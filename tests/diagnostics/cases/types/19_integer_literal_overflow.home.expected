@@ -1,0 +1,7 @@
+Checking: <repo>/tests/diagnostics/cases/types/19_integer_literal_overflow.home
+
+error: integer literal does not fit in destination type
+  --> <repo>/tests/diagnostics/cases/types/19_integer_literal_overflow.home:6:17
+   |
+   6 |     let x: u8 = 1000
+   |                  ^

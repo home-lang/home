@@ -1395,8 +1395,15 @@ pub const TypeChecker = struct {
                     // Otherwise, SYNTHESIZE the type from the value
                     const value_type = if (decl.type_name) |type_name| blk: {
                         const declared_type = try self.parseTypeName(type_name);
-                        // CHECK mode: value must have declared_type
-                        try self.checkExpression(value, declared_type);
+                        // CHECK mode: propagate the declared type as a
+                        // hint into the initializer so numeric literals
+                        // and array literals adopt the destination
+                        // element type instead of their isolated
+                        // default. The synthesized value type is then
+                        // validated against the declared type the same
+                        // way `checkExpression` did.
+                        const synthesized = try self.inferExpressionWithHint(value, declared_type);
+                        try self.checkExpressionAgainst(value, declared_type, synthesized);
                         break :blk declared_type;
                     } else blk: {
                         // SYNTHESIS mode: infer type from value
@@ -1844,7 +1851,19 @@ pub const TypeChecker = struct {
     fn checkExpression(self: *TypeChecker, expr: *const ast.Expr, expected: Type) TypeError!void {
         // First synthesize the actual type
         const actual = try self.synthesizeExpression(expr);
+        try self.checkExpressionAgainst(expr, expected, actual);
+    }
 
+    /// Compare an already-synthesized actual type against an expected
+    /// type, emitting the same diagnostics as `checkExpression`. This
+    /// is split out so the LetDecl path can synthesize *with* a hint
+    /// and still reuse the same coercion / error-emission policy.
+    fn checkExpressionAgainst(
+        self: *TypeChecker,
+        expr: *const ast.Expr,
+        expected: Type,
+        actual: Type,
+    ) TypeError!void {
         // Allow Void (unknown) types to match any expected type
         // This enables gradual typing for expressions with unknown types
         if (actual == .Void) {
@@ -1858,10 +1877,22 @@ pub const TypeChecker = struct {
             }
         }
 
-        // Special case: integer literals can be coerced to any integer type
+        // Special case: integer literals can be coerced to any integer
+        // type *that they fit into*. We reject `let x: u8 = 1000` and
+        // `let x: u8 = -1` here so the existing overflow / signedness
+        // diagnostic still surfaces.
         if (expr.* == .IntegerLiteral) {
             if (isIntegerType(expected)) {
-                return; // Valid integer literal coercion
+                if (integerLiteralFits(expr.IntegerLiteral.value, expected)) {
+                    return; // Valid integer literal coercion
+                }
+                try self.addError("integer literal does not fit in destination type", expr.getLocation());
+                return error.TypeMismatch;
+            }
+            // Float destination: integer literal promotes to float
+            // (e.g. `let x: f64 = 0`).
+            if (isFloatType(expected)) {
+                return;
             }
             // Integer literal `0` is valid as a null pointer for *T
             // (matches Home's existing kernel convention). Any other
@@ -1871,6 +1902,29 @@ pub const TypeChecker = struct {
                 // pointer types are modeled either via Reference or as
                 // Void in imported namespaces — accept both here.
                 if (expected == .Reference or expected == .MutableReference or expected == .Void) {
+                    return;
+                }
+            }
+        }
+
+        // `-N` for an integer literal N: parsed as UnaryExpr(Negate,
+        // IntegerLiteral). Apply the same fits-check with the sign
+        // flipped — this catches `let x: u8 = -1`.
+        if (expr.* == .UnaryExpr) {
+            const u = expr.UnaryExpr;
+            if (u.op == .Neg and u.operand.* == .IntegerLiteral) {
+                if (isIntegerType(expected)) {
+                    const v: i64 = -u.operand.IntegerLiteral.value;
+                    if (integerLiteralFits(v, expected)) {
+                        return;
+                    }
+                    try self.addError(
+                        "integer literal does not fit in destination type",
+                        expr.getLocation(),
+                    );
+                    return error.TypeMismatch;
+                }
+                if (isFloatType(expected)) {
                     return;
                 }
             }
@@ -1921,6 +1975,53 @@ pub const TypeChecker = struct {
         return switch (t) {
             .Float, .F32, .F64 => true,
             else => false,
+        };
+    }
+
+    /// Does the integer literal `value` fit into the destination integer
+    /// type `dest`? Used by the context-propagation path: when a numeric
+    /// literal appears in a position with a known destination type, we
+    /// adopt that type instead of the literal's intrinsic `Int`. We must
+    /// reject overflow (e.g. `let x: u8 = 1000`) and signed-to-unsigned
+    /// loss (e.g. `let x: u8 = -1`), so the existing diagnostic still
+    /// fires for those cases.
+    fn integerLiteralFits(value: i64, dest: Type) bool {
+        return switch (dest) {
+            .Int, .I64 => true,
+            .I8 => value >= std.math.minInt(i8) and value <= std.math.maxInt(i8),
+            .I16 => value >= std.math.minInt(i16) and value <= std.math.maxInt(i16),
+            .I32 => value >= std.math.minInt(i32) and value <= std.math.maxInt(i32),
+            .I128 => true, // any i64 fits in i128
+            .U8 => value >= 0 and value <= std.math.maxInt(u8),
+            .U16 => value >= 0 and value <= std.math.maxInt(u16),
+            .U32 => value >= 0 and value <= std.math.maxInt(u32),
+            .U64 => value >= 0,
+            .U128 => value >= 0,
+            else => false,
+        };
+    }
+
+    /// Does the float literal `value` fit into `dest`? f64 values
+    /// always fit f64; for f32 we accept all literals (parser already
+    /// represents them as f64) — codegen handles the narrowing. The
+    /// purpose here is mostly to *reject* float-to-integer (covered by
+    /// the caller checking `isFloatType(dest)` first).
+    fn floatLiteralFits(value: f64, dest: Type) bool {
+        _ = value;
+        return switch (dest) {
+            .Float, .F32, .F64 => true,
+            else => false,
+        };
+    }
+
+    /// Strip a single Optional wrapper from a destination-type hint
+    /// so a literal `0` in a `?u32` context still picks up `u32`.
+    /// Other type wrappers (References, Arrays) are preserved because
+    /// they affect which propagation rule fires.
+    fn unwrapHint(t: Type) Type {
+        return switch (t) {
+            .Optional => |inner| inner.*,
+            else => t,
         };
     }
 
@@ -1999,6 +2100,223 @@ pub const TypeChecker = struct {
         return try self.inferExpression(expr);
     }
 
+    /// Infer an expression's type, optionally biased by a contextual
+    /// destination type ("hint"). The hint comes from the surrounding
+    /// syntactic context — e.g. the declared type of a `let`, the
+    /// element type of a typed array literal, the parameter type at
+    /// a call site, or the sibling branch of an if-expression.
+    ///
+    /// When the hint is non-null and matches the expression's natural
+    /// type family (integer/float for literals, Array(T) for array
+    /// literals, the same hint for if-branches), we propagate it so a
+    /// bare literal like `1000` in a `u32` context types as `u32`
+    /// instead of the default `int`. When there's no hint, behavior is
+    /// identical to plain `inferExpression`.
+    ///
+    /// This is the single seam used by issue #21 to fix the
+    /// "literal types in isolation" bug across:
+    ///   1. RHS of typed `let`/`const`/`var`
+    ///   2. element of a `[N]T` array literal
+    ///   3. branches of an if-expression in a typed context
+    ///   4. argument of a function call
+    fn inferExpressionWithHint(
+        self: *TypeChecker,
+        expr: *const ast.Expr,
+        hint: ?Type,
+    ) TypeError!Type {
+        // Unwrap one level of Optional from the hint so a literal `0`
+        // in a `?u32` context still picks up `u32`.
+        const eff_hint: ?Type = if (hint) |h| unwrapHint(h) else null;
+
+        return switch (expr.*) {
+            .IntegerLiteral => |lit| blk: {
+                if (eff_hint) |dest| {
+                    if (isIntegerType(dest) and integerLiteralFits(lit.value, dest)) {
+                        break :blk dest;
+                    }
+                    // Float destination, integer literal: accept by
+                    // promoting to the float type. Only do this when
+                    // the literal value is exactly representable
+                    // (always true for any i64 in f64 within safe
+                    // range; we accept all here and let codegen warn
+                    // on precision loss).
+                    if (isFloatType(dest)) break :blk dest;
+                }
+                break :blk Type.Int;
+            },
+            .FloatLiteral => |lit| blk: {
+                if (eff_hint) |dest| {
+                    if (isFloatType(dest) and floatLiteralFits(lit.value, dest)) {
+                        break :blk dest;
+                    }
+                }
+                break :blk Type.Float;
+            },
+            .ArrayLiteral => |array| try self.inferArrayLiteralWithHint(array, eff_hint),
+            .IfExpr => |ie| try self.inferIfExprWithHint(ie, eff_hint),
+            .UnaryExpr => |unary| try self.inferUnaryExprWithHint(unary, eff_hint),
+            else => try self.inferExpression(expr),
+        };
+    }
+
+    /// Hint-aware array literal inference. If the hint is `Array(T)`,
+    /// every element is checked against T (so literal `0` in a
+    /// `[2]u64` literal is typed `u64`, not `int`). Otherwise this
+    /// degrades to the old element-homogeneity check.
+    fn inferArrayLiteralWithHint(
+        self: *TypeChecker,
+        array: *const ast.ArrayLiteral,
+        hint: ?Type,
+    ) TypeError!Type {
+        // Extract the element-type hint, if the destination is itself an
+        // array type. Otherwise fall through to the no-hint path.
+        const elem_hint: ?Type = if (hint) |h|
+            (if (h == .Array) h.Array.element_type.* else null)
+        else
+            null;
+
+        if (elem_hint == null) {
+            return try self.inferArrayLiteral(array);
+        }
+
+        if (array.elements.len == 0) {
+            // Empty array with a known element type: adopt it directly
+            // instead of defaulting to `int`.
+            const elem_type = try self.allocator.create(Type);
+            errdefer self.allocator.destroy(elem_type);
+            elem_type.* = elem_hint.?;
+            try self.allocated_types.append(self.allocator, elem_type);
+            return Type{ .Array = .{ .element_type = elem_type } };
+        }
+
+        // Type each element against the hint. We collect a
+        // representative element type — the hint itself, since every
+        // element either coerces to it or generates an error.
+        for (array.elements) |elem| {
+            const elem_t = try self.inferExpressionWithHint(elem, elem_hint);
+            if (elem_t == .Void or elem_t.equals(elem_hint.?) or
+                canCoerce(elem_t, elem_hint.?))
+            {
+                continue;
+            }
+            // String → pointer-like coercion: `[*u8]` initialized
+            // with string literals (kernel C-string tables).
+            if (elem_t == .String and (elem_hint.? == .Reference or
+                elem_hint.? == .MutableReference))
+            {
+                continue;
+            }
+            try self.addError(
+                "Array elements must all have the same type",
+                array.node.loc,
+            );
+            return error.TypeMismatch;
+        }
+
+        const elem_type = try self.allocator.create(Type);
+        errdefer self.allocator.destroy(elem_type);
+        elem_type.* = elem_hint.?;
+        try self.allocated_types.append(self.allocator, elem_type);
+        return Type{ .Array = .{ .element_type = elem_type } };
+    }
+
+    /// Hint-aware if-expression inference. Both branches are checked
+    /// with the same destination hint, so `if cond { 1000 } else { x }`
+    /// in a `u32` context types both branches as `u32`. With no hint,
+    /// we still try to find a "sibling type" — if one branch has a
+    /// concrete numeric type and the other is a bare literal, the
+    /// literal adopts the sibling type.
+    fn inferIfExprWithHint(
+        self: *TypeChecker,
+        ie: *const ast.IfExpr,
+        hint: ?Type,
+    ) TypeError!Type {
+        if (hint) |dest| {
+            const then_t = try self.inferExpressionWithHint(ie.then_branch, dest);
+            const else_t = self.inferExpressionWithHint(ie.else_branch, dest) catch {
+                return then_t;
+            };
+            if (!then_t.equals(else_t) and then_t != .Void and else_t != .Void and
+                !canCoerce(then_t, else_t) and !canCoerce(else_t, then_t))
+            {
+                try self.addError("if-expression branches have different types", ie.node.loc);
+            }
+            return dest;
+        }
+
+        // No outer hint: do a two-pass sibling-type inference. First
+        // synthesize each branch in isolation; if exactly one branch is
+        // a bare literal default-typed to Int/Float, re-synthesize it
+        // using the *other* branch's type as a hint.
+        const then_raw = try self.inferExpression(ie.then_branch);
+        const else_raw = self.inferExpression(ie.else_branch) catch {
+            return then_raw;
+        };
+
+        const then_is_default = isDefaultLiteralType(ie.then_branch, then_raw);
+        const else_is_default = isDefaultLiteralType(ie.else_branch, else_raw);
+
+        if (then_is_default and !else_is_default and isNumericType(else_raw)) {
+            const then_t = try self.inferExpressionWithHint(ie.then_branch, else_raw);
+            if (!then_t.equals(else_raw) and !canCoerce(then_t, else_raw)) {
+                try self.addError("if-expression branches have different types", ie.node.loc);
+            }
+            return else_raw;
+        }
+        if (else_is_default and !then_is_default and isNumericType(then_raw)) {
+            const else_t = try self.inferExpressionWithHint(ie.else_branch, then_raw);
+            if (!else_t.equals(then_raw) and !canCoerce(else_t, then_raw)) {
+                try self.addError("if-expression branches have different types", ie.node.loc);
+            }
+            return then_raw;
+        }
+
+        if (!then_raw.equals(else_raw) and then_raw != .Void and else_raw != .Void and
+            !canCoerce(then_raw, else_raw) and !canCoerce(else_raw, then_raw))
+        {
+            try self.addError("if-expression branches have different types", ie.node.loc);
+        }
+        return then_raw;
+    }
+
+    /// Hint-aware unary expression inference. The hint passes through
+    /// negation so `let x: i32 = -1` types `1` as `i32` and the
+    /// surrounding `-` produces `i32` as well.
+    fn inferUnaryExprWithHint(
+        self: *TypeChecker,
+        unary: *const ast.UnaryExpr,
+        hint: ?Type,
+    ) TypeError!Type {
+        // Only propagate the hint into the operand; otherwise the
+        // resulting type is determined by the regular unary rules.
+        const operand_t = try self.inferExpressionWithHint(unary.operand, hint);
+        return operand_t;
+    }
+
+    fn isNumericType(t: Type) bool {
+        return isIntegerType(t) or isFloatType(t);
+    }
+
+    /// True when `expr_type` is the *default* literal type that the
+    /// type-checker assigns to a bare numeric literal in the absence
+    /// of context. We use this to decide whether to retroactively
+    /// re-type a literal once we discover its sibling expression has
+    /// a more specific numeric type.
+    fn isDefaultLiteralType(expr: *const ast.Expr, expr_type: Type) bool {
+        return switch (expr.*) {
+            .IntegerLiteral => expr_type == .Int,
+            .FloatLiteral => expr_type == .Float,
+            // Allow `-1` etc. — a UnaryExpr wrapping a literal is
+            // morally the same default-typed literal.
+            .UnaryExpr => |u| switch (u.operand.*) {
+                .IntegerLiteral => expr_type == .Int,
+                .FloatLiteral => expr_type == .Float,
+                else => false,
+            },
+            else => false,
+        };
+    }
+
     /// Legacy inference method (will gradually migrate to synthesizeExpression)
     fn inferExpression(self: *TypeChecker, expr: *const ast.Expr) TypeError!Type {
         return switch (expr.*) {
@@ -2067,16 +2385,7 @@ pub const TypeChecker = struct {
                 }
                 break :blk Type.Void;
             },
-            .IfExpr => |ie| blk: {
-                const then_t = try self.inferExpression(ie.then_branch);
-                const else_t = self.inferExpression(ie.else_branch) catch {
-                    break :blk then_t;
-                };
-                if (!then_t.equals(else_t) and then_t != .Void and else_t != .Void) {
-                    try self.addError("if-expression branches have different types", ie.node.loc);
-                }
-                break :blk then_t;
-            },
+            .IfExpr => |ie| try self.inferIfExprWithHint(ie, null),
             .ClosureExpr => Type.Void,
             else => Type.Void,
         };
@@ -2186,9 +2495,14 @@ pub const TypeChecker = struct {
                         return error.WrongNumberOfArguments;
                     }
 
-                    // Type check positional arguments
+                    // Type check positional arguments. Pass each
+                    // parameter's declared type as a hint so a bare
+                    // numeric literal at a call site (`f(1000)` where
+                    // the param is `u32`) is typed as the parameter
+                    // type instead of the default `int`.
                     for (call.args, 0..) |arg, i| {
-                        const arg_type = try self.inferExpression(arg);
+                        const param_hint: ?Type = if (i < expected_params.len) expected_params[i] else null;
+                        const arg_type = try self.inferExpressionWithHint(arg, param_hint);
                         // Allow Void (unknown/inferred type) to match any expected type
                         // This handles cases where .get() returns unknown type from generic collections.
                         // Also allow String → integer/pointer coercion for kernel
@@ -3032,6 +3346,13 @@ pub const TypeChecker = struct {
         if (std.mem.eql(u8, name, "u32")) return Type.U32;
         if (std.mem.eql(u8, name, "u64")) return Type.U64;
         if (std.mem.eql(u8, name, "u128")) return Type.U128;
+        // `usize` / `isize` are platform-pointer-width integers. The
+        // compiler currently runs on 64-bit hosts and home-os targets
+        // 64-bit kernels, so model them as U64 / I64. This is a type
+        // identity, not a coercion — `usize` and `u64` interoperate
+        // freely under `canCoerce` between same-family integers anyway.
+        if (std.mem.eql(u8, name, "usize")) return Type.U64;
+        if (std.mem.eql(u8, name, "isize")) return Type.I64;
         if (std.mem.eql(u8, name, "float")) return Type.Float;
         if (std.mem.eql(u8, name, "f32")) return Type.F32;
         if (std.mem.eql(u8, name, "f64")) return Type.F64;
@@ -3208,8 +3529,32 @@ pub const TypeChecker = struct {
             return Type.Void;
         }
 
-        // Check if it's an array type [T] or [T; N]
+        // Check if it's an array type [T], [T; N], or [N]T.
+        // The `[N]T` form is produced by the parser for fixed-size
+        // arrays declared in Zig style — e.g. `[40]u32` becomes the
+        // string "[40]u32". The matching closing bracket is in the
+        // *middle* of the string in that case, not at the end.
         if (name.len > 2 and name[0] == '[') {
+            // Try `[N]T` form first: an integer/identifier between `[`
+            // and `]`, followed by the element type. We don't actually
+            // need the size at the type-system level (we model arrays
+            // homogeneously), so just extract the element type after
+            // the closing bracket.
+            if (std.mem.indexOfScalar(u8, name, ']')) |close_idx| {
+                if (close_idx < name.len - 1) {
+                    // There's content after the `]` — this is `[N]T`.
+                    const elem_type_name = std.mem.trim(u8, name[close_idx + 1 ..], " ");
+                    const elem_type = try self.allocator.create(Type);
+                    errdefer self.allocator.destroy(elem_type);
+                    elem_type.* = try self.parseTypeName(elem_type_name);
+                    try self.allocated_types.append(self.allocator, elem_type);
+
+                    return Type{ .Array = .{
+                        .element_type = elem_type,
+                    } };
+                }
+            }
+
             // Find the element type (skip ; and size if present)
             var end_pos = name.len - 1;
             if (name[end_pos] == ']') {

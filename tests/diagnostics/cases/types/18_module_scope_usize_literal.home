@@ -1,0 +1,5 @@
+// Issue #21 pattern 3: module-scope `let X: usize = N`. Both the
+// `usize` type-name (newly recognized as a pointer-width integer)
+// and the literal `256` need to flow through the propagation path
+// for this to typecheck.
+let RX_BUFFER_SIZE: usize = 256

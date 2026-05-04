@@ -1,0 +1,9 @@
+// Issue #21 pattern 9: array literal mixes a bare integer literal
+// with already-typed expressions. Without context propagation the
+// literal is typed `int` and disagrees with the identifier's `u64`,
+// surfacing as `Array elements must all have the same type`. With
+// the destination hint `[2]u64`, the literal adopts `u64`.
+fn build(a: u64): void {
+    var s: [2]u64 = [1, a]
+    return
+}

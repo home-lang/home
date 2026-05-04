@@ -1,0 +1,3 @@
+Checking: <repo>/tests/diagnostics/cases/types/15_typed_array_literal_propagates_int.home
+
+Success: Type checking passed ✓

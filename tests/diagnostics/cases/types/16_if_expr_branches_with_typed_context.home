@@ -1,0 +1,9 @@
+// Issue #21 pattern 4: if-expression branch unification.
+// In a `u32`-typed binding context, both the literal and the
+// identifier branches should agree on `u32`. Previously the
+// literal `1000` typed as `int` and the typechecker complained
+// the branches had different types.
+fn clamp(message_len: u32): u32 {
+    var clamped: u32 = if message_len > 1000 { 1000 } else { message_len }
+    return clamped
+}

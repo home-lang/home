@@ -1,0 +1,5 @@
+// Issue #21 pattern 1: array literal context propagation.
+// Bare integer literals in a `[N]u32` initializer should adopt
+// the destination element type instead of defaulting to `int`,
+// which previously surfaced as `expected void, found [int]`.
+const NICE_TO_WEIGHT: [4]u32 = [88761, 71755, 56483, 46273]

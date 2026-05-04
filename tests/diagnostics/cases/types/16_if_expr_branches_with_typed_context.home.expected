@@ -1,0 +1,3 @@
+Checking: <repo>/tests/diagnostics/cases/types/16_if_expr_branches_with_typed_context.home
+
+Success: Type checking passed ✓

@@ -1,0 +1,7 @@
+// Issue #21 negative case: literal coercion must reject overflow.
+// `1000` does not fit in `u8`, so the typechecker should still
+// emit a "does not fit in destination type" error rather than
+// silently accept it.
+fn main() {
+    let x: u8 = 1000
+}
