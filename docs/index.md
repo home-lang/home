@@ -22,3 +22,12 @@ features:
   - title: Systems Ready
     details: Build operating systems, game engines, and high-performance applications. First-class support for HomeOS.
 ---
+
+## Developer Experience
+
+- [DX Commands](/DX_COMMANDS) - daily `home dev`, `home fix`, `home doctor`,
+  package, API diff, and size-report workflows.
+- [Home Declarations](/HOME_DECLARATIONS) - `.d.hm` package API metadata for
+  LSP, package, and incremental-checking workflows.
+- [Pantry Integration](/PANTRY_INTEGRATION) - using Pantry for project tools and
+  dependencies.

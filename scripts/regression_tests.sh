@@ -135,7 +135,7 @@ echo
 echo "=== SIB encoding (rsp / r12 base) ==="
 
 run_case "sib_stack_pointer_deref" '
-// Many locals exercise `[rbp - N]` reads with N that crosses the
+// Many locals exercise rbp-relative reads with N that crosses the
 // disp8/disp32 boundary. The rbx async state pointer also forces
 // mod-displacement memory access to route through the correct ModRM
 // encoding.
@@ -159,7 +159,7 @@ echo "=== saturating arithmetic ==="
 run_case "clamp_add_clamps_at_max" '
 fn main() {
     let near_max = 9223372036854775806
-    // near_max + 5 overflows; `+|` clamps at i64::MAX.
+    // near_max + 5 overflows; saturating add clamps at i64::MAX.
     let r = near_max +| 5
     assert(r == 9223372036854775807)
 }
@@ -168,7 +168,7 @@ fn main() {
 run_case "clamp_sub_clamps_at_min" '
 fn main() {
     let near_min = 0 - 9223372036854775800
-    // (0 - near_min) - 100 overflows below MIN; `-|` clamps at MIN.
+    // (0 - near_min) - 100 overflows below MIN; saturating sub clamps at MIN.
     let r = near_min -| 100
     assert(r == 0 - 9223372036854775807 - 1)
 }

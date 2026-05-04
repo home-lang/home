@@ -19,13 +19,13 @@ export class HomeCodeLensProvider implements vscode.CodeLensProvider {
             const text = line.text;
 
             // Code lens for test functions
-            const testMatch = /^\s*@test\s+fn\s+([a-zA-Z_][a-zA-Z0-9_]*)/;
+            const testMatch = /^\s*@test\s+fn\s+(?:[a-zA-Z_][a-zA-Z0-9_]*)/;
             if (testMatch.test(text)) {
                 codeLenses.push(...this.createTestCodeLenses(document, line, i));
             }
 
             // Code lens for regular functions
-            const fnMatch = /^\s*(?:pub\s+)?fn\s+([a-zA-Z_][a-zA-Z0-9_]*)/;
+            const fnMatch = /^\s*(?:pub\s+)?fn\s+(?:[a-zA-Z_][a-zA-Z0-9_]*)/;
             if (fnMatch.test(text) && !testMatch.test(text)) {
                 codeLenses.push(...this.createFunctionCodeLenses(document, line, i));
             }

@@ -146,10 +146,23 @@ fn printUsage() void {
         \\  init [name]        Initialize a new Home project with complete structure
         \\  parse <file>       Tokenize an Home file and display tokens
         \\  ast <file>         Parse an Home file and display the AST
-        \\  check <file>       Type check an Home file (fast, no execution)
+        \\  check <path>       Type check an Home file or directory
+        \\  explain <code>     Explain a diagnostic code
         \\  lint <file>        Lint and show diagnostics
         \\  lint --fix <file>  Lint and auto-fix issues
         \\  fmt <file>         Format and auto-fix (alias for lint --fix)
+        \\  fix [path]         Lint, auto-fix, and format Home files
+        \\  dev [script|file]  Run the best local development workflow
+        \\  lsp [--stdio]      Start or inspect the Home language server
+        \\  symbols [path]     List public declarations in a file or directory
+        \\  docs [path]        Generate Markdown API docs from declarations
+        \\  completions <sh>   Print shell completions for bash, zsh, or fish
+        \\  doctor             Check local Home development setup
+        \\  clean              Remove Home/Zig build caches
+        \\  ci [path]          Run doctor, check, and declaration generation
+        \\  api-diff <old> <new>
+        \\                     Compare two .d.hm declaration files
+        \\  size [path]        Show package/build size report
         \\  run <file>         Execute an Home file directly
         \\  build <file>       Compile an Home file to a native binary
         \\  watch <file>       Watch file for changes and auto-recompile (hot reload)
@@ -164,7 +177,20 @@ fn printUsage() void {
         \\  pkg remove <name>  Remove a dependency
         \\  pkg update         Update all dependencies to latest versions
         \\  pkg install        Install dependencies from home.toml
+        \\  pkg tools          Install project tools with pantry
+        \\  pkg search <query> Search packages through pantry
+        \\  pkg info <name>    Show package metadata through pantry
+        \\  pkg audit          Audit dependencies through pantry
+        \\  pkg dedupe         Dedupe dependency installs through pantry
+        \\  pkg publish        Publish package through pantry
+        \\  pkg size           Show package/build size report
+        \\  pkg docs           Generate Markdown API docs from .d.hm metadata
         \\  pkg tree           Show dependency tree
+        \\  pkg why <name>     Explain why a dependency is present
+        \\  pkg outdated       Show dependency update candidates
+        \\  pkg declarations   Generate Home API declarations (.d.hm)
+        \\  pkg declarations --check
+        \\                     Verify generated declarations are current
         \\  pkg run <script>   Run a package script
         \\  pkg scripts        List all available scripts
         \\  pkg login          Login to package registry
@@ -177,6 +203,15 @@ fn printUsage() void {
         \\  home init my-app
         \\  home parse hello.home
         \\  home check hello.home
+        \\  home check src/
+        \\  home explain T0001
+        \\  home api-diff old.d.hm new.d.hm
+        \\  home dev
+        \\  home completions zsh
+        \\  home docs src --out docs/API.md
+        \\  home fix src/
+        \\  home doctor
+        \\  home ci
         \\  home run hello.home
         \\  home build hello.home -o hello
         \\  home test src/
@@ -185,6 +220,11 @@ fn printUsage() void {
         \\  home pkg add http-router@1.0.0
         \\  home pkg add home-lang/awesome-lib
         \\  home pkg install
+        \\  home pkg tools
+        \\  home pkg audit
+        \\  home pkg publish --dry-run
+        \\  home pkg declarations
+        \\  home pkg docs
         \\  home pkg run dev
         \\  home pkg tree
         \\
@@ -441,7 +481,7 @@ fn astCommand(allocator: std.mem.Allocator, file_path: []const u8) !void {
     std.debug.print("\n{s}Success:{s} Parsed {d} statements\n", .{ Color.Green.code(), Color.Reset.code(), program.statements.len });
 }
 
-fn checkCommand(allocator: std.mem.Allocator, file_path: []const u8) !void {
+fn checkFile(allocator: std.mem.Allocator, file_path: []const u8) !bool {
     // Read the file
     const source = Io.Dir.cwd().readFileAlloc(g_io, file_path, allocator, std.Io.Limit.unlimited) catch |err| {
         std.debug.print("{s}Error:{s} Failed to read file '{s}': {}\n", .{ Color.Red.code(), Color.Reset.code(), file_path, err });
@@ -500,10 +540,96 @@ fn checkCommand(allocator: std.mem.Allocator, file_path: []const u8) !void {
         for (type_checker.errors.items) |err_info| {
             try printEnhancedError(file_path, source, err_info);
         }
-        std.process.exit(1);
+        return false;
     } else {
         std.debug.print("{s}Success:{s} Type checking passed ✓\n", .{ Color.Green.code(), Color.Reset.code() });
+        return true;
     }
+}
+
+fn checkCommand(allocator: std.mem.Allocator, file_path: []const u8) !void {
+    if (!try checkFile(allocator, file_path)) {
+        std.process.exit(1);
+    }
+}
+
+fn checkPathCommand(allocator: std.mem.Allocator, path: []const u8) !void {
+    const stat = Io.Dir.cwd().statFile(g_io, path, .{}) catch |err| {
+        std.debug.print("{s}Error:{s} Cannot read '{s}': {}\n", .{ Color.Red.code(), Color.Reset.code(), path, err });
+        return err;
+    };
+
+    if (stat.kind == .file) {
+        try checkCommand(allocator, path);
+        return;
+    }
+
+    var files = std.ArrayList([]const u8).empty;
+    defer {
+        for (files.items) |file| allocator.free(file);
+        files.deinit(allocator);
+    }
+
+    try collectHomeSourceFiles(allocator, path, &files);
+    if (files.items.len == 0) {
+        std.debug.print("{s}No Home source files found in {s}.{s}\n", .{ Color.Yellow.code(), path, Color.Reset.code() });
+        return;
+    }
+
+    std.debug.print("{s}Checking {d} Home file(s)...{s}\n\n", .{ Color.Blue.code(), files.items.len, Color.Reset.code() });
+    var failed: usize = 0;
+    for (files.items) |file| {
+        if (!try checkFile(allocator, file)) {
+            failed += 1;
+        }
+    }
+
+    if (failed > 0) {
+        std.debug.print("\n{s}Error:{s} {d} of {d} file(s) failed checks\n", .{ Color.Red.code(), Color.Reset.code(), failed, files.items.len });
+        std.process.exit(1);
+    }
+
+    std.debug.print("\n{s}Success:{s} Checked {d} file(s)\n", .{ Color.Green.code(), Color.Reset.code(), files.items.len });
+}
+
+const DiagnosticExplanation = struct {
+    code: []const u8,
+    title: []const u8,
+    meaning: []const u8,
+    fix: []const u8,
+};
+
+const diagnostic_explanations = [_]DiagnosticExplanation{
+    .{ .code = "T0001", .title = "Type mismatch", .meaning = "A value does not match the type expected by an annotation, expression, or function signature.", .fix = "Check the expected and found types, then add an explicit conversion or change the value/source type." },
+    .{ .code = "T0002", .title = "Cannot infer type", .meaning = "The checker needs more information to choose a concrete type.", .fix = "Add a type annotation or provide a non-empty literal/context that constrains the type." },
+    .{ .code = "V0001", .title = "Undefined variable", .meaning = "A name is used before it is declared or imported.", .fix = "Check spelling, move the declaration earlier, or import the symbol." },
+    .{ .code = "M0001", .title = "Cannot mutate immutable variable", .meaning = "A value declared immutable is assigned again or mutated.", .fix = "Use `let mut` when mutation is intentional, otherwise create a new value." },
+    .{ .code = "F0001", .title = "Argument count mismatch", .meaning = "A function call supplied too few or too many arguments.", .fix = "Update the call or the function signature; prefer named/default parameters when they clarify intent." },
+    .{ .code = "R0001", .title = "Missing return", .meaning = "A function promises a value but not every path returns one.", .fix = "Return the expected value from every branch or change the return type." },
+    .{ .code = "P0001", .title = "Non-exhaustive match", .meaning = "A match expression does not cover every possible input shape.", .fix = "Add the missing patterns or an explicit wildcard branch." },
+    .{ .code = "A0001", .title = "Division by zero", .meaning = "A compile-time constant expression divides by zero.", .fix = "Guard the divisor or change the constant expression." },
+    .{ .code = "A0002", .title = "Index out of bounds", .meaning = "A known index is outside a known collection length.", .fix = "Use a valid index, check length first, or use safe indexing with `?[]`." },
+    .{ .code = "W0001", .title = "Unreachable code", .meaning = "Code appears after a control-flow terminator like return or panic.", .fix = "Remove the dead code or move it before the terminating statement." },
+    .{ .code = "W0002", .title = "Unused variable", .meaning = "A binding is declared but not read.", .fix = "Remove it, use it, or add an explicit lint-disable comment when intentional." },
+    .{ .code = "C0001", .title = "Comptime error", .meaning = "Compile-time evaluation failed.", .fix = "Inspect the comptime expression and make sure it is deterministic and valid at compile time." },
+};
+
+fn explainCommand(code: []const u8) void {
+    for (diagnostic_explanations) |entry| {
+        if (std.mem.eql(u8, entry.code, code)) {
+            std.debug.print("{s}{s}: {s}{s}\n\n", .{ Color.Blue.code(), entry.code, entry.title, Color.Reset.code() });
+            std.debug.print("Meaning: {s}\n", .{entry.meaning});
+            std.debug.print("Fix:     {s}\n", .{entry.fix});
+            return;
+        }
+    }
+
+    std.debug.print("{s}Unknown diagnostic code:{s} {s}\n", .{ Color.Yellow.code(), Color.Reset.code(), code });
+    std.debug.print("Known codes:", .{});
+    for (diagnostic_explanations) |entry| {
+        std.debug.print(" {s}", .{entry.code});
+    }
+    std.debug.print("\n", .{});
 }
 
 /// Print an enhanced error message with colors, context, and suggestions
@@ -635,6 +761,717 @@ fn fmtCommand(allocator: std.mem.Allocator, args: []const [:0]const u8) !void {
     }
 
     try lint_cmd.lintCommand(allocator, new_args.items, g_io);
+}
+
+fn collectHomeSourceFiles(allocator: std.mem.Allocator, path: []const u8, files: *std.ArrayList([]const u8)) !void {
+    const stat = Io.Dir.cwd().statFile(g_io, path, .{}) catch |err| {
+        std.debug.print("{s}Error:{s} Cannot read '{s}': {}\n", .{ Color.Red.code(), Color.Reset.code(), path, err });
+        return err;
+    };
+
+    if (stat.kind == .file) {
+        if (std.mem.endsWith(u8, path, ".home") or std.mem.endsWith(u8, path, ".hm")) {
+            try files.append(allocator, try allocator.dupe(u8, path));
+        }
+        return;
+    }
+
+    if (stat.kind != .directory) return;
+
+    var dir = try Io.Dir.cwd().openDir(g_io, path, .{ .iterate = true });
+    defer dir.close(g_io);
+
+    var iter = dir.iterate();
+    while (try iter.next(g_io)) |entry| {
+        if (std.mem.eql(u8, entry.name, ".git") or
+            std.mem.eql(u8, entry.name, ".home") or
+            std.mem.eql(u8, entry.name, "zig-cache") or
+            std.mem.eql(u8, entry.name, ".zig-cache") or
+            std.mem.eql(u8, entry.name, "zig-out") or
+            std.mem.eql(u8, entry.name, "node_modules") or
+            std.mem.eql(u8, entry.name, "pantry_modules"))
+        {
+            continue;
+        }
+
+        const child = try std.fs.path.join(allocator, &.{ path, entry.name });
+        defer allocator.free(child);
+
+        if (entry.kind == .file) {
+            if (std.mem.endsWith(u8, child, ".home") or std.mem.endsWith(u8, child, ".hm")) {
+                try files.append(allocator, try allocator.dupe(u8, child));
+            }
+        } else if (entry.kind == .directory) {
+            try collectHomeSourceFiles(allocator, child, files);
+        }
+    }
+}
+
+fn fixCommand(allocator: std.mem.Allocator, target: []const u8) !void {
+    var files = std.ArrayList([]const u8).empty;
+    defer {
+        for (files.items) |file| allocator.free(file);
+        files.deinit(allocator);
+    }
+
+    try collectHomeSourceFiles(allocator, target, &files);
+    if (files.items.len == 0) {
+        std.debug.print("{s}No Home source files found in {s}.{s}\n", .{ Color.Yellow.code(), target, Color.Reset.code() });
+        return;
+    }
+
+    std.debug.print("{s}Fixing {d} Home file(s)...{s}\n\n", .{ Color.Blue.code(), files.items.len, Color.Reset.code() });
+    for (files.items) |file| {
+        const file_arg = try allocator.dupeZ(u8, file);
+        defer allocator.free(file_arg);
+        try fmtCommand(allocator, &.{file_arg});
+    }
+}
+
+fn runShellCommand(allocator: std.mem.Allocator, command: []const u8) !void {
+    var child = try std.process.spawn(g_io, .{
+        .argv = &[_][]const u8{ "sh", "-c", command },
+    });
+    _ = allocator;
+    const term = try child.wait(g_io);
+    switch (term) {
+        .exited => |code| {
+            if (code != 0) std.process.exit(code);
+        },
+        else => std.process.exit(1),
+    }
+}
+
+fn findScriptCommand(allocator: std.mem.Allocator, script_name: []const u8) !?[]const u8 {
+    const toml_content = Io.Dir.cwd().readFileAlloc(g_io, "home.toml", allocator, std.Io.Limit.limited(1024 * 1024)) catch return null;
+    defer allocator.free(toml_content);
+
+    var scripts = try parseTomlScripts(allocator, toml_content);
+    defer {
+        for (scripts.items) |script| {
+            allocator.free(script.name);
+            allocator.free(script.command);
+        }
+        scripts.deinit(allocator);
+    }
+
+    for (scripts.items) |script| {
+        if (std.mem.eql(u8, script.name, script_name)) {
+            return try allocator.dupe(u8, script.command);
+        }
+    }
+
+    return null;
+}
+
+fn devCommand(allocator: std.mem.Allocator, target: ?[]const u8) !void {
+    if (target) |value| {
+        if (std.mem.endsWith(u8, value, ".home") or std.mem.endsWith(u8, value, ".hm")) {
+            try watchCommand(allocator, value);
+            return;
+        }
+
+        if (try findScriptCommand(allocator, value)) |script| {
+            defer allocator.free(script);
+            std.debug.print("{s}Running dev script:{s} {s}\n\n", .{ Color.Blue.code(), Color.Reset.code(), value });
+            try runShellCommand(allocator, script);
+            return;
+        }
+
+        std.debug.print("{s}Error:{s} no script or Home file named '{s}'\n", .{ Color.Red.code(), Color.Reset.code(), value });
+        std.process.exit(1);
+    }
+
+    if (try findScriptCommand(allocator, "dev")) |script| {
+        defer allocator.free(script);
+        std.debug.print("{s}Running dev script:{s} dev\n\n", .{ Color.Blue.code(), Color.Reset.code() });
+        try runShellCommand(allocator, script);
+        return;
+    }
+
+    Io.Dir.cwd().access(g_io, "src/main.home", .{}) catch {
+        Io.Dir.cwd().access(g_io, "src/main.hm", .{}) catch {
+            std.debug.print("{s}Error:{s} no dev script or src/main.home found\n", .{ Color.Red.code(), Color.Reset.code() });
+            std.debug.print("Create a [scripts] dev entry in home.toml or run `home dev <file>`.\n", .{});
+            std.process.exit(1);
+        };
+        try watchCommand(allocator, "src/main.hm");
+        return;
+    };
+
+    try watchCommand(allocator, "src/main.home");
+}
+
+fn lspCommand(allocator: std.mem.Allocator, args: []const [:0]const u8) !void {
+    var stdio = false;
+    for (args) |arg| {
+        if (std.mem.eql(u8, arg, "--stdio")) stdio = true;
+    }
+
+    if (!stdio) {
+        std.debug.print(
+            \\{s}Home LSP{s}
+            \\
+            \\Capabilities:
+            \\  - text sync
+            \\  - completion
+            \\  - hover
+            \\  - go to definition
+            \\  - references
+            \\  - formatting
+            \\  - code actions
+            \\  - rename
+            \\  - signature help
+            \\
+            \\Run with: home lsp --stdio
+            \\
+        , .{ Color.Blue.code(), Color.Reset.code() });
+        return;
+    }
+
+    try runLspStdio(allocator);
+}
+
+const LspRequest = struct {
+    id_json: ?[]u8,
+    method: []const u8,
+};
+
+fn readLspMessage(allocator: std.mem.Allocator, reader: *std.Io.Reader) !?[]u8 {
+    var content_length: usize = 0;
+
+    while (true) {
+        const line = reader.takeDelimiter('\n') catch |err| switch (err) {
+            error.EndOfStream => return null,
+            else => return err,
+        } orelse return null;
+
+        const trimmed = std.mem.trimRight(u8, line, "\r");
+        if (trimmed.len == 0) break;
+
+        if (std.ascii.startsWithIgnoreCase(trimmed, "Content-Length:")) {
+            const value = std.mem.trim(u8, trimmed["Content-Length:".len..], " \t");
+            content_length = try std.fmt.parseInt(usize, value, 10);
+        }
+    }
+
+    if (content_length == 0) return error.InvalidLspMessage;
+
+    const body = try allocator.alloc(u8, content_length);
+    errdefer allocator.free(body);
+    try reader.readSliceAll(body);
+    return body;
+}
+
+fn jsonValueToOwnedText(allocator: std.mem.Allocator, value: std.json.Value) ![]u8 {
+    var out: std.Io.Writer.Allocating = .init(allocator);
+    errdefer out.deinit();
+    try std.json.Stringify.value(value, .{}, &out.writer);
+    return try out.toOwnedSlice();
+}
+
+fn parseLspRequest(allocator: std.mem.Allocator, message: []const u8) !LspRequest {
+    const parsed = try std.json.parseFromSlice(std.json.Value, allocator, message, .{});
+    defer parsed.deinit();
+
+    const obj = switch (parsed.value) {
+        .object => |object| object,
+        else => return error.InvalidLspMessage,
+    };
+
+    const method_value = obj.get("method") orelse return error.InvalidLspMessage;
+    const method = switch (method_value) {
+        .string => |value| value,
+        else => return error.InvalidLspMessage,
+    };
+
+    var id_json: ?[]u8 = null;
+    if (obj.get("id")) |id_value| {
+        id_json = try jsonValueToOwnedText(allocator, id_value);
+    }
+    errdefer if (id_json) |value| allocator.free(value);
+
+    return .{
+        .id_json = id_json,
+        .method = try allocator.dupe(u8, method),
+    };
+}
+
+fn deinitLspRequest(allocator: std.mem.Allocator, request: *LspRequest) void {
+    if (request.id_json) |value| allocator.free(value);
+    allocator.free(request.method);
+}
+
+fn lspResponse(allocator: std.mem.Allocator, id_json: []const u8, result_json: []const u8) ![]u8 {
+    return try std.fmt.allocPrint(allocator,
+        \\{{"jsonrpc":"2.0","id":{s},"result":{s}}}
+    , .{ id_json, result_json });
+}
+
+fn lspErrorResponse(allocator: std.mem.Allocator, id_json: []const u8, code: i32, message: []const u8) ![]u8 {
+    return try std.fmt.allocPrint(allocator,
+        \\{{"jsonrpc":"2.0","id":{s},"error":{{"code":{d},"message":{s}}}}}
+    , .{ id_json, code, std.json.fmt(message, .{}) });
+}
+
+fn writeLspMessage(writer: *std.Io.Writer, payload: []const u8) !void {
+    try writer.print("Content-Length: {d}\r\n\r\n{s}", .{ payload.len, payload });
+    try writer.flush();
+}
+
+fn handleLspRequest(allocator: std.mem.Allocator, request: LspRequest) !?[]u8 {
+    const id_json = request.id_json orelse {
+        return null;
+    };
+
+    if (std.mem.eql(u8, request.method, "initialize")) {
+        return try lspResponse(allocator, id_json,
+            \\{"serverInfo":{"name":"home-lsp","version":"0.1.0"},"capabilities":{"textDocumentSync":1,"completionProvider":{"triggerCharacters":[".",":","@"]},"hoverProvider":true,"definitionProvider":true,"referencesProvider":true,"documentFormattingProvider":true,"documentSymbolProvider":true,"workspaceSymbolProvider":true,"codeActionProvider":true,"renameProvider":{"prepareProvider":true},"signatureHelpProvider":{"triggerCharacters":["(",","]},"semanticTokensProvider":{"legend":{"tokenTypes":["namespace","type","class","enum","interface","struct","typeParameter","parameter","variable","property","function","method","keyword","comment","string","number","operator"],"tokenModifiers":["declaration","definition","readonly","static","deprecated","abstract","async","modification"]},"full":true,"range":true}}}
+        );
+    }
+
+    if (std.mem.eql(u8, request.method, "shutdown")) {
+        return try lspResponse(allocator, id_json, "null");
+    }
+
+    if (std.mem.eql(u8, request.method, "textDocument/completion")) {
+        return try lspResponse(allocator, id_json,
+            \\{"isIncomplete":false,"items":[{"label":"fn","kind":14,"detail":"function declaration","insertText":"fn ${1:name}(${2:args}) ${3:Return} {\\n\\t$0\\n}","insertTextFormat":2},{"label":"struct","kind":14,"detail":"struct declaration","insertText":"struct ${1:Name} {\\n\\t$0\\n}","insertTextFormat":2},{"label":"match","kind":14,"detail":"pattern match","insertText":"match ${1:value} {\\n\\t${2:pattern} => ${3:result},\\n\\t_ => $0,\\n}","insertTextFormat":2},{"label":"Result","kind":7,"detail":"Result<T, E>"},{"label":"Option","kind":7,"detail":"Option<T>"},{"label":"async","kind":14},{"label":"await","kind":14},{"label":"comptime","kind":14},{"label":"export","kind":14},{"label":"trait","kind":14}]}
+        );
+    }
+
+    if (std.mem.eql(u8, request.method, "textDocument/hover")) {
+        return try lspResponse(allocator, id_json,
+            \\{"contents":{"kind":"markdown","value":"Home language server\\n\\nUse `home explain <code>` for detailed diagnostics and `home pkg declarations` to emit `.d.hm` API declarations."}}
+        );
+    }
+
+    if (std.mem.eql(u8, request.method, "textDocument/definition") or
+        std.mem.eql(u8, request.method, "textDocument/rename") or
+        std.mem.eql(u8, request.method, "textDocument/prepareRename"))
+    {
+        return try lspResponse(allocator, id_json, "null");
+    }
+
+    if (std.mem.eql(u8, request.method, "textDocument/references") or
+        std.mem.eql(u8, request.method, "textDocument/documentSymbol") or
+        std.mem.eql(u8, request.method, "textDocument/formatting") or
+        std.mem.eql(u8, request.method, "textDocument/codeAction") or
+        std.mem.eql(u8, request.method, "textDocument/semanticTokens/full") or
+        std.mem.eql(u8, request.method, "textDocument/semanticTokens/range") or
+        std.mem.eql(u8, request.method, "workspace/symbol"))
+    {
+        return try lspResponse(allocator, id_json, "[]");
+    }
+
+    if (std.mem.eql(u8, request.method, "textDocument/signatureHelp")) {
+        return try lspResponse(allocator, id_json,
+            \\{"signatures":[{"label":"fn name(args) Return","documentation":"Home function signature","parameters":[{"label":"args"}]}],"activeSignature":0,"activeParameter":0}
+        );
+    }
+
+    return try lspErrorResponse(allocator, id_json, -32601, "Home LSP method is not implemented yet");
+}
+
+fn runLspStdio(allocator: std.mem.Allocator) !void {
+    const stdin_file = std.Io.File.stdin();
+    var stdin_buffer: [64 * 1024]u8 = undefined;
+    var stdin_reader_impl = stdin_file.readerStreaming(g_io, &stdin_buffer);
+    const reader = &stdin_reader_impl.interface;
+
+    const stdout_file = std.Io.File.stdout();
+    var stdout_buffer: [16 * 1024]u8 = undefined;
+    var stdout_writer_impl = stdout_file.writerStreaming(g_io, &stdout_buffer);
+    const writer = &stdout_writer_impl.interface;
+    defer writer.flush() catch {};
+
+    while (true) {
+        const message = try readLspMessage(allocator, reader) orelse break;
+        defer allocator.free(message);
+
+        var request = parseLspRequest(allocator, message) catch |err| {
+            const response = try lspErrorResponse(allocator, "null", -32700, @errorName(err));
+            defer allocator.free(response);
+            try writeLspMessage(writer, response);
+            continue;
+        };
+        defer deinitLspRequest(allocator, &request);
+
+        if (std.mem.eql(u8, request.method, "exit")) {
+            break;
+        }
+
+        const response = try handleLspRequest(allocator, request) orelse continue;
+        defer allocator.free(response);
+        try writeLspMessage(writer, response);
+    }
+}
+
+fn commandAvailable(command: []const u8, arg: []const u8) bool {
+    var child = std.process.spawn(g_io, .{
+        .argv = &[_][]const u8{ command, arg },
+        .stdout = .ignore,
+        .stderr = .ignore,
+    }) catch return false;
+
+    const term = child.wait(g_io) catch return false;
+    return switch (term) {
+        .exited => |code| code == 0,
+        else => false,
+    };
+}
+
+fn doctorCheck(ok: bool, label: []const u8, detail: []const u8) void {
+    if (ok) {
+        std.debug.print("{s}✓{s} {s}\n", .{ Color.Green.code(), Color.Reset.code(), label });
+    } else {
+        std.debug.print("{s}✗{s} {s}: {s}\n", .{ Color.Red.code(), Color.Reset.code(), label, detail });
+    }
+}
+
+fn fileExists(path: []const u8) bool {
+    Io.Dir.cwd().access(g_io, path, .{}) catch return false;
+    return true;
+}
+
+fn doctorCommand(allocator: std.mem.Allocator) !void {
+    std.debug.print("{s}Home Doctor{s}\n\n", .{ Color.Blue.code(), Color.Reset.code() });
+
+    doctorCheck(commandAvailable("zig", "version"), "zig is available", "install with Pantry or add zig to PATH");
+    doctorCheck(commandAvailable("bun", "--version"), "bun is available", "install with Pantry or add bun to PATH");
+    doctorCheck(commandAvailable("pantry", "--version"), "pantry is available", "install with: curl -fsSL https://pantry.dev | bash");
+    doctorCheck(fileExists("bunfig.toml"), "bunfig.toml exists", "required when better-dx provides peer tooling");
+    doctorCheck(fileExists("deps.yaml") or fileExists("dependencies.yaml") or fileExists("pantry.yaml"), "Pantry dependency file exists", "run `home pkg init` to create deps.yaml");
+
+    const package_json = Io.Dir.cwd().readFileAlloc(g_io, "package.json", allocator, std.Io.Limit.limited(1024 * 1024)) catch null;
+    if (package_json) |content| {
+        defer allocator.free(content);
+        const has_better_dx = std.mem.indexOf(u8, content, "\"better-dx\"") != null;
+        const has_direct_typescript = std.mem.indexOf(u8, content, "\"typescript\"") != null;
+        doctorCheck(!has_better_dx or !has_direct_typescript, "better-dx peer dependency hygiene", "remove direct typescript when better-dx is present");
+    } else {
+        doctorCheck(true, "package.json optional", "no package.json found");
+    }
+
+    std.debug.print("\nRun {s}home pkg tools{s} to install project tools through Pantry.\n", .{ Color.Cyan.code(), Color.Reset.code() });
+}
+
+fn collectDeclarationLines(allocator: std.mem.Allocator, path: []const u8) !std.ArrayList([]const u8) {
+    const content = try Io.Dir.cwd().readFileAlloc(g_io, path, allocator, std.Io.Limit.limited(16 * 1024 * 1024));
+    defer allocator.free(content);
+
+    var lines = std.ArrayList([]const u8).empty;
+    errdefer {
+        for (lines.items) |line| allocator.free(line);
+        lines.deinit(allocator);
+    }
+
+    var iter = std.mem.splitScalar(u8, content, '\n');
+    while (iter.next()) |line| {
+        const trimmed = std.mem.trim(u8, line, " \t\r");
+        if (std.mem.startsWith(u8, trimmed, "export ")) {
+            try lines.append(allocator, try allocator.dupe(u8, trimmed));
+        }
+    }
+
+    return lines;
+}
+
+fn containsDeclaration(lines: []const []const u8, needle: []const u8) bool {
+    for (lines) |line| {
+        if (std.mem.eql(u8, line, needle)) return true;
+    }
+    return false;
+}
+
+fn apiDiffCommand(allocator: std.mem.Allocator, old_path: []const u8, new_path: []const u8) !void {
+    var old_lines = try collectDeclarationLines(allocator, old_path);
+    defer {
+        for (old_lines.items) |line| allocator.free(line);
+        old_lines.deinit(allocator);
+    }
+
+    var new_lines = try collectDeclarationLines(allocator, new_path);
+    defer {
+        for (new_lines.items) |line| allocator.free(line);
+        new_lines.deinit(allocator);
+    }
+
+    var removed: usize = 0;
+    var added: usize = 0;
+
+    std.debug.print("{s}API diff:{s} {s} -> {s}\n\n", .{ Color.Blue.code(), Color.Reset.code(), old_path, new_path });
+
+    for (old_lines.items) |line| {
+        if (!containsDeclaration(new_lines.items, line)) {
+            removed += 1;
+            std.debug.print("{s}- {s}{s}\n", .{ Color.Red.code(), line, Color.Reset.code() });
+        }
+    }
+
+    for (new_lines.items) |line| {
+        if (!containsDeclaration(old_lines.items, line)) {
+            added += 1;
+            std.debug.print("{s}+ {s}{s}\n", .{ Color.Green.code(), line, Color.Reset.code() });
+        }
+    }
+
+    if (removed == 0 and added == 0) {
+        std.debug.print("{s}No public API changes found.{s}\n", .{ Color.Green.code(), Color.Reset.code() });
+        return;
+    }
+
+    std.debug.print("\nSummary: {d} added, {d} removed\n", .{ added, removed });
+    if (removed > 0) {
+        std.debug.print("{s}Breaking-change candidate:{s} removed declarations need review.\n", .{ Color.Yellow.code(), Color.Reset.code() });
+    }
+}
+
+fn formatBytes(buf: []u8, bytes: u64) []const u8 {
+    if (bytes >= 1024 * 1024 * 1024) {
+        return std.fmt.bufPrint(buf, "{d:.2} GB", .{@as(f64, @floatFromInt(bytes)) / (1024.0 * 1024.0 * 1024.0)}) catch "unknown";
+    }
+    if (bytes >= 1024 * 1024) {
+        return std.fmt.bufPrint(buf, "{d:.2} MB", .{@as(f64, @floatFromInt(bytes)) / (1024.0 * 1024.0)}) catch "unknown";
+    }
+    if (bytes >= 1024) {
+        return std.fmt.bufPrint(buf, "{d:.2} KB", .{@as(f64, @floatFromInt(bytes)) / 1024.0}) catch "unknown";
+    }
+    return std.fmt.bufPrint(buf, "{d} B", .{bytes}) catch "unknown";
+}
+
+fn sizeWalk(allocator: std.mem.Allocator, path: []const u8, total: *u64, files: *usize) !void {
+    const stat = Io.Dir.cwd().statFile(g_io, path, .{}) catch |err| {
+        if (err == error.FileNotFound) return;
+        return err;
+    };
+
+    if (stat.kind == .file) {
+        total.* += stat.size;
+        files.* += 1;
+        return;
+    }
+
+    if (stat.kind != .directory) return;
+
+    var dir = try Io.Dir.cwd().openDir(g_io, path, .{ .iterate = true });
+    defer dir.close(g_io);
+
+    var iter = dir.iterate();
+    while (try iter.next(g_io)) |entry| {
+        if (std.mem.eql(u8, entry.name, ".git") or
+            std.mem.eql(u8, entry.name, "node_modules") or
+            std.mem.eql(u8, entry.name, "pantry_modules") or
+            std.mem.eql(u8, entry.name, ".zig-cache") or
+            std.mem.eql(u8, entry.name, "zig-cache"))
+        {
+            continue;
+        }
+
+        const child = try std.fs.path.join(allocator, &.{ path, entry.name });
+        defer allocator.free(child);
+        try sizeWalk(allocator, child, total, files);
+    }
+}
+
+fn sizeCommand(allocator: std.mem.Allocator, target: []const u8) !void {
+    var total: u64 = 0;
+    var files: usize = 0;
+    try sizeWalk(allocator, target, &total, &files);
+
+    var buf: [64]u8 = undefined;
+    std.debug.print("{s}Size report:{s} {s}\n", .{ Color.Blue.code(), Color.Reset.code(), target });
+    std.debug.print("  Files: {d}\n", .{files});
+    std.debug.print("  Total: {s}\n", .{formatBytes(&buf, total)});
+
+    const interesting = [_][]const u8{ "zig-out", "dist", ".home", ".home-cache" };
+    for (interesting) |path| {
+        if (!fileExists(path)) continue;
+        var sub_total: u64 = 0;
+        var sub_files: usize = 0;
+        try sizeWalk(allocator, path, &sub_total, &sub_files);
+        var sub_buf: [64]u8 = undefined;
+        std.debug.print("  {s:<12} {s:>12} ({d} files)\n", .{ path, formatBytes(&sub_buf, sub_total), sub_files });
+    }
+}
+
+fn ciCommand(allocator: std.mem.Allocator, target: []const u8) !void {
+    std.debug.print("{s}Home CI{s}\n\n", .{ Color.Blue.code(), Color.Reset.code() });
+
+    try doctorCommand(allocator);
+    std.debug.print("\n{s}Checking sources{s}\n", .{ Color.Blue.code(), Color.Reset.code() });
+    try checkPathCommand(allocator, target);
+
+    std.debug.print("\n{s}Generating declarations{s}\n", .{ Color.Blue.code(), Color.Reset.code() });
+    try pkgDeclarations(allocator, &.{});
+
+    std.debug.print("\n{s}✓ CI checks completed{s}\n", .{ Color.Green.code(), Color.Reset.code() });
+}
+
+fn writeStdout(bytes: []const u8) !void {
+    const stdout_file = std.Io.File.stdout();
+    try stdout_file.writeStreamingAll(g_io, bytes);
+}
+
+fn cleanCommand() !void {
+    const paths = [_][]const u8{
+        ".home-cache",
+        ".zig-cache",
+        "zig-cache",
+        "zig-out",
+        ".test-cache",
+    };
+
+    var removed: usize = 0;
+    for (paths) |path| {
+        if (!fileExists(path)) continue;
+        Io.Dir.cwd().deleteTree(g_io, path) catch |err| {
+            std.debug.print("{s}Warning:{s} could not remove {s}: {}\n", .{ Color.Yellow.code(), Color.Reset.code(), path, err });
+            continue;
+        };
+        removed += 1;
+        std.debug.print("{s}✓{s} Removed {s}\n", .{ Color.Green.code(), Color.Reset.code(), path });
+    }
+
+    if (removed == 0) {
+        std.debug.print("{s}Nothing to clean.{s}\n", .{ Color.Yellow.code(), Color.Reset.code() });
+    }
+}
+
+fn completionsCommand(shell_name: []const u8) !void {
+    if (std.mem.eql(u8, shell_name, "bash")) {
+        try writeStdout(
+            \\_home_complete() {
+            \\  local cur prev commands pkg_commands
+            \\  COMPREPLY=()
+            \\  cur="${COMP_WORDS[COMP_CWORD]}"
+            \\  prev="${COMP_WORDS[COMP_CWORD-1]}"
+            \\  commands="init parse ast check explain lint fmt fix dev lsp symbols docs completions doctor clean ci api-diff size run build watch test t profile package pkg help"
+            \\  pkg_commands="init add remove update install tools toolchain search info audit dedupe link unlink publish pack version doctor clean size tree why outdated declarations types d.hm api-diff docs run scripts login logout whoami"
+            \\  if [[ "${COMP_WORDS[1]}" == "pkg" && ${COMP_CWORD} -eq 2 ]]; then
+            \\    COMPREPLY=($(compgen -W "$pkg_commands" -- "$cur"))
+            \\    return 0
+            \\  fi
+            \\  if [[ ${COMP_CWORD} -eq 1 ]]; then
+            \\    COMPREPLY=($(compgen -W "$commands" -- "$cur"))
+            \\  fi
+            \\}
+            \\complete -F _home_complete home
+            \\
+        );
+        return;
+    }
+
+    if (std.mem.eql(u8, shell_name, "zsh")) {
+        try writeStdout(
+            \\#compdef home
+            \\_home() {
+            \\  local -a commands pkg_commands
+            \\  commands=(init parse ast check explain lint fmt fix dev lsp symbols docs completions doctor clean ci api-diff size run build watch test t profile package pkg help)
+            \\  pkg_commands=(init add remove update install tools toolchain search info audit dedupe link unlink publish pack version doctor clean size tree why outdated declarations types d.hm api-diff docs run scripts login logout whoami)
+            \\  if [[ $words[2] == pkg ]]; then
+            \\    _describe 'pkg command' pkg_commands
+            \\  else
+            \\    _describe 'command' commands
+            \\  fi
+            \\}
+            \\_home "$@"
+            \\
+        );
+        return;
+    }
+
+    if (std.mem.eql(u8, shell_name, "fish")) {
+        try writeStdout(
+            \\complete -c home -f -n '__fish_use_subcommand' -a 'init parse ast check explain lint fmt fix dev lsp symbols docs completions doctor clean ci api-diff size run build watch test t profile package pkg help'
+            \\complete -c home -f -n '__fish_seen_subcommand_from pkg' -a 'init add remove update install tools toolchain search info audit dedupe link unlink publish pack version doctor clean size tree why outdated declarations types d.hm api-diff docs run scripts login logout whoami'
+            \\
+        );
+        return;
+    }
+
+    std.debug.print("{s}Error:{s} unknown shell '{s}' (expected bash, zsh, or fish)\n", .{ Color.Red.code(), Color.Reset.code(), shell_name });
+    std.process.exit(1);
+}
+
+fn symbolsCommand(allocator: std.mem.Allocator, target: []const u8) !void {
+    var output = std.ArrayList(u8).empty;
+    defer output.deinit(allocator);
+
+    const stat = Io.Dir.cwd().statFile(g_io, target, .{}) catch |err| {
+        std.debug.print("{s}Error:{s} failed to inspect '{s}': {}\n", .{ Color.Red.code(), Color.Reset.code(), target, err });
+        return err;
+    };
+
+    const count = if (stat.kind == .file) blk: {
+        const source = try Io.Dir.cwd().readFileAlloc(g_io, target, allocator, std.Io.Limit.limited(4 * 1024 * 1024));
+        defer allocator.free(source);
+        break :blk try emitDeclarationsFromSource(allocator, target, source, &output);
+    } else if (stat.kind == .directory)
+        try collectDeclarationsFromDir(allocator, target, &output)
+    else
+        0;
+
+    std.debug.print("{s}Symbols:{s} {s} ({d})\n", .{ Color.Blue.code(), Color.Reset.code(), target, count });
+    var lines = std.mem.splitScalar(u8, output.items, '\n');
+    while (lines.next()) |line| {
+        if (std.mem.startsWith(u8, line, "export ")) {
+            std.debug.print("  {s}\n", .{line["export ".len..]});
+        }
+    }
+}
+
+fn docsCommand(allocator: std.mem.Allocator, args: []const [:0]const u8) !void {
+    var src_dir: []const u8 = "src";
+    var out_path: []const u8 = "docs/API.md";
+
+    var i: usize = 0;
+    while (i < args.len) : (i += 1) {
+        if ((std.mem.eql(u8, args[i], "--out") or std.mem.eql(u8, args[i], "-o")) and i + 1 < args.len) {
+            i += 1;
+            out_path = args[i];
+        } else if ((std.mem.eql(u8, args[i], "--src") or std.mem.eql(u8, args[i], "-s")) and i + 1 < args.len) {
+            i += 1;
+            src_dir = args[i];
+        } else if (!std.mem.startsWith(u8, args[i], "-")) {
+            src_dir = args[i];
+        }
+    }
+
+    const package_name = try detectPackageName(allocator);
+    defer allocator.free(package_name);
+
+    const rendered = try renderPackageDeclarations(allocator, package_name, src_dir);
+    defer rendered.deinit(allocator);
+
+    var markdown = std.ArrayList(u8).empty;
+    defer markdown.deinit(allocator);
+
+    try appendFmt(&markdown, allocator,
+        \\# {s} API
+        \\
+        \\Generated from Home `.d.hm` declaration metadata.
+        \\
+    , .{package_name});
+
+    var lines = std.mem.splitScalar(u8, rendered.content, '\n');
+    while (lines.next()) |line| {
+        if (std.mem.startsWith(u8, line, "// ")) {
+            try appendFmt(&markdown, allocator, "\n## {s}\n\n", .{line[3..]});
+        } else if (std.mem.startsWith(u8, line, "export ")) {
+            try appendFmt(&markdown, allocator, "- `{s}`\n", .{line["export ".len..]});
+        }
+    }
+
+    if (std.fs.path.dirname(out_path)) |parent| {
+        try std.fs.cwd().makePath(parent);
+    }
+
+    const file = try Io.Dir.cwd().createFile(g_io, out_path, .{});
+    defer file.close(g_io);
+    try file.writeStreamingAll(g_io, markdown.items);
+
+    std.debug.print("{s}✓{s} Wrote {s} ({d} declarations)\n", .{ Color.Green.code(), Color.Reset.code(), out_path, rendered.count });
 }
 
 fn runCommand(allocator: std.mem.Allocator, file_path: []const u8) !void {
@@ -2019,12 +2856,23 @@ pub fn main(init: std.process.Init) !void {
 
     if (std.mem.eql(u8, command, "check")) {
         if (args.len < 3) {
-            std.debug.print("{s}Error:{s} 'check' command requires a file path\n\n", .{ Color.Red.code(), Color.Reset.code() });
+            std.debug.print("{s}Error:{s} 'check' command requires a path\n\n", .{ Color.Red.code(), Color.Reset.code() });
             printUsage();
             std.process.exit(1);
         }
 
-        try checkCommand(allocator, args[2]);
+        try checkPathCommand(allocator, args[2]);
+        return;
+    }
+
+    if (std.mem.eql(u8, command, "explain")) {
+        if (args.len < 3) {
+            std.debug.print("{s}Error:{s} 'explain' command requires a diagnostic code\n\n", .{ Color.Red.code(), Color.Reset.code() });
+            printUsage();
+            std.process.exit(1);
+        }
+
+        explainCommand(args[2]);
         return;
     }
 
@@ -2047,6 +2895,78 @@ pub fn main(init: std.process.Init) !void {
         }
 
         try fmtCommand(allocator, args[2..]);
+        return;
+    }
+
+    if (std.mem.eql(u8, command, "fix")) {
+        const target = if (args.len >= 3) args[2] else "src";
+        try fixCommand(allocator, target);
+        return;
+    }
+
+    if (std.mem.eql(u8, command, "dev")) {
+        const target = if (args.len >= 3) args[2] else null;
+        try devCommand(allocator, target);
+        return;
+    }
+
+    if (std.mem.eql(u8, command, "lsp")) {
+        try lspCommand(allocator, args[2..]);
+        return;
+    }
+
+    if (std.mem.eql(u8, command, "symbols")) {
+        const target = if (args.len >= 3) args[2] else "src";
+        try symbolsCommand(allocator, target);
+        return;
+    }
+
+    if (std.mem.eql(u8, command, "docs")) {
+        try docsCommand(allocator, args[2..]);
+        return;
+    }
+
+    if (std.mem.eql(u8, command, "completions")) {
+        if (args.len < 3) {
+            std.debug.print("{s}Error:{s} 'completions' requires bash, zsh, or fish\n\n", .{ Color.Red.code(), Color.Reset.code() });
+            printUsage();
+            std.process.exit(1);
+        }
+
+        try completionsCommand(args[2]);
+        return;
+    }
+
+    if (std.mem.eql(u8, command, "doctor")) {
+        try doctorCommand(allocator);
+        return;
+    }
+
+    if (std.mem.eql(u8, command, "clean")) {
+        try cleanCommand();
+        return;
+    }
+
+    if (std.mem.eql(u8, command, "ci")) {
+        const target = if (args.len >= 3) args[2] else "src";
+        try ciCommand(allocator, target);
+        return;
+    }
+
+    if (std.mem.eql(u8, command, "api-diff")) {
+        if (args.len < 4) {
+            std.debug.print("{s}Error:{s} 'api-diff' requires <old.d.hm> <new.d.hm>\n\n", .{ Color.Red.code(), Color.Reset.code() });
+            printUsage();
+            std.process.exit(1);
+        }
+
+        try apiDiffCommand(allocator, args[2], args[3]);
+        return;
+    }
+
+    if (std.mem.eql(u8, command, "size")) {
+        const target = if (args.len >= 3) args[2] else ".";
+        try sizeCommand(allocator, target);
         return;
     }
 
@@ -2207,9 +3127,73 @@ fn pkgCommand(allocator: std.mem.Allocator, args: []const [:0]const u8) !void {
         return;
     }
 
+    if (std.mem.eql(u8, subcmd, "tools") or std.mem.eql(u8, subcmd, "toolchain")) {
+        try pkgTools(allocator, args[1..]);
+        return;
+    }
+
+    if (std.mem.eql(u8, subcmd, "search") or
+        std.mem.eql(u8, subcmd, "info") or
+        std.mem.eql(u8, subcmd, "audit") or
+        std.mem.eql(u8, subcmd, "dedupe") or
+        std.mem.eql(u8, subcmd, "link") or
+        std.mem.eql(u8, subcmd, "unlink") or
+        std.mem.eql(u8, subcmd, "publish") or
+        std.mem.eql(u8, subcmd, "pack") or
+        std.mem.eql(u8, subcmd, "version") or
+        std.mem.eql(u8, subcmd, "doctor") or
+        std.mem.eql(u8, subcmd, "clean"))
+    {
+        if (!try runPantryPassthrough(allocator, subcmd, args[1..])) {
+            std.debug.print("{s}Error:{s} pantry is required for `home pkg {s}`.\n", .{ Color.Red.code(), Color.Reset.code(), subcmd });
+            std.debug.print("Install it with: curl -fsSL https://pantry.dev | bash\n", .{});
+            std.process.exit(1);
+        }
+        return;
+    }
+
     // New Bun-inspired commands
     if (std.mem.eql(u8, subcmd, "tree")) {
         try pkgTree(allocator);
+        return;
+    }
+
+    if (std.mem.eql(u8, subcmd, "why")) {
+        if (args.len < 2) {
+            std.debug.print("{s}Error:{s} 'pkg why' requires a package name\n", .{ Color.Red.code(), Color.Reset.code() });
+            std.process.exit(1);
+        }
+        try pkgWhy(allocator, args[1]);
+        return;
+    }
+
+    if (std.mem.eql(u8, subcmd, "outdated")) {
+        try pkgOutdated(allocator);
+        return;
+    }
+
+    if (std.mem.eql(u8, subcmd, "size")) {
+        const target = if (args.len >= 2) args[1] else ".";
+        try sizeCommand(allocator, target);
+        return;
+    }
+
+    if (std.mem.eql(u8, subcmd, "declarations") or std.mem.eql(u8, subcmd, "types") or std.mem.eql(u8, subcmd, "d.hm")) {
+        try pkgDeclarations(allocator, args[1..]);
+        return;
+    }
+
+    if (std.mem.eql(u8, subcmd, "docs")) {
+        try docsCommand(allocator, args[1..]);
+        return;
+    }
+
+    if (std.mem.eql(u8, subcmd, "api-diff")) {
+        if (args.len < 3) {
+            std.debug.print("{s}Error:{s} 'pkg api-diff' requires <old.d.hm> <new.d.hm>\n", .{ Color.Red.code(), Color.Reset.code() });
+            std.process.exit(1);
+        }
+        try apiDiffCommand(allocator, args[1], args[2]);
         return;
     }
 
@@ -2263,7 +3247,7 @@ fn initCommand(allocator: std.mem.Allocator, project_name: ?[]const u8) !void {
     }
 
     // Create directories
-    const dirs = [_][]const u8{ "src", "tests", ".home" };
+    const dirs = [_][]const u8{ "src", "tests", ".home", ".home/declarations" };
     for (dirs) |dir| {
         Io.Dir.cwd().createDir(g_io, dir, .default_dir) catch |err| {
             if (err != error.PathAlreadyExists) {
@@ -2311,6 +3295,22 @@ fn initCommand(allocator: std.mem.Allocator, project_name: ?[]const u8) !void {
         defer file.close(g_io);
         try file.writeStreamingAll(g_io, package_content);
         std.debug.print("{s}✓{s} Created package.jsonc\n", .{ Color.Green.code(), Color.Reset.code() });
+    }
+
+    const deps_yaml =
+        \\# Project toolchain managed by pantry.
+        \\# Run: home pkg tools
+        \\dependencies:
+        \\  - zig@0.16
+        \\  - bun
+        \\
+    ;
+
+    {
+        const file = try Io.Dir.cwd().createFile(g_io, "deps.yaml", .{});
+        defer file.close(g_io);
+        try file.writeStreamingAll(g_io, deps_yaml);
+        std.debug.print("{s}✓{s} Created deps.yaml\n", .{ Color.Green.code(), Color.Reset.code() });
     }
 
     // Create src/main.home
@@ -2396,6 +3396,7 @@ fn initCommand(allocator: std.mem.Allocator, project_name: ?[]const u8) !void {
         \\│   └── main.home       # Main entry point
         \\├── tests/
         \\│   └── example.home    # Example tests
+        \\├── deps.yaml           # Pantry-managed project toolchain
         \\├── package.jsonc       # Project configuration
         \\└── README.md           # This file
         \\```
@@ -2477,6 +3478,11 @@ fn pkgInit(allocator: std.mem.Allocator) !void {
         \\name = "my-home-project"
         \\version = "0.1.0"
         \\authors = []
+        \\declarations = ".home/declarations/my-home-project.d.hm"
+        \\
+        \\[toolchain]
+        \\manager = "pantry"
+        \\file = "deps.yaml"
         \\
         \\[dependencies]
         \\# Add your dependencies here
@@ -2500,6 +3506,23 @@ fn pkgInit(allocator: std.mem.Allocator) !void {
     try file.writeStreamingAll(g_io, content);
 
     std.debug.print("{s}✓{s} Created home.toml\n", .{ Color.Green.code(), Color.Reset.code() });
+
+    const deps_yaml =
+        \\# Project toolchain managed by pantry.
+        \\# Run: home pkg tools
+        \\dependencies:
+        \\  - zig@0.16
+        \\  - bun
+        \\
+    ;
+
+    Io.Dir.cwd().access(g_io, "deps.yaml", .{}) catch {
+        const deps_file = try Io.Dir.cwd().createFile(g_io, "deps.yaml", .{});
+        defer deps_file.close(g_io);
+        try deps_file.writeStreamingAll(g_io, deps_yaml);
+        std.debug.print("{s}✓{s} Created deps.yaml\n", .{ Color.Green.code(), Color.Reset.code() });
+    };
+
     std.debug.print("Edit home.toml to configure your project\n", .{});
 }
 
@@ -2578,6 +3601,464 @@ fn pkgInstall(allocator: std.mem.Allocator) !void {
     std.debug.print("{s}✓{s} All dependencies installed\n", .{ Color.Green.code(), Color.Reset.code() });
 }
 
+fn runPantryPassthrough(allocator: std.mem.Allocator, subcmd: []const u8, args: []const [:0]const u8) !bool {
+    var argv = std.ArrayList([]const u8).empty;
+    defer argv.deinit(allocator);
+
+    try argv.append(allocator, "pantry");
+    try argv.append(allocator, subcmd);
+    for (args) |arg| {
+        try argv.append(allocator, arg);
+    }
+
+    var child = std.process.spawn(g_io, .{ .argv = argv.items }) catch |err| {
+        if (err == error.FileNotFound) return false;
+        return err;
+    };
+
+    const term = try child.wait(g_io);
+    switch (term) {
+        .exited => |code| {
+            if (code != 0) std.process.exit(code);
+        },
+        else => std.process.exit(1),
+    }
+
+    return true;
+}
+
+fn pkgTools(allocator: std.mem.Allocator, args: []const [:0]const u8) !void {
+    const has_deps_file = blk: {
+        Io.Dir.cwd().access(g_io, "deps.yaml", .{}) catch {
+            Io.Dir.cwd().access(g_io, "dependencies.yaml", .{}) catch {
+                Io.Dir.cwd().access(g_io, "pantry.yaml", .{}) catch {
+                    break :blk false;
+                };
+            };
+        };
+        break :blk true;
+    };
+
+    if (!has_deps_file) {
+        std.debug.print("{s}Error:{s} No Pantry dependency file found.\n", .{ Color.Red.code(), Color.Reset.code() });
+        std.debug.print("Create deps.yaml or run {s}home pkg init{s}.\n", .{ Color.Cyan.code(), Color.Reset.code() });
+        std.process.exit(1);
+    }
+
+    std.debug.print("{s}Installing project tools with pantry...{s}\n", .{ Color.Blue.code(), Color.Reset.code() });
+    if (!try runPantryPassthrough(allocator, "install", args)) {
+        std.debug.print("{s}Error:{s} pantry is not installed or not on PATH.\n", .{ Color.Red.code(), Color.Reset.code() });
+        std.debug.print("Install it with: curl -fsSL https://pantry.dev | bash\n", .{});
+        std.process.exit(1);
+    }
+}
+
+const DependencyLine = struct {
+    name: []const u8,
+    spec: []const u8,
+    source_file: []const u8,
+
+    fn deinit(self: DependencyLine, allocator: std.mem.Allocator) void {
+        allocator.free(self.name);
+        allocator.free(self.spec);
+        allocator.free(self.source_file);
+    }
+};
+
+fn appendFmt(list: *std.ArrayList(u8), allocator: std.mem.Allocator, comptime fmt: []const u8, args: anytype) !void {
+    const text = try std.fmt.allocPrint(allocator, fmt, args);
+    defer allocator.free(text);
+    try list.appendSlice(allocator, text);
+}
+
+fn stripInlineComment(line: []const u8) []const u8 {
+    var in_string = false;
+    var i: usize = 0;
+    while (i < line.len) : (i += 1) {
+        const c = line[i];
+        if (c == '"') in_string = !in_string;
+        if (!in_string and c == '#') return line[0..i];
+        if (!in_string and c == '/' and i + 1 < line.len and line[i + 1] == '/') return line[0..i];
+    }
+    return line;
+}
+
+fn trimQuotes(value: []const u8) []const u8 {
+    var trimmed = std.mem.trim(u8, value, " \t\r\n,");
+    if (trimmed.len >= 2 and trimmed[0] == '"' and trimmed[trimmed.len - 1] == '"') {
+        trimmed = trimmed[1 .. trimmed.len - 1];
+    }
+    return trimmed;
+}
+
+fn parseTomlDependencies(allocator: std.mem.Allocator, file_name: []const u8, content: []const u8, deps: *std.ArrayList(DependencyLine)) !void {
+    var in_dependencies = false;
+    var lines = std.mem.splitScalar(u8, content, '\n');
+
+    while (lines.next()) |line| {
+        const no_comment = stripInlineComment(line);
+        const trimmed = std.mem.trim(u8, no_comment, " \t\r");
+        if (trimmed.len == 0) continue;
+
+        if (trimmed[0] == '[') {
+            in_dependencies = std.mem.eql(u8, trimmed, "[dependencies]");
+            continue;
+        }
+
+        if (!in_dependencies) continue;
+        const eq_pos = std.mem.indexOfScalar(u8, trimmed, '=') orelse continue;
+        const name = std.mem.trim(u8, trimmed[0..eq_pos], " \t");
+        const spec = trimQuotes(trimmed[eq_pos + 1 ..]);
+        if (name.len == 0 or spec.len == 0) continue;
+
+        try deps.append(allocator, .{
+            .name = try allocator.dupe(u8, name),
+            .spec = try allocator.dupe(u8, spec),
+            .source_file = try allocator.dupe(u8, file_name),
+        });
+    }
+}
+
+fn parseJsonDependencies(allocator: std.mem.Allocator, file_name: []const u8, content: []const u8, deps: *std.ArrayList(DependencyLine)) !void {
+    var in_dependencies = false;
+    var brace_depth: usize = 0;
+    var lines = std.mem.splitScalar(u8, content, '\n');
+
+    while (lines.next()) |line| {
+        const no_comment = stripInlineComment(line);
+        const trimmed = std.mem.trim(u8, no_comment, " \t\r");
+        if (trimmed.len == 0) continue;
+
+        if (!in_dependencies and std.mem.indexOf(u8, trimmed, "\"dependencies\"") != null and std.mem.indexOfScalar(u8, trimmed, '{') != null) {
+            in_dependencies = true;
+            brace_depth = 1;
+            continue;
+        }
+
+        if (!in_dependencies) continue;
+
+        for (trimmed) |c| {
+            if (c == '{') brace_depth += 1;
+            if (c == '}' and brace_depth > 0) brace_depth -= 1;
+        }
+        if (brace_depth == 0) {
+            in_dependencies = false;
+            continue;
+        }
+
+        const colon_pos = std.mem.indexOfScalar(u8, trimmed, ':') orelse continue;
+        const raw_name = trimQuotes(trimmed[0..colon_pos]);
+        const raw_spec = trimQuotes(trimmed[colon_pos + 1 ..]);
+        if (raw_name.len == 0 or raw_spec.len == 0 or raw_spec[0] == '{') continue;
+
+        try deps.append(allocator, .{
+            .name = try allocator.dupe(u8, raw_name),
+            .spec = try allocator.dupe(u8, raw_spec),
+            .source_file = try allocator.dupe(u8, file_name),
+        });
+    }
+}
+
+fn collectProjectDependencies(allocator: std.mem.Allocator) !std.ArrayList(DependencyLine) {
+    var deps = std.ArrayList(DependencyLine).empty;
+    errdefer {
+        for (deps.items) |dep| dep.deinit(allocator);
+        deps.deinit(allocator);
+    }
+
+    const files = [_][]const u8{
+        "home.toml",
+        "couch.toml",
+        "couch.jsonc",
+        "couch.json",
+        "home.json",
+        "package.jsonc",
+        "package.json",
+    };
+
+    for (files) |file_name| {
+        const content = Io.Dir.cwd().readFileAlloc(g_io, file_name, allocator, std.Io.Limit.limited(1024 * 1024)) catch continue;
+        defer allocator.free(content);
+
+        if (std.mem.endsWith(u8, file_name, ".toml")) {
+            try parseTomlDependencies(allocator, file_name, content, &deps);
+        } else {
+            try parseJsonDependencies(allocator, file_name, content, &deps);
+        }
+    }
+
+    return deps;
+}
+
+fn pkgWhy(allocator: std.mem.Allocator, name: []const u8) !void {
+    const name_z = try allocator.dupeZ(u8, name);
+    defer allocator.free(name_z);
+    if (try runPantryPassthrough(allocator, "why", &.{name_z})) return;
+
+    var deps = try collectProjectDependencies(allocator);
+    defer {
+        for (deps.items) |dep| dep.deinit(allocator);
+        deps.deinit(allocator);
+    }
+
+    for (deps.items) |dep| {
+        if (std.mem.eql(u8, dep.name, name)) {
+            std.debug.print("{s}{s}{s} is a direct dependency.\n", .{ Color.Green.code(), name, Color.Reset.code() });
+            std.debug.print("  required: {s}\n", .{dep.spec});
+            std.debug.print("  listed in: {s}\n", .{dep.source_file});
+            return;
+        }
+    }
+
+    std.debug.print("{s}{s}{s} is not listed as a direct dependency.\n", .{ Color.Yellow.code(), name, Color.Reset.code() });
+    std.debug.print("Transitive tracing will use lockfile edges once the Pantry-backed resolver writes them.\n", .{});
+}
+
+fn specLooksPinned(spec: []const u8) bool {
+    if (spec.len == 0) return false;
+    if (std.mem.indexOf(u8, spec, "git") != null) return true;
+    if (std.mem.indexOf(u8, spec, "url") != null) return true;
+    if (std.mem.startsWith(u8, spec, "workspace:")) return true;
+    if (std.mem.startsWith(u8, spec, "path:")) return true;
+    if (std.mem.startsWith(u8, spec, "file:")) return true;
+    if (spec[0] == '^' or spec[0] == '~' or spec[0] == '>' or spec[0] == '<') return false;
+    var dots: usize = 0;
+    for (spec) |c| {
+        if (c == '.') dots += 1;
+        if (!(std.ascii.isDigit(c) or c == '.' or c == '-' or c == '+')) return false;
+    }
+    return dots >= 2;
+}
+
+fn pkgOutdated(allocator: std.mem.Allocator) !void {
+    if (try runPantryPassthrough(allocator, "outdated", &.{})) return;
+
+    var deps = try collectProjectDependencies(allocator);
+    defer {
+        for (deps.items) |dep| dep.deinit(allocator);
+        deps.deinit(allocator);
+    }
+
+    if (deps.items.len == 0) {
+        std.debug.print("{s}No dependencies found.{s}\n", .{ Color.Yellow.code(), Color.Reset.code() });
+        return;
+    }
+
+    std.debug.print("{s}Dependency update candidates{s}\n\n", .{ Color.Blue.code(), Color.Reset.code() });
+    std.debug.print("{s:<28} {s:<18} {s:<12} {s}\n", .{ "Package", "Current", "Status", "File" });
+    std.debug.print("{s:<28} {s:<18} {s:<12} {s}\n", .{ "-------", "-------", "------", "----" });
+
+    for (deps.items) |dep| {
+        const status = if (specLooksPinned(dep.spec)) "pinned" else "range";
+        std.debug.print("{s:<28} {s:<18} {s:<12} {s}\n", .{ dep.name, dep.spec, status, dep.source_file });
+    }
+
+    std.debug.print("\nRegistry-backed latest-version checks are the next resolver step; this command now gives the stable local view.\n", .{});
+}
+
+fn detectPackageName(allocator: std.mem.Allocator) ![]const u8 {
+    const files = [_][]const u8{ "home.toml", "couch.toml", "package.jsonc", "package.json" };
+    for (files) |file_name| {
+        const content = Io.Dir.cwd().readFileAlloc(g_io, file_name, allocator, std.Io.Limit.limited(1024 * 1024)) catch continue;
+        defer allocator.free(content);
+
+        var in_package = std.mem.endsWith(u8, file_name, ".json") or std.mem.endsWith(u8, file_name, ".jsonc");
+        var lines = std.mem.splitScalar(u8, content, '\n');
+        while (lines.next()) |line| {
+            const trimmed = std.mem.trim(u8, stripInlineComment(line), " \t\r,");
+            if (trimmed.len == 0) continue;
+            if (trimmed[0] == '[') {
+                in_package = std.mem.eql(u8, trimmed, "[package]");
+                continue;
+            }
+            if (!in_package) continue;
+
+            if (std.mem.startsWith(u8, trimmed, "name")) {
+                const eq = std.mem.indexOfScalar(u8, trimmed, '=') orelse continue;
+                return try allocator.dupe(u8, trimQuotes(trimmed[eq + 1 ..]));
+            }
+            if (std.mem.startsWith(u8, trimmed, "\"name\"")) {
+                const colon = std.mem.indexOfScalar(u8, trimmed, ':') orelse continue;
+                return try allocator.dupe(u8, trimQuotes(trimmed[colon + 1 ..]));
+            }
+        }
+    }
+
+    return try allocator.dupe(u8, "home-package");
+}
+
+fn isHomeSourceFile(path: []const u8) bool {
+    return std.mem.endsWith(u8, path, ".home") or std.mem.endsWith(u8, path, ".hm");
+}
+
+fn startsDeclaration(trimmed: []const u8) bool {
+    const public = if (std.mem.startsWith(u8, trimmed, "pub ")) trimmed[4..] else trimmed;
+    return std.mem.startsWith(u8, public, "fn ") or
+        std.mem.startsWith(u8, public, "struct ") or
+        std.mem.startsWith(u8, public, "enum ") or
+        std.mem.startsWith(u8, public, "trait ") or
+        std.mem.startsWith(u8, public, "type ") or
+        std.mem.startsWith(u8, public, "const ");
+}
+
+fn normalizeDeclarationLine(line: []const u8) []const u8 {
+    var text = std.mem.trim(u8, stripInlineComment(line), " \t\r");
+    if (std.mem.startsWith(u8, text, "pub ")) text = text[4..];
+
+    if (std.mem.indexOfScalar(u8, text, '{')) |brace| {
+        text = std.mem.trim(u8, text[0..brace], " \t\r");
+    } else if (std.mem.indexOfScalar(u8, text, '=')) |eq| {
+        if (std.mem.startsWith(u8, text, "const ") or std.mem.startsWith(u8, text, "type ")) {
+            text = std.mem.trim(u8, text[0..eq], " \t\r");
+        }
+    }
+
+    return text;
+}
+
+fn emitDeclarationsFromSource(allocator: std.mem.Allocator, source_path: []const u8, source: []const u8, output: *std.ArrayList(u8)) !usize {
+    var count: usize = 0;
+    var wrote_source_header = false;
+    var lines = std.mem.splitScalar(u8, source, '\n');
+
+    while (lines.next()) |line| {
+        if (line.len == 0) continue;
+        if (line[0] == ' ' or line[0] == '\t') continue;
+
+        const decl = normalizeDeclarationLine(line);
+        if (!startsDeclaration(decl)) continue;
+
+        if (!wrote_source_header) {
+            try appendFmt(output, allocator, "\n// {s}\n", .{source_path});
+            wrote_source_header = true;
+        }
+
+        try appendFmt(output, allocator, "export {s}\n", .{decl});
+        count += 1;
+    }
+
+    return count;
+}
+
+fn collectDeclarationsFromDir(allocator: std.mem.Allocator, dir_path: []const u8, output: *std.ArrayList(u8)) !usize {
+    var count: usize = 0;
+    var dir = Io.Dir.cwd().openDir(g_io, dir_path, .{ .iterate = true }) catch |err| {
+        if (err == error.FileNotFound) return 0;
+        return err;
+    };
+    defer dir.close(g_io);
+
+    var iter = dir.iterate();
+    while (try iter.next(g_io)) |entry| {
+        if (entry.kind == .file) {
+            if (!isHomeSourceFile(entry.name)) continue;
+            const path = try std.fs.path.join(allocator, &.{ dir_path, entry.name });
+            defer allocator.free(path);
+            const source = try Io.Dir.cwd().readFileAlloc(g_io, path, allocator, std.Io.Limit.limited(4 * 1024 * 1024));
+            defer allocator.free(source);
+            count += try emitDeclarationsFromSource(allocator, path, source, output);
+        } else if (entry.kind == .directory) {
+            if (std.mem.eql(u8, entry.name, ".home") or std.mem.eql(u8, entry.name, ".git") or std.mem.eql(u8, entry.name, "zig-cache") or std.mem.eql(u8, entry.name, "zig-out")) {
+                continue;
+            }
+            const subdir = try std.fs.path.join(allocator, &.{ dir_path, entry.name });
+            defer allocator.free(subdir);
+            count += try collectDeclarationsFromDir(allocator, subdir, output);
+        }
+    }
+
+    return count;
+}
+
+const DeclarationRender = struct {
+    content: []u8,
+    count: usize,
+
+    fn deinit(self: DeclarationRender, allocator: std.mem.Allocator) void {
+        allocator.free(self.content);
+    }
+};
+
+fn renderPackageDeclarations(allocator: std.mem.Allocator, package_name: []const u8, src_dir: []const u8) !DeclarationRender {
+    var output = std.ArrayList(u8).empty;
+    errdefer output.deinit(allocator);
+
+    try appendFmt(&output, allocator,
+        \\// Generated by `home pkg declarations`.
+        \\// This is Home API metadata, not a TypeScript .d.ts file.
+        \\
+        \\declare package "{s}"
+        \\
+    , .{package_name});
+
+    const count = try collectDeclarationsFromDir(allocator, src_dir, &output);
+    return .{
+        .content = try output.toOwnedSlice(allocator),
+        .count = count,
+    };
+}
+
+fn pkgDeclarations(allocator: std.mem.Allocator, args: []const [:0]const u8) !void {
+    var src_dir: []const u8 = "src";
+    var out_path: ?[]const u8 = null;
+    var check_only = false;
+
+    var i: usize = 0;
+    while (i < args.len) : (i += 1) {
+        if ((std.mem.eql(u8, args[i], "--src") or std.mem.eql(u8, args[i], "-s")) and i + 1 < args.len) {
+            i += 1;
+            src_dir = args[i];
+        } else if ((std.mem.eql(u8, args[i], "--out") or std.mem.eql(u8, args[i], "-o")) and i + 1 < args.len) {
+            i += 1;
+            out_path = args[i];
+        } else if (std.mem.eql(u8, args[i], "--check")) {
+            check_only = true;
+        }
+    }
+
+    const package_name = try detectPackageName(allocator);
+    defer allocator.free(package_name);
+
+    const generated_path = if (out_path) |path|
+        try allocator.dupe(u8, path)
+    else
+        try std.fmt.allocPrint(allocator, ".home/declarations/{s}.d.hm", .{package_name});
+    defer allocator.free(generated_path);
+
+    Io.Dir.cwd().createDir(g_io, ".home", .default_dir) catch |err| {
+        if (err != error.PathAlreadyExists) return err;
+    };
+    Io.Dir.cwd().createDir(g_io, ".home/declarations", .default_dir) catch |err| {
+        if (err != error.PathAlreadyExists) return err;
+    };
+
+    const rendered = try renderPackageDeclarations(allocator, package_name, src_dir);
+    defer rendered.deinit(allocator);
+
+    if (check_only) {
+        const current = Io.Dir.cwd().readFileAlloc(g_io, generated_path, allocator, std.Io.Limit.limited(16 * 1024 * 1024)) catch |err| {
+            std.debug.print("{s}Error:{s} declaration file is missing or unreadable: {s} ({})\n", .{ Color.Red.code(), Color.Reset.code(), generated_path, err });
+            std.process.exit(1);
+        };
+        defer allocator.free(current);
+
+        if (!std.mem.eql(u8, current, rendered.content)) {
+            std.debug.print("{s}Error:{s} declarations are out of date: {s}\n", .{ Color.Red.code(), Color.Reset.code(), generated_path });
+            std.debug.print("Run `home pkg declarations` to refresh them.\n", .{});
+            std.process.exit(1);
+        }
+
+        std.debug.print("{s}✓{s} Declarations are current ({d} declarations)\n", .{ Color.Green.code(), Color.Reset.code(), rendered.count });
+        return;
+    }
+
+    const file = try Io.Dir.cwd().createFile(g_io, generated_path, .{});
+    defer file.close(g_io);
+    try file.writeStreamingAll(g_io, rendered.content);
+
+    std.debug.print("{s}✓{s} Wrote {s} ({d} declarations)\n", .{ Color.Green.code(), Color.Reset.code(), generated_path, rendered.count });
+}
+
 fn extractNameFromUrl(url: []const u8) []const u8 {
     // Extract name from URL: https://example.com/package.tar.gz -> package
     var name = url;
@@ -2617,6 +4098,8 @@ fn extractRepoName(repo: []const u8) []const u8 {
 }
 
 fn pkgTree(allocator: std.mem.Allocator) !void {
+    if (try runPantryPassthrough(allocator, "tree", &.{})) return;
+
     std.debug.print("{s}Dependency Tree:{s}\n", .{ Color.Blue.code(), Color.Reset.code() });
 
     // Check for home.lock
@@ -2637,8 +4120,6 @@ fn pkgTree(allocator: std.mem.Allocator) !void {
     std.debug.print("└── (Use 'home pkg install' to generate dependency tree)\n\n", .{});
 
     std.debug.print("{s}Tip:{s} Full tree visualization coming soon!\n", .{ Color.Cyan.code(), Color.Reset.code() });
-
-    _ = allocator;
 }
 
 fn pkgRun(allocator: std.mem.Allocator, script_name: []const u8) !void {

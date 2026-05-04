@@ -22,7 +22,7 @@ set -euo pipefail
 # ---------- pretty output ---------------------------------------------------
 
 # Detect whether stdout is a TTY so we don't dump escape codes into log files.
-if [ -t 1 ] && [ -z "${NO_COLOR:-}" ]; then
+if [[ -t 1 ]] && [[ -z "${NO_COLOR:-}" ]]; then
   bold=$(printf '\033[1m')
   dim=$(printf '\033[2m')
   red=$(printf '\033[31m')
@@ -60,11 +60,11 @@ require_cmd mktemp
 require_cmd rm
 
 # We need at least one of `shasum` or `sha256sum` for checksum verification.
-checksum_cmd=""
+checksum_cmd=()
 if command -v sha256sum >/dev/null 2>&1; then
-  checksum_cmd="sha256sum"
+  checksum_cmd=(sha256sum)
 elif command -v shasum >/dev/null 2>&1; then
-  checksum_cmd="shasum -a 256"
+  checksum_cmd=(shasum -a 256)
 fi
 
 # ---------- platform detection ---------------------------------------------
@@ -112,14 +112,14 @@ main() {
   target="$(detect_target)"
   ext="$(artifact_extension "$target")"
 
-  if [ "$target" = "windows-x64" ] || [ "$target" = "windows-arm64" ]; then
+  if [[ "$target" = "windows-x64" ]] || [[ "$target" = "windows-arm64" ]]; then
     warn "Windows detected. This script targets POSIX shells (Git Bash, WSL, MSYS)."
     warn "For native PowerShell, use the .zip artifact directly from GitHub Releases."
   fi
 
   local artifact_name="home-${target}.${ext}"
   local base_url
-  if [ "$version" = "latest" ]; then
+  if [[ "$version" = "latest" ]]; then
     base_url="https://github.com/home-lang/home/releases/latest/download"
   else
     base_url="https://github.com/home-lang/home/releases/download/${version}"
@@ -148,9 +148,9 @@ main() {
   # Checksum verification. The release workflow emits a `.sha256` companion
   # for each artifact; if it's missing (e.g. older release) we warn rather
   # than fail. Set HOME_SKIP_CHECKSUM=1 to silence the warning entirely.
-  if [ "${HOME_SKIP_CHECKSUM:-0}" = "1" ]; then
+  if [[ "${HOME_SKIP_CHECKSUM:-0}" = "1" ]]; then
     warn "skipping checksum verification (HOME_SKIP_CHECKSUM=1)"
-  elif [ -z "$checksum_cmd" ]; then
+  elif [[ ${#checksum_cmd[@]} -eq 0 ]]; then
     warn "no sha256sum/shasum found; skipping checksum verification"
   else
     info "Downloading checksum..."
@@ -160,8 +160,8 @@ main() {
       # care about the hex; recompute over the downloaded artifact and compare.
       local expected actual
       expected="$(awk '{print $1}' "$checksum_path")"
-      actual="$(cd "$tmp_dir" && $checksum_cmd "$artifact_name" | awk '{print $1}')"
-      if [ "$expected" != "$actual" ]; then
+      actual="$(cd "$tmp_dir" && "${checksum_cmd[@]}" "$artifact_name" | awk '{print $1}')"
+      if [[ "$expected" != "$actual" ]]; then
         error "checksum mismatch for $artifact_name"
         error "  expected: $expected"
         error "  actual:   $actual"
@@ -192,12 +192,12 @@ main() {
 
   # The artifacts pack the binary at the archive root (see release.yml).
   local binary_name="home"
-  if [ "$ext" = "zip" ]; then
+  if [[ "$ext" = "zip" ]]; then
     binary_name="home.exe"
   fi
 
   local binary_src="${install_dir}/${binary_name}"
-  if [ ! -f "$binary_src" ]; then
+  if [[ ! -f "$binary_src" ]]; then
     die "binary not found at $binary_src after extraction (corrupt archive?)"
   fi
 
@@ -205,7 +205,7 @@ main() {
 
   # Copy (rather than symlink) into bin_dir so users who set HOME_BIN_DIR to
   # something outside HOME_INSTALL_DIR get a self-contained binary.
-  if [ "$binary_src" != "${bin_dir}/${binary_name}" ]; then
+  if [[ "$binary_src" != "${bin_dir}/${binary_name}" ]]; then
     cp "$binary_src" "${bin_dir}/${binary_name}"
     chmod +x "${bin_dir}/${binary_name}"
   fi
