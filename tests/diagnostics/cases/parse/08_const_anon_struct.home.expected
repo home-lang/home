@@ -1,0 +1,3 @@
+Checking: <repo>/tests/diagnostics/cases/parse/08_const_anon_struct.home
+
+Success: Type checking passed ✓

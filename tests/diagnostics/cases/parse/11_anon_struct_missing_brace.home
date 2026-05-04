@@ -1,0 +1,6 @@
+// Negative test for issue #18 — the `const Name = struct { ... }`
+// form must still surface a useful diagnostic when the body is
+// malformed. Here the closing brace is missing.
+pub const Broken = struct {
+    x: u32
+    y: u32

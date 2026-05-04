@@ -1,0 +1,9 @@
+// Regression test for issue #18 — `inline fn` modifier on function
+// declarations. Both bare and `pub inline fn` forms should parse.
+inline fn add(a: u32, b: u32): u32 {
+    return a + b
+}
+
+pub inline fn double(x: u32): u32 {
+    return x * 2
+}

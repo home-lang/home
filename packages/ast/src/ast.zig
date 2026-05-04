@@ -2164,6 +2164,11 @@ pub const EnumDecl = struct {
     variants: []const EnumVariant,
     is_public: bool = false,
     attributes: []const Attribute = &.{},
+    /// Optional explicit tag (discriminant) type. Supports both
+    /// `enum Name: u8 { ... }` (TS-style colon form) and the
+    /// Zig-style `enum(u8) { ... }` form. Null means the compiler
+    /// picks a default tag type based on the variant count.
+    tag_type: ?[]const u8 = null,
 
     pub fn init(allocator: std.mem.Allocator, name: []const u8, variants: []const EnumVariant, loc: SourceLocation) !*EnumDecl {
         const decl = try allocator.create(EnumDecl);
@@ -2240,6 +2245,7 @@ pub const FnDecl = struct {
     is_test: bool = false,
     is_public: bool = false,
     is_exported: bool = false, // export keyword for C ABI exports
+    is_inline: bool = false, // inline keyword for inline-hint functions
     variadic_param: ?VariadicParam = null,
     attributes: []const Attribute = &.{}, // Attributes attached to this function
     doc_comment: ?[]const u8 = null, // Documentation comment (/// ...)

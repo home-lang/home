@@ -1,0 +1,5 @@
+// Regression test for issue #18 — `align(N)` suffix on let/var
+// declarations. Used in home-os kernel for DMA buffers, page
+// tables, and other hardware-aligned storage.
+let idt: [256]u32 align(4096) = undefined
+var mailbox: [64]u8 align(16) = undefined

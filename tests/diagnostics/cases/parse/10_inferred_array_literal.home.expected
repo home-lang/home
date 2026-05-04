@@ -1,0 +1,3 @@
+Checking: <repo>/tests/diagnostics/cases/parse/10_inferred_array_literal.home
+
+Success: Type checking passed ✓

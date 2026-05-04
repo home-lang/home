@@ -653,6 +653,60 @@ pub const Parser = struct {
         return try attrs.toOwnedSlice(self.allocator);
     }
 
+    /// Optionally consume an `align(N)` suffix on a let/var/field
+    /// type annotation. The integer is parsed and discarded; codegen
+    /// is expected to recover alignment requirements from attributes
+    /// or layout directives in the future.
+    fn consumeOptionalAlignSuffix(self: *Parser) !void {
+        if (self.check(.Identifier) and std.mem.eql(u8, self.peek().lexeme, "align")) {
+            _ = self.advance();
+            _ = try self.expect(.LeftParen, "Expected '(' after 'align'");
+            // Skip the alignment expression — we accept any constant
+            // expression here and defer evaluation to a later pass.
+            var depth: i32 = 1;
+            while (depth > 0 and !self.isAtEnd()) {
+                const t = self.peek();
+                if (t.type == .LeftParen) depth += 1;
+                if (t.type == .RightParen) {
+                    depth -= 1;
+                    if (depth == 0) break;
+                }
+                _ = self.advance();
+            }
+            _ = try self.expect(.RightParen, "Expected ')' after alignment value");
+        }
+    }
+
+    /// Apply pub/doc/attributes to a declaration that may have been
+    /// rewritten from `const Name = struct/enum/union { ... }` form.
+    fn applyLetVisibility(
+        self: *Parser,
+        stmt: *ast.Stmt,
+        is_pub: bool,
+        doc_comment: ?[]const u8,
+        attributes: []const ast.Attribute,
+    ) void {
+        _ = self;
+        switch (stmt.*) {
+            .LetDecl => {
+                if (is_pub) stmt.LetDecl.is_public = true;
+            },
+            .StructDecl => {
+                if (is_pub) stmt.StructDecl.is_public = true;
+                if (doc_comment) |doc| stmt.StructDecl.doc_comment = doc;
+                stmt.StructDecl.attributes = attributes;
+            },
+            .EnumDecl => {
+                if (is_pub) stmt.EnumDecl.is_public = true;
+                stmt.EnumDecl.attributes = attributes;
+            },
+            .UnionDecl => {
+                if (is_pub) stmt.UnionDecl.is_public = true;
+            },
+            else => {},
+        }
+    }
+
     /// Parse a top-level declaration or statement.
     ///
     /// Declarations include functions, structs, enums, unions, type aliases,
@@ -679,6 +733,9 @@ pub const Parser = struct {
         const is_pub = self.match(&.{.Pub});
         const is_export = self.match(&.{.Export});
         const is_extern = self.match(&.{.Extern});
+        // `inline` is a function modifier hint. Accept it before `fn`
+        // (both at top level and in front of `pub` was already absorbed).
+        const is_inline = self.match(&.{.Inline});
 
         // Check if @test attribute exists for backward compatibility
         var is_test = false;
@@ -705,6 +762,31 @@ pub const Parser = struct {
 
         if (self.match(&.{.Struct})) {
             var stmt = try self.structDeclaration();
+            if (is_pub) stmt.StructDecl.is_public = true;
+            if (doc_comment) |doc| stmt.StructDecl.doc_comment = doc;
+            stmt.StructDecl.attributes = attributes;
+            return stmt;
+        }
+
+        // `packed struct Name { ... }` — sets the layout bit on the
+        // resulting decl. Mirrors the Zig-style anonymous form
+        // (`const Name = packed struct { ... }`) handled in letDecl.
+        if (self.match(&.{.Packed})) {
+            _ = try self.expect(.Struct, "Expected 'struct' after 'packed'");
+            var stmt = try self.structDeclaration();
+            stmt.StructDecl.layout = .Packed;
+            if (is_pub) stmt.StructDecl.is_public = true;
+            if (doc_comment) |doc| stmt.StructDecl.doc_comment = doc;
+            stmt.StructDecl.attributes = attributes;
+            return stmt;
+        }
+
+        // `extern struct Name { ... }` — C-ABI compatible layout.
+        // Note: bare `extern fn ...` is handled below via `is_extern`.
+        if (is_extern and self.check(.Struct)) {
+            _ = self.advance();
+            var stmt = try self.structDeclaration();
+            stmt.StructDecl.layout = .Extern;
             if (is_pub) stmt.StructDecl.is_public = true;
             if (doc_comment) |doc| stmt.StructDecl.doc_comment = doc;
             stmt.StructDecl.attributes = attributes;
@@ -747,6 +829,7 @@ pub const Parser = struct {
             var stmt = try self.functionDeclarationWithAsync(is_test, is_extern, true);
             if (is_pub or is_export) stmt.FnDecl.is_public = true;
             if (is_export) stmt.FnDecl.is_exported = true;
+            if (is_inline) stmt.FnDecl.is_inline = true;
             if (doc_comment) |doc| stmt.FnDecl.doc_comment = doc;
             stmt.FnDecl.attributes = attributes;
             return stmt;
@@ -756,6 +839,7 @@ pub const Parser = struct {
             var stmt = try self.functionDeclaration(is_test, is_extern);
             if (is_pub or is_export) stmt.FnDecl.is_public = true;
             if (is_export) stmt.FnDecl.is_exported = true;
+            if (is_inline) stmt.FnDecl.is_inline = true;
             if (doc_comment) |doc| stmt.FnDecl.doc_comment = doc;
             stmt.FnDecl.attributes = attributes;
             return stmt;
@@ -763,13 +847,13 @@ pub const Parser = struct {
 
         if (self.match(&.{.Let})) {
             var stmt = try self.letDeclaration(false);
-            if (is_pub) stmt.LetDecl.is_public = true;
+            self.applyLetVisibility(&stmt, is_pub, doc_comment, attributes);
             return stmt;
         }
 
         if (self.match(&.{.Const})) {
             var stmt = try self.letDeclaration(true);
-            if (is_pub) stmt.LetDecl.is_public = true;
+            self.applyLetVisibility(&stmt, is_pub, doc_comment, attributes);
             return stmt;
         }
 
@@ -1135,11 +1219,30 @@ pub const Parser = struct {
         return ast.Stmt{ .ItTestDecl = test_decl };
     }
 
-    /// Parse a struct declaration
+    /// Parse a struct declaration. Top-level entry: requires a struct name.
     fn structDeclaration(self: *Parser) !ast.Stmt {
+        return self.structDeclarationWithName(null);
+    }
+
+    /// Parse a struct declaration body, optionally with a pre-bound name.
+    /// When `bound_name` is non-null, the parser does not consume an
+    /// identifier (used for `const Name = struct { ... }` form).
+    fn structDeclarationWithName(self: *Parser, bound_name: ?[]const u8) !ast.Stmt {
         const struct_token = self.previous();
-        const name_token = try self.expect(.Identifier, "Expected struct name");
-        const name = name_token.lexeme;
+        const name = if (bound_name) |bn| bn else blk: {
+            const name_token = try self.expect(.Identifier, "Expected struct name");
+            break :blk name_token.lexeme;
+        };
+
+        // Optional explicit backing type for fixed-layout structs:
+        //   `packed struct IDTEntry: u128 { ... }`. Currently we accept
+        //   the type and discard it — codegen will recover the layout
+        //   from field types and the `packed` attribute. The token is
+        //   consumed so it doesn't trip the `{`-after-name check.
+        if (self.check(.Colon)) {
+            _ = self.advance();
+            _ = try self.parseTypeAnnotation();
+        }
 
         // Parse generic type parameters if present: struct Name<T, U> or struct Name<T: Trait>
         var type_params = std.ArrayList(ast.GenericParam).empty;
@@ -1188,12 +1291,46 @@ pub const Parser = struct {
         defer methods.deinit(self.allocator);
 
         while (!self.check(.RightBrace) and !self.isAtEnd()) {
+            // Look-ahead for method modifiers: `pub fn`, `inline fn`,
+            // `pub inline fn`, `inline pub fn`. Only consume them when
+            // the next non-modifier token is `fn`, otherwise leave the
+            // tokens for field-declaration parsing below (so that names
+            // like `pub` aren't mistakenly eaten).
+            const member_checkpoint = self.current;
+            var member_is_pub = false;
+            var member_is_inline = false;
+            // First-position modifier
+            if (self.check(.Pub)) {
+                member_is_pub = true;
+                _ = self.advance();
+            } else if (self.check(.Inline)) {
+                member_is_inline = true;
+                _ = self.advance();
+            }
+            // Second-position modifier (other order)
+            if (member_is_pub and self.check(.Inline)) {
+                member_is_inline = true;
+                _ = self.advance();
+            } else if (member_is_inline and self.check(.Pub)) {
+                member_is_pub = true;
+                _ = self.advance();
+            }
+            // If the next token isn't `fn`, rewind and let the field
+            // parser handle it.
+            if ((member_is_pub or member_is_inline) and !self.check(.Fn)) {
+                self.current = member_checkpoint;
+                member_is_pub = false;
+                member_is_inline = false;
+            }
+
             // Check if this is a method definition (fn keyword)
             if (self.match(&.{.Fn})) {
                 // Parse method and collect it
                 if (self.functionDeclaration(false, false)) |method_stmt| {
                     switch (method_stmt) {
                         .FnDecl => |fn_decl| {
+                            if (member_is_pub) fn_decl.is_public = true;
+                            if (member_is_inline) fn_decl.is_inline = true;
                             try methods.append(self.allocator, fn_decl);
                         },
                         else => {
@@ -1313,11 +1450,44 @@ pub const Parser = struct {
         return ast.Stmt{ .StructDecl = struct_decl };
     }
 
-    /// Parse an enum declaration
+    /// Parse an enum declaration. Accepts:
+    ///   enum Name { ... }           — untagged
+    ///   enum Name: u8 { ... }       — TS-style explicit tag
+    ///   enum Name(u8) { ... }       — Zig-style explicit tag
+    ///   enum(u8) Name { ... }       — Zig-style explicit tag (alt order)
+    ///   enum(u8) { ... }            — anonymous (caller supplies name)
     fn enumDeclaration(self: *Parser) !ast.Stmt {
+        return self.enumDeclarationWithName(null);
+    }
+
+    /// Parse an enum declaration body, optionally with a pre-bound name.
+    /// When `bound_name` is non-null, the parser does not consume an
+    /// identifier (used for `const Name = enum(u8) { ... }` form).
+    fn enumDeclarationWithName(self: *Parser, bound_name: ?[]const u8) !ast.Stmt {
         const enum_token = self.previous();
-        const name_token = try self.expect(.Identifier, "Expected enum name");
-        const name = name_token.lexeme;
+
+        // Optional Zig-style tag type immediately after `enum`: `enum(u8) ...`
+        var tag_type: ?[]const u8 = null;
+        if (self.match(&.{.LeftParen})) {
+            tag_type = try self.parseTypeAnnotation();
+            _ = try self.expect(.RightParen, "Expected ')' after enum tag type");
+        }
+
+        const name = if (bound_name) |bn| bn else blk: {
+            const name_token = try self.expect(.Identifier, "Expected enum name");
+            break :blk name_token.lexeme;
+        };
+
+        // TS-style explicit tag after the name: `enum Name: u8 { ... }`
+        if (tag_type == null and self.match(&.{.Colon})) {
+            tag_type = try self.parseTypeAnnotation();
+        }
+
+        // Also accept Zig-style tag in alt order: `enum Name(u8) { ... }`
+        if (tag_type == null and self.match(&.{.LeftParen})) {
+            tag_type = try self.parseTypeAnnotation();
+            _ = try self.expect(.RightParen, "Expected ')' after enum tag type");
+        }
 
         _ = try self.expect(.LeftBrace, "Expected '{' after enum name");
 
@@ -1377,15 +1547,22 @@ pub const Parser = struct {
             variants_slice,
             ast.SourceLocation.fromToken(enum_token),
         );
+        enum_decl.tag_type = tag_type;
 
         return ast.Stmt{ .EnumDecl = enum_decl };
     }
 
     /// Parse a union declaration
     fn unionDeclaration(self: *Parser) !ast.Stmt {
+        return self.unionDeclarationWithName(null);
+    }
+
+    fn unionDeclarationWithName(self: *Parser, bound_name: ?[]const u8) !ast.Stmt {
         const union_token = self.previous();
-        const name_token = try self.expect(.Identifier, "Expected union name");
-        const name = name_token.lexeme;
+        const name = if (bound_name) |bn| bn else blk: {
+            const name_token = try self.expect(.Identifier, "Expected union name");
+            break :blk name_token.lexeme;
+        };
 
         _ = try self.expect(.LeftBrace, "Expected '{' after union name");
 
@@ -1575,6 +1752,11 @@ pub const Parser = struct {
         var path_segments = std.ArrayList([]const u8).empty;
         defer path_segments.deinit(self.allocator);
 
+        // TS-style `from` alias: `import name from "path"`.
+        // The leading identifier becomes the import alias and the
+        // string literal supplies the path.
+        var ts_alias: ?[]const u8 = null;
+
         // String-path form: `import "path/to/file.home" as alias`.
         // Path comes in as a single literal; subsequent `as` aliasing
         // is handled at the bottom of this function.
@@ -1589,12 +1771,34 @@ pub const Parser = struct {
         } else {
             // First segment
             const first_token = try self.expect(.Identifier, "Expected module name after 'import'");
-            try path_segments.append(self.allocator, first_token.lexeme);
 
-            // Additional segments separated by '/'
-            while (self.match(&.{.Slash})) {
-                const segment_token = try self.expect(.Identifier, "Expected module name after '/'");
-                try path_segments.append(self.allocator, segment_token.lexeme);
+            // TS-style `import name from "path"` — when the next
+            // identifier is the soft keyword `from` followed by a
+            // string literal, treat the first identifier as the alias
+            // and the string literal as the module path. This matches
+            // the form used pervasively in home-os kernel code.
+            if (self.check(.Identifier) and std.mem.eql(u8, self.peek().lexeme, "from")) {
+                _ = self.advance(); // consume `from`
+                if (self.check(.String)) {
+                    const str_tok = self.advance();
+                    var lex = str_tok.lexeme;
+                    if (lex.len >= 2 and lex[0] == '"' and lex[lex.len - 1] == '"') {
+                        lex = lex[1 .. lex.len - 1];
+                    }
+                    try path_segments.append(self.allocator, lex);
+                    ts_alias = first_token.lexeme;
+                } else {
+                    try self.reportError("Expected string literal after 'from'");
+                    try path_segments.append(self.allocator, first_token.lexeme);
+                }
+            } else {
+                try path_segments.append(self.allocator, first_token.lexeme);
+
+                // Additional segments separated by '/'
+                while (self.match(&.{.Slash})) {
+                    const segment_token = try self.expect(.Identifier, "Expected module name after '/'");
+                    try path_segments.append(self.allocator, segment_token.lexeme);
+                }
             }
         }
 
@@ -1689,8 +1893,9 @@ pub const Parser = struct {
             imports = try import_list.toOwnedSlice(self.allocator);
         }
 
-        // Parse optional alias: import path/to/module as Alias
-        var alias: ?[]const u8 = null;
+        // Parse optional alias: `import path/to/module as Alias`. Already
+        // captured for TS-style `import name from "path"` form above.
+        var alias: ?[]const u8 = ts_alias;
         if (self.match(&.{.As})) {
             const alias_token = try self.expect(.Identifier, "Expected identifier after 'as'");
             alias = alias_token.lexeme;
@@ -2152,6 +2357,25 @@ pub const Parser = struct {
         var type_name: ?[]const u8 = null;
         if (self.match(&.{.Colon})) {
             type_name = try self.parseTypeAnnotation();
+            // Optional alignment qualifier: `let x: T align(N) = ...`.
+            // Currently we accept and discard the alignment; codegen
+            // will eventually thread this through to data placement.
+            try self.consumeOptionalAlignSuffix();
+        }
+
+        // Detect Zig-style anonymous type bindings:
+        //   const Name = struct { ... }
+        //   const Name = enum(u8) { ... }
+        //   const Name = union { ... }
+        //   const Name = packed struct { ... }
+        //   const Name = extern struct { ... }
+        // Treat these as if the user wrote `struct Name { ... }` etc.,
+        // so downstream passes see a normal type declaration.
+        if (type_name == null and self.check(.Equal)) {
+            if (self.peekTypeBindingAfterEquals()) |kind| {
+                _ = self.advance(); // consume '='
+                return try self.parseAnonymousTypeBinding(kind, name_token.lexeme);
+            }
         }
 
         // Optional initializer
@@ -2175,6 +2399,85 @@ pub const Parser = struct {
         return ast.Stmt{ .LetDecl = decl };
     }
 
+    /// Anonymous type binding kinds for `const Name = <kind> { ... }`.
+    const AnonTypeKind = enum {
+        Struct,
+        PackedStruct,
+        ExternStruct,
+        Enum,
+        Union,
+    };
+
+    /// Peek past `=` to see if the initializer is an anonymous type
+    /// definition (struct/enum/union/packed struct/extern struct).
+    /// Returns null if it's an ordinary expression.
+    fn peekTypeBindingAfterEquals(self: *Parser) ?AnonTypeKind {
+        // We expect to be looking at `=` right now.
+        if (!self.check(.Equal)) return null;
+        // Peek the token after `=`.
+        const next_idx = self.current + 1;
+        if (next_idx >= self.tokens.len) return null;
+        const next = self.tokens[next_idx];
+        return switch (next.type) {
+            .Struct => .Struct,
+            .Enum => .Enum,
+            .Union => .Union,
+            .Packed => blk: {
+                const after = next_idx + 1;
+                if (after >= self.tokens.len) break :blk null;
+                if (self.tokens[after].type == .Struct) break :blk .PackedStruct;
+                break :blk null;
+            },
+            .Extern => blk: {
+                const after = next_idx + 1;
+                if (after >= self.tokens.len) break :blk null;
+                if (self.tokens[after].type == .Struct) break :blk .ExternStruct;
+                break :blk null;
+            },
+            else => null,
+        };
+    }
+
+    /// Parse the right-hand side of `const Name = <kind> { ... }`.
+    fn parseAnonymousTypeBinding(self: *Parser, kind: AnonTypeKind, name: []const u8) !ast.Stmt {
+        switch (kind) {
+            .Struct => {
+                _ = self.advance(); // consume `struct`
+                const stmt = try self.structDeclarationWithName(name);
+                try self.optionalSemicolon();
+                return stmt;
+            },
+            .PackedStruct => {
+                _ = self.advance(); // consume `packed`
+                _ = self.advance(); // consume `struct`
+                var stmt = try self.structDeclarationWithName(name);
+                stmt.StructDecl.layout = .Packed;
+                try self.optionalSemicolon();
+                return stmt;
+            },
+            .ExternStruct => {
+                _ = self.advance(); // consume `extern`
+                _ = self.advance(); // consume `struct`
+                var stmt = try self.structDeclarationWithName(name);
+                stmt.StructDecl.layout = .Extern;
+                try self.optionalSemicolon();
+                return stmt;
+            },
+            .Enum => {
+                _ = self.advance(); // consume `enum`
+                const stmt = try self.enumDeclarationWithName(name);
+                try self.optionalSemicolon();
+                return stmt;
+            },
+            .Union => {
+                _ = self.advance(); // consume `union`
+                const stmt = try self.unionDeclarationWithName(name);
+                try self.optionalSemicolon();
+                return stmt;
+            },
+        }
+    }
+
     /// Parse a var declaration (module-level mutable variable)
     /// Syntax: var name: Type = value
     fn varDeclaration(self: *Parser) !ast.Stmt {
@@ -2193,6 +2496,15 @@ pub const Parser = struct {
         var type_name: ?[]const u8 = null;
         if (self.match(&.{.Colon})) {
             type_name = try self.parseTypeAnnotation();
+            try self.consumeOptionalAlignSuffix();
+        }
+
+        // Allow `var Name = struct { ... }` etc. like the let/const path.
+        if (type_name == null and self.check(.Equal)) {
+            if (self.peekTypeBindingAfterEquals()) |kind| {
+                _ = self.advance(); // consume '='
+                return try self.parseAnonymousTypeBinding(kind, name_token.lexeme);
+            }
         }
 
         // Optional initializer
@@ -5631,13 +5943,17 @@ pub const Parser = struct {
         if (self.match(&.{.LeftBracket})) {
             const bracket_token = self.previous();
 
-            // Check for typed array literal: [N]Type{ values }
-            // Save checkpoint in case this isn't a typed array literal
-            if (self.check(.Integer)) {
+            // Check for typed array literal:
+            //   [N]Type{ values }       — explicit length
+            //   [_]Type{ values }       — inferred length (Zig-style)
+            // Save checkpoint in case this isn't a typed array literal.
+            const is_size_token = self.check(.Integer) or
+                (self.check(.Identifier) and std.mem.eql(u8, self.peek().lexeme, "_"));
+            if (is_size_token) {
                 const checkpoint = self.current;
                 const size_token = self.advance();
                 if (self.match(&.{.RightBracket})) {
-                    // We have [N] - now check for type followed by {
+                    // We have [N] or [_] - now check for type followed by {
                     if (self.check(.Identifier)) {
                         const type_token = self.advance();
                         if (self.match(&.{.LeftBrace})) {

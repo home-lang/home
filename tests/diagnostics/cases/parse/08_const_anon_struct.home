@@ -1,0 +1,16 @@
+// Regression test for issue #18 — accept Zig-style anonymous type
+// bindings: `const Name = struct/enum/union/packed struct { ... }`.
+pub const SyscallFrame = struct {
+    rax: u64
+    rbx: u64
+}
+
+pub const LaptopFeature = enum(u8) {
+    Battery = 0
+    Power = 1
+}
+
+pub const Header = packed struct {
+    version: u8
+    flags: u8
+}

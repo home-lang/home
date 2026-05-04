@@ -1,0 +1,12 @@
+// Regression test for issue #18 — accept explicit tag types on enums.
+// Both the TS-style colon form and the Zig-style paren form should
+// parse cleanly. The bare-name form must still work too.
+enum ColorTs: u8 {
+    Black = 0
+    Blue = 1
+}
+
+enum ColorZig(u8) {
+    Black = 0
+    Blue = 1
+}

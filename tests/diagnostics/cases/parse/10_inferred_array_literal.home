@@ -1,0 +1,10 @@
+// Regression test for issue #18 — `[_]Type{...}` inferred-size typed
+// array literals (Zig-style). Used pervasively in home-os kernel
+// drivers for fixed-payload arrays whose length is implied by the
+// initializer list. The parser must accept the form even though the
+// type checker may flag the surrounding context for unrelated
+// reasons; this test only locks in parser-level acceptance.
+fn make_addresses() {
+    let _addrs = [_]u8{0x2C, 0x4B, 0x4A, 0x20}
+    let _zeros = [_]u8{0} ** 4
+}

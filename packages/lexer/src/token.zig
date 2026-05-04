@@ -152,6 +152,8 @@ pub const TokenType = enum {
     Assert,
     Export, // export keyword for exported functions
     Extern, // extern keyword for external function declarations
+    Inline, // inline modifier for function declarations
+    Packed, // packed modifier for struct layout (no padding)
 
     // Special
     Eof,
@@ -299,6 +301,8 @@ pub const TokenType = enum {
             .Assert => "assert",
             .Export => "export",
             .Extern => "extern",
+            .Inline => "inline",
+            .Packed => "packed",
             .Eof => "eof",
             .Invalid => "invalid",
             .UnterminatedString => "unterminated string",
@@ -441,4 +445,6 @@ pub const keywords = std.StaticStringMap(TokenType).initComptime(.{
     .{ "var", .Var },
     .{ "export", .Export },
     .{ "extern", .Extern },
+    .{ "inline", .Inline },
+    .{ "packed", .Packed },
 });
