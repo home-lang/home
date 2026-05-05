@@ -1,0 +1,30 @@
+// Regression test for issue #28 — nested declarations inside a
+// struct body. Used pervasively in home-os kernel code (e.g.
+// `kernel/src/fs/sparse.home`, `kernel/src/iot/voice_routines.home`)
+// to namespace per-type constants and helper enums next to fields and
+// methods. The parser accepts `pub const`, `pub fn`, and nested
+// `pub const Bar = enum { ... }` interleaved with struct fields.
+//
+// For now nested non-method declarations are skip-parsed structurally
+// — they don't yet appear as first-class members on the AST — but the
+// surrounding struct continues to parse and type-check.
+pub const Foo = struct {
+    a: u32,
+    b: u32,
+
+    pub const MAX: u32 = 100
+    pub const MIN: u32 = 0
+
+    pub fn new(): Foo {
+        return Foo { .a = 0, .b = 0 }
+    }
+
+    pub const Kind = enum {
+        Small,
+        Large,
+    }
+
+    pub fn sum(self: *const Foo): u32 {
+        return self.a + self.b
+    }
+}

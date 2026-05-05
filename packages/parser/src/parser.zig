@@ -1435,11 +1435,13 @@ pub const Parser = struct {
         defer methods.deinit(self.allocator);
 
         while (!self.check(.RightBrace) and !self.isAtEnd()) {
-            // Look-ahead for method modifiers: `pub fn`, `inline fn`,
+            // Look-ahead for member modifiers: `pub fn`, `inline fn`,
             // `pub inline fn`, `inline pub fn`. Only consume them when
-            // the next non-modifier token is `fn`, otherwise leave the
-            // tokens for field-declaration parsing below (so that names
-            // like `pub` aren't mistakenly eaten).
+            // the next non-modifier token introduces a recognized
+            // member kind (`fn`, or a nested type/const declaration —
+            // see below). Otherwise leave the tokens for field-
+            // declaration parsing so that names like `pub` aren't
+            // mistakenly eaten.
             const member_checkpoint = self.current;
             var member_is_pub = false;
             var member_is_inline = false;
@@ -1459,12 +1461,55 @@ pub const Parser = struct {
                 member_is_pub = true;
                 _ = self.advance();
             }
-            // If the next token isn't `fn`, rewind and let the field
-            // parser handle it.
-            if ((member_is_pub or member_is_inline) and !self.check(.Fn)) {
-                self.current = member_checkpoint;
-                member_is_pub = false;
-                member_is_inline = false;
+
+            // After the optional `pub`/`inline` prefix, accept a nested
+            // declaration: `const`, `fn`, `enum`, `struct`, `union`,
+            // `trait`, `impl`, or `type`. This is how Zig-style
+            // namespacing works — a struct body doubles as a module
+            // for associated constants and types (e.g.
+            // `kernel/src/fs/btree_dir.home` defines `BTreeNode` with
+            // `pub fn` methods and `pub const NODE_TYPE_LEAF: u8 = ...`
+            // siblings). For now, methods (`fn`) are the only kind
+            // attached to the struct AST; other nested decls are
+            // skip-parsed structurally so the rest of the body still
+            // type-checks. A future change can promote them to first-
+            // class struct members once the AST/typechecker grow the
+            // notion of nested namespaced symbols.
+            if (member_is_pub or member_is_inline) {
+                if (!self.check(.Fn) and !self.check(.Const) and !self.check(.Enum) and
+                    !self.check(.Struct) and !self.check(.Union) and !self.check(.Trait) and
+                    !self.check(.Impl) and !self.check(.Type) and !self.check(.Packed) and
+                    !self.check(.Extern))
+                {
+                    // Not a recognized prefixed member — rewind and let
+                    // the field parser handle it (so a field literally
+                    // named `pub` doesn't get misparsed).
+                    self.current = member_checkpoint;
+                    member_is_pub = false;
+                    member_is_inline = false;
+                }
+            }
+
+            // Nested const declaration. Accepts:
+            //   `const NAME[: T] = expr`
+            //   `const NAME = struct { ... }` / `enum { ... }` / `union { ... }`
+            //   `pub const ...` (modifier already consumed above)
+            // We skip-parse for now (see comment above), then continue
+            // to the next member.
+            if (self.match(&.{.Const})) {
+                try self.skipNestedConstDecl();
+                continue;
+            }
+
+            // Nested type-keyword declarations. We accept these so
+            // home-os can sit `pub enum SomeKind { ... }` next to
+            // fields, but skip-parse them for now.
+            if (self.check(.Enum) or self.check(.Struct) or self.check(.Union) or
+                self.check(.Trait) or self.check(.Impl) or self.check(.Type) or
+                self.check(.Packed) or self.check(.Extern))
+            {
+                try self.skipNestedTypeDecl();
+                continue;
             }
 
             // Check if this is a method definition (fn keyword)
@@ -1605,6 +1650,123 @@ pub const Parser = struct {
         }
 
         return ast.Stmt{ .StructDecl = struct_decl };
+    }
+
+    /// Skip-parse a nested `const` declaration inside a struct body
+    /// (the leading `const` keyword has already been consumed). Accepts
+    /// `const NAME[: T] = <expr-or-type-decl>` followed by an optional
+    /// comma or semicolon.
+    ///
+    /// We don't yet thread these through the AST as struct-namespaced
+    /// constants; this is enough to keep the rest of the body parsable
+    /// while the typechecker grows nested-symbol support.
+    fn skipNestedConstDecl(self: *Parser) ParseError!void {
+        // Name (allow soft-keywords as in letDeclaration)
+        if (!self.match(&.{
+            .Identifier, .Default, .Type, .It, .Match, .Union, .In,
+        })) {
+            try self.reportError("Expected name after 'const'");
+            return error.UnexpectedToken;
+        }
+
+        // Optional type annotation
+        if (self.match(&.{.Colon})) {
+            _ = try self.parseTypeAnnotation();
+            try self.consumeOptionalAlignSuffix();
+        }
+
+        // Initializer
+        if (self.match(&.{.Equal})) {
+            // Detect anonymous type bindings (`= struct { ... }`,
+            // `= enum { ... }`, etc.) and consume their bodies
+            // structurally. Otherwise parse the value as an expression.
+            if (self.check(.Struct) or self.check(.Enum) or self.check(.Union) or
+                self.check(.Packed) or self.check(.Extern))
+            {
+                try self.skipNestedTypeDecl();
+            } else if (self.check(.Identifier) and std.mem.eql(u8, self.peek().lexeme, "error")) {
+                // `pub const E = error { ... }` — error-set declaration.
+                // Skip-parse like the other type bindings.
+                try self.skipNestedTypeDecl();
+            } else {
+                _ = try self.expression();
+            }
+        }
+
+        // Optional terminator
+        _ = self.match(&.{.Comma});
+        _ = self.match(&.{.Semicolon});
+    }
+
+    /// Skip-parse a nested type declaration that uses one of the
+    /// type-introducing keywords (`struct`, `enum`, `union`, `trait`,
+    /// `impl`, `type`, `packed struct`, `extern struct`, `error`).
+    /// The leading keyword has NOT been consumed yet.
+    fn skipNestedTypeDecl(self: *Parser) ParseError!void {
+        // Discard tokens up to and including the body's matching `}`
+        // (or the trailing terminator for keyword-only forms like
+        // `type X = U;`). We rely on brace-depth tracking so that nested
+        // bodies don't trip us up.
+        //
+        // Simpler than re-entering the full declaration parser: we
+        // don't currently store the result, and the bodies we encounter
+        // in home-os tend to use only basic syntax.
+        var saw_brace = false;
+        var depth: i32 = 0;
+        while (!self.isAtEnd()) {
+            const t = self.peek().type;
+            if (t == .LeftBrace) {
+                saw_brace = true;
+                depth += 1;
+                _ = self.advance();
+                continue;
+            }
+            if (t == .RightBrace) {
+                if (depth == 0) {
+                    // We never opened a brace and we're at the outer
+                    // struct body's closing brace — bail out so the
+                    // outer parser sees it.
+                    break;
+                }
+                depth -= 1;
+                _ = self.advance();
+                if (depth == 0 and saw_brace) {
+                    // Closing the nested decl's body. Allow optional
+                    // comma/semicolon and return.
+                    _ = self.match(&.{.Comma});
+                    _ = self.match(&.{.Semicolon});
+                    return;
+                }
+                continue;
+            }
+            // For brace-less forms (`type X = U`), terminate at the
+            // first newline-separated boundary outside any nested
+            // structure. We approximate this by stopping when we'd be
+            // about to consume the outer struct's `}`.
+            if (depth == 0 and !saw_brace) {
+                // If this is the start of the body (`{`), the next
+                // iteration will catch it. Otherwise consume tokens
+                // until a comma/semicolon at depth 0 or until we hit
+                // the next member-introducing keyword.
+                if (t == .Comma or t == .Semicolon) {
+                    _ = self.advance();
+                    return;
+                }
+                // Stop before the next statement/member if we recognize
+                // a field-like or member-like start on a new line.
+                if (self.isAtNewLine()) {
+                    if (t == .Pub or t == .Inline or t == .Const or
+                        t == .Fn or t == .Enum or t == .Struct or
+                        t == .Union or t == .Trait or t == .Impl or
+                        t == .Type or t == .Packed or t == .Extern or
+                        t == .RightBrace)
+                    {
+                        return;
+                    }
+                }
+            }
+            _ = self.advance();
+        }
     }
 
     /// Parse an enum declaration. Accepts:

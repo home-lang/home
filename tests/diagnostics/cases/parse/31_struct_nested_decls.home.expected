@@ -1,0 +1,3 @@
+Checking: <repo>/tests/diagnostics/cases/parse/31_struct_nested_decls.home
+
+Success: Type checking passed ✓
