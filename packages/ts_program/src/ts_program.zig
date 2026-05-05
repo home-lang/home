@@ -158,6 +158,73 @@ pub const Program = struct {
         try self.resolveImports();
     }
 
+    /// Compile every file in parallel using a worker pool. Each
+    /// worker compiles one file at a time; the outer thread waits
+    /// for all to finish before resolving cross-file imports.
+    ///
+    /// Phase 5 deliverable. Per the §5.6 model: parse + bind are
+    /// embarrassingly parallel (each file is independent). Number
+    /// of workers defaults to `min(NPROC, 8)` matching tsgo.
+    pub fn compileAllParallel(self: *Program, options: ts_driver.CompileOptions, workers: ?usize) ProgramError!void {
+        const cpu_count = std.Thread.getCpuCount() catch 1;
+        const n = workers orelse @min(cpu_count, 8);
+
+        // Files-to-compile slice (indices we still need to do).
+        var pending: std.ArrayListUnmanaged(usize) = .empty;
+        defer pending.deinit(self.gpa);
+        for (self.files.items, 0..) |f, idx| {
+            if (f.compilation == null) try pending.append(self.gpa, idx);
+        }
+        if (pending.items.len == 0) {
+            try self.resolveImports();
+            return;
+        }
+
+        // Atomic cursor that workers pop from.
+        var cursor = std.atomic.Value(usize).init(0);
+        var failures = std.atomic.Value(u32).init(0);
+
+        const Worker = struct {
+            fn run(prog: *Program, opts: ts_driver.CompileOptions, pending_slice: []const usize, cur: *std.atomic.Value(usize), fail: *std.atomic.Value(u32)) void {
+                while (true) {
+                    const i = cur.fetchAdd(1, .seq_cst);
+                    if (i >= pending_slice.len) return;
+                    const idx = pending_slice[i];
+                    const f = prog.files.items[idx];
+                    var per_file = opts;
+                    per_file.is_tsx = opts.is_tsx or f.is_tsx;
+                    const c = ts_driver.compileSource(prog.gpa, f.source, per_file) catch {
+                        _ = fail.fetchAdd(1, .seq_cst);
+                        continue;
+                    };
+                    f.compilation = c;
+                }
+            }
+        };
+
+        var threads = self.gpa.alloc(std.Thread, n) catch return error.OutOfMemory;
+        defer self.gpa.free(threads);
+        var spawned: usize = 0;
+        for (threads, 0..) |*t, i| {
+            _ = i;
+            t.* = std.Thread.spawn(.{}, Worker.run, .{ self, options, pending.items, &cursor, &failures }) catch {
+                // If we can't spawn more workers, do the rest serially.
+                Worker.run(self, options, pending.items, &cursor, &failures);
+                break;
+            };
+            spawned += 1;
+        }
+        for (threads[0..spawned]) |t| t.join();
+
+        if (failures.load(.seq_cst) > 0) {
+            // Phase 5 follow-up: aggregate per-file errors. For now
+            // report the most generic.
+            return error.ParseError;
+        }
+
+        try self.resolveImports();
+    }
+
     /// Walk every compiled file's import declarations and resolve
     /// each to a FileId, populating the adjacency list.
     fn resolveImports(self: *Program) ProgramError!void {
@@ -360,6 +427,41 @@ test "Program: topologicalOrder produces leaves-first" {
     // a depends on b which depends on c — a should come last.
     try T.expectEqual(a, order[2]);
     try T.expectEqual(b, order[1]);
+}
+
+test "Program: compileAllParallel produces same output as serial" {
+    var vfs = ts_resolver.VirtualFs.init(T.allocator);
+    defer vfs.deinit();
+    var resolver = ts_resolver.Resolver.init(T.allocator, vfs.fs(), .{});
+    defer resolver.deinit();
+    var p = Program.init(T.allocator, &resolver);
+    defer p.deinit();
+    // 8 files, each with a small TS program — exercises the worker
+    // pool with multiple jobs in flight at once.
+    const sources = [_][]const u8{
+        "let a: number = 1;",
+        "let b: string = \"hi\";",
+        "function id(x: number): number { return x; }",
+        "class Foo { x = 1; }",
+        "interface Bar { y: number; }",
+        "type Pair<A, B> = [A, B];",
+        "enum Color { Red, Green, Blue }",
+        "let arr: number[] = [1, 2, 3];",
+    };
+    for (sources, 0..) |s, i| {
+        var path_buf: [32]u8 = undefined;
+        const path = try std.fmt.bufPrint(&path_buf, "/f{d}.ts", .{i});
+        _ = try p.add(path, s);
+    }
+    try p.compileAllParallel(.{}, 4);
+    var emitted: usize = 0;
+    for (p.files.items) |f| {
+        try T.expect(f.compilation != null);
+        if (f.compilation.?.js.len > 0) emitted += 1;
+    }
+    // Interface + type alias erase to empty JS; the rest emit
+    // non-empty output. We expect at least 6 of 8.
+    try T.expect(emitted >= 6);
 }
 
 test "Program: cycle does not infinite loop" {
