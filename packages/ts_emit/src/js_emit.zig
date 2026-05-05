@@ -134,6 +134,11 @@ pub const Printer = struct {
             .type_alias_decl => {
                 return;
             },
+            .decorator => {
+                // Phase 4 follow-up: emit __decorate / Stage-3 form.
+                // For now decorators erase so output remains runnable.
+                return;
+            },
             .enum_decl => try self.printEnum(node),
             .namespace_decl => try self.printNamespace(node),
             .import_decl => try self.printImport(node),

@@ -187,6 +187,20 @@ pub const Parser = struct {
     // ========================================================================
 
     fn parseStatement(self: *Parser) ParseError!NodeId {
+        // Decorators that precede class declarations (and `export`+
+        // `class` chains) attach to the next decorated statement.
+        // We collect them here and store them as leading siblings —
+        // the binder / emitter walks back when it sees a decorated
+        // declaration.
+        if (self.peek().kind == .at) {
+            const start = self.peek();
+            const dec_expr = try self.parseDecoratorExpression();
+            const dec = try self.builder.addDecorator(
+                .{ .start = start.span.start, .end = self.tokens[self.cursor - 1].span.end },
+                dec_expr,
+            );
+            return dec;
+        }
         const t = self.peek();
         return switch (t.kind) {
             .kw_let, .kw_const, .kw_var => try self.parseVarDecl(),
@@ -989,6 +1003,13 @@ pub const Parser = struct {
     /// expression isn't grammatical.
     fn parseLeftHandSideExpression(self: *Parser) ParseError!NodeId {
         return try self.parseCallOrMemberExpression();
+    }
+
+    /// Parse a decorator expression after the `@` sigil. `@foo`,
+    /// `@foo.bar`, `@foo()`, `@foo(arg, arg)` — all valid.
+    fn parseDecoratorExpression(self: *Parser) ParseError!NodeId {
+        _ = try self.expect(.at, "'@' to start decorator");
+        return try self.parseLeftHandSideExpression();
     }
 
     fn parseVarDecl(self: *Parser) ParseError!NodeId {
@@ -3409,6 +3430,38 @@ test "parser: type alias with generics" {
     const t = hir_mod.typeAliasOf(&s.hir, top);
     try T.expectEqual(@as(usize, 2), t.type_params_len);
     try T.expectEqual(hir_mod.NodeKind.tuple_type, s.hir.kindOf(t.aliased));
+}
+
+test "parser: decorator before class declaration" {
+    var s = try newTestSetup("@logged class Foo {}");
+    defer destroyTestSetup(s);
+    const root = try s.parser.parseSourceFile();
+    const stmts = hir_mod.blockStmts(&s.hir, root);
+    try T.expectEqual(@as(usize, 2), stmts.len);
+    try T.expectEqual(hir_mod.NodeKind.decorator, s.hir.kindOf(stmts[0]));
+    try T.expectEqual(hir_mod.NodeKind.class_decl, s.hir.kindOf(stmts[1]));
+}
+
+test "parser: decorator with call expression" {
+    var s = try newTestSetup("@logged(\"info\") class Foo {}");
+    defer destroyTestSetup(s);
+    const root = try s.parser.parseSourceFile();
+    const stmts = hir_mod.blockStmts(&s.hir, root);
+    try T.expectEqual(hir_mod.NodeKind.decorator, s.hir.kindOf(stmts[0]));
+    const dec = hir_mod.decoratorOf(&s.hir, stmts[0]);
+    try T.expectEqual(hir_mod.NodeKind.call_expr, s.hir.kindOf(dec.expression));
+}
+
+test "parser: multiple decorators" {
+    var s = try newTestSetup("@a @b @c class Foo {}");
+    defer destroyTestSetup(s);
+    const root = try s.parser.parseSourceFile();
+    const stmts = hir_mod.blockStmts(&s.hir, root);
+    try T.expectEqual(@as(usize, 4), stmts.len);
+    try T.expectEqual(hir_mod.NodeKind.decorator, s.hir.kindOf(stmts[0]));
+    try T.expectEqual(hir_mod.NodeKind.decorator, s.hir.kindOf(stmts[1]));
+    try T.expectEqual(hir_mod.NodeKind.decorator, s.hir.kindOf(stmts[2]));
+    try T.expectEqual(hir_mod.NodeKind.class_decl, s.hir.kindOf(stmts[3]));
 }
 
 test "parser: parameter properties skip modifiers" {

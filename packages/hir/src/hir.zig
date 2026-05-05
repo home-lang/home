@@ -812,6 +812,12 @@ pub const JsxFragmentPayload = struct {
     children_len: u32,
 };
 
+/// `@dec` or `@dec(args)` — a single decorator.
+pub const DecoratorPayload = struct {
+    /// The decorator expression (LeftHandSideExpression).
+    expression: NodeId,
+};
+
 // ============================================================================
 // Hir storage
 // ============================================================================
@@ -910,6 +916,7 @@ pub const Hir = struct {
     jsx_spread_attribute_payloads: std.ArrayListUnmanaged(JsxSpreadAttributePayload),
     jsx_expression_payloads: std.ArrayListUnmanaged(JsxExpressionPayload),
     jsx_fragment_payloads: std.ArrayListUnmanaged(JsxFragmentPayload),
+    decorator_payloads: std.ArrayListUnmanaged(DecoratorPayload),
 
     /// Shared variable-arity child pool. Per-node payloads reference
     /// slices into this with `(start: u32, len: u32)`.
@@ -985,6 +992,7 @@ pub const Hir = struct {
             .jsx_spread_attribute_payloads = .empty,
             .jsx_expression_payloads = .empty,
             .jsx_fragment_payloads = .empty,
+            .decorator_payloads = .empty,
             .child_pool = .empty,
             .cold = ColdData.empty(),
         };
@@ -1067,6 +1075,7 @@ pub const Hir = struct {
         self.jsx_spread_attribute_payloads.deinit(self.gpa);
         self.jsx_expression_payloads.deinit(self.gpa);
         self.jsx_fragment_payloads.deinit(self.gpa);
+        self.decorator_payloads.deinit(self.gpa);
         self.child_pool.deinit(self.gpa);
         self.cold.deinit(self.gpa);
     }
@@ -2048,6 +2057,14 @@ pub const Builder = struct {
         return id;
     }
 
+    pub fn addDecorator(self: *Builder, span: Span, expression: NodeId) !NodeId {
+        const payload_idx: u32 = @intCast(self.hir.decorator_payloads.items.len);
+        try self.hir.decorator_payloads.append(self.hir.gpa, .{ .expression = expression });
+        const id = try self.newNode(.decorator, span, payload_idx);
+        self.hir.setParent(expression, id);
+        return id;
+    }
+
     pub fn addJsxFragment(self: *Builder, span: Span, children: []const NodeId) !NodeId {
         const c_start: u32 = @intCast(self.hir.child_pool.items.len);
         try self.hir.child_pool.appendSlice(self.hir.gpa, children);
@@ -2490,6 +2507,11 @@ pub fn jsxFragmentOf(hir: *const Hir, id: NodeId) JsxFragmentPayload {
 pub fn jsxFragmentChildren(hir: *const Hir, id: NodeId) []const NodeId {
     const p = jsxFragmentOf(hir, id);
     return hir.childSlice(p.children_start, p.children_len);
+}
+
+pub fn decoratorOf(hir: *const Hir, id: NodeId) DecoratorPayload {
+    std.debug.assert(hir.kindOf(id) == .decorator);
+    return hir.decorator_payloads.items[hir.payloads.items[id]];
 }
 
 // ============================================================================
