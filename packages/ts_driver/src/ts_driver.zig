@@ -600,6 +600,26 @@ test "driver: object literal infers shape; member access types correctly" {
     try T.expectEqual(@as(u32, ts_checker.Primitive.string_t), c.hir.typeOf(sy_init));
 }
 
+test "driver: discriminated union narrowing — string discriminant" {
+    var c = try compileSource(T.allocator,
+        \\type Shape = { kind: "circle"; r: number } | { kind: "square"; w: number };
+        \\function area(s: Shape) {
+        \\  if (s.kind === "circle") {
+        \\    let rr = s.r;
+        \\  }
+        \\}
+    , .{});
+    defer {
+        c.deinit();
+        T.allocator.destroy(c);
+    }
+    // No "Property does not exist" diagnostic for s.r (since s
+    // narrowed to the circle variant inside the if-then).
+    for (c.diagnostics.items) |d| {
+        try T.expect(std.mem.indexOf(u8, d.message, "does not exist") == null);
+    }
+}
+
 test "driver: explicit type-args on a generic call parse + compile" {
     var c = try compileSource(T.allocator,
         \\function id<T>(x: T): T { return x; }

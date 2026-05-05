@@ -467,6 +467,22 @@ pub const Checker = struct {
         // `positive` = "this branch represents the equality
         // matching" (i.e. `===` in then, `!==` in else).
         const positive = (b.op == .eq_strict) == when_true;
+
+        // Discriminated union narrowing: `x.kind === "circle"`.
+        // LHS is a member access, RHS is a literal. We walk the
+        // member access's object's static type — if it's a union of
+        // object types, keep the variants whose discriminant prop's
+        // type matches the RHS literal.
+        if (self.hir.kindOf(b.lhs) == .member_access and
+            (self.hir.kindOf(b.rhs) == .literal_string or
+                self.hir.kindOf(b.rhs) == .literal_number or
+                self.hir.kindOf(b.rhs) == .literal_bool))
+        {
+            try self.applyDiscriminatedNarrow(b.lhs, b.rhs, positive);
+            // Don't return — fall through so other guards still try
+            // to match (rare overlap, but keeps the logic
+            // additive).
+        }
         // typeof X === "kind"
         if (self.hir.kindOf(b.lhs) == .unary_op) {
             const u = hir_mod.unaryOf(self.hir, b.lhs);
@@ -527,6 +543,61 @@ pub const Checker = struct {
                 return;
             }
         }
+    }
+
+    /// Discriminated-union narrowing. `lhs` is a member access
+    /// `obj.disc`; `rhs_lit` is the literal we're comparing against.
+    /// If `obj` is a union of object types and one of its members'
+    /// `disc` field matches `rhs_lit`, we narrow `obj` to that member.
+    fn applyDiscriminatedNarrow(self: *Checker, lhs: NodeId, rhs_lit: NodeId, positive: bool) !void {
+        const m = hir_mod.memberOf(self.hir, lhs);
+        if (self.hir.kindOf(m.object) != .identifier) return;
+        const obj_id = hir_mod.identifierOf(self.hir, m.object);
+        const static_t = self.typeOfIdentifier(m.object);
+        if (!self.interner.pool.flagsOf(static_t).is_union) return;
+
+        // Compute the literal's type id for comparison.
+        const lit_t: TypeId = blk: {
+            switch (self.hir.kindOf(rhs_lit)) {
+                .literal_string => {
+                    const lit = hir_mod.literalStringOf(self.hir, rhs_lit);
+                    break :blk self.interner.internStringLiteral(lit.value) catch return;
+                },
+                .literal_number => {
+                    const v = hir_mod.literalNumberOf(self.hir, rhs_lit);
+                    break :blk self.interner.internNumberLiteral(v) catch return;
+                },
+                .literal_bool => {
+                    const v = hir_mod.literalBoolOf(self.hir, rhs_lit);
+                    break :blk self.interner.internBooleanLiteral(v);
+                },
+                else => return,
+            }
+        };
+
+        const members = self.interner.unionMembers(static_t);
+        var keep: std.ArrayListUnmanaged(TypeId) = .empty;
+        defer keep.deinit(self.gpa);
+        for (members) |variant| {
+            if (!self.interner.pool.flagsOf(variant).is_object_type) continue;
+            const disc_t = self.interner.objectMember(variant, m.name) orelse continue;
+            // Match: the variant's discriminant is exactly the literal.
+            if (disc_t == lit_t) {
+                if (positive) {
+                    try keep.append(self.gpa, variant);
+                }
+            } else {
+                if (!positive) {
+                    try keep.append(self.gpa, variant);
+                }
+            }
+        }
+        if (keep.items.len == 0) return;
+        const narrowed: TypeId = if (keep.items.len == 1)
+            keep.items[0]
+        else
+            self.interner.internUnion(keep.items) catch return;
+        try self.recordNarrow(obj_id.name, narrowed);
     }
 
     fn recordNarrow(self: *Checker, name: hir_mod.StringId, t: TypeId) !void {
