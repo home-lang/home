@@ -176,6 +176,13 @@ pub fn build(b: *std.Build) void {
     const tsconfig_jsonc_pkg = createPackage(b, "packages/tsconfig/src/jsonc.zig", target, optimize, zig_test_framework);
     const tsconfig_pkg = createPackage(b, "packages/tsconfig/src/tsconfig.zig", target, optimize, zig_test_framework);
     tsconfig_pkg.addImport("jsonc", tsconfig_jsonc_pkg);
+
+    // TS-parity Phase 2 — binder + symbol table.
+    const binder_pkg = createPackage(b, "packages/binder/src/binder.zig", target, optimize, zig_test_framework);
+    binder_pkg.addImport("hir", hir_pkg);
+    binder_pkg.addImport("string_interner", string_interner_pkg);
+    binder_pkg.addImport("ts_lexer", ts_lexer_pkg);
+    binder_pkg.addImport("ts_parser", ts_parser_pkg);
     const volatile_pkg = createPackage(b, "packages/volatile/src/volatile.zig", target, optimize, zig_test_framework);
     const pantry_pkg = createPackage(b, "packages/pantry/src/pantry.zig", target, optimize, zig_test_framework);
     const collections_pkg = createPackage(b, "packages/collections/src/collection.zig", target, optimize, zig_test_framework);
@@ -803,6 +810,10 @@ pub fn build(b: *std.Build) void {
     const tsconfig_tests = b.addTest(.{ .root_module = tsconfig_pkg });
     const run_tsconfig_tests = b.addRunArtifact(tsconfig_tests);
     test_step.dependOn(&run_tsconfig_tests.step);
+
+    const binder_tests = b.addTest(.{ .root_module = binder_pkg });
+    const run_binder_tests = b.addRunArtifact(binder_tests);
+    test_step.dependOn(&run_binder_tests.step);
 
     // Volatile operations tests
     const volatile_tests = b.addTest(.{ .root_module = volatile_pkg });
