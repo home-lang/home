@@ -5422,6 +5422,25 @@ pub const Parser = struct {
                 try self.expect(.Identifier, "Expected reflection function name after '@'");
             const name = name_token.lexeme;
 
+            // `@addrOf(expr)` is a thin alias for `&expr` — the parser
+            // lowers it directly into a `UnaryExpr(AddressOf, …)` so
+            // the rest of the pipeline (typechecker, codegen) sees it
+            // as a normal address-of and the result types as `*T`.
+            if (std.mem.eql(u8, name, "addrOf")) {
+                _ = try self.expect(.LeftParen, "Expected '(' after '@addrOf'");
+                const target = try self.expression();
+                _ = try self.expect(.RightParen, "Expected ')' after '@addrOf' argument");
+                const unary = try ast.UnaryExpr.init(
+                    self.allocator,
+                    .AddressOf,
+                    target,
+                    ast.SourceLocation.fromToken(at_token),
+                );
+                const expr = try self.allocator.create(ast.Expr);
+                expr.* = ast.Expr{ .UnaryExpr = unary };
+                return expr;
+            }
+
             // Opaque builtins (parsed before the known-reflection kind
             // table so we never hit the "Unknown reflection" error for
             // these). Used by kernel code for raw memory, atomics, and
@@ -5433,6 +5452,7 @@ pub const Parser = struct {
                 std.mem.eql(u8, name, "atomicLoad") or std.mem.eql(u8, name, "atomicStore") or
                 std.mem.eql(u8, name, "atomicRmw") or std.mem.eql(u8, name, "cmpxchg") or
                 std.mem.eql(u8, name, "cmpxchgWeak") or std.mem.eql(u8, name, "cmpxchgStrong") or
+                std.mem.eql(u8, name, "atomicCmpXchg") or
                 std.mem.eql(u8, name, "prefetch") or std.mem.eql(u8, name, "fence") or
                 std.mem.eql(u8, name, "clz") or std.mem.eql(u8, name, "ctz") or
                 std.mem.eql(u8, name, "popCount") or std.mem.eql(u8, name, "byteSwap") or
@@ -5491,6 +5511,11 @@ pub const Parser = struct {
                 if (std.mem.eql(u8, name, "intToFloat")) break :blk .IntToFloat;
                 if (std.mem.eql(u8, name, "floatToInt")) break :blk .FloatToInt;
                 if (std.mem.eql(u8, name, "enumToInt")) break :blk .EnumToInt;
+                // Zig-style alias: `@intFromEnum(variant)` returns the
+                // underlying integer tag of an enum variant. Reuses the
+                // EnumToInt kind so codegen and the rest of the
+                // pipeline don't need a new variant.
+                if (std.mem.eql(u8, name, "intFromEnum")) break :blk .EnumToInt;
                 if (std.mem.eql(u8, name, "intToEnum")) break :blk .IntToEnum;
                 // Memory builtins
                 if (std.mem.eql(u8, name, "memset")) break :blk .MemSet;

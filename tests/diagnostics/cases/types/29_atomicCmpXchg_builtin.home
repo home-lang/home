@@ -1,0 +1,8 @@
+// Issue #27: `@atomicCmpXchg(ptr, expected, desired)` is recognised
+// as an opaque builtin. The parser consumes its arguments and lowers
+// to a Void expression, so callers like
+// `var old: i32 = @atomicCmpXchg(&sem.count, current, new_val)` no
+// longer report "Unknown reflection function".
+fn caller(p: *u32) {
+    var prev = @atomicCmpXchg(p, 0u32, 1u32)
+}

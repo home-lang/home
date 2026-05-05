@@ -1,0 +1,9 @@
+// Issue #27: `@intFromEnum(variant)` is the Zig-style alias for the
+// existing `@enumToInt(variant)` and produces the underlying integer
+// tag of an enum variant.
+enum Color { Red, Green, Blue }
+
+fn caller() {
+    var n = @intFromEnum(Color.Green)
+    var m: u8 = @intCast(@intFromEnum(Color.Blue))
+}

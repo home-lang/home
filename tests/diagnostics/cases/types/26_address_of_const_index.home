@@ -1,0 +1,17 @@
+// Issue #26: `&arr[CONST]` where the index is a named const (not a
+// literal) must still produce `*T`. The index path always resolved
+// correctly; the spurious "Argument type mismatch" actually came
+// from sibling string-literal args being rejected for `[]const u8`
+// parameters. Both are now fixed.
+struct KmemCache { active: u32 }
+
+const NUM_CACHES: u32 = 16
+const CACHE_PCB: u32 = 0
+
+var caches: [NUM_CACHES]KmemCache = undefined
+
+fn set_cache_name(cache: *KmemCache, name: []const u8) {}
+
+fn caller() {
+    set_cache_name(&caches[CACHE_PCB], "pcb_cache")
+}

@@ -2064,6 +2064,27 @@ pub const TypeChecker = struct {
             // Also check if from can coerce to inner type
             return canCoerce(from, inner_type);
         }
+        // Pointer-style coercion: kernel code mixes `*T`, `*const T`,
+        // `*volatile T` freely. Treat all Reference / MutableReference
+        // types as interchangeable — the volatile/const distinction is
+        // a codegen hint, not a type-system constraint.
+        const from_is_ref = from == .Reference or from == .MutableReference;
+        const to_is_ref = to == .Reference or to == .MutableReference;
+        if (from_is_ref and to_is_ref) {
+            return true;
+        }
+        // Allow integer ↔ Reference: kernel passes raw addresses as
+        // integer-typed values. This must run before the early-return
+        // integer-family branch below so `canCoerce(Int, *T)` succeeds
+        // when an integer literal flows into a pointer parameter
+        // (e.g. `panic(reason, 0, file, ...)` where the literal `0` is
+        // a sentinel for `*u8`).
+        if ((from == .U64 or from == .I64 or from == .Int) and to_is_ref) {
+            return true;
+        }
+        if (from_is_ref and (to == .U64 or to == .I64 or to == .Int)) {
+            return true;
+        }
         // Integer type coercion: generic Int can coerce to specific integer types
         if (from == .Int) {
             return isIntegerType(to);
@@ -2089,22 +2110,6 @@ pub const TypeChecker = struct {
                 return true;
             }
         }
-        // Pointer-style coercion: kernel code mixes `*T`, `*const T`,
-        // `*volatile T` freely. Treat all Reference / MutableReference
-        // types as interchangeable — the volatile/const distinction is
-        // a codegen hint, not a type-system constraint.
-        const from_is_ref = from == .Reference or from == .MutableReference;
-        const to_is_ref = to == .Reference or to == .MutableReference;
-        if (from_is_ref and to_is_ref) {
-            return true;
-        }
-        // Also allow u64 ↔ Reference: kernel passes raw addresses as u64.
-        if ((from == .U64 or from == .I64 or from == .Int) and to_is_ref) {
-            return true;
-        }
-        if (from_is_ref and (to == .U64 or to == .I64 or to == .Int)) {
-            return true;
-        }
         // Array element coercion: `[int]` → `[u8]` / `[u32]` etc. when
         // the element types are both integer-family. Kernel tables like
         // the AES S-box are declared `[u8; 256]` but literal-initialized
@@ -2117,6 +2122,16 @@ pub const TypeChecker = struct {
             if (isFloatType(from_elem) and isFloatType(to_elem)) return true;
             // Unknown/void element is a wildcard.
             if (from_elem == .Void or to_elem == .Void) return true;
+        }
+        // String literal → byte-array slice (`[]u8`, `[]const u8`).
+        // Kernel string-handling helpers declare their input as a u8
+        // slice, not the opaque `String` type. A bare string literal at
+        // the call site still types as `String`, so without this
+        // coercion every `copy_string("foo", buf, len)` site fails
+        // even though the runtime layout is identical.
+        if (from == .String and to == .Array) {
+            const to_elem = to.Array.element_type.*;
+            if (to_elem == .U8 or to_elem == .I8 or to_elem == .Void) return true;
         }
         return false;
     }

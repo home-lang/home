@@ -1,0 +1,3 @@
+Checking: <repo>/tests/diagnostics/cases/types/25_chained_address_of_index_then_field.home
+
+Success: Type checking passed ✓

@@ -1,0 +1,18 @@
+// Issue #26: `&arr[i].field` (index-then-field chain) must type as
+// `*T` when passed to a function expecting a pointer. The fix is the
+// String→Array(U8) coercion plus the Int→Reference coercion in
+// canCoerce, which together let the existing AddressOf wrap-in-
+// Reference path complete without spurious argument mismatches when
+// the chain is composed with sibling string / pointer args.
+struct BlockDevice {
+    name: [16]u8,
+}
+
+var devices: [4]BlockDevice = undefined
+var device_count: u32 = 0
+
+fn copy_name(dest: *[16]u8, src: []const u8) {}
+
+fn caller() {
+    copy_name(&devices[device_count].name, "ata")
+}

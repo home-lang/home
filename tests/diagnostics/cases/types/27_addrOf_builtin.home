@@ -1,0 +1,11 @@
+// Issue #27: `@addrOf(expr)` is the Zig-style alias for `&expr`. The
+// parser lowers it directly into a UnaryExpr(AddressOf, …) so the
+// rest of the pipeline treats it identically to `&`. Kernel modules
+// use it inside `@ptrFromInt(@addrOf(global.field))` for raw address
+// arithmetic.
+fn use_p(p: *u32) {}
+
+fn caller() {
+    var x: u32 = 7
+    use_p(@addrOf(x))
+}
