@@ -1,0 +1,3 @@
+Checking: <repo>/tests/diagnostics/cases/parse/19_call_then_less_than.home
+
+Success: Type checking passed ✓

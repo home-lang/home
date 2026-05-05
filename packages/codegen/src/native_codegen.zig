@@ -3590,17 +3590,24 @@ pub const NativeCodegen = struct {
                 // Save value pointer in r10 for later use (caller-saved, no need to preserve)
                 try self.assembler.movRegReg(.r10, .rax);
 
-                // Find the target tag for the pattern (e.g., "Some" -> tag value)
+                // Find the target tag for the pattern (e.g., "Some" -> tag value).
+                // The sentinel "<auto-unwrap>" (from Zig-style `if (x) |val|`) maps
+                // to the first payload-bearing variant in the enum — i.e. Some/Ok.
                 var found = false;
                 var target_tag: i64 = 0;
                 var has_data = false;
 
                 var variant_data_type: []const u8 = "i64";
+                const auto_unwrap = std.mem.eql(u8, if_let.pattern, "<auto-unwrap>");
                 var enum_iter = self.enum_layouts.iterator();
                 while (enum_iter.next()) |entry| {
                     const enum_layout = entry.value_ptr.*;
                     for (enum_layout.variants, 0..) |v, idx| {
-                        if (std.mem.eql(u8, v.name, if_let.pattern)) {
+                        const matches_pattern = if (auto_unwrap)
+                            (v.data_type != null)
+                        else
+                            std.mem.eql(u8, v.name, if_let.pattern);
+                        if (matches_pattern) {
                             found = true;
                             target_tag = @intCast(idx);
                             has_data = v.data_type != null;

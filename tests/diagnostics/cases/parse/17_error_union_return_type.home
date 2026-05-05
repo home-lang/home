@@ -1,0 +1,16 @@
+// Regression test for issue #23 sub-item 3 — Zig-style `!T` error-union
+// sugar in return-type / type-annotation position. `!T` desugars to
+// `Result<T, AnyError>` so kernel code that uses `fn f() !void {}` no
+// longer hits "Expected '{' after function name".
+fn lid_init() !void {
+    return
+}
+
+// Also accepted on `: T` and `-> T` return-type forms.
+fn parse_int(s: u32): !u32 {
+    return s
+}
+
+fn open_file(path: u64) -> !void {
+    return
+}

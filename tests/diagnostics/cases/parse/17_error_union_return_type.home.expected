@@ -1,0 +1,3 @@
+Checking: <repo>/tests/diagnostics/cases/parse/17_error_union_return_type.home
+
+Success: Type checking passed ✓

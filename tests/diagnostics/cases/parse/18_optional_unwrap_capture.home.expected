@@ -1,0 +1,3 @@
+Checking: <repo>/tests/diagnostics/cases/parse/18_optional_unwrap_capture.home
+
+Success: Type checking passed ✓

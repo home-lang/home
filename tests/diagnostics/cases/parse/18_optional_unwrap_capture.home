@@ -1,0 +1,19 @@
+// Regression test for issue #23 sub-item 4 — Zig-style optional-unwrap
+// capture syntax in `if`. `if (cond) |x| { body }` desugars to an
+// if-let with the sentinel pattern `<auto-unwrap>`, which downstream
+// consumers treat as "match any payload-bearing variant" (Some/Ok).
+// `if (cond) |_| { body }` is the discard form — body runs when the
+// value is present but no name is bound.
+fn find(): ?u32 {
+    return null
+}
+
+fn caller() {
+    if (find()) |x| {
+        var y: u32 = x
+    }
+
+    if (find()) |_| {
+        var z: u32 = 42
+    }
+}

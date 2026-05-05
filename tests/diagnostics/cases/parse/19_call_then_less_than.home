@@ -1,0 +1,20 @@
+// Regression test for issue #23 sub-item 5 — `while expr < expr {}` and
+// `if expr < expr {}` parse correctly when the LHS ends with a call
+// (`f() < x`). Previously the parser treated bare-identifier `target`
+// followed by `{}` as a struct literal, swallowing the loop body.
+// Struct-literal parsing is now suppressed for bare identifiers in the
+// condition expression of `while` and `if`.
+fn timer(): u64 {
+    return 0
+}
+
+fn delay() {
+    var target: u64 = 0
+    while timer() < target {
+        // Busy wait — empty body must still parse.
+    }
+
+    if timer() < target {
+        // Same shape, also accepted on `if`.
+    }
+}

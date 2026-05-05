@@ -898,17 +898,33 @@ pub const Interpreter = struct {
                 if (value == .Struct) {
                     const struct_val = value.Struct;
                     // Pattern can be "Option.Some" or just "Some"
-                    // Check if pattern ends with the variant name or matches exactly
+                    // Check if pattern ends with the variant name or matches exactly.
+                    // The sentinel "<auto-unwrap>" comes from the Zig-style
+                    // `if (cond) |x| { ... }` desugaring — match any payload-bearing
+                    // variant (Some/Ok/etc.) by looking for a stored payload.
                     const variant_name = struct_val.type_name;
-                    if (std.mem.eql(u8, pattern, variant_name) or
+                    const auto_unwrap = std.mem.eql(u8, pattern, "<auto-unwrap>");
+                    if (auto_unwrap or
+                        std.mem.eql(u8, pattern, variant_name) or
                         std.mem.endsWith(u8, pattern, variant_name))
                     {
-                        matches = true;
                         // Get the payload from the "value" or "0" field
+                        var payload_val: ?Value = null;
                         if (struct_val.fields.get("value")) |payload| {
-                            bound_value = payload;
+                            payload_val = payload;
                         } else if (struct_val.fields.get("0")) |payload| {
-                            bound_value = payload;
+                            payload_val = payload;
+                        }
+                        // For auto-unwrap, only match payload-bearing variants
+                        // (Some/Ok); the empty None/Err cases fall through to else.
+                        if (auto_unwrap) {
+                            if (payload_val != null) {
+                                matches = true;
+                                bound_value = payload_val;
+                            }
+                        } else {
+                            matches = true;
+                            bound_value = payload_val;
                         }
                     }
                 }

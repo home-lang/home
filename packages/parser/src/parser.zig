@@ -128,6 +128,12 @@ pub const Parser = struct {
     symbol_table: SymbolTable,
     /// Count of pending > tokens from >> splits in nested generics (e.g. A<B<C>> splits >> into two >)
     pending_greater: u32,
+    /// When > 0, primary() suppresses bare-identifier struct-literal
+    /// parsing so that `while target { ... }` and `if cond { ... }`
+    /// don't treat the body's `{` as part of a `target { ... }` struct
+    /// literal in the condition expression. Stack depth lets nested
+    /// expressions (e.g. `while f({}) {}`) restore the inner context.
+    suppress_struct_literal: u32,
     /// Macro system for expanding macro invocations
     macro_system: MacroSystem,
 
@@ -161,6 +167,7 @@ pub const Parser = struct {
             .module_resolver = try ModuleResolver.init(allocator, null),
             .symbol_table = SymbolTable.init(allocator),
             .pending_greater = 0,
+            .suppress_struct_literal = 0,
             .macro_system = macro_system,
         };
     }
@@ -231,6 +238,41 @@ pub const Parser = struct {
         const current_line = self.peek().line;
         const prev_line = self.previous().line;
         return current_line > prev_line;
+    }
+
+    /// Lookahead helper for Zig-style optional-unwrap capture in
+    /// `if (cond) |x| { body }`. When the parser is at `(`, scan forward
+    /// to find the matching `)` and check whether the next token begins a
+    /// `|ident|` or `|_|` capture. Returns `false` if we hit EOF or an
+    /// unbalanced paren run before finding a match. Pure lookahead: no
+    /// tokens are consumed.
+    fn afterMatchingParenLooksLikeCapturePipe(self: *Parser) bool {
+        if (!self.check(.LeftParen)) return false;
+        var i: usize = self.current + 1;
+        var depth: usize = 1;
+        while (i < self.tokens.len) : (i += 1) {
+            const t = self.tokens[i].type;
+            if (t == .LeftParen) {
+                depth += 1;
+            } else if (t == .RightParen) {
+                depth -= 1;
+                if (depth == 0) {
+                    // Inspect token after the closing `)`.
+                    const after = i + 1;
+                    if (after >= self.tokens.len) return false;
+                    if (self.tokens[after].type != .Pipe) return false;
+                    const ident = after + 1;
+                    if (ident >= self.tokens.len) return false;
+                    if (self.tokens[ident].type != .Identifier) return false;
+                    const close = ident + 1;
+                    if (close >= self.tokens.len) return false;
+                    return self.tokens[close].type == .Pipe;
+                }
+            } else if (t == .Eof) {
+                return false;
+            }
+        }
+        return false;
     }
 
     /// Consume an optional semicolon.
@@ -1050,7 +1092,7 @@ pub const Parser = struct {
         } else if (!self.check(.LeftBrace) and !self.check(.Requires) and !self.check(.Ensures) and
             (self.isPrimitiveTypeStart() or self.check(.Identifier) or self.check(.Star) or
                 self.check(.StarStar) or self.check(.LeftBracket) or self.check(.Ampersand) or
-                self.check(.Question)))
+                self.check(.Question) or self.check(.Bang)))
         {
             return_type = try self.parseTypeAnnotation();
         }
@@ -2097,6 +2139,16 @@ pub const Parser = struct {
             return try std.fmt.allocPrint(self.allocator, "?{s}", .{inner_type});
         }
 
+        // Zig-style error-union sugar: `!T` desugars to `Result<T, AnyError>`.
+        // The bang is treated as a type-position prefix only when it appears
+        // here (i.e. where a type is expected); the unary `!` operator and
+        // the macro-invocation `!` are parsed in expression position so this
+        // does not conflict with either.
+        if (self.match(&.{.Bang})) {
+            const inner_type = try self.parseTypeAnnotation();
+            return try std.fmt.allocPrint(self.allocator, "Result<{s}, AnyError>", .{inner_type});
+        }
+
         // Check for optional array type: ?[]T or ?[N]T (lexer combines ?[ into QuestionBracket)
         if (self.match(&.{.QuestionBracket})) {
             if (self.peek().type == .RightBracket) {
@@ -2662,11 +2714,70 @@ pub const Parser = struct {
             return self.ifLetStatement(if_token);
         }
 
-        // Parse condition - let expression() handle all grouping naturally
+        // Parse condition - let expression() handle all grouping naturally.
         // This supports both `if x > 0 {` and `if (x > 0) {` as well as
-        // complex conditions like `if (a > b) != (c > d) && e {`
-        const condition = try self.expression();
+        // complex conditions like `if (a > b) != (c > d) && e {`.
+        //
+        // Special-case lookahead for Zig-style `if (cond) |x| { body }`:
+        // when the condition begins with `(`, scan forward to find the
+        // matching `)` and peek the token immediately after. If it is `|`
+        // followed by an identifier (or `_`) and another `|`, parse the
+        // condition as `(inner)` (consuming both parens here) so the
+        // capture pipe is unambiguous. Otherwise fall through to the
+        // normal expression parser, which handles `|` as bitwise-OR.
+        //
+        // Struct-literal parsing is suppressed for bare identifiers in the
+        // condition so that `if cond { body }` doesn't treat `cond { ... }`
+        // as a struct literal that swallows the body block.
+        var condition: *ast.Expr = undefined;
+        var did_capture_paren = false;
+        self.suppress_struct_literal += 1;
+        if (self.check(.LeftParen) and self.afterMatchingParenLooksLikeCapturePipe()) {
+            _ = self.advance(); // consume `(`
+            did_capture_paren = true;
+            condition = try self.expression();
+            _ = try self.expect(.RightParen, "Expected ')' after if condition");
+        } else {
+            condition = try self.expression();
+        }
+        self.suppress_struct_literal -= 1;
         errdefer ast.Program.deinitExpr(condition, self.allocator);
+
+        // Zig-style optional unwrap: `if (cond) |x| { body }` or
+        // `if (cond) |_| { body }`. Only valid when we recognized the
+        // capture-pipe shape above and consumed the surrounding parens.
+        // Desugar to an `if-let` with the sentinel pattern `<auto-unwrap>`,
+        // which downstream consumers treat as "match any payload-bearing
+        // variant" — i.e. `Option.Some` or `Result.Ok`. The discard form
+        // `|_|` lowers to no binding.
+        if (did_capture_paren and self.match(&.{.Pipe})) {
+            var binding: ?[]const u8 = null;
+            const bind_tok = try self.expect(.Identifier, "Expected identifier or '_' in '|...|' capture");
+            if (!std.mem.eql(u8, bind_tok.lexeme, "_")) {
+                binding = bind_tok.lexeme;
+            }
+            _ = try self.expect(.Pipe, "Expected '|' after capture binding");
+
+            const then_block = try self.blockStatement();
+            errdefer ast.Program.deinitBlockStmt(then_block, self.allocator);
+
+            var else_block: ?*ast.BlockStmt = null;
+            if (self.match(&.{.Else})) {
+                else_block = try self.blockStatement();
+            }
+            errdefer if (else_block) |eb| ast.Program.deinitBlockStmt(eb, self.allocator);
+
+            const stmt = try ast.IfLetStmt.init(
+                self.allocator,
+                "<auto-unwrap>",
+                binding,
+                condition,
+                then_block,
+                else_block,
+                ast.SourceLocation.fromToken(if_token),
+            );
+            return ast.Stmt{ .IfLetStmt = stmt };
+        }
 
         const then_block = try self.blockStatement();
         errdefer ast.Program.deinitBlockStmt(then_block, self.allocator);
@@ -2731,8 +2842,11 @@ pub const Parser = struct {
         // Expect '=' followed by the expression to match
         _ = try self.expect(.Equal, "Expected '=' after pattern in 'if let'");
 
-        // Parse the expression being matched
+        // Parse the expression being matched. Suppress struct-literal
+        // parsing on bare identifiers so the body's `{` is unambiguous.
+        self.suppress_struct_literal += 1;
         const value = try self.expression();
+        self.suppress_struct_literal -= 1;
         errdefer ast.Program.deinitExpr(value, self.allocator);
 
         // Parse the then block
@@ -2762,10 +2876,15 @@ pub const Parser = struct {
     /// Parse a while statement
     fn whileStatement(self: *Parser) !ast.Stmt {
         const while_token = self.previous();
-        // Parse condition - let expression() handle all grouping naturally
+        // Parse condition - let expression() handle all grouping naturally.
         // This supports both `while x > 0 {` and `while (x > 0) {` as well as
-        // complex conditions like `while (a > b) != (c > d) && e {`
+        // complex conditions like `while (a > b) != (c > d) && e {`.
+        // Struct-literal parsing is suppressed for bare identifiers in the
+        // condition so that `while timer() < target { ... }` doesn't slurp
+        // the body's `{` into a `target { ... }` literal.
+        self.suppress_struct_literal += 1;
         const condition = try self.expression();
+        self.suppress_struct_literal -= 1;
         errdefer ast.Program.deinitExpr(condition, self.allocator);
 
         const body = try self.blockStatement();
@@ -2784,7 +2903,9 @@ pub const Parser = struct {
     /// Parse a while statement with a label
     fn whileStatementWithLabel(self: *Parser, label: []const u8) !ast.Stmt {
         const while_token = self.previous();
+        self.suppress_struct_literal += 1;
         const condition = try self.expression();
+        self.suppress_struct_literal -= 1;
         errdefer ast.Program.deinitExpr(condition, self.allocator);
 
         const body = try self.blockStatement();
@@ -4225,6 +4346,15 @@ pub const Parser = struct {
 
         var seen_named = false; // Track if we've seen a named argument
 
+        // Inside `(...)` call-argument parsing, lift any outer
+        // struct-literal suppression (used by while/if condition parsing).
+        // The matching `)` is a hard boundary that an inner struct literal
+        // cannot escape, so allowing literals here restores the natural
+        // shape of e.g. `if check(Point { x: 1 }) { ... }`.
+        const saved_suppress = self.suppress_struct_literal;
+        self.suppress_struct_literal = 0;
+        defer self.suppress_struct_literal = saved_suppress;
+
         if (!self.check(.RightParen)) {
             while (true) {
                 // Check if this is a named argument: identifier followed by colon
@@ -4300,6 +4430,13 @@ pub const Parser = struct {
     /// Parse an index expression (array[index]) or slice expression (array[start..end])
     fn indexExpr(self: *Parser, array: *ast.Expr) !*ast.Expr {
         const bracket_token = self.previous();
+
+        // Inside `[...]`, lift any outer struct-literal suppression — the
+        // matching `]` bounds the index expression so a struct literal
+        // here is unambiguous.
+        const saved_suppress = self.suppress_struct_literal;
+        self.suppress_struct_literal = 0;
+        defer self.suppress_struct_literal = saved_suppress;
 
         // Check for slice starting from beginning: arr[..end] or arr[..=end]
         if (self.check(.DotDot) or self.check(.DotDotEqual)) {
@@ -5901,8 +6038,14 @@ pub const Parser = struct {
 
             // Check for struct literal: TypeName { field: value, ... }
             // Only treat as struct literal if we see { identifier : pattern
-            // This avoids ambiguity with for loops: "for x in items { let..." is NOT a struct literal
-            if (self.check(.LeftBrace)) {
+            // This avoids ambiguity with for loops: "for x in items { let..." is NOT a struct literal.
+            //
+            // While parsing a `while`/`if`/`do-while` condition, struct literals
+            // on bare identifiers are suppressed so that the body's `{` is not
+            // mistaken for the start of a `target {}` literal. Type-prefixed
+            // generic-struct literals (`Vec<T>{...}`, handled above) and
+            // explicit braced expressions (`(target {...})`) remain available.
+            if (self.suppress_struct_literal == 0 and self.check(.LeftBrace)) {
                 // Look ahead to see if this is actually a struct literal
                 const checkpoint = self.current;
                 _ = self.advance(); // consume '{'
@@ -6268,6 +6411,14 @@ pub const Parser = struct {
                 expr.* = ast.Expr{ .TupleExpr = tuple_expr };
                 return expr;
             }
+
+            // Inside parens, struct-literal suppression (used by while/if
+            // condition parsing) is lifted: the body's `{` cannot be reached
+            // until we see the matching `)`, so a struct literal here is
+            // unambiguous.
+            const saved_suppress = self.suppress_struct_literal;
+            self.suppress_struct_literal = 0;
+            defer self.suppress_struct_literal = saved_suppress;
 
             const first_expr = try self.expression();
 
