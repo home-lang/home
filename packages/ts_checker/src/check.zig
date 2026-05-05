@@ -32,6 +32,7 @@ const interner = @import("interner.zig");
 const relation = @import("relation.zig");
 const lower = @import("lower.zig");
 const string_interner = @import("string_interner");
+const binder_mod = @import("binder");
 
 pub const TypeId = types.TypeId;
 pub const NodeId = hir_mod.NodeId;
@@ -53,6 +54,9 @@ pub const Checker = struct {
     string_interner: *const string_interner.Interner,
     engine: *relation.Engine,
     lowerer: lower.Lowerer,
+    /// Optional bound module — when set, identifier expressions
+    /// resolve their type via the symbol table.
+    module: ?*const binder_mod.Module,
     diagnostics: std.ArrayListUnmanaged(Diagnostic),
     diag_arena: std.heap.ArenaAllocator,
 
@@ -70,9 +74,17 @@ pub const Checker = struct {
             .string_interner = si,
             .engine = engine,
             .lowerer = lower.Lowerer.init(gpa, hir, ti, si),
+            .module = null,
             .diagnostics = .empty,
             .diag_arena = std.heap.ArenaAllocator.init(gpa),
         };
+    }
+
+    /// Attach a bound module so identifier expressions get real
+    /// types from the symbol table instead of falling through to
+    /// `Primitive.any`.
+    pub fn setModule(self: *Checker, module: *const binder_mod.Module) void {
+        self.module = module;
     }
 
     pub fn deinit(self: *Checker) void {
@@ -158,7 +170,7 @@ pub const Checker = struct {
             .literal_bool => types.Primitive.boolean_t,
             .literal_null => types.Primitive.null_t,
             .literal_undefined => types.Primitive.undefined_t,
-            .identifier => types.Primitive.any, // resolved via binder in follow-up
+            .identifier => self.typeOfIdentifier(node),
             .binary_op => try self.checkBinop(node),
             .unary_op => try self.checkUnary(node),
             .logical_op => try self.checkLogical(node),
@@ -209,6 +221,21 @@ pub const Checker = struct {
             else => types.Primitive.any,
         };
         self.hir.setType(node, t);
+        return t;
+    }
+
+    /// Resolve an identifier reference's type via the binder. If
+    /// the symbol declares a `var_decl` / `let_decl` / `const_decl`
+    /// with a known TypeId on the decl node, return that. Otherwise
+    /// fall through to `Primitive.any`.
+    fn typeOfIdentifier(self: *Checker, node: NodeId) TypeId {
+        const module = self.module orelse return types.Primitive.any;
+        const id = hir_mod.identifierOf(self.hir, node);
+        const sym = module.root.lookup(id.name) orelse return types.Primitive.any;
+        if (sym.decls.items.len == 0) return types.Primitive.any;
+        const decl = sym.decls.items[0];
+        const t = self.hir.typeOf(decl);
+        if (t == types.Primitive.none) return types.Primitive.any;
         return t;
     }
 

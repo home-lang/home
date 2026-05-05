@@ -190,6 +190,7 @@ pub fn build(b: *std.Build) void {
     ts_checker_pkg.addImport("string_interner", string_interner_pkg);
     ts_checker_pkg.addImport("ts_lexer", ts_lexer_pkg);
     ts_checker_pkg.addImport("ts_parser", ts_parser_pkg);
+    ts_checker_pkg.addImport("binder", binder_pkg);
 
     // TS-parity Phase 4 — JS / .d.ts emit + Home .d.hm.
     const ts_emit_pkg = createPackage(b, "packages/ts_emit/src/ts_emit.zig", target, optimize, zig_test_framework);

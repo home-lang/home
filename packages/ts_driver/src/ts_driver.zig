@@ -239,6 +239,7 @@ pub fn compileSource(
     errdefer c.type_engine.deinit();
     var checker = ts_checker.Checker.init(gpa, &c.hir, &c.type_interner, &c.interner, &c.type_engine);
     defer checker.deinit();
+    checker.setModule(c.module);
     if (c.root != hir_mod.none_node_id) {
         checker.checkSourceFile(c.root) catch |err| switch (err) {
             error.OutOfMemory => return error.OutOfMemory,
@@ -397,6 +398,23 @@ test "driver: type-check assigns TypeIds to expressions" {
     const decl = stmts[0];
     const init_node = hir_mod.varDeclOf(&c.hir, decl).init;
     try T.expectEqual(@as(u32, ts_checker.Primitive.number_t), c.hir.typeOf(init_node));
+}
+
+test "driver: identifier reference resolves via binder symbol table" {
+    var c = try compileSource(T.allocator, "let x: number = 1; let y = x;", .{});
+    defer {
+        c.deinit();
+        T.allocator.destroy(c);
+    }
+    const stmts = hir_mod.blockStmts(&c.hir, c.root);
+    // First decl: `let x: number = 1` — type number_t
+    const x_decl = stmts[0];
+    try T.expectEqual(@as(u32, ts_checker.Primitive.number_t), c.hir.typeOf(x_decl));
+    // Second decl: `let y = x` — y inherits x's type via the
+    // identifier resolution path.
+    const y_decl = stmts[1];
+    const y_init = hir_mod.varDeclOf(&c.hir, y_decl).init;
+    try T.expectEqual(@as(u32, ts_checker.Primitive.number_t), c.hir.typeOf(y_init));
 }
 
 test "driver: type-check reports diagnostic on mismatched assignment" {
