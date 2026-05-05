@@ -400,6 +400,23 @@ test "driver: type-check assigns TypeIds to expressions" {
     try T.expectEqual(@as(u32, ts_checker.Primitive.number_t), c.hir.typeOf(init_node));
 }
 
+test "driver: call expression returns its function's return type" {
+    var c = try compileSource(T.allocator,
+        \\function id(x: number): string { return ""; }
+        \\let r = id(1);
+    , .{});
+    defer {
+        c.deinit();
+        T.allocator.destroy(c);
+    }
+    const stmts = hir_mod.blockStmts(&c.hir, c.root);
+    const r_decl = stmts[1];
+    const init_node = hir_mod.varDeclOf(&c.hir, r_decl).init;
+    try T.expectEqual(hir_mod.NodeKind.call_expr, c.hir.kindOf(init_node));
+    // r should be string (the return type of id).
+    try T.expectEqual(@as(u32, ts_checker.Primitive.string_t), c.hir.typeOf(init_node));
+}
+
 test "driver: identifier reference resolves via binder symbol table" {
     var c = try compileSource(T.allocator, "let x: number = 1; let y = x;", .{});
     defer {

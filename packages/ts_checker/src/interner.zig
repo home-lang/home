@@ -47,6 +47,14 @@ pub const TypeKey = union(Kind) {
         origin: TypeId,
         args: []const TypeId,
     },
+    /// Function signature: `(p1: T1, p2: T2) => R` — `params`
+    /// captures the parameter type ids in declaration order; the
+    /// final element is conventionally the return type.
+    signature: struct {
+        params: []const TypeId,
+        return_type: TypeId,
+        is_construct: bool,
+    },
 
     pub const Kind = enum(u8) {
         string_lit,
@@ -62,6 +70,7 @@ pub const TypeKey = union(Kind) {
         tuple,
         type_parameter,
         instantiation,
+        signature,
     };
 
     pub fn hash(self: TypeKey) u64 {
@@ -108,6 +117,11 @@ pub const TypeKey = union(Kind) {
             .instantiation => |inst| {
                 hasher.update(std.mem.asBytes(&inst.origin));
                 for (inst.args) |a| hasher.update(std.mem.asBytes(&a));
+            },
+            .signature => |sig| {
+                for (sig.params) |p| hasher.update(std.mem.asBytes(&p));
+                hasher.update(std.mem.asBytes(&sig.return_type));
+                hasher.update(&[_]u8{@intFromBool(sig.is_construct)});
             },
         }
         return hasher.final();
@@ -158,6 +172,12 @@ pub const TypeKey = union(Kind) {
             .instantiation => |a| {
                 const b = other.instantiation;
                 return a.origin == b.origin and std.mem.eql(TypeId, a.args, b.args);
+            },
+            .signature => |a| {
+                const b = other.signature;
+                return a.is_construct == b.is_construct and
+                    a.return_type == b.return_type and
+                    std.mem.eql(TypeId, a.params, b.params);
             },
         };
     }
@@ -313,6 +333,34 @@ pub const Interner = struct {
         return try self.internKey(key, .{ .is_type_parameter = true });
     }
 
+    /// Intern a function signature type: `(p1: T1, p2: T2) => R`.
+    /// `param_types` is consumed via dupe; caller may free its
+    /// original copy.
+    pub fn internSignature(self: *Interner, param_types: []const TypeId, return_type: TypeId, is_construct: bool) !TypeId {
+        const dup = try self.key_arena.allocator().dupe(TypeId, param_types);
+        const key: TypeKey = .{ .signature = .{
+            .params = dup,
+            .return_type = return_type,
+            .is_construct = is_construct,
+        } };
+        return try self.internKey(key, .{ .is_signature = true });
+    }
+
+    /// Look up the return type of a signature TypeId. Returns null
+    /// if the id isn't a signature.
+    pub fn signatureReturn(self: *const Interner, id: TypeId) ?TypeId {
+        if (!self.pool.flagsOf(id).is_signature) return null;
+        const payload = self.pool.signature_payloads.items[self.pool.payloadOf(id)];
+        return payload.return_type;
+    }
+
+    /// Look up the parameter type ids of a signature.
+    pub fn signatureParams(self: *const Interner, id: TypeId) []const TypeId {
+        std.debug.assert(self.pool.flagsOf(id).is_signature);
+        const payload = self.pool.signature_payloads.items[self.pool.payloadOf(id)];
+        return self.pool.type_arg_pool.items[payload.params_start .. payload.params_start + payload.params_len];
+    }
+
     /// Insert a key+flags pair, allocating the side payload as needed.
     /// Returns existing TypeId on a duplicate.
     fn internKey(self: *Interner, key: TypeKey, flags: types.TypeFlags) !TypeId {
@@ -403,6 +451,21 @@ pub const Interner = struct {
                     .origin = inst.origin,
                     .args_start = start,
                     .args_len = @intCast(inst.args.len),
+                });
+                break :blk idx;
+            },
+            .signature => |sig| blk: {
+                const start: u32 = @intCast(self.pool.type_arg_pool.items.len);
+                try self.pool.type_arg_pool.appendSlice(self.gpa, sig.params);
+                const idx: u32 = @intCast(self.pool.signature_payloads.items.len);
+                try self.pool.signature_payloads.append(self.gpa, .{
+                    .type_params_start = 0,
+                    .type_params_len = 0,
+                    .params_start = start,
+                    .params_len = @intCast(sig.params.len),
+                    .return_type = sig.return_type,
+                    .is_construct = sig.is_construct,
+                    .has_this_type = false,
                 });
                 break :blk idx;
             },
