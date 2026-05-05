@@ -19,7 +19,7 @@
   "author": "Home Language Team",
   "license": "MIT",
   "dependencies": {
-    "express": "^4.18.2",
+    "express": "^5.2.1",
     "cors": "^2.8.5",
     "helmet": "^7.0.0",
     "compression": "^1.7.4",
