@@ -21,6 +21,7 @@ pub const types = @import("types.zig");
 pub const interner = @import("interner.zig");
 pub const relation = @import("relation.zig");
 pub const lower = @import("lower.zig");
+pub const check = @import("check.zig");
 
 pub const TypeId = types.TypeId;
 pub const Primitive = types.Primitive;
@@ -32,6 +33,7 @@ pub const Engine = relation.Engine;
 pub const Relation = relation.Relation;
 pub const RelationCache = relation.RelationCache;
 pub const Lowerer = lower.Lowerer;
+pub const Checker = check.Checker;
 
 const std = @import("std");
 const T = std.testing;
@@ -41,6 +43,7 @@ test {
     _ = interner;
     _ = relation;
     _ = lower;
+    _ = check;
 }
 
 test "ts_checker: end-to-end smoke" {
