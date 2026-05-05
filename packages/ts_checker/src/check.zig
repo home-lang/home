@@ -236,7 +236,8 @@ pub const Checker = struct {
             },
             .member_access => blk: {
                 const m = hir_mod.memberOf(self.hir, node);
-                _ = try self.checkExpression(m.object);
+                const obj_t = try self.checkExpression(m.object);
+                if (self.interner.objectMember(obj_t, m.name)) |t| break :blk t;
                 break :blk types.Primitive.any;
             },
             .element_access => blk: {

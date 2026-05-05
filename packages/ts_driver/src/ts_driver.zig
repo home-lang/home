@@ -417,6 +417,37 @@ test "driver: call expression returns its function's return type" {
     try T.expectEqual(@as(u32, ts_checker.Primitive.string_t), c.hir.typeOf(init_node));
 }
 
+test "driver: member access on object-typed variable returns property type" {
+    var c = try compileSource(T.allocator,
+        \\let p: { x: number; y: string } = null;
+        \\let nx = p.x;
+        \\let sy = p.y;
+    , .{});
+    defer {
+        c.deinit();
+        T.allocator.destroy(c);
+    }
+    const stmts = hir_mod.blockStmts(&c.hir, c.root);
+    const nx_init = hir_mod.varDeclOf(&c.hir, stmts[1]).init;
+    try T.expectEqual(@as(u32, ts_checker.Primitive.number_t), c.hir.typeOf(nx_init));
+    const sy_init = hir_mod.varDeclOf(&c.hir, stmts[2]).init;
+    try T.expectEqual(@as(u32, ts_checker.Primitive.string_t), c.hir.typeOf(sy_init));
+}
+
+test "driver: missing property falls back to any" {
+    var c = try compileSource(T.allocator,
+        \\let p: { x: number } = null;
+        \\let z = p.missing;
+    , .{});
+    defer {
+        c.deinit();
+        T.allocator.destroy(c);
+    }
+    const stmts = hir_mod.blockStmts(&c.hir, c.root);
+    const z_init = hir_mod.varDeclOf(&c.hir, stmts[1]).init;
+    try T.expectEqual(@as(u32, ts_checker.Primitive.any), c.hir.typeOf(z_init));
+}
+
 test "driver: function parameter resolves to its annotation type in body" {
     var c = try compileSource(T.allocator,
         \\function id(x: number): number { let y = x; return y; }

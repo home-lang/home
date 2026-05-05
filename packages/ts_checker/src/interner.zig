@@ -361,6 +361,51 @@ pub const Interner = struct {
         return self.pool.type_arg_pool.items[payload.params_start .. payload.params_start + payload.params_len];
     }
 
+    /// Intern an object type with the given members. Members must
+    /// be sorted by `name` for canonicalization (we sort in place
+    /// on a duped copy). The resulting TypeId can be queried via
+    /// `objectMember(id, name)` to get a property's type.
+    pub fn internObjectType(self: *Interner, members: []const types.ObjectMember) !TypeId {
+        const dup = try self.key_arena.allocator().dupe(types.ObjectMember, members);
+        std.mem.sort(types.ObjectMember, dup, {}, objectMemberLessThan);
+        // Object types use their own per-instance side payload —
+        // we don't need a TypeKey-based intern table for them
+        // because each parsed `{...}` is structurally distinct
+        // (Phase 6 follow-up: add structural dedup so equivalent
+        // shapes share a TypeId). For now allocate fresh.
+        const member_start: u32 = @intCast(self.pool.object_member_pool.items.len);
+        try self.pool.object_member_pool.appendSlice(self.gpa, dup);
+        const payload_idx: u32 = @intCast(self.pool.object_type_payloads.items.len);
+        try self.pool.object_type_payloads.append(self.gpa, .{
+            .members_start = member_start,
+            .members_len = @intCast(dup.len),
+            .call_sig = 0,
+            .construct_sig = 0,
+            .string_index_type = types.Primitive.none,
+            .number_index_type = types.Primitive.none,
+        });
+        const id: TypeId = @intCast(self.pool.headers.items.len);
+        try self.pool.headers.append(self.gpa, .{
+            .flags = .{ .is_object_type = true, .is_object = true },
+            .symbol = 0,
+            .payload = payload_idx,
+        });
+        return id;
+    }
+
+    /// Lookup a property by name on an object type. Returns its
+    /// type id, or `null` if the type isn't an object or the
+    /// property doesn't exist.
+    pub fn objectMember(self: *const Interner, id: TypeId, name: StringId) ?TypeId {
+        if (!self.pool.flagsOf(id).is_object_type) return null;
+        const payload = self.pool.object_type_payloads.items[self.pool.payloadOf(id)];
+        const members = self.pool.object_member_pool.items[payload.members_start .. payload.members_start + payload.members_len];
+        for (members) |m| {
+            if (m.name == name) return m.type;
+        }
+        return null;
+    }
+
     /// Insert a key+flags pair, allocating the side payload as needed.
     /// Returns existing TypeId on a duplicate.
     fn internKey(self: *Interner, key: TypeKey, flags: types.TypeFlags) !TypeId {
@@ -500,6 +545,10 @@ pub const Interner = struct {
         return self.pool.literal_payloads.items[self.pool.payloadOf(id)];
     }
 };
+
+fn objectMemberLessThan(_: void, a: types.ObjectMember, b: types.ObjectMember) bool {
+    return a.name < b.name;
+}
 
 // =============================================================================
 // Tests

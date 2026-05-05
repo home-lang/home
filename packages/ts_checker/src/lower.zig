@@ -73,10 +73,60 @@ pub const Lowerer = struct {
             .type_literal => try self.lowerLiteralType(node),
             .array_type => try self.lowerArray(node),
             .tuple_type => try self.lowerTuple(node),
-            .fn_type, .constructor_type => types.Primitive.unknown, // signatures pending
+            .object_type => try self.lowerObjectType(node),
+            .fn_type, .constructor_type => try self.lowerFnType(node),
             .mapped_type => types.Primitive.unknown, // mapped pending
             else => types.Primitive.unknown,
         };
+    }
+
+    /// Lower a `{ x: T; y: U }` HIR node into a checker object type.
+    fn lowerObjectType(self: *Lowerer, node: NodeId) LowerError!TypeId {
+        const members = hir_mod.objectTypeMembers(self.hir, node);
+        var built: std.ArrayListUnmanaged(types.ObjectMember) = .empty;
+        defer built.deinit(self.gpa);
+        for (members) |m| {
+            if (self.hir.kindOf(m) != .interface_member) continue;
+            const im = hir_mod.interfaceMemberOf(self.hir, m);
+            const t: TypeId = if (im.type_node != hir_mod.none_node_id)
+                try self.lower(im.type_node)
+            else
+                types.Primitive.any;
+            try built.append(self.gpa, .{
+                .name = im.name,
+                .type = t,
+                .is_optional = im.is_optional,
+                .is_readonly = im.is_readonly,
+                .is_method = im.is_method,
+            });
+        }
+        return self.interner.internObjectType(built.items) catch error.OutOfMemory;
+    }
+
+    /// Lower a `(p: T) => U` fn-type into a signature.
+    fn lowerFnType(self: *Lowerer, node: NodeId) LowerError!TypeId {
+        const ft = hir_mod.fnTypeOf(self.hir, node);
+        var param_types: std.ArrayListUnmanaged(TypeId) = .empty;
+        defer param_types.deinit(self.gpa);
+        var i: u32 = 0;
+        while (i < ft.params_len) : (i += 1) {
+            const p = self.hir.child_pool.items[ft.params_start + i];
+            if (self.hir.kindOf(p) != .parameter) {
+                try param_types.append(self.gpa, types.Primitive.any);
+                continue;
+            }
+            const pp = hir_mod.parameterOf(self.hir, p);
+            const t: TypeId = if (pp.type_annotation != hir_mod.none_node_id)
+                try self.lower(pp.type_annotation)
+            else
+                types.Primitive.any;
+            try param_types.append(self.gpa, t);
+        }
+        const ret: TypeId = if (ft.return_type != hir_mod.none_node_id)
+            try self.lower(ft.return_type)
+        else
+            types.Primitive.void_t;
+        return self.interner.internSignature(param_types.items, ret, ft.is_constructor) catch error.OutOfMemory;
     }
 
     fn lowerTypeRef(self: *Lowerer, node: NodeId) LowerError!TypeId {
