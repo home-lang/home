@@ -684,6 +684,13 @@ pub const Printer = struct {
     fn printExport(self: *Printer, node: NodeId) !void {
         const ex = hir_mod.exportOf(self.hir, node);
         if (ex.is_type_only) return;
+        // `export interface I {}` / `export type T = ...` erase at
+        // runtime — bail before writing the `export ` keyword so we
+        // don't leave a dangling token.
+        if (ex.decl != hir_mod.none_node_id) {
+            const dk = self.hir.kindOf(ex.decl);
+            if (dk == .interface_decl or dk == .type_alias_decl) return;
+        }
         try self.write("export ");
         if (ex.is_default) {
             try self.write("default ");
@@ -1184,6 +1191,23 @@ test "emit: type-only import erases" {
 
 test "emit: interface erases" {
     const out = try emit("interface Foo { x: number; }");
+    defer T.allocator.free(out);
+    try T.expectEqualStrings("", out);
+}
+
+test "emit: export interface erases without dangling token" {
+    const out = try emit(
+        \\export interface Box { value: number; }
+        \\export class Counter { count: number = 0; }
+    );
+    defer T.allocator.free(out);
+    // No dangling `export ` left from the interface erase.
+    try T.expect(std.mem.indexOf(u8, out, "export class Counter") != null);
+    try T.expect(std.mem.indexOf(u8, out, "interface") == null);
+}
+
+test "emit: export type alias erases" {
+    const out = try emit("export type Pair = [number, number];");
     defer T.allocator.free(out);
     try T.expectEqualStrings("", out);
 }

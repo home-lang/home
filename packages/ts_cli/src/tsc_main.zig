@@ -16,6 +16,7 @@ const ts_program = @import("ts_program");
 const ts_resolver = @import("ts_resolver");
 const ts_driver = @import("ts_driver");
 const ts_diagnostics = @import("ts_diagnostics");
+const ts_emit = @import("ts_emit");
 const tsconfig_mod = @import("tsconfig");
 
 const RealFs = struct {
@@ -173,6 +174,20 @@ pub fn main(init: std.process.Init) !void {
         break :blk null;
     };
 
+    // Resolve `declaration` from CLI or tsconfig. CLI wins.
+    const emit_dts: bool = blk: {
+        if (opts.declaration) |d| break :blk d;
+        if (loaded_cfg) |c| if (c.compiler_options.declaration) |d| break :blk d;
+        break :blk false;
+    };
+
+    // Declaration output dir: tsconfig `declarationDir` if set,
+    // otherwise alongside the .js (which itself respects outDir).
+    const declaration_dir: ?[]const u8 = blk: {
+        if (loaded_cfg) |c| if (c.compiler_options.declaration_dir) |d| break :blk d;
+        break :blk out_dir;
+    };
+
     // Print diagnostics + write JS outputs.
     var any_errors = false;
     for (program.files.items) |f| {
@@ -200,12 +215,28 @@ pub fn main(init: std.process.Init) !void {
             if (d.phase != .emit) any_errors = true;
         }
         if (opts.no_emit) continue;
-        const out_path = try computeOutPath(gpa, f.path, out_dir);
+        const out_path = try computeOutPath(gpa, f.path, out_dir, ".js");
         defer gpa.free(out_path);
         RealFs.write(gpa, out_path, c.js) catch |err| {
             std.debug.print("error writing {s}: {s}\n", .{ out_path, @errorName(err) });
             std.process.exit(1);
         };
+        if (emit_dts) {
+            var emitter = ts_emit.DtsEmitter.init(gpa, &c.hir, &c.interner, .{});
+            defer emitter.deinit();
+            emitter.emitSourceFile(c.root) catch |err| {
+                std.debug.print("error emitting d.ts for {s}: {s}\n", .{ f.path, @errorName(err) });
+                continue;
+            };
+            const dts_bytes = emitter.toOwnedSlice() catch continue;
+            defer gpa.free(dts_bytes);
+            const dts_path = try computeOutPath(gpa, f.path, declaration_dir, ".d.ts");
+            defer gpa.free(dts_path);
+            RealFs.write(gpa, dts_path, dts_bytes) catch |err| {
+                std.debug.print("error writing {s}: {s}\n", .{ dts_path, @errorName(err) });
+                std.process.exit(1);
+            };
+        }
     }
 
     if (any_errors) std.process.exit(1);
@@ -219,18 +250,18 @@ fn mapPhaseToCode(phase: ts_driver.Diagnostic.Phase) u32 {
     };
 }
 
-/// Compute the .js output path for a source file. With no outDir,
-/// emit alongside the source (`a.ts` → `a.js`). With outDir, mirror
-/// just the basename (full path-mirroring vs. rootDir is a Phase 5
-/// follow-up — for now this matches the most-common case).
-fn computeOutPath(gpa: std.mem.Allocator, src_path: []const u8, out_dir: ?[]const u8) ![]u8 {
+/// Compute the output path for a source file with the given extension
+/// (e.g. `.js`, `.d.ts`). With no out_dir, emit alongside the source
+/// (`a.ts` → `a.js`). With an out_dir, mirror just the basename
+/// (full path-mirroring vs. rootDir is a Phase 5 follow-up).
+fn computeOutPath(gpa: std.mem.Allocator, src_path: []const u8, out_dir: ?[]const u8, ext: []const u8) ![]u8 {
     const ext_dot = std.mem.lastIndexOfScalar(u8, src_path, '.') orelse src_path.len;
     const stem = src_path[0..ext_dot];
     if (out_dir) |dir| {
         const base = std.fs.path.basename(stem);
-        return try std.fmt.allocPrint(gpa, "{s}/{s}.js", .{ dir, base });
+        return try std.fmt.allocPrint(gpa, "{s}/{s}{s}", .{ dir, base, ext });
     }
-    return try std.fmt.allocPrint(gpa, "{s}.js", .{stem});
+    return try std.fmt.allocPrint(gpa, "{s}{s}", .{ stem, ext });
 }
 
 /// Resolve the path to a tsconfig.json. With an explicit `--project`

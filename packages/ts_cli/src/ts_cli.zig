@@ -63,6 +63,8 @@ pub const Options = struct {
     module: ?[]const u8 = null,
     /// `--jsx=…`.
     jsx: ?[]const u8 = null,
+    /// `--declaration` / `-d`. `null` means defer to tsconfig.
+    declaration: ?bool = null,
 };
 
 pub const ParseError = error{
@@ -134,6 +136,10 @@ pub fn parseArgs(gpa: std.mem.Allocator, args: []const []const u8) ParseError!Op
             i += 1;
             if (i >= args.len) return error.MissingValue;
             opts.jsx = args[i];
+        } else if (std.mem.eql(u8, a, "--declaration") or std.mem.eql(u8, a, "-d")) {
+            opts.declaration = true;
+        } else if (std.mem.eql(u8, a, "--no-declaration")) {
+            opts.declaration = false;
         } else if (a.len > 0 and a[0] == '-') {
             // Unknown flag — silently accept for forward-compat per
             // TS_PARITY_PLAN. A future cycle promotes selected

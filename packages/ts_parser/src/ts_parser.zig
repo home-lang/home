@@ -881,7 +881,19 @@ pub const Parser = struct {
 
     fn parseExportDeclaration(self: *Parser) ParseError!NodeId {
         const start = self.advance(); // export
-        const is_type_only = self.match(.kw_type);
+        // `type` after `export` is the type-only marker only when
+        // the next token is `{` (named re-export) or `*` (namespace
+        // re-export). `export type Foo = T;` and `export type Foo {}`
+        // are type-alias / interface declarations — we must NOT eat
+        // the `type` keyword in those cases.
+        var is_type_only: bool = false;
+        if (self.peek().kind == .kw_type) {
+            const next = self.peekAt(1).kind;
+            if (next == .open_brace or next == .asterisk) {
+                _ = self.advance();
+                is_type_only = true;
+            }
+        }
         const empty_string = self.interner.intern("") catch return error.OutOfMemory;
 
         // export default <expr>;
