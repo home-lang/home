@@ -1,0 +1,16 @@
+// Regression test for issue #30 — `orelse` binary operator. Used in
+// home-os kernel code (e.g. `kernel/src/iot/conversation.home:271`) for
+// the `value orelse return null` pattern. Semantically identical to the
+// existing `??` operator; the right-hand side also accepts a
+// control-flow expression (return / break / continue).
+fn make(): ?i32 { return 42 }
+
+fn unwrap_default(): i32 {
+    let x = make() orelse 0
+    return x
+}
+
+fn unwrap_or_return(): ?i32 {
+    let x = make() orelse return null
+    return x
+}

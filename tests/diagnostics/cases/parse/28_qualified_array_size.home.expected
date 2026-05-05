@@ -1,0 +1,3 @@
+Checking: <repo>/tests/diagnostics/cases/parse/28_qualified_array_size.home
+
+Success: Type checking passed ✓

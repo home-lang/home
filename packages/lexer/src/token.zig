@@ -129,6 +129,7 @@ pub const TokenType = enum {
     Not,
     Null,
     Or,
+    OrElse, // orelse — null-coalescing operator (semantically identical to ??)
     Pub,
     Readonly, // readonly modifier on struct fields and Readonly<T> utility
     Requires, // requires clause for function contracts
@@ -278,6 +279,7 @@ pub const TokenType = enum {
             .Not => "not",
             .Null => "null",
             .Or => "or",
+            .OrElse => "orelse",
             .Pub => "pub",
             .Readonly => "readonly",
             .Requires => "requires",
@@ -422,6 +424,7 @@ pub const keywords = std.StaticStringMap(TokenType).initComptime(.{
     .{ "not", .Not },
     .{ "null", .Null },
     .{ "or", .Or },
+    .{ "orelse", .OrElse },
     .{ "pub", .Pub },
     .{ "readonly", .Readonly },
     .{ "requires", .Requires },

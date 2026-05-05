@@ -1,0 +1,13 @@
+// Regression test for issue #30 — `align(N)` attribute on struct
+// fields. Used in home-os kernel code (e.g. `kernel/src/vmm.home:48`)
+// for page tables and other hardware-aligned storage. Mirrors the
+// declaration-level `align(N)` from issue #18.
+struct PageTable {
+    entries: [512]u8 align(4096),
+}
+
+struct DmaRing {
+    head: u32 align(64),
+    tail: u32 align(64),
+    descriptors: [256]u64 align(4096),
+}

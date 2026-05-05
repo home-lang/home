@@ -1,0 +1,12 @@
+// Regression test for issue #30 — module-qualified and compound
+// expression array sizes inside `[...]T`. Used in home-os kernel code
+// (e.g. `kernel/src/ml/tensor_ops.home:1140` and `kernel/src/vmm.home`)
+// for arrays sized by an external constant or a small arithmetic
+// expression.
+const MAX: usize = 1024
+
+fn allocate_buffers(): void {
+    var simple: [MAX]u8 = undefined
+    var divided: [MAX / 8]u8 = undefined
+    var doubled: [MAX * 2]u32 = undefined
+}

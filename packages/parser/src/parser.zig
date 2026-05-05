@@ -1471,6 +1471,13 @@ pub const Parser = struct {
             _ = try self.expect(.Colon, "Expected ':' after field name");
             const field_type_name = try self.parseTypeAnnotation();
 
+            // Optional `align(N)` field attribute (e.g.
+            // `entries: [512]u8 align(4096)`). Mirrors the
+            // declaration-level handling — accepted and currently
+            // discarded; codegen will recover the requirement from
+            // attributes/layout in a later pass.
+            try self.consumeOptionalAlignSuffix();
+
             // Check if this is a constant (has = value)
             if (self.match(&.{.Equal})) {
                 // Skip the constant value expression
@@ -2251,13 +2258,35 @@ pub const Parser = struct {
             }
 
             // Check for [IDENT]T syntax where IDENT is a constant name,
-            // e.g. `[MAX_QUEUES]RequestQueue`. Disambiguate from `[T]`
-            // by looking at the token immediately past the `]`: if it
-            // could start a type, treat as size-then-element form.
+            // e.g. `[MAX_QUEUES]RequestQueue`. Also handles dotted
+            // qualifiers — `[mod.MAX]u64` and longer chains like
+            // `[a.b.c.MAX]u64` — by walking `.` tokens between
+            // identifiers. Falls back to the more general
+            // "lex-and-collect" path below for compound size
+            // expressions like `[MAX / 8]u8` or `[count * 2]T`.
+            // Disambiguate from `[T]` by looking at the token
+            // immediately past the `]`: if it could start a type,
+            // treat as size-then-element form.
             if (self.check(.Identifier)) {
                 const save = self.current;
-                const id_tok = self.advance();
-                if (self.check(.RightBracket)) {
+                const head_tok = self.advance();
+                var size_buf = std.ArrayList(u8).empty;
+                defer size_buf.deinit(self.allocator);
+                try size_buf.appendSlice(self.allocator, head_tok.lexeme);
+
+                var path_ok = true;
+                while (self.check(.Dot)) {
+                    _ = self.advance();
+                    if (!self.check(.Identifier)) {
+                        path_ok = false;
+                        break;
+                    }
+                    const next_tok = self.advance();
+                    try size_buf.append(self.allocator, '.');
+                    try size_buf.appendSlice(self.allocator, next_tok.lexeme);
+                }
+
+                if (path_ok and self.check(.RightBracket)) {
                     _ = self.advance();
                     const nt = self.peek().type;
                     const looks_like_type =
@@ -2265,12 +2294,53 @@ pub const Parser = struct {
                         nt == .LeftBracket or nt == .Question or nt == .Ampersand;
                     if (looks_like_type) {
                         const elem_type = try self.parseTypeAnnotation();
-                        return try std.fmt.allocPrint(self.allocator, "[{s}]{s}", .{ id_tok.lexeme, elem_type });
+                        return try std.fmt.allocPrint(self.allocator, "[{s}]{s}", .{ size_buf.items, elem_type });
                     }
-                    // `[T]` form with T being the identifier we consumed.
-                    return try std.fmt.allocPrint(self.allocator, "[{s}]", .{id_tok.lexeme});
+                    // `[T]` form with T being the qualified identifier
+                    // we consumed.
+                    return try std.fmt.allocPrint(self.allocator, "[{s}]", .{size_buf.items});
                 }
-                // Rewind and let the generic case handle it.
+                // Not a simple identifier-or-qualified-path size — rewind
+                // and try the lex-and-collect fallback for compound
+                // expressions before giving up.
+                self.current = save;
+            }
+
+            // Fallback for compound size expressions inside `[...]`,
+            // e.g. `[N / 8]u8`, `[count * 2]T`, or `[base + 1]u32`.
+            // Collect raw tokens until the matching `]`, then commit
+            // only if the next token after `]` looks like the start
+            // of a type. Otherwise rewind and let the `[T]` /
+            // `[T; N]` generic path below handle it.
+            if (self.check(.Identifier) or self.check(.Integer) or self.check(.LeftParen)) {
+                const save = self.current;
+                var depth: i32 = 1;
+                var size_buf = std.ArrayList(u8).empty;
+                defer size_buf.deinit(self.allocator);
+                while (depth > 0 and !self.isAtEnd()) {
+                    const tok = self.peek();
+                    if (tok.type == .LeftBracket) depth += 1;
+                    if (tok.type == .RightBracket) {
+                        depth -= 1;
+                        if (depth == 0) break;
+                    }
+                    if (size_buf.items.len > 0) {
+                        try size_buf.append(self.allocator, ' ');
+                    }
+                    try size_buf.appendSlice(self.allocator, tok.lexeme);
+                    _ = self.advance();
+                }
+                if (depth == 0 and self.check(.RightBracket)) {
+                    _ = self.advance();
+                    const nt = self.peek().type;
+                    const looks_like_type =
+                        nt == .Identifier or nt == .Star or nt == .StarStar or
+                        nt == .LeftBracket or nt == .Question or nt == .Ampersand;
+                    if (looks_like_type and size_buf.items.len > 0) {
+                        const elem_type = try self.parseTypeAnnotation();
+                        return try std.fmt.allocPrint(self.allocator, "[{s}]{s}", .{ size_buf.items, elem_type });
+                    }
+                }
                 self.current = save;
             }
 
@@ -4035,6 +4105,13 @@ pub const Parser = struct {
             } else if (self.match(&.{.Else})) {
                 // expr else default - unwrap Result/Option with fallback
                 expr = try self.elseExpr(expr);
+            } else if (self.match(&.{.OrElse})) {
+                // expr orelse default - unwrap Optional with fallback
+                // (semantically identical to `expr ?? default`). The
+                // right-hand side accepts a control-flow expression
+                // (`return`, `break`, `continue`) in addition to the
+                // usual expression grammar.
+                expr = try self.orelseExpr(expr);
             } else {
                 break;
             }
@@ -4195,6 +4272,80 @@ pub const Parser = struct {
         const result = try self.allocator.create(ast.Expr);
         result.* = ast.Expr{ .TryExpr = try_expr };
         return result;
+    }
+
+    /// Parse an orelse expression (expr orelse default) for unwrapping Optional
+    /// with a fallback. Semantically identical to `expr ?? default` and to
+    /// `expr else default`. Modeled on Zig's `orelse`, the right-hand side
+    /// also accepts a control-flow expression — `return [value]`, `break`,
+    /// or `continue` — so patterns like `let x = make() orelse return null`
+    /// parse cleanly. Implementation reuses the existing TryExpr.initWithElse
+    /// path so codegen and type-checking treat it the same as `??`.
+    fn orelseExpr(self: *Parser, operand: *ast.Expr) !*ast.Expr {
+        const orelse_token = self.previous();
+
+        const else_branch = try self.parseControlFlowOrExpression();
+
+        const try_expr = try ast.TryExpr.initWithElse(
+            self.allocator,
+            operand,
+            else_branch,
+            ast.SourceLocation.fromToken(orelse_token),
+        );
+
+        const result = try self.allocator.create(ast.Expr);
+        result.* = ast.Expr{ .TryExpr = try_expr };
+        return result;
+    }
+
+    /// Parse the right-hand side of `orelse` / `catch`-style binary forms
+    /// where `return [value]`, `break`, `continue`, or a `{ ... }` block
+    /// are accepted in addition to the usual expression grammar.
+    ///
+    /// `break` and `continue` are wrapped in a `ReturnExpr` with a null
+    /// value so existing code paths that walk the expression tree see a
+    /// recognizable control-flow node; a future pass can introduce
+    /// dedicated BreakExpr / ContinueExpr if/when the kernel needs to
+    /// distinguish them.
+    fn parseControlFlowOrExpression(self: *Parser) ParseError!*ast.Expr {
+        if (self.check(.LeftBrace)) {
+            _ = self.advance();
+            return try self.blockExprParse();
+        }
+        if (self.match(&.{.Return})) {
+            const ret_token = self.previous();
+            const ret_value: ?*ast.Expr = if (self.check(.Comma) or
+                self.check(.RightBrace) or self.check(.RightParen) or
+                self.check(.RightBracket) or self.check(.Semicolon) or
+                self.isAtEnd())
+                null
+            else
+                try self.parsePrecedence(.Assignment);
+            const return_expr = try ast.ReturnExpr.init(
+                self.allocator,
+                ret_value,
+                ast.SourceLocation.fromToken(ret_token),
+            );
+            const result = try self.allocator.create(ast.Expr);
+            result.* = ast.Expr{ .ReturnExpr = return_expr };
+            return result;
+        }
+        if (self.match(&.{ .Break, .Continue })) {
+            // No dedicated AST node for break/continue expressions yet —
+            // wrap as a value-less ReturnExpr so the AST stays well-typed.
+            // Callers that care about the distinction can inspect the
+            // source token at the captured location.
+            const cf_token = self.previous();
+            const return_expr = try ast.ReturnExpr.init(
+                self.allocator,
+                null,
+                ast.SourceLocation.fromToken(cf_token),
+            );
+            const result = try self.allocator.create(ast.Expr);
+            result.* = ast.Expr{ .ReturnExpr = return_expr };
+            return result;
+        }
+        return try self.parsePrecedence(.Assignment);
     }
 
     /// Parse an is expression for type narrowing (e.g., value is string, value is not null)

@@ -1,0 +1,3 @@
+Checking: <repo>/tests/diagnostics/cases/parse/27_orelse_operator.home
+
+Success: Type checking passed ✓

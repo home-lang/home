@@ -44,7 +44,7 @@ pub const Precedence = enum(u8) {
         return switch (token_type) {
             .Equal, .PlusEqual, .MinusEqual, .StarEqual, .SlashEqual, .PercentEqual => .Assignment,
             .Question => .Ternary,
-            .QuestionQuestion, .QuestionColon, .Else => .NullCoalesce,
+            .QuestionQuestion, .QuestionColon, .Else, .OrElse => .NullCoalesce,
             .QuestionBracket => .Call,
             .PipePipe, .Or => .Or,
             .AmpersandAmpersand, .And => .And,
