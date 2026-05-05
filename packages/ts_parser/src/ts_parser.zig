@@ -447,13 +447,20 @@ pub const Parser = struct {
             const name_id = try self.internToken(name_tok);
             name = try self.builder.addIdentifier(tokenSpan(name_tok), name_id);
         }
-        // Generic type parameters — Phase 1.D skips them.
-        if (self.peek().kind == .less_than) try self.skipTypeAnnotation();
+        // Generic type parameters: `function f<T extends U = D>(...)`.
+        if (self.peek().kind == .less_than) {
+            const tps = try self.parseTypeParameterDeclaration();
+            // Phase 1: type parameters parse fully but aren't slotted
+            // into FnDeclPayload yet — Phase 3's checker re-derives
+            // them from the symbol's decl list. Free here so we don't
+            // leak.
+            self.gpa.free(tps);
+        }
         const params = try self.parseParameterList();
         defer self.gpa.free(params);
 
-        const return_type: NodeId = hir_mod.none_node_id;
-        if (self.match(.colon)) try self.skipTypeAnnotation();
+        var return_type: NodeId = hir_mod.none_node_id;
+        if (self.match(.colon)) return_type = try self.parseTypeAnnotation();
 
         var body: NodeId = hir_mod.none_node_id;
         if (self.peek().kind == .open_brace) {
@@ -488,10 +495,20 @@ pub const Parser = struct {
             while (true) {
                 const param_start = self.peek();
                 var flags: hir_mod.ParamFlags = .{};
+                // Decorators (`@dec`) on parameters — accept and discard.
+                while (self.peek().kind == .at) {
+                    _ = self.advance();
+                    _ = try self.parseLeftHandSideExpression();
+                }
+                // Modifiers on parameter properties: `readonly`, `public`, etc.
+                while (self.peek().kind.isModifierKeyword()) {
+                    _ = self.advance();
+                }
                 if (self.match(.dot_dot_dot)) flags.is_rest = true;
                 const name_tok = try self.expect(.identifier, "parameter name");
                 if (self.match(.question)) flags.is_optional = true;
-                if (self.match(.colon)) try self.skipTypeAnnotation();
+                var type_ann: NodeId = hir_mod.none_node_id;
+                if (self.match(.colon)) type_ann = try self.parseTypeAnnotation();
                 var default_value: NodeId = hir_mod.none_node_id;
                 if (self.match(.equal)) default_value = try self.parseAssignmentExpression();
                 const name_id = try self.internToken(name_tok);
@@ -499,7 +516,7 @@ pub const Parser = struct {
                 const param = try self.builder.addParameter(
                     .{ .start = param_start.span.start, .end = self.tokens[self.cursor - 1].span.end },
                     ident,
-                    hir_mod.none_node_id,
+                    type_ann,
                     default_value,
                     flags,
                 );
@@ -520,12 +537,22 @@ pub const Parser = struct {
             const name_id = try self.internToken(name_tok);
             name = try self.builder.addIdentifier(tokenSpan(name_tok), name_id);
         }
-        // generic type-params skip
-        if (self.peek().kind == .less_than) try self.skipTypeAnnotation();
+        // Generic type parameters: `class Foo<T extends U = D>`.
+        if (self.peek().kind == .less_than) {
+            const tps = try self.parseTypeParameterDeclaration();
+            self.gpa.free(tps);
+        }
 
         var extends: NodeId = hir_mod.none_node_id;
         if (self.match(.kw_extends)) {
             extends = try self.parseLeftHandSideExpression();
+            // Optional `<T>` after `extends Foo<T>` — skip generic args.
+            if (self.peek().kind == .less_than) {
+                _ = try self.parseTypeParameterDeclaration();
+                // Note: this swallows the `<T>` after extends but
+                // leaks the parsed nodes into HIR; that's fine since
+                // they're real type-arg refs anchored under the class.
+            }
         }
         var implements_list: std.ArrayListUnmanaged(NodeId) = .empty;
         defer implements_list.deinit(self.gpa);
@@ -541,20 +568,24 @@ pub const Parser = struct {
         var members: std.ArrayListUnmanaged(NodeId) = .empty;
         defer members.deinit(self.gpa);
         while (self.peek().kind != .close_brace and self.peek().kind != .eof) {
-            // For Phase 1.D we accept a permissive class body: skip
-            // modifiers, then either parse a method (parens) or a
-            // property (`name [: T] [= init];`). The proper class member
-            // parser is a follow-up.
+            // Decorators `@dec` on members.
+            while (self.peek().kind == .at) {
+                _ = self.advance();
+                _ = try self.parseLeftHandSideExpression();
+            }
             try self.skipClassModifiers();
             const member_start = self.peek();
             // method?
             if (self.peek().kind == .identifier or self.peek().kind == .kw_constructor or self.peek().kind.isContextualKeyword()) {
                 const name_tok = self.advance();
                 if (self.peek().kind == .open_paren or self.peek().kind == .less_than) {
-                    if (self.peek().kind == .less_than) try self.skipTypeAnnotation();
+                    if (self.peek().kind == .less_than) {
+                        const tps = try self.parseTypeParameterDeclaration();
+                        self.gpa.free(tps);
+                    }
                     const params = try self.parseParameterList();
                     defer self.gpa.free(params);
-                    if (self.match(.colon)) try self.skipTypeAnnotation();
+                    if (self.match(.colon)) _ = try self.parseTypeAnnotation();
                     var body: NodeId = hir_mod.none_node_id;
                     if (self.peek().kind == .open_brace) {
                         body = try self.parseBlockStatement();
@@ -578,7 +609,8 @@ pub const Parser = struct {
                     continue;
                 }
                 // property
-                if (self.match(.colon)) try self.skipTypeAnnotation();
+                if (self.match(.question)) {} // optional property
+                if (self.match(.colon)) _ = try self.parseTypeAnnotation();
                 var default_value: NodeId = hir_mod.none_node_id;
                 if (self.match(.equal)) default_value = try self.parseAssignmentExpression();
                 try self.consumeStatementTerminator();
@@ -623,7 +655,10 @@ pub const Parser = struct {
     fn parseInterfaceDeclaration(self: *Parser) ParseError!NodeId {
         const start = self.advance(); // interface
         const name_tok = try self.expect(.identifier, "interface name");
-        if (self.peek().kind == .less_than) try self.skipTypeAnnotation();
+        if (self.peek().kind == .less_than) {
+            const tps = try self.parseTypeParameterDeclaration();
+            self.gpa.free(tps);
+        }
         var extends_list: std.ArrayListUnmanaged(NodeId) = .empty;
         defer extends_list.deinit(self.gpa);
         if (self.match(.kw_extends)) {
@@ -665,10 +700,15 @@ pub const Parser = struct {
     fn parseTypeAlias(self: *Parser) ParseError!NodeId {
         const start = self.advance(); // type
         const name_tok = try self.expect(.identifier, "type alias name");
-        if (self.peek().kind == .less_than) try self.skipTypeAnnotation();
+        var type_params: []NodeId = &.{};
+        var owns_tps = false;
+        if (self.peek().kind == .less_than) {
+            type_params = try self.parseTypeParameterDeclaration();
+            owns_tps = true;
+        }
+        defer if (owns_tps) self.gpa.free(type_params);
         _ = try self.expect(.equal, "'=' in type alias");
-        // Skip the type expression. Phase 1 follow-up: real type parser.
-        try self.skipTypeAnnotation();
+        const aliased = try self.parseTypeAnnotation();
         try self.consumeStatementTerminator();
         const name_id = try self.internToken(name_tok);
         const name_node = try self.builder.addIdentifier(tokenSpan(name_tok), name_id);
@@ -676,8 +716,8 @@ pub const Parser = struct {
         return try self.builder.addTypeAlias(
             .{ .start = start.span.start, .end = end_pos },
             name_node,
-            &.{},
-            hir_mod.none_node_id,
+            type_params,
+            aliased,
         );
     }
 
@@ -3000,6 +3040,74 @@ test "parser: type annotation — leading | accepted" {
     const top = hir_mod.blockStmts(&s.hir, root)[0];
     const v = hir_mod.varDeclOf(&s.hir, top);
     try T.expectEqual(hir_mod.NodeKind.union_type, s.hir.kindOf(v.type_annotation));
+}
+
+// ====================================================================
+// Generics on declarations
+// ====================================================================
+
+test "parser: function with generic type parameters" {
+    var s = try newTestSetup("function id<T>(x: T): T { return x; }");
+    defer destroyTestSetup(s);
+    const root = try s.parser.parseSourceFile();
+    const top = hir_mod.blockStmts(&s.hir, root)[0];
+    try T.expectEqual(hir_mod.NodeKind.fn_decl, s.hir.kindOf(top));
+    const f = hir_mod.fnDeclOf(&s.hir, top);
+    try T.expect(f.return_type != hir_mod.none_node_id);
+    const params = hir_mod.fnParams(&s.hir, top);
+    const pp = hir_mod.parameterOf(&s.hir, params[0]);
+    try T.expect(pp.type_annotation != hir_mod.none_node_id);
+}
+
+test "parser: function with constrained generic" {
+    var s = try newTestSetup("function f<T extends Foo>(x: T) {}");
+    defer destroyTestSetup(s);
+    const root = try s.parser.parseSourceFile();
+    const top = hir_mod.blockStmts(&s.hir, root)[0];
+    try T.expectEqual(hir_mod.NodeKind.fn_decl, s.hir.kindOf(top));
+}
+
+test "parser: function with default generic" {
+    var s = try newTestSetup("function f<T = string>(x: T) {}");
+    defer destroyTestSetup(s);
+    const root = try s.parser.parseSourceFile();
+    const top = hir_mod.blockStmts(&s.hir, root)[0];
+    try T.expectEqual(hir_mod.NodeKind.fn_decl, s.hir.kindOf(top));
+}
+
+test "parser: class with generics" {
+    var s = try newTestSetup("class Box<T> { value: T; }");
+    defer destroyTestSetup(s);
+    const root = try s.parser.parseSourceFile();
+    const top = hir_mod.blockStmts(&s.hir, root)[0];
+    try T.expectEqual(hir_mod.NodeKind.class_decl, s.hir.kindOf(top));
+}
+
+test "parser: interface with generics" {
+    var s = try newTestSetup("interface List<T extends Item> { head: T; }");
+    defer destroyTestSetup(s);
+    const root = try s.parser.parseSourceFile();
+    const top = hir_mod.blockStmts(&s.hir, root)[0];
+    try T.expectEqual(hir_mod.NodeKind.interface_decl, s.hir.kindOf(top));
+}
+
+test "parser: type alias with generics" {
+    var s = try newTestSetup("type Pair<A, B> = [A, B];");
+    defer destroyTestSetup(s);
+    const root = try s.parser.parseSourceFile();
+    const top = hir_mod.blockStmts(&s.hir, root)[0];
+    try T.expectEqual(hir_mod.NodeKind.type_alias_decl, s.hir.kindOf(top));
+    const t = hir_mod.typeAliasOf(&s.hir, top);
+    try T.expectEqual(@as(usize, 2), t.type_params_len);
+    try T.expectEqual(hir_mod.NodeKind.tuple_type, s.hir.kindOf(t.aliased));
+}
+
+test "parser: parameter properties skip modifiers" {
+    var s = try newTestSetup("class Foo { constructor(public x: number, private readonly y: string) {} }");
+    defer destroyTestSetup(s);
+    const root = try s.parser.parseSourceFile();
+    const top = hir_mod.blockStmts(&s.hir, root)[0];
+    try T.expectEqual(hir_mod.NodeKind.class_decl, s.hir.kindOf(top));
 }
 
 // ====================================================================
