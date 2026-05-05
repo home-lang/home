@@ -229,6 +229,11 @@ pub fn build(b: *std.Build) void {
     ts_cli_pkg.addImport("ts_program", ts_program_pkg);
     ts_cli_pkg.addImport("ts_resolver", ts_resolver_pkg);
     ts_cli_pkg.addImport("tsconfig", tsconfig_pkg);
+
+    // TS-parity Phase 6 — conformance harness.
+    const ts_conformance_pkg = createPackage(b, "packages/ts_conformance/src/ts_conformance.zig", target, optimize, zig_test_framework);
+    ts_conformance_pkg.addImport("ts_driver", ts_driver_pkg);
+    ts_conformance_pkg.addImport("ts_diagnostics", ts_diagnostics_pkg);
     const volatile_pkg = createPackage(b, "packages/volatile/src/volatile.zig", target, optimize, zig_test_framework);
     const pantry_pkg = createPackage(b, "packages/pantry/src/pantry.zig", target, optimize, zig_test_framework);
     const collections_pkg = createPackage(b, "packages/collections/src/collection.zig", target, optimize, zig_test_framework);
@@ -892,6 +897,10 @@ pub fn build(b: *std.Build) void {
     const ts_cli_tests = b.addTest(.{ .root_module = ts_cli_pkg });
     const run_ts_cli_tests = b.addRunArtifact(ts_cli_tests);
     test_step.dependOn(&run_ts_cli_tests.step);
+
+    const ts_conformance_tests = b.addTest(.{ .root_module = ts_conformance_pkg });
+    const run_ts_conformance_tests = b.addRunArtifact(ts_conformance_tests);
+    test_step.dependOn(&run_ts_conformance_tests.step);
 
     // Volatile operations tests
     const volatile_tests = b.addTest(.{ .root_module = volatile_pkg });
