@@ -1,0 +1,3 @@
+Checking: <repo>/tests/diagnostics/cases/parse/30_struct_literal_dot_field.home
+
+Success: Type checking passed ✓

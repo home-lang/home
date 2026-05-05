@@ -1,0 +1,19 @@
+// Regression test for issue #28 — Zig-style `Type { .field = value }`
+// struct literal in expression position. Used pervasively in home-os
+// kernel code (e.g. `kernel/src/fs/btree_dir.home:46`,
+// `kernel/src/security/keyring.home`, `kernel/src/iot/audio_processing.home`)
+// for record construction. Module-qualified type names
+// (`mod.Type { .x = 1 }`) are also accepted.
+pub const Foo = struct {
+    x: i32,
+    y: i32,
+}
+
+pub fn make(): Foo {
+    return Foo { .x = 1, .y = 2 }
+}
+
+pub fn make_in_let(): Foo {
+    let f = Foo { .x = 10, .y = 20 }
+    return f
+}

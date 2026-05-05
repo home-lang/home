@@ -203,6 +203,77 @@ pub const Parser = struct {
         return false;
     }
 
+    /// Heuristic: starts with an uppercase ASCII letter — the convention
+    /// used for type names (`Foo`, `BTreeNode`, `MAX_SIZE`). Used to
+    /// decide whether `name { ... }` is plausibly a struct literal.
+    fn startsUppercase(s: []const u8) bool {
+        return s.len > 0 and s[0] >= 'A' and s[0] <= 'Z';
+    }
+
+    /// Does an expression look like a type name (suitable for module-
+    /// qualified struct literal parsing)? Accepts:
+    ///   * Identifier whose lexeme starts uppercase
+    ///   * MemberExpr (`a.b.Type`) whose final field name starts
+    ///     uppercase
+    /// We keep the rule conservative: the trailing element must look
+    /// like a type, otherwise an ordinary `obj.method { ... }` form
+    /// could be misparsed as a struct literal.
+    fn isTypeLikeExpr(expr: *const ast.Expr) bool {
+        return switch (expr.*) {
+            .Identifier => |id| startsUppercase(id.name),
+            .MemberExpr => |m| startsUppercase(m.member),
+            else => false,
+        };
+    }
+
+    /// Flatten a chain of `Identifier` and `MemberExpr` nodes into a
+    /// single dotted name string (e.g. `ns.inner.Type`). Returns a
+    /// freshly-allocated owned slice. Caller frees on error.
+    fn flattenDottedType(self: *Parser, expr: *const ast.Expr) ParseError![]const u8 {
+        var parts: std.ArrayList([]const u8) = .empty;
+        defer parts.deinit(self.allocator);
+
+        var cur: *const ast.Expr = expr;
+        while (true) {
+            switch (cur.*) {
+                .MemberExpr => |m| {
+                    try parts.append(self.allocator, m.member);
+                    cur = m.object;
+                },
+                .Identifier => |id| {
+                    try parts.append(self.allocator, id.name);
+                    break;
+                },
+                else => {
+                    // Should be unreachable when caller guards with
+                    // isTypeLikeExpr, but bail out gracefully.
+                    try self.reportError("Internal: expected identifier chain for struct literal type name");
+                    return error.UnexpectedToken;
+                },
+            }
+        }
+
+        // Reverse: parts collected tail-first.
+        var total: usize = parts.items.len; // for dots
+        if (total > 0) total -= 1;
+        for (parts.items) |p| total += p.len;
+
+        var out: std.ArrayList(u8) = .empty;
+        defer out.deinit(self.allocator);
+        try out.ensureTotalCapacity(self.allocator, total);
+
+        var i: usize = parts.items.len;
+        var first = true;
+        while (i > 0) {
+            i -= 1;
+            if (!first) try out.append(self.allocator, '.');
+            try out.appendSlice(self.allocator, parts.items[i]);
+            first = false;
+        }
+
+        return out.toOwnedSlice(self.allocator);
+    }
+
     /// Heuristic: does the current token look like the start of a type
     /// name (primitive int/float/bool/string or `*`/`[`/`?` prefix)?
     /// Used to pick between type-first and expression-first cast forms
@@ -4038,7 +4109,36 @@ pub const Parser = struct {
         var expr = try self.primary();
 
         // Parse postfix/infix expressions
-        while (@intFromEnum(precedence) <= @intFromEnum(Precedence.fromToken(self.peek().type))) {
+        while (true) {
+            // Module-qualified struct literal: after parsing `mod.Type`
+            // (a MemberExpr), `{ . field = ... }` or `{ field : ... }`
+            // becomes a struct literal whose type is the dotted path.
+            // This complements the bare-identifier path inside `primary`
+            // for literals like `Foo { .x = 1 }`.
+            //
+            // Only triggered when struct-literal parsing isn't suppressed
+            // (e.g. inside an `if` / `while` condition) and the chained
+            // expression resolves to a Member or Identifier whose
+            // tail looks like a type name (PascalCase).
+            if (self.suppress_struct_literal == 0 and
+                self.check(.LeftBrace) and
+                isTypeLikeExpr(expr))
+            {
+                const checkpoint = self.current;
+                _ = self.advance(); // consume '{'
+                if (self.isStructLiteralLookahead()) {
+                    const dotted = try self.flattenDottedType(expr);
+                    // Free the original expression tree — we adopted its
+                    // identifier chain into `dotted`.
+                    ast.Program.deinitExpr(expr, self.allocator);
+                    expr = try self.finishStructLiteralOwned(dotted, expr.getLocation());
+                    continue;
+                }
+                self.current = checkpoint;
+            }
+
+            const peek_prec = Precedence.fromToken(self.peek().type);
+            if (@intFromEnum(precedence) > @intFromEnum(peek_prec)) break;
             // Newline-sensitive break: if the next token both starts a
             // new line AND could begin a fresh statement as a prefix
             // operator (`*x`, `&x`, `-x`, `+x`) or a parenthesized
@@ -5318,6 +5418,141 @@ pub const Parser = struct {
         return result;
     }
 
+    /// Lookahead helper: assuming the parser has just consumed `{` of a
+    /// possible struct literal, decide whether the following tokens
+    /// match a struct-literal field list.
+    ///
+    /// Recognizes:
+    ///   1. `}` (empty struct literal)
+    ///   2. `IDENT :` (TS-style: `Foo { x: 1 }`)
+    ///   3. `. IDENT =` (Zig-style: `Foo { .x = 1 }`)
+    ///   4. `. IDENT ,` or `. IDENT }` (Zig-style shorthand: `Foo { .x }`)
+    ///   5. `IDENT , IDENT` or `IDENT } ` — error-set variant list
+    ///      (`error { NotFound, PermissionDenied }`); treated as
+    ///      struct-literal-shaped only when invoked from the error-set
+    ///      path. Bare-identifier callers reject this so that an
+    ///      ordinary block `{ name }` isn't mistaken for a literal.
+    fn isStructLiteralLookahead(self: *Parser) bool {
+        // Empty braces {} could be struct literal
+        if (self.check(.RightBrace)) return true;
+
+        // Zig-style `.field = value` or `.field` shorthand
+        if (self.check(.Dot)) {
+            const after_dot = self.current + 1;
+            if (after_dot < self.tokens.len and
+                (self.tokens[after_dot].type == .Identifier or self.tokens[after_dot].type == .Type))
+            {
+                const after_field = self.current + 2;
+                if (after_field < self.tokens.len) {
+                    const t = self.tokens[after_field].type;
+                    if (t == .Equal or t == .Comma or t == .RightBrace) {
+                        return true;
+                    }
+                }
+            }
+            return false;
+        }
+
+        // TS-style `field: value`
+        if (self.check(.Identifier) or self.check(.Type)) {
+            const after_ident_pos = self.current + 1;
+            if (after_ident_pos < self.tokens.len) {
+                if (self.tokens[after_ident_pos].type == .Colon) {
+                    return true;
+                }
+            }
+        }
+
+        return false;
+    }
+
+    /// Parse the body of a struct literal (the part between `{` and `}`),
+    /// then consume the closing `}` and produce a StructLiteralExpr.
+    /// `type_name_owned` is taken to be already heap-allocated and is
+    /// adopted by the resulting AST node.
+    fn finishStructLiteralOwned(
+        self: *Parser,
+        type_name_owned: []const u8,
+        loc: ast.SourceLocation,
+    ) ParseError!*ast.Expr {
+        var fields = std.ArrayList(ast.FieldInit).empty;
+        defer fields.deinit(self.allocator);
+
+        while (!self.check(.RightBrace) and !self.isAtEnd()) {
+            // Optional leading `.` for Zig-style `.field = value` form.
+            const had_leading_dot = self.match(&.{.Dot});
+
+            // Allow 'type' keyword as field name
+            const field_name_token = if (self.match(&.{ .Identifier, .Type }))
+                self.previous()
+            else {
+                try self.reportError("Expected field name");
+                return error.UnexpectedToken;
+            };
+
+            // Choose the value separator. With a leading dot, accept
+            // `=` (canonical) or shorthand (`.field` alone). Without a
+            // leading dot, accept `:` (TS-style) or shorthand.
+            var is_shorthand = false;
+            const field_value = blk: {
+                if (had_leading_dot) {
+                    if (self.match(&.{.Equal})) {
+                        break :blk try self.expression();
+                    }
+                } else {
+                    if (self.match(&.{.Colon})) {
+                        break :blk try self.expression();
+                    }
+                }
+                // Shorthand: field name is also the variable name
+                is_shorthand = true;
+                const id_expr = try self.allocator.create(ast.Expr);
+                id_expr.* = ast.Expr{
+                    .Identifier = ast.Identifier.init(field_name_token.lexeme, ast.SourceLocation.fromToken(field_name_token)),
+                };
+                break :blk id_expr;
+            };
+
+            try fields.append(self.allocator, ast.FieldInit{
+                .name = field_name_token.lexeme,
+                .value = field_value,
+                .is_shorthand = is_shorthand,
+                .loc = ast.SourceLocation.fromToken(field_name_token),
+            });
+
+            // Comma is optional - newline separation is allowed
+            _ = self.match(&.{.Comma});
+            // Allow trailing comma before }
+            if (self.check(.RightBrace)) break;
+        }
+
+        _ = try self.expect(.RightBrace, "Expected '}' after struct fields");
+
+        const struct_lit = try self.allocator.create(ast.StructLiteralExpr);
+        struct_lit.* = ast.StructLiteralExpr.init(
+            type_name_owned,
+            try fields.toOwnedSlice(self.allocator),
+            false,
+            loc,
+        );
+
+        const expr = try self.allocator.create(ast.Expr);
+        expr.* = ast.Expr{ .StructLiteral = struct_lit };
+        return expr;
+    }
+
+    /// Same as finishStructLiteralOwned but for callers that have a
+    /// borrowed type name slice (token lexeme). The slice is currently
+    /// stored as-is on the AST node — the existing struct-literal path
+    /// passes token.lexeme directly, so we preserve that contract.
+    fn finishStructLiteral(
+        self: *Parser,
+        type_name: []const u8,
+        loc: ast.SourceLocation,
+    ) ParseError!*ast.Expr {
+        return self.finishStructLiteralOwned(type_name, loc);
+    }
+
     /// Parse a primary expression (literals, identifiers, grouping)
     fn primary(self: *Parser) ParseError!*ast.Expr {
         // Inline assembly. Two forms supported:
@@ -6136,72 +6371,8 @@ pub const Parser = struct {
                         const checkpoint2 = self.current;
                         _ = self.advance(); // consume '{'
 
-                        const is_struct_literal = blk: {
-                            // Empty braces {} is struct literal
-                            if (self.check(.RightBrace)) break :blk true;
-                            // If next token is identifier (or 'type' keyword) followed by :, it's struct literal
-                            if (self.check(.Identifier) or self.check(.Type)) {
-                                const after_ident_pos = self.current + 1;
-                                if (after_ident_pos < self.tokens.len) {
-                                    if (self.tokens[after_ident_pos].type == .Colon) {
-                                        break :blk true;
-                                    }
-                                }
-                            }
-                            break :blk false;
-                        };
-
-                        if (is_struct_literal) {
-                            var fields = std.ArrayList(ast.FieldInit).empty;
-                            defer fields.deinit(self.allocator);
-
-                            while (!self.check(.RightBrace) and !self.isAtEnd()) {
-                                // Allow 'type' keyword as field name
-                                const field_name_token = if (self.match(&.{ .Identifier, .Type }))
-                                    self.previous()
-                                else {
-                                    try self.reportError("Expected field name");
-                                    return error.UnexpectedToken;
-                                };
-
-                                // Support both `field: value` and shorthand `field` syntax
-                                var is_shorthand = false;
-                                const field_value = if (self.match(&.{.Colon}))
-                                    try self.expression()
-                                else blk: {
-                                    // Shorthand: field name is also the variable name
-                                    is_shorthand = true;
-                                    const id_expr = try self.allocator.create(ast.Expr);
-                                    id_expr.* = ast.Expr{
-                                        .Identifier = ast.Identifier.init(field_name_token.lexeme, ast.SourceLocation.fromToken(field_name_token)),
-                                    };
-                                    break :blk id_expr;
-                                };
-
-                                try fields.append(self.allocator, ast.FieldInit{
-                                    .name = field_name_token.lexeme,
-                                    .value = field_value,
-                                    .is_shorthand = is_shorthand,
-                                    .loc = ast.SourceLocation.fromToken(field_name_token),
-                                });
-
-                                _ = self.match(&.{.Comma});
-                                if (self.check(.RightBrace)) break;
-                            }
-
-                            _ = try self.expect(.RightBrace, "Expected '}' after struct fields");
-
-                            const struct_lit = try self.allocator.create(ast.StructLiteralExpr);
-                            struct_lit.* = ast.StructLiteralExpr.init(
-                                type_name,
-                                try fields.toOwnedSlice(self.allocator),
-                                false,
-                                ast.SourceLocation.fromToken(token),
-                            );
-
-                            const expr = try self.allocator.create(ast.Expr);
-                            expr.* = ast.Expr{ .StructLiteral = struct_lit };
-                            return expr;
+                        if (self.isStructLiteralLookahead()) {
+                            return try self.finishStructLiteralOwned(type_name, ast.SourceLocation.fromToken(token));
                         }
 
                         // Not a struct literal, restore position
@@ -6234,86 +6405,16 @@ pub const Parser = struct {
                 const checkpoint = self.current;
                 _ = self.advance(); // consume '{'
 
-                const is_struct_literal = blk: {
-                    // Empty braces {} could be struct literal
-                    if (self.check(.RightBrace)) break :blk true;
-
-                    // If next token is an identifier (or 'type' keyword) followed by :, it's a struct literal
-                    if (self.check(.Identifier) or self.check(.Type)) {
-                        const after_ident_pos = self.current + 1;
-                        if (after_ident_pos < self.tokens.len) {
-                            if (self.tokens[after_ident_pos].type == .Colon) {
-                                break :blk true;
-                            }
-                        }
-                    }
-
-                    // Otherwise it's not a struct literal (e.g., a block after for x in items)
-                    break :blk false;
-                };
-
-                if (!is_struct_literal) {
-                    // Restore position and return identifier
-                    self.current = checkpoint;
-                    const expr = try self.allocator.create(ast.Expr);
-                    expr.* = ast.Expr{
-                        .Identifier = ast.Identifier.init(token.lexeme, ast.SourceLocation.fromToken(token)),
-                    };
-                    return expr;
+                if (self.isStructLiteralLookahead()) {
+                    return try self.finishStructLiteral(token.lexeme, ast.SourceLocation.fromToken(token));
                 }
 
-                var fields = std.ArrayList(ast.FieldInit).empty;
-                defer fields.deinit(self.allocator);
-
-                while (!self.check(.RightBrace) and !self.isAtEnd()) {
-                    // Allow 'type' keyword as field name
-                    const field_name_token = if (self.match(&.{ .Identifier, .Type }))
-                        self.previous()
-                    else {
-                        try self.reportError("Expected field name");
-                        return error.UnexpectedToken;
-                    };
-
-                    // Support both `field: value` and shorthand `field` syntax
-                    var is_shorthand = false;
-                    const field_value = if (self.match(&.{.Colon}))
-                        try self.expression()
-                    else blk: {
-                        // Shorthand: field name is also the variable name
-                        is_shorthand = true;
-                        const id_expr = try self.allocator.create(ast.Expr);
-                        id_expr.* = ast.Expr{
-                            .Identifier = ast.Identifier.init(field_name_token.lexeme, ast.SourceLocation.fromToken(field_name_token)),
-                        };
-                        break :blk id_expr;
-                    };
-
-                    try fields.append(self.allocator, ast.FieldInit{
-                        .name = field_name_token.lexeme,
-                        .value = field_value,
-                        .is_shorthand = is_shorthand,
-                        .loc = ast.SourceLocation.fromToken(field_name_token),
-                    });
-
-                    // Comma is optional - newline separation is allowed
-                    // Continue if we have a comma OR if next token is an identifier (another field)
-                    _ = self.match(&.{.Comma});
-                    // Allow trailing comma before }
-                    if (self.check(.RightBrace)) break;
-                }
-
-                _ = try self.expect(.RightBrace, "Expected '}' after struct fields");
-
-                const struct_lit = try self.allocator.create(ast.StructLiteralExpr);
-                struct_lit.* = ast.StructLiteralExpr.init(
-                    token.lexeme,
-                    try fields.toOwnedSlice(self.allocator),
-                    false,
-                    ast.SourceLocation.fromToken(token),
-                );
-
+                // Restore position and return identifier
+                self.current = checkpoint;
                 const expr = try self.allocator.create(ast.Expr);
-                expr.* = ast.Expr{ .StructLiteral = struct_lit };
+                expr.* = ast.Expr{
+                    .Identifier = ast.Identifier.init(token.lexeme, ast.SourceLocation.fromToken(token)),
+                };
                 return expr;
             }
 
