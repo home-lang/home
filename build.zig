@@ -183,6 +183,11 @@ pub fn build(b: *std.Build) void {
     binder_pkg.addImport("string_interner", string_interner_pkg);
     binder_pkg.addImport("ts_lexer", ts_lexer_pkg);
     binder_pkg.addImport("ts_parser", ts_parser_pkg);
+
+    // TS-parity Phase 3 — type system foundation.
+    const ts_checker_pkg = createPackage(b, "packages/ts_checker/src/ts_checker.zig", target, optimize, zig_test_framework);
+    ts_checker_pkg.addImport("hir", hir_pkg);
+    ts_checker_pkg.addImport("string_interner", string_interner_pkg);
     const volatile_pkg = createPackage(b, "packages/volatile/src/volatile.zig", target, optimize, zig_test_framework);
     const pantry_pkg = createPackage(b, "packages/pantry/src/pantry.zig", target, optimize, zig_test_framework);
     const collections_pkg = createPackage(b, "packages/collections/src/collection.zig", target, optimize, zig_test_framework);
@@ -814,6 +819,10 @@ pub fn build(b: *std.Build) void {
     const binder_tests = b.addTest(.{ .root_module = binder_pkg });
     const run_binder_tests = b.addRunArtifact(binder_tests);
     test_step.dependOn(&run_binder_tests.step);
+
+    const ts_checker_tests = b.addTest(.{ .root_module = ts_checker_pkg });
+    const run_ts_checker_tests = b.addRunArtifact(ts_checker_tests);
+    test_step.dependOn(&run_ts_checker_tests.step);
 
     // Volatile operations tests
     const volatile_tests = b.addTest(.{ .root_module = volatile_pkg });

@@ -1,0 +1,547 @@
+//! Type interner — Phase 3 / Phase 5 of TS_PARITY_PLAN.
+//!
+//! Wraps the SoA `Pool` with structural-equality interning so two
+//! lookups for the same type return the same `TypeId`. Identity
+//! becomes `id_a == id_b`, the foundation for the relation cache
+//! key (§5.4).
+//!
+//! Phase 3 ships a *single-threaded* implementation. Phase 5 will add
+//! 64-shard lock striping and the seqlock-based read fast path on top
+//! of this same Pool layout — the public API does not change.
+//!
+//! Verified architectural advantage: tsgo has no global type interner
+//! (Appendix D.2). Identity comparisons in tsgo require structural
+//! recursion through the relation cache; in Home they are O(1).
+
+const std = @import("std");
+const types = @import("types.zig");
+
+pub const TypeId = types.TypeId;
+pub const StringId = types.StringId;
+pub const Pool = types.Pool;
+pub const Primitive = types.Primitive;
+
+/// Structural key. The interner hashes + compares these to dedup.
+///
+/// Numeric / bool literals carry their full value so `42` ≠ `43`,
+/// `true` ≠ `false`. Compound types (union, intersection, …) carry
+/// pre-computed `TypeId` lists, which lets the interner key on
+/// `(kind_tag, sorted_member_ids)` rather than re-walking the
+/// nested structure.
+pub const TypeKey = union(Kind) {
+    string_lit: StringId,
+    number_lit: u64,
+    bigint_lit: StringId,
+    boolean_lit: bool,
+    /// Union: members must be sorted by TypeId (interner sorts before
+    /// keying so `A | B` and `B | A` collapse).
+    union_t: []const TypeId,
+    intersection: []const TypeId,
+    conditional: types.ConditionalPayload,
+    mapped: types.MappedPayload,
+    indexed_access: types.IndexedAccessPayload,
+    keyof: TypeId,
+    tuple: []const types.TupleElement,
+    type_parameter: types.TypeParameterPayload,
+    instantiation: struct {
+        origin: TypeId,
+        args: []const TypeId,
+    },
+
+    pub const Kind = enum(u8) {
+        string_lit,
+        number_lit,
+        bigint_lit,
+        boolean_lit,
+        union_t,
+        intersection,
+        conditional,
+        mapped,
+        indexed_access,
+        keyof,
+        tuple,
+        type_parameter,
+        instantiation,
+    };
+
+    pub fn hash(self: TypeKey) u64 {
+        var hasher = std.hash.Wyhash.init(0xC73C73C73C73C73C);
+        hasher.update(&[_]u8{@intFromEnum(@as(Kind, self))});
+        switch (self) {
+            .string_lit => |id| hasher.update(std.mem.asBytes(&id)),
+            .number_lit => |bits| hasher.update(std.mem.asBytes(&bits)),
+            .bigint_lit => |id| hasher.update(std.mem.asBytes(&id)),
+            .boolean_lit => |b| hasher.update(std.mem.asBytes(&b)),
+            .union_t, .intersection => |members| {
+                for (members) |m| hasher.update(std.mem.asBytes(&m));
+            },
+            .conditional => |c| {
+                hasher.update(std.mem.asBytes(&c.check_type));
+                hasher.update(std.mem.asBytes(&c.extends_type));
+                hasher.update(std.mem.asBytes(&c.true_branch));
+                hasher.update(std.mem.asBytes(&c.false_branch));
+            },
+            .mapped => |m| {
+                hasher.update(std.mem.asBytes(&m.constraint));
+                hasher.update(std.mem.asBytes(&m.template));
+                hasher.update(std.mem.asBytes(&@intFromEnum(m.readonly)));
+                hasher.update(std.mem.asBytes(&@intFromEnum(m.optional)));
+            },
+            .indexed_access => |ia| {
+                hasher.update(std.mem.asBytes(&ia.object));
+                hasher.update(std.mem.asBytes(&ia.index));
+            },
+            .keyof => |op| hasher.update(std.mem.asBytes(&op)),
+            .tuple => |elems| {
+                for (elems) |e| {
+                    hasher.update(std.mem.asBytes(&e.type));
+                    const flags: u8 = (@as(u8, @intFromBool(e.is_optional)) << 0) |
+                        (@as(u8, @intFromBool(e.is_rest)) << 1);
+                    hasher.update(&[_]u8{flags});
+                }
+            },
+            .type_parameter => |tp| {
+                hasher.update(std.mem.asBytes(&tp.name));
+                hasher.update(std.mem.asBytes(&tp.constraint));
+                hasher.update(std.mem.asBytes(&tp.default));
+            },
+            .instantiation => |inst| {
+                hasher.update(std.mem.asBytes(&inst.origin));
+                for (inst.args) |a| hasher.update(std.mem.asBytes(&a));
+            },
+        }
+        return hasher.final();
+    }
+
+    pub fn eql(self: TypeKey, other: TypeKey) bool {
+        if (@as(Kind, self) != @as(Kind, other)) return false;
+        return switch (self) {
+            .string_lit => |a| a == other.string_lit,
+            .number_lit => |a| a == other.number_lit,
+            .bigint_lit => |a| a == other.bigint_lit,
+            .boolean_lit => |a| a == other.boolean_lit,
+            .union_t => |a| std.mem.eql(TypeId, a, other.union_t),
+            .intersection => |a| std.mem.eql(TypeId, a, other.intersection),
+            .conditional => |a| {
+                const b = other.conditional;
+                return a.check_type == b.check_type and
+                    a.extends_type == b.extends_type and
+                    a.true_branch == b.true_branch and
+                    a.false_branch == b.false_branch;
+            },
+            .mapped => |a| {
+                const b = other.mapped;
+                return a.constraint == b.constraint and
+                    a.template == b.template and
+                    a.readonly == b.readonly and
+                    a.optional == b.optional;
+            },
+            .indexed_access => |a| {
+                return a.object == other.indexed_access.object and
+                    a.index == other.indexed_access.index;
+            },
+            .keyof => |a| a == other.keyof,
+            .tuple => |a| {
+                const b = other.tuple;
+                if (a.len != b.len) return false;
+                for (a, b) |ea, eb| {
+                    if (ea.type != eb.type or ea.is_optional != eb.is_optional or ea.is_rest != eb.is_rest) {
+                        return false;
+                    }
+                }
+                return true;
+            },
+            .type_parameter => |a| {
+                const b = other.type_parameter;
+                return a.name == b.name and a.constraint == b.constraint and a.default == b.default;
+            },
+            .instantiation => |a| {
+                const b = other.instantiation;
+                return a.origin == b.origin and std.mem.eql(TypeId, a.args, b.args);
+            },
+        };
+    }
+};
+
+const KeyHashCtx = struct {
+    pub fn hash(_: KeyHashCtx, k: TypeKey) u64 {
+        return k.hash();
+    }
+    pub fn eql(_: KeyHashCtx, a: TypeKey, b: TypeKey) bool {
+        return a.eql(b);
+    }
+};
+
+pub const Interner = struct {
+    gpa: std.mem.Allocator,
+    pool: Pool,
+    /// `TypeKey` → `TypeId`. Keys store *owned* slices when the key is
+    /// list-shaped (union/intersection/tuple/instantiation); the interner
+    /// arena owns those slices.
+    table: std.HashMapUnmanaged(TypeKey, TypeId, KeyHashCtx, std.hash_map.default_max_load_percentage),
+    /// Arena backing all key-owned slices.
+    key_arena: std.heap.ArenaAllocator,
+
+    pub fn init(gpa: std.mem.Allocator) !Interner {
+        return .{
+            .gpa = gpa,
+            .pool = try Pool.init(gpa),
+            .table = .empty,
+            .key_arena = std.heap.ArenaAllocator.init(gpa),
+        };
+    }
+
+    pub fn deinit(self: *Interner) void {
+        self.table.deinit(self.gpa);
+        self.pool.deinit();
+        self.key_arena.deinit();
+    }
+
+    /// Intern a string literal type. Returns a stable `TypeId`.
+    pub fn internStringLiteral(self: *Interner, value: StringId) !TypeId {
+        const key: TypeKey = .{ .string_lit = value };
+        return try self.internKey(key, .{ .is_string = true, .is_literal = true });
+    }
+
+    pub fn internNumberLiteral(self: *Interner, value: f64) !TypeId {
+        const bits: u64 = @bitCast(value);
+        const key: TypeKey = .{ .number_lit = bits };
+        return try self.internKey(key, .{ .is_number = true, .is_literal = true });
+    }
+
+    pub fn internBigIntLiteral(self: *Interner, digits: StringId) !TypeId {
+        const key: TypeKey = .{ .bigint_lit = digits };
+        return try self.internKey(key, .{ .is_bigint = true, .is_literal = true });
+    }
+
+    pub fn internBooleanLiteral(_: *Interner, value: bool) TypeId {
+        // Reuse the pre-interned primitives.
+        return if (value) Primitive.true_lit else Primitive.false_lit;
+    }
+
+    /// Intern a union of `members`. The caller's slice is consumed and
+    /// re-sorted; the interner stores its own copy. Single-member
+    /// "unions" collapse to that member.
+    pub fn internUnion(self: *Interner, members: []const TypeId) !TypeId {
+        if (members.len == 0) return Primitive.never;
+        if (members.len == 1) return members[0];
+
+        // Sort + dedup into a fresh slice owned by the key arena so
+        // the lookup is canonical.
+        const sorted = try self.key_arena.allocator().dupe(TypeId, members);
+        std.mem.sort(TypeId, sorted, {}, std.sort.asc(TypeId));
+        var write: usize = 1;
+        var i: usize = 1;
+        while (i < sorted.len) : (i += 1) {
+            if (sorted[i] != sorted[i - 1]) {
+                sorted[write] = sorted[i];
+                write += 1;
+            }
+        }
+        const canonical = sorted[0..write];
+        if (canonical.len == 1) return canonical[0];
+
+        const key: TypeKey = .{ .union_t = canonical };
+        // Compute the union's flags: OR of constituent flags but
+        // mark `is_union`.
+        var flags: types.TypeFlags = .{ .is_union = true };
+        for (canonical) |m| {
+            const mf = self.pool.flagsOf(m);
+            const a: u32 = @bitCast(flags);
+            const b: u32 = @bitCast(mf);
+            flags = @bitCast(a | b);
+        }
+        flags.is_union = true;
+        return try self.internKey(key, flags);
+    }
+
+    /// Intern an intersection. Single-member intersection collapses.
+    pub fn internIntersection(self: *Interner, members: []const TypeId) !TypeId {
+        if (members.len == 0) return Primitive.unknown;
+        if (members.len == 1) return members[0];
+        const sorted = try self.key_arena.allocator().dupe(TypeId, members);
+        std.mem.sort(TypeId, sorted, {}, std.sort.asc(TypeId));
+        var write: usize = 1;
+        var i: usize = 1;
+        while (i < sorted.len) : (i += 1) {
+            if (sorted[i] != sorted[i - 1]) {
+                sorted[write] = sorted[i];
+                write += 1;
+            }
+        }
+        const canonical = sorted[0..write];
+        if (canonical.len == 1) return canonical[0];
+
+        const key: TypeKey = .{ .intersection = canonical };
+        return try self.internKey(key, .{ .is_intersection = true });
+    }
+
+    pub fn internKeyof(self: *Interner, operand: TypeId) !TypeId {
+        const key: TypeKey = .{ .keyof = operand };
+        return try self.internKey(key, .{ .is_keyof = true });
+    }
+
+    pub fn internIndexedAccess(self: *Interner, object: TypeId, index: TypeId) !TypeId {
+        const key: TypeKey = .{ .indexed_access = .{ .object = object, .index = index } };
+        return try self.internKey(key, .{ .is_indexed_access = true });
+    }
+
+    pub fn internConditional(
+        self: *Interner,
+        check: TypeId,
+        extends_t: TypeId,
+        true_branch: TypeId,
+        false_branch: TypeId,
+    ) !TypeId {
+        const payload: types.ConditionalPayload = .{
+            .check_type = check,
+            .extends_type = extends_t,
+            .true_branch = true_branch,
+            .false_branch = false_branch,
+        };
+        const key: TypeKey = .{ .conditional = payload };
+        return try self.internKey(key, .{ .is_conditional = true });
+    }
+
+    pub fn internTypeParameter(self: *Interner, name: StringId, constraint: TypeId, default: TypeId) !TypeId {
+        const payload: types.TypeParameterPayload = .{
+            .name = name,
+            .constraint = constraint,
+            .default = default,
+        };
+        const key: TypeKey = .{ .type_parameter = payload };
+        return try self.internKey(key, .{ .is_type_parameter = true });
+    }
+
+    /// Insert a key+flags pair, allocating the side payload as needed.
+    /// Returns existing TypeId on a duplicate.
+    fn internKey(self: *Interner, key: TypeKey, flags: types.TypeFlags) !TypeId {
+        const gop = try self.table.getOrPut(self.gpa, key);
+        if (gop.found_existing) return gop.value_ptr.*;
+        // Allocate the side payload first, then the header.
+        const payload_idx: u32 = switch (key) {
+            .string_lit => |sid| blk: {
+                const idx: u32 = @intCast(self.pool.literal_payloads.items.len);
+                try self.pool.literal_payloads.append(self.gpa, .{ .string_lit = sid });
+                break :blk idx;
+            },
+            .number_lit => |bits| blk: {
+                const idx: u32 = @intCast(self.pool.literal_payloads.items.len);
+                try self.pool.literal_payloads.append(self.gpa, .{ .number_lit = bits });
+                break :blk idx;
+            },
+            .bigint_lit => |sid| blk: {
+                const idx: u32 = @intCast(self.pool.literal_payloads.items.len);
+                try self.pool.literal_payloads.append(self.gpa, .{ .bigint_lit = sid });
+                break :blk idx;
+            },
+            .boolean_lit => |b| blk: {
+                const idx: u32 = @intCast(self.pool.literal_payloads.items.len);
+                try self.pool.literal_payloads.append(self.gpa, .{ .boolean_lit = b });
+                break :blk idx;
+            },
+            .union_t => |members| blk: {
+                const start: u32 = @intCast(self.pool.member_pool.items.len);
+                try self.pool.member_pool.appendSlice(self.gpa, members);
+                const idx: u32 = @intCast(self.pool.union_payloads.items.len);
+                try self.pool.union_payloads.append(self.gpa, .{
+                    .members_start = start,
+                    .members_len = @intCast(members.len),
+                });
+                break :blk idx;
+            },
+            .intersection => |members| blk: {
+                const start: u32 = @intCast(self.pool.member_pool.items.len);
+                try self.pool.member_pool.appendSlice(self.gpa, members);
+                const idx: u32 = @intCast(self.pool.intersection_payloads.items.len);
+                try self.pool.intersection_payloads.append(self.gpa, .{
+                    .members_start = start,
+                    .members_len = @intCast(members.len),
+                });
+                break :blk idx;
+            },
+            .conditional => |c| blk: {
+                const idx: u32 = @intCast(self.pool.conditional_payloads.items.len);
+                try self.pool.conditional_payloads.append(self.gpa, c);
+                break :blk idx;
+            },
+            .mapped => |m| blk: {
+                const idx: u32 = @intCast(self.pool.mapped_payloads.items.len);
+                try self.pool.mapped_payloads.append(self.gpa, m);
+                break :blk idx;
+            },
+            .indexed_access => |ia| blk: {
+                const idx: u32 = @intCast(self.pool.indexed_access_payloads.items.len);
+                try self.pool.indexed_access_payloads.append(self.gpa, ia);
+                break :blk idx;
+            },
+            .keyof => |op| blk: {
+                const idx: u32 = @intCast(self.pool.keyof_payloads.items.len);
+                try self.pool.keyof_payloads.append(self.gpa, .{ .operand = op });
+                break :blk idx;
+            },
+            .tuple => |elems| blk: {
+                const start: u32 = @intCast(self.pool.tuple_element_pool.items.len);
+                try self.pool.tuple_element_pool.appendSlice(self.gpa, elems);
+                const idx: u32 = @intCast(self.pool.tuple_payloads.items.len);
+                try self.pool.tuple_payloads.append(self.gpa, .{
+                    .elements_start = start,
+                    .elements_len = @intCast(elems.len),
+                });
+                break :blk idx;
+            },
+            .type_parameter => |tp| blk: {
+                const idx: u32 = @intCast(self.pool.type_parameter_payloads.items.len);
+                try self.pool.type_parameter_payloads.append(self.gpa, tp);
+                break :blk idx;
+            },
+            .instantiation => |inst| blk: {
+                const start: u32 = @intCast(self.pool.type_arg_pool.items.len);
+                try self.pool.type_arg_pool.appendSlice(self.gpa, inst.args);
+                const idx: u32 = @intCast(self.pool.instantiation_payloads.items.len);
+                try self.pool.instantiation_payloads.append(self.gpa, .{
+                    .origin = inst.origin,
+                    .args_start = start,
+                    .args_len = @intCast(inst.args.len),
+                });
+                break :blk idx;
+            },
+        };
+        const id: TypeId = @intCast(self.pool.headers.items.len);
+        try self.pool.headers.append(self.gpa, .{
+            .flags = flags,
+            .symbol = 0,
+            .payload = payload_idx,
+        });
+        gop.value_ptr.* = id;
+        return id;
+    }
+
+    // Direct accessors that callers can use without recomputing the key.
+    pub fn unionMembers(self: *const Interner, id: TypeId) []const TypeId {
+        const flags = self.pool.flagsOf(id);
+        std.debug.assert(flags.is_union);
+        const p = self.pool.union_payloads.items[self.pool.payloadOf(id)];
+        return self.pool.member_pool.items[p.members_start .. p.members_start + p.members_len];
+    }
+
+    pub fn intersectionMembers(self: *const Interner, id: TypeId) []const TypeId {
+        const flags = self.pool.flagsOf(id);
+        std.debug.assert(flags.is_intersection);
+        const p = self.pool.intersection_payloads.items[self.pool.payloadOf(id)];
+        return self.pool.member_pool.items[p.members_start .. p.members_start + p.members_len];
+    }
+
+    pub fn literalOf(self: *const Interner, id: TypeId) types.LiteralData {
+        std.debug.assert(self.pool.flagsOf(id).is_literal);
+        return self.pool.literal_payloads.items[self.pool.payloadOf(id)];
+    }
+};
+
+// =============================================================================
+// Tests
+// =============================================================================
+
+const T = std.testing;
+const string_interner = @import("string_interner");
+
+test "Interner: primitive ids round-trip without allocation" {
+    var i = try Interner.init(T.allocator);
+    defer i.deinit();
+    // True/false literals are pre-interned.
+    try T.expectEqual(Primitive.true_lit, i.internBooleanLiteral(true));
+    try T.expectEqual(Primitive.false_lit, i.internBooleanLiteral(false));
+}
+
+test "Interner: number literal type dedup" {
+    var i = try Interner.init(T.allocator);
+    defer i.deinit();
+    const a = try i.internNumberLiteral(42);
+    const b = try i.internNumberLiteral(42);
+    const c = try i.internNumberLiteral(43);
+    try T.expectEqual(a, b);
+    try T.expect(a != c);
+}
+
+test "Interner: string literal type dedup" {
+    var i = try Interner.init(T.allocator);
+    defer i.deinit();
+    var sint = try string_interner.Interner.init(T.allocator);
+    defer sint.deinit();
+    const id_hello = try sint.intern("hello");
+    const id_world = try sint.intern("world");
+
+    const a = try i.internStringLiteral(id_hello);
+    const b = try i.internStringLiteral(id_hello);
+    const c = try i.internStringLiteral(id_world);
+    try T.expectEqual(a, b);
+    try T.expect(a != c);
+    try T.expect(i.pool.flagsOf(a).is_string);
+    try T.expect(i.pool.flagsOf(a).is_literal);
+}
+
+test "Interner: union sort-and-dedup canonicalization" {
+    var i = try Interner.init(T.allocator);
+    defer i.deinit();
+    const ab = try i.internUnion(&.{ Primitive.string_t, Primitive.number_t });
+    const ba = try i.internUnion(&.{ Primitive.number_t, Primitive.string_t });
+    try T.expectEqual(ab, ba);
+    try T.expect(i.pool.flagsOf(ab).is_union);
+
+    // Single-member union collapses.
+    const single = try i.internUnion(&.{Primitive.string_t});
+    try T.expectEqual(Primitive.string_t, single);
+
+    // Empty union → never.
+    const empty = try i.internUnion(&.{});
+    try T.expectEqual(Primitive.never, empty);
+}
+
+test "Interner: union flags fold constituent flags" {
+    var i = try Interner.init(T.allocator);
+    defer i.deinit();
+    const u = try i.internUnion(&.{ Primitive.string_t, Primitive.number_t });
+    const f = i.pool.flagsOf(u);
+    try T.expect(f.is_union);
+    try T.expect(f.is_string);
+    try T.expect(f.is_number);
+}
+
+test "Interner: intersection collapses single member" {
+    var i = try Interner.init(T.allocator);
+    defer i.deinit();
+    const x = try i.internIntersection(&.{Primitive.string_t});
+    try T.expectEqual(Primitive.string_t, x);
+    const empty = try i.internIntersection(&.{});
+    try T.expectEqual(Primitive.unknown, empty);
+}
+
+test "Interner: keyof is interned structurally" {
+    var i = try Interner.init(T.allocator);
+    defer i.deinit();
+    const a = try i.internKeyof(Primitive.string_t);
+    const b = try i.internKeyof(Primitive.string_t);
+    const c = try i.internKeyof(Primitive.number_t);
+    try T.expectEqual(a, b);
+    try T.expect(a != c);
+    try T.expect(i.pool.flagsOf(a).is_keyof);
+}
+
+test "Interner: indexed access dedup" {
+    var i = try Interner.init(T.allocator);
+    defer i.deinit();
+    const a = try i.internIndexedAccess(Primitive.string_t, Primitive.number_t);
+    const b = try i.internIndexedAccess(Primitive.string_t, Primitive.number_t);
+    const c = try i.internIndexedAccess(Primitive.number_t, Primitive.string_t);
+    try T.expectEqual(a, b);
+    try T.expect(a != c);
+}
+
+test "Interner: conditional dedup" {
+    var i = try Interner.init(T.allocator);
+    defer i.deinit();
+    const a = try i.internConditional(Primitive.string_t, Primitive.string_t, Primitive.true_lit, Primitive.false_lit);
+    const b = try i.internConditional(Primitive.string_t, Primitive.string_t, Primitive.true_lit, Primitive.false_lit);
+    try T.expectEqual(a, b);
+    try T.expect(i.pool.flagsOf(a).is_conditional);
+}
