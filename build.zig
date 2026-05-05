@@ -252,6 +252,14 @@ pub fn build(b: *std.Build) void {
 
     // TS-parity Phase 5 §5.7 — watch mode foundation.
     const ts_watch_pkg = createPackage(b, "packages/ts_watch/src/ts_watch.zig", target, optimize, zig_test_framework);
+
+    // TS-parity Phase 8 — LSP foundation.
+    const ts_lsp_pkg = createPackage(b, "packages/ts_lsp/src/ts_lsp.zig", target, optimize, zig_test_framework);
+    ts_lsp_pkg.addImport("hir", hir_pkg);
+    ts_lsp_pkg.addImport("ts_program", ts_program_pkg);
+    ts_lsp_pkg.addImport("ts_driver", ts_driver_pkg);
+    ts_lsp_pkg.addImport("ts_diagnostics", ts_diagnostics_pkg);
+    ts_lsp_pkg.addImport("ts_resolver", ts_resolver_pkg);
     const volatile_pkg = createPackage(b, "packages/volatile/src/volatile.zig", target, optimize, zig_test_framework);
     const pantry_pkg = createPackage(b, "packages/pantry/src/pantry.zig", target, optimize, zig_test_framework);
     const collections_pkg = createPackage(b, "packages/collections/src/collection.zig", target, optimize, zig_test_framework);
@@ -923,6 +931,10 @@ pub fn build(b: *std.Build) void {
     const ts_watch_tests = b.addTest(.{ .root_module = ts_watch_pkg });
     const run_ts_watch_tests = b.addRunArtifact(ts_watch_tests);
     test_step.dependOn(&run_ts_watch_tests.step);
+
+    const ts_lsp_tests = b.addTest(.{ .root_module = ts_lsp_pkg });
+    const run_ts_lsp_tests = b.addRunArtifact(ts_lsp_tests);
+    test_step.dependOn(&run_ts_lsp_tests.step);
 
     // Volatile operations tests
     const volatile_tests = b.addTest(.{ .root_module = volatile_pkg });
