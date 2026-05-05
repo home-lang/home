@@ -1733,12 +1733,26 @@ pub const TypeChecker = struct {
 
                 // Check all case patterns and bodies
                 for (switch_stmt.cases) |case_clause| {
-                    // Check that patterns match the switch value type
+                    // Check that each case pattern is assignable to the
+                    // switch value's type. We mirror the literal-
+                    // coercion rules used by `let`, function arguments,
+                    // and array elements (issues #21/#22/#26): an
+                    // integer literal coerces to any integer type it
+                    // fits into, a char literal is fundamentally a
+                    // small int and coerces to u8/u16/u32, and a
+                    // string literal coerces to a byte-array switch
+                    // value. This closes the regression introduced by
+                    // #20, where strict type-equality broke valid
+                    // kernel switches like `switch (c: u8) { '(' => …
+                    // }`.
                     if (!case_clause.is_default) {
                         for (case_clause.patterns) |pattern| {
                             const pattern_type = try self.inferExpression(pattern);
-                            if (!pattern_type.equals(value_type)) {
-                                try self.addError("Case pattern type must match switch value type", case_clause.node.loc);
+                            if (!patternCoercesToSwitchValue(pattern, pattern_type, value_type)) {
+                                try self.addError(
+                                    "Case pattern type must match switch value type",
+                                    case_clause.node.loc,
+                                );
                                 return error.TypeMismatch;
                             }
                         }
@@ -2017,6 +2031,82 @@ pub const TypeChecker = struct {
             .U128 => value >= 0,
             else => false,
         };
+    }
+
+    /// Does a switch case pattern coerce to the switch value's type?
+    /// Mirrors the literal-coercion rules from `checkExpressionAgainst`
+    /// (issues #21/#22/#26) but applied to the case-pattern → value
+    /// direction. Returns `true` if the pattern is acceptable (either
+    /// because the inferred types already match, or because a literal
+    /// in the pattern can be retyped to the switch value's type).
+    ///
+    /// The handled coercions are:
+    ///   - integer literal (or `-N` of an int literal) that fits in
+    ///     the switch value's integer type
+    ///   - char literal against u8/u16/u32 (a char is a small int)
+    ///   - string literal against `[]u8` (or any byte-family Array),
+    ///     same as the StringLiteral → Array(U8) rule used elsewhere
+    ///
+    /// Closes the home #20 regression where strict type-equality broke
+    /// otherwise valid kernel switches.
+    fn patternCoercesToSwitchValue(
+        pattern: *const ast.Expr,
+        pattern_type: Type,
+        value_type: Type,
+    ) bool {
+        // Gradual-typing escape hatch: when the switch value or
+        // pattern carries an unknown / `Void` type (e.g. an
+        // unresolved field access into an imported namespace), don't
+        // block the rest of the type-check. Mirrors the
+        // `actual == .Void` policy in `checkExpressionAgainst`.
+        if (value_type == .Void or pattern_type == .Void) return true;
+
+        // Fast path: types already match.
+        if (pattern_type.equals(value_type)) return true;
+
+        // Integer literal → any integer type it fits into.
+        if (pattern.* == .IntegerLiteral) {
+            if (isIntegerType(value_type)) {
+                return integerLiteralFits(pattern.IntegerLiteral.value, value_type);
+            }
+        }
+
+        // `-N` for an integer literal N: parsed as
+        // `UnaryExpr(Negate, IntegerLiteral)`. Apply the same fits-
+        // check with the sign flipped so `-1 => …` still works
+        // against a signed switch value.
+        if (pattern.* == .UnaryExpr) {
+            const u = pattern.UnaryExpr;
+            if (u.op == .Neg and u.operand.* == .IntegerLiteral) {
+                if (isIntegerType(value_type)) {
+                    const v: i128 = -u.operand.IntegerLiteral.value;
+                    return integerLiteralFits(v, value_type);
+                }
+            }
+        }
+
+        // Char literal → small integer. A Home char literal is at
+        // most a 21-bit code point, so it always fits in u32 / i32 /
+        // larger; for u8 / u16 / i8 / i16 we trust the user (codegen
+        // truncates as needed — same policy as integer literals).
+        if (pattern.* == .CharLiteral) {
+            if (isIntegerType(value_type)) return true;
+        }
+
+        // String literal → byte-family Array. Mirrors the
+        // `StringLiteral → Array(u8/i8/Int)` coercion used by `let`
+        // and function arguments (issue #22).
+        if (pattern.* == .StringLiteral) {
+            if (value_type == .Array) {
+                const elem = value_type.Array.element_type.*;
+                if (elem == .U8 or elem == .I8 or elem == .Int or elem == .Void) {
+                    return true;
+                }
+            }
+        }
+
+        // Fallback: existing coercion rules (subtyping, etc.).
+        return canCoerce(pattern_type, value_type);
     }
 
     /// Does the float literal `value` fit into `dest`? f64 values

@@ -1,0 +1,28 @@
+// Issue #32 sub-item B: a char literal is fundamentally a small int
+// and must coerce to the switch value's integer type. Issue #20
+// regressed this by switching to strict type-equality between the
+// case pattern and the switch value, which broke kernel modules that
+// dispatch on a `u8` byte using char-literal cases (e.g. parens,
+// digit ranges in `i18n/bidi.home` and `net/smb.home`). The fix
+// restores the let / function-argument literal-coercion rules
+// established by issues #21/#22/#26 to switch case patterns too.
+fn classify(c: u8): u32 {
+    switch (c) {
+        '(' => return 1,
+        ')' => return 2,
+        '0' => return 3,
+        else => return 0,
+    }
+}
+
+// Bare integer literals against a wider unsigned switch value also
+// coerce — `0x10DE` fits u32 and used to fail with "Case pattern
+// type must match switch value type".
+fn vendor_name(id: u32): u32 {
+    switch (id) {
+        0x10DE => return 1,
+        0x1002 => return 2,
+        0x8086 => return 3,
+        else => return 0,
+    }
+}
