@@ -117,37 +117,47 @@ pub const Service = struct {
         };
     }
 
-    /// Find every reference to the symbol at `byte_pos` in the file.
-    /// Cross-file references are a Phase 8 follow-up that walks every
-    /// file's HIR via the program graph.
+    /// Find every reference to the symbol at `byte_pos` across
+    /// every file in the program. Identifier matches are filtered
+    /// by name (string identity); shadowing-aware lookup via the
+    /// binder's scope graph is a Phase 8 follow-up.
     pub fn findReferences(self: *Service, gpa: std.mem.Allocator, file_path: []const u8, byte_pos: u32) ![]Span {
         var spans: std.ArrayListUnmanaged(Span) = .empty;
         errdefer spans.deinit(gpa);
-        const file_id = self.program.lookupPath(file_path) orelse return spans.toOwnedSlice(gpa);
-        const f = self.program.fileById(file_id);
-        const c = f.compilation orelse return spans.toOwnedSlice(gpa);
-        const node = findInnermostNode(&c.hir, c.root, byte_pos) orelse return spans.toOwnedSlice(gpa);
-        if (c.hir.kindOf(node) != .identifier) return spans.toOwnedSlice(gpa);
-        const target = hir_mod.identifierOf(&c.hir, node);
 
-        // Walk every node in the file, find identifiers with the
-        // same interned name. (Phase 8 follow-up: shadowing-aware
-        // walk via the binder's scope graph.)
-        var i: hir_mod.NodeId = 0;
-        while (i < c.hir.nodeCount()) : (i += 1) {
-            if (c.hir.kindOf(i) != .identifier) continue;
-            const id = hir_mod.identifierOf(&c.hir, i);
-            if (id.name != target.name) continue;
-            const span = c.hir.spanOf(i);
-            const sp = ts_diagnostics.positionToLineCol(f.source, span.start);
-            const ep = ts_diagnostics.positionToLineCol(f.source, span.end);
-            try spans.append(gpa, .{
-                .file = f.path,
-                .start_line = sp.line,
-                .start_col = sp.col,
-                .end_line = ep.line,
-                .end_col = ep.col,
-            });
+        // Resolve the target identifier to its interned name.
+        const file_id = self.program.lookupPath(file_path) orelse return spans.toOwnedSlice(gpa);
+        const origin = self.program.fileById(file_id);
+        const oc = origin.compilation orelse return spans.toOwnedSlice(gpa);
+        const node = findInnermostNode(&oc.hir, oc.root, byte_pos) orelse return spans.toOwnedSlice(gpa);
+        if (oc.hir.kindOf(node) != .identifier) return spans.toOwnedSlice(gpa);
+        const target = hir_mod.identifierOf(&oc.hir, node);
+        const target_name = oc.interner.get(target.name);
+
+        // Walk every program file's HIR. Each file has its own
+        // string_interner, so we re-intern the target name into
+        // the visited file's interner to compare ids.
+        for (self.program.files.items) |f| {
+            const c = f.compilation orelse continue;
+            // Look the name up in this file's interner (without
+            // adding to it). If absent, no reference is possible.
+            const local_id = c.interner.lookup(target_name) orelse continue;
+            var i: hir_mod.NodeId = 0;
+            while (i < c.hir.nodeCount()) : (i += 1) {
+                if (c.hir.kindOf(i) != .identifier) continue;
+                const id = hir_mod.identifierOf(&c.hir, i);
+                if (id.name != local_id) continue;
+                const span = c.hir.spanOf(i);
+                const sp = ts_diagnostics.positionToLineCol(f.source, span.start);
+                const ep = ts_diagnostics.positionToLineCol(f.source, span.end);
+                try spans.append(gpa, .{
+                    .file = f.path,
+                    .start_line = sp.line,
+                    .start_col = sp.col,
+                    .end_line = ep.line,
+                    .end_col = ep.col,
+                });
+            }
         }
         return spans.toOwnedSlice(gpa);
     }
@@ -374,6 +384,27 @@ test "Service: findReferences returns all identifier sites" {
     defer T.allocator.free(refs);
     // Three occurrences of x: declaration + two refs.
     try T.expectEqual(@as(usize, 3), refs.len);
+}
+
+test "Service: findReferences walks every file in the program" {
+    var vfs = ts_resolver.VirtualFs.init(T.allocator);
+    defer vfs.deinit();
+    var resolver = ts_resolver.Resolver.init(T.allocator, vfs.fs(), .{});
+    defer resolver.deinit();
+    var program = ts_program.Program.init(T.allocator, &resolver);
+    defer program.deinit();
+
+    _ = try program.add("/a.ts", "export let count = 1;");
+    _ = try program.add("/b.ts", "let other = count;");
+    _ = try program.add("/c.ts", "let third = count + count;");
+    try program.compileAll(.{});
+
+    var svc = Service.init(T.allocator, &program);
+    // Position of `count` in the declaration in /a.ts.
+    const refs = try svc.findReferences(T.allocator, "/a.ts", 11);
+    defer T.allocator.free(refs);
+    // Across all three files: 1 in /a.ts (decl), 1 in /b.ts, 2 in /c.ts.
+    try T.expectEqual(@as(usize, 4), refs.len);
 }
 
 test "Service: diagnostics surface from compilation" {
