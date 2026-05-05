@@ -279,6 +279,37 @@ pub fn build(b: *std.Build) void {
     const ts_bundler_pkg = createPackage(b, "packages/ts_bundler/src/ts_bundler.zig", target, optimize, zig_test_framework);
     ts_bundler_pkg.addImport("ts_program", ts_program_pkg);
     ts_bundler_pkg.addImport("ts_resolver", ts_resolver_pkg);
+
+    // ====================================================================
+    // TS-parity binaries: `home-tsc` (compiler driver) + `home-lsp`
+    // (Language Server Protocol stdio loop). Both consume the
+    // packages above as plain libraries.
+    // ====================================================================
+    const home_tsc_exe = b.addExecutable(.{
+        .name = "home-tsc",
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("packages/ts_cli/src/tsc_main.zig"),
+            .target = target,
+            .optimize = optimize,
+        }),
+    });
+    home_tsc_exe.root_module.addImport("ts_cli", ts_cli_pkg);
+    home_tsc_exe.root_module.addImport("ts_program", ts_program_pkg);
+    home_tsc_exe.root_module.addImport("ts_resolver", ts_resolver_pkg);
+    home_tsc_exe.root_module.addImport("ts_driver", ts_driver_pkg);
+    home_tsc_exe.root_module.addImport("ts_diagnostics", ts_diagnostics_pkg);
+    b.installArtifact(home_tsc_exe);
+
+    const home_lsp_exe = b.addExecutable(.{
+        .name = "home-lsp",
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("packages/ts_lsp_server/src/lsp_main.zig"),
+            .target = target,
+            .optimize = optimize,
+        }),
+    });
+    home_lsp_exe.root_module.addImport("ts_lsp_server", ts_lsp_server_pkg);
+    b.installArtifact(home_lsp_exe);
     const volatile_pkg = createPackage(b, "packages/volatile/src/volatile.zig", target, optimize, zig_test_framework);
     const pantry_pkg = createPackage(b, "packages/pantry/src/pantry.zig", target, optimize, zig_test_framework);
     const collections_pkg = createPackage(b, "packages/collections/src/collection.zig", target, optimize, zig_test_framework);
