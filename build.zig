@@ -188,6 +188,14 @@ pub fn build(b: *std.Build) void {
     const ts_checker_pkg = createPackage(b, "packages/ts_checker/src/ts_checker.zig", target, optimize, zig_test_framework);
     ts_checker_pkg.addImport("hir", hir_pkg);
     ts_checker_pkg.addImport("string_interner", string_interner_pkg);
+
+    // TS-parity Phase 4 — JS / .d.ts emit + Home .d.hm.
+    const ts_emit_pkg = createPackage(b, "packages/ts_emit/src/ts_emit.zig", target, optimize, zig_test_framework);
+    ts_emit_pkg.addImport("hir", hir_pkg);
+    ts_emit_pkg.addImport("string_interner", string_interner_pkg);
+    ts_emit_pkg.addImport("ts_lexer", ts_lexer_pkg);
+    ts_emit_pkg.addImport("ts_parser", ts_parser_pkg);
+    const d_hm_pkg = createPackage(b, "packages/d_hm/src/d_hm.zig", target, optimize, zig_test_framework);
     const volatile_pkg = createPackage(b, "packages/volatile/src/volatile.zig", target, optimize, zig_test_framework);
     const pantry_pkg = createPackage(b, "packages/pantry/src/pantry.zig", target, optimize, zig_test_framework);
     const collections_pkg = createPackage(b, "packages/collections/src/collection.zig", target, optimize, zig_test_framework);
@@ -823,6 +831,14 @@ pub fn build(b: *std.Build) void {
     const ts_checker_tests = b.addTest(.{ .root_module = ts_checker_pkg });
     const run_ts_checker_tests = b.addRunArtifact(ts_checker_tests);
     test_step.dependOn(&run_ts_checker_tests.step);
+
+    const ts_emit_tests = b.addTest(.{ .root_module = ts_emit_pkg });
+    const run_ts_emit_tests = b.addRunArtifact(ts_emit_tests);
+    test_step.dependOn(&run_ts_emit_tests.step);
+
+    const d_hm_tests = b.addTest(.{ .root_module = d_hm_pkg });
+    const run_d_hm_tests = b.addRunArtifact(d_hm_tests);
+    test_step.dependOn(&run_d_hm_tests.step);
 
     // Volatile operations tests
     const volatile_tests = b.addTest(.{ .root_module = volatile_pkg });
