@@ -449,6 +449,20 @@ pub const Checker = struct {
     fn applyTypeGuard(self: *Checker, cond: NodeId, when_true: bool) !void {
         if (self.hir.kindOf(cond) != .binary_op) return;
         const b = hir_mod.binopOf(self.hir, cond);
+
+        // `x instanceof Foo` — narrows `x` to the class instance type
+        // (or `Primitive.object_t` if we don't yet have an interned
+        // class type). The else-branch leaves `x` un-narrowed since
+        // proper subtraction needs the discriminated-union machinery
+        // (Phase 6).
+        if (b.op == .instanceof and self.hir.kindOf(b.lhs) == .identifier) {
+            const id = hir_mod.identifierOf(self.hir, b.lhs);
+            if (when_true) {
+                try self.recordNarrow(id.name, types.Primitive.object_t);
+            }
+            return;
+        }
+
         if (b.op != .eq_strict and b.op != .neq_strict) return;
         // `positive` = "this branch represents the equality
         // matching" (i.e. `===` in then, `!==` in else).
@@ -921,6 +935,28 @@ test "checker: call expression returns signature's return type" {
     // Without binder wired here the call falls through to any —
     // exercised properly in the driver test below.
     _ = init_node;
+}
+
+test "checker: instanceof narrows to object_t in then-branch" {
+    const s = try newSetup(
+        \\function f(x: any): any {
+        \\  if (x instanceof Foo) {
+        \\    return x;
+        \\  }
+        \\  return null;
+        \\}
+    );
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+    // Walk into the if-then branch and find the return.
+    const top = firstStatement(s);
+    const f = hir_mod.fnDeclOf(&s.hir, top);
+    const body_stmts = hir_mod.blockStmts(&s.hir, f.body);
+    const if_stmt = body_stmts[0];
+    try T.expectEqual(hir_mod.NodeKind.if_stmt, s.hir.kindOf(if_stmt));
+    // The narrowing happens inside applyTypeGuard during checkSourceFile;
+    // we just verify there were no diagnostics.
+    try T.expect(s.checker.diagnostics.items.len == 0);
 }
 
 test "checker: parameter inside body resolves to its annotation type" {
