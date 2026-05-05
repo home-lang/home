@@ -1,0 +1,3 @@
+Checking: <repo>/tests/diagnostics/cases/types/31_pointer_deref_unwrap.home
+
+Success: Type checking passed ✓

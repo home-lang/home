@@ -2360,6 +2360,20 @@ pub const TypeChecker = struct {
             try self.allocated_types.append(self.allocator, inner_ptr);
             return Type{ .Reference = inner_ptr };
         }
+        // Dereference (`*ptr`) must strip one Reference layer before the
+        // hint comparison happens. Without this, `let ch: u8 = *p` (where
+        // `p: *u8`) reports a spurious "expected u8, found &u8" because
+        // the operand type — `&u8` — flowed through unchanged. The
+        // non-hint path in `inferUnaryExpression` already does this; the
+        // hint variant must mirror it. The hint can't propagate into the
+        // operand here (the operand's type is `&T`, not `T`), so we drop
+        // it deliberately.
+        if (unary.op == .Deref) {
+            const operand_t = try self.inferExpressionWithHint(unary.operand, null);
+            if (operand_t == .Reference) return operand_t.Reference.*;
+            if (operand_t == .MutableReference) return operand_t.MutableReference.*;
+            return operand_t;
+        }
         // Other unary ops: hint flows straight through to the operand
         // and the result type is the operand's type (matches the
         // existing Neg/Not/BitNot behaviour in `inferUnaryExpression`).

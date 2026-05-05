@@ -1,0 +1,20 @@
+// Issue #31 (Bug 2): `*ptr` (Deref) must strip one Reference layer in
+// the hint-propagating inference path, not just the synthesis path.
+// Previously `let ch: u8 = *p` (where `p: *u8`) reported a spurious
+// "Type mismatch: expected u8, found &u8" because the hint-driven
+// `inferUnaryExprWithHint` returned the operand type unchanged. The
+// fix mirrors the unwrap that `inferUnaryExpression` already does in
+// the non-hint path. This snapshot pins the positive behaviour.
+struct S { x: u32 }
+
+fn read_byte(p: *u8) {
+    let ch: u8 = *p
+}
+
+fn read_field(s: *S) {
+    let v: u32 = (*s).x
+}
+
+fn read_inferred(p: *u8) {
+    let ch = *p
+}
