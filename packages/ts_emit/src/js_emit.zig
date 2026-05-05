@@ -52,6 +52,10 @@ pub const Options = struct {
     /// from this printer. The driver normally adds the source first
     /// and passes the returned index here.
     source_map_src_idx: u32 = 0,
+    /// When non-null, the printer appends a tsc-compatible
+    /// `//# sourceMappingURL=<url>` comment to the end of the
+    /// JS output. The URL is typically `<output>.map`.
+    source_map_url: ?[]const u8 = null,
 };
 
 const source_map_mod = @import("source_map.zig");
@@ -183,6 +187,13 @@ pub const Printer = struct {
             }
             if (i > 0) try self.write(self.options.newline);
             try self.printStatement(stmt);
+        }
+        // Optional source-map URL trailer.
+        if (self.options.source_map_url) |url| {
+            try self.write(self.options.newline);
+            try self.write("//# sourceMappingURL=");
+            try self.write(url);
+            try self.write(self.options.newline);
         }
     }
 
@@ -1294,6 +1305,32 @@ test "emit: class with decorator-call expression" {
     const out = try emit("@inject(Foo) class Bar {}");
     defer T.allocator.free(out);
     try T.expect(std.mem.indexOf(u8, out, "__decorate([inject(Foo)], Bar)") != null);
+}
+
+test "emit: sourceMappingURL trailer appended when configured" {
+    const s = try newTestSetup("let x = 1;");
+    defer destroyTestSetup(s);
+
+    var printer = Printer.init(T.allocator, &s.hir, &s.interner, .{
+        .source_map_url = "out.js.map",
+    });
+    defer printer.deinit();
+    try printer.printSourceFile(s.root);
+    const out = try printer.toOwnedSlice();
+    defer T.allocator.free(out);
+    try T.expect(std.mem.indexOf(u8, out, "//# sourceMappingURL=out.js.map") != null);
+}
+
+test "emit: no sourceMappingURL when option absent" {
+    const s = try newTestSetup("let x = 1;");
+    defer destroyTestSetup(s);
+
+    var printer = Printer.init(T.allocator, &s.hir, &s.interner, .{});
+    defer printer.deinit();
+    try printer.printSourceFile(s.root);
+    const out = try printer.toOwnedSlice();
+    defer T.allocator.free(out);
+    try T.expect(std.mem.indexOf(u8, out, "sourceMappingURL") == null);
 }
 
 test "emit: source map records mappings for each statement" {
