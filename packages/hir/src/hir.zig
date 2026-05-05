@@ -624,6 +624,150 @@ pub const ObjectPropertyPayload = struct {
 };
 
 // ============================================================================
+// Type-system node payloads
+// ============================================================================
+//
+// HIR carries type annotations as a separate node graph; the same `Hir`
+// stores both expression nodes and type nodes, distinguished by kind
+// (NodeKind.type_ref through NodeKind.constructor_type).
+//
+// Phase 1 follow-up: the type parser produces these nodes; the type
+// checker (Phase 3) consumes them via `hir.Pool` lowering to TypeIds.
+
+/// `Foo`, `Foo.Bar`, `Foo<T, U>`. The base reference is identified via
+/// a name (interned string) for `Foo`; qualified-name continuations
+/// chain through `qualifier` references.
+pub const TypeRefPayload = struct {
+    /// Name of the referenced type. For qualified names like
+    /// `A.B.C`, this stores the *rightmost* segment; the qualifier
+    /// chain lives in `qualifier_start..len`.
+    name: StringId,
+    /// Children pool slice: type-argument nodes (for `Foo<T, U>`).
+    args_start: u32,
+    args_len: u32,
+    /// Children pool slice: qualifier identifiers (`A.B.C` stores
+    /// `[A, B]` here; `name` is `C`).
+    qualifier_start: u32,
+    qualifier_len: u32,
+};
+
+/// `T | U | V`.
+pub const UnionTypePayload = struct {
+    members_start: u32,
+    members_len: u32,
+};
+
+/// `T & U & V`.
+pub const IntersectionTypePayload = struct {
+    members_start: u32,
+    members_len: u32,
+};
+
+/// `T[]` — postfix array shorthand.
+pub const ArrayTypePayload = struct {
+    element: NodeId,
+};
+
+/// `[T, U, V]`.
+pub const TupleTypePayload = struct {
+    elements_start: u32,
+    elements_len: u32,
+};
+
+/// `(a: T, b?: U) => R` and `new (a: T) => R`.
+pub const FnTypePayload = struct {
+    params_start: u32,
+    params_len: u32,
+    type_params_start: u32,
+    type_params_len: u32,
+    return_type: NodeId,
+    is_constructor: bool,
+};
+
+/// `T[K]`.
+pub const IndexedAccessTypePayload = struct {
+    object: NodeId,
+    index: NodeId,
+};
+
+/// `keyof T`.
+pub const KeyofTypePayload = struct {
+    operand: NodeId,
+};
+
+/// `typeof expr` (TS, in type position).
+pub const TypeofTypePayload = struct {
+    operand: NodeId,
+};
+
+/// `T extends U ? X : Y`.
+pub const ConditionalTypePayload = struct {
+    check: NodeId,
+    extends: NodeId,
+    true_branch: NodeId,
+    false_branch: NodeId,
+};
+
+/// `infer X` placeholder.
+pub const InferTypePayload = struct {
+    name: StringId,
+    /// Constraint type (`infer X extends Constraint`), `none_node_id` if absent.
+    constraint: NodeId,
+};
+
+/// `{ [K in keyof T]: V }`.
+pub const MappedTypePayload = struct {
+    /// Type-parameter being iterated.
+    type_param: NodeId,
+    /// Constraint of `K`, typically `keyof T`.
+    constraint: NodeId,
+    /// Value type of each member.
+    value: NodeId,
+    /// `+/- readonly` modifier state.
+    readonly: u8, // 0=none, 1=add, 2=remove
+    /// `+/- ?` modifier state.
+    optional: u8,
+};
+
+/// Literal type — `"hello"`, `42`, `true`. Reuses the same payload as
+/// the value-position literal nodes (number / string / bigint / bool);
+/// the kind distinguishes "literal-as-type" from value literals.
+pub const LiteralTypePayload = struct {
+    /// Pointer to the literal-bearing child node (`literal_string`,
+    /// `literal_number`, `literal_bigint`, `literal_bool`).
+    literal: NodeId,
+    /// True for `-42` (negative numeric literal type).
+    negative: bool,
+};
+
+/// `<T extends U = D>` — type parameter declaration (used in
+/// fn / class / interface / type-alias generics).
+pub const TypeParameterPayload = struct {
+    name: StringId,
+    /// `none_node_id` if no `extends`.
+    constraint: NodeId,
+    /// `none_node_id` if no default.
+    default: NodeId,
+    /// `in` / `out` variance modifier (0=none, 1=in, 2=out, 3=in_out).
+    variance: u8,
+};
+
+/// `let`/`const`/`var` declaration. The `kind` on the `Hir.kindOf(node)`
+/// distinguishes `var_decl` / `let_decl` / `const_decl`.
+pub const VarDeclPayload = struct {
+    /// Identifier (or destructuring pattern).
+    name: NodeId,
+    /// Type annotation, or `none_node_id`.
+    type_annotation: NodeId,
+    /// Initializer, or `none_node_id`.
+    init: NodeId,
+};
+
+/// Arrow function payload. Reuses `FnDeclPayload`'s shape with the
+/// `is_arrow` flag set in `FnFlags`.
+pub const ArrowPayload = FnDeclPayload;
+
+// ============================================================================
 // Hir storage
 // ============================================================================
 
@@ -701,6 +845,21 @@ pub const Hir = struct {
     array_literal_payloads: std.ArrayListUnmanaged(ArrayLiteralPayload),
     object_literal_payloads: std.ArrayListUnmanaged(ObjectLiteralPayload),
     object_property_payloads: std.ArrayListUnmanaged(ObjectPropertyPayload),
+    var_decl_payloads: std.ArrayListUnmanaged(VarDeclPayload),
+    type_ref_payloads: std.ArrayListUnmanaged(TypeRefPayload),
+    union_type_payloads: std.ArrayListUnmanaged(UnionTypePayload),
+    intersection_type_payloads: std.ArrayListUnmanaged(IntersectionTypePayload),
+    array_type_payloads: std.ArrayListUnmanaged(ArrayTypePayload),
+    tuple_type_payloads: std.ArrayListUnmanaged(TupleTypePayload),
+    fn_type_payloads: std.ArrayListUnmanaged(FnTypePayload),
+    indexed_access_type_payloads: std.ArrayListUnmanaged(IndexedAccessTypePayload),
+    keyof_type_payloads: std.ArrayListUnmanaged(KeyofTypePayload),
+    typeof_type_payloads: std.ArrayListUnmanaged(TypeofTypePayload),
+    conditional_type_payloads: std.ArrayListUnmanaged(ConditionalTypePayload),
+    infer_type_payloads: std.ArrayListUnmanaged(InferTypePayload),
+    mapped_type_payloads: std.ArrayListUnmanaged(MappedTypePayload),
+    literal_type_payloads: std.ArrayListUnmanaged(LiteralTypePayload),
+    type_parameter_payloads: std.ArrayListUnmanaged(TypeParameterPayload),
 
     /// Shared variable-arity child pool. Per-node payloads reference
     /// slices into this with `(start: u32, len: u32)`.
@@ -756,6 +915,21 @@ pub const Hir = struct {
             .array_literal_payloads = .empty,
             .object_literal_payloads = .empty,
             .object_property_payloads = .empty,
+            .var_decl_payloads = .empty,
+            .type_ref_payloads = .empty,
+            .union_type_payloads = .empty,
+            .intersection_type_payloads = .empty,
+            .array_type_payloads = .empty,
+            .tuple_type_payloads = .empty,
+            .fn_type_payloads = .empty,
+            .indexed_access_type_payloads = .empty,
+            .keyof_type_payloads = .empty,
+            .typeof_type_payloads = .empty,
+            .conditional_type_payloads = .empty,
+            .infer_type_payloads = .empty,
+            .mapped_type_payloads = .empty,
+            .literal_type_payloads = .empty,
+            .type_parameter_payloads = .empty,
             .child_pool = .empty,
             .cold = ColdData.empty(),
         };
@@ -818,6 +992,21 @@ pub const Hir = struct {
         self.array_literal_payloads.deinit(self.gpa);
         self.object_literal_payloads.deinit(self.gpa);
         self.object_property_payloads.deinit(self.gpa);
+        self.var_decl_payloads.deinit(self.gpa);
+        self.type_ref_payloads.deinit(self.gpa);
+        self.union_type_payloads.deinit(self.gpa);
+        self.intersection_type_payloads.deinit(self.gpa);
+        self.array_type_payloads.deinit(self.gpa);
+        self.tuple_type_payloads.deinit(self.gpa);
+        self.fn_type_payloads.deinit(self.gpa);
+        self.indexed_access_type_payloads.deinit(self.gpa);
+        self.keyof_type_payloads.deinit(self.gpa);
+        self.typeof_type_payloads.deinit(self.gpa);
+        self.conditional_type_payloads.deinit(self.gpa);
+        self.infer_type_payloads.deinit(self.gpa);
+        self.mapped_type_payloads.deinit(self.gpa);
+        self.literal_type_payloads.deinit(self.gpa);
+        self.type_parameter_payloads.deinit(self.gpa);
         self.child_pool.deinit(self.gpa);
         self.cold.deinit(self.gpa);
     }
@@ -1510,6 +1699,30 @@ pub const Builder = struct {
         return id;
     }
 
+    /// Add a variable declaration. `kind` must be one of
+    /// `.var_decl`, `.let_decl`, `.const_decl`.
+    pub fn addVarDecl(
+        self: *Builder,
+        kind: NodeKind,
+        span: Span,
+        name: NodeId,
+        type_annotation: NodeId,
+        init_node: NodeId,
+    ) !NodeId {
+        std.debug.assert(kind == .var_decl or kind == .let_decl or kind == .const_decl);
+        const payload_idx: u32 = @intCast(self.hir.var_decl_payloads.items.len);
+        try self.hir.var_decl_payloads.append(self.hir.gpa, .{
+            .name = name,
+            .type_annotation = type_annotation,
+            .init = init_node,
+        });
+        const id = try self.newNode(kind, span, payload_idx);
+        if (name != none_node_id) self.hir.setParent(name, id);
+        if (type_annotation != none_node_id) self.hir.setParent(type_annotation, id);
+        if (init_node != none_node_id) self.hir.setParent(init_node, id);
+        return id;
+    }
+
     pub fn addObjectLiteral(self: *Builder, span: Span, props: []const NodeId) !NodeId {
         const props_start: u32 = @intCast(self.hir.child_pool.items.len);
         try self.hir.child_pool.appendSlice(self.hir.gpa, props);
@@ -1520,6 +1733,227 @@ pub const Builder = struct {
         });
         const id = try self.newNode(.object_literal, span, payload_idx);
         for (props) |p| self.hir.setParent(p, id);
+        return id;
+    }
+
+    // ---- Type-system nodes -----------------------------------------------
+
+    pub fn addTypeRef(
+        self: *Builder,
+        span: Span,
+        name: StringId,
+        qualifier: []const NodeId,
+        args: []const NodeId,
+    ) !NodeId {
+        const q_start: u32 = @intCast(self.hir.child_pool.items.len);
+        try self.hir.child_pool.appendSlice(self.hir.gpa, qualifier);
+        const a_start: u32 = @intCast(self.hir.child_pool.items.len);
+        try self.hir.child_pool.appendSlice(self.hir.gpa, args);
+        const payload_idx: u32 = @intCast(self.hir.type_ref_payloads.items.len);
+        try self.hir.type_ref_payloads.append(self.hir.gpa, .{
+            .name = name,
+            .qualifier_start = q_start,
+            .qualifier_len = @intCast(qualifier.len),
+            .args_start = a_start,
+            .args_len = @intCast(args.len),
+        });
+        const id = try self.newNode(.type_ref, span, payload_idx);
+        for (qualifier) |q| self.hir.setParent(q, id);
+        for (args) |a| self.hir.setParent(a, id);
+        return id;
+    }
+
+    pub fn addUnionType(self: *Builder, span: Span, members: []const NodeId) !NodeId {
+        const start: u32 = @intCast(self.hir.child_pool.items.len);
+        try self.hir.child_pool.appendSlice(self.hir.gpa, members);
+        const payload_idx: u32 = @intCast(self.hir.union_type_payloads.items.len);
+        try self.hir.union_type_payloads.append(self.hir.gpa, .{
+            .members_start = start,
+            .members_len = @intCast(members.len),
+        });
+        const id = try self.newNode(.union_type, span, payload_idx);
+        for (members) |m| self.hir.setParent(m, id);
+        return id;
+    }
+
+    pub fn addIntersectionType(self: *Builder, span: Span, members: []const NodeId) !NodeId {
+        const start: u32 = @intCast(self.hir.child_pool.items.len);
+        try self.hir.child_pool.appendSlice(self.hir.gpa, members);
+        const payload_idx: u32 = @intCast(self.hir.intersection_type_payloads.items.len);
+        try self.hir.intersection_type_payloads.append(self.hir.gpa, .{
+            .members_start = start,
+            .members_len = @intCast(members.len),
+        });
+        const id = try self.newNode(.intersection_type, span, payload_idx);
+        for (members) |m| self.hir.setParent(m, id);
+        return id;
+    }
+
+    pub fn addArrayType(self: *Builder, span: Span, element: NodeId) !NodeId {
+        const payload_idx: u32 = @intCast(self.hir.array_type_payloads.items.len);
+        try self.hir.array_type_payloads.append(self.hir.gpa, .{ .element = element });
+        const id = try self.newNode(.array_type, span, payload_idx);
+        self.hir.setParent(element, id);
+        return id;
+    }
+
+    pub fn addTupleType(self: *Builder, span: Span, elements: []const NodeId) !NodeId {
+        const start: u32 = @intCast(self.hir.child_pool.items.len);
+        try self.hir.child_pool.appendSlice(self.hir.gpa, elements);
+        const payload_idx: u32 = @intCast(self.hir.tuple_type_payloads.items.len);
+        try self.hir.tuple_type_payloads.append(self.hir.gpa, .{
+            .elements_start = start,
+            .elements_len = @intCast(elements.len),
+        });
+        const id = try self.newNode(.tuple_type, span, payload_idx);
+        for (elements) |e| self.hir.setParent(e, id);
+        return id;
+    }
+
+    pub fn addFnType(
+        self: *Builder,
+        span: Span,
+        type_params: []const NodeId,
+        params: []const NodeId,
+        return_type: NodeId,
+        is_constructor: bool,
+    ) !NodeId {
+        const tp_start: u32 = @intCast(self.hir.child_pool.items.len);
+        try self.hir.child_pool.appendSlice(self.hir.gpa, type_params);
+        const p_start: u32 = @intCast(self.hir.child_pool.items.len);
+        try self.hir.child_pool.appendSlice(self.hir.gpa, params);
+        const payload_idx: u32 = @intCast(self.hir.fn_type_payloads.items.len);
+        try self.hir.fn_type_payloads.append(self.hir.gpa, .{
+            .type_params_start = tp_start,
+            .type_params_len = @intCast(type_params.len),
+            .params_start = p_start,
+            .params_len = @intCast(params.len),
+            .return_type = return_type,
+            .is_constructor = is_constructor,
+        });
+        const kind: NodeKind = if (is_constructor) .constructor_type else .fn_type;
+        const id = try self.newNode(kind, span, payload_idx);
+        for (type_params) |tp| self.hir.setParent(tp, id);
+        for (params) |p| self.hir.setParent(p, id);
+        if (return_type != none_node_id) self.hir.setParent(return_type, id);
+        return id;
+    }
+
+    pub fn addIndexedAccessType(self: *Builder, span: Span, object: NodeId, index: NodeId) !NodeId {
+        const payload_idx: u32 = @intCast(self.hir.indexed_access_type_payloads.items.len);
+        try self.hir.indexed_access_type_payloads.append(self.hir.gpa, .{
+            .object = object,
+            .index = index,
+        });
+        const id = try self.newNode(.indexed_access_type, span, payload_idx);
+        self.hir.setParent(object, id);
+        self.hir.setParent(index, id);
+        return id;
+    }
+
+    pub fn addKeyofType(self: *Builder, span: Span, operand: NodeId) !NodeId {
+        const payload_idx: u32 = @intCast(self.hir.keyof_type_payloads.items.len);
+        try self.hir.keyof_type_payloads.append(self.hir.gpa, .{ .operand = operand });
+        const id = try self.newNode(.keyof_type, span, payload_idx);
+        self.hir.setParent(operand, id);
+        return id;
+    }
+
+    pub fn addTypeofType(self: *Builder, span: Span, operand: NodeId) !NodeId {
+        const payload_idx: u32 = @intCast(self.hir.typeof_type_payloads.items.len);
+        try self.hir.typeof_type_payloads.append(self.hir.gpa, .{ .operand = operand });
+        const id = try self.newNode(.typeof_type, span, payload_idx);
+        self.hir.setParent(operand, id);
+        return id;
+    }
+
+    pub fn addConditionalType(
+        self: *Builder,
+        span: Span,
+        check: NodeId,
+        extends: NodeId,
+        true_branch: NodeId,
+        false_branch: NodeId,
+    ) !NodeId {
+        const payload_idx: u32 = @intCast(self.hir.conditional_type_payloads.items.len);
+        try self.hir.conditional_type_payloads.append(self.hir.gpa, .{
+            .check = check,
+            .extends = extends,
+            .true_branch = true_branch,
+            .false_branch = false_branch,
+        });
+        const id = try self.newNode(.conditional_type, span, payload_idx);
+        self.hir.setParent(check, id);
+        self.hir.setParent(extends, id);
+        self.hir.setParent(true_branch, id);
+        self.hir.setParent(false_branch, id);
+        return id;
+    }
+
+    pub fn addInferType(self: *Builder, span: Span, name: StringId, constraint: NodeId) !NodeId {
+        const payload_idx: u32 = @intCast(self.hir.infer_type_payloads.items.len);
+        try self.hir.infer_type_payloads.append(self.hir.gpa, .{
+            .name = name,
+            .constraint = constraint,
+        });
+        const id = try self.newNode(.infer_type, span, payload_idx);
+        if (constraint != none_node_id) self.hir.setParent(constraint, id);
+        return id;
+    }
+
+    pub fn addLiteralType(self: *Builder, span: Span, literal: NodeId, negative: bool) !NodeId {
+        const payload_idx: u32 = @intCast(self.hir.literal_type_payloads.items.len);
+        try self.hir.literal_type_payloads.append(self.hir.gpa, .{
+            .literal = literal,
+            .negative = negative,
+        });
+        const id = try self.newNode(.type_literal, span, payload_idx);
+        self.hir.setParent(literal, id);
+        return id;
+    }
+
+    pub fn addTypeParameter(
+        self: *Builder,
+        span: Span,
+        name: StringId,
+        constraint: NodeId,
+        default: NodeId,
+        variance: u8,
+    ) !NodeId {
+        const payload_idx: u32 = @intCast(self.hir.type_parameter_payloads.items.len);
+        try self.hir.type_parameter_payloads.append(self.hir.gpa, .{
+            .name = name,
+            .constraint = constraint,
+            .default = default,
+            .variance = variance,
+        });
+        const id = try self.newNode(.type_parameter, span, payload_idx);
+        if (constraint != none_node_id) self.hir.setParent(constraint, id);
+        if (default != none_node_id) self.hir.setParent(default, id);
+        return id;
+    }
+
+    pub fn addMappedType(
+        self: *Builder,
+        span: Span,
+        type_param: NodeId,
+        constraint: NodeId,
+        value: NodeId,
+        readonly: u8,
+        optional: u8,
+    ) !NodeId {
+        const payload_idx: u32 = @intCast(self.hir.mapped_type_payloads.items.len);
+        try self.hir.mapped_type_payloads.append(self.hir.gpa, .{
+            .type_param = type_param,
+            .constraint = constraint,
+            .value = value,
+            .readonly = readonly,
+            .optional = optional,
+        });
+        const id = try self.newNode(.mapped_type, span, payload_idx);
+        self.hir.setParent(type_param, id);
+        if (constraint != none_node_id) self.hir.setParent(constraint, id);
+        if (value != none_node_id) self.hir.setParent(value, id);
         return id;
     }
 };
@@ -1785,6 +2219,108 @@ pub fn objectLiteralProps(hir: *const Hir, id: NodeId) []const NodeId {
 pub fn objectPropertyOf(hir: *const Hir, id: NodeId) ObjectPropertyPayload {
     std.debug.assert(hir.kindOf(id) == .object_property);
     return hir.object_property_payloads.items[hir.payloads.items[id]];
+}
+
+pub fn varDeclOf(hir: *const Hir, id: NodeId) VarDeclPayload {
+    const k = hir.kindOf(id);
+    std.debug.assert(k == .var_decl or k == .let_decl or k == .const_decl);
+    return hir.var_decl_payloads.items[hir.payloads.items[id]];
+}
+
+pub fn typeRefOf(hir: *const Hir, id: NodeId) TypeRefPayload {
+    std.debug.assert(hir.kindOf(id) == .type_ref);
+    return hir.type_ref_payloads.items[hir.payloads.items[id]];
+}
+
+pub fn typeRefArgs(hir: *const Hir, id: NodeId) []const NodeId {
+    const p = typeRefOf(hir, id);
+    return hir.childSlice(p.args_start, p.args_len);
+}
+
+pub fn typeRefQualifier(hir: *const Hir, id: NodeId) []const NodeId {
+    const p = typeRefOf(hir, id);
+    return hir.childSlice(p.qualifier_start, p.qualifier_len);
+}
+
+pub fn unionTypeOf(hir: *const Hir, id: NodeId) UnionTypePayload {
+    std.debug.assert(hir.kindOf(id) == .union_type);
+    return hir.union_type_payloads.items[hir.payloads.items[id]];
+}
+
+pub fn unionTypeMembers(hir: *const Hir, id: NodeId) []const NodeId {
+    const p = unionTypeOf(hir, id);
+    return hir.childSlice(p.members_start, p.members_len);
+}
+
+pub fn intersectionTypeOf(hir: *const Hir, id: NodeId) IntersectionTypePayload {
+    std.debug.assert(hir.kindOf(id) == .intersection_type);
+    return hir.intersection_type_payloads.items[hir.payloads.items[id]];
+}
+
+pub fn intersectionTypeMembers(hir: *const Hir, id: NodeId) []const NodeId {
+    const p = intersectionTypeOf(hir, id);
+    return hir.childSlice(p.members_start, p.members_len);
+}
+
+pub fn arrayTypeOf(hir: *const Hir, id: NodeId) ArrayTypePayload {
+    std.debug.assert(hir.kindOf(id) == .array_type);
+    return hir.array_type_payloads.items[hir.payloads.items[id]];
+}
+
+pub fn tupleTypeOf(hir: *const Hir, id: NodeId) TupleTypePayload {
+    std.debug.assert(hir.kindOf(id) == .tuple_type);
+    return hir.tuple_type_payloads.items[hir.payloads.items[id]];
+}
+
+pub fn tupleTypeElements(hir: *const Hir, id: NodeId) []const NodeId {
+    const p = tupleTypeOf(hir, id);
+    return hir.childSlice(p.elements_start, p.elements_len);
+}
+
+pub fn fnTypeOf(hir: *const Hir, id: NodeId) FnTypePayload {
+    const k = hir.kindOf(id);
+    std.debug.assert(k == .fn_type or k == .constructor_type);
+    return hir.fn_type_payloads.items[hir.payloads.items[id]];
+}
+
+pub fn indexedAccessTypeOf(hir: *const Hir, id: NodeId) IndexedAccessTypePayload {
+    std.debug.assert(hir.kindOf(id) == .indexed_access_type);
+    return hir.indexed_access_type_payloads.items[hir.payloads.items[id]];
+}
+
+pub fn keyofTypeOf(hir: *const Hir, id: NodeId) KeyofTypePayload {
+    std.debug.assert(hir.kindOf(id) == .keyof_type);
+    return hir.keyof_type_payloads.items[hir.payloads.items[id]];
+}
+
+pub fn typeofTypeOf(hir: *const Hir, id: NodeId) TypeofTypePayload {
+    std.debug.assert(hir.kindOf(id) == .typeof_type);
+    return hir.typeof_type_payloads.items[hir.payloads.items[id]];
+}
+
+pub fn conditionalTypeOf(hir: *const Hir, id: NodeId) ConditionalTypePayload {
+    std.debug.assert(hir.kindOf(id) == .conditional_type);
+    return hir.conditional_type_payloads.items[hir.payloads.items[id]];
+}
+
+pub fn inferTypeOf(hir: *const Hir, id: NodeId) InferTypePayload {
+    std.debug.assert(hir.kindOf(id) == .infer_type);
+    return hir.infer_type_payloads.items[hir.payloads.items[id]];
+}
+
+pub fn literalTypeOf(hir: *const Hir, id: NodeId) LiteralTypePayload {
+    std.debug.assert(hir.kindOf(id) == .type_literal);
+    return hir.literal_type_payloads.items[hir.payloads.items[id]];
+}
+
+pub fn typeParameterOf(hir: *const Hir, id: NodeId) TypeParameterPayload {
+    std.debug.assert(hir.kindOf(id) == .type_parameter);
+    return hir.type_parameter_payloads.items[hir.payloads.items[id]];
+}
+
+pub fn mappedTypeOf(hir: *const Hir, id: NodeId) MappedTypePayload {
+    std.debug.assert(hir.kindOf(id) == .mapped_type);
+    return hir.mapped_type_payloads.items[hir.payloads.items[id]];
 }
 
 // ============================================================================
