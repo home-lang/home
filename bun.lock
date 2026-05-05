@@ -8,7 +8,6 @@
         "@stacksjs/bunpress": "^0.1.1",
         "@types/bun": "^1.3.9",
         "better-dx": "^0.2.6",
-        "typescript": "^5.9.3",
       },
     },
     "packages/action": {
