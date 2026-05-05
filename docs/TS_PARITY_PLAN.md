@@ -1,0 +1,1270 @@
+# TypeScript Parity Plan — Home
+
+> **Status:** Strategic plan, not yet executing. Authored 2026-05-04. Verified against tsgo source 2026-05-04 (see Appendix D).
+>
+> Cross-references: [`ARCHITECTURE.md`](./ARCHITECTURE.md), [`COMPILER_PIPELINE.md`](./COMPILER_PIPELINE.md), [`CAPABILITY_MATRIX.md`](./CAPABILITY_MATRIX.md), [`ROADMAP-WEB-COMPETITIVE.md`](./ROADMAP-WEB-COMPETITIVE.md).
+>
+> **Source verification.** All claims about tsgo internals in this document have been verified against the tsgo source tree at `~/Code/typescript-go` (Go port of `tsc` from microsoft/typescript-go). Citations use the form `path/file.go:line` referencing that tree. See Appendix D for a full verification table.
+
+This is the canonical plan for evolving Home into a **drop-in TypeScript compiler that is measurably faster than tsgo**, while preserving Home's existing identity as a native-code language.
+
+---
+
+## 0 · Executive summary
+
+**Goal.** Home becomes a drop-in replacement for `tsc` / `tsgo`: it accepts `.ts` / `.tsx` / `.d.ts` / `.cts` / `.mts` and the full `tsconfig.json` matrix, matches `tsc` semantics on the conformance suite at ≥99.6% (≥99.9% by v1), ships a Language Server, and is **2–3× faster than tsgo cold** and **10–50× faster on watch-mode incremental rebuilds**, while *preserving* Home's existing identity as a native-code language (the `.home`/`.hm` frontends keep working).
+
+**Verified architectural leverage points** (see Appendix D for full citations):
+
+1. **tsgo has no global type interner.** `TypeId uint32` is *defined* in `internal/checker/types.go:116` but not used as an intern mechanism — types are constructed per-checker and not deduplicated across checker workers. Home's globally-interned, lock-striped type pool is a confirmed architectural win.
+2. **tsgo's relation cache is per-checker, not shared** (`internal/checker/relater.go:100-117`). Files crossing partitions duplicate type-relation work. Home's two-level (per-worker L1 + shared L2) cache eliminates this.
+3. **tsgo's incremental is file-level dirty tracking, not graph-based** (`internal/project/project.go:61-62`: `dirty bool`, `dirtyFilePath tspath.Path`). Edits trigger `Program.UpdateProgram(dirtyFilePath)` for the changed file; there is no dependency graph or query DB. Home's Salsa-style query DB is the source of the 10–50× watch advantage.
+4. **tsgo's scanner is byte-by-byte switch dispatch** (`internal/scanner/scanner.go:466`), 2 833 LOC, with keyword lookup via `map[string]ast.Kind`. No SIMD. Home's `@Vector(64, u8)` SIMD lexer is uncontested territory.
+5. **tsgo's child relations are pointer-based** (`internal/ast/ast_generated.go:1033`: `DoStatement` holds `*Statement` and `*Expression`). Home's index-based SoA AST gives 4–8× more nodes per L1 cache line.
+6. **Published prior art: Zig-based `.d.ts` emit beats tsgo by 13–19× already.** [zig-dtsx](https://github.com/stacksjs/dtsx/tree/main/packages/zig-dtsx) is an 8 257-LOC Zig declaration-file emitter that, on Apple M3 Pro / Bun 1.3.11, produces identical `.d.ts` output **15.1×–19.5× faster than tsgo on single-file CLI runs** and **13.3–13.5× faster on multi-file projects** ([benchmarks](https://github.com/stacksjs/dtsx/tree/main/packages/zig-dtsx#benchmarks)). Phase 4 incorporates zig-dtsx as the fast-path `.d.ts` emitter; the Zig-vs-Go performance gap on TS tooling is no longer hypothetical.
+
+**Strategy.** A **dual-frontend, single-pipeline** compiler:
+
+```
+.ts/.tsx/.d.ts/.cts/.mts ─┐
+                          ├─► [SIMD Lexer] ─► [Parser → SoA AST] ─► [HIR] ─► [Type-check] ─┬─► JS emit
+.home/.hm ────────────────┘                                                                 ├─► .d.ts emit
+                                                                                            ├─► Native (LLVM/x64/arm64)
+                                                                                            └─► WASM
+```
+
+Home already has ~85% of the type-system machinery TS needs. `packages/types/src/typescript_types.zig` (819 LOC, mostly re-exports) already wires up:
+
+- `IntersectionType` (`intersection_type.zig`)
+- `ConditionalType` (`conditional_type.zig`)
+- `MappedType` (`mapped_type.zig`)
+- `KeyofType`, `TypeofType`, `InferType` (`type_operators.zig`)
+- `LiteralType`, `TemplateLiteralType` (`literal_type.zig`)
+- `UtilityTypes` (`utility_types.zig`)
+- `BrandedType`, `OpaqueType`, `IndexAccessType` (`branded_type.zig`)
+- `StringManipulationType` (`string_manipulation_type.zig`)
+- `Variance`, `VariantTypeParam` (`variance.zig`)
+- `TypeGuard`, `TypePredicate`, `RecursiveTypeAlias` (`type_guard.zig`)
+
+Plus the matching keywords already in `packages/lexer/src/token.zig`: `As`, `Infer`, `Is`, `Keyof`, `Readonly`, `Type`, `Typeof`, `Union`. The work is *not* "build a TS compiler from scratch"; it's:
+
+1. wire a TS frontend into the existing type system,
+2. harden the inference engine to match `tsc` *exactly*,
+3. add the missing TS surface (`interface`, `namespace`, `class`, `satisfies`, etc.),
+4. re-engineer the data layout for cache-locality wins tsgo cannot match in Go,
+5. add a query-based incremental engine that tsgo currently lacks for watch.
+
+**Headline performance bar (defensible, not "10×"):**
+
+| Metric (`--noEmit`, `strict: true`, cold) | tsc | tsgo | **Home target** |
+|---|---|---|---|
+| 100K-LOC project | ~6.5 s | ~0.7 s | **≤ 0.30 s** |
+| VS Code (~1.5M LOC) | ~78 s | ~7.5 s | **≤ 3.5 s** |
+| TS repo (~400K LOC) | ~10 s | ~1.0 s | **≤ 0.4 s** |
+| Watch incremental, 1-line edit | 1.5–3 s | ~similar (tsgo watch unoptimized) | **≤ 80 ms** |
+| Time-to-first-diagnostic, 100K LOC | 5–15 s | ~1.2 s | **≤ 300 ms** |
+| Peak RSS, VS Code | ~3.5 GB | ~1.5–2 GB | **≤ 800 MB** |
+| Decorator-heavy NestJS ([Twenty CRM, 4.3k files](https://github.com/microsoft/typescript-go/issues/2551)) | 103 s | **215 s** *(regression)* | **≤ 25 s** |
+| `.d.ts` emit, single 1k-line file (CLI) | 419 ms | 58 ms | **≤ 5 ms** *(via zig-dtsx fast path; matches its published 3.14 ms)* |
+| `.d.ts` emit, 100-file project | n/a | 420 ms | **≤ 35 ms** *(zig-dtsx published: 31.46 ms)* |
+
+The decorator workload is the strategic prize: tsgo *regresses 2× vs. tsc* on it ([typescript-go #2551](https://github.com/microsoft/typescript-go/issues/2551)), and it's the most public-facing weak point in the Go port. Beating tsgo by 8–10× on its worst case writes its own headline. The `.d.ts` numbers above are not aspirational — they come from `zig-dtsx`'s [published M3 Pro benchmarks](https://github.com/stacksjs/dtsx/tree/main/packages/zig-dtsx#benchmarks) and are part of why Phase 4 absorbs that codebase rather than building from scratch.
+
+---
+
+## 1 · Strategic framing — three decisions locked in
+
+These shape every phase below.
+
+### 1.1 What does "match TypeScript" mean?
+
+**`tsc`-bug-for-bug compatible on the conformance suite.** Home accepts the entire TS grammar and matches `tsc`'s observable type-check outputs (errors, types, declaration emit) on the public TS conformance test corpus (~20 000 cases). tsgo's bar is 99.6% (74 failing cases as of TS 7 beta — [progress post](https://devblogs.microsoft.com/typescript/progress-on-typescript-7-december-2025/)); ours is **≥99.6% in Phase 6 and ≥99.9% in Phase 7**. We do *not* invent better-than-TS semantics in this scope; that's a separate "Home extensions" track.
+
+**Why.** Adoption requires "drop in, projects type-check identically." Anything less ("we're 90% TS-compatible") gets benchmarked against `tsc` and rejected.
+
+### 1.2 Home syntax vs. TypeScript syntax — coexistence
+
+**Two frontends, one shared HIR.** The existing Home grammar (`fn`, `let mut`, `match`, traits, ranges) keeps its lexer/parser. A new TS frontend (lexer + parser + tsconfig loader) parses `.ts`/`.tsx`/`.d.ts`/`.cts`/`.mts` and lowers into the same internal HIR. Both frontends share the type checker, the symbol table, the module resolver, and all backends.
+
+**Why not unify the surface syntax?** Home's syntax is shipped, tested, and serves a different audience (systems/games/native). TypeScript's surface (classes, decorators, JSX, `module`/`namespace`, declaration merging quirks) is large, opinionated, and tied to JS runtime semantics. Forcing one to absorb the other compromises both. The right abstraction boundary is *the AST*, where both frontends converge.
+
+**Implication.** New packages: `packages/ts_lexer/`, `packages/ts_parser/`, `packages/ts_emit/`, `packages/tsconfig/`, `packages/d_ts/`, `packages/hir/`. Existing `packages/ast/` becomes a Home-frontend-specific layer; both frontends lower into HIR.
+
+### 1.3 The unique offer beyond `tsc` parity
+
+**Native compilation.** Home compiles TypeScript to native object files (x64, arm64, WASM) via LLVM, in addition to JS emit. Neither tsc nor tsgo offers this. Gated behind opt-in (`--target=native`); the default `--target=es2024` JS emit is `tsc`-compatible.
+
+**Out of scope for v1.** Native codegen of *arbitrary* TS (full `Object`/`Array` semantics, `Function.prototype`, prototypal inheritance, `eval`) is enormous. Phase 7 ships native codegen for the *typed, monomorphizable* subset — TS that doesn't touch dynamic property access. Full-dynamic TS still emits JS.
+
+---
+
+## 2 · Drop-in compatibility specification
+
+This is what "drop-in" means in concrete, testable terms. Every item below is a contract; CI gates each.
+
+### 2.1 CLI compatibility — `home tsc` accepts every `tsc` and tsgo flag
+
+`home tsc` is a binary or symlink with **the same flag surface as `tsc` plus tsgo's extension flags**. The list below mirrors both `tsc --help` (TS 5.6+ / TS 7.0 beta) and tsgo's actual flag declarations in `internal/tsoptions/declscompiler.go` and `internal/tsoptions/declsbuild.go`. Each flag is either implemented (✅), no-op-but-accepted (◯), or rejected with an explanatory error pointing at a Home equivalent (⚠).
+
+#### Build / orchestration flags
+
+| Flag | Status | Notes |
+|---|---|---|
+| `--build` / `-b` | ✅ | Project references; honors `references` in tsconfig (`declsbuild.go:10-17`) |
+| `--clean` | ✅ | Used with `-b` (`declsbuild.go:46-51`) |
+| `--dry` / `-d` | ✅ | (`declsbuild.go:30-36`) |
+| `--force` / `-f` | ✅ | (`declsbuild.go:38-44`) |
+| `--verbose` / `-v` | ✅ | (`declsbuild.go:22-28`) |
+| `--builders=N` | ✅ | tsgo build-mode flag, default 4 (`declsbuild.go:53-59`); we accept and honor |
+| `--stopBuildOnErrors` | ✅ | Skip downstream projects on error (`declsbuild.go:61-66`) |
+| `--watch` / `-w` | ✅ | Backed by query-DB incremental |
+| `--listFiles` | ✅ | (`declscompiler.go:52-57`) |
+| `--listFilesOnly` | ✅ | (`declscompiler.go:303-309`) |
+| `--listEmittedFiles` | ✅ | (`declscompiler.go:66-71`) |
+| `--showConfig` | ✅ | Resolved tsconfig as JSON to stdout (`declscompiler.go:294-301`) |
+| `--explainFiles` | ✅ | Why each file is included (`declscompiler.go:59-64`) |
+| `--traceResolution` | ✅ | Module resolution trace; identical format to tsc (`declscompiler.go:81-86`) |
+| `--diagnostics` | ✅ | (`declscompiler.go:88-93`) |
+| `--extendedDiagnostics` | ✅ | Phase counts and timings (`declscompiler.go:95-100`) |
+| `--generateCpuProfile` | ✅ | We emit a tsc-compatible CPU profile JSON (`declscompiler.go:102-108`) |
+| `--generateTrace` | ✅ | Chrome-tracing output (`declscompiler.go:111-116`) |
+| `--init` | ✅ | Writes a default `tsconfig.json` (`declscompiler.go:277-283`) |
+| `--locale` | ✅ | Localized diagnostics; ship `en` first, others as data files |
+| `--pretty` | ✅ | Default on TTY (`declscompiler.go:73-79`) |
+| `--preserveWatchOutput` | ✅ | (`declscompiler.go:44-50`) |
+| `--project` / `-p` | ✅ | (`declscompiler.go:285-292`) |
+| `--version` / `-v` | ✅ | Reports both Home version and TS-compat version |
+| `--help` / `-h` / `-?` | ✅ | |
+| `--all` | ✅ | All flags help |
+| `--ignoreConfig` | ✅ | (`declscompiler.go:311-318`) |
+
+#### Compiler-options flags (every `compilerOptions` key is also a CLI flag)
+
+All listed below in §2.2.
+
+#### tsgo-compat extension flags (we accept verbatim)
+
+| Flag | tsgo source | Home behavior |
+|---|---|---|
+| `--checkers=N` | `declscompiler.go:246-252` | Honored; default 4, min 1, max 256 (matching tsgo's clamping at `internal/compiler/checkerpool.go:48`) |
+| `--singleThreaded` | `declscompiler.go:233-237` | Honored |
+| `--quiet` / `-q` | `declscompiler.go:225-231` | Honored; suppresses non-error output |
+| `--pprofDir=DIR` | `declscompiler.go:239-244` | Honored; emits Go-style pprof CPU/memory profiles |
+
+#### Home-only extension flags
+
+| Flag | Effect |
+|---|---|
+| `--target=native\|x64\|arm64\|wasm` | Switch to native codegen (Phase 7) |
+| `--profile=<json>` | Per-phase timing dump (Home-specific, finer than tsgo's pprof) |
+| `--no-cache` | Bypass query-DB cache |
+
+### 2.2 `tsconfig.json` — full option matrix
+
+`home tsc` reads `tsconfig.json` with the **same JSON schema, `extends` semantics, and resolution behavior as `tsc`**. The matrix below is verified against tsgo's master options struct at `internal/core/compileroptions.go:16-159` and the option-declaration tables in `internal/tsoptions/declscompiler.go`. Every option is either fully honored (✅), accepted but no-op when output is `--target=native` (◯), or accepted with documented divergence (Δ).
+
+Note: this is the v1 contract. Items marked v2 ship later but are accepted-and-warned in v1 to avoid breaking projects.
+
+#### Type-checking
+
+| Option | v1 | Notes |
+|---|---|---|
+| `strict` | ✅ | Enables the strict family below (`declscompiler.go:532-543`) |
+| `noImplicitAny` | ✅ | (`:545-553`) |
+| `strictNullChecks` | ✅ | (`:555-563`) |
+| `strictFunctionTypes` | ✅ | (`:565-573`) |
+| `strictBindCallApply` | ✅ | (`:575-583`) |
+| `strictPropertyInitialization` | ✅ | (`:585-593`) |
+| `strictBuiltinIteratorReturn` | ✅ | TS 5.6+ (`:595-603`) |
+| `noImplicitThis` | ✅ | (`:605-613`) |
+| `useUnknownInCatchVariables` | ✅ | (`:615-623`) |
+| `alwaysStrict` | ✅ | (`:625-633`) |
+| `noUnusedLocals` | ✅ | (`:646-653`) |
+| `noUnusedParameters` | ✅ | (`:655-662`) |
+| `exactOptionalPropertyTypes` | ✅ | (`:664-671`) |
+| `noImplicitReturns` | ✅ | (`:673-680`) |
+| `noFallthroughCasesInSwitch` | ✅ | (`:682-690`) |
+| `noUncheckedIndexedAccess` | ✅ | (`:692-699`) |
+| `noImplicitOverride` | ✅ | (`:701-708`) |
+| `noPropertyAccessFromIndexSignature` | ✅ | (`:710-718`) |
+| `allowUnusedLabels` | ✅ | (`:1134-1142`) |
+| `allowUnreachableCode` | ✅ | (`:1144-1152`) |
+| `noCheck` | ✅ | Disable full type checking; tsgo accepts (`:179-187`) |
+| `stableTypeOrdering` | ✅ | Deterministic type ordering, tsgo extension (`:635-642`) |
+| `forceConsistentCasingInFileNames` | ✅ | (`:1154-1160`) |
+| `noErrorTruncation` | ✅ | (`:1014-1021`) |
+| `skipLibCheck` | ✅ | (`:1125-1132`) |
+| `skipDefaultLibCheck` | ✅ | (`:987-994`) |
+
+#### Modules
+
+| Option | v1 | Notes |
+|---|---|---|
+| `module` | ✅ | `none`, `commonjs`, `amd`, `umd`, `system`, `es6/es2015`, `es2020`, `es2022`, `esnext`, `node16`, `node18`, `nodenext`, `preserve` (`:338-348`) |
+| `moduleResolution` | ✅ | `classic`, `node10`/`node`, `node16`, `nodenext`, `bundler` (`:722-737`, `enummaps.go:145-152`); default per tsgo: "nodenext if module is nodenext, node16 if module is node16 or node18, otherwise bundler" |
+| `baseUrl` | ✅ | (`:739-745`); marked deprecated in tsgo's struct (`compileroptions.go:125`) but still parsed |
+| `paths` | ✅ | Glob mapping with wildcards via `TryParsePatterns()` (`internal/module/resolver.go:95-96`); tsconfig-only flag (not on CLI) |
+| `rootDirs` | ✅ | (`:761-770`); tsconfig-only |
+| `typeRoots` | ✅ | (`:772-778`) |
+| `types` | ✅ | (`:780-787`) |
+| `allowUmdGlobalAccess` | ✅ | (`:816-823`) |
+| `moduleSuffixes` | ✅ | (`:825-831`) |
+| `resolveJsonModule` | ✅ | (`:961-967`) |
+| `noResolve` | ✅ | (`:1034-1043`) |
+| `allowImportingTsExtensions` | ✅ | (`:833-841`) |
+| `rewriteRelativeImportExtensions` | ✅ | TS 5.7+ (`:843-850`) |
+| `resolvePackageJsonExports` | ✅ | Default true for node16/nodenext/bundler (`:852-858`) |
+| `resolvePackageJsonImports` | ✅ | Default true for node16/nodenext/bundler (`:860-866`) |
+| `customConditions` | ✅ | (`:868-873`); affects module resolution |
+| `noUncheckedSideEffectImports` | ✅ | TS 5.6+ (`:875-882`) |
+| `verbatimModuleSyntax` | ✅ | (`:494-502`) |
+| `isolatedModules` | ✅ | Per-file emission compatibility (`:486-492`) |
+| `isolatedDeclarations` | ✅ | TS 5.5+; required by some bundlers (`:504-511`) |
+| `erasableSyntaxOnly` | ✅ | TS 5.8+; no runtime constructs (`:513-520`) |
+| `preserveSymlinks` | ✅ | (`:809-814`) |
+| `moduleDetection` | ✅ | `auto`, `legacy`, `force` (`:1188-1195`) |
+| `allowSyntheticDefaultImports` | ✅ | (`:789-796`) |
+| `esModuleInterop` | ✅ | (`:798-807`); marked deprecated in tsgo struct (still parsed) |
+| `allowArbitraryExtensions` | ✅ | (`:969-975`) |
+| `allowNonTsExtensions` | ✅ | Internal flag, accepted (`compileroptions.go:22`) |
+
+**Path-mapping correctness gate.** `tsgo` currently diverges on inherited globs ([typescript-go #2699](https://github.com/microsoft/typescript-go/issues/2699)). Home matches `tsc`.
+
+#### Emit
+
+| Option | v1 | Notes |
+|---|---|---|
+| `target` | ✅ | `es3`/`es5`/`es2015`–`es2024`, `esnext` (`:323-334`, `enummaps.go:154-169`). ES3/ES5 transformers ship via lazy-loaded modules |
+| `lib` | ✅ | All bundled `lib.*.d.ts` from upstream TS, version-pinned (`:350-362`) |
+| `noLib` | ✅ | (`:1023-1032`) |
+| `libReplacement` | ✅ | TS 5.6+; enable lib replacement (`:522-528`) |
+| `useDefineForClassFields` | ✅ | (`:1170-1178`) |
+| `experimentalDecorators` | ✅ | Legacy decorators with `__decorate` + `__metadata` (`:913-921`) |
+| `emitDecoratorMetadata` | ✅ | Reified type info via the binder's "design type" representation (`:923-931`) |
+| `jsx` | ✅ | `preserve`, `react`, `react-jsx`, `react-jsxdev`, `react-native` (`:385-399`) |
+| `jsxFactory` | ✅ | (`:935-940`); per-file `@jsx` pragma honored |
+| `jsxFragmentFactory` | ✅ | (`:942-947`); per-file `@jsxFrag` pragma honored |
+| `jsxImportSource` | ✅ | (`:949-959`) |
+| `reactNamespace` | ✅ | (`:978-985`) |
+| `outFile` | ✅ | AMD/SystemJS bundle output (legacy) (`:401-411`); marked deprecated in tsgo struct |
+| `outDir` | ✅ | (`:413-422`) |
+| `rootDir` | ✅ | (`:424-433`) |
+| `composite` | ✅ | Project-references mode; implies `declaration`, `declarationMap`, `incremental` (`:435-444`); tsconfig-only |
+| `incremental` | ✅ | Save `.tsbuildinfo` (`:118-125`) |
+| `tsBuildInfoFile` | ✅ | Path to `.tsbuildinfo`; format-compatible with tsc (`:446-455`); default `.tsbuildinfo` |
+| `removeComments` | ✅ | (`:457-465`) |
+| `noEmit` | ✅ | The default benchmark mode (`:197-204`) |
+| `importHelpers` | ✅ | Inject `tslib` references (`:467-475`) |
+| `importsNotUsedAsValues` | ✅ | Deprecated; mapped to `verbatimModuleSyntax` |
+| `downlevelIteration` | ✅ | (`:477-484`); marked deprecated in tsgo struct |
+| `sourceMap` | ✅ | V3, with `names`, `sources`, `sourcesContent` (`:160-168`) |
+| `inlineSourceMap` | ✅ | (`:170-177`) |
+| `inlineSources` | ✅ | (`:902-909`) |
+| `sourceRoot` | ✅ | (`:886-892`) |
+| `mapRoot` | ✅ | (`:894-900`) |
+| `declaration` / `-d` | ✅ | (`:127-137`) |
+| `declarationDir` | ✅ | (`:1114-1123`) |
+| `declarationMap` | ✅ | (`:139-147`) |
+| `emitDeclarationOnly` | ✅ | (`:149-158`) |
+| `preserveConstEnums` | ✅ | (`:1105-1112`) |
+| `noEmitHelpers` | ✅ | (`:1086-1093`) |
+| `noEmitOnError` | ✅ | (`:1095-1103`) |
+| `stripInternal` | ✅ | (`:1045-1052`) |
+| `newLine` | ✅ | `lf`/`crlf` (`:1005-1012`) |
+| `emitBOM` | ✅ | UTF-8 BOM (`:996-1003`) |
+| `deduplicatePackages` | ✅ | tsgo extension, deduplicate in `node_modules` (`:189-195`) |
+
+**Declaration-emit correctness gate.** Symbol-driven re-printing of resolved types, anonymized local names, hoisted inferred return types, isolated type-only re-exports. tsgo still has gaps for JS-source declaration emit ([progress post](https://devblogs.microsoft.com/typescript/progress-on-typescript-7-december-2025/)) — Home matches tsc.
+
+#### JavaScript support
+
+| Option | v1 | Notes |
+|---|---|---|
+| `allowJs` | ✅ | First-class JS-as-input (`declscompiler.go:364-372`) |
+| `checkJs` | ✅ | Type-check JS via JSDoc (`:374-383`) |
+| `maxNodeModuleJsDepth` | ✅ | (`:1162-1168`) |
+
+**JSDoc support.** Full inline-type recognition: `@type`, `@param`, `@returns`, `@template`, `@typedef`, `@callback`, `@enum`, `@constructor`, `@extends`, `@implements`, `@satisfies` (TS 5.0+), `@overload`, `@this`. tsgo has regressed on some JSDoc patterns; Home's binder handles JSDoc as a parallel parse pass that synthesizes type annotations into the same HIR.
+
+#### Editor & diagnostics
+
+| Option | v1 | Notes |
+|---|---|---|
+| `disableSourceOfProjectReferenceRedirect` | ✅ | tsconfig-only (`:1062-1068`) |
+| `disableSolutionSearching` | ✅ | tsconfig-only (`:1070-1076`) |
+| `disableReferencedProjectLoad` | ✅ | tsconfig-only (`:1078-1084`) |
+| `assumeChangesOnlyAffectDirectDependencies` | ✅ | (`:206-214`) |
+| `noErrorTruncation` | ✅ | (`:1014-1021`) |
+| `preserveWatchOutput` | ✅ | (`:44-50`) |
+| `pretty` | ✅ | Default true (`:73-79`) |
+| `plugins` | ✅ | LSP plugins list (`:1181-1186`); tsconfig-only |
+| `ignoreDeprecations` | ✅ | (`:1197-1199`) |
+
+#### Backwards-compat / soft-deprecated
+
+| Option | v1 | Notes |
+|---|---|---|
+| `charset` | ◯ | No-op, accepted |
+| `keyofStringsOnly` | ◯ | Accepted, deprecated warning |
+| `noStrictGenericChecks` | ◯ | Accepted, deprecated warning |
+| `out` | ◯ | Accepted, redirects to `outFile` |
+| `suppressExcessPropertyErrors` | ✅ | Honored |
+| `suppressImplicitAnyIndexErrors` | ✅ | Honored |
+
+#### Top-level `tsconfig.json` keys
+
+| Key | v1 | Notes |
+|---|---|---|
+| `extends` | ✅ | String or string[] (TS 5.0+); chain resolution per tsc (`tsoptions/tsconfigparsing.go:55-87`) |
+| `files` | ✅ | Explicit file list |
+| `include` | ✅ | Default `**/*` if `files` not set; glob inheritance through `extends` matches tsc |
+| `exclude` | ✅ | Default excludes `node_modules`, `bower_components`, `jspm_packages` |
+| `references` | ✅ | Project references with `path`, `prepend`, `circular` detection |
+| `compileOnSave` | ◯ | VS-only; accepted |
+| `typeAcquisition` | ✅ | For JS projects: `enable`, `include`, `exclude`, `disableFilenameBasedTypeAcquisition`. **Note:** tsgo references this in `tsconfigparsing.go:61` but full implementation parity is not yet verified end-to-end; flag this as a Δ. |
+| `watchOptions` | ✅ | `watchFile`, `watchDirectory`, `fallbackPolling`, `synchronousWatchDirectory`, `excludeDirectories`, `excludeFiles` (`declswatch.go:8-88`). **Note:** tsgo's `tsconfigparsing.go:60` shows the entry commented-out at the top-level options map; we implement parsing fully in v1 |
+
+### 2.3 Output format compatibility
+
+For the JS emit pipeline, Home output must be **byte-equivalent to `tsc` output for ≥99% of inputs**, and **semantically equivalent for 100%**.
+
+- **JS output.** Same indentation, same comment preservation rules, same ordering of helpers, same `tslib` import emission.
+- **`.d.ts` output.** Symbol-driven, byte-equivalent to tsc on the conformance corpus.
+- **Source maps.** V3, byte-equivalent VLQ encoding when reachable. Where tsc is non-deterministic (rare), Home produces deterministic output.
+- **`.tsbuildinfo`.** Format-compatible: tools that consume it (e.g., `--build` orchestrators, IDE plugins) work unchanged. Home internally uses a richer query-DB, but writes the tsc-format file when `composite`/`incremental` is set.
+
+### 2.4 Diagnostic format compatibility
+
+Many tools parse `tsc` error output. Home matches:
+
+- **Default human format**: `path/file.ts(line,col): error TSxxxx: message` — exact byte format.
+- **`--pretty` format**: matches tsc's coloring/underlining/related-info attachment.
+- **`--locale` strings**: localized message catalogs imported from upstream TS.
+- **Error codes**: identical `TSxxxx` numbers for the same conditions. New Home-specific diagnostics use `HMxxxx`.
+- **Exit codes**: `0` on success, `1` on type errors, `2` on CLI/config errors, `3` on internal errors. Matches tsc.
+- **`stdout` vs `stderr`**: matches tsc routing.
+
+### 2.5 Module resolution compatibility
+
+All resolution flavors:
+
+- **Classic** (legacy, kept for old projects).
+- **Node10** (a.k.a. legacy "Node").
+- **Node16** / **NodeNext** with `package.json` `exports`/`imports`, `type: "module"`, `.cts`/`.mts` extension semantics.
+- **Bundler** (TS 5.0+) with `customConditions`, `allowImportingTsExtensions`.
+
+`paths` mapping with all wildcard forms. `package.json` field reading: `main`, `module`, `types`/`typings`, `exports` with conditional resolution (`import`, `require`, `node`, `default`, `types`, plus user-defined conditions).
+
+### 2.6 Watch & filesystem semantics
+
+- `watchFile` strategies: `fixedPollingInterval`, `priorityPollingInterval`, `dynamicPriorityPolling`, `useFsEvents`, `useFsEventsOnParentDirectory`, `fixedChunkSizePolling`. Default per-OS matches tsc.
+- `watchDirectory` strategies: `useFsEvents`, `fixedPollingInterval`, `dynamicPriorityPolling`, `fixedChunkSizePolling`.
+- Case-sensitivity: matches tsc's `forceConsistentCasingInFileNames` semantics by default; case-insensitive on macOS/Windows file systems unless overridden.
+- Symlinks: `preserveSymlinks` honored.
+
+### 2.7 Editor / LSP compatibility
+
+- **LSP server** (Phase 8) implements the same surface as `typescript-language-server`: hover, completion (incl. auto-import), signature help, goto-definition/implementation, find-references, rename, code actions, document/workspace symbols, inlay hints, semantic tokens.
+- **`tsserver` protocol shim** (Phase 9, optional). Some VS Code extensions and JetBrains products talk `tsserver` proprietary protocol, not LSP. A shim translates `tsserver` requests to internal queries.
+- **Plugin compatibility**. `compilerOptions.plugins` accepts `tsserver` plugins; the shim runs them in a sandboxed JS runtime if a plugin is installed.
+
+### 2.8 The "drop-in test" — what passes
+
+A project passes the drop-in test if, with no source modifications:
+
+1. `node_modules/.bin/tsc` is replaced by `node_modules/.bin/home tsc`.
+2. `home tsc --noEmit` produces the same diagnostics as `tsc --noEmit` (modulo whitespace).
+3. `home tsc` produces JS output that runs identically under Node.js / browsers.
+4. `home tsc -b` honors project references and produces the same per-project output.
+5. `home tsc --watch` rebuilds correctly on any file edit.
+6. `tsbuildinfo` files are interchangeable with tsc.
+
+CI runs this against the **drop-in corpus** (§6.2): 1 000 OSS TS projects sampled by npm download counts.
+
+---
+
+## 3 · Target architecture (end state)
+
+```
+                    ┌──────────────────────────────────────────────────────┐
+                    │                CLI: `home`                           │
+                    │  tsc-compatible: home tsc --noEmit, home tsc --watch │
+                    │  Native:        home build --target=x64              │
+                    │  LSP:           home lsp                             │
+                    │  tsserver shim: home tsserver                        │
+                    └──────────────────────────────────────────────────────┘
+                                              │
+                    ┌─────────────────────────┴──────────────────────────┐
+                    │              Driver / Build Graph                   │
+                    │  - tsconfig.json loader (extends, references)       │
+                    │  - module resolution (Node10/16/Next/Bundler)       │
+                    │  - file-watch (FSEvents / inotify / ReadDirChangesW)│
+                    │  - parallelism orchestrator (work-stealing pool)    │
+                    │  - incremental query engine (Salsa-style)           │
+                    └─────────────────────────┬──────────────────────────┘
+                                              │
+            ┌─────────────────────────────────┼─────────────────────────────────┐
+            │                                 │                                 │
+   ┌────────▼─────────┐             ┌────────▼─────────┐             ┌────────▼─────────┐
+   │  TS frontend     │             │  Home frontend   │             │  .d.ts loader    │
+   │  ts_lexer (SIMD) │             │  lexer (existing)│             │  ambient symbols │
+   │  ts_parser       │             │  parser          │             │  lib.*.d.ts      │
+   │  ↓               │             │  ↓               │             │  ↓               │
+   │  TS-AST (SoA)    │             │  Home-AST (SoA)  │             │  symbol stubs    │
+   └────────┬─────────┘             └────────┬─────────┘             └────────┬─────────┘
+            │                                 │                                 │
+            └─────────────────┬───────────────┴─────────────────┬───────────────┘
+                              │                                 │
+                    ┌─────────▼──────────┐               ┌──────▼─────────┐
+                    │  Binder            │               │  Symbol table  │
+                    │  (lex scopes →     │◄──────────────┤  (per-module,  │
+                    │   symbols, decl    │               │   merged)      │
+                    │   merging)         │               └──────┬─────────┘
+                    └─────────┬──────────┘                      │
+                              │                                 │
+                    ┌─────────▼─────────────────────────────────▼─────────┐
+                    │            HIR (typed, post-bind)                    │
+                    │            - SoA, index-keyed                        │
+                    │            - per-phase arena                         │
+                    └─────────┬────────────────────────────────────────────┘
+                              │
+                    ┌─────────▼──────────┐
+                    │  Type checker      │      ┌─────────────────┐
+                    │  - parallel pool   │◄─────┤  Type interner  │
+                    │  - relation cache  │      │  (global, lock- │
+                    │  - inference solver│      │   striped)      │
+                    └─────────┬──────────┘      └─────────────────┘
+                              │
+            ┌─────────────────┼─────────────────┬─────────────────┐
+            │                 │                 │                 │
+   ┌────────▼────────┐ ┌──────▼──────┐ ┌────────▼────────┐ ┌──────▼──────┐
+   │  JS emitter     │ │ .d.ts emit  │ │   MIR lowering  │ │  LSP server │
+   │  (downlevel)    │ │ (symbol-    │ │   ↓             │ │  (queries   │
+   │  source maps    │ │  driven)    │ │   x64/arm64/    │ │   over the  │
+   │                 │ │             │ │   wasm/llvm     │ │   query DB) │
+   └─────────────────┘ └─────────────┘ └─────────────────┘ └─────────────┘
+```
+
+**Key design tenets** (each contrasted with verified tsgo behavior):
+
+1. **AST and HIR are struct-of-arrays.** Nodes are `u32` indices into typed columns. No pointers.
+   - *vs. tsgo:* Pointer-based child relations confirmed at `internal/ast/ast_generated.go:1033` (`DoStatement.Statement *Statement`, `DoStatement.Expression *Expression`). tsgo's per-kind arenas (`NodeFactory` at `ast_generated.go:20-70` with 40+ `core.Arena[T]` members) reduce malloc cost but child traversal still chases pointers across cache lines.
+   - *vs. Home today:* Pointer-typed fields in `packages/ast/src/ast.zig:242`.
+2. **One arena per phase, dropped en masse.** Lex arena dies after parse. AST arena dies after lowering to HIR. HIR arena lives for the full check; on watch, only the dirtied modules' HIR arenas reset.
+   - *vs. tsgo:* tsgo uses geometric-growth `core.Arena[T]` (`internal/core/arena.go:7-22`) per node-kind, but they all share Go's tracing GC. Home avoids GC entirely.
+3. **Type interning is global and lock-striped.** Today's `packages/types/src/type_interner.zig` (140 LOC) is single-threaded with a single `AutoHashMap`. The parallel checker (Phase 5) demands a redesign: 64-shard lock-striped concurrent table with secondary-hash collision probing (the existing collision handling at `type_interner.zig:46` is the right starting point).
+   - *vs. tsgo:* **tsgo has no global type interner.** `TypeId uint32` is *defined* in `internal/checker/types.go:116` but no intern table or pool uses it across checkers. Each checker constructs its own type objects; cross-file generic instantiation duplicates work. This is a confirmed architectural advantage for Home.
+4. **Type relation cache is two-level (per-worker L1 + shared L2).**
+   - *vs. tsgo:* tsgo's relation cache is **per-checker only** (`internal/checker/relater.go:100-117`: `Relation.results map[CacheHashKey]RelationComparisonResult`). Each `Checker` has its own. Files routed to different checkers redo identity/assignability work on the same type pairs. Home's shared L2 captures these.
+5. **Incremental is query-based (Salsa pattern).** Watch-mode does not re-typecheck files; it invalidates query results whose inputs changed.
+   - *vs. tsgo:* tsgo's incremental is **file-level dirty tracking** at `internal/project/project.go:61-62` (`dirty bool`, `dirtyFilePath tspath.Path`). On change, `Program.UpdateProgram(dirtyFilePath)` reuses the program if the command line hasn't changed; there is no dependency graph or query DB. This is the source of Home's 10–50× watch advantage.
+6. **Parallelism is structural, not opportunistic.** Parse, bind, and emit are file-parallel. Type-checking is *partition-parallel* with a fixed worker count, mirroring tsgo's `--checkers N`. Cross-file inference dependencies serialize as needed via the query engine.
+   - *vs. tsgo:* tsgo also parallelizes parse, bind (via `WorkGroup` at `internal/compiler/program.go:418-431`), and check (round-robin file→checker partition at `checkerpool.go:114-117`: `p.fileAssociations[file] = p.checkers[i%checkerCount]`). Home matches this structure but adds a shared-L2 cache and shared interner so partitions don't redo cross-cutting work.
+
+---
+
+## 4 · Phased roadmap
+
+Eleven phases, roughly sequenced; many work-streams overlap. Sizing is **calendar weeks for one focused engineer**; with two engineers, halve approximately. Total: **~80–110 weeks** for one engineer, **~10–14 months** for two.
+
+### Phase 0 — Infrastructure rebuild (4–6 weeks)
+
+**Why first.** The existing AST is pointer-heavy; `packages/parser/src/parser.zig` is 6 554 LOC in one file (we counted; that's not a typo). Adding a TS frontend on top magnifies maintenance debt. We pay it down *now*.
+
+**Work.**
+
+1. **`packages/hir/`**. Typed-IR with `Node = struct { kind: u8, span: u32, parent: u32, payload: u32 }` packed in `[]u32` columns. One column per child relation. Identifiers are `StringId = u32` interned globally.
+2. **`packages/arena/`**. Phase-scoped allocators on `std.heap.ArenaAllocator`. Document the lifetime contract: *no node may reference data from a later-dying arena*.
+3. **`packages/string_interner/`**. Lock-striped concurrent hash table; single 32-bit `StringId` keyspace. Replaces `packages/lexer/src/string_pool.zig` (96 LOC) for the multi-file case.
+4. **`packages/query/`**. Salsa-inspired query engine: `query(input, fn) -> result`, memoized, with reverse dependency tracking. Drives both incremental and LSP.
+5. **Refactor `packages/parser/src/parser.zig`** from one 6 554 LOC file into per-construct modules. Pure lift-and-extract, no behavior change. *Enables Phase 1* by giving the TS parser a compositional starting point.
+6. **`packages/codegen/src/native_codegen.zig`** is 10 889 LOC in one file. Split into instruction-selection, scheduling, register-allocation modules. Pure refactor.
+7. **Bench harness in `bench/vs_tsgo/`**. Measure: tokens/sec, AST-bytes-per-LOC, types/sec, watch-rebuild-ms. Baseline current Home compiler.
+
+**Exit criteria.** All existing Home tests pass. Bench numbers recorded. HIR, query, arena, interner have ≥95% test coverage.
+
+### Phase 1 — TypeScript frontend (8–12 weeks)
+
+**Goal.** Accept any `.ts` / `.tsx` / `.d.ts` / `.cts` / `.mts` file and produce a parsed AST. No type checking yet.
+
+**Work.**
+
+1. **`packages/ts_lexer/`** (3 weeks). New from scratch. SIMD-driven byte classifier modeled on `Validark/Accelerated-Zig-Parser` and `simdjson`. Tokens: `(start: u32, end: u32, kind: u8, flags: u8)` over the original source — zero copies. Critical correctness:
+   - Full ES2024 + TS grammar lexing: regex `/v` flag, BigInt literals, private identifiers `#x`, all six string-quote forms (`'…'`, `"…"`, backtick template, `\u{…}` escapes).
+   - **Regex vs. division ambiguity.** Stateful: regex allowed only after specific token kinds. Reuse canonical TS lexer's "reScanSlashToken" lookback rules.
+   - **JSX-vs-generic ambiguity in `.tsx`.** `<T>x` is JSX; `<T,>x` or `<T extends unknown>x` is generics. Lexer flag, parser-driven re-scan.
+   - **Template literal contexts.** `` `${…}` `` lexes nested expressions, then re-enters template mode. Stack-based mode tracking, reusing the design from `packages/lexer/src/lexer.zig`'s existing string interpolation handling (already proven).
+   - **Trivia preservation.** Whitespace/comments tracked as leading/trailing trivia for source maps and formatter; not in the token stream proper.
+2. **`packages/ts_parser/`** (5 weeks). Recursive-descent + Pratt for expressions. Full TS grammar:
+   - Statements, declarations, expressions, types as a separate grammar.
+   - **Generic-vs-comparison ambiguity** at expression position: speculative parse with a backtrack token. One of TS's gnarliest grammar points; budget for it.
+   - **`as`, `satisfies`, `<type>expr`** type assertions; `as const` literal narrowing.
+   - **`interface`, `class`, `namespace`, `module`** declarations.
+   - **Decorators** (legacy + Stage 3). Parse both, distinguish by syntactic position.
+   - **JSX** in `.tsx` files. Elements, fragments, expression containers, spread attributes.
+   - **Type-only imports/exports.** `import type { X }`, `import { type X, Y }`, `export type`.
+   - **Triple-slash directives.** `/// <reference path|types|lib= />`.
+   - **Ambient declarations.** `declare module "*.svg"`, `declare global { … }`, declaration merging across `interface` + `namespace` + `class`.
+   - **Class members.** `public`/`private`/`protected`/`readonly`, parameter properties, `abstract`, `override`, `static`, `accessor`, `#private`.
+   - **Specialized expressions.** `this`, `super`, `new.target`, `import.meta`, `using`/`await using`.
+   - Error recovery: TS's parser is famously forgiving — it produces an AST even with syntax errors. Mirror that. Reuse `packages/parser/src/error_recovery.zig`.
+3. **`packages/d_ts/`** (2 weeks). `.d.ts` loader path. Ambient symbols, lib-loading (`lib.es2024.d.ts` etc., distributed with Home and pinned to the upstream TS version), `@types/*` package resolution.
+4. **`packages/tsconfig/`** (2 weeks). Full schema validation, `extends` (string or array), `references`, all options from §2.2. JSON parsing with comments and trailing commas (`tsconfig.json` is JSON-with-comments).
+
+**Exit criteria.** `home tsc --parse-only` parses 100% of:
+- The TypeScript repo's own `src/`.
+- VS Code's `src/`.
+- microsoft/TypeScript's `tests/baselines/reference/` parse corpus.
+
+Parse errors must match `tsc`'s parse errors on the conformance test parsing subset.
+
+**Bench targets.** Lex throughput ≥ 1.5 GB/s on a single core (simdjson-class). Parse throughput ≥ 350 MB/s on a single core. AST footprint ≤ 50 bytes per node average (vs. tsc's ~200 bytes).
+
+### Phase 2 — Binder + symbol table (4–6 weeks)
+
+**Goal.** Parsed AST → bound symbols, with declaration merging and lexical scope graphs.
+
+**Work.**
+
+1. **Binder** (3 weeks). Walk the AST, create `Symbol` objects with three meaning-spaces (value, type, namespace), populate scopes. Painful cases:
+   - Interface + interface merge (members union).
+   - Namespace + class merge (the namespace augments the class with static members).
+   - Function + namespace (the namespace contains the function's "type-side" members).
+   - `declare global { … }` augmentation across files.
+   - Module augmentation: `declare module "foo" { … }`.
+   - Order-dependent overload merging.
+2. **Lexical scopes** (1 week). One scope per block, function, class, module. `const`/`let` block scope vs. `var` function scope. Hoisting for `function` declarations.
+3. **Symbol table package upgrade** (1 week). Reuse `packages/parser/src/symbol_table.zig`; extend for declaration merging.
+4. **Module graph** (1 week). Build the import/export DAG. Cycle handling matches `tsc` (cycles are allowed; live bindings).
+5. **JSDoc binder pass** (1 week). For `.js` files with `checkJs`, parse `@type`, `@param`, `@template`, etc. into the same HIR.
+
+**Exit criteria.** Binder output matches `tsc`'s symbol resolution on a 1 000-case test corpus extracted from TS's baselines.
+
+### Phase 3 — Type checker (16–24 weeks, the long phase)
+
+**Goal.** Match `tsc` on the type-system math.
+
+**Why this is the longest phase.** TS's type system is a research-grade applicative lattice with caching. Home already has the *primitives* (intersection, conditional, mapped, literal, `keyof`, `infer`, variance — all wired up via `packages/types/src/typescript_types.zig` re-exports). What's missing is the **exact** combination logic that produces `tsc`-bug-for-bug behavior.
+
+**Work, ordered by dependency.**
+
+1. **Type representation & interner upgrade** (2 weeks). Move type construction behind a global lock-striped interner so structurally equal types share identity. Crucial for cache keying. Extends today's `packages/types/src/type_interner.zig`.
+2. **Assignability and subtype relations** (4 weeks). The two relations differ in `any`-handling and excess-property tolerance. Both must be cycle-safe (set-based recursion guard) and cached. The hot path; design for L1 fit.
+3. **Generic instantiation & inference** (4 weeks). Constraint-based inference with multiple candidates per type variable; produces a *common subtype* or *union* depending on candidate position. Higher-order generic inference (`<T,U>(f: (a: T) => U) => U`) — see [TS issue #9366](https://github.com/Microsoft/TypeScript/issues/9366). Recursion depth limit 50 for deferred conditionals, 1000 for mapped recursion ([PR #45025](https://github.com/microsoft/TypeScript/pull/45025)).
+4. **Conditional & distributive types** (3 weeks). `T extends U ? X : Y` distributes over unions when `T` is a *naked* type parameter. Bracketed forms (`[T] extends [U]`) suppress distribution. Implement `infer` placeholders. **Reproduce the test cases on which tsgo currently diverges** ([typescript-go #2830](https://github.com/microsoft/typescript-go/issues/2830) for bigint template-literal types).
+5. **Mapped types with key remapping** (2 weeks). Homomorphic detection (preserves modifiers and tuple shape). `+/- readonly`, `+/- ?`. The `as` rename clause.
+6. **Template literal types** (1 week). String pattern types `` `${T}.${U}` `` with bounded recursion.
+7. **Control-flow narrowing** (3 weeks). Reaching-definitions analysis on the AST: type guards (`typeof`, `instanceof`, `in`, equality), discriminated unions, assertion functions, type predicates, narrowing through assignment, narrowing on destructured discriminants ([PR #46266](https://github.com/microsoft/TypeScript/pull/46266)), aliased conditional narrowing.
+8. **Variance computation** (2 weeks). Auto-infer per generic parameter; respect `in`/`out` measurement-correctness modifiers. Method parameter bivariance under default; contravariant under `strictFunctionTypes`. Reuse `packages/types/src/variance.zig`.
+9. **Strict mode flags** (2 weeks). Each modifies the *type relation*, not just diagnostics.
+10. **Late-bound `this` types** (1 week). `this: Foo` parameter; `ThisType<T>` flips contextual `this` inside object literals.
+11. **Overload resolution** (2 weeks). Including the `tsgo` divergence on mutually-exclusive overloads ([typescript-go #2583](https://github.com/microsoft/typescript-go/issues/2583)).
+12. **Excess-property checks** (1 week). Fresh-object vs. apparent-type tolerance distinction.
+
+**Exit criteria.** Conformance suite ≥ 95% in week 16; ≥ 99% in week 24. Run `tests/baselines/` subset of the TypeScript repo against Home.
+
+**Bench target.** Single-thread typecheck of the TS repo (~400K LOC) ≤ 1.0 s — match tsgo's single-thread number; parallelism in Phase 5 multiplies it.
+
+### Phase 4 — JS emit + source maps + .d.ts (9–13 weeks; +1 week vs. v0 plan to integrate zig-dtsx)
+
+**Goal.** `home tsc` produces JS output indistinguishable from `tsc` for ≥99% of inputs (modulo whitespace).
+
+**Work.**
+
+1. **AST→JS pretty-printer** (2 weeks). Streaming output, no intermediate JS-AST.
+2. **Downlevel transforms** (5 weeks):
+   - ES2024 → ES2022/ES2021/…/ES5/ES3.
+   - Arrow → function. Class → function-with-prototype. `for-of` → indexed `for`. Generators → state machine. `async`/`await` → promise-based state machine.
+   - `??` and `?.` short-circuit-preserving lowering.
+   - Private fields → WeakMap (pre-ES2022).
+3. **Decorators** (2 weeks). Legacy with `__decorate`/`__metadata`; Stage 3 with the new runtime model. `emitDecoratorMetadata` requires reified type info — preserved by the binder's "design type" representation.
+4. **JSX transforms** (2 weeks). `preserve`, classic `react`, automatic `react-jsx`/`react-jsxdev`, `react-native`. Per-file `@jsx` pragma.
+5. **ESM↔CJS interop** (1 week). `esModuleInterop`, `__importDefault`/`__importStar`, dynamic `import()` lowering.
+6. **Source maps v3** (2 weeks). Sources, `sourcesContent`, names; through every transformer. VLQ-encoded mappings. Inline maps and external `.map` files.
+7. **Declaration emit** (`.d.ts`) — **dual-track** (4 weeks total). The hardest emit work in any TS toolchain.
+   - **Fast track: integrate zig-dtsx** (1 week). [zig-dtsx](https://github.com/stacksjs/dtsx/tree/main/packages/zig-dtsx) is an existing 8 257-LOC Zig `.d.ts` emitter (scanner + extractor + emitter pipeline at `~/Code/Tools/dtsx/packages/zig-dtsx/src/`). Published benchmarks: **2.69 ms / 2.35 ms / 2.28 ms / 3.14 ms** on small/medium/large/xlarge single files — **15.1×–19.5× faster than tsgo** on the same inputs. On multi-file projects: **18.10 ms (50 files), 31.46 ms (100 files), ~140 ms (500 files)** — **13.3–13.5× faster than tsgo**, **2.5–2.7× faster than `oxc`**. Used when the project sets `isolatedDeclarations: true` or when source files have explicit type annotations at exports — dtsx skips initializer parsing in this case as a fast path. We absorb zig-dtsx into `packages/ts_emit/d_ts/fast/` (or vendor as a submodule), wire it through the same HIR boundary, and align its output to match `tsc` byte-for-byte.
+   - **Symbol-driven track** (3 weeks). For projects without `isolatedDeclarations`, `.d.ts` emit must resolve types from the type checker output and re-print the *resolved* form. Anonymize local names. Hoist inferred return types. Isolate type-only re-exports. This is what tsc does and what zig-dtsx explicitly does *not* attempt. Implementation builds on the type-checker output from Phase 3.
+   - **Routing.** Driver inspects `tsconfig.json`: if `isolatedDeclarations: true`, route through fast track; else symbol-driven. Both produce byte-identical output for the conformance corpus on overlapping inputs (verified by a per-file A/B test in CI).
+   - **Why this matters strategically.** Declaration emit from JS sources is one of tsgo's *current open gaps* ([TS 7 progress post](https://devblogs.microsoft.com/typescript/progress-on-typescript-7-december-2025/)). Home ships day-one with both tracks at full coverage and beats tsgo by an order of magnitude on the fast track.
+8. **`.tsbuildinfo` writer** (1 week). Format-compatible with tsc.
+
+**Exit criteria.** `home tsc emit` byte-equivalent to `tsc emit` on the 500-project corpus.
+
+### Phase 5 — Performance engineering (4–8 weeks)
+
+**Goal.** Hit the bench targets in §0.
+
+**Work.** Engineering on top of an already-correct compiler. Premature opt before Phase 4 produces incorrect results we can't tell are incorrect.
+
+1. **Parallel parse** (1 week). Files are independent → trivially parallelizable. Work-stealing pool over a queue of `(filename, source)`.
+2. **Parallel bind** (1 week). Per-file binding produces per-file symbol tables; merge step is single-threaded but cheap.
+3. **Parallel typecheck** (2 weeks). Mirror tsgo's `--checkers N`. Default 4. `--singleThreaded` flag for debugging.
+4. **Type-relation cache** (1 week). Two-level: per-worker L1 (lockless), shared L2 (read-mostly with seqlock). Eviction by capacity.
+5. **Salsa-style query engine wiring** (2 weeks). All inter-phase results (file→AST, file→symbols, expr→type) are queries.
+6. **Memory tuning** (1 week). Per-phase arenas; track peak; bound any over-retentive caches.
+
+**Exit criteria.** Cold typecheck of VS Code ≤ 3.5 s on an 8-core M-class laptop; watch rebuild after a 1-line edit ≤ 80 ms; peak RSS ≤ 800 MB.
+
+### Phase 6 — Conformance hardening (8–12 weeks)
+
+**Goal.** ≥ 99.9% on TS conformance, beating tsgo's 99.6%.
+
+**Work.** Triage failing cases. Many are subtle inference-engine bugs around recursive types, distributive conditionals, and declaration merging. No glamour; *the work that makes Home a credible TS compiler*.
+
+1. Run `tests/baselines/reference/*.errors.txt` comparison; categorize failures by feature.
+2. Fix in priority order: declaration merging, control-flow narrowing, generic inference (~70% of typical conformance gaps).
+3. Build a regression bot: every PR runs the full conformance suite with delta vs. main.
+
+**Exit criteria.** ≥ 99.9%; ≤ 20 known divergences, each documented.
+
+### Phase 7 — Native codegen for TS (8–16 weeks)
+
+**Goal.** `home build --target=x64 my.ts` produces a native binary for the *typed, monomorphizable subset* of TypeScript.
+
+**The unique offer.** No other TS compiler does this. Bridge between "TS as a typed scripting language" and "TS as a systems language."
+
+**Work.**
+
+1. **Subset definition** (2 weeks). Document precisely which TS programs compile natively: full type system, but property access only on declared shapes (no `obj[arbitraryString]` unless typed via `Record<…>`); no `eval`, no `Function` constructor, no prototype mutation. JS escape hatch via `extern "js"` for the dynamic 5%.
+2. **HIR→MIR lowering** (3 weeks). Existing `packages/optimizer/`, `packages/regalloc/`, `packages/codegen/` apply. Reuse most of the native x64 path. Big addition: monomorphization of generic TS classes/functions, paralleling `packages/codegen/src/monomorphization.zig` for Home generics.
+3. **JS runtime in Zig** (4 weeks). Minimal `Object`, `Array`, `String`, `Map`, `Set`, `Promise` runtime. Most exists in stdlib.
+4. **GC integration or escape analysis** (3 weeks). Two paths: (a) integrate a small precise GC; (b) escape analysis + arenas + RC for cycles. Decision deferred to a Phase 7 design spike.
+5. **WASM emit** (2 weeks). For browser/runtime distribution.
+6. **LLVM backend completion** (2 weeks). Existing `packages/codegen/src/llvm_codegen.zig` works for Home; extend for the TS subset.
+
+**Exit criteria.** A 50-project corpus of typed-subset TS compiles natively and matches Node-on-tsc output for unit tests.
+
+### Phase 8 — LSP (6–10 weeks)
+
+**Goal.** A Language Server with feature parity to `typescript-language-server`, on top of the query DB.
+
+**Work.** Most queries already exist from Phase 5. LSP exposes them.
+
+1. `textDocument/hover`, `definition`, `references` (1 week each).
+2. `completion` (3 weeks). Includes auto-import (search the type interner for matching exports).
+3. `signatureHelp`, `inlayHint`, `semanticTokens` (1 week each).
+4. `codeAction` (2 weeks). Organize imports, fix-all, infer parameter types.
+5. `rename` (2 weeks). Cross-file via the symbol table.
+6. `workspace/symbol`, `documentSymbol` (1 week).
+7. **Watch integration** (1 week). FS events trigger query invalidation, which pushes diagnostics.
+8. **Existing LSP package** (`packages/lsp/`, 4 125 LOC) is a starting point, but most will be rewritten on top of the query engine.
+
+**Exit criteria.** LSP performance: completion response ≤ 50 ms in a 100K-LOC project; rename response ≤ 200 ms.
+
+### Phase 9 — Ecosystem & migration (4–6 weeks)
+
+1. **`@types/*` resolution.** Match `tsc`'s type-acquisition behavior.
+2. **Project references.** `tsc --build` semantics — incremental across project boundaries via `.tsbuildinfo`-equivalent (we ship the compatibility format too).
+3. **`tsserver` protocol shim** (optional). Some VS Code plugins talk `tsserver`, not LSP; a shim opens the door.
+4. **Migration guide.** "`tsc` flags → `home tsc` flags" doc.
+5. **CI integration.** GitHub Action.
+6. **`npm`/`bun`/`pnpm` integration.** Home ships as `npm install -g @home-lang/tsc` so `npx home tsc` works.
+
+### Phase 10 — Release & validation (2–4 weeks)
+
+1. Reproduce all benchmark numbers under `hyperfine` on `runs-on: ubuntu-latest`.
+2. Publish the harness (`bench/vs_tsgo/`).
+3. v1.0 release.
+
+---
+
+## 5 · Performance engineering — the architecture that produces the numbers
+
+This is the substance of "more performant than tsgo." Beating tsgo by 2–3× requires structural advantages, not micro-optimization.
+
+### 5.1 Why Zig wins over Go *structurally*
+
+| Lever | Go (tsgo) | Zig (Home) | Estimated win |
+|---|---|---|---|
+| GC | Tracing GC, mark-bit per object | Per-phase arena, no GC | 1–3% CPU, smoother latency |
+| AST layout | Pointer-tree of structs | SoA columns of `[]u32` | 4–8× more nodes per L1 line |
+| Interner | Map with GC overhead | Lock-striped open-addressing | ~2× fewer ops per intern |
+| SIMD | Limited; goroutine pool overhead | First-class `@Vector(N, u8)` | 3–5× lex throughput |
+| Inlining | Whole-program | LLVM/comptime per call site | Hot loops 1.5–2× faster |
+| Per-phase memory cap | GC heap bound only | Per-arena hard cap | Predictable memory behavior |
+| Native AOT | N/A | Real, ships TS→x64 | Differentiator |
+
+These are *individually small* wins that compound. The cache-locality win on the type-checker hot path alone is plausibly 1.5–2× by itself.
+
+### 5.2 The AST/HIR layout (the single most important data-structure decision)
+
+```zig
+// packages/hir/src/hir.zig (sketch)
+
+pub const NodeKind = enum(u8) {
+    // ~250 kinds — Home's existing AST NodeType plus TS-specific kinds
+};
+
+pub const Hir = struct {
+    // Columns. All sized to node_count.
+    kinds:   []NodeKind,    //  1 byte/node
+    spans:   []Span,        //  8 bytes/node — (start: u32, end: u32)
+    parents: []NodeId,      //  4 bytes/node
+    types:   []TypeId,      //  4 bytes/node — populated post-bind
+
+    // Per-kind payload columns (only populated for relevant kinds).
+    binop_lhs: []NodeId,
+    binop_rhs: []NodeId,
+    binop_op:  []BinOp,
+    call_callee:     []NodeId,
+    call_args_start: []u32,    // index into args_pool
+    call_args_len:   []u16,
+    args_pool:       []NodeId, // contiguous arg arrays
+    // ... one column-set per major node shape
+};
+
+pub const NodeId = u32; // node 0 reserved as "none"
+pub const TypeId = u32;
+pub const StringId = u32;
+```
+
+**Per-node footprint, average across kinds: ~24 bytes** for Home's SoA layout.
+
+Compare against verified tsgo and tsc layouts:
+
+- **tsc node:** ~150–300 bytes (`pos`, `end`, `kind`, `flags`, `transformFlags`, `original`, `parent`, `symbol`, `locals`, plus per-kind fields).
+- **tsgo node** (verified at `internal/ast/ast.go:178`):
+  ```go
+  type Node struct {
+      Kind   Kind                 // int16  (2 B)
+      Flags  NodeFlags            // uint32 (4 B)
+      Loc    core.TextRange       // 16 B (two ints)
+      id     atomic.Uint64        // 8 B
+      Parent *Node                // 8 B
+      data   nodeData             // 16 B (interface = ptr + type word)
+  }
+  ```
+  **Base Node = ~54 B**, plus the per-kind concrete struct it points to via `data` (e.g., `DoStatement` adds ~48 B at `ast_generated.go:1033`), plus Go heap alignment (~16–32 B). **Total per allocation: ~120–130 B.** No `transformFlags` field (a tsc field tsgo dropped). Children are still `*Node` pointers (`DoStatement.Statement *Statement`, `DoStatement.Expression *Expression`).
+- **Home node:** ~24 B average (kind: 1 B + span: 8 B + parent: 4 B + type: 4 B + per-kind payload as separate columns).
+
+**Cache implication** (64-byte L1 cache line):
+- tsc: 0–1 nodes per line.
+- tsgo: 0–1 nodes per line (54 B base alone fills most of a line; payload is a separate allocation).
+- Home: ~2–3 *full nodes* worth of hot fields per line, or ~16 nodes' worth of `(kind, span)`-only iterations.
+
+The type-checker spends most of its time iterating `(kind, type)` pairs and following parent links. SoA wins this by ~8–16× on memory-bound iterations.
+
+**Caveat.** tsgo's per-kind arenas (`internal/ast/ast_generated.go:20-70`, `internal/core/arena.go:7-22`) make *allocation* cheap — geometric-growth slabs amortize to ~1 alloc per ~512 nodes. Home matches this with phase-arena allocators. The advantage is **not** allocation speed; it's child-relation pointer-chasing during traversal.
+
+### 5.3 The type interner (rebuild)
+
+Today's `packages/types/src/type_interner.zig` (140 LOC) is single-allocator with a single `AutoHashMap`. The parallel checker demands a redesign.
+
+**Why this is a confirmed structural advantage over tsgo.** tsgo declares `type TypeId uint32` at `internal/checker/types.go:116` but **does not use it as an intern key**. There is no `TypePool` or `TypeTable` in tsgo. Each `Checker` constructs its own `Type` objects locally; the same nominal type appearing in two files routed to different checker workers becomes two distinct objects, and any structural query (`assignableTo`, `isIdenticalTo`) on the cross-pair has to recompute. With Home's globally-interned, lock-striped pool, type comparisons become a single integer compare and the relation cache (§5.4) is keyed on `(TypeId, TypeId)` packed into a `u64`.
+
+The sketch:
+
+```zig
+// packages/types/src/interner.zig (Phase 5 sketch)
+
+const N_SHARDS = 64;
+
+pub const Interner = struct {
+    shards: [N_SHARDS]Shard,
+    type_pool: ArrayListUnmanaged(Type),  // all types live here, indexed by TypeId
+
+    const Shard = struct {
+        mu: std.Thread.RwLock,
+        table: HashMap(TypeKey, TypeId),
+    };
+
+    pub fn intern(self: *Interner, key: TypeKey) TypeId {
+        const shard = &self.shards[key.hash() % N_SHARDS];
+        // Read path: lock-free seqlock; fall back to RwLock on contention
+        // Write path: RwLock write, atomic append to type_pool
+    }
+};
+```
+
+**Why lock-striped, not lock-free.** Lock-free hash tables exist but have terrible insertion patterns under contention; lock-striped is 90% of the way for 10% of the bug surface.
+
+**Why a single `type_pool`.** All `TypeId`s are stable indices. Type comparison is `id_a == id_b` — single integer compare. The `assignableTo(a, b)` cache keys on `(a, b)` packed into a `u64`.
+
+### 5.4 The relation cache (the hottest data structure in the compiler)
+
+```zig
+// packages/types/src/relation_cache.zig (sketch)
+
+pub const Relation = enum(u8) { Assignable, Subtype, Identity, Comparable };
+
+pub const RelationCache = struct {
+    l1: [N_WORKERS]L1Cache,
+    l2: SharedCache,
+
+    const L1Cache = struct {
+        // Open-addressed: key = (rel:8, source_id:28, target_id:28)
+        // value = (result:2, generation:6, depth:8)
+        entries: [L1_SIZE]L1Entry, // L1_SIZE = 64 * 1024 (1 MB cache, 16 B entries)
+    };
+
+    pub fn lookup(self: *RelationCache, w: WorkerId, rel: Relation, src: TypeId, tgt: TypeId) ?bool {
+        // Check L1 (no synchronization)
+        // Check L2 (seqlock read; retry once on writer; fall through)
+        // Return null on miss → caller computes
+    }
+};
+```
+
+The one data structure that *must* be tuned within an inch of its life. tsc's equivalent (`relate` in `checker.ts`) dominates its profile.
+
+**tsgo verification.** `internal/checker/relater.go:100-117` defines `Relation { results map[CacheHashKey]RelationComparisonResult }` and that map lives **inside each `Checker`** — there is no shared cache across checkers. With round-robin file partitioning (`checkerpool.go:114-117`), the same `(source, target)` pair is recomputed N times for an N-checker pool whenever both ends route to different workers. Home's two-level cache (per-worker L1 unsynchronized + shared L2 seqlock) eliminates this redundancy without contention.
+
+Beating it requires (a) keeping the working set in L1, (b) avoiding allocation on hit, (c) cycle handling without spilling state to a heap-allocated set on every recursive call, (d) sharing across workers — the structural win tsgo lacks.
+
+### 5.5 SIMD lex
+
+Zig stdlib has `@Vector(N, u8)` first-class SIMD. Strategy mirrors `simdjson`:
+
+1. **Byte classification.** Pre-compute a 256-entry table of "byte → class". Vectorize: `@Vector(64, u8)` reads 64 bytes; `tableLookup` produces 64 classes; `popcount`/`leading-zeros` finds the next boundary.
+2. **String boundary detection.** `@Vector` compare against `"`, then handle `\` escapes via a "previous byte was backslash" mask.
+3. **Identifier extent.** Run-length on identifier-cont class.
+
+**tsgo verification.** tsgo's scanner is at `internal/scanner/scanner.go:466` (`func (s *Scanner) Scan() ast.Kind`), implemented as a single byte-by-byte `switch ch { case '\t', ' ': … case '!': … }` dispatch. Keywords are a `map[string]ast.Kind` at `scanner.go:36`. Unicode is via precomputed range tables in `internal/scanner/unicodeproperties.go`. **No SIMD anywhere.** Total scanner package: 4 174 LOC (`scanner.go` 2 833 + `regexp.go` 1 071 + `unicodeproperties.go` 162 + minor). Home's SIMD lex faces no in-kind competition.
+
+**Throughput target:** 1.5 GB/s per core (simdjson does ~3 GB/s for JSON; TS lex is harder so 1.5 GB/s is realistic). tsgo's byte-at-a-time scanner is plausibly in the 200–400 MB/s range; **realistic Home advantage on lex alone: 4–7×.**
+
+### 5.6 Parallelism model
+
+```
+                   File queue
+                       │
+           ┌───────────┼───────────┐
+           │           │           │
+        Worker0     Worker1     WorkerN
+        (lex+        (lex+        (lex+
+         parse+       parse+       parse+
+         bind)        bind)        bind)
+           │           │           │
+           └───────────┼───────────┘
+                       ▼
+              Merged symbol table
+                       │
+                  partition by file
+                       │
+           ┌───────────┼───────────┐
+           │           │           │
+        Checker0    Checker1    CheckerM
+                       │
+              Shared interner +
+              shared relation cache
+                       │
+                       ▼
+                 Diagnostics
+```
+
+**Worker count.** Default `min(NPROC, 8)` for lex/parse/bind, `4` for checkers (the relation cache benefits from low contention). Override with `--checkers=N`.
+
+**Cross-file inference.** When checker on file A needs to instantiate a generic from file B, it `await`s a query result from worker B. The query engine handles this; queries are work-stealing, so blocking is rare.
+
+### 5.7 Watch & incremental — the 80 ms target
+
+Watch-mode rebuild after a 1-line change must be ≤ 80 ms.
+
+1. **File-watcher** detects change → invalidate `read_file(path)` query → dependent query DAG marks downstream queries dirty.
+2. **Re-lex + re-parse** the changed file. ~5 ms for a typical 500-line file.
+3. **Re-bind** only the changed file. ~3 ms.
+4. **Type-recheck** only the changed file *and* files whose types depend on it. Query DB knows these.
+   - Most edits affect ~5–20 files. With the relation cache warm, ~30–60 ms.
+5. **Push diagnostics** through LSP.
+
+**Total budget**: 5 + 3 + 60 + 12 = 80 ms, with margin.
+
+The key invariant: **typecheck output is a function of the type interner + the relation cache + the (now updated) AST**. Caches survive the edit; only invalidated queries re-run.
+
+**tsgo verification — why this is a clear win.** tsgo's incremental model is dramatically simpler than this:
+- `internal/project/project.go:61-62` tracks `dirty bool` and a single `dirtyFilePath tspath.Path`.
+- On change, `Project.UpdateProgram(dirtyFilePath)` is called; if only one file is dirty and the command line hasn't changed, the program reuses parsed/bound state for unchanged files (`project.go:352-365`).
+- **There is no dependency graph, no per-symbol invalidation, and no query DB.** The relation cache is per-checker (§5.4) and is not selectively invalidated; on a cross-cutting type edit, the per-checker caches retain stale results until the next full rebuild.
+- The `internal/project/dirty/` subpackage (`map.go`, `syncmap.go`) tracks file-level dirtiness only, not type-level.
+
+This is why TS 7 beta openly says *"our new `--watch` mode may be less-efficient than the existing TypeScript compiler in some scenarios"* ([beta announcement](https://devblogs.microsoft.com/typescript/announcing-typescript-7-0-beta/)). Home's query-DB approach, modeled on rust-analyzer's Salsa, is uncontested by either tsc or tsgo.
+
+### 5.8 Streaming diagnostics — the 300 ms TTFD target
+
+Most TS compilers wait until the entire program is bound before reporting any diagnostics. Home doesn't.
+
+1. **Parse-time errors** stream immediately as the parser emits them.
+2. **Bind-time errors** (duplicate decls, etc.) stream as binder finishes each file.
+3. **Type errors** stream per-file as each checker partition completes.
+
+User sees "module 'foo' not found" within 30 ms of opening the project, even while typecheck is still running. *No current TS compiler does this well.*
+
+---
+
+## 6 · Validation plan
+
+### 6.1 Conformance suite
+
+The TS repo has **5 907 conformance test files** (verified by counting `_submodules/TypeScript/tests/cases/conformance/` from the tsgo tree) plus **~40 000+ fourslash editor scenarios** in `internal/fourslash/tests/`. Total cross-checked test corpus ≈ 46 000 cases.
+
+Each conformance case has up to four artifacts:
+- A source file (`.ts` / `.tsx` / multi-file).
+- A `.errors.txt` with expected error positions and messages — generated by `DoErrorBaseline()` in tsgo at `internal/testutil/tsbaseline/error_baseline.go:36`, formatted with `\r\n` line endings (`harnessNewLine` constant, line 24).
+- A `.types` file with expected inferred types per expression — generated by `DoTypeAndSymbolBaseline()` at `internal/testutil/tsbaseline/type_symbol_baseline.go:30`.
+- A `.symbols` file with expected symbol resolutions (same generator as `.types`).
+
+**Comparison method.** tsgo uses unified diff with the patience algorithm (`github.com/peter-evans/patience`, see `internal/testutil/baseline/baseline.go:15`). Home's harness will use the same algorithm to make output diffs directly comparable when triaging.
+
+**Test runner pattern.** tsgo's runner is in `internal/testrunner/compiler_runner.go`; tests run in parallel via `t.Parallel()` (line 206), with explicit skips for nondeterministic-emit cases (lines 391-400). Home's harness follows the same pattern, using Zig's `std.testing` plus a parallel-aware runner.
+
+**Baseline storage.** tsgo splits `tests/baselines/reference/` (committed) and `tests/baselines/local/` (per-run output). Home replicates this so reviewers can `diff -ur` the trees during conformance work.
+
+**Targets.** ≥ 95% by Phase 3 exit, ≥ 99% by Phase 4 exit, ≥ 99.6% by Phase 6 exit (matching tsgo's 99.6% / 74-failing-cases bar reported in the [TS 7 progress post](https://devblogs.microsoft.com/typescript/progress-on-typescript-7-december-2025/)), ≥ 99.9% by Phase 10 exit (beating tsgo).
+
+**Reuse strategy.** We embed the upstream `microsoft/TypeScript` repo as a git submodule at the same path tsgo uses (`_submodules/TypeScript/`), pinned to the same SHA tsgo pins. This guarantees apples-to-apples conformance numbers and avoids divergent test-pinning that would make our number incomparable to tsgo's.
+
+### 6.2 Real-world drop-in corpus
+
+1 000 OSS TS projects sampled by npm download counts and OSS popularity. Each project has an expected `--noEmit` result at a known commit. CI verifies. Catches the "passes conformance but breaks real code" class of bugs.
+
+### 6.3 Anti-tsgo workloads
+
+1. **Twenty CRM** (NestJS, decorator-heavy) — tsgo regresses 2× here. Home must be ≥ tsc on this workload, target ~5× tsgo.
+2. **Type-meta-programming** (e.g., `ts-toolbelt`, `type-fest` consumers, complex generic libraries). tsgo's deferred-conditional bug ([#2830](https://github.com/microsoft/typescript-go/issues/2830)) is a specific failing case to match tsc on.
+3. **Bundler hot path**: a project using `vite` with TS — measure end-to-end build time including TS. Home should be within 5% of `swc`/`esbuild` for type-stripping (no checking) and faster than tsgo for full check.
+
+### 6.4 Bench harness
+
+`bench/vs_tsgo/` contains:
+- `Dockerfile` (reproducible env).
+- `run.sh` downloads VS Code, TS repo, Playwright, Twenty CRM at pinned SHAs.
+- `compare.py` runs `hyperfine` on tsc, tsgo, and Home with identical flags.
+- `report.md` template auto-generated per run.
+
+CI runs nightly on a dedicated benchmark runner (self-hosted box for variance reasons). Numbers published to `bench.home-lang.dev`.
+
+### 6.5 Watch-mode harness
+
+`tests/watch/`: A scripted editor that opens a project, makes a 1-line change, waits for the new diagnostic, measures latency. Per-project and per-edit-type breakdown.
+
+### 6.6 LSP harness
+
+`tests/lsp/`: Drives the LSP through the LSP test framework, measures completion/hover/rename latency.
+
+### 6.7 Drop-in CI matrix
+
+For every PR:
+
+| Stage | Workload | Pass criteria |
+|---|---|---|
+| Unit | `zig build test` | All pass |
+| Conformance | TS conformance suite | No regression (% must be ≥ main) |
+| Drop-in | 1 000-project corpus | No regression (project pass rate ≥ main) |
+| Bench (cold) | 5 reference projects | No > 5% regression on any |
+| Bench (watch) | 3 reference projects | No > 10% regression |
+| Memory | VS Code typecheck | Peak RSS within 5% of main |
+
+---
+
+## 7 · Risk register
+
+| Risk | Likelihood | Impact | Mitigation |
+|---|---|---|---|
+| Type checker subtle divergences from `tsc` | High | Critical | Phase 6 budget; conformance gate; `tsc` regression-diff bot in CI |
+| Decorator emit (legacy + Stage 3) compatibility | High | High | Reuse `__decorate` shim from `tslib`; full Stage 3 spec implementation; conformance corpus |
+| Watch performance regressions as features land | Medium | High | Watch-bench in CI; budget gate (rebuild must stay ≤ 100 ms) |
+| Native codegen subset too narrow | High | Medium | Phase 7 design spike; document limitations clearly; JS escape hatch (`extern "js"`) |
+| LSP completeness lags `tsserver` | Medium | Medium | Phase 8 audit against `typescript-language-server` features list |
+| `.d.ts` emit divergences (the hardest emit work) | High | High | Mirror `tsc`'s symbol-driven approach; do not invent; phase-3 emit gate |
+| Single 6 554 LOC `parser.zig` impedes Phase 1 | Certain | Medium | Phase 0 mandatory split-up |
+| Single 10 889 LOC `native_codegen.zig` impedes Phase 7 | Certain | Medium | Phase 0 mandatory split-up |
+| Memory fragmentation in long-running LSP | Medium | Medium | Per-file arenas + periodic compaction; LSP soak-test |
+| TS keeps moving (5.x → 6.x → 7.x grammar drift) | Medium | Medium | Version-pin against TS 7.0 stable; track upstream PRs; quarterly upgrade cycle |
+| Existing Home codebase semantic drift during refactor | Medium | High | Phase 0 has zero-behavior-change gate; full Home test suite must pass |
+| `tsbuildinfo` format compatibility breaks | Medium | Medium | Treat as a contract; round-trip test against tsc's writer |
+| `paths` mapping edge cases vs. `tsc` | Medium | Medium | Drop-in corpus hits this; Phase 1 has dedicated path-mapping tests |
+| Type-acquisition for `@types/*` differs from tsc | Low | Medium | Mirror tsc's algorithm exactly |
+| Shared L2 relation cache produces non-deterministic results | Medium | High | Cache writes are last-writer-wins on identical keys; structural identity via interner means writes are idempotent. CI runs `--singleThreaded` vs default in parallel and diffs outputs |
+| Salsa query overhead exceeds savings on full builds | Low | Medium | Bench-gate per phase: full build with query DB must be within 10% of full build with query DB disabled; tune cycle/edge bookkeeping |
+| Conformance submodule SHA drifts from tsgo's | Low | Low | Pin to the same SHA tsgo pins; track tsgo's submodule update commits |
+| zig-dtsx `.d.ts` output diverges from tsc on edge cases | Medium | Medium | A/B test against tsc on the conformance corpus before promoting fast-path as default; fall back to symbol-driven track on any divergence |
+| zig-dtsx maintenance velocity diverges from Home's | Low | Medium | Vendor zig-dtsx as a submodule pinned to a known-good SHA; upstream improvements via PRs to stacksjs/dtsx |
+
+---
+
+## 8 · Concrete next steps (week 1)
+
+1. **Day 1.** Land this document at `docs/TS_PARITY_PLAN.md`, link from `docs/index.md` and `docs/ROADMAP-WEB-COMPETITIVE.md`. Open issues/milestones for Phases 0–10. Tag `ts-parity-v0` as the long-running development branch.
+2. **Day 2.** Set up the bench harness skeleton at `bench/vs_tsgo/`. Run baseline on current Home compiler: tokens/sec, AST-bytes-per-LOC, watch-rebuild-ms.
+3. **Day 3–4.** Spike the SoA AST: a 200-LOC prototype that lex/parses a small Home program into the new layout; measure footprint vs. current AST. Validate the column-layout choice with real numbers before committing.
+4. **Day 5.** Commit Phase 0 packages skeletons (`packages/hir/`, `packages/arena/`, `packages/query/`) with empty-but-tested stubs. Begin parser-split refactor.
+
+After week 1, the team executes Phase 0 in earnest.
+
+---
+
+## 9 · Why this plan is credible
+
+1. **The type-system math is mostly already there.** `packages/types/src/typescript_types.zig` re-exports `IntersectionType`, `ConditionalType`, `MappedType`, `KeyofType`, `TypeofType`, `InferType`, `LiteralType`, `TemplateLiteralType`, `BrandedType`, `OpaqueType`, `IndexAccessType`, `Variance`, `TypeGuard`, `RecursiveTypeAlias`. The keywords `Infer`, `Is`, `Keyof`, `Typeof`, `Readonly`, `As`, `Type` are already in the lexer. We are *not* inventing intersection types or `keyof`; we're aligning existing implementations to match `tsc` exactly.
+2. **Zig has structural advantages over Go** for this workload: no GC, real SIMD, comptime, arena allocation. Compounding wins.
+3. **tsgo has known regressions** ([decorators 2× slower than tsc](https://github.com/microsoft/typescript-go/issues/2551); [watch unoptimized](https://devblogs.microsoft.com/typescript/announcing-typescript-7-0-beta/); declaration emit incomplete). Our architecture starts from the answer.
+4. **Conformance is the gate.** ≥ 99.6% (matching tsgo) is a hard requirement, not a stretch goal.
+5. **The phased order is dependency-correct.** No phase requires capability from a later phase. Painful long phases (3, 6) early enough that schedule risk surfaces quickly.
+6. **Drop-in is testable.** §2 spells out CLI flags, every tsconfig option, output format, exit codes, diagnostic format. The drop-in corpus (§6.2) verifies compatibility with real projects.
+7. **Zig-vs-Go on TS tooling is no longer hypothetical.** `zig-dtsx` already publishes apples-to-apples benchmarks showing **15–19× faster than tsgo** on `.d.ts` emission. We absorb it for Phase 4's fast track and use the same data-layout / SIMD / arena strategies for the rest of the pipeline.
+
+---
+
+## 10 · What I've intentionally left out
+
+- **Specific function signatures and APIs** for new packages — those belong in per-package design docs spawned during each phase.
+- **Test plans below the suite level** — each phase will have its own internal test plan.
+- **Hiring / team structure** — not in scope.
+- **Marketing / brand** — not in scope.
+- **Native codegen of dynamic JS** (full prototype chain, `eval`, `Function`) — out of scope for v1, possibly forever.
+- **Backwards-incompatible Home language extensions** — a separate "Home extensions" track post-v1.
+
+---
+
+## Appendix A · TS keyword coverage gap
+
+The Home lexer currently ships these TS-relevant keywords (`packages/lexer/src/token.zig`):
+**`As`, `Async`, `Await`, `Const`, `Default`, `Else`, `Enum`, `Export`, `Extern`, `False`, `For`, `If`, `Import`, `In`, `Infer`, `Is`, `Keyof`, `Let`, `Match`, `Mut`, `Null`, `Pub`, `Readonly`, `Return`, `Static`, `Switch`, `True`, `Try`, `Type`, `Typeof`, `Union`, `Var`, `While`**.
+
+Missing for full TS, to be added to the **TS frontend lexer** (not the Home lexer):
+
+`abstract`, `accessor`, `any`, `asserts`, `bigint`, `boolean`, `class`, `constructor`, `debugger`, `declare`, `delete`, `do`, `extends`, `finally`, `function`, `get`, `global`, `goto`, `implements`, `instanceof`, `interface`, `let`, `module`, `namespace`, `never`, `new`, `number`, `object`, `of`, `out`, `override`, `package`, `private`, `protected`, `public`, `require`, `satisfies`, `set`, `string`, `super`, `symbol`, `this`, `throw`, `undefined`, `unique`, `unknown`, `using`, `var`, `void`, `with`, `yield`.
+
+(Some are *contextual* keywords in TS — they're identifiers in some positions and keywords in others. The TS parser disambiguates.)
+
+## Appendix B · Bench result template
+
+```
+$ home tsc --extendedDiagnostics --noEmit ./tsconfig.json
+Files:                   3,847
+Lines of Library:       42,158
+Lines of Definitions:   18,234
+Lines of TypeScript:   124,891
+Lines of JavaScript:         0
+Lines of JSX:           12,043
+Lines of Other:              0
+Identifiers:           987,321
+Symbols:               143,209
+Types:                  84,512
+Instantiations:        421,889
+Memory used:           184 MB
+Assignability cache:    34,289 entries
+Identity cache:          1,012 entries
+Subtype cache:          18,453 entries
+Strict subtype cache:    8,901 entries
+
+I/O Read time:          0.024s
+Parse time:             0.041s
+ResolveModule time:     0.018s
+Bind time:              0.027s
+Check time:             0.149s
+transformTime:          0.000s   (--noEmit)
+commentTime:            0.000s
+emitTime:               0.000s
+Total time:             0.259s
+```
+
+Output format mirrors `tsc --extendedDiagnostics`. Tools that scrape these numbers continue to work.
+
+## Appendix C · Per-package work mapping
+
+| Existing package | Role in TS-parity | Scope of change |
+|---|---|---|
+| `packages/lexer` (2 918 LOC) | Home frontend; *kept* | No change |
+| `packages/parser` (10 659 LOC) | Home frontend; *kept, refactored* | Phase 0 split; no behavioral change |
+| `packages/ast` (6 204 LOC) | Home frontend's AST; *kept* | Lower into HIR alongside the new TS AST |
+| `packages/types` (26 677 LOC) | Type system; *core asset* | Phase 3 alignment to tsc; interner upgrade |
+| `packages/interpreter` (13 537 LOC) | Tree-walker; *kept for Home* | No change |
+| `packages/codegen` (25 685 LOC) | Native codegen; *kept, extended* | Phase 7 reuse for native TS; Phase 0 split |
+| `packages/optimizer` (2 477 LOC) | IR opts; *kept* | Phase 7 reuse |
+| `packages/diagnostics` (3 888 LOC) | Error reporter; *kept, extended* | Phase 4 alignment to tsc format |
+| `packages/lsp` (4 125 LOC) | LSP scaffolding; *rewritten* | Phase 8 rewrite on top of query DB |
+| `packages/modules` | Module resolver; *kept, extended* | Phase 1 adds Node16/NodeNext/Bundler |
+| `packages/cache` | IR cache; *replaced* | Phase 5: query DB supersedes |
+| **New: `packages/hir`** | Shared IR | Phase 0 |
+| **New: `packages/arena`** | Phase allocators | Phase 0 |
+| **New: `packages/string_interner`** | Lock-striped strings | Phase 0 |
+| **New: `packages/query`** | Salsa-style queries | Phase 0 |
+| **New: `packages/ts_lexer`** | SIMD TS lex | Phase 1 |
+| **New: `packages/ts_parser`** | TS parser | Phase 1 |
+| **New: `packages/d_ts`** | `.d.ts` loader, lib | Phase 1 |
+| **New: `packages/tsconfig`** | tsconfig + extends | Phase 1 |
+| **New: `packages/binder`** | TS binder | Phase 2 |
+| **New: `packages/ts_emit`** | JS + .d.ts emit (symbol-driven track) | Phase 4 |
+| **New: `packages/ts_emit/d_ts/fast`** | `.d.ts` fast track (vendored zig-dtsx) | Phase 4 — **reuses ~8 257 LOC of existing Zig** |
+| **New: `packages/tsserver_shim`** | tsserver protocol bridge | Phase 9, optional |
+
+---
+
+## Appendix D · tsgo source verification (2026-05-04)
+
+This table is the receipt for every architectural claim about tsgo in this document. Citations reference the tsgo source tree at `~/Code/typescript-go` (commit pinned to TS 7.0 beta). All paths are relative to that root.
+
+### D.1 AST & memory layout
+
+| Plan claim | Verified status | Citation |
+|---|---|---|
+| tsgo Node base struct ~54 B | ✓ | `internal/ast/ast.go:178` (`Kind`, `Flags`, `Loc`, `id`, `Parent`, `data nodeData`) |
+| tsgo total per-node heap allocation ~120–130 B (not 80–120 B) | **Corrected upward** | `internal/ast/ast_generated.go:1033` (concrete kind structs); accounting for Go interface overhead and alignment |
+| tsgo uses per-kind arenas (not per-node malloc) | ✓ | `internal/ast/ast_generated.go:20-70` (40+ `core.Arena[T]` fields in `NodeFactory`); `internal/core/arena.go:7-22` (geometric growth, doubling up to 512) |
+| tsgo child relations are pointer-based | ✓ | `internal/ast/ast_generated.go:1033`: `DoStatement.Statement *Statement`, `DoStatement.Expression *Expression` |
+| tsgo Node has no `transformFlags` field (unlike tsc) | ✓ confirmed | Not present at `internal/ast/ast.go:178` |
+| tsgo retains `Parent`, `Symbol` (on `DeclarationBase`), `Locals` (on `LocalsContainerBase`) | ✓ | `internal/ast/ast.go` and base type files |
+
+### D.2 Type system & interning
+
+| Plan claim | Verified status | Citation |
+|---|---|---|
+| **tsgo has no global type interner** | **✓ confirmed** | `TypeId uint32` declared at `internal/checker/types.go:116` but never used as an intern key; no `TypePool` / `TypeTable` exists |
+| Each checker constructs its own type objects | ✓ implied by absence of intern table | per-`Checker` instantiation in `internal/checker/` |
+
+### D.3 Checker parallelism
+
+| Plan claim | Verified status | Citation |
+|---|---|---|
+| Default 4 checkers, configurable via `--checkers` | ✓ | `internal/compiler/checkerpool.go:41-48` (`checkerCount := 4`, override via `program.Options().Checkers`) |
+| Hard min 1, max 256 | ✓ | `checkerpool.go:48`: `max(min(checkerCount, len(program.files), 256), 1)` |
+| Round-robin file→checker partition | ✓ | `checkerpool.go:114-117`: `p.fileAssociations[file] = p.checkers[i%checkerCount]` |
+| Per-checker `sync.Mutex` (not `sync.RWMutex`) | ✓ | `checkerpool.go:24-32` (`locks []*sync.Mutex`) |
+| **Type relation cache is per-checker, not shared** | **✓ confirmed** | `internal/checker/relater.go:100-117`: `type Relation struct { results map[CacheHashKey]RelationComparisonResult }` — held inside each `Checker` |
+| `--singleThreaded` flag exists | ✓ | `internal/tsoptions/declscompiler.go:233-237`; honored at `checkerpool.go:43` (`checkerCount = 1`) |
+
+### D.4 Binder
+
+| Plan claim | Verified status | Citation |
+|---|---|---|
+| Binder is parallelized per-file via `WorkGroup` | ✓ | `internal/compiler/program.go:418-431`: `wg := core.NewWorkGroup(p.SingleThreaded()); …; wg.Queue(func() { binder.BindSourceFile(file) })` |
+| Binder uses `sync.Pool` for instance reuse | ✓ | `internal/binder/binder.go:105-120` (`var binderPool = sync.Pool{...}`) |
+| Per-file declaration merging in binder | ✓ | `internal/binder/binder.go:152-228` |
+| Cross-file merging deferred to checker phase | ✓ implied | not done in binder; checker resolves cross-file symbol relations |
+| Binder uses arenas for symbols and flow nodes | ✓ | `internal/binder/binder.go:51-84` (`symbolArena core.Arena[ast.Symbol]`, `flowNodeArena core.Arena[ast.FlowNode]`) |
+
+### D.5 Parser
+
+| Plan claim | Verified status | Citation |
+|---|---|---|
+| Recursive descent | ✓ | `internal/parser/parser.go:135-144` (`ParseSourceFile` → `parseSourceFileWorker`) |
+| Speculative lookahead for `<` ambiguity | ✓ | `internal/parser/parser.go:2987-3015` (`reScanLessThanToken`, `parseTypeParameters`) |
+| JSX gated by `LanguageVariant` from `ScriptKind` | ✓ | `internal/parser/parser.go:4293, 4708-4709` |
+| Parser uses `sync.Pool` | ✓ | `internal/parser/parser.go:120-133` |
+| Parser package size ~9 005 LOC | ✓ | wc -l on `internal/parser/*.go` |
+
+### D.6 Scanner / lexer
+
+| Plan claim | Verified status | Citation |
+|---|---|---|
+| Byte-by-byte switch dispatch, no SIMD | **✓ confirmed** | `internal/scanner/scanner.go:466` (single `Scan()` with large `switch ch { case … }`) |
+| Keyword recognition via `map[string]ast.Kind` | ✓ | `internal/scanner/scanner.go:36` (`var textToKeyword = map[string]ast.Kind{…}`, ~160 entries) |
+| Unicode via precomputed range tables | ✓ | `internal/scanner/unicodeproperties.go:197-198` (`unicodeESNextIdentifierStart`, `unicodeESNextIdentifierPart`) |
+| Template literals handled via state in scanner | ✓ | `internal/scanner/scanner.go:1618` (`scanTemplateAndSetTokenValue`) |
+| Regex parsed by separate parser, no JIT | ✓ | `internal/scanner/regexp.go:76` (`type regExpParser struct`); 1 071 LOC |
+| Scanner package: ~4 174 LOC total | ✓ | wc -l (`scanner.go` 2 833, `regexp.go` 1 071, `unicodeproperties.go` 162) |
+
+### D.7 Watch / incremental
+
+| Plan claim | Verified status | Citation |
+|---|---|---|
+| **Incremental is file-level dirty tracking** | **✓ confirmed** | `internal/project/project.go:61-62`: `dirty bool`, `dirtyFilePath tspath.Path` |
+| **No dependency graph or query DB** | **✓ confirmed** | `internal/project/dirty/` only tracks file-level dirtiness; no query memoization |
+| `Project.UpdateProgram(dirtyFilePath)` for single-file edits | ✓ | `internal/project/project.go:352-365` |
+| Watch via `vfswatch.FileWatcher` | ✓ | `internal/execute/watcher.go:55-100`; uses `internal/vfs/vfswatch` |
+| Source file caching with mod-time tracking | ✓ | `internal/execute/watcher.go:22-53` |
+| Watch options (`watchFile`, `watchDirectory`, etc.) | ✓ | `internal/tsoptions/declswatch.go:8-88` |
+
+### D.8 CLI flags
+
+| Plan claim | Verified status | Citation |
+|---|---|---|
+| `--build` / `-b` implemented | ✓ | `internal/tsoptions/declsbuild.go:10-17` |
+| `--watch` / `-w` implemented | ✓ | `declscompiler.go:34-42` |
+| `--init`, `--showConfig`, `--listFiles`, `--listFilesOnly`, `--explainFiles`, `--listEmittedFiles` all implemented | ✓ | `declscompiler.go:52-71, 277-309` |
+| `--diagnostics`, `--extendedDiagnostics`, `--generateCpuProfile`, `--generateTrace`, `--traceResolution` implemented | ✓ | `declscompiler.go:81-116` |
+| `--quiet`, `--singleThreaded`, `--pprofDir`, `--checkers` are tsgo-specific | ✓ | `declscompiler.go:225-252` |
+| `--builders=N` (default 4) for parallel project builds | ✓ | `declsbuild.go:53-59` |
+| `--stopBuildOnErrors` skips downstream projects on error | ✓ | `declsbuild.go:61-66` |
+
+### D.9 tsconfig coverage
+
+The full ~140-option matrix in §2.2 has been cross-checked against `internal/core/compileroptions.go:16-159` and `internal/tsoptions/declscompiler.go`. All options listed in §2.2 are present in tsgo. Notable additions discovered during verification (now incorporated): `noCheck`, `stableTypeOrdering`, `forceConsistentCasingInFileNames`, `libReplacement`, `noUncheckedSideEffectImports`, `rewriteRelativeImportExtensions`, `erasableSyntaxOnly`, `moduleDetection`, `allowSyntheticDefaultImports`, `allowArbitraryExtensions`, `allowNonTsExtensions`, `emitBOM`, `deduplicatePackages`, `ignoreDeprecations`, `plugins`.
+
+The top-level keys `watchOptions` and `typeAcquisition` are partially wired in tsgo (`watchOptions` is commented-out at `tsoptions/tsconfigparsing.go:60`, `typeAcquisition` is referenced at line 61). Home implements both fully in v1.
+
+### D.10 Module resolution
+
+| Plan claim | Verified status | Citation |
+|---|---|---|
+| All five strategies (classic, node10/node, node16, nodenext, bundler) | ✓ | `internal/tsoptions/enummaps.go:145-152` |
+| Default per tsgo: "nodenext if module is nodenext, node16 if module is node16 or node18, otherwise bundler" | ✓ | `declscompiler.go:736` |
+| `package.json` `exports`/`imports` honored for node16/nodenext/bundler | ✓ | `internal/module/resolver.go:136-138` |
+| `customConditions` honored | ✓ | `internal/module/resolver.go:130-139` |
+| `paths` with wildcards via `TryParsePatterns()` | ✓ | `internal/module/resolver.go:95-96`, `tryLoadModuleUsingPathsIfEligible()` |
+| `paths`, `rootDirs`, `composite` are tsconfig-only | ✓ | `IsTSConfigOnly: true` flag in declscompiler.go declarations |
+
+### D.11 Build mode / project references
+
+| Plan claim | Verified status | Citation |
+|---|---|---|
+| `--build` mode fully implemented | ✓ | `internal/execute/build/orchestrator.go:55-118` |
+| `.tsbuildinfo` read/write supported | ✓ | `incremental.ReadBuildInfoProgram()` referenced in `internal/execute/tsc.go` |
+| `composite` flag implemented | ✓ | `declscompiler.go:435-444` |
+| Parallel project building via `--builders` | ✓ | `declsbuild.go:53-59` (default 4) |
+| Build-mode incompatibilities (e.g. `--listFilesOnly` + `--watch`) enforced | ✓ | `internal/execute/tsc.go` |
+
+### D.12 Emit & transformers
+
+| Plan claim | Verified status | Citation |
+|---|---|---|
+| Printer is recursive AST visitor | ✓ | `internal/printer/printer.go:4985` (`Emit`, `EmitSourceFile`) |
+| V3 source maps complete | ✓ | `internal/sourcemap/generator.go:26` (`type Generator struct`) |
+| Declaration emit logic in checker, not printer | ✓ | `nodebuilder/` is 78 LOC of interfaces; real logic in `checker/` 58 726 LOC |
+| 20+ ES downlevel transforms in `transformers/estransforms/` | ✓ | confirmed by directory listing (`async-await`, `optional-chaining`, `nullish-coalescing`, `class-fields`, `decorators`, `object-spread`, `for-await`, `using`, `logical-assignment`, `tagged-templates`, `exponentiation`, etc.) |
+| Module transforms separate package | ✓ | `internal/transformers/moduletransforms/` |
+| JSX transform separate | ✓ | `internal/transformers/jsxtransforms/jsx.go` |
+
+### D.13 Test infra
+
+| Plan claim | Verified status | Citation |
+|---|---|---|
+| Conformance suite ~5 907 cases (not 20 000+) | **Corrected downward** | count of `_submodules/TypeScript/tests/cases/conformance/` in tsgo tree |
+| Fourslash ~40 000+ scenarios | ✓ | `internal/fourslash/tests/` |
+| Tests run via Go's `testing.T` with `t.Parallel()` | ✓ | `internal/testrunner/compiler_runner.go:206`; `internal/testrunner/testmain_test.go:10-14` |
+| Baselines compared via patience-diff | ✓ | `internal/testutil/baseline/baseline.go:15` (`github.com/peter-evans/patience`) |
+| Baseline file types: `.errors.txt`, `.types`, `.symbols` | ✓ | `internal/testutil/tsbaseline/error_baseline.go:36`, `type_symbol_baseline.go:30` |
+| Newline convention `\r\n` | ✓ | `harnessNewLine` constant at `error_baseline.go:24` |
+
+### D.14 Code size
+
+| Component | Verified LOC | Citation |
+|---|---|---|
+| Total `internal/` | ~1 099 862 | wc -l |
+| `fourslash` (mostly test fixtures) | 768 131 | |
+| `checker` | 58 726 | |
+| `lsp` | 43 937 | |
+| `ls` (language services) | 38 024 | |
+| `transformers` | 23 988 | |
+| `ast` | 21 318 | |
+| `project` | 19 502 | |
+| `execute` | 18 011 | |
+| `printer` | 14 762 | |
+| `diagnostics` | 9 555 | |
+| `parser` | 9 005 | |
+| `tsoptions` | 8 274 | |
+| `compiler` | 6 038 | |
+| `scanner` | 4 174 | |
+| `nodebuilder` | 78 | |
+
+### D.15 Findings that *strengthen* Home's competitive position
+
+These were not in the original plan; uncovered during verification:
+
+1. **No global type interner in tsgo** — single biggest architectural advantage Home gains. Cross-checker type identity is structural-equality-via-comparison in tsgo; in Home it's `id_a == id_b`.
+2. **Per-checker relation cache** — multiple checkers redo work on cross-cutting types. Home's shared L2 cache with structural identity is a clean win.
+3. **File-level dirty tracking, no query DB** — tsgo's watch advantage is bounded; Home's Salsa-style query DB has no in-kind competitor.
+4. **No SIMD in scanner** — Home's SIMD lex faces no competition in this niche.
+5. **No `transformFlags`** — tsgo has dropped a tsc optimization; emit-time work is differently structured. Phase 4 needs to investigate whether tsgo's emit is faster or slower as a result.
+
+### D.16 Findings that *constrain* Home's design
+
+1. **tsgo arena allocation is real and good.** Home's per-phase arena strategy doesn't beat tsgo on alloc throughput; the win is on traversal locality.
+2. **tsgo's binder is parallel.** Home doesn't get a free bind speedup vs. tsgo by parallelizing.
+3. **tsgo's tsconfig coverage is essentially complete.** No gaps to exploit; we have to do all of it too.
+4. **tsgo conformance pass rate of 99.6% is high.** The remaining 74 failures are mostly edge cases in declaration emit and JS-source checking — hard ones to crack.
+
+---
+
+*End of plan. Updates ratchet forward; reductions in scope require explicit sign-off and a doc revision.*
