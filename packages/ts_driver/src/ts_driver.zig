@@ -58,6 +58,7 @@ pub const Compilation = struct {
 
     pub fn deinit(self: *Compilation) void {
         self.gpa.free(self.js);
+        for (self.diagnostics.items) |d| self.gpa.free(d.message);
         self.diagnostics.deinit(self.gpa);
         self.module.deinit();
         self.gpa.destroy(self.module);

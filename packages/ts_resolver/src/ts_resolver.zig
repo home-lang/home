@@ -180,10 +180,28 @@ pub const Resolver = struct {
     }
 
     fn joinPath(self: *Resolver, a: []const u8, b: []const u8) ResolveError![]const u8 {
-        // Trim trailing `/` on a, leading `./` on b.
+        // Resolve `..` segments in b relative to a.
         var bb = b;
-        while (bb.len >= 2 and bb[0] == '.' and bb[1] == '/') bb = bb[2..];
-        var aa = a;
+        const aa_owned = self.ar().dupe(u8, a) catch return error.OutOfMemory;
+        var aa: []u8 = aa_owned;
+        while (true) {
+            if (bb.len >= 2 and bb[0] == '.' and bb[1] == '/') {
+                bb = bb[2..];
+                continue;
+            }
+            if (bb.len >= 3 and bb[0] == '.' and bb[1] == '.' and bb[2] == '/') {
+                // Pop one segment from aa.
+                aa = stripLastSegment(aa);
+                bb = bb[3..];
+                continue;
+            }
+            break;
+        }
+        // Special case: aa is just "/" — preserve it.
+        if (aa.len == 1 and aa[0] == '/') {
+            return std.fmt.allocPrint(self.ar(), "/{s}", .{bb}) catch error.OutOfMemory;
+        }
+        // Trim trailing `/`.
         while (aa.len > 0 and aa[aa.len - 1] == '/') aa = aa[0 .. aa.len - 1];
         if (aa.len == 0) return self.ar().dupe(u8, bb) catch error.OutOfMemory;
         return std.fmt.allocPrint(self.ar(), "{s}/{s}", .{ aa, bb }) catch error.OutOfMemory;
@@ -370,16 +388,33 @@ fn hasExtension(s: []const u8, ext: []const u8) bool {
 }
 
 /// Returns the directory portion of `path` (everything up to but
-/// not including the last `/`). Returns "" for a root-relative file.
+/// not including the last `/`). For absolute paths whose only `/`
+/// is the leading one, returns "/"; for relative paths with no
+/// separator, returns "".
 pub fn dirname(path: []const u8) []const u8 {
     var i: usize = path.len;
     while (i > 0) {
         i -= 1;
         if (path[i] == '/' or path[i] == '\\') {
+            if (i == 0) return path[0..1]; // root: "/x" -> "/"
             return path[0..i];
         }
     }
     return "";
+}
+
+/// Remove the last `/<segment>` from a path. For "/a/b/c" returns
+/// "/a/b"; for "/a" returns "/"; for "a" returns "".
+fn stripLastSegment(path: []u8) []u8 {
+    var i: usize = path.len;
+    while (i > 0) {
+        i -= 1;
+        if (path[i] == '/' or path[i] == '\\') {
+            if (i == 0) return path[0..1];
+            return path[0..i];
+        }
+    }
+    return path[0..0];
 }
 
 /// Match `pattern` (which may end in `*`) against `s`. Returns the
