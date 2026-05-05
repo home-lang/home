@@ -417,6 +417,32 @@ test "driver: call expression returns its function's return type" {
     try T.expectEqual(@as(u32, ts_checker.Primitive.string_t), c.hir.typeOf(init_node));
 }
 
+test "driver: typeof narrowing inside if narrows identifier type" {
+    var c = try compileSource(T.allocator,
+        \\function f(x: any) {
+        \\  if (typeof x === "string") {
+        \\    let s = x;
+        \\  }
+        \\}
+    , .{});
+    defer {
+        c.deinit();
+        T.allocator.destroy(c);
+    }
+    // Find the inner `let s = x;` and check x's resolved type
+    // is string_t (narrowed from any inside the if-then branch).
+    const stmts = hir_mod.blockStmts(&c.hir, c.root);
+    const fn_node = stmts[0];
+    const f = hir_mod.fnDeclOf(&c.hir, fn_node);
+    const body_stmts = hir_mod.blockStmts(&c.hir, f.body);
+    const if_stmt = body_stmts[0];
+    const ifp = hir_mod.ifOf(&c.hir, if_stmt);
+    const then_stmts = hir_mod.blockStmts(&c.hir, ifp.then_branch);
+    const s_decl = then_stmts[0];
+    const s_init = hir_mod.varDeclOf(&c.hir, s_decl).init;
+    try T.expectEqual(@as(u32, ts_checker.Primitive.string_t), c.hir.typeOf(s_init));
+}
+
 test "driver: member access on object-typed variable returns property type" {
     var c = try compileSource(T.allocator,
         \\let p: { x: number; y: string } = null;

@@ -57,6 +57,10 @@ pub const Checker = struct {
     /// Optional bound module — when set, identifier expressions
     /// resolve their type via the symbol table.
     module: ?*const binder_mod.Module,
+    /// Stack of name → narrowed-type maps. Each `if`/`while`/etc.
+    /// pushes a scope; identifier resolution consults the top of
+    /// the stack first before falling back to the static type.
+    narrow_scopes: std.ArrayListUnmanaged(std.AutoHashMapUnmanaged(hir_mod.StringId, TypeId)),
     diagnostics: std.ArrayListUnmanaged(Diagnostic),
     diag_arena: std.heap.ArenaAllocator,
 
@@ -75,6 +79,7 @@ pub const Checker = struct {
             .engine = engine,
             .lowerer = lower.Lowerer.init(gpa, hir, ti, si),
             .module = null,
+            .narrow_scopes = .empty,
             .diagnostics = .empty,
             .diag_arena = std.heap.ArenaAllocator.init(gpa),
         };
@@ -88,6 +93,11 @@ pub const Checker = struct {
     }
 
     pub fn deinit(self: *Checker) void {
+        for (self.narrow_scopes.items) |*scope| {
+            var s = scope.*;
+            s.deinit(self.gpa);
+        }
+        self.narrow_scopes.deinit(self.gpa);
         self.diagnostics.deinit(self.gpa);
         self.diag_arena.deinit();
     }
@@ -112,8 +122,18 @@ pub const Checker = struct {
             .if_stmt => {
                 const i = hir_mod.ifOf(self.hir, node);
                 _ = try self.checkExpression(i.cond);
+                // Then-branch: apply any narrowing implied by the
+                // guard (e.g. `typeof x === "string"` narrows x to
+                // string inside the then).
+                try self.pushNarrowScope();
+                try self.applyTypeGuard(i.cond, true);
                 try self.checkStatement(i.then_branch);
-                if (i.else_branch != hir_mod.none_node_id) try self.checkStatement(i.else_branch);
+                self.popNarrowScope();
+                if (i.else_branch != hir_mod.none_node_id) {
+                    // Else-branch: apply the negated guard
+                    // (Phase 6 follow-up — for now, no narrowing).
+                    try self.checkStatement(i.else_branch);
+                }
             },
             .while_stmt => {
                 const w = hir_mod.whileOf(self.hir, node);
@@ -269,6 +289,66 @@ pub const Checker = struct {
         return t;
     }
 
+    fn pushNarrowScope(self: *Checker) !void {
+        const empty: std.AutoHashMapUnmanaged(hir_mod.StringId, TypeId) = .empty;
+        try self.narrow_scopes.append(self.gpa, empty);
+    }
+
+    fn popNarrowScope(self: *Checker) void {
+        if (self.narrow_scopes.items.len == 0) return;
+        var top = self.narrow_scopes.items[self.narrow_scopes.items.len - 1];
+        top.deinit(self.gpa);
+        _ = self.narrow_scopes.pop();
+    }
+
+    /// Look up the topmost narrowed type for `name`, walking the
+    /// scope stack from inner-most to outer-most.
+    fn lookupNarrow(self: *Checker, name: hir_mod.StringId) ?TypeId {
+        var i = self.narrow_scopes.items.len;
+        while (i > 0) {
+            i -= 1;
+            if (self.narrow_scopes.items[i].get(name)) |t| return t;
+        }
+        return null;
+    }
+
+    /// Detect simple type guards in `cond` and write their
+    /// narrowing into the current scope. Recognized today:
+    ///
+    ///   typeof X === "string" / "number" / "boolean" / "bigint" /
+    ///                "symbol" / "undefined"
+    ///   X !== null / X !== undefined
+    fn applyTypeGuard(self: *Checker, cond: NodeId, when_true: bool) !void {
+        if (!when_true) return; // negated branch — Phase 6 follow-up
+        if (self.hir.kindOf(cond) != .binary_op) return;
+        const b = hir_mod.binopOf(self.hir, cond);
+        if (b.op != .eq_strict and b.op != .neq_strict) return;
+        const positive = (b.op == .eq_strict) == when_true;
+        // typeof X === "string"
+        if (self.hir.kindOf(b.lhs) == .unary_op) {
+            const u = hir_mod.unaryOf(self.hir, b.lhs);
+            if (u.op == .typeof and self.hir.kindOf(u.operand) == .identifier and
+                self.hir.kindOf(b.rhs) == .literal_string)
+            {
+                const id = hir_mod.identifierOf(self.hir, u.operand);
+                const lit = hir_mod.literalStringOf(self.hir, b.rhs);
+                const lit_str = self.string_interner.get(lit.value);
+                if (typeOfTypeofString(lit_str)) |narrowed| {
+                    if (positive) try self.recordNarrow(id.name, narrowed);
+                }
+                return;
+            }
+        }
+        // X !== null / X === null — Phase 6 follow-up (need union
+        // subtraction support to remove null from a union).
+    }
+
+    fn recordNarrow(self: *Checker, name: hir_mod.StringId, t: TypeId) !void {
+        if (self.narrow_scopes.items.len == 0) return;
+        var top = &self.narrow_scopes.items[self.narrow_scopes.items.len - 1];
+        try top.put(self.gpa, name, t);
+    }
+
     /// Resolve an identifier reference's type. Walks up the HIR
     /// parent chain looking for an enclosing function whose
     /// parameter list declares this name; then falls back to the
@@ -278,6 +358,10 @@ pub const Checker = struct {
     /// (function parameter use, top-level decl reference).
     fn typeOfIdentifier(self: *Checker, node: NodeId) TypeId {
         const id = hir_mod.identifierOf(self.hir, node);
+
+        // Narrowed binding from an enclosing type-guard takes
+        // precedence over the static type.
+        if (self.lookupNarrow(id.name)) |t| return t;
 
         // Walk up the parent chain searching for parameters or
         // sibling let/const/var decls in scope.
@@ -401,6 +485,17 @@ pub const Checker = struct {
         try self.diagnostics.append(self.gpa, .{ .node = node, .message = msg });
     }
 };
+
+fn typeOfTypeofString(s: []const u8) ?TypeId {
+    if (std.mem.eql(u8, s, "string")) return types.Primitive.string_t;
+    if (std.mem.eql(u8, s, "number")) return types.Primitive.number_t;
+    if (std.mem.eql(u8, s, "boolean")) return types.Primitive.boolean_t;
+    if (std.mem.eql(u8, s, "bigint")) return types.Primitive.bigint_t;
+    if (std.mem.eql(u8, s, "symbol")) return types.Primitive.symbol_t;
+    if (std.mem.eql(u8, s, "undefined")) return types.Primitive.undefined_t;
+    if (std.mem.eql(u8, s, "object")) return types.Primitive.object_t;
+    return null;
+}
 
 // =============================================================================
 // Tests
