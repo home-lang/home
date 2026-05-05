@@ -263,6 +263,8 @@ pub fn build(b: *std.Build) void {
 
     // TS-parity Phase 5 §11.6 — persistent compilation cache.
     const ts_cache_pkg = createPackage(b, "packages/ts_cache/src/ts_cache.zig", target, optimize, zig_test_framework);
+    // ts_driver consumes ts_cache for the emitWithCache fast path.
+    ts_driver_pkg.addImport("ts_cache", ts_cache_pkg);
     const volatile_pkg = createPackage(b, "packages/volatile/src/volatile.zig", target, optimize, zig_test_framework);
     const pantry_pkg = createPackage(b, "packages/pantry/src/pantry.zig", target, optimize, zig_test_framework);
     const collections_pkg = createPackage(b, "packages/collections/src/collection.zig", target, optimize, zig_test_framework);

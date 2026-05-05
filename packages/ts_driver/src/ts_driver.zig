@@ -17,6 +17,7 @@ const binder = @import("binder");
 const ts_emit = @import("ts_emit");
 const tsconfig_mod = @import("tsconfig");
 const ts_checker = @import("ts_checker");
+const ts_cache = @import("ts_cache");
 
 pub const NodeId = hir_mod.NodeId;
 pub const Hir = hir_mod.Hir;
@@ -123,6 +124,62 @@ pub const CompileError = error{
     BindError,
     EmitError,
 };
+
+/// Lightweight emit result used by `emitWithCache` — JS bytes
+/// plus diagnostic summary, no HIR / symbols / interner. Faster
+/// to fetch from cache than reconstructing a full `Compilation`.
+pub const EmitResult = struct {
+    js: []const u8,
+    diagnostic_count: u32,
+    has_errors: bool,
+    /// True when the result came from the cache; false on a
+    /// fresh pipeline run.
+    from_cache: bool,
+
+    pub fn deinit(self: *EmitResult, gpa: std.mem.Allocator) void {
+        gpa.free(self.js);
+    }
+};
+
+/// Compile-or-cached-fetch. On a cache hit, returns the cached
+/// JS without running lex/parse/bind/check/emit. On a miss, runs
+/// the full pipeline, stores the result in the cache, and returns
+/// it. The cache key is `sha256(source + config_blob)` where
+/// `config_blob` is the caller-supplied tsconfig fingerprint.
+pub fn emitWithCache(
+    gpa: std.mem.Allocator,
+    source: []const u8,
+    cache: *ts_cache.Cache,
+    config_blob: []const u8,
+    options: CompileOptions,
+) !EmitResult {
+    const key = ts_cache.Cache.computeKey(source, config_blob);
+    if (cache.get(key) catch null) |cached| {
+        return .{
+            .js = cached.js,
+            .diagnostic_count = cached.diagnostic_count,
+            .has_errors = cached.has_errors,
+            .from_cache = true,
+        };
+    }
+    var c = try compileSource(gpa, source, options);
+    defer {
+        c.deinit();
+        gpa.destroy(c);
+    }
+    const js_dupe = try gpa.dupe(u8, c.js);
+    try cache.put(key, .{
+        .js = c.js,
+        .diagnostic_count = @intCast(c.diagnostics.items.len),
+        .has_errors = c.has_errors,
+    });
+    return .{
+        .js = js_dupe,
+        .diagnostic_count = @intCast(c.diagnostics.items.len),
+        .has_errors = c.has_errors,
+        .from_cache = false,
+    };
+}
 
 /// Compile a TS source string end-to-end. The caller owns the
 /// returned `Compilation` and must call `deinit` on it.
@@ -415,6 +472,35 @@ test "driver: call expression returns its function's return type" {
     try T.expectEqual(hir_mod.NodeKind.call_expr, c.hir.kindOf(init_node));
     // r should be string (the return type of id).
     try T.expectEqual(@as(u32, ts_checker.Primitive.string_t), c.hir.typeOf(init_node));
+}
+
+test "driver: emitWithCache hits on repeat compile" {
+    var cache = try ts_cache.Cache.init(T.allocator, null);
+    defer cache.deinit();
+
+    const src = "let x: number = 42;";
+    var r1 = try emitWithCache(T.allocator, src, &cache, "", .{});
+    defer r1.deinit(T.allocator);
+    try T.expect(!r1.from_cache);
+    try T.expectEqualStrings("let x = 42;", r1.js);
+
+    var r2 = try emitWithCache(T.allocator, src, &cache, "", .{});
+    defer r2.deinit(T.allocator);
+    try T.expect(r2.from_cache);
+    try T.expectEqualStrings("let x = 42;", r2.js);
+}
+
+test "driver: emitWithCache distinct sources produce distinct entries" {
+    var cache = try ts_cache.Cache.init(T.allocator, null);
+    defer cache.deinit();
+
+    var ra = try emitWithCache(T.allocator, "let a = 1;", &cache, "", .{});
+    defer ra.deinit(T.allocator);
+    var rb = try emitWithCache(T.allocator, "let b = 2;", &cache, "", .{});
+    defer rb.deinit(T.allocator);
+
+    try T.expect(!std.mem.eql(u8, ra.js, rb.js));
+    try T.expectEqual(@as(u32, 2), cache.count());
 }
 
 test "driver: typeof narrowing inside if narrows identifier type" {
