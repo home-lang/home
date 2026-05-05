@@ -132,6 +132,31 @@ pub const Program = struct {
         return self.files.items[id];
     }
 
+    /// Replace the source bytes for an existing file (matched by
+    /// path). Returns the file's id, or null if `path` isn't
+    /// tracked. Drops the file's cached compilation if any.
+    pub fn updateSource(self: *Program, path: []const u8, new_source: []const u8) !?FileId {
+        const id = self.by_path.get(path) orelse return null;
+        const f = self.files.items[id];
+        if (f.compilation) |old| {
+            old.deinit();
+            self.gpa.destroy(old);
+            f.compilation = null;
+        }
+        // Replace the source slice. We also update the
+        // `sources` map's value so the dupe stays consistent.
+        const new_dupe = try self.gpa.dupe(u8, new_source);
+        if (self.sources.fetchRemove(path)) |old_entry| {
+            self.gpa.free(old_entry.key);
+            self.gpa.free(old_entry.value);
+        }
+        const skey = try self.gpa.dupe(u8, path);
+        try self.sources.put(self.gpa, skey, new_dupe);
+        f.source = new_dupe;
+        f.imports.clearRetainingCapacity();
+        return id;
+    }
+
     pub fn lookupPath(self: *const Program, path: []const u8) ?FileId {
         return self.by_path.get(path);
     }
@@ -251,6 +276,52 @@ pub const Program = struct {
                 }
             }
         }
+    }
+
+    /// Re-compile only the subset of files whose paths appear in
+    /// `changed_paths`. Files not listed reuse their existing
+    /// `compilation` (or remain unset if they were never compiled).
+    /// Returns the count of files re-compiled.
+    ///
+    /// Pairs with `ts_watch.Watcher.tick()` for the watch-mode
+    /// loop:
+    ///   var cs = try watcher.tick();
+    ///   defer cs.deinit(gpa);
+    ///   const paths = try changeSetPaths(gpa, &cs);
+    ///   defer gpa.free(paths);
+    ///   _ = try program.recompileChanged(paths, options);
+    pub fn recompileChanged(
+        self: *Program,
+        changed_paths: []const []const u8,
+        options: ts_driver.CompileOptions,
+    ) ProgramError!u32 {
+        var count: u32 = 0;
+        for (changed_paths) |p| {
+            const id = self.by_path.get(p) orelse continue;
+            const f = self.files.items[id];
+            // Free the previous compilation so the new one owns
+            // a fresh HIR + symbol table.
+            if (f.compilation) |old| {
+                old.deinit();
+                self.gpa.destroy(old);
+                f.compilation = null;
+            }
+            // Clear any cached import edges — they'll be repopulated
+            // by resolveImports below.
+            f.imports.clearRetainingCapacity();
+
+            var per_file = options;
+            per_file.is_tsx = options.is_tsx or f.is_tsx;
+            const c = ts_driver.compileSource(self.gpa, f.source, per_file) catch |err| switch (err) {
+                error.OutOfMemory => return error.OutOfMemory,
+                else => return error.ParseError,
+            };
+            f.compilation = c;
+            count += 1;
+        }
+        // Cross-file imports may now resolve to different ids.
+        try self.resolveImports();
+        return count;
     }
 
     /// Return true if `from` reaches `to` through the import graph
@@ -462,6 +533,49 @@ test "Program: compileAllParallel produces same output as serial" {
     // Interface + type alias erase to empty JS; the rest emit
     // non-empty output. We expect at least 6 of 8.
     try T.expect(emitted >= 6);
+}
+
+test "Program: updateSource replaces a file's source bytes" {
+    var vfs = ts_resolver.VirtualFs.init(T.allocator);
+    defer vfs.deinit();
+    var resolver = ts_resolver.Resolver.init(T.allocator, vfs.fs(), .{});
+    defer resolver.deinit();
+    var p = Program.init(T.allocator, &resolver);
+    defer p.deinit();
+    _ = try p.add("/a.ts", "let x = 1;");
+    try p.compileAll(.{});
+    try T.expect(p.fileById(0).compilation != null);
+
+    const id = (try p.updateSource("/a.ts", "let y = 2;")) orelse return error.NoFile;
+    // Compilation cleared; source replaced.
+    try T.expect(p.fileById(id).compilation == null);
+    try T.expectEqualStrings("let y = 2;", p.fileById(id).source);
+}
+
+test "Program: recompileChanged only recompiles listed paths" {
+    var vfs = ts_resolver.VirtualFs.init(T.allocator);
+    defer vfs.deinit();
+    var resolver = ts_resolver.Resolver.init(T.allocator, vfs.fs(), .{});
+    defer resolver.deinit();
+    var p = Program.init(T.allocator, &resolver);
+    defer p.deinit();
+    _ = try p.add("/a.ts", "let a = 1;");
+    _ = try p.add("/b.ts", "let b = 2;");
+    _ = try p.add("/c.ts", "let c = 3;");
+    try p.compileAll(.{});
+
+    // Touch only /b.ts.
+    _ = try p.updateSource("/b.ts", "let b = 999;");
+    const paths = [_][]const u8{"/b.ts"};
+    const recompiled = try p.recompileChanged(&paths, .{});
+    try T.expectEqual(@as(u32, 1), recompiled);
+    // /a.ts and /c.ts still have their original compilation.
+    try T.expect(p.fileById(0).compilation != null);
+    try T.expect(p.fileById(2).compilation != null);
+    // /b.ts has a fresh compilation reflecting the new source.
+    const b = p.fileById(1);
+    try T.expect(b.compilation != null);
+    try T.expect(std.mem.indexOf(u8, b.compilation.?.js, "999") != null);
 }
 
 test "Program: cycle does not infinite loop" {
