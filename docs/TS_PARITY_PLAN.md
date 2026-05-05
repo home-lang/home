@@ -67,6 +67,9 @@ Plus the matching keywords already in `packages/lexer/src/token.zig`: `As`, `Inf
 | Decorator-heavy NestJS ([Twenty CRM, 4.3k files](https://github.com/microsoft/typescript-go/issues/2551)) | 103 s | **215 s** *(regression)* | **≤ 25 s** |
 | `.d.ts` emit, single 1k-line file (CLI) | 419 ms | 58 ms | **≤ 5 ms** *(via zig-dtsx fast path; matches its published 3.14 ms)* |
 | `.d.ts` emit, 100-file project | n/a | 420 ms | **≤ 35 ms** *(zig-dtsx published: 31.46 ms)* |
+| Bundle `three.js` cold full *(typecheck + bundle)* | n/a *(tsc no bundler)* | n/a | **≤ 100 ms** *(Bun bundler alone: ~80 ms)* |
+| Bundle 100-file React app *(typecheck + bundle)* | n/a | n/a | **≤ 80 ms** *(Bun bundler alone: ~50 ms)* |
+| Bundle watch incremental, 1-line | n/a | n/a | **≤ 30 ms** |
 
 The decorator workload is the strategic prize: tsgo *regresses 2× vs. tsc* on it ([typescript-go #2551](https://github.com/microsoft/typescript-go/issues/2551)), and it's the most public-facing weak point in the Go port. Beating tsgo by 8–10× on its worst case writes its own headline. The `.d.ts` numbers above are not aspirational — they come from `zig-dtsx`'s [published M3 Pro benchmarks](https://github.com/stacksjs/dtsx/tree/main/packages/zig-dtsx#benchmarks) and are part of why Phase 4 absorbs that codebase rather than building from scratch.
 
@@ -95,6 +98,30 @@ These shape every phase below.
 **Native compilation.** Home compiles TypeScript to native object files (x64, arm64, WASM) via LLVM, in addition to JS emit. Neither tsc nor tsgo offers this. Gated behind opt-in (`--target=native`); the default `--target=es2024` JS emit is `tsc`-compatible.
 
 **Out of scope for v1.** Native codegen of *arbitrary* TS (full `Object`/`Array` semantics, `Function.prototype`, prototypal inheritance, `eval`) is enormous. Phase 7 ships native codegen for the *typed, monomorphizable* subset — TS that doesn't touch dynamic property access. Full-dynamic TS still emits JS.
+
+### 1.4 Unified toolchain — bundler included, frontend-agnostic
+
+**Decision D — Home ships a unified bundler in v1 that bundles JS, TS, *and* Home source.** `home bundle` produces optimized output (JS bundles in ESM/CJS/IIFE/AMD; native binaries via Phase 7 codegen; WASM via Phase 7) and is:
+1. A drop-in replacement for `esbuild`, `swc`/`swc-loader`, and the bundler portion of `vite` / `webpack` / `rollup` for `.ts`/`.tsx`/`.js`/`.jsx` projects.
+2. The native build tool for `.home`/`.hm` projects, replacing the current `home build` with the full bundler pipeline (chunks, tree-shaking, dead-code elimination, minification of intermediate IR, native or JS output as configured).
+3. A *mixed-source* bundler — projects can import `.home` modules from `.ts` files and vice-versa; Home's HIR is the unifying representation.
+
+Implementation **vendors Bun's bundler** at `~/Code/bun/src/bundler/` (≈20 K LOC of Zig) as the JS/TS path and adapts it to consume Home's type-checked HIR. The Home-source path reuses the same linker, chunker, tree-shaker, and source-map machinery — both frontends produce HIR, the bundler operates on HIR, so the same code paths apply.
+
+**Why this is in scope.** Most TS teams don't actually run `tsc` to *produce* output — they run `tsc --noEmit` for type-checking and `esbuild`/`swc`/`vite` for emission and bundling. A "drop-in tsc" alone leaves the *bigger half* of the toolchain untouched. Symmetrically, Home developers today build `.home` programs through the existing native pipeline but lose tree-shaking, code-splitting, plugin extensibility, and the HMR developer-loop. **One bundler, both frontends, no second tool to learn or maintain.**
+
+**Why Bun's bundler specifically.** It is (a) already Zig, so no FFI overhead and direct use of our HIR / string interner is feasible, (b) battle-tested (Bun ships it to millions of users), (c) feature-complete: ESM/CJS/IIFE output, `ThreadPool`-based parallel parse, esbuild-style linker (`LinkerContext.zig` 2 782 LOC, `bundle_v2.zig` 4 509 LOC), tree-shaking, minification, source maps, plugin API, CSS bundling, HTML imports, server components. Bun is the fastest JS bundler currently available (~3× esbuild on cold full builds, ~25× webpack); building on top puts Home at parity with the state of the art on day one and *adds type-checking and Home-source bundling the others do not do*.
+
+**Frontend matrix.**
+
+| Source | Type check | Bundler entry | Output options |
+|---|---|---|---|
+| `.ts` / `.tsx` / `.d.ts` / `.cts` / `.mts` | TS frontend (Phase 1–3) | HIR | JS (ESM/CJS/IIFE/AMD), `.d.ts`, native, WASM |
+| `.js` / `.jsx` / `.cjs` / `.mjs` | TS frontend with `allowJs` / JSDoc | HIR | JS (transformed/passthrough), native, WASM |
+| `.home` / `.hm` | Home frontend (existing) | HIR | Native, WASM, JS *(Phase 7 lowering)* |
+| Mixed | Both frontends in one program graph | HIR | Any of the above |
+
+**Out of scope for v1.** Bun-specific runtime features (Bun's `fetch`, native test runner, package manager) — those stay in Bun. Home's bundler is a pure build-tool, not a runtime. Likewise, bundling `.home` to *JS* (a `.home` → JS lowering) is a Phase 7+ stretch goal; v1 ships `.home` → native + WASM via the existing codegen.
 
 ---
 
@@ -590,6 +617,78 @@ Parse errors must match `tsc`'s parse errors on the conformance test parsing sub
 
 **Exit criteria.** `home tsc emit` byte-equivalent to `tsc emit` on the 500-project corpus.
 
+### Phase 4.5 — Bundler integration via Bun (6–10 weeks)
+
+**Goal.** `home bundle` is the **single bundler for both frontends**:
+- For TS/JS projects: drop-in compatible with the output of `esbuild` for ≥ 99% of inputs and ≥ 95% byte-equivalent (modulo whitespace and chunk-naming determinism).
+- For Home projects (`.home`/`.hm`): replaces the existing `home build` flow with the full pipeline — module graph, tree-shaking, code splitting, native-or-WASM output, minification of intermediate IR, plugins.
+- For mixed projects: a single program graph spans both source kinds; `.ts` files importing `.home` modules and vice-versa work transparently.
+
+Type-checking is integrated: `home bundle` runs the type checker first and emits *only* if checking succeeds (or with `--bundle-with-errors` to override).
+
+**Strategy.** Vendor Bun's bundler from `~/Code/bun/src/bundler/`, adapted to consume Home's HIR and type-checker output instead of Bun's parser AST. Because both Home's TS frontend and Home's `.home`/`.hm` frontend produce the same HIR, the same bundler code paths handle both — there is *no* second bundler.
+
+**Source survey** (Bun's bundler tree at `~/Code/bun/src/bundler/`):
+
+| File | LOC | Role |
+|---|---|---|
+| `bundle_v2.zig` | 4 509 | Top-level orchestrator |
+| `LinkerContext.zig` | 2 782 | esbuild-style linker (binding resolution, tree-shaking, code-splitting) |
+| `transpiler.zig` | 1 461 | Per-file transpile/transform pipeline |
+| `Graph.zig`, `LinkerGraph.zig` | ~1 000 each | Module graph, import/export resolution |
+| `Chunk.zig`, `entry_points.zig` | ~600 each | Chunk allocation, entry-point handling |
+| `ParseTask.zig`, `ThreadPool.zig` | ~1 000 combined | Parallel parse pipeline |
+| `cache.zig`, `OutputFile.zig` | ~500 combined | Caching, file emission |
+| `linker_context/*.zig` | ~3 000 across 10+ files | `computeChunks`, `convertStmts`, `findAllImportedParts`, `generateChunksInParallel`, etc. |
+| `HTMLScanner.zig`, `HTMLImportManifest.zig` | ~1 000 | HTML imports (Bun-style multi-file entry) |
+| Other (`AstBuilder`, `barrel_imports`, `defines`, etc.) | ~3 000 | Misc support |
+| **Total** | **~20 130** in top-level | Plus subdirs |
+
+**Work, ordered by dependency.**
+
+1. **License & vendor strategy** (3 days). Bun is MIT-licensed; vendor the bundler tree as a git submodule pinned to a known SHA. Maintain a thin `packages/bundler/adapter.zig` that bridges Bun's expected interfaces (`bun.JSAst.Ast`, `bun.options.Options`) to Home's HIR + type-checker symbols. Upstream improvements via PRs to oven-sh/bun where mutually beneficial.
+2. **HIR ↔ Bun-AST shim** (2 weeks). Bun's bundler operates on its own `JSAst` representation. Two paths:
+   - **Path A (preferred):** Lower Home's HIR into Bun's `JSAst` at the bundler boundary. Cheap, preserves all of Bun's optimizations.
+   - **Path B (long-term):** Adapt the linker to operate directly on HIR. Cleaner but a rewrite; deferred to v2.
+   Path A in v1.
+3. **Symbol-table bridge** (1 week). Bun's linker uses its own symbol tables. Map Home symbols → Bun symbols at bundler entry; map back at emit.
+4. **Type-checked emit gate** (3 days). `home bundle` first runs the type checker (Phase 3) on the entry-point closure; emits only on success unless `--bundle-with-errors`. The type checker runs in parallel with parse; emit waits on both.
+5. **CLI surface** (1 week). `home bundle <entry>` with esbuild-style flags plus Home-source extensions:
+   - Output: `--format=esm|cjs|iife|amd|native|wasm`, `--target=esnext|es2022|…|x64|arm64`, `--platform=browser|node|neutral|native`, `--outfile`, `--outdir`.
+   - Optimization: `--minify`, `--minify-syntax`, `--minify-whitespace`, `--minify-identifiers`, `--tree-shaking=true|false`.
+   - Source maps: `--sourcemap=inline|external|both`, `--sources-content`.
+   - Code splitting: `--splitting`, `--chunk-names`.
+   - Externals: `--external=react,vue,…`.
+   - Define: `--define:KEY=VALUE`.
+   - Loaders: `--loader:.png=file`, `.svg=text`, `.json=json`, `.txt=text`, `.home=home`, `.hm=home`, etc.
+   - Bun-specific extras inherited: `--banner`, `--footer`, `--public-path`, `--asset-names`.
+   - Home extras: `--target=native` switches the bundler's emit step to invoke Phase 7 native codegen on each chunk; `--target=wasm` does the same for WASM.
+6. **Plugin API** (2 weeks). Bun has a plugin API; expose the same surface so existing Bun plugins work unchanged. `home bundle --plugin=./my-plugin.ts` (plugin runs in a sandboxed JS runtime; for Zig-native plugins we ship `home bundle --zig-plugin=./libplugin.so`).
+7. **Source maps** (built-in to Bun's bundler; verify byte-identical to esbuild on the conformance corpus).
+8. **CSS bundling** (1 week, optional). Bun bundles CSS; we ship this in v1 since the code is there. Markup as v1.0 if stable, otherwise v1.1.
+9. **HTML imports** (1 week, optional). Bun's `HTMLScanner.zig` + `HTMLImportManifest.zig` already handle this. Ship in v1.
+10. **Watch + dev-server mode** (2 weeks). `home bundle --watch` integrates with the Phase 5 query DB so file changes trigger incremental rebuilds. `home dev` (later phase) wraps this for full HMR.
+
+**Exit criteria.**
+
+- `home bundle` byte-equivalent to `esbuild` output on a 200-project corpus (the projects from esbuild's published benchmarks plus a curated 100 OSS TS projects).
+- Cold full build of the bundler reference projects (esbuild's `three.js` benchmark, etc.) within **5%** of Bun's published numbers (Home pays a small overhead for type-checking, which esbuild and Bun do not do).
+- Watch incremental rebuild after a 1-line edit: ≤ **30 ms** (matching the §11 Tier-1-enhanced typecheck-watch number).
+- All esbuild CLI flags accepted; semantically-equivalent output.
+
+**Bench targets** (single 8-core M-class laptop, cold, including type checking):
+
+| Workload | esbuild | Bun bundler | tsc emit | **Home bundle target** |
+|---|---|---|---|---|
+| TS — `three.js` cold full | ~250 ms | ~80 ms | n/a (no bundler) | **≤ 100 ms** *(includes typecheck; Bun + esbuild do not)* |
+| TS — 100-file React app | ~150 ms | ~50 ms | n/a | **≤ 80 ms** |
+| TS — watch incremental, 1-line | ~40 ms | ~25 ms | n/a | **≤ 30 ms** |
+| `.home` — 100-file native | n/a | n/a | n/a | **≤ 120 ms** *(typecheck + tree-shake + native codegen)* |
+| `.home` — watch incremental, 1-line | n/a | n/a | n/a | **≤ 40 ms** |
+| Mixed `.ts` + `.home` — 100-file | n/a | n/a | n/a | **≤ 100 ms** |
+
+Home pays a ~20–60% overhead vs. raw esbuild/Bun bundler **because we add type-checking inline.** Without type-checking (`home bundle --skip-check`), we match Bun within 5%. For `.home` workloads, the comparison is against Home's *current* native build — the bundler adds tree-shaking and chunking on top, so output is smaller-and-faster despite the equivalent or shorter build wall-clock.
+
 ### Phase 5 — Performance engineering (4–8 weeks)
 
 **Goal.** Hit the bench targets in §0.
@@ -979,6 +1078,9 @@ For every PR:
 | Conformance submodule SHA drifts from tsgo's | Low | Low | Pin to the same SHA tsgo pins; track tsgo's submodule update commits |
 | zig-dtsx `.d.ts` output diverges from tsc on edge cases | Medium | Medium | A/B test against tsc on the conformance corpus before promoting fast-path as default; fall back to symbol-driven track on any divergence |
 | zig-dtsx maintenance velocity diverges from Home's | Low | Medium | Vendor zig-dtsx as a submodule pinned to a known-good SHA; upstream improvements via PRs to stacksjs/dtsx |
+| Bun bundler upstream divergence | Medium | Medium | Vendor as submodule pinned to a known-good SHA; thin adapter layer absorbs Bun's API churn; upstream non-Bun-specific fixes |
+| Bundler output drifts from esbuild byte-equivalence | Medium | Low | Per-project byte-diff in CI on a 200-project corpus; chunk-naming determinism via stable hash |
+| Type-check overhead dominates `home bundle` perf | Medium | High | `--skip-check` opt-out matches esbuild speed; default mode runs type checker in parallel with parse so wall-clock overhead is the *max*, not *sum* |
 
 ---
 
@@ -1002,6 +1104,7 @@ After week 1, the team executes Phase 0 in earnest.
 5. **The phased order is dependency-correct.** No phase requires capability from a later phase. Painful long phases (3, 6) early enough that schedule risk surfaces quickly.
 6. **Drop-in is testable.** §2 spells out CLI flags, every tsconfig option, output format, exit codes, diagnostic format. The drop-in corpus (§6.2) verifies compatibility with real projects.
 7. **Zig-vs-Go on TS tooling is no longer hypothetical.** `zig-dtsx` already publishes apples-to-apples benchmarks showing **15–19× faster than tsgo** on `.d.ts` emission. We absorb it for Phase 4's fast track and use the same data-layout / SIMD / arena strategies for the rest of the pipeline.
+8. **Bundler is not from scratch.** Bun's bundler (~20 K LOC of Zig: `bundle_v2.zig`, `LinkerContext.zig`, `transpiler.zig`, `Graph.zig`, etc.) is the fastest JS bundler currently published. Vendoring it for Phase 4.5 puts Home at parity with Bun on bundling and *adds type-checking the others do not do*. The "complete TS toolchain that's faster than the sum of its parts" is the v1 product, not a v2 wishlist.
 
 ---
 
@@ -1013,6 +1116,99 @@ After week 1, the team executes Phase 0 in earnest.
 - **Marketing / brand** — not in scope.
 - **Native codegen of dynamic JS** (full prototype chain, `eval`, `Function`) — out of scope for v1, possibly forever.
 - **Backwards-incompatible Home language extensions** — a separate "Home extensions" track post-v1.
+
+---
+
+## 11 · Performance ceiling — pushing past v1
+
+The §0 targets (≤ 0.30 s cold, ≤ 80 ms watch, ≤ 300 ms TTFD) beat tsgo by 2–3× cold and 10–50× watch. **They are not the theoretical maximum.** The §5 architecture is well-designed but conservative; this section catalogues every additional technique we considered, tiered by return-on-investment.
+
+**We commit to all of Tier 1** — it adds ~12 weeks to the schedule (≈12% of v1 budget) for an additional ~30–60% on every headline benchmark plus 5–10× on cold-start CLI scenarios. Tier 2 is opt-in after v1 profiling. Tier 3 is research-grade and noted only for completeness.
+
+### Headline numbers, revised
+
+The v1 plan's targets in §0 *include Tier 1*. To make the comparison legible, here is the breakdown:
+
+| Metric | tsgo | v1 baseline (no Tier 1) | **v1 committed (with Tier 1)** | Multiplier vs. tsgo |
+|---|---|---|---|---|
+| 100K-LOC cold typecheck | ~0.7 s | ≤ 0.30 s | **≤ 0.18 s** | **~3.9×** |
+| VS Code cold typecheck | ~7.5 s | ≤ 3.5 s | **≤ 2.2 s** | **~3.4×** |
+| TS repo cold typecheck | ~1.0 s | ≤ 0.4 s | **≤ 0.25 s** | **~4.0×** |
+| Watch incremental, 1-line | ~similar to tsc | ≤ 80 ms | **≤ 30 ms** | **~50–100×** |
+| Time-to-first-diagnostic | ~1.2 s | ≤ 300 ms | **≤ 50 ms** | **~24×** |
+| Cold-start CLI from npm script (warm cache) | ~1.5 s | ≤ 300 ms | **≤ 30 ms** | **~50×** |
+| Peak RSS, VS Code | ~1.5–2 GB | ≤ 800 MB | **≤ 500 MB** | **~3–4× smaller** |
+| Decorator-heavy NestJS | 215 s | ≤ 25 s | **≤ 18 s** | **~12×** |
+| `.d.ts` 1k-line file (CLI) | 58 ms | ≤ 5 ms | **≤ 3 ms** | **~19×** *(matches zig-dtsx published)* |
+
+The §0 table is the *committed* target. Tier 1 items are integrated into the existing phases as additional effort; the 80-110 week range becomes 92-122 weeks.
+
+### Tier 1 — high-ROI, well-known techniques (committed)
+
+For each: cost in additional engineering weeks, win in measured impact, and which phase absorbs it.
+
+| # | Technique | Why it wins | Cost | Win | Phase |
+|---|---|---|---|---|---|
+| 11.1 | **Stack-machine parser** instead of recursive descent | Eliminates function-call overhead per node; Bun, V8 preparser, Sucrase use this | +2w | Parse phase 1.2–1.3× | 1 |
+| 11.2 | **Parser-binder fusion** — emit symbols during parse, not in a second pass | Eliminates one full AST traversal per file | +1w | ~10–15% on parse+bind combined | 2 |
+| 11.3 | **Bit-packed primitive TypeIds**: reserve `TypeId < 2^16` for primitives + ~50 hot literal types | Comparisons against primitives skip the interner entirely; ~50% of hot-path queries hit primitives | +3d | ~20–30% on relation cache | 3 |
+| 11.4 | **Hot/cold field split** on AST and types — rare fields (JSDoc, debug strings, error message data) in parallel arrays | Hot path reads only hot columns; ~2× more cache-line utilization | +1w | ~10–15% on traversal-bound phases | 0 |
+| 11.5 | **Per-worker bump arenas** — each worker its own arena, all dropped at phase end | Eliminates even the Mutex on the arena allocator's free-list | +3d | ~5–10% on parallel phases | 0 |
+| 11.6 | **Persistent on-disk query DB** across CLI invocations (mmap'd LMDB-style B-tree, keyed `(file_path, content_hash)`) | npm-script flows (`npm test` → `tsc --noEmit` → jest) re-pay cold-start each run today; mmap'd cache lets second invocation skip everything unchanged | +2w | TTFD on warm-cache CLI: 300 ms → **30 ms** (~10×) | 5 |
+| 11.7 | **Lazy type expansion** — defer conditional + template-literal expansion until a relation query forces it; track bound-vs-free per type variable | Conditional/template-literal types blow up on heavy generic libs | +2w | 5–50× on `type-fest`/`ts-toolbelt`-style workloads | 3 |
+| 11.8 | **Variance precomputation at definition site** | tsc-style implicit recompute per assignment check is wasted work | +3d | ~5–10% on generic-heavy projects | 3 |
+| 11.9 | **Streaming emit during typecheck** — emit file F as soon as F's check completes | Time-to-first-emitted-file drops from full-build to per-file time | +1w | Major DX in monorepo builds | 4 |
+| 11.10 | **mmap'd `lib.*.d.ts` snapshots** — pre-parse and pre-bind at Home build time; mmap the result | Cold start parses+binds ~50K LOC of identical lib files every run | +1w | Cold-start LSP TTFD: 300 ms → **50 ms** | 1 |
+| 11.11 | **PGO + LTO build of Home itself** with Zig's `-Doptimize=ReleaseFast` | Standard whole-program-optimization win on a Zig binary | +3d | 10–20% across the board | 10 |
+| 11.12 | **Generational arenas within a phase** — short-lived instantiation candidates in young gen, reset between checker queries; long-lived in old gen | Bounded peak memory; some allocator-cost win | +1w | Memory peak 2–4× lower; ~5% CPU | 5 |
+| 11.13 | **Parallel chunk-lex within a single file** — split file into 64KB segments, lex in parallel, fix up token boundaries | Single huge generated files (Prisma `client.d.ts` ≈ 50K LOC) lex single-threaded under v1 | +2w | 4–8× on huge single-file lex | 1 |
+| 11.14 | **Perfect-hash keyword recognition** via Zig `comptime` | Eliminates hash collisions vs. `map[string]Kind` (tsgo) or open hashing (tsc) | +2d | ~3–5% on lex | 1 |
+| 11.15 | **Cache prefetch on AST traversal** — `@prefetch` of predicted-next node during current-node work | Hides DRAM latency on memory-bound walks | +3d profile-guided | ~10–20% on traversal-bound phases | 5 |
+| **Total** | | | **~12 weeks** | | |
+
+### Tier 2 — meaningful but riskier (opt-in after v1)
+
+These add real wins but with implementation risk or complexity that isn't justified before profile data points at them.
+
+| # | Technique | Why it wins | Why deferred |
+|---|---|---|---|
+| 11.16 | **NUMA-aware placement** — pin workers to NUMA nodes, shard interner per-node | 30–50% on relation cache for 64+ core servers | Negligible on laptops; complicates test matrix |
+| 11.17 | **Vectorized batch relation queries** — `assignableTo(a, [b1..bN])` with SIMD on TypeId arrays | 30–50% on relation hot path *if* checker is restructured to batch | API redesign; correctness-sensitive |
+| 11.18 | **Sub-file granularity invalidation** — invalidate per-symbol, not per-file | Watch latency 80 ms → 10 ms | Significant query-DB complexity |
+| 11.19 | **Speculative execution of dependent queries** — predict next 5 invalidations on each keystroke, start in background | Perceived watch latency near-zero | Misprediction cost; complex rollback |
+| 11.20 | **CRDT-style symbol table merges** — commutative join across per-file binds | Eliminates merge bottleneck after parallel binding | Correctness-sensitive |
+| 11.21 | **Roaring bitmaps for symbol sets** | 10–100× smaller than HashSet; fast set ops | Engineering effort > marginal speedup at v1 sizes |
+| 11.22 | **Cross-build content-addressed cache** (Bazel-style: `(source + tsconfig + deps) → cached result`) | Cold builds near-free for unchanged files even on fresh checkouts | Infra cost; requires CI integration |
+
+### Tier 3 — exotic / research-grade (noted only for completeness)
+
+| # | Technique | Why it wins | Why noted not committed |
+|---|---|---|---|
+| 11.23 | **GPU dispatch for batched relation queries** | Embarrassingly parallel sub-problems (excess-property checks across thousands of object literals) | Engineering cost prohibitive; benefit niche |
+| 11.24 | **JIT-compiled relation rules per generic instantiation** — like Truffle/Graal but for TS types | Native-speed relation checks | Massive complexity; marginal gain over interner+L1 cache |
+| 11.25 | **Differentiable compilation** — track derivatives of type changes through the dependency graph | Minimal-recomputation guarantee beyond Salsa | Research-grade; no shipping precedent |
+
+### Tier 0 — already in v1 (not new, just flagged as load-bearing)
+
+These v1 items account for the bulk of the tsgo gap; cutting any of them collapses the headline numbers:
+
+- **SIMD lex** (§5.5) — uncontested vs. tsgo's byte-by-byte switch.
+- **SoA AST with index-based child relations** (§5.2) — vs. tsgo's pointer-tree.
+- **Lock-striped global type interner** (§5.3) — tsgo has none.
+- **Two-level relation cache** (§5.4) — tsgo's is per-checker only.
+- **Salsa-style query DB** (§3, §5.7) — tsgo has file-level dirty tracking only.
+- **Streaming diagnostics** (§5.8) — no other TS compiler does this.
+- **zig-dtsx fast-path `.d.ts` emit** (Phase 4) — already 15–19× tsgo on that path.
+
+### Ceiling assessment
+
+After Tier 1, where is the next 2× hiding? Three places:
+
+1. **The type checker's algorithmic complexity itself.** TS's relation algorithm has worst-case exponential cases (recursive types, deeply distributed conditionals). Asymptotic improvements would require redesigning what TS *means*, not just how we compute it — out of scope for "TS-compatible."
+2. **DRAM bandwidth.** At ~50 GB/s on a laptop, even a perfectly cache-friendly compiler hits a ceiling reading 1.5 GB of source through the type checker. Tier 1's hot/cold split + prefetch + arenas push us to ~70% of theoretical bandwidth; the last 30% is hardware-bound.
+3. **The TS conformance gate itself.** ≥ 99.6% conformance constrains how clever we can get. Phase 6's correctness work *will* slow down a few hot paths to match tsc's behavior. We accept this; correctness > speed.
+
+So: **v1 + Tier 1 is the most performant TS-compatible compiler currently practical to build.** Tier 2 buys 20–40% more in specific scenarios; Tier 3 is research. The honest claim is "approximately 3.5–4× tsgo cold and 50–100× tsgo on watch, with conformance ≥ 99.9%."
 
 ---
 
@@ -1087,6 +1283,8 @@ Output format mirrors `tsc --extendedDiagnostics`. Tools that scrape these numbe
 | **New: `packages/binder`** | TS binder | Phase 2 |
 | **New: `packages/ts_emit`** | JS + .d.ts emit (symbol-driven track) | Phase 4 |
 | **New: `packages/ts_emit/d_ts/fast`** | `.d.ts` fast track (vendored zig-dtsx) | Phase 4 — **reuses ~8 257 LOC of existing Zig** |
+| **New: `packages/bundler`** | JS/TS bundler (vendored Bun bundler + Home adapter) | Phase 4.5 — **reuses ~20 130 LOC of existing Zig** |
+| **New: `packages/bundler/adapter`** | HIR ↔ Bun-AST shim, symbol-table bridge | Phase 4.5 |
 | **New: `packages/tsserver_shim`** | tsserver protocol bridge | Phase 9, optional |
 
 ---
