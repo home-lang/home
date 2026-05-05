@@ -163,10 +163,44 @@ pub const Printer = struct {
     /// Public entry: emit a complete source-file as JavaScript.
     pub fn printSourceFile(self: *Printer, root: NodeId) !void {
         const stmts = hir_mod.blockStmts(self.hir, root);
-        for (stmts, 0..) |stmt, i| {
+        var i: usize = 0;
+        while (i < stmts.len) : (i += 1) {
+            const stmt = stmts[i];
+            // Decorator preamble: collect a run of decorator
+            // siblings preceding a class_decl. Emit the class
+            // first, then the __decorate(...) helper call.
+            if (self.hir.kindOf(stmt) == .decorator) {
+                var j = i;
+                while (j < stmts.len and self.hir.kindOf(stmts[j]) == .decorator) j += 1;
+                if (j < stmts.len and self.hir.kindOf(stmts[j]) == .class_decl) {
+                    if (i > 0) try self.write(self.options.newline);
+                    try self.printStatement(stmts[j]);
+                    try self.write(self.options.newline);
+                    try self.emitClassDecorateCall(stmts[i..j], stmts[j]);
+                    i = j;
+                    continue;
+                }
+            }
             if (i > 0) try self.write(self.options.newline);
             try self.printStatement(stmt);
         }
+    }
+
+    /// Emit `<Name> = __decorate([dec1, dec2, ...], <Name>);` after
+    /// a class declaration that had decorators attached.
+    fn emitClassDecorateCall(self: *Printer, decorators: []const NodeId, class_node: NodeId) anyerror!void {
+        const c = hir_mod.classOf(self.hir, class_node);
+        if (c.name == hir_mod.none_node_id) return;
+        try self.printExpression(c.name);
+        try self.write(" = __decorate([");
+        for (decorators, 0..) |d, i| {
+            if (i > 0) try self.write(", ");
+            const dp = hir_mod.decoratorOf(self.hir, d);
+            try self.printExpression(dp.expression);
+        }
+        try self.write("], ");
+        try self.printExpression(c.name);
+        try self.write(");");
     }
 
     fn printStatement(self: *Printer, node: NodeId) anyerror!void {
@@ -1241,6 +1275,25 @@ test "emit: async arrow" {
     const out = try emit("let f = async (x) => x;");
     defer T.allocator.free(out);
     try T.expect(std.mem.indexOf(u8, out, "async (x) => x") != null);
+}
+
+test "emit: class with decorator emits __decorate helper" {
+    const out = try emit("@logged class Foo {}");
+    defer T.allocator.free(out);
+    try T.expect(std.mem.indexOf(u8, out, "class Foo") != null);
+    try T.expect(std.mem.indexOf(u8, out, "Foo = __decorate([logged], Foo);") != null);
+}
+
+test "emit: class with multiple decorators preserves order" {
+    const out = try emit("@a @b @c class Bar {}");
+    defer T.allocator.free(out);
+    try T.expect(std.mem.indexOf(u8, out, "Bar = __decorate([a, b, c], Bar);") != null);
+}
+
+test "emit: class with decorator-call expression" {
+    const out = try emit("@inject(Foo) class Bar {}");
+    defer T.allocator.free(out);
+    try T.expect(std.mem.indexOf(u8, out, "__decorate([inject(Foo)], Bar)") != null);
 }
 
 test "emit: source map records mappings for each statement" {
