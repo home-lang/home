@@ -1,0 +1,12 @@
+// Regression test for issue #33 (sub-item A) — `'\b'` (backspace)
+// escape sequence in char literals. The lexer previously rejected
+// `\b` because the escape switch only allowed `n, t, r, ", \, ', 0, {`.
+// home-os kernel scancode tables (e.g.
+// `kernel/src/drivers/keyboard.home`) use `'\b'` for the backspace
+// keystroke, so this is required for any keyboard driver that maps
+// scancodes to ASCII.
+const BS: u8 = '\b'
+const NL: u8 = '\n'
+const TAB: u8 = '\t'
+const CR: u8 = '\r'
+const BACKSLASH: u8 = '\\'

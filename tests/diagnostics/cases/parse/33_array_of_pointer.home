@@ -1,0 +1,20 @@
+// Regression test for issue #33 (sub-item B) — `[*T; N]` array of N
+// pointer-to-T elements. Distinct from `[*]T` (Zig-style many-item
+// pointer, fixed in #29). Used in home-os kernel code such as
+// `kernel/src/mm/buddy.home` (free-list arrays), `kernel/src/ml/tensor.home`
+// (tensor input/saved arrays) and `kernel/src/test/framework.home`
+// (test-suite arrays).
+//
+// The parser was greedily matching `[*` as the start of a many-item
+// pointer and then expecting `]`, so `[*Entry; 512]` failed with
+// "Expected ']' after [*". Fix: only enter the many-pointer branch
+// when the token after `*` is `]`; otherwise fall through to the
+// regular array-with-inner-type path so the `*T` is parsed as a
+// pointer element type.
+fn first_ptr(p: [*u8; 4]): *u8 {
+    return p[0]
+}
+
+fn first_ptr_const(p: [*const u8; 8]): *const u8 {
+    return p[0]
+}

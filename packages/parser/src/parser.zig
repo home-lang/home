@@ -2455,7 +2455,11 @@ pub const Parser = struct {
         // Also handles `[*]T` — Zig-style many-item pointer used in
         // kernel FFI signatures (pointer to unknown-length array).
         if (self.match(&.{.LeftBracket})) {
-            if (self.peek().type == .Star) {
+            // Only treat `[*` as the start of a many-pointer when the
+            // very next token is `]`. Otherwise the `*` belongs to a
+            // pointer element type — e.g. `[*Entry; 512]` is an array
+            // of 512 pointers to `Entry`, not a many-pointer.
+            if (self.peek().type == .Star and self.peekNext().type == .RightBracket) {
                 _ = self.advance(); // consume `*`
                 _ = try self.expect(.RightBracket, "Expected ']' after [*");
                 // Optional `const` / `volatile` qualifiers on the
@@ -3916,6 +3920,7 @@ pub const Parser = struct {
                         'n' => '\n',
                         't' => '\t',
                         'r' => '\r',
+                        'b' => 0x08,
                         '\\' => '\\',
                         '\'' => '\'',
                         '"' => '"',

@@ -290,7 +290,7 @@ pub const Lexer = struct {
 
                 const escape_char = self.peek();
                 switch (escape_char) {
-                    'n', 't', 'r', '"', '\\', '\'', '0', '{' => {
+                    'n', 't', 'r', 'b', '"', '\\', '\'', '0', '{' => {
                         _ = self.advance();
                     },
                     'x' => {
@@ -365,7 +365,7 @@ pub const Lexer = struct {
                 if (self.isAtEnd()) return self.makeToken(.Invalid);
                 const escape_char = self.peek();
                 switch (escape_char) {
-                    'n', 't', 'r', '"', '\\', '\'', '0', '{' => {
+                    'n', 't', 'r', 'b', '"', '\\', '\'', '0', '{' => {
                         _ = self.advance();
                     },
                     'x' => {
@@ -407,7 +407,7 @@ pub const Lexer = struct {
 
             const escape_char = self.peek();
             switch (escape_char) {
-                'n', 't', 'r', '\'', '"', '\\', '0', '{' => {
+                'n', 't', 'r', 'b', '\'', '"', '\\', '0', '{' => {
                     _ = self.advance();
                 },
                 'x' => {
@@ -489,7 +489,7 @@ pub const Lexer = struct {
 
                 const escape_char = self.peek();
                 switch (escape_char) {
-                    'n', 't', 'r', '"', '\\', '\'', '0', '$' => {
+                    'n', 't', 'r', 'b', '"', '\\', '\'', '0', '$' => {
                         _ = self.advance();
                     },
                     'x' => {
@@ -587,7 +587,7 @@ pub const Lexer = struct {
 
                 const escape_char = self.peek();
                 switch (escape_char) {
-                    'n', 't', 'r', '"', '\\', '\'', '0', '$' => {
+                    'n', 't', 'r', 'b', '"', '\\', '\'', '0', '$' => {
                         _ = self.advance();
                     },
                     'x' => {
