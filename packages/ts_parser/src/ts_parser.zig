@@ -180,6 +180,28 @@ pub const Parser = struct {
             .kw_let, .kw_const, .kw_var => try self.parseVarDecl(),
             .kw_return => try self.parseReturnStatement(),
             .open_brace => try self.parseBlockStatement(),
+            .kw_if => try self.parseIfStatement(),
+            .kw_while => try self.parseWhileStatement(),
+            .kw_do => try self.parseDoWhileStatement(),
+            .kw_for => try self.parseForStatement(),
+            .kw_break => try self.parseBreakStatement(),
+            .kw_continue => try self.parseContinueStatement(),
+            .kw_throw => try self.parseThrowStatement(),
+            .kw_try => try self.parseTryStatement(),
+            .kw_switch => try self.parseSwitchStatement(),
+            .kw_function => try self.parseFunctionDeclaration(),
+            .kw_class => try self.parseClassDeclaration(),
+            .kw_interface => try self.parseInterfaceDeclaration(),
+            .kw_enum => try self.parseEnumDeclaration(),
+            .kw_namespace, .kw_module => try self.parseNamespaceDeclaration(),
+            .kw_import => try self.parseImportDeclaration(),
+            .kw_export => try self.parseExportDeclaration(),
+            .kw_type => blk: {
+                // `type X = T;` is a TS type alias. `type` is contextual,
+                // so only treat as a keyword when followed by an identifier.
+                if (self.peekAt(1).kind == .identifier) break :blk try self.parseTypeAlias();
+                break :blk try self.parseExpressionStatement();
+            },
             .semicolon => blk: {
                 _ = self.advance();
                 // Empty statement is a no-op; lower as a synthesized
@@ -188,6 +210,737 @@ pub const Parser = struct {
             },
             else => try self.parseExpressionStatement(),
         };
+    }
+
+    fn parseIfStatement(self: *Parser) ParseError!NodeId {
+        const start = self.advance(); // if
+        _ = try self.expect(.open_paren, "'(' after 'if'");
+        const cond = try self.parseExpression();
+        _ = try self.expect(.close_paren, "')' after if condition");
+        const then_branch = try self.parseStatement();
+        var else_branch: NodeId = hir_mod.none_node_id;
+        if (self.match(.kw_else)) else_branch = try self.parseStatement();
+        const end_pos: u32 = if (else_branch != hir_mod.none_node_id)
+            self.hir.spanOf(else_branch).end
+        else
+            self.hir.spanOf(then_branch).end;
+        return try self.builder.addIf(.{ .start = start.span.start, .end = end_pos }, cond, then_branch, else_branch);
+    }
+
+    fn parseWhileStatement(self: *Parser) ParseError!NodeId {
+        const start = self.advance(); // while
+        _ = try self.expect(.open_paren, "'(' after 'while'");
+        const cond = try self.parseExpression();
+        _ = try self.expect(.close_paren, "')' after while condition");
+        const body = try self.parseStatement();
+        const end_pos = self.hir.spanOf(body).end;
+        return try self.builder.addWhile(.{ .start = start.span.start, .end = end_pos }, cond, body);
+    }
+
+    fn parseDoWhileStatement(self: *Parser) ParseError!NodeId {
+        const start = self.advance(); // do
+        const body = try self.parseStatement();
+        _ = try self.expect(.kw_while, "'while' after do-block");
+        _ = try self.expect(.open_paren, "'(' after 'while'");
+        const cond = try self.parseExpression();
+        const close = try self.expect(.close_paren, "')' after do-while condition");
+        try self.consumeStatementTerminator();
+        return try self.builder.addDoWhile(.{ .start = start.span.start, .end = close.span.end }, body, cond);
+    }
+
+    fn parseForStatement(self: *Parser) ParseError!NodeId {
+        const start = self.advance(); // for
+        _ = try self.expect(.open_paren, "'(' after 'for'");
+
+        // Parse the init slot. Three shapes:
+        //   for (;;) ...                  — empty init
+        //   for (let x ...) ...            — declaration init
+        //   for (expr ...) ...             — expression init
+        // The first two can be followed by `in` / `of` for for-in/for-of.
+        var init_node: NodeId = hir_mod.none_node_id;
+        const has_decl_kw = (self.peek().kind == .kw_let or
+            self.peek().kind == .kw_const or
+            self.peek().kind == .kw_var);
+
+        if (self.peek().kind == .semicolon) {
+            // empty init — leave as none
+        } else if (has_decl_kw) {
+            const kw = self.advance(); // let/const/var
+            const name_tok = try self.expect(.identifier, "identifier in for-init binding");
+            // optional type annotation
+            if (self.match(.colon)) try self.skipTypeAnnotation();
+
+            // Detect for-in / for-of immediately.
+            if (self.peek().kind == .kw_in or self.peek().kind == .kw_of) {
+                const kind_tok = self.advance(); // in/of
+                const name_id = try self.internToken(name_tok);
+                const ident = try self.builder.addIdentifier(tokenSpan(name_tok), name_id);
+                const source_expr = try self.parseExpression();
+                _ = try self.expect(.close_paren, "')' to close for-in/of header");
+                const body = try self.parseStatement();
+                const end_pos = self.hir.spanOf(body).end;
+                if (kind_tok.kind == .kw_in) {
+                    return try self.builder.addForIn(.{ .start = start.span.start, .end = end_pos }, ident, source_expr, body);
+                } else {
+                    return try self.builder.addForOf(.{ .start = start.span.start, .end = end_pos }, ident, source_expr, body);
+                }
+            }
+
+            // Classic for: `for (let x = init;` …)
+            var init_expr: NodeId = hir_mod.none_node_id;
+            if (self.match(.equal)) init_expr = try self.parseAssignmentExpression();
+            const name_id = try self.internToken(name_tok);
+            const ident = try self.builder.addIdentifier(tokenSpan(name_tok), name_id);
+            if (init_expr == hir_mod.none_node_id) {
+                init_node = ident;
+            } else {
+                init_node = try self.builder.addAssignment(.{
+                    .start = kw.span.start,
+                    .end = self.hir.spanOf(init_expr).end,
+                }, ident, init_expr, null);
+            }
+        } else {
+            const head_expr = try self.parseExpression();
+
+            if (self.peek().kind == .kw_in or self.peek().kind == .kw_of) {
+                const kind_tok = self.advance();
+                const source_expr = try self.parseExpression();
+                _ = try self.expect(.close_paren, "')' to close for-in/of header");
+                const body = try self.parseStatement();
+                const end_pos = self.hir.spanOf(body).end;
+                if (kind_tok.kind == .kw_in) {
+                    return try self.builder.addForIn(.{ .start = start.span.start, .end = end_pos }, head_expr, source_expr, body);
+                } else {
+                    return try self.builder.addForOf(.{ .start = start.span.start, .end = end_pos }, head_expr, source_expr, body);
+                }
+            }
+            init_node = head_expr;
+        }
+
+        _ = try self.expect(.semicolon, "';' after for-init");
+        var cond: NodeId = hir_mod.none_node_id;
+        if (self.peek().kind != .semicolon) cond = try self.parseExpression();
+        _ = try self.expect(.semicolon, "';' after for-condition");
+        var update: NodeId = hir_mod.none_node_id;
+        if (self.peek().kind != .close_paren) update = try self.parseExpression();
+        _ = try self.expect(.close_paren, "')' to close for header");
+        const body = try self.parseStatement();
+        const end_pos = self.hir.spanOf(body).end;
+        return try self.builder.addFor(.{ .start = start.span.start, .end = end_pos }, init_node, cond, update, body);
+    }
+
+    fn parseBreakStatement(self: *Parser) ParseError!NodeId {
+        const start = self.advance(); // break
+        var label: NodeId = hir_mod.none_node_id;
+        if (self.peek().kind == .identifier and !self.peek().flags.preceded_by_newline) {
+            const lab_tok = self.advance();
+            const lab_id = try self.internToken(lab_tok);
+            label = try self.builder.addIdentifier(tokenSpan(lab_tok), lab_id);
+        }
+        try self.consumeStatementTerminator();
+        const end_pos: u32 = if (self.cursor > 0) self.tokens[self.cursor - 1].span.end else start.span.end;
+        return try self.builder.addBreak(.{ .start = start.span.start, .end = end_pos }, label);
+    }
+
+    fn parseContinueStatement(self: *Parser) ParseError!NodeId {
+        const start = self.advance(); // continue
+        var label: NodeId = hir_mod.none_node_id;
+        if (self.peek().kind == .identifier and !self.peek().flags.preceded_by_newline) {
+            const lab_tok = self.advance();
+            const lab_id = try self.internToken(lab_tok);
+            label = try self.builder.addIdentifier(tokenSpan(lab_tok), lab_id);
+        }
+        try self.consumeStatementTerminator();
+        const end_pos: u32 = if (self.cursor > 0) self.tokens[self.cursor - 1].span.end else start.span.end;
+        return try self.builder.addContinue(.{ .start = start.span.start, .end = end_pos }, label);
+    }
+
+    fn parseThrowStatement(self: *Parser) ParseError!NodeId {
+        const start = self.advance(); // throw
+        // ASI restriction: throw cannot be followed by a newline before
+        // the expression. If a newline intervenes, we still attempt to
+        // parse for recovery, since most editors will see this as an
+        // unfinished statement.
+        const value = try self.parseExpression();
+        try self.consumeStatementTerminator();
+        const end_pos = self.hir.spanOf(value).end;
+        return try self.builder.addThrow(.{ .start = start.span.start, .end = end_pos }, value);
+    }
+
+    fn parseTryStatement(self: *Parser) ParseError!NodeId {
+        const start = self.advance(); // try
+        const block = try self.parseBlockStatement();
+        var catch_param: NodeId = hir_mod.none_node_id;
+        var catch_block: NodeId = hir_mod.none_node_id;
+        if (self.match(.kw_catch)) {
+            if (self.match(.open_paren)) {
+                const name_tok = try self.expect(.identifier, "identifier in catch binding");
+                if (self.match(.colon)) try self.skipTypeAnnotation();
+                _ = try self.expect(.close_paren, "')' to close catch param");
+                const id = try self.internToken(name_tok);
+                catch_param = try self.builder.addIdentifier(tokenSpan(name_tok), id);
+            }
+            catch_block = try self.parseBlockStatement();
+        }
+        var finally_block: NodeId = hir_mod.none_node_id;
+        if (self.match(.kw_finally)) finally_block = try self.parseBlockStatement();
+        const end_pos: u32 = if (finally_block != hir_mod.none_node_id)
+            self.hir.spanOf(finally_block).end
+        else if (catch_block != hir_mod.none_node_id)
+            self.hir.spanOf(catch_block).end
+        else
+            self.hir.spanOf(block).end;
+        return try self.builder.addTry(.{ .start = start.span.start, .end = end_pos }, block, catch_param, catch_block, finally_block);
+    }
+
+    fn parseSwitchStatement(self: *Parser) ParseError!NodeId {
+        const start = self.advance(); // switch
+        _ = try self.expect(.open_paren, "'(' after 'switch'");
+        const discriminant = try self.parseExpression();
+        _ = try self.expect(.close_paren, "')' after switch discriminant");
+        _ = try self.expect(.open_brace, "'{' to open switch body");
+
+        var cases: std.ArrayListUnmanaged(NodeId) = .empty;
+        defer cases.deinit(self.gpa);
+
+        while (self.peek().kind != .close_brace and self.peek().kind != .eof) {
+            const case_start = self.peek();
+            var value: NodeId = hir_mod.none_node_id;
+            if (self.match(.kw_case)) {
+                value = try self.parseExpression();
+            } else if (!self.match(.kw_default)) {
+                try self.report("expected ", "'case' or 'default' in switch body");
+                return error.UnexpectedToken;
+            }
+            _ = try self.expect(.colon, "':' after case label");
+            var stmts: std.ArrayListUnmanaged(NodeId) = .empty;
+            defer stmts.deinit(self.gpa);
+            while (true) {
+                const k = self.peek().kind;
+                if (k == .kw_case or k == .kw_default or k == .close_brace or k == .eof) break;
+                try stmts.append(self.gpa, try self.parseStatement());
+            }
+            const last_end: u32 = if (stmts.items.len > 0)
+                self.hir.spanOf(stmts.items[stmts.items.len - 1]).end
+            else
+                case_start.span.end;
+            const case = try self.builder.addSwitchCase(.{
+                .start = case_start.span.start,
+                .end = last_end,
+            }, value, stmts.items);
+            try cases.append(self.gpa, case);
+        }
+        const close = try self.expect(.close_brace, "'}' to close switch body");
+        return try self.builder.addSwitch(.{ .start = start.span.start, .end = close.span.end }, discriminant, cases.items);
+    }
+
+    fn parseFunctionDeclaration(self: *Parser) ParseError!NodeId {
+        const start = self.advance(); // function
+        const is_generator = self.match(.asterisk);
+        // Function name (optional in expression context, required in
+        // declaration). Phase 1.D treats `function` as a declaration only
+        // when at statement position; named-fn-expression handling lives
+        // in parseUnaryExpression's primary path (deferred follow-up).
+        var name: NodeId = hir_mod.none_node_id;
+        if (self.peek().kind == .identifier) {
+            const name_tok = self.advance();
+            const name_id = try self.internToken(name_tok);
+            name = try self.builder.addIdentifier(tokenSpan(name_tok), name_id);
+        }
+        // Generic type parameters — Phase 1.D skips them.
+        if (self.peek().kind == .less_than) try self.skipTypeAnnotation();
+        const params = try self.parseParameterList();
+        defer self.gpa.free(params);
+
+        const return_type: NodeId = hir_mod.none_node_id;
+        if (self.match(.colon)) try self.skipTypeAnnotation();
+
+        var body: NodeId = hir_mod.none_node_id;
+        if (self.peek().kind == .open_brace) {
+            body = try self.parseBlockStatement();
+        } else {
+            // Ambient declaration `function foo(...);`.
+            try self.consumeStatementTerminator();
+        }
+        const end_pos: u32 = if (body != hir_mod.none_node_id)
+            self.hir.spanOf(body).end
+        else if (self.cursor > 0)
+            self.tokens[self.cursor - 1].span.end
+        else
+            start.span.end;
+        return try self.builder.addFnDecl(
+            .{ .start = start.span.start, .end = end_pos },
+            name,
+            params,
+            return_type,
+            body,
+            .{ .is_generator = is_generator },
+        );
+    }
+
+    /// Parse a parenthesized parameter list. Allocates the result slice;
+    /// caller frees with `gpa.free`.
+    fn parseParameterList(self: *Parser) ParseError![]NodeId {
+        _ = try self.expect(.open_paren, "'(' for parameter list");
+        var params: std.ArrayListUnmanaged(NodeId) = .empty;
+        errdefer params.deinit(self.gpa);
+        if (self.peek().kind != .close_paren) {
+            while (true) {
+                const param_start = self.peek();
+                var flags: hir_mod.ParamFlags = .{};
+                if (self.match(.dot_dot_dot)) flags.is_rest = true;
+                const name_tok = try self.expect(.identifier, "parameter name");
+                if (self.match(.question)) flags.is_optional = true;
+                if (self.match(.colon)) try self.skipTypeAnnotation();
+                var default_value: NodeId = hir_mod.none_node_id;
+                if (self.match(.equal)) default_value = try self.parseAssignmentExpression();
+                const name_id = try self.internToken(name_tok);
+                const ident = try self.builder.addIdentifier(tokenSpan(name_tok), name_id);
+                const param = try self.builder.addParameter(
+                    .{ .start = param_start.span.start, .end = self.tokens[self.cursor - 1].span.end },
+                    ident,
+                    hir_mod.none_node_id,
+                    default_value,
+                    flags,
+                );
+                try params.append(self.gpa, param);
+                if (!self.match(.comma)) break;
+                if (self.peek().kind == .close_paren) break; // trailing comma
+            }
+        }
+        _ = try self.expect(.close_paren, "')' to close parameter list");
+        return try params.toOwnedSlice(self.gpa);
+    }
+
+    fn parseClassDeclaration(self: *Parser) ParseError!NodeId {
+        const start = self.advance(); // class
+        var name: NodeId = hir_mod.none_node_id;
+        if (self.peek().kind == .identifier) {
+            const name_tok = self.advance();
+            const name_id = try self.internToken(name_tok);
+            name = try self.builder.addIdentifier(tokenSpan(name_tok), name_id);
+        }
+        // generic type-params skip
+        if (self.peek().kind == .less_than) try self.skipTypeAnnotation();
+
+        var extends: NodeId = hir_mod.none_node_id;
+        if (self.match(.kw_extends)) {
+            extends = try self.parseLeftHandSideExpression();
+        }
+        var implements_list: std.ArrayListUnmanaged(NodeId) = .empty;
+        defer implements_list.deinit(self.gpa);
+        if (self.match(.kw_implements)) {
+            while (true) {
+                const ref = try self.parseTypeReference();
+                try implements_list.append(self.gpa, ref);
+                if (!self.match(.comma)) break;
+            }
+        }
+
+        _ = try self.expect(.open_brace, "'{' to open class body");
+        var members: std.ArrayListUnmanaged(NodeId) = .empty;
+        defer members.deinit(self.gpa);
+        while (self.peek().kind != .close_brace and self.peek().kind != .eof) {
+            // For Phase 1.D we accept a permissive class body: skip
+            // modifiers, then either parse a method (parens) or a
+            // property (`name [: T] [= init];`). The proper class member
+            // parser is a follow-up.
+            try self.skipClassModifiers();
+            const member_start = self.peek();
+            // method?
+            if (self.peek().kind == .identifier or self.peek().kind == .kw_constructor or self.peek().kind.isContextualKeyword()) {
+                const name_tok = self.advance();
+                if (self.peek().kind == .open_paren or self.peek().kind == .less_than) {
+                    if (self.peek().kind == .less_than) try self.skipTypeAnnotation();
+                    const params = try self.parseParameterList();
+                    defer self.gpa.free(params);
+                    if (self.match(.colon)) try self.skipTypeAnnotation();
+                    var body: NodeId = hir_mod.none_node_id;
+                    if (self.peek().kind == .open_brace) {
+                        body = try self.parseBlockStatement();
+                    } else {
+                        try self.consumeStatementTerminator();
+                    }
+                    const name_id = try self.internToken(name_tok);
+                    const name_node = try self.builder.addIdentifier(tokenSpan(name_tok), name_id);
+                    const fn_node = try self.builder.addFnDecl(
+                        .{ .start = member_start.span.start, .end = self.tokens[self.cursor - 1].span.end },
+                        name_node,
+                        params,
+                        hir_mod.none_node_id,
+                        body,
+                        .{
+                            .is_method = true,
+                            .is_constructor = name_tok.kind == .kw_constructor,
+                        },
+                    );
+                    try members.append(self.gpa, fn_node);
+                    continue;
+                }
+                // property
+                if (self.match(.colon)) try self.skipTypeAnnotation();
+                var default_value: NodeId = hir_mod.none_node_id;
+                if (self.match(.equal)) default_value = try self.parseAssignmentExpression();
+                try self.consumeStatementTerminator();
+                const name_id = try self.internToken(name_tok);
+                const name_node = try self.builder.addIdentifier(tokenSpan(name_tok), name_id);
+                const prop = try self.builder.addObjectProperty(
+                    .{ .start = member_start.span.start, .end = self.tokens[self.cursor - 1].span.end },
+                    name_node,
+                    default_value,
+                    false,
+                    default_value == hir_mod.none_node_id,
+                    false,
+                );
+                try members.append(self.gpa, prop);
+                continue;
+            }
+            // Unknown — advance to keep error-recovery flowing.
+            _ = self.advance();
+        }
+        const close = try self.expect(.close_brace, "'}' to close class body");
+        return try self.builder.addClass(
+            .{ .start = start.span.start, .end = close.span.end },
+            name,
+            &.{},
+            extends,
+            implements_list.items,
+            members.items,
+        );
+    }
+
+    fn skipClassModifiers(self: *Parser) ParseError!void {
+        while (true) {
+            const k = self.peek().kind;
+            if (k.isModifierKeyword()) {
+                _ = self.advance();
+                continue;
+            }
+            return;
+        }
+    }
+
+    fn parseInterfaceDeclaration(self: *Parser) ParseError!NodeId {
+        const start = self.advance(); // interface
+        const name_tok = try self.expect(.identifier, "interface name");
+        if (self.peek().kind == .less_than) try self.skipTypeAnnotation();
+        var extends_list: std.ArrayListUnmanaged(NodeId) = .empty;
+        defer extends_list.deinit(self.gpa);
+        if (self.match(.kw_extends)) {
+            while (true) {
+                const ref = try self.parseTypeReference();
+                try extends_list.append(self.gpa, ref);
+                if (!self.match(.comma)) break;
+            }
+        }
+        _ = try self.expect(.open_brace, "'{' to open interface body");
+        // Phase 1.D scope: we skip the body content entirely. A real
+        // member parser is a Phase 1 follow-up; we still produce an HIR
+        // node so the binder can see the interface declaration.
+        var members: std.ArrayListUnmanaged(NodeId) = .empty;
+        defer members.deinit(self.gpa);
+        var depth: i32 = 1;
+        while (depth > 0 and self.peek().kind != .eof) {
+            const t = self.peek();
+            if (t.kind == .open_brace) {
+                depth += 1;
+            } else if (t.kind == .close_brace) {
+                depth -= 1;
+                if (depth == 0) break;
+            }
+            _ = self.advance();
+        }
+        const close = try self.expect(.close_brace, "'}' to close interface body");
+        const name_id = try self.internToken(name_tok);
+        const name_node = try self.builder.addIdentifier(tokenSpan(name_tok), name_id);
+        return try self.builder.addInterface(
+            .{ .start = start.span.start, .end = close.span.end },
+            name_node,
+            &.{},
+            extends_list.items,
+            members.items,
+        );
+    }
+
+    fn parseTypeAlias(self: *Parser) ParseError!NodeId {
+        const start = self.advance(); // type
+        const name_tok = try self.expect(.identifier, "type alias name");
+        if (self.peek().kind == .less_than) try self.skipTypeAnnotation();
+        _ = try self.expect(.equal, "'=' in type alias");
+        // Skip the type expression. Phase 1 follow-up: real type parser.
+        try self.skipTypeAnnotation();
+        try self.consumeStatementTerminator();
+        const name_id = try self.internToken(name_tok);
+        const name_node = try self.builder.addIdentifier(tokenSpan(name_tok), name_id);
+        const end_pos = self.tokens[self.cursor - 1].span.end;
+        return try self.builder.addTypeAlias(
+            .{ .start = start.span.start, .end = end_pos },
+            name_node,
+            &.{},
+            hir_mod.none_node_id,
+        );
+    }
+
+    fn parseEnumDeclaration(self: *Parser) ParseError!NodeId {
+        const start = self.advance(); // enum
+        const name_tok = try self.expect(.identifier, "enum name");
+        _ = try self.expect(.open_brace, "'{' to open enum body");
+        var members: std.ArrayListUnmanaged(NodeId) = .empty;
+        defer members.deinit(self.gpa);
+        while (self.peek().kind != .close_brace and self.peek().kind != .eof) {
+            const member_start = self.peek();
+            const member_tok = if (self.peek().kind == .string_literal)
+                self.advance()
+            else
+                try self.expect(.identifier, "enum member name");
+            var value: NodeId = hir_mod.none_node_id;
+            if (self.match(.equal)) value = try self.parseAssignmentExpression();
+            const name_id = try self.internToken(member_tok);
+            const name_node = try self.builder.addIdentifier(tokenSpan(member_tok), name_id);
+            const member = try self.builder.addObjectProperty(
+                .{ .start = member_start.span.start, .end = self.tokens[self.cursor - 1].span.end },
+                name_node,
+                value,
+                false,
+                value == hir_mod.none_node_id,
+                false,
+            );
+            try members.append(self.gpa, member);
+            if (!self.match(.comma)) break;
+        }
+        const close = try self.expect(.close_brace, "'}' to close enum body");
+        const name_id = try self.internToken(name_tok);
+        const name_node = try self.builder.addIdentifier(tokenSpan(name_tok), name_id);
+        return try self.builder.addEnum(
+            .{ .start = start.span.start, .end = close.span.end },
+            name_node,
+            members.items,
+            false,
+        );
+    }
+
+    fn parseNamespaceDeclaration(self: *Parser) ParseError!NodeId {
+        const start = self.advance(); // namespace / module
+        const name_tok = if (self.peek().kind == .string_literal)
+            self.advance()
+        else
+            try self.expect(.identifier, "namespace name");
+        _ = try self.expect(.open_brace, "'{' to open namespace body");
+        var body: std.ArrayListUnmanaged(NodeId) = .empty;
+        defer body.deinit(self.gpa);
+        while (self.peek().kind != .close_brace and self.peek().kind != .eof) {
+            try body.append(self.gpa, try self.parseStatement());
+        }
+        const close = try self.expect(.close_brace, "'}' to close namespace body");
+        const name_id = try self.internToken(name_tok);
+        const name_node = try self.builder.addIdentifier(tokenSpan(name_tok), name_id);
+        return try self.builder.addNamespace(
+            .{ .start = start.span.start, .end = close.span.end },
+            name_node,
+            body.items,
+        );
+    }
+
+    /// Parse a single qualified-identifier type reference such as
+    /// `Foo`, `Foo.Bar`, or `Foo<T>` — used in `extends` / `implements`.
+    /// Phase 1.D returns the head identifier and skips the rest.
+    fn parseTypeReference(self: *Parser) ParseError!NodeId {
+        const name_tok = try self.expect(.identifier, "type reference identifier");
+        const name_id = try self.internToken(name_tok);
+        const ident = try self.builder.addIdentifier(tokenSpan(name_tok), name_id);
+        // Skip qualified-name continuations + generic args.
+        while (self.peek().kind == .dot) {
+            _ = self.advance();
+            _ = try self.expect(.identifier, "qualified-name member");
+        }
+        if (self.peek().kind == .less_than) try self.skipTypeAnnotation();
+        return ident;
+    }
+
+    fn parseImportDeclaration(self: *Parser) ParseError!NodeId {
+        const start = self.advance(); // import
+        const is_type_only = self.match(.kw_type);
+        var default_binding: NodeId = hir_mod.none_node_id;
+        var namespace_binding: NodeId = hir_mod.none_node_id;
+        var named: std.ArrayListUnmanaged(NodeId) = .empty;
+        defer named.deinit(self.gpa);
+
+        if (self.peek().kind == .string_literal) {
+            // bare side-effect import: `import "module";`
+            const mod_tok = self.advance();
+            try self.consumeStatementTerminator();
+            const mod_id = try self.internStringLiteral(mod_tok);
+            return try self.builder.addImport(
+                .{ .start = start.span.start, .end = self.tokens[self.cursor - 1].span.end },
+                mod_id,
+                hir_mod.none_node_id,
+                hir_mod.none_node_id,
+                &.{},
+                is_type_only,
+            );
+        }
+
+        // Default binding?
+        if (self.peek().kind == .identifier) {
+            const name_tok = self.advance();
+            const id = try self.internToken(name_tok);
+            default_binding = try self.builder.addIdentifier(tokenSpan(name_tok), id);
+            if (!self.match(.comma)) {
+                // Only default — proceed to from clause.
+            }
+        }
+
+        // Namespace import: `* as ns`?
+        if (self.match(.asterisk)) {
+            _ = try self.expect(.kw_as, "'as' in namespace import");
+            const name_tok = try self.expect(.identifier, "namespace import name");
+            const id = try self.internToken(name_tok);
+            namespace_binding = try self.builder.addIdentifier(tokenSpan(name_tok), id);
+        }
+        // Named imports: `{ a, b as c, type d }`?
+        else if (self.match(.open_brace)) {
+            while (self.peek().kind != .close_brace and self.peek().kind != .eof) {
+                const spec_start = self.peek();
+                const spec_type_only = self.match(.kw_type);
+                const imported_tok = if (self.peek().kind.isKeyword() or self.peek().kind == .identifier)
+                    self.advance()
+                else
+                    return error.UnexpectedToken;
+                var local_id = try self.internToken(imported_tok);
+                const imported_id = local_id;
+                if (self.match(.kw_as)) {
+                    const local_tok = try self.expect(.identifier, "local name in 'as' clause");
+                    local_id = try self.internToken(local_tok);
+                }
+                const spec = try self.builder.addImportSpecifier(
+                    .{ .start = spec_start.span.start, .end = self.tokens[self.cursor - 1].span.end },
+                    imported_id,
+                    local_id,
+                    spec_type_only,
+                );
+                try named.append(self.gpa, spec);
+                if (!self.match(.comma)) break;
+            }
+            _ = try self.expect(.close_brace, "'}' to close named imports");
+        }
+
+        _ = try self.expect(.kw_from, "'from' in import declaration");
+        const mod_tok = try self.expect(.string_literal, "module specifier");
+        try self.consumeStatementTerminator();
+        const mod_id = try self.internStringLiteral(mod_tok);
+        const end_pos = self.tokens[self.cursor - 1].span.end;
+        return try self.builder.addImport(
+            .{ .start = start.span.start, .end = end_pos },
+            mod_id,
+            default_binding,
+            namespace_binding,
+            named.items,
+            is_type_only,
+        );
+    }
+
+    fn parseExportDeclaration(self: *Parser) ParseError!NodeId {
+        const start = self.advance(); // export
+        const is_type_only = self.match(.kw_type);
+        const empty_string = self.interner.intern("") catch return error.OutOfMemory;
+
+        // export default <expr>;
+        if (self.match(.kw_default)) {
+            const decl = try self.parseAssignmentExpression();
+            try self.consumeStatementTerminator();
+            const end_pos = self.tokens[self.cursor - 1].span.end;
+            return try self.builder.addExport(
+                .{ .start = start.span.start, .end = end_pos },
+                decl,
+                &.{},
+                empty_string,
+                is_type_only,
+                true,
+            );
+        }
+
+        // export { a, b as c } [from "m"];
+        if (self.match(.open_brace)) {
+            var named: std.ArrayListUnmanaged(NodeId) = .empty;
+            defer named.deinit(self.gpa);
+            while (self.peek().kind != .close_brace and self.peek().kind != .eof) {
+                const spec_start = self.peek();
+                const spec_type_only = self.match(.kw_type);
+                const imported_tok = if (self.peek().kind.isKeyword() or self.peek().kind == .identifier)
+                    self.advance()
+                else
+                    return error.UnexpectedToken;
+                const imported_id = try self.internToken(imported_tok);
+                var local_id = imported_id;
+                if (self.match(.kw_as)) {
+                    const local_tok = try self.expect(.identifier, "local name in 'as' clause");
+                    local_id = try self.internToken(local_tok);
+                }
+                const spec = try self.builder.addImportSpecifier(
+                    .{ .start = spec_start.span.start, .end = self.tokens[self.cursor - 1].span.end },
+                    imported_id,
+                    local_id,
+                    spec_type_only,
+                );
+                try named.append(self.gpa, spec);
+                if (!self.match(.comma)) break;
+            }
+            _ = try self.expect(.close_brace, "'}' to close named exports");
+            var module_id = empty_string;
+            if (self.match(.kw_from)) {
+                const mod_tok = try self.expect(.string_literal, "module specifier");
+                module_id = try self.internStringLiteral(mod_tok);
+            }
+            try self.consumeStatementTerminator();
+            const end_pos = self.tokens[self.cursor - 1].span.end;
+            return try self.builder.addExport(
+                .{ .start = start.span.start, .end = end_pos },
+                hir_mod.none_node_id,
+                named.items,
+                module_id,
+                is_type_only,
+                false,
+            );
+        }
+
+        // export * [as ns] from "m";
+        if (self.match(.asterisk)) {
+            if (self.match(.kw_as)) {
+                _ = try self.expect(.identifier, "namespace name");
+            }
+            _ = try self.expect(.kw_from, "'from' after 'export *'");
+            const mod_tok = try self.expect(.string_literal, "module specifier");
+            try self.consumeStatementTerminator();
+            const mod_id = try self.internStringLiteral(mod_tok);
+            const end_pos = self.tokens[self.cursor - 1].span.end;
+            return try self.builder.addExport(
+                .{ .start = start.span.start, .end = end_pos },
+                hir_mod.none_node_id,
+                &.{},
+                mod_id,
+                is_type_only,
+                false,
+            );
+        }
+
+        // export <decl>
+        const decl = try self.parseStatement();
+        const end_pos = self.hir.spanOf(decl).end;
+        return try self.builder.addExport(
+            .{ .start = start.span.start, .end = end_pos },
+            decl,
+            &.{},
+            empty_string,
+            is_type_only,
+            false,
+        );
+    }
+
+    /// Parse a "left-hand-side" expression — primary + member-call
+    /// chain. Used for `extends` clauses where a full assignment-level
+    /// expression isn't grammatical.
+    fn parseLeftHandSideExpression(self: *Parser) ParseError!NodeId {
+        return try self.parseCallOrMemberExpression();
     }
 
     fn parseVarDecl(self: *Parser) ParseError!NodeId {
@@ -562,11 +1315,136 @@ pub const Parser = struct {
                 _ = try self.expect(.close_paren, "')' to close parenthesized expression");
                 return e;
             },
+            .open_bracket => return try self.parseArrayLiteral(),
+            .open_brace => return try self.parseObjectLiteral(),
+            .kw_this => {
+                _ = self.advance();
+                const this_id = self.interner.intern("this") catch return error.OutOfMemory;
+                return try self.builder.addIdentifier(tokenSpan(t), this_id);
+            },
+            .kw_super => {
+                _ = self.advance();
+                const super_id = self.interner.intern("super") catch return error.OutOfMemory;
+                return try self.builder.addIdentifier(tokenSpan(t), super_id);
+            },
+            .kw_new => {
+                _ = self.advance();
+                // Phase 1.D: lower `new Foo(args)` as a call expression
+                // — the binder distinguishes via parent-decoration. The
+                // dedicated `new_expr` HIR kind exists but is reserved
+                // for the follow-up that introduces an explicit lowering.
+                const callee = try self.parseLeftHandSideExpression();
+                if (self.peek().kind == .open_paren) {
+                    const args = try self.parseArgumentList();
+                    defer self.gpa.free(args);
+                    const close_pos = self.tokens[self.cursor - 1].span.end;
+                    return try self.builder.addCall(.{ .start = t.span.start, .end = close_pos }, callee, args);
+                }
+                return try self.builder.addCall(.{ .start = t.span.start, .end = self.hir.spanOf(callee).end }, callee, &.{});
+            },
+            .kw_function => {
+                // Function expression — reuse declaration parser; it
+                // will emit `fn_decl` even when used as expression.
+                return try self.parseFunctionDeclaration();
+            },
             else => {
                 try self.report("unexpected token in expression: ", @tagName(t.kind));
                 return error.UnexpectedToken;
             },
         }
+    }
+
+    fn parseArrayLiteral(self: *Parser) ParseError!NodeId {
+        const start = try self.expect(.open_bracket, "'[' to start array literal");
+        var elements: std.ArrayListUnmanaged(NodeId) = .empty;
+        defer elements.deinit(self.gpa);
+        while (self.peek().kind != .close_bracket and self.peek().kind != .eof) {
+            if (self.peek().kind == .comma) {
+                // Hole — represent as `none` for now. (TS treats
+                // `[,1]` as `[undefined, 1]`.)
+                _ = self.advance();
+                try elements.append(self.gpa, hir_mod.none_node_id);
+                continue;
+            }
+            const e = try self.parseAssignmentExpression();
+            try elements.append(self.gpa, e);
+            if (!self.match(.comma)) break;
+        }
+        const close = try self.expect(.close_bracket, "']' to close array literal");
+        return try self.builder.addArrayLiteral(.{ .start = start.span.start, .end = close.span.end }, elements.items);
+    }
+
+    fn parseObjectLiteral(self: *Parser) ParseError!NodeId {
+        const start = try self.expect(.open_brace, "'{' to start object literal");
+        var props: std.ArrayListUnmanaged(NodeId) = .empty;
+        defer props.deinit(self.gpa);
+        while (self.peek().kind != .close_brace and self.peek().kind != .eof) {
+            const prop_start = self.peek();
+            // Spread element: `...expr`.
+            if (self.match(.dot_dot_dot)) {
+                const value = try self.parseAssignmentExpression();
+                // Lower as a property with a synthetic `..` key — for
+                // now just store the value as the property and mark it
+                // as a method to flag "non-standard." A dedicated spread
+                // node is a follow-up.
+                try props.append(self.gpa, value);
+                if (!self.match(.comma)) break;
+                continue;
+            }
+
+            // Computed key: `[expr]: value`.
+            var key: NodeId = undefined;
+            var is_computed = false;
+            if (self.match(.open_bracket)) {
+                key = try self.parseAssignmentExpression();
+                _ = try self.expect(.close_bracket, "']' to close computed property name");
+                is_computed = true;
+            } else {
+                const key_tok = self.advance();
+                const key_id = self.interner.intern(self.source[key_tok.span.start..key_tok.span.end]) catch return error.OutOfMemory;
+                key = try self.builder.addIdentifier(tokenSpan(key_tok), key_id);
+            }
+
+            var value: NodeId = hir_mod.none_node_id;
+            var is_shorthand = false;
+            var is_method = false;
+            if (self.match(.colon)) {
+                value = try self.parseAssignmentExpression();
+            } else if (self.peek().kind == .open_paren) {
+                // Method shorthand: `{ foo() {} }`.
+                const params = try self.parseParameterList();
+                defer self.gpa.free(params);
+                if (self.match(.colon)) try self.skipTypeAnnotation();
+                var body: NodeId = hir_mod.none_node_id;
+                if (self.peek().kind == .open_brace) body = try self.parseBlockStatement();
+                value = try self.builder.addFnDecl(
+                    .{ .start = prop_start.span.start, .end = self.tokens[self.cursor - 1].span.end },
+                    hir_mod.none_node_id,
+                    params,
+                    hir_mod.none_node_id,
+                    body,
+                    .{ .is_method = true },
+                );
+                is_method = true;
+            } else {
+                // Shorthand property: `{ foo }` — value mirrors the key
+                // identifier.
+                is_shorthand = true;
+                value = key;
+            }
+            const prop = try self.builder.addObjectProperty(
+                .{ .start = prop_start.span.start, .end = self.tokens[self.cursor - 1].span.end },
+                key,
+                value,
+                is_computed,
+                is_shorthand,
+                is_method,
+            );
+            try props.append(self.gpa, prop);
+            if (!self.match(.comma)) break;
+        }
+        const close = try self.expect(.close_brace, "'}' to close object literal");
+        return try self.builder.addObjectLiteral(.{ .start = start.span.start, .end = close.span.end }, props.items);
     }
 
     /// Accept any token that can appear after `.` — identifier or
@@ -950,4 +1828,366 @@ test "parser: complex realistic snippet" {
     const stmts = hir_mod.blockStmts(&s.hir, root);
     try T.expectEqual(@as(usize, 1), stmts.len);
     try T.expectEqual(hir_mod.NodeKind.assignment, s.hir.kindOf(stmts[0]));
+}
+
+// ====================================================================
+// Phase 1.D follow-ups: control flow, declarations, imports
+// ====================================================================
+
+test "parser: if statement without else" {
+    var s = try newTestSetup("if (x) { return 1; }");
+    defer destroyTestSetup(s);
+    const root = try s.parser.parseSourceFile();
+    const top = hir_mod.blockStmts(&s.hir, root)[0];
+    try T.expectEqual(hir_mod.NodeKind.if_stmt, s.hir.kindOf(top));
+    const ifp = hir_mod.ifOf(&s.hir, top);
+    try T.expectEqual(hir_mod.NodeKind.identifier, s.hir.kindOf(ifp.cond));
+    try T.expectEqual(hir_mod.NodeKind.block_stmt, s.hir.kindOf(ifp.then_branch));
+    try T.expectEqual(hir_mod.none_node_id, ifp.else_branch);
+}
+
+test "parser: if/else if chain" {
+    var s = try newTestSetup("if (a) 1; else if (b) 2; else 3;");
+    defer destroyTestSetup(s);
+    const root = try s.parser.parseSourceFile();
+    const top = hir_mod.blockStmts(&s.hir, root)[0];
+    try T.expectEqual(hir_mod.NodeKind.if_stmt, s.hir.kindOf(top));
+    const outer = hir_mod.ifOf(&s.hir, top);
+    try T.expect(outer.else_branch != hir_mod.none_node_id);
+    try T.expectEqual(hir_mod.NodeKind.if_stmt, s.hir.kindOf(outer.else_branch));
+}
+
+test "parser: while loop" {
+    var s = try newTestSetup("while (x > 0) { x = x - 1; }");
+    defer destroyTestSetup(s);
+    const root = try s.parser.parseSourceFile();
+    const top = hir_mod.blockStmts(&s.hir, root)[0];
+    try T.expectEqual(hir_mod.NodeKind.while_stmt, s.hir.kindOf(top));
+    const w = hir_mod.whileOf(&s.hir, top);
+    try T.expectEqual(hir_mod.NodeKind.binary_op, s.hir.kindOf(w.cond));
+}
+
+test "parser: do-while loop" {
+    var s = try newTestSetup("do { x = x + 1; } while (x < 10);");
+    defer destroyTestSetup(s);
+    const root = try s.parser.parseSourceFile();
+    const top = hir_mod.blockStmts(&s.hir, root)[0];
+    try T.expectEqual(hir_mod.NodeKind.do_while_stmt, s.hir.kindOf(top));
+}
+
+test "parser: classic for loop" {
+    var s = try newTestSetup("for (let i = 0; i < 10; i = i + 1) { sum = sum + i; }");
+    defer destroyTestSetup(s);
+    const root = try s.parser.parseSourceFile();
+    const top = hir_mod.blockStmts(&s.hir, root)[0];
+    try T.expectEqual(hir_mod.NodeKind.for_stmt, s.hir.kindOf(top));
+    const f = hir_mod.forStmtOf(&s.hir, top);
+    try T.expect(f.init != hir_mod.none_node_id);
+    try T.expect(f.cond != hir_mod.none_node_id);
+    try T.expect(f.update != hir_mod.none_node_id);
+}
+
+test "parser: for-in loop" {
+    var s = try newTestSetup("for (let k in obj) { use(k); }");
+    defer destroyTestSetup(s);
+    const root = try s.parser.parseSourceFile();
+    const top = hir_mod.blockStmts(&s.hir, root)[0];
+    try T.expectEqual(hir_mod.NodeKind.for_in_stmt, s.hir.kindOf(top));
+}
+
+test "parser: for-of loop" {
+    var s = try newTestSetup("for (let v of items) { sum = sum + v; }");
+    defer destroyTestSetup(s);
+    const root = try s.parser.parseSourceFile();
+    const top = hir_mod.blockStmts(&s.hir, root)[0];
+    try T.expectEqual(hir_mod.NodeKind.for_of_stmt, s.hir.kindOf(top));
+}
+
+test "parser: break and continue" {
+    var s = try newTestSetup("while (x) { break; continue; break label; continue label; }");
+    defer destroyTestSetup(s);
+    const root = try s.parser.parseSourceFile();
+    const top = hir_mod.blockStmts(&s.hir, root)[0];
+    const body_id = hir_mod.whileOf(&s.hir, top).body;
+    const stmts = hir_mod.blockStmts(&s.hir, body_id);
+    try T.expectEqual(@as(usize, 4), stmts.len);
+    try T.expectEqual(hir_mod.NodeKind.break_stmt, s.hir.kindOf(stmts[0]));
+    try T.expectEqual(hir_mod.NodeKind.continue_stmt, s.hir.kindOf(stmts[1]));
+    try T.expect(hir_mod.labelOf(&s.hir, stmts[0]).label == hir_mod.none_node_id);
+    try T.expect(hir_mod.labelOf(&s.hir, stmts[2]).label != hir_mod.none_node_id);
+}
+
+test "parser: throw statement" {
+    var s = try newTestSetup("throw new Error(\"bad\");");
+    defer destroyTestSetup(s);
+    const root = try s.parser.parseSourceFile();
+    const top = hir_mod.blockStmts(&s.hir, root)[0];
+    try T.expectEqual(hir_mod.NodeKind.throw_stmt, s.hir.kindOf(top));
+}
+
+test "parser: try-catch-finally" {
+    var s = try newTestSetup("try { f(); } catch (e) { log(e); } finally { cleanup(); }");
+    defer destroyTestSetup(s);
+    const root = try s.parser.parseSourceFile();
+    const top = hir_mod.blockStmts(&s.hir, root)[0];
+    try T.expectEqual(hir_mod.NodeKind.try_stmt, s.hir.kindOf(top));
+    const tp = hir_mod.tryOf(&s.hir, top);
+    try T.expect(tp.catch_block != hir_mod.none_node_id);
+    try T.expect(tp.catch_param != hir_mod.none_node_id);
+    try T.expect(tp.finally_block != hir_mod.none_node_id);
+}
+
+test "parser: try without catch" {
+    var s = try newTestSetup("try { f(); } finally { cleanup(); }");
+    defer destroyTestSetup(s);
+    const root = try s.parser.parseSourceFile();
+    const top = hir_mod.blockStmts(&s.hir, root)[0];
+    try T.expectEqual(hir_mod.NodeKind.try_stmt, s.hir.kindOf(top));
+    const tp = hir_mod.tryOf(&s.hir, top);
+    try T.expectEqual(hir_mod.none_node_id, tp.catch_block);
+    try T.expect(tp.finally_block != hir_mod.none_node_id);
+}
+
+test "parser: switch with cases and default" {
+    var s = try newTestSetup(
+        \\switch (x) {
+        \\  case 1: f(); break;
+        \\  case 2: g(); break;
+        \\  default: h();
+        \\}
+    );
+    defer destroyTestSetup(s);
+    const root = try s.parser.parseSourceFile();
+    const top = hir_mod.blockStmts(&s.hir, root)[0];
+    try T.expectEqual(hir_mod.NodeKind.switch_stmt, s.hir.kindOf(top));
+    const cases = hir_mod.switchCases(&s.hir, top);
+    try T.expectEqual(@as(usize, 3), cases.len);
+    // Default case has none_node_id value.
+    try T.expectEqual(hir_mod.none_node_id, hir_mod.switchCaseOf(&s.hir, cases[2]).value);
+}
+
+test "parser: function declaration with parameters and body" {
+    var s = try newTestSetup("function add(a, b) { return a + b; }");
+    defer destroyTestSetup(s);
+    const root = try s.parser.parseSourceFile();
+    const top = hir_mod.blockStmts(&s.hir, root)[0];
+    try T.expectEqual(hir_mod.NodeKind.fn_decl, s.hir.kindOf(top));
+    const fn_p = hir_mod.fnDeclOf(&s.hir, top);
+    try T.expect(fn_p.name != hir_mod.none_node_id);
+    const params = hir_mod.fnParams(&s.hir, top);
+    try T.expectEqual(@as(usize, 2), params.len);
+}
+
+test "parser: function with type annotations skipped" {
+    var s = try newTestSetup("function id(x: number): number { return x; }");
+    defer destroyTestSetup(s);
+    const root = try s.parser.parseSourceFile();
+    const top = hir_mod.blockStmts(&s.hir, root)[0];
+    try T.expectEqual(hir_mod.NodeKind.fn_decl, s.hir.kindOf(top));
+}
+
+test "parser: function with optional and rest parameters" {
+    var s = try newTestSetup("function fmt(prefix, value?, ...rest) { return prefix; }");
+    defer destroyTestSetup(s);
+    const root = try s.parser.parseSourceFile();
+    const top = hir_mod.blockStmts(&s.hir, root)[0];
+    const params = hir_mod.fnParams(&s.hir, top);
+    try T.expectEqual(@as(usize, 3), params.len);
+    try T.expect(hir_mod.parameterOf(&s.hir, params[1]).flags.is_optional);
+    try T.expect(hir_mod.parameterOf(&s.hir, params[2]).flags.is_rest);
+}
+
+test "parser: class declaration with method and property" {
+    var s = try newTestSetup(
+        \\class Foo {
+        \\  x = 1;
+        \\  greet(name) { return name; }
+        \\}
+    );
+    defer destroyTestSetup(s);
+    const root = try s.parser.parseSourceFile();
+    const top = hir_mod.blockStmts(&s.hir, root)[0];
+    try T.expectEqual(hir_mod.NodeKind.class_decl, s.hir.kindOf(top));
+    const cl = hir_mod.classOf(&s.hir, top);
+    try T.expect(cl.name != hir_mod.none_node_id);
+    const members = hir_mod.classMembers(&s.hir, top);
+    try T.expectEqual(@as(usize, 2), members.len);
+}
+
+test "parser: class extends" {
+    var s = try newTestSetup("class Bar extends Foo {}");
+    defer destroyTestSetup(s);
+    const root = try s.parser.parseSourceFile();
+    const top = hir_mod.blockStmts(&s.hir, root)[0];
+    const cl = hir_mod.classOf(&s.hir, top);
+    try T.expect(cl.extends != hir_mod.none_node_id);
+}
+
+test "parser: interface declaration" {
+    var s = try newTestSetup("interface Point { x: number; y: number; }");
+    defer destroyTestSetup(s);
+    const root = try s.parser.parseSourceFile();
+    const top = hir_mod.blockStmts(&s.hir, root)[0];
+    try T.expectEqual(hir_mod.NodeKind.interface_decl, s.hir.kindOf(top));
+}
+
+test "parser: type alias" {
+    var s = try newTestSetup("type Pair = [number, number];");
+    defer destroyTestSetup(s);
+    const root = try s.parser.parseSourceFile();
+    const top = hir_mod.blockStmts(&s.hir, root)[0];
+    try T.expectEqual(hir_mod.NodeKind.type_alias_decl, s.hir.kindOf(top));
+}
+
+test "parser: enum declaration" {
+    var s = try newTestSetup("enum Color { Red, Green, Blue }");
+    defer destroyTestSetup(s);
+    const root = try s.parser.parseSourceFile();
+    const top = hir_mod.blockStmts(&s.hir, root)[0];
+    try T.expectEqual(hir_mod.NodeKind.enum_decl, s.hir.kindOf(top));
+    const members = hir_mod.enumMembers(&s.hir, top);
+    try T.expectEqual(@as(usize, 3), members.len);
+}
+
+test "parser: namespace declaration" {
+    var s = try newTestSetup("namespace Math { let pi = 3.14; }");
+    defer destroyTestSetup(s);
+    const root = try s.parser.parseSourceFile();
+    const top = hir_mod.blockStmts(&s.hir, root)[0];
+    try T.expectEqual(hir_mod.NodeKind.namespace_decl, s.hir.kindOf(top));
+}
+
+test "parser: import default" {
+    var s = try newTestSetup("import React from \"react\";");
+    defer destroyTestSetup(s);
+    const root = try s.parser.parseSourceFile();
+    const top = hir_mod.blockStmts(&s.hir, root)[0];
+    try T.expectEqual(hir_mod.NodeKind.import_decl, s.hir.kindOf(top));
+    const imp = hir_mod.importOf(&s.hir, top);
+    try T.expect(imp.default_binding != hir_mod.none_node_id);
+    try T.expectEqualStrings("react", s.interner.get(imp.module));
+}
+
+test "parser: import named" {
+    var s = try newTestSetup("import { useState, useEffect as effect } from \"react\";");
+    defer destroyTestSetup(s);
+    const root = try s.parser.parseSourceFile();
+    const top = hir_mod.blockStmts(&s.hir, root)[0];
+    const named = hir_mod.importNamed(&s.hir, top);
+    try T.expectEqual(@as(usize, 2), named.len);
+}
+
+test "parser: import namespace" {
+    var s = try newTestSetup("import * as fs from \"fs\";");
+    defer destroyTestSetup(s);
+    const root = try s.parser.parseSourceFile();
+    const top = hir_mod.blockStmts(&s.hir, root)[0];
+    const imp = hir_mod.importOf(&s.hir, top);
+    try T.expect(imp.namespace_binding != hir_mod.none_node_id);
+}
+
+test "parser: import type-only" {
+    var s = try newTestSetup("import type { Foo } from \"./types\";");
+    defer destroyTestSetup(s);
+    const root = try s.parser.parseSourceFile();
+    const top = hir_mod.blockStmts(&s.hir, root)[0];
+    try T.expect(hir_mod.importOf(&s.hir, top).is_type_only);
+}
+
+test "parser: bare side-effect import" {
+    var s = try newTestSetup("import \"polyfill\";");
+    defer destroyTestSetup(s);
+    const root = try s.parser.parseSourceFile();
+    const top = hir_mod.blockStmts(&s.hir, root)[0];
+    try T.expectEqual(hir_mod.NodeKind.import_decl, s.hir.kindOf(top));
+    const imp = hir_mod.importOf(&s.hir, top);
+    try T.expectEqual(hir_mod.none_node_id, imp.default_binding);
+    try T.expectEqual(hir_mod.none_node_id, imp.namespace_binding);
+}
+
+test "parser: export default" {
+    var s = try newTestSetup("export default 42;");
+    defer destroyTestSetup(s);
+    const root = try s.parser.parseSourceFile();
+    const top = hir_mod.blockStmts(&s.hir, root)[0];
+    try T.expectEqual(hir_mod.NodeKind.export_decl, s.hir.kindOf(top));
+    try T.expect(hir_mod.exportOf(&s.hir, top).is_default);
+}
+
+test "parser: export named" {
+    var s = try newTestSetup("export { a, b as c };");
+    defer destroyTestSetup(s);
+    const root = try s.parser.parseSourceFile();
+    const top = hir_mod.blockStmts(&s.hir, root)[0];
+    const ex = hir_mod.exportOf(&s.hir, top);
+    try T.expectEqual(@as(usize, 2), hir_mod.exportNamed(&s.hir, top).len);
+    try T.expect(!ex.is_default);
+}
+
+test "parser: export decl" {
+    var s = try newTestSetup("export function id(x) { return x; }");
+    defer destroyTestSetup(s);
+    const root = try s.parser.parseSourceFile();
+    const top = hir_mod.blockStmts(&s.hir, root)[0];
+    try T.expectEqual(hir_mod.NodeKind.export_decl, s.hir.kindOf(top));
+    const ex = hir_mod.exportOf(&s.hir, top);
+    try T.expect(ex.decl != hir_mod.none_node_id);
+    try T.expectEqual(hir_mod.NodeKind.fn_decl, s.hir.kindOf(ex.decl));
+}
+
+test "parser: array literal" {
+    var s = try newTestSetup("let a = [1, 2, 3];");
+    defer destroyTestSetup(s);
+    const root = try s.parser.parseSourceFile();
+    const top = hir_mod.blockStmts(&s.hir, root)[0];
+    const init_node = hir_mod.assignmentOf(&s.hir, top).value;
+    try T.expectEqual(hir_mod.NodeKind.array_literal, s.hir.kindOf(init_node));
+    try T.expectEqual(@as(usize, 3), hir_mod.arrayLiteralElements(&s.hir, init_node).len);
+}
+
+test "parser: object literal" {
+    var s = try newTestSetup("let o = { x: 1, y: 2, z };");
+    defer destroyTestSetup(s);
+    const root = try s.parser.parseSourceFile();
+    const top = hir_mod.blockStmts(&s.hir, root)[0];
+    const init_node = hir_mod.assignmentOf(&s.hir, top).value;
+    try T.expectEqual(hir_mod.NodeKind.object_literal, s.hir.kindOf(init_node));
+    try T.expectEqual(@as(usize, 3), hir_mod.objectLiteralProps(&s.hir, init_node).len);
+}
+
+test "parser: object method shorthand" {
+    var s = try newTestSetup("let o = { greet() { return 1; } };");
+    defer destroyTestSetup(s);
+    const root = try s.parser.parseSourceFile();
+    const top = hir_mod.blockStmts(&s.hir, root)[0];
+    const init_node = hir_mod.assignmentOf(&s.hir, top).value;
+    const props = hir_mod.objectLiteralProps(&s.hir, init_node);
+    try T.expect(hir_mod.objectPropertyOf(&s.hir, props[0]).is_method);
+}
+
+test "parser: this and super" {
+    var s = try newTestSetup("this.x; super.y;");
+    defer destroyTestSetup(s);
+    const root = try s.parser.parseSourceFile();
+    const stmts = hir_mod.blockStmts(&s.hir, root);
+    try T.expectEqual(hir_mod.NodeKind.member_access, s.hir.kindOf(stmts[0]));
+    try T.expectEqual(hir_mod.NodeKind.member_access, s.hir.kindOf(stmts[1]));
+}
+
+test "parser: new expression" {
+    var s = try newTestSetup("new Foo(1, 2);");
+    defer destroyTestSetup(s);
+    const root = try s.parser.parseSourceFile();
+    const top = hir_mod.blockStmts(&s.hir, root)[0];
+    try T.expectEqual(hir_mod.NodeKind.call_expr, s.hir.kindOf(top));
+}
+
+test "parser: function expression in let-binding" {
+    var s = try newTestSetup("let f = function (x) { return x + 1; };");
+    defer destroyTestSetup(s);
+    const root = try s.parser.parseSourceFile();
+    const top = hir_mod.blockStmts(&s.hir, root)[0];
+    try T.expectEqual(hir_mod.NodeKind.assignment, s.hir.kindOf(top));
+    const init_node = hir_mod.assignmentOf(&s.hir, top).value;
+    try T.expectEqual(hir_mod.NodeKind.fn_decl, s.hir.kindOf(init_node));
 }
