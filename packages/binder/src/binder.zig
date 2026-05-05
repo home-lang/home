@@ -336,6 +336,7 @@ pub const Binder = struct {
     fn bindStatement(self: *Binder, node: NodeId) anyerror!void {
         const kind = self.hir.kindOf(node);
         switch (kind) {
+            .var_decl, .let_decl, .const_decl => try self.bindVarDecl(node),
             .fn_decl, .fn_expr, .arrow_fn => try self.bindFunctionDecl(node),
             .class_decl => try self.bindClassDecl(node),
             .interface_decl => try self.bindInterfaceDecl(node),
@@ -392,11 +393,23 @@ pub const Binder = struct {
                     for (stmts) |s| try self.bindStatement(s);
                 }
             },
-            // `let x = …` is currently lowered as an assignment; we
-            // recognize that shape and synthesize a let binding.
-            .assignment => try self.bindAssignmentAsMaybeDecl(node),
             else => {},
         }
+    }
+
+    fn bindVarDecl(self: *Binder, node: NodeId) !void {
+        const kind = self.hir.kindOf(node);
+        const v = hir_mod.varDeclOf(self.hir, node);
+        if (v.name == hir_mod.none_node_id) return;
+        if (self.hir.kindOf(v.name) != .identifier) return;
+        const id = hir_mod.identifierOf(self.hir, v.name);
+        const flags: SymbolFlags = .{
+            .is_value = true,
+            .is_const = kind == .const_decl,
+            .is_let = kind == .let_decl,
+            .is_var = kind == .var_decl,
+        };
+        _ = try self.declare(.value, id.name, flags, node);
     }
 
     fn bindBlock(self: *Binder, node: NodeId) anyerror!void {
@@ -404,24 +417,6 @@ pub const Binder = struct {
         const stmts = hir_mod.blockStmts(self.hir, node);
         for (stmts) |s| try self.bindStatement(s);
         self.closeScope();
-    }
-
-    /// `let x = expr` parses today as `assignment(identifier, expr)` at
-    /// statement position. We treat the leftmost identifier in such an
-    /// assignment as a `let` binding when the parent is a block / module
-    /// scope and the symbol does not yet exist. This is *imprecise* —
-    /// it misses re-assignment vs. declaration disambiguation — but is
-    /// sufficient to populate scope tables for Phase 3 narrowing.
-    fn bindAssignmentAsMaybeDecl(self: *Binder, node: NodeId) !void {
-        const a = hir_mod.assignmentOf(self.hir, node);
-        if (a.op != null) return; // compound assignment is never a decl
-        if (self.hir.kindOf(a.target) != .identifier) return;
-        const id = hir_mod.identifierOf(self.hir, a.target);
-        if (self.currentScope().values.get(id.name) != null) return;
-        _ = try self.declare(.value, id.name, .{
-            .is_value = true,
-            .is_let = true,
-        }, node);
     }
 
     fn bindFunctionDecl(self: *Binder, node: NodeId) !void {

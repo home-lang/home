@@ -112,6 +112,7 @@ pub const Printer = struct {
         try self.indent();
         const kind = self.hir.kindOf(node);
         switch (kind) {
+            .var_decl, .let_decl, .const_decl => try self.printVarDecl(node),
             .block_stmt => try self.printBlock(node),
             .if_stmt => try self.printIf(node),
             .while_stmt => try self.printWhile(node),
@@ -150,6 +151,26 @@ pub const Printer = struct {
         while (i < self.depth) : (i += 1) {
             try self.write(self.options.indent);
         }
+    }
+
+    fn printVarDecl(self: *Printer, node: NodeId) anyerror!void {
+        const kind = self.hir.kindOf(node);
+        const kw: []const u8 = switch (kind) {
+            .var_decl => "var",
+            .let_decl => "let",
+            .const_decl => "const",
+            else => unreachable,
+        };
+        try self.write(kw);
+        try self.write(" ");
+        const v = hir_mod.varDeclOf(self.hir, node);
+        if (v.name != hir_mod.none_node_id) try self.printExpression(v.name);
+        // Type annotation erases at runtime.
+        if (v.init != hir_mod.none_node_id) {
+            try self.write(" = ");
+            try self.printExpression(v.init);
+        }
+        try self.writeSemi();
     }
 
     fn printBlock(self: *Printer, node: NodeId) !void {
@@ -1010,4 +1031,24 @@ test "emit: export default function" {
     const out = try emit("export default function f() {}");
     defer T.allocator.free(out);
     try T.expect(std.mem.indexOf(u8, out, "export default function f") != null);
+}
+
+test "emit: let / const / var distinct" {
+    const out = try emit("let a = 1; const b = 2; var c = 3;");
+    defer T.allocator.free(out);
+    try T.expect(std.mem.indexOf(u8, out, "let a = 1;") != null);
+    try T.expect(std.mem.indexOf(u8, out, "const b = 2;") != null);
+    try T.expect(std.mem.indexOf(u8, out, "var c = 3;") != null);
+}
+
+test "emit: type annotation erases" {
+    const out = try emit("let x: number = 1;");
+    defer T.allocator.free(out);
+    try T.expectEqualStrings("let x = 1;", out);
+}
+
+test "emit: declaration without initializer" {
+    const out = try emit("let x;");
+    defer T.allocator.free(out);
+    try T.expectEqualStrings("let x;", out);
 }

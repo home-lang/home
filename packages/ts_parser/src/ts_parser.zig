@@ -741,22 +741,6 @@ pub const Parser = struct {
         );
     }
 
-    /// Parse a single qualified-identifier type reference such as
-    /// `Foo`, `Foo.Bar`, or `Foo<T>` — used in `extends` / `implements`.
-    /// Phase 1.D returns the head identifier and skips the rest.
-    fn parseTypeReference(self: *Parser) ParseError!NodeId {
-        const name_tok = try self.expect(.identifier, "type reference identifier");
-        const name_id = try self.internToken(name_tok);
-        const ident = try self.builder.addIdentifier(tokenSpan(name_tok), name_id);
-        // Skip qualified-name continuations + generic args.
-        while (self.peek().kind == .dot) {
-            _ = self.advance();
-            _ = try self.expect(.identifier, "qualified-name member");
-        }
-        if (self.peek().kind == .less_than) try self.skipTypeAnnotation();
-        return ident;
-    }
-
     fn parseImportDeclaration(self: *Parser) ParseError!NodeId {
         const start = self.advance(); // import
         const is_type_only = self.match(.kw_type);
@@ -957,14 +941,21 @@ pub const Parser = struct {
 
     fn parseVarDecl(self: *Parser) ParseError!NodeId {
         const start = self.advance(); // let/const/var
+        const decl_kind: hir_mod.NodeKind = switch (start.kind) {
+            .kw_let => .let_decl,
+            .kw_const => .const_decl,
+            .kw_var => .var_decl,
+            else => unreachable,
+        };
         // Phase 1.D scope: single binding per declaration. Multiple
         // bindings (`let x = 1, y = 2`) are a follow-up.
         const name_tok = try self.expect(.identifier, "identifier in variable declaration");
+        const name_id = try self.internToken(name_tok);
+        const name_node = try self.builder.addIdentifier(tokenSpan(name_tok), name_id);
 
-        // Optional type annotation `: T` — Phase 1.D parses but ignores
-        // (no annotation node yet; type checker hooks this in Phase 3).
+        var type_annotation: NodeId = hir_mod.none_node_id;
         if (self.match(.colon)) {
-            try self.skipTypeAnnotation();
+            type_annotation = try self.parseTypeAnnotation();
         }
 
         var init_node: NodeId = hir_mod.none_node_id;
@@ -973,19 +964,8 @@ pub const Parser = struct {
         }
         try self.consumeStatementTerminator();
 
-        const name_id = try self.internToken(name_tok);
-        const ident = try self.builder.addIdentifier(tokenSpan(name_tok), name_id);
-        if (init_node == hir_mod.none_node_id) {
-            // Declaration without initializer — represent as the
-            // identifier itself as the statement value. Real binder
-            // lifts this; today we just reach a stable HIR shape.
-            return ident;
-        }
-        // Lower `let x = expr` as `(x = expr)` — the binder Phase 2
-        // will distinguish declaration vs. assignment via the
-        // declaration kind it tracks alongside.
         const stmt_span: Span = .{ .start = start.span.start, .end = self.tokens[self.cursor - 1].span.end };
-        return try self.builder.addAssignment(stmt_span, ident, init_node, null);
+        return try self.builder.addVarDecl(decl_kind, stmt_span, name_node, type_annotation, init_node);
     }
 
     fn parseReturnStatement(self: *Parser) ParseError!NodeId {
@@ -1031,13 +1011,11 @@ pub const Parser = struct {
         return error.UnexpectedToken;
     }
 
-    /// Skip a type annotation. Phase 1.D doesn't lower types into HIR
-    /// yet; this just advances the cursor past the annotation so we
-    /// can parse code that has annotations.
+    /// Skip a type annotation by walking it until a delimiter — used
+    /// only in salvage paths where producing a real HIR type node
+    /// isn't necessary (the body of an interface, the rhs of a
+    /// `type X =`, etc.). Most callers prefer `parseTypeAnnotation`.
     fn skipTypeAnnotation(self: *Parser) ParseError!void {
-        // Crudely skip until we hit a delimiter. This is enough to
-        // parse `let x: number = 1;` and similar; the proper type
-        // parser is a Phase 1.D follow-up.
         var depth: i32 = 0;
         while (true) {
             const t = self.peek();
@@ -1055,6 +1033,487 @@ pub const Parser = struct {
             _ = self.advance();
             if (t.kind == .eof) return;
         }
+    }
+
+    // ========================================================================
+    // Type annotation parser
+    // ========================================================================
+    //
+    // Grammar (subset, builds out as features land):
+    //
+    //   Type            = ConditionalType
+    //   ConditionalType = UnionType ('extends' UnionType '?' Type ':' Type)?
+    //   UnionType       = ('|')? IntersectionType ('|' IntersectionType)*
+    //   IntersectionType= ('&')? ArrayType ('&' ArrayType)*
+    //   ArrayType       = NonArrayType ('[]' | '[' Type ']')*
+    //   NonArrayType    = PrimaryType
+    //   PrimaryType     = LiteralType | KeyofType | TypeofType | InferType
+    //                   | TupleType | ParenType | TypeRef
+    //                   | FnType
+    //
+    // We keep the parser permissive for forms it doesn't fully model
+    // yet (object types {…} are lowered as a synthetic `unknown` type
+    // ref so consumers see *something* without halting).
+
+    /// Public entry: parse a single type annotation starting at the
+    /// current cursor. Returns a HIR type node id.
+    fn parseTypeAnnotation(self: *Parser) ParseError!NodeId {
+        return try self.parseConditionalType();
+    }
+
+    fn parseConditionalType(self: *Parser) ParseError!NodeId {
+        const check = try self.parseUnionType();
+        if (self.peek().kind != .kw_extends) return check;
+        const extends_kw = self.advance(); // extends
+        _ = extends_kw;
+        const extends_t = try self.parseUnionType();
+        if (!self.match(.question)) return check;
+        const true_branch = try self.parseTypeAnnotation();
+        _ = try self.expect(.colon, "':' in conditional type");
+        const false_branch = try self.parseTypeAnnotation();
+        const sp: Span = .{
+            .start = self.hir.spanOf(check).start,
+            .end = self.hir.spanOf(false_branch).end,
+        };
+        return try self.builder.addConditionalType(sp, check, extends_t, true_branch, false_branch);
+    }
+
+    fn parseUnionType(self: *Parser) ParseError!NodeId {
+        // Leading `|` is allowed: `type T = | A | B`.
+        _ = self.match(.pipe);
+        const first = try self.parseIntersectionType();
+        if (self.peek().kind != .pipe) return first;
+        var members: std.ArrayListUnmanaged(NodeId) = .empty;
+        defer members.deinit(self.gpa);
+        try members.append(self.gpa, first);
+        while (self.match(.pipe)) {
+            const m = try self.parseIntersectionType();
+            try members.append(self.gpa, m);
+        }
+        const sp: Span = .{
+            .start = self.hir.spanOf(first).start,
+            .end = self.hir.spanOf(members.items[members.items.len - 1]).end,
+        };
+        return try self.builder.addUnionType(sp, members.items);
+    }
+
+    fn parseIntersectionType(self: *Parser) ParseError!NodeId {
+        _ = self.match(.ampersand);
+        const first = try self.parseTypeOperator();
+        if (self.peek().kind != .ampersand) return first;
+        var members: std.ArrayListUnmanaged(NodeId) = .empty;
+        defer members.deinit(self.gpa);
+        try members.append(self.gpa, first);
+        while (self.match(.ampersand)) {
+            const m = try self.parseTypeOperator();
+            try members.append(self.gpa, m);
+        }
+        const sp: Span = .{
+            .start = self.hir.spanOf(first).start,
+            .end = self.hir.spanOf(members.items[members.items.len - 1]).end,
+        };
+        return try self.builder.addIntersectionType(sp, members.items);
+    }
+
+    /// `keyof T`, `typeof e`, `infer X`, `readonly T[]` (modifier
+    /// stripped); other forms fall through to `parseArrayType`.
+    fn parseTypeOperator(self: *Parser) ParseError!NodeId {
+        const t = self.peek();
+        switch (t.kind) {
+            .kw_keyof => {
+                _ = self.advance();
+                const operand = try self.parseTypeOperator();
+                const sp: Span = .{ .start = t.span.start, .end = self.hir.spanOf(operand).end };
+                return try self.builder.addKeyofType(sp, operand);
+            },
+            .kw_typeof => {
+                _ = self.advance();
+                // `typeof` in a type position consumes a value
+                // expression. Phase 1: take an identifier (with
+                // qualified-name continuation) — full member access /
+                // import.x is a follow-up.
+                const ref_tok = try self.expect(.identifier, "identifier after typeof");
+                const ref_id = try self.internToken(ref_tok);
+                const ref = try self.builder.addIdentifier(tokenSpan(ref_tok), ref_id);
+                const sp: Span = .{ .start = t.span.start, .end = ref_tok.span.end };
+                return try self.builder.addTypeofType(sp, ref);
+            },
+            .kw_infer => {
+                _ = self.advance();
+                const name_tok = try self.expect(.identifier, "name after 'infer'");
+                const name_id = try self.internToken(name_tok);
+                var constraint: NodeId = hir_mod.none_node_id;
+                if (self.match(.kw_extends)) {
+                    constraint = try self.parseTypeOperator();
+                }
+                const end_pos: u32 = if (constraint != hir_mod.none_node_id)
+                    self.hir.spanOf(constraint).end
+                else
+                    name_tok.span.end;
+                return try self.builder.addInferType(.{ .start = t.span.start, .end = end_pos }, name_id, constraint);
+            },
+            .kw_readonly => {
+                // `readonly T[]` — the modifier doesn't get its own
+                // HIR node yet; we fold it as a comment-equivalent.
+                _ = self.advance();
+                return try self.parseArrayType();
+            },
+            else => return try self.parseArrayType(),
+        }
+    }
+
+    fn parseArrayType(self: *Parser) ParseError!NodeId {
+        var node = try self.parsePrimaryType();
+        while (true) {
+            if (self.match(.open_bracket)) {
+                if (self.match(.close_bracket)) {
+                    // `T[]`
+                    const sp: Span = .{
+                        .start = self.hir.spanOf(node).start,
+                        .end = self.tokens[self.cursor - 1].span.end,
+                    };
+                    node = try self.builder.addArrayType(sp, node);
+                    continue;
+                }
+                // `T[K]` — indexed access type.
+                const index = try self.parseTypeAnnotation();
+                _ = try self.expect(.close_bracket, "']' to close indexed access type");
+                const sp: Span = .{
+                    .start = self.hir.spanOf(node).start,
+                    .end = self.tokens[self.cursor - 1].span.end,
+                };
+                node = try self.builder.addIndexedAccessType(sp, node, index);
+                continue;
+            }
+            break;
+        }
+        return node;
+    }
+
+    fn parsePrimaryType(self: *Parser) ParseError!NodeId {
+        const t = self.peek();
+        return switch (t.kind) {
+            // Primitive type keywords — represented as type refs to
+            // the global builtin name. The checker resolves them to
+            // `Primitive.string_t`, `Primitive.number_t`, etc.
+            .kw_any, .kw_unknown, .kw_never, .kw_void, .kw_string, .kw_number, .kw_boolean, .kw_bigint, .kw_symbol, .kw_object, .kw_undefined, .kw_null => blk: {
+                _ = self.advance();
+                const id = try self.internToken(t);
+                break :blk try self.builder.addTypeRef(tokenSpan(t), id, &.{}, &.{});
+            },
+            .kw_true => blk: {
+                _ = self.advance();
+                const lit = try self.builder.addLiteralBool(tokenSpan(t), true);
+                break :blk try self.builder.addLiteralType(tokenSpan(t), lit, false);
+            },
+            .kw_false => blk: {
+                _ = self.advance();
+                const lit = try self.builder.addLiteralBool(tokenSpan(t), false);
+                break :blk try self.builder.addLiteralType(tokenSpan(t), lit, false);
+            },
+            .string_literal => blk: {
+                _ = self.advance();
+                const id = try self.internStringLiteral(t);
+                const lit = try self.builder.addLiteralString(tokenSpan(t), id);
+                break :blk try self.builder.addLiteralType(tokenSpan(t), lit, false);
+            },
+            .number_literal => blk: {
+                _ = self.advance();
+                const slice = self.source[t.span.start..t.span.end];
+                const value = parseNumericLiteral(slice);
+                const lit = try self.builder.addLiteralNumber(tokenSpan(t), value);
+                break :blk try self.builder.addLiteralType(tokenSpan(t), lit, false);
+            },
+            .minus => blk: {
+                // Negative numeric literal type: `-1`.
+                _ = self.advance();
+                const num = try self.expect(.number_literal, "numeric literal after '-' in type");
+                const value = -parseNumericLiteral(self.source[num.span.start..num.span.end]);
+                const lit = try self.builder.addLiteralNumber(tokenSpan(num), value);
+                break :blk try self.builder.addLiteralType(.{ .start = t.span.start, .end = num.span.end }, lit, true);
+            },
+            .open_paren => try self.parseParenOrFnType(),
+            .open_bracket => try self.parseTupleType(),
+            .open_brace => try self.parseObjectOrMappedType(),
+            .less_than => try self.parseGenericFnType(),
+            .kw_new => try self.parseConstructorType(),
+            .identifier => try self.parseTypeReference(),
+            .kw_this => blk: {
+                _ = self.advance();
+                const id = self.interner.intern("this") catch return error.OutOfMemory;
+                break :blk try self.builder.addTypeRef(tokenSpan(t), id, &.{}, &.{});
+            },
+            else => {
+                // Unknown — emit a synthetic `unknown` type ref so the
+                // upstream HIR shape stays valid; downstream binder /
+                // checker will flag the diagnostic.
+                _ = self.advance();
+                const id = self.interner.intern("unknown") catch return error.OutOfMemory;
+                return try self.builder.addTypeRef(tokenSpan(t), id, &.{}, &.{});
+            },
+        };
+    }
+
+    /// `(T)` (paren type) or `(a: T) => U` (function type).
+    fn parseParenOrFnType(self: *Parser) ParseError!NodeId {
+        // Speculative: snapshot cursor; if we see `=>` after the close
+        // paren, it's a function type. Otherwise reset and parse as a
+        // grouped type.
+        const start = self.cursor;
+        const open_tok = self.advance(); // '('
+
+        // Quick scan for `=>` ignoring matched delimiters.
+        var depth: i32 = 1;
+        var i = self.cursor;
+        var is_fn = false;
+        var is_zero_arg = false;
+        if (self.peek().kind == .close_paren) is_zero_arg = true;
+        while (i < self.tokens.len) : (i += 1) {
+            const tk = self.tokens[i].kind;
+            if (tk == .open_paren or tk == .open_bracket or tk == .open_brace or tk == .less_than) depth += 1;
+            if (tk == .close_paren or tk == .close_bracket or tk == .close_brace or tk == .greater_than) {
+                depth -= 1;
+                if (depth == 0) {
+                    if (i + 1 < self.tokens.len and self.tokens[i + 1].kind == .arrow) {
+                        is_fn = true;
+                    }
+                    break;
+                }
+            }
+            if (tk == .eof) break;
+        }
+
+        if (is_fn or is_zero_arg) {
+            // Reset to before the open paren and parse fn type.
+            self.cursor = start;
+            return try self.parseFnTypeFromParen(false);
+        }
+
+        const inner = try self.parseTypeAnnotation();
+        const close = try self.expect(.close_paren, "')' to close grouped type");
+        _ = open_tok;
+        _ = close;
+        return inner;
+    }
+
+    fn parseFnTypeFromParen(self: *Parser, is_constructor: bool) ParseError!NodeId {
+        const start = self.peek();
+        const params = try self.parseTypeParameterList();
+        defer self.gpa.free(params);
+        _ = try self.expect(.arrow, "'=>' in function type");
+        const ret = try self.parseTypeAnnotation();
+        const sp: Span = .{ .start = start.span.start, .end = self.hir.spanOf(ret).end };
+        return try self.builder.addFnType(sp, &.{}, params, ret, is_constructor);
+    }
+
+    /// Parse `(p1: T1, p2: T2)` and return parameter HIR nodes.
+    fn parseTypeParameterList(self: *Parser) ParseError![]NodeId {
+        _ = try self.expect(.open_paren, "'(' for fn-type parameter list");
+        var params: std.ArrayListUnmanaged(NodeId) = .empty;
+        errdefer params.deinit(self.gpa);
+        if (self.peek().kind != .close_paren) {
+            while (true) {
+                const ps = self.peek();
+                var flags: hir_mod.ParamFlags = .{};
+                if (self.match(.dot_dot_dot)) flags.is_rest = true;
+                // The name is optional in fn types: `(string) => void`
+                // is sometimes written as `(arg0: string) => void`. We
+                // require an identifier for now; type-only param lists
+                // without names are a follow-up.
+                const name_tok = try self.expect(.identifier, "fn-type parameter name");
+                if (self.match(.question)) flags.is_optional = true;
+                var type_ann: NodeId = hir_mod.none_node_id;
+                if (self.match(.colon)) type_ann = try self.parseTypeAnnotation();
+                const name_id = try self.internToken(name_tok);
+                const ident = try self.builder.addIdentifier(tokenSpan(name_tok), name_id);
+                const param = try self.builder.addParameter(
+                    .{ .start = ps.span.start, .end = self.tokens[self.cursor - 1].span.end },
+                    ident,
+                    type_ann,
+                    hir_mod.none_node_id,
+                    flags,
+                );
+                try params.append(self.gpa, param);
+                if (!self.match(.comma)) break;
+                if (self.peek().kind == .close_paren) break;
+            }
+        }
+        _ = try self.expect(.close_paren, "')' to close fn-type params");
+        return try params.toOwnedSlice(self.gpa);
+    }
+
+    fn parseTupleType(self: *Parser) ParseError!NodeId {
+        const open = try self.expect(.open_bracket, "'[' to start tuple type");
+        var elems: std.ArrayListUnmanaged(NodeId) = .empty;
+        defer elems.deinit(self.gpa);
+        while (self.peek().kind != .close_bracket and self.peek().kind != .eof) {
+            // Accept (and ignore for now) leading `name:` labelled
+            // tuple elements: `[x: number, y: number]`.
+            if (self.peek().kind == .identifier and self.peekAt(1).kind == .colon) {
+                _ = self.advance();
+                _ = self.advance();
+            }
+            // Rest element prefix `...T`.
+            _ = self.match(.dot_dot_dot);
+            const e = try self.parseTypeAnnotation();
+            _ = self.match(.question); // optional element marker
+            try elems.append(self.gpa, e);
+            if (!self.match(.comma)) break;
+        }
+        const close = try self.expect(.close_bracket, "']' to close tuple type");
+        return try self.builder.addTupleType(.{ .start = open.span.start, .end = close.span.end }, elems.items);
+    }
+
+    /// `{ ...members... }` — object type literal. Phase 1 lowers to
+    /// a synthetic type ref since we don't yet model member lists in
+    /// HIR types directly. We *do* consume the body to keep the
+    /// parser balanced.
+    fn parseObjectOrMappedType(self: *Parser) ParseError!NodeId {
+        const open = try self.expect(.open_brace, "'{' to start object type");
+        // Detect mapped type: `{ [K in T]: V }`.
+        if (self.peek().kind == .open_bracket and self.peekAt(2).kind == .kw_in) {
+            _ = self.advance(); // `[`
+            const k_tok = try self.expect(.identifier, "key in mapped type");
+            const k_id = try self.internToken(k_tok);
+            _ = try self.expect(.kw_in, "'in' in mapped type");
+            const constraint = try self.parseTypeAnnotation();
+            _ = try self.expect(.close_bracket, "']' to close mapped type key");
+            // Optional `?` modifier
+            var optional_mod: u8 = 0;
+            if (self.match(.question)) optional_mod = 1;
+            _ = try self.expect(.colon, "':' in mapped type");
+            const value = try self.parseTypeAnnotation();
+            _ = self.match(.semicolon);
+            const close = try self.expect(.close_brace, "'}' to close mapped type");
+            const tp = try self.builder.addTypeParameter(tokenSpan(k_tok), k_id, hir_mod.none_node_id, hir_mod.none_node_id, 0);
+            return try self.builder.addMappedType(.{ .start = open.span.start, .end = close.span.end }, tp, constraint, value, 0, optional_mod);
+        }
+        // Skip the body until matching close. Member-list lowering is
+        // a Phase 1 follow-up; we emit a synthetic `object` type ref.
+        var depth: i32 = 1;
+        while (depth > 0 and self.peek().kind != .eof) {
+            const tk = self.peek().kind;
+            if (tk == .open_brace) {
+                depth += 1;
+            } else if (tk == .close_brace) {
+                depth -= 1;
+                if (depth == 0) break;
+            }
+            _ = self.advance();
+        }
+        const close = try self.expect(.close_brace, "'}' to close object type");
+        const id = self.interner.intern("object") catch return error.OutOfMemory;
+        return try self.builder.addTypeRef(.{ .start = open.span.start, .end = close.span.end }, id, &.{}, &.{});
+    }
+
+    fn parseGenericFnType(self: *Parser) ParseError!NodeId {
+        const start = self.peek();
+        const tps = try self.parseTypeParameterDeclaration();
+        defer self.gpa.free(tps);
+        const params = try self.parseTypeParameterList();
+        defer self.gpa.free(params);
+        _ = try self.expect(.arrow, "'=>' in generic fn type");
+        const ret = try self.parseTypeAnnotation();
+        const sp: Span = .{ .start = start.span.start, .end = self.hir.spanOf(ret).end };
+        return try self.builder.addFnType(sp, tps, params, ret, false);
+    }
+
+    fn parseConstructorType(self: *Parser) ParseError!NodeId {
+        const start = self.advance(); // new
+        var tps: []NodeId = &.{};
+        var owns_tps = false;
+        if (self.peek().kind == .less_than) {
+            tps = try self.parseTypeParameterDeclaration();
+            owns_tps = true;
+        }
+        defer if (owns_tps) self.gpa.free(tps);
+        const params = try self.parseTypeParameterList();
+        defer self.gpa.free(params);
+        _ = try self.expect(.arrow, "'=>' in constructor type");
+        const ret = try self.parseTypeAnnotation();
+        const sp: Span = .{ .start = start.span.start, .end = self.hir.spanOf(ret).end };
+        return try self.builder.addFnType(sp, tps, params, ret, true);
+    }
+
+    /// Parse `<T, U extends V = D>`. Returns owned slice of
+    /// `type_parameter` HIR nodes.
+    fn parseTypeParameterDeclaration(self: *Parser) ParseError![]NodeId {
+        _ = try self.expect(.less_than, "'<' to open type parameters");
+        var tps: std.ArrayListUnmanaged(NodeId) = .empty;
+        errdefer tps.deinit(self.gpa);
+        while (self.peek().kind != .greater_than and self.peek().kind != .eof) {
+            const tp_start = self.peek();
+            // Variance modifiers `in`/`out`.
+            var variance: u8 = 0;
+            if (self.peek().kind == .kw_in and self.peekAt(1).kind == .identifier) {
+                _ = self.advance();
+                variance |= 1;
+            }
+            if (self.peek().kind == .kw_out and self.peekAt(1).kind == .identifier) {
+                _ = self.advance();
+                variance |= 2;
+            }
+            const name_tok = try self.expect(.identifier, "type parameter name");
+            const name_id = try self.internToken(name_tok);
+            var constraint: NodeId = hir_mod.none_node_id;
+            if (self.match(.kw_extends)) constraint = try self.parseTypeAnnotation();
+            var default: NodeId = hir_mod.none_node_id;
+            if (self.match(.equal)) default = try self.parseTypeAnnotation();
+            const tp = try self.builder.addTypeParameter(
+                .{ .start = tp_start.span.start, .end = self.tokens[self.cursor - 1].span.end },
+                name_id,
+                constraint,
+                default,
+                variance,
+            );
+            try tps.append(self.gpa, tp);
+            if (!self.match(.comma)) break;
+        }
+        _ = try self.expect(.greater_than, "'>' to close type parameters");
+        return try tps.toOwnedSlice(self.gpa);
+    }
+
+    /// `Foo`, `Foo.Bar`, `Foo<T, U>`. The lexer hands us the `<` only
+    /// when it can tell from context — in type position it's always
+    /// generic args, never a comparison.
+    fn parseTypeReference(self: *Parser) ParseError!NodeId {
+        const start = self.peek();
+        const name_tok = try self.expect(.identifier, "type name");
+        const final_name = try self.internToken(name_tok);
+
+        var qualifier: std.ArrayListUnmanaged(NodeId) = .empty;
+        defer qualifier.deinit(self.gpa);
+        var name_id = final_name;
+
+        // `A.B.C` — every `.B` extends the qualifier.
+        while (self.peek().kind == .dot) {
+            _ = self.advance();
+            const next_tok = try self.expect(.identifier, "qualified-name member");
+            const prev_id = name_id;
+            const prev_node = try self.builder.addIdentifier(tokenSpan(name_tok), prev_id);
+            try qualifier.append(self.gpa, prev_node);
+            name_id = try self.internToken(next_tok);
+        }
+
+        var args: std.ArrayListUnmanaged(NodeId) = .empty;
+        defer args.deinit(self.gpa);
+        if (self.peek().kind == .less_than) {
+            _ = self.advance();
+            while (self.peek().kind != .greater_than and self.peek().kind != .eof) {
+                const a = try self.parseTypeAnnotation();
+                try args.append(self.gpa, a);
+                if (!self.match(.comma)) break;
+            }
+            _ = try self.expect(.greater_than, "'>' to close type arguments");
+        }
+
+        const end_pos = self.tokens[self.cursor - 1].span.end;
+        return try self.builder.addTypeRef(
+            .{ .start = start.span.start, .end = end_pos },
+            name_id,
+            qualifier.items,
+            args.items,
+        );
     }
 
     // ========================================================================
@@ -1637,16 +2096,20 @@ test "parser: let declaration with initializer" {
     const root = try s.parser.parseSourceFile();
     const stmts = hir_mod.blockStmts(&s.hir, root);
     try T.expectEqual(@as(usize, 1), stmts.len);
-    try T.expectEqual(hir_mod.NodeKind.assignment, s.hir.kindOf(stmts[0]));
+    try T.expectEqual(hir_mod.NodeKind.let_decl, s.hir.kindOf(stmts[0]));
+    const vd = hir_mod.varDeclOf(&s.hir, stmts[0]);
+    try T.expectEqual(hir_mod.NodeKind.binary_op, s.hir.kindOf(vd.init));
 }
 
-test "parser: var / const / let all work" {
+test "parser: var / const / let produce distinct kinds" {
     var s = try newTestSetup("var a = 1; let b = 2; const c = 3;");
     defer destroyTestSetup(s);
     const root = try s.parser.parseSourceFile();
     const stmts = hir_mod.blockStmts(&s.hir, root);
     try T.expectEqual(@as(usize, 3), stmts.len);
-    for (stmts) |stmt| try T.expectEqual(hir_mod.NodeKind.assignment, s.hir.kindOf(stmt));
+    try T.expectEqual(hir_mod.NodeKind.var_decl, s.hir.kindOf(stmts[0]));
+    try T.expectEqual(hir_mod.NodeKind.let_decl, s.hir.kindOf(stmts[1]));
+    try T.expectEqual(hir_mod.NodeKind.const_decl, s.hir.kindOf(stmts[2]));
 }
 
 test "parser: function call expression" {
@@ -1839,7 +2302,9 @@ test "parser: complex realistic snippet" {
     const root = try s.parser.parseSourceFile();
     const stmts = hir_mod.blockStmts(&s.hir, root);
     try T.expectEqual(@as(usize, 1), stmts.len);
-    try T.expectEqual(hir_mod.NodeKind.assignment, s.hir.kindOf(stmts[0]));
+    try T.expectEqual(hir_mod.NodeKind.let_decl, s.hir.kindOf(stmts[0]));
+    const vd = hir_mod.varDeclOf(&s.hir, stmts[0]);
+    try T.expectEqual(hir_mod.NodeKind.binary_op, s.hir.kindOf(vd.init));
 }
 
 // ====================================================================
@@ -2152,7 +2617,7 @@ test "parser: array literal" {
     defer destroyTestSetup(s);
     const root = try s.parser.parseSourceFile();
     const top = hir_mod.blockStmts(&s.hir, root)[0];
-    const init_node = hir_mod.assignmentOf(&s.hir, top).value;
+    const init_node = hir_mod.varDeclOf(&s.hir, top).init;
     try T.expectEqual(hir_mod.NodeKind.array_literal, s.hir.kindOf(init_node));
     try T.expectEqual(@as(usize, 3), hir_mod.arrayLiteralElements(&s.hir, init_node).len);
 }
@@ -2162,7 +2627,7 @@ test "parser: object literal" {
     defer destroyTestSetup(s);
     const root = try s.parser.parseSourceFile();
     const top = hir_mod.blockStmts(&s.hir, root)[0];
-    const init_node = hir_mod.assignmentOf(&s.hir, top).value;
+    const init_node = hir_mod.varDeclOf(&s.hir, top).init;
     try T.expectEqual(hir_mod.NodeKind.object_literal, s.hir.kindOf(init_node));
     try T.expectEqual(@as(usize, 3), hir_mod.objectLiteralProps(&s.hir, init_node).len);
 }
@@ -2172,7 +2637,7 @@ test "parser: object method shorthand" {
     defer destroyTestSetup(s);
     const root = try s.parser.parseSourceFile();
     const top = hir_mod.blockStmts(&s.hir, root)[0];
-    const init_node = hir_mod.assignmentOf(&s.hir, top).value;
+    const init_node = hir_mod.varDeclOf(&s.hir, top).init;
     const props = hir_mod.objectLiteralProps(&s.hir, init_node);
     try T.expect(hir_mod.objectPropertyOf(&s.hir, props[0]).is_method);
 }
@@ -2194,12 +2659,156 @@ test "parser: new expression" {
     try T.expectEqual(hir_mod.NodeKind.call_expr, s.hir.kindOf(top));
 }
 
+// ====================================================================
+// Type annotation parsing
+// ====================================================================
+
+test "parser: type annotation — primitive ref" {
+    var s = try newTestSetup("let x: number = 1;");
+    defer destroyTestSetup(s);
+    const root = try s.parser.parseSourceFile();
+    const top = hir_mod.blockStmts(&s.hir, root)[0];
+    const v = hir_mod.varDeclOf(&s.hir, top);
+    try T.expect(v.type_annotation != hir_mod.none_node_id);
+    try T.expectEqual(hir_mod.NodeKind.type_ref, s.hir.kindOf(v.type_annotation));
+    const tr = hir_mod.typeRefOf(&s.hir, v.type_annotation);
+    try T.expectEqualStrings("number", s.interner.get(tr.name));
+}
+
+test "parser: type annotation — union" {
+    var s = try newTestSetup("let x: number | string = 1;");
+    defer destroyTestSetup(s);
+    const root = try s.parser.parseSourceFile();
+    const top = hir_mod.blockStmts(&s.hir, root)[0];
+    const v = hir_mod.varDeclOf(&s.hir, top);
+    try T.expectEqual(hir_mod.NodeKind.union_type, s.hir.kindOf(v.type_annotation));
+    try T.expectEqual(@as(usize, 2), hir_mod.unionTypeMembers(&s.hir, v.type_annotation).len);
+}
+
+test "parser: type annotation — intersection" {
+    var s = try newTestSetup("let x: A & B = null;");
+    defer destroyTestSetup(s);
+    const root = try s.parser.parseSourceFile();
+    const top = hir_mod.blockStmts(&s.hir, root)[0];
+    const v = hir_mod.varDeclOf(&s.hir, top);
+    try T.expectEqual(hir_mod.NodeKind.intersection_type, s.hir.kindOf(v.type_annotation));
+}
+
+test "parser: type annotation — array T[]" {
+    var s = try newTestSetup("let x: number[] = [];");
+    defer destroyTestSetup(s);
+    const root = try s.parser.parseSourceFile();
+    const top = hir_mod.blockStmts(&s.hir, root)[0];
+    const v = hir_mod.varDeclOf(&s.hir, top);
+    try T.expectEqual(hir_mod.NodeKind.array_type, s.hir.kindOf(v.type_annotation));
+}
+
+test "parser: type annotation — generic type ref Foo<T>" {
+    var s = try newTestSetup("let x: Array<number> = [];");
+    defer destroyTestSetup(s);
+    const root = try s.parser.parseSourceFile();
+    const top = hir_mod.blockStmts(&s.hir, root)[0];
+    const v = hir_mod.varDeclOf(&s.hir, top);
+    const tr = hir_mod.typeRefOf(&s.hir, v.type_annotation);
+    try T.expectEqual(@as(usize, 1), tr.args_len);
+}
+
+test "parser: type annotation — qualified name" {
+    var s = try newTestSetup("let x: A.B.C = null;");
+    defer destroyTestSetup(s);
+    const root = try s.parser.parseSourceFile();
+    const top = hir_mod.blockStmts(&s.hir, root)[0];
+    const v = hir_mod.varDeclOf(&s.hir, top);
+    try T.expectEqual(hir_mod.NodeKind.type_ref, s.hir.kindOf(v.type_annotation));
+    const tr = hir_mod.typeRefOf(&s.hir, v.type_annotation);
+    try T.expectEqualStrings("C", s.interner.get(tr.name));
+    try T.expectEqual(@as(usize, 2), tr.qualifier_len);
+}
+
+test "parser: type annotation — tuple" {
+    var s = try newTestSetup("let x: [number, string] = [1, \"a\"];");
+    defer destroyTestSetup(s);
+    const root = try s.parser.parseSourceFile();
+    const top = hir_mod.blockStmts(&s.hir, root)[0];
+    const v = hir_mod.varDeclOf(&s.hir, top);
+    try T.expectEqual(hir_mod.NodeKind.tuple_type, s.hir.kindOf(v.type_annotation));
+    try T.expectEqual(@as(usize, 2), hir_mod.tupleTypeElements(&s.hir, v.type_annotation).len);
+}
+
+test "parser: type annotation — keyof" {
+    var s = try newTestSetup("let x: keyof Foo = null;");
+    defer destroyTestSetup(s);
+    const root = try s.parser.parseSourceFile();
+    const top = hir_mod.blockStmts(&s.hir, root)[0];
+    const v = hir_mod.varDeclOf(&s.hir, top);
+    try T.expectEqual(hir_mod.NodeKind.keyof_type, s.hir.kindOf(v.type_annotation));
+}
+
+test "parser: type annotation — typeof in type position" {
+    var s = try newTestSetup("let x: typeof y = null;");
+    defer destroyTestSetup(s);
+    const root = try s.parser.parseSourceFile();
+    const top = hir_mod.blockStmts(&s.hir, root)[0];
+    const v = hir_mod.varDeclOf(&s.hir, top);
+    try T.expectEqual(hir_mod.NodeKind.typeof_type, s.hir.kindOf(v.type_annotation));
+}
+
+test "parser: type annotation — indexed access T[K]" {
+    var s = try newTestSetup("let x: A[B] = null;");
+    defer destroyTestSetup(s);
+    const root = try s.parser.parseSourceFile();
+    const top = hir_mod.blockStmts(&s.hir, root)[0];
+    const v = hir_mod.varDeclOf(&s.hir, top);
+    try T.expectEqual(hir_mod.NodeKind.indexed_access_type, s.hir.kindOf(v.type_annotation));
+}
+
+test "parser: type annotation — fn type" {
+    var s = try newTestSetup("let f: (a: number) => string = null;");
+    defer destroyTestSetup(s);
+    const root = try s.parser.parseSourceFile();
+    const top = hir_mod.blockStmts(&s.hir, root)[0];
+    const v = hir_mod.varDeclOf(&s.hir, top);
+    try T.expectEqual(hir_mod.NodeKind.fn_type, s.hir.kindOf(v.type_annotation));
+}
+
+test "parser: type annotation — literal types" {
+    var s = try newTestSetup("let x: \"hello\" | 42 | true = \"hello\";");
+    defer destroyTestSetup(s);
+    const root = try s.parser.parseSourceFile();
+    const top = hir_mod.blockStmts(&s.hir, root)[0];
+    const v = hir_mod.varDeclOf(&s.hir, top);
+    try T.expectEqual(hir_mod.NodeKind.union_type, s.hir.kindOf(v.type_annotation));
+    const members = hir_mod.unionTypeMembers(&s.hir, v.type_annotation);
+    try T.expectEqual(@as(usize, 3), members.len);
+    try T.expectEqual(hir_mod.NodeKind.type_literal, s.hir.kindOf(members[0]));
+    try T.expectEqual(hir_mod.NodeKind.type_literal, s.hir.kindOf(members[1]));
+    try T.expectEqual(hir_mod.NodeKind.type_literal, s.hir.kindOf(members[2]));
+}
+
+test "parser: type annotation — conditional type" {
+    var s = try newTestSetup("let x: T extends U ? A : B = null;");
+    defer destroyTestSetup(s);
+    const root = try s.parser.parseSourceFile();
+    const top = hir_mod.blockStmts(&s.hir, root)[0];
+    const v = hir_mod.varDeclOf(&s.hir, top);
+    try T.expectEqual(hir_mod.NodeKind.conditional_type, s.hir.kindOf(v.type_annotation));
+}
+
+test "parser: type annotation — leading | accepted" {
+    var s = try newTestSetup("let x: | A | B = null;");
+    defer destroyTestSetup(s);
+    const root = try s.parser.parseSourceFile();
+    const top = hir_mod.blockStmts(&s.hir, root)[0];
+    const v = hir_mod.varDeclOf(&s.hir, top);
+    try T.expectEqual(hir_mod.NodeKind.union_type, s.hir.kindOf(v.type_annotation));
+}
+
 test "parser: function expression in let-binding" {
     var s = try newTestSetup("let f = function (x) { return x + 1; };");
     defer destroyTestSetup(s);
     const root = try s.parser.parseSourceFile();
     const top = hir_mod.blockStmts(&s.hir, root)[0];
-    try T.expectEqual(hir_mod.NodeKind.assignment, s.hir.kindOf(top));
-    const init_node = hir_mod.assignmentOf(&s.hir, top).value;
+    try T.expectEqual(hir_mod.NodeKind.let_decl, s.hir.kindOf(top));
+    const init_node = hir_mod.varDeclOf(&s.hir, top).init;
     try T.expectEqual(hir_mod.NodeKind.fn_decl, s.hir.kindOf(init_node));
 }
