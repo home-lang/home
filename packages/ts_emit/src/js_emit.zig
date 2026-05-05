@@ -45,7 +45,16 @@ pub const Options = struct {
     /// If true, drop semicolons unless required for ASI. We default
     /// to *with* semicolons, matching tsc.
     omit_semis: bool = false,
+    /// If non-null, the printer records source-map mappings into the
+    /// supplied `SourceMap` as it streams.
+    source_map: ?*source_map_mod.SourceMap = null,
+    /// Source-index inside the SourceMap for every mapping recorded
+    /// from this printer. The driver normally adds the source first
+    /// and passes the returned index here.
+    source_map_src_idx: u32 = 0,
 };
+
+const source_map_mod = @import("source_map.zig");
 
 pub const Printer = struct {
     gpa: std.mem.Allocator,
@@ -57,6 +66,13 @@ pub const Printer = struct {
     /// True when the previous token-output ended with a position where
     /// inserting a newline would alter ASI semantics.
     pending_break: bool,
+    /// Generated-line of the next byte we'll write (0-based).
+    gen_line: u32,
+    /// Generated-column of the next byte we'll write (0-based).
+    gen_col: u32,
+    /// Source bytes for line/col lookup of HIR spans. Optional;
+    /// when null, source-map mappings are skipped.
+    source: ?[]const u8,
 
     pub fn init(
         gpa: std.mem.Allocator,
@@ -72,7 +88,16 @@ pub const Printer = struct {
             .options = options,
             .depth = 0,
             .pending_break = false,
+            .gen_line = 0,
+            .gen_col = 0,
+            .source = null,
         };
+    }
+
+    /// Attach source bytes for span->line/col lookups. Optional —
+    /// only needed when `options.source_map` is set.
+    pub fn setSource(self: *Printer, source: []const u8) void {
+        self.source = source;
     }
 
     pub fn deinit(self: *Printer) void {
@@ -85,6 +110,42 @@ pub const Printer = struct {
 
     fn write(self: *Printer, s: []const u8) !void {
         try self.out.appendSlice(self.gpa, s);
+        for (s) |c| {
+            if (c == '\n') {
+                self.gen_line += 1;
+                self.gen_col = 0;
+            } else {
+                self.gen_col += 1;
+            }
+        }
+    }
+
+    /// Record a source-map mapping for the *next* token, anchored at
+    /// the current generated position. No-op if no source map is
+    /// configured. `src_byte_pos` is a byte offset into the source
+    /// the caller is mapping back to.
+    fn mapAt(self: *Printer, src_byte_pos: u32) !void {
+        const sm = self.options.source_map orelse return;
+        const src = self.source orelse return;
+        var line: u32 = 0;
+        var col: u32 = 0;
+        var i: u32 = 0;
+        while (i < src_byte_pos and i < src.len) : (i += 1) {
+            if (src[i] == '\n') {
+                line += 1;
+                col = 0;
+            } else {
+                col += 1;
+            }
+        }
+        try sm.addMapping(.{
+            .gen_line = self.gen_line,
+            .gen_col = self.gen_col,
+            .src_idx = self.options.source_map_src_idx,
+            .src_line = line,
+            .src_col = col,
+            .name_idx = null,
+        });
     }
 
     fn writeNewlineIndent(self: *Printer) !void {
@@ -110,6 +171,8 @@ pub const Printer = struct {
 
     fn printStatement(self: *Printer, node: NodeId) anyerror!void {
         try self.indent();
+        const span = self.hir.spanOf(node);
+        try self.mapAt(span.start);
         const kind = self.hir.kindOf(node);
         switch (kind) {
             .var_decl, .let_decl, .const_decl => try self.printVarDecl(node),
@@ -1178,4 +1241,32 @@ test "emit: async arrow" {
     const out = try emit("let f = async (x) => x;");
     defer T.allocator.free(out);
     try T.expect(std.mem.indexOf(u8, out, "async (x) => x") != null);
+}
+
+test "emit: source map records mappings for each statement" {
+    const src = "let x = 1;\nlet y = 2;\nlet z = 3;";
+    const s = try newTestSetup(src);
+    defer destroyTestSetup(s);
+
+    var sm = source_map_mod.SourceMap.init(T.allocator, "out.js");
+    defer sm.deinit();
+    const sidx = try sm.addSource("in.ts", src);
+
+    var printer = Printer.init(T.allocator, &s.hir, &s.interner, .{
+        .source_map = &sm,
+        .source_map_src_idx = sidx,
+    });
+    defer printer.deinit();
+    printer.setSource(src);
+    try printer.printSourceFile(s.root);
+
+    // Three statements -> at least 3 mappings.
+    try T.expect(sm.mappings.items.len >= 3);
+
+    // First mapping should map gen (0, 0) -> src (0, 0).
+    const first = sm.mappings.items[0];
+    try T.expectEqual(@as(u32, 0), first.gen_line);
+    try T.expectEqual(@as(u32, 0), first.gen_col);
+    try T.expectEqual(@as(u32, 0), first.src_line);
+    try T.expectEqual(@as(u32, 0), first.src_col);
 }
