@@ -1,0 +1,18 @@
+// Regression test for issue #23 sub-item 1 — Zig-style alignment
+// qualifier on struct declarations. Used in home-os kernel for
+// cache-line aligned data structures (NUMA nodes, run queues, etc.).
+struct alignas(64) CPURunQueue {
+    head: u32,
+    tail: u32,
+    count: u32,
+}
+
+// Tagged packed struct (`packed struct(BackingType) { ... }`) — used
+// for bit-flag types in audio/IO code paths.
+pub const FrameFlags = packed struct(u8) {
+    voice_detected: bool,
+    clipping: bool,
+    silence: bool,
+    processed: bool,
+    reserved: u4,
+}

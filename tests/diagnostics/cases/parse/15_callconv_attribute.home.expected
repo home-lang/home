@@ -1,0 +1,3 @@
+Checking: <repo>/tests/diagnostics/cases/parse/15_callconv_attribute.home
+
+Success: Type checking passed ✓

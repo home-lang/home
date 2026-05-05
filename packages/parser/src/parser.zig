@@ -600,6 +600,28 @@ pub const Parser = struct {
         return try attrs.toOwnedSlice(self.allocator);
     }
 
+    /// Optionally consume a Zig-style `callconv(<expr>)` suffix on a
+    /// function declaration. Skips a balanced paren group; the expression
+    /// is parsed and discarded for now (codegen will read this back from
+    /// a future explicit annotation on FnDecl).
+    fn consumeOptionalCallconvSuffix(self: *Parser) !void {
+        if (self.check(.Identifier) and std.mem.eql(u8, self.peek().lexeme, "callconv")) {
+            _ = self.advance();
+            _ = try self.expect(.LeftParen, "Expected '(' after 'callconv'");
+            var depth: i32 = 1;
+            while (depth > 0 and !self.isAtEnd()) {
+                const t = self.peek();
+                if (t.type == .LeftParen) depth += 1;
+                if (t.type == .RightParen) {
+                    depth -= 1;
+                    if (depth == 0) break;
+                }
+                _ = self.advance();
+            }
+            _ = try self.expect(.RightParen, "Expected ')' after callconv expression");
+        }
+    }
+
     /// Optionally consume an `align(N)` suffix on a let/var/field
     /// type annotation. The integer is parsed and discarded; codegen
     /// is expected to recover alignment requirements from attributes
@@ -1009,6 +1031,15 @@ pub const Parser = struct {
 
         _ = try self.expect(.RightParen, "Expected ')' after parameters");
 
+        // Optional Zig-style calling-convention attribute between the
+        // parameter list and the return type:
+        //   `fn name(args) callconv(.C) -> RetType { ... }`
+        //   `fn name(args) callconv(.C) { ... }`            (no return)
+        // The convention expression is parsed and discarded; codegen
+        // will recover it from a future explicit annotation. Accept any
+        // balanced paren expression so we don't constrain the form.
+        try self.consumeOptionalCallconvSuffix();
+
         // Parse return type. Three styles are accepted:
         //   TypeScript-style: `fn foo(x: int): int { ... }`
         //   Rust-style:       `fn foo(x: int) -> int { ... }`
@@ -1023,6 +1054,11 @@ pub const Parser = struct {
         {
             return_type = try self.parseTypeAnnotation();
         }
+
+        // Also accept the calling-convention attribute *after* the
+        // return type, mirroring Zig's grammar:
+        //   `fn name(args) RetType callconv(.C) { ... }`.
+        try self.consumeOptionalCallconvSuffix();
 
         // Parse contract clauses: requires and ensures
         var requires_clauses = std.ArrayList(ast.ContractClause).empty;
@@ -1176,6 +1212,54 @@ pub const Parser = struct {
     /// identifier (used for `const Name = struct { ... }` form).
     fn structDeclarationWithName(self: *Parser, bound_name: ?[]const u8) !ast.Stmt {
         const struct_token = self.previous();
+
+        // Optional `alignas(N)` qualifier between `struct` and the name:
+        //   `struct alignas(64) CPURunQueue { ... }`. The integer is parsed
+        //   and stored on the StructDecl so codegen can recover the
+        //   alignment requirement. Accept any constant expression in the
+        //   parens for now and capture only literal integers; non-literal
+        //   forms are silently kept as null until the constant evaluator
+        //   can fold them.
+        var explicit_alignment: ?u32 = null;
+        var explicit_alignas: bool = false;
+        if (bound_name == null and self.check(.Identifier) and std.mem.eql(u8, self.peek().lexeme, "alignas")) {
+            _ = self.advance();
+            _ = try self.expect(.LeftParen, "Expected '(' after 'alignas'");
+            // Parse a single integer literal where possible; otherwise
+            // skip the inner expression so we don't trip up on more
+            // complex constant forms.
+            if (self.check(.Integer)) {
+                const tok = self.advance();
+                explicit_alignment = std.fmt.parseInt(u32, tok.lexeme, 0) catch null;
+            } else {
+                var depth: i32 = 1;
+                while (depth > 0 and !self.isAtEnd()) {
+                    const t = self.peek();
+                    if (t.type == .LeftParen) depth += 1;
+                    if (t.type == .RightParen) {
+                        depth -= 1;
+                        if (depth == 0) break;
+                    }
+                    _ = self.advance();
+                }
+            }
+            _ = try self.expect(.RightParen, "Expected ')' after alignas value");
+            explicit_alignas = true;
+        }
+
+        // Zig-style explicit backing type that comes *before* the name
+        // and lives in the keyword position:
+        //   `packed struct(u8) { ... }` (always anonymous — `bound_name`
+        //   is non-null here because the outer form is
+        //   `const Name = packed struct(u8) { ... }`).
+        // Accept and discard the backing type for now — codegen will
+        // recover the layout from field types and the `packed` attribute.
+        if (bound_name != null and self.check(.LeftParen)) {
+            _ = self.advance();
+            _ = try self.parseTypeAnnotation();
+            _ = try self.expect(.RightParen, "Expected ')' after struct backing type");
+        }
+
         const name = if (bound_name) |bn| bn else blk: {
             const name_token = try self.expect(.Identifier, "Expected struct name");
             break :blk name_token.lexeme;
@@ -1393,6 +1477,12 @@ pub const Parser = struct {
                 type_params_slice,
                 ast.SourceLocation.fromToken(struct_token),
             );
+
+        // Propagate the optional `alignas(N)` qualifier consumed above.
+        if (explicit_alignas) {
+            struct_decl.layout = .Aligned;
+            struct_decl.alignment = explicit_alignment;
+        }
 
         return ast.Stmt{ .StructDecl = struct_decl };
     }

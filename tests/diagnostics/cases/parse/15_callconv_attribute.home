@@ -1,0 +1,11 @@
+// Regression test for issue #23 sub-item 2 — Zig-style `callconv(.C)`
+// calling-convention attribute on `fn` declarations. Used in home-os
+// kernel for interrupt handlers and other ABI-pinned exports.
+export fn exceptionHandler(vector: u64, error_code: u64) callconv(.C) {
+    var v: u64 = vector + error_code
+}
+
+// Also accept the attribute *after* an explicit return type.
+fn exitProcess(code: u32): u32 callconv(.C) {
+    return code
+}
