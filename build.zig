@@ -545,6 +545,21 @@ pub fn build(b: *std.Build) void {
 
     const run_codegen_tests = b.addRunArtifact(codegen_tests);
 
+    // ARM64 assembler tests (issue #5)
+    const arm64_tests = b.addTest(.{
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("packages/codegen/tests/arm64_test.zig"),
+            .target = target,
+            .optimize = optimize,
+        }),
+    });
+    arm64_tests.root_module.addImport("codegen", codegen_pkg);
+    // Needed for the JIT smoke tests' libc calls (mmap, pthread_jit_write_protect_np,
+    // sys_icache_invalidate). Harmless on hosts where the JIT tests are skipped.
+    arm64_tests.root_module.link_libc = true;
+
+    const run_arm64_tests = b.addRunArtifact(arm64_tests);
+
     // Database tests (requires sqlite3 - skip on Windows and cross-compilation)
     const run_database_tests = if (target.result.os.tag != .windows and target.query.isNative()) blk: {
         const database_tests = b.addTest(.{
@@ -656,6 +671,7 @@ pub fn build(b: *std.Build) void {
     test_step.dependOn(&run_interpreter_tests.step);
     test_step.dependOn(&run_formatter_tests.step);
     test_step.dependOn(&run_codegen_tests.step);
+    test_step.dependOn(&run_arm64_tests.step);
     if (run_database_tests) |db_tests| test_step.dependOn(&db_tests.step);
     test_step.dependOn(&run_threading_tests.step);
     test_step.dependOn(&run_memory_tests.step);

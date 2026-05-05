@@ -7,13 +7,13 @@ pub const Assembler = struct {
 
     pub fn init(allocator: std.mem.Allocator) Assembler {
         return .{
-            .code = std.ArrayList(u8).init(allocator),
+            .code = std.ArrayList(u8).empty,
             .allocator = allocator,
         };
     }
 
     pub fn deinit(self: *Assembler) void {
-        self.code.deinit();
+        self.code.deinit(self.allocator);
     }
 
     pub fn getCode(self: *const Assembler) []const u8 {
@@ -234,9 +234,203 @@ pub const Assembler = struct {
         try self.emitU32(instr);
     }
 
+    // ─── Additional encoders (issue #5) ──────────────────────────────────────
+    // Extend the original 15-instruction surface with arithmetic immediates,
+    // logical ops, shifts, the full B.cond family, supervisor calls, and
+    // single-register push/pop + prologue/epilogue helpers. The IR-walking
+    // codegen is still hard-coded to x64 — wiring this assembler into a
+    // target-abstract NativeCodegen is a separate, much larger refactor.
+
+    /// AArch64 condition codes for B.cond (and CSEL family).
+    pub const Cond = enum(u4) {
+        eq = 0x0,
+        ne = 0x1,
+        hs = 0x2, // unsigned >=  (also CS)
+        lo = 0x3, // unsigned <   (also CC)
+        mi = 0x4,
+        pl = 0x5,
+        vs = 0x6,
+        vc = 0x7,
+        hi = 0x8, // unsigned >
+        ls = 0x9, // unsigned <=
+        ge = 0xA, // signed >=
+        lt = 0xB, // signed <
+        gt = 0xC, // signed >
+        le = 0xD, // signed <=
+        al = 0xE,
+    };
+
+    /// B.cond - Conditional branch with arbitrary condition code.
+    /// `offset` is byte-relative to this instruction; must be a multiple of 4
+    /// and within ±1 MiB (signed 21-bit byte range).
+    pub fn bcond(self: *Assembler, cond: Cond, offset: i32) !void {
+        const imm19 = @as(u32, @bitCast(offset >> 2)) & 0x7FFFF;
+        const instr = 0x54000000 | (imm19 << 5) | @as(u32, @intFromEnum(cond));
+        try self.emitU32(instr);
+    }
+
+    pub fn bne(self: *Assembler, offset: i32) !void {
+        return self.bcond(.ne, offset);
+    }
+    pub fn blt(self: *Assembler, offset: i32) !void {
+        return self.bcond(.lt, offset);
+    }
+    pub fn bgt(self: *Assembler, offset: i32) !void {
+        return self.bcond(.gt, offset);
+    }
+    pub fn ble(self: *Assembler, offset: i32) !void {
+        return self.bcond(.le, offset);
+    }
+    pub fn bge(self: *Assembler, offset: i32) !void {
+        return self.bcond(.ge, offset);
+    }
+
+    /// ADD (immediate) - add xd, xn, #imm12 (LSL #0).
+    /// `imm` must fit in 12 bits unsigned (0..4095).
+    pub fn addRegImm(self: *Assembler, dest: Register, src: Register, imm: u12) !void {
+        const rd = @intFromEnum(dest);
+        const rn = @intFromEnum(src);
+        const instr = 0x91000000 | (@as(u32, imm) << 10) | (@as(u32, rn) << 5) | rd;
+        try self.emitU32(instr);
+    }
+
+    /// SUB (immediate) - sub xd, xn, #imm12 (LSL #0).
+    pub fn subRegImm(self: *Assembler, dest: Register, src: Register, imm: u12) !void {
+        const rd = @intFromEnum(dest);
+        const rn = @intFromEnum(src);
+        const instr = 0xD1000000 | (@as(u32, imm) << 10) | (@as(u32, rn) << 5) | rd;
+        try self.emitU32(instr);
+    }
+
+    /// CMP (immediate) - cmp xn, #imm12  (alias of SUBS XZR, Xn, #imm12).
+    pub fn cmpRegImm(self: *Assembler, src: Register, imm: u12) !void {
+        const rn = @intFromEnum(src);
+        const instr = 0xF100001F | (@as(u32, imm) << 10) | (@as(u32, rn) << 5);
+        try self.emitU32(instr);
+    }
+
+    /// NEG xd, xn  (alias of SUB Xd, XZR, Xn).
+    pub fn negReg(self: *Assembler, dest: Register, src: Register) !void {
+        const rd = @intFromEnum(dest);
+        const rm = @intFromEnum(src);
+        const instr = 0xCB0003E0 | (@as(u32, rm) << 16) | rd;
+        try self.emitU32(instr);
+    }
+
+    /// AND (shifted register) - and xd, xn, xm
+    pub fn andRegReg(self: *Assembler, dest: Register, src1: Register, src2: Register) !void {
+        const rd = @intFromEnum(dest);
+        const rn = @intFromEnum(src1);
+        const rm = @intFromEnum(src2);
+        const instr = 0x8A000000 | (@as(u32, rm) << 16) | (@as(u32, rn) << 5) | rd;
+        try self.emitU32(instr);
+    }
+
+    /// ORR (shifted register) - orr xd, xn, xm
+    pub fn orrRegReg(self: *Assembler, dest: Register, src1: Register, src2: Register) !void {
+        const rd = @intFromEnum(dest);
+        const rn = @intFromEnum(src1);
+        const rm = @intFromEnum(src2);
+        const instr = 0xAA000000 | (@as(u32, rm) << 16) | (@as(u32, rn) << 5) | rd;
+        try self.emitU32(instr);
+    }
+
+    /// EOR (shifted register) - eor xd, xn, xm  (the AArch64 XOR).
+    pub fn eorRegReg(self: *Assembler, dest: Register, src1: Register, src2: Register) !void {
+        const rd = @intFromEnum(dest);
+        const rn = @intFromEnum(src1);
+        const rm = @intFromEnum(src2);
+        const instr = 0xCA000000 | (@as(u32, rm) << 16) | (@as(u32, rn) << 5) | rd;
+        try self.emitU32(instr);
+    }
+
+    /// LSL (immediate) - lsl xd, xn, #shift (alias of UBFM, shift in 0..63).
+    pub fn lslRegImm(self: *Assembler, dest: Register, src: Register, shift: u6) !void {
+        const rd = @intFromEnum(dest);
+        const rn = @intFromEnum(src);
+        const immr: u32 = (64 - @as(u32, shift)) & 0x3F;
+        const imms: u32 = 63 - @as(u32, shift);
+        const instr = 0xD3400000 | (immr << 16) | (imms << 10) | (@as(u32, rn) << 5) | rd;
+        try self.emitU32(instr);
+    }
+
+    /// LSR (immediate) - lsr xd, xn, #shift (alias of UBFM).
+    pub fn lsrRegImm(self: *Assembler, dest: Register, src: Register, shift: u6) !void {
+        const rd = @intFromEnum(dest);
+        const rn = @intFromEnum(src);
+        const immr: u32 = @as(u32, shift);
+        const imms: u32 = 63;
+        const instr = 0xD3400000 | (immr << 16) | (imms << 10) | (@as(u32, rn) << 5) | rd;
+        try self.emitU32(instr);
+    }
+
+    /// ASR (immediate) - asr xd, xn, #shift (alias of SBFM).
+    pub fn asrRegImm(self: *Assembler, dest: Register, src: Register, shift: u6) !void {
+        const rd = @intFromEnum(dest);
+        const rn = @intFromEnum(src);
+        const immr: u32 = @as(u32, shift);
+        const imms: u32 = 63;
+        const instr = 0x93400000 | (immr << 16) | (imms << 10) | (@as(u32, rn) << 5) | rd;
+        try self.emitU32(instr);
+    }
+
+    /// SVC #imm16 - Supervisor call (the AArch64 syscall instruction).
+    pub fn svc(self: *Assembler, imm: u16) !void {
+        const instr = 0xD4000001 | (@as(u32, imm) << 5);
+        try self.emitU32(instr);
+    }
+
+    /// "Push" a single register: STR Xt, [SP, #-16]!
+    /// Wastes 8 bytes per push but keeps SP 16-byte aligned per the AArch64 ABI.
+    pub fn pushReg(self: *Assembler, src: Register) !void {
+        const rt = @intFromEnum(src);
+        // STR (immediate, pre-indexed), 64-bit, imm9 = -16 (0x1F0 in 9-bit two's complement).
+        const imm9: u32 = 0x1F0;
+        const rn_sp: u32 = 31;
+        const instr = 0xF8000C00 | (imm9 << 12) | (rn_sp << 5) | rt;
+        try self.emitU32(instr);
+    }
+
+    /// "Pop" a single register: LDR Xt, [SP], #16
+    pub fn popReg(self: *Assembler, dest: Register) !void {
+        const rt = @intFromEnum(dest);
+        // LDR (immediate, post-indexed), 64-bit, imm9 = +16.
+        const imm9: u32 = 16;
+        const rn_sp: u32 = 31;
+        const instr = 0xF8400400 | (imm9 << 12) | (rn_sp << 5) | rt;
+        try self.emitU32(instr);
+    }
+
+    /// Standard AArch64 leaf-friendly prologue:
+    ///     stp x29, x30, [sp, #-16]!
+    ///     mov x29, sp        ; encoded as `add x29, sp, #0` because in
+    ///                        ; ORR's encoding (which `movRegReg` uses)
+    ///                        ; register 31 means XZR, not SP.
+    pub fn functionPrologue(self: *Assembler) !void {
+        try self.stpPreIndex(.x29, .x30, .sp, -16);
+        try self.addRegImm(.x29, .sp, 0);
+    }
+
+    /// Standard epilogue paired with `functionPrologue`:
+    ///     ldp x29, x30, [sp], #16
+    ///     ret
+    pub fn functionEpilogue(self: *Assembler) !void {
+        try self.ldpPostIndex(.x29, .x30, .sp, 16);
+        try self.ret();
+    }
+
+    /// Patch a previously-emitted B.cond at `position` to target `target`.
+    pub fn patchBcond(self: *Assembler, position: usize, cond: Cond, target: usize) !void {
+        const offset = @as(i32, @intCast(target)) - @as(i32, @intCast(position));
+        const imm19 = @as(u32, @bitCast(offset >> 2)) & 0x7FFFF;
+        const instr = 0x54000000 | (imm19 << 5) | @as(u32, @intFromEnum(cond));
+        const buf = std.mem.toBytes(instr);
+        @memcpy(self.code.items[position .. position + 4], &buf);
+    }
+
     fn emitU32(self: *Assembler, value: u32) !void {
         const bytes = std.mem.toBytes(value);
-        try self.code.appendSlice(&bytes);
+        try self.code.appendSlice(self.allocator, &bytes);
     }
 
     pub fn patchBeq(self: *Assembler, position: usize, target: usize) !void {
