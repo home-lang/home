@@ -205,6 +205,9 @@ pub fn build(b: *std.Build) void {
     ts_driver_pkg.addImport("ts_parser", ts_parser_pkg);
     ts_driver_pkg.addImport("binder", binder_pkg);
     ts_driver_pkg.addImport("ts_emit", ts_emit_pkg);
+
+    // TS-parity Phase 1.E follow-up — module resolver.
+    const ts_resolver_pkg = createPackage(b, "packages/ts_resolver/src/ts_resolver.zig", target, optimize, zig_test_framework);
     const volatile_pkg = createPackage(b, "packages/volatile/src/volatile.zig", target, optimize, zig_test_framework);
     const pantry_pkg = createPackage(b, "packages/pantry/src/pantry.zig", target, optimize, zig_test_framework);
     const collections_pkg = createPackage(b, "packages/collections/src/collection.zig", target, optimize, zig_test_framework);
@@ -852,6 +855,10 @@ pub fn build(b: *std.Build) void {
     const ts_driver_tests = b.addTest(.{ .root_module = ts_driver_pkg });
     const run_ts_driver_tests = b.addRunArtifact(ts_driver_tests);
     test_step.dependOn(&run_ts_driver_tests.step);
+
+    const ts_resolver_tests = b.addTest(.{ .root_module = ts_resolver_pkg });
+    const run_ts_resolver_tests = b.addRunArtifact(ts_resolver_tests);
+    test_step.dependOn(&run_ts_resolver_tests.step);
 
     // Volatile operations tests
     const volatile_tests = b.addTest(.{ .root_module = volatile_pkg });
