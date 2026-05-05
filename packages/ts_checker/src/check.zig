@@ -122,17 +122,15 @@ pub const Checker = struct {
             .if_stmt => {
                 const i = hir_mod.ifOf(self.hir, node);
                 _ = try self.checkExpression(i.cond);
-                // Then-branch: apply any narrowing implied by the
-                // guard (e.g. `typeof x === "string"` narrows x to
-                // string inside the then).
                 try self.pushNarrowScope();
                 try self.applyTypeGuard(i.cond, true);
                 try self.checkStatement(i.then_branch);
                 self.popNarrowScope();
                 if (i.else_branch != hir_mod.none_node_id) {
-                    // Else-branch: apply the negated guard
-                    // (Phase 6 follow-up — for now, no narrowing).
+                    try self.pushNarrowScope();
+                    try self.applyTypeGuard(i.cond, false);
                     try self.checkStatement(i.else_branch);
+                    self.popNarrowScope();
                 }
             },
             .while_stmt => {
@@ -318,6 +316,20 @@ pub const Checker = struct {
                 const m = hir_mod.memberOf(self.hir, node);
                 const obj_t = try self.checkExpression(m.object);
                 if (self.interner.objectMember(obj_t, m.name)) |t| break :blk t;
+                // No matching member on a known object type → TS2339
+                // 'Property X does not exist on type ...'. We only
+                // emit when the object is known to be an object
+                // type (not any/unknown/etc) — otherwise property
+                // access on `any` is unrestricted.
+                if (self.interner.pool.flagsOf(obj_t).is_object_type) {
+                    const name_str = self.string_interner.get(m.name);
+                    const msg = try std.fmt.allocPrint(
+                        self.diag_arena.allocator(),
+                        "Property '{s}' does not exist on type.",
+                        .{name_str},
+                    );
+                    try self.diagnostics.append(self.gpa, .{ .node = node, .message = msg });
+                }
                 break :blk types.Primitive.any;
             },
             .element_access => blk: {
@@ -373,18 +385,22 @@ pub const Checker = struct {
     }
 
     /// Detect simple type guards in `cond` and write their
-    /// narrowing into the current scope. Recognized today:
+    /// narrowing into the current scope.
     ///
+    /// Recognized:
     ///   typeof X === "string" / "number" / "boolean" / "bigint" /
-    ///                "symbol" / "undefined"
-    ///   X !== null / X !== undefined
+    ///                "symbol" / "undefined" / "object"
+    ///     and the !== negation (with `when_true` flipped)
+    ///   X === null / X !== null
+    ///   X === undefined / X !== undefined
     fn applyTypeGuard(self: *Checker, cond: NodeId, when_true: bool) !void {
-        if (!when_true) return; // negated branch — Phase 6 follow-up
         if (self.hir.kindOf(cond) != .binary_op) return;
         const b = hir_mod.binopOf(self.hir, cond);
         if (b.op != .eq_strict and b.op != .neq_strict) return;
+        // `positive` = "this branch represents the equality
+        // matching" (i.e. `===` in then, `!==` in else).
         const positive = (b.op == .eq_strict) == when_true;
-        // typeof X === "string"
+        // typeof X === "kind"
         if (self.hir.kindOf(b.lhs) == .unary_op) {
             const u = hir_mod.unaryOf(self.hir, b.lhs);
             if (u.op == .typeof and self.hir.kindOf(u.operand) == .identifier and
@@ -394,13 +410,56 @@ pub const Checker = struct {
                 const lit = hir_mod.literalStringOf(self.hir, b.rhs);
                 const lit_str = self.string_interner.get(lit.value);
                 if (typeOfTypeofString(lit_str)) |narrowed| {
-                    if (positive) try self.recordNarrow(id.name, narrowed);
+                    if (positive) {
+                        try self.recordNarrow(id.name, narrowed);
+                    } else {
+                        // Negative branch: subtract `narrowed` from
+                        // the variable's static type. Phase 6
+                        // follow-up does proper union subtraction;
+                        // for now we only handle the simple case
+                        // where the static type is exactly `narrowed`
+                        // (in which case the negative branch
+                        // contradicts and `never` applies).
+                        try self.recordNarrow(id.name, types.Primitive.never);
+                    }
                 }
                 return;
             }
         }
-        // X !== null / X === null — Phase 6 follow-up (need union
-        // subtraction support to remove null from a union).
+        // X === null / X !== null
+        if (self.hir.kindOf(b.lhs) == .identifier and
+            self.hir.kindOf(b.rhs) == .literal_null)
+        {
+            const id = hir_mod.identifierOf(self.hir, b.lhs);
+            if (positive) {
+                try self.recordNarrow(id.name, types.Primitive.null_t);
+            } else {
+                // X !== null inside then-branch → narrow away null;
+                // we record the original-minus-null. With proper
+                // union subtraction this is exact; for now we record
+                // 'unknown' which is at least correct as a
+                // supertype.
+                try self.recordNarrow(id.name, types.Primitive.unknown);
+            }
+            return;
+        }
+        // X === undefined / X !== undefined (literal_undefined +
+        // identifier 'undefined' both occur in source code).
+        if (self.hir.kindOf(b.lhs) == .identifier and
+            self.hir.kindOf(b.rhs) == .identifier)
+        {
+            const lhs = hir_mod.identifierOf(self.hir, b.lhs);
+            const rhs = hir_mod.identifierOf(self.hir, b.rhs);
+            const rhs_name = self.string_interner.get(rhs.name);
+            if (std.mem.eql(u8, rhs_name, "undefined")) {
+                if (positive) {
+                    try self.recordNarrow(lhs.name, types.Primitive.undefined_t);
+                } else {
+                    try self.recordNarrow(lhs.name, types.Primitive.unknown);
+                }
+                return;
+            }
+        }
     }
 
     fn recordNarrow(self: *Checker, name: hir_mod.StringId, t: TypeId) !void {

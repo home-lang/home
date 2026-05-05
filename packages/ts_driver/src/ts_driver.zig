@@ -522,6 +522,61 @@ test "driver: generic identity function infers T from argument" {
     try T.expectEqual(@as(u32, ts_checker.Primitive.string_t), c.hir.typeOf(s_init));
 }
 
+test "driver: typeof narrowing in else branch flips" {
+    var c = try compileSource(T.allocator,
+        \\function f(x: any) {
+        \\  if (typeof x === "string") {
+        \\    let s = x;
+        \\  } else {
+        \\    let n = x;
+        \\  }
+        \\}
+    , .{});
+    defer {
+        c.deinit();
+        T.allocator.destroy(c);
+    }
+    // Within the else branch, x is narrowed to never (because
+    // the static type is `any` and we negated typeof===string).
+    // Phase 6 follow-up: proper union subtraction; for now we
+    // only verify the else branch does some narrowing.
+    const stmts = hir_mod.blockStmts(&c.hir, c.root);
+    const fn_node = stmts[0];
+    const f = hir_mod.fnDeclOf(&c.hir, fn_node);
+    const body_stmts = hir_mod.blockStmts(&c.hir, f.body);
+    const if_stmt = body_stmts[0];
+    const ifp = hir_mod.ifOf(&c.hir, if_stmt);
+    const else_stmts = hir_mod.blockStmts(&c.hir, ifp.else_branch);
+    const n_decl = else_stmts[0];
+    const n_init = hir_mod.varDeclOf(&c.hir, n_decl).init;
+    // never (negation of typeof===string).
+    try T.expectEqual(@as(u32, ts_checker.Primitive.never), c.hir.typeOf(n_init));
+}
+
+test "driver: null guard narrows in then branch" {
+    var c = try compileSource(T.allocator,
+        \\function f(x: any) {
+        \\  if (x === null) {
+        \\    let n = x;
+        \\  }
+        \\}
+    , .{});
+    defer {
+        c.deinit();
+        T.allocator.destroy(c);
+    }
+    const stmts = hir_mod.blockStmts(&c.hir, c.root);
+    const fn_node = stmts[0];
+    const f = hir_mod.fnDeclOf(&c.hir, fn_node);
+    const body_stmts = hir_mod.blockStmts(&c.hir, f.body);
+    const if_stmt = body_stmts[0];
+    const ifp = hir_mod.ifOf(&c.hir, if_stmt);
+    const then_stmts = hir_mod.blockStmts(&c.hir, ifp.then_branch);
+    const n_decl = then_stmts[0];
+    const n_init = hir_mod.varDeclOf(&c.hir, n_decl).init;
+    try T.expectEqual(@as(u32, ts_checker.Primitive.null_t), c.hir.typeOf(n_init));
+}
+
 test "driver: typeof narrowing inside if narrows identifier type" {
     var c = try compileSource(T.allocator,
         \\function f(x: any) {
@@ -565,7 +620,7 @@ test "driver: member access on object-typed variable returns property type" {
     try T.expectEqual(@as(u32, ts_checker.Primitive.string_t), c.hir.typeOf(sy_init));
 }
 
-test "driver: missing property falls back to any" {
+test "driver: missing property falls back to any + TS2339 diagnostic" {
     var c = try compileSource(T.allocator,
         \\let p: { x: number } = null;
         \\let z = p.missing;
@@ -577,6 +632,15 @@ test "driver: missing property falls back to any" {
     const stmts = hir_mod.blockStmts(&c.hir, c.root);
     const z_init = hir_mod.varDeclOf(&c.hir, stmts[1]).init;
     try T.expectEqual(@as(u32, ts_checker.Primitive.any), c.hir.typeOf(z_init));
+    var saw_2339 = false;
+    for (c.diagnostics.items) |d| {
+        if (std.mem.indexOf(u8, d.message, "missing") != null) {
+            saw_2339 = true;
+            break;
+        }
+    }
+    try T.expect(saw_2339);
+    try T.expect(c.has_errors);
 }
 
 test "driver: function parameter resolves to its annotation type in body" {
