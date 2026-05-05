@@ -6058,6 +6058,9 @@ pub const Parser = struct {
                 std.mem.eql(u8, name, "atomicRmw") or std.mem.eql(u8, name, "cmpxchg") or
                 std.mem.eql(u8, name, "cmpxchgWeak") or std.mem.eql(u8, name, "cmpxchgStrong") or
                 std.mem.eql(u8, name, "atomicCmpXchg") or
+                std.mem.eql(u8, name, "atomicFetchAdd") or
+                std.mem.eql(u8, name, "atomicFetchSub") or
+                std.mem.eql(u8, name, "alignCast") or std.mem.eql(u8, name, "intToU64") or
                 std.mem.eql(u8, name, "prefetch") or std.mem.eql(u8, name, "fence") or
                 std.mem.eql(u8, name, "clz") or std.mem.eql(u8, name, "ctz") or
                 std.mem.eql(u8, name, "popCount") or std.mem.eql(u8, name, "byteSwap") or

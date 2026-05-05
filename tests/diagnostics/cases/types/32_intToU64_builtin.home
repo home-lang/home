@@ -1,0 +1,9 @@
+// Issue #32: `@intToU64(value)` is recognised as an opaque builtin
+// that converts any integer expression to `u64`. The parser consumes
+// its argument and lowers to a Void expression, so callers like
+// `var addr: u64 = @intToU64(offset)` no longer report
+// "Unknown reflection function".
+fn caller() {
+    var x: u32 = 42
+    var y: u64 = @intToU64(x)
+}

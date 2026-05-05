@@ -1,0 +1,3 @@
+Checking: <repo>/tests/diagnostics/cases/types/34_atomicFetchSub_builtin.home
+
+Success: Type checking passed ✓

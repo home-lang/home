@@ -1,0 +1,8 @@
+// Issue #32: `@atomicFetchAdd(ptr, val)` is recognised as an opaque
+// builtin for atomic fetch-then-add. The parser consumes its
+// arguments and lowers to a Void expression, so callers like
+// `var prev = @atomicFetchAdd(&counter, 1u32)` no longer report
+// "Unknown reflection function".
+fn caller(p: *u32) {
+    var prev = @atomicFetchAdd(p, 1u32)
+}

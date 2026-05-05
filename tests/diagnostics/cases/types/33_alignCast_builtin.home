@@ -1,0 +1,8 @@
+// Issue #32: `@alignCast(alignment, ptr)` is recognised as an opaque
+// builtin that returns the same pointer with an updated alignment
+// claim. The parser consumes its arguments and lowers to a Void
+// expression, so callers like `var p = @alignCast(8, raw_ptr)` no
+// longer report "Unknown reflection function".
+fn caller(p: *u8) {
+    var aligned = @alignCast(8, p)
+}

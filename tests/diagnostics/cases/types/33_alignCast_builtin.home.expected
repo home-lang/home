@@ -1,0 +1,3 @@
+Checking: <repo>/tests/diagnostics/cases/types/33_alignCast_builtin.home
+
+Success: Type checking passed ✓
