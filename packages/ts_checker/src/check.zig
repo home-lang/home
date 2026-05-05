@@ -298,18 +298,45 @@ pub const Checker = struct {
                     const t = try self.checkExpression(arg);
                     try arg_types.append(self.gpa, t);
                 }
-                if (self.interner.signatureReturn(callee_t)) |ret| {
-                    // Generic instantiation: if the signature's
-                    // params contain type-parameter ids, infer them
-                    // from the arg types and substitute in the
-                    // return type.
-                    if (self.interner.pool.flagsOf(callee_t).is_signature) {
-                        const param_ts = self.interner.signatureParams(callee_t);
+                if (self.interner.pool.flagsOf(callee_t).is_signature) {
+                    const param_ts = self.interner.signatureParams(callee_t);
+                    // TS2554: argument count mismatch.
+                    if (args.len != param_ts.len) {
+                        const msg = try std.fmt.allocPrint(
+                            self.diag_arena.allocator(),
+                            "Expected {d} arguments, but got {d}.",
+                            .{ param_ts.len, args.len },
+                        );
+                        try self.diagnostics.append(self.gpa, .{ .node = node, .message = msg });
+                    }
+                    // TS2345: argument type mismatch — for each
+                    // arg/param pair, if the arg's type isn't
+                    // assignable to the param's type, emit a
+                    // diagnostic. Skip when the param type is a
+                    // type parameter (we'd need full instantiation
+                    // to check those).
+                    const npairs = @min(args.len, param_ts.len);
+                    var i: usize = 0;
+                    while (i < npairs) : (i += 1) {
+                        const param_t = param_ts[i];
+                        if (self.interner.pool.flagsOf(param_t).is_type_parameter) continue;
+                        const arg_t = arg_types.items[i];
+                        const ok = self.engine.isAssignableTo(arg_t, param_t) catch true;
+                        if (!ok) {
+                            const msg = try std.fmt.allocPrint(
+                                self.diag_arena.allocator(),
+                                "Argument is not assignable to parameter at position {d}.",
+                                .{i},
+                            );
+                            try self.diagnostics.append(self.gpa, .{ .node = args[i], .message = msg });
+                        }
+                    }
+                    if (self.interner.signatureReturn(callee_t)) |ret| {
                         const instantiated = self.instantiateReturn(param_ts, arg_types.items, ret) catch ret;
                         break :blk instantiated;
                     }
-                    break :blk ret;
                 }
+                if (self.interner.signatureReturn(callee_t)) |ret| break :blk ret;
                 break :blk types.Primitive.any;
             },
             .member_access => blk: {
@@ -340,20 +367,43 @@ pub const Checker = struct {
             },
             .array_literal => blk: {
                 const elements = hir_mod.arrayLiteralElements(self.hir, node);
+                var elem_types: std.ArrayListUnmanaged(TypeId) = .empty;
+                defer elem_types.deinit(self.gpa);
                 for (elements) |el| {
-                    if (el != hir_mod.none_node_id) _ = try self.checkExpression(el);
+                    if (el == hir_mod.none_node_id) continue;
+                    const t = try self.checkExpression(el);
+                    try elem_types.append(self.gpa, t);
                 }
-                break :blk types.Primitive.any;
+                if (elem_types.items.len == 0) break :blk types.Primitive.any;
+                // Simplification (Phase 3): represent the array as
+                // the union of its element types. A proper Array<T>
+                // generic instantiation lands when the type system
+                // gets instantiation support.
+                break :blk self.interner.internUnion(elem_types.items) catch return error.OutOfMemory;
             },
             .object_literal => blk: {
+                // Type each property and synthesize an object-type
+                // mirroring the shape: '{ x: 1 }' -> '{ x: number }'.
                 const props = hir_mod.objectLiteralProps(self.hir, node);
+                var members: std.ArrayListUnmanaged(types.ObjectMember) = .empty;
+                defer members.deinit(self.gpa);
                 for (props) |p| {
-                    if (self.hir.kindOf(p) == .object_property) {
-                        const op = hir_mod.objectPropertyOf(self.hir, p);
-                        if (op.value != hir_mod.none_node_id) _ = try self.checkExpression(op.value);
-                    }
+                    if (self.hir.kindOf(p) != .object_property) continue;
+                    const op = hir_mod.objectPropertyOf(self.hir, p);
+                    if (op.value == hir_mod.none_node_id) continue;
+                    if (self.hir.kindOf(op.key) != .identifier) continue;
+                    const k = hir_mod.identifierOf(self.hir, op.key);
+                    const vt = try self.checkExpression(op.value);
+                    try members.append(self.gpa, .{
+                        .name = k.name,
+                        .type = vt,
+                        .is_optional = false,
+                        .is_readonly = false,
+                        .is_method = op.is_method,
+                    });
                 }
-                break :blk types.Primitive.any;
+                const obj_t = self.interner.internObjectType(members.items) catch return error.OutOfMemory;
+                break :blk obj_t;
             },
             else => types.Primitive.any,
         };

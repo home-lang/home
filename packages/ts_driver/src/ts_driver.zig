@@ -503,6 +503,103 @@ test "driver: emitWithCache distinct sources produce distinct entries" {
     try T.expectEqual(@as(u32, 2), cache.count());
 }
 
+test "driver: TS2554 argument count mismatch" {
+    var c = try compileSource(T.allocator,
+        \\function f(a: number): number { return a; }
+        \\f(1, 2);
+    , .{});
+    defer {
+        c.deinit();
+        T.allocator.destroy(c);
+    }
+    var saw_2554 = false;
+    for (c.diagnostics.items) |d| {
+        if (std.mem.indexOf(u8, d.message, "Expected 1 arguments, but got 2") != null) {
+            saw_2554 = true;
+            break;
+        }
+    }
+    try T.expect(saw_2554);
+    try T.expect(c.has_errors);
+}
+
+test "driver: TS2345 argument type mismatch" {
+    var c = try compileSource(T.allocator,
+        \\function f(a: number): number { return a; }
+        \\f("hi");
+    , .{});
+    defer {
+        c.deinit();
+        T.allocator.destroy(c);
+    }
+    var saw_2345 = false;
+    for (c.diagnostics.items) |d| {
+        if (std.mem.indexOf(u8, d.message, "Argument is not assignable") != null) {
+            saw_2345 = true;
+            break;
+        }
+    }
+    try T.expect(saw_2345);
+}
+
+test "driver: TS2345 silent for assignable arg" {
+    var c = try compileSource(T.allocator,
+        \\function f(a: number): number { return a; }
+        \\f(42);
+    , .{});
+    defer {
+        c.deinit();
+        T.allocator.destroy(c);
+    }
+    for (c.diagnostics.items) |d| {
+        try T.expect(std.mem.indexOf(u8, d.message, "Argument is not assignable") == null);
+    }
+}
+
+test "driver: array literal infers element-type union" {
+    var c = try compileSource(T.allocator, "let xs = [1, 2, 3];", .{});
+    defer {
+        c.deinit();
+        T.allocator.destroy(c);
+    }
+    const stmts = hir_mod.blockStmts(&c.hir, c.root);
+    const init_node = hir_mod.varDeclOf(&c.hir, stmts[0]).init;
+    // [1, 2, 3] all have number_t — union collapses to number_t.
+    try T.expectEqual(@as(u32, ts_checker.Primitive.number_t), c.hir.typeOf(init_node));
+}
+
+test "driver: heterogeneous array literal infers union" {
+    var c = try compileSource(T.allocator, "let xs = [1, \"hi\"];", .{});
+    defer {
+        c.deinit();
+        T.allocator.destroy(c);
+    }
+    const stmts = hir_mod.blockStmts(&c.hir, c.root);
+    const init_node = hir_mod.varDeclOf(&c.hir, stmts[0]).init;
+    const t = c.hir.typeOf(init_node);
+    // Union of number and string.
+    try T.expect(c.type_interner.pool.flagsOf(t).is_union);
+    try T.expect(c.type_interner.pool.flagsOf(t).is_number);
+    try T.expect(c.type_interner.pool.flagsOf(t).is_string);
+}
+
+test "driver: object literal infers shape; member access types correctly" {
+    var c = try compileSource(T.allocator,
+        \\let p = { x: 1, y: "hi" };
+        \\let nx = p.x;
+        \\let sy = p.y;
+    , .{});
+    defer {
+        c.deinit();
+        T.allocator.destroy(c);
+    }
+    const stmts = hir_mod.blockStmts(&c.hir, c.root);
+    const nx_init = hir_mod.varDeclOf(&c.hir, stmts[1]).init;
+    try T.expectEqual(@as(u32, ts_checker.Primitive.number_t), c.hir.typeOf(nx_init));
+    const sy_init = hir_mod.varDeclOf(&c.hir, stmts[2]).init;
+    try T.expectEqual(@as(u32, ts_checker.Primitive.string_t), c.hir.typeOf(sy_init));
+}
+
 test "driver: generic identity function infers T from argument" {
     var c = try compileSource(T.allocator,
         \\function id<T>(x: T): T { return x; }
