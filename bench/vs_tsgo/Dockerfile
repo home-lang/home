@@ -6,7 +6,7 @@
 # Build:    docker build -t home-bench bench/vs_tsgo/
 # Run:      docker run --rm -it -v "$PWD/bench/vs_tsgo/results:/results" home-bench
 
-FROM ubuntu:24.04
+FROM ubuntu:26.04
 
 ENV DEBIAN_FRONTEND=noninteractive
 
