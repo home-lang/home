@@ -208,6 +208,7 @@ pub fn build(b: *std.Build) void {
     ts_driver_pkg.addImport("binder", binder_pkg);
     ts_driver_pkg.addImport("ts_emit", ts_emit_pkg);
     ts_driver_pkg.addImport("tsconfig", tsconfig_pkg);
+    ts_driver_pkg.addImport("ts_checker", ts_checker_pkg);
 
     // TS-parity Phase 1.E follow-up — module resolver.
     const ts_resolver_pkg = createPackage(b, "packages/ts_resolver/src/ts_resolver.zig", target, optimize, zig_test_framework);

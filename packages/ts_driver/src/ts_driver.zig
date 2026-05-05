@@ -16,6 +16,7 @@ const string_interner = @import("string_interner");
 const binder = @import("binder");
 const ts_emit = @import("ts_emit");
 const tsconfig_mod = @import("tsconfig");
+const ts_checker = @import("ts_checker");
 
 pub const NodeId = hir_mod.NodeId;
 pub const Hir = hir_mod.Hir;
@@ -49,6 +50,10 @@ pub const Compilation = struct {
     root: NodeId,
     /// Bound module (symbols + scope graph). Owned via its own arena.
     module: *binder.Module,
+    /// Type interner — owns all TypeIds attached to the HIR.
+    type_interner: ts_checker.Interner,
+    /// Relation engine — caches assignability/subtype results.
+    type_engine: ts_checker.Engine,
     /// Emitted JavaScript text.
     js: []u8,
     /// All diagnostics from every phase, in source order.
@@ -62,6 +67,8 @@ pub const Compilation = struct {
         self.diagnostics.deinit(self.gpa);
         self.module.deinit();
         self.gpa.destroy(self.module);
+        self.type_engine.deinit();
+        self.type_interner.deinit();
         self.tokens.deinit(self.gpa);
         self.hir.deinit();
         self.interner.deinit();
@@ -135,6 +142,8 @@ pub fn compileSource(
         .tokens = undefined,
         .root = hir_mod.none_node_id,
         .module = undefined,
+        .type_interner = undefined,
+        .type_engine = undefined,
         .js = &.{},
         .diagnostics = .empty,
         .has_errors = false,
@@ -222,6 +231,28 @@ pub fn compileSource(
     c.module = bind.module;
     bind.deinit();
     // Own bind no longer drops module on errdefer.
+
+    // ------ Type check ------
+    c.type_interner = ts_checker.Interner.init(gpa) catch return error.OutOfMemory;
+    errdefer c.type_interner.deinit();
+    c.type_engine = ts_checker.Engine.init(gpa, &c.type_interner);
+    errdefer c.type_engine.deinit();
+    var checker = ts_checker.Checker.init(gpa, &c.hir, &c.type_interner, &c.interner, &c.type_engine);
+    defer checker.deinit();
+    if (c.root != hir_mod.none_node_id) {
+        checker.checkSourceFile(c.root) catch |err| switch (err) {
+            error.OutOfMemory => return error.OutOfMemory,
+        };
+    }
+    for (checker.diagnostics.items) |d| {
+        try c.diagnostics.append(gpa, .{
+            .phase = .bind,
+            .pos = c.hir.spanOf(d.node).start,
+            .line = 0,
+            .message = try gpa.dupe(u8, d.message),
+        });
+        c.has_errors = true;
+    }
 
     // ------ Emit ------
     var printer = ts_emit.Printer.init(gpa, &c.hir, &c.interner, options.emit);
@@ -354,6 +385,35 @@ test "driver: control flow round-trips" {
     try T.expect(std.mem.indexOf(u8, c.js, "function abs") != null);
     try T.expect(std.mem.indexOf(u8, c.js, "if (") != null);
     try T.expect(std.mem.indexOf(u8, c.js, "return") != null);
+}
+
+test "driver: type-check assigns TypeIds to expressions" {
+    var c = try compileSource(T.allocator, "let x: number = 42;", .{});
+    defer {
+        c.deinit();
+        T.allocator.destroy(c);
+    }
+    const stmts = hir_mod.blockStmts(&c.hir, c.root);
+    const decl = stmts[0];
+    const init_node = hir_mod.varDeclOf(&c.hir, decl).init;
+    try T.expectEqual(@as(u32, ts_checker.Primitive.number_t), c.hir.typeOf(init_node));
+}
+
+test "driver: type-check reports diagnostic on mismatched assignment" {
+    var c = try compileSource(T.allocator, "let x: number = \"hi\";", .{});
+    defer {
+        c.deinit();
+        T.allocator.destroy(c);
+    }
+    try T.expect(c.has_errors);
+    var found = false;
+    for (c.diagnostics.items) |d| {
+        if (std.mem.indexOf(u8, d.message, "not assignable") != null) {
+            found = true;
+            break;
+        }
+    }
+    try T.expect(found);
 }
 
 test "driver: tsx self-closing emits createElement" {
