@@ -260,6 +260,9 @@ pub fn build(b: *std.Build) void {
     ts_lsp_pkg.addImport("ts_driver", ts_driver_pkg);
     ts_lsp_pkg.addImport("ts_diagnostics", ts_diagnostics_pkg);
     ts_lsp_pkg.addImport("ts_resolver", ts_resolver_pkg);
+
+    // TS-parity Phase 5 §11.6 — persistent compilation cache.
+    const ts_cache_pkg = createPackage(b, "packages/ts_cache/src/ts_cache.zig", target, optimize, zig_test_framework);
     const volatile_pkg = createPackage(b, "packages/volatile/src/volatile.zig", target, optimize, zig_test_framework);
     const pantry_pkg = createPackage(b, "packages/pantry/src/pantry.zig", target, optimize, zig_test_framework);
     const collections_pkg = createPackage(b, "packages/collections/src/collection.zig", target, optimize, zig_test_framework);
@@ -935,6 +938,10 @@ pub fn build(b: *std.Build) void {
     const ts_lsp_tests = b.addTest(.{ .root_module = ts_lsp_pkg });
     const run_ts_lsp_tests = b.addRunArtifact(ts_lsp_tests);
     test_step.dependOn(&run_ts_lsp_tests.step);
+
+    const ts_cache_tests = b.addTest(.{ .root_module = ts_cache_pkg });
+    const run_ts_cache_tests = b.addRunArtifact(ts_cache_tests);
+    test_step.dependOn(&run_ts_cache_tests.step);
 
     // Volatile operations tests
     const volatile_tests = b.addTest(.{ .root_module = volatile_pkg });
