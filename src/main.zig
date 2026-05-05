@@ -942,11 +942,11 @@ fn readLspMessage(allocator: std.mem.Allocator, reader: *std.Io.Reader) !?[]u8 {
 
     while (true) {
         const line = reader.takeDelimiter('\n') catch |err| switch (err) {
-            error.EndOfStream => return null,
-            else => return err,
+            error.ReadFailed => return null,
+            error.StreamTooLong => return error.StreamTooLong,
         } orelse return null;
 
-        const trimmed = std.mem.trimRight(u8, line, "\r");
+        const trimmed = std.mem.trimEnd(u8, line, "\r");
         if (trimmed.len == 0) break;
 
         if (std.ascii.startsWithIgnoreCase(trimmed, "Content-Length:")) {
@@ -1010,7 +1010,7 @@ fn lspResponse(allocator: std.mem.Allocator, id_json: []const u8, result_json: [
 
 fn lspErrorResponse(allocator: std.mem.Allocator, id_json: []const u8, code: i32, message: []const u8) ![]u8 {
     return try std.fmt.allocPrint(allocator,
-        \\{{"jsonrpc":"2.0","id":{s},"error":{{"code":{d},"message":{s}}}}}
+        \\{{"jsonrpc":"2.0","id":{s},"error":{{"code":{d},"message":{f}}}}}
     , .{ id_json, code, std.json.fmt(message, .{}) });
 }
 
@@ -1464,7 +1464,7 @@ fn docsCommand(allocator: std.mem.Allocator, args: []const [:0]const u8) !void {
     }
 
     if (std.fs.path.dirname(out_path)) |parent| {
-        try std.fs.cwd().makePath(parent);
+        try Io.Dir.cwd().createDirPath(g_io, parent);
     }
 
     const file = try Io.Dir.cwd().createFile(g_io, out_path, .{});
