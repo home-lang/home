@@ -1529,6 +1529,14 @@ pub const Parser = struct {
     }
 
     fn parseAssignmentExpression(self: *Parser) ParseError!NodeId {
+        // Arrow function fast paths:
+        //   `x => …`   — single-ident arrow
+        //   `() => …`  — zero-arg
+        //   `(…) => …` — paren'd arrow (speculative)
+        //   `async () => …` / `async x => …`
+        //   `<T>(…) => …` — generic arrow
+        if (try self.maybeParseArrowFunction()) |arrow| return arrow;
+
         const left = try self.parseConditionalExpression();
         const t = self.peek();
         switch (t.kind) {
@@ -1545,6 +1553,197 @@ pub const Parser = struct {
             .percent_equal => return self.parseCompoundAssign(left, .mod),
             else => return left,
         }
+    }
+
+    /// Detect if the next token sequence is an arrow function and
+    /// parse it. Returns null on no match (no tokens consumed).
+    fn maybeParseArrowFunction(self: *Parser) ParseError!?NodeId {
+        const checkpoint = self.cursor;
+        const is_async = blk: {
+            if (self.peek().kind == .kw_async) {
+                const next = self.peekAt(1).kind;
+                if (next == .open_paren or next == .identifier or next == .less_than) {
+                    _ = self.advance();
+                    break :blk true;
+                }
+            }
+            break :blk false;
+        };
+        const start_tok = if (is_async) self.tokens[checkpoint] else self.peek();
+
+        // Single-ident arrow: `x => …`
+        if (self.peek().kind == .identifier and self.peekAt(1).kind == .arrow) {
+            const name_tok = self.advance();
+            _ = self.advance(); // `=>`
+            const name_id = try self.internToken(name_tok);
+            const ident = try self.builder.addIdentifier(tokenSpan(name_tok), name_id);
+            const param = try self.builder.addParameter(
+                tokenSpan(name_tok),
+                ident,
+                hir_mod.none_node_id,
+                hir_mod.none_node_id,
+                .{},
+            );
+            const body = try self.parseArrowBody();
+            const sp: Span = .{ .start = start_tok.span.start, .end = self.hir.spanOf(body).end };
+            return try self.builder.addFnDecl(
+                sp,
+                hir_mod.none_node_id,
+                &.{param},
+                hir_mod.none_node_id,
+                body,
+                .{ .is_arrow = true, .is_async = is_async },
+            );
+        }
+
+        // Generic arrow: `<T>(…) => …`
+        if (self.peek().kind == .less_than) {
+            // Speculatively check that the closing `>` is followed by
+            // `(`. If so, this is a generic arrow.
+            if (self.findMatchingTypeArgsEnd(self.cursor)) |after_args| {
+                if (after_args < self.tokens.len and self.tokens[after_args].kind == .open_paren) {
+                    const tps = try self.parseTypeParameterDeclaration();
+                    defer self.gpa.free(tps);
+                    if (try self.tryParseArrowAfterParen(start_tok, is_async, tps)) |arrow| return arrow;
+                    // Failed; restore.
+                    self.cursor = checkpoint;
+                    return null;
+                }
+            }
+            self.cursor = checkpoint;
+            return null;
+        }
+
+        // Paren-arrow: `(…) => …`. Speculatively check that the
+        // close-paren is followed by `=>` or `:` (typed return) before
+        // committing.
+        if (self.peek().kind == .open_paren) {
+            if (try self.tryParseArrowAfterParen(start_tok, is_async, &.{})) |arrow| return arrow;
+        }
+        // Not an arrow — restore and fall through.
+        self.cursor = checkpoint;
+        return null;
+    }
+
+    /// Returns the cursor index AFTER the matching `>` of a
+    /// type-argument list starting at `start` (which must point at
+    /// `<`). Returns null if not balanced.
+    fn findMatchingTypeArgsEnd(self: *Parser, start: u32) ?u32 {
+        if (start >= self.tokens.len or self.tokens[start].kind != .less_than) return null;
+        var depth: i32 = 1;
+        var i: u32 = start + 1;
+        while (i < self.tokens.len) : (i += 1) {
+            const tk = self.tokens[i].kind;
+            if (tk == .less_than) {
+                depth += 1;
+            } else if (tk == .greater_than) {
+                depth -= 1;
+                if (depth == 0) return i + 1;
+            } else if (tk == .eof) {
+                return null;
+            }
+        }
+        return null;
+    }
+
+    /// Speculatively parse `(…)` as arrow params. If it doesn't look
+    /// like an arrow (no `=>` after the close-paren / typed return),
+    /// rewinds and returns null.
+    fn tryParseArrowAfterParen(
+        self: *Parser,
+        start_tok: Token,
+        is_async: bool,
+        type_params: []const NodeId,
+    ) ParseError!?NodeId {
+        const before_paren = self.cursor;
+        // Find the matching `)`.
+        const after_paren_idx = self.findMatchingParenEnd(self.cursor) orelse return null;
+        // After `)`, we expect either `=>` (untyped return) or `:` then `=>`.
+        if (after_paren_idx >= self.tokens.len) return null;
+        const after_kind = self.tokens[after_paren_idx].kind;
+        if (after_kind != .arrow and after_kind != .colon) return null;
+        if (after_kind == .colon) {
+            // We need to scan past the type annotation to find a `=>`.
+            // Simple approach: look for the next top-level `=>` before
+            // a statement-terminator-class token.
+            if (!self.scanForArrowAfterColon(after_paren_idx + 1)) return null;
+        }
+
+        // Looks like an arrow — parse for real.
+        const params = try self.parseParameterList();
+        defer self.gpa.free(params);
+
+        // Optional return-type annotation. Use the real type parser
+        // so we don't accidentally consume the `=>` token.
+        if (self.match(.colon)) {
+            _ = try self.parseTypeAnnotation();
+        }
+        _ = try self.expect(.arrow, "'=>' in arrow function");
+        const body = try self.parseArrowBody();
+        const sp: Span = .{ .start = start_tok.span.start, .end = self.hir.spanOf(body).end };
+        const flags: hir_mod.FnFlags = .{
+            .is_arrow = true,
+            .is_async = is_async,
+        };
+        // type_params slot reuses the standard FnDecl fields; for now
+        // we drop them at the HIR boundary to keep the lowering
+        // uniform. Phase 3 / type checker will re-derive them.
+        _ = type_params;
+        _ = before_paren;
+        return try self.builder.addFnDecl(sp, hir_mod.none_node_id, params, hir_mod.none_node_id, body, flags);
+    }
+
+    /// Cursor points at `(`. Returns the cursor *after* the matching `)`.
+    fn findMatchingParenEnd(self: *Parser, start: u32) ?u32 {
+        if (start >= self.tokens.len or self.tokens[start].kind != .open_paren) return null;
+        var depth: i32 = 1;
+        var i: u32 = start + 1;
+        while (i < self.tokens.len) : (i += 1) {
+            const tk = self.tokens[i].kind;
+            switch (tk) {
+                .open_paren, .open_bracket, .open_brace, .less_than => depth += 1,
+                .close_paren, .close_bracket, .close_brace, .greater_than => {
+                    depth -= 1;
+                    if (depth == 0 and tk == .close_paren) return i + 1;
+                },
+                .eof => return null,
+                else => {},
+            }
+        }
+        return null;
+    }
+
+    /// From `idx` (right after `:`), scan past a type annotation and
+    /// return true if we eventually hit `=>` at the top level.
+    fn scanForArrowAfterColon(self: *Parser, idx: u32) bool {
+        var depth: i32 = 0;
+        var i: u32 = idx;
+        while (i < self.tokens.len) : (i += 1) {
+            const tk = self.tokens[i].kind;
+            if (depth == 0) {
+                if (tk == .arrow) return true;
+                if (tk == .semicolon or tk == .comma or tk == .close_paren or
+                    tk == .close_brace or tk == .close_bracket or tk == .eof)
+                {
+                    return false;
+                }
+            }
+            switch (tk) {
+                .less_than, .open_paren, .open_brace, .open_bracket => depth += 1,
+                .greater_than, .close_paren, .close_brace, .close_bracket => {
+                    if (depth > 0) depth -= 1;
+                },
+                else => {},
+            }
+        }
+        return false;
+    }
+
+    fn parseArrowBody(self: *Parser) ParseError!NodeId {
+        if (self.peek().kind == .open_brace) {
+            return try self.parseBlockStatement();
+        }
+        return try self.parseAssignmentExpression();
     }
 
     fn parseCompoundAssign(self: *Parser, left: NodeId, op: hir_mod.BinOp) ParseError!NodeId {
@@ -2801,6 +3000,90 @@ test "parser: type annotation — leading | accepted" {
     const top = hir_mod.blockStmts(&s.hir, root)[0];
     const v = hir_mod.varDeclOf(&s.hir, top);
     try T.expectEqual(hir_mod.NodeKind.union_type, s.hir.kindOf(v.type_annotation));
+}
+
+// ====================================================================
+// Arrow functions
+// ====================================================================
+
+test "parser: arrow — single ident no parens" {
+    var s = try newTestSetup("let f = x => x;");
+    defer destroyTestSetup(s);
+    const root = try s.parser.parseSourceFile();
+    const top = hir_mod.blockStmts(&s.hir, root)[0];
+    const init_node = hir_mod.varDeclOf(&s.hir, top).init;
+    try T.expectEqual(hir_mod.NodeKind.arrow_fn, s.hir.kindOf(init_node));
+    try T.expectEqual(@as(usize, 1), hir_mod.fnParams(&s.hir, init_node).len);
+}
+
+test "parser: arrow — zero arg" {
+    var s = try newTestSetup("let f = () => 42;");
+    defer destroyTestSetup(s);
+    const root = try s.parser.parseSourceFile();
+    const top = hir_mod.blockStmts(&s.hir, root)[0];
+    const init_node = hir_mod.varDeclOf(&s.hir, top).init;
+    try T.expectEqual(hir_mod.NodeKind.arrow_fn, s.hir.kindOf(init_node));
+    try T.expectEqual(@as(usize, 0), hir_mod.fnParams(&s.hir, init_node).len);
+}
+
+test "parser: arrow — multiple args" {
+    var s = try newTestSetup("let add = (x, y) => x + y;");
+    defer destroyTestSetup(s);
+    const root = try s.parser.parseSourceFile();
+    const top = hir_mod.blockStmts(&s.hir, root)[0];
+    const init_node = hir_mod.varDeclOf(&s.hir, top).init;
+    try T.expectEqual(hir_mod.NodeKind.arrow_fn, s.hir.kindOf(init_node));
+    try T.expectEqual(@as(usize, 2), hir_mod.fnParams(&s.hir, init_node).len);
+}
+
+test "parser: arrow — typed params + return" {
+    var s = try newTestSetup("let f = (x: number): string => \"hi\";");
+    defer destroyTestSetup(s);
+    const root = try s.parser.parseSourceFile();
+    const top = hir_mod.blockStmts(&s.hir, root)[0];
+    const init_node = hir_mod.varDeclOf(&s.hir, top).init;
+    try T.expectEqual(hir_mod.NodeKind.arrow_fn, s.hir.kindOf(init_node));
+}
+
+test "parser: arrow — body block" {
+    var s = try newTestSetup("let f = (x) => { return x + 1; };");
+    defer destroyTestSetup(s);
+    const root = try s.parser.parseSourceFile();
+    const top = hir_mod.blockStmts(&s.hir, root)[0];
+    const init_node = hir_mod.varDeclOf(&s.hir, top).init;
+    try T.expectEqual(hir_mod.NodeKind.arrow_fn, s.hir.kindOf(init_node));
+    const fn_p = hir_mod.fnDeclOf(&s.hir, init_node);
+    try T.expectEqual(hir_mod.NodeKind.block_stmt, s.hir.kindOf(fn_p.body));
+}
+
+test "parser: arrow — async" {
+    var s = try newTestSetup("let f = async (x) => x;");
+    defer destroyTestSetup(s);
+    const root = try s.parser.parseSourceFile();
+    const top = hir_mod.blockStmts(&s.hir, root)[0];
+    const init_node = hir_mod.varDeclOf(&s.hir, top).init;
+    try T.expectEqual(hir_mod.NodeKind.arrow_fn, s.hir.kindOf(init_node));
+    try T.expect(hir_mod.fnDeclOf(&s.hir, init_node).flags.is_async);
+}
+
+test "parser: arrow — ambiguity (T) is grouping not arrow" {
+    var s = try newTestSetup("let x = (1 + 2);");
+    defer destroyTestSetup(s);
+    const root = try s.parser.parseSourceFile();
+    const top = hir_mod.blockStmts(&s.hir, root)[0];
+    const init_node = hir_mod.varDeclOf(&s.hir, top).init;
+    // Should be a binary op, not an arrow.
+    try T.expectEqual(hir_mod.NodeKind.binary_op, s.hir.kindOf(init_node));
+}
+
+test "parser: arrow — passed as argument" {
+    var s = try newTestSetup("map(x => x * 2);");
+    defer destroyTestSetup(s);
+    const root = try s.parser.parseSourceFile();
+    const top = hir_mod.blockStmts(&s.hir, root)[0];
+    try T.expectEqual(hir_mod.NodeKind.call_expr, s.hir.kindOf(top));
+    const args = hir_mod.callArgs(&s.hir, top);
+    try T.expectEqual(hir_mod.NodeKind.arrow_fn, s.hir.kindOf(args[0]));
 }
 
 test "parser: function expression in let-binding" {

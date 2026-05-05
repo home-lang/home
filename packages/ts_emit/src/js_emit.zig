@@ -359,9 +359,27 @@ pub const Printer = struct {
         try self.write("}");
     }
 
-    fn printFnDecl(self: *Printer, node: NodeId) !void {
+    fn printFnDecl(self: *Printer, node: NodeId) anyerror!void {
         const f = hir_mod.fnDeclOf(self.hir, node);
-        if (!f.flags.is_method and !f.flags.is_constructor and !f.flags.is_arrow) {
+        if (f.flags.is_arrow) {
+            if (f.flags.is_async) try self.write("async ");
+            try self.write("(");
+            const params = hir_mod.fnParams(self.hir, node);
+            for (params, 0..) |p, i| {
+                if (i > 0) try self.write(", ");
+                try self.printParameter(p);
+            }
+            try self.write(") => ");
+            if (f.body != hir_mod.none_node_id) {
+                if (self.hir.kindOf(f.body) == .block_stmt) {
+                    try self.printBlock(f.body);
+                } else {
+                    try self.printExpression(f.body);
+                }
+            }
+            return;
+        }
+        if (!f.flags.is_method and !f.flags.is_constructor) {
             if (f.flags.is_async) try self.write("async ");
             try self.write("function");
             if (f.flags.is_generator) try self.write("*");
@@ -1051,4 +1069,22 @@ test "emit: declaration without initializer" {
     const out = try emit("let x;");
     defer T.allocator.free(out);
     try T.expectEqualStrings("let x;", out);
+}
+
+test "emit: arrow expression body" {
+    const out = try emit("let f = x => x + 1;");
+    defer T.allocator.free(out);
+    try T.expect(std.mem.indexOf(u8, out, "(x) => (x + 1)") != null);
+}
+
+test "emit: arrow block body" {
+    const out = try emit("let f = (x) => { return x; };");
+    defer T.allocator.free(out);
+    try T.expect(std.mem.indexOf(u8, out, "(x) => {") != null);
+}
+
+test "emit: async arrow" {
+    const out = try emit("let f = async (x) => x;");
+    defer T.allocator.free(out);
+    try T.expect(std.mem.indexOf(u8, out, "async (x) => x") != null);
 }
