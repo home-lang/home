@@ -206,6 +206,12 @@ pub const NodeKind = enum(u8) {
     parameter,
     type_parameter,
     decorator,
+    switch_case,
+    import_specifier,
+    export_specifier,
+    object_property,
+    enum_member,
+    interface_member,
 
     /// Returns true if the kind is in the "expression" category.
     pub fn isExpression(self: NodeKind) bool {
@@ -402,6 +408,221 @@ pub const ReturnPayload = struct {
     value: NodeId,
 };
 
+pub const WhilePayload = struct {
+    cond: NodeId,
+    body: NodeId,
+};
+
+pub const DoWhilePayload = struct {
+    body: NodeId,
+    cond: NodeId,
+};
+
+/// Classic three-part `for (init; cond; update) body`. Any of the
+/// header slots may be `none_node_id`.
+pub const ForPayload = struct {
+    init: NodeId,
+    cond: NodeId,
+    update: NodeId,
+    body: NodeId,
+};
+
+/// `for (let x in obj) body` and `for (let x of iter) body`. The
+/// kind on the node distinguishes the two forms.
+pub const ForInOfPayload = struct {
+    /// Binding declaration or expression on the left of `in` / `of`.
+    target: NodeId,
+    /// Right-hand side expression.
+    source: NodeId,
+    body: NodeId,
+};
+
+pub const ThrowPayload = struct {
+    value: NodeId,
+};
+
+pub const TryPayload = struct {
+    block: NodeId,
+    /// `none_node_id` if no catch clause.
+    catch_param: NodeId,
+    /// `none_node_id` if no catch clause.
+    catch_block: NodeId,
+    /// `none_node_id` if no finally clause.
+    finally_block: NodeId,
+};
+
+/// `case <value>: <stmts...>` and `default: <stmts...>`. `value`
+/// is `none_node_id` for the default clause.
+pub const SwitchCasePayload = struct {
+    value: NodeId,
+    /// Children pool slice: case body statements.
+    stmts_start: u32,
+    stmts_len: u32,
+};
+
+pub const SwitchPayload = struct {
+    discriminant: NodeId,
+    /// Children pool slice: switch_case nodes.
+    cases_start: u32,
+    cases_len: u32,
+};
+
+pub const LabelPayload = struct {
+    /// `none_node_id` for an unlabeled `break` / `continue`.
+    label: NodeId,
+};
+
+pub const FnDeclPayload = struct {
+    /// Function name. `none_node_id` for anonymous function expression.
+    name: NodeId,
+    /// Children pool slice: parameter nodes (`parameter` kind).
+    params_start: u32,
+    params_len: u32,
+    /// Return-type type node, or `none_node_id`.
+    return_type: NodeId,
+    /// Body block, or `none_node_id` for ambient declarations.
+    body: NodeId,
+    flags: FnFlags,
+};
+
+pub const FnFlags = packed struct(u8) {
+    is_async: bool = false,
+    is_generator: bool = false,
+    is_arrow: bool = false,
+    is_method: bool = false,
+    is_constructor: bool = false,
+    is_getter: bool = false,
+    is_setter: bool = false,
+    _pad: u1 = 0,
+};
+
+pub const ParameterPayload = struct {
+    name: NodeId,
+    /// `none_node_id` if no annotation.
+    type_annotation: NodeId,
+    /// `none_node_id` if no default value.
+    default_value: NodeId,
+    /// True for `?:` optional parameter, rest params (`...x`), etc.
+    flags: ParamFlags,
+};
+
+pub const ParamFlags = packed struct(u8) {
+    is_optional: bool = false,
+    is_rest: bool = false,
+    is_readonly: bool = false,
+    _pad: u5 = 0,
+};
+
+pub const TypeAliasPayload = struct {
+    name: NodeId,
+    /// Children pool slice: type-parameter nodes.
+    type_params_start: u32,
+    type_params_len: u32,
+    /// The aliased type node.
+    aliased: NodeId,
+};
+
+pub const InterfacePayload = struct {
+    name: NodeId,
+    /// Children pool slice: type-parameter nodes.
+    type_params_start: u32,
+    type_params_len: u32,
+    /// Children pool slice: extends type references.
+    extends_start: u32,
+    extends_len: u32,
+    /// Children pool slice: member nodes (signatures).
+    members_start: u32,
+    members_len: u32,
+};
+
+pub const ClassPayload = struct {
+    /// `none_node_id` for a class expression with no name.
+    name: NodeId,
+    /// Children pool slice: type-parameter nodes.
+    type_params_start: u32,
+    type_params_len: u32,
+    /// Optional `extends` parent expression.
+    extends: NodeId,
+    /// Children pool slice: implements type refs.
+    implements_start: u32,
+    implements_len: u32,
+    /// Children pool slice: class member nodes.
+    members_start: u32,
+    members_len: u32,
+};
+
+pub const EnumPayload = struct {
+    name: NodeId,
+    /// Children pool slice: enum-member nodes.
+    members_start: u32,
+    members_len: u32,
+    is_const: bool,
+};
+
+pub const NamespacePayload = struct {
+    name: NodeId,
+    /// Children pool slice: statements / nested decls.
+    body_start: u32,
+    body_len: u32,
+};
+
+pub const ImportPayload = struct {
+    /// Module specifier as an interned string.
+    module: StringId,
+    /// `none_node_id` if no default-import binding (`import x from "m"`).
+    default_binding: NodeId,
+    /// `none_node_id` if no namespace import (`import * as ns from "m"`).
+    namespace_binding: NodeId,
+    /// Children pool slice: named-import-specifier nodes.
+    named_start: u32,
+    named_len: u32,
+    /// True for `import type ...`.
+    is_type_only: bool,
+};
+
+pub const ExportPayload = struct {
+    /// `none_node_id` if no declaration is being re-exported (e.g.
+    /// `export { a, b }`).
+    decl: NodeId,
+    /// Children pool slice: named-export-specifier nodes.
+    named_start: u32,
+    named_len: u32,
+    /// `string_interner.empty_id` if this isn't a re-export.
+    module: StringId,
+    is_type_only: bool,
+    is_default: bool,
+};
+
+pub const ImportSpecifierPayload = struct {
+    /// Imported name in the foreign module.
+    imported: StringId,
+    /// Local binding (defaults to `imported` if no `as` rename).
+    local: StringId,
+    is_type_only: bool,
+};
+
+pub const ArrayLiteralPayload = struct {
+    /// Children pool slice: element expressions (or `none_node_id` for holes).
+    elements_start: u32,
+    elements_len: u32,
+};
+
+pub const ObjectLiteralPayload = struct {
+    /// Children pool slice: property nodes.
+    props_start: u32,
+    props_len: u32,
+};
+
+pub const ObjectPropertyPayload = struct {
+    /// Property key — identifier, string, number, or computed expression.
+    key: NodeId,
+    /// Property value.
+    value: NodeId,
+    is_computed: bool,
+    is_shorthand: bool,
+    is_method: bool,
+};
+
 // ============================================================================
 // Hir storage
 // ============================================================================
@@ -458,6 +679,28 @@ pub const Hir = struct {
     block_payloads: std.ArrayListUnmanaged(BlockPayload),
     if_payloads: std.ArrayListUnmanaged(IfPayload),
     return_payloads: std.ArrayListUnmanaged(ReturnPayload),
+    while_payloads: std.ArrayListUnmanaged(WhilePayload),
+    do_while_payloads: std.ArrayListUnmanaged(DoWhilePayload),
+    for_payloads: std.ArrayListUnmanaged(ForPayload),
+    for_in_of_payloads: std.ArrayListUnmanaged(ForInOfPayload),
+    throw_payloads: std.ArrayListUnmanaged(ThrowPayload),
+    try_payloads: std.ArrayListUnmanaged(TryPayload),
+    switch_case_payloads: std.ArrayListUnmanaged(SwitchCasePayload),
+    switch_payloads: std.ArrayListUnmanaged(SwitchPayload),
+    label_payloads: std.ArrayListUnmanaged(LabelPayload),
+    fn_decl_payloads: std.ArrayListUnmanaged(FnDeclPayload),
+    parameter_payloads: std.ArrayListUnmanaged(ParameterPayload),
+    type_alias_payloads: std.ArrayListUnmanaged(TypeAliasPayload),
+    interface_payloads: std.ArrayListUnmanaged(InterfacePayload),
+    class_payloads: std.ArrayListUnmanaged(ClassPayload),
+    enum_payloads: std.ArrayListUnmanaged(EnumPayload),
+    namespace_payloads: std.ArrayListUnmanaged(NamespacePayload),
+    import_payloads: std.ArrayListUnmanaged(ImportPayload),
+    export_payloads: std.ArrayListUnmanaged(ExportPayload),
+    import_specifier_payloads: std.ArrayListUnmanaged(ImportSpecifierPayload),
+    array_literal_payloads: std.ArrayListUnmanaged(ArrayLiteralPayload),
+    object_literal_payloads: std.ArrayListUnmanaged(ObjectLiteralPayload),
+    object_property_payloads: std.ArrayListUnmanaged(ObjectPropertyPayload),
 
     /// Shared variable-arity child pool. Per-node payloads reference
     /// slices into this with `(start: u32, len: u32)`.
@@ -491,6 +734,28 @@ pub const Hir = struct {
             .block_payloads = .empty,
             .if_payloads = .empty,
             .return_payloads = .empty,
+            .while_payloads = .empty,
+            .do_while_payloads = .empty,
+            .for_payloads = .empty,
+            .for_in_of_payloads = .empty,
+            .throw_payloads = .empty,
+            .try_payloads = .empty,
+            .switch_case_payloads = .empty,
+            .switch_payloads = .empty,
+            .label_payloads = .empty,
+            .fn_decl_payloads = .empty,
+            .parameter_payloads = .empty,
+            .type_alias_payloads = .empty,
+            .interface_payloads = .empty,
+            .class_payloads = .empty,
+            .enum_payloads = .empty,
+            .namespace_payloads = .empty,
+            .import_payloads = .empty,
+            .export_payloads = .empty,
+            .import_specifier_payloads = .empty,
+            .array_literal_payloads = .empty,
+            .object_literal_payloads = .empty,
+            .object_property_payloads = .empty,
             .child_pool = .empty,
             .cold = ColdData.empty(),
         };
@@ -531,6 +796,28 @@ pub const Hir = struct {
         self.block_payloads.deinit(self.gpa);
         self.if_payloads.deinit(self.gpa);
         self.return_payloads.deinit(self.gpa);
+        self.while_payloads.deinit(self.gpa);
+        self.do_while_payloads.deinit(self.gpa);
+        self.for_payloads.deinit(self.gpa);
+        self.for_in_of_payloads.deinit(self.gpa);
+        self.throw_payloads.deinit(self.gpa);
+        self.try_payloads.deinit(self.gpa);
+        self.switch_case_payloads.deinit(self.gpa);
+        self.switch_payloads.deinit(self.gpa);
+        self.label_payloads.deinit(self.gpa);
+        self.fn_decl_payloads.deinit(self.gpa);
+        self.parameter_payloads.deinit(self.gpa);
+        self.type_alias_payloads.deinit(self.gpa);
+        self.interface_payloads.deinit(self.gpa);
+        self.class_payloads.deinit(self.gpa);
+        self.enum_payloads.deinit(self.gpa);
+        self.namespace_payloads.deinit(self.gpa);
+        self.import_payloads.deinit(self.gpa);
+        self.export_payloads.deinit(self.gpa);
+        self.import_specifier_payloads.deinit(self.gpa);
+        self.array_literal_payloads.deinit(self.gpa);
+        self.object_literal_payloads.deinit(self.gpa);
+        self.object_property_payloads.deinit(self.gpa);
         self.child_pool.deinit(self.gpa);
         self.cold.deinit(self.gpa);
     }
@@ -812,6 +1099,429 @@ pub const Builder = struct {
         if (value != none_node_id) self.hir.setParent(value, id);
         return id;
     }
+
+    pub fn addWhile(self: *Builder, span: Span, cond: NodeId, body: NodeId) !NodeId {
+        const payload_idx: u32 = @intCast(self.hir.while_payloads.items.len);
+        try self.hir.while_payloads.append(self.hir.gpa, .{ .cond = cond, .body = body });
+        const id = try self.newNode(.while_stmt, span, payload_idx);
+        self.hir.setParent(cond, id);
+        self.hir.setParent(body, id);
+        return id;
+    }
+
+    pub fn addDoWhile(self: *Builder, span: Span, body: NodeId, cond: NodeId) !NodeId {
+        const payload_idx: u32 = @intCast(self.hir.do_while_payloads.items.len);
+        try self.hir.do_while_payloads.append(self.hir.gpa, .{ .body = body, .cond = cond });
+        const id = try self.newNode(.do_while_stmt, span, payload_idx);
+        self.hir.setParent(body, id);
+        self.hir.setParent(cond, id);
+        return id;
+    }
+
+    pub fn addFor(self: *Builder, span: Span, init_n: NodeId, cond: NodeId, update: NodeId, body: NodeId) !NodeId {
+        const payload_idx: u32 = @intCast(self.hir.for_payloads.items.len);
+        try self.hir.for_payloads.append(self.hir.gpa, .{
+            .init = init_n,
+            .cond = cond,
+            .update = update,
+            .body = body,
+        });
+        const id = try self.newNode(.for_stmt, span, payload_idx);
+        if (init_n != none_node_id) self.hir.setParent(init_n, id);
+        if (cond != none_node_id) self.hir.setParent(cond, id);
+        if (update != none_node_id) self.hir.setParent(update, id);
+        self.hir.setParent(body, id);
+        return id;
+    }
+
+    pub fn addForIn(self: *Builder, span: Span, target: NodeId, source: NodeId, body: NodeId) !NodeId {
+        return self.addForInOf(.for_in_stmt, span, target, source, body);
+    }
+
+    pub fn addForOf(self: *Builder, span: Span, target: NodeId, source: NodeId, body: NodeId) !NodeId {
+        return self.addForInOf(.for_of_stmt, span, target, source, body);
+    }
+
+    fn addForInOf(self: *Builder, kind: NodeKind, span: Span, target: NodeId, source: NodeId, body: NodeId) !NodeId {
+        const payload_idx: u32 = @intCast(self.hir.for_in_of_payloads.items.len);
+        try self.hir.for_in_of_payloads.append(self.hir.gpa, .{
+            .target = target,
+            .source = source,
+            .body = body,
+        });
+        const id = try self.newNode(kind, span, payload_idx);
+        self.hir.setParent(target, id);
+        self.hir.setParent(source, id);
+        self.hir.setParent(body, id);
+        return id;
+    }
+
+    pub fn addThrow(self: *Builder, span: Span, value: NodeId) !NodeId {
+        const payload_idx: u32 = @intCast(self.hir.throw_payloads.items.len);
+        try self.hir.throw_payloads.append(self.hir.gpa, .{ .value = value });
+        const id = try self.newNode(.throw_stmt, span, payload_idx);
+        self.hir.setParent(value, id);
+        return id;
+    }
+
+    pub fn addTry(
+        self: *Builder,
+        span: Span,
+        block: NodeId,
+        catch_param: NodeId,
+        catch_block: NodeId,
+        finally_block: NodeId,
+    ) !NodeId {
+        const payload_idx: u32 = @intCast(self.hir.try_payloads.items.len);
+        try self.hir.try_payloads.append(self.hir.gpa, .{
+            .block = block,
+            .catch_param = catch_param,
+            .catch_block = catch_block,
+            .finally_block = finally_block,
+        });
+        const id = try self.newNode(.try_stmt, span, payload_idx);
+        self.hir.setParent(block, id);
+        if (catch_param != none_node_id) self.hir.setParent(catch_param, id);
+        if (catch_block != none_node_id) self.hir.setParent(catch_block, id);
+        if (finally_block != none_node_id) self.hir.setParent(finally_block, id);
+        return id;
+    }
+
+    pub fn addSwitchCase(self: *Builder, span: Span, value: NodeId, stmts: []const NodeId) !NodeId {
+        const stmts_start: u32 = @intCast(self.hir.child_pool.items.len);
+        try self.hir.child_pool.appendSlice(self.hir.gpa, stmts);
+        const payload_idx: u32 = @intCast(self.hir.switch_case_payloads.items.len);
+        try self.hir.switch_case_payloads.append(self.hir.gpa, .{
+            .value = value,
+            .stmts_start = stmts_start,
+            .stmts_len = @intCast(stmts.len),
+        });
+        const id = try self.newNode(.switch_case, span, payload_idx);
+        if (value != none_node_id) self.hir.setParent(value, id);
+        for (stmts) |s| self.hir.setParent(s, id);
+        return id;
+    }
+
+    pub fn addSwitch(self: *Builder, span: Span, discriminant: NodeId, cases: []const NodeId) !NodeId {
+        const cases_start: u32 = @intCast(self.hir.child_pool.items.len);
+        try self.hir.child_pool.appendSlice(self.hir.gpa, cases);
+        const payload_idx: u32 = @intCast(self.hir.switch_payloads.items.len);
+        try self.hir.switch_payloads.append(self.hir.gpa, .{
+            .discriminant = discriminant,
+            .cases_start = cases_start,
+            .cases_len = @intCast(cases.len),
+        });
+        const id = try self.newNode(.switch_stmt, span, payload_idx);
+        self.hir.setParent(discriminant, id);
+        for (cases) |c| self.hir.setParent(c, id);
+        return id;
+    }
+
+    pub fn addBreak(self: *Builder, span: Span, label: NodeId) !NodeId {
+        const payload_idx: u32 = @intCast(self.hir.label_payloads.items.len);
+        try self.hir.label_payloads.append(self.hir.gpa, .{ .label = label });
+        const id = try self.newNode(.break_stmt, span, payload_idx);
+        if (label != none_node_id) self.hir.setParent(label, id);
+        return id;
+    }
+
+    pub fn addContinue(self: *Builder, span: Span, label: NodeId) !NodeId {
+        const payload_idx: u32 = @intCast(self.hir.label_payloads.items.len);
+        try self.hir.label_payloads.append(self.hir.gpa, .{ .label = label });
+        const id = try self.newNode(.continue_stmt, span, payload_idx);
+        if (label != none_node_id) self.hir.setParent(label, id);
+        return id;
+    }
+
+    pub fn addParameter(
+        self: *Builder,
+        span: Span,
+        name: NodeId,
+        type_annotation: NodeId,
+        default_value: NodeId,
+        flags: ParamFlags,
+    ) !NodeId {
+        const payload_idx: u32 = @intCast(self.hir.parameter_payloads.items.len);
+        try self.hir.parameter_payloads.append(self.hir.gpa, .{
+            .name = name,
+            .type_annotation = type_annotation,
+            .default_value = default_value,
+            .flags = flags,
+        });
+        const id = try self.newNode(.parameter, span, payload_idx);
+        if (name != none_node_id) self.hir.setParent(name, id);
+        if (type_annotation != none_node_id) self.hir.setParent(type_annotation, id);
+        if (default_value != none_node_id) self.hir.setParent(default_value, id);
+        return id;
+    }
+
+    pub fn addFnDecl(
+        self: *Builder,
+        span: Span,
+        name: NodeId,
+        params: []const NodeId,
+        return_type: NodeId,
+        body: NodeId,
+        flags: FnFlags,
+    ) !NodeId {
+        const params_start: u32 = @intCast(self.hir.child_pool.items.len);
+        try self.hir.child_pool.appendSlice(self.hir.gpa, params);
+        const payload_idx: u32 = @intCast(self.hir.fn_decl_payloads.items.len);
+        try self.hir.fn_decl_payloads.append(self.hir.gpa, .{
+            .name = name,
+            .params_start = params_start,
+            .params_len = @intCast(params.len),
+            .return_type = return_type,
+            .body = body,
+            .flags = flags,
+        });
+        const kind: NodeKind = if (flags.is_arrow) .arrow_fn else if (flags.is_method or flags.is_constructor) .fn_expr else .fn_decl;
+        const id = try self.newNode(kind, span, payload_idx);
+        if (name != none_node_id) self.hir.setParent(name, id);
+        for (params) |p| self.hir.setParent(p, id);
+        if (return_type != none_node_id) self.hir.setParent(return_type, id);
+        if (body != none_node_id) self.hir.setParent(body, id);
+        return id;
+    }
+
+    pub fn addTypeAlias(
+        self: *Builder,
+        span: Span,
+        name: NodeId,
+        type_params: []const NodeId,
+        aliased: NodeId,
+    ) !NodeId {
+        const tp_start: u32 = @intCast(self.hir.child_pool.items.len);
+        try self.hir.child_pool.appendSlice(self.hir.gpa, type_params);
+        const payload_idx: u32 = @intCast(self.hir.type_alias_payloads.items.len);
+        try self.hir.type_alias_payloads.append(self.hir.gpa, .{
+            .name = name,
+            .type_params_start = tp_start,
+            .type_params_len = @intCast(type_params.len),
+            .aliased = aliased,
+        });
+        const id = try self.newNode(.type_alias_decl, span, payload_idx);
+        self.hir.setParent(name, id);
+        for (type_params) |tp| self.hir.setParent(tp, id);
+        if (aliased != none_node_id) self.hir.setParent(aliased, id);
+        return id;
+    }
+
+    pub fn addInterface(
+        self: *Builder,
+        span: Span,
+        name: NodeId,
+        type_params: []const NodeId,
+        extends: []const NodeId,
+        members: []const NodeId,
+    ) !NodeId {
+        const tp_start: u32 = @intCast(self.hir.child_pool.items.len);
+        try self.hir.child_pool.appendSlice(self.hir.gpa, type_params);
+        const ext_start: u32 = @intCast(self.hir.child_pool.items.len);
+        try self.hir.child_pool.appendSlice(self.hir.gpa, extends);
+        const mem_start: u32 = @intCast(self.hir.child_pool.items.len);
+        try self.hir.child_pool.appendSlice(self.hir.gpa, members);
+        const payload_idx: u32 = @intCast(self.hir.interface_payloads.items.len);
+        try self.hir.interface_payloads.append(self.hir.gpa, .{
+            .name = name,
+            .type_params_start = tp_start,
+            .type_params_len = @intCast(type_params.len),
+            .extends_start = ext_start,
+            .extends_len = @intCast(extends.len),
+            .members_start = mem_start,
+            .members_len = @intCast(members.len),
+        });
+        const id = try self.newNode(.interface_decl, span, payload_idx);
+        self.hir.setParent(name, id);
+        for (type_params) |tp| self.hir.setParent(tp, id);
+        for (extends) |e| self.hir.setParent(e, id);
+        for (members) |m| self.hir.setParent(m, id);
+        return id;
+    }
+
+    pub fn addClass(
+        self: *Builder,
+        span: Span,
+        name: NodeId,
+        type_params: []const NodeId,
+        extends: NodeId,
+        implements: []const NodeId,
+        members: []const NodeId,
+    ) !NodeId {
+        const tp_start: u32 = @intCast(self.hir.child_pool.items.len);
+        try self.hir.child_pool.appendSlice(self.hir.gpa, type_params);
+        const impl_start: u32 = @intCast(self.hir.child_pool.items.len);
+        try self.hir.child_pool.appendSlice(self.hir.gpa, implements);
+        const mem_start: u32 = @intCast(self.hir.child_pool.items.len);
+        try self.hir.child_pool.appendSlice(self.hir.gpa, members);
+        const payload_idx: u32 = @intCast(self.hir.class_payloads.items.len);
+        try self.hir.class_payloads.append(self.hir.gpa, .{
+            .name = name,
+            .type_params_start = tp_start,
+            .type_params_len = @intCast(type_params.len),
+            .extends = extends,
+            .implements_start = impl_start,
+            .implements_len = @intCast(implements.len),
+            .members_start = mem_start,
+            .members_len = @intCast(members.len),
+        });
+        const id = try self.newNode(.class_decl, span, payload_idx);
+        if (name != none_node_id) self.hir.setParent(name, id);
+        for (type_params) |tp| self.hir.setParent(tp, id);
+        if (extends != none_node_id) self.hir.setParent(extends, id);
+        for (implements) |i| self.hir.setParent(i, id);
+        for (members) |m| self.hir.setParent(m, id);
+        return id;
+    }
+
+    pub fn addEnum(self: *Builder, span: Span, name: NodeId, members: []const NodeId, is_const: bool) !NodeId {
+        const mem_start: u32 = @intCast(self.hir.child_pool.items.len);
+        try self.hir.child_pool.appendSlice(self.hir.gpa, members);
+        const payload_idx: u32 = @intCast(self.hir.enum_payloads.items.len);
+        try self.hir.enum_payloads.append(self.hir.gpa, .{
+            .name = name,
+            .members_start = mem_start,
+            .members_len = @intCast(members.len),
+            .is_const = is_const,
+        });
+        const id = try self.newNode(.enum_decl, span, payload_idx);
+        self.hir.setParent(name, id);
+        for (members) |m| self.hir.setParent(m, id);
+        return id;
+    }
+
+    pub fn addNamespace(self: *Builder, span: Span, name: NodeId, body: []const NodeId) !NodeId {
+        const body_start: u32 = @intCast(self.hir.child_pool.items.len);
+        try self.hir.child_pool.appendSlice(self.hir.gpa, body);
+        const payload_idx: u32 = @intCast(self.hir.namespace_payloads.items.len);
+        try self.hir.namespace_payloads.append(self.hir.gpa, .{
+            .name = name,
+            .body_start = body_start,
+            .body_len = @intCast(body.len),
+        });
+        const id = try self.newNode(.namespace_decl, span, payload_idx);
+        self.hir.setParent(name, id);
+        for (body) |b| self.hir.setParent(b, id);
+        return id;
+    }
+
+    pub fn addImportSpecifier(
+        self: *Builder,
+        span: Span,
+        imported: StringId,
+        local: StringId,
+        is_type_only: bool,
+    ) !NodeId {
+        const payload_idx: u32 = @intCast(self.hir.import_specifier_payloads.items.len);
+        try self.hir.import_specifier_payloads.append(self.hir.gpa, .{
+            .imported = imported,
+            .local = local,
+            .is_type_only = is_type_only,
+        });
+        return self.newNode(.import_specifier, span, payload_idx);
+    }
+
+    pub fn addImport(
+        self: *Builder,
+        span: Span,
+        module: StringId,
+        default_binding: NodeId,
+        namespace_binding: NodeId,
+        named: []const NodeId,
+        is_type_only: bool,
+    ) !NodeId {
+        const named_start: u32 = @intCast(self.hir.child_pool.items.len);
+        try self.hir.child_pool.appendSlice(self.hir.gpa, named);
+        const payload_idx: u32 = @intCast(self.hir.import_payloads.items.len);
+        try self.hir.import_payloads.append(self.hir.gpa, .{
+            .module = module,
+            .default_binding = default_binding,
+            .namespace_binding = namespace_binding,
+            .named_start = named_start,
+            .named_len = @intCast(named.len),
+            .is_type_only = is_type_only,
+        });
+        const id = try self.newNode(.import_decl, span, payload_idx);
+        if (default_binding != none_node_id) self.hir.setParent(default_binding, id);
+        if (namespace_binding != none_node_id) self.hir.setParent(namespace_binding, id);
+        for (named) |n| self.hir.setParent(n, id);
+        return id;
+    }
+
+    pub fn addExport(
+        self: *Builder,
+        span: Span,
+        decl: NodeId,
+        named: []const NodeId,
+        module: StringId,
+        is_type_only: bool,
+        is_default: bool,
+    ) !NodeId {
+        const named_start: u32 = @intCast(self.hir.child_pool.items.len);
+        try self.hir.child_pool.appendSlice(self.hir.gpa, named);
+        const payload_idx: u32 = @intCast(self.hir.export_payloads.items.len);
+        try self.hir.export_payloads.append(self.hir.gpa, .{
+            .decl = decl,
+            .named_start = named_start,
+            .named_len = @intCast(named.len),
+            .module = module,
+            .is_type_only = is_type_only,
+            .is_default = is_default,
+        });
+        const id = try self.newNode(.export_decl, span, payload_idx);
+        if (decl != none_node_id) self.hir.setParent(decl, id);
+        for (named) |n| self.hir.setParent(n, id);
+        return id;
+    }
+
+    pub fn addArrayLiteral(self: *Builder, span: Span, elements: []const NodeId) !NodeId {
+        const elements_start: u32 = @intCast(self.hir.child_pool.items.len);
+        try self.hir.child_pool.appendSlice(self.hir.gpa, elements);
+        const payload_idx: u32 = @intCast(self.hir.array_literal_payloads.items.len);
+        try self.hir.array_literal_payloads.append(self.hir.gpa, .{
+            .elements_start = elements_start,
+            .elements_len = @intCast(elements.len),
+        });
+        const id = try self.newNode(.array_literal, span, payload_idx);
+        for (elements) |e| if (e != none_node_id) self.hir.setParent(e, id);
+        return id;
+    }
+
+    pub fn addObjectProperty(
+        self: *Builder,
+        span: Span,
+        key: NodeId,
+        value: NodeId,
+        is_computed: bool,
+        is_shorthand: bool,
+        is_method: bool,
+    ) !NodeId {
+        const payload_idx: u32 = @intCast(self.hir.object_property_payloads.items.len);
+        try self.hir.object_property_payloads.append(self.hir.gpa, .{
+            .key = key,
+            .value = value,
+            .is_computed = is_computed,
+            .is_shorthand = is_shorthand,
+            .is_method = is_method,
+        });
+        const id = try self.newNode(.object_property, span, payload_idx);
+        self.hir.setParent(key, id);
+        if (value != none_node_id) self.hir.setParent(value, id);
+        return id;
+    }
+
+    pub fn addObjectLiteral(self: *Builder, span: Span, props: []const NodeId) !NodeId {
+        const props_start: u32 = @intCast(self.hir.child_pool.items.len);
+        try self.hir.child_pool.appendSlice(self.hir.gpa, props);
+        const payload_idx: u32 = @intCast(self.hir.object_literal_payloads.items.len);
+        try self.hir.object_literal_payloads.append(self.hir.gpa, .{
+            .props_start = props_start,
+            .props_len = @intCast(props.len),
+        });
+        const id = try self.newNode(.object_literal, span, payload_idx);
+        for (props) |p| self.hir.setParent(p, id);
+        return id;
+    }
 };
 
 // ============================================================================
@@ -907,6 +1617,174 @@ pub fn callArgs(hir: *const Hir, id: NodeId) []const NodeId {
 pub fn blockStmts(hir: *const Hir, id: NodeId) []const NodeId {
     const p = blockOf(hir, id);
     return hir.childSlice(p.stmts_start, p.stmts_len);
+}
+
+pub fn whileOf(hir: *const Hir, id: NodeId) WhilePayload {
+    std.debug.assert(hir.kindOf(id) == .while_stmt);
+    return hir.while_payloads.items[hir.payloads.items[id]];
+}
+
+pub fn doWhileOf(hir: *const Hir, id: NodeId) DoWhilePayload {
+    std.debug.assert(hir.kindOf(id) == .do_while_stmt);
+    return hir.do_while_payloads.items[hir.payloads.items[id]];
+}
+
+pub fn forStmtOf(hir: *const Hir, id: NodeId) ForPayload {
+    std.debug.assert(hir.kindOf(id) == .for_stmt);
+    return hir.for_payloads.items[hir.payloads.items[id]];
+}
+
+pub fn forInOf(hir: *const Hir, id: NodeId) ForInOfPayload {
+    const k = hir.kindOf(id);
+    std.debug.assert(k == .for_in_stmt or k == .for_of_stmt);
+    return hir.for_in_of_payloads.items[hir.payloads.items[id]];
+}
+
+pub fn throwOf(hir: *const Hir, id: NodeId) ThrowPayload {
+    std.debug.assert(hir.kindOf(id) == .throw_stmt);
+    return hir.throw_payloads.items[hir.payloads.items[id]];
+}
+
+pub fn tryOf(hir: *const Hir, id: NodeId) TryPayload {
+    std.debug.assert(hir.kindOf(id) == .try_stmt);
+    return hir.try_payloads.items[hir.payloads.items[id]];
+}
+
+pub fn switchCaseOf(hir: *const Hir, id: NodeId) SwitchCasePayload {
+    std.debug.assert(hir.kindOf(id) == .switch_case);
+    return hir.switch_case_payloads.items[hir.payloads.items[id]];
+}
+
+pub fn switchCaseStmts(hir: *const Hir, id: NodeId) []const NodeId {
+    const p = switchCaseOf(hir, id);
+    return hir.childSlice(p.stmts_start, p.stmts_len);
+}
+
+pub fn switchOf(hir: *const Hir, id: NodeId) SwitchPayload {
+    std.debug.assert(hir.kindOf(id) == .switch_stmt);
+    return hir.switch_payloads.items[hir.payloads.items[id]];
+}
+
+pub fn switchCases(hir: *const Hir, id: NodeId) []const NodeId {
+    const p = switchOf(hir, id);
+    return hir.childSlice(p.cases_start, p.cases_len);
+}
+
+pub fn labelOf(hir: *const Hir, id: NodeId) LabelPayload {
+    const k = hir.kindOf(id);
+    std.debug.assert(k == .break_stmt or k == .continue_stmt);
+    return hir.label_payloads.items[hir.payloads.items[id]];
+}
+
+pub fn fnDeclOf(hir: *const Hir, id: NodeId) FnDeclPayload {
+    const k = hir.kindOf(id);
+    std.debug.assert(k == .fn_decl or k == .fn_expr or k == .arrow_fn);
+    return hir.fn_decl_payloads.items[hir.payloads.items[id]];
+}
+
+pub fn fnParams(hir: *const Hir, id: NodeId) []const NodeId {
+    const p = fnDeclOf(hir, id);
+    return hir.childSlice(p.params_start, p.params_len);
+}
+
+pub fn parameterOf(hir: *const Hir, id: NodeId) ParameterPayload {
+    std.debug.assert(hir.kindOf(id) == .parameter);
+    return hir.parameter_payloads.items[hir.payloads.items[id]];
+}
+
+pub fn typeAliasOf(hir: *const Hir, id: NodeId) TypeAliasPayload {
+    std.debug.assert(hir.kindOf(id) == .type_alias_decl);
+    return hir.type_alias_payloads.items[hir.payloads.items[id]];
+}
+
+pub fn interfaceOf(hir: *const Hir, id: NodeId) InterfacePayload {
+    std.debug.assert(hir.kindOf(id) == .interface_decl);
+    return hir.interface_payloads.items[hir.payloads.items[id]];
+}
+
+pub fn interfaceMembers(hir: *const Hir, id: NodeId) []const NodeId {
+    const p = interfaceOf(hir, id);
+    return hir.childSlice(p.members_start, p.members_len);
+}
+
+pub fn classOf(hir: *const Hir, id: NodeId) ClassPayload {
+    std.debug.assert(hir.kindOf(id) == .class_decl or hir.kindOf(id) == .class_expr);
+    return hir.class_payloads.items[hir.payloads.items[id]];
+}
+
+pub fn classMembers(hir: *const Hir, id: NodeId) []const NodeId {
+    const p = classOf(hir, id);
+    return hir.childSlice(p.members_start, p.members_len);
+}
+
+pub fn enumOf(hir: *const Hir, id: NodeId) EnumPayload {
+    std.debug.assert(hir.kindOf(id) == .enum_decl);
+    return hir.enum_payloads.items[hir.payloads.items[id]];
+}
+
+pub fn enumMembers(hir: *const Hir, id: NodeId) []const NodeId {
+    const p = enumOf(hir, id);
+    return hir.childSlice(p.members_start, p.members_len);
+}
+
+pub fn namespaceOf(hir: *const Hir, id: NodeId) NamespacePayload {
+    std.debug.assert(hir.kindOf(id) == .namespace_decl);
+    return hir.namespace_payloads.items[hir.payloads.items[id]];
+}
+
+pub fn namespaceBody(hir: *const Hir, id: NodeId) []const NodeId {
+    const p = namespaceOf(hir, id);
+    return hir.childSlice(p.body_start, p.body_len);
+}
+
+pub fn importOf(hir: *const Hir, id: NodeId) ImportPayload {
+    std.debug.assert(hir.kindOf(id) == .import_decl);
+    return hir.import_payloads.items[hir.payloads.items[id]];
+}
+
+pub fn importNamed(hir: *const Hir, id: NodeId) []const NodeId {
+    const p = importOf(hir, id);
+    return hir.childSlice(p.named_start, p.named_len);
+}
+
+pub fn exportOf(hir: *const Hir, id: NodeId) ExportPayload {
+    std.debug.assert(hir.kindOf(id) == .export_decl);
+    return hir.export_payloads.items[hir.payloads.items[id]];
+}
+
+pub fn exportNamed(hir: *const Hir, id: NodeId) []const NodeId {
+    const p = exportOf(hir, id);
+    return hir.childSlice(p.named_start, p.named_len);
+}
+
+pub fn importSpecifierOf(hir: *const Hir, id: NodeId) ImportSpecifierPayload {
+    std.debug.assert(hir.kindOf(id) == .import_specifier);
+    return hir.import_specifier_payloads.items[hir.payloads.items[id]];
+}
+
+pub fn arrayLiteralOf(hir: *const Hir, id: NodeId) ArrayLiteralPayload {
+    std.debug.assert(hir.kindOf(id) == .array_literal);
+    return hir.array_literal_payloads.items[hir.payloads.items[id]];
+}
+
+pub fn arrayLiteralElements(hir: *const Hir, id: NodeId) []const NodeId {
+    const p = arrayLiteralOf(hir, id);
+    return hir.childSlice(p.elements_start, p.elements_len);
+}
+
+pub fn objectLiteralOf(hir: *const Hir, id: NodeId) ObjectLiteralPayload {
+    std.debug.assert(hir.kindOf(id) == .object_literal);
+    return hir.object_literal_payloads.items[hir.payloads.items[id]];
+}
+
+pub fn objectLiteralProps(hir: *const Hir, id: NodeId) []const NodeId {
+    const p = objectLiteralOf(hir, id);
+    return hir.childSlice(p.props_start, p.props_len);
+}
+
+pub fn objectPropertyOf(hir: *const Hir, id: NodeId) ObjectPropertyPayload {
+    std.debug.assert(hir.kindOf(id) == .object_property);
+    return hir.object_property_payloads.items[hir.payloads.items[id]];
 }
 
 // ============================================================================
