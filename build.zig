@@ -271,6 +271,11 @@ pub fn build(b: *std.Build) void {
     ts_lsp_server_pkg.addImport("ts_lsp", ts_lsp_pkg);
     ts_lsp_server_pkg.addImport("ts_program", ts_program_pkg);
     ts_lsp_server_pkg.addImport("ts_resolver", ts_resolver_pkg);
+
+    // TS-parity Phase 4.5 — bundler skeleton.
+    const ts_bundler_pkg = createPackage(b, "packages/ts_bundler/src/ts_bundler.zig", target, optimize, zig_test_framework);
+    ts_bundler_pkg.addImport("ts_program", ts_program_pkg);
+    ts_bundler_pkg.addImport("ts_resolver", ts_resolver_pkg);
     const volatile_pkg = createPackage(b, "packages/volatile/src/volatile.zig", target, optimize, zig_test_framework);
     const pantry_pkg = createPackage(b, "packages/pantry/src/pantry.zig", target, optimize, zig_test_framework);
     const collections_pkg = createPackage(b, "packages/collections/src/collection.zig", target, optimize, zig_test_framework);
@@ -954,6 +959,10 @@ pub fn build(b: *std.Build) void {
     const ts_lsp_server_tests = b.addTest(.{ .root_module = ts_lsp_server_pkg });
     const run_ts_lsp_server_tests = b.addRunArtifact(ts_lsp_server_tests);
     test_step.dependOn(&run_ts_lsp_server_tests.step);
+
+    const ts_bundler_tests = b.addTest(.{ .root_module = ts_bundler_pkg });
+    const run_ts_bundler_tests = b.addRunArtifact(ts_bundler_tests);
+    test_step.dependOn(&run_ts_bundler_tests.step);
 
     // Volatile operations tests
     const volatile_tests = b.addTest(.{ .root_module = volatile_pkg });
