@@ -12,7 +12,7 @@ This is the canonical plan for evolving Home into a **drop-in TypeScript compile
 
 ## 0 · Executive summary
 
-**Goal.** Home becomes a drop-in replacement for `tsc` / `tsgo`: it accepts `.ts` / `.tsx` / `.d.ts` / `.cts` / `.mts` and the full `tsconfig.json` matrix, matches `tsc` semantics on the conformance suite at ≥99.6% (≥99.9% by v1), ships a Language Server, and is **2–3× faster than tsgo cold** and **10–50× faster on watch-mode incremental rebuilds**, while *preserving* Home's existing identity as a native-code language (the `.home`/`.hm` frontends keep working).
+**Goal.** Home becomes a drop-in replacement for `tsc` / `tsgo`: it accepts `.ts` / `.tsx` / `.d.ts` / `.cts` / `.mts` and the full `tsconfig.json` matrix, matches `tsc` semantics on the conformance suite at ≥99.6% (≥99.9% by v1), ships a Language Server, and is **2–3× faster than tsgo cold** and **10–50× faster on watch-mode incremental rebuilds**, while *preserving* Home's existing identity as a native-code language (the `.home` / `.hm` frontends keep working, with declaration files at `.d.hm` paralleling TypeScript's `.d.ts`).
 
 **Verified architectural leverage points** (see Appendix D for full citations):
 
@@ -28,7 +28,8 @@ This is the canonical plan for evolving Home into a **drop-in TypeScript compile
 ```
 .ts/.tsx/.d.ts/.cts/.mts ─┐
                           ├─► [SIMD Lexer] ─► [Parser → SoA AST] ─► [HIR] ─► [Type-check] ─┬─► JS emit
-.home/.hm ────────────────┘                                                                 ├─► .d.ts emit
+.home/.hm/.d.hm ──────────┘                                                                 ├─► .d.ts emit (TS frontend)
+                                                                                            ├─► .d.hm emit (Home frontend)
                                                                                             ├─► Native (LLVM/x64/arm64)
                                                                                             └─► WASM
 ```
@@ -87,7 +88,7 @@ These shape every phase below.
 
 ### 1.2 Home syntax vs. TypeScript syntax — coexistence
 
-**Two frontends, one shared HIR.** The existing Home grammar (`fn`, `let mut`, `match`, traits, ranges) keeps its lexer/parser. A new TS frontend (lexer + parser + tsconfig loader) parses `.ts`/`.tsx`/`.d.ts`/`.cts`/`.mts` and lowers into the same internal HIR. Both frontends share the type checker, the symbol table, the module resolver, and all backends.
+**Two frontends, one shared HIR.** The existing Home grammar (`fn`, `let mut`, `match`, traits, ranges) keeps its lexer/parser, with declaration files at `.d.hm` (the Home equivalent of `.d.ts`). A new TS frontend (lexer + parser + tsconfig loader) parses `.ts`/`.tsx`/`.d.ts`/`.cts`/`.mts` and lowers into the same internal HIR. Both frontends share the type checker, the symbol table, the module resolver, and all backends.
 
 **Why not unify the surface syntax?** Home's syntax is shipped, tested, and serves a different audience (systems/games/native). TypeScript's surface (classes, decorators, JSX, `module`/`namespace`, declaration merging quirks) is large, opinionated, and tied to JS runtime semantics. Forcing one to absorb the other compromises both. The right abstraction boundary is *the AST*, where both frontends converge.
 
@@ -118,8 +119,22 @@ Implementation **vendors Bun's bundler** at `~/Code/bun/src/bundler/` (≈20 K L
 |---|---|---|---|
 | `.ts` / `.tsx` / `.d.ts` / `.cts` / `.mts` | TS frontend (Phase 1–3) | HIR | JS (ESM/CJS/IIFE/AMD), `.d.ts`, native, WASM |
 | `.js` / `.jsx` / `.cjs` / `.mjs` | TS frontend with `allowJs` / JSDoc | HIR | JS (transformed/passthrough), native, WASM |
-| `.home` / `.hm` | Home frontend (existing) | HIR | Native, WASM, JS *(Phase 7 lowering)* |
+| `.home` / `.hm` / `.d.hm` | Home frontend (existing; `.d.hm` for ambient/declaration-only) | HIR | Native, WASM, `.d.hm`, JS *(Phase 7 lowering)* |
 | Mixed | Both frontends in one program graph | HIR | Any of the above |
+
+**File extension reference:**
+
+| Extension | Meaning |
+|---|---|
+| `.ts` | TypeScript source |
+| `.tsx` | TypeScript with JSX |
+| `.d.ts` | TypeScript declaration file (ambient types only, no implementation) |
+| `.cts` / `.mts` | TypeScript with explicit CommonJS / ESM module type |
+| `.js` / `.jsx` | JavaScript (with optional JSDoc types) |
+| `.cjs` / `.mjs` | JavaScript with explicit CommonJS / ESM module type |
+| `.home` | Home source (canonical extension) |
+| `.hm` | Home source (short alternative) |
+| **`.d.hm`** | **Home declaration file** (ambient types only, no implementation; Home equivalent of `.d.ts`) |
 
 **Out of scope for v1.** Bun-specific runtime features (Bun's `fetch`, native test runner, package manager) — those stay in Bun. Home's bundler is a pure build-tool, not a runtime. Likewise, bundling `.home` to *JS* (a `.home` → JS lowering) is a Phase 7+ stretch goal; v1 ships `.home` → native + WASM via the existing codegen.
 
@@ -513,6 +528,8 @@ Eleven phases, roughly sequenced; many work-streams overlap. Sizing is **calenda
 ### Phase 1 — TypeScript frontend (8–12 weeks)
 
 **Goal.** Accept any `.ts` / `.tsx` / `.d.ts` / `.cts` / `.mts` file and produce a parsed AST. No type checking yet.
+
+**Note on Home's symmetric `.d.hm`.** The Home frontend gains an analogous declaration-only mode: `.d.hm` files are parsed by the existing Home lexer/parser but with the same restrictions `.d.ts` imposes on `.ts` (no function bodies, no executable statements, only declarations). This work happens in parallel with Phase 1 in the existing `packages/parser/`, not in `packages/ts_parser/`.
 
 **Work.**
 
