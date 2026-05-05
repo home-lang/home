@@ -199,10 +199,34 @@ pub const Emitter = struct {
         try self.write("interface ");
         try self.emitIdentifier(i.name);
         try self.write(" {");
-        // Phase 4: we don't yet have HIR member nodes for interface
-        // bodies (the parser skips them). Emit an empty body for
-        // now; member-list lowering is a follow-up.
+        const members = hir_mod.interfaceMembers(self.hir, node);
+        if (members.len == 0) {
+            try self.write("}");
+            return;
+        }
+        self.depth += 1;
+        for (members) |m| {
+            try self.write(self.options.newline);
+            try self.indent();
+            try self.emitInterfaceMember(m);
+        }
+        self.depth -= 1;
+        try self.write(self.options.newline);
+        try self.indent();
         try self.write("}");
+    }
+
+    fn emitInterfaceMember(self: *Emitter, node: NodeId) !void {
+        if (self.hir.kindOf(node) != .interface_member) return;
+        const m = hir_mod.interfaceMemberOf(self.hir, node);
+        if (m.is_readonly) try self.write("readonly ");
+        try self.write(self.interner.get(m.name));
+        if (m.is_optional) try self.write("?");
+        if (m.type_node != hir_mod.none_node_id) {
+            try self.write(": ");
+            try self.emitTypeNode(m.type_node);
+        }
+        try self.write(";");
     }
 
     fn emitTypeAlias(self: *Emitter, node: NodeId) !void {
@@ -470,6 +494,15 @@ pub const Emitter = struct {
                     else => try self.write("unknown"),
                 }
             },
+            .object_type => {
+                const members = hir_mod.objectTypeMembers(self.hir, node);
+                try self.write("{ ");
+                for (members, 0..) |m, i| {
+                    if (i > 0) try self.write(" ");
+                    try self.emitInterfaceMember(m);
+                }
+                try self.write(" }");
+            },
             .fn_type, .constructor_type => {
                 const ft = hir_mod.fnTypeOf(self.hir, node);
                 if (ft.is_constructor) try self.write("new ");
@@ -617,6 +650,28 @@ test "d.ts: export decl" {
     const out = try emitTest("export function id(x: number): number { return x; }");
     defer T.allocator.free(out);
     try T.expect(std.mem.indexOf(u8, out, "export declare function id(x: number): number;") != null);
+}
+
+test "d.ts: interface body emits members" {
+    const out = try emitTest("interface Point { x: number; y: number; }");
+    defer T.allocator.free(out);
+    try T.expect(std.mem.indexOf(u8, out, "interface Point {") != null);
+    try T.expect(std.mem.indexOf(u8, out, "x: number;") != null);
+    try T.expect(std.mem.indexOf(u8, out, "y: number;") != null);
+}
+
+test "d.ts: interface readonly + optional flags" {
+    const out = try emitTest("interface I { readonly id: number; name?: string; }");
+    defer T.allocator.free(out);
+    try T.expect(std.mem.indexOf(u8, out, "readonly id: number;") != null);
+    try T.expect(std.mem.indexOf(u8, out, "name?: string;") != null);
+}
+
+test "d.ts: object type literal in annotation" {
+    const out = try emitTest("let p: { x: number; y: number } = null;");
+    defer T.allocator.free(out);
+    try T.expect(std.mem.indexOf(u8, out, "{ x: number;") != null);
+    try T.expect(std.mem.indexOf(u8, out, "y: number; }") != null);
 }
 
 test "d.ts: namespace declaration" {

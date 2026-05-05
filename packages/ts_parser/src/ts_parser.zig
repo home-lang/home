@@ -696,25 +696,12 @@ pub const Parser = struct {
             }
         }
         _ = try self.expect(.open_brace, "'{' to open interface body");
-        // Phase 1.D scope: we skip the body content entirely. A real
-        // member parser is a Phase 1 follow-up; we still produce an HIR
-        // node so the binder can see the interface declaration.
         var members: std.ArrayListUnmanaged(NodeId) = .empty;
         defer members.deinit(self.gpa);
-        var depth: i32 = 1;
-        while (depth > 0 and self.peek().kind != .eof) {
-            const t = self.peek();
-            if (t.kind == .open_brace) {
-                depth += 1;
-            } else if (t.kind == .close_brace) {
-                depth -= 1;
-                if (depth == 0) break;
-            }
-            _ = self.advance();
-        }
+        try self.parseTypeMemberList(&members);
         const close = try self.expect(.close_brace, "'}' to close interface body");
-        const name_id = try self.internToken(name_tok);
-        const name_node = try self.builder.addIdentifier(tokenSpan(name_tok), name_id);
+        const name_id_str = try self.internToken(name_tok);
+        const name_node = try self.builder.addIdentifier(tokenSpan(name_tok), name_id_str);
         return try self.builder.addInterface(
             .{ .start = start.span.start, .end = close.span.end },
             name_node,
@@ -1438,10 +1425,10 @@ pub const Parser = struct {
         return try self.builder.addTupleType(.{ .start = open.span.start, .end = close.span.end }, elems.items);
     }
 
-    /// `{ ...members... }` — object type literal. Phase 1 lowers to
-    /// a synthetic type ref since we don't yet model member lists in
-    /// HIR types directly. We *do* consume the body to keep the
-    /// parser balanced.
+    /// `{ ...members... }` — object type literal. Phase 6 lowers to
+    /// a real `object_type` HIR node carrying member info (name,
+    /// type, optional/readonly/method flags). Mapped types
+    /// (`{ [K in T]: V }`) are still parsed via the dedicated path.
     fn parseObjectOrMappedType(self: *Parser) ParseError!NodeId {
         const open = try self.expect(.open_brace, "'{' to start object type");
         // Detect mapped type: `{ [K in T]: V }`.
@@ -1462,22 +1449,117 @@ pub const Parser = struct {
             const tp = try self.builder.addTypeParameter(tokenSpan(k_tok), k_id, hir_mod.none_node_id, hir_mod.none_node_id, 0);
             return try self.builder.addMappedType(.{ .start = open.span.start, .end = close.span.end }, tp, constraint, value, 0, optional_mod);
         }
-        // Skip the body until matching close. Member-list lowering is
-        // a Phase 1 follow-up; we emit a synthetic `object` type ref.
-        var depth: i32 = 1;
-        while (depth > 0 and self.peek().kind != .eof) {
-            const tk = self.peek().kind;
-            if (tk == .open_brace) {
-                depth += 1;
-            } else if (tk == .close_brace) {
-                depth -= 1;
-                if (depth == 0) break;
+        var members: std.ArrayListUnmanaged(NodeId) = .empty;
+        defer members.deinit(self.gpa);
+        try self.parseTypeMemberList(&members);
+        const close = try self.expect(.close_brace, "'}' to close object type");
+        return try self.builder.addObjectType(
+            .{ .start = open.span.start, .end = close.span.end },
+            members.items,
+        );
+    }
+
+    /// Parse a sequence of TypeScript "type member" declarations
+    /// inside `{ … }`. Members are separated by `;`, `,`, or
+    /// newline. Each member is one of:
+    ///
+    ///   `name: T;`        — property
+    ///   `name?: T;`       — optional property
+    ///   `readonly name: T;` — readonly property
+    ///   `name(p: P): R;`  — method-shorthand (lowers to fn_type)
+    ///   `[k: string]: V;` — index signature (Phase 6 follow-up)
+    ///   `(p): R;`         — call signature (Phase 6 follow-up)
+    ///
+    /// Index/call/construct signatures are skipped for now —
+    /// tracked as Phase 6 follow-ups so the harness can keep
+    /// progressing.
+    fn parseTypeMemberList(self: *Parser, out: *std.ArrayListUnmanaged(NodeId)) ParseError!void {
+        while (self.peek().kind != .close_brace and self.peek().kind != .eof) {
+            const t = self.peek();
+            // Skip index/call/construct signatures and other complex
+            // forms by walking until the next separator.
+            if (t.kind == .open_bracket or t.kind == .open_paren or t.kind == .kw_new) {
+                try self.skipUntilTypeMemberSeparator();
+                continue;
+            }
+            var is_readonly = false;
+            if (t.kind == .kw_readonly and self.peekAt(1).kind != .colon) {
+                _ = self.advance();
+                is_readonly = true;
+            }
+            const name_tok = self.advance();
+            // Allow string-literal property names: `"foo": T`.
+            const name_id: hir_mod.StringId = if (name_tok.kind == .string_literal)
+                try self.internStringLiteral(name_tok)
+            else
+                try self.internToken(name_tok);
+            const is_optional = self.match(.question);
+
+            // Method shorthand: `name(p: T): R`.
+            if (self.peek().kind == .open_paren) {
+                const params = try self.parseTypeParameterList();
+                defer self.gpa.free(params);
+                var ret: NodeId = hir_mod.none_node_id;
+                if (self.match(.colon)) ret = try self.parseTypeAnnotation();
+                const fn_t = try self.builder.addFnType(
+                    .{ .start = name_tok.span.start, .end = self.tokens[self.cursor - 1].span.end },
+                    &.{},
+                    params,
+                    ret,
+                    false,
+                );
+                _ = self.match(.semicolon);
+                _ = self.match(.comma);
+                const member = try self.builder.addInterfaceMember(
+                    tokenSpan(name_tok),
+                    name_id,
+                    fn_t,
+                    is_optional,
+                    is_readonly,
+                    true,
+                );
+                try out.append(self.gpa, member);
+                continue;
+            }
+
+            // Property: `name: T;`.
+            var type_node: NodeId = hir_mod.none_node_id;
+            if (self.match(.colon)) type_node = try self.parseTypeAnnotation();
+            _ = self.match(.semicolon);
+            _ = self.match(.comma);
+            const member = try self.builder.addInterfaceMember(
+                tokenSpan(name_tok),
+                name_id,
+                type_node,
+                is_optional,
+                is_readonly,
+                false,
+            );
+            try out.append(self.gpa, member);
+        }
+    }
+
+    fn skipUntilTypeMemberSeparator(self: *Parser) ParseError!void {
+        var depth: i32 = 0;
+        while (true) {
+            const t = self.peek();
+            if (depth == 0) {
+                if (t.kind == .semicolon or t.kind == .comma) {
+                    _ = self.advance();
+                    return;
+                }
+                if (t.kind == .close_brace or t.kind == .eof) return;
+            }
+            switch (t.kind) {
+                .open_brace, .open_paren, .open_bracket, .less_than => depth += 1,
+                .close_brace, .close_paren, .close_bracket, .greater_than => {
+                    depth -= 1;
+                    if (depth < 0) return;
+                },
+                else => {},
             }
             _ = self.advance();
         }
-        const close = try self.expect(.close_brace, "'}' to close object type");
-        const id = self.interner.intern("object") catch return error.OutOfMemory;
-        return try self.builder.addTypeRef(.{ .start = open.span.start, .end = close.span.end }, id, &.{}, &.{});
     }
 
     fn parseGenericFnType(self: *Parser) ParseError!NodeId {
@@ -3254,6 +3336,54 @@ test "parser: type annotation — conditional type" {
     const top = hir_mod.blockStmts(&s.hir, root)[0];
     const v = hir_mod.varDeclOf(&s.hir, top);
     try T.expectEqual(hir_mod.NodeKind.conditional_type, s.hir.kindOf(v.type_annotation));
+}
+
+test "parser: interface body parses members" {
+    var s = try newTestSetup("interface Point { x: number; y: number; }");
+    defer destroyTestSetup(s);
+    const root = try s.parser.parseSourceFile();
+    const top = hir_mod.blockStmts(&s.hir, root)[0];
+    const members = hir_mod.interfaceMembers(&s.hir, top);
+    try T.expectEqual(@as(usize, 2), members.len);
+    const m0 = hir_mod.interfaceMemberOf(&s.hir, members[0]);
+    try T.expectEqualStrings("x", s.interner.get(m0.name));
+    try T.expect(m0.type_node != hir_mod.none_node_id);
+    try T.expectEqual(hir_mod.NodeKind.type_ref, s.hir.kindOf(m0.type_node));
+}
+
+test "parser: interface with optional + readonly members" {
+    var s = try newTestSetup("interface I { readonly id: number; name?: string; }");
+    defer destroyTestSetup(s);
+    const root = try s.parser.parseSourceFile();
+    const top = hir_mod.blockStmts(&s.hir, root)[0];
+    const members = hir_mod.interfaceMembers(&s.hir, top);
+    const m0 = hir_mod.interfaceMemberOf(&s.hir, members[0]);
+    try T.expect(m0.is_readonly);
+    const m1 = hir_mod.interfaceMemberOf(&s.hir, members[1]);
+    try T.expect(m1.is_optional);
+}
+
+test "parser: interface method shorthand" {
+    var s = try newTestSetup("interface Adder { add(a: number, b: number): number; }");
+    defer destroyTestSetup(s);
+    const root = try s.parser.parseSourceFile();
+    const top = hir_mod.blockStmts(&s.hir, root)[0];
+    const members = hir_mod.interfaceMembers(&s.hir, top);
+    try T.expectEqual(@as(usize, 1), members.len);
+    const m = hir_mod.interfaceMemberOf(&s.hir, members[0]);
+    try T.expect(m.is_method);
+    try T.expectEqual(hir_mod.NodeKind.fn_type, s.hir.kindOf(m.type_node));
+}
+
+test "parser: object type literal" {
+    var s = try newTestSetup("let p: { x: number; y: string } = null;");
+    defer destroyTestSetup(s);
+    const root = try s.parser.parseSourceFile();
+    const top = hir_mod.blockStmts(&s.hir, root)[0];
+    const v = hir_mod.varDeclOf(&s.hir, top);
+    try T.expectEqual(hir_mod.NodeKind.object_type, s.hir.kindOf(v.type_annotation));
+    const members = hir_mod.objectTypeMembers(&s.hir, v.type_annotation);
+    try T.expectEqual(@as(usize, 2), members.len);
 }
 
 test "parser: type annotation — leading | accepted" {

@@ -187,6 +187,7 @@ pub const NodeKind = enum(u8) {
     array_type,
     fn_type,
     constructor_type,
+    object_type,
 
     // ----- JSX (TS frontend) -----
     jsx_element,
@@ -224,7 +225,7 @@ pub const NodeKind = enum(u8) {
     pub fn isType(self: NodeKind) bool {
         const v = @intFromEnum(self);
         return v >= @intFromEnum(NodeKind.type_ref) and
-            v <= @intFromEnum(NodeKind.constructor_type);
+            v <= @intFromEnum(NodeKind.object_type);
     }
 
     /// Returns true if the kind is in the "statement" category (excludes
@@ -818,6 +819,31 @@ pub const DecoratorPayload = struct {
     expression: NodeId,
 };
 
+/// One member of an interface body or object-type literal.
+/// Examples:
+///   `x: number;` → property with name='x', type=number, optional=false
+///   `y?: string;` → property with name='y', optional=true
+///   `f(): void;` → method-like, type is a fn_type referencing the
+///     params + return type
+pub const InterfaceMemberPayload = struct {
+    /// Property name (interned). For computed keys this is `0` and
+    /// the parser emits a `key_expr` that lives in the cold side
+    /// table — Phase 1 follow-up.
+    name: StringId,
+    /// Type of this member. For methods this is a fn_type node.
+    type_node: NodeId,
+    is_optional: bool,
+    is_readonly: bool,
+    is_method: bool,
+};
+
+/// `{ x: number; y: string }` — anonymous object type. Members
+/// live in the children pool.
+pub const ObjectTypePayload = struct {
+    members_start: u32,
+    members_len: u32,
+};
+
 // ============================================================================
 // Hir storage
 // ============================================================================
@@ -917,6 +943,8 @@ pub const Hir = struct {
     jsx_expression_payloads: std.ArrayListUnmanaged(JsxExpressionPayload),
     jsx_fragment_payloads: std.ArrayListUnmanaged(JsxFragmentPayload),
     decorator_payloads: std.ArrayListUnmanaged(DecoratorPayload),
+    interface_member_payloads: std.ArrayListUnmanaged(InterfaceMemberPayload),
+    object_type_payloads: std.ArrayListUnmanaged(ObjectTypePayload),
 
     /// Shared variable-arity child pool. Per-node payloads reference
     /// slices into this with `(start: u32, len: u32)`.
@@ -993,6 +1021,8 @@ pub const Hir = struct {
             .jsx_expression_payloads = .empty,
             .jsx_fragment_payloads = .empty,
             .decorator_payloads = .empty,
+            .interface_member_payloads = .empty,
+            .object_type_payloads = .empty,
             .child_pool = .empty,
             .cold = ColdData.empty(),
         };
@@ -1076,6 +1106,8 @@ pub const Hir = struct {
         self.jsx_expression_payloads.deinit(self.gpa);
         self.jsx_fragment_payloads.deinit(self.gpa);
         self.decorator_payloads.deinit(self.gpa);
+        self.interface_member_payloads.deinit(self.gpa);
+        self.object_type_payloads.deinit(self.gpa);
         self.child_pool.deinit(self.gpa);
         self.cold.deinit(self.gpa);
     }
@@ -2057,6 +2089,41 @@ pub const Builder = struct {
         return id;
     }
 
+    pub fn addInterfaceMember(
+        self: *Builder,
+        span: Span,
+        name: StringId,
+        type_node: NodeId,
+        is_optional: bool,
+        is_readonly: bool,
+        is_method: bool,
+    ) !NodeId {
+        const payload_idx: u32 = @intCast(self.hir.interface_member_payloads.items.len);
+        try self.hir.interface_member_payloads.append(self.hir.gpa, .{
+            .name = name,
+            .type_node = type_node,
+            .is_optional = is_optional,
+            .is_readonly = is_readonly,
+            .is_method = is_method,
+        });
+        const id = try self.newNode(.interface_member, span, payload_idx);
+        if (type_node != none_node_id) self.hir.setParent(type_node, id);
+        return id;
+    }
+
+    pub fn addObjectType(self: *Builder, span: Span, members: []const NodeId) !NodeId {
+        const start: u32 = @intCast(self.hir.child_pool.items.len);
+        try self.hir.child_pool.appendSlice(self.hir.gpa, members);
+        const payload_idx: u32 = @intCast(self.hir.object_type_payloads.items.len);
+        try self.hir.object_type_payloads.append(self.hir.gpa, .{
+            .members_start = start,
+            .members_len = @intCast(members.len),
+        });
+        const id = try self.newNode(.object_type, span, payload_idx);
+        for (members) |m| self.hir.setParent(m, id);
+        return id;
+    }
+
     pub fn addDecorator(self: *Builder, span: Span, expression: NodeId) !NodeId {
         const payload_idx: u32 = @intCast(self.hir.decorator_payloads.items.len);
         try self.hir.decorator_payloads.append(self.hir.gpa, .{ .expression = expression });
@@ -2512,6 +2579,21 @@ pub fn jsxFragmentChildren(hir: *const Hir, id: NodeId) []const NodeId {
 pub fn decoratorOf(hir: *const Hir, id: NodeId) DecoratorPayload {
     std.debug.assert(hir.kindOf(id) == .decorator);
     return hir.decorator_payloads.items[hir.payloads.items[id]];
+}
+
+pub fn interfaceMemberOf(hir: *const Hir, id: NodeId) InterfaceMemberPayload {
+    std.debug.assert(hir.kindOf(id) == .interface_member);
+    return hir.interface_member_payloads.items[hir.payloads.items[id]];
+}
+
+pub fn objectTypeOf(hir: *const Hir, id: NodeId) ObjectTypePayload {
+    std.debug.assert(hir.kindOf(id) == .object_type);
+    return hir.object_type_payloads.items[hir.payloads.items[id]];
+}
+
+pub fn objectTypeMembers(hir: *const Hir, id: NodeId) []const NodeId {
+    const p = objectTypeOf(hir, id);
+    return hir.childSlice(p.members_start, p.members_len);
 }
 
 // ============================================================================
