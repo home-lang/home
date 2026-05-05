@@ -68,6 +68,8 @@ Plus the matching keywords already in `packages/lexer/src/token.zig`: `As`, `Inf
 | Decorator-heavy NestJS ([Twenty CRM, 4.3k files](https://github.com/microsoft/typescript-go/issues/2551)) | 103 s | **215 s** *(regression)* | **≤ 25 s** |
 | `.d.ts` emit, single 1k-line file (CLI) | 419 ms | 58 ms | **≤ 5 ms** *(via zig-dtsx fast path; matches its published 3.14 ms)* |
 | `.d.ts` emit, 100-file project | n/a | 420 ms | **≤ 35 ms** *(zig-dtsx published: 31.46 ms)* |
+| `.d.hm` emit, single 1k-line Home file | n/a *(no equivalent)* | n/a | **≤ 4 ms** |
+| `.d.hm` emit, 100-file Home project | n/a | n/a | **≤ 30 ms** |
 | Bundle `three.js` cold full *(typecheck + bundle)* | n/a *(tsc no bundler)* | n/a | **≤ 100 ms** *(Bun bundler alone: ~80 ms)* |
 | Bundle 100-file React app *(typecheck + bundle)* | n/a | n/a | **≤ 80 ms** *(Bun bundler alone: ~50 ms)* |
 | Bundle watch incremental, 1-line | n/a | n/a | **≤ 30 ms** |
@@ -397,6 +399,8 @@ All resolution flavors:
 
 `paths` mapping with all wildcard forms. `package.json` field reading: `main`, `module`, `types`/`typings`, `exports` with conditional resolution (`import`, `require`, `node`, `default`, `types`, plus user-defined conditions).
 
+**Home-source resolution.** `.home` / `.hm` modules resolve symmetrically. When importing a Home module from a `.ts` file (or vice-versa), the resolver looks for the implementation file (`.home` / `.hm`) and a co-located **`.d.hm`** declaration if one exists; the type checker prefers the declaration when both are present (matching tsc's preference for `.d.ts` over `.ts`). The `pantry.json` package manifest (Home's `package.json` analogue) supports a `declarations` field for exposing `.d.hm` to consumers, paralleling npm's `types` / `typings` field for `.d.ts`.
+
 ### 2.6 Watch & filesystem semantics
 
 - `watchFile` strategies: `fixedPollingInterval`, `priorityPollingInterval`, `dynamicPriorityPolling`, `useFsEvents`, `useFsEventsOnParentDirectory`, `fixedChunkSizePolling`. Default per-OS matches tsc.
@@ -609,7 +613,7 @@ Parse errors must match `tsc`'s parse errors on the conformance test parsing sub
 
 **Bench target.** Single-thread typecheck of the TS repo (~400K LOC) ≤ 1.0 s — match tsgo's single-thread number; parallelism in Phase 5 multiplies it.
 
-### Phase 4 — JS emit + source maps + .d.ts (9–13 weeks; +1 week vs. v0 plan to integrate zig-dtsx)
+### Phase 4 — JS emit + source maps + .d.ts + .d.hm (10–14 weeks; +1 week vs. v0 plan to integrate zig-dtsx, +1 week for `.d.hm` emitter)
 
 **Goal.** `home tsc` produces JS output indistinguishable from `tsc` for ≥99% of inputs (modulo whitespace).
 
@@ -625,11 +629,20 @@ Parse errors must match `tsc`'s parse errors on the conformance test parsing sub
 4. **JSX transforms** (2 weeks). `preserve`, classic `react`, automatic `react-jsx`/`react-jsxdev`, `react-native`. Per-file `@jsx` pragma.
 5. **ESM↔CJS interop** (1 week). `esModuleInterop`, `__importDefault`/`__importStar`, dynamic `import()` lowering.
 6. **Source maps v3** (2 weeks). Sources, `sourcesContent`, names; through every transformer. VLQ-encoded mappings. Inline maps and external `.map` files.
-7. **Declaration emit** (`.d.ts`) — **dual-track** (4 weeks total). The hardest emit work in any TS toolchain.
+7. **Declaration emit** (`.d.ts` *for TS sources* + **`.d.hm` for Home sources**) — **dual-track per frontend** (5 weeks total). The hardest emit work in any TS toolchain.
+
+   **For TS sources → `.d.ts`:**
    - **Fast track: integrate zig-dtsx** (1 week). [zig-dtsx](https://github.com/stacksjs/dtsx/tree/main/packages/zig-dtsx) is an existing 8 257-LOC Zig `.d.ts` emitter (scanner + extractor + emitter pipeline at `~/Code/Tools/dtsx/packages/zig-dtsx/src/`). Published benchmarks: **2.69 ms / 2.35 ms / 2.28 ms / 3.14 ms** on small/medium/large/xlarge single files — **15.1×–19.5× faster than tsgo** on the same inputs. On multi-file projects: **18.10 ms (50 files), 31.46 ms (100 files), ~140 ms (500 files)** — **13.3–13.5× faster than tsgo**, **2.5–2.7× faster than `oxc`**. Used when the project sets `isolatedDeclarations: true` or when source files have explicit type annotations at exports — dtsx skips initializer parsing in this case as a fast path. We absorb zig-dtsx into `packages/ts_emit/d_ts/fast/` (or vendor as a submodule), wire it through the same HIR boundary, and align its output to match `tsc` byte-for-byte.
    - **Symbol-driven track** (3 weeks). For projects without `isolatedDeclarations`, `.d.ts` emit must resolve types from the type checker output and re-print the *resolved* form. Anonymize local names. Hoist inferred return types. Isolate type-only re-exports. This is what tsc does and what zig-dtsx explicitly does *not* attempt. Implementation builds on the type-checker output from Phase 3.
    - **Routing.** Driver inspects `tsconfig.json`: if `isolatedDeclarations: true`, route through fast track; else symbol-driven. Both produce byte-identical output for the conformance corpus on overlapping inputs (verified by a per-file A/B test in CI).
    - **Why this matters strategically.** Declaration emit from JS sources is one of tsgo's *current open gaps* ([TS 7 progress post](https://devblogs.microsoft.com/typescript/progress-on-typescript-7-december-2025/)). Home ships day-one with both tracks at full coverage and beats tsgo by an order of magnitude on the fast track.
+
+   **For Home sources → `.d.hm`** (1 week):
+   - Symmetric to `.d.ts` emission for TS. Home's existing type system already produces resolved types post-checker; emit walks the resolved-type graph and prints declaration-only Home syntax.
+   - Grammar: `.d.hm` accepts the same constructs `.d.ts` accepts in TS — `pub fn`, `struct`, `enum`, `trait`, `type`, `const` (no initializer), `extern fn`, plus `declare`-style ambient blocks for FFI surfaces. Function bodies are forbidden; only signatures.
+   - Emit is symbol-driven (Home's type system already does the resolved-form work; no separate fast track is needed because Home source already has explicit type annotations at every public boundary).
+   - Used by: (a) the bundler when emitting Home libraries for downstream consumption; (b) `home build --emit-declarations`; (c) the LSP for cross-package type resolution; (d) the package manager when publishing a Home package — the equivalent of npm's `types` field, but in Home's `pantry.json`.
+   - Cross-frontend interop: a `.ts` file can `import { …Home types… } from "./mod.home"`, and the type checker reads Home's `.d.hm` summary as it would `.d.ts`. Same in reverse: `.home` files can import `.ts` modules with the type checker reading the `.d.ts` summary.
 8. **`.tsbuildinfo` writer** (1 week). Format-compatible with tsc.
 
 **Exit criteria.** `home tsc emit` byte-equivalent to `tsc emit` on the 500-project corpus.
@@ -1300,6 +1313,7 @@ Output format mirrors `tsc --extendedDiagnostics`. Tools that scrape these numbe
 | **New: `packages/binder`** | TS binder | Phase 2 |
 | **New: `packages/ts_emit`** | JS + .d.ts emit (symbol-driven track) | Phase 4 |
 | **New: `packages/ts_emit/d_ts/fast`** | `.d.ts` fast track (vendored zig-dtsx) | Phase 4 — **reuses ~8 257 LOC of existing Zig** |
+| **New: `packages/d_hm`** | `.d.hm` parser + emitter (Home's `.d.ts` analogue) | Phase 4 |
 | **New: `packages/bundler`** | JS/TS bundler (vendored Bun bundler + Home adapter) | Phase 4.5 — **reuses ~20 130 LOC of existing Zig** |
 | **New: `packages/bundler/adapter`** | HIR ↔ Bun-AST shim, symbol-table bridge | Phase 4.5 |
 | **New: `packages/tsserver_shim`** | tsserver protocol bridge | Phase 9, optional |
