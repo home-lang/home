@@ -267,6 +267,21 @@ pub const builtin_corpus = [_]CorpusEntry{
     .{ .name = "08-generics", .source = "function id<T>(x: T): T { return x; }" },
     .{ .name = "09-import", .source = "import { foo } from \"./bar\";" },
     .{ .name = "10-mismatched-assignment", .source = "let x: number = \"hi\";", .expects_error = true },
+    .{ .name = "11-call-correct-args", .source = "function f(a: number): number { return a; } let r = f(42);" },
+    .{ .name = "12-call-wrong-arg-count", .source = "function f(a: number): number { return a; } f(1, 2);", .expects_error = true },
+    .{ .name = "13-call-wrong-arg-type", .source = "function f(a: number): number { return a; } f(\"hi\");", .expects_error = true },
+    .{ .name = "14-property-exists", .source = "let p: { x: number }; let v = p.x;" },
+    .{ .name = "15-property-missing", .source = "let p: { x: number }; let v = p.missing;", .expects_error = true },
+    .{ .name = "16-generic-instantiation", .source = "function id<T>(x: T): T { return x; } let n = id(42); let s = id(\"hi\");" },
+    .{ .name = "17-typeof-narrowing", .source = "function f(x: any) { if (typeof x === \"string\") { let s = x; } }" },
+    .{ .name = "18-class-extends", .source = "class A {} class B extends A {}" },
+    .{ .name = "19-arrow-with-types", .source = "let f: (n: number) => string = (n) => \"x\";" },
+    .{ .name = "20-tsx", .source = "let v = <Foo bar={1} />;", .is_tsx = true },
+    .{ .name = "21-decorator", .source = "@dec class Foo {}" },
+    .{ .name = "22-export", .source = "export function f(): number { return 1; }" },
+    .{ .name = "23-import-default", .source = "import React from \"react\"; React;" },
+    .{ .name = "24-namespace", .source = "namespace N { let x: number = 1; }" },
+    .{ .name = "25-enum", .source = "enum Color { Red, Green, Blue }" },
 };
 
 // =============================================================================
