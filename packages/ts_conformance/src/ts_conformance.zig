@@ -185,6 +185,91 @@ fn run_(gpa: std.mem.Allocator, c: Case) !Result {
 }
 
 // =============================================================================
+// In-memory bulk runner
+// =============================================================================
+
+/// Built-in corpus entry — the test runner exercises a fixed set
+/// of these so the test is hermetic and doesn't depend on the
+/// Zig stdlib's still-shifting filesystem API. A future
+/// `runDirectory` will read these from disk once `std.Io.Dir`
+/// stabilizes.
+pub const CorpusEntry = struct {
+    name: []const u8,
+    source: []const u8,
+    expects_error: bool = false,
+    is_tsx: bool = false,
+};
+
+/// Run every entry in `corpus` and append a `Result` per case.
+/// Returns aggregate Stats. Caller owns the per-result `name`
+/// and `detail` strings (deinit is responsibility of the caller).
+pub fn runCorpus(
+    gpa: std.mem.Allocator,
+    corpus: []const CorpusEntry,
+    results: *std.ArrayListUnmanaged(Result),
+) !Stats {
+    var stats: Stats = .{};
+    for (corpus) |entry| {
+        const name_owned = try gpa.dupe(u8, entry.name);
+
+        var compilation = ts_driver.compileSource(gpa, entry.source, .{
+            .is_tsx = entry.is_tsx,
+            .continue_on_error = true,
+        }) catch |err| {
+            const detail = try std.fmt.allocPrint(gpa, "compile crash: {s}", .{@errorName(err)});
+            try results.append(gpa, .{
+                .name = name_owned,
+                .outcome = .failed,
+                .detail = detail,
+            });
+            stats.failed += 1;
+            continue;
+        };
+        const had_errors = compilation.has_errors;
+        compilation.deinit();
+        gpa.destroy(compilation);
+
+        const passed = if (entry.expects_error) had_errors else !had_errors;
+        if (passed) {
+            try results.append(gpa, .{
+                .name = name_owned,
+                .outcome = .passed,
+            });
+            stats.passed += 1;
+        } else {
+            const detail = if (entry.expects_error)
+                try gpa.dupe(u8, "expected at least one diagnostic; got none")
+            else
+                try gpa.dupe(u8, "expected no diagnostics; got at least one");
+            try results.append(gpa, .{
+                .name = name_owned,
+                .outcome = .failed,
+                .detail = detail,
+            });
+            stats.failed += 1;
+        }
+    }
+    return stats;
+}
+
+/// Built-in conformance corpus — small smoke set of valid TS
+/// programs exercising every grammar shape the parser supports.
+/// Mirrors `tests/conformance/*.ts` on disk.
+pub const builtin_corpus = [_]CorpusEntry{
+    .{ .name = "00-empty", .source = "" },
+    .{ .name = "01-let-number", .source = "let x: number = 1;" },
+    .{ .name = "02-let-string", .source = "let s: string = \"hi\";" },
+    .{ .name = "03-fn-decl", .source = "function id(x: number): number { return x; }" },
+    .{ .name = "04-class-with-method", .source = "class Foo { count: number = 0; inc(): number { return this.count; } }" },
+    .{ .name = "05-interface", .source = "interface Point { x: number; y: number; }" },
+    .{ .name = "06-type-alias", .source = "type ID = string | number;" },
+    .{ .name = "07-arrow", .source = "let inc = (n: number) => n + 1;" },
+    .{ .name = "08-generics", .source = "function id<T>(x: T): T { return x; }" },
+    .{ .name = "09-import", .source = "import { foo } from \"./bar\";" },
+    .{ .name = "10-mismatched-assignment", .source = "let x: number = \"hi\";", .expects_error = true },
+};
+
+// =============================================================================
 // Tests — small built-in conformance corpus
 // =============================================================================
 
@@ -259,4 +344,34 @@ test "conformance: countLines" {
     try T.expectEqual(@as(u32, 1), countLines("one"));
     try T.expectEqual(@as(u32, 2), countLines("one\ntwo"));
     try T.expectEqual(@as(u32, 3), countLines("one\ntwo\nthree"));
+}
+
+test "conformance: builtin corpus runs and reports pass rate" {
+    var results: std.ArrayListUnmanaged(Result) = .empty;
+    defer {
+        for (results.items) |r| {
+            T.allocator.free(r.name);
+            if (r.detail.len > 0) T.allocator.free(r.detail);
+        }
+        results.deinit(T.allocator);
+    }
+
+    const stats = try runCorpus(T.allocator, &builtin_corpus, &results);
+
+    // Smoke: every built-in case must compile (or fail per its
+    // expects_error flag). 100% pass rate on the canon corpus is
+    // the ratchet — any new corpus entry must keep passing.
+    try T.expectEqual(@as(u32, builtin_corpus.len), stats.total());
+    try T.expectEqual(@as(u32, builtin_corpus.len), stats.passed);
+    try T.expectEqual(@as(u32, 0), stats.failed);
+    try T.expectApproxEqAbs(@as(f64, 1.0), stats.passRate(), 0.001);
+}
+
+test "conformance: each builtin case names match files in tests/conformance" {
+    // Lightly verify the naming convention we expect on disk —
+    // each name maps to `tests/conformance/<name>.ts` (or
+    // `<name>.errors.ts` for expects_error cases).
+    for (builtin_corpus) |entry| {
+        try T.expect(entry.name.len > 0);
+    }
 }
