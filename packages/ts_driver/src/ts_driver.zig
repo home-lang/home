@@ -26,9 +26,15 @@ pub const Token = ts_lexer.Token;
 /// One unified diagnostic across all phases.
 pub const Diagnostic = struct {
     pub const Phase = enum { lex, parse, bind, emit };
+    pub const CodePrefix = enum { TS, HM };
     phase: Phase,
     pos: u32,
     line: u32,
+    /// TypeScript-compatible diagnostic code (e.g. 2322). 0 means
+    /// uncategorized — consumers fall back to a phase-derived code.
+    code: u32 = 0,
+    /// `TS` for tsc-compatible codes; `HM` for Home-only codes.
+    code_prefix: CodePrefix = .TS,
     message: []const u8,
 };
 
@@ -307,6 +313,11 @@ pub fn compileSource(
             .phase = .bind,
             .pos = c.hir.spanOf(d.node).start,
             .line = 0,
+            .code = d.code,
+            .code_prefix = switch (d.code_prefix) {
+                .TS => .TS,
+                .HM => .HM,
+            },
             .message = try gpa.dupe(u8, d.message),
         });
         c.has_errors = true;

@@ -79,13 +79,17 @@ pub fn run(gpa: std.mem.Allocator, c: Case) !Result {
     var actual_count: u32 = 0;
     for (compilation.diagnostics.items) |d| {
         const pos = ts_diagnostics.positionToLineCol(c.source, d.pos);
-        const code = mapPhaseToCode(d.phase);
+        const code = if (d.code != 0) d.code else mapPhaseToCode(d.phase);
+        const prefix: ts_diagnostics.Diagnostic.CodePrefix = switch (d.code_prefix) {
+            .TS => .TS,
+            .HM => .HM,
+        };
         const fdiag: ts_diagnostics.Diagnostic = .{
             .file = c.path,
             .line = pos.line,
             .col = pos.col,
             .code = code,
-            .code_prefix = .TS,
+            .code_prefix = prefix,
             .severity = .err,
             .message = d.message,
             .span_len = 0,
@@ -317,7 +321,7 @@ test "conformance: type-error decl fails as expected" {
         .name = "type_error",
         .source = "let x: number = \"hi\";",
         .path = "tests/te.ts",
-        .expected_errors = "tests/te.ts(1,1): error TS2304: Type is not assignable to declared type.",
+        .expected_errors = "tests/te.ts(1,1): error TS2322: Type is not assignable to declared type.",
     });
     defer if (r.detail.len > 0) T.allocator.free(r.detail);
     try T.expectEqual(Outcome.passed, r.outcome);

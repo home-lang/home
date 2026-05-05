@@ -44,7 +44,30 @@ pub const CheckError = error{
 
 pub const Diagnostic = struct {
     node: NodeId,
+    /// TypeScript-compatible code (e.g. 2322). 0 for uncategorized.
+    code: u32 = 0,
+    /// `TS` for tsc-compatible codes; `HM` for Home-only codes.
+    code_prefix: CodePrefix = .TS,
     message: []const u8,
+
+    pub const CodePrefix = enum { TS, HM };
+};
+
+/// TypeScript-compatible diagnostic codes used by the checker.
+/// Matches `ts_diagnostics.TsCodes` numerically. We keep a local
+/// copy to avoid a cross-package dependency from the checker.
+pub const TsCodes = struct {
+    pub const cannot_find_name: u32 = 2304;
+    pub const cannot_find_module: u32 = 2307;
+    pub const type_not_assignable: u32 = 2322;
+    pub const property_does_not_exist: u32 = 2339;
+    pub const argument_type_mismatch: u32 = 2345;
+    pub const expected_n_arguments: u32 = 2554;
+    pub const duplicate_identifier: u32 = 2300;
+    pub const generic_type_requires_args: u32 = 2314;
+    pub const operator_cannot_be_applied: u32 = 2365;
+    pub const not_callable: u32 = 2349;
+    pub const this_implicitly_any: u32 = 2683;
 };
 
 pub const Checker = struct {
@@ -341,7 +364,7 @@ pub const Checker = struct {
         if (declared_type != types.Primitive.none and v.init != hir_mod.none_node_id) {
             const ok = self.engine.isAssignableTo(init_type, declared_type) catch return error.OutOfMemory;
             if (!ok) {
-                try self.report(node, "Type is not assignable to declared type.");
+                try self.report(node, TsCodes.type_not_assignable, "Type is not assignable to declared type.");
             }
         } else if (declared_type == types.Primitive.none) {
             self.hir.setType(node, init_type);
@@ -405,7 +428,11 @@ pub const Checker = struct {
                             "Expected {d} arguments, but got {d}.",
                             .{ param_ts.len, args.len },
                         );
-                        try self.diagnostics.append(self.gpa, .{ .node = node, .message = msg });
+                        try self.diagnostics.append(self.gpa, .{
+                            .node = node,
+                            .code = TsCodes.expected_n_arguments,
+                            .message = msg,
+                        });
                     }
                     // TS2345: argument type mismatch — for each
                     // arg/param pair, if the arg's type isn't
@@ -426,7 +453,11 @@ pub const Checker = struct {
                                 "Argument is not assignable to parameter at position {d}.",
                                 .{i},
                             );
-                            try self.diagnostics.append(self.gpa, .{ .node = args[i], .message = msg });
+                            try self.diagnostics.append(self.gpa, .{
+                                .node = args[i],
+                                .code = TsCodes.argument_type_mismatch,
+                                .message = msg,
+                            });
                         }
                     }
                     if (self.interner.signatureReturn(callee_t)) |ret| {
@@ -453,7 +484,11 @@ pub const Checker = struct {
                         "Property '{s}' does not exist on type.",
                         .{name_str},
                     );
-                    try self.diagnostics.append(self.gpa, .{ .node = node, .message = msg });
+                    try self.diagnostics.append(self.gpa, .{
+                        .node = node,
+                        .code = TsCodes.property_does_not_exist,
+                        .message = msg,
+                    });
                 }
                 break :blk types.Primitive.any;
             },
@@ -913,9 +948,13 @@ pub const Checker = struct {
         return t;
     }
 
-    fn report(self: *Checker, node: NodeId, message: []const u8) !void {
+    fn report(self: *Checker, node: NodeId, code: u32, message: []const u8) !void {
         const msg = try self.diag_arena.allocator().dupe(u8, message);
-        try self.diagnostics.append(self.gpa, .{ .node = node, .message = msg });
+        try self.diagnostics.append(self.gpa, .{
+            .node = node,
+            .code = code,
+            .message = msg,
+        });
     }
 };
 
@@ -1229,4 +1268,54 @@ test "checker: instanceof narrows to the class instance type when class is decla
     // No diagnostics: `x.value` resolves on the narrowed instance
     // type rather than triggering TS2339.
     try T.expect(s.checker.diagnostics.items.len == 0);
+}
+
+test "checker: var-decl type mismatch emits TS2322" {
+    const s = try newSetup("let x: number = \"hi\";");
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+    try T.expectEqual(@as(usize, 1), s.checker.diagnostics.items.len);
+    try T.expectEqual(TsCodes.type_not_assignable, s.checker.diagnostics.items[0].code);
+}
+
+test "checker: argument count mismatch emits TS2554" {
+    const s = try newSetup(
+        \\function f(a: number, b: number): number { return a + b; }
+        \\f(1);
+    );
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+    var found = false;
+    for (s.checker.diagnostics.items) |d| {
+        if (d.code == TsCodes.expected_n_arguments) found = true;
+    }
+    try T.expect(found);
+}
+
+test "checker: argument type mismatch emits TS2345" {
+    const s = try newSetup(
+        \\function f(a: number): number { return a; }
+        \\f("hi");
+    );
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+    var found = false;
+    for (s.checker.diagnostics.items) |d| {
+        if (d.code == TsCodes.argument_type_mismatch) found = true;
+    }
+    try T.expect(found);
+}
+
+test "checker: missing object property emits TS2339" {
+    const s = try newSetup(
+        \\let p = { x: 1 };
+        \\let y = p.z;
+    );
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+    var found = false;
+    for (s.checker.diagnostics.items) |d| {
+        if (d.code == TsCodes.property_does_not_exist) found = true;
+    }
+    try T.expect(found);
 }
