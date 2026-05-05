@@ -1849,6 +1849,79 @@ pub const Parser = struct {
         return try self.builder.addFnDecl(sp, hir_mod.none_node_id, params, hir_mod.none_node_id, body, flags);
     }
 
+    /// Speculative: cursor points at `<` after a callee. Walk
+    /// balanced angles + parens until we find the matching `>` at
+    /// angle-depth 0. If the next non-trivia token is `(`, return
+    /// the cursor at the `(`. Otherwise return null — the `<` is
+    /// a less-than operator and the caller falls back to binop.
+    ///
+    /// Conservative: we bail on tokens that don't appear in TS
+    /// type-arg lists (assignment, semicolon, EOF, etc.) since they
+    /// indicate the `<` was a comparison.
+    fn findCallTypeArgsEnd(self: *Parser, start: u32) ?u32 {
+        if (start >= self.tokens.len or self.tokens[start].kind != .less_than) return null;
+        var depth: i32 = 1;
+        var i: u32 = start + 1;
+        while (i < self.tokens.len) : (i += 1) {
+            const tk = self.tokens[i].kind;
+            switch (tk) {
+                .less_than => depth += 1,
+                .greater_than => {
+                    depth -= 1;
+                    if (depth == 0) {
+                        // Next token must be `(` for this to be a
+                        // generic call.
+                        const next = i + 1;
+                        if (next < self.tokens.len and self.tokens[next].kind == .open_paren) {
+                            return next;
+                        }
+                        return null;
+                    }
+                },
+                // Balanced delimiters that may appear inside type args.
+                .open_paren, .open_bracket, .open_brace => {
+                    if (self.skipBalancedFrom(i)) |after| {
+                        i = after - 1; // -1 because the loop increments
+                    } else return null;
+                },
+                // Tokens that disqualify this from being type args.
+                .equal,
+                .semicolon,
+                .arrow,
+                .question_dot,
+                .eof,
+                => return null,
+                else => {},
+            }
+        }
+        return null;
+    }
+
+    /// Skip a balanced (), [], or {} starting at `start`. Returns
+    /// the cursor *after* the matching closer, or null on mismatch.
+    fn skipBalancedFrom(self: *Parser, start: u32) ?u32 {
+        if (start >= self.tokens.len) return null;
+        const opener = self.tokens[start].kind;
+        const closer: ts_lexer.TokenKind = switch (opener) {
+            .open_paren => .close_paren,
+            .open_bracket => .close_bracket,
+            .open_brace => .close_brace,
+            else => return null,
+        };
+        var depth: i32 = 1;
+        var i: u32 = start + 1;
+        while (i < self.tokens.len) : (i += 1) {
+            const tk = self.tokens[i].kind;
+            if (tk == opener) depth += 1;
+            if (tk == closer) {
+                depth -= 1;
+                if (depth == 0) return i + 1;
+            }
+            if (tk == .eof) return null;
+        }
+        return null;
+    }
+
     /// Cursor points at `(`. Returns the cursor *after* the matching `)`.
     fn findMatchingParenEnd(self: *Parser, start: u32) ?u32 {
         if (start >= self.tokens.len or self.tokens[start].kind != .open_paren) return null;
@@ -2042,6 +2115,24 @@ pub const Parser = struct {
                     const close_pos = self.tokens[self.cursor - 1].span.end;
                     const sp: Span = .{ .start = self.hir.spanOf(node).start, .end = close_pos };
                     node = try self.builder.addCall(sp, node, args);
+                },
+                .less_than => {
+                    // Speculative: `id<T, U>(...)` — explicit type args
+                    // for a generic call. We accept the form only when
+                    // a matching `>` is followed immediately by `(`.
+                    // Otherwise we bail out and leave `<` to the binop
+                    // path.
+                    if (self.findCallTypeArgsEnd(self.cursor)) |after_gt| {
+                        // Skip the type args entirely (Phase 6 follow-up
+                        // intern + thread them into call_expr; for now
+                        // we just type-check via call-site inference).
+                        self.cursor = after_gt;
+                        const args = try self.parseArgumentList();
+                        defer self.gpa.free(args);
+                        const close_pos = self.tokens[self.cursor - 1].span.end;
+                        const sp: Span = .{ .start = self.hir.spanOf(node).start, .end = close_pos };
+                        node = try self.builder.addCall(sp, node, args);
+                    } else break;
                 },
                 .open_bracket => {
                     _ = self.advance();

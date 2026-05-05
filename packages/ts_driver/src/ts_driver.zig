@@ -600,6 +600,39 @@ test "driver: object literal infers shape; member access types correctly" {
     try T.expectEqual(@as(u32, ts_checker.Primitive.string_t), c.hir.typeOf(sy_init));
 }
 
+test "driver: explicit type-args on a generic call parse + compile" {
+    var c = try compileSource(T.allocator,
+        \\function id<T>(x: T): T { return x; }
+        \\let r = id<number>(42);
+    , .{});
+    defer {
+        c.deinit();
+        T.allocator.destroy(c);
+    }
+    // Should not produce a parse error.
+    for (c.diagnostics.items) |d| {
+        try T.expect(d.phase != .parse);
+    }
+    // Output JS strips the type args.
+    try T.expect(std.mem.indexOf(u8, c.js, "id(42)") != null);
+}
+
+test "driver: comparison still parses as binop (no false-positive type args)" {
+    var c = try compileSource(T.allocator,
+        \\let a = 1;
+        \\let b = 2;
+        \\let c2 = a < b;
+    , .{});
+    defer {
+        c.deinit();
+        T.allocator.destroy(c);
+    }
+    for (c.diagnostics.items) |d| {
+        try T.expect(d.phase != .parse);
+    }
+    try T.expect(std.mem.indexOf(u8, c.js, "a < b") != null);
+}
+
 test "driver: object annotation accepts a shape-compatible literal" {
     var c = try compileSource(T.allocator,
         \\let p: { x: number; y: string } = { x: 1, y: "hi" };
