@@ -2218,6 +2218,14 @@ pub const Parser = struct {
             if (self.peek().type == .Star) {
                 _ = self.advance(); // consume `*`
                 _ = try self.expect(.RightBracket, "Expected ']' after [*");
+                // Optional `const` / `volatile` qualifiers on the
+                // pointee, matching the `[]T` form below. Kernel FFI
+                // signatures routinely use `[*]const u8` for byte
+                // strings and `[*]volatile T` for MMIO regions.
+                _ = self.match(&.{.Const});
+                if (self.check(.Identifier) and std.mem.eql(u8, self.peek().lexeme, "volatile")) {
+                    _ = self.advance();
+                }
                 const elem_type = try self.parseTypeAnnotation();
                 return try std.fmt.allocPrint(self.allocator, "[*]{s}", .{elem_type});
             }

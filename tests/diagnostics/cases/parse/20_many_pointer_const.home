@@ -1,0 +1,15 @@
+// Regression test for issue #29 — `[*]const T` (Zig-style many-item
+// pointer to a const-qualified element) used to fail at parse time
+// with `Expected type name` because the `[*]` parser branch did not
+// accept a `const` (or `volatile`) qualifier on the pointee.
+//
+// Kernel FFI signatures rely on this form for byte strings
+// (`[*]const u8`), MMIO regions (`[*]volatile T`), and read-only
+// constant tables (`[*]const T`).
+fn f(p: [*]const u8): i32 {
+    return 0
+}
+
+fn g(p: [*]const u32): i32 {
+    return 0
+}

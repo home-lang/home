@@ -1,0 +1,19 @@
+// Regression test for issue #29 — `[*]T` (Zig-style many-item pointer
+// without a const qualifier). The bare form already parsed before the
+// fix, but exercising it alongside `20_many_pointer_const.home` locks
+// in the full grammar surface so a future refactor of the bracket
+// parser can't silently regress one of the two variants.
+fn h(p: [*]u8): i32 {
+    return 0
+}
+
+fn i(p: [*]u32): i32 {
+    return 0
+}
+
+// Builtin args: `@as` accepts a `[*]T` type-first too, including the
+// const-qualified form covered in case 20.
+fn k(x: u64): u64 {
+    let p = @as([*]const u8, @ptrFromInt(x))
+    return @intFromPtr(p)
+}

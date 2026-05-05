@@ -1,0 +1,3 @@
+Checking: <repo>/tests/diagnostics/cases/parse/20_many_pointer_const.home
+
+Success: Type checking passed ✓
