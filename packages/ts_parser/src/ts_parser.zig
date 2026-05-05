@@ -59,6 +59,11 @@ pub const Parser = struct {
     source: []const u8,
     diagnostics: std.ArrayListUnmanaged(Diagnostic),
     diag_arena: std.heap.ArenaAllocator,
+    /// True for `.tsx` files. Enables JSX parsing in expression
+    /// position; the parser disambiguates `<T>x` (generic type
+    /// assertion) vs. `<T>x</T>` (JSX) via the `<T,>` and
+    /// `<T extends unknown>` rules from the TS grammar.
+    is_tsx: bool,
 
     pub fn init(
         gpa: std.mem.Allocator,
@@ -77,7 +82,14 @@ pub const Parser = struct {
             .source = source,
             .diagnostics = .empty,
             .diag_arena = std.heap.ArenaAllocator.init(gpa),
+            .is_tsx = false,
         };
+    }
+
+    /// Enable JSX parsing in expression position (set by callers
+    /// for `.tsx` source files).
+    pub fn setTsx(self: *Parser, enabled: bool) void {
+        self.is_tsx = enabled;
     }
 
     pub fn deinit(self: *Parser) void {
@@ -2025,6 +2037,15 @@ pub const Parser = struct {
                 _ = try self.expect(.close_paren, "')' to close parenthesized expression");
                 return e;
             },
+            .less_than => {
+                if (self.is_tsx) return try self.parseJsx();
+                // In .ts files `<T>expr` is a type assertion. We
+                // currently treat it as a no-op pass-through.
+                _ = self.advance();
+                try self.skipTypeAnnotation();
+                _ = try self.expect(.greater_than, "'>' to close type assertion");
+                return try self.parseUnaryExpression();
+            },
             .open_bracket => return try self.parseArrayLiteral(),
             .open_brace => return try self.parseObjectLiteral(),
             .kw_this => {
@@ -2061,6 +2082,186 @@ pub const Parser = struct {
                 try self.report("unexpected token in expression: ", @tagName(t.kind));
                 return error.UnexpectedToken;
             },
+        }
+    }
+
+    // ========================================================================
+    // JSX (TSX-only)
+    // ========================================================================
+    //
+    // Phase 1 JSX coverage — *structured* JSX that doesn't require
+    // free-text-content tokenization:
+    //   - <Foo />, <Foo></Foo>, <Foo>...</Foo>
+    //   - Attributes: name="str", name={expr}, name (boolean
+    //     shorthand), {...spread}
+    //   - Child expression containers: {expr}
+    //   - Nested JSX elements as children
+    //   - Fragments: <>…</>
+    //
+    // *Not* yet supported — would require lexer mode switching:
+    //   - Bare text content: <p>hello world</p>
+    //   - HTML entities: <p>&amp;</p>
+    // The parser diagnoses these and continues.
+
+    fn parseJsx(self: *Parser) ParseError!NodeId {
+        return try self.parseJsxElementOrFragment();
+    }
+
+    fn parseJsxElementOrFragment(self: *Parser) ParseError!NodeId {
+        const open = try self.expect(.less_than, "'<' to start JSX element");
+        // Fragment: `<>...</>`
+        if (self.peek().kind == .greater_than) {
+            _ = self.advance(); // `>`
+            var children: std.ArrayListUnmanaged(NodeId) = .empty;
+            defer children.deinit(self.gpa);
+            try self.parseJsxChildren(&children);
+            // Closing `</>`.
+            _ = try self.expect(.less_than, "'<' to start fragment close");
+            _ = try self.expect(.slash, "'/' in fragment close");
+            const close = try self.expect(.greater_than, "'>' to close fragment");
+            return try self.builder.addJsxFragment(.{ .start = open.span.start, .end = close.span.end }, children.items);
+        }
+
+        // Tag identifier — accept identifier or member-access (`Foo.Bar`).
+        const tag_tok = try self.expect(.identifier, "JSX tag name");
+        const tag_id = try self.internToken(tag_tok);
+        var tag = try self.builder.addIdentifier(tokenSpan(tag_tok), tag_id);
+        while (self.peek().kind == .dot) {
+            _ = self.advance();
+            const member_tok = try self.expect(.identifier, "JSX qualified-tag member");
+            const member_id = try self.internToken(member_tok);
+            tag = try self.builder.addMemberAccess(
+                .{ .start = self.hir.spanOf(tag).start, .end = member_tok.span.end },
+                tag,
+                member_id,
+                false,
+            );
+        }
+
+        // Attributes.
+        var attrs: std.ArrayListUnmanaged(NodeId) = .empty;
+        defer attrs.deinit(self.gpa);
+        while (true) {
+            const t = self.peek();
+            switch (t.kind) {
+                .greater_than, .slash, .eof => break,
+                .open_brace => {
+                    _ = self.advance();
+                    _ = try self.expect(.dot_dot_dot, "'...' in JSX spread attribute");
+                    const expr = try self.parseAssignmentExpression();
+                    const close = try self.expect(.close_brace, "'}' to close JSX spread attribute");
+                    const node = try self.builder.addJsxSpreadAttribute(
+                        .{ .start = t.span.start, .end = close.span.end },
+                        expr,
+                    );
+                    try attrs.append(self.gpa, node);
+                },
+                else => {
+                    // `name`, `name="str"`, `name={expr}`.
+                    const name_tok = self.advance();
+                    const name_id = try self.internToken(name_tok);
+                    var value: NodeId = hir_mod.none_node_id;
+                    if (self.match(.equal)) {
+                        if (self.peek().kind == .string_literal) {
+                            const str_tok = self.advance();
+                            const str_id = try self.internStringLiteral(str_tok);
+                            value = try self.builder.addLiteralString(tokenSpan(str_tok), str_id);
+                        } else if (self.peek().kind == .open_brace) {
+                            _ = self.advance();
+                            const expr = try self.parseAssignmentExpression();
+                            _ = try self.expect(.close_brace, "'}' to close JSX expression value");
+                            value = try self.builder.addJsxExpression(tokenSpan(name_tok), expr);
+                        } else if (self.peek().kind == .less_than) {
+                            // JSX-as-attribute-value: `prop={…}` is canonical
+                            // but `prop=<Inner/>` is permitted by some
+                            // dialects. Phase 1 follow-up.
+                            value = try self.parseJsx();
+                        }
+                    }
+                    const node = try self.builder.addJsxAttribute(
+                        .{ .start = name_tok.span.start, .end = self.tokens[self.cursor - 1].span.end },
+                        name_id,
+                        value,
+                    );
+                    try attrs.append(self.gpa, node);
+                },
+            }
+        }
+
+        // Self-closing `/>`.
+        if (self.match(.slash)) {
+            const close = try self.expect(.greater_than, "'>' to close self-closing JSX element");
+            return try self.builder.addJsxElement(
+                .{ .start = open.span.start, .end = close.span.end },
+                tag,
+                attrs.items,
+                &.{},
+                true,
+            );
+        }
+        _ = try self.expect(.greater_than, "'>' to close JSX opening tag");
+
+        var children: std.ArrayListUnmanaged(NodeId) = .empty;
+        defer children.deinit(self.gpa);
+        try self.parseJsxChildren(&children);
+
+        // Closing tag `</Foo>`.
+        _ = try self.expect(.less_than, "'<' to start JSX closing tag");
+        _ = try self.expect(.slash, "'/' in JSX closing tag");
+        // Skip the closing tag identifier (and any qualified-name
+        // chain) — semantic equivalence is the binder's job.
+        if (self.peek().kind == .identifier) {
+            _ = self.advance();
+            while (self.peek().kind == .dot) {
+                _ = self.advance();
+                _ = try self.expect(.identifier, "JSX closing-tag member");
+            }
+        }
+        const close = try self.expect(.greater_than, "'>' to close JSX closing tag");
+        return try self.builder.addJsxElement(
+            .{ .start = open.span.start, .end = close.span.end },
+            tag,
+            attrs.items,
+            children.items,
+            false,
+        );
+    }
+
+    fn parseJsxChildren(self: *Parser, out: *std.ArrayListUnmanaged(NodeId)) ParseError!void {
+        while (true) {
+            const t = self.peek();
+            switch (t.kind) {
+                .less_than => {
+                    if (self.peekAt(1).kind == .slash) return; // `</Foo>`
+                    const child = try self.parseJsxElementOrFragment();
+                    try out.append(self.gpa, child);
+                },
+                .open_brace => {
+                    _ = self.advance();
+                    if (self.peek().kind == .close_brace) {
+                        _ = self.advance();
+                        const node = try self.builder.addJsxExpression(tokenSpan(t), hir_mod.none_node_id);
+                        try out.append(self.gpa, node);
+                        continue;
+                    }
+                    const expr = try self.parseAssignmentExpression();
+                    const close = try self.expect(.close_brace, "'}' to close JSX child expression");
+                    const node = try self.builder.addJsxExpression(
+                        .{ .start = t.span.start, .end = close.span.end },
+                        expr,
+                    );
+                    try out.append(self.gpa, node);
+                },
+                .eof => return,
+                else => {
+                    // Anything else is treated as an unrecognized
+                    // child — likely free text, which the lexer is
+                    // not currently emitting in JSX child position.
+                    // Phase 1 follow-up: lexer mode switching.
+                    try self.report("unsupported JSX child token: ", @tagName(t.kind));
+                    return error.UnexpectedToken;
+                },
+            }
         }
     }
 
@@ -3040,6 +3241,114 @@ test "parser: type annotation — leading | accepted" {
     const top = hir_mod.blockStmts(&s.hir, root)[0];
     const v = hir_mod.varDeclOf(&s.hir, top);
     try T.expectEqual(hir_mod.NodeKind.union_type, s.hir.kindOf(v.type_annotation));
+}
+
+// ====================================================================
+// JSX (TSX-only)
+// ====================================================================
+
+fn newTsxTestSetup(source: []const u8) !*TestSetup {
+    const s = try newTestSetup(source);
+    s.parser.setTsx(true);
+    return s;
+}
+
+test "parser: jsx self-closing element" {
+    var s = try newTsxTestSetup("let v = <Foo />;");
+    defer destroyTestSetup(s);
+    const root = try s.parser.parseSourceFile();
+    const top = hir_mod.blockStmts(&s.hir, root)[0];
+    const init_node = hir_mod.varDeclOf(&s.hir, top).init;
+    try T.expectEqual(hir_mod.NodeKind.jsx_self_closing, s.hir.kindOf(init_node));
+    try T.expect(hir_mod.jsxElementOf(&s.hir, init_node).self_closing);
+}
+
+test "parser: jsx element with attribute" {
+    var s = try newTsxTestSetup("let v = <Foo bar=\"baz\" />;");
+    defer destroyTestSetup(s);
+    const root = try s.parser.parseSourceFile();
+    const top = hir_mod.blockStmts(&s.hir, root)[0];
+    const init_node = hir_mod.varDeclOf(&s.hir, top).init;
+    const attrs = hir_mod.jsxAttrs(&s.hir, init_node);
+    try T.expectEqual(@as(usize, 1), attrs.len);
+    const a = hir_mod.jsxAttributeOf(&s.hir, attrs[0]);
+    try T.expectEqualStrings("bar", s.interner.get(a.name));
+}
+
+test "parser: jsx element with expression attribute" {
+    var s = try newTsxTestSetup("let v = <Foo bar={x + 1} />;");
+    defer destroyTestSetup(s);
+    const root = try s.parser.parseSourceFile();
+    const top = hir_mod.blockStmts(&s.hir, root)[0];
+    const init_node = hir_mod.varDeclOf(&s.hir, top).init;
+    const attrs = hir_mod.jsxAttrs(&s.hir, init_node);
+    const a = hir_mod.jsxAttributeOf(&s.hir, attrs[0]);
+    try T.expect(a.value != hir_mod.none_node_id);
+    try T.expectEqual(hir_mod.NodeKind.jsx_expression, s.hir.kindOf(a.value));
+}
+
+test "parser: jsx boolean shorthand attribute" {
+    var s = try newTsxTestSetup("let v = <Foo bar />;");
+    defer destroyTestSetup(s);
+    const root = try s.parser.parseSourceFile();
+    const top = hir_mod.blockStmts(&s.hir, root)[0];
+    const init_node = hir_mod.varDeclOf(&s.hir, top).init;
+    const attrs = hir_mod.jsxAttrs(&s.hir, init_node);
+    const a = hir_mod.jsxAttributeOf(&s.hir, attrs[0]);
+    try T.expectEqual(hir_mod.none_node_id, a.value);
+}
+
+test "parser: jsx spread attribute" {
+    var s = try newTsxTestSetup("let v = <Foo {...rest} />;");
+    defer destroyTestSetup(s);
+    const root = try s.parser.parseSourceFile();
+    const top = hir_mod.blockStmts(&s.hir, root)[0];
+    const init_node = hir_mod.varDeclOf(&s.hir, top).init;
+    const attrs = hir_mod.jsxAttrs(&s.hir, init_node);
+    try T.expectEqual(hir_mod.NodeKind.jsx_spread_attribute, s.hir.kindOf(attrs[0]));
+}
+
+test "parser: jsx with expression child" {
+    var s = try newTsxTestSetup("let v = <Foo>{count}</Foo>;");
+    defer destroyTestSetup(s);
+    const root = try s.parser.parseSourceFile();
+    const top = hir_mod.blockStmts(&s.hir, root)[0];
+    const init_node = hir_mod.varDeclOf(&s.hir, top).init;
+    try T.expectEqual(hir_mod.NodeKind.jsx_element, s.hir.kindOf(init_node));
+    const children = hir_mod.jsxChildren(&s.hir, init_node);
+    try T.expectEqual(@as(usize, 1), children.len);
+    try T.expectEqual(hir_mod.NodeKind.jsx_expression, s.hir.kindOf(children[0]));
+}
+
+test "parser: jsx nested elements" {
+    var s = try newTsxTestSetup("let v = <Outer><Inner /></Outer>;");
+    defer destroyTestSetup(s);
+    const root = try s.parser.parseSourceFile();
+    const top = hir_mod.blockStmts(&s.hir, root)[0];
+    const init_node = hir_mod.varDeclOf(&s.hir, top).init;
+    const children = hir_mod.jsxChildren(&s.hir, init_node);
+    try T.expectEqual(@as(usize, 1), children.len);
+    try T.expectEqual(hir_mod.NodeKind.jsx_self_closing, s.hir.kindOf(children[0]));
+}
+
+test "parser: jsx fragment" {
+    var s = try newTsxTestSetup("let v = <>{a}{b}</>;");
+    defer destroyTestSetup(s);
+    const root = try s.parser.parseSourceFile();
+    const top = hir_mod.blockStmts(&s.hir, root)[0];
+    const init_node = hir_mod.varDeclOf(&s.hir, top).init;
+    try T.expectEqual(hir_mod.NodeKind.jsx_fragment, s.hir.kindOf(init_node));
+    try T.expectEqual(@as(usize, 2), hir_mod.jsxFragmentChildren(&s.hir, init_node).len);
+}
+
+test "parser: jsx with member access tag" {
+    var s = try newTsxTestSetup("let v = <Foo.Bar />;");
+    defer destroyTestSetup(s);
+    const root = try s.parser.parseSourceFile();
+    const top = hir_mod.blockStmts(&s.hir, root)[0];
+    const init_node = hir_mod.varDeclOf(&s.hir, top).init;
+    const el = hir_mod.jsxElementOf(&s.hir, init_node);
+    try T.expectEqual(hir_mod.NodeKind.member_access, s.hir.kindOf(el.tag));
 }
 
 // ====================================================================

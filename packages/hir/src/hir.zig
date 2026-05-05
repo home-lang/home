@@ -768,6 +768,51 @@ pub const VarDeclPayload = struct {
 pub const ArrowPayload = FnDeclPayload;
 
 // ============================================================================
+// JSX node payloads
+// ============================================================================
+
+pub const JsxElementPayload = struct {
+    /// Tag identifier for `<Foo>`. For namespaced tags (`<svg:rect>`)
+    /// the qualifier list provides the namespace prefix.
+    tag: NodeId,
+    /// Children-pool slice: attributes (`jsx_attribute` /
+    /// `jsx_spread_attribute`).
+    attrs_start: u32,
+    attrs_len: u32,
+    /// Children-pool slice: nested children (other jsx_element /
+    /// jsx_fragment / jsx_expression / jsx_text).
+    children_start: u32,
+    children_len: u32,
+    /// True when the opening tag is self-closing: `<Foo />`.
+    self_closing: bool,
+};
+
+pub const JsxAttributePayload = struct {
+    /// Attribute name (interned).
+    name: StringId,
+    /// `none_node_id` for boolean shorthand attributes (`<Foo bar />`).
+    /// Otherwise points to a string literal or a jsx_expression.
+    value: NodeId,
+};
+
+pub const JsxSpreadAttributePayload = struct {
+    /// `{...expr}` — the expression to spread.
+    expression: NodeId,
+};
+
+pub const JsxExpressionPayload = struct {
+    /// `{expr}` — the contained value expression. `none_node_id`
+    /// for empty `{}`.
+    expression: NodeId,
+};
+
+pub const JsxFragmentPayload = struct {
+    /// Children-pool slice.
+    children_start: u32,
+    children_len: u32,
+};
+
+// ============================================================================
 // Hir storage
 // ============================================================================
 
@@ -860,6 +905,11 @@ pub const Hir = struct {
     mapped_type_payloads: std.ArrayListUnmanaged(MappedTypePayload),
     literal_type_payloads: std.ArrayListUnmanaged(LiteralTypePayload),
     type_parameter_payloads: std.ArrayListUnmanaged(TypeParameterPayload),
+    jsx_element_payloads: std.ArrayListUnmanaged(JsxElementPayload),
+    jsx_attribute_payloads: std.ArrayListUnmanaged(JsxAttributePayload),
+    jsx_spread_attribute_payloads: std.ArrayListUnmanaged(JsxSpreadAttributePayload),
+    jsx_expression_payloads: std.ArrayListUnmanaged(JsxExpressionPayload),
+    jsx_fragment_payloads: std.ArrayListUnmanaged(JsxFragmentPayload),
 
     /// Shared variable-arity child pool. Per-node payloads reference
     /// slices into this with `(start: u32, len: u32)`.
@@ -930,6 +980,11 @@ pub const Hir = struct {
             .mapped_type_payloads = .empty,
             .literal_type_payloads = .empty,
             .type_parameter_payloads = .empty,
+            .jsx_element_payloads = .empty,
+            .jsx_attribute_payloads = .empty,
+            .jsx_spread_attribute_payloads = .empty,
+            .jsx_expression_payloads = .empty,
+            .jsx_fragment_payloads = .empty,
             .child_pool = .empty,
             .cold = ColdData.empty(),
         };
@@ -1007,6 +1062,11 @@ pub const Hir = struct {
         self.mapped_type_payloads.deinit(self.gpa);
         self.literal_type_payloads.deinit(self.gpa);
         self.type_parameter_payloads.deinit(self.gpa);
+        self.jsx_element_payloads.deinit(self.gpa);
+        self.jsx_attribute_payloads.deinit(self.gpa);
+        self.jsx_spread_attribute_payloads.deinit(self.gpa);
+        self.jsx_expression_payloads.deinit(self.gpa);
+        self.jsx_fragment_payloads.deinit(self.gpa);
         self.child_pool.deinit(self.gpa);
         self.cold.deinit(self.gpa);
     }
@@ -1933,6 +1993,74 @@ pub const Builder = struct {
         return id;
     }
 
+    // ---- JSX nodes -------------------------------------------------------
+
+    pub fn addJsxAttribute(self: *Builder, span: Span, name: StringId, value: NodeId) !NodeId {
+        const payload_idx: u32 = @intCast(self.hir.jsx_attribute_payloads.items.len);
+        try self.hir.jsx_attribute_payloads.append(self.hir.gpa, .{ .name = name, .value = value });
+        const id = try self.newNode(.jsx_attribute, span, payload_idx);
+        if (value != none_node_id) self.hir.setParent(value, id);
+        return id;
+    }
+
+    pub fn addJsxSpreadAttribute(self: *Builder, span: Span, expr: NodeId) !NodeId {
+        const payload_idx: u32 = @intCast(self.hir.jsx_spread_attribute_payloads.items.len);
+        try self.hir.jsx_spread_attribute_payloads.append(self.hir.gpa, .{ .expression = expr });
+        const id = try self.newNode(.jsx_spread_attribute, span, payload_idx);
+        self.hir.setParent(expr, id);
+        return id;
+    }
+
+    pub fn addJsxExpression(self: *Builder, span: Span, expr: NodeId) !NodeId {
+        const payload_idx: u32 = @intCast(self.hir.jsx_expression_payloads.items.len);
+        try self.hir.jsx_expression_payloads.append(self.hir.gpa, .{ .expression = expr });
+        const id = try self.newNode(.jsx_expression, span, payload_idx);
+        if (expr != none_node_id) self.hir.setParent(expr, id);
+        return id;
+    }
+
+    pub fn addJsxElement(
+        self: *Builder,
+        span: Span,
+        tag: NodeId,
+        attrs: []const NodeId,
+        children: []const NodeId,
+        self_closing: bool,
+    ) !NodeId {
+        const a_start: u32 = @intCast(self.hir.child_pool.items.len);
+        try self.hir.child_pool.appendSlice(self.hir.gpa, attrs);
+        const c_start: u32 = @intCast(self.hir.child_pool.items.len);
+        try self.hir.child_pool.appendSlice(self.hir.gpa, children);
+        const payload_idx: u32 = @intCast(self.hir.jsx_element_payloads.items.len);
+        try self.hir.jsx_element_payloads.append(self.hir.gpa, .{
+            .tag = tag,
+            .attrs_start = a_start,
+            .attrs_len = @intCast(attrs.len),
+            .children_start = c_start,
+            .children_len = @intCast(children.len),
+            .self_closing = self_closing,
+        });
+        const kind: NodeKind = if (self_closing) .jsx_self_closing else .jsx_element;
+        const id = try self.newNode(kind, span, payload_idx);
+        self.hir.setParent(tag, id);
+        for (attrs) |a| self.hir.setParent(a, id);
+        for (children) |c| self.hir.setParent(c, id);
+        return id;
+    }
+
+    pub fn addJsxFragment(self: *Builder, span: Span, children: []const NodeId) !NodeId {
+        const c_start: u32 = @intCast(self.hir.child_pool.items.len);
+        try self.hir.child_pool.appendSlice(self.hir.gpa, children);
+        const payload_idx: u32 = @intCast(self.hir.jsx_fragment_payloads.items.len);
+        try self.hir.jsx_fragment_payloads.append(self.hir.gpa, .{
+            .children_start = c_start,
+            .children_len = @intCast(children.len),
+        });
+        const id = try self.newNode(.jsx_fragment, span, payload_idx);
+        for (children) |c| self.hir.setParent(c, id);
+        return id;
+    }
+
     pub fn addMappedType(
         self: *Builder,
         span: Span,
@@ -2321,6 +2449,47 @@ pub fn typeParameterOf(hir: *const Hir, id: NodeId) TypeParameterPayload {
 pub fn mappedTypeOf(hir: *const Hir, id: NodeId) MappedTypePayload {
     std.debug.assert(hir.kindOf(id) == .mapped_type);
     return hir.mapped_type_payloads.items[hir.payloads.items[id]];
+}
+
+pub fn jsxElementOf(hir: *const Hir, id: NodeId) JsxElementPayload {
+    const k = hir.kindOf(id);
+    std.debug.assert(k == .jsx_element or k == .jsx_self_closing);
+    return hir.jsx_element_payloads.items[hir.payloads.items[id]];
+}
+
+pub fn jsxAttrs(hir: *const Hir, id: NodeId) []const NodeId {
+    const p = jsxElementOf(hir, id);
+    return hir.childSlice(p.attrs_start, p.attrs_len);
+}
+
+pub fn jsxChildren(hir: *const Hir, id: NodeId) []const NodeId {
+    const p = jsxElementOf(hir, id);
+    return hir.childSlice(p.children_start, p.children_len);
+}
+
+pub fn jsxAttributeOf(hir: *const Hir, id: NodeId) JsxAttributePayload {
+    std.debug.assert(hir.kindOf(id) == .jsx_attribute);
+    return hir.jsx_attribute_payloads.items[hir.payloads.items[id]];
+}
+
+pub fn jsxSpreadAttributeOf(hir: *const Hir, id: NodeId) JsxSpreadAttributePayload {
+    std.debug.assert(hir.kindOf(id) == .jsx_spread_attribute);
+    return hir.jsx_spread_attribute_payloads.items[hir.payloads.items[id]];
+}
+
+pub fn jsxExpressionOf(hir: *const Hir, id: NodeId) JsxExpressionPayload {
+    std.debug.assert(hir.kindOf(id) == .jsx_expression);
+    return hir.jsx_expression_payloads.items[hir.payloads.items[id]];
+}
+
+pub fn jsxFragmentOf(hir: *const Hir, id: NodeId) JsxFragmentPayload {
+    std.debug.assert(hir.kindOf(id) == .jsx_fragment);
+    return hir.jsx_fragment_payloads.items[hir.payloads.items[id]];
+}
+
+pub fn jsxFragmentChildren(hir: *const Hir, id: NodeId) []const NodeId {
+    const p = jsxFragmentOf(hir, id);
+    return hir.childSlice(p.children_start, p.children_len);
 }
 
 // ============================================================================

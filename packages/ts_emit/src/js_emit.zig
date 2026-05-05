@@ -649,7 +649,93 @@ pub const Printer = struct {
             .object_literal => try self.printObjectLiteral(node),
             .fn_decl, .fn_expr, .arrow_fn => try self.printFnDecl(node),
             .class_decl, .class_expr => try self.printClassDecl(node),
+            .jsx_element, .jsx_self_closing => try self.printJsxElement(node),
+            .jsx_fragment => try self.printJsxFragment(node),
+            .jsx_expression => try self.printJsxExpression(node),
             else => return error.UnsupportedNode,
+        }
+    }
+
+    /// Lower JSX to `React.createElement(tag, props, ...children)`.
+    /// This is the classic-mode transform — ts_emit follow-up will
+    /// add the `react-jsx` automatic transform with imports from
+    /// `react/jsx-runtime`.
+    fn printJsxElement(self: *Printer, node: NodeId) anyerror!void {
+        const el = hir_mod.jsxElementOf(self.hir, node);
+        try self.write("React.createElement(");
+        // Tag: a lowercase HTML tag becomes a string literal; an
+        // identifier-of-uppercase-first-letter (a component) is
+        // emitted as a reference. We approximate by inspecting the
+        // first byte of the tag's source span.
+        if (self.hir.kindOf(el.tag) == .identifier) {
+            const id = hir_mod.identifierOf(self.hir, el.tag);
+            const name = self.interner.get(id.name);
+            if (name.len > 0 and name[0] >= 'a' and name[0] <= 'z') {
+                try self.write("\"");
+                try self.write(name);
+                try self.write("\"");
+            } else {
+                try self.printExpression(el.tag);
+            }
+        } else {
+            try self.printExpression(el.tag);
+        }
+        try self.write(", ");
+        const attrs = hir_mod.jsxAttrs(self.hir, node);
+        if (attrs.len == 0) {
+            try self.write("null");
+        } else {
+            try self.write("{ ");
+            for (attrs, 0..) |a, i| {
+                if (i > 0) try self.write(", ");
+                switch (self.hir.kindOf(a)) {
+                    .jsx_attribute => {
+                        const ap = hir_mod.jsxAttributeOf(self.hir, a);
+                        try self.write(self.interner.get(ap.name));
+                        try self.write(": ");
+                        if (ap.value == hir_mod.none_node_id) {
+                            try self.write("true");
+                        } else if (self.hir.kindOf(ap.value) == .jsx_expression) {
+                            const ex = hir_mod.jsxExpressionOf(self.hir, ap.value);
+                            try self.printExpression(ex.expression);
+                        } else {
+                            try self.printExpression(ap.value);
+                        }
+                    },
+                    .jsx_spread_attribute => {
+                        const sp = hir_mod.jsxSpreadAttributeOf(self.hir, a);
+                        try self.write("...");
+                        try self.printExpression(sp.expression);
+                    },
+                    else => {},
+                }
+            }
+            try self.write(" }");
+        }
+        const children = hir_mod.jsxChildren(self.hir, node);
+        for (children) |c| {
+            try self.write(", ");
+            try self.printExpression(c);
+        }
+        try self.write(")");
+    }
+
+    fn printJsxFragment(self: *Printer, node: NodeId) anyerror!void {
+        try self.write("React.createElement(React.Fragment, null");
+        const children = hir_mod.jsxFragmentChildren(self.hir, node);
+        for (children) |c| {
+            try self.write(", ");
+            try self.printExpression(c);
+        }
+        try self.write(")");
+    }
+
+    fn printJsxExpression(self: *Printer, node: NodeId) anyerror!void {
+        const ex = hir_mod.jsxExpressionOf(self.hir, node);
+        if (ex.expression == hir_mod.none_node_id) {
+            try self.write("null");
+        } else {
+            try self.printExpression(ex.expression);
         }
     }
 

@@ -81,6 +81,8 @@ pub const CompileOptions = struct {
     /// If true, errors during emit fall back to "best effort" — we
     /// emit what we have and record the diagnostic.
     continue_on_error: bool = true,
+    /// Treat the source as `.tsx` — enables JSX parsing.
+    is_tsx: bool = false,
 };
 
 pub const CompileError = error{
@@ -146,6 +148,7 @@ pub fn compileSource(
 
     // ------ Parse ------
     var parser = ts_parser.Parser.init(gpa, &c.hir, &c.interner, source, c.tokens.items);
+    parser.setTsx(options.is_tsx);
     defer parser.deinit();
 
     c.root = parser.parseSourceFile() catch |err| switch (err) {
@@ -327,6 +330,34 @@ test "driver: control flow round-trips" {
     try T.expect(std.mem.indexOf(u8, c.js, "function abs") != null);
     try T.expect(std.mem.indexOf(u8, c.js, "if (") != null);
     try T.expect(std.mem.indexOf(u8, c.js, "return") != null);
+}
+
+test "driver: tsx self-closing emits createElement" {
+    var c = try compileSource(T.allocator, "let v = <Foo bar=\"baz\" />;", .{ .is_tsx = true });
+    defer {
+        c.deinit();
+        T.allocator.destroy(c);
+    }
+    try T.expect(std.mem.indexOf(u8, c.js, "React.createElement(Foo") != null);
+    try T.expect(std.mem.indexOf(u8, c.js, "bar: \"baz\"") != null);
+}
+
+test "driver: tsx lowercase tag emits string" {
+    var c = try compileSource(T.allocator, "let v = <div className=\"x\" />;", .{ .is_tsx = true });
+    defer {
+        c.deinit();
+        T.allocator.destroy(c);
+    }
+    try T.expect(std.mem.indexOf(u8, c.js, "React.createElement(\"div\"") != null);
+}
+
+test "driver: tsx fragment" {
+    var c = try compileSource(T.allocator, "let v = <>{a}{b}</>;", .{ .is_tsx = true });
+    defer {
+        c.deinit();
+        T.allocator.destroy(c);
+    }
+    try T.expect(std.mem.indexOf(u8, c.js, "React.Fragment") != null);
 }
 
 test "driver: classes with constructors and methods" {
