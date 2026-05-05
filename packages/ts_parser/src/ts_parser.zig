@@ -1831,8 +1831,9 @@ pub const Parser = struct {
 
         // Optional return-type annotation. Use the real type parser
         // so we don't accidentally consume the `=>` token.
+        var return_type: NodeId = hir_mod.none_node_id;
         if (self.match(.colon)) {
-            _ = try self.parseTypeAnnotation();
+            return_type = try self.parseTypeAnnotation();
         }
         _ = try self.expect(.arrow, "'=>' in arrow function");
         const body = try self.parseArrowBody();
@@ -1846,7 +1847,7 @@ pub const Parser = struct {
         // uniform. Phase 3 / type checker will re-derive them.
         _ = type_params;
         _ = before_paren;
-        return try self.builder.addFnDecl(sp, hir_mod.none_node_id, params, hir_mod.none_node_id, body, flags);
+        return try self.builder.addFnDecl(sp, hir_mod.none_node_id, params, return_type, body, flags);
     }
 
     /// Speculative: cursor points at `<` after a callee. Walk

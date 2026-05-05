@@ -216,10 +216,16 @@ pub const Checker = struct {
         // Function name's identifier resolves to the signature type.
         if (f.name != hir_mod.none_node_id) self.hir.setType(f.name, sig);
 
-        // Walk the body so its statements get typed.
+        // Walk the body so its statements get typed. Arrow functions
+        // with expression bodies (e.g. `(x) => x + 1`) attach an
+        // expression directly as the body — handle both forms.
         if (f.body != hir_mod.none_node_id) {
-            const stmts = hir_mod.blockStmts(self.hir, f.body);
-            for (stmts) |s| try self.checkStatement(s);
+            if (self.hir.kindOf(f.body) == .block_stmt) {
+                const stmts = hir_mod.blockStmts(self.hir, f.body);
+                for (stmts) |s| try self.checkStatement(s);
+            } else {
+                _ = try self.checkExpression(f.body);
+            }
         }
     }
 
@@ -407,6 +413,14 @@ pub const Checker = struct {
                 }
                 const obj_t = self.interner.internObjectType(members.items) catch return error.OutOfMemory;
                 break :blk obj_t;
+            },
+            // Arrow / function expression: lower the signature so the
+            // surrounding `let f = (x: T) => U` learns f's signature
+            // type. checkFnDecl walks the body too, so all interior
+            // typing happens here.
+            .arrow_fn, .fn_expr => blk: {
+                try self.checkFnDecl(node);
+                break :blk self.hir.typeOf(node);
             },
             else => types.Primitive.any,
         };

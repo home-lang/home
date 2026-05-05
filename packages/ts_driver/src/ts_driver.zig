@@ -600,6 +600,37 @@ test "driver: object literal infers shape; member access types correctly" {
     try T.expectEqual(@as(u32, ts_checker.Primitive.string_t), c.hir.typeOf(sy_init));
 }
 
+test "driver: arrow function with explicit signature gets a signature TypeId" {
+    var c = try compileSource(T.allocator,
+        \\let f = (x: number): string => "hi";
+    , .{});
+    defer {
+        c.deinit();
+        T.allocator.destroy(c);
+    }
+    const stmts = hir_mod.blockStmts(&c.hir, c.root);
+    const f_decl = stmts[0];
+    const init_node = hir_mod.varDeclOf(&c.hir, f_decl).init;
+    const sig_t = c.hir.typeOf(init_node);
+    try T.expect(c.type_interner.pool.flagsOf(sig_t).is_signature);
+    const ret = c.type_interner.signatureReturn(sig_t).?;
+    try T.expectEqual(@as(u32, ts_checker.Primitive.string_t), ret);
+}
+
+test "driver: arrow assigned to function-type annotation type-checks" {
+    var c = try compileSource(T.allocator,
+        \\let f: (n: number) => string = (n) => "x";
+    , .{});
+    defer {
+        c.deinit();
+        T.allocator.destroy(c);
+    }
+    // Should not produce a "not assignable" diagnostic.
+    for (c.diagnostics.items) |d| {
+        try T.expect(std.mem.indexOf(u8, d.message, "not assignable") == null);
+    }
+}
+
 test "driver: discriminated union narrowing — string discriminant" {
     var c = try compileSource(T.allocator,
         \\type Shape = { kind: "circle"; r: number } | { kind: "square"; w: number };

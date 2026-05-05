@@ -260,8 +260,39 @@ pub const Engine = struct {
             return self.computeObjectAssignable(source, target);
         }
 
+        // Signatures: contravariant parameters, covariant return.
+        if (sf.is_signature and tf.is_signature) {
+            return self.computeSignatureAssignable(source, target);
+        }
+
         // Primitive-vs-primitive: only identity matches at this layer.
         return false;
+    }
+
+    /// Function-signature assignability:
+    ///
+    ///   source: (P1', P2') => R'
+    ///   target: (P1, P2) => R
+    ///
+    /// Source assigns to target iff:
+    ///   * source has at most as many params as target (extras on
+    ///     source would mean it expects more than callers supply),
+    ///   * each `target.params[i]` is assignable to `source.params[i]`
+    ///     (CONTRAVARIANT — caller passes in the target's input type),
+    ///   * source return is assignable to target return (COVARIANT).
+    ///
+    /// `any` on either side flows in both directions per tsc.
+    fn computeSignatureAssignable(self: *Engine, source: TypeId, target: TypeId) anyerror!bool {
+        const sp = self.interner.signatureParams(source);
+        const tp = self.interner.signatureParams(target);
+        if (sp.len > tp.len) return false;
+        for (sp, 0..) |s_param, i| {
+            const t_param = tp[i];
+            if (!try self.isAssignableTo(t_param, s_param)) return false;
+        }
+        const s_ret = self.interner.signatureReturn(source) orelse return true;
+        const t_ret = self.interner.signatureReturn(target) orelse return true;
+        return self.isAssignableTo(s_ret, t_ret);
     }
 
     /// Structural object-type assignability per TypeScript's
