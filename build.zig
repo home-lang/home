@@ -211,6 +211,9 @@ pub fn build(b: *std.Build) void {
 
     // TS-parity Phase 1.E follow-up — module resolver.
     const ts_resolver_pkg = createPackage(b, "packages/ts_resolver/src/ts_resolver.zig", target, optimize, zig_test_framework);
+
+    // TS-parity Phase 4 — tsc-compatible diagnostic formatter.
+    const ts_diagnostics_pkg = createPackage(b, "packages/ts_diagnostics/src/ts_diagnostics.zig", target, optimize, zig_test_framework);
     const volatile_pkg = createPackage(b, "packages/volatile/src/volatile.zig", target, optimize, zig_test_framework);
     const pantry_pkg = createPackage(b, "packages/pantry/src/pantry.zig", target, optimize, zig_test_framework);
     const collections_pkg = createPackage(b, "packages/collections/src/collection.zig", target, optimize, zig_test_framework);
@@ -862,6 +865,10 @@ pub fn build(b: *std.Build) void {
     const ts_resolver_tests = b.addTest(.{ .root_module = ts_resolver_pkg });
     const run_ts_resolver_tests = b.addRunArtifact(ts_resolver_tests);
     test_step.dependOn(&run_ts_resolver_tests.step);
+
+    const ts_diagnostics_tests = b.addTest(.{ .root_module = ts_diagnostics_pkg });
+    const run_ts_diagnostics_tests = b.addRunArtifact(ts_diagnostics_tests);
+    test_step.dependOn(&run_ts_diagnostics_tests.step);
 
     // Volatile operations tests
     const volatile_tests = b.addTest(.{ .root_module = volatile_pkg });
