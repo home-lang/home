@@ -15,6 +15,7 @@ const hir_mod = @import("hir");
 const string_interner = @import("string_interner");
 const binder = @import("binder");
 const ts_emit = @import("ts_emit");
+const tsconfig_mod = @import("tsconfig");
 
 pub const NodeId = hir_mod.NodeId;
 pub const Hir = hir_mod.Hir;
@@ -83,7 +84,29 @@ pub const CompileOptions = struct {
     continue_on_error: bool = true,
     /// Treat the source as `.tsx` — enables JSX parsing.
     is_tsx: bool = false,
+    /// Optional parsed tsconfig. When present, the driver applies
+    /// the relevant compilerOptions:
+    ///   - `jsx` — enables tsx parsing for `react`/`react-jsx`/etc.
+    ///   - `target` — selects the downlevel JS variant (Phase 4
+    ///     follow-up; today the printer emits ES2024 + erasure)
+    ///   - `module` — selects the import/export form (Phase 4
+    ///     follow-up; today emits ES modules)
+    pub_tsconfig: ?*const tsconfig_mod.TsConfig = null,
 };
+
+/// Apply tsconfig.compilerOptions to a CompileOptions. Useful when
+/// callers want to derive options from a config file.
+pub fn optionsFromConfig(cfg: *const tsconfig_mod.TsConfig) CompileOptions {
+    var opts: CompileOptions = .{};
+    opts.pub_tsconfig = cfg;
+    if (cfg.compiler_options.jsx) |jsx| {
+        // Any jsx mode implies the source is .tsx.
+        switch (jsx) {
+            .preserve, .react, .react_jsx, .react_jsxdev, .react_native => opts.is_tsx = true,
+        }
+    }
+    return opts;
+}
 
 pub const CompileError = error{
     OutOfMemory,
@@ -358,6 +381,32 @@ test "driver: tsx fragment" {
         T.allocator.destroy(c);
     }
     try T.expect(std.mem.indexOf(u8, c.js, "React.Fragment") != null);
+}
+
+test "driver: optionsFromConfig enables tsx for jsx=react-jsx" {
+    var arena = std.heap.ArenaAllocator.init(T.allocator);
+    defer arena.deinit();
+    const cfg = try tsconfig_mod.parseString(
+        T.allocator,
+        arena.allocator(),
+        \\{ "compilerOptions": { "jsx": "react-jsx" } }
+        ,
+    );
+    const opts = optionsFromConfig(&cfg);
+    try T.expect(opts.is_tsx);
+}
+
+test "driver: optionsFromConfig with no jsx leaves is_tsx false" {
+    var arena = std.heap.ArenaAllocator.init(T.allocator);
+    defer arena.deinit();
+    const cfg = try tsconfig_mod.parseString(
+        T.allocator,
+        arena.allocator(),
+        \\{ "compilerOptions": { "target": "es2022" } }
+        ,
+    );
+    const opts = optionsFromConfig(&cfg);
+    try T.expect(!opts.is_tsx);
 }
 
 test "driver: classes with constructors and methods" {
