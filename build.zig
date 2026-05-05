@@ -145,6 +145,37 @@ pub fn build(b: *std.Build) void {
     const inline_pkg = createPackage(b, "packages/inline/src/inline.zig", target, optimize, zig_test_framework);
     const regalloc_pkg = createPackage(b, "packages/regalloc/src/regalloc.zig", target, optimize, zig_test_framework);
     const platform_pkg = createPackage(b, "packages/platform/src/platform.zig", target, optimize, zig_test_framework);
+
+    // TS-parity Phase 0 infrastructure packages (see docs/TS_PARITY_PLAN.md).
+    // These have no dependencies on the rest of the codebase; they form the
+    // shared substrate that the future TS frontend, HIR, query DB, and
+    // performance engineering work builds on top of.
+    const arena_pkg = createPackage(b, "packages/arena/src/arena.zig", target, optimize, zig_test_framework);
+    const string_interner_pkg = createPackage(b, "packages/string_interner/src/string_interner.zig", target, optimize, zig_test_framework);
+    const hir_pkg = createPackage(b, "packages/hir/src/hir.zig", target, optimize, zig_test_framework);
+    hir_pkg.addImport("string_interner", string_interner_pkg);
+    const query_pkg = createPackage(b, "packages/query/src/query.zig", target, optimize, zig_test_framework);
+    // TS-parity Phase 0.7 — extracted parser modules. Tests run as their
+    // own root so they're picked up by `zig build test`.
+    const parsers_precedence_pkg = createPackage(b, "packages/parser/src/parsers/precedence.zig", target, optimize, zig_test_framework);
+    parsers_precedence_pkg.addImport("lexer", lexer_pkg);
+    // TS-parity Phase 0.8 — extracted codegen submodules.
+    const native_layouts_pkg = createPackage(b, "packages/codegen/src/native/layouts.zig", target, optimize, zig_test_framework);
+    native_layouts_pkg.addImport("ast", ast_pkg);
+
+    // TS-parity Phase 1 — TypeScript frontend packages.
+    const ts_lexer_pkg = createPackage(b, "packages/ts_lexer/src/ts_lexer.zig", target, optimize, zig_test_framework);
+    const ts_parser_pkg = createPackage(b, "packages/ts_parser/src/ts_parser.zig", target, optimize, zig_test_framework);
+    ts_parser_pkg.addImport("ts_lexer", ts_lexer_pkg);
+    ts_parser_pkg.addImport("hir", hir_pkg);
+    ts_parser_pkg.addImport("string_interner", string_interner_pkg);
+    const ts_parser_prec_pkg = createPackage(b, "packages/ts_parser/src/precedence.zig", target, optimize, zig_test_framework);
+    ts_parser_prec_pkg.addImport("ts_lexer", ts_lexer_pkg);
+    ts_parser_prec_pkg.addImport("hir", hir_pkg);
+    const d_ts_pkg = createPackage(b, "packages/d_ts/src/d_ts.zig", target, optimize, zig_test_framework);
+    const tsconfig_jsonc_pkg = createPackage(b, "packages/tsconfig/src/jsonc.zig", target, optimize, zig_test_framework);
+    const tsconfig_pkg = createPackage(b, "packages/tsconfig/src/tsconfig.zig", target, optimize, zig_test_framework);
+    tsconfig_pkg.addImport("jsonc", tsconfig_jsonc_pkg);
     const volatile_pkg = createPackage(b, "packages/volatile/src/volatile.zig", target, optimize, zig_test_framework);
     const pantry_pkg = createPackage(b, "packages/pantry/src/pantry.zig", target, optimize, zig_test_framework);
     const collections_pkg = createPackage(b, "packages/collections/src/collection.zig", target, optimize, zig_test_framework);
@@ -707,6 +738,55 @@ pub fn build(b: *std.Build) void {
     const platform_tests = b.addTest(.{ .root_module = platform_pkg });
     const run_platform_tests = b.addRunArtifact(platform_tests);
     test_step.dependOn(&run_platform_tests.step);
+
+    // TS-parity Phase 0 infrastructure tests
+    const arena_tests = b.addTest(.{ .root_module = arena_pkg });
+    const run_arena_tests = b.addRunArtifact(arena_tests);
+    test_step.dependOn(&run_arena_tests.step);
+
+    const string_interner_tests = b.addTest(.{ .root_module = string_interner_pkg });
+    const run_string_interner_tests = b.addRunArtifact(string_interner_tests);
+    test_step.dependOn(&run_string_interner_tests.step);
+
+    const hir_tests = b.addTest(.{ .root_module = hir_pkg });
+    const run_hir_tests = b.addRunArtifact(hir_tests);
+    test_step.dependOn(&run_hir_tests.step);
+
+    const query_tests = b.addTest(.{ .root_module = query_pkg });
+    const run_query_tests = b.addRunArtifact(query_tests);
+    test_step.dependOn(&run_query_tests.step);
+
+    const parsers_precedence_tests = b.addTest(.{ .root_module = parsers_precedence_pkg });
+    const run_parsers_precedence_tests = b.addRunArtifact(parsers_precedence_tests);
+    test_step.dependOn(&run_parsers_precedence_tests.step);
+
+    const native_layouts_tests = b.addTest(.{ .root_module = native_layouts_pkg });
+    const run_native_layouts_tests = b.addRunArtifact(native_layouts_tests);
+    test_step.dependOn(&run_native_layouts_tests.step);
+
+    const ts_lexer_tests = b.addTest(.{ .root_module = ts_lexer_pkg });
+    const run_ts_lexer_tests = b.addRunArtifact(ts_lexer_tests);
+    test_step.dependOn(&run_ts_lexer_tests.step);
+
+    const ts_parser_tests = b.addTest(.{ .root_module = ts_parser_pkg });
+    const run_ts_parser_tests = b.addRunArtifact(ts_parser_tests);
+    test_step.dependOn(&run_ts_parser_tests.step);
+
+    const ts_parser_prec_tests = b.addTest(.{ .root_module = ts_parser_prec_pkg });
+    const run_ts_parser_prec_tests = b.addRunArtifact(ts_parser_prec_tests);
+    test_step.dependOn(&run_ts_parser_prec_tests.step);
+
+    const d_ts_tests = b.addTest(.{ .root_module = d_ts_pkg });
+    const run_d_ts_tests = b.addRunArtifact(d_ts_tests);
+    test_step.dependOn(&run_d_ts_tests.step);
+
+    const tsconfig_jsonc_tests = b.addTest(.{ .root_module = tsconfig_jsonc_pkg });
+    const run_tsconfig_jsonc_tests = b.addRunArtifact(tsconfig_jsonc_tests);
+    test_step.dependOn(&run_tsconfig_jsonc_tests.step);
+
+    const tsconfig_tests = b.addTest(.{ .root_module = tsconfig_pkg });
+    const run_tsconfig_tests = b.addRunArtifact(tsconfig_tests);
+    test_step.dependOn(&run_tsconfig_tests.step);
 
     // Volatile operations tests
     const volatile_tests = b.addTest(.{ .root_module = volatile_pkg });

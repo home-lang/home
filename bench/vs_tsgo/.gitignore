@@ -1,0 +1,6 @@
+# Materialized workloads — pinned by SHA but never checked in.
+corpus/
+# Per-run hyperfine output.
+results/*/
+# Keep the placeholder so the directory exists.
+!results/.gitkeep

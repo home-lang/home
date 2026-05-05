@@ -1,0 +1,60 @@
+# Pinned workload manifest for bench/vs_tsgo.
+#
+# Per TS_PARITY_PLAN §6.4. Pinned SHAs guarantee apples-to-apples
+# numbers across runs and across machines. When upgrading a pin, record
+# the prior SHA + new SHA in the journal entry in TS_PARITY_PLAN.md so
+# performance regressions can be bisected against corpus drift.
+
+[workloads.typescript]
+description = "The TypeScript compiler's own source tree (~400K LOC)."
+url = "https://github.com/microsoft/TypeScript.git"
+# v5.6.3 — chosen to match the version of `tsc` we ship side-by-side.
+sha = "8da6a6b8c3a3f2c0c3a3a3a3a3a3a3a3a3a3a3a3"  # PLACEHOLDER — set on first run
+tsconfig = "src/tsconfig.json"
+expected_loc = 400000
+
+[workloads.vscode]
+description = "VS Code (~1.5M LOC). The big-TS reference workload."
+url = "https://github.com/microsoft/vscode.git"
+sha = "0000000000000000000000000000000000000000"  # PLACEHOLDER
+tsconfig = "src/tsconfig.json"
+expected_loc = 1500000
+
+[workloads.twenty_crm]
+description = "Twenty CRM (NestJS, decorator-heavy). tsgo regresses 2× here."
+url = "https://github.com/twentyhq/twenty.git"
+sha = "0000000000000000000000000000000000000000"  # PLACEHOLDER
+tsconfig = "packages/twenty-server/tsconfig.json"
+expected_loc = 250000
+
+[workloads.playwright]
+description = "Playwright (~150K LOC). Library + tooling mix."
+url = "https://github.com/microsoft/playwright.git"
+sha = "0000000000000000000000000000000000000000"  # PLACEHOLDER
+tsconfig = "tsconfig.json"
+expected_loc = 150000
+
+[workloads.ts_toolbelt_consumer]
+description = "Synthetic ts-toolbelt consumer (Phase 6 conformance: tsgo's #2830 regression)."
+url = "https://github.com/millsp/ts-toolbelt.git"
+sha = "0000000000000000000000000000000000000000"  # PLACEHOLDER
+tsconfig = "tsconfig.json"
+expected_loc = 10000
+
+[compilers.tsc]
+binary = "tsc"
+version_cmd = "tsc --version"
+flags_typecheck_only = ["--noEmit"]
+
+[compilers.tsgo]
+binary = "tsgo"
+version_cmd = "tsgo --version"
+flags_typecheck_only = ["--noEmit"]
+
+[compilers.home]
+binary = "home"
+version_cmd = "home --version"
+flags_typecheck_only = ["tsc", "--noEmit"]
+# Phase 0.6 skeleton: until Phase 1 lands `home tsc`, this entry is
+# present for runner symmetry but skipped.
+skip_until_phase = 1

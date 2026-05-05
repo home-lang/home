@@ -60,63 +60,10 @@ pub const ParseError = error{
 /// - Assignments bind loosest (evaluated last)
 /// - Arithmetic operators follow mathematical precedence
 /// - Function calls and member access bind tightest
-const Precedence = enum(u8) {
-    None = 0,
-    Assignment = 1,     // =
-    Ternary = 2,        // ?:
-    NullCoalesce = 3,   // ??
-    Or = 4,             // ||
-    And = 5,            // &&
-    BitOr = 6,          // |
-    BitXor = 7,         // ^
-    BitAnd = 8,         // &
-    Equality = 9,       // == !=
-    Comparison = 10,    // < > <= >=
-    TypeCast = 11,      // as
-    Range = 12,         // .. ..=
-    Pipe = 13,          // |> (function pipeline)
-    Shift = 14,         // << >> (bitwise shifts)
-    Term = 15,          // + -
-    Factor = 16,        // * / % ~/
-    Power = 17,         // ** (exponentiation, right-associative)
-    Unary = 18,         // ! - ...
-    Call = 20,          // . () [] ?.
-    Primary = 21,
-
-    /// Get the precedence level for a given token type.
-    ///
-    /// Maps operator tokens to their precedence levels. Non-operator
-    /// tokens return None precedence.
-    ///
-    /// Parameters:
-    ///   - token_type: The token to get precedence for
-    ///
-    /// Returns: Precedence level for this token
-    fn fromToken(token_type: TokenType) Precedence {
-        return switch (token_type) {
-            .Equal, .PlusEqual, .MinusEqual, .StarEqual, .SlashEqual, .PercentEqual => .Assignment,
-            .Question => .Ternary,
-            .QuestionQuestion, .QuestionColon, .Else => .NullCoalesce,
-            .QuestionBracket => .Call,
-            .PipePipe, .Or => .Or,
-            .AmpersandAmpersand, .And => .And,
-            .Pipe => .BitOr,
-            .PipeGreater => .Pipe,
-            .Caret => .BitXor,
-            .Ampersand => .BitAnd,
-            .EqualEqual, .BangEqual => .Equality,
-            .Less, .LessEqual, .Greater, .GreaterEqual, .Is => .Comparison,
-            .As => .TypeCast,
-            .DotDot, .DotDotEqual => .Range,
-            .LeftShift, .RightShift => .Shift,
-            .Plus, .Minus, .PlusBang, .MinusBang, .PlusQuestion, .MinusQuestion, .PlusPipe, .MinusPipe => .Term,
-            .Star, .Slash, .Percent, .TildeSlash, .StarBang, .SlashBang, .StarQuestion, .SlashQuestion, .StarPipe => .Factor,
-            .StarStar => .Power,
-            .LeftParen, .LeftBracket, .Dot, .QuestionDot => .Call,
-            else => .None,
-        };
-    }
-};
+// `Precedence` was extracted into `parsers/precedence.zig` per
+// TS_PARITY_PLAN §0 Phase 0.7. The aliasing line below preserves the
+// previous internal name so the rest of this file is unchanged.
+const Precedence = @import("parsers/precedence.zig").Precedence;
 
 /// Information about a parse error for error reporting.
 ///

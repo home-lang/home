@@ -95,110 +95,20 @@ const HEAP_START: usize = 0x10000000; // Start of heap memory
 /// would use a proper allocator with deallocation support.
 const HEAP_SIZE: usize = 1024 * 1024; // 1MB heap
 
-/// Memory layout information for a struct type.
-///
-/// Stores the field offsets and sizes needed for struct field access
-/// code generation. This includes padding for alignment requirements.
-pub const StructLayout = struct {
-    /// Struct type name
-    name: []const u8,
-    /// Field layout information (ordered by declaration)
-    fields: []const FieldInfo,
-    /// Total size of the struct in bytes (including padding)
-    total_size: usize,
-};
-
-/// Layout information for a single struct field.
-///
-/// Contains the offset and size needed to generate field access code.
-pub const FieldInfo = struct {
-    /// Field name
-    name: []const u8,
-    /// Byte offset from struct base pointer
-    offset: usize,
-    /// Size of field in bytes
-    size: usize,
-    /// Type name of the field (for nested member access)
-    type_name: []const u8 = "",
-};
-
-/// Enum variant information.
-pub const EnumVariantInfo = struct {
-    /// Variant name
-    name: []const u8,
-    /// Optional data type (null for unit variants like None)
-    data_type: ?[]const u8,
-};
-
-/// Enum layout information.
-///
-/// Maps enum variant names to their integer values (indices) and data types.
-pub const EnumLayout = struct {
-    /// Enum type name
-    name: []const u8,
-    /// Variant information (ordered by declaration)
-    variants: []const EnumVariantInfo,
-};
-
-/// Loop context for break/continue statements
-///
-/// Tracks loop entry and exit points for control flow jumps
-pub const LoopContext = struct {
-    /// Position of loop start (condition test, used by while-continue)
-    loop_start: usize,
-    /// Position that `continue` should jump to. For while loops this
-    /// equals loop_start (re-test condition). For for loops it points
-    /// to the iterator increment so the counter advances before the
-    /// next iteration. Null means "use loop_start".
-    continue_target: ?usize = null,
-    /// List of positions that need patching for break (jumps to end)
-    break_fixups: std.ArrayList(usize),
-    /// Positions emitted by continue that need patching to the increment
-    continue_fixups: std.ArrayList(usize),
-    /// Optional label for labeled break/continue
-    label: ?[]const u8,
-};
-
-/// Local variable information.
-///
-/// Stores both stack location and type information for local variables.
-pub const LocalInfo = struct {
-    /// Stack offset from RBP (1-based index)
-    offset: u32,
-    /// Type name (e.g., "i32", "[i32]", "Point")
-    type_name: []const u8,
-    /// Size in bytes
-    size: usize,
-};
-
-/// Function parameter information (for default values support)
-pub const FunctionParamInfo = struct {
-    /// Parameter name
-    name: []const u8,
-    /// Parameter type
-    type_name: []const u8,
-    /// Default value expression (null if no default)
-    default_value: ?*ast.Expr,
-};
-
-/// Function info for code generation
-pub const FunctionInfo = struct {
-    /// Code position
-    position: usize,
-    /// Parameters with default value info
-    params: []FunctionParamInfo,
-    /// Number of required parameters (without defaults)
-    required_params: usize,
-};
-
-/// String literal fixup information
-/// Tracks where in the code we need to patch string addresses
-pub const StringFixup = struct {
-    /// Position in code where the displacement was written
-    code_pos: usize,
-    /// Offset of the string in the data section
-    data_offset: usize,
-};
+// Layout descriptors extracted into `native/layouts.zig` per
+// TS_PARITY_PLAN §0 Phase 0.8. The aliasing block below preserves
+// the previous public API so external callers keep compiling without
+// modification.
+const layouts = @import("native/layouts.zig");
+pub const StructLayout = layouts.StructLayout;
+pub const FieldInfo = layouts.FieldInfo;
+pub const EnumVariantInfo = layouts.EnumVariantInfo;
+pub const EnumLayout = layouts.EnumLayout;
+pub const LoopContext = layouts.LoopContext;
+pub const LocalInfo = layouts.LocalInfo;
+pub const FunctionParamInfo = layouts.FunctionParamInfo;
+pub const FunctionInfo = layouts.FunctionInfo;
+pub const StringFixup = layouts.StringFixup;
 
 /// Simple register allocator for optimizing register usage
 /// Tracks which registers are currently in use and allocates them efficiently
