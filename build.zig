@@ -265,6 +265,12 @@ pub fn build(b: *std.Build) void {
     const ts_cache_pkg = createPackage(b, "packages/ts_cache/src/ts_cache.zig", target, optimize, zig_test_framework);
     // ts_driver consumes ts_cache for the emitWithCache fast path.
     ts_driver_pkg.addImport("ts_cache", ts_cache_pkg);
+
+    // TS-parity Phase 8 — LSP wire-protocol JSON-RPC server.
+    const ts_lsp_server_pkg = createPackage(b, "packages/ts_lsp_server/src/ts_lsp_server.zig", target, optimize, zig_test_framework);
+    ts_lsp_server_pkg.addImport("ts_lsp", ts_lsp_pkg);
+    ts_lsp_server_pkg.addImport("ts_program", ts_program_pkg);
+    ts_lsp_server_pkg.addImport("ts_resolver", ts_resolver_pkg);
     const volatile_pkg = createPackage(b, "packages/volatile/src/volatile.zig", target, optimize, zig_test_framework);
     const pantry_pkg = createPackage(b, "packages/pantry/src/pantry.zig", target, optimize, zig_test_framework);
     const collections_pkg = createPackage(b, "packages/collections/src/collection.zig", target, optimize, zig_test_framework);
@@ -944,6 +950,10 @@ pub fn build(b: *std.Build) void {
     const ts_cache_tests = b.addTest(.{ .root_module = ts_cache_pkg });
     const run_ts_cache_tests = b.addRunArtifact(ts_cache_tests);
     test_step.dependOn(&run_ts_cache_tests.step);
+
+    const ts_lsp_server_tests = b.addTest(.{ .root_module = ts_lsp_server_pkg });
+    const run_ts_lsp_server_tests = b.addRunArtifact(ts_lsp_server_tests);
+    test_step.dependOn(&run_ts_lsp_server_tests.step);
 
     // Volatile operations tests
     const volatile_tests = b.addTest(.{ .root_module = volatile_pkg });
