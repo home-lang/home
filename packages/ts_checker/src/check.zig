@@ -257,15 +257,18 @@ pub const Checker = struct {
         }
 
         // If both are present, check assignability.
+        const final_type: TypeId = if (declared_type != types.Primitive.none) declared_type else init_type;
         if (declared_type != types.Primitive.none and v.init != hir_mod.none_node_id) {
             const ok = self.engine.isAssignableTo(init_type, declared_type) catch return error.OutOfMemory;
             if (!ok) {
                 try self.report(node, "Type is not assignable to declared type.");
             }
         } else if (declared_type == types.Primitive.none) {
-            // Inferred from init.
             self.hir.setType(node, init_type);
         }
+        // Propagate the declaration's type to the name identifier
+        // so hover-on-identifier returns the right type.
+        if (v.name != hir_mod.none_node_id) self.hir.setType(v.name, final_type);
     }
 
     /// Type an expression. Returns its TypeId and also records it

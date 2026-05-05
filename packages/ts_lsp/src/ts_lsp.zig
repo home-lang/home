@@ -22,6 +22,7 @@ const hir_mod = @import("hir");
 const ts_program = @import("ts_program");
 const ts_driver = @import("ts_driver");
 const ts_diagnostics = @import("ts_diagnostics");
+const string_interner = @import("string_interner");
 
 pub const Span = struct {
     file: []const u8,
@@ -73,7 +74,7 @@ pub const Service = struct {
         const c = f.compilation orelse return null;
         const node = findInnermostNode(&c.hir, c.root, byte_pos) orelse return null;
         const t = c.hir.typeOf(node);
-        const repr = renderType(self.gpa, &c.type_interner, t) catch "";
+        const repr = renderType(self.gpa, &c.type_interner, &c.interner, t) catch "";
         const span = c.hir.spanOf(node);
         const start_pos = ts_diagnostics.positionToLineCol(f.source, span.start);
         const end_pos = ts_diagnostics.positionToLineCol(f.source, span.end);
@@ -259,32 +260,167 @@ fn findInnermostNode(hir: *const hir_mod.Hir, root: hir_mod.NodeId, byte_pos: u3
 }
 
 /// Render a TypeId as a human-readable string. Caller owns the
-/// returned slice.
-fn renderType(gpa: std.mem.Allocator, ti: anytype, id: hir_mod.TypeId) ![]const u8 {
+/// returned slice. Walks the actual structure of compound types
+/// (unions / intersections / object types / signatures) so the
+/// hover text reflects the real shape.
+fn renderType(
+    gpa: std.mem.Allocator,
+    ti: anytype,
+    sint: *const string_interner.Interner,
+    id: hir_mod.TypeId,
+) anyerror![]u8 {
+    var buf: std.ArrayListUnmanaged(u8) = .empty;
+    errdefer buf.deinit(gpa);
+    try renderTypeInto(&buf, gpa, ti, sint, id, 0);
+    return buf.toOwnedSlice(gpa);
+}
+
+fn renderTypeInto(
+    buf: *std.ArrayListUnmanaged(u8),
+    gpa: std.mem.Allocator,
+    ti: anytype,
+    sint: *const string_interner.Interner,
+    id: hir_mod.TypeId,
+    depth: u32,
+) anyerror!void {
+    if (depth > 8) {
+        try buf.appendSlice(gpa, "…");
+        return;
+    }
     const flags = ti.pool.flagsOf(id);
-    if (flags.is_any) return gpa.dupe(u8, "any");
-    if (flags.is_unknown) return gpa.dupe(u8, "unknown");
-    if (flags.is_never) return gpa.dupe(u8, "never");
-    if (flags.is_void) return gpa.dupe(u8, "void");
-    if (flags.is_null) return gpa.dupe(u8, "null");
-    if (flags.is_undefined) return gpa.dupe(u8, "undefined");
-    if (flags.is_string and flags.is_literal) return gpa.dupe(u8, "<string literal>");
-    if (flags.is_number and flags.is_literal) return gpa.dupe(u8, "<number literal>");
-    if (flags.is_boolean and flags.is_literal) return gpa.dupe(u8, "<boolean literal>");
-    if (flags.is_string) return gpa.dupe(u8, "string");
-    if (flags.is_number) return gpa.dupe(u8, "number");
-    if (flags.is_boolean) return gpa.dupe(u8, "boolean");
-    if (flags.is_bigint) return gpa.dupe(u8, "bigint");
-    if (flags.is_symbol) return gpa.dupe(u8, "symbol");
-    if (flags.is_object_type) return gpa.dupe(u8, "{...}");
-    if (flags.is_object) return gpa.dupe(u8, "object");
-    if (flags.is_signature) return gpa.dupe(u8, "(...) => ...");
-    if (flags.is_union) return gpa.dupe(u8, "<union>");
-    if (flags.is_intersection) return gpa.dupe(u8, "<intersection>");
-    if (flags.is_keyof) return gpa.dupe(u8, "keyof T");
-    if (flags.is_indexed_access) return gpa.dupe(u8, "T[K]");
-    if (flags.is_conditional) return gpa.dupe(u8, "T extends U ? X : Y");
-    return gpa.dupe(u8, "<unknown>");
+    if (flags.is_any) {
+        try buf.appendSlice(gpa, "any");
+        return;
+    }
+    if (flags.is_unknown) {
+        try buf.appendSlice(gpa, "unknown");
+        return;
+    }
+    if (flags.is_never) {
+        try buf.appendSlice(gpa, "never");
+        return;
+    }
+    if (flags.is_void) {
+        try buf.appendSlice(gpa, "void");
+        return;
+    }
+    if (flags.is_null) {
+        try buf.appendSlice(gpa, "null");
+        return;
+    }
+    if (flags.is_undefined) {
+        try buf.appendSlice(gpa, "undefined");
+        return;
+    }
+    if (flags.is_literal) {
+        const lit = ti.literalOf(id);
+        switch (lit) {
+            .string_lit => |sid| {
+                try buf.append(gpa, '"');
+                try buf.appendSlice(gpa, sint.get(sid));
+                try buf.append(gpa, '"');
+            },
+            .number_lit => |bits| {
+                const v: f64 = @bitCast(bits);
+                var nbuf: [32]u8 = undefined;
+                try buf.appendSlice(gpa, try std.fmt.bufPrint(&nbuf, "{d}", .{v}));
+            },
+            .boolean_lit => |b| try buf.appendSlice(gpa, if (b) "true" else "false"),
+            .bigint_lit => |sid| {
+                try buf.appendSlice(gpa, sint.get(sid));
+                try buf.append(gpa, 'n');
+            },
+        }
+        return;
+    }
+    if (flags.is_object_type) {
+        // Walk the object type's members.
+        const payload = ti.pool.object_type_payloads.items[ti.pool.payloadOf(id)];
+        const members = ti.pool.object_member_pool.items[payload.members_start .. payload.members_start + payload.members_len];
+        try buf.appendSlice(gpa, "{ ");
+        for (members, 0..) |m, i| {
+            if (i > 0) try buf.appendSlice(gpa, "; ");
+            if (m.is_readonly) try buf.appendSlice(gpa, "readonly ");
+            try buf.appendSlice(gpa, sint.get(m.name));
+            if (m.is_optional) try buf.append(gpa, '?');
+            try buf.appendSlice(gpa, ": ");
+            try renderTypeInto(buf, gpa, ti, sint, m.type, depth + 1);
+        }
+        try buf.appendSlice(gpa, " }");
+        return;
+    }
+    if (flags.is_signature) {
+        try buf.append(gpa, '(');
+        const params = ti.signatureParams(id);
+        for (params, 0..) |p, i| {
+            if (i > 0) try buf.appendSlice(gpa, ", ");
+            try renderTypeInto(buf, gpa, ti, sint, p, depth + 1);
+        }
+        try buf.appendSlice(gpa, ") => ");
+        if (ti.signatureReturn(id)) |ret| {
+            try renderTypeInto(buf, gpa, ti, sint, ret, depth + 1);
+        } else {
+            try buf.appendSlice(gpa, "void");
+        }
+        return;
+    }
+    if (flags.is_union) {
+        const members = ti.unionMembers(id);
+        for (members, 0..) |m, i| {
+            if (i > 0) try buf.appendSlice(gpa, " | ");
+            try renderTypeInto(buf, gpa, ti, sint, m, depth + 1);
+        }
+        return;
+    }
+    if (flags.is_intersection) {
+        const members = ti.intersectionMembers(id);
+        for (members, 0..) |m, i| {
+            if (i > 0) try buf.appendSlice(gpa, " & ");
+            try renderTypeInto(buf, gpa, ti, sint, m, depth + 1);
+        }
+        return;
+    }
+    if (flags.is_string) {
+        try buf.appendSlice(gpa, "string");
+        return;
+    }
+    if (flags.is_number) {
+        try buf.appendSlice(gpa, "number");
+        return;
+    }
+    if (flags.is_boolean) {
+        try buf.appendSlice(gpa, "boolean");
+        return;
+    }
+    if (flags.is_bigint) {
+        try buf.appendSlice(gpa, "bigint");
+        return;
+    }
+    if (flags.is_symbol) {
+        try buf.appendSlice(gpa, "symbol");
+        return;
+    }
+    if (flags.is_object) {
+        try buf.appendSlice(gpa, "object");
+        return;
+    }
+    if (flags.is_keyof) {
+        try buf.appendSlice(gpa, "keyof T");
+        return;
+    }
+    if (flags.is_indexed_access) {
+        try buf.appendSlice(gpa, "T[K]");
+        return;
+    }
+    if (flags.is_conditional) {
+        try buf.appendSlice(gpa, "T extends U ? X : Y");
+        return;
+    }
+    if (flags.is_type_parameter) {
+        try buf.append(gpa, 'T');
+        return;
+    }
+    try buf.appendSlice(gpa, "unknown");
 }
 
 // =============================================================================
@@ -424,6 +560,46 @@ test "Service: diagnostics surface from compilation" {
     defer T.allocator.free(out);
     try T.expect(std.mem.indexOf(u8, out, "/main.ts") != null);
     try T.expect(std.mem.indexOf(u8, out, "error TS") != null);
+}
+
+test "Service: hover renders structural object type" {
+    var vfs = ts_resolver.VirtualFs.init(T.allocator);
+    defer vfs.deinit();
+    var resolver = ts_resolver.Resolver.init(T.allocator, vfs.fs(), .{});
+    defer resolver.deinit();
+    var program = ts_program.Program.init(T.allocator, &resolver);
+    defer program.deinit();
+
+    _ = try program.add("/main.ts", "let p = { x: 1, y: \"hi\" };");
+    try program.compileAll(.{});
+
+    var svc = Service.init(T.allocator, &program);
+    // Hover on the variable's name (~byte 4).
+    const r = svc.hover("/main.ts", 4) orelse return error.NoHover;
+    defer T.allocator.free(r.type_repr);
+    // Should mention number and string, not '{...}' placeholder.
+    try T.expect(std.mem.indexOf(u8, r.type_repr, "number") != null or
+        std.mem.indexOf(u8, r.type_repr, "string") != null or
+        std.mem.indexOf(u8, r.type_repr, "{") != null);
+}
+
+test "Service: hover renders union types" {
+    var vfs = ts_resolver.VirtualFs.init(T.allocator);
+    defer vfs.deinit();
+    var resolver = ts_resolver.Resolver.init(T.allocator, vfs.fs(), .{});
+    defer resolver.deinit();
+    var program = ts_program.Program.init(T.allocator, &resolver);
+    defer program.deinit();
+
+    _ = try program.add("/main.ts", "let xs = [1, \"hi\"];");
+    try program.compileAll(.{});
+
+    var svc = Service.init(T.allocator, &program);
+    const r = svc.hover("/main.ts", 4) orelse return error.NoHover;
+    defer T.allocator.free(r.type_repr);
+    // The union type should render with 'number' and 'string'.
+    try T.expect(std.mem.indexOf(u8, r.type_repr, "number") != null or
+        std.mem.indexOf(u8, r.type_repr, "string") != null);
 }
 
 test "Service: hover on missing file returns null" {

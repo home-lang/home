@@ -260,6 +260,7 @@ pub fn build(b: *std.Build) void {
     ts_lsp_pkg.addImport("ts_driver", ts_driver_pkg);
     ts_lsp_pkg.addImport("ts_diagnostics", ts_diagnostics_pkg);
     ts_lsp_pkg.addImport("ts_resolver", ts_resolver_pkg);
+    ts_lsp_pkg.addImport("string_interner", string_interner_pkg);
 
     // TS-parity Phase 5 §11.6 — persistent compilation cache.
     const ts_cache_pkg = createPackage(b, "packages/ts_cache/src/ts_cache.zig", target, optimize, zig_test_framework);
