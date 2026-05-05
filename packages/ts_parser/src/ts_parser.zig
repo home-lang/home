@@ -846,8 +846,20 @@ pub const Parser = struct {
 
         // export default <expr>;
         if (self.match(.kw_default)) {
-            const decl = try self.parseAssignmentExpression();
-            try self.consumeStatementTerminator();
+            // `export default` may be followed by a class/function
+            // *declaration* (no statement-terminator) — those have
+            // their own statement parser; otherwise it's an
+            // expression value.
+            const decl = switch (self.peek().kind) {
+                .kw_class => try self.parseClassDeclaration(),
+                .kw_function => try self.parseFunctionDeclaration(),
+                .kw_interface => try self.parseInterfaceDeclaration(),
+                else => blk: {
+                    const expr = try self.parseAssignmentExpression();
+                    try self.consumeStatementTerminator();
+                    break :blk expr;
+                },
+            };
             const end_pos = self.tokens[self.cursor - 1].span.end;
             return try self.builder.addExport(
                 .{ .start = start.span.start, .end = end_pos },
