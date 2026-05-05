@@ -16,6 +16,7 @@ const ts_program = @import("ts_program");
 const ts_resolver = @import("ts_resolver");
 const ts_driver = @import("ts_driver");
 const ts_diagnostics = @import("ts_diagnostics");
+const tsconfig_mod = @import("tsconfig");
 
 const RealFs = struct {
     fn read(gpa: std.mem.Allocator, path: []const u8) ![]const u8 {
@@ -68,11 +69,25 @@ pub fn main(init: std.process.Init) !void {
         for (all_args[1..]) |a| try argv.append(gpa, a);
     }
 
-    const opts = ts_cli.parseArgs(gpa, argv.items) catch |err| {
+    var opts = ts_cli.parseArgs(gpa, argv.items) catch |err| {
         std.debug.print("error parsing args: {s}\n", .{@errorName(err)});
         std.process.exit(2);
     };
     defer gpa.free(opts.files);
+
+    // Resolve tsconfig BEFORE dispatch so a discovered tsconfig
+    // counts as input for the "no files" check inside dispatch.
+    // Explicit `--project <path>` wins; otherwise we walk upward
+    // from cwd looking for the nearest `tsconfig.json`.
+    var cfg_arena = std.heap.ArenaAllocator.init(gpa);
+    defer cfg_arena.deinit();
+    var cfg_path_buf: ?[]u8 = null;
+    defer if (cfg_path_buf) |b| gpa.free(b);
+    var loaded_cfg: ?tsconfig_mod.TsConfig = null;
+    if (resolveTsConfigPath(gpa, opts.project) catch null) |path| {
+        opts.project = path;
+        cfg_path_buf = path;
+    }
 
     const dec = ts_cli.dispatch(opts);
     if (dec.stdout_text.len > 0) {
@@ -84,11 +99,44 @@ pub fn main(init: std.process.Init) !void {
     if (dec.code != .success) std.process.exit(@intFromEnum(dec.code));
 
     if (opts.show_version or opts.show_help) return;
-    if (opts.files.len == 0) return;
 
-    // Compile each input file (single-file mode for v0; project /
-    // tsconfig flow lands in a follow-up).
-    _ = RealFs;
+    // Load the discovered tsconfig. The JSONC parser aliases
+    // strings into the source buffer, so cfg_src must outlive
+    // `loaded_cfg`'s borrowed slices — keep it for the rest of
+    // main rather than freeing inside this block.
+    var cfg_src: []const u8 = &.{};
+    defer if (cfg_src.len > 0) gpa.free(cfg_src);
+    if (cfg_path_buf) |path| {
+        cfg_src = RealFs.read(gpa, path) catch |err| blk: {
+            std.debug.print("error reading {s}: {s}\n", .{ path, @errorName(err) });
+            break :blk &.{};
+        };
+        if (cfg_src.len > 0) {
+            loaded_cfg = tsconfig_mod.parseString(gpa, cfg_arena.allocator(), cfg_src) catch |err| blk: {
+                std.debug.print("error parsing tsconfig {s}: {s}\n", .{ path, @errorName(err) });
+                break :blk null;
+            };
+            if (loaded_cfg) |*c| c.file_path = path;
+        }
+    }
+
+    // Determine the file list: positional args win; otherwise pull
+    // from the resolved tsconfig's `files` (a single literal list).
+    // Glob expansion for `include` / `exclude` is a follow-up.
+    var input_files: std.ArrayListUnmanaged([]const u8) = .empty;
+    defer input_files.deinit(gpa);
+    for (opts.files) |f| try input_files.append(gpa, f);
+    if (input_files.items.len == 0) {
+        if (loaded_cfg) |c| {
+            if (c.files) |fs_list| for (fs_list) |f| try input_files.append(gpa, f);
+        }
+    }
+
+    if (input_files.items.len == 0) {
+        std.debug.print("error: no input files; pass paths or --project=<path>\n", .{});
+        std.process.exit(2);
+    }
+
     var virtual = ts_resolver.VirtualFs.init(gpa);
     defer virtual.deinit();
     var resolver = ts_resolver.Resolver.init(gpa, virtual.fs(), .{});
@@ -97,7 +145,7 @@ pub fn main(init: std.process.Init) !void {
     var program = ts_program.Program.init(gpa, &resolver);
     defer program.deinit();
 
-    for (opts.files) |path| {
+    for (input_files.items) |path| {
         const src = RealFs.read(gpa, path) catch |err| {
             std.debug.print("error reading {s}: {s}\n", .{ path, @errorName(err) });
             std.process.exit(1);
@@ -109,9 +157,20 @@ pub fn main(init: std.process.Init) !void {
         };
     }
 
-    program.compileAll(.{}) catch |err| {
+    const compile_opts: ts_driver.CompileOptions = if (loaded_cfg) |*c|
+        ts_driver.optionsFromConfig(c)
+    else
+        .{};
+
+    program.compileAll(compile_opts) catch |err| {
         std.debug.print("compile error: {s}\n", .{@errorName(err)});
         std.process.exit(1);
+    };
+
+    // Resolve outDir from CLI or tsconfig. CLI wins.
+    const out_dir: ?[]const u8 = opts.out_dir orelse blk: {
+        if (loaded_cfg) |c| if (c.compiler_options.out_dir) |d| break :blk d;
+        break :blk null;
     };
 
     // Print diagnostics + write JS outputs.
@@ -119,22 +178,103 @@ pub fn main(init: std.process.Init) !void {
     for (program.files.items) |f| {
         const c = f.compilation orelse continue;
         for (c.diagnostics.items) |d| {
-            std.debug.print("{s}: {s}\n", .{ f.path, d.message });
+            const pos = ts_diagnostics.positionToLineCol(c.source, d.pos);
+            const code = if (d.code != 0) d.code else mapPhaseToCode(d.phase);
+            const prefix: ts_diagnostics.Diagnostic.CodePrefix = switch (d.code_prefix) {
+                .TS => .TS,
+                .HM => .HM,
+            };
+            const fdiag: ts_diagnostics.Diagnostic = .{
+                .file = f.path,
+                .line = pos.line,
+                .col = pos.col,
+                .code = code,
+                .code_prefix = prefix,
+                .severity = .err,
+                .message = d.message,
+                .span_len = 0,
+            };
+            const formatted = ts_diagnostics.formatDefault(gpa, fdiag) catch continue;
+            defer gpa.free(formatted);
+            std.debug.print("{s}\n", .{formatted});
             if (d.phase != .emit) any_errors = true;
         }
         if (opts.no_emit) continue;
-        // Output path: replace .ts/.tsx with .js (sibling). When
-        // outDir is set we mirror the directory structure under it.
-        const ext_dot = std.mem.lastIndexOfScalar(u8, f.path, '.') orelse f.path.len;
-        const stem = f.path[0..ext_dot];
-        const out_path = try std.fmt.allocPrint(gpa, "{s}.js", .{stem});
+        const out_path = try computeOutPath(gpa, f.path, out_dir);
         defer gpa.free(out_path);
         RealFs.write(gpa, out_path, c.js) catch |err| {
             std.debug.print("error writing {s}: {s}\n", .{ out_path, @errorName(err) });
             std.process.exit(1);
         };
     }
-    _ = ts_diagnostics; // silence unused import while diagnostics flow lands
 
     if (any_errors) std.process.exit(1);
+}
+
+fn mapPhaseToCode(phase: ts_driver.Diagnostic.Phase) u32 {
+    return switch (phase) {
+        .lex, .parse => 1109,
+        .bind => 2304,
+        .emit => 5024,
+    };
+}
+
+/// Compute the .js output path for a source file. With no outDir,
+/// emit alongside the source (`a.ts` → `a.js`). With outDir, mirror
+/// just the basename (full path-mirroring vs. rootDir is a Phase 5
+/// follow-up — for now this matches the most-common case).
+fn computeOutPath(gpa: std.mem.Allocator, src_path: []const u8, out_dir: ?[]const u8) ![]u8 {
+    const ext_dot = std.mem.lastIndexOfScalar(u8, src_path, '.') orelse src_path.len;
+    const stem = src_path[0..ext_dot];
+    if (out_dir) |dir| {
+        const base = std.fs.path.basename(stem);
+        return try std.fmt.allocPrint(gpa, "{s}/{s}.js", .{ dir, base });
+    }
+    return try std.fmt.allocPrint(gpa, "{s}.js", .{stem});
+}
+
+/// Resolve the path to a tsconfig.json. With an explicit `--project`
+/// (file or directory), use it directly. Otherwise walk upward from
+/// cwd looking for the nearest `tsconfig.json`. Returns a freshly
+/// allocated path that the caller frees, or null when nothing is
+/// found.
+fn resolveTsConfigPath(gpa: std.mem.Allocator, project: ?[]const u8) !?[]u8 {
+    var threaded = std.Io.Threaded.init(gpa, .{});
+    defer threaded.deinit();
+    const io = threaded.io();
+    const cwd = std.Io.Dir.cwd();
+
+    if (project) |p| {
+        // If the path ends with .json, treat as the file directly;
+        // otherwise treat as a directory and append `tsconfig.json`.
+        if (std.mem.endsWith(u8, p, ".json")) {
+            return try gpa.dupe(u8, p);
+        }
+        const joined = try std.fmt.allocPrint(gpa, "{s}/tsconfig.json", .{p});
+        return joined;
+    }
+
+    // Upward walk. Use the absolute path of cwd so we know when we
+    // hit the root.
+    var dir_buf: [std.fs.max_path_bytes]u8 = undefined;
+    const n = try std.process.currentPath(io, &dir_buf);
+    var cur = try gpa.dupe(u8, dir_buf[0..n]);
+    defer gpa.free(cur);
+    while (cur.len > 0) {
+        const candidate = try std.fmt.allocPrint(gpa, "{s}/tsconfig.json", .{cur});
+        // Try to stat — if it exists, return.
+        const exists = blk: {
+            var f = cwd.openFile(io, candidate, .{}) catch break :blk false;
+            f.close(io);
+            break :blk true;
+        };
+        if (exists) return candidate;
+        gpa.free(candidate);
+        const parent = std.fs.path.dirname(cur) orelse break;
+        if (std.mem.eql(u8, parent, cur)) break;
+        const new_cur = try gpa.dupe(u8, parent);
+        gpa.free(cur);
+        cur = new_cur;
+    }
+    return null;
 }

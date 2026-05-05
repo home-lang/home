@@ -298,6 +298,7 @@ pub fn build(b: *std.Build) void {
     home_tsc_exe.root_module.addImport("ts_resolver", ts_resolver_pkg);
     home_tsc_exe.root_module.addImport("ts_driver", ts_driver_pkg);
     home_tsc_exe.root_module.addImport("ts_diagnostics", ts_diagnostics_pkg);
+    home_tsc_exe.root_module.addImport("tsconfig", tsconfig_pkg);
     b.installArtifact(home_tsc_exe);
 
     const home_lsp_exe = b.addExecutable(.{
