@@ -16,10 +16,22 @@ for the full list. Legend: ✅ Stable · 🚧 In progress / partial · ❌ Not y
 
 | Area | Feature | Status |
 |---|---|---|
-| Frontend | Lexer | ✅ Stable |
-| Frontend | Parser (with error recovery) | ✅ Stable |
-| Frontend | Type inference | ✅ Stable |
-| Frontend | Tree-walking interpreter | ✅ Stable |
+| Frontend (Home) | Lexer | ✅ Stable |
+| Frontend (Home) | Parser (with error recovery) | ✅ Stable |
+| Frontend (Home) | Type inference | ✅ Stable |
+| Frontend (Home) | Tree-walking interpreter | ✅ Stable |
+| Frontend (TS) | TS lexer (full ES2024 + TS keyword set) | 🚧 In progress |
+| Frontend (TS) | TS parser (statements, expressions, decls, JSX, generics, decorators) | 🚧 In progress |
+| Frontend (TS) | Type-annotation parser (unions/intersections/generics/conditional/mapped/keyof/typeof/tuple/fn types) | 🚧 In progress |
+| TS pipeline | Binder + symbol table (3 meaning-spaces, declaration merging) | 🚧 In progress |
+| TS pipeline | Type checker (interner + relation cache + expression typing + assignability) | 🚧 In progress |
+| TS pipeline | JS emitter (full Phase 1 surface, source maps V3) | 🚧 In progress |
+| TS pipeline | `.d.ts` emitter (symbol-driven + zig-dtsx fast path via pantry) | 🚧 In progress |
+| TS pipeline | Multi-file program graph + parallel compile | 🚧 In progress |
+| TS pipeline | Module resolver (5 strategies + paths) | 🚧 In progress |
+| TS pipeline | tsc-compatible diagnostic formatting | 🚧 In progress |
+| TS pipeline | `home tsc` CLI flag surface | 🚧 In progress |
+| TS pipeline | Conformance harness (tsc-baseline format) | 🚧 In progress |
 | Language | Pattern matching | 🚧 In progress |
 | Language | Closures | 🚧 In progress |
 | Language | Traits / `impl` | 🚧 In progress |
@@ -40,6 +52,33 @@ for the full list. Legend: ✅ Stable · 🚧 In progress / partial · ❌ Not y
 | Stdlib | HTTP, database, threading, FFI | 🚧 In progress |
 
 For release notes see [`CHANGELOG.md`](./CHANGELOG.md).
+
+## TypeScript parity
+
+Home is being extended with a drop-in `tsc` / `tsgo` compatible
+TypeScript frontend. The plan is documented in
+[`docs/TS_PARITY_PLAN.md`](./docs/TS_PARITY_PLAN.md). Phase 4.5 is
+substantially complete: a `home tsc` driver wires lex → parse →
+bind → check → emit end-to-end with multi-file program graph,
+parallel compile, source maps, tsc-compatible diagnostics, and a
+zig-dtsx fast path for `.d.ts` emission.
+
+Top-level shape (each link is a Zig package with its own tests):
+
+- [`packages/ts_lexer`](./packages/ts_lexer/) — full ES2024 + TS keyword scanner (16-byte tokens, comptime perfect-hash keywords)
+- [`packages/ts_parser`](./packages/ts_parser/) — recursive-descent statements, Pratt expressions, JSX, generics, decorators, full type-annotation grammar
+- [`packages/hir`](./packages/hir/) — SoA HIR (21 B/node hot footprint, gated at compile time)
+- [`packages/binder`](./packages/binder/) — symbol table with three TS meaning-spaces and declaration merging
+- [`packages/ts_checker`](./packages/ts_checker/) — type interner, relation cache, expression-level checking
+- [`packages/ts_emit`](./packages/ts_emit/) — streaming JS pretty-printer, V3 source maps, symbol-driven `.d.ts`, zig-dtsx fast path
+- [`packages/ts_driver`](./packages/ts_driver/) — single-file end-to-end compile (lex → parse → bind → check → emit)
+- [`packages/ts_program`](./packages/ts_program/) — multi-file program graph with parallel compileAllParallel
+- [`packages/ts_resolver`](./packages/ts_resolver/) — module resolution across the five tsc strategies + path mapping
+- [`packages/ts_diagnostics`](./packages/ts_diagnostics/) — tsc-compatible diagnostic formatting (default + pretty)
+- [`packages/ts_cli`](./packages/ts_cli/) — `home tsc` CLI flag surface
+- [`packages/ts_conformance`](./packages/ts_conformance/) — tsc-baseline conformance harness
+- [`packages/d_hm`](./packages/d_hm/) — Home declaration files (the `.d.ts` analogue for `.home`)
+- [`pantry/zig-dtsx`](https://github.com/stacksjs/dtsx/tree/main/packages/zig-dtsx) — vendored as a pantry dep; powers the `.d.ts` fast path (15-19× faster than tsgo per published benchmarks)
 
 ## Install
 
