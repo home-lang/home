@@ -10,6 +10,7 @@
 
 pub const js_emit = @import("js_emit.zig");
 pub const source_map = @import("source_map.zig");
+pub const d_ts_emit = @import("d_ts_emit.zig");
 
 pub const Printer = js_emit.Printer;
 pub const Options = js_emit.Options;
@@ -18,10 +19,13 @@ pub const SourceMap = source_map.SourceMap;
 pub const Mapping = source_map.Mapping;
 pub const encodeVlq = source_map.encodeVlq;
 pub const decodeVlq = source_map.decodeVlq;
+pub const DtsEmitter = d_ts_emit.Emitter;
+pub const DtsOptions = d_ts_emit.Options;
 
 const std = @import("std");
 
 test {
     _ = js_emit;
     _ = source_map;
+    _ = d_ts_emit;
 }

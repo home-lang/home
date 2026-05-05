@@ -611,7 +611,8 @@ pub const Parser = struct {
                     }
                     const params = try self.parseParameterList();
                     defer self.gpa.free(params);
-                    if (self.match(.colon)) _ = try self.parseTypeAnnotation();
+                    var return_type: NodeId = hir_mod.none_node_id;
+                    if (self.match(.colon)) return_type = try self.parseTypeAnnotation();
                     var body: NodeId = hir_mod.none_node_id;
                     if (self.peek().kind == .open_brace) {
                         body = try self.parseBlockStatement();
@@ -624,7 +625,7 @@ pub const Parser = struct {
                         .{ .start = member_start.span.start, .end = self.tokens[self.cursor - 1].span.end },
                         name_node,
                         params,
-                        hir_mod.none_node_id,
+                        return_type,
                         body,
                         .{
                             .is_method = true,
