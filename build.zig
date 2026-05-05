@@ -266,6 +266,8 @@ pub fn build(b: *std.Build) void {
     const ts_cache_pkg = createPackage(b, "packages/ts_cache/src/ts_cache.zig", target, optimize, zig_test_framework);
     // ts_driver consumes ts_cache for the emitWithCache fast path.
     ts_driver_pkg.addImport("ts_cache", ts_cache_pkg);
+    // ts_program uses ts_cache for the multi-file emitAllToCache path.
+    ts_program_pkg.addImport("ts_cache", ts_cache_pkg);
 
     // TS-parity Phase 8 — LSP wire-protocol JSON-RPC server.
     const ts_lsp_server_pkg = createPackage(b, "packages/ts_lsp_server/src/ts_lsp_server.zig", target, optimize, zig_test_framework);

@@ -19,6 +19,7 @@
 const std = @import("std");
 const ts_driver = @import("ts_driver");
 const ts_resolver = @import("ts_resolver");
+const ts_cache = @import("ts_cache");
 
 pub const FileId = u32;
 
@@ -181,6 +182,66 @@ pub const Program = struct {
         }
 
         try self.resolveImports();
+    }
+
+    /// Per-file cached emit summary. Populated by `emitAllToCache`.
+    pub const EmitSummary = struct {
+        file_id: FileId,
+        path: []const u8,
+        js: []const u8, // owned by gpa
+        diagnostic_count: u32,
+        has_errors: bool,
+        from_cache: bool,
+
+        pub fn deinit(self: *EmitSummary, gpa: std.mem.Allocator) void {
+            gpa.free(self.js);
+        }
+    };
+
+    /// Emit every file to JS, consulting `cache` for hits. The cache
+    /// key is `sha256(source + config_blob)` per file. On a hit the
+    /// cached JS is returned directly without running the lex/parse/
+    /// bind/check/emit pipeline — the multi-file analogue of
+    /// `ts_driver.emitWithCache`.
+    ///
+    /// This is the path `home tsc --emit` will take for unchanged
+    /// files: cold-start over a fully-cached project drops to a
+    /// pile of disk reads instead of N pipeline runs.
+    ///
+    /// Returns a slice of `EmitSummary` records (caller frees each
+    /// `js` slice plus the outer slice via `gpa.free`).
+    pub fn emitAllToCache(
+        self: *Program,
+        cache: *ts_cache.Cache,
+        config_blob: []const u8,
+        options: ts_driver.CompileOptions,
+    ) ProgramError![]EmitSummary {
+        const out = self.gpa.alloc(EmitSummary, self.files.items.len) catch return error.OutOfMemory;
+        errdefer {
+            for (out) |*s| self.gpa.free(s.js);
+            self.gpa.free(out);
+        }
+        for (self.files.items, 0..) |f, idx| {
+            var per_file = options;
+            per_file.is_tsx = options.is_tsx or f.is_tsx;
+            const r = ts_driver.emitWithCache(self.gpa, f.source, cache, config_blob, per_file) catch |err| switch (err) {
+                error.OutOfMemory => return error.OutOfMemory,
+                error.LexError => return error.LexError,
+                error.ParseError => return error.ParseError,
+                error.BindError => return error.BindError,
+                error.EmitError => return error.EmitError,
+                else => return error.EmitError,
+            };
+            out[idx] = .{
+                .file_id = f.id,
+                .path = f.path,
+                .js = r.js,
+                .diagnostic_count = r.diagnostic_count,
+                .has_errors = r.has_errors,
+                .from_cache = r.from_cache,
+            };
+        }
+        return out;
     }
 
     /// Compile every file in parallel using a worker pool. Each
@@ -576,6 +637,61 @@ test "Program: recompileChanged only recompiles listed paths" {
     const b = p.fileById(1);
     try T.expect(b.compilation != null);
     try T.expect(std.mem.indexOf(u8, b.compilation.?.js, "999") != null);
+}
+
+test "Program: emitAllToCache emits JS for every file" {
+    var vfs = ts_resolver.VirtualFs.init(T.allocator);
+    defer vfs.deinit();
+    var resolver = ts_resolver.Resolver.init(T.allocator, vfs.fs(), .{});
+    defer resolver.deinit();
+    var p = Program.init(T.allocator, &resolver);
+    defer p.deinit();
+    _ = try p.add("/a.ts", "let x: number = 1;");
+    _ = try p.add("/b.ts", "let y: string = \"hi\";");
+
+    var cache = try ts_cache.Cache.init(T.allocator, null);
+    defer cache.deinit();
+
+    const summaries = try p.emitAllToCache(&cache, "", .{});
+    defer {
+        for (summaries) |*s| s.deinit(T.allocator);
+        T.allocator.free(summaries);
+    }
+    try T.expectEqual(@as(usize, 2), summaries.len);
+    for (summaries) |s| {
+        try T.expect(s.js.len > 0);
+        try T.expect(!s.from_cache); // first run is always a miss
+    }
+    // Cache now has 2 entries.
+    try T.expectEqual(@as(u32, 2), cache.count());
+}
+
+test "Program: emitAllToCache second pass is cache-hit" {
+    var vfs = ts_resolver.VirtualFs.init(T.allocator);
+    defer vfs.deinit();
+    var resolver = ts_resolver.Resolver.init(T.allocator, vfs.fs(), .{});
+    defer resolver.deinit();
+    var p = Program.init(T.allocator, &resolver);
+    defer p.deinit();
+    _ = try p.add("/a.ts", "let x: number = 1;");
+    _ = try p.add("/b.ts", "let y: string = \"hi\";");
+
+    var cache = try ts_cache.Cache.init(T.allocator, null);
+    defer cache.deinit();
+
+    const first = try p.emitAllToCache(&cache, "", .{});
+    defer {
+        for (first) |*s| s.deinit(T.allocator);
+        T.allocator.free(first);
+    }
+    const second = try p.emitAllToCache(&cache, "", .{});
+    defer {
+        for (second) |*s| s.deinit(T.allocator);
+        T.allocator.free(second);
+    }
+    for (second) |s| try T.expect(s.from_cache);
+    // Same JS bytes.
+    for (first, second) |a, b| try T.expectEqualStrings(a.js, b.js);
 }
 
 test "Program: cycle does not infinite loop" {
