@@ -196,6 +196,15 @@ pub fn build(b: *std.Build) void {
     ts_emit_pkg.addImport("ts_lexer", ts_lexer_pkg);
     ts_emit_pkg.addImport("ts_parser", ts_parser_pkg);
     const d_hm_pkg = createPackage(b, "packages/d_hm/src/d_hm.zig", target, optimize, zig_test_framework);
+
+    // TS-parity Phase 4.5 — driver wiring lex → parse → bind → emit.
+    const ts_driver_pkg = createPackage(b, "packages/ts_driver/src/ts_driver.zig", target, optimize, zig_test_framework);
+    ts_driver_pkg.addImport("hir", hir_pkg);
+    ts_driver_pkg.addImport("string_interner", string_interner_pkg);
+    ts_driver_pkg.addImport("ts_lexer", ts_lexer_pkg);
+    ts_driver_pkg.addImport("ts_parser", ts_parser_pkg);
+    ts_driver_pkg.addImport("binder", binder_pkg);
+    ts_driver_pkg.addImport("ts_emit", ts_emit_pkg);
     const volatile_pkg = createPackage(b, "packages/volatile/src/volatile.zig", target, optimize, zig_test_framework);
     const pantry_pkg = createPackage(b, "packages/pantry/src/pantry.zig", target, optimize, zig_test_framework);
     const collections_pkg = createPackage(b, "packages/collections/src/collection.zig", target, optimize, zig_test_framework);
@@ -839,6 +848,10 @@ pub fn build(b: *std.Build) void {
     const d_hm_tests = b.addTest(.{ .root_module = d_hm_pkg });
     const run_d_hm_tests = b.addRunArtifact(d_hm_tests);
     test_step.dependOn(&run_d_hm_tests.step);
+
+    const ts_driver_tests = b.addTest(.{ .root_module = ts_driver_pkg });
+    const run_ts_driver_tests = b.addRunArtifact(ts_driver_tests);
+    test_step.dependOn(&run_ts_driver_tests.step);
 
     // Volatile operations tests
     const volatile_tests = b.addTest(.{ .root_module = volatile_pkg });
