@@ -1,0 +1,3 @@
+Checking: <repo>/tests/diagnostics/cases/types/30_uninit_via_addrof.home
+
+Success: Type checking passed ✓

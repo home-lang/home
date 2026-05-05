@@ -2337,6 +2337,15 @@ pub const TypeChecker = struct {
         // operand. Then re-wrap in a Reference on return so the
         // surrounding context sees the pointer type it expects.
         if (unary.op == .AddressOf) {
+            // Taking `&local` (or `&local.field`, `&local[i]`) hands a
+            // writable alias to whatever consumes it. Conservatively
+            // treat that as a potential write to the root local before
+            // we evaluate the operand, so the operand itself doesn't
+            // trigger the "use of possibly uninitialized variable"
+            // warning and downstream reads are accepted.
+            if (rootIdentName(unary.operand)) |root| {
+                _ = self.uninitialized_vars.remove(root);
+            }
             const operand_hint: ?Type = if (hint) |h|
                 (switch (h) {
                     .Reference => |inner| inner.*,
@@ -2434,8 +2443,15 @@ pub const TypeChecker = struct {
             .UnaryExpr => |unary| try self.inferUnaryExpression(unary),
             .AssignmentExpr => |assign| blk: {
                 const val_type = try self.inferExpression(assign.value);
-                if (assign.target.* == .Identifier) {
-                    _ = self.uninitialized_vars.remove(assign.target.Identifier.name);
+                // Clear the may-uninit bit for the root local: this covers
+                // direct `x = …`, sub-component writes like `x.f = …` and
+                // `x[i] = …`, and writes through a pointer alias such as
+                // `*x = …`. Conservative: any l-value that bottoms out at
+                // a local treats the whole local as potentially initialised
+                // from this point on, which matches what the runtime would
+                // observe.
+                if (rootIdentName(assign.target)) |root| {
+                    _ = self.uninitialized_vars.remove(root);
                 }
                 break :blk val_type;
             },
@@ -3166,7 +3182,40 @@ pub const TypeChecker = struct {
         return error.UndefinedVariable;
     }
 
+    /// Walk an l-value-shaped expression to its root identifier name, if
+    /// any. Used by the may-uninit dataflow so that operations whose target
+    /// is a sub-component of a local (`x.f`, `x[i]`, `*x`, or chains of
+    /// these) still count as a write to the root local for "definitely
+    /// initialised" purposes. Conservative: any AddressOf or assignment
+    /// reaching a local through these accessors clears the local from the
+    /// uninitialised set.
+    fn rootIdentName(expr: *const ast.Expr) ?[]const u8 {
+        return switch (expr.*) {
+            .Identifier => |id| id.name,
+            .MemberExpr => |m| rootIdentName(m.object),
+            .IndexExpr => |idx| rootIdentName(idx.array),
+            .UnaryExpr => |u| switch (u.op) {
+                .Deref, .AddressOf, .Borrow, .BorrowMut => rootIdentName(u.operand),
+                else => null,
+            },
+            else => null,
+        };
+    }
+
     fn inferUnaryExpression(self: *TypeChecker, unary: *const ast.UnaryExpr) TypeError!Type {
+        // Address-of acts as a potential write through a pointer: the
+        // callee receiving `&local` (directly or via `&local.field` /
+        // `&local[i]`) may initialise the storage. Conservatively mark
+        // the root local as no-longer-uninitialised before evaluating
+        // the operand, so the AddressOf operand itself doesn't trip the
+        // "use of possibly uninitialized variable" warning and any
+        // downstream reads are accepted.
+        if (unary.op == .AddressOf) {
+            if (rootIdentName(unary.operand)) |root| {
+                _ = self.uninitialized_vars.remove(root);
+            }
+        }
+
         const operand_type = try self.inferExpression(unary.operand);
 
         return switch (unary.op) {

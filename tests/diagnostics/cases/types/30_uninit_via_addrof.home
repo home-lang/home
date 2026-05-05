@@ -1,0 +1,24 @@
+// Issue #31 (Bug 1): the may-uninit dataflow now treats `&local`
+// (or `&local.field` / `&local[i]`) and any sub-component write
+// (`local.field = …`, `local[i] = …`) as a potential initialisation
+// of the root local. Previously a kernel-style `var buf: [N]u8;
+// fill(&buf)` pattern incorrectly reported "use of possibly
+// uninitialized variable" both at the AddressOf site and at later
+// reads. This snapshot pins the positive (no diagnostics) behaviour.
+fn fill_buffer(buf: *[16]u8) {}
+
+struct Point { x: i32, y: i32 }
+
+fn caller() {
+    var buf: [16]u8
+    fill_buffer(&buf)
+    let first: u8 = buf[0]
+
+    var p: Point
+    p.x = 10
+    let v: i32 = p.x
+
+    var arr: [4]u8
+    arr[0] = 5
+    let head: u8 = arr[0]
+}
