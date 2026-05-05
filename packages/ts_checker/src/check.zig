@@ -74,7 +74,7 @@ pub const Checker = struct {
     gpa: std.mem.Allocator,
     hir: *Hir,
     interner: *interner.Interner,
-    string_interner: *const string_interner.Interner,
+    string_interner: *string_interner.Interner,
     engine: *relation.Engine,
     lowerer: lower.Lowerer,
     /// Optional bound module — when set, identifier expressions
@@ -86,8 +86,22 @@ pub const Checker = struct {
     narrow_scopes: std.ArrayListUnmanaged(std.AutoHashMapUnmanaged(hir_mod.StringId, TypeId)),
     /// Class-name → instance type. Populated by `checkClassDecl`
     /// when a class is declared; consulted by `instanceof` narrowing
-    /// and `new` expression typing.
+    /// and `new` expression typing — both of which require the name
+    /// to refer to a constructable runtime entity (not an interface
+    /// or a type alias).
     class_instance_types: std.AutoHashMapUnmanaged(hir_mod.StringId, TypeId),
+    /// Class-name → constructor signature TypeId. Populated when a
+    /// class declares an explicit `constructor(...)`; consulted by
+    /// `new_expr` typing to check argument count / types. Classes
+    /// without an explicit constructor produce no entry — `new Foo()`
+    /// then accepts any args (matches TS's implicit no-arg default).
+    class_constructor_sigs: std.AutoHashMapUnmanaged(hir_mod.StringId, TypeId),
+    /// Generic name → TypeId table for type-annotation resolution.
+    /// A superset of `class_instance_types` that also covers
+    /// `interface I { ... }` and `type Alias = T`. Consulted by
+    /// `lowererLowerWithTypeParams` so `b: Box`, `b: SomeInterface`,
+    /// or `b: SomeAlias` all resolve at the annotation site.
+    type_names: std.AutoHashMapUnmanaged(hir_mod.StringId, TypeId),
     diagnostics: std.ArrayListUnmanaged(Diagnostic),
     diag_arena: std.heap.ArenaAllocator,
 
@@ -95,7 +109,7 @@ pub const Checker = struct {
         gpa: std.mem.Allocator,
         hir: *Hir,
         ti: *interner.Interner,
-        si: *const string_interner.Interner,
+        si: *string_interner.Interner,
         engine: *relation.Engine,
     ) Checker {
         return .{
@@ -108,6 +122,8 @@ pub const Checker = struct {
             .module = null,
             .narrow_scopes = .empty,
             .class_instance_types = .empty,
+            .class_constructor_sigs = .empty,
+            .type_names = .empty,
             .diagnostics = .empty,
             .diag_arena = std.heap.ArenaAllocator.init(gpa),
         };
@@ -127,6 +143,8 @@ pub const Checker = struct {
         }
         self.narrow_scopes.deinit(self.gpa);
         self.class_instance_types.deinit(self.gpa);
+        self.class_constructor_sigs.deinit(self.gpa);
+        self.type_names.deinit(self.gpa);
         self.diagnostics.deinit(self.gpa);
         self.diag_arena.deinit();
     }
@@ -143,6 +161,8 @@ pub const Checker = struct {
             .var_decl, .let_decl, .const_decl => try self.checkVarDecl(node),
             .fn_decl, .fn_expr, .arrow_fn => try self.checkFnDecl(node),
             .class_decl => try self.checkClassDecl(node),
+            .interface_decl => try self.checkInterfaceDecl(node),
+            .type_alias_decl => try self.checkTypeAliasDecl(node),
             .return_stmt => {
                 const r = hir_mod.returnOf(self.hir, node);
                 if (r.value != hir_mod.none_node_id) {
@@ -185,19 +205,37 @@ pub const Checker = struct {
     /// store it on the fn_decl node. Walks the body so nested
     /// expressions get typed too.
     fn checkFnDecl(self: *Checker, node: NodeId) CheckError!void {
-        const f = hir_mod.fnDeclOf(self.hir, node);
+        const had_type_params = hir_mod.fnTypeParams(self.hir, node).len > 0;
+        _ = try self.checkFnSignatureOnly(node);
+        defer if (had_type_params) self.popNarrowScope();
+        try self.walkFnBody(node);
+    }
 
-        // Type parameters: each parameter gets its own
-        // type-parameter TypeId so references inside the body /
-        // params / return type can resolve to it. Phase 3
-        // simplification: type-parameter constraints are not yet
-        // checked; defaults are not applied; they're referenced by
-        // name only.
-        const type_params = hir_mod.fnTypeParams(self.hir, node);
-        if (type_params.len > 0) {
-            try self.pushNarrowScope();
+    /// Type the body of a function/method/arrow. Split from
+    /// `checkFnDecl` so callers (e.g. `checkClassDecl`) can run the
+    /// signature pass first, register the enclosing scope's
+    /// `this`-type, and only then walk the body.
+    fn walkFnBody(self: *Checker, node: NodeId) CheckError!void {
+        const f = hir_mod.fnDeclOf(self.hir, node);
+        if (f.body == hir_mod.none_node_id) return;
+        if (self.hir.kindOf(f.body) == .block_stmt) {
+            const stmts = hir_mod.blockStmts(self.hir, f.body);
+            for (stmts) |s| try self.checkStatement(s);
+        } else {
+            _ = try self.checkExpression(f.body);
         }
-        defer if (type_params.len > 0) self.popNarrowScope();
+    }
+
+    /// Run the signature-only pass of `checkFnDecl` — type
+    /// parameters, parameter annotations, return type, intern the
+    /// signature — without walking the body. The caller owns the
+    /// narrow scope: a type-params scope is pushed here when the
+    /// fn declares any, and the caller must pop it after the body
+    /// walk so type-param references inside the body still resolve.
+    fn checkFnSignatureOnly(self: *Checker, node: NodeId) CheckError!TypeId {
+        const f = hir_mod.fnDeclOf(self.hir, node);
+        const type_params = hir_mod.fnTypeParams(self.hir, node);
+        if (type_params.len > 0) try self.pushNarrowScope();
         for (type_params) |tp| {
             if (self.hir.kindOf(tp) != .type_parameter) continue;
             const tpp = hir_mod.typeParameterOf(self.hir, tp);
@@ -211,13 +249,9 @@ pub const Checker = struct {
                 types.Primitive.none;
             const tp_id = self.interner.internTypeParameter(tpp.name, constraint, def) catch return error.OutOfMemory;
             self.hir.setType(tp, tp_id);
-            // Make this name resolve to its type-parameter id
-            // inside the function (parameter annotations, return
-            // type, body).
             try self.recordNarrow(tpp.name, tp_id);
         }
 
-        // Resolve parameter types.
         var param_types: std.ArrayListUnmanaged(TypeId) = .empty;
         defer param_types.deinit(self.gpa);
         const params = hir_mod.fnParams(self.hir, node);
@@ -229,13 +263,9 @@ pub const Checker = struct {
                 types.Primitive.any;
             try param_types.append(self.gpa, t);
             self.hir.setType(p, t);
-            // Tag the parameter's name node too so identifier
-            // lookup inside the body returns the parameter type.
             if (pp.name != hir_mod.none_node_id) self.hir.setType(pp.name, t);
         }
 
-        // Resolve return type (declared annotation only — return-
-        // statement-driven inference is a follow-up).
         const ret_t: TypeId = if (f.return_type != hir_mod.none_node_id)
             try self.lowererLowerWithTypeParams(f.return_type)
         else
@@ -243,20 +273,8 @@ pub const Checker = struct {
 
         const sig = self.interner.internSignature(param_types.items, ret_t, false) catch return error.OutOfMemory;
         self.hir.setType(node, sig);
-        // Function name's identifier resolves to the signature type.
         if (f.name != hir_mod.none_node_id) self.hir.setType(f.name, sig);
-
-        // Walk the body so its statements get typed. Arrow functions
-        // with expression bodies (e.g. `(x) => x + 1`) attach an
-        // expression directly as the body — handle both forms.
-        if (f.body != hir_mod.none_node_id) {
-            if (self.hir.kindOf(f.body) == .block_stmt) {
-                const stmts = hir_mod.blockStmts(self.hir, f.body);
-                for (stmts) |s| try self.checkStatement(s);
-            } else {
-                _ = try self.checkExpression(f.body);
-            }
-        }
+        return sig;
     }
 
     /// Lower a class declaration into an instance object type. Each
@@ -270,19 +288,28 @@ pub const Checker = struct {
         const c = hir_mod.classOf(self.hir, node);
         const members = hir_mod.classMembers(self.hir, node);
 
+        // Pass 1: build the instance shape from signatures + field
+        // annotations only (no method body walks). Methods need the
+        // instance type registered in `class_instance_types` BEFORE
+        // their bodies are typed so `this` resolves.
         var instance_members: std.ArrayListUnmanaged(types.ObjectMember) = .empty;
         defer instance_members.deinit(self.gpa);
+        var ctor_sig: TypeId = types.Primitive.none;
 
         for (members) |m| {
             switch (self.hir.kindOf(m)) {
                 .fn_decl, .fn_expr, .arrow_fn => {
-                    // Walk the method so its body / params get typed.
-                    try self.checkFnDecl(m);
+                    const sig = try self.checkFnSignatureOnly(m);
+                    // Pop the type-params scope `checkFnSignatureOnly`
+                    // pushed (we don't walk the body in this pass).
+                    if (hir_mod.fnTypeParams(self.hir, m).len > 0) self.popNarrowScope();
                     const fn_p = hir_mod.fnDeclOf(self.hir, m);
-                    if (fn_p.flags.is_constructor) continue;
+                    if (fn_p.flags.is_constructor) {
+                        ctor_sig = sig;
+                        continue;
+                    }
                     if (fn_p.name == hir_mod.none_node_id or self.hir.kindOf(fn_p.name) != .identifier) continue;
                     const id = hir_mod.identifierOf(self.hir, fn_p.name);
-                    const sig = self.hir.typeOf(m);
                     try instance_members.append(self.gpa, .{
                         .name = id.name,
                         .type = sig,
@@ -316,28 +343,147 @@ pub const Checker = struct {
             }
         }
 
+        // `extends Parent`: prepend any inherited members the child
+        // doesn't override. The child's declared members win on
+        // name conflict (TS prototype-chain semantics).
+        if (c.extends != hir_mod.none_node_id) {
+            try self.mergeExtendedMembers(c.extends, &instance_members);
+        }
+
         const instance_t = self.interner.internObjectType(instance_members.items) catch return error.OutOfMemory;
         self.hir.setType(node, instance_t);
         if (c.name != hir_mod.none_node_id and self.hir.kindOf(c.name) == .identifier) {
             const cid = hir_mod.identifierOf(self.hir, c.name);
             try self.class_instance_types.put(self.gpa, cid.name, instance_t);
+            try self.type_names.put(self.gpa, cid.name, instance_t);
+            if (ctor_sig != types.Primitive.none) {
+                try self.class_constructor_sigs.put(self.gpa, cid.name, ctor_sig);
+            }
             // The class name as a value is the constructor — we don't
             // have a dedicated constructor signature TypeId yet, so
             // record the instance type on the name node. `new Foo()`
             // looks up the class by name to get the instance type.
             self.hir.setType(c.name, instance_t);
         }
+
+        // Pass 2: re-run each method through `checkFnDecl` (which
+        // re-derives the signature idempotently and walks the body)
+        // with `this` bound to the instance type via a narrow
+        // scope. Identifier lookup consults narrow scopes first,
+        // so `this.x` typing falls through the narrow binding into
+        // the instance object's member table.
+        const this_id = self.string_interner.intern("this") catch return error.OutOfMemory;
+        for (members) |m| switch (self.hir.kindOf(m)) {
+            .fn_decl, .fn_expr, .arrow_fn => {
+                try self.pushNarrowScope();
+                try self.recordNarrow(this_id, instance_t);
+                try self.checkFnDecl(m);
+                self.popNarrowScope();
+            },
+            else => {},
+        };
+    }
+
+    /// Merge a parent class's instance members into the current
+    /// child's member list, inheriting anything the child doesn't
+    /// already declare. The child wins on name conflict — that's
+    /// override semantics. Silent no-op when the parent expression
+    /// isn't a known class identifier.
+    fn mergeExtendedMembers(
+        self: *Checker,
+        extends_expr: NodeId,
+        child_members: *std.ArrayListUnmanaged(types.ObjectMember),
+    ) CheckError!void {
+        if (self.hir.kindOf(extends_expr) != .identifier) return;
+        const id = hir_mod.identifierOf(self.hir, extends_expr);
+        const parent_t = self.class_instance_types.get(id.name) orelse return;
+        const parent_members = self.interner.objectMembers(parent_t);
+
+        // Collect names the child already declares so we know which
+        // parent entries to skip (override).
+        var child_names: std.AutoHashMapUnmanaged(hir_mod.StringId, void) = .empty;
+        defer child_names.deinit(self.gpa);
+        for (child_members.items) |m| try child_names.put(self.gpa, m.name, {});
+
+        // Prepend inherited-only members so child entries (declared
+        // last) win after sort+dedup is performed by the caller.
+        var inherited: std.ArrayListUnmanaged(types.ObjectMember) = .empty;
+        defer inherited.deinit(self.gpa);
+        for (parent_members) |pm| {
+            if (child_names.contains(pm.name)) continue;
+            try inherited.append(self.gpa, pm);
+        }
+        if (inherited.items.len == 0) return;
+        try child_members.insertSlice(self.gpa, 0, inherited.items);
+    }
+
+    /// Lower an interface declaration into an interned object type
+    /// matching its member list. Each `name: T` becomes a member
+    /// typed as the lowering of `T`; each method shorthand `name(p):
+    /// R` becomes a member typed as the matching signature. The
+    /// resulting TypeId is recorded on the interface name and in
+    /// `type_names` so subsequent `b: I` annotations resolve.
+    fn checkInterfaceDecl(self: *Checker, node: NodeId) CheckError!void {
+        const it = hir_mod.interfaceOf(self.hir, node);
+        const members = hir_mod.interfaceMembers(self.hir, node);
+
+        var iface_members: std.ArrayListUnmanaged(types.ObjectMember) = .empty;
+        defer iface_members.deinit(self.gpa);
+
+        for (members) |m| {
+            if (self.hir.kindOf(m) != .interface_member) continue;
+            const im = hir_mod.interfaceMemberOf(self.hir, m);
+            // name == 0 means a computed key — skip until we have
+            // late-bound key support.
+            if (im.name == 0) continue;
+            const member_t: TypeId = blk: {
+                if (im.type_node != hir_mod.none_node_id) {
+                    break :blk try self.lowererLowerWithTypeParams(im.type_node);
+                }
+                break :blk types.Primitive.any;
+            };
+            try iface_members.append(self.gpa, .{
+                .name = im.name,
+                .type = member_t,
+                .is_optional = im.is_optional,
+                .is_readonly = im.is_readonly,
+                .is_method = im.is_method,
+            });
+        }
+
+        const iface_t = self.interner.internObjectType(iface_members.items) catch return error.OutOfMemory;
+        self.hir.setType(node, iface_t);
+        if (it.name != hir_mod.none_node_id and self.hir.kindOf(it.name) == .identifier) {
+            const id = hir_mod.identifierOf(self.hir, it.name);
+            try self.type_names.put(self.gpa, id.name, iface_t);
+            self.hir.setType(it.name, iface_t);
+        }
+    }
+
+    /// Lower a type alias `type Alias = T` into the underlying
+    /// type's TypeId and record it under the alias name so
+    /// `b: Alias` resolves at the annotation site.
+    fn checkTypeAliasDecl(self: *Checker, node: NodeId) CheckError!void {
+        const ta = hir_mod.typeAliasOf(self.hir, node);
+        if (ta.aliased == hir_mod.none_node_id) return;
+        const aliased_t = try self.lowererLowerWithTypeParams(ta.aliased);
+        self.hir.setType(node, aliased_t);
+        if (ta.name != hir_mod.none_node_id and self.hir.kindOf(ta.name) == .identifier) {
+            const id = hir_mod.identifierOf(self.hir, ta.name);
+            try self.type_names.put(self.gpa, id.name, aliased_t);
+            self.hir.setType(ta.name, aliased_t);
+        }
     }
 
     /// Lower a type annotation while consulting the current
     /// narrow scope (for in-scope type parameters) and the
-    /// declared-class table (for class names used as types).
+    /// named-type table (for class / interface / type-alias names).
     fn lowererLowerWithTypeParams(self: *Checker, type_node: NodeId) CheckError!TypeId {
         if (self.hir.kindOf(type_node) == .type_ref) {
             const r = hir_mod.typeRefOf(self.hir, type_node);
             if (r.qualifier_len == 0 and r.args_len == 0) {
                 if (self.lookupNarrow(r.name)) |t| return t;
-                if (self.class_instance_types.get(r.name)) |t| return t;
+                if (self.type_names.get(r.name)) |t| return t;
             }
         }
         return self.lowerer.lower(type_node);
@@ -398,13 +544,24 @@ pub const Checker = struct {
                 const c = hir_mod.callOf(self.hir, node);
                 _ = try self.checkExpression(c.callee);
                 const args = hir_mod.callArgs(self.hir, node);
-                for (args) |arg| _ = try self.checkExpression(arg);
+                var arg_types: std.ArrayListUnmanaged(TypeId) = .empty;
+                defer arg_types.deinit(self.gpa);
+                for (args) |arg| {
+                    const t = try self.checkExpression(arg);
+                    try arg_types.append(self.gpa, t);
+                }
                 // `new Foo(...)` produces the instance type recorded
-                // by `checkClassDecl`. If the callee isn't a known
-                // class identifier (e.g. `new someExpr()`), fall back
-                // to `any`.
+                // by `checkClassDecl`. If the class declared an
+                // explicit constructor we also typecheck args against
+                // its signature (TS2554 + TS2345 mirror call-site
+                // checking). If the callee isn't a known class
+                // identifier (e.g. `new someExpr()`), fall back to
+                // `any`.
                 if (self.hir.kindOf(c.callee) == .identifier) {
                     const id = hir_mod.identifierOf(self.hir, c.callee);
+                    if (self.class_constructor_sigs.get(id.name)) |ctor_sig| {
+                        try self.checkArgsAgainstSignature(node, args, arg_types.items, ctor_sig);
+                    }
                     if (self.class_instance_types.get(id.name)) |inst| break :blk inst;
                 }
                 break :blk types.Primitive.any;
@@ -420,47 +577,9 @@ pub const Checker = struct {
                     try arg_types.append(self.gpa, t);
                 }
                 if (self.interner.pool.flagsOf(callee_t).is_signature) {
-                    const param_ts = self.interner.signatureParams(callee_t);
-                    // TS2554: argument count mismatch.
-                    if (args.len != param_ts.len) {
-                        const msg = try std.fmt.allocPrint(
-                            self.diag_arena.allocator(),
-                            "Expected {d} arguments, but got {d}.",
-                            .{ param_ts.len, args.len },
-                        );
-                        try self.diagnostics.append(self.gpa, .{
-                            .node = node,
-                            .code = TsCodes.expected_n_arguments,
-                            .message = msg,
-                        });
-                    }
-                    // TS2345: argument type mismatch — for each
-                    // arg/param pair, if the arg's type isn't
-                    // assignable to the param's type, emit a
-                    // diagnostic. Skip when the param type is a
-                    // type parameter (we'd need full instantiation
-                    // to check those).
-                    const npairs = @min(args.len, param_ts.len);
-                    var i: usize = 0;
-                    while (i < npairs) : (i += 1) {
-                        const param_t = param_ts[i];
-                        if (self.interner.pool.flagsOf(param_t).is_type_parameter) continue;
-                        const arg_t = arg_types.items[i];
-                        const ok = self.engine.isAssignableTo(arg_t, param_t) catch true;
-                        if (!ok) {
-                            const msg = try std.fmt.allocPrint(
-                                self.diag_arena.allocator(),
-                                "Argument is not assignable to parameter at position {d}.",
-                                .{i},
-                            );
-                            try self.diagnostics.append(self.gpa, .{
-                                .node = args[i],
-                                .code = TsCodes.argument_type_mismatch,
-                                .message = msg,
-                            });
-                        }
-                    }
+                    try self.checkArgsAgainstSignature(node, args, arg_types.items, callee_t);
                     if (self.interner.signatureReturn(callee_t)) |ret| {
+                        const param_ts = self.interner.signatureParams(callee_t);
                         const instantiated = self.instantiateReturn(param_ts, arg_types.items, ret) catch ret;
                         break :blk instantiated;
                     }
@@ -948,6 +1067,53 @@ pub const Checker = struct {
         return t;
     }
 
+    /// Shared arg / signature checker used by both `call_expr` and
+    /// `new_expr`. Emits TS2554 (count mismatch) and TS2345 (per-arg
+    /// type mismatch) against `sig`'s parameter list. Type-parameter
+    /// slots are skipped — full instantiation lives in
+    /// `instantiateReturn`.
+    fn checkArgsAgainstSignature(
+        self: *Checker,
+        call_node: NodeId,
+        args: []const NodeId,
+        arg_types: []const TypeId,
+        sig: TypeId,
+    ) CheckError!void {
+        const param_ts = self.interner.signatureParams(sig);
+        if (args.len != param_ts.len) {
+            const msg = try std.fmt.allocPrint(
+                self.diag_arena.allocator(),
+                "Expected {d} arguments, but got {d}.",
+                .{ param_ts.len, args.len },
+            );
+            try self.diagnostics.append(self.gpa, .{
+                .node = call_node,
+                .code = TsCodes.expected_n_arguments,
+                .message = msg,
+            });
+        }
+        const npairs = @min(args.len, param_ts.len);
+        var i: usize = 0;
+        while (i < npairs) : (i += 1) {
+            const param_t = param_ts[i];
+            if (self.interner.pool.flagsOf(param_t).is_type_parameter) continue;
+            const arg_t = arg_types[i];
+            const ok = self.engine.isAssignableTo(arg_t, param_t) catch true;
+            if (!ok) {
+                const msg = try std.fmt.allocPrint(
+                    self.diag_arena.allocator(),
+                    "Argument is not assignable to parameter at position {d}.",
+                    .{i},
+                );
+                try self.diagnostics.append(self.gpa, .{
+                    .node = args[i],
+                    .code = TsCodes.argument_type_mismatch,
+                    .message = msg,
+                });
+            }
+        }
+    }
+
     fn report(self: *Checker, node: NodeId, code: u32, message: []const u8) !void {
         const msg = try self.diag_arena.allocator().dupe(u8, message);
         try self.diagnostics.append(self.gpa, .{
@@ -1318,4 +1484,197 @@ test "checker: missing object property emits TS2339" {
         if (d.code == TsCodes.property_does_not_exist) found = true;
     }
     try T.expect(found);
+}
+
+test "checker: interface name resolves as a type annotation" {
+    const s = try newSetup(
+        \\interface Box { value: number; }
+        \\function f(b: Box): number { return b.value; }
+    );
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+    try T.expect(s.checker.diagnostics.items.len == 0);
+    const stmts = hir_mod.blockStmts(&s.hir, s.root);
+    const iface_t = s.hir.typeOf(stmts[0]);
+    const params = hir_mod.fnParams(&s.hir, stmts[1]);
+    try T.expectEqual(iface_t, s.hir.typeOf(params[0]));
+    // `b.value` types to number — confirms interface members
+    // resolve through the type-name lookup.
+    const f = hir_mod.fnDeclOf(&s.hir, stmts[1]);
+    const body = hir_mod.blockStmts(&s.hir, f.body);
+    const ret_p = hir_mod.returnOf(&s.hir, body[0]);
+    try T.expectEqual(types.Primitive.number_t, s.hir.typeOf(ret_p.value));
+}
+
+test "checker: type alias to a primitive resolves" {
+    const s = try newSetup(
+        \\type Count = number;
+        \\let n: Count = 1;
+    );
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+    try T.expect(s.checker.diagnostics.items.len == 0);
+    const stmts = hir_mod.blockStmts(&s.hir, s.root);
+    const alias_t = s.hir.typeOf(stmts[0]);
+    try T.expectEqual(types.Primitive.number_t, alias_t);
+    try T.expectEqual(types.Primitive.number_t, s.hir.typeOf(stmts[1]));
+}
+
+test "checker: type alias to an object literal resolves member access" {
+    const s = try newSetup(
+        \\type Point = { x: number; y: number };
+        \\function f(p: Point): number { return p.x; }
+    );
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+    try T.expect(s.checker.diagnostics.items.len == 0);
+    const stmts = hir_mod.blockStmts(&s.hir, s.root);
+    const f = hir_mod.fnDeclOf(&s.hir, stmts[1]);
+    const body = hir_mod.blockStmts(&s.hir, f.body);
+    const ret_p = hir_mod.returnOf(&s.hir, body[0]);
+    try T.expectEqual(types.Primitive.number_t, s.hir.typeOf(ret_p.value));
+}
+
+test "checker: interface annotation mismatch emits TS2322" {
+    const s = try newSetup(
+        \\interface Box { value: number; }
+        \\let b: Box = { value: "hi" };
+    );
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+    var found = false;
+    for (s.checker.diagnostics.items) |d| {
+        if (d.code == TsCodes.type_not_assignable) found = true;
+    }
+    try T.expect(found);
+}
+
+test "checker: this.x inside a class method resolves to the field type" {
+    const s = try newSetup(
+        \\class Box {
+        \\  value: number = 0;
+        \\  read(): number { return this.value; }
+        \\}
+    );
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+    try T.expect(s.checker.diagnostics.items.len == 0);
+    // Walk into the read() method's return statement and verify
+    // `this.value` is typed as number_t.
+    const top = firstStatement(s);
+    const members = hir_mod.classMembers(&s.hir, top);
+    var read_node: NodeId = hir_mod.none_node_id;
+    for (members) |m| {
+        const k = s.hir.kindOf(m);
+        if (k != .fn_decl and k != .fn_expr and k != .arrow_fn) continue;
+        const fp = hir_mod.fnDeclOf(&s.hir, m);
+        if (fp.flags.is_constructor) continue;
+        read_node = m;
+        break;
+    }
+    try T.expect(read_node != hir_mod.none_node_id);
+    const fp = hir_mod.fnDeclOf(&s.hir, read_node);
+    const body = hir_mod.blockStmts(&s.hir, fp.body);
+    const ret_p = hir_mod.returnOf(&s.hir, body[0]);
+    try T.expectEqual(types.Primitive.number_t, s.hir.typeOf(ret_p.value));
+}
+
+test "checker: missing this property in method emits TS2339" {
+    const s = try newSetup(
+        \\class Box {
+        \\  value: number = 0;
+        \\  bad(): number { return this.missing; }
+        \\}
+    );
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+    var found = false;
+    for (s.checker.diagnostics.items) |d| {
+        if (d.code == TsCodes.property_does_not_exist) found = true;
+    }
+    try T.expect(found);
+}
+
+test "checker: class extends inherits parent fields" {
+    const s = try newSetup(
+        \\class Shape { kind: string = ""; }
+        \\class Box extends Shape { value: number = 0; }
+        \\function f(b: Box): string { return b.kind; }
+    );
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+    try T.expect(s.checker.diagnostics.items.len == 0);
+    // Box's instance type carries both `value` (own) and `kind`
+    // (inherited from Shape).
+    const stmts = hir_mod.blockStmts(&s.hir, s.root);
+    const box_t = s.hir.typeOf(stmts[1]);
+    const kind_id = try s.sint.intern("kind");
+    const value_id = try s.sint.intern("value");
+    try T.expect(s.ti.objectMember(box_t, kind_id) != null);
+    try T.expect(s.ti.objectMember(box_t, value_id) != null);
+    // f(b: Box).body returns b.kind — typed as string.
+    const f = hir_mod.fnDeclOf(&s.hir, stmts[2]);
+    const body = hir_mod.blockStmts(&s.hir, f.body);
+    const ret_p = hir_mod.returnOf(&s.hir, body[0]);
+    try T.expectEqual(types.Primitive.string_t, s.hir.typeOf(ret_p.value));
+}
+
+test "checker: child class overrides parent field type" {
+    const s = try newSetup(
+        \\class A { x: string = ""; }
+        \\class B extends A { x: number = 0; }
+    );
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+    const stmts = hir_mod.blockStmts(&s.hir, s.root);
+    const b_t = s.hir.typeOf(stmts[1]);
+    const x_id = try s.sint.intern("x");
+    const x_t = s.ti.objectMember(b_t, x_id) orelse return error.TestExpectedEqual;
+    // Child override wins — `x` is number_t, not string_t.
+    try T.expectEqual(types.Primitive.number_t, x_t);
+}
+
+test "checker: new with wrong arg count emits TS2554" {
+    const s = try newSetup(
+        \\class Box {
+        \\  constructor(v: number) {}
+        \\}
+        \\let b = new Box();
+    );
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+    var found = false;
+    for (s.checker.diagnostics.items) |d| {
+        if (d.code == TsCodes.expected_n_arguments) found = true;
+    }
+    try T.expect(found);
+}
+
+test "checker: new with wrong arg type emits TS2345" {
+    const s = try newSetup(
+        \\class Box {
+        \\  constructor(v: number) {}
+        \\}
+        \\let b = new Box("hi");
+    );
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+    var found = false;
+    for (s.checker.diagnostics.items) |d| {
+        if (d.code == TsCodes.argument_type_mismatch) found = true;
+    }
+    try T.expect(found);
+}
+
+test "checker: new with correct constructor args type-checks cleanly" {
+    const s = try newSetup(
+        \\class Box {
+        \\  value: number = 0;
+        \\  constructor(v: number) {}
+        \\}
+        \\let b = new Box(42);
+    );
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+    try T.expect(s.checker.diagnostics.items.len == 0);
 }
