@@ -197,6 +197,20 @@ pub fn build(b: *std.Build) void {
     ts_emit_pkg.addImport("string_interner", string_interner_pkg);
     ts_emit_pkg.addImport("ts_lexer", ts_lexer_pkg);
     ts_emit_pkg.addImport("ts_parser", ts_parser_pkg);
+
+    // zig-dtsx fast-path .d.ts emitter — installed via pantry at
+    // pantry/zig-dtsx/. `pantry add zig-dtsx` populates the directory;
+    // CI restores it before build. Single-module root file
+    // (zig_dtsx.zig) re-exports scanner + emitter; Zig requires each
+    // file to belong to exactly one module so we can't expose
+    // scanner and emitter as separate modules without duplication.
+    const dtsx_pkg = b.createModule(.{
+        .root_source_file = b.path("pantry/zig-dtsx/src/zig_dtsx.zig"),
+        .target = target,
+        .optimize = optimize,
+    });
+    ts_emit_pkg.addImport("zig_dtsx", dtsx_pkg);
+
     const d_hm_pkg = createPackage(b, "packages/d_hm/src/d_hm.zig", target, optimize, zig_test_framework);
 
     // TS-parity Phase 4.5 — driver wiring lex → parse → bind → emit.
