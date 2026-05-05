@@ -417,6 +417,43 @@ test "driver: call expression returns its function's return type" {
     try T.expectEqual(@as(u32, ts_checker.Primitive.string_t), c.hir.typeOf(init_node));
 }
 
+test "driver: function parameter resolves to its annotation type in body" {
+    var c = try compileSource(T.allocator,
+        \\function id(x: number): number { let y = x; return y; }
+    , .{});
+    defer {
+        c.deinit();
+        T.allocator.destroy(c);
+    }
+    // Walk to `let y = x` inside the body, check y's init `x` is number_t.
+    const stmts = hir_mod.blockStmts(&c.hir, c.root);
+    const fn_node = stmts[0];
+    const f = hir_mod.fnDeclOf(&c.hir, fn_node);
+    const body_stmts = hir_mod.blockStmts(&c.hir, f.body);
+    const y_decl = body_stmts[0];
+    const y_init = hir_mod.varDeclOf(&c.hir, y_decl).init;
+    try T.expectEqual(@as(u32, ts_checker.Primitive.number_t), c.hir.typeOf(y_init));
+}
+
+test "driver: nested call inside function body resolves" {
+    var c = try compileSource(T.allocator,
+        \\function id(x: number): string { return ""; }
+        \\function caller(): string { return id(1); }
+    , .{});
+    defer {
+        c.deinit();
+        T.allocator.destroy(c);
+    }
+    const stmts = hir_mod.blockStmts(&c.hir, c.root);
+    const caller_fn = stmts[1];
+    const f = hir_mod.fnDeclOf(&c.hir, caller_fn);
+    const body_stmts = hir_mod.blockStmts(&c.hir, f.body);
+    const ret = body_stmts[0];
+    const ret_p = hir_mod.returnOf(&c.hir, ret);
+    // The call `id(1)` returns string.
+    try T.expectEqual(@as(u32, ts_checker.Primitive.string_t), c.hir.typeOf(ret_p.value));
+}
+
 test "driver: identifier reference resolves via binder symbol table" {
     var c = try compileSource(T.allocator, "let x: number = 1; let y = x;", .{});
     defer {

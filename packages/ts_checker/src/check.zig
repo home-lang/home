@@ -268,13 +268,68 @@ pub const Checker = struct {
         return t;
     }
 
-    /// Resolve an identifier reference's type via the binder. If
-    /// the symbol declares a `var_decl` / `let_decl` / `const_decl`
-    /// with a known TypeId on the decl node, return that. Otherwise
-    /// fall through to `Primitive.any`.
+    /// Resolve an identifier reference's type. Walks up the HIR
+    /// parent chain looking for an enclosing function whose
+    /// parameter list declares this name; then falls back to the
+    /// binder's module-level scope. This is a Phase 3 simplification
+    /// — proper lexical scoping per the binder's Scope graph lands
+    /// in a follow-up; this covers the high-frequency patterns
+    /// (function parameter use, top-level decl reference).
     fn typeOfIdentifier(self: *Checker, node: NodeId) TypeId {
-        const module = self.module orelse return types.Primitive.any;
         const id = hir_mod.identifierOf(self.hir, node);
+
+        // Walk up the parent chain searching for parameters or
+        // sibling let/const/var decls in scope.
+        var cur: hir_mod.NodeId = self.hir.parentOf(node);
+        while (cur != hir_mod.none_node_id) {
+            const k = self.hir.kindOf(cur);
+            if (k == .fn_decl or k == .fn_expr or k == .arrow_fn) {
+                // Walk parameters and check the same name.
+                const params = hir_mod.fnParams(self.hir, cur);
+                for (params) |p| {
+                    if (self.hir.kindOf(p) != .parameter) continue;
+                    const pp = hir_mod.parameterOf(self.hir, p);
+                    if (pp.name == hir_mod.none_node_id) continue;
+                    if (self.hir.kindOf(pp.name) != .identifier) continue;
+                    const pid = hir_mod.identifierOf(self.hir, pp.name);
+                    if (pid.name == id.name) return self.hir.typeOf(p);
+                }
+                // Don't continue past the function — outer scopes
+                // would shadow but we still want module-level
+                // fallback below.
+            }
+            if (k == .block_stmt) {
+                // Look for a sibling var_decl/let_decl/const_decl
+                // before this node.
+                const stmts = hir_mod.blockStmts(self.hir, cur);
+                for (stmts) |s| {
+                    const sk = self.hir.kindOf(s);
+                    if (sk == .var_decl or sk == .let_decl or sk == .const_decl) {
+                        const v = hir_mod.varDeclOf(self.hir, s);
+                        if (v.name != hir_mod.none_node_id and self.hir.kindOf(v.name) == .identifier) {
+                            const vid = hir_mod.identifierOf(self.hir, v.name);
+                            if (vid.name == id.name) {
+                                const t = self.hir.typeOf(s);
+                                if (t != types.Primitive.none) return t;
+                            }
+                        }
+                    } else if (sk == .fn_decl or sk == .fn_expr) {
+                        const fp = hir_mod.fnDeclOf(self.hir, s);
+                        if (fp.name != hir_mod.none_node_id and self.hir.kindOf(fp.name) == .identifier) {
+                            const fid = hir_mod.identifierOf(self.hir, fp.name);
+                            if (fid.name == id.name) {
+                                const t = self.hir.typeOf(s);
+                                if (t != types.Primitive.none) return t;
+                            }
+                        }
+                    }
+                }
+            }
+            cur = self.hir.parentOf(cur);
+        }
+
+        // Module-level fallback.
+        const module = self.module orelse return types.Primitive.any;
         const sym = module.root.lookup(id.name) orelse return types.Primitive.any;
         if (sym.decls.items.len == 0) return types.Primitive.any;
         const decl = sym.decls.items[0];
