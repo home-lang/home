@@ -503,6 +503,25 @@ test "driver: emitWithCache distinct sources produce distinct entries" {
     try T.expectEqual(@as(u32, 2), cache.count());
 }
 
+test "driver: generic identity function infers T from argument" {
+    var c = try compileSource(T.allocator,
+        \\function id<T>(x: T): T { return x; }
+        \\let n = id(42);
+        \\let s = id("hi");
+    , .{});
+    defer {
+        c.deinit();
+        T.allocator.destroy(c);
+    }
+    const stmts = hir_mod.blockStmts(&c.hir, c.root);
+    const n_init = hir_mod.varDeclOf(&c.hir, stmts[1]).init;
+    const s_init = hir_mod.varDeclOf(&c.hir, stmts[2]).init;
+    // Without instantiation we'd see the unsubstituted type
+    // parameter. With it, n is number and s is string.
+    try T.expectEqual(@as(u32, ts_checker.Primitive.number_t), c.hir.typeOf(n_init));
+    try T.expectEqual(@as(u32, ts_checker.Primitive.string_t), c.hir.typeOf(s_init));
+}
+
 test "driver: typeof narrowing inside if narrows identifier type" {
     var c = try compileSource(T.allocator,
         \\function f(x: any) {

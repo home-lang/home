@@ -474,14 +474,13 @@ pub const Parser = struct {
             name = try self.builder.addIdentifier(tokenSpan(name_tok), name_id);
         }
         // Generic type parameters: `function f<T extends U = D>(...)`.
+        var type_params: []NodeId = &.{};
+        var owns_tps = false;
         if (self.peek().kind == .less_than) {
-            const tps = try self.parseTypeParameterDeclaration();
-            // Phase 1: type parameters parse fully but aren't slotted
-            // into FnDeclPayload yet — Phase 3's checker re-derives
-            // them from the symbol's decl list. Free here so we don't
-            // leak.
-            self.gpa.free(tps);
+            type_params = try self.parseTypeParameterDeclaration();
+            owns_tps = true;
         }
+        defer if (owns_tps) self.gpa.free(type_params);
         const params = try self.parseParameterList();
         defer self.gpa.free(params);
 
@@ -501,9 +500,10 @@ pub const Parser = struct {
             self.tokens[self.cursor - 1].span.end
         else
             start.span.end;
-        return try self.builder.addFnDecl(
+        return try self.builder.addFnDeclGeneric(
             .{ .start = start.span.start, .end = end_pos },
             name,
+            type_params,
             params,
             return_type,
             body,

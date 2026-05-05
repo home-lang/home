@@ -476,6 +476,11 @@ pub const LabelPayload = struct {
 pub const FnDeclPayload = struct {
     /// Function name. `none_node_id` for anonymous function expression.
     name: NodeId,
+    /// Children pool slice: type-parameter nodes
+    /// (`type_parameter` kind) for generic functions. Empty for
+    /// non-generic decls.
+    type_params_start: u32,
+    type_params_len: u32,
     /// Children pool slice: parameter nodes (`parameter` kind).
     params_start: u32,
     params_len: u32,
@@ -1554,11 +1559,30 @@ pub const Builder = struct {
         body: NodeId,
         flags: FnFlags,
     ) !NodeId {
+        return self.addFnDeclGeneric(span, name, &.{}, params, return_type, body, flags);
+    }
+
+    /// Generic-aware fn-decl builder. `type_params` is the list of
+    /// `type_parameter` HIR nodes; pass `&.{}` for non-generic decls.
+    pub fn addFnDeclGeneric(
+        self: *Builder,
+        span: Span,
+        name: NodeId,
+        type_params: []const NodeId,
+        params: []const NodeId,
+        return_type: NodeId,
+        body: NodeId,
+        flags: FnFlags,
+    ) !NodeId {
+        const tp_start: u32 = @intCast(self.hir.child_pool.items.len);
+        try self.hir.child_pool.appendSlice(self.hir.gpa, type_params);
         const params_start: u32 = @intCast(self.hir.child_pool.items.len);
         try self.hir.child_pool.appendSlice(self.hir.gpa, params);
         const payload_idx: u32 = @intCast(self.hir.fn_decl_payloads.items.len);
         try self.hir.fn_decl_payloads.append(self.hir.gpa, .{
             .name = name,
+            .type_params_start = tp_start,
+            .type_params_len = @intCast(type_params.len),
             .params_start = params_start,
             .params_len = @intCast(params.len),
             .return_type = return_type,
@@ -1568,6 +1592,7 @@ pub const Builder = struct {
         const kind: NodeKind = if (flags.is_arrow) .arrow_fn else if (flags.is_method or flags.is_constructor) .fn_expr else .fn_decl;
         const id = try self.newNode(kind, span, payload_idx);
         if (name != none_node_id) self.hir.setParent(name, id);
+        for (type_params) |tp| self.hir.setParent(tp, id);
         for (params) |p| self.hir.setParent(p, id);
         if (return_type != none_node_id) self.hir.setParent(return_type, id);
         if (body != none_node_id) self.hir.setParent(body, id);
@@ -2331,6 +2356,11 @@ pub fn fnDeclOf(hir: *const Hir, id: NodeId) FnDeclPayload {
 pub fn fnParams(hir: *const Hir, id: NodeId) []const NodeId {
     const p = fnDeclOf(hir, id);
     return hir.childSlice(p.params_start, p.params_len);
+}
+
+pub fn fnTypeParams(hir: *const Hir, id: NodeId) []const NodeId {
+    const p = fnDeclOf(hir, id);
+    return hir.childSlice(p.type_params_start, p.type_params_len);
 }
 
 pub fn parameterOf(hir: *const Hir, id: NodeId) ParameterPayload {

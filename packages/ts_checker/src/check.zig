@@ -159,6 +159,36 @@ pub const Checker = struct {
     fn checkFnDecl(self: *Checker, node: NodeId) CheckError!void {
         const f = hir_mod.fnDeclOf(self.hir, node);
 
+        // Type parameters: each parameter gets its own
+        // type-parameter TypeId so references inside the body /
+        // params / return type can resolve to it. Phase 3
+        // simplification: type-parameter constraints are not yet
+        // checked; defaults are not applied; they're referenced by
+        // name only.
+        const type_params = hir_mod.fnTypeParams(self.hir, node);
+        if (type_params.len > 0) {
+            try self.pushNarrowScope();
+        }
+        defer if (type_params.len > 0) self.popNarrowScope();
+        for (type_params) |tp| {
+            if (self.hir.kindOf(tp) != .type_parameter) continue;
+            const tpp = hir_mod.typeParameterOf(self.hir, tp);
+            const constraint: TypeId = if (tpp.constraint != hir_mod.none_node_id)
+                try self.lowerer.lower(tpp.constraint)
+            else
+                types.Primitive.unknown;
+            const def: TypeId = if (tpp.default != hir_mod.none_node_id)
+                try self.lowerer.lower(tpp.default)
+            else
+                types.Primitive.none;
+            const tp_id = self.interner.internTypeParameter(tpp.name, constraint, def) catch return error.OutOfMemory;
+            self.hir.setType(tp, tp_id);
+            // Make this name resolve to its type-parameter id
+            // inside the function (parameter annotations, return
+            // type, body).
+            try self.recordNarrow(tpp.name, tp_id);
+        }
+
         // Resolve parameter types.
         var param_types: std.ArrayListUnmanaged(TypeId) = .empty;
         defer param_types.deinit(self.gpa);
@@ -166,7 +196,7 @@ pub const Checker = struct {
         for (params) |p| {
             const pp = hir_mod.parameterOf(self.hir, p);
             const t: TypeId = if (pp.type_annotation != hir_mod.none_node_id)
-                try self.lowerer.lower(pp.type_annotation)
+                try self.lowererLowerWithTypeParams(pp.type_annotation)
             else
                 types.Primitive.any;
             try param_types.append(self.gpa, t);
@@ -179,7 +209,7 @@ pub const Checker = struct {
         // Resolve return type (declared annotation only — return-
         // statement-driven inference is a follow-up).
         const ret_t: TypeId = if (f.return_type != hir_mod.none_node_id)
-            try self.lowerer.lower(f.return_type)
+            try self.lowererLowerWithTypeParams(f.return_type)
         else
             types.Primitive.any;
 
@@ -193,6 +223,23 @@ pub const Checker = struct {
             const stmts = hir_mod.blockStmts(self.hir, f.body);
             for (stmts) |s| try self.checkStatement(s);
         }
+    }
+
+    /// Lower a type annotation while consulting the current
+    /// narrow scope so type-parameter references resolve to their
+    /// interned type_parameter ids.
+    fn lowererLowerWithTypeParams(self: *Checker, type_node: NodeId) CheckError!TypeId {
+        // Simple substitution: if the type-node is a bare type_ref
+        // by name and that name is in the narrow scope, return the
+        // mapped TypeId. Otherwise fall through to the general
+        // lowerer.
+        if (self.hir.kindOf(type_node) == .type_ref) {
+            const r = hir_mod.typeRefOf(self.hir, type_node);
+            if (r.qualifier_len == 0 and r.args_len == 0) {
+                if (self.lookupNarrow(r.name)) |t| return t;
+            }
+        }
+        return self.lowerer.lower(type_node);
     }
 
     fn checkVarDecl(self: *Checker, node: NodeId) CheckError!void {
@@ -246,12 +293,25 @@ pub const Checker = struct {
             .call_expr => blk: {
                 const c = hir_mod.callOf(self.hir, node);
                 const callee_t = try self.checkExpression(c.callee);
-                for (hir_mod.callArgs(self.hir, node)) |arg| {
-                    _ = try self.checkExpression(arg);
+                const args = hir_mod.callArgs(self.hir, node);
+                var arg_types: std.ArrayListUnmanaged(TypeId) = .empty;
+                defer arg_types.deinit(self.gpa);
+                for (args) |arg| {
+                    const t = try self.checkExpression(arg);
+                    try arg_types.append(self.gpa, t);
                 }
-                // If the callee resolved to a function-signature
-                // type, the call's value is its return type.
-                if (self.interner.signatureReturn(callee_t)) |ret| break :blk ret;
+                if (self.interner.signatureReturn(callee_t)) |ret| {
+                    // Generic instantiation: if the signature's
+                    // params contain type-parameter ids, infer them
+                    // from the arg types and substitute in the
+                    // return type.
+                    if (self.interner.pool.flagsOf(callee_t).is_signature) {
+                        const param_ts = self.interner.signatureParams(callee_t);
+                        const instantiated = self.instantiateReturn(param_ts, arg_types.items, ret) catch ret;
+                        break :blk instantiated;
+                    }
+                    break :blk ret;
+                }
                 break :blk types.Primitive.any;
             },
             .member_access => blk: {
@@ -478,6 +538,72 @@ pub const Checker = struct {
         const tt = try self.checkExpression(c.then_branch);
         const ff = try self.checkExpression(c.else_branch);
         return self.interner.internUnion(&.{ tt, ff }) catch error.OutOfMemory;
+    }
+
+    /// Generic call-site instantiation. For each parameter slot
+    /// whose type is a type-parameter id, record a substitution
+    /// `param_ts[i] -> arg_ts[i]`. Then walk `ret_type` and
+    /// substitute any type-parameter occurrences. Returns the
+    /// substituted return type. Falls through to `ret_type`
+    /// unchanged if the signature isn't generic or substitution
+    /// can't determine a single type.
+    fn instantiateReturn(
+        self: *Checker,
+        param_ts: []const TypeId,
+        arg_ts: []const TypeId,
+        ret_type: TypeId,
+    ) !TypeId {
+        // Build a map: type-parameter-id -> inferred-type
+        var subs: std.AutoHashMapUnmanaged(TypeId, TypeId) = .empty;
+        defer subs.deinit(self.gpa);
+
+        const n = @min(param_ts.len, arg_ts.len);
+        for (0..n) |i| {
+            const p = param_ts[i];
+            if (self.interner.pool.flagsOf(p).is_type_parameter) {
+                // Record (or upgrade) the substitution.
+                if (subs.get(p)) |prev| {
+                    if (prev != arg_ts[i]) {
+                        // Mismatched inferences — Phase 6 follow-
+                        // up does common-supertype. For now leave
+                        // the first-seen mapping in place.
+                    }
+                } else {
+                    try subs.put(self.gpa, p, arg_ts[i]);
+                }
+            }
+        }
+        if (subs.count() == 0) return ret_type;
+        return self.substituteType(ret_type, &subs);
+    }
+
+    /// Substitute occurrences of type-parameter ids in `t` per the
+    /// `subs` map. Phase 3 simplification: handles direct type-
+    /// parameter, union-of-substitutables, and array element
+    /// (when array is lowered to its element). Other compound
+    /// shapes pass through unchanged.
+    fn substituteType(
+        self: *Checker,
+        t: TypeId,
+        subs: *const std.AutoHashMapUnmanaged(TypeId, TypeId),
+    ) !TypeId {
+        if (subs.get(t)) |s| return s;
+        const flags = self.interner.pool.flagsOf(t);
+        if (flags.is_union) {
+            const members = self.interner.unionMembers(t);
+            var new: std.ArrayListUnmanaged(TypeId) = .empty;
+            defer new.deinit(self.gpa);
+            for (members) |m| try new.append(self.gpa, try self.substituteType(m, subs));
+            return self.interner.internUnion(new.items) catch return t;
+        }
+        if (flags.is_intersection) {
+            const members = self.interner.intersectionMembers(t);
+            var new: std.ArrayListUnmanaged(TypeId) = .empty;
+            defer new.deinit(self.gpa);
+            for (members) |m| try new.append(self.gpa, try self.substituteType(m, subs));
+            return self.interner.internIntersection(new.items) catch return t;
+        }
+        return t;
     }
 
     fn report(self: *Checker, node: NodeId, message: []const u8) !void {
