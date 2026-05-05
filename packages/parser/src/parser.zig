@@ -3068,7 +3068,8 @@ pub const Parser = struct {
 
         while (!self.check(.RightBrace) and !self.isAtEnd()) {
             if (self.match(&.{.Case})) {
-                // Parse case patterns
+                // C-style: `case Pattern[, Pattern...]: <stmts>`
+                // Kept as a deprecated alias of the `=>` form for back-compat.
                 var patterns = std.ArrayList(*ast.Expr).empty;
                 defer patterns.deinit(self.allocator);
 
@@ -3103,6 +3104,7 @@ pub const Parser = struct {
 
                 try cases.append(self.allocator, case_clause);
             } else if (self.match(&.{.Default})) {
+                // C-style default arm (deprecated alias of `else =>`).
                 _ = try self.expect(.Colon, "Expected ':' after 'default'");
 
                 // Parse default body
@@ -3124,9 +3126,33 @@ pub const Parser = struct {
 
                 try cases.append(self.allocator, default_clause);
                 break; // Default must be last
+            } else if (self.match(&.{.Else})) {
+                // match-style default arm: `else => <body>`.
+                const default_clause = try self.parseSwitchArrowArm(&.{}, true);
+                try cases.append(self.allocator, default_clause);
+                // `else` arm is the default — must be last.
+                break;
             } else {
-                try self.reportError("Expected 'case' or 'default' in switch statement");
-                return error.UnexpectedToken;
+                // match-style: `Pattern[, Pattern...] => <body>`.
+                var patterns = std.ArrayList(*ast.Expr).empty;
+                defer patterns.deinit(self.allocator);
+
+                const first_pattern = try self.expression();
+                try patterns.append(self.allocator, first_pattern);
+
+                while (self.match(&.{.Comma}) and !self.check(.FatArrow)) {
+                    const pattern = try self.expression();
+                    try patterns.append(self.allocator, pattern);
+                }
+
+                if (!self.check(.FatArrow)) {
+                    try self.reportError("Expected 'case', 'default', 'else', or '=>' arm in switch statement");
+                    return error.UnexpectedToken;
+                }
+
+                const owned_patterns = try patterns.toOwnedSlice(self.allocator);
+                const arm = try self.parseSwitchArrowArm(owned_patterns, false);
+                try cases.append(self.allocator, arm);
             }
         }
 
@@ -3140,6 +3166,63 @@ pub const Parser = struct {
         );
 
         return ast.Stmt{ .SwitchStmt = stmt };
+    }
+
+    /// Parse the body of a `=>` switch arm and build a CaseClause.
+    /// `patterns` is moved into the resulting clause (caller must not free
+    /// it on success). Body forms accepted (mirrors match-arm parsing):
+    ///   * `=> { stmt; stmt; }`     — block body, statements inlined.
+    ///   * `=> return [expr],`      — return statement.
+    ///   * `=> expr,`               — single expression, wrapped as ExprStmt.
+    /// A trailing comma is consumed if present; newline separation is fine.
+    fn parseSwitchArrowArm(
+        self: *Parser,
+        patterns: []const *ast.Expr,
+        is_default: bool,
+    ) ParseError!*ast.CaseClause {
+        const arrow_token = try self.expect(.FatArrow, "Expected '=>' in switch arm");
+
+        var body_stmts = std.ArrayList(ast.Stmt).empty;
+        defer body_stmts.deinit(self.allocator);
+
+        if (self.match(&.{.LeftBrace})) {
+            // Block body — inline its statements directly into the clause so
+            // codegen/interpreter (which iterate `case_clause.body`) see them
+            // as a flat statement list, matching the C-style `case ...:` form.
+            while (!self.check(.RightBrace) and !self.isAtEnd()) {
+                const stmt = try self.statement();
+                try body_stmts.append(self.allocator, stmt);
+            }
+            _ = try self.expect(.RightBrace, "Expected '}' after switch arm block");
+        } else if (self.match(&.{.Return})) {
+            // Return statement — value is optional.
+            const ret_token = self.previous();
+            const ret_value: ?*ast.Expr = if (!self.check(.Comma) and !self.check(.RightBrace) and !self.check(.Semicolon))
+                try self.expression()
+            else
+                null;
+            const ret_stmt = try ast.ReturnStmt.init(
+                self.allocator,
+                ret_value,
+                ast.SourceLocation.fromToken(ret_token),
+            );
+            try body_stmts.append(self.allocator, ast.Stmt{ .ReturnStmt = ret_stmt });
+        } else {
+            // Bare expression — wrap as ExprStmt so it lives in `body`.
+            const body_expr = try self.expression();
+            try body_stmts.append(self.allocator, ast.Stmt{ .ExprStmt = body_expr });
+        }
+
+        // Trailing comma is optional (newline-separated arms also work).
+        _ = self.match(&.{.Comma});
+
+        return ast.CaseClause.init(
+            self.allocator,
+            patterns,
+            try body_stmts.toOwnedSlice(self.allocator),
+            is_default,
+            ast.SourceLocation.fromToken(arrow_token),
+        );
     }
 
     /// Parse a match statement with pattern matching

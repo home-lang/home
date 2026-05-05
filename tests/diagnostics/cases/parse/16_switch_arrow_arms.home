@@ -1,0 +1,49 @@
+// Regression test for issue #20 — `switch` arms accept the same
+// match-style `Pattern => body` form that `match` already uses.
+// Used in 16+ home-os kernel modules (wifi drivers, security,
+// iot, fs, mm, …) which all reach for `=>` arrows inside `switch`.
+
+// Block-bodied arms with an `else` default (Zig-style).
+fn classifyEvent() {
+    let event = 1;
+    let mut result = 0;
+    switch (event) {
+        1 => { result = 100 },
+        2 => { result = 200 },
+        else => { result = 0 },
+    }
+}
+
+// Single-expression and `return` arm bodies — mirrors how match
+// already lets you write `Pattern => expr,` without a block.
+fn handleSignal() {
+    let sig = 1;
+    switch (sig) {
+        1 => return 100,
+        2 => return 200,
+        else => return 0,
+    }
+}
+
+// Multi-pattern arm: comma-separated patterns share one body.
+fn isVowel() {
+    let ch = 97;
+    switch (ch) {
+        97, 101, 105, 111, 117 => return 1,
+        else => return 0,
+    }
+}
+
+// C-style `case`/`default` form is preserved as a deprecated alias
+// so existing kernel/test code keeps parsing.
+fn legacy() {
+    let x = 1;
+    switch (x) {
+        case 1:
+            return 10;
+        case 2:
+            return 20;
+        default:
+            return 0;
+    }
+}
