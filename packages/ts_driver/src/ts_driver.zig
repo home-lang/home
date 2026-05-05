@@ -600,6 +600,64 @@ test "driver: object literal infers shape; member access types correctly" {
     try T.expectEqual(@as(u32, ts_checker.Primitive.string_t), c.hir.typeOf(sy_init));
 }
 
+test "driver: object annotation accepts a shape-compatible literal" {
+    var c = try compileSource(T.allocator,
+        \\let p: { x: number; y: string } = { x: 1, y: "hi" };
+    , .{});
+    defer {
+        c.deinit();
+        T.allocator.destroy(c);
+    }
+    // No "not assignable" diagnostic.
+    for (c.diagnostics.items) |d| {
+        try T.expect(std.mem.indexOf(u8, d.message, "not assignable") == null);
+    }
+}
+
+test "driver: object annotation rejects shape with missing required prop" {
+    var c = try compileSource(T.allocator,
+        \\let p: { x: number; y: string } = { x: 1 };
+    , .{});
+    defer {
+        c.deinit();
+        T.allocator.destroy(c);
+    }
+    var saw_mismatch = false;
+    for (c.diagnostics.items) |d| {
+        if (std.mem.indexOf(u8, d.message, "not assignable") != null) {
+            saw_mismatch = true;
+            break;
+        }
+    }
+    try T.expect(saw_mismatch);
+}
+
+test "driver: optional prop on annotation tolerates missing source key" {
+    var c = try compileSource(T.allocator,
+        \\let p: { x: number; y?: string } = { x: 1 };
+    , .{});
+    defer {
+        c.deinit();
+        T.allocator.destroy(c);
+    }
+    for (c.diagnostics.items) |d| {
+        try T.expect(std.mem.indexOf(u8, d.message, "not assignable") == null);
+    }
+}
+
+test "driver: object annotation accepts extra source props" {
+    var c = try compileSource(T.allocator,
+        \\let p: { x: number } = { x: 1, y: "extra" };
+    , .{});
+    defer {
+        c.deinit();
+        T.allocator.destroy(c);
+    }
+    for (c.diagnostics.items) |d| {
+        try T.expect(std.mem.indexOf(u8, d.message, "not assignable") == null);
+    }
+}
+
 test "driver: generic identity function infers T from argument" {
     var c = try compileSource(T.allocator,
         \\function id<T>(x: T): T { return x; }

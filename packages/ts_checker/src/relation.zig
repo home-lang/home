@@ -19,6 +19,7 @@
 const std = @import("std");
 const types = @import("types.zig");
 const interner = @import("interner.zig");
+const string_interner = @import("string_interner");
 
 pub const TypeId = types.TypeId;
 pub const Primitive = types.Primitive;
@@ -101,7 +102,7 @@ pub const Engine = struct {
     }
 
     /// True if `a` and `b` are structurally identical.
-    pub fn isIdenticalTo(self: *Engine, a: TypeId, b: TypeId) !bool {
+    pub fn isIdenticalTo(self: *Engine, a: TypeId, b: TypeId) anyerror!bool {
         if (a == b) return true; // interner identity short-circuit
         switch (self.cache.lookup(.identity, a, b)) {
             .yes => return true,
@@ -114,7 +115,7 @@ pub const Engine = struct {
         return result;
     }
 
-    fn computeIdentity(self: *Engine, a: TypeId, b: TypeId) !bool {
+    fn computeIdentity(self: *Engine, a: TypeId, b: TypeId) anyerror!bool {
         if (a == b) return true;
         const fa = self.pool().flagsOf(a);
         const fb = self.pool().flagsOf(b);
@@ -134,6 +135,21 @@ pub const Engine = struct {
             const am = self.interner.intersectionMembers(a);
             const bm = self.interner.intersectionMembers(b);
             return std.mem.eql(TypeId, am, bm);
+        }
+        // Object types: structurally identical iff they have the
+        // same members with the same names + types. Members are
+        // already sorted on intern, so we can compare position-wise.
+        if (fa.is_object_type) {
+            const am = self.interner.objectMembers(a);
+            const bm = self.interner.objectMembers(b);
+            if (am.len != bm.len) return false;
+            for (am, bm) |x, y| {
+                if (x.name != y.name) return false;
+                if (x.is_optional != y.is_optional) return false;
+                if (x.is_readonly != y.is_readonly) return false;
+                if (!try self.isIdenticalTo(x.type, y.type)) return false;
+            }
+            return true;
         }
         // Two literals with the same flags but different payloads
         // (e.g. `42` vs. `43`) — already filtered by interner identity
@@ -237,8 +253,41 @@ pub const Engine = struct {
             return false;
         }
 
+        // Object types: structural subtyping. Source must have all
+        // properties target requires, and each shared property type
+        // must be assignable in the same direction (depth-checked).
+        if (sf.is_object_type and tf.is_object_type) {
+            return self.computeObjectAssignable(source, target);
+        }
+
         // Primitive-vs-primitive: only identity matches at this layer.
         return false;
+    }
+
+    /// Structural object-type assignability per TypeScript's
+    /// "duck typing" rule:
+    ///
+    ///   For every required property `p: T` on `target`, `source`
+    ///   must declare `p: S` such that `S` is assignable to `T`.
+    ///   Optional `target` properties may be missing on `source`.
+    ///   Excess `source` properties are allowed (object-literal
+    ///   "fresh"-type checks happen at the call-site, not here).
+    ///   Method-vs-property mismatch is not yet enforced (Phase 6).
+    fn computeObjectAssignable(self: *Engine, source: TypeId, target: TypeId) anyerror!bool {
+        const target_members = self.interner.objectMembers(target);
+        for (target_members) |tm| {
+            const sm = self.interner.objectMemberInfo(source, tm.name) orelse {
+                if (tm.is_optional) continue;
+                return false;
+            };
+            // readonly on target is fine even if source is mutable
+            // (covariant). Mutable on target with readonly source is
+            // unsound and should fail — Phase 6 enforces this; we
+            // currently allow it to keep behavior matching tsgo's
+            // default flag set.
+            if (!try self.isAssignableTo(sm.type, tm.type)) return false;
+        }
+        return true;
     }
 
     /// Subtype is stricter than assignable: `any` is *not* a subtype of
@@ -390,6 +439,106 @@ test "RelationCache: pack/unpack key" {
     const k3 = packKey(.subtype, 0xABCDE, 0x12345);
     try T.expectEqual(k1, k2);
     try T.expect(k1 != k3);
+}
+
+test "Engine: structural object assignability — exact match" {
+    var ti = try Interner.init(T.allocator);
+    defer ti.deinit();
+    var e = Engine.init(T.allocator, &ti);
+    defer e.deinit();
+
+    var sint = try string_interner.Interner.init(T.allocator);
+    defer sint.deinit();
+    const x_id = try sint.intern("x");
+    const a = try ti.internObjectType(&.{
+        .{ .name = x_id, .type = Primitive.number_t, .is_optional = false, .is_readonly = false, .is_method = false },
+    });
+    const b = try ti.internObjectType(&.{
+        .{ .name = x_id, .type = Primitive.number_t, .is_optional = false, .is_readonly = false, .is_method = false },
+    });
+    try T.expect(try e.isAssignableTo(a, b));
+    try T.expect(try e.isIdenticalTo(a, b));
+}
+
+test "Engine: structural object — source missing required prop fails" {
+    var ti = try Interner.init(T.allocator);
+    defer ti.deinit();
+    var e = Engine.init(T.allocator, &ti);
+    defer e.deinit();
+    var sint = try string_interner.Interner.init(T.allocator);
+    defer sint.deinit();
+    const x = try sint.intern("x");
+    const y = try sint.intern("y");
+    const src = try ti.internObjectType(&.{
+        .{ .name = x, .type = Primitive.number_t, .is_optional = false, .is_readonly = false, .is_method = false },
+    });
+    const tgt = try ti.internObjectType(&.{
+        .{ .name = x, .type = Primitive.number_t, .is_optional = false, .is_readonly = false, .is_method = false },
+        .{ .name = y, .type = Primitive.string_t, .is_optional = false, .is_readonly = false, .is_method = false },
+    });
+    try T.expect(!try e.isAssignableTo(src, tgt));
+}
+
+test "Engine: structural object — optional target prop allowed missing" {
+    var ti = try Interner.init(T.allocator);
+    defer ti.deinit();
+    var e = Engine.init(T.allocator, &ti);
+    defer e.deinit();
+    var sint = try string_interner.Interner.init(T.allocator);
+    defer sint.deinit();
+    const x = try sint.intern("x");
+    const y = try sint.intern("y");
+    const src = try ti.internObjectType(&.{
+        .{ .name = x, .type = Primitive.number_t, .is_optional = false, .is_readonly = false, .is_method = false },
+    });
+    const tgt = try ti.internObjectType(&.{
+        .{ .name = x, .type = Primitive.number_t, .is_optional = false, .is_readonly = false, .is_method = false },
+        .{ .name = y, .type = Primitive.string_t, .is_optional = true, .is_readonly = false, .is_method = false },
+    });
+    try T.expect(try e.isAssignableTo(src, tgt));
+}
+
+test "Engine: structural object — extra source props allowed" {
+    var ti = try Interner.init(T.allocator);
+    defer ti.deinit();
+    var e = Engine.init(T.allocator, &ti);
+    defer e.deinit();
+    var sint = try string_interner.Interner.init(T.allocator);
+    defer sint.deinit();
+    const x = try sint.intern("x");
+    const y = try sint.intern("y");
+    const src = try ti.internObjectType(&.{
+        .{ .name = x, .type = Primitive.number_t, .is_optional = false, .is_readonly = false, .is_method = false },
+        .{ .name = y, .type = Primitive.string_t, .is_optional = false, .is_readonly = false, .is_method = false },
+    });
+    const tgt = try ti.internObjectType(&.{
+        .{ .name = x, .type = Primitive.number_t, .is_optional = false, .is_readonly = false, .is_method = false },
+    });
+    try T.expect(try e.isAssignableTo(src, tgt));
+}
+
+test "Engine: structural object — depth-checked" {
+    var ti = try Interner.init(T.allocator);
+    defer ti.deinit();
+    var e = Engine.init(T.allocator, &ti);
+    defer e.deinit();
+    var sint = try string_interner.Interner.init(T.allocator);
+    defer sint.deinit();
+    const x = try sint.intern("x");
+    const wrap = try sint.intern("wrap");
+    const inner_src = try ti.internObjectType(&.{
+        .{ .name = x, .type = Primitive.number_t, .is_optional = false, .is_readonly = false, .is_method = false },
+    });
+    const inner_tgt = try ti.internObjectType(&.{
+        .{ .name = x, .type = Primitive.string_t, .is_optional = false, .is_readonly = false, .is_method = false },
+    });
+    const src = try ti.internObjectType(&.{
+        .{ .name = wrap, .type = inner_src, .is_optional = false, .is_readonly = false, .is_method = false },
+    });
+    const tgt = try ti.internObjectType(&.{
+        .{ .name = wrap, .type = inner_tgt, .is_optional = false, .is_readonly = false, .is_method = false },
+    });
+    try T.expect(!try e.isAssignableTo(src, tgt));
 }
 
 test "Engine: cache populates on lookup" {

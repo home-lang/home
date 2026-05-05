@@ -406,6 +406,27 @@ pub const Interner = struct {
         return null;
     }
 
+    /// Full-info lookup for a property — returns the ObjectMember
+    /// record, or `null` if the type isn't an object or the
+    /// property doesn't exist.
+    pub fn objectMemberInfo(self: *const Interner, id: TypeId, name: StringId) ?types.ObjectMember {
+        if (!self.pool.flagsOf(id).is_object_type) return null;
+        const payload = self.pool.object_type_payloads.items[self.pool.payloadOf(id)];
+        const members = self.pool.object_member_pool.items[payload.members_start .. payload.members_start + payload.members_len];
+        for (members) |m| {
+            if (m.name == name) return m;
+        }
+        return null;
+    }
+
+    /// Slice of all members of an object type. Returns an empty
+    /// slice if `id` isn't an object type.
+    pub fn objectMembers(self: *const Interner, id: TypeId) []const types.ObjectMember {
+        if (!self.pool.flagsOf(id).is_object_type) return &.{};
+        const payload = self.pool.object_type_payloads.items[self.pool.payloadOf(id)];
+        return self.pool.object_member_pool.items[payload.members_start .. payload.members_start + payload.members_len];
+    }
+
     /// Insert a key+flags pair, allocating the side payload as needed.
     /// Returns existing TypeId on a duplicate.
     fn internKey(self: *Interner, key: TypeKey, flags: types.TypeFlags) !TypeId {
