@@ -1,0 +1,3 @@
+Checking: <repo>/tests/diagnostics/cases/types/21_u64_hex_literal_max.home
+
+Success: Type checking passed ✓

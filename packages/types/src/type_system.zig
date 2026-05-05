@@ -1914,7 +1914,7 @@ pub const TypeChecker = struct {
             const u = expr.UnaryExpr;
             if (u.op == .Neg and u.operand.* == .IntegerLiteral) {
                 if (isIntegerType(expected)) {
-                    const v: i64 = -u.operand.IntegerLiteral.value;
+                    const v: i128 = -u.operand.IntegerLiteral.value;
                     if (integerLiteralFits(v, expected)) {
                         return;
                     }
@@ -1998,17 +1998,22 @@ pub const TypeChecker = struct {
     /// reject overflow (e.g. `let x: u8 = 1000`) and signed-to-unsigned
     /// loss (e.g. `let x: u8 = -1`), so the existing diagnostic still
     /// fires for those cases.
-    fn integerLiteralFits(value: i64, dest: Type) bool {
+    ///
+    /// `value` is i128 so the full unsigned 64-bit range is representable
+    /// positively — `let x: u64 = 0xFFFFFFFFFFFFFFFF` arrives here as
+    /// `value = 18446744073709551615` and is accepted, instead of being
+    /// sign-extended to a negative i64 and rejected as out-of-range.
+    fn integerLiteralFits(value: i128, dest: Type) bool {
         return switch (dest) {
-            .Int, .I64 => true,
+            .Int, .I64 => value >= std.math.minInt(i64) and value <= std.math.maxInt(i64),
             .I8 => value >= std.math.minInt(i8) and value <= std.math.maxInt(i8),
             .I16 => value >= std.math.minInt(i16) and value <= std.math.maxInt(i16),
             .I32 => value >= std.math.minInt(i32) and value <= std.math.maxInt(i32),
-            .I128 => true, // any i64 fits in i128
+            .I128 => true, // any i128 fits in i128
             .U8 => value >= 0 and value <= std.math.maxInt(u8),
             .U16 => value >= 0 and value <= std.math.maxInt(u16),
             .U32 => value >= 0 and value <= std.math.maxInt(u32),
-            .U64 => value >= 0,
+            .U64 => value >= 0 and value <= std.math.maxInt(u64),
             .U128 => value >= 0,
             else => false,
         };
@@ -2302,14 +2307,38 @@ pub const TypeChecker = struct {
 
     /// Hint-aware unary expression inference. The hint passes through
     /// negation so `let x: i32 = -1` types `1` as `i32` and the
-    /// surrounding `-` produces `i32` as well.
+    /// surrounding `-` produces `i32` as well. For `&expr` we must
+    /// wrap the operand type in a Reference so a call-site hint of
+    /// `*T` actually produces `*T` instead of leaking out the inner
+    /// `T` (regression seen in #25 where `&arr[i]` and `&s.field`
+    /// were typed as the element/field value at the call site).
     fn inferUnaryExprWithHint(
         self: *TypeChecker,
         unary: *const ast.UnaryExpr,
         hint: ?Type,
     ) TypeError!Type {
-        // Only propagate the hint into the operand; otherwise the
-        // resulting type is determined by the regular unary rules.
+        // For address-of the hint applies to `*T` (the result type),
+        // so unwrap one Reference layer before propagating into the
+        // operand. Then re-wrap in a Reference on return so the
+        // surrounding context sees the pointer type it expects.
+        if (unary.op == .AddressOf) {
+            const operand_hint: ?Type = if (hint) |h|
+                (switch (h) {
+                    .Reference => |inner| inner.*,
+                    .MutableReference => |inner| inner.*,
+                    else => h,
+                })
+            else
+                null;
+            const operand_t = try self.inferExpressionWithHint(unary.operand, operand_hint);
+            const inner_ptr = try self.allocator.create(Type);
+            inner_ptr.* = operand_t;
+            try self.allocated_types.append(self.allocator, inner_ptr);
+            return Type{ .Reference = inner_ptr };
+        }
+        // Other unary ops: hint flows straight through to the operand
+        // and the result type is the operand's type (matches the
+        // existing Neg/Not/BitNot behaviour in `inferUnaryExpression`).
         const operand_t = try self.inferExpressionWithHint(unary.operand, hint);
         return operand_t;
     }

@@ -1,0 +1,8 @@
+// Issue #24: large u64 hex literals must typecheck.
+// `0xFFFFFFFFFFFFFFFF` equals `u64.max` and is a legitimate
+// kernel-level mask. Pre-fix the typechecker rejected it because
+// the parser stored it as a sign-extended i64 (negative) and the
+// fits-check required `value >= 0` for unsigned destinations.
+fn main() {
+    let x: u64 = 0xFFFFFFFFFFFFFFFF
+}

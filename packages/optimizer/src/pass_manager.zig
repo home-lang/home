@@ -492,7 +492,7 @@ pub const Pass = struct {
         };
     }
 
-    fn evaluateBinaryOp(bin: *const ast.BinaryExpr) !?i64 {
+    fn evaluateBinaryOp(bin: *const ast.BinaryExpr) !?i128 {
         if (bin.left.* != .IntegerLiteral or bin.right.* != .IntegerLiteral) {
             return null;
         }
@@ -501,9 +501,9 @@ pub const Pass = struct {
         const right = bin.right.IntegerLiteral.value;
 
         return switch (bin.op) {
-            .Add => std.math.add(i64, left, right) catch return null,
-            .Sub => std.math.sub(i64, left, right) catch return null,
-            .Mul => std.math.mul(i64, left, right) catch return null,
+            .Add => std.math.add(i128, left, right) catch return null,
+            .Sub => std.math.sub(i128, left, right) catch return null,
+            .Mul => std.math.mul(i128, left, right) catch return null,
             .Div => if (right != 0) @divTrunc(left, right) else null,
             .Mod => if (right != 0) @rem(left, right) else null,
             else => null,
@@ -1401,9 +1401,12 @@ pub const Pass = struct {
                             0;
 
                         if (iter_count > 0 and iter_count <= max_iterations) {
-                            // Unroll the loop
-                            var i: i64 = start_val;
-                            while (i < end_val) : (i += 1) {
+                            // Unroll the loop. Iterator stays i64 because the
+                            // unrolled body uses it in i64 contexts; ranges
+                            // small enough to unroll are well within i64.
+                            var i: i64 = @intCast(start_val);
+                            const end_i64: i64 = @intCast(end_val);
+                            while (i < end_i64) : (i += 1) {
                                 // Clone each statement in the loop body and substitute the loop variable
                                 for (for_stmt.body.statements) |body_stmt| {
                                     const unrolled_stmt = try self.cloneAndSubstituteStmt(body_stmt, for_stmt.iterator, i);

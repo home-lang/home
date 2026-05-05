@@ -27,7 +27,7 @@ test "parser: integer literal" {
 
     const expr = stmt.ExprStmt;
     try testing.expect(expr.* == .IntegerLiteral);
-    try testing.expectEqual(@as(i64, 42), expr.IntegerLiteral.value);
+    try testing.expectEqual(@as(i128, 42), expr.IntegerLiteral.value);
 }
 
 test "parser: float literal" {
@@ -94,7 +94,7 @@ test "parser: binary expression - addition" {
     try testing.expect(binary.left.* == .Identifier);
     try testing.expectEqualStrings("x", binary.left.Identifier.name);
     try testing.expect(binary.right.* == .IntegerLiteral);
-    try testing.expectEqual(@as(i64, 2), binary.right.IntegerLiteral.value);
+    try testing.expectEqual(@as(i128, 2), binary.right.IntegerLiteral.value);
 }
 
 test "parser: binary expression - multiplication" {
@@ -133,7 +133,7 @@ test "parser: integer binary expressions are constant-folded" {
 
     const expr = program.statements[0].ExprStmt;
     try testing.expect(expr.* == .IntegerLiteral);
-    try testing.expectEqual(@as(i64, 7), expr.IntegerLiteral.value);
+    try testing.expectEqual(@as(i128, 7), expr.IntegerLiteral.value);
 }
 
 test "parser: comparison operators" {
@@ -157,7 +157,7 @@ test "parser: unary expression" {
     const unary = expr.UnaryExpr;
     try testing.expectEqual(ast.UnaryOp.Neg, unary.op);
     try testing.expect(unary.operand.* == .IntegerLiteral);
-    try testing.expectEqual(@as(i64, 42), unary.operand.IntegerLiteral.value);
+    try testing.expectEqual(@as(i128, 42), unary.operand.IntegerLiteral.value);
 }
 
 test "parser: call expression" {
@@ -408,7 +408,7 @@ test "parser: index expression" {
     try testing.expect(index.array.* == .Identifier);
     try testing.expectEqualStrings("arr", index.array.Identifier.name);
     try testing.expect(index.index.* == .IntegerLiteral);
-    try testing.expectEqual(@as(i64, 0), index.index.IntegerLiteral.value);
+    try testing.expectEqual(@as(i128, 0), index.index.IntegerLiteral.value);
 }
 
 test "parser: member access expression" {

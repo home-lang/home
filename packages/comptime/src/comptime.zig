@@ -213,7 +213,12 @@ pub const ComptimeExecutor = struct {
     /// Execute an expression at compile time
     pub fn eval(self: *ComptimeExecutor, expr: *ast.Expr) ComptimeError!ComptimeValue {
         return switch (expr.*) {
-            .IntegerLiteral => |lit| ComptimeValue{ .int = lit.value },
+            .IntegerLiteral => |lit| ComptimeValue{
+                // ComptimeValue.int is i64; AST stores values as i128 to
+                // preserve full u64 range. Truncate by bit pattern so
+                // values that fit u64 survive intact.
+                .int = @bitCast(@as(u64, @truncate(@as(u128, @bitCast(lit.value))))),
+            },
             .FloatLiteral => |lit| ComptimeValue{ .float = lit.value },
             .BooleanLiteral => |lit| ComptimeValue{ .bool = lit.value },
             .StringLiteral => |lit| ComptimeValue{ .string = lit.value },

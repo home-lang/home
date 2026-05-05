@@ -1,0 +1,7 @@
+Checking: <repo>/tests/diagnostics/cases/types/22_u64_hex_literal_overflow.home
+
+error: integer literal does not fit in destination type
+  --> <repo>/tests/diagnostics/cases/types/22_u64_hex_literal_overflow.home:6:18
+   |
+   6 |     let x: u32 = 0xFFFFFFFFFF
+   |                   ^

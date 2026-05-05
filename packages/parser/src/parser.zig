@@ -3880,15 +3880,15 @@ pub const Parser = struct {
     /// Returns the folded value if both operands are IntegerLiterals AND the
     /// operation is total at runtime. Returns null otherwise; the caller
     /// falls back to constructing a BinaryExpr.
-    pub fn foldIntegerBinary(op: ast.BinaryOp, left: *ast.Expr, right: *ast.Expr) ?i64 {
+    pub fn foldIntegerBinary(op: ast.BinaryOp, left: *ast.Expr, right: *ast.Expr) ?i128 {
         if (left.* != .IntegerLiteral) return null;
         if (right.* != .IntegerLiteral) return null;
         const a = left.IntegerLiteral.value;
         const b = right.IntegerLiteral.value;
         return switch (op) {
-            .Add => std.math.add(i64, a, b) catch null,
-            .Sub => std.math.sub(i64, a, b) catch null,
-            .Mul => std.math.mul(i64, a, b) catch null,
+            .Add => std.math.add(i128, a, b) catch null,
+            .Sub => std.math.sub(i128, a, b) catch null,
+            .Mul => std.math.mul(i128, a, b) catch null,
             .Div => if (b == 0) null else @divTrunc(a, b),
             .Mod => if (b == 0) null else @rem(a, b),
             .BitAnd => a & b,
@@ -5503,21 +5503,22 @@ pub const Parser = struct {
             // Skip prefix for non-decimal bases
             const parse_str = if (base != 10) clean[2..] else clean;
 
-            // Parse as i64 first; if that overflows, fall back to u64 (for
-            // large unsigned masks like 0xFFFFFFFFFFFFFFFF) and reinterpret
-            // the bit pattern as i64 via a cast. The type suffix decides
-            // the final signedness at typecheck time.
-            const value: i64 = blk: {
-                if (std.fmt.parseInt(i64, parse_str, base)) |v| {
+            // Parse as i128 so the full unsigned 64-bit range fits as a
+            // positive value. This preserves the user's intent for large
+            // hex masks like `0xFFFFFFFFFFFFFFFF` and lets the
+            // type-checker decide signedness against the destination
+            // type. Anything beyond u64 is rejected here.
+            const value: i128 = blk: {
+                if (std.fmt.parseInt(i128, parse_str, base)) |v| {
+                    if (v > std.math.maxInt(u64)) {
+                        try self.reportError("Integer literal is too large (exceeds u64 range)");
+                        return error.IntegerOverflow;
+                    }
                     break :blk v;
                 } else |err| {
                     if (err == error.Overflow) {
-                        if (std.fmt.parseInt(u64, parse_str, base)) |uv| {
-                            break :blk @bitCast(uv);
-                        } else |_| {
-                            try self.reportError("Integer literal is too large (exceeds u64 range)");
-                            return error.IntegerOverflow;
-                        }
+                        try self.reportError("Integer literal is too large (exceeds u64 range)");
+                        return error.IntegerOverflow;
                     }
                     return err;
                 }

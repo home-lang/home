@@ -2154,8 +2154,12 @@ pub const NativeCodegen = struct {
                     try self.assembler.movRegReg(saved_reg, value_reg);
                 }
 
-                // Use rdx as temp register
-                try self.assembler.movRegImm64(.rdx, int_lit.value);
+                // Use rdx as temp register. IntegerLiteral.value is i128
+                // (full u64 range fits positively); narrow to i64 by
+                // bit-pattern truncation so large unsigned masks keep
+                // their bits.
+                const imm_i64: i64 = @bitCast(@as(u64, @truncate(@as(u128, @bitCast(int_lit.value)))));
+                try self.assembler.movRegImm64(.rdx, imm_i64);
                 // Compare
                 const cmp_reg = if (needs_save) saved_reg else value_reg;
                 try self.assembler.cmpRegReg(cmp_reg, .rdx);
@@ -7354,7 +7358,19 @@ pub const NativeCodegen = struct {
     /// overflows at run time.
     fn tryFoldConstant(self: *NativeCodegen, expr: *const ast.Expr) ?i64 {
         switch (expr.*) {
-            .IntegerLiteral => |lit| return lit.value,
+            .IntegerLiteral => |lit| {
+                // The AST stores values as i128 to preserve the full
+                // unsigned 64-bit range. Reinterpret the low 64 bits as
+                // i64 for codegen — values from typecheck-validated u64
+                // hex masks survive intact through bit-pattern equality.
+                if (lit.value > std.math.maxInt(u64) or lit.value < std.math.minInt(i64)) {
+                    return null;
+                }
+                if (lit.value > std.math.maxInt(i64)) {
+                    return @bitCast(@as(u64, @intCast(lit.value)));
+                }
+                return @intCast(lit.value);
+            },
             .BooleanLiteral => |lit| return if (lit.value) 1 else 0,
             .BinaryExpr => |bin| {
                 const left = self.tryFoldConstant(bin.left) orelse return null;
@@ -7441,8 +7457,11 @@ pub const NativeCodegen = struct {
 
         switch (expr.*) {
             .IntegerLiteral => |lit| {
-                // Load immediate value into rax
-                try self.assembler.movRegImm64(.rax, lit.value);
+                // Load immediate value into rax. Truncate i128 → i64 by
+                // bit-pattern so large unsigned masks (e.g.
+                // `0xFFFFFFFFFFFFFFFF`) preserve all bits.
+                const imm_i64: i64 = @bitCast(@as(u64, @truncate(@as(u128, @bitCast(lit.value)))));
+                try self.assembler.movRegImm64(.rax, imm_i64);
             },
             .FloatLiteral => |lit| {
                 // Load float as bit pattern into rax

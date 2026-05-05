@@ -249,14 +249,18 @@ pub const Node = struct {
 /// Integer literal expression.
 ///
 /// Represents a constant integer value in the source code.
-/// Currently supports 64-bit signed integers.
+/// Stored as i128 so the full unsigned 64-bit range is representable
+/// without bitcast tricks. Hex literals like `0xFFFF000000000000`
+/// (> i64.max) keep their natural positive value, which lets the
+/// type-checker decide signedness against the destination type
+/// rather than guessing from a sign-extended bit pattern.
 ///
-/// Example: `42`, `-17`, `0`
+/// Example: `42`, `-17`, `0`, `0xFFFFFFFFFFFFFFFF`
 pub const IntegerLiteral = struct {
     /// Base node metadata
     node: Node,
-    /// The integer value
-    value: i64,
+    /// The integer value (i128 to fit full u64 range positively)
+    value: i128,
     /// Optional type suffix (e.g., "i32", "u64")
     type_suffix: ?[]const u8 = null,
 
@@ -267,7 +271,7 @@ pub const IntegerLiteral = struct {
     ///   - loc: Source location
     ///
     /// Returns: Initialized IntegerLiteral
-    pub fn init(value: i64, loc: SourceLocation) IntegerLiteral {
+    pub fn init(value: i128, loc: SourceLocation) IntegerLiteral {
         return .{
             .node = .{ .type = .IntegerLiteral, .loc = loc },
             .value = value,
@@ -283,7 +287,7 @@ pub const IntegerLiteral = struct {
     ///   - loc: Source location
     ///
     /// Returns: Initialized IntegerLiteral with type suffix
-    pub fn initWithType(value: i64, type_suffix: ?[]const u8, loc: SourceLocation) IntegerLiteral {
+    pub fn initWithType(value: i128, type_suffix: ?[]const u8, loc: SourceLocation) IntegerLiteral {
         return .{
             .node = .{ .type = .IntegerLiteral, .loc = loc },
             .value = value,

@@ -1095,7 +1095,11 @@ pub const Interpreter = struct {
                     }
                     // i128 and u128 are larger than our i64 value type, so we can't fully validate them
                 }
-                return Value{ .Int = lit.value };
+                // Value.Int is i64; AST stores values as i128 (so the
+                // full u64 range fits positively). Truncate by bit
+                // pattern to preserve large unsigned masks.
+                const v_i64: i64 = @bitCast(@as(u64, @truncate(@as(u128, @bitCast(lit.value)))));
+                return Value{ .Int = v_i64 };
             },
             .FloatLiteral => |lit| {
                 // Type suffix validation for floats (f32, f64)

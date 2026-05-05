@@ -1,0 +1,7 @@
+// Issue #24 negative case: a hex literal that overflows the
+// destination type must still be rejected. `0xFFFFFFFFFF` (40 bits)
+// does not fit in `u32`, so we expect "integer literal does not fit
+// in destination type" rather than a silent acceptance.
+fn main() {
+    let x: u32 = 0xFFFFFFFFFF
+}

@@ -1,0 +1,3 @@
+Checking: <repo>/tests/diagnostics/cases/types/23_address_of_array_index.home
+
+Success: Type checking passed ✓

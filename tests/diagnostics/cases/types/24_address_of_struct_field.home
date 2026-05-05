@@ -1,0 +1,10 @@
+// Issue #25: `&s.field` at a call site must produce `*T`. The
+// regression also surfaced for struct field access, including
+// through a struct pointer (`&b.field` where `b: *Bridge`).
+struct Bridge { ip: u32 }
+
+fn use_p(p: *u32) {}
+
+fn caller(b: *Bridge) {
+    use_p(&b.ip)
+}

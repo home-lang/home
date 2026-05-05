@@ -1,0 +1,3 @@
+Checking: <repo>/tests/diagnostics/cases/types/24_address_of_struct_field.home
+
+Success: Type checking passed ✓

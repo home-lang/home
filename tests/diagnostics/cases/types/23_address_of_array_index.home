@@ -1,0 +1,10 @@
+// Issue #25: `&arr[i]` at a call site must produce `*T`, not `T`.
+// Pre-fix the hint-aware unary path returned the operand value type
+// (`u32`) instead of wrapping in a pointer, so the call-site hint of
+// `*u32` flowed through and the argument was rejected as a value.
+fn use_p(p: *u32) {}
+
+fn caller() {
+    var arr: [4]u32 = [1u32, 2u32, 3u32, 4u32]
+    use_p(&arr[0])
+}
