@@ -2806,6 +2806,7 @@ pub const Parser = struct {
         ExternStruct,
         Enum,
         Union,
+        ErrorSet,
     };
 
     /// Peek past `=` to see if the initializer is an anonymous type
@@ -2818,6 +2819,16 @@ pub const Parser = struct {
         const next_idx = self.current + 1;
         if (next_idx >= self.tokens.len) return null;
         const next = self.tokens[next_idx];
+        // `error { ... }` — error-set declaration. `error` is a soft
+        // keyword (lexed as Identifier) so we match by lexeme. Followed
+        // by `{` to disambiguate from any other identifier named
+        // "error" (the lookahead requires a brace before committing).
+        if (next.type == .Identifier and std.mem.eql(u8, next.lexeme, "error")) {
+            const after = next_idx + 1;
+            if (after < self.tokens.len and self.tokens[after].type == .LeftBrace) {
+                return .ErrorSet;
+            }
+        }
         return switch (next.type) {
             .Struct => .Struct,
             .Enum => .Enum,
@@ -2875,7 +2886,53 @@ pub const Parser = struct {
                 try self.optionalSemicolon();
                 return stmt;
             },
+            .ErrorSet => {
+                _ = self.advance(); // consume `error` (Identifier)
+                const stmt = try self.errorSetDeclarationWithName(name);
+                try self.optionalSemicolon();
+                return stmt;
+            },
         }
+    }
+
+    /// Parse the body of an error-set declaration:
+    ///   `{ Variant1, Variant2, ... }`
+    /// The `error` keyword has already been consumed by the caller.
+    /// We model the result as an enum with no payload — the underlying
+    /// representation is identical (a tagged set of named alternatives)
+    /// and the AST/typechecker already handle enums end-to-end.
+    /// A future change can introduce a dedicated ErrorSetDecl node if
+    /// we need to distinguish them (e.g. for error-union inference).
+    fn errorSetDeclarationWithName(self: *Parser, name: []const u8) !ast.Stmt {
+        const start_token = self.previous();
+        _ = try self.expect(.LeftBrace, "Expected '{' after 'error'");
+
+        var variants = std.ArrayList(ast.EnumVariant).empty;
+        defer variants.deinit(self.allocator);
+
+        while (!self.check(.RightBrace) and !self.isAtEnd()) {
+            const variant_token = try self.expect(.Identifier, "Expected error name");
+            try variants.append(self.allocator, ast.EnumVariant{
+                .name = variant_token.lexeme,
+                .data_type = null,
+            });
+            // Comma is optional — newline-separated lists are accepted.
+            _ = self.match(&.{.Comma});
+            if (self.check(.RightBrace)) break;
+        }
+
+        _ = try self.expect(.RightBrace, "Expected '}' after error set");
+
+        const variants_slice = try variants.toOwnedSlice(self.allocator);
+        errdefer self.allocator.free(variants_slice);
+
+        const enum_decl = try ast.EnumDecl.init(
+            self.allocator,
+            name,
+            variants_slice,
+            ast.SourceLocation.fromToken(start_token),
+        );
+        return ast.Stmt{ .EnumDecl = enum_decl };
     }
 
     /// Parse a var declaration (module-level mutable variable)

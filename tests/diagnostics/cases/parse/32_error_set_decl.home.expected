@@ -1,0 +1,3 @@
+Checking: <repo>/tests/diagnostics/cases/parse/32_error_set_decl.home
+
+Success: Type checking passed ✓

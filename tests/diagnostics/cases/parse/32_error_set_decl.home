@@ -1,0 +1,17 @@
+// Regression test for issue #28 — Zig-style `error { Variant1, ... }`
+// error-set declaration. Used in home-os kernel code (e.g.
+// `kernel/src/security/hardened_usercopy.home`,
+// `kernel/src/security/module_signing.home`) to declare structured
+// error categories. We currently reuse the EnumDecl AST node for the
+// representation — variants without payloads — since the runtime
+// representation (a tagged set of names) is identical.
+pub const FsError = error {
+    NotFound,
+    PermissionDenied,
+    IOError,
+}
+
+pub const NetError = error {
+    Timeout,
+    ConnectionReset,
+}
