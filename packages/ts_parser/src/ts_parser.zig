@@ -637,16 +637,18 @@ pub const Parser = struct {
                 }
                 // property
                 if (self.match(.question)) {} // optional property
-                if (self.match(.colon)) _ = try self.parseTypeAnnotation();
+                var type_anno: NodeId = hir_mod.none_node_id;
+                if (self.match(.colon)) type_anno = try self.parseTypeAnnotation();
                 var default_value: NodeId = hir_mod.none_node_id;
                 if (self.match(.equal)) default_value = try self.parseAssignmentExpression();
                 try self.consumeStatementTerminator();
                 const name_id = try self.internToken(name_tok);
                 const name_node = try self.builder.addIdentifier(tokenSpan(name_tok), name_id);
-                const prop = try self.builder.addObjectProperty(
+                const prop = try self.builder.addObjectPropertyTyped(
                     .{ .start = member_start.span.start, .end = self.tokens[self.cursor - 1].span.end },
                     name_node,
                     default_value,
+                    type_anno,
                     false,
                     default_value == hir_mod.none_node_id,
                     false,
@@ -2076,6 +2078,35 @@ pub const Parser = struct {
         }
     }
 
+    /// Parse a member-access chain off a primary expression — `dot`,
+    /// `?.`, and `[index]` — but stop at `(`. Used as the callee of
+    /// a `new` expression so the parenthesized argument list belongs
+    /// to the `new`, not to a call wrapped around it.
+    fn parseMemberExpressionOnly(self: *Parser) ParseError!NodeId {
+        var node = try self.parsePrimaryExpression();
+        while (true) {
+            const t = self.peek();
+            switch (t.kind) {
+                .dot => {
+                    _ = self.advance();
+                    const name_tok = try self.expectIdentifierLike();
+                    const name_id = try self.internToken(name_tok);
+                    const sp: Span = .{ .start = self.hir.spanOf(node).start, .end = name_tok.span.end };
+                    node = try self.builder.addMemberAccess(sp, node, name_id, false);
+                },
+                .open_bracket => {
+                    _ = self.advance();
+                    const idx = try self.parseExpression();
+                    const close = try self.expect(.close_bracket, "']' to close index access");
+                    const sp: Span = .{ .start = self.hir.spanOf(node).start, .end = close.span.end };
+                    node = try self.builder.addElementAccess(sp, node, idx, false);
+                },
+                else => break,
+            }
+        }
+        return node;
+    }
+
     fn parseCallOrMemberExpression(self: *Parser) ParseError!NodeId {
         var node = try self.parsePrimaryExpression();
         while (true) {
@@ -2256,18 +2287,19 @@ pub const Parser = struct {
             },
             .kw_new => {
                 _ = self.advance();
-                // Phase 1.D: lower `new Foo(args)` as a call expression
-                // — the binder distinguishes via parent-decoration. The
-                // dedicated `new_expr` HIR kind exists but is reserved
-                // for the follow-up that introduces an explicit lowering.
-                const callee = try self.parseLeftHandSideExpression();
+                // Lowered as a dedicated `new_expr` so the checker can
+                // produce the class instance type rather than the
+                // constructor's call return type. The callee uses a
+                // member-only parser so `new Foo(args)` doesn't get
+                // pre-consumed as a call.
+                const callee = try self.parseMemberExpressionOnly();
                 if (self.peek().kind == .open_paren) {
                     const args = try self.parseArgumentList();
                     defer self.gpa.free(args);
                     const close_pos = self.tokens[self.cursor - 1].span.end;
-                    return try self.builder.addCall(.{ .start = t.span.start, .end = close_pos }, callee, args);
+                    return try self.builder.addNew(.{ .start = t.span.start, .end = close_pos }, callee, args);
                 }
-                return try self.builder.addCall(.{ .start = t.span.start, .end = self.hir.spanOf(callee).end }, callee, &.{});
+                return try self.builder.addNew(.{ .start = t.span.start, .end = self.hir.spanOf(callee).end }, callee, &.{});
             },
             .kw_function => {
                 // Function expression — reuse declaration parser; it
@@ -3292,7 +3324,9 @@ test "parser: new expression" {
     defer destroyTestSetup(s);
     const root = try s.parser.parseSourceFile();
     const top = hir_mod.blockStmts(&s.hir, root)[0];
-    try T.expectEqual(hir_mod.NodeKind.call_expr, s.hir.kindOf(top));
+    try T.expectEqual(hir_mod.NodeKind.new_expr, s.hir.kindOf(top));
+    const args = hir_mod.callArgs(&s.hir, top);
+    try T.expectEqual(@as(usize, 2), args.len);
 }
 
 // ====================================================================

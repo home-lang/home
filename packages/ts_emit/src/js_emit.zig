@@ -756,6 +756,7 @@ pub const Printer = struct {
             .conditional => try self.printConditional(node),
             .assignment => try self.printAssignment(node),
             .call_expr => try self.printCall(node),
+            .new_expr => try self.printNew(node),
             .member_access => try self.printMember(node),
             .element_access => try self.printElement(node),
             .array_literal => try self.printArrayLiteral(node),
@@ -908,6 +909,19 @@ pub const Printer = struct {
 
     fn printCall(self: *Printer, node: NodeId) !void {
         const p = hir_mod.callOf(self.hir, node);
+        try self.printExpression(p.callee);
+        try self.write("(");
+        const args = hir_mod.callArgs(self.hir, node);
+        for (args, 0..) |a, i| {
+            if (i > 0) try self.write(", ");
+            try self.printExpression(a);
+        }
+        try self.write(")");
+    }
+
+    fn printNew(self: *Printer, node: NodeId) !void {
+        const p = hir_mod.callOf(self.hir, node);
+        try self.write("new ");
         try self.printExpression(p.callee);
         try self.write("(");
         const args = hir_mod.callArgs(self.hir, node);

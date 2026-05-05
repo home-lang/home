@@ -61,6 +61,10 @@ pub const Checker = struct {
     /// pushes a scope; identifier resolution consults the top of
     /// the stack first before falling back to the static type.
     narrow_scopes: std.ArrayListUnmanaged(std.AutoHashMapUnmanaged(hir_mod.StringId, TypeId)),
+    /// Class-name → instance type. Populated by `checkClassDecl`
+    /// when a class is declared; consulted by `instanceof` narrowing
+    /// and `new` expression typing.
+    class_instance_types: std.AutoHashMapUnmanaged(hir_mod.StringId, TypeId),
     diagnostics: std.ArrayListUnmanaged(Diagnostic),
     diag_arena: std.heap.ArenaAllocator,
 
@@ -80,6 +84,7 @@ pub const Checker = struct {
             .lowerer = lower.Lowerer.init(gpa, hir, ti, si),
             .module = null,
             .narrow_scopes = .empty,
+            .class_instance_types = .empty,
             .diagnostics = .empty,
             .diag_arena = std.heap.ArenaAllocator.init(gpa),
         };
@@ -98,6 +103,7 @@ pub const Checker = struct {
             s.deinit(self.gpa);
         }
         self.narrow_scopes.deinit(self.gpa);
+        self.class_instance_types.deinit(self.gpa);
         self.diagnostics.deinit(self.gpa);
         self.diag_arena.deinit();
     }
@@ -113,6 +119,7 @@ pub const Checker = struct {
         switch (self.hir.kindOf(node)) {
             .var_decl, .let_decl, .const_decl => try self.checkVarDecl(node),
             .fn_decl, .fn_expr, .arrow_fn => try self.checkFnDecl(node),
+            .class_decl => try self.checkClassDecl(node),
             .return_stmt => {
                 const r = hir_mod.returnOf(self.hir, node);
                 if (r.value != hir_mod.none_node_id) {
@@ -229,18 +236,85 @@ pub const Checker = struct {
         }
     }
 
+    /// Lower a class declaration into an instance object type. Each
+    /// method becomes an object member typed as a signature; each
+    /// declared field becomes an object member typed as the
+    /// annotation (or the initializer's type, or `any`).
+    /// Constructors are walked for body typing but excluded from the
+    /// instance shape — they live on the constructor function, not
+    /// on instances.
+    fn checkClassDecl(self: *Checker, node: NodeId) CheckError!void {
+        const c = hir_mod.classOf(self.hir, node);
+        const members = hir_mod.classMembers(self.hir, node);
+
+        var instance_members: std.ArrayListUnmanaged(types.ObjectMember) = .empty;
+        defer instance_members.deinit(self.gpa);
+
+        for (members) |m| {
+            switch (self.hir.kindOf(m)) {
+                .fn_decl, .fn_expr, .arrow_fn => {
+                    // Walk the method so its body / params get typed.
+                    try self.checkFnDecl(m);
+                    const fn_p = hir_mod.fnDeclOf(self.hir, m);
+                    if (fn_p.flags.is_constructor) continue;
+                    if (fn_p.name == hir_mod.none_node_id or self.hir.kindOf(fn_p.name) != .identifier) continue;
+                    const id = hir_mod.identifierOf(self.hir, fn_p.name);
+                    const sig = self.hir.typeOf(m);
+                    try instance_members.append(self.gpa, .{
+                        .name = id.name,
+                        .type = sig,
+                        .is_optional = false,
+                        .is_readonly = false,
+                        .is_method = true,
+                    });
+                },
+                .object_property => {
+                    const op = hir_mod.objectPropertyOf(self.hir, m);
+                    if (self.hir.kindOf(op.key) != .identifier) continue;
+                    const id = hir_mod.identifierOf(self.hir, op.key);
+                    const field_t: TypeId = blk: {
+                        if (op.type_annotation != hir_mod.none_node_id) {
+                            break :blk try self.lowererLowerWithTypeParams(op.type_annotation);
+                        }
+                        if (op.value != hir_mod.none_node_id) {
+                            break :blk try self.checkExpression(op.value);
+                        }
+                        break :blk types.Primitive.any;
+                    };
+                    try instance_members.append(self.gpa, .{
+                        .name = id.name,
+                        .type = field_t,
+                        .is_optional = false,
+                        .is_readonly = false,
+                        .is_method = false,
+                    });
+                },
+                else => {},
+            }
+        }
+
+        const instance_t = self.interner.internObjectType(instance_members.items) catch return error.OutOfMemory;
+        self.hir.setType(node, instance_t);
+        if (c.name != hir_mod.none_node_id and self.hir.kindOf(c.name) == .identifier) {
+            const cid = hir_mod.identifierOf(self.hir, c.name);
+            try self.class_instance_types.put(self.gpa, cid.name, instance_t);
+            // The class name as a value is the constructor — we don't
+            // have a dedicated constructor signature TypeId yet, so
+            // record the instance type on the name node. `new Foo()`
+            // looks up the class by name to get the instance type.
+            self.hir.setType(c.name, instance_t);
+        }
+    }
+
     /// Lower a type annotation while consulting the current
-    /// narrow scope so type-parameter references resolve to their
-    /// interned type_parameter ids.
+    /// narrow scope (for in-scope type parameters) and the
+    /// declared-class table (for class names used as types).
     fn lowererLowerWithTypeParams(self: *Checker, type_node: NodeId) CheckError!TypeId {
-        // Simple substitution: if the type-node is a bare type_ref
-        // by name and that name is in the narrow scope, return the
-        // mapped TypeId. Otherwise fall through to the general
-        // lowerer.
         if (self.hir.kindOf(type_node) == .type_ref) {
             const r = hir_mod.typeRefOf(self.hir, type_node);
             if (r.qualifier_len == 0 and r.args_len == 0) {
                 if (self.lookupNarrow(r.name)) |t| return t;
+                if (self.class_instance_types.get(r.name)) |t| return t;
             }
         }
         return self.lowerer.lower(type_node);
@@ -252,7 +326,7 @@ pub const Checker = struct {
         // Lower type annotation first (so we can check init against it).
         var declared_type: TypeId = types.Primitive.none;
         if (v.type_annotation != hir_mod.none_node_id) {
-            declared_type = try self.lowerer.lower(v.type_annotation);
+            declared_type = try self.lowererLowerWithTypeParams(v.type_annotation);
             self.hir.setType(node, declared_type);
         }
 
@@ -296,6 +370,21 @@ pub const Checker = struct {
                 const a = hir_mod.assignmentOf(self.hir, node);
                 _ = try self.checkExpression(a.target);
                 break :blk try self.checkExpression(a.value);
+            },
+            .new_expr => blk: {
+                const c = hir_mod.callOf(self.hir, node);
+                _ = try self.checkExpression(c.callee);
+                const args = hir_mod.callArgs(self.hir, node);
+                for (args) |arg| _ = try self.checkExpression(arg);
+                // `new Foo(...)` produces the instance type recorded
+                // by `checkClassDecl`. If the callee isn't a known
+                // class identifier (e.g. `new someExpr()`), fall back
+                // to `any`.
+                if (self.hir.kindOf(c.callee) == .identifier) {
+                    const id = hir_mod.identifierOf(self.hir, c.callee);
+                    if (self.class_instance_types.get(id.name)) |inst| break :blk inst;
+                }
+                break :blk types.Primitive.any;
             },
             .call_expr => blk: {
                 const c = hir_mod.callOf(self.hir, node);
@@ -464,15 +553,22 @@ pub const Checker = struct {
         if (self.hir.kindOf(cond) != .binary_op) return;
         const b = hir_mod.binopOf(self.hir, cond);
 
-        // `x instanceof Foo` — narrows `x` to the class instance type
-        // (or `Primitive.object_t` if we don't yet have an interned
-        // class type). The else-branch leaves `x` un-narrowed since
-        // proper subtraction needs the discriminated-union machinery
-        // (Phase 6).
+        // `x instanceof Foo` — narrows `x` to the class's instance
+        // type when `Foo` resolves to a declared class; otherwise
+        // falls back to `Primitive.object_t`. The else-branch leaves
+        // `x` un-narrowed since proper subtraction needs the
+        // discriminated-union machinery (Phase 6).
         if (b.op == .instanceof and self.hir.kindOf(b.lhs) == .identifier) {
             const id = hir_mod.identifierOf(self.hir, b.lhs);
             if (when_true) {
-                try self.recordNarrow(id.name, types.Primitive.object_t);
+                var narrowed: TypeId = types.Primitive.object_t;
+                if (self.hir.kindOf(b.rhs) == .identifier) {
+                    const rhs_id = hir_mod.identifierOf(self.hir, b.rhs);
+                    if (self.class_instance_types.get(rhs_id.name)) |inst| {
+                        narrowed = inst;
+                    }
+                }
+                try self.recordNarrow(id.name, narrowed);
             }
             return;
         }
@@ -1056,4 +1152,81 @@ test "checker: parameter inside body resolves to its annotation type" {
     const ret_p = hir_mod.returnOf(&s.hir, ret);
     // a + b — both branches should have number type.
     try T.expectEqual(types.Primitive.number_t, s.hir.typeOf(ret_p.value));
+}
+
+test "checker: class declaration produces an instance object type" {
+    const s = try newSetup(
+        \\class Box {
+        \\  value: number = 0;
+        \\  get(): number { return 1; }
+        \\}
+    );
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+    const top = firstStatement(s);
+    try T.expectEqual(hir_mod.NodeKind.class_decl, s.hir.kindOf(top));
+    const inst_t = s.hir.typeOf(top);
+    try T.expect(s.ti.pool.flagsOf(inst_t).is_object_type);
+    // 'value' field is interned at the instance type.
+    const value_id = try s.sint.intern("value");
+    try T.expect(s.ti.objectMember(inst_t, value_id) != null);
+    // 'get' method is interned at the instance type as a signature.
+    const get_id = try s.sint.intern("get");
+    const get_t = s.ti.objectMember(inst_t, get_id) orelse return error.TestExpectedEqual;
+    try T.expect(s.ti.pool.flagsOf(get_t).is_signature);
+}
+
+test "checker: new Foo() yields the class instance type" {
+    const s = try newSetup(
+        \\class Box { value: number = 0; }
+        \\let b = new Box();
+    );
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+    const stmts = hir_mod.blockStmts(&s.hir, s.root);
+    const class_t = s.hir.typeOf(stmts[0]);
+    const decl = stmts[1];
+    try T.expectEqual(hir_mod.NodeKind.let_decl, s.hir.kindOf(decl));
+    const v = hir_mod.varDeclOf(&s.hir, decl);
+    try T.expectEqual(hir_mod.NodeKind.new_expr, s.hir.kindOf(v.init));
+    try T.expectEqual(class_t, s.hir.typeOf(v.init));
+}
+
+test "checker: parameter typed as a declared class resolves member access" {
+    const s = try newSetup(
+        \\class Box { value: number = 0; }
+        \\function f(b: Box): number { return b.value; }
+    );
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+    try T.expect(s.checker.diagnostics.items.len == 0);
+    const stmts = hir_mod.blockStmts(&s.hir, s.root);
+    const class_t = s.hir.typeOf(stmts[0]);
+    // Walk into f's body, find the return, and check that `b.value`
+    // typed to number_t (which only happens when `b` resolved to
+    // the Box instance type).
+    const f = hir_mod.fnDeclOf(&s.hir, stmts[1]);
+    const body = hir_mod.blockStmts(&s.hir, f.body);
+    const ret_p = hir_mod.returnOf(&s.hir, body[0]);
+    try T.expectEqual(types.Primitive.number_t, s.hir.typeOf(ret_p.value));
+    // And the parameter's type matches the class's instance type.
+    const params = hir_mod.fnParams(&s.hir, stmts[1]);
+    try T.expectEqual(class_t, s.hir.typeOf(params[0]));
+}
+
+test "checker: instanceof narrows to the class instance type when class is declared" {
+    const s = try newSetup(
+        \\class Box { value: number = 0; }
+        \\function f(x: any): any {
+        \\  if (x instanceof Box) {
+        \\    return x.value;
+        \\  }
+        \\  return null;
+        \\}
+    );
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+    // No diagnostics: `x.value` resolves on the narrowed instance
+    // type rather than triggering TS2339.
+    try T.expect(s.checker.diagnostics.items.len == 0);
 }

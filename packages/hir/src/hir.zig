@@ -624,6 +624,9 @@ pub const ObjectPropertyPayload = struct {
     key: NodeId,
     /// Property value.
     value: NodeId,
+    /// Optional type annotation (for class fields with `: T`).
+    /// `none_node_id` if no annotation.
+    type_annotation: NodeId,
     is_computed: bool,
     is_shorthand: bool,
     is_method: bool,
@@ -1319,6 +1322,27 @@ pub const Builder = struct {
         return id;
     }
 
+    /// Add a `new Foo(args)` expression. Same payload shape as a
+    /// call, but emitted as `.new_expr` so the checker can produce
+    /// the class instance type rather than the constructor's return.
+    pub fn addNew(self: *Builder, span: Span, callee: NodeId, args: []const NodeId) !NodeId {
+        const args_start: u32 = @intCast(self.hir.child_pool.items.len);
+        try self.hir.child_pool.appendSlice(self.hir.gpa, args);
+        const args_len: u16 = @intCast(args.len);
+        const payload_idx: u32 = @intCast(self.hir.call_payloads.items.len);
+        try self.hir.call_payloads.append(self.hir.gpa, .{
+            .callee = callee,
+            .args_start = args_start,
+            .args_len = args_len,
+            .type_args_start = 0,
+            .type_args_len = 0,
+        });
+        const id = try self.newNode(.new_expr, span, payload_idx);
+        self.hir.setParent(callee, id);
+        for (args) |arg| self.hir.setParent(arg, id);
+        return id;
+    }
+
     pub fn addMemberAccess(self: *Builder, span: Span, object: NodeId, name: StringId, optional: bool) !NodeId {
         const payload_idx: u32 = @intCast(self.hir.member_payloads.items.len);
         try self.hir.member_payloads.append(self.hir.gpa, .{
@@ -1811,10 +1835,24 @@ pub const Builder = struct {
         is_shorthand: bool,
         is_method: bool,
     ) !NodeId {
+        return self.addObjectPropertyTyped(span, key, value, none_node_id, is_computed, is_shorthand, is_method);
+    }
+
+    pub fn addObjectPropertyTyped(
+        self: *Builder,
+        span: Span,
+        key: NodeId,
+        value: NodeId,
+        type_annotation: NodeId,
+        is_computed: bool,
+        is_shorthand: bool,
+        is_method: bool,
+    ) !NodeId {
         const payload_idx: u32 = @intCast(self.hir.object_property_payloads.items.len);
         try self.hir.object_property_payloads.append(self.hir.gpa, .{
             .key = key,
             .value = value,
+            .type_annotation = type_annotation,
             .is_computed = is_computed,
             .is_shorthand = is_shorthand,
             .is_method = is_method,
@@ -1822,6 +1860,7 @@ pub const Builder = struct {
         const id = try self.newNode(.object_property, span, payload_idx);
         self.hir.setParent(key, id);
         if (value != none_node_id) self.hir.setParent(value, id);
+        if (type_annotation != none_node_id) self.hir.setParent(type_annotation, id);
         return id;
     }
 
@@ -2215,7 +2254,8 @@ pub fn logicalOf(hir: *const Hir, id: NodeId) LogicalPayload {
 }
 
 pub fn callOf(hir: *const Hir, id: NodeId) CallPayload {
-    std.debug.assert(hir.kindOf(id) == .call_expr);
+    const k = hir.kindOf(id);
+    std.debug.assert(k == .call_expr or k == .new_expr);
     return hir.call_payloads.items[hir.payloads.items[id]];
 }
 
