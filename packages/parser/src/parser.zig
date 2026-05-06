@@ -2568,7 +2568,7 @@ pub const Parser = struct {
                 try size_buf.appendSlice(self.allocator, head_tok.lexeme);
 
                 var path_ok = true;
-                while (self.check(.Dot)) {
+                while (self.check(.Dot) or self.check(.ColonColon)) {
                     _ = self.advance();
                     if (!self.check(.Identifier)) {
                         path_ok = false;
@@ -2706,8 +2706,8 @@ pub const Parser = struct {
         var result = try self.allocator.dupe(u8, type_token.lexeme);
         errdefer self.allocator.free(result);
 
-        // Handle module path: foo.bar.Type
-        while (self.match(&.{.Dot})) {
+        // Handle module path: foo.bar.Type (also accepts Rust-style `foo::bar::Type`)
+        while (self.match(&.{ .Dot, .ColonColon })) {
             const next = try self.expect(.Identifier, "Expected type name after '.'");
             const new_result = try std.fmt.allocPrint(self.allocator, "{s}.{s}", .{ result, next.lexeme });
             self.allocator.free(result);
@@ -3272,7 +3272,8 @@ pub const Parser = struct {
         var pattern = first_token.lexeme;
 
         // Handle qualified pattern like Option.Some or Result.Ok
-        if (self.match(&.{.Dot})) {
+        // Also accepts Rust-style Option::Some (treated identically).
+        if (self.match(&.{ .Dot, .ColonColon })) {
             const variant_token = try self.expect(.Identifier, "Expected variant name after '.'");
             // Concatenate the pattern: "Option.Some"
             const full_pattern = try std.fmt.allocPrint(self.allocator, "{s}.{s}", .{ pattern, variant_token.lexeme });
@@ -4115,8 +4116,8 @@ pub const Parser = struct {
             const name_token = self.previous();
             var name = name_token.lexeme;
 
-            // Check for qualified name: Type.Variant
-            if (self.match(&.{.Dot})) {
+            // Check for qualified name: Type.Variant (or Rust-style Type::Variant)
+            if (self.match(&.{ .Dot, .ColonColon })) {
                 const variant_token = try self.expect(.Identifier, "Expected variant name after '.'");
                 // Combine into qualified name
                 const qualified = try std.fmt.allocPrint(self.allocator, "{s}.{s}", .{ name, variant_token.lexeme });
@@ -4496,7 +4497,8 @@ pub const Parser = struct {
                 expr = try self.call(expr);
             } else if (self.match(&.{.LeftBracket})) {
                 expr = try self.indexExpr(expr);
-            } else if (self.match(&.{.Dot})) {
+            } else if (self.match(&.{ .Dot, .ColonColon })) {
+                // `::` is parsed identically to `.` (Rust-style path operator).
                 expr = try self.memberExpr(expr);
             } else if (self.match(&.{.QuestionDot})) {
                 expr = try self.safeNavExpr(expr);
@@ -5432,7 +5434,7 @@ pub const Parser = struct {
 
         // Handle member access and calls, but NOT struct literals
         while (true) {
-            if (self.match(&.{.Dot})) {
+            if (self.match(&.{ .Dot, .ColonColon })) {
                 const member_token = try self.expect(.Identifier, "Expected member name after '.'");
                 const member_expr = try ast.MemberExpr.init(
                     self.allocator,
@@ -6365,7 +6367,8 @@ pub const Parser = struct {
                             next_t == .Ampersand or
                             (next_t == .Identifier and
                                 (self.peekNext().type == .RightParen or
-                                    self.peekNext().type == .Dot));
+                                    self.peekNext().type == .Dot or
+                                    self.peekNext().type == .ColonColon));
                         if (looks_like_type) {
                             _ = self.parseTypeAnnotation() catch {
                                 self.current = save;

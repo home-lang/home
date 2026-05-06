@@ -1,0 +1,15 @@
+// Regression test for issue #42 — Rust-style `Type::Variant` path operator.
+// `::` is parsed identically to `.` in path-access contexts, so the
+// kernel idiom (ported from Rust references) parses cleanly.
+//
+// Used in home-os kernel modules:
+//   - kernel/src/arch/arm64/rpi/gic400.home  (IrqTrigger::Level)
+//   - kernel/src/arch/arm64/rpi/uart.home    (Parity::None, FlowControl::None)
+//   - kernel/src/power/battery.home          (PowerSource::AC)
+//   - kernel/src/power/cpufreq_x86.home      (DriverType::IntelHWP)
+enum E { A, B }
+
+fn f(): u32 {
+    let x = E::A
+    return 0
+}

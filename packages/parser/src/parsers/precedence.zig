@@ -60,7 +60,7 @@ pub const Precedence = enum(u8) {
             .Plus, .Minus, .PlusBang, .MinusBang, .PlusQuestion, .MinusQuestion, .PlusPipe, .MinusPipe => .Term,
             .Star, .Slash, .Percent, .TildeSlash, .StarBang, .SlashBang, .StarQuestion, .SlashQuestion, .StarPipe => .Factor,
             .StarStar => .Power,
-            .LeftParen, .LeftBracket, .Dot, .QuestionDot => .Call,
+            .LeftParen, .LeftBracket, .Dot, .ColonColon, .QuestionDot => .Call,
             else => .None,
         };
     }
@@ -118,6 +118,7 @@ test "Precedence.fromToken: call/access tier" {
     try t.expectEqual(Precedence.Call, Precedence.fromToken(.LeftParen));
     try t.expectEqual(Precedence.Call, Precedence.fromToken(.LeftBracket));
     try t.expectEqual(Precedence.Call, Precedence.fromToken(.Dot));
+    try t.expectEqual(Precedence.Call, Precedence.fromToken(.ColonColon));
     try t.expectEqual(Precedence.Call, Precedence.fromToken(.QuestionDot));
     try t.expectEqual(Precedence.Call, Precedence.fromToken(.QuestionBracket));
 }

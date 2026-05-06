@@ -27,6 +27,7 @@ pub const TokenType = enum {
     DotDotDot, // ...
     Semicolon, // ;
     Colon, // :
+    ColonColon, // :: (Rust-style path operator, treated as alias for `.`)
     Question, // ?
     QuestionDot, // ?.
     QuestionQuestion, // ??
@@ -186,6 +187,7 @@ pub const TokenType = enum {
             .DotDotDot => "...",
             .Semicolon => ";",
             .Colon => ":",
+            .ColonColon => "::",
             .Question => "?",
             .QuestionDot => "?.",
             .QuestionQuestion => "??",
