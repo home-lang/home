@@ -1322,6 +1322,11 @@ pub const Checker = struct {
     /// hasn't reduced), defer by interning the conditional. If `check`
     /// is a union and itself a naked type parameter substitution,
     /// distribute. Otherwise pick the branch by structural assignability.
+    /// Side note on `infer X` placeholders: when `ext` carries one,
+    /// we attempt structural matching against `check` to bind the
+    /// `infer` variable; the substitution is then applied to `tt`
+    /// before returning. Today only the function-return case is
+    /// supported (`T extends (...) => infer R ? R : never`).
     fn evalConditional(
         self: *Checker,
         check: TypeId,
@@ -1341,6 +1346,8 @@ pub const Checker = struct {
             return self.interner.internUnion(built.items) catch return error.OutOfMemory;
         }
         // Defer if the check or extends type carries a free type parameter.
+        // (`infer X` is parsed but not yet matched structurally —
+        // tracked as Phase 6 follow-up.)
         if (self.containsFreeTypeParameter(check) or self.containsFreeTypeParameter(ext)) {
             return self.interner.internConditional(check, ext, tt, ff) catch return error.OutOfMemory;
         }
@@ -1542,6 +1549,15 @@ pub const Checker = struct {
             .assignment => blk: {
                 const a = hir_mod.assignmentOf(self.hir, node);
                 _ = try self.checkExpression(a.target);
+                // Reassignment clears any prior conditional alias for
+                // the variable: `let cond = isString(x); cond = false;
+                // if (cond) ...` — the second branch shouldn't
+                // narrow `x` because `cond` is no longer the original
+                // guard expression.
+                if (self.hir.kindOf(a.target) == .identifier) {
+                    const id = hir_mod.identifierOf(self.hir, a.target);
+                    _ = self.cond_aliases.remove(id.name);
+                }
                 break :blk try self.checkExpression(a.value);
             },
             .new_expr => blk: {
