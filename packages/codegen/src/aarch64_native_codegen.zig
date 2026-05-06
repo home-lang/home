@@ -8,7 +8,7 @@ const macho = @import("macho.zig");
 /// AArch64 native codegen — Path B-lite of issue #5.
 ///
 /// Mirrors the structure of `native_codegen.NativeCodegen` but emits arm64
-/// machine code via `arm64.Assembler`. Currently supports the M8 subset:
+/// machine code via `arm64.Assembler`. Currently supports the M9 subset:
 ///   - `FnDecl` (top-level functions, including non-`main`) with up to 8
 ///     i64 parameters delivered via x0..x7 per AAPCS64
 ///   - `StructDecl` (registered into a layout table; emits no code)
@@ -29,6 +29,9 @@ const macho = @import("macho.zig");
 ///   - struct field reads (`p.x`) and writes (`p.x = ...`)
 ///   - fixed-size i64 arrays via `[a, b, c]` literals, indexed read/write
 ///     (`arr[i]`, `arr[i] = v`)
+///   - `match` expressions with integer-literal, boolean-literal, and
+///     identifier (wildcard / unbound) arm patterns. Guards, struct/enum/
+///     tuple destructuring, and identifier *binding* are M-later.
 ///
 /// Other AST nodes (pointers, methods, struct args/returns, nested
 /// structs, slices, dynamic-length arrays, ...) return
@@ -489,6 +492,95 @@ pub const Aarch64NativeCodegen = struct {
             .CallExpr => |call| try self.generateCallExpr(call),
             .MemberExpr => |member| try self.generateMemberRead(member),
             .IndexExpr => |idx| try self.generateIndexRead(idx),
+            .MatchExpr => |match| try self.generateMatchExpr(match),
+            else => return error.NotImplemented,
+        }
+    }
+
+    fn generateMatchExpr(self: *Aarch64NativeCodegen, match: *ast.MatchExpr) CodegenError!void {
+        // Evaluate the matched value once and spill to the stack so each
+        // arm can reload it (and so it survives any push/pop the arm bodies
+        // emit). The value lives at `[sp + 0]` while delta == 16.
+        try self.generateExpr(match.value);
+        try self.assembler.pushReg(.x0);
+        self.stack_delta += 16;
+
+        var end_jumps = std.ArrayList(usize).empty;
+        defer end_jumps.deinit(self.allocator);
+
+        for (match.arms) |arm| {
+            if (arm.guard != null) return error.NotImplemented;
+
+            // Pattern check. Returns the position of the conditional skip
+            // branch (`bne next_arm`) for literal patterns, or null when the
+            // pattern always matches (identifier / wildcard).
+            const skip_pos = try self.emitArmPatternCheck(arm.pattern);
+
+            // Body — its result lands in x0.
+            try self.generateExpr(arm.body);
+
+            // After the body, branch unconditionally to the match's end so
+            // we don't fall through into the next arm.
+            const end_jump_pos = self.assembler.getPosition();
+            try self.assembler.b(0); // placeholder
+            try end_jumps.append(self.allocator, end_jump_pos);
+
+            // Patch the skip-to-next-arm branch to land just past this arm.
+            if (skip_pos) |pos| {
+                try self.assembler.patchBcond(pos, .ne, self.assembler.getPosition());
+            }
+        }
+
+        // Patch every `b end` placeholder to land here.
+        const end_target = self.assembler.getPosition();
+        for (end_jumps.items) |pos| {
+            try self.assembler.patchB(pos, end_target);
+        }
+
+        // Drop the saved match value off the stack. x1 is a scratch
+        // register; we just need somewhere to land the popReg.
+        try self.assembler.popReg(.x1);
+        self.stack_delta -= 16;
+    }
+
+    /// Emit the comparison + conditional skip for one arm. Returns the
+    /// position of the `bne next_arm` instruction so the caller can patch
+    /// it once it knows where the next arm starts; or `null` if the
+    /// pattern always matches (no skip needed).
+    fn emitArmPatternCheck(self: *Aarch64NativeCodegen, pattern: *ast.Expr) CodegenError!?usize {
+        switch (pattern.*) {
+            .IntegerLiteral => |lit| {
+                if (lit.value > std.math.maxInt(i64) or lit.value < std.math.minInt(i64)) {
+                    return error.IntegerLiteralOutOfRange;
+                }
+                // Reload the saved match value into x1.
+                try self.assembler.ldrRegMem(.x1, .sp, 0);
+                // Compare with the literal. Small unsigned values can use
+                // the immediate form; everything else needs a temp register.
+                if (lit.value >= 0 and lit.value <= 4095) {
+                    try self.assembler.cmpRegImm(.x1, @intCast(lit.value));
+                } else {
+                    try self.assembler.movRegImm64(.x2, @intCast(lit.value));
+                    try self.assembler.cmpRegReg(.x1, .x2);
+                }
+                const pos = self.assembler.getPosition();
+                try self.assembler.bcond(.ne, 0); // placeholder
+                return pos;
+            },
+            .BooleanLiteral => |lit| {
+                try self.assembler.ldrRegMem(.x1, .sp, 0);
+                try self.assembler.cmpRegImm(.x1, if (lit.value) 1 else 0);
+                const pos = self.assembler.getPosition();
+                try self.assembler.bcond(.ne, 0);
+                return pos;
+            },
+            .Identifier => {
+                // Wildcard / unbound name — always matches. We don't bind
+                // the value to the identifier in M9; if the body references
+                // the name and it isn't already a function-scope local, it
+                // will fail with UndefinedIdentifier.
+                return null;
+            },
             else => return error.NotImplemented,
         }
     }
