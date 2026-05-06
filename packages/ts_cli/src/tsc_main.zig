@@ -362,6 +362,9 @@ pub fn main(init: std.process.Init) !void {
         // Native FS-event backends (FSEvents/inotify/ReadDirChangesW)
         // are tracked separately.
         std.debug.print("home tsc - watching for changes (Ctrl-C to stop)\n", .{});
+        var watch_threaded = std.Io.Threaded.init(gpa, .{});
+        defer watch_threaded.deinit();
+        const watch_io = watch_threaded.io();
         var rfs = ts_watch.RealStatFs.init(gpa);
         defer rfs.deinit();
         var watcher = ts_watch.Watcher.init(gpa, rfs.fs());
@@ -372,14 +375,14 @@ pub fn main(init: std.process.Init) !void {
             try watcher.track(path);
         }
         while (true) {
-            // Inter-poll pause is currently a tight loop because
-            // both `std.time.sleep` and `std.posix.nanosleep` were
-            // removed in this Zig 0.16-dev. A platform-native
-            // FS-event backend (FSEvents/inotify/ReadDirChangesW)
-            // is the right replacement; tracked as Phase 5 §5.A.5.
-            // For now we throttle by walking the poll loop slowly.
-            var spin: u64 = 0;
-            while (spin < 5_000_000) : (spin += 1) {}
+            // Inter-poll pause: 100ms via `std.Io.Clock.Duration.sleep`.
+            // A platform-native FS-event backend (FSEvents/inotify/
+            // ReadDirChangesW) is the right long-term replacement and
+            // is tracked as Phase 5 §5.A.5.
+            std.Io.Clock.Duration.sleep(.{
+                .clock = .boot,
+                .raw = .fromNanoseconds(100 * std.time.ns_per_ms),
+            }, watch_io) catch {};
             var change_set = watcher.tick() catch |err| {
                 std.debug.print("watch error: {s}\n", .{@errorName(err)});
                 continue;
