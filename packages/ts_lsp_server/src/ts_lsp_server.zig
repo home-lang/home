@@ -253,6 +253,159 @@ fn lspCompletionItemKind(k: ts_lsp.CompletionItem.ItemKind) u8 {
     };
 }
 
+/// Strip a `file://` prefix from a URI, returning the bare filesystem
+/// path. Returns the input unchanged when no prefix is present.
+pub fn uriToPath(uri: []const u8) []const u8 {
+    const prefix = "file://";
+    if (std.mem.startsWith(u8, uri, prefix)) return uri[prefix.len..];
+    return uri;
+}
+
+/// Locate the JSON value associated with `key` inside `body`. Walks the
+/// raw bytes looking for `"key":` and then returns the slice between
+/// the opening and matching closing string quote (for string values),
+/// taking JSON `\"` and `\\` escapes into account. Returns null when
+/// the key isn't found or the value isn't a string. Caller does NOT
+/// own the returned slice — it's a borrow into `body`.
+fn findJsonStringField(body: []const u8, key: []const u8) ?[]const u8 {
+    // Build a transient `"<key>":` needle on the stack.
+    var needle_buf: [64]u8 = undefined;
+    if (key.len + 3 > needle_buf.len) return null;
+    needle_buf[0] = '"';
+    @memcpy(needle_buf[1 .. 1 + key.len], key);
+    needle_buf[1 + key.len] = '"';
+    needle_buf[2 + key.len] = ':';
+    const needle = needle_buf[0 .. 3 + key.len];
+
+    var search_from: usize = 0;
+    while (std.mem.indexOfPos(u8, body, search_from, needle)) |pos| {
+        // Skip whitespace after the colon.
+        var i = pos + needle.len;
+        while (i < body.len and (body[i] == ' ' or body[i] == '\t' or body[i] == '\n' or body[i] == '\r')) : (i += 1) {}
+        if (i >= body.len or body[i] != '"') {
+            // Not a string value at this site — keep looking; another
+            // occurrence of the same key might be a string.
+            search_from = pos + needle.len;
+            continue;
+        }
+        // i points at the opening quote. Walk forward looking for the
+        // matching closing quote, honoring `\"` and `\\` escapes.
+        const start = i + 1;
+        var j = start;
+        while (j < body.len) : (j += 1) {
+            const c = body[j];
+            if (c == '\\') {
+                j += 1;
+                continue;
+            }
+            if (c == '"') return body[start..j];
+        }
+        return null;
+    }
+    return null;
+}
+
+/// Decode a JSON-encoded string slice (no surrounding quotes) into a
+/// freshly allocated buffer. Handles the standard escapes used by the
+/// LSP wire format: `\"`, `\\`, `\/`, `\n`, `\r`, `\t`, `\b`, `\f`. A
+/// `\uXXXX` escape is decoded into UTF-8. Caller owns the result.
+pub fn decodeJsonString(gpa: std.mem.Allocator, raw: []const u8) ![]u8 {
+    var out: std.ArrayListUnmanaged(u8) = .empty;
+    errdefer out.deinit(gpa);
+    var i: usize = 0;
+    while (i < raw.len) : (i += 1) {
+        const c = raw[i];
+        if (c != '\\') {
+            try out.append(gpa, c);
+            continue;
+        }
+        if (i + 1 >= raw.len) return error.InvalidEscape;
+        const esc = raw[i + 1];
+        switch (esc) {
+            '"', '\\', '/' => try out.append(gpa, esc),
+            'n' => try out.append(gpa, '\n'),
+            'r' => try out.append(gpa, '\r'),
+            't' => try out.append(gpa, '\t'),
+            'b' => try out.append(gpa, 0x08),
+            'f' => try out.append(gpa, 0x0c),
+            'u' => {
+                if (i + 5 >= raw.len) return error.InvalidEscape;
+                const cp = try std.fmt.parseInt(u21, raw[i + 2 .. i + 6], 16);
+                var ubuf: [4]u8 = undefined;
+                const n = try std.unicode.utf8Encode(cp, &ubuf);
+                try out.appendSlice(gpa, ubuf[0..n]);
+                i += 4;
+            },
+            else => return error.InvalidEscape,
+        }
+        i += 1;
+    }
+    return out.toOwnedSlice(gpa);
+}
+
+/// Handle a `textDocument/didChange` JSON-RPC notification: extract
+/// the URI + new full-document text from `params_json`, route to
+/// `service.didChangeFile`, then encode a `textDocument/publishDiagnostics`
+/// notification body for the caller to write back.
+///
+/// `params_json` is the raw JSON body of the notification (the entire
+/// `params` value's surroundings are accepted — we lift the fields by
+/// name so the framing layer can pass either the whole request body
+/// or just the `params` object). Caller owns the returned slice.
+///
+/// Today's implementation assumes full-document sync mode: the client
+/// declares `textDocumentSync = 1` (Full) in the InitializeResult, so
+/// `contentChanges[0].text` is the entire updated file.
+pub fn handleDidChange(
+    service: *ts_lsp.Service,
+    gpa: std.mem.Allocator,
+    params_json: []const u8,
+) ![]u8 {
+    const uri = findJsonStringField(params_json, "uri") orelse return error.MissingUri;
+    // The full-document text lives in `params.contentChanges[0].text`;
+    // since we look up by key name, the field's nesting is irrelevant.
+    const text_raw = findJsonStringField(params_json, "text") orelse return error.MissingText;
+
+    const new_source = try decodeJsonString(gpa, text_raw);
+    defer gpa.free(new_source);
+    const path = uriToPath(uri);
+
+    const rendered = try service.didChangeFile(gpa, path, new_source);
+    defer gpa.free(rendered);
+
+    return encodePublishDiagnostics(gpa, uri, rendered);
+}
+
+/// Encode a `textDocument/publishDiagnostics` JSON-RPC notification
+/// body. `rendered` is the `\n`-terminated tsc-style diagnostic
+/// listing returned by `Service.diagnostics` / `Service.didChangeFile`.
+/// Each non-empty line is wrapped in a minimal LSP `Diagnostic`
+/// object with `range = (0,0)..(0,0)` and severity = Error (1).
+/// Caller owns the returned slice.
+pub fn encodePublishDiagnostics(
+    gpa: std.mem.Allocator,
+    uri: []const u8,
+    rendered: []const u8,
+) ![]u8 {
+    var buf: std.ArrayListUnmanaged(u8) = .empty;
+    errdefer buf.deinit(gpa);
+    try buf.appendSlice(gpa, "{\"jsonrpc\":\"2.0\",\"method\":\"textDocument/publishDiagnostics\",\"params\":{\"uri\":\"");
+    try writeJsonStringContents(&buf, gpa, uri);
+    try buf.appendSlice(gpa, "\",\"diagnostics\":[");
+    var first = true;
+    var it = std.mem.splitScalar(u8, rendered, '\n');
+    while (it.next()) |line| {
+        if (line.len == 0) continue;
+        if (!first) try buf.append(gpa, ',');
+        first = false;
+        try buf.appendSlice(gpa, "{\"range\":{\"start\":{\"line\":0,\"character\":0},\"end\":{\"line\":0,\"character\":0}},\"severity\":1,\"message\":\"");
+        try writeJsonStringContents(&buf, gpa, line);
+        try buf.appendSlice(gpa, "\"}");
+    }
+    try buf.appendSlice(gpa, "]}}");
+    return buf.toOwnedSlice(gpa);
+}
+
 /// Render the InitializeResult body — declares capabilities for
 /// every method we support.
 pub fn renderInitializeResult(gpa: std.mem.Allocator) ![]u8 {
@@ -391,4 +544,66 @@ test "renderReferencesResult: empty array" {
     const r = try renderReferencesResult(T.allocator, refs);
     defer T.allocator.free(r);
     try T.expectEqualStrings("[]", r);
+}
+
+test "uriToPath: strips file:// prefix" {
+    try T.expectEqualStrings("/main.ts", uriToPath("file:///main.ts"));
+    try T.expectEqualStrings("/main.ts", uriToPath("/main.ts"));
+}
+
+test "findJsonStringField: locates uri + text" {
+    const body =
+        \\{"jsonrpc":"2.0","method":"textDocument/didChange","params":{"textDocument":{"uri":"file:///main.ts","version":2},"contentChanges":[{"text":"let x = 1;"}]}}
+    ;
+    try T.expectEqualStrings("file:///main.ts", findJsonStringField(body, "uri").?);
+    try T.expectEqualStrings("let x = 1;", findJsonStringField(body, "text").?);
+}
+
+test "decodeJsonString: handles common escapes" {
+    const a = try decodeJsonString(T.allocator, "let s = \\\"hi\\\";\\nlet n = 1;");
+    defer T.allocator.free(a);
+    try T.expectEqualStrings("let s = \"hi\";\nlet n = 1;", a);
+}
+
+test "handleDidChange: routes notification to Service.didChangeFile" {
+    var vfs = ts_resolver.VirtualFs.init(T.allocator);
+    defer vfs.deinit();
+    var resolver = ts_resolver.Resolver.init(T.allocator, vfs.fs(), .{});
+    defer resolver.deinit();
+    var program = ts_program.Program.init(T.allocator, &resolver);
+    defer program.deinit();
+
+    // Seed the file with a type error so the initial diagnostics
+    // are non-empty.
+    _ = try program.add("/main.ts", "let x: number = \"hi\";");
+    try program.compileAll(.{});
+
+    var svc = ts_lsp.Service.init(T.allocator, &program);
+
+    // Synthesize a JSON-RPC didChange notification body whose
+    // `contentChanges[0].text` fixes the type error.
+    const body =
+        \\{"jsonrpc":"2.0","method":"textDocument/didChange","params":{"textDocument":{"uri":"file:///main.ts","version":2},"contentChanges":[{"text":"let x: number = 1;"}]}}
+    ;
+    const out = try handleDidChange(&svc, T.allocator, body);
+    defer T.allocator.free(out);
+    try T.expect(std.mem.indexOf(u8, out, "\"method\":\"textDocument/publishDiagnostics\"") != null);
+    try T.expect(std.mem.indexOf(u8, out, "\"uri\":\"file:///main.ts\"") != null);
+    // The fixed source produces no diagnostics, so the array is empty.
+    try T.expect(std.mem.indexOf(u8, out, "\"diagnostics\":[]") != null);
+
+    // Re-issue with a broken edit and confirm a diagnostic surfaces.
+    const broken =
+        \\{"jsonrpc":"2.0","method":"textDocument/didChange","params":{"textDocument":{"uri":"file:///main.ts","version":3},"contentChanges":[{"text":"let x: number = \"oops\";"}]}}
+    ;
+    const out2 = try handleDidChange(&svc, T.allocator, broken);
+    defer T.allocator.free(out2);
+    try T.expect(std.mem.indexOf(u8, out2, "\"diagnostics\":[]") == null);
+    try T.expect(std.mem.indexOf(u8, out2, "error TS") != null);
+}
+
+test "encodePublishDiagnostics: empty rendered -> empty array" {
+    const r = try encodePublishDiagnostics(T.allocator, "file:///x.ts", "");
+    defer T.allocator.free(r);
+    try T.expect(std.mem.indexOf(u8, r, "\"diagnostics\":[]") != null);
 }
