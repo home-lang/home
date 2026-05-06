@@ -1,0 +1,43 @@
+// Issue #41: regression from #40's "user-alias type-first heuristic"
+// fixed.
+//
+// #40 relaxed the heuristic to treat any `Identifier+Comma` shape as
+// type-first so user-defined type aliases (`@intToFloat(AudioFloat,
+// FFT_SIZE - 1)`) parse without forcing primitives. That went too
+// far: kernel code uses the inverse `expression-first` shape
+// (`@intCast(value, u64)`) where the primitive type sits in the
+// trailing position. The relaxed heuristic mis-classified the bare
+// value identifier as the type and the trailing primitive as a
+// value-position identifier, then the typechecker reported the
+// primitive as an "Undefined variable".
+//
+// Fix: when the first arg is a non-primitive identifier and the
+// trailing arg is a single primitive type closed by `)`, prefer
+// expression-first. User-defined-type aliases (#40) still work
+// because their second arg is rarely a single primitive followed by
+// `)`. Arbitrary-width integer types (`u3`, `i7`) are treated as
+// primitives for this discriminator.
+
+fn intcast_basic(x: u32): u64 {
+    return @intCast(x, u64)
+}
+
+fn intcast_in_expression(timeout_ms: u32): u64 {
+    return @intCast(timeout_ms, u64) * 1000
+}
+
+fn truncate_with_arbitrary_width(bit_idx: u32): u32 {
+    return @truncate(bit_idx, u3)
+}
+
+fn bitcast_signed_to_unsigned(delta: i32): u32 {
+    return @bitCast(delta, u32)
+}
+
+// User-alias type-first form from #40 still works.
+type AudioFloat = f64
+const FFT_SIZE: i32 = 1024
+
+fn cast_with_alias(): AudioFloat {
+    return @intToFloat(AudioFloat, FFT_SIZE - 1)
+}

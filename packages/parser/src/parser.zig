@@ -274,6 +274,36 @@ pub const Parser = struct {
         return out.toOwnedSlice(self.allocator);
     }
 
+    /// Is `name` a built-in primitive type identifier
+    /// (`u8`/`u16`/.../`i64`/`f32`/`bool`/`void`/...)?
+    /// Also matches Zig-style arbitrary-width integers `u<N>` /
+    /// `i<N>` (e.g. `u3`, `i7`) for use in `@truncate(x, u3)`.
+    fn isPrimitiveTypeName(name: []const u8) bool {
+        const primitives = [_][]const u8{
+            "i8",    "i16",    "i32",  "i64",    "i128",
+            "u8",    "u16",    "u32",  "u64",    "u128",
+            "f32",   "f64",
+            "int",   "float",  "bool", "string", "str",
+            "void",  "usize",  "isize",
+            "char",
+        };
+        for (primitives) |p| {
+            if (std.mem.eql(u8, name, p)) return true;
+        }
+        // Arbitrary-width int: `u3`, `i7`, `u128`, etc.
+        if (name.len >= 2 and (name[0] == 'u' or name[0] == 'i')) {
+            var all_digits = true;
+            for (name[1..]) |c| {
+                if (c < '0' or c > '9') {
+                    all_digits = false;
+                    break;
+                }
+            }
+            if (all_digits) return true;
+        }
+        return false;
+    }
+
     /// Heuristic: does the current token look like the start of a type
     /// name (primitive int/float/bool/string or `*`/`[`/`?` prefix)?
     /// Used to pick between type-first and expression-first cast forms
@@ -284,18 +314,7 @@ pub const Parser = struct {
             return true;
         }
         if (t.type != .Identifier) return false;
-        const name = t.lexeme;
-        const primitives = [_][]const u8{
-            "i8",    "i16",    "i32",  "i64",    "i128",
-            "u8",    "u16",    "u32",  "u64",    "u128",
-            "f32",   "f64",
-            "int",   "float",  "bool", "string", "str",
-            "void",  "usize",  "isize",
-        };
-        for (primitives) |p| {
-            if (std.mem.eql(u8, name, p)) return true;
-        }
-        return false;
+        return isPrimitiveTypeName(t.lexeme);
     }
 
     /// Check if the current token is on a new line compared to the previous token.
@@ -6287,16 +6306,40 @@ pub const Parser = struct {
                     {
                         break :blk true;
                     }
-                    // Identifier directly followed by `,` — treat as
-                    // type-first. Covers both primitive names
-                    // (`u64`, `i32`) and user-defined type aliases
-                    // (`AudioFloat`, `WifiTxDesc`). The single-arg
-                    // case `@ptrFromInt(str)` where `str` is a
-                    // value-position identifier is unaffected because
-                    // it is not followed by `,`.
+                    // Identifier directly followed by `,` — generally
+                    // treat as type-first to cover both primitive
+                    // names (`@as(u64, length)`) and user-defined
+                    // type aliases (`@intToFloat(AudioFloat, FFT_SIZE - 1)`).
+                    // The single-arg case `@ptrFromInt(str)` where
+                    // `str` is a value-position identifier is
+                    // unaffected because it is not followed by `,`.
+                    //
+                    // Exception (issue #41): the kernel uses the
+                    // expression-first shape `@intCast(value, u64)`
+                    // — value first, primitive type last. When the
+                    // first identifier is NOT a primitive but the
+                    // trailing arg is a single primitive type closed
+                    // by `)`, prefer expression-first so the
+                    // primitive parses as a type, not a symbol-table
+                    // lookup.
                     if (self.peek().type == .Identifier and
                         self.peekNext().type == .Comma)
                     {
+                        const first_is_primitive =
+                            isPrimitiveTypeName(self.peek().lexeme);
+                        if (!first_is_primitive and
+                            self.current + 3 < self.tokens.len)
+                        {
+                            const arg2 = self.tokens[self.current + 2];
+                            const after_arg2 = self.tokens[self.current + 3].type;
+                            if (arg2.type == .Identifier and
+                                isPrimitiveTypeName(arg2.lexeme) and
+                                after_arg2 == .RightParen)
+                            {
+                                // `IDENT, primitive)` — expression-first.
+                                break :blk false;
+                            }
+                        }
                         break :blk true;
                     }
                     break :blk false;

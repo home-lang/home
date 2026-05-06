@@ -1,0 +1,3 @@
+Checking: <repo>/tests/diagnostics/cases/types/42_intCast_with_primitive_type_arg.home
+
+Success: Type checking passed ✓
