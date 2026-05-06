@@ -380,6 +380,16 @@ pub const Assembler = struct {
         try self.emitU32(instr);
     }
 
+    /// CSET Xd, cond - Conditional set: writes 1 if `cond` is true after the
+    /// most recent flag-setting instruction, else 0. Aliases CSINC with the
+    /// low bit of the condition inverted (CSET Xd, eq → CSINC Xd, XZR, XZR, ne).
+    pub fn cset(self: *Assembler, dest: Register, cond: Cond) !void {
+        const rd = @intFromEnum(dest);
+        const inverted_cond: u32 = @as(u32, @intFromEnum(cond)) ^ 1;
+        const instr = 0x9A9F07E0 | (inverted_cond << 12) | rd;
+        try self.emitU32(instr);
+    }
+
     /// "Push" a single register: STR Xt, [SP, #-16]!
     /// Wastes 8 bytes per push but keeps SP 16-byte aligned per the AArch64 ABI.
     pub fn pushReg(self: *Assembler, src: Register) !void {

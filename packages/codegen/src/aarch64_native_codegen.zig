@@ -8,15 +8,17 @@ const macho = @import("macho.zig");
 /// AArch64 native codegen — Path B-lite of issue #5.
 ///
 /// Mirrors the structure of `native_codegen.NativeCodegen` but emits arm64
-/// machine code via `arm64.Assembler`. Currently supports the M2 subset:
+/// machine code via `arm64.Assembler`. Currently supports the M3 subset:
 ///   - top-level `FnDecl` named `main` (other functions still NotImplemented)
 ///   - `LetDecl` (immutable; `is_static` not supported)
+///   - `IfStmt` with optional else
 ///   - `ReturnStmt`
-///   - integer literals, identifier reads, `+ - * /` binary expressions
+///   - integer + boolean literals, identifier reads
+///   - binary expressions: `+ - * /`, `== != < <= > >=`
 ///
 /// Other AST nodes return `error.NotImplemented`. The plan is to expand
-/// this milestone-by-milestone (M3 = conditionals, M4 = loops, …) per the
-/// B-lite roadmap rather than refactoring NativeCodegen itself.
+/// this milestone-by-milestone (M4 = loops, M5 = function calls, …) per
+/// the B-lite roadmap rather than refactoring NativeCodegen itself.
 pub const CodegenError = error{
     NotImplemented,
     UnsupportedPlatform,
@@ -90,9 +92,44 @@ pub const Aarch64NativeCodegen = struct {
         switch (stmt) {
             .FnDecl => |func| try self.generateFnDecl(func),
             .LetDecl => |decl| try self.generateLetDecl(decl),
+            .IfStmt => |if_stmt| try self.generateIfStmt(if_stmt),
             .ReturnStmt => |ret| try self.generateReturn(ret),
             .ExprStmt => |expr| try self.generateExpr(expr),
             else => return error.NotImplemented,
+        }
+    }
+
+    fn generateIfStmt(self: *Aarch64NativeCodegen, if_stmt: *ast.IfStmt) CodegenError!void {
+        // Evaluate condition into x0 (1 = true, 0 = false).
+        try self.generateExpr(if_stmt.condition);
+        // Compare against 0; B.EQ jumps to else / end if condition is false.
+        try self.assembler.cmpRegImm(.x0, 0);
+
+        const skip_then_pos = self.assembler.getPosition();
+        try self.assembler.bcond(.eq, 0); // placeholder, patched below
+
+        // Then block.
+        for (if_stmt.then_block.statements) |stmt| {
+            try self.generateStmt(stmt);
+        }
+
+        if (if_stmt.else_block) |else_block| {
+            // After the then block, branch unconditionally over the else block.
+            const skip_else_pos = self.assembler.getPosition();
+            try self.assembler.b(0); // placeholder
+
+            // Patch the b.eq to land here (start of else).
+            try self.assembler.patchBcond(skip_then_pos, .eq, self.assembler.getPosition());
+
+            for (else_block.statements) |stmt| {
+                try self.generateStmt(stmt);
+            }
+
+            // Patch the unconditional jump to land after the else block.
+            try self.assembler.patchB(skip_else_pos, self.assembler.getPosition());
+        } else {
+            // No else: b.eq lands here (just past the then block).
+            try self.assembler.patchBcond(skip_then_pos, .eq, self.assembler.getPosition());
         }
     }
 
@@ -108,13 +145,11 @@ pub const Aarch64NativeCodegen = struct {
         self.locals.clearRetainingCapacity();
         self.stack_delta = 0;
 
-        // Pre-pass: count immediate `let` bindings to size the frame. Nested
-        // blocks aren't reached here — M2 only handles top-level lets in the
-        // function body.
-        var local_count: u32 = 0;
-        for (func.body.statements) |stmt| {
-            if (stmt == .LetDecl) local_count += 1;
-        }
+        // Pre-pass: count `let` bindings reachable from this function's body
+        // (including those nested in if/else branches) to size the frame.
+        // We over-allocate when branches are mutually exclusive — that's a
+        // known limitation; an optimal allocator can reuse slots later.
+        const local_count: u32 = countLetDeclsInBlock(func.body);
         const raw_frame: u32 = local_count * 8;
         self.frame_size = std.mem.alignForward(u32, raw_frame, 16);
         if (self.frame_size > 4095) return error.FrameTooLarge; // single ADD/SUB imm12
@@ -194,6 +229,9 @@ pub const Aarch64NativeCodegen = struct {
                 const v: i64 = @intCast(lit.value);
                 try self.assembler.movRegImm64(.x0, v);
             },
+            .BooleanLiteral => |lit| {
+                try self.assembler.movRegImm64(.x0, if (lit.value) 1 else 0);
+            },
             .Identifier => |ident| {
                 const base = self.locals.get(ident.name) orelse return error.UndefinedIdentifier;
                 const offset: u32 = base + self.stack_delta;
@@ -221,7 +259,44 @@ pub const Aarch64NativeCodegen = struct {
             .Sub => try self.assembler.subRegReg(.x0, .x1, .x0),
             .Mul => try self.assembler.mulRegReg(.x0, .x1, .x0),
             .Div, .IntDiv => try self.assembler.divRegReg(.x0, .x1, .x0),
+
+            // Comparisons: cmp x1, x0  →  cset x0, <cond>.
+            .Equal => try self.emitCompare(.eq),
+            .NotEqual => try self.emitCompare(.ne),
+            .Less => try self.emitCompare(.lt),
+            .LessEq => try self.emitCompare(.le),
+            .Greater => try self.emitCompare(.gt),
+            .GreaterEq => try self.emitCompare(.ge),
+
             else => return error.NotImplemented,
         }
     }
+
+    fn emitCompare(self: *Aarch64NativeCodegen, cond: arm64.Assembler.Cond) !void {
+        try self.assembler.cmpRegReg(.x1, .x0);
+        try self.assembler.cset(.x0, cond);
+    }
 };
+
+/// Recursively count `let` bindings reachable from a block. Branches of an
+/// if/else are summed (over-allocates when branches are mutually exclusive,
+/// which is fine for now).
+fn countLetDeclsInBlock(block: *const ast.BlockStmt) u32 {
+    var count: u32 = 0;
+    for (block.statements) |stmt| {
+        count += countLetDeclsInStmt(stmt);
+    }
+    return count;
+}
+
+fn countLetDeclsInStmt(stmt: ast.Stmt) u32 {
+    return switch (stmt) {
+        .LetDecl => 1,
+        .IfStmt => |if_stmt| blk: {
+            var c = countLetDeclsInBlock(if_stmt.then_block);
+            if (if_stmt.else_block) |eb| c += countLetDeclsInBlock(eb);
+            break :blk c;
+        },
+        else => 0,
+    };
+}
