@@ -81,6 +81,13 @@ pub const Lowerer = struct {
             // their runtime type. The narrowing semantics are
             // separately recorded in the checker via `fn_predicates`.
             .type_predicate_type => types.Primitive.boolean_t,
+            // Template literal types lower to `string` for now —
+            // structural-pattern matching against templates is a
+            // Phase 6 follow-up. The interner already supports
+            // string-literal types so a template with no
+            // interpolations could collapse to a literal type, but
+            // we keep things conservative.
+            .template_literal_type => types.Primitive.string_t,
             else => types.Primitive.unknown,
         };
     }

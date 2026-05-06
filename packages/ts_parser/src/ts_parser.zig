@@ -1385,6 +1385,18 @@ pub const Parser = struct {
                 const lit = try self.builder.addLiteralNumber(tokenSpan(t), value);
                 break :blk try self.builder.addLiteralType(tokenSpan(t), lit, false);
             },
+            // Template literal type: `\`hello-${T}\`` (in type position).
+            .no_substitution_template => blk: {
+                _ = self.advance();
+                // Strip the backticks and produce a single text part.
+                const slice = self.source[t.span.start + 1 .. t.span.end - 1];
+                const text_id = self.interner.intern(slice) catch return error.OutOfMemory;
+                const text_lit = try self.builder.addLiteralString(tokenSpan(t), text_id);
+                break :blk try self.builder.addTemplateLiteralType(tokenSpan(t), &.{text_lit}, &.{});
+            },
+            .template_head => blk: {
+                break :blk try self.parseTemplateLiteralType();
+            },
             .minus => blk: {
                 // Negative numeric literal type: `-1`.
                 _ = self.advance();
@@ -1501,6 +1513,54 @@ pub const Parser = struct {
         }
         _ = try self.expect(.close_paren, "')' to close fn-type params");
         return try params.toOwnedSlice(self.gpa);
+    }
+
+    /// Parse a template-literal type: `\`a${T}b${U}c\``. Cursor at
+    /// `template_head` (`` `a${ ``); we collect each interpolated
+    /// type and the trailing text segments until we hit
+    /// `template_tail`.
+    fn parseTemplateLiteralType(self: *Parser) ParseError!NodeId {
+        const head = self.advance(); // template_head
+        var text_parts: std.ArrayListUnmanaged(NodeId) = .empty;
+        defer text_parts.deinit(self.gpa);
+        var type_parts: std.ArrayListUnmanaged(NodeId) = .empty;
+        defer type_parts.deinit(self.gpa);
+        // Strip leading `\`` and trailing `${` from the head text.
+        const head_slice = self.source[head.span.start + 1 .. head.span.end - 2];
+        const head_id = self.interner.intern(head_slice) catch return error.OutOfMemory;
+        const head_lit = try self.builder.addLiteralString(tokenSpan(head), head_id);
+        try text_parts.append(self.gpa, head_lit);
+
+        while (true) {
+            // Parse the interpolated type expression.
+            const t = try self.parseTypeAnnotation();
+            try type_parts.append(self.gpa, t);
+            const next = self.peek();
+            if (next.kind == .template_middle) {
+                _ = self.advance();
+                const slice = self.source[next.span.start + 1 .. next.span.end - 2];
+                const id = self.interner.intern(slice) catch return error.OutOfMemory;
+                const lit = try self.builder.addLiteralString(tokenSpan(next), id);
+                try text_parts.append(self.gpa, lit);
+                continue;
+            }
+            if (next.kind == .template_tail) {
+                _ = self.advance();
+                const slice = self.source[next.span.start + 1 .. next.span.end - 1];
+                const id = self.interner.intern(slice) catch return error.OutOfMemory;
+                const lit = try self.builder.addLiteralString(tokenSpan(next), id);
+                try text_parts.append(self.gpa, lit);
+                break;
+            }
+            // Malformed — bail.
+            break;
+        }
+
+        const sp: Span = .{
+            .start = head.span.start,
+            .end = if (self.cursor > 0) self.tokens[self.cursor - 1].span.end else head.span.end,
+        };
+        return try self.builder.addTemplateLiteralType(sp, text_parts.items, type_parts.items);
     }
 
     fn parseTupleType(self: *Parser) ParseError!NodeId {
@@ -4075,3 +4135,18 @@ test "parser: this parameter alone parses cleanly" {
     const params = hir_mod.fnParams(&s.hir, top);
     try T.expectEqual(@as(usize, 0), params.len);
 }
+
+test "parser: template literal type with no substitution" {
+    var s = try newTestSetup("type T = `hello`;");
+    defer destroyTestSetup(s);
+    const root = try s.parser.parseSourceFile();
+    const top = hir_mod.blockStmts(&s.hir, root)[0];
+    try T.expectEqual(hir_mod.NodeKind.type_alias_decl, s.hir.kindOf(top));
+}
+
+// Phase 1.B follow-up: parser-driven `rescanTemplate` after each
+// interpolated type expression is needed for `\`hello-${T}-world\``
+// to lex correctly (the scanner currently can't reach the closing
+// backtick when the interpolation contains an identifier-shaped
+// type). The single-text path above already exercises the
+// addTemplateLiteralType builder + lower path.
