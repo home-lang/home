@@ -186,13 +186,19 @@ pub const Module = struct {
     scopes: std.ArrayListUnmanaged(*Scope),
 
     pub fn deinit(self: *Module) void {
-        // Symbols + scopes live in the arena — single bulk free below.
-        // Free each per-symbol decls list (which is unmanaged but
-        // allocates from the arena, so this is purely defensive).
-        const ar = self.arena.allocator();
-        _ = ar;
-        self.symbols.deinit(self.arena.child_allocator);
-        self.scopes.deinit(self.arena.child_allocator);
+        // Everything the Module owns is allocated through the arena:
+        //   - symbol structs (via openScope's arena allocator)
+        //   - scope structs (ditto)
+        //   - the SymbolMap entries (via declare's arena allocator)
+        //   - the per-symbol `decls` ArrayList backing storage
+        //   - the `symbols` / `scopes` ArrayList backing storage
+        // A single arena.deinit() releases all of it. Calling
+        // ArrayListUnmanaged.deinit on arena-backed storage with a
+        // *different* allocator (the gpa) is a use-after-free in
+        // disguise: it decommits memory the arena will then walk and
+        // free a second time, surfacing as a poisoned allocator
+        // pointer (0xaa…) on deeply recursive inputs where the
+        // arena's free list has grown large enough to be reused.
         self.arena.deinit();
     }
 
@@ -307,7 +313,7 @@ pub const Binder = struct {
             .namespaces = .empty,
         };
         try self.scope_stack.append(self.gpa, sc);
-        try self.module.scopes.append(self.gpa, sc);
+        try self.module.scopes.append(ar, sc);
         return sc;
     }
 
@@ -332,7 +338,7 @@ pub const Binder = struct {
             .parent_scope = self.currentScope(),
         };
         try s.decls.append(ar, decl);
-        try self.module.symbols.append(self.gpa, s);
+        try self.module.symbols.append(ar, s);
         return s;
     }
 
