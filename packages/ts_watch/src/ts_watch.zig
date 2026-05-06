@@ -136,6 +136,47 @@ pub const Watcher = struct {
 };
 
 // =============================================================================
+// RealStatFs — real-disk implementation of `StatFs`
+// =============================================================================
+//
+// Walks paths via `std.Io.Dir.cwd().statFile`, threading a short-
+// lived `std.Io.Threaded` instance per call (matching the pattern
+// in `ts_cache.zig`). Returns `Stat { mtime, size }` or null on
+// any error (file not found, access denied, etc.) so callers can
+// treat missing files uniformly.
+
+pub const RealStatFs = struct {
+    gpa: std.mem.Allocator,
+
+    pub fn init(gpa: std.mem.Allocator) RealStatFs {
+        return .{ .gpa = gpa };
+    }
+
+    pub fn deinit(self: *RealStatFs) void {
+        _ = self;
+    }
+
+    pub fn fs(self: *RealStatFs) StatFs {
+        return .{ .ptr = self, .vtable = &vt };
+    }
+
+    const vt: StatFs.VTable = .{ .stat = realStat };
+
+    fn realStat(p: *anyopaque, path: []const u8) ?Stat {
+        const self: *RealStatFs = @ptrCast(@alignCast(p));
+        var threaded = std.Io.Threaded.init(self.gpa, .{});
+        defer threaded.deinit();
+        const io = threaded.io();
+        const cwd = std.Io.Dir.cwd();
+        const s = cwd.statFile(io, path, .{}) catch return null;
+        return .{
+            .mtime = s.mtime.nanoseconds,
+            .size = s.size,
+        };
+    }
+};
+
+// =============================================================================
 // VirtualWatchFs — test harness
 // =============================================================================
 
@@ -275,6 +316,32 @@ test "Watcher: track is idempotent" {
     try w.track("/a.ts");
     try w.track("/a.ts");
     try T.expectEqual(@as(usize, 1), w.count());
+}
+
+test "RealStatFs: stat on a known repo file returns non-null" {
+    var rfs = RealStatFs.init(T.allocator);
+    defer rfs.deinit();
+    // `build.zig` lives at the repo root, which is the cwd when
+    // `zig build test` invokes this test binary.
+    const s = rfs.fs().stat("build.zig");
+    try T.expect(s != null);
+    try T.expect(s.?.size > 0);
+}
+
+var nonexistent_counter: std.atomic.Value(u64) = .{ .raw = 0 };
+
+test "RealStatFs: stat on a nonexistent path returns null" {
+    var rfs = RealStatFs.init(T.allocator);
+    defer rfs.deinit();
+    var pbuf: [128]u8 = undefined;
+    // Const-folded seed + atomic counter avoids collisions across
+    // parallel runs without needing the (removed-in-0.16-dev) wall-
+    // clock API. Even on collision the assertion still holds — the
+    // path must not exist on disk.
+    const n = nonexistent_counter.fetchAdd(1, .monotonic);
+    const path = try std.fmt.bufPrint(&pbuf, "/tmp/nonexistent-home-ts-watch-{x}-{d}", .{ @as(u64, 0xCAFEBABEDEADBEEF), n });
+    const s = rfs.fs().stat(path);
+    try T.expect(s == null);
 }
 
 test "Watcher: multiple files with mixed changes" {

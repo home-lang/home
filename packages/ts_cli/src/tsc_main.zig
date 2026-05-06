@@ -352,6 +352,15 @@ pub fn main(init: std.process.Init) !void {
         // any file changed, calls Program.recompileChanged and
         // re-emits. Native FS-event backends (FSEvents/inotify/
         // ReadDirChangesW) are tracked separately.
+        //
+        // §5.A.5 follow-up: `ts_watch.RealStatFs` is now in place
+        // and can drive `ts_watch.Watcher` against real disk stats
+        // (mtime + size), avoiding the per-tick byte-comparison.
+        // Wiring it through here means importing `ts_watch` into
+        // `home-tsc`'s build module — a follow-up step keeps this
+        // landing low-risk; the abstraction is unit-tested in the
+        // `ts_watch` package against both `VirtualWatchFs` and
+        // `RealStatFs`, so the swap is mechanical.
         std.debug.print("home tsc - watching for changes (Ctrl-C to stop)\n", .{});
         var last_sources: std.ArrayListUnmanaged([]u8) = .empty;
         defer {
