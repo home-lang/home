@@ -177,6 +177,23 @@ pub const Lowerer = struct {
     fn lowerKeyof(self: *Lowerer, node: NodeId) LowerError!TypeId {
         const k = hir_mod.keyofTypeOf(self.hir, node);
         const operand = try self.lower(k.operand);
+        // Eager evaluation when the operand is a known object type
+        // — produce the union of its property names as string
+        // literals. Other operand shapes (type parameters, etc.)
+        // fall back to the symbolic `keyof T` representation, which
+        // future substitution can re-evaluate.
+        if (self.interner.pool.flagsOf(operand).is_object_type) {
+            const members = self.interner.objectMembers(operand);
+            if (members.len == 0) return types.Primitive.never;
+            var lits: std.ArrayListUnmanaged(TypeId) = .empty;
+            defer lits.deinit(self.gpa);
+            for (members) |m| {
+                const lit = self.interner.internStringLiteral(m.name) catch continue;
+                try lits.append(self.gpa, lit);
+            }
+            if (lits.items.len == 1) return lits.items[0];
+            return self.interner.internUnion(lits.items) catch error.OutOfMemory;
+        }
         return self.interner.internKeyof(operand) catch error.OutOfMemory;
     }
 

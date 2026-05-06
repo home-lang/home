@@ -1146,6 +1146,26 @@ pub const Checker = struct {
                     return self.typeOfIdentifier(tt.operand);
                 }
             },
+            .keyof_type => {
+                // `keyof T` — re-resolve the operand through the
+                // type-name aware path, then evaluate eagerly when
+                // the result is a known object type.
+                const k = hir_mod.keyofTypeOf(self.hir, type_node);
+                const operand = try self.lowererLowerWithTypeParams(k.operand);
+                if (self.interner.pool.flagsOf(operand).is_object_type) {
+                    const members = self.interner.objectMembers(operand);
+                    if (members.len == 0) return types.Primitive.never;
+                    var lits: std.ArrayListUnmanaged(TypeId) = .empty;
+                    defer lits.deinit(self.gpa);
+                    for (members) |m| {
+                        const lit = self.interner.internStringLiteral(m.name) catch continue;
+                        try lits.append(self.gpa, lit);
+                    }
+                    if (lits.items.len == 1) return lits.items[0];
+                    return self.interner.internUnion(lits.items) catch return error.OutOfMemory;
+                }
+                return self.interner.internKeyof(operand) catch return error.OutOfMemory;
+            },
             else => {},
         }
         return self.lowerer.lower(type_node);
@@ -1326,8 +1346,13 @@ pub const Checker = struct {
                 // that the expression is assignable to T (TS2322 on
                 // miss); a follow-up will tighten that path.
                 const a = hir_mod.asExpressionOf(self.hir, node);
-                _ = try self.checkExpression(a.expr);
+                const inner_t = try self.checkExpression(a.expr);
                 if (a.type_node == hir_mod.none_node_id) break :blk types.Primitive.any;
+                // `expr as const` — special form. The parser
+                // builds a synthetic `const` type-ref to mark it.
+                if (self.isAsConstMarker(a.type_node)) {
+                    break :blk self.literalizeForAsConst(a.expr, inner_t) catch inner_t;
+                }
                 break :blk try self.lowererLowerWithTypeParams(a.type_node);
             },
             .non_null_expr => blk: {
@@ -1452,6 +1477,23 @@ pub const Checker = struct {
                 }
                 try self.recordNarrow(id.name, narrowed);
             }
+            return;
+        }
+
+        // `"foo" in x` — narrows `x` to the variants of its union
+        // that declare `foo`. The else-branch keeps the variants
+        // that *don't* declare it. LHS must be a string literal
+        // (TS only narrows when the property name is statically
+        // known); RHS must be an identifier we can record against.
+        if (b.op == .in and
+            self.hir.kindOf(b.lhs) == .literal_string and
+            self.hir.kindOf(b.rhs) == .identifier)
+        {
+            const lit = hir_mod.literalStringOf(self.hir, b.lhs);
+            const rhs_id = hir_mod.identifierOf(self.hir, b.rhs);
+            const current = self.lookupNarrow(rhs_id.name) orelse self.typeOfIdentifier(b.rhs);
+            const narrowed = self.narrowByPropertyPresence(current, lit.value, when_true) catch current;
+            if (narrowed != current) try self.recordNarrow(rhs_id.name, narrowed);
             return;
         }
 
@@ -1904,6 +1946,85 @@ pub const Checker = struct {
             .code = code,
             .message = msg,
         });
+    }
+
+    /// True when `type_node` is the synthetic `type_ref` to `const`
+    /// the parser uses to encode `expr as const`.
+    fn isAsConstMarker(self: *Checker, type_node: NodeId) bool {
+        if (self.hir.kindOf(type_node) != .type_ref) return false;
+        const r = hir_mod.typeRefOf(self.hir, type_node);
+        if (r.qualifier_len != 0 or r.args_len != 0) return false;
+        const name = self.string_interner.get(r.name);
+        return std.mem.eql(u8, name, "const");
+    }
+
+    /// Implement `expr as const`: re-type the inner expression as
+    /// its narrowest literal form. For literals this is the literal
+    /// type itself; for `{ k: v }` we walk the properties and
+    /// recursively literalize. Other shapes fall through unchanged.
+    fn literalizeForAsConst(self: *Checker, expr: NodeId, fallback: TypeId) !TypeId {
+        switch (self.hir.kindOf(expr)) {
+            .literal_string => {
+                const lit = hir_mod.literalStringOf(self.hir, expr);
+                return self.interner.internStringLiteral(lit.value) catch return error.OutOfMemory;
+            },
+            .literal_number => {
+                const v = hir_mod.literalNumberOf(self.hir, expr);
+                return self.interner.internNumberLiteral(v) catch return error.OutOfMemory;
+            },
+            .literal_bool => {
+                const v = hir_mod.literalBoolOf(self.hir, expr);
+                return if (v) types.Primitive.true_lit else types.Primitive.false_lit;
+            },
+            .object_literal => {
+                const props = hir_mod.objectLiteralProps(self.hir, expr);
+                var members: std.ArrayListUnmanaged(types.ObjectMember) = .empty;
+                defer members.deinit(self.gpa);
+                for (props) |p| {
+                    if (self.hir.kindOf(p) != .object_property) continue;
+                    const op = hir_mod.objectPropertyOf(self.hir, p);
+                    if (self.hir.kindOf(op.key) != .identifier) continue;
+                    if (op.value == hir_mod.none_node_id) continue;
+                    const k = hir_mod.identifierOf(self.hir, op.key);
+                    const inner = try self.checkExpression(op.value);
+                    const lit_t = try self.literalizeForAsConst(op.value, inner);
+                    try members.append(self.gpa, .{
+                        .name = k.name,
+                        .type = lit_t,
+                        .is_optional = false,
+                        .is_readonly = true,
+                        .is_method = false,
+                    });
+                }
+                return self.interner.internObjectType(members.items) catch return error.OutOfMemory;
+            },
+            else => return fallback,
+        }
+    }
+
+    /// Filter a union type by whether each variant declares
+    /// `prop_name` as a member. Used by `in`-operator narrowing:
+    /// `"foo" in obj` keeps the union arms that have `foo`;
+    /// the else branch keeps the arms that don't. For non-union
+    /// inputs, the unfiltered type passes through (matches tsc:
+    /// `in` narrowing only fires on unions of object types).
+    fn narrowByPropertyPresence(
+        self: *Checker,
+        t: TypeId,
+        prop_name: hir_mod.StringId,
+        keep_with_prop: bool,
+    ) !TypeId {
+        if (!self.interner.pool.flagsOf(t).is_union) return t;
+        const members = self.interner.unionMembers(t);
+        var kept: std.ArrayListUnmanaged(TypeId) = .empty;
+        defer kept.deinit(self.gpa);
+        for (members) |m| {
+            const has = self.interner.objectMember(m, prop_name) != null;
+            if (has == keep_with_prop) try kept.append(self.gpa, m);
+        }
+        if (kept.items.len == 0) return types.Primitive.never;
+        if (kept.items.len == 1) return kept.items[0];
+        return self.interner.internUnion(kept.items) catch return error.OutOfMemory;
     }
 
     /// Bind the loop variable in `for (TARGET in/of SOURCE) ...`
@@ -2860,6 +2981,109 @@ test "checker: array literal exposes length: number" {
     const stmts = hir_mod.blockStmts(&s.hir, s.root);
     const v = hir_mod.varDeclOf(&s.hir, stmts[1]);
     try T.expectEqual(types.Primitive.number_t, s.hir.typeOf(v.init));
+}
+
+test "checker: keyof T evaluates to a union of property name literals" {
+    const s = try newSetup(
+        \\type Point = { x: number; y: number };
+        \\type PointKey = keyof Point;
+    );
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+    const stmts = hir_mod.blockStmts(&s.hir, s.root);
+    const keys_t = s.hir.typeOf(stmts[1]);
+    try T.expect(s.ti.pool.flagsOf(keys_t).is_union);
+    // Both 'x' and 'y' should appear as string-literal types.
+    var has_x = false;
+    var has_y = false;
+    for (s.ti.unionMembers(keys_t)) |m| {
+        if (!s.ti.pool.flagsOf(m).is_literal) continue;
+        const lit = s.ti.literalOf(m);
+        switch (lit) {
+            .string_lit => |sid| {
+                const text = s.sint.get(sid);
+                if (std.mem.eql(u8, text, "x")) has_x = true;
+                if (std.mem.eql(u8, text, "y")) has_y = true;
+            },
+            else => {},
+        }
+    }
+    try T.expect(has_x);
+    try T.expect(has_y);
+}
+
+test "checker: `as const` on a string literal types as the literal" {
+    const s = try newSetup("let s = \"hi\" as const;");
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+    const stmts = hir_mod.blockStmts(&s.hir, s.root);
+    const v = hir_mod.varDeclOf(&s.hir, stmts[0]);
+    const t = s.hir.typeOf(v.init);
+    try T.expect(s.ti.pool.flagsOf(t).is_literal);
+    const lit = s.ti.literalOf(t);
+    switch (lit) {
+        .string_lit => |sid| try T.expectEqualStrings("hi", s.sint.get(sid)),
+        else => return error.TestExpectedEqual,
+    }
+}
+
+test "checker: `as const` on a number literal types as the literal" {
+    const s = try newSetup("let n = 42 as const;");
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+    const stmts = hir_mod.blockStmts(&s.hir, s.root);
+    const v = hir_mod.varDeclOf(&s.hir, stmts[0]);
+    const t = s.hir.typeOf(v.init);
+    try T.expect(s.ti.pool.flagsOf(t).is_literal);
+}
+
+test "checker: `as const` on an object literal makes members literal + readonly" {
+    const s = try newSetup("let o = { kind: \"circle\", r: 1 } as const;");
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+    const stmts = hir_mod.blockStmts(&s.hir, s.root);
+    const v = hir_mod.varDeclOf(&s.hir, stmts[0]);
+    const t = s.hir.typeOf(v.init);
+    try T.expect(s.ti.pool.flagsOf(t).is_object_type);
+    const kind_id = try s.sint.intern("kind");
+    const kind_t = s.ti.objectMember(t, kind_id) orelse return error.TestExpectedEqual;
+    // 'kind' is the literal "circle", not the broad string type.
+    try T.expect(s.ti.pool.flagsOf(kind_t).is_literal);
+}
+
+test "checker: `in` operator narrows a union to variants with the named prop" {
+    // Then-branch only (the else-branch path needs the negative
+    // narrowing to be tightened — currently keeps the variants
+    // *without* the prop but typeOfIdentifier may not see that
+    // through every parent chain shape; tracked as a follow-up).
+    const s = try newSetup(
+        \\type Cat = { meows: boolean };
+        \\type Dog = { barks: boolean };
+        \\function f(p: Cat | Dog): boolean {
+        \\  if ("meows" in p) { return p.meows; }
+        \\  return false;
+        \\}
+    );
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+    try T.expect(s.checker.diagnostics.items.len == 0);
+}
+
+test "checker: keyof on a literal type alias resolves to a literal union" {
+    // The full assignability story (TS2322 on `keyof T = "z"`) needs
+    // contextual typing for fresh string-literal expressions —
+    // tracked as a follow-up. Here we just verify that `keyof T`
+    // produces the expected interned shape so downstream features
+    // (mapped types, indexed access) can build on it.
+    const s = try newSetup(
+        \\type Point = { x: number; y: number };
+        \\type PointKey = keyof Point;
+    );
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+    const stmts = hir_mod.blockStmts(&s.hir, s.root);
+    const keys_t = s.hir.typeOf(stmts[1]);
+    try T.expect(s.ti.pool.flagsOf(keys_t).is_union);
 }
 
 test "checker: tuple type exposes per-index members + length literal" {

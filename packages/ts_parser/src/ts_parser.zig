@@ -2092,6 +2092,25 @@ pub const Parser = struct {
             // expression-RHS path so we don't try to parse `number`
             // as an identifier.
             if (t.kind == .kw_as or t.kind == .kw_satisfies) {
+                // `expr as const` is a special form — `const` isn't
+                // a valid type, it's a contextual keyword that asks
+                // the checker to type the LHS as its literal form
+                // (rather than the widened type). Build a synthetic
+                // type_ref to "const" so the checker can recognize
+                // and handle it.
+                if (t.kind == .kw_as and self.peek().kind == .kw_const) {
+                    const const_tok = self.advance();
+                    const const_id = self.interner.intern("const") catch return error.OutOfMemory;
+                    const type_node = try self.builder.addTypeRef(
+                        tokenSpan(const_tok),
+                        const_id,
+                        &.{},
+                        &.{},
+                    );
+                    const sp: Span = .{ .start = self.hir.spanOf(left).start, .end = const_tok.span.end };
+                    left = try self.builder.addAsExpression(.as_expr, sp, left, type_node);
+                    continue;
+                }
                 const type_node = try self.parseTypeAnnotation();
                 const sp: Span = .{ .start = self.hir.spanOf(left).start, .end = self.hir.spanOf(type_node).end };
                 const kind: hir_mod.NodeKind = if (t.kind == .kw_as) .as_expr else .satisfies_expr;
