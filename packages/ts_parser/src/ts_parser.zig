@@ -634,7 +634,7 @@ pub const Parser = struct {
                     const params = try self.parseParameterList();
                     defer self.gpa.free(params);
                     var return_type: NodeId = hir_mod.none_node_id;
-                    if (self.match(.colon)) return_type = try self.parseTypeAnnotation();
+                    if (self.match(.colon)) return_type = try self.parseReturnTypeAnnotation(params);
                     var body: NodeId = hir_mod.none_node_id;
                     if (self.peek().kind == .open_brace) {
                         body = try self.parseBlockStatement();
@@ -2067,11 +2067,11 @@ pub const Parser = struct {
         const params = try self.parseParameterList();
         defer self.gpa.free(params);
 
-        // Optional return-type annotation. Use the real type parser
-        // so we don't accidentally consume the `=>` token.
+        // Optional return-type annotation. Use the predicate-aware
+        // parser so `(x): x is T => ...` works.
         var return_type: NodeId = hir_mod.none_node_id;
         if (self.match(.colon)) {
-            return_type = try self.parseTypeAnnotation();
+            return_type = try self.parseReturnTypeAnnotation(params);
         }
         _ = try self.expect(.arrow, "'=>' in arrow function");
         const body = try self.parseArrowBody();
