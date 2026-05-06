@@ -1349,6 +1349,11 @@ pub const Checker = struct {
                 // the conditional across each member and union the
                 // results.
                 //
+                // `[T] extends [U]` — the bracketed tuple-of-one form
+                // suppresses distribution. We detect both sides being
+                // single-element tuples and unwrap them, evaluating
+                // non-distributively.
+                //
                 // `infer R` placeholders in the extends-side need to
                 // be visible to the true-branch (`R`). We push a
                 // narrow scope around the conditional, lower the
@@ -1357,6 +1362,24 @@ pub const Checker = struct {
                 const c = hir_mod.conditionalTypeOf(self.hir, type_node);
                 try self.pushNarrowScope();
                 defer self.popNarrowScope();
+
+                // Detect `[T] extends [U]` — both sides are
+                // single-element tuples. Unwrap and skip distribution.
+                if (self.hir.kindOf(c.check) == .tuple_type and self.hir.kindOf(c.extends) == .tuple_type) {
+                    const check_elems = hir_mod.tupleTypeElements(self.hir, c.check);
+                    const ext_elems = hir_mod.tupleTypeElements(self.hir, c.extends);
+                    if (check_elems.len == 1 and ext_elems.len == 1) {
+                        const check = try self.lowererLowerWithTypeParams(check_elems[0]);
+                        const ext = try self.lowererLowerWithTypeParams(ext_elems[0]);
+                        try self.registerInferNames(ext_elems[0], ext);
+                        const tt = try self.lowererLowerWithTypeParams(c.true_branch);
+                        const ff = try self.lowererLowerWithTypeParams(c.false_branch);
+                        // Non-distributing: evaluate as a single check
+                        // (skipping the union-distribute branch).
+                        return self.evalConditionalNonDistributing(check, ext, tt, ff);
+                    }
+                }
+
                 const check = try self.lowererLowerWithTypeParams(c.check);
                 const ext = try self.lowererLowerWithTypeParams(c.extends);
                 try self.registerInferNames(c.extends, ext);
@@ -1420,6 +1443,33 @@ pub const Checker = struct {
             }
         }
         // Defer if the check or extends type carries a free type parameter.
+        if (self.containsFreeTypeParameter(check) or self.containsFreeTypeParameter(ext)) {
+            return self.interner.internConditional(check, ext, tt, ff) catch return error.OutOfMemory;
+        }
+        const ok = self.engine.isAssignableTo(check, ext) catch false;
+        return if (ok) tt else ff;
+    }
+
+    /// Like `evalConditional` but skips union distribution — used for
+    /// the bracketed `[T] extends [U]` form where TS suppresses the
+    /// distributive behavior.
+    fn evalConditionalNonDistributing(
+        self: *Checker,
+        check: TypeId,
+        ext: TypeId,
+        tt: TypeId,
+        ff: TypeId,
+    ) CheckError!TypeId {
+        if (self.interner.pool.flagsOf(ext).is_signature and
+            self.interner.pool.flagsOf(check).is_signature)
+        {
+            var infer_subs: std.AutoHashMapUnmanaged(TypeId, TypeId) = .empty;
+            defer infer_subs.deinit(self.gpa);
+            const matched = self.matchInfer(check, ext, &infer_subs) catch false;
+            if (matched and infer_subs.count() > 0) {
+                return self.substituteType(tt, &infer_subs);
+            }
+        }
         if (self.containsFreeTypeParameter(check) or self.containsFreeTypeParameter(ext)) {
             return self.interner.internConditional(check, ext, tt, ff) catch return error.OutOfMemory;
         }
@@ -4327,6 +4377,26 @@ test "checker: mapped type over keyof T materializes properties" {
     try T.expectEqual(@as(usize, 2), members.len);
     // Both members should be number_t.
     for (members) |m| try T.expectEqual(types.Primitive.number_t, m.type);
+}
+
+test "checker: bracketed [T] extends [U] suppresses distribution" {
+    // Without brackets: `(string | number) extends string ? "y" : "n"`
+    // distributes to `"y" | "n"`. With brackets:
+    // `[(string | number)] extends [string] ? "y" : "n"` evaluates
+    // non-distributively: `string | number` is NOT assignable to
+    // `string`, so the result is `"n"` only (single literal).
+    const s = try newSetup(
+        \\type T = [string | number] extends [string] ? "y" : "n";
+        \\let r: T;
+    );
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+    const stmts = hir_mod.blockStmts(&s.hir, s.root);
+    const r_decl = stmts[1];
+    const t = s.hir.typeOf(r_decl);
+    // Result should be a single string-literal type, not a union.
+    try T.expect(!s.ti.pool.flagsOf(t).is_union);
+    try T.expect(s.ti.pool.flagsOf(t).is_literal);
 }
 
 test "checker: ReturnType<T> infers signature return via infer R" {
