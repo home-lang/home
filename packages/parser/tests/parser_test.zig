@@ -764,3 +764,67 @@ test "parser: method call with arguments" {
     try testing.expect(expr.* == .CallExpr);
     try testing.expectEqual(@as(usize, 2), expr.CallExpr.args.len);
 }
+
+test "parser: inline asm simple string form" {
+    const program = try parseSource(testing.allocator, "asm(\"nop\")");
+    defer program.deinit(testing.allocator);
+
+    const expr = program.statements[0].ExprStmt;
+    try testing.expect(expr.* == .InlineAsm);
+    try testing.expectEqualStrings("nop", expr.InlineAsm.instruction);
+}
+
+test "parser: inline asm Rust-style asm! macro form" {
+    // Rust-style `asm!(...)` with operand grammar (in/out specifiers).
+    // The body is captured as an opaque token range — we just need the
+    // parser to stop reporting `Expected '(' after 'asm'`.
+    const program = try parseSource(
+        testing.allocator,
+        "asm!(\"mrs {}, CurrentEL\", out(reg) el)",
+    );
+    defer program.deinit(testing.allocator);
+
+    const expr = program.statements[0].ExprStmt;
+    try testing.expect(expr.* == .InlineAsm);
+}
+
+test "parser: inline asm Rust-style asm! with multiple operands" {
+    const program = try parseSource(
+        testing.allocator,
+        "asm!(\"rdmsr\", in(\"ecx\") msr, out(\"eax\") lo, out(\"edx\") hi)",
+    );
+    defer program.deinit(testing.allocator);
+
+    const expr = program.statements[0].ExprStmt;
+    try testing.expect(expr.* == .InlineAsm);
+}
+
+test "parser: inline asm Zig-style volatile brace form" {
+    const program = try parseSource(
+        testing.allocator,
+        "asm volatile { \"mov %rbp, %0\" : \"=r\" (fp) }",
+    );
+    defer program.deinit(testing.allocator);
+
+    const expr = program.statements[0].ExprStmt;
+    try testing.expect(expr.* == .InlineAsm);
+}
+
+test "parser: inline asm Zig-style volatile single-instruction brace form" {
+    const program = try parseSource(testing.allocator, "asm volatile { \"hlt\" }");
+    defer program.deinit(testing.allocator);
+
+    const expr = program.statements[0].ExprStmt;
+    try testing.expect(expr.* == .InlineAsm);
+}
+
+test "parser: inline asm volatile paren form (existing)" {
+    const program = try parseSource(
+        testing.allocator,
+        "asm volatile (\"mov x0, x1\" : : : \"memory\")",
+    );
+    defer program.deinit(testing.allocator);
+
+    const expr = program.statements[0].ExprStmt;
+    try testing.expect(expr.* == .InlineAsm);
+}

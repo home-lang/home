@@ -500,6 +500,50 @@ pub const Parser = struct {
         return error.UnexpectedToken;
     }
 
+    /// Skip tokens until the matching `close` delimiter is consumed.
+    /// Tracks nesting for all three delimiter pairs so that nested
+    /// parens/brackets/braces inside the body don't terminate the scan
+    /// prematurely. Used for opaque-body parsing (e.g. inline asm operand
+    /// lists where the grammar doesn't fit Home expressions).
+    /// Assumes the opening delimiter has already been consumed by the caller.
+    fn consumeBalancedRaw(self: *Parser, close: TokenType) void {
+        var paren_depth: i32 = 0;
+        var bracket_depth: i32 = 0;
+        var brace_depth: i32 = 0;
+        // The caller already consumed one opener matching `close`, so start
+        // its corresponding counter at 1.
+        switch (close) {
+            .RightParen => paren_depth = 1,
+            .RightBracket => bracket_depth = 1,
+            .RightBrace => brace_depth = 1,
+            else => paren_depth = 1,
+        }
+        while (!self.isAtEnd()) {
+            const t = self.advance();
+            switch (t.type) {
+                .LeftParen => paren_depth += 1,
+                .RightParen => {
+                    paren_depth -= 1;
+                    if (close == .RightParen and paren_depth == 0 and
+                        bracket_depth == 0 and brace_depth == 0) return;
+                },
+                .LeftBracket => bracket_depth += 1,
+                .RightBracket => {
+                    bracket_depth -= 1;
+                    if (close == .RightBracket and paren_depth == 0 and
+                        bracket_depth == 0 and brace_depth == 0) return;
+                },
+                .LeftBrace => brace_depth += 1,
+                .RightBrace => {
+                    brace_depth -= 1;
+                    if (close == .RightBrace and paren_depth == 0 and
+                        bracket_depth == 0 and brace_depth == 0) return;
+                },
+                else => {},
+            }
+        }
+    }
+
     /// Report a parse error with location information.
     ///
     /// Records the error in the errors list and prints a formatted error
@@ -5857,18 +5901,63 @@ pub const Parser = struct {
 
     /// Parse a primary expression (literals, identifiers, grouping)
     fn primary(self: *Parser) ParseError!*ast.Expr {
-        // Inline assembly. Two forms supported:
+        // Inline assembly. Forms supported:
         //   1. asm("string")                          — simple literal form
         //   2. asm volatile ( ... )                    — Zig-style operand
-        //      form with output/input/clobber lists. The body (between the
-        //      outer parens) is captured as an opaque raw string so kernel
-        //      code that mixes operand expressions can at least parse.
+        //      form with output/input/clobber lists.
+        //   3. asm volatile { ... }                    — Zig-style brace form
+        //      (kernel debug code uses this for `cli`, `hlt` and stack-trace
+        //      capture).
+        //   4. asm!(...) / asm![...] / asm!{...}       — Rust-style macro
+        //      form used pervasively by the arm64 / x86 power kernel code
+        //      with `in(reg) val`, `out(reg) result`, `inout(...) v => r`
+        //      operand grammar.
+        //
+        // The body (between the outer delimiters) is captured as an opaque
+        // raw token sequence — operand lists are preserved but unparsed.
+        // Codegen can interpret them later if/when we ship a real inline-asm
+        // backend. For now we just need parser/typecheck to accept them so
+        // downstream kernel files stop blocking on this.
         if (self.match(&.{.Asm})) {
             const asm_token = self.previous();
+
+            // Rust-style `asm!` macro form. Accept any of `(`, `[`, `{` as
+            // the opening delimiter — Rust allows all three for macro
+            // invocations and kernel sources only use `(` today, but the
+            // parser already permits all three for non-asm macros so we
+            // mirror that here for consistency.
+            if (self.match(&.{.Bang})) {
+                const close_token: TokenType = if (self.match(&.{.LeftParen}))
+                    .RightParen
+                else if (self.match(&.{.LeftBracket}))
+                    .RightBracket
+                else if (self.match(&.{.LeftBrace}))
+                    .RightBrace
+                else blk: {
+                    try self.reportError("Expected '(', '[', or '{' after 'asm!'");
+                    break :blk .RightParen;
+                };
+                self.consumeBalancedRaw(close_token);
+                const expr = try self.allocator.create(ast.Expr);
+                expr.* = ast.Expr{ .InlineAsm = ast.InlineAsm.init("", ast.SourceLocation.fromToken(asm_token)) };
+                return expr;
+            }
+
             // Optional `volatile` keyword (soft — matched as Identifier).
             if (self.check(.Identifier) and std.mem.eql(u8, self.peek().lexeme, "volatile")) {
                 _ = self.advance();
             }
+
+            // Brace-block form: `asm volatile { "instr" : "=r"(out) : ... }`.
+            // Captured as an opaque raw token range — same shape as the
+            // paren form, just with a different closing delimiter.
+            if (self.match(&.{.LeftBrace})) {
+                self.consumeBalancedRaw(.RightBrace);
+                const expr = try self.allocator.create(ast.Expr);
+                expr.* = ast.Expr{ .InlineAsm = ast.InlineAsm.init("", ast.SourceLocation.fromToken(asm_token)) };
+                return expr;
+            }
+
             _ = try self.expect(.LeftParen, "Expected '(' after 'asm'");
 
             // If the body is a simple string literal followed by `)`, keep
@@ -5887,17 +5976,8 @@ pub const Parser = struct {
                 self.current = save_pos;
             }
 
-            // Raw-capture mode: walk the token stream until the matching
-            // right paren, tracking nesting. Operand lists are preserved
-            // as opaque tokens — the codegen layer is where we interpret
-            // them if/when we ship a real inline-asm backend.
-            var depth: i32 = 1;
-            while (depth > 0 and !self.isAtEnd()) {
-                const t = self.advance();
-                if (t.type == .LeftParen) depth += 1;
-                if (t.type == .RightParen) depth -= 1;
-            }
-
+            // Raw-capture mode for the paren form.
+            self.consumeBalancedRaw(.RightParen);
             const expr = try self.allocator.create(ast.Expr);
             expr.* = ast.Expr{ .InlineAsm = ast.InlineAsm.init("", ast.SourceLocation.fromToken(asm_token)) };
             return expr;
