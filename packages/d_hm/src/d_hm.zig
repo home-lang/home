@@ -138,6 +138,23 @@ pub const FieldSpec = struct {
     ty: []const u8,
 };
 
+/// One enum variant. `payload_ty` is null for unit variants, or
+/// the pre-rendered payload type for tuple-style variants like
+/// `Some(int)`.
+pub const VariantSpec = struct {
+    name: []const u8,
+    payload_ty: ?[]const u8 = null,
+};
+
+/// A single method signature on a trait. Mirrors `writeFnSignature`'s
+/// argument list; the printer adds the `fn ` keyword + `;` terminator
+/// inside the trait body.
+pub const MethodSpec = struct {
+    name: []const u8,
+    params: []const ParamSpec,
+    return_ty: []const u8,
+};
+
 pub const EmitOptions = struct {
     /// If set, the standard auto-gen banner is written by `init` so
     /// callers don't have to remember it.
@@ -296,6 +313,83 @@ pub const Emitter = struct {
         try self.writeRaw(";");
         try self.writeRaw(self.options.newline);
     }
+
+    /// `pub enum Name { V1, V2(int), V3 }` — variants only; no
+    /// methods or `impl` blocks emitted (those belong on the
+    /// implementation side, not in a declaration file).
+    pub fn writeEnum(
+        self: *Emitter,
+        name: []const u8,
+        variants: []const VariantSpec,
+    ) !void {
+        try self.ensureHeader();
+        try self.writeRaw("pub enum ");
+        try self.writeRaw(name);
+        try self.writeRaw(" {");
+        if (variants.len == 0) {
+            try self.writeRaw("}");
+        } else {
+            try self.writeRaw(" ");
+            for (variants, 0..) |v, i| {
+                if (i > 0) try self.writeRaw(", ");
+                try self.writeRaw(v.name);
+                if (v.payload_ty) |pt| {
+                    try self.writeRaw("(");
+                    try self.writeRaw(pt);
+                    try self.writeRaw(")");
+                }
+            }
+            try self.writeRaw(" }");
+        }
+        try self.writeRaw(self.options.newline);
+    }
+
+    /// `pub trait Name { fn m1(...) -> T; … }` — method signatures
+    /// only. No default-method bodies (those are implementation
+    /// detail and don't belong in a declaration file).
+    pub fn writeTrait(
+        self: *Emitter,
+        name: []const u8,
+        methods: []const MethodSpec,
+    ) !void {
+        try self.ensureHeader();
+        try self.writeRaw("pub trait ");
+        try self.writeRaw(name);
+        try self.writeRaw(" {");
+        if (methods.len == 0) {
+            try self.writeRaw("}");
+        } else {
+            try self.writeRaw(self.options.newline);
+            for (methods) |m| {
+                try self.writeRaw("    fn ");
+                try self.writeRaw(m.name);
+                try self.writeParamList(m.params);
+                try self.writeRaw(" -> ");
+                try self.writeRaw(m.return_ty);
+                try self.writeRaw(";");
+                try self.writeRaw(self.options.newline);
+            }
+            try self.writeRaw("}");
+        }
+        try self.writeRaw(self.options.newline);
+    }
+
+    /// `declare module "name" { ... }` — opens a module-augmentation
+    /// block. Caller must call `closeDeclareModule` after writing the
+    /// inner declarations.
+    pub fn openDeclareModule(self: *Emitter, module_name: []const u8) !void {
+        try self.ensureHeader();
+        try self.writeRaw("declare module \"");
+        try self.writeRaw(module_name);
+        try self.writeRaw("\" {");
+        try self.writeRaw(self.options.newline);
+    }
+
+    /// Closing brace for a previously opened `declare module` block.
+    pub fn closeDeclareModule(self: *Emitter) !void {
+        try self.writeRaw("}");
+        try self.writeRaw(self.options.newline);
+    }
 };
 
 /// Loader scaffold. Phase 4 follow-up: wire into the Home parser's
@@ -440,6 +534,74 @@ test "Emitter: header suppression via options" {
     defer T.allocator.free(out);
     try T.expect(std.mem.indexOf(u8, out, HEADER) == null);
     try T.expect(std.mem.startsWith(u8, out, "pub type X = int;"));
+}
+
+test "Emitter: enum with unit + payload variants" {
+    var em = Emitter.init(T.allocator);
+    defer em.deinit();
+    try em.writeEnum("Maybe", &.{
+        .{ .name = "None" },
+        .{ .name = "Some", .payload_ty = "int" },
+    });
+    const out = try em.toOwnedSlice();
+    defer T.allocator.free(out);
+    try T.expect(std.mem.indexOf(u8, out, "pub enum Maybe { None, Some(int) }") != null);
+}
+
+test "Emitter: empty enum compacts to `{}`" {
+    var em = Emitter.init(T.allocator);
+    defer em.deinit();
+    try em.writeEnum("Empty", &.{});
+    const out = try em.toOwnedSlice();
+    defer T.allocator.free(out);
+    try T.expect(std.mem.indexOf(u8, out, "pub enum Empty {}") != null);
+}
+
+test "Emitter: trait renders method signatures" {
+    var em = Emitter.init(T.allocator);
+    defer em.deinit();
+    try em.writeTrait("Reader", &.{
+        .{
+            .name = "read",
+            .params = &.{.{ .name = "buf", .ty = "[]u8" }},
+            .return_ty = "usize",
+        },
+        .{
+            .name = "close",
+            .params = &.{},
+            .return_ty = "void",
+        },
+    });
+    const out = try em.toOwnedSlice();
+    defer T.allocator.free(out);
+    try T.expect(std.mem.indexOf(u8, out, "pub trait Reader {") != null);
+    try T.expect(std.mem.indexOf(u8, out, "    fn read(buf: []u8) -> usize;") != null);
+    try T.expect(std.mem.indexOf(u8, out, "    fn close() -> void;") != null);
+}
+
+test "Emitter: empty trait compacts to `{}`" {
+    var em = Emitter.init(T.allocator);
+    defer em.deinit();
+    try em.writeTrait("Marker", &.{});
+    const out = try em.toOwnedSlice();
+    defer T.allocator.free(out);
+    try T.expect(std.mem.indexOf(u8, out, "pub trait Marker {}") != null);
+}
+
+test "Emitter: declare module wraps inner decls" {
+    var em = Emitter.init(T.allocator);
+    defer em.deinit();
+    try em.openDeclareModule("foo");
+    try em.writeFnSignature("init", &.{}, "void");
+    try em.closeDeclareModule();
+    const out = try em.toOwnedSlice();
+    defer T.allocator.free(out);
+    try T.expect(std.mem.indexOf(u8, out, "declare module \"foo\" {") != null);
+    try T.expect(std.mem.indexOf(u8, out, "pub fn init() -> void;") != null);
+    // Closing brace appears after the inner decl.
+    const open_idx = std.mem.indexOf(u8, out, "declare module").?;
+    const close_idx = std.mem.lastIndexOf(u8, out, "}").?;
+    try T.expect(open_idx < close_idx);
 }
 
 test "DeclKind: enum is exhaustive" {
