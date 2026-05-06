@@ -618,10 +618,14 @@ pub const Service = struct {
     }
 
     /// All top-level declarations in `file`, useful for an editor
-    /// outline view.
+    /// outline view. Class/interface/namespace/enum decls carry their
+    /// members as nested `children`. Free with `freeSymbols`.
     pub fn documentSymbols(self: *Service, gpa: std.mem.Allocator, file_path: []const u8) ![]SymbolInfo {
         var out: std.ArrayListUnmanaged(SymbolInfo) = .empty;
-        errdefer out.deinit(gpa);
+        errdefer {
+            for (out.items) |s| if (s.children.len > 0) freeSymbols(gpa, s.children);
+            out.deinit(gpa);
+        }
         const file_id = self.program.lookupPath(file_path) orelse return out.toOwnedSlice(gpa);
         const f = self.program.fileById(file_id);
         const c = f.compilation orelse return out.toOwnedSlice(gpa);
@@ -629,7 +633,8 @@ pub const Service = struct {
         if (c.hir.kindOf(c.root) != .block_stmt) return out.toOwnedSlice(gpa);
         const stmts = hir_mod.blockStmts(&c.hir, c.root);
         for (stmts) |s| {
-            const info = describeTopLevelSymbol(&c.hir, &c.interner, s, f.source, f.path) orelse continue;
+            var info = describeTopLevelSymbol(&c.hir, &c.interner, s, f.source, f.path) orelse continue;
+            info.children = try collectSymbolChildren(gpa, &c.hir, &c.interner, s, f.source, f.path);
             try out.append(gpa, info);
         }
         return out.toOwnedSlice(gpa);
