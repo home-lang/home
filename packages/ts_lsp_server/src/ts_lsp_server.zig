@@ -419,10 +419,18 @@ pub fn handleDidChange(
     defer gpa.free(new_source);
     const path = uriToPath(uri);
 
+    // Drive the recompile + source update; the rendered text return
+    // value is discarded — we re-pull diagnostics in structured form
+    // below so the wire layer can emit per-LSP `Diagnostic` shape
+    // (range/severity/code/source/message) instead of stuffing the
+    // tsc-style line into `message` with a bogus (0,0)..(0,0) range.
     const rendered = try service.didChangeFile(gpa, path, new_source);
-    defer gpa.free(rendered);
+    gpa.free(rendered);
 
-    return encodePublishDiagnostics(gpa, uri, rendered);
+    const diags = try service.diagnosticsStructured(gpa, path);
+    defer ts_lsp.freeLspDiagnostics(gpa, diags);
+
+    return encodePublishDiagnosticsStructured(gpa, uri, diags);
 }
 
 /// Handle a `textDocument/didOpen` notification: parse `uri` + `text`
@@ -1649,6 +1657,54 @@ pub fn handleCodeLens(
     return encodeResponse(gpa, request_id, buf.items);
 }
 
+/// Map `LspDiagnostic.Severity` to the LSP-wire severity number
+/// (1 = Error, 2 = Warning, 3 = Information, 4 = Hint).
+fn lspSeverityCode(s: ts_lsp.LspDiagnostic.Severity) u8 {
+    return switch (s) {
+        .err => 1,
+        .warning => 2,
+        .info => 3,
+        .hint => 4,
+    };
+}
+
+/// Encode a `textDocument/publishDiagnostics` JSON-RPC notification
+/// body from structured `[]LspDiagnostic`. Each entry is rendered
+/// as an LSP `Diagnostic` object with the spec-required shape:
+/// `range`, `severity`, `code`, `source`, `message`. Span coords
+/// are converted from `ts_lsp.Span`'s 1-based form to LSP's
+/// 0-based wire form (matching `writeRange`).
+/// Caller owns the returned slice.
+pub fn encodePublishDiagnosticsStructured(
+    gpa: std.mem.Allocator,
+    uri: []const u8,
+    diags: []const ts_lsp.LspDiagnostic,
+) ![]u8 {
+    var buf: std.ArrayListUnmanaged(u8) = .empty;
+    errdefer buf.deinit(gpa);
+    try buf.appendSlice(gpa, "{\"jsonrpc\":\"2.0\",\"method\":\"textDocument/publishDiagnostics\",\"params\":{\"uri\":\"");
+    try writeJsonStringContents(&buf, gpa, uri);
+    try buf.appendSlice(gpa, "\",\"diagnostics\":[");
+    for (diags, 0..) |d, i| {
+        if (i != 0) try buf.append(gpa, ',');
+        try buf.appendSlice(gpa, "{\"range\":");
+        try writeRange(&buf, gpa, d.range);
+        var nbuf: [64]u8 = undefined;
+        const sev_code = try std.fmt.bufPrint(
+            &nbuf,
+            ",\"severity\":{d},\"code\":{d},\"source\":\"",
+            .{ lspSeverityCode(d.severity), d.code },
+        );
+        try buf.appendSlice(gpa, sev_code);
+        try writeJsonStringContents(&buf, gpa, d.source);
+        try buf.appendSlice(gpa, "\",\"message\":\"");
+        try writeJsonStringContents(&buf, gpa, d.message);
+        try buf.appendSlice(gpa, "\"}");
+    }
+    try buf.appendSlice(gpa, "]}}");
+    return buf.toOwnedSlice(gpa);
+}
+
 /// Encode a `textDocument/publishDiagnostics` JSON-RPC notification
 /// body. `rendered` is the `\n`-terminated tsc-style diagnostic
 /// listing returned by `Service.diagnostics` / `Service.didChangeFile`.
@@ -2183,7 +2239,48 @@ test "handleDidChange: routes notification to Service.didChangeFile" {
     const out2 = try handleDidChange(&svc, T.allocator, broken);
     defer T.allocator.free(out2);
     try T.expect(std.mem.indexOf(u8, out2, "\"diagnostics\":[]") == null);
-    try T.expect(std.mem.indexOf(u8, out2, "error TS") != null);
+    // Structured diagnostics emit per-LSP `Diagnostic` shape: a
+    // `range`/`severity`/`code`/`source` quartet rather than the
+    // tsc-style `error TSxxxx:` line stuffed into `message`.
+    try T.expect(std.mem.indexOf(u8, out2, "\"severity\":1") != null);
+    try T.expect(std.mem.indexOf(u8, out2, "\"source\":\"ts\"") != null);
+}
+
+test "handleDidChange: emits structured Diagnostic[] with range/severity/code/source" {
+    var vfs = ts_resolver.VirtualFs.init(T.allocator);
+    defer vfs.deinit();
+    var resolver = ts_resolver.Resolver.init(T.allocator, vfs.fs(), .{});
+    defer resolver.deinit();
+    var program = ts_program.Program.init(T.allocator, &resolver);
+    defer program.deinit();
+
+    _ = try program.add("/main.ts", "let x: number = 1;");
+    try program.compileAll(.{});
+
+    var svc = ts_lsp.Service.init(T.allocator, &program);
+
+    // didChange flips the source to a type-error variant; the
+    // resulting publishDiagnostics body must carry the LSP-spec
+    // `Diagnostic` shape (not a (0,0)..(0,0) tsc-string fallback).
+    const body =
+        \\{"jsonrpc":"2.0","method":"textDocument/didChange","params":{"textDocument":{"uri":"file:///main.ts","version":2},"contentChanges":[{"text":"let x: number = \"oops\";"}]}}
+    ;
+    const out = try handleDidChange(&svc, T.allocator, body);
+    defer T.allocator.free(out);
+
+    try T.expect(std.mem.indexOf(u8, out, "\"method\":\"textDocument/publishDiagnostics\"") != null);
+    try T.expect(std.mem.indexOf(u8, out, "\"uri\":\"file:///main.ts\"") != null);
+    // Each diagnostic carries the four LSP-required fields plus
+    // a `range` object — assert all show up in the wire body.
+    try T.expect(std.mem.indexOf(u8, out, "\"range\":{\"start\":") != null);
+    try T.expect(std.mem.indexOf(u8, out, "\"severity\":1") != null);
+    try T.expect(std.mem.indexOf(u8, out, "\"source\":\"ts\"") != null);
+    try T.expect(std.mem.indexOf(u8, out, "\"code\":") != null);
+    try T.expect(std.mem.indexOf(u8, out, "\"message\":\"") != null);
+    // The legacy text-renderer prefix must NOT leak through —
+    // the `error TSxxxx:` form belongs to the rendered blob, not
+    // to the structured wire shape.
+    try T.expect(std.mem.indexOf(u8, out, "error TS") == null);
 }
 
 test "handleDidOpen: adds a new file to the program" {
