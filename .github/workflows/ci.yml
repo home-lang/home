@@ -18,13 +18,13 @@ jobs:
     runs-on: ubuntu-latest
 
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@v6
 
       - name: Install Bun
         uses: oven-sh/setup-bun@v2
 
       - name: Use cached node_modules
-        uses: actions/cache@v4
+        uses: actions/cache@v5
         with:
           path: node_modules
           key: node-modules-${{ hashFiles('**/bun.lock') }}
@@ -41,13 +41,13 @@ jobs:
     runs-on: ubuntu-latest
 
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@v6
 
       - name: Install Bun
         uses: oven-sh/setup-bun@v2
 
       - name: Use cached node_modules
-        uses: actions/cache@v4
+        uses: actions/cache@v5
         with:
           path: node_modules
           key: node-modules-${{ hashFiles('**/bun.lock') }}
@@ -64,13 +64,13 @@ jobs:
     runs-on: ubuntu-latest
 
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@v6
 
       - name: Install Bun
         uses: oven-sh/setup-bun@v2
 
       - name: Use cached node_modules
-        uses: actions/cache@v4
+        uses: actions/cache@v5
         with:
           path: node_modules
           key: node-modules-${{ hashFiles('**/bun.lock') }}
@@ -106,7 +106,7 @@ jobs:
             platform: windows
 
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@v6
 
       - name: Setup Zig
         uses: mlugg/setup-zig@v2
@@ -183,7 +183,7 @@ jobs:
     name: Kernel Tests
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@v6
 
       - name: Setup Zig
         uses: mlugg/setup-zig@v2
@@ -237,7 +237,7 @@ jobs:
     runs-on: ubuntu-latest
     needs: build-and-test-home
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@v6
 
       - name: Setup Zig
         uses: mlugg/setup-zig@v2
@@ -266,7 +266,7 @@ jobs:
     name: Filesystem Tests
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@v6
 
       - name: Setup Zig
         uses: mlugg/setup-zig@v2
@@ -284,7 +284,7 @@ jobs:
     name: Network Stack Tests
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@v6
 
       - name: Setup Zig
         uses: mlugg/setup-zig@v2
