@@ -189,25 +189,46 @@ pub const Service = struct {
 
     /// Hover at `byte_pos` inside `file`. Walks the file's HIR
     /// to find the smallest enclosing node and renders its type.
+    /// When the position lands on an identifier whose binder symbol
+    /// is a function/class/variable declaration, the rendered form
+    /// echoes the declaration shape (e.g. `function add(a: number,
+    /// b: number): number`) instead of just the type repr.
     pub fn hover(self: *Service, file_path: []const u8, byte_pos: u32) ?HoverResult {
         const file_id = self.program.lookupPath(file_path) orelse return null;
         const f = self.program.fileById(file_id);
         const c = f.compilation orelse return null;
         const node = findInnermostNode(&c.hir, c.root, byte_pos) orelse return null;
         const t = c.hir.typeOf(node);
-        const repr = renderType(self.gpa, &c.type_interner, &c.interner, t) catch "";
         const span = c.hir.spanOf(node);
         const start_pos = ts_diagnostics.positionToLineCol(f.source, span.start);
         const end_pos = ts_diagnostics.positionToLineCol(f.source, span.end);
+        const span_info: Span = .{
+            .file = f.path,
+            .start_line = start_pos.line,
+            .start_col = start_pos.col,
+            .end_line = end_pos.line,
+            .end_col = end_pos.col,
+        };
+
+        // Declaration-shape rendering for identifiers bound to
+        // top-level value symbols (functions / classes / variables).
+        if (c.hir.kindOf(node) == .identifier) {
+            const id = hir_mod.identifierOf(&c.hir, node);
+            if (c.module.root.lookup(id.name)) |sym| {
+                if (renderDeclShape(self.gpa, &c.type_interner, &c.interner, &c.hir, sym, t)) |decl_repr| {
+                    return .{
+                        .type_repr = decl_repr,
+                        .span = span_info,
+                        .kind = c.hir.kindOf(node),
+                    };
+                }
+            }
+        }
+
+        const repr = renderType(self.gpa, &c.type_interner, &c.interner, t) catch "";
         return .{
             .type_repr = repr,
-            .span = .{
-                .file = f.path,
-                .start_line = start_pos.line,
-                .start_col = start_pos.col,
-                .end_line = end_pos.line,
-                .end_col = end_pos.col,
-            },
+            .span = span_info,
             .kind = c.hir.kindOf(node),
         };
     }
@@ -1302,6 +1323,97 @@ fn renderTypeInto(
     try buf.appendSlice(gpa, "unknown");
 }
 
+/// Render a binder symbol as its source-shape declaration, e.g.:
+///   - function add(a: number, b: number): number
+///   - class Box { … }
+///   - let count: number
+///
+/// Returns null when the symbol kind isn't one we have a special
+/// rendering for; callers should fall back to `renderType`.
+/// Caller owns the returned slice when non-null.
+fn renderDeclShape(
+    gpa: std.mem.Allocator,
+    ti: anytype,
+    sint: *const string_interner.Interner,
+    hir: *const hir_mod.Hir,
+    sym: anytype,
+    t: hir_mod.TypeId,
+) ?[]u8 {
+    const name = sint.get(sym.name);
+    var buf: std.ArrayListUnmanaged(u8) = .empty;
+    errdefer buf.deinit(gpa);
+
+    if (sym.flags.is_function) {
+        const flags = ti.pool.flagsOf(t);
+        if (!flags.is_signature) return null;
+        buf.appendSlice(gpa, "function ") catch return null;
+        buf.appendSlice(gpa, name) catch return null;
+        buf.append(gpa, '(') catch return null;
+
+        // Prefer parameter names from the original fn_decl, falling
+        // back to positional `arg{N}` when unavailable.
+        const param_types = ti.signatureParams(t);
+        var fn_params: ?[]const hir_mod.NodeId = null;
+        if (sym.decls.items.len > 0) {
+            const decl_id = sym.decls.items[0];
+            const dk = hir.kindOf(decl_id);
+            if (dk == .fn_decl or dk == .fn_expr or dk == .arrow_fn) {
+                fn_params = hir_mod.fnParams(hir, decl_id);
+            }
+        }
+
+        for (param_types, 0..) |p, i| {
+            if (i > 0) buf.appendSlice(gpa, ", ") catch return null;
+            var named = false;
+            if (fn_params) |fps| {
+                if (i < fps.len) {
+                    const param = hir_mod.parameterOf(hir, fps[i]);
+                    if (param.flags.is_rest) buf.appendSlice(gpa, "...") catch return null;
+                    if (param.name != hir_mod.none_node_id and hir.kindOf(param.name) == .identifier) {
+                        const pid = hir_mod.identifierOf(hir, param.name);
+                        buf.appendSlice(gpa, sint.get(pid.name)) catch return null;
+                        named = true;
+                    }
+                    if (param.flags.is_optional) buf.append(gpa, '?') catch return null;
+                }
+            }
+            if (!named) {
+                var nbuf: [16]u8 = undefined;
+                const s = std.fmt.bufPrint(&nbuf, "arg{d}", .{i}) catch return null;
+                buf.appendSlice(gpa, s) catch return null;
+            }
+            buf.appendSlice(gpa, ": ") catch return null;
+            renderTypeInto(&buf, gpa, ti, sint, p, 0) catch return null;
+        }
+        buf.appendSlice(gpa, "): ") catch return null;
+        if (ti.signatureReturn(t)) |ret| {
+            renderTypeInto(&buf, gpa, ti, sint, ret, 0) catch return null;
+        } else {
+            buf.appendSlice(gpa, "void") catch return null;
+        }
+        return buf.toOwnedSlice(gpa) catch null;
+    }
+
+    if (sym.flags.is_class) {
+        buf.appendSlice(gpa, "class ") catch return null;
+        buf.appendSlice(gpa, name) catch return null;
+        buf.appendSlice(gpa, " { … }") catch return null;
+        return buf.toOwnedSlice(gpa) catch null;
+    }
+
+    if (sym.flags.is_const or sym.flags.is_let or sym.flags.is_var) {
+        const kw = if (sym.flags.is_const) "const " else if (sym.flags.is_let) "let " else "var ";
+        buf.appendSlice(gpa, kw) catch return null;
+        buf.appendSlice(gpa, name) catch return null;
+        buf.appendSlice(gpa, ": ") catch return null;
+        renderTypeInto(&buf, gpa, ti, sint, t, 0) catch return null;
+        return buf.toOwnedSlice(gpa) catch null;
+    }
+
+    buf.deinit(gpa);
+    return null;
+}
+
 // =============================================================================
 // Tests
 // =============================================================================
@@ -1553,6 +1665,29 @@ test "Service: hover renders union types" {
     // The union type should render with 'number' and 'string'.
     try T.expect(std.mem.indexOf(u8, r.type_repr, "number") != null or
         std.mem.indexOf(u8, r.type_repr, "string") != null);
+}
+
+test "Service: hover renders function declaration shape" {
+    var vfs = ts_resolver.VirtualFs.init(T.allocator);
+    defer vfs.deinit();
+    var resolver = ts_resolver.Resolver.init(T.allocator, vfs.fs(), .{});
+    defer resolver.deinit();
+    var program = ts_program.Program.init(T.allocator, &resolver);
+    defer program.deinit();
+
+    const src = "function add(a: number, b: number): number { return a + b; }\nadd(1, 2);";
+    _ = try program.add("/main.ts", src);
+    try program.compileAll(.{});
+
+    var svc = Service.init(T.allocator, &program);
+    // Byte 62 lands on the call-site identifier `add` (start of line 2).
+    const r = svc.hover("/main.ts", 62) orelse return error.NoHover;
+    defer T.allocator.free(r.type_repr);
+    // Expect the declaration-shape rendering, not just `(a, b) => …`.
+    try T.expect(std.mem.indexOf(u8, r.type_repr, "function add") != null);
+    try T.expect(std.mem.indexOf(u8, r.type_repr, "a: number") != null);
+    try T.expect(std.mem.indexOf(u8, r.type_repr, "b: number") != null);
+    try T.expect(std.mem.indexOf(u8, r.type_repr, "): number") != null);
 }
 
 test "Service: hover on missing file returns null" {
