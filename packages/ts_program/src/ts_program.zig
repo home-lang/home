@@ -353,6 +353,11 @@ pub const Program = struct {
         for (self.files.items) |f| {
             const c = f.compilation orelse continue;
             const root = c.root;
+            // Defensive guard: a parse error can leave c.root pointing
+            // at a non-block sentinel (e.g. recursive type files that
+            // bail mid-parse). blockStmts asserts kind == .block_stmt,
+            // so skip resolution for malformed roots.
+            if (c.hir.kindOf(root) != .block_stmt) continue;
             const stmts = hir_mod.blockStmts(&c.hir, root);
             for (stmts) |s| {
                 if (c.hir.kindOf(s) != .import_decl) continue;

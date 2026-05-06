@@ -328,6 +328,8 @@ pub const Service = struct {
         for (self.program.files.items) |other| {
             if (std.mem.eql(u8, other.path, file_path)) continue;
             const oc = other.compilation orelse continue;
+            // Skip files whose parse left a non-block root (malformed).
+            if (oc.hir.kindOf(oc.root) != .block_stmt) continue;
             const ostmts = hir_mod.blockStmts(&oc.hir, oc.root);
             for (ostmts) |s| {
                 const info = describeTopLevelSymbol(&oc.hir, &oc.interner, s, oc.source, other.path) orelse continue;
@@ -423,6 +425,8 @@ pub const Service = struct {
         errdefer out.deinit(gpa);
         for (self.program.files.items) |f| {
             const c = f.compilation orelse continue;
+            // Skip files whose parse left a non-block root (malformed).
+            if (c.hir.kindOf(c.root) != .block_stmt) continue;
             const stmts = hir_mod.blockStmts(&c.hir, c.root);
             for (stmts) |s| {
                 const info = describeTopLevelSymbol(&c.hir, &c.interner, s, f.source, f.path) orelse continue;
@@ -441,6 +445,8 @@ pub const Service = struct {
         const file_id = self.program.lookupPath(file_path) orelse return out.toOwnedSlice(gpa);
         const f = self.program.fileById(file_id);
         const c = f.compilation orelse return out.toOwnedSlice(gpa);
+        // Skip files whose parse left a non-block root (malformed).
+        if (c.hir.kindOf(c.root) != .block_stmt) return out.toOwnedSlice(gpa);
         const stmts = hir_mod.blockStmts(&c.hir, c.root);
         for (stmts) |s| {
             const info = describeTopLevelSymbol(&c.hir, &c.interner, s, f.source, f.path) orelse continue;
@@ -482,6 +488,8 @@ pub const Service = struct {
         // Collect import declarations (statement order).
         var imports: std.ArrayListUnmanaged(hir_mod.NodeId) = .empty;
         defer imports.deinit(gpa);
+        // Skip files whose parse left a non-block root (malformed).
+        if (c.hir.kindOf(c.root) != .block_stmt) return actions.toOwnedSlice(gpa);
         const stmts = hir_mod.blockStmts(&c.hir, c.root);
         for (stmts) |s| {
             if (c.hir.kindOf(s) == .import_decl) try imports.append(gpa, s);
