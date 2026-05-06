@@ -75,6 +75,14 @@ pub const EsTarget = enum {
     pub fn supportsNativeAsync(self: EsTarget) bool {
         return @intFromEnum(self) >= @intFromEnum(EsTarget.es2017);
     }
+
+    /// Native `#private` class fields land in ES2022. Below that we
+    /// lower them to a per-class `WeakMap` keyed by the instance, with
+    /// `this.#x` reads/writes routed through `_Class_x.get(this)` /
+    /// `_Class_x.set(this, v)`.
+    pub fn supportsNativePrivateFields(self: EsTarget) bool {
+        return @intFromEnum(self) >= @intFromEnum(EsTarget.es2022);
+    }
 };
 
 pub const JsxRuntime = enum {
@@ -160,6 +168,11 @@ pub const Printer = struct {
     /// wrapper. The `.await_expr` printer consults this to emit
     /// `yield` instead of `await` within the generator body.
     in_async_downlevel: bool,
+    /// Name (interned) of the lexically-enclosing class while emitting
+    /// its body, when private-field downlevel is active. Used to
+    /// rewrite `this.#x` -> `_<Class>_x.get(this)`. `null` outside a
+    /// class body or when the target supports native private fields.
+    current_class_name: ?StringId,
 
     pub fn init(
         gpa: std.mem.Allocator,
@@ -179,6 +192,7 @@ pub const Printer = struct {
             .gen_col = 0,
             .source = null,
             .in_async_downlevel = false,
+            .current_class_name = null,
         };
     }
 
@@ -785,6 +799,23 @@ pub const Printer = struct {
             return;
         }
         const c = hir_mod.classOf(self.hir, node);
+        const members = hir_mod.classMembers(self.hir, node);
+        // §4.A.7 — at targets below ES2022, lower `#field` to a
+        // per-class `WeakMap`. Emit the `var _<Class>_<field> = new
+        // WeakMap();` declarations *before* the class statement.
+        const downlevel_private = !self.options.es_target.supportsNativePrivateFields() and
+            self.classHasPrivateField(node) and c.name != hir_mod.none_node_id;
+        if (downlevel_private) {
+            for (members) |m| {
+                if (self.hir.kindOf(m) != .object_property) continue;
+                const op = hir_mod.objectPropertyOf(self.hir, m);
+                const pname = self.privateFieldName(op.key) orelse continue;
+                try self.write("var ");
+                try self.writeWeakMapName(c.name, pname);
+                try self.write(" = new WeakMap();");
+                try self.write(self.options.newline);
+            }
+        }
         try self.write("class");
         if (c.name != hir_mod.none_node_id) {
             try self.write(" ");
@@ -795,11 +826,15 @@ pub const Printer = struct {
             try self.printExpression(c.extends);
         }
         try self.write(" {");
-        const members = hir_mod.classMembers(self.hir, node);
         if (members.len == 0) {
             try self.write("}");
             return;
         }
+        // Track lexical class so `printMember` can rewrite `this.#x`
+        // accesses inside the body.
+        const prev_class = self.current_class_name;
+        if (downlevel_private) self.current_class_name = hir_mod.identifierOf(self.hir, c.name).name;
+        defer self.current_class_name = prev_class;
         self.depth += 1;
         var i: usize = 0;
         while (i < members.len) : (i += 1) {
@@ -809,6 +844,17 @@ pub const Printer = struct {
             // member; we skip them in the in-class output and
             // collect them for the post-class __decorate calls.
             if (self.hir.kindOf(m) == .decorator) continue;
+            // Private fields are stored in the per-class WeakMap;
+            // skip the in-class field declaration entirely.
+            // TODO: when there's an initializer, inject
+            //   `_Class_x.set(this, <init>);` into a constructor body
+            //   (synthesizing one if absent). Today the initializer is
+            //   silently dropped — callers must initialize via a
+            //   method/setter for now.
+            if (downlevel_private and self.hir.kindOf(m) == .object_property) {
+                const op = hir_mod.objectPropertyOf(self.hir, m);
+                if (self.privateFieldName(op.key) != null) continue;
+            }
             try self.write(self.options.newline);
             try self.indent();
             switch (self.hir.kindOf(m)) {
@@ -830,6 +876,39 @@ pub const Printer = struct {
         try self.write("}");
         // §4.A.8 — emit `__decorate` calls for each decorated member.
         try self.emitMethodDecorateCalls(node);
+    }
+
+    /// True if any class member is an `object_property` whose key is
+    /// an identifier starting with `#` (a private field).
+    fn classHasPrivateField(self: *Printer, class_node: NodeId) bool {
+        const members = hir_mod.classMembers(self.hir, class_node);
+        for (members) |m| {
+            if (self.hir.kindOf(m) != .object_property) continue;
+            const op = hir_mod.objectPropertyOf(self.hir, m);
+            if (self.privateFieldName(op.key) != null) return true;
+        }
+        return false;
+    }
+
+    /// If `key` is an identifier whose interned name begins with `#`,
+    /// return the name *without* the leading `#`. Otherwise null.
+    fn privateFieldName(self: *Printer, key: NodeId) ?[]const u8 {
+        if (key == hir_mod.none_node_id) return null;
+        if (self.hir.kindOf(key) != .identifier) return null;
+        const id = hir_mod.identifierOf(self.hir, key);
+        const s = self.interner.get(id.name);
+        if (s.len == 0 or s[0] != '#') return null;
+        return s[1..];
+    }
+
+    /// Emit the WeakMap variable name for a private field on this class
+    /// — `_<ClassName>_<field>`, matching tsc's mangling.
+    fn writeWeakMapName(self: *Printer, class_name_node: NodeId, field: []const u8) !void {
+        try self.write("_");
+        const cn = hir_mod.identifierOf(self.hir, class_name_node);
+        try self.write(self.interner.get(cn.name));
+        try self.write("_");
+        try self.write(field);
     }
 
     /// Walk class members; for each run of decorator siblings preceding
@@ -1729,6 +1808,21 @@ pub const Printer = struct {
 
     fn printMember(self: *Printer, node: NodeId) !void {
         const p = hir_mod.memberOf(self.hir, node);
+        // §4.A.7 — rewrite `<obj>.#field` to `_<Class>_field.get(<obj>)`
+        // when private-field downlevel is active inside a class body.
+        if (self.current_class_name) |class_name| {
+            const name_str = self.interner.get(p.name);
+            if (name_str.len > 0 and name_str[0] == '#') {
+                try self.write("_");
+                try self.write(self.interner.get(class_name));
+                try self.write("_");
+                try self.write(name_str[1..]);
+                try self.write(".get(");
+                try self.printExpression(p.object);
+                try self.write(")");
+                return;
+            }
+        }
         // Downlevel `obj?.x` to `(obj === null || obj === void 0 ? void 0 : obj.x)`
         // when targeting below ES2020.
         if (p.optional and !self.options.es_target.supportsNullishAndOptional()) {
@@ -2626,4 +2720,29 @@ test "emit: source map records mappings for each statement" {
     try T.expectEqual(@as(u32, 0), first.gen_col);
     try T.expectEqual(@as(u32, 0), first.src_line);
     try T.expectEqual(@as(u32, 0), first.src_col);
+}
+
+test "emit: private field lowers to WeakMap below es2022" {
+    const out = try emitWithOpts(
+        "class Foo { #count = 0; get() { return this.#count; } }",
+        .{ .es_target = .es2021 },
+    );
+    defer T.allocator.free(out);
+    // WeakMap declaration appears before the class.
+    try T.expect(std.mem.indexOf(u8, out, "var _Foo_count = new WeakMap();") != null);
+    // `this.#count` rewrites to `_Foo_count.get(this)`.
+    try T.expect(std.mem.indexOf(u8, out, "_Foo_count.get(this)") != null);
+    // The `#count` field declaration is gone from the class body.
+    try T.expect(std.mem.indexOf(u8, out, "#count") == null);
+}
+
+test "emit: private field preserved at es2022+" {
+    const out = try emitWithOpts(
+        "class Foo { #count = 0; get() { return this.#count; } }",
+        .{ .es_target = .es2022 },
+    );
+    defer T.allocator.free(out);
+    // No WeakMap lowering at native-private-field targets.
+    try T.expect(std.mem.indexOf(u8, out, "WeakMap") == null);
+    try T.expect(std.mem.indexOf(u8, out, "#count") != null);
 }

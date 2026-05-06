@@ -651,7 +651,7 @@ pub const Parser = struct {
             try self.skipClassModifiers();
             const member_start = self.peek();
             // method?
-            if (self.peek().kind == .identifier or self.peek().kind == .kw_constructor or self.peek().kind.isContextualKeyword()) {
+            if (self.peek().kind == .identifier or self.peek().kind == .private_identifier or self.peek().kind == .kw_constructor or self.peek().kind.isContextualKeyword()) {
                 const name_tok = self.advance();
                 if (self.peek().kind == .open_paren or self.peek().kind == .less_than) {
                     if (self.peek().kind == .less_than) {
