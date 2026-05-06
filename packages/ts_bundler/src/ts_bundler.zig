@@ -28,10 +28,19 @@ pub const Format = enum {
 
 pub const BundleOptions = struct {
     format: Format = .esm,
-    /// When true, run a (future) minifier over the concatenated output.
-    /// v0 ignores this flag — it's part of the surface so callers can
-    /// already opt in; the real minifier ships with §4.5.A.4.
+    /// When true, run a naive minifier over the concatenated output:
+    /// trim leading/trailing whitespace per line, collapse runs of
+    /// spaces, and drop trailing semicolons before `}`. This is a
+    /// stand-in for a real minifier (§4.5.A.4) but materially shrinks
+    /// the emit for v0 callers.
     minify: bool = false,
+    /// When true, run a v0 tree-shaking pass over each compiled module
+    /// before concatenation. The pass is approximate — it drops
+    /// top-level `function name(...)` declarations whose name does not
+    /// appear anywhere else in the module's emit. It's enough to
+    /// demonstrate the shape; the real graph-walking shaker lands with
+    /// the Bun-bundler integration.
+    tree_shake: bool = false,
 };
 
 pub const BundleError = error{
@@ -102,12 +111,21 @@ pub const Bundler = struct {
                 gpa.destroy(c);
             }
 
-            out.appendSlice(gpa, c.js) catch return error.OutOfMemory;
-            // Ensure each module's emit ends on a newline so the next
-            // entry doesn't accidentally splice its first line onto
-            // the previous one.
-            if (c.js.len > 0 and c.js[c.js.len - 1] != '\n') {
-                out.append(gpa, '\n') catch return error.OutOfMemory;
+            if (options.tree_shake) {
+                const shaken = treeShake(gpa, c.js) catch return error.OutOfMemory;
+                defer gpa.free(shaken);
+                out.appendSlice(gpa, shaken) catch return error.OutOfMemory;
+                if (shaken.len > 0 and shaken[shaken.len - 1] != '\n') {
+                    out.append(gpa, '\n') catch return error.OutOfMemory;
+                }
+            } else {
+                out.appendSlice(gpa, c.js) catch return error.OutOfMemory;
+                // Ensure each module's emit ends on a newline so the
+                // next entry doesn't accidentally splice its first
+                // line onto the previous one.
+                if (c.js.len > 0 and c.js[c.js.len - 1] != '\n') {
+                    out.append(gpa, '\n') catch return error.OutOfMemory;
+                }
             }
         }
 
@@ -115,13 +133,162 @@ pub const Bundler = struct {
             out.appendSlice(gpa, "})();\n") catch return error.OutOfMemory;
         }
 
-        // `minify` is a forward-compat hook. v0 just returns the
-        // concatenated bytes unchanged.
-        _ = options.minify;
+        if (options.minify) {
+            const raw = out.toOwnedSlice(gpa) catch return error.OutOfMemory;
+            defer gpa.free(raw);
+            return minify(gpa, raw) catch return error.OutOfMemory;
+        }
 
         return out.toOwnedSlice(gpa) catch return error.OutOfMemory;
     }
 };
+
+/// Approximate v0 tree-shaker. Walks the emit line-by-line and drops
+/// top-level `function NAME(...) { ... }` blocks whose `NAME` does not
+/// appear anywhere else in the same emit (i.e. the symbol is declared
+/// but never referenced). Returns a freshly-allocated slice owned by
+/// the caller.
+fn treeShake(gpa: std.mem.Allocator, js: []const u8) ![]u8 {
+    var out: std.ArrayListUnmanaged(u8) = .empty;
+    errdefer out.deinit(gpa);
+
+    var i: usize = 0;
+    while (i < js.len) {
+        // Find the start of the current line.
+        const line_start = i;
+        var line_end = i;
+        while (line_end < js.len and js[line_end] != '\n') : (line_end += 1) {}
+        const line = js[line_start..line_end];
+
+        // Detect a top-level `function NAME(` at column 0 (no leading
+        // whitespace). Anything indented is treated as nested and
+        // preserved untouched.
+        const fn_kw = "function ";
+        if (std.mem.startsWith(u8, line, fn_kw)) {
+            const name_start = fn_kw.len;
+            var name_end = name_start;
+            while (name_end < line.len and isIdentChar(line[name_end])) : (name_end += 1) {}
+            if (name_end > name_start and name_end < line.len and line[name_end] == '(') {
+                const name = line[name_start..name_end];
+                // The block always opens with `{` either on this line
+                // or shortly after; we span until the matching `}`.
+                if (findBlockEnd(js, line_start)) |block_end| {
+                    // Look for any other reference to `name` outside
+                    // the declaration block. If none, drop it.
+                    const before = js[0..line_start];
+                    const after = if (block_end < js.len) js[block_end..] else js[js.len..js.len];
+                    if (containsIdent(before, name) or containsIdent(after, name)) {
+                        try out.appendSlice(gpa, js[line_start..block_end]);
+                    } // else: skip — unreachable top-level fn.
+                    i = block_end;
+                    continue;
+                }
+                // Malformed — fall through to default copy path.
+            }
+        }
+
+        // Default path: copy the line plus its trailing newline (if any).
+        const copy_end = if (line_end < js.len) line_end + 1 else js.len;
+        try out.appendSlice(gpa, js[line_start..copy_end]);
+        i = copy_end;
+    }
+
+    return out.toOwnedSlice(gpa);
+}
+
+fn isIdentChar(c: u8) bool {
+    return (c >= 'a' and c <= 'z') or (c >= 'A' and c <= 'Z') or
+        (c >= '0' and c <= '9') or c == '_' or c == '$';
+}
+
+/// Whole-word identifier search — avoids matching `foo` inside `foobar`.
+fn containsIdent(haystack: []const u8, needle: []const u8) bool {
+    if (needle.len == 0 or haystack.len < needle.len) return false;
+    var i: usize = 0;
+    while (i + needle.len <= haystack.len) : (i += 1) {
+        if (!std.mem.eql(u8, haystack[i .. i + needle.len], needle)) continue;
+        const left_ok = i == 0 or !isIdentChar(haystack[i - 1]);
+        const right_ok = i + needle.len == haystack.len or !isIdentChar(haystack[i + needle.len]);
+        if (left_ok and right_ok) return true;
+    }
+    return false;
+}
+
+/// Locate the byte index immediately after the `}` that closes the
+/// brace-delimited block starting at or after `start`. Naive (no
+/// string/comment awareness) — sufficient for the v0 emit shape.
+fn findBlockEnd(js: []const u8, start: usize) ?usize {
+    var i: usize = start;
+    while (i < js.len and js[i] != '{') : (i += 1) {}
+    if (i >= js.len) return null;
+    var depth: usize = 0;
+    while (i < js.len) : (i += 1) {
+        switch (js[i]) {
+            '{' => depth += 1,
+            '}' => {
+                depth -= 1;
+                if (depth == 0) {
+                    var end = i + 1;
+                    if (end < js.len and js[end] == '\n') end += 1;
+                    return end;
+                }
+            },
+            else => {},
+        }
+    }
+    return null;
+}
+
+/// Naive minifier: trim leading/trailing whitespace per line, collapse
+/// runs of spaces inside lines to a single space, and drop a trailing
+/// `;` immediately before `}`. Returns a freshly-allocated slice owned
+/// by the caller.
+fn minify(gpa: std.mem.Allocator, js: []const u8) ![]u8 {
+    var out: std.ArrayListUnmanaged(u8) = .empty;
+    errdefer out.deinit(gpa);
+
+    var line_iter = std.mem.splitScalar(u8, js, '\n');
+    var first = true;
+    while (line_iter.next()) |raw_line| {
+        const trimmed = std.mem.trim(u8, raw_line, " \t\r");
+        if (trimmed.len == 0) continue;
+
+        // Collapse runs of spaces inside the line.
+        var prev_space = false;
+        var line_buf: std.ArrayListUnmanaged(u8) = .empty;
+        defer line_buf.deinit(gpa);
+        for (trimmed) |c| {
+            if (c == ' ' or c == '\t') {
+                if (!prev_space) try line_buf.append(gpa, ' ');
+                prev_space = true;
+            } else {
+                try line_buf.append(gpa, c);
+                prev_space = false;
+            }
+        }
+
+        if (!first) try out.append(gpa, '\n');
+        first = false;
+        try out.appendSlice(gpa, line_buf.items);
+    }
+
+    // Drop `;` before any `}` (skipping intervening whitespace/newlines).
+    var compacted: std.ArrayListUnmanaged(u8) = .empty;
+    errdefer compacted.deinit(gpa);
+    var i: usize = 0;
+    while (i < out.items.len) : (i += 1) {
+        if (out.items[i] == ';') {
+            var j: usize = i + 1;
+            while (j < out.items.len and (out.items[j] == ' ' or out.items[j] == '\n' or out.items[j] == '\t')) : (j += 1) {}
+            if (j < out.items.len and out.items[j] == '}') {
+                continue; // skip the `;`
+            }
+        }
+        try compacted.append(gpa, out.items[i]);
+    }
+    out.deinit(gpa);
+    return compacted.toOwnedSlice(gpa);
+}
 
 /// Slurp a file from `cwd` into a freshly-allocated buffer (caller
 /// frees with `gpa`).
@@ -174,6 +341,71 @@ test "Bundler: single-entry concat produces expected JS" {
     try T.expect(std.mem.indexOf(u8, js, "42") != null);
     // ESM mode: no IIFE wrapper.
     try T.expect(std.mem.indexOf(u8, js, "(function () {") == null);
+}
+
+test "Bundler: tree-shake drops unreachable top-level fn" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const io = std.testing.io;
+    {
+        var f = try tmp.dir.createFile(io, "main.ts", .{ .truncate = true });
+        defer f.close(io);
+        // `used` is referenced from the call below; `unused` is not
+        // referenced anywhere, so the v0 shaker should drop it.
+        try f.writeStreamingAll(io,
+            \\function used(a, b) { return a + b; }
+            \\function unused(x) { return x + 1; }
+            \\let r = used(1, 2);
+        );
+    }
+    const path_z = try tmp.dir.realPathFileAlloc(io, "main.ts", T.allocator);
+    defer T.allocator.free(path_z);
+    const path: []const u8 = path_z;
+
+    var b = Bundler.init(T.allocator);
+    defer b.deinit();
+    try b.addEntry(path);
+
+    const js = try b.bundle(T.allocator, .{ .tree_shake = true });
+    defer T.allocator.free(js);
+
+    try T.expect(std.mem.indexOf(u8, js, "function used") != null);
+    try T.expect(std.mem.indexOf(u8, js, "function unused") == null);
+}
+
+test "Bundler: minify strips leading whitespace" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const io = std.testing.io;
+    {
+        var f = try tmp.dir.createFile(io, "main.ts", .{ .truncate = true });
+        defer f.close(io);
+        try f.writeStreamingAll(io,
+            \\function add(a, b) {
+            \\  return a + b;
+            \\}
+            \\let r = add(1, 2);
+        );
+    }
+    const path_z = try tmp.dir.realPathFileAlloc(io, "main.ts", T.allocator);
+    defer T.allocator.free(path_z);
+    const path: []const u8 = path_z;
+
+    var b = Bundler.init(T.allocator);
+    defer b.deinit();
+    try b.addEntry(path);
+
+    const js = try b.bundle(T.allocator, .{ .minify = true });
+    defer T.allocator.free(js);
+
+    // No line in the minified emit may begin with whitespace.
+    var it = std.mem.splitScalar(u8, js, '\n');
+    while (it.next()) |line| {
+        if (line.len == 0) continue;
+        try T.expect(line[0] != ' ' and line[0] != '\t');
+    }
 }
 
 test "Bundler: IIFE wrap shape" {
