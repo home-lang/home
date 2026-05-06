@@ -226,6 +226,10 @@ pub const OwnedCorpusEntry = struct {
 /// file as an `OwnedCorpusEntry`. Convention for `.errors.ts` is
 /// "expects an error" — same as on tsgo's tests/cases/conformance/
 /// corpus. Caller owns each name+source slice and the outer slice.
+///
+/// Zig 0.16-dev moved the FS surface to `std.Io.Dir`, which threads
+/// an `Io` instance through every call. We construct a short-lived
+/// `Threaded` `Io` so the public API stays plain `std.mem.Allocator`.
 pub fn loadDirectory(gpa: std.mem.Allocator, dir_path: []const u8) ![]OwnedCorpusEntry {
     var out: std.ArrayListUnmanaged(OwnedCorpusEntry) = .empty;
     errdefer {
@@ -235,26 +239,37 @@ pub fn loadDirectory(gpa: std.mem.Allocator, dir_path: []const u8) ![]OwnedCorpu
         }
         out.deinit(gpa);
     }
-    var dir = try std.fs.cwd().openDir(dir_path, .{ .iterate = true });
-    defer dir.close();
+    var threaded = std.Io.Threaded.init(gpa, .{});
+    defer threaded.deinit();
+    const io = threaded.io();
+    const cwd = std.Io.Dir.cwd();
+    var dir = try cwd.openDir(io, dir_path, .{ .iterate = true });
+    defer dir.close(io);
     var walker = try dir.walk(gpa);
     defer walker.deinit();
-    while (try walker.next()) |entry| {
+    while (try walker.next(io)) |entry| {
         if (entry.kind != .file) continue;
         const ext_end = entry.basename.len;
         const is_ts = std.mem.endsWith(u8, entry.basename, ".ts");
         const is_tsx = std.mem.endsWith(u8, entry.basename, ".tsx");
         if (!is_ts and !is_tsx) continue;
         // Open through the iterating root so paths are dir-relative.
-        const file = dir.openFile(entry.path, .{}) catch continue;
-        defer file.close();
-        const stat = file.stat() catch continue;
-        const src = gpa.alloc(u8, stat.size) catch continue;
-        const n = file.readAll(src) catch {
-            gpa.free(src);
-            continue;
-        };
-        if (n != src.len) {
+        var file = entry.dir.openFile(io, entry.basename, .{}) catch continue;
+        defer file.close(io);
+        const stat = file.stat(io) catch continue;
+        const file_size: usize = @intCast(stat.size);
+        const src = gpa.alloc(u8, file_size) catch continue;
+        var read_total: usize = 0;
+        var read_failed = false;
+        while (read_total < file_size) {
+            const n = file.readPositionalAll(io, src[read_total..], read_total) catch {
+                read_failed = true;
+                break;
+            };
+            if (n == 0) break;
+            read_total += n;
+        }
+        if (read_failed or read_total != file_size) {
             gpa.free(src);
             continue;
         }
@@ -592,6 +607,61 @@ test "conformance: each builtin case names match files in tests/conformance" {
     for (builtin_corpus) |entry| {
         try T.expect(entry.name.len > 0);
     }
+}
+
+test "conformance: smoke-run local TS conformance subdirectory" {
+    // Smoke-run a SUBSET of the canonical microsoft/TypeScript
+    // conformance suite from a contributor's local TS checkout.
+    // We deliberately do NOT vendor TS as a submodule — every
+    // contributor with a Code workspace already has it. When the
+    // path doesn't exist (CI, fresh contributors), skip cleanly.
+    //
+    // Subdir picked: types/typeRelationships/comparable/ — 13
+    // small cases exercising equality / switch / type-assertion
+    // comparability (union, intersection, optional, nullish).
+    // Goal here is only that the harness can walk a real-world
+    // directory of TS files without crashing; we don't ratchet on
+    // pass/fail rate yet — Phase 6 is about wiring up the runner.
+    const corpus_path = "/Users/chrisbreuer/Code/typescript-go/_submodules/TypeScript/tests/cases/conformance/types/typeRelationships/comparable";
+    {
+        // Skip cleanly when the contributor has no local TS checkout.
+        var threaded = std.Io.Threaded.init(T.allocator, .{});
+        defer threaded.deinit();
+        const io = threaded.io();
+        std.Io.Dir.cwd().access(io, corpus_path, .{}) catch return;
+    }
+
+    var results: std.ArrayListUnmanaged(Result) = .empty;
+    defer {
+        for (results.items) |r| {
+            T.allocator.free(r.name);
+            if (r.detail.len > 0) T.allocator.free(r.detail);
+        }
+        results.deinit(T.allocator);
+    }
+
+    const stats = try runDirectory(T.allocator, corpus_path, &results);
+
+    // Visibility: print per-case pass/fail counts plus a one-line
+    // summary so PR reviewers can eyeball the breakdown without
+    // re-running the harness.
+    std.debug.print(
+        "[ts_conformance smoke] comparable: total={d} passed={d} failed={d} skipped={d} pass_rate={d:.2}\n",
+        .{ stats.total(), stats.passed, stats.failed, stats.skipped, stats.passRate() },
+    );
+    for (results.items) |r| {
+        switch (r.outcome) {
+            .passed => std.debug.print("  PASS  {s}\n", .{r.name}),
+            .failed => std.debug.print("  FAIL  {s}: {s}\n", .{ r.name, r.detail }),
+            .skipped => std.debug.print("  SKIP  {s}\n", .{r.name}),
+        }
+    }
+
+    // Sanity: at minimum, we want to confirm the harness walked
+    // SOME files. Per-case pass/fail isn't asserted here — the
+    // expectation is that the runner doesn't crash on a real-world
+    // dir of TS files.
+    try T.expect(stats.total() > 0);
 }
 
 test "conformance: runOwnedCorpus matches runCorpus on equal inputs" {
