@@ -195,6 +195,13 @@ pub fn freeSymbols(gpa: std.mem.Allocator, symbols: []SymbolInfo) void {
     gpa.free(symbols);
 }
 
+/// Free a `[]CodeLens` produced by `codeLenses`. Frees the per-lens
+/// `title` allocations and the slice itself.
+pub fn freeCodeLenses(gpa: std.mem.Allocator, lenses: []CodeLens) void {
+    for (lenses) |l| gpa.free(l.title);
+    gpa.free(lenses);
+}
+
 /// LSP `textDocument/documentHighlight` payload — describes a single
 /// occurrence of the identifier under the cursor inside the current
 /// file. `kind` matches LSP's `DocumentHighlightKind` (text=1, read=2,
@@ -214,6 +221,21 @@ pub const CallHierarchyItem = struct {
     name: []const u8,
     kind: SymbolInfo.SymbolKind,
     span: Span,
+};
+
+/// LSP `textDocument/codeLens` payload. Each lens is rendered inline
+/// above a top-level declaration with a short title (e.g.
+/// `"5 references"`). `command` is the LSP command id the editor
+/// invokes when the user clicks the lens; empty for display-only.
+pub const CodeLens = struct {
+    /// Where to render the lens — typically the declaration's full
+    /// span; the editor anchors the lens at `start_line`.
+    span: Span,
+    /// Title text shown to the user.
+    title: []const u8,
+    /// LSP command id the editor invokes on click. Empty for
+    /// display-only lenses.
+    command: []const u8,
 };
 
 pub const Service = struct {
@@ -731,6 +753,88 @@ pub const Service = struct {
             var info = describeTopLevelSymbol(&c.hir, &c.interner, s, f.source, f.path) orelse continue;
             info.children = try collectSymbolChildren(gpa, &c.hir, &c.interner, s, f.source, f.path);
             try out.append(gpa, info);
+        }
+        return out.toOwnedSlice(gpa);
+    }
+
+    /// LSP `textDocument/codeLens` — emit one `CodeLens` per top-level
+    /// `function` / `class` declaration in `file_path`, titled with
+    /// the count of program-wide references (the declaration site
+    /// itself is excluded from the count). Singular `"1 reference"`
+    /// vs plural `"N references"` follows English plural agreement.
+    /// Title strings are owned by `gpa`; callers free them with
+    /// `freeCodeLenses`.
+    pub fn codeLenses(self: *Service, gpa: std.mem.Allocator, file_path: []const u8) ![]CodeLens {
+        var out: std.ArrayListUnmanaged(CodeLens) = .empty;
+        errdefer {
+            for (out.items) |l| gpa.free(l.title);
+            out.deinit(gpa);
+        }
+
+        const file_id = self.program.lookupPath(file_path) orelse return out.toOwnedSlice(gpa);
+        const f = self.program.fileById(file_id);
+        const c = f.compilation orelse return out.toOwnedSlice(gpa);
+        if (c.hir.kindOf(c.root) != .block_stmt) return out.toOwnedSlice(gpa);
+        const stmts = hir_mod.blockStmts(&c.hir, c.root);
+
+        for (stmts) |s_in| {
+            // Unwrap `export <decl>` so we can see the inner fn/class.
+            var s = s_in;
+            if (c.hir.kindOf(s) == .export_decl) {
+                const ex = hir_mod.exportOf(&c.hir, s);
+                if (ex.decl != hir_mod.none_node_id) s = ex.decl;
+            }
+            const k = c.hir.kindOf(s);
+            const name_node: hir_mod.NodeId = switch (k) {
+                .fn_decl => blk: {
+                    const fnp = hir_mod.fnDeclOf(&c.hir, s);
+                    if (fnp.name == hir_mod.none_node_id) continue;
+                    break :blk fnp.name;
+                },
+                .class_decl => blk: {
+                    const cls = hir_mod.classOf(&c.hir, s);
+                    if (cls.name == hir_mod.none_node_id) continue;
+                    break :blk cls.name;
+                },
+                else => continue,
+            };
+            if (c.hir.kindOf(name_node) != .identifier) continue;
+
+            // Use the declaration's own span for the lens (editor
+            // anchors at start_line). Use the name node's start as
+            // the cursor seed for findReferences.
+            const decl_span = c.hir.spanOf(s_in);
+            const name_span = c.hir.spanOf(name_node);
+            const byte_pos: u32 = name_span.start;
+
+            const refs = try self.findReferences(gpa, file_path, byte_pos);
+            defer gpa.free(refs);
+
+            // Exclude the declaration's own name occurrence: it is
+            // always returned by findReferences (the cursor sits on
+            // the binding identifier), so subtract one when present.
+            // Guard against the (unexpected) zero case.
+            const total: usize = refs.len;
+            const count: usize = if (total > 0) total - 1 else 0;
+
+            const title = if (count == 1)
+                try std.fmt.allocPrint(gpa, "1 reference", .{})
+            else
+                try std.fmt.allocPrint(gpa, "{d} references", .{count});
+
+            const sp = ts_diagnostics.positionToLineCol(f.source, decl_span.start);
+            const ep = ts_diagnostics.positionToLineCol(f.source, decl_span.end);
+            try out.append(gpa, .{
+                .span = .{
+                    .file = f.path,
+                    .start_line = sp.line,
+                    .start_col = sp.col,
+                    .end_line = ep.line,
+                    .end_col = ep.col,
+                },
+                .title = title,
+                .command = "",
+            });
         }
         return out.toOwnedSlice(gpa);
     }
@@ -2500,6 +2604,56 @@ test "Service: documentSymbols emits enum members as nested children" {
     try T.expectEqual(SymbolInfo.SymbolKind.enum_member, symbols[0].children[0].kind);
     try T.expectEqualStrings("Green", symbols[0].children[1].name);
     try T.expectEqualStrings("Blue", symbols[0].children[2].name);
+}
+
+test "Service: codeLenses count references on top-level fn and class" {
+    var vfs = ts_resolver.VirtualFs.init(T.allocator);
+    defer vfs.deinit();
+    var resolver = ts_resolver.Resolver.init(T.allocator, vfs.fs(), .{});
+    defer resolver.deinit();
+    var program = ts_program.Program.init(T.allocator, &resolver);
+    defer program.deinit();
+
+    const src =
+        \\function add(a: number, b: number): number { return a + b; }
+        \\class Box { value: number = 0; }
+        \\let s = add(1, 2);
+        \\let t = add(3, 4);
+        \\let b = new Box();
+    ;
+    _ = try program.add("/main.ts", src);
+    try program.compileAll(.{});
+
+    var svc = Service.init(T.allocator, &program);
+    const lenses = try svc.codeLenses(T.allocator, "/main.ts");
+    defer freeCodeLenses(T.allocator, lenses);
+
+    try T.expectEqual(@as(usize, 2), lenses.len);
+    // `add` is referenced twice (in the two calls).
+    try T.expectEqualStrings("2 references", lenses[0].title);
+    // `Box` is referenced once (in `new Box()`).
+    try T.expectEqualStrings("1 reference", lenses[1].title);
+}
+
+test "Service: codeLenses emits zero-reference lens for unused decl" {
+    var vfs = ts_resolver.VirtualFs.init(T.allocator);
+    defer vfs.deinit();
+    var resolver = ts_resolver.Resolver.init(T.allocator, vfs.fs(), .{});
+    defer resolver.deinit();
+    var program = ts_program.Program.init(T.allocator, &resolver);
+    defer program.deinit();
+
+    const src = "function unused() { return 1; }";
+    _ = try program.add("/main.ts", src);
+    try program.compileAll(.{});
+
+    var svc = Service.init(T.allocator, &program);
+    const lenses = try svc.codeLenses(T.allocator, "/main.ts");
+    defer freeCodeLenses(T.allocator, lenses);
+
+    try T.expectEqual(@as(usize, 1), lenses.len);
+    try T.expectEqualStrings("0 references", lenses[0].title);
+    try T.expectEqualStrings("", lenses[0].command);
 }
 
 test "Service: signatureHelp returns signature info inside a call" {
