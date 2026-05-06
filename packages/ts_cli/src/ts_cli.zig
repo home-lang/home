@@ -65,6 +65,8 @@ pub const Options = struct {
     jsx: ?[]const u8 = null,
     /// `--declaration` / `-d`. `null` means defer to tsconfig.
     declaration: ?bool = null,
+    /// `--sourceMap`. `null` means defer to tsconfig.
+    source_map: ?bool = null,
 };
 
 pub const ParseError = error{
@@ -140,6 +142,10 @@ pub fn parseArgs(gpa: std.mem.Allocator, args: []const []const u8) ParseError!Op
             opts.declaration = true;
         } else if (std.mem.eql(u8, a, "--no-declaration")) {
             opts.declaration = false;
+        } else if (std.mem.eql(u8, a, "--sourceMap")) {
+            opts.source_map = true;
+        } else if (std.mem.eql(u8, a, "--no-sourceMap")) {
+            opts.source_map = false;
         } else if (a.len > 0 and a[0] == '-') {
             // Unknown flag — silently accept for forward-compat per
             // TS_PARITY_PLAN. A future cycle promotes selected
@@ -174,6 +180,7 @@ pub const helpText: []const u8 =
     \\  --module <kind>        Module form (commonjs / es2022 / nodenext / preserve)
     \\  --outDir <dir>         Output directory for emitted files
     \\  --jsx <mode>           JSX mode (preserve / react / react-jsx / react-jsxdev)
+    \\  --sourceMap            Emit a `.js.map` source map alongside each `.js`
     \\  --strict               Enable all --strictXxx options
     \\  --pretty / --no-pretty Force-toggle ANSI-colored diagnostics
     \\  --listFiles            Print all included files and exit
@@ -309,6 +316,21 @@ test "parseArgs: --pretty default + tsc_main resolution semantics" {
     const opts_no = try parseArgs(T.allocator, &argv_no);
     defer T.allocator.free(opts_no.files);
     try T.expect((opts_no.pretty orelse true) == false);
+}
+
+test "parseArgs: --sourceMap / --no-sourceMap" {
+    {
+        const argv = [_][]const u8{"--sourceMap"};
+        const opts = try parseArgs(T.allocator, &argv);
+        defer T.allocator.free(opts.files);
+        try T.expectEqual(@as(?bool, true), opts.source_map);
+    }
+    {
+        const argv = [_][]const u8{"--no-sourceMap"};
+        const opts = try parseArgs(T.allocator, &argv);
+        defer T.allocator.free(opts.files);
+        try T.expectEqual(@as(?bool, false), opts.source_map);
+    }
 }
 
 test "parseArgs: --strict" {
