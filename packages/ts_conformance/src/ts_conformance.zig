@@ -209,6 +209,142 @@ pub const CorpusEntry = struct {
     is_tsx: bool = false,
 };
 
+/// Owned-source variant — like `CorpusEntry` but the source is
+/// owned by the caller and freed after the run.
+pub const OwnedCorpusEntry = struct {
+    name: []u8,
+    source: []u8,
+    expects_error: bool = false,
+    is_tsx: bool = false,
+};
+
+/// Walk `dir_path` recursively and collect every `.ts` / `.tsx`
+/// file as an `OwnedCorpusEntry`. Convention for `.errors.ts` is
+/// "expects an error" — same as on tsgo's tests/cases/conformance/
+/// corpus. Caller owns each name+source slice and the outer slice.
+pub fn loadDirectory(gpa: std.mem.Allocator, dir_path: []const u8) ![]OwnedCorpusEntry {
+    var out: std.ArrayListUnmanaged(OwnedCorpusEntry) = .empty;
+    errdefer {
+        for (out.items) |entry| {
+            gpa.free(entry.name);
+            gpa.free(entry.source);
+        }
+        out.deinit(gpa);
+    }
+    var dir = try std.fs.cwd().openDir(dir_path, .{ .iterate = true });
+    defer dir.close();
+    var walker = try dir.walk(gpa);
+    defer walker.deinit();
+    while (try walker.next()) |entry| {
+        if (entry.kind != .file) continue;
+        const ext_end = entry.basename.len;
+        const is_ts = std.mem.endsWith(u8, entry.basename, ".ts");
+        const is_tsx = std.mem.endsWith(u8, entry.basename, ".tsx");
+        if (!is_ts and !is_tsx) continue;
+        // Open through the iterating root so paths are dir-relative.
+        const file = dir.openFile(entry.path, .{}) catch continue;
+        defer file.close();
+        const stat = file.stat() catch continue;
+        const src = gpa.alloc(u8, stat.size) catch continue;
+        const n = file.readAll(src) catch {
+            gpa.free(src);
+            continue;
+        };
+        if (n != src.len) {
+            gpa.free(src);
+            continue;
+        }
+        const expects_error = std.mem.indexOf(u8, entry.basename, ".errors.") != null;
+        const ext_dot = std.mem.lastIndexOfScalar(u8, entry.basename, '.') orelse ext_end;
+        const stem = entry.basename[0..ext_dot];
+        const name = try gpa.dupe(u8, stem);
+        try out.append(gpa, .{
+            .name = name,
+            .source = src,
+            .expects_error = expects_error,
+            .is_tsx = is_tsx,
+        });
+    }
+    return out.toOwnedSlice(gpa);
+}
+
+/// Run an owned-source corpus (typically loaded via `loadDirectory`).
+pub fn runOwnedCorpus(
+    gpa: std.mem.Allocator,
+    corpus: []const OwnedCorpusEntry,
+    results: *std.ArrayListUnmanaged(Result),
+) !Stats {
+    // Convert to the borrow-shaped CorpusEntry view + dispatch.
+    var stats: Stats = .{};
+    for (corpus) |entry| {
+        const view: CorpusEntry = .{
+            .name = entry.name,
+            .source = entry.source,
+            .expects_error = entry.expects_error,
+            .is_tsx = entry.is_tsx,
+        };
+        const r = try runOneEntry(gpa, view);
+        switch (r.outcome) {
+            .passed => stats.passed += 1,
+            .failed => stats.failed += 1,
+            .skipped => stats.skipped += 1,
+        }
+        try results.append(gpa, r);
+    }
+    return stats;
+}
+
+/// Convenience: run every TS file under `dir_path` and return Stats.
+/// Each result's name is the file's basename (without extension).
+/// Per-result `name`+`detail` are owned; the corpus itself is freed
+/// internally.
+pub fn runDirectory(
+    gpa: std.mem.Allocator,
+    dir_path: []const u8,
+    results: *std.ArrayListUnmanaged(Result),
+) !Stats {
+    const corpus = try loadDirectory(gpa, dir_path);
+    defer {
+        for (corpus) |entry| {
+            gpa.free(entry.name);
+            gpa.free(entry.source);
+        }
+        gpa.free(corpus);
+    }
+    return runOwnedCorpus(gpa, corpus, results);
+}
+
+fn runOneEntry(gpa: std.mem.Allocator, entry: CorpusEntry) !Result {
+    const name_owned = try gpa.dupe(u8, entry.name);
+    var compilation = ts_driver.compileSource(gpa, entry.source, .{
+        .is_tsx = entry.is_tsx,
+        .continue_on_error = true,
+    }) catch |err| {
+        const detail = try std.fmt.allocPrint(gpa, "compile crash: {s}", .{@errorName(err)});
+        return .{
+            .name = name_owned,
+            .outcome = .failed,
+            .detail = detail,
+        };
+    };
+    const had_errors = compilation.has_errors;
+    compilation.deinit();
+    gpa.destroy(compilation);
+    const passed = if (entry.expects_error) had_errors else !had_errors;
+    if (passed) {
+        return .{ .name = name_owned, .outcome = .passed };
+    }
+    const detail = if (entry.expects_error)
+        try gpa.dupe(u8, "expected at least one diagnostic; got none")
+    else
+        try gpa.dupe(u8, "expected no diagnostics; got at least one");
+    return .{
+        .name = name_owned,
+        .outcome = .failed,
+        .detail = detail,
+    };
+}
+
 /// Run every entry in `corpus` and append a `Result` per case.
 /// Returns aggregate Stats. Caller owns the per-result `name`
 /// and `detail` strings (deinit is responsibility of the caller).
@@ -436,4 +572,37 @@ test "conformance: each builtin case names match files in tests/conformance" {
     for (builtin_corpus) |entry| {
         try T.expect(entry.name.len > 0);
     }
+}
+
+test "conformance: runOwnedCorpus matches runCorpus on equal inputs" {
+    // We can't easily create disk files in this Zig 0.16-dev test
+    // harness (writeFile API in flux), so verify runOwnedCorpus
+    // produces the same results as runCorpus on the same data.
+    const owned = try T.allocator.alloc(OwnedCorpusEntry, 2);
+    defer {
+        for (owned) |o| {
+            T.allocator.free(o.name);
+            T.allocator.free(o.source);
+        }
+        T.allocator.free(owned);
+    }
+    owned[0] = .{
+        .name = try T.allocator.dupe(u8, "ok"),
+        .source = try T.allocator.dupe(u8, "let x: number = 1;"),
+    };
+    owned[1] = .{
+        .name = try T.allocator.dupe(u8, "fail"),
+        .source = try T.allocator.dupe(u8, "let x: number = \"hi\";"),
+        .expects_error = true,
+    };
+    var results: std.ArrayListUnmanaged(Result) = .empty;
+    defer {
+        for (results.items) |r| {
+            T.allocator.free(r.name);
+            if (r.detail.len > 0) T.allocator.free(r.detail);
+        }
+        results.deinit(T.allocator);
+    }
+    const stats = try runOwnedCorpus(T.allocator, owned, &results);
+    try T.expectEqual(@as(u32, 2), stats.passed);
 }

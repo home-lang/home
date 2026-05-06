@@ -531,6 +531,20 @@ pub const Parser = struct {
                     _ = self.advance();
                 }
                 if (self.match(.dot_dot_dot)) flags.is_rest = true;
+                // `this: T` parameter — TS doesn't surface it at
+                // runtime, but the type annotation matters for typing
+                // `this` inside the body. We consume the form and
+                // skip; full plumbing through the checker is a
+                // follow-up. Comma-or-closeparen logic still applies.
+                if (self.peek().kind == .kw_this) {
+                    _ = self.advance(); // this
+                    if (self.match(.colon)) {
+                        _ = try self.parseTypeAnnotation();
+                    }
+                    if (!self.match(.comma)) break;
+                    if (self.peek().kind == .close_paren) break;
+                    continue;
+                }
                 const name_tok = try self.expect(.identifier, "parameter name");
                 if (self.match(.question)) flags.is_optional = true;
                 var type_ann: NodeId = hir_mod.none_node_id;
@@ -4039,4 +4053,25 @@ test "parser: function expression in let-binding" {
     try T.expectEqual(hir_mod.NodeKind.let_decl, s.hir.kindOf(top));
     const init_node = hir_mod.varDeclOf(&s.hir, top).init;
     try T.expectEqual(hir_mod.NodeKind.fn_decl, s.hir.kindOf(init_node));
+}
+
+test "parser: this parameter is consumed and skipped" {
+    var s = try newTestSetup("function f(this: Foo, x: number): number { return x; }");
+    defer destroyTestSetup(s);
+    const root = try s.parser.parseSourceFile();
+    const top = hir_mod.blockStmts(&s.hir, root)[0];
+    try T.expectEqual(hir_mod.NodeKind.fn_decl, s.hir.kindOf(top));
+    // The `this` param is skipped; only `x` lands in the param list.
+    const params = hir_mod.fnParams(&s.hir, top);
+    try T.expectEqual(@as(usize, 1), params.len);
+}
+
+test "parser: this parameter alone parses cleanly" {
+    var s = try newTestSetup("function f(this: any) { }");
+    defer destroyTestSetup(s);
+    const root = try s.parser.parseSourceFile();
+    const top = hir_mod.blockStmts(&s.hir, root)[0];
+    try T.expectEqual(hir_mod.NodeKind.fn_decl, s.hir.kindOf(top));
+    const params = hir_mod.fnParams(&s.hir, top);
+    try T.expectEqual(@as(usize, 0), params.len);
 }
