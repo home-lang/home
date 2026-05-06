@@ -63,6 +63,7 @@ pub const TsCodes = struct {
     pub const property_does_not_exist: u32 = 2339;
     pub const argument_type_mismatch: u32 = 2345;
     pub const expected_n_arguments: u32 = 2554;
+    pub const no_overload_matches: u32 = 2769;
     pub const duplicate_identifier: u32 = 2300;
     pub const generic_type_requires_args: u32 = 2314;
     pub const operator_cannot_be_applied: u32 = 2365;
@@ -2131,6 +2132,15 @@ pub const Checker = struct {
                                     }
                                 }
                             }
+                            // No overload accepted these args — emit
+                            // TS2769 instead of falling through to the
+                            // implementation signature (which is not
+                            // visible at call sites in TS).
+                            try self.report(node, TsCodes.no_overload_matches, "No overload matches this call.");
+                            if (self.interner.signatureReturn(overload_list.items[0])) |ret| {
+                                break :blk ret;
+                            }
+                            break :blk types.Primitive.any;
                         }
                     }
                 }
@@ -2594,12 +2604,13 @@ pub const Checker = struct {
         // X === <literal> / X !== <literal> — narrow X to the
         // literal type in the positive branch, subtract it in the
         // negative branch. Covers `s === "hello"`, `n === 42`,
-        // `b === true`. Discriminated-union narrowing above handles
-        // the member-access case (`x.kind === "circle"`); this
-        // branch handles the bare-identifier case.
+        // `b === true`, `x === 42n`. Discriminated-union narrowing
+        // above handles the member-access case (`x.kind === "circle"`);
+        // this branch handles the bare-identifier case.
         if (self.hir.kindOf(b.lhs) == .identifier and
             (self.hir.kindOf(b.rhs) == .literal_string or
                 self.hir.kindOf(b.rhs) == .literal_number or
+                self.hir.kindOf(b.rhs) == .literal_bigint or
                 self.hir.kindOf(b.rhs) == .literal_bool))
         {
             const id = hir_mod.identifierOf(self.hir, b.lhs);
@@ -2612,6 +2623,10 @@ pub const Checker = struct {
                     .literal_number => {
                         const v = hir_mod.literalNumberOf(self.hir, b.rhs);
                         break :blk self.interner.internNumberLiteral(v) catch return;
+                    },
+                    .literal_bigint => {
+                        const lit = hir_mod.literalBigIntOf(self.hir, b.rhs);
+                        break :blk self.interner.internBigIntLiteral(lit.digits) catch return;
                     },
                     .literal_bool => {
                         const v = hir_mod.literalBoolOf(self.hir, b.rhs);
@@ -4774,6 +4789,25 @@ test "checker: overload resolution picks the matching signature" {
     try T.expectEqual(types.Primitive.string_t, s.hir.typeOf(stmts[4]));
 }
 
+test "checker: TS2769 when no overload matches the call" {
+    // Two overloads + impl. Call with `boolean` matches neither
+    // overload's first parameter (string / number) — should emit
+    // TS2769 rather than silently using the impl signature.
+    const s = try newSetup(
+        \\function f(x: string): number;
+        \\function f(x: number): string;
+        \\function f(x: any): any { return x; }
+        \\let r = f(true);
+    );
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+    var found = false;
+    for (s.checker.diagnostics.items) |d| {
+        if (d.code == TsCodes.no_overload_matches) found = true;
+    }
+    try T.expect(found);
+}
+
 test "checker: aliased conditional narrows via stored guard" {
     const s = try newSetup(
         \\function isString(x: any): x is string { return true; }
@@ -5148,6 +5182,30 @@ test "checker: n === number-literal narrows to literal type" {
     const x_init = hir_mod.varDeclOf(&s.hir, x_decl).init;
     const expected = try s.ti.internNumberLiteral(42);
     try T.expectEqual(expected, s.hir.typeOf(x_init));
+}
+
+test "checker: x === bigint-literal narrows to literal type" {
+    const s = try newSetup(
+        \\function f(x: bigint) {
+        \\  if (x === 42n) {
+        \\    let y = x;
+        \\  }
+        \\}
+    );
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+    const stmts = hir_mod.blockStmts(&s.hir, s.root);
+    const fn_node = stmts[0];
+    const f = hir_mod.fnDeclOf(&s.hir, fn_node);
+    const body_stmts = hir_mod.blockStmts(&s.hir, f.body);
+    const if_stmt = body_stmts[0];
+    const ifp = hir_mod.ifOf(&s.hir, if_stmt);
+    const then_stmts = hir_mod.blockStmts(&s.hir, ifp.then_branch);
+    const y_decl = then_stmts[0];
+    const y_init = hir_mod.varDeclOf(&s.hir, y_decl).init;
+    const digits_id = try s.sint.intern("42");
+    const expected = try s.ti.internBigIntLiteral(digits_id);
+    try T.expectEqual(expected, s.hir.typeOf(y_init));
 }
 
 test "checker: obj.x !== null narrows obj.x in then-branch" {
