@@ -659,6 +659,25 @@ pub const Checker = struct {
         }
     }
 
+    /// If `t` is structurally a `Promise<T>` — an object type with a
+    /// `then` member whose first parameter is itself a signature
+    /// `(value: T) => any` — return `T`. Otherwise return `t`
+    /// unchanged. This lets `await p` unwrap to the resolved value
+    /// type without first-class generics support.
+    fn unwrapPromise(self: *Checker, t: TypeId) TypeId {
+        if (!self.interner.pool.flagsOf(t).is_object_type) return t;
+        const then_id = self.string_interner.intern("then") catch return t;
+        const then_t = self.interner.objectMember(t, then_id) orelse return t;
+        if (!self.interner.pool.flagsOf(then_t).is_signature) return t;
+        const then_params = self.interner.signatureParams(then_t);
+        if (then_params.len == 0) return t;
+        const cb_t = then_params[0];
+        if (!self.interner.pool.flagsOf(cb_t).is_signature) return t;
+        const cb_params = self.interner.signatureParams(cb_t);
+        if (cb_params.len == 0) return t;
+        return cb_params[0];
+    }
+
     /// Re-intern the function's signature with `new_ret` as the
     /// return type, then update the node's type. Identifier lookups
     /// against the function's name see the refined signature.
@@ -2247,13 +2266,15 @@ pub const Checker = struct {
                 break :blk self.hir.typeOf(node);
             },
             .await_expr => blk: {
-                // `await expr` — type-check the operand and pass its
-                // type through. TODO(Phase 6): when the operand's type
-                // is a known `Promise<T>`-shaped object with a `.then`
-                // member, unwrap to `T`.
+                // `await expr` — type-check the operand. When the
+                // operand's type is structurally a `Promise<T>` (an
+                // object type with a `.then(cb)` method whose callback
+                // takes the resolved value as its first parameter),
+                // unwrap to `T`. Otherwise pass the operand type
+                // through.
                 const a = hir_mod.awaitExprOf(self.hir, node);
                 const inner_t = try self.checkExpression(a.expr);
-                break :blk inner_t;
+                break :blk self.unwrapPromise(inner_t);
             },
             .yield_expr => blk: {
                 // `yield expr` / `yield* expr` — type-check the
@@ -4824,8 +4845,36 @@ test "checker: `await g()` types as the operand call's return type" {
     try T.expectEqual(hir_mod.NodeKind.let_decl, s.hir.kindOf(x_decl));
     const v = hir_mod.varDeclOf(&s.hir, x_decl);
     try T.expectEqual(hir_mod.NodeKind.await_expr, s.hir.kindOf(v.init));
-    // v1: await passes the operand type through (TODO: Promise<T> unwrap).
+    // The operand isn't Promise-shaped, so unwrapPromise is a passthrough.
     try T.expectEqual(types.Primitive.number_t, s.hir.typeOf(v.init));
+}
+
+test "checker: unwrapPromise extracts T from a structural Promise<T>" {
+    const s = try newSetup("");
+    defer destroySetup(s);
+    // Build `(value: number) => any`.
+    const cb_params = [_]types.TypeId{types.Primitive.number_t};
+    const cb_sig = try s.ti.internSignature(&cb_params, types.Primitive.any, false);
+    // Build `then(cb: (value: number) => any): any`.
+    const then_params = [_]types.TypeId{cb_sig};
+    const then_sig = try s.ti.internSignature(&then_params, types.Primitive.any, false);
+    // Build `{ then: (cb) => any }`.
+    const then_name = try s.sint.intern("then");
+    const members = [_]types.ObjectMember{.{
+        .name = then_name,
+        .type = then_sig,
+        .is_optional = false,
+        .is_readonly = false,
+        .is_method = true,
+    }};
+    const promise_t = try s.ti.internObjectType(&members);
+    try T.expectEqual(types.Primitive.number_t, s.checker.unwrapPromise(promise_t));
+}
+
+test "checker: unwrapPromise passes non-Promise types through unchanged" {
+    const s = try newSetup("");
+    defer destroySetup(s);
+    try T.expectEqual(types.Primitive.number_t, s.checker.unwrapPromise(types.Primitive.number_t));
 }
 
 test "checker: `yield expr` types as the operand expression's type" {
