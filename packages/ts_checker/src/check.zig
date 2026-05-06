@@ -387,6 +387,13 @@ pub const Checker = struct {
                     try self.applyAssertionFlow(s);
                 }
             },
+            .try_stmt => {
+                const ts = hir_mod.tryOf(self.hir, node);
+                if (ts.block != hir_mod.none_node_id) try self.checkStatement(ts.block);
+                if (ts.catch_block != hir_mod.none_node_id) try self.checkStatement(ts.catch_block);
+                if (ts.finally_block != hir_mod.none_node_id) try self.checkStatement(ts.finally_block);
+                try self.checkUnusedCatchParam(node);
+            },
             // Expressions used as statements.
             else => {
                 if (hir_mod.NodeKind.isExpression(self.hir.kindOf(node))) {
@@ -724,6 +731,36 @@ pub const Checker = struct {
                 .message = msg,
             });
         }
+    }
+
+    /// `noUnusedParameters` (TS6133) for `catch (e) { ... }` clauses.
+    /// Mirrors `checkUnusedParameters`: emits TS6133 when the catch
+    /// binding's name is never read inside the catch block. Names
+    /// starting with `_` are exempt by tsc convention.
+    fn checkUnusedCatchParam(self: *Checker, try_node: NodeId) CheckError!void {
+        if (!self.strict_flags.no_unused_parameters) return;
+        const ts = hir_mod.tryOf(self.hir, try_node);
+        if (ts.catch_param == hir_mod.none_node_id) return;
+        if (self.hir.kindOf(ts.catch_param) != .identifier) return;
+        const id = hir_mod.identifierOf(self.hir, ts.catch_param);
+        const name_str = self.string_interner.get(id.name);
+        if (name_str.len > 0 and name_str[0] == '_') return;
+        var refs: std.AutoHashMapUnmanaged(hir_mod.StringId, void) = .empty;
+        defer refs.deinit(self.gpa);
+        if (ts.catch_block != hir_mod.none_node_id) {
+            try self.collectIdentifierRefs(ts.catch_block, &refs);
+        }
+        if (refs.contains(id.name)) return;
+        const msg = try std.fmt.allocPrint(
+            self.diag_arena.allocator(),
+            "'{s}' is declared but its value is never read.",
+            .{name_str},
+        );
+        try self.diagnostics.append(self.gpa, .{
+            .node = ts.catch_param,
+            .code = TsCodes.declared_but_not_read,
+            .message = msg,
+        });
     }
 
     /// Recursively collect every identifier StringId reachable from
@@ -4630,6 +4667,51 @@ test "checker: noUnusedParameters honors leading-underscore convention" {
 test "checker: noUnusedParameters skips when flag is off" {
     const s = try newSetup("function f(x: number, y: number): number { return x; }");
     defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+    try T.expect(s.checker.diagnostics.items.len == 0);
+}
+
+test "checker: noUnusedParameters emits TS6133 for unread catch binding" {
+    const s = try newSetup("try { } catch (e) { }");
+    defer destroySetup(s);
+    s.checker.setStrictFlags(.{ .no_unused_parameters = true });
+    try s.checker.checkSourceFile(s.root);
+    var has_e = false;
+    for (s.checker.diagnostics.items) |d| {
+        if (d.code != TsCodes.declared_but_not_read) continue;
+        if (std.mem.indexOf(u8, d.message, "'e'") != null) has_e = true;
+    }
+    try T.expect(has_e);
+}
+
+test "checker: noUnusedParameters does not flag a read catch binding" {
+    const s = try newSetup("try { } catch (e) { let m = e; }");
+    defer destroySetup(s);
+    s.checker.setStrictFlags(.{ .no_unused_parameters = true });
+    try s.checker.checkSourceFile(s.root);
+    for (s.checker.diagnostics.items) |d| {
+        if (d.code != TsCodes.declared_but_not_read) continue;
+        try T.expect(std.mem.indexOf(u8, d.message, "'e'") == null);
+    }
+}
+
+test "checker: noUnusedParameters emits TS6133 for unread arrow param" {
+    const s = try newSetup("let f = (unused: number) => 1;");
+    defer destroySetup(s);
+    s.checker.setStrictFlags(.{ .no_unused_parameters = true });
+    try s.checker.checkSourceFile(s.root);
+    var has_unused = false;
+    for (s.checker.diagnostics.items) |d| {
+        if (d.code != TsCodes.declared_but_not_read) continue;
+        if (std.mem.indexOf(u8, d.message, "'unused'") != null) has_unused = true;
+    }
+    try T.expect(has_unused);
+}
+
+test "checker: noUnusedParameters does not flag a read arrow param" {
+    const s = try newSetup("let f = (x: number) => x;");
+    defer destroySetup(s);
+    s.checker.setStrictFlags(.{ .no_unused_parameters = true });
     try s.checker.checkSourceFile(s.root);
     try T.expect(s.checker.diagnostics.items.len == 0);
 }
