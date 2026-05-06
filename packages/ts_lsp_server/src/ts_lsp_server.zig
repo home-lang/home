@@ -16,6 +16,8 @@
 //!   - textDocument/completion
 //!   - textDocument/signatureHelp
 //!   - textDocument/rename
+//!   - textDocument/prepareRename
+//!   - completionItem/resolve
 //!   - textDocument/documentSymbol
 //!   - workspace/symbol
 //!   - textDocument/codeAction
@@ -60,6 +62,8 @@ pub const Method = enum {
     text_document_signature_help,
     text_document_publish_diagnostics,
     text_document_rename,
+    text_document_prepare_rename,
+    completion_item_resolve,
     text_document_document_symbol,
     workspace_symbol,
     text_document_code_action,
@@ -87,6 +91,8 @@ pub const Method = enum {
             .{ "textDocument/signatureHelp", Method.text_document_signature_help },
             .{ "textDocument/publishDiagnostics", Method.text_document_publish_diagnostics },
             .{ "textDocument/rename", Method.text_document_rename },
+            .{ "textDocument/prepareRename", Method.text_document_prepare_rename },
+            .{ "completionItem/resolve", Method.completion_item_resolve },
             .{ "textDocument/documentSymbol", Method.text_document_document_symbol },
             .{ "workspace/symbol", Method.workspace_symbol },
             .{ "textDocument/codeAction", Method.text_document_code_action },
@@ -898,6 +904,138 @@ pub fn handleRename(
     return encodeResponse(gpa, request_id, buf.items);
 }
 
+/// True when `c` is a valid identifier-continuation byte (ASCII
+/// letter, digit, underscore, or `$`). Mirrors the lexer's notion of
+/// `isIdentPart`. Pure ASCII — non-ASCII bytes are conservatively
+/// rejected, which is acceptable since the LSP layer only uses this
+/// for word-boundary detection in `handlePrepareRename`.
+fn isIdentChar(c: u8) bool {
+    return (c >= 'a' and c <= 'z') or
+        (c >= 'A' and c <= 'Z') or
+        (c >= '0' and c <= '9') or
+        c == '_' or c == '$';
+}
+
+/// True when `c` can start an identifier (excludes ASCII digits).
+fn isIdentStart(c: u8) bool {
+    return (c >= 'a' and c <= 'z') or
+        (c >= 'A' and c <= 'Z') or
+        c == '_' or c == '$';
+}
+
+/// Handle a `textDocument/prepareRename` JSON-RPC request: parse
+/// `uri` + `(line, character)`, find the identifier extents that
+/// straddle `byte_pos`, and emit either a
+/// `{ range, placeholder }` object or `null` when the cursor isn't on
+/// a renamable identifier. Per the LSP spec the response shape may
+/// also be a bare `Range`; we always return the richer
+/// `{ range, placeholder }` form so clients pre-fill the rename
+/// input. Caller owns the returned slice.
+pub fn handlePrepareRename(
+    service: *ts_lsp.Service,
+    gpa: std.mem.Allocator,
+    request_id: RequestId,
+    params_json: []const u8,
+) ![]u8 {
+    const uri = findJsonStringField(params_json, "uri") orelse return error.MissingUri;
+    const line = findJsonIntField(params_json, "line") orelse return error.MissingLine;
+    const character = findJsonIntField(params_json, "character") orelse return error.MissingCharacter;
+    const path = uriToPath(uri);
+
+    const file_id = service.program.lookupPath(path) orelse {
+        return encodeResponse(gpa, request_id, "null");
+    };
+    const f = service.program.fileById(file_id);
+    const line_u: u32 = if (line < 0) 0 else @intCast(line);
+    const char_u: u32 = if (character < 0) 0 else @intCast(character);
+    const byte_pos = lineColToByte(f.source, line_u, char_u);
+
+    // Walk left for the identifier start, right for the end. The
+    // cursor may sit one byte past the last identifier character (a
+    // common editor convention), so when `byte_pos` itself isn't an
+    // identifier byte we also try `byte_pos - 1`.
+    const src = f.source;
+    var probe: usize = byte_pos;
+    if (probe >= src.len or !isIdentChar(src[probe])) {
+        if (probe == 0) return encodeResponse(gpa, request_id, "null");
+        if (!isIdentChar(src[probe - 1])) return encodeResponse(gpa, request_id, "null");
+        probe -= 1;
+    }
+    var start: usize = probe;
+    while (start > 0 and isIdentChar(src[start - 1])) : (start -= 1) {}
+    if (!isIdentStart(src[start])) return encodeResponse(gpa, request_id, "null");
+    var end: usize = probe + 1;
+    while (end < src.len and isIdentChar(src[end])) : (end += 1) {}
+
+    const start_pos = byteToLineCol(src, @intCast(start));
+    const end_pos = byteToLineCol(src, @intCast(end));
+    const name = src[start..end];
+
+    var buf: std.ArrayListUnmanaged(u8) = .empty;
+    defer buf.deinit(gpa);
+    var nbuf: [128]u8 = undefined;
+    const fmt = try std.fmt.bufPrint(
+        &nbuf,
+        "{{\"range\":{{\"start\":{{\"line\":{d},\"character\":{d}}},\"end\":{{\"line\":{d},\"character\":{d}}}}},\"placeholder\":\"",
+        .{ start_pos.line, start_pos.character, end_pos.line, end_pos.character },
+    );
+    try buf.appendSlice(gpa, fmt);
+    try writeJsonStringContents(&buf, gpa, name);
+    try buf.appendSlice(gpa, "\"}");
+    return encodeResponse(gpa, request_id, buf.items);
+}
+
+/// Handle a `completionItem/resolve` JSON-RPC request. Per the LSP
+/// spec the client sends back a CompletionItem from a prior
+/// `textDocument/completion` response and expects the same shape
+/// echoed back with optional fields (e.g. `documentation`,
+/// `detail`) populated. Today this is a stub: we return the input
+/// item verbatim. A future enhancement would resolve `data` /
+/// `auto_import_from` payloads and attach symbol-level docs. Caller
+/// owns the returned slice.
+pub fn handleCompletionItemResolve(
+    service: *ts_lsp.Service,
+    gpa: std.mem.Allocator,
+    request_id: RequestId,
+    params_json: []const u8,
+) ![]u8 {
+    _ = service;
+    // The CompletionItem itself is the entire `params` value (the
+    // protocol passes the item as the request's `params`). Echo it
+    // back unchanged; if we can't locate an object, fall through to
+    // an empty `{}`.
+    if (std.mem.indexOfScalar(u8, params_json, '{')) |obj_start| {
+        // Find the matching closing brace by tracking depth so we
+        // ignore braces inside strings.
+        var depth: usize = 0;
+        var in_str = false;
+        var i: usize = obj_start;
+        while (i < params_json.len) : (i += 1) {
+            const ch = params_json[i];
+            if (in_str) {
+                if (ch == '\\') {
+                    i += 1;
+                    continue;
+                }
+                if (ch == '"') in_str = false;
+                continue;
+            }
+            if (ch == '"') {
+                in_str = true;
+                continue;
+            }
+            if (ch == '{') depth += 1;
+            if (ch == '}') {
+                depth -= 1;
+                if (depth == 0) {
+                    return encodeResponse(gpa, request_id, params_json[obj_start .. i + 1]);
+                }
+            }
+        }
+    }
+    return encodeResponse(gpa, request_id, "{}");
+}
+
 /// Handle a `textDocument/documentSymbol` JSON-RPC request: extract
 /// the URI, route to `Service.documentSymbols`, and emit an LSP
 /// `DocumentSymbol[]` array (with nested `children`). Caller owns
@@ -1517,6 +1655,14 @@ pub fn dispatchRequest(
         .text_document_rename => {
             if (is_notification) return &.{};
             return try handleRename(service, gpa, id, params);
+        },
+        .text_document_prepare_rename => {
+            if (is_notification) return &.{};
+            return try handlePrepareRename(service, gpa, id, params);
+        },
+        .completion_item_resolve => {
+            if (is_notification) return &.{};
+            return try handleCompletionItemResolve(service, gpa, id, params);
         },
         .text_document_document_symbol => {
             if (is_notification) return &.{};
@@ -2139,6 +2285,61 @@ test "handleRename: returns WorkspaceEdit with changes object" {
     try T.expect(std.mem.indexOf(u8, out, "\"changes\":") != null);
     try T.expect(std.mem.indexOf(u8, out, "\"file:///main.ts\":[") != null);
     try T.expect(std.mem.indexOf(u8, out, "\"newText\":\"n\"") != null);
+}
+
+test "handlePrepareRename: returns range + placeholder for identifier" {
+    var vfs = ts_resolver.VirtualFs.init(T.allocator);
+    defer vfs.deinit();
+    var resolver = ts_resolver.Resolver.init(T.allocator, vfs.fs(), .{});
+    defer resolver.deinit();
+    var program = ts_program.Program.init(T.allocator, &resolver);
+    defer program.deinit();
+
+    _ = try program.add("/main.ts", "let count = 1;");
+    try program.compileAll(.{});
+    var svc = ts_lsp.Service.init(T.allocator, &program);
+
+    // Cursor on `count` (line 0, char 6 — middle of the identifier).
+    const body =
+        \\{"jsonrpc":"2.0","id":151,"method":"textDocument/prepareRename","params":{"textDocument":{"uri":"file:///main.ts"},"position":{"line":0,"character":6}}}
+    ;
+    const out = try handlePrepareRename(&svc, T.allocator, .{ .integer = 151 }, body);
+    defer T.allocator.free(out);
+    try T.expect(std.mem.indexOf(u8, out, "\"id\":151") != null);
+    try T.expect(std.mem.indexOf(u8, out, "\"placeholder\":\"count\"") != null);
+    // Identifier `count` lives at chars 4..9 on line 0.
+    try T.expect(std.mem.indexOf(u8, out, "\"start\":{\"line\":0,\"character\":4}") != null);
+    try T.expect(std.mem.indexOf(u8, out, "\"end\":{\"line\":0,\"character\":9}") != null);
+
+    // Cursor on a non-identifier glyph (`=`, surrounded by spaces) -> result: null.
+    const empty =
+        \\{"jsonrpc":"2.0","id":152,"method":"textDocument/prepareRename","params":{"textDocument":{"uri":"file:///main.ts"},"position":{"line":0,"character":10}}}
+    ;
+    const out2 = try handlePrepareRename(&svc, T.allocator, .{ .integer = 152 }, empty);
+    defer T.allocator.free(out2);
+    try T.expect(std.mem.indexOf(u8, out2, "\"result\":null") != null);
+}
+
+test "handleCompletionItemResolve: echoes input item back" {
+    var vfs = ts_resolver.VirtualFs.init(T.allocator);
+    defer vfs.deinit();
+    var resolver = ts_resolver.Resolver.init(T.allocator, vfs.fs(), .{});
+    defer resolver.deinit();
+    var program = ts_program.Program.init(T.allocator, &resolver);
+    defer program.deinit();
+    var svc = ts_lsp.Service.init(T.allocator, &program);
+
+    // The CompletionItem is passed as the `params` value.
+    const body =
+        \\{"jsonrpc":"2.0","id":161,"method":"completionItem/resolve","params":{"label":"foo","kind":6,"data":{"auto_import_from":"./bar"}}}
+    ;
+    const params = findJsonRawField(body, "params").?;
+    const out = try handleCompletionItemResolve(&svc, T.allocator, .{ .integer = 161 }, params);
+    defer T.allocator.free(out);
+    try T.expect(std.mem.indexOf(u8, out, "\"id\":161") != null);
+    try T.expect(std.mem.indexOf(u8, out, "\"label\":\"foo\"") != null);
+    try T.expect(std.mem.indexOf(u8, out, "\"kind\":6") != null);
+    try T.expect(std.mem.indexOf(u8, out, "\"auto_import_from\":\"./bar\"") != null);
 }
 
 test "handleDocumentSymbol: returns DocumentSymbol array" {
