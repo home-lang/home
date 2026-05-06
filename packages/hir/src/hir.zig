@@ -514,6 +514,11 @@ pub const ParameterPayload = struct {
     default_value: NodeId,
     /// True for `?:` optional parameter, rest params (`...x`), etc.
     flags: ParamFlags,
+    /// Slice into `child_pool` for parameter decorators (`@inject`).
+    /// Length 0 when none. Used by the emitter to produce
+    /// `__param(N, dec)` calls during legacy decorator emission.
+    decorators_start: u32 = 0,
+    decorators_len: u16 = 0,
 };
 
 pub const ParamFlags = packed struct(u8) {
@@ -1645,17 +1650,35 @@ pub const Builder = struct {
         default_value: NodeId,
         flags: ParamFlags,
     ) !NodeId {
+        return self.addParameterWithDecorators(span, name, type_annotation, default_value, flags, &.{});
+    }
+
+    pub fn addParameterWithDecorators(
+        self: *Builder,
+        span: Span,
+        name: NodeId,
+        type_annotation: NodeId,
+        default_value: NodeId,
+        flags: ParamFlags,
+        decorators: []const NodeId,
+    ) !NodeId {
+        const dec_start: u32 = @intCast(self.hir.child_pool.items.len);
+        try self.hir.child_pool.appendSlice(self.hir.gpa, decorators);
+        const dec_len: u16 = @intCast(decorators.len);
         const payload_idx: u32 = @intCast(self.hir.parameter_payloads.items.len);
         try self.hir.parameter_payloads.append(self.hir.gpa, .{
             .name = name,
             .type_annotation = type_annotation,
             .default_value = default_value,
             .flags = flags,
+            .decorators_start = dec_start,
+            .decorators_len = dec_len,
         });
         const id = try self.newNode(.parameter, span, payload_idx);
         if (name != none_node_id) self.hir.setParent(name, id);
         if (type_annotation != none_node_id) self.hir.setParent(type_annotation, id);
         if (default_value != none_node_id) self.hir.setParent(default_value, id);
+        for (decorators) |d| if (d != none_node_id) self.hir.setParent(d, id);
         return id;
     }
 
@@ -2631,6 +2654,13 @@ pub fn fnTypeParams(hir: *const Hir, id: NodeId) []const NodeId {
 pub fn parameterOf(hir: *const Hir, id: NodeId) ParameterPayload {
     std.debug.assert(hir.kindOf(id) == .parameter);
     return hir.parameter_payloads.items[hir.payloads.items[id]];
+}
+
+/// Decorator nodes attached to a parameter. Empty when the parameter
+/// has no `@dec` annotations.
+pub fn parameterDecorators(hir: *const Hir, id: NodeId) []const NodeId {
+    const p = parameterOf(hir, id);
+    return hir.childSlice(p.decorators_start, p.decorators_len);
 }
 
 pub fn typeAliasOf(hir: *const Hir, id: NodeId) TypeAliasPayload {

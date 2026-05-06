@@ -801,6 +801,36 @@ pub const Printer = struct {
                 try self.write(self.interner.get(id.name));
             }
             try self.write("\", null);");
+            // §4.A.8 ratchet — also emit `__param(N, dec)` calls
+            // when the decorated target is a method/fn with
+            // parameter decorators.
+            if (tk == .fn_decl or tk == .fn_expr) {
+                const params = hir_mod.fnParams(self.hir, target);
+                for (params, 0..) |p, idx| {
+                    if (self.hir.kindOf(p) != .parameter) continue;
+                    const param_decs = hir_mod.parameterDecorators(self.hir, p);
+                    if (param_decs.len == 0) continue;
+                    try self.write(self.options.newline);
+                    try self.write("__decorate([");
+                    for (param_decs, 0..) |pd, k| {
+                        if (k > 0) try self.write(", ");
+                        const wrap_idx_buf = try std.fmt.allocPrint(self.gpa, "__param({d}, ", .{idx});
+                        defer self.gpa.free(wrap_idx_buf);
+                        try self.write(wrap_idx_buf);
+                        const dp = hir_mod.decoratorOf(self.hir, pd);
+                        try self.printExpression(dp.expression);
+                        try self.write(")");
+                    }
+                    try self.write("], ");
+                    try self.printExpression(c.name);
+                    try self.write(".prototype, \"");
+                    if (self.hir.kindOf(name_node) == .identifier) {
+                        const fid = hir_mod.identifierOf(self.hir, name_node);
+                        try self.write(self.interner.get(fid.name));
+                    }
+                    try self.write("\", null);");
+                }
+            }
             i = j;
         }
     }
@@ -2165,6 +2195,18 @@ test "emit: property decorators emit __decorate against prototype" {
     );
     defer T.allocator.free(out);
     try T.expect(std.mem.indexOf(u8, out, "__decorate([observe], Foo.prototype, \"count\", null);") != null);
+}
+
+test "emit: parameter decorators emit __param wrappers" {
+    const out = try emit(
+        \\class Service {
+        \\  @logged
+        \\  greet(@inject name: string) { return name; }
+        \\}
+    );
+    defer T.allocator.free(out);
+    try T.expect(std.mem.indexOf(u8, out, "__decorate([logged], Service.prototype, \"greet\", null);") != null);
+    try T.expect(std.mem.indexOf(u8, out, "__decorate([__param(0, inject)], Service.prototype, \"greet\", null);") != null);
 }
 
 test "emit: non-jsx file with automatic mode skips the import" {

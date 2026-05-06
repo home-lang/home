@@ -539,10 +539,18 @@ pub const Parser = struct {
             while (true) {
                 const param_start = self.peek();
                 var flags: hir_mod.ParamFlags = .{};
-                // Decorators (`@dec`) on parameters — accept and discard.
+                // Capture `@dec` decorators on parameters so the
+                // emitter can produce `__param(N, dec)` calls.
+                var param_decorators: std.ArrayListUnmanaged(NodeId) = .empty;
+                defer param_decorators.deinit(self.gpa);
                 while (self.peek().kind == .at) {
-                    _ = self.advance();
-                    _ = try self.parseLeftHandSideExpression();
+                    const at_tok = self.advance();
+                    const dec_expr = try self.parseLeftHandSideExpression();
+                    const dec_node = try self.builder.addDecorator(.{
+                        .start = at_tok.span.start,
+                        .end = self.hir.spanOf(dec_expr).end,
+                    }, dec_expr);
+                    try param_decorators.append(self.gpa, dec_node);
                 }
                 // Modifiers on parameter properties: `readonly`, `public`, etc.
                 while (self.peek().kind.isModifierKeyword()) {
@@ -571,12 +579,13 @@ pub const Parser = struct {
                 if (self.match(.equal)) default_value = try self.parseAssignmentExpression();
                 const name_id = try self.internToken(name_tok);
                 const ident = try self.builder.addIdentifier(tokenSpan(name_tok), name_id);
-                const param = try self.builder.addParameter(
+                const param = try self.builder.addParameterWithDecorators(
                     .{ .start = param_start.span.start, .end = self.tokens[self.cursor - 1].span.end },
                     ident,
                     type_ann,
                     default_value,
                     flags,
+                    param_decorators.items,
                 );
                 try params.append(self.gpa, param);
                 if (!self.match(.comma)) break;
