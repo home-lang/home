@@ -8,7 +8,7 @@ const macho = @import("macho.zig");
 /// AArch64 native codegen — Path B-lite of issue #5.
 ///
 /// Mirrors the structure of `native_codegen.NativeCodegen` but emits arm64
-/// machine code via `arm64.Assembler`. Currently supports the M7 subset:
+/// machine code via `arm64.Assembler`. Currently supports the M8 subset:
 ///   - `FnDecl` (top-level functions, including non-`main`) with up to 8
 ///     i64 parameters delivered via x0..x7 per AAPCS64
 ///   - `StructDecl` (registered into a layout table; emits no code)
@@ -27,11 +27,13 @@ const macho = @import("macho.zig");
 ///   - built-in `print(s)` / `println(s)` for string-literal arguments,
 ///     lowered to the BSD `write` syscall on macOS-arm64
 ///   - struct field reads (`p.x`) and writes (`p.x = ...`)
+///   - fixed-size i64 arrays via `[a, b, c]` literals, indexed read/write
+///     (`arr[i]`, `arr[i] = v`)
 ///
 /// Other AST nodes (pointers, methods, struct args/returns, nested
-/// structs, arrays, ...) return `error.NotImplemented`. The plan is to
-/// expand this milestone-by-milestone per the B-lite roadmap rather than
-/// refactoring NativeCodegen itself.
+/// structs, slices, dynamic-length arrays, ...) return
+/// `error.NotImplemented`. The plan is to expand this milestone-by-milestone
+/// per the B-lite roadmap rather than refactoring NativeCodegen itself.
 pub const CodegenError = error{
     NotImplemented,
     UnsupportedPlatform,
@@ -41,6 +43,7 @@ pub const CodegenError = error{
     UndefinedStruct,
     UndefinedField,
     NotAStructLocal,
+    NotAnArrayLocal,
     TooManyArguments,
     InvalidCallTarget,
     FrameTooLarge,
@@ -88,6 +91,10 @@ pub const Aarch64NativeCodegen = struct {
     /// Used by member expressions to look up field offsets. Cleared between
     /// functions.
     local_struct_types: std.StringHashMap([]const u8),
+    /// Local name → array length (in elements). Locals listed here occupy
+    /// `length * 8` consecutive bytes starting at their `locals` offset.
+    /// Cleared between functions.
+    local_array_lens: std.StringHashMap(u32),
     /// Next free slot offset (bytes from SP) for the local being allocated.
     /// Reset in generateFnDecl.
     next_slot: u32 = 0,
@@ -120,6 +127,7 @@ pub const Aarch64NativeCodegen = struct {
             .functions = std.StringHashMap(usize).init(allocator),
             .locals = std.StringHashMap(u32).init(allocator),
             .local_struct_types = std.StringHashMap([]const u8).init(allocator),
+            .local_array_lens = std.StringHashMap(u32).init(allocator),
             .pending_calls = std.ArrayList(PendingCall).empty,
             .strings = std.ArrayList(StringLit).empty,
             .string_fixups = std.ArrayList(StringFixup).empty,
@@ -132,6 +140,7 @@ pub const Aarch64NativeCodegen = struct {
         self.functions.deinit();
         self.locals.deinit();
         self.local_struct_types.deinit();
+        self.local_array_lens.deinit();
         self.pending_calls.deinit(self.allocator);
         for (self.strings.items) |str| self.allocator.free(str.bytes);
         self.strings.deinit(self.allocator);
@@ -294,6 +303,7 @@ pub const Aarch64NativeCodegen = struct {
         // Reset per-function state.
         self.locals.clearRetainingCapacity();
         self.local_struct_types.clearRetainingCapacity();
+        self.local_array_lens.clearRetainingCapacity();
         self.stack_delta = 0;
         self.next_slot = 0;
 
@@ -366,6 +376,9 @@ pub const Aarch64NativeCodegen = struct {
             if (value.* == .StructLiteral) {
                 return self.generateLetStruct(decl.name, value.StructLiteral);
             }
+            if (value.* == .ArrayLiteral) {
+                return self.generateLetArray(decl.name, value.ArrayLiteral);
+            }
         }
 
         // Scalar path.
@@ -399,6 +412,21 @@ pub const Aarch64NativeCodegen = struct {
             try self.generateExpr(field.value); // x0 = field value
             const offset = fieldOffset(sdecl, field.name) orelse return error.UndefinedField;
             try self.assembler.strRegMem(.x0, .sp, @intCast(base_slot + offset));
+        }
+    }
+
+    fn generateLetArray(self: *Aarch64NativeCodegen, name: []const u8, lit: *const ast.ArrayLiteral) CodegenError!void {
+        const len: u32 = @intCast(lit.elements.len);
+        const base_slot = self.next_slot;
+        self.next_slot += len * 8;
+        try self.locals.put(name, base_slot);
+        try self.local_array_lens.put(name, len);
+
+        // Store each element at base + i*8.
+        for (lit.elements, 0..) |elem, i| {
+            try self.generateExpr(elem); // x0 = element value
+            const off: u32 = base_slot + @as(u32, @intCast(i)) * 8;
+            try self.assembler.strRegMem(.x0, .sp, @intCast(off));
         }
     }
 
@@ -460,8 +488,26 @@ pub const Aarch64NativeCodegen = struct {
             .AssignmentExpr => |assign| try self.generateAssignment(assign),
             .CallExpr => |call| try self.generateCallExpr(call),
             .MemberExpr => |member| try self.generateMemberRead(member),
+            .IndexExpr => |idx| try self.generateIndexRead(idx),
             else => return error.NotImplemented,
         }
+    }
+
+    fn generateIndexRead(self: *Aarch64NativeCodegen, idx: *ast.IndexExpr) CodegenError!void {
+        // M8 only supports `local[expr]` where local is an array on the stack.
+        const ident = switch (idx.array.*) {
+            .Identifier => |id| id.name,
+            else => return error.NotImplemented,
+        };
+        const base = self.locals.get(ident) orelse return error.UndefinedIdentifier;
+        if (self.local_array_lens.get(ident) == null) return error.NotAnArrayLocal;
+
+        // Evaluate the index → x0, then bias by (base + delta) / 8 so that
+        // `[sp, x0, LSL #3]` lands on the right element.
+        try self.generateExpr(idx.index);
+        const bias: u32 = (base + self.stack_delta) / 8;
+        try self.assembler.addRegImm(.x0, .x0, @intCast(bias));
+        try self.assembler.ldrRegRegLsl3(.x0, .sp, .x0);
     }
 
     fn generateMemberRead(self: *Aarch64NativeCodegen, member: *ast.MemberExpr) CodegenError!void {
@@ -552,6 +598,30 @@ pub const Aarch64NativeCodegen = struct {
                 const off = fieldOffset(sdecl, member.member) orelse return error.UndefinedField;
                 const total: u32 = base + off + self.stack_delta;
                 try self.assembler.strRegMem(.x0, .sp, @intCast(total));
+            },
+            .IndexExpr => |idx| {
+                // arr[i] = value. Value is already in x0; we need to compute
+                // the slot address without losing it.
+                const ident = switch (idx.array.*) {
+                    .Identifier => |id| id.name,
+                    else => return error.NotImplemented,
+                };
+                const base = self.locals.get(ident) orelse return error.UndefinedIdentifier;
+                if (self.local_array_lens.get(ident) == null) return error.NotAnArrayLocal;
+
+                // Spill value, evaluate index, restore value, store.
+                try self.assembler.pushReg(.x0);
+                self.stack_delta += 16;
+
+                try self.generateExpr(idx.index); // x0 = i (with delta=16)
+
+                try self.assembler.popReg(.x1);
+                self.stack_delta -= 16;
+                // Now x0 = i, x1 = value, delta back to its outer level.
+
+                const bias: u32 = (base + self.stack_delta) / 8;
+                try self.assembler.addRegImm(.x0, .x0, @intCast(bias));
+                try self.assembler.strRegRegLsl3(.x1, .sp, .x0);
             },
             else => return error.NotImplemented,
         }
@@ -688,13 +758,17 @@ fn countSlotsInBlock(block: *const ast.BlockStmt, struct_layouts: *std.StringHas
 fn countSlotsInStmt(stmt: ast.Stmt, struct_layouts: *std.StringHashMap(*const ast.StructDecl)) u32 {
     return switch (stmt) {
         .LetDecl => |decl| blk: {
-            // Struct-typed initializer? If we know the struct, claim one
-            // slot per field; otherwise fall back to one slot.
             if (decl.value) |v| {
+                // Struct-typed initializer? If we know the struct, claim
+                // one slot per field; otherwise fall back to one slot.
                 if (v.* == .StructLiteral) {
                     if (struct_layouts.get(v.StructLiteral.type_name)) |sdecl| {
                         break :blk @intCast(sdecl.fields.len);
                     }
+                }
+                // Array literal? Claim one slot per element.
+                if (v.* == .ArrayLiteral) {
+                    break :blk @intCast(v.ArrayLiteral.elements.len);
                 }
             }
             break :blk 1;

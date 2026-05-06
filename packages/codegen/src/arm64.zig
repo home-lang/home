@@ -380,6 +380,27 @@ pub const Assembler = struct {
         try self.emitU32(instr);
     }
 
+    /// LDR Xd, [Xn, Xm, LSL #3] — load 64-bit from `Xn + Xm*8`.
+    /// Xn may be SP. Useful for indexed access into arrays of i64.
+    pub fn ldrRegRegLsl3(self: *Assembler, dest: Register, base: Register, index: Register) !void {
+        const rt = @intFromEnum(dest);
+        const rn = @intFromEnum(base);
+        const rm = @intFromEnum(index);
+        // size=11, opc=01 (load), Rm, option=011 (LSL), S=1 (scaled)
+        const instr = 0xF8607800 | (@as(u32, rm) << 16) | (@as(u32, rn) << 5) | rt;
+        try self.emitU32(instr);
+    }
+
+    /// STR Xs, [Xn, Xm, LSL #3] — store 64-bit at `Xn + Xm*8`.
+    pub fn strRegRegLsl3(self: *Assembler, src: Register, base: Register, index: Register) !void {
+        const rt = @intFromEnum(src);
+        const rn = @intFromEnum(base);
+        const rm = @intFromEnum(index);
+        // size=11, opc=00 (store), Rm, option=011 (LSL), S=1 (scaled)
+        const instr = 0xF8207800 | (@as(u32, rm) << 16) | (@as(u32, rn) << 5) | rt;
+        try self.emitU32(instr);
+    }
+
     /// ADR Xd, label - PC-relative byte address (signed 21-bit, ±1 MiB).
     /// `offset` is the byte offset from this instruction to the target.
     pub fn adr(self: *Assembler, dest: Register, offset: i32) !void {
