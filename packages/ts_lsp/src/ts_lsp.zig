@@ -164,6 +164,11 @@ pub const SymbolInfo = struct {
     name: []const u8,
     kind: SymbolKind,
     span: Span,
+    /// Nested members for tree-view outlines (class methods, namespace
+    /// members, interface members, enum members). Empty when the symbol
+    /// has no children. Owned by the same allocation as the parent
+    /// slice; the caller frees them recursively via `freeSymbols`.
+    children: []SymbolInfo = &.{},
 
     pub const SymbolKind = enum {
         function,
@@ -176,8 +181,18 @@ pub const SymbolInfo = struct {
         module,
         property,
         method,
+        enum_member,
     };
 };
+
+/// Recursively free a `[]SymbolInfo` produced by `documentSymbols` /
+/// `workspaceSymbols`. Frees nested `children` slices too.
+pub fn freeSymbols(gpa: std.mem.Allocator, symbols: []SymbolInfo) void {
+    for (symbols) |s| {
+        if (s.children.len > 0) freeSymbols(gpa, s.children);
+    }
+    gpa.free(symbols);
+}
 
 pub const Service = struct {
     gpa: std.mem.Allocator,
@@ -1212,6 +1227,12 @@ fn describeTopLevelSymbol(
             const name_id = hir_mod.identifierOf(hir, e.name).name;
             return .{ .name = sint.get(name_id), .kind = .enum_, .span = span_info };
         },
+        .namespace_decl => {
+            const n = hir_mod.namespaceOf(hir, node);
+            if (n.name == hir_mod.none_node_id) return null;
+            const name_id = hir_mod.identifierOf(hir, n.name).name;
+            return .{ .name = sint.get(name_id), .kind = .namespace, .span = span_info };
+        },
         .let_decl, .const_decl, .var_decl => {
             const v = hir_mod.varDeclOf(hir, node);
             if (v.name == hir_mod.none_node_id) return null;
@@ -1220,6 +1241,143 @@ fn describeTopLevelSymbol(
         },
         else => return null,
     }
+}
+
+/// Build the `children` list for a top-level symbol. Class members
+/// become method/property children, interface members become
+/// method/property children, namespace members recursively become
+/// their describable child kinds, and enum members become
+/// `enum_member` children. Returns an empty slice when the node has
+/// no enumerable children.
+fn collectSymbolChildren(
+    gpa: std.mem.Allocator,
+    hir: *const hir_mod.Hir,
+    sint: *const string_interner.Interner,
+    node_in: hir_mod.NodeId,
+    source: []const u8,
+    file_path: []const u8,
+) ![]SymbolInfo {
+    var node = node_in;
+    if (hir.kindOf(node) == .export_decl) {
+        const ex = hir_mod.exportOf(hir, node);
+        if (ex.decl != hir_mod.none_node_id) node = ex.decl;
+    }
+    var out: std.ArrayListUnmanaged(SymbolInfo) = .empty;
+    errdefer {
+        for (out.items) |s| if (s.children.len > 0) freeSymbols(gpa, s.children);
+        out.deinit(gpa);
+    }
+    switch (hir.kindOf(node)) {
+        .class_decl => {
+            const members = hir_mod.classMembers(hir, node);
+            for (members) |m| {
+                const child = describeMemberSymbol(hir, sint, m, source, file_path) orelse continue;
+                try out.append(gpa, child);
+            }
+        },
+        .interface_decl => {
+            const members = hir_mod.interfaceMembers(hir, node);
+            for (members) |m| {
+                const child = describeMemberSymbol(hir, sint, m, source, file_path) orelse continue;
+                try out.append(gpa, child);
+            }
+        },
+        .namespace_decl => {
+            const body = hir_mod.namespaceBody(hir, node);
+            for (body) |s| {
+                var child = describeTopLevelSymbol(hir, sint, s, source, file_path) orelse continue;
+                child.children = try collectSymbolChildren(gpa, hir, sint, s, source, file_path);
+                try out.append(gpa, child);
+            }
+        },
+        .enum_decl => {
+            const members = hir_mod.enumMembers(hir, node);
+            for (members) |m| {
+                const child = describeEnumMember(hir, sint, m, source, file_path) orelse continue;
+                try out.append(gpa, child);
+            }
+        },
+        else => {},
+    }
+    return out.toOwnedSlice(gpa);
+}
+
+/// Describe one class or interface member as a child SymbolInfo.
+/// Returns null for members we can't name (e.g. decorators, computed
+/// keys without a literal identifier).
+fn describeMemberSymbol(
+    hir: *const hir_mod.Hir,
+    sint: *const string_interner.Interner,
+    node: hir_mod.NodeId,
+    source: []const u8,
+    file_path: []const u8,
+) ?SymbolInfo {
+    const k = hir.kindOf(node);
+    const span = hir.spanOf(node);
+    const sp = ts_diagnostics.positionToLineCol(source, span.start);
+    const ep = ts_diagnostics.positionToLineCol(source, span.end);
+    const span_info: Span = .{
+        .file = file_path,
+        .start_line = sp.line,
+        .start_col = sp.col,
+        .end_line = ep.line,
+        .end_col = ep.col,
+    };
+    switch (k) {
+        // Class methods are emitted as `fn_expr` (since they have
+        // `is_method=true`); free functions as `fn_decl`. Both share
+        // `FnDeclPayload`; we surface either as a `method` child.
+        .fn_decl, .fn_expr => {
+            const f = hir_mod.fnDeclOf(hir, node);
+            if (f.name == hir_mod.none_node_id) return null;
+            const name_id = hir_mod.identifierOf(hir, f.name).name;
+            return .{ .name = sint.get(name_id), .kind = .method, .span = span_info };
+        },
+        .object_property => {
+            const op = hir_mod.objectPropertyOf(hir, node);
+            if (op.key == hir_mod.none_node_id) return null;
+            if (hir.kindOf(op.key) != .identifier) return null;
+            const name_id = hir_mod.identifierOf(hir, op.key).name;
+            const kind: SymbolInfo.SymbolKind = if (op.is_method) .method else .property;
+            return .{ .name = sint.get(name_id), .kind = kind, .span = span_info };
+        },
+        .interface_member => {
+            const im = hir_mod.interfaceMemberOf(hir, node);
+            if (im.name == 0) return null;
+            const kind: SymbolInfo.SymbolKind = if (im.is_method) .method else .property;
+            return .{ .name = sint.get(im.name), .kind = kind, .span = span_info };
+        },
+        else => return null,
+    }
+}
+
+/// Describe one enum member (parser emits these as `object_property`).
+fn describeEnumMember(
+    hir: *const hir_mod.Hir,
+    sint: *const string_interner.Interner,
+    node: hir_mod.NodeId,
+    source: []const u8,
+    file_path: []const u8,
+) ?SymbolInfo {
+    if (hir.kindOf(node) != .object_property) return null;
+    const op = hir_mod.objectPropertyOf(hir, node);
+    if (op.key == hir_mod.none_node_id) return null;
+    if (hir.kindOf(op.key) != .identifier) return null;
+    const name_id = hir_mod.identifierOf(hir, op.key).name;
+    const span = hir.spanOf(node);
+    const sp = ts_diagnostics.positionToLineCol(source, span.start);
+    const ep = ts_diagnostics.positionToLineCol(source, span.end);
+    return .{
+        .name = sint.get(name_id),
+        .kind = .enum_member,
+        .span = .{
+            .file = file_path,
+            .start_line = sp.line,
+            .start_col = sp.col,
+            .end_line = ep.line,
+            .end_col = ep.col,
+        },
+    };
 }
 
 /// Walk the HIR depth-first and return the smallest node whose
@@ -1902,7 +2060,7 @@ test "Service: documentSymbols enumerates top-level decls" {
 
     var svc = Service.init(T.allocator, &program);
     const symbols = try svc.documentSymbols(T.allocator, "/main.ts");
-    defer T.allocator.free(symbols);
+    defer freeSymbols(T.allocator, symbols);
 
     try T.expectEqual(@as(usize, 5), symbols.len);
     try T.expectEqualStrings("add", symbols[0].name);
@@ -1915,6 +2073,63 @@ test "Service: documentSymbols enumerates top-level decls" {
     try T.expectEqual(SymbolInfo.SymbolKind.type_alias, symbols[3].kind);
     try T.expectEqualStrings("counter", symbols[4].name);
     try T.expectEqual(SymbolInfo.SymbolKind.variable, symbols[4].kind);
+}
+
+test "Service: documentSymbols emits class methods as nested children" {
+    var vfs = ts_resolver.VirtualFs.init(T.allocator);
+    defer vfs.deinit();
+    var resolver = ts_resolver.Resolver.init(T.allocator, vfs.fs(), .{});
+    defer resolver.deinit();
+    var program = ts_program.Program.init(T.allocator, &resolver);
+    defer program.deinit();
+
+    const src =
+        \\class Box {
+        \\  open() { }
+        \\  close() { }
+        \\}
+    ;
+    _ = try program.add("/main.ts", src);
+    try program.compileAll(.{});
+
+    var svc = Service.init(T.allocator, &program);
+    const symbols = try svc.documentSymbols(T.allocator, "/main.ts");
+    defer freeSymbols(T.allocator, symbols);
+
+    try T.expectEqual(@as(usize, 1), symbols.len);
+    try T.expectEqualStrings("Box", symbols[0].name);
+    try T.expectEqual(SymbolInfo.SymbolKind.class, symbols[0].kind);
+    try T.expectEqual(@as(usize, 2), symbols[0].children.len);
+    try T.expectEqualStrings("open", symbols[0].children[0].name);
+    try T.expectEqual(SymbolInfo.SymbolKind.method, symbols[0].children[0].kind);
+    try T.expectEqualStrings("close", symbols[0].children[1].name);
+    try T.expectEqual(SymbolInfo.SymbolKind.method, symbols[0].children[1].kind);
+}
+
+test "Service: documentSymbols emits enum members as nested children" {
+    var vfs = ts_resolver.VirtualFs.init(T.allocator);
+    defer vfs.deinit();
+    var resolver = ts_resolver.Resolver.init(T.allocator, vfs.fs(), .{});
+    defer resolver.deinit();
+    var program = ts_program.Program.init(T.allocator, &resolver);
+    defer program.deinit();
+
+    const src = "enum Color { Red, Green, Blue }";
+    _ = try program.add("/main.ts", src);
+    try program.compileAll(.{});
+
+    var svc = Service.init(T.allocator, &program);
+    const symbols = try svc.documentSymbols(T.allocator, "/main.ts");
+    defer freeSymbols(T.allocator, symbols);
+
+    try T.expectEqual(@as(usize, 1), symbols.len);
+    try T.expectEqualStrings("Color", symbols[0].name);
+    try T.expectEqual(SymbolInfo.SymbolKind.enum_, symbols[0].kind);
+    try T.expectEqual(@as(usize, 3), symbols[0].children.len);
+    try T.expectEqualStrings("Red", symbols[0].children[0].name);
+    try T.expectEqual(SymbolInfo.SymbolKind.enum_member, symbols[0].children[0].kind);
+    try T.expectEqualStrings("Green", symbols[0].children[1].name);
+    try T.expectEqualStrings("Blue", symbols[0].children[2].name);
 }
 
 test "Service: signatureHelp returns signature info inside a call" {
