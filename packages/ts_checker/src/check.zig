@@ -2501,6 +2501,44 @@ pub const Checker = struct {
                 return;
             }
         }
+        // X === <literal> / X !== <literal> — narrow X to the
+        // literal type in the positive branch, subtract it in the
+        // negative branch. Covers `s === "hello"`, `n === 42`,
+        // `b === true`. Discriminated-union narrowing above handles
+        // the member-access case (`x.kind === "circle"`); this
+        // branch handles the bare-identifier case.
+        if (self.hir.kindOf(b.lhs) == .identifier and
+            (self.hir.kindOf(b.rhs) == .literal_string or
+                self.hir.kindOf(b.rhs) == .literal_number or
+                self.hir.kindOf(b.rhs) == .literal_bool))
+        {
+            const id = hir_mod.identifierOf(self.hir, b.lhs);
+            const lit_t: TypeId = blk: {
+                switch (self.hir.kindOf(b.rhs)) {
+                    .literal_string => {
+                        const lit = hir_mod.literalStringOf(self.hir, b.rhs);
+                        break :blk self.interner.internStringLiteral(lit.value) catch return;
+                    },
+                    .literal_number => {
+                        const v = hir_mod.literalNumberOf(self.hir, b.rhs);
+                        break :blk self.interner.internNumberLiteral(v) catch return;
+                    },
+                    .literal_bool => {
+                        const v = hir_mod.literalBoolOf(self.hir, b.rhs);
+                        break :blk self.interner.internBooleanLiteral(v);
+                    },
+                    else => unreachable,
+                }
+            };
+            if (positive) {
+                try self.recordNarrow(id.name, lit_t);
+            } else {
+                const current = self.lookupNarrow(id.name) orelse self.typeOfIdentifier(b.lhs);
+                const narrowed = self.subtractType(current, lit_t) catch current;
+                try self.recordNarrow(id.name, narrowed);
+            }
+            return;
+        }
         // X === null / X !== null
         if (self.hir.kindOf(b.lhs) == .identifier and
             self.hir.kindOf(b.rhs) == .literal_null)
@@ -4890,4 +4928,53 @@ test "checker: `yield expr` types as the operand expression's type" {
     const expr_id = body_stmts[0];
     try T.expectEqual(hir_mod.NodeKind.yield_expr, s.hir.kindOf(expr_id));
     try T.expectEqual(types.Primitive.number_t, s.hir.typeOf(expr_id));
+}
+
+test "checker: x === string-literal narrows to literal type" {
+    const s = try newSetup(
+        \\function f(s: string) {
+        \\  if (s === "hello") {
+        \\    let x = s;
+        \\  }
+        \\}
+    );
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+    const stmts = hir_mod.blockStmts(&s.hir, s.root);
+    const fn_node = stmts[0];
+    const f = hir_mod.fnDeclOf(&s.hir, fn_node);
+    const body_stmts = hir_mod.blockStmts(&s.hir, f.body);
+    const if_stmt = body_stmts[0];
+    const ifp = hir_mod.ifOf(&s.hir, if_stmt);
+    const then_stmts = hir_mod.blockStmts(&s.hir, ifp.then_branch);
+    const x_decl = then_stmts[0];
+    const x_init = hir_mod.varDeclOf(&s.hir, x_decl).init;
+    // The narrowed type should be the string-literal type "hello",
+    // not the wider string_t.
+    const hello_id = try s.sint.intern("hello");
+    const expected = try s.ti.internStringLiteral(hello_id);
+    try T.expectEqual(expected, s.hir.typeOf(x_init));
+}
+
+test "checker: n === number-literal narrows to literal type" {
+    const s = try newSetup(
+        \\function f(n: number) {
+        \\  if (n === 42) {
+        \\    let x = n;
+        \\  }
+        \\}
+    );
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+    const stmts = hir_mod.blockStmts(&s.hir, s.root);
+    const fn_node = stmts[0];
+    const f = hir_mod.fnDeclOf(&s.hir, fn_node);
+    const body_stmts = hir_mod.blockStmts(&s.hir, f.body);
+    const if_stmt = body_stmts[0];
+    const ifp = hir_mod.ifOf(&s.hir, if_stmt);
+    const then_stmts = hir_mod.blockStmts(&s.hir, ifp.then_branch);
+    const x_decl = then_stmts[0];
+    const x_init = hir_mod.varDeclOf(&s.hir, x_decl).init;
+    const expected = try s.ti.internNumberLiteral(42);
+    try T.expectEqual(expected, s.hir.typeOf(x_init));
 }
