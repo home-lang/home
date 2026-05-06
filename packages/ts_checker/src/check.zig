@@ -75,6 +75,7 @@ pub const TsCodes = struct {
     pub const object_literal_excess_property: u32 = 2353;
     pub const satisfies_constraint: u32 = 1360;
     pub const used_before_assignment: u32 = 2454;
+    pub const cannot_assign_const: u32 = 2588;
 };
 
 /// Per-alias generic info: the type-parameter TypeIds in
@@ -2264,6 +2265,21 @@ pub const Checker = struct {
                 if (self.hir.kindOf(a.target) == .identifier) {
                     const id = hir_mod.identifierOf(self.hir, a.target);
                     _ = self.cond_aliases.remove(id.name);
+                    // TS2588: `const x = 1; x = 2;` — assigning to
+                    // a const-bound identifier is a hard error.
+                    if (self.identifierResolvesToConst(a.target)) {
+                        const name_str = self.string_interner.get(id.name);
+                        const msg = try std.fmt.allocPrint(
+                            self.diag_arena.allocator(),
+                            "Cannot assign to '{s}' because it is a constant.",
+                            .{name_str},
+                        );
+                        try self.diagnostics.append(self.gpa, .{
+                            .node = node,
+                            .code = TsCodes.cannot_assign_const,
+                            .message = msg,
+                        });
+                    }
                 }
                 break :blk try self.checkExpression(a.value);
             },
@@ -3128,7 +3144,8 @@ pub const Checker = struct {
                 // The loop binding lives directly on the for node;
                 // it isn't a sibling in any block. Match against
                 // the binding's name slot if it's a let/const/var
-                // form.
+                // form, or directly when it's a bare identifier
+                // (the parser emits this for `for (let n of ...)`).
                 const fr = hir_mod.forInOf(self.hir, cur);
                 if (fr.target != hir_mod.none_node_id) {
                     const tk = self.hir.kindOf(fr.target);
@@ -3141,6 +3158,12 @@ pub const Checker = struct {
                                 if (t != types.Primitive.none) return t;
                             }
                         }
+                    } else if (tk == .identifier) {
+                        const vid = hir_mod.identifierOf(self.hir, fr.target);
+                        if (vid.name == id.name) {
+                            const t = self.hir.typeOf(fr.target);
+                            if (t != types.Primitive.none) return t;
+                        }
                     }
                 }
             }
@@ -3148,13 +3171,123 @@ pub const Checker = struct {
         }
 
         // Module-level fallback.
-        const module = self.module orelse return types.Primitive.any;
-        const sym = module.root.lookup(id.name) orelse return types.Primitive.any;
-        if (sym.decls.items.len == 0) return types.Primitive.any;
-        const decl = sym.decls.items[0];
-        const t = self.hir.typeOf(decl);
-        if (t == types.Primitive.none) return types.Primitive.any;
-        return t;
+        if (self.module) |module| {
+            if (module.root.lookup(id.name)) |sym| {
+                if (sym.decls.items.len > 0) {
+                    const decl = sym.decls.items[0];
+                    const t = self.hir.typeOf(decl);
+                    if (t != types.Primitive.none) return t;
+                }
+                return types.Primitive.any;
+            }
+            // Module is bound and the name is unknown — emit TS2304
+            // unless the identifier is a recognized built-in (e.g.
+            // `console`, `undefined`, global constructors). Skip
+            // declaration name slots to avoid flagging the very
+            // identifier that introduces the name.
+            if (!self.isDeclNameSlot(node) and !self.isBuiltinName(id.name)) {
+                self.reportCannotFindName(node, id.name) catch {};
+            }
+        }
+        return types.Primitive.any;
+    }
+
+    /// Recognize a small set of common globals that should not
+    /// trigger TS2304 even though we don't have a real lib.d.ts
+    /// loaded yet. The list intentionally errs on the conservative
+    /// side; expand as more globals are encountered.
+    fn isBuiltinName(self: *const Checker, name: hir_mod.StringId) bool {
+        const s = self.string_interner.get(name);
+        const builtins = [_][]const u8{
+            "console",   "undefined",  "NaN",       "Infinity",
+            "globalThis", "this",      "process",   "Math",
+            "JSON",      "Object",     "Array",     "String",
+            "Number",    "Boolean",    "Symbol",    "BigInt",
+            "Error",     "TypeError",  "RangeError", "SyntaxError",
+            "Promise",   "Map",        "Set",       "WeakMap",
+            "WeakSet",   "Date",       "RegExp",    "Function",
+            "parseInt",  "parseFloat", "isNaN",     "isFinite",
+            "encodeURI", "decodeURI",  "encodeURIComponent",
+            "decodeURIComponent",
+            "arguments", "require",    "module",    "exports",
+            "__dirname", "__filename",
+            // Dynamic `import("…")` parses the keyword as an
+            // identifier callee — exempt it from TS2304.
+            "import",
+            // Common ambient names emitted by the parser for
+            // module / class shapes that don't have full
+            // resolution wired up yet.
+            "super",
+        };
+        for (builtins) |b| {
+            if (std.mem.eql(u8, s, b)) return true;
+        }
+        return false;
+    }
+
+    fn reportCannotFindName(
+        self: *Checker,
+        node: NodeId,
+        name: hir_mod.StringId,
+    ) !void {
+        const name_str = self.string_interner.get(name);
+        const msg = try std.fmt.allocPrint(
+            self.diag_arena.allocator(),
+            "Cannot find name '{s}'.",
+            .{name_str},
+        );
+        try self.diagnostics.append(self.gpa, .{
+            .node = node,
+            .code = TsCodes.cannot_find_name,
+            .message = msg,
+        });
+    }
+
+    /// Returns true when the identifier reference resolves to a
+    /// `const`-declared symbol at the source — used by TS2588 to
+    /// flag assignment to a constant. Walks the same parent-chain
+    /// as `typeOfIdentifier` but checks the *kind* of declaration
+    /// rather than its type.
+    fn identifierResolvesToConst(self: *Checker, node: NodeId) bool {
+        const id = hir_mod.identifierOf(self.hir, node);
+        var cur: hir_mod.NodeId = self.hir.parentOf(node);
+        while (cur != hir_mod.none_node_id) {
+            const k = self.hir.kindOf(cur);
+            // Parameter binding shadows outer const decls; if a
+            // parameter with this name is in scope, it isn't const.
+            if (k == .fn_decl or k == .fn_expr or k == .arrow_fn) {
+                const params = hir_mod.fnParams(self.hir, cur);
+                for (params) |p| {
+                    if (self.hir.kindOf(p) != .parameter) continue;
+                    const pp = hir_mod.parameterOf(self.hir, p);
+                    if (pp.name == hir_mod.none_node_id) continue;
+                    if (self.hir.kindOf(pp.name) != .identifier) continue;
+                    const pid = hir_mod.identifierOf(self.hir, pp.name);
+                    if (pid.name == id.name) return false;
+                }
+            }
+            if (k == .block_stmt) {
+                const stmts = hir_mod.blockStmts(self.hir, cur);
+                for (stmts) |s| {
+                    const sk = self.hir.kindOf(s);
+                    if (sk == .var_decl or sk == .let_decl or sk == .const_decl) {
+                        const v = hir_mod.varDeclOf(self.hir, s);
+                        if (v.name != hir_mod.none_node_id and self.hir.kindOf(v.name) == .identifier) {
+                            const vid = hir_mod.identifierOf(self.hir, v.name);
+                            if (vid.name == id.name) return sk == .const_decl;
+                        }
+                    }
+                }
+            }
+            cur = self.hir.parentOf(cur);
+        }
+        // Module-level fallback via the binder's symbol table.
+        if (self.module) |module| {
+            if (module.root.lookup(id.name)) |sym| {
+                return sym.flags.is_const;
+            }
+        }
+        return false;
     }
 
     fn checkBinop(self: *Checker, node: NodeId) CheckError!TypeId {
@@ -3734,6 +3867,71 @@ fn destroySetup(s: *TestSetup) void {
 
 fn firstStatement(s: *TestSetup) NodeId {
     return hir_mod.blockStmts(&s.hir, s.root)[0];
+}
+
+/// Setup variant that also runs the binder and attaches the resulting
+/// module to the checker. Required for diagnostics whose detection
+/// path consults the symbol table — TS2304 in particular needs the
+/// module to know "I have full visibility, this name truly doesn't
+/// exist." Caller owns the binder via `destroyBoundSetup`.
+const BoundTestSetup = struct {
+    base: *TestSetup,
+    binder: binder_mod.Binder,
+};
+
+fn newBoundSetup(source: []const u8) !*BoundTestSetup {
+    const b = try T.allocator.create(BoundTestSetup);
+    errdefer T.allocator.destroy(b);
+    b.base = try newSetup(source);
+    errdefer destroySetup(b.base);
+    b.binder = try binder_mod.Binder.init(T.allocator, &b.base.hir, &b.base.sint, 0);
+    errdefer {
+        b.binder.module.deinit();
+        T.allocator.destroy(b.binder.module);
+        b.binder.deinit();
+    }
+    try b.binder.bindSourceFile(b.base.root);
+    b.base.checker.setModule(b.binder.module);
+    return b;
+}
+
+fn destroyBoundSetup(b: *BoundTestSetup) void {
+    b.binder.module.deinit();
+    T.allocator.destroy(b.binder.module);
+    b.binder.deinit();
+    destroySetup(b.base);
+    T.allocator.destroy(b);
+}
+
+test "checker: unresolved identifier emits TS2304" {
+    const b = try newBoundSetup("unknownVar;");
+    defer destroyBoundSetup(b);
+    try b.base.checker.checkSourceFile(b.base.root);
+    var found = false;
+    for (b.base.checker.diagnostics.items) |d| {
+        if (d.code == TsCodes.cannot_find_name) found = true;
+    }
+    try T.expect(found);
+}
+
+test "checker: assigning to const emits TS2588" {
+    const b = try newBoundSetup("const x = 1; x = 2;");
+    defer destroyBoundSetup(b);
+    try b.base.checker.checkSourceFile(b.base.root);
+    var found = false;
+    for (b.base.checker.diagnostics.items) |d| {
+        if (d.code == TsCodes.cannot_assign_const) found = true;
+    }
+    try T.expect(found);
+}
+
+test "checker: assigning to let does not emit TS2588" {
+    const b = try newBoundSetup("let x = 1; x = 2;");
+    defer destroyBoundSetup(b);
+    try b.base.checker.checkSourceFile(b.base.root);
+    for (b.base.checker.diagnostics.items) |d| {
+        try T.expect(d.code != TsCodes.cannot_assign_const);
+    }
 }
 
 test "checker: number literal types as Primitive.number_t" {
