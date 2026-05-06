@@ -14,6 +14,7 @@
 //!   - textDocument/definition
 //!   - textDocument/references
 //!   - textDocument/completion
+//!   - textDocument/signatureHelp
 //!   - textDocument/publishDiagnostics (server-pushed)
 //!   - shutdown
 //!   - exit
@@ -46,6 +47,7 @@ pub const Method = enum {
     text_document_definition,
     text_document_references,
     text_document_completion,
+    text_document_signature_help,
     text_document_publish_diagnostics,
     unknown,
 
@@ -62,6 +64,7 @@ pub const Method = enum {
             .{ "textDocument/definition", Method.text_document_definition },
             .{ "textDocument/references", Method.text_document_references },
             .{ "textDocument/completion", Method.text_document_completion },
+            .{ "textDocument/signatureHelp", Method.text_document_signature_help },
             .{ "textDocument/publishDiagnostics", Method.text_document_publish_diagnostics },
         };
         inline for (map) |entry| {
@@ -477,6 +480,182 @@ pub fn handleHover(
     return encodeResponse(gpa, request_id, "null");
 }
 
+/// Handle a `textDocument/definition` JSON-RPC request: extract the
+/// URI + `(line, character)` from `params_json`, convert to a byte
+/// offset into the file's source, route to `service.gotoDefinition`,
+/// and encode the LSP response. Per the LSP spec the result type is
+/// `Location | Location[] | LocationLink[] | null`; we emit the
+/// single `Location` form when a definition resolves and `null`
+/// otherwise. Caller owns the returned slice.
+pub fn handleDefinition(
+    service: *ts_lsp.Service,
+    gpa: std.mem.Allocator,
+    request_id: RequestId,
+    params_json: []const u8,
+) ![]u8 {
+    const uri = findJsonStringField(params_json, "uri") orelse return error.MissingUri;
+    const line = findJsonIntField(params_json, "line") orelse return error.MissingLine;
+    const character = findJsonIntField(params_json, "character") orelse return error.MissingCharacter;
+    const path = uriToPath(uri);
+
+    const file_id = service.program.lookupPath(path) orelse {
+        return encodeResponse(gpa, request_id, "null");
+    };
+    const f = service.program.fileById(file_id);
+    const line_u: u32 = if (line < 0) 0 else @intCast(line);
+    const char_u: u32 = if (character < 0) 0 else @intCast(character);
+    const byte_pos = lineColToByte(f.source, line_u, char_u);
+
+    if (service.gotoDefinition(path, byte_pos)) |def| {
+        var buf: std.ArrayListUnmanaged(u8) = .empty;
+        defer buf.deinit(gpa);
+        try buf.appendSlice(gpa, "{\"uri\":\"file://");
+        try writeJsonStringContents(&buf, gpa, def.file);
+        try buf.appendSlice(gpa, "\",\"range\":");
+        try writeRange(&buf, gpa, def.span);
+        try buf.append(gpa, '}');
+        return encodeResponse(gpa, request_id, buf.items);
+    }
+    return encodeResponse(gpa, request_id, "null");
+}
+
+/// Handle a `textDocument/references` JSON-RPC request: extract the
+/// URI + `(line, character)` from `params_json`, convert to a byte
+/// offset into the file's source, route to `service.findReferences`,
+/// and encode the LSP response as a `Location[]` array. Caller owns
+/// the returned slice.
+pub fn handleReferences(
+    service: *ts_lsp.Service,
+    gpa: std.mem.Allocator,
+    request_id: RequestId,
+    params_json: []const u8,
+) ![]u8 {
+    const uri = findJsonStringField(params_json, "uri") orelse return error.MissingUri;
+    const line = findJsonIntField(params_json, "line") orelse return error.MissingLine;
+    const character = findJsonIntField(params_json, "character") orelse return error.MissingCharacter;
+    const path = uriToPath(uri);
+
+    const file_id = service.program.lookupPath(path) orelse {
+        return encodeResponse(gpa, request_id, "[]");
+    };
+    const f = service.program.fileById(file_id);
+    const line_u: u32 = if (line < 0) 0 else @intCast(line);
+    const char_u: u32 = if (character < 0) 0 else @intCast(character);
+    const byte_pos = lineColToByte(f.source, line_u, char_u);
+
+    const refs = try service.findReferences(gpa, path, byte_pos);
+    defer gpa.free(refs);
+
+    const result = try renderReferencesResult(gpa, refs);
+    defer gpa.free(result);
+    return encodeResponse(gpa, request_id, result);
+}
+
+/// Handle a `textDocument/completion` JSON-RPC request: extract the
+/// URI + `(line, character)` from `params_json`, convert to a byte
+/// offset into the file's source, route to `service.completions`,
+/// and encode the LSP `CompletionList` response. Caller owns the
+/// returned slice.
+pub fn handleCompletion(
+    service: *ts_lsp.Service,
+    gpa: std.mem.Allocator,
+    request_id: RequestId,
+    params_json: []const u8,
+) ![]u8 {
+    const uri = findJsonStringField(params_json, "uri") orelse return error.MissingUri;
+    const line = findJsonIntField(params_json, "line") orelse return error.MissingLine;
+    const character = findJsonIntField(params_json, "character") orelse return error.MissingCharacter;
+    const path = uriToPath(uri);
+
+    const file_id = service.program.lookupPath(path) orelse {
+        return encodeResponse(gpa, request_id, "{\"isIncomplete\":false,\"items\":[]}");
+    };
+    const f = service.program.fileById(file_id);
+    const line_u: u32 = if (line < 0) 0 else @intCast(line);
+    const char_u: u32 = if (character < 0) 0 else @intCast(character);
+    const byte_pos = lineColToByte(f.source, line_u, char_u);
+
+    const items = try service.completions(gpa, path, byte_pos);
+    defer gpa.free(items);
+
+    var buf: std.ArrayListUnmanaged(u8) = .empty;
+    defer buf.deinit(gpa);
+    try buf.appendSlice(gpa, "{\"isIncomplete\":false,\"items\":[");
+    for (items, 0..) |it, i| {
+        if (i > 0) try buf.append(gpa, ',');
+        try buf.appendSlice(gpa, "{\"label\":\"");
+        try writeJsonStringContents(&buf, gpa, it.label);
+        try buf.appendSlice(gpa, "\",\"kind\":");
+        var nbuf: [4]u8 = undefined;
+        const kind_num = lspCompletionItemKind(it.kind);
+        try buf.appendSlice(gpa, try std.fmt.bufPrint(&nbuf, "{d}", .{kind_num}));
+        if (it.detail.len > 0) {
+            try buf.appendSlice(gpa, ",\"detail\":\"");
+            try writeJsonStringContents(&buf, gpa, it.detail);
+            try buf.append(gpa, '"');
+        }
+        if (it.auto_import_from.len > 0) {
+            try buf.appendSlice(gpa, ",\"data\":{\"auto_import_from\":\"");
+            try writeJsonStringContents(&buf, gpa, it.auto_import_from);
+            try buf.appendSlice(gpa, "\"}");
+        }
+        try buf.append(gpa, '}');
+    }
+    try buf.appendSlice(gpa, "]}");
+    return encodeResponse(gpa, request_id, buf.items);
+}
+
+/// Handle a `textDocument/signatureHelp` JSON-RPC request: extract the
+/// URI + `(line, character)` from `params_json`, convert to a byte
+/// offset into the file's source, route to `service.signatureHelp`,
+/// and encode the LSP `SignatureHelp` response (or `result: null` when
+/// the cursor isn't inside a call expression). Caller owns the
+/// returned slice.
+pub fn handleSignatureHelp(
+    service: *ts_lsp.Service,
+    gpa: std.mem.Allocator,
+    request_id: RequestId,
+    params_json: []const u8,
+) ![]u8 {
+    const uri = findJsonStringField(params_json, "uri") orelse return error.MissingUri;
+    const line = findJsonIntField(params_json, "line") orelse return error.MissingLine;
+    const character = findJsonIntField(params_json, "character") orelse return error.MissingCharacter;
+    const path = uriToPath(uri);
+
+    const file_id = service.program.lookupPath(path) orelse {
+        return encodeResponse(gpa, request_id, "null");
+    };
+    const f = service.program.fileById(file_id);
+    const line_u: u32 = if (line < 0) 0 else @intCast(line);
+    const char_u: u32 = if (character < 0) 0 else @intCast(character);
+    const byte_pos = lineColToByte(f.source, line_u, char_u);
+
+    const maybe_sig = service.signatureHelp(gpa, path, byte_pos) catch null;
+    const sig = maybe_sig orelse return encodeResponse(gpa, request_id, "null");
+    defer {
+        gpa.free(sig.label);
+        for (sig.parameters) |p| gpa.free(p);
+        gpa.free(sig.parameters);
+    }
+
+    var buf: std.ArrayListUnmanaged(u8) = .empty;
+    defer buf.deinit(gpa);
+    try buf.appendSlice(gpa, "{\"signatures\":[{\"label\":\"");
+    try writeJsonStringContents(&buf, gpa, sig.label);
+    try buf.appendSlice(gpa, "\",\"parameters\":[");
+    for (sig.parameters, 0..) |p, i| {
+        if (i > 0) try buf.append(gpa, ',');
+        try buf.appendSlice(gpa, "{\"label\":\"");
+        try writeJsonStringContents(&buf, gpa, p);
+        try buf.appendSlice(gpa, "\"}");
+    }
+    try buf.appendSlice(gpa, "]}],\"activeSignature\":0,\"activeParameter\":");
+    var nbuf: [16]u8 = undefined;
+    try buf.appendSlice(gpa, try std.fmt.bufPrint(&nbuf, "{d}", .{sig.active_parameter}));
+    try buf.append(gpa, '}');
+    return encodeResponse(gpa, request_id, buf.items);
+}
+
 /// Encode a `textDocument/publishDiagnostics` JSON-RPC notification
 /// body. `rendered` is the `\n`-terminated tsc-style diagnostic
 /// listing returned by `Service.diagnostics` / `Service.didChangeFile`.
@@ -853,4 +1032,91 @@ test "encodePublishDiagnostics: empty rendered -> empty array" {
     const r = try encodePublishDiagnostics(T.allocator, "file:///x.ts", "");
     defer T.allocator.free(r);
     try T.expect(std.mem.indexOf(u8, r, "\"diagnostics\":[]") != null);
+}
+
+test "handleCompletion: routes request and returns CompletionList response" {
+    var vfs = ts_resolver.VirtualFs.init(T.allocator);
+    defer vfs.deinit();
+    var resolver = ts_resolver.Resolver.init(T.allocator, vfs.fs(), .{});
+    defer resolver.deinit();
+    var program = ts_program.Program.init(T.allocator, &resolver);
+    defer program.deinit();
+
+    _ = try program.add("/main.ts", "let foo = 1; function bar() {}");
+    try program.compileAll(.{});
+
+    var svc = ts_lsp.Service.init(T.allocator, &program);
+
+    const body =
+        \\{"jsonrpc":"2.0","id":11,"method":"textDocument/completion","params":{"textDocument":{"uri":"file:///main.ts"},"position":{"line":0,"character":0}}}
+    ;
+    const out = try handleCompletion(&svc, T.allocator, .{ .integer = 11 }, body);
+    defer T.allocator.free(out);
+    try T.expect(std.mem.indexOf(u8, out, "\"jsonrpc\":\"2.0\"") != null);
+    try T.expect(std.mem.indexOf(u8, out, "\"id\":11") != null);
+    try T.expect(std.mem.indexOf(u8, out, "\"isIncomplete\":false") != null);
+    try T.expect(std.mem.indexOf(u8, out, "\"items\":[") != null);
+    // At least one of the module-level symbols should appear with the
+    // mapped LSP CompletionItemKind constant.
+    const has_foo = std.mem.indexOf(u8, out, "\"label\":\"foo\",\"kind\":6") != null;
+    const has_bar = std.mem.indexOf(u8, out, "\"label\":\"bar\",\"kind\":3") != null;
+    try T.expect(has_foo or has_bar);
+}
+
+test "handleCompletion: unknown file returns empty CompletionList" {
+    var vfs = ts_resolver.VirtualFs.init(T.allocator);
+    defer vfs.deinit();
+    var resolver = ts_resolver.Resolver.init(T.allocator, vfs.fs(), .{});
+    defer resolver.deinit();
+    var program = ts_program.Program.init(T.allocator, &resolver);
+    defer program.deinit();
+    var svc = ts_lsp.Service.init(T.allocator, &program);
+
+    const body =
+        \\{"jsonrpc":"2.0","id":12,"method":"textDocument/completion","params":{"textDocument":{"uri":"file:///missing.ts"},"position":{"line":0,"character":0}}}
+    ;
+    const out = try handleCompletion(&svc, T.allocator, .{ .integer = 12 }, body);
+    defer T.allocator.free(out);
+    try T.expect(std.mem.indexOf(u8, out, "\"items\":[]") != null);
+}
+
+test "handleSignatureHelp: routes request and returns SignatureHelp response" {
+    var vfs = ts_resolver.VirtualFs.init(T.allocator);
+    defer vfs.deinit();
+    var resolver = ts_resolver.Resolver.init(T.allocator, vfs.fs(), .{});
+    defer resolver.deinit();
+    var program = ts_program.Program.init(T.allocator, &resolver);
+    defer program.deinit();
+
+    const src =
+        \\function add(a: number, b: number): number { return a + b; }
+        \\let r = add(1, 2);
+    ;
+    _ = try program.add("/main.ts", src);
+    try program.compileAll(.{});
+
+    var svc = ts_lsp.Service.init(T.allocator, &program);
+
+    // Position cursor inside the call's argument list. The call site
+    // `add(1, 2)` lives on line 1; column 12 lands between the args.
+    const body =
+        \\{"jsonrpc":"2.0","id":21,"method":"textDocument/signatureHelp","params":{"textDocument":{"uri":"file:///main.ts"},"position":{"line":1,"character":12}}}
+    ;
+    const out = try handleSignatureHelp(&svc, T.allocator, .{ .integer = 21 }, body);
+    defer T.allocator.free(out);
+    try T.expect(std.mem.indexOf(u8, out, "\"jsonrpc\":\"2.0\"") != null);
+    try T.expect(std.mem.indexOf(u8, out, "\"id\":21") != null);
+    try T.expect(std.mem.indexOf(u8, out, "\"signatures\":[{") != null);
+    try T.expect(std.mem.indexOf(u8, out, "\"label\":\"") != null);
+    try T.expect(std.mem.indexOf(u8, out, "\"parameters\":[") != null);
+    try T.expect(std.mem.indexOf(u8, out, "\"activeSignature\":0") != null);
+    try T.expect(std.mem.indexOf(u8, out, "\"activeParameter\":") != null);
+
+    // Cursor outside any call expression -> result: null.
+    const oob =
+        \\{"jsonrpc":"2.0","id":22,"method":"textDocument/signatureHelp","params":{"textDocument":{"uri":"file:///main.ts"},"position":{"line":0,"character":0}}}
+    ;
+    const out2 = try handleSignatureHelp(&svc, T.allocator, .{ .integer = 22 }, oob);
+    defer T.allocator.free(out2);
+    try T.expect(std.mem.indexOf(u8, out2, "\"result\":null") != null);
 }
