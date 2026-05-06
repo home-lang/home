@@ -2502,6 +2502,40 @@ pub const Checker = struct {
                 return self.applyTypeGuard(aliased, when_true);
             }
         }
+        // `if (Array.isArray(x))` — built-in narrowing for the
+        // canonical array predicate. We don't yet have a fully-shaped
+        // `Array<any>` reference type wired up here, so we narrow the
+        // argument to `Primitive.object_t` (arrays are objects). This
+        // mirrors the approximation used elsewhere (e.g. `instanceof`)
+        // and lets `let arr = x` after the guard pick up an object
+        // type rather than the original `any`/union.
+        if (self.hir.kindOf(cond) == .call_expr) {
+            const c = hir_mod.callOf(self.hir, cond);
+            if (self.hir.kindOf(c.callee) == .member_access) {
+                const m = hir_mod.memberOf(self.hir, c.callee);
+                if (self.hir.kindOf(m.object) == .identifier) {
+                    const obj_id = hir_mod.identifierOf(self.hir, m.object);
+                    const obj_name = self.string_interner.get(obj_id.name);
+                    const prop_name = self.string_interner.get(m.name);
+                    if (std.mem.eql(u8, obj_name, "Array") and
+                        std.mem.eql(u8, prop_name, "isArray"))
+                    {
+                        const args = hir_mod.callArgs(self.hir, cond);
+                        if (args.len >= 1 and self.hir.kindOf(args[0]) == .identifier) {
+                            const arg_id = hir_mod.identifierOf(self.hir, args[0]);
+                            if (when_true) {
+                                try self.recordNarrow(arg_id.name, types.Primitive.object_t);
+                            } else {
+                                const current = self.lookupNarrow(arg_id.name) orelse self.typeOfIdentifier(args[0]);
+                                const narrowed = self.subtractType(current, types.Primitive.object_t) catch current;
+                                try self.recordNarrow(arg_id.name, narrowed);
+                            }
+                            return;
+                        }
+                    }
+                }
+            }
+        }
         // `if (isFoo(x))` — type-predicate call narrowing. When the
         // condition is a call to a predicate function and the argument
         // at the predicate's parameter index is an identifier, narrow
@@ -3448,6 +3482,10 @@ fn typeOfTypeofString(s: []const u8) ?TypeId {
     if (std.mem.eql(u8, s, "symbol")) return types.Primitive.symbol_t;
     if (std.mem.eql(u8, s, "undefined")) return types.Primitive.undefined_t;
     if (std.mem.eql(u8, s, "object")) return types.Primitive.object_t;
+    // `typeof x === "function"` — narrow to a callable approximation.
+    // We don't yet model a top-callable primitive, so use `object_t`,
+    // which is the closest precomputed type (functions are objects).
+    if (std.mem.eql(u8, s, "function")) return types.Primitive.object_t;
     return null;
 }
 
@@ -5310,4 +5348,49 @@ test "checker: ThisType<T> unwraps to T" {
     defer destroySetup(s);
     try s.checker.checkSourceFile(s.root);
     try T.expectEqual(@as(usize, 0), s.checker.diagnostics.items.len);
+}
+
+test "checker: Array.isArray(x) narrows x in then-branch" {
+    const s = try newSetup(
+        \\function f(x: any) {
+        \\  if (Array.isArray(x)) {
+        \\    let arr = x;
+        \\  }
+        \\}
+    );
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+    const stmts = hir_mod.blockStmts(&s.hir, s.root);
+    const fn_node = stmts[0];
+    const f = hir_mod.fnDeclOf(&s.hir, fn_node);
+    const body_stmts = hir_mod.blockStmts(&s.hir, f.body);
+    const if_stmt = body_stmts[0];
+    const ifp = hir_mod.ifOf(&s.hir, if_stmt);
+    const then_stmts = hir_mod.blockStmts(&s.hir, ifp.then_branch);
+    const v_decl = then_stmts[0];
+    const v_init = hir_mod.varDeclOf(&s.hir, v_decl).init;
+    // `x` should be narrowed to object_t (array approximation) inside the guard.
+    try T.expectEqual(types.Primitive.object_t, s.hir.typeOf(v_init));
+}
+
+test "checker: typeof x === \"function\" narrows x in then-branch" {
+    const s = try newSetup(
+        \\function f(x: any) {
+        \\  if (typeof x === "function") {
+        \\    let fn = x;
+        \\  }
+        \\}
+    );
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+    const stmts = hir_mod.blockStmts(&s.hir, s.root);
+    const fn_node = stmts[0];
+    const f = hir_mod.fnDeclOf(&s.hir, fn_node);
+    const body_stmts = hir_mod.blockStmts(&s.hir, f.body);
+    const if_stmt = body_stmts[0];
+    const ifp = hir_mod.ifOf(&s.hir, if_stmt);
+    const then_stmts = hir_mod.blockStmts(&s.hir, ifp.then_branch);
+    const v_decl = then_stmts[0];
+    const v_init = hir_mod.varDeclOf(&s.hir, v_decl).init;
+    try T.expectEqual(types.Primitive.object_t, s.hir.typeOf(v_init));
 }
