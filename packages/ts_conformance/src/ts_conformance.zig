@@ -685,45 +685,38 @@ test "conformance: each builtin case names match files in tests/conformance" {
     }
 }
 
-test "conformance: smoke-run local TS conformance subdirectory" {
-    // Smoke-run a SUBSET of the canonical microsoft/TypeScript
-    // conformance suite from a contributor's local TS checkout.
-    // We deliberately do NOT vendor TS as a submodule — every
-    // contributor with a Code workspace already has it. When the
-    // path doesn't exist (CI, fresh contributors), skip cleanly.
-    //
-    // Subdir picked: types/typeRelationships/comparable/ — 13
-    // small cases exercising equality / switch / type-assertion
-    // comparability (union, intersection, optional, nullish).
-    // Goal here is only that the harness can walk a real-world
-    // directory of TS files without crashing; we don't ratchet on
-    // pass/fail rate yet — Phase 6 is about wiring up the runner.
-    const corpus_path = "/Users/chrisbreuer/Code/typescript-go/_submodules/TypeScript/tests/cases/conformance/types/typeRelationships/comparable";
+/// Run a single labeled subdir of TS conformance cases. Skips
+/// cleanly (returns null) when `dir_path` doesn't exist on this
+/// contributor's machine. Per-case failures are accumulated, not
+/// asserted — the caller decides what to do with the Stats.
+fn runConformanceSubset(
+    gpa: std.mem.Allocator,
+    label: []const u8,
+    dir_path: []const u8,
+) !?Stats {
     {
         // Skip cleanly when the contributor has no local TS checkout.
-        var threaded = std.Io.Threaded.init(T.allocator, .{});
+        var threaded = std.Io.Threaded.init(gpa, .{});
         defer threaded.deinit();
         const io = threaded.io();
-        std.Io.Dir.cwd().access(io, corpus_path, .{}) catch return;
+        std.Io.Dir.cwd().access(io, dir_path, .{}) catch return null;
     }
 
     var results: std.ArrayListUnmanaged(Result) = .empty;
     defer {
         for (results.items) |r| {
-            T.allocator.free(r.name);
-            if (r.detail.len > 0) T.allocator.free(r.detail);
+            gpa.free(r.name);
+            if (r.detail.len > 0) gpa.free(r.detail);
         }
-        results.deinit(T.allocator);
+        results.deinit(gpa);
     }
 
-    const stats = try runDirectory(T.allocator, corpus_path, &results);
+    const stats = try runDirectory(gpa, dir_path, &results);
 
-    // Visibility: print per-case pass/fail counts plus a one-line
-    // summary so PR reviewers can eyeball the breakdown without
-    // re-running the harness.
+    // Per-subdir summary line + per-case breakdown.
     std.debug.print(
-        "[ts_conformance smoke] comparable: total={d} passed={d} failed={d} skipped={d} pass_rate={d:.2}\n",
-        .{ stats.total(), stats.passed, stats.failed, stats.skipped, stats.passRate() },
+        "[ts_conformance smoke] {s}: total={d} passed={d} failed={d} skipped={d} pass_rate={d:.2}\n",
+        .{ label, stats.total(), stats.passed, stats.failed, stats.skipped, stats.passRate() },
     );
     for (results.items) |r| {
         switch (r.outcome) {
@@ -733,11 +726,58 @@ test "conformance: smoke-run local TS conformance subdirectory" {
         }
     }
 
-    // Sanity: at minimum, we want to confirm the harness walked
-    // SOME files. Per-case pass/fail isn't asserted here — the
-    // expectation is that the runner doesn't crash on a real-world
-    // dir of TS files.
-    try T.expect(stats.total() > 0);
+    return stats;
+}
+
+test "conformance: smoke-run local TS conformance subdirectories" {
+    // Smoke-run a SUBSET of the canonical microsoft/TypeScript
+    // conformance suite from a contributor's local TS checkout.
+    // We deliberately do NOT vendor TS as a submodule — every
+    // contributor with a Code workspace already has it. When the
+    // path doesn't exist (CI, fresh contributors), skip cleanly.
+    //
+    // Subdirs picked (small + diverse feature coverage):
+    //   - types/typeRelationships/comparable/ — equality / switch /
+    //     type-assertion comparability (union, intersection, etc).
+    //   - expressions/binaryOperators/inOperator/ — `in` operator
+    //     valid + invalid operand cases.
+    //   - types/primitives/stringLiteral/ — string-literal types.
+    //
+    // Goal: confirm the harness walks real-world dirs of TS files
+    // without crashing and produces aggregate pass-rate stats. We
+    // don't ratchet on pass/fail rate yet — per-case failures are
+    // accumulated and reported, not asserted.
+    const ts_conformance_root = "/Users/chrisbreuer/Code/typescript-go/_submodules/TypeScript/tests/cases/conformance";
+    const subdirs = [_]struct { label: []const u8, path: []const u8 }{
+        .{ .label = "comparable", .path = ts_conformance_root ++ "/types/typeRelationships/comparable" },
+        .{ .label = "inOperator", .path = ts_conformance_root ++ "/expressions/binaryOperators/inOperator" },
+        .{ .label = "stringLiteral", .path = ts_conformance_root ++ "/types/primitives/stringLiteral" },
+    };
+
+    var combined: Stats = .{};
+    var ran_any = false;
+    for (subdirs) |sd| {
+        const maybe = try runConformanceSubset(T.allocator, sd.label, sd.path);
+        if (maybe) |s| {
+            ran_any = true;
+            combined.passed += s.passed;
+            combined.failed += s.failed;
+            combined.skipped += s.skipped;
+        }
+    }
+
+    // If no subdir was reachable (no local TS checkout), skip cleanly.
+    if (!ran_any) return;
+
+    std.debug.print(
+        "[ts_conformance smoke] COMBINED: total={d} passed={d} failed={d} skipped={d} pass_rate={d:.2}\n",
+        .{ combined.total(), combined.passed, combined.failed, combined.skipped, combined.passRate() },
+    );
+
+    // Sanity: at minimum, confirm the harness walked SOME files.
+    // Per-case pass/fail isn't asserted — the expectation is that
+    // the runner doesn't crash on real-world dirs of TS files.
+    try T.expect(combined.total() > 0);
 }
 
 test "conformance: runOwnedCorpus matches runCorpus on equal inputs" {
