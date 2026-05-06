@@ -99,6 +99,11 @@ pub const Aarch64NativeCodegen = struct {
     /// `length * 8` consecutive bytes starting at their `locals` offset.
     /// Cleared between functions.
     local_array_lens: std.StringHashMap(u32),
+    /// Local name → enum type name. Locals listed here are enum-typed.
+    /// Bare-tag enums occupy 1 slot (8 bytes — just the tag); enums with
+    /// any payload-bearing variant occupy 2 slots (tag at +0, payload at
+    /// +8). Cleared between functions.
+    local_enum_types: std.StringHashMap([]const u8),
     /// Next free slot offset (bytes from SP) for the local being allocated.
     /// Reset in generateFnDecl.
     next_slot: u32 = 0,
@@ -136,6 +141,7 @@ pub const Aarch64NativeCodegen = struct {
             .locals = std.StringHashMap(u32).init(allocator),
             .local_struct_types = std.StringHashMap([]const u8).init(allocator),
             .local_array_lens = std.StringHashMap(u32).init(allocator),
+            .local_enum_types = std.StringHashMap([]const u8).init(allocator),
             .pending_calls = std.ArrayList(PendingCall).empty,
             .strings = std.ArrayList(StringLit).empty,
             .string_fixups = std.ArrayList(StringFixup).empty,
@@ -150,6 +156,7 @@ pub const Aarch64NativeCodegen = struct {
         self.locals.deinit();
         self.local_struct_types.deinit();
         self.local_array_lens.deinit();
+        self.local_enum_types.deinit();
         self.pending_calls.deinit(self.allocator);
         for (self.strings.items) |str| self.allocator.free(str.bytes);
         self.strings.deinit(self.allocator);
@@ -318,6 +325,7 @@ pub const Aarch64NativeCodegen = struct {
         self.locals.clearRetainingCapacity();
         self.local_struct_types.clearRetainingCapacity();
         self.local_array_lens.clearRetainingCapacity();
+        self.local_enum_types.clearRetainingCapacity();
         self.stack_delta = 0;
         self.next_slot = 0;
 
@@ -327,7 +335,7 @@ pub const Aarch64NativeCodegen = struct {
         // if/else branches are mutually exclusive; an optimal allocator can
         // reuse slots later.
         const param_count: u32 = @intCast(func.params.len);
-        const let_slot_count: u32 = countSlotsInBlock(func.body, &self.struct_layouts);
+        const let_slot_count: u32 = countSlotsInBlock(func.body, &self.struct_layouts, &self.enum_layouts);
         const raw_frame: u32 = (param_count + let_slot_count) * 8;
         self.frame_size = std.mem.alignForward(u32, raw_frame, 16);
         if (self.frame_size > 4095) return error.FrameTooLarge; // single ADD/SUB imm12
@@ -393,6 +401,24 @@ pub const Aarch64NativeCodegen = struct {
             if (value.* == .ArrayLiteral) {
                 return self.generateLetArray(decl.name, value.ArrayLiteral);
             }
+            // Enum construction: `let o = Option.Some(42)` or `let c = Color.Red`.
+            // Bare-tag enums fall through to the scalar path (M10a) — the
+            // MemberExpr returns the tag in x0 and we store one slot. Payload-
+            // bearing enums need two slots and a dedicated builder.
+            if (matchEnumConstruction(value, &self.enum_layouts)) |edecl| {
+                if (enumIsPayloadBearing(edecl)) {
+                    return self.generateLetEnumPayload(decl.name, value, edecl);
+                }
+                // Bare-tag: still record the local as enum-typed so later
+                // match-on-Identifier can dispatch correctly.
+                try self.generateExpr(value); // tag → x0
+                const slot = self.next_slot;
+                self.next_slot += 8;
+                try self.locals.put(decl.name, slot);
+                try self.local_enum_types.put(decl.name, edecl.name);
+                try self.assembler.strRegMem(.x0, .sp, @intCast(slot));
+                return;
+            }
         }
 
         // Scalar path.
@@ -408,6 +434,57 @@ pub const Aarch64NativeCodegen = struct {
 
         // delta is 0 here — top-level statement, no expr in flight.
         try self.assembler.strRegMem(.x0, .sp, @intCast(slot));
+    }
+
+    /// Lay down a payload-bearing enum value into a fresh 16-byte local
+    /// slot pair: `[tag][payload]`. `value` is either `EnumName.Variant`
+    /// (no payload) or `EnumName.Variant(arg)` (one payload arg).
+    fn generateLetEnumPayload(
+        self: *Aarch64NativeCodegen,
+        name: []const u8,
+        value: *ast.Expr,
+        edecl: *const ast.EnumDecl,
+    ) CodegenError!void {
+        const member: *ast.MemberExpr = switch (value.*) {
+            .MemberExpr => |m| m,
+            .CallExpr => |c| switch (c.callee.*) {
+                .MemberExpr => |m| m,
+                else => return error.InvalidCallTarget,
+            },
+            else => return error.InvalidCallTarget,
+        };
+        const tag = variantIndex(edecl, member.member) orelse return error.UndefinedField;
+
+        // Reserve the slots up front; record the local. Slot order is
+        // [base+0]=tag, [base+8]=payload.
+        const slot = self.next_slot;
+        self.next_slot += 16;
+        try self.locals.put(name, slot);
+        try self.local_enum_types.put(name, edecl.name);
+
+        // Evaluate payload (if any) into x0 first — it might read other
+        // locals. Then write tag and payload to their slots.
+        var has_payload: bool = false;
+        if (value.* == .CallExpr) {
+            const call = value.CallExpr;
+            if (call.args.len > 1 or call.named_args.len != 0) return error.NotImplemented;
+            if (call.args.len == 1) {
+                try self.generateExpr(call.args[0]);
+                has_payload = true;
+            }
+        }
+
+        if (has_payload) {
+            // Stash payload while we materialize the tag. delta isn't
+            // used (top-level stmt, delta=0), but be explicit.
+            try self.assembler.strRegMem(.x0, .sp, @intCast(slot + 8));
+        } else {
+            try self.assembler.movRegImm64(.x0, 0);
+            try self.assembler.strRegMem(.x0, .sp, @intCast(slot + 8));
+        }
+
+        try self.assembler.movRegImm64(.x1, tag);
+        try self.assembler.strRegMem(.x1, .sp, @intCast(slot));
     }
 
     fn generateLetStruct(self: *Aarch64NativeCodegen, name: []const u8, lit: *const ast.StructLiteralExpr) CodegenError!void {
@@ -509,6 +586,26 @@ pub const Aarch64NativeCodegen = struct {
     }
 
     fn generateMatchExpr(self: *Aarch64NativeCodegen, match: *ast.MatchExpr) CodegenError!void {
+        // Detect a payload-bearing enum scrutinee — handled specially so
+        // we can spill the payload alongside the tag and bind it inside
+        // arms that match by `Variant(ident)`. Other scrutinees go through
+        // the M9 single-slot path.
+        var scrut_is_payload_enum = false;
+        switch (match.value.*) {
+            .Identifier => |id| {
+                if (self.local_enum_types.get(id.name)) |ename| {
+                    if (self.enum_layouts.get(ename)) |edecl| {
+                        if (enumIsPayloadBearing(edecl)) scrut_is_payload_enum = true;
+                    }
+                }
+            },
+            else => {},
+        }
+
+        if (scrut_is_payload_enum) {
+            return self.generateMatchExprEnum(match);
+        }
+
         // Evaluate the matched value once and spill to the stack so each
         // arm can reload it (and so it survives any push/pop the arm bodies
         // emit). The value lives at `[sp + 0]` while delta == 16.
@@ -552,6 +649,138 @@ pub const Aarch64NativeCodegen = struct {
         // register; we just need somewhere to land the popReg.
         try self.assembler.popReg(.x1);
         self.stack_delta -= 16;
+    }
+
+    /// Match dispatch where the scrutinee is a payload-bearing enum local.
+    /// Reads tag + payload directly from the local's slot pair (no spill
+    /// needed — the local lives in the stable frame). Patterns supported:
+    ///   - `EnumName.Bare`     → tag check only
+    ///   - `EnumName.Some(_)`  → tag check, payload ignored
+    ///   - `EnumName.Some(x)`  → tag check, payload bound to identifier `x`
+    ///   - `_`                 → wildcard
+    fn generateMatchExprEnum(self: *Aarch64NativeCodegen, match: *ast.MatchExpr) CodegenError!void {
+        const scrut_name = match.value.Identifier.name;
+        const scrut_slot = self.locals.get(scrut_name) orelse return error.UndefinedIdentifier;
+
+        var end_jumps = std.ArrayList(usize).empty;
+        defer end_jumps.deinit(self.allocator);
+
+        for (match.arms) |arm| {
+            if (arm.guard != null) return error.NotImplemented;
+
+            const arm_info = try self.emitEnumArmCheck(arm.pattern, scrut_slot);
+
+            // If the pattern binds an identifier to the payload, allocate
+            // a fresh slot, copy payload there, and register the binding
+            // in `locals` for the duration of the arm body.
+            var bind_name: ?[]const u8 = null;
+            if (arm_info.binding) |name| {
+                const bslot = self.next_slot;
+                self.next_slot += 8;
+                // payload is at [sp + scrut_slot + 8 + delta].
+                try self.assembler.ldrRegMem(.x1, .sp, @intCast(scrut_slot + 8 + self.stack_delta));
+                try self.assembler.strRegMem(.x1, .sp, @intCast(bslot + self.stack_delta));
+                try self.locals.put(name, bslot);
+                bind_name = name;
+            }
+
+            // Body — result lands in x0.
+            try self.generateExpr(arm.body);
+
+            // Tear down the binding before the next arm so the binding
+            // name doesn't leak into a sibling arm with a different shape.
+            if (bind_name) |name| {
+                _ = self.locals.remove(name);
+            }
+
+            const end_jump_pos = self.assembler.getPosition();
+            try self.assembler.b(0);
+            try end_jumps.append(self.allocator, end_jump_pos);
+
+            if (arm_info.skip_pos) |pos| {
+                try self.assembler.patchBcond(pos, .ne, self.assembler.getPosition());
+            }
+        }
+
+        const end_target = self.assembler.getPosition();
+        for (end_jumps.items) |pos| {
+            try self.assembler.patchB(pos, end_target);
+        }
+    }
+
+    const EnumArmInfo = struct {
+        /// Position of the conditional skip branch to patch with the
+        /// next-arm address; null when the pattern always matches.
+        skip_pos: ?usize,
+        /// Name of the payload identifier this pattern binds, or null.
+        binding: ?[]const u8,
+    };
+
+    /// Emit a tag check against an enum local at `scrut_slot` (slot+0=tag,
+    /// slot+8=payload). Handles `_` wildcard, bare `EnumName.Variant`, and
+    /// `EnumName.Variant(ident)` (with optional payload binding).
+    fn emitEnumArmCheck(
+        self: *Aarch64NativeCodegen,
+        pattern: *ast.Expr,
+        scrut_slot: u32,
+    ) CodegenError!EnumArmInfo {
+        switch (pattern.*) {
+            .Identifier => |id| {
+                if (std.mem.eql(u8, id.name, "_")) {
+                    return .{ .skip_pos = null, .binding = null };
+                }
+                // Identifier without binding semantics — treat as wildcard
+                // for compatibility with M9.
+                return .{ .skip_pos = null, .binding = null };
+            },
+            .MemberExpr => |member| {
+                const tag = try self.lookupEnumPatternTag(member);
+                try self.emitEnumTagCheck(scrut_slot, tag);
+                const pos = self.assembler.getPosition() - 4; // bcond just emitted
+                return .{ .skip_pos = pos, .binding = null };
+            },
+            .CallExpr => |call| {
+                const member = switch (call.callee.*) {
+                    .MemberExpr => |m| m,
+                    else => return error.NotImplemented,
+                };
+                const tag = try self.lookupEnumPatternTag(member);
+                try self.emitEnumTagCheck(scrut_slot, tag);
+                const pos = self.assembler.getPosition() - 4;
+                if (call.args.len != 1) return error.NotImplemented;
+                const bind: ?[]const u8 = switch (call.args[0].*) {
+                    .Identifier => |id| if (std.mem.eql(u8, id.name, "_")) null else id.name,
+                    else => return error.NotImplemented,
+                };
+                return .{ .skip_pos = pos, .binding = bind };
+            },
+            else => return error.NotImplemented,
+        }
+    }
+
+    fn lookupEnumPatternTag(
+        self: *Aarch64NativeCodegen,
+        member: *ast.MemberExpr,
+    ) CodegenError!i64 {
+        const obj_name = switch (member.object.*) {
+            .Identifier => |id| id.name,
+            else => return error.NotImplemented,
+        };
+        const edecl = self.enum_layouts.get(obj_name) orelse return error.NotImplemented;
+        return variantIndex(edecl, member.member) orelse error.UndefinedField;
+    }
+
+    /// Emit `ldr x1, [sp + scrut_slot + delta]; cmp x1, #tag; bcond ne, 0`.
+    /// Caller patches the bcond once the next-arm address is known.
+    fn emitEnumTagCheck(self: *Aarch64NativeCodegen, scrut_slot: u32, tag: i64) CodegenError!void {
+        try self.assembler.ldrRegMem(.x1, .sp, @intCast(scrut_slot + self.stack_delta));
+        if (tag >= 0 and tag <= 4095) {
+            try self.assembler.cmpRegImm(.x1, @intCast(tag));
+        } else {
+            try self.assembler.movRegImm64(.x2, tag);
+            try self.assembler.cmpRegReg(.x1, .x2);
+        }
+        try self.assembler.bcond(.ne, 0);
     }
 
     /// Emit the comparison + conditional skip for one arm. Returns the
@@ -882,15 +1111,23 @@ fn argRegister(i: usize) arm64.Assembler.Register {
 /// block. Scalars contribute 1 slot, struct-typed `let`s contribute N slots
 /// (where N is the field count). Branches of an if/else are summed
 /// (over-allocates when branches are mutually exclusive — fine for now).
-fn countSlotsInBlock(block: *const ast.BlockStmt, struct_layouts: *std.StringHashMap(*const ast.StructDecl)) u32 {
+fn countSlotsInBlock(
+    block: *const ast.BlockStmt,
+    struct_layouts: *std.StringHashMap(*const ast.StructDecl),
+    enum_layouts: *std.StringHashMap(*const ast.EnumDecl),
+) u32 {
     var count: u32 = 0;
     for (block.statements) |stmt| {
-        count += countSlotsInStmt(stmt, struct_layouts);
+        count += countSlotsInStmt(stmt, struct_layouts, enum_layouts);
     }
     return count;
 }
 
-fn countSlotsInStmt(stmt: ast.Stmt, struct_layouts: *std.StringHashMap(*const ast.StructDecl)) u32 {
+fn countSlotsInStmt(
+    stmt: ast.Stmt,
+    struct_layouts: *std.StringHashMap(*const ast.StructDecl),
+    enum_layouts: *std.StringHashMap(*const ast.EnumDecl),
+) u32 {
     return switch (stmt) {
         .LetDecl => |decl| blk: {
             if (decl.value) |v| {
@@ -905,15 +1142,50 @@ fn countSlotsInStmt(stmt: ast.Stmt, struct_layouts: *std.StringHashMap(*const as
                 if (v.* == .ArrayLiteral) {
                     break :blk @intCast(v.ArrayLiteral.elements.len);
                 }
+                // Enum construction (`E.V` / `E.V(arg)`)? Slot count
+                // depends on whether any variant carries a payload.
+                if (matchEnumConstruction(v, enum_layouts)) |edecl| {
+                    break :blk enumSlotCount(edecl);
+                }
+                // Match-RHS let: 1 slot for the let's own value, plus
+                // one slot per arm with a single-Identifier binding
+                // pattern (`Some(x) => ...`).
+                if (v.* == .MatchExpr) {
+                    var c: u32 = 1;
+                    for (v.MatchExpr.arms) |arm| {
+                        c += armBindingSlotCount(arm.pattern);
+                    }
+                    break :blk c;
+                }
             }
             break :blk 1;
         },
         .IfStmt => |if_stmt| blk: {
-            var c = countSlotsInBlock(if_stmt.then_block, struct_layouts);
-            if (if_stmt.else_block) |eb| c += countSlotsInBlock(eb, struct_layouts);
+            var c = countSlotsInBlock(if_stmt.then_block, struct_layouts, enum_layouts);
+            if (if_stmt.else_block) |eb| c += countSlotsInBlock(eb, struct_layouts, enum_layouts);
             break :blk c;
         },
-        .WhileStmt => |while_stmt| countSlotsInBlock(while_stmt.body, struct_layouts),
+        .WhileStmt => |while_stmt| countSlotsInBlock(while_stmt.body, struct_layouts, enum_layouts),
+        else => 0,
+    };
+}
+
+/// Number of frame slots required to hold any payload bindings introduced
+/// by a single match arm pattern. M10b only supports one binding (the
+/// payload identifier of an enum variant), so the answer is 0 or 1.
+fn armBindingSlotCount(pattern: *ast.Expr) u32 {
+    return switch (pattern.*) {
+        .CallExpr => |call| blk: {
+            if (call.args.len != 1) break :blk 0;
+            switch (call.args[0].*) {
+                .Identifier => |id| {
+                    // `_` is a wildcard, no binding needed.
+                    if (std.mem.eql(u8, id.name, "_")) break :blk 0;
+                    break :blk 1;
+                },
+                else => break :blk 0,
+            }
+        },
         else => 0,
     };
 }
@@ -936,4 +1208,45 @@ fn variantIndex(decl: *const ast.EnumDecl, name: []const u8) ?i64 {
         if (std.mem.eql(u8, v.name, name)) return @intCast(i);
     }
     return null;
+}
+
+/// True if any variant of this enum carries a payload (`Some(int)`,
+/// `Err(string)`, etc.). Payload-bearing enums are stored as two
+/// consecutive 8-byte slots (`[tag][payload]`), bare-tag enums as one.
+fn enumIsPayloadBearing(decl: *const ast.EnumDecl) bool {
+    for (decl.variants) |v| {
+        if (v.data_type != null) return true;
+    }
+    return false;
+}
+
+/// Returns the local-slot footprint of an enum value of this declaration:
+/// 1 slot (8 bytes) for bare-tag enums, 2 slots (16 bytes) for payload-
+/// bearing ones. M-later: variants with payloads larger than 8 bytes.
+fn enumSlotCount(decl: *const ast.EnumDecl) u32 {
+    return if (enumIsPayloadBearing(decl)) 2 else 1;
+}
+
+/// True if this Expr is a syntactic enum-value construction:
+/// either `EnumName.Variant` (MemberExpr whose object resolves to an
+/// enum name in `enum_layouts`) or `EnumName.Variant(arg)` (CallExpr
+/// whose callee is such a MemberExpr). Returns the matching enum decl
+/// or null.
+fn matchEnumConstruction(
+    expr: *ast.Expr,
+    enum_layouts: *std.StringHashMap(*const ast.EnumDecl),
+) ?*const ast.EnumDecl {
+    const member: *ast.MemberExpr = switch (expr.*) {
+        .MemberExpr => |m| m,
+        .CallExpr => |c| switch (c.callee.*) {
+            .MemberExpr => |m| m,
+            else => return null,
+        },
+        else => return null,
+    };
+    const obj_name = switch (member.object.*) {
+        .Identifier => |id| id.name,
+        else => return null,
+    };
+    return enum_layouts.get(obj_name);
 }
