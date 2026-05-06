@@ -15,6 +15,16 @@
 //!   - textDocument/references
 //!   - textDocument/completion
 //!   - textDocument/signatureHelp
+//!   - textDocument/rename
+//!   - textDocument/documentSymbol
+//!   - workspace/symbol
+//!   - textDocument/codeAction
+//!   - textDocument/semanticTokens/full
+//!   - textDocument/semanticTokens/range
+//!   - textDocument/foldingRange
+//!   - textDocument/inlayHint
+//!   - textDocument/documentHighlight
+//!   - textDocument/formatting
 //!   - textDocument/publishDiagnostics (server-pushed)
 //!   - shutdown
 //!   - exit
@@ -49,6 +59,16 @@ pub const Method = enum {
     text_document_completion,
     text_document_signature_help,
     text_document_publish_diagnostics,
+    text_document_rename,
+    text_document_document_symbol,
+    workspace_symbol,
+    text_document_code_action,
+    text_document_semantic_tokens_full,
+    text_document_semantic_tokens_range,
+    text_document_folding_range,
+    text_document_inlay_hint,
+    text_document_document_highlight,
+    text_document_formatting,
     unknown,
 
     pub fn fromString(s: []const u8) Method {
@@ -66,6 +86,16 @@ pub const Method = enum {
             .{ "textDocument/completion", Method.text_document_completion },
             .{ "textDocument/signatureHelp", Method.text_document_signature_help },
             .{ "textDocument/publishDiagnostics", Method.text_document_publish_diagnostics },
+            .{ "textDocument/rename", Method.text_document_rename },
+            .{ "textDocument/documentSymbol", Method.text_document_document_symbol },
+            .{ "workspace/symbol", Method.workspace_symbol },
+            .{ "textDocument/codeAction", Method.text_document_code_action },
+            .{ "textDocument/semanticTokens/full", Method.text_document_semantic_tokens_full },
+            .{ "textDocument/semanticTokens/range", Method.text_document_semantic_tokens_range },
+            .{ "textDocument/foldingRange", Method.text_document_folding_range },
+            .{ "textDocument/inlayHint", Method.text_document_inlay_hint },
+            .{ "textDocument/documentHighlight", Method.text_document_document_highlight },
+            .{ "textDocument/formatting", Method.text_document_formatting },
         };
         inline for (map) |entry| {
             if (std.mem.eql(u8, s, entry[0])) return entry[1];
@@ -750,6 +780,157 @@ pub fn handleExit(gpa: std.mem.Allocator) !void {
     std.process.exit(0);
 }
 
+/// Look up an LSP method name in the `Method` enum. Thin wrapper over
+/// `Method.fromString` so the dispatch site reads naturally.
+pub fn lspMethodFromString(s: []const u8) Method {
+    return Method.fromString(s);
+}
+
+/// Locate the JSON-RPC `id` field inside `body` and return a
+/// `RequestId` representation. Returns `null` when the field is
+/// absent (i.e. a JSON-RPC notification).
+fn findJsonRequestId(body: []const u8) ?RequestId {
+    if (findJsonStringField(body, "id")) |s| return .{ .string = s };
+    if (findJsonIntField(body, "id")) |n| return .{ .integer = n };
+    return null;
+}
+
+/// Locate the raw JSON value associated with `key` inside `body`.
+/// Returns the slice covering the value (object / array / scalar).
+/// Caller does NOT own the returned slice — it borrows from `body`.
+fn findJsonRawField(body: []const u8, key: []const u8) ?[]const u8 {
+    var needle_buf: [64]u8 = undefined;
+    if (key.len + 3 > needle_buf.len) return null;
+    needle_buf[0] = '"';
+    @memcpy(needle_buf[1 .. 1 + key.len], key);
+    needle_buf[1 + key.len] = '"';
+    needle_buf[2 + key.len] = ':';
+    const needle = needle_buf[0 .. 3 + key.len];
+
+    const pos = std.mem.indexOf(u8, body, needle) orelse return null;
+    var i = pos + needle.len;
+    while (i < body.len and (body[i] == ' ' or body[i] == '\t' or body[i] == '\n' or body[i] == '\r')) : (i += 1) {}
+    if (i >= body.len) return null;
+    const start = i;
+    const c = body[i];
+    if (c == '{' or c == '[') {
+        const open = c;
+        const close: u8 = if (open == '{') '}' else ']';
+        var depth: usize = 0;
+        var in_str = false;
+        while (i < body.len) : (i += 1) {
+            const ch = body[i];
+            if (in_str) {
+                if (ch == '\\') {
+                    i += 1;
+                    continue;
+                }
+                if (ch == '"') in_str = false;
+                continue;
+            }
+            if (ch == '"') {
+                in_str = true;
+                continue;
+            }
+            if (ch == open) depth += 1;
+            if (ch == close) {
+                depth -= 1;
+                if (depth == 0) return body[start .. i + 1];
+            }
+        }
+        return null;
+    }
+    return null;
+}
+
+/// Parse a JSON-RPC frame from `frame_bytes` and route to the
+/// appropriate `handle*` function. Returns the wire-encoded response
+/// body bytes (caller owns) — or an empty slice for notifications
+/// that have no response. Unknown methods produce a JSON-RPC
+/// `Method not found` error response (-32601).
+pub fn dispatchRequest(
+    service: *ts_lsp.Service,
+    gpa: std.mem.Allocator,
+    frame_bytes: []const u8,
+) ![]u8 {
+    // Minimal envelope extraction: id (optional), method, params.
+    const maybe_id = findJsonRequestId(frame_bytes);
+    const method_name = findJsonStringField(frame_bytes, "method") orelse "";
+    const method = lspMethodFromString(method_name);
+    const params = findJsonRawField(frame_bytes, "params") orelse frame_bytes;
+
+    // Notifications carry no `id` — the server never replies to them.
+    const is_notification = maybe_id == null;
+    const id = maybe_id orelse RequestId{ .null_id = {} };
+
+    switch (method) {
+        .initialize => {
+            if (is_notification) return &.{};
+            return try handleInitialize(gpa, id, params);
+        },
+        .initialized => {
+            try handleInitialized(gpa, params);
+            return &.{};
+        },
+        .shutdown => {
+            if (is_notification) return &.{};
+            return try handleShutdown(gpa, id);
+        },
+        .exit => {
+            // The handler terminates the process; never returns. We
+            // never reach the `return &.{}` below in production, but
+            // tests stub `handleExit` out by not calling dispatch on
+            // `exit`.
+            try handleExit(gpa);
+            return &.{};
+        },
+        .text_document_did_change => {
+            return try handleDidChange(service, gpa, params);
+        },
+        .text_document_did_open, .text_document_did_close, .text_document_publish_diagnostics => {
+            // Notifications we currently accept but don't act on.
+            return &.{};
+        },
+        .text_document_hover => {
+            if (is_notification) return &.{};
+            return try handleHover(service, gpa, id, params);
+        },
+        .text_document_definition => {
+            if (is_notification) return &.{};
+            return try handleDefinition(service, gpa, id, params);
+        },
+        .text_document_references => {
+            if (is_notification) return &.{};
+            return try handleReferences(service, gpa, id, params);
+        },
+        .text_document_completion => {
+            if (is_notification) return &.{};
+            return try handleCompletion(service, gpa, id, params);
+        },
+        .text_document_signature_help => {
+            if (is_notification) return &.{};
+            return try handleSignatureHelp(service, gpa, id, params);
+        },
+        // Methods we know about but don't yet implement, plus the
+        // catch-all `.unknown` — both fall through to the standard
+        // JSON-RPC `Method not found` error.
+        .text_document_rename,
+        .text_document_document_symbol,
+        .workspace_symbol,
+        .text_document_code_action,
+        .text_document_semantic_tokens_full,
+        .text_document_semantic_tokens_range,
+        .text_document_folding_range,
+        .text_document_inlay_hint,
+        .text_document_document_highlight,
+        .text_document_formatting,
+        .unknown,
+        => {
+            return try encodeError(gpa, id, .{ .code = -32601, .message = "Method not found" });
+        },
+    }
+}
+
 // =============================================================================
 // Tests
 // =============================================================================
@@ -1198,4 +1379,63 @@ test "handleReferences: routes request and returns Location[] response" {
     const out2 = try handleReferences(&svc, T.allocator, .{ .integer = 42 }, empty);
     defer T.allocator.free(out2);
     try T.expect(std.mem.indexOf(u8, out2, "\"result\":[]") != null);
+}
+
+test "dispatchRequest: routes textDocument/hover request" {
+    var vfs = ts_resolver.VirtualFs.init(T.allocator);
+    defer vfs.deinit();
+    var resolver = ts_resolver.Resolver.init(T.allocator, vfs.fs(), .{});
+    defer resolver.deinit();
+    var program = ts_program.Program.init(T.allocator, &resolver);
+    defer program.deinit();
+
+    _ = try program.add("/main.ts", "let x: number = 1;");
+    try program.compileAll(.{});
+
+    var svc = ts_lsp.Service.init(T.allocator, &program);
+
+    const frame =
+        \\{"jsonrpc":"2.0","id":7,"method":"textDocument/hover","params":{"textDocument":{"uri":"file:///main.ts"},"position":{"line":0,"character":4}}}
+    ;
+    const out = try dispatchRequest(&svc, T.allocator, frame);
+    defer T.allocator.free(out);
+    try T.expect(std.mem.indexOf(u8, out, "\"jsonrpc\":\"2.0\"") != null);
+    try T.expect(std.mem.indexOf(u8, out, "\"id\":7") != null);
+    try T.expect(std.mem.indexOf(u8, out, "\"contents\":{\"kind\":\"markdown\"") != null);
+}
+
+test "dispatchRequest: unknown method returns -32601" {
+    var vfs = ts_resolver.VirtualFs.init(T.allocator);
+    defer vfs.deinit();
+    var resolver = ts_resolver.Resolver.init(T.allocator, vfs.fs(), .{});
+    defer resolver.deinit();
+    var program = ts_program.Program.init(T.allocator, &resolver);
+    defer program.deinit();
+    var svc = ts_lsp.Service.init(T.allocator, &program);
+
+    const frame =
+        \\{"jsonrpc":"2.0","id":99,"method":"textDocument/madeUp","params":{}}
+    ;
+    const out = try dispatchRequest(&svc, T.allocator, frame);
+    defer T.allocator.free(out);
+    try T.expect(std.mem.indexOf(u8, out, "\"id\":99") != null);
+    try T.expect(std.mem.indexOf(u8, out, "\"code\":-32601") != null);
+    try T.expect(std.mem.indexOf(u8, out, "\"message\":\"Method not found\"") != null);
+}
+
+test "dispatchRequest: notification (no id) returns empty bytes" {
+    var vfs = ts_resolver.VirtualFs.init(T.allocator);
+    defer vfs.deinit();
+    var resolver = ts_resolver.Resolver.init(T.allocator, vfs.fs(), .{});
+    defer resolver.deinit();
+    var program = ts_program.Program.init(T.allocator, &resolver);
+    defer program.deinit();
+    var svc = ts_lsp.Service.init(T.allocator, &program);
+
+    const frame =
+        \\{"jsonrpc":"2.0","method":"initialized","params":{}}
+    ;
+    const out = try dispatchRequest(&svc, T.allocator, frame);
+    defer T.allocator.free(out);
+    try T.expectEqual(@as(usize, 0), out.len);
 }
