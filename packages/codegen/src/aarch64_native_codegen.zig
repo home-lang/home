@@ -122,6 +122,10 @@ pub const Aarch64NativeCodegen = struct {
     /// top-level statements before any function body is emitted, so frame
     /// sizing and member expressions can look up sizes and field offsets.
     struct_layouts: std.StringHashMap(*const ast.StructDecl),
+    /// Enum name → AST node. Populated by the same pre-pass. M10a only
+    /// supports bare-tag variants (no payload); the codegen lowers an enum
+    /// value to a single i64 holding the variant's index.
+    enum_layouts: std.StringHashMap(*const ast.EnumDecl),
 
     pub fn init(allocator: std.mem.Allocator, program: *const ast.Program) Aarch64NativeCodegen {
         return .{
@@ -136,6 +140,7 @@ pub const Aarch64NativeCodegen = struct {
             .strings = std.ArrayList(StringLit).empty,
             .string_fixups = std.ArrayList(StringFixup).empty,
             .struct_layouts = std.StringHashMap(*const ast.StructDecl).init(allocator),
+            .enum_layouts = std.StringHashMap(*const ast.EnumDecl).init(allocator),
         };
     }
 
@@ -150,6 +155,7 @@ pub const Aarch64NativeCodegen = struct {
         self.strings.deinit(self.allocator);
         self.string_fixups.deinit(self.allocator);
         self.struct_layouts.deinit();
+        self.enum_layouts.deinit();
     }
 
     pub fn writeExecutable(self: *Aarch64NativeCodegen, path: []const u8) !void {
@@ -158,6 +164,7 @@ pub const Aarch64NativeCodegen = struct {
         for (self.program.statements) |stmt| {
             switch (stmt) {
                 .StructDecl => |decl| try self.struct_layouts.put(decl.name, decl),
+                .EnumDecl => |decl| try self.enum_layouts.put(decl.name, decl),
                 else => {},
             }
         }
@@ -224,6 +231,7 @@ pub const Aarch64NativeCodegen = struct {
         switch (stmt) {
             .FnDecl => |func| try self.generateFnDecl(func),
             .StructDecl => {}, // registered in writeExecutable's pass 0
+            .EnumDecl => {}, // registered in writeExecutable's pass 0
             .LetDecl => |decl| try self.generateLetDecl(decl),
             .IfStmt => |if_stmt| try self.generateIfStmt(if_stmt),
             .WhileStmt => |while_stmt| try self.generateWhileStmt(while_stmt),
@@ -584,6 +592,27 @@ pub const Aarch64NativeCodegen = struct {
                 // will fail with UndefinedIdentifier.
                 return null;
             },
+            .MemberExpr => |member| {
+                // M10a: bare enum-variant pattern, e.g. `Color.Red` →
+                // compare the spilled scrutinee against the variant's tag.
+                const ident = switch (member.object.*) {
+                    .Identifier => |id| id.name,
+                    else => return error.NotImplemented,
+                };
+                const edecl = self.enum_layouts.get(ident) orelse return error.NotImplemented;
+                const idx = variantIndex(edecl, member.member) orelse return error.UndefinedField;
+
+                try self.assembler.ldrRegMem(.x1, .sp, 0);
+                if (idx >= 0 and idx <= 4095) {
+                    try self.assembler.cmpRegImm(.x1, @intCast(idx));
+                } else {
+                    try self.assembler.movRegImm64(.x2, idx);
+                    try self.assembler.cmpRegReg(.x1, .x2);
+                }
+                const pos = self.assembler.getPosition();
+                try self.assembler.bcond(.ne, 0);
+                return pos;
+            },
             else => return error.NotImplemented,
         }
     }
@@ -612,6 +641,17 @@ pub const Aarch64NativeCodegen = struct {
             .Identifier => |id| id.name,
             else => return error.NotImplemented,
         };
+
+        // M10a: `EnumName.Variant` produces the variant's index (i64). Bare
+        // variants only — payload-bearing variants (e.g. `Some(x)`) flow
+        // through a CallExpr whose callee is this MemberExpr and are handled
+        // separately.
+        if (self.enum_layouts.get(ident)) |edecl| {
+            const idx = variantIndex(edecl, member.member) orelse return error.UndefinedField;
+            try self.assembler.movRegImm64(.x0, idx);
+            return;
+        }
+
         const base = self.locals.get(ident) orelse return error.UndefinedIdentifier;
         const struct_name = self.local_struct_types.get(ident) orelse return error.NotAStructLocal;
         const sdecl = self.struct_layouts.get(struct_name) orelse return error.UndefinedStruct;
@@ -885,6 +925,15 @@ fn fieldOffset(decl: *const ast.StructDecl, name: []const u8) ?u32 {
     for (decl.fields) |f| {
         if (std.mem.eql(u8, f.name, name)) return offset;
         offset += 8;
+    }
+    return null;
+}
+
+/// Look up a variant by name in an enum declaration; returns its 0-based
+/// declaration index, used as the runtime tag value in M10a.
+fn variantIndex(decl: *const ast.EnumDecl, name: []const u8) ?i64 {
+    for (decl.variants, 0..) |v, i| {
+        if (std.mem.eql(u8, v.name, name)) return @intCast(i);
     }
     return null;
 }
