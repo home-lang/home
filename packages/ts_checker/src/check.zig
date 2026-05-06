@@ -1509,6 +1509,19 @@ pub const Checker = struct {
                 // own TypeId (so partial application leaves the
                 // remaining slot in place).
                 if (r.qualifier_len == 0 and r.args_len > 0) {
+                    // `ThisType<T>` — TS marker that re-binds contextual
+                    // `this` inside object literals to T. For now, treat
+                    // it as a no-op unwrap so `let x: ThisType<{x:1}>`
+                    // is equivalent to `let x: {x:1}`. Propagating T as
+                    // the contextual `this` for method bodies inside
+                    // the literal is a Phase 6 follow-up.
+                    if (r.args_len == 1) {
+                        const name_str = self.string_interner.get(r.name);
+                        if (std.mem.eql(u8, name_str, "ThisType")) {
+                            const args = hir_mod.typeRefArgs(self.hir, type_node);
+                            return try self.lowererLowerWithTypeParams(args[0]);
+                        }
+                    }
                     if (self.generic_aliases.get(r.name)) |info| {
                         const args = hir_mod.typeRefArgs(self.hir, type_node);
                         var subs: std.AutoHashMapUnmanaged(TypeId, TypeId) = .empty;
@@ -5184,4 +5197,13 @@ test "checker: obj.x === <literal> narrows obj.x to literal type" {
     // The narrowed `obj.x` should be the literal 42, not number_t.
     const expected = try s.ti.internNumberLiteral(42);
     try T.expectEqual(expected, s.hir.typeOf(v_init));
+}
+
+test "checker: ThisType<T> unwraps to T" {
+    const s = try newSetup(
+        \\let x: ThisType<{ value: number }> = { value: 1 };
+    );
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+    try T.expectEqual(@as(usize, 0), s.checker.diagnostics.items.len);
 }
