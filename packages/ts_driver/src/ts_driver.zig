@@ -303,6 +303,15 @@ pub fn compileSource(
     var checker = ts_checker.Checker.init(gpa, &c.hir, &c.type_interner, &c.interner, &c.type_engine);
     defer checker.deinit();
     checker.setModule(c.module);
+    // Translate tsconfig strictness flags. `strict: true` implies
+    // every individual flag in TS — for now we propagate just
+    // `noImplicitAny`, with the rest following as they're wired.
+    if (options.pub_tsconfig) |cfg| {
+        const co = cfg.compiler_options;
+        const strict_on = co.strict orelse false;
+        const no_implicit_any = co.no_implicit_any orelse strict_on;
+        checker.setStrictFlags(.{ .no_implicit_any = no_implicit_any });
+    }
     if (c.root != hir_mod.none_node_id) {
         checker.checkSourceFile(c.root) catch |err| switch (err) {
             error.OutOfMemory => return error.OutOfMemory,

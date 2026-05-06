@@ -68,6 +68,19 @@ pub const TsCodes = struct {
     pub const operator_cannot_be_applied: u32 = 2365;
     pub const not_callable: u32 = 2349;
     pub const this_implicitly_any: u32 = 2683;
+    pub const parameter_implicitly_any: u32 = 7006;
+    pub const variable_implicitly_any: u32 = 7005;
+};
+
+/// Subset of compiler-options flags the checker consults. Defaults
+/// match `tsc`'s no-flag baseline (everything off). The driver
+/// populates this from a parsed `tsconfig` before `checkSourceFile`.
+pub const StrictFlags = struct {
+    /// `noImplicitAny` (also implied by `strict`). When true, a
+    /// parameter / variable that ends up typed as `any` because it
+    /// has no annotation and no inferable initializer raises TS7006
+    /// / TS7005.
+    no_implicit_any: bool = false,
 };
 
 pub const Checker = struct {
@@ -102,6 +115,8 @@ pub const Checker = struct {
     /// `lowererLowerWithTypeParams` so `b: Box`, `b: SomeInterface`,
     /// or `b: SomeAlias` all resolve at the annotation site.
     type_names: std.AutoHashMapUnmanaged(hir_mod.StringId, TypeId),
+    /// Strictness flags driving optional diagnostics.
+    strict_flags: StrictFlags = .{},
     diagnostics: std.ArrayListUnmanaged(Diagnostic),
     diag_arena: std.heap.ArenaAllocator,
 
@@ -134,6 +149,10 @@ pub const Checker = struct {
     /// `Primitive.any`.
     pub fn setModule(self: *Checker, module: *const binder_mod.Module) void {
         self.module = module;
+    }
+
+    pub fn setStrictFlags(self: *Checker, flags: StrictFlags) void {
+        self.strict_flags = flags;
     }
 
     pub fn deinit(self: *Checker) void {
@@ -257,13 +276,30 @@ pub const Checker = struct {
         const params = hir_mod.fnParams(self.hir, node);
         for (params) |p| {
             const pp = hir_mod.parameterOf(self.hir, p);
-            const t: TypeId = if (pp.type_annotation != hir_mod.none_node_id)
+            const has_anno = pp.type_annotation != hir_mod.none_node_id;
+            const t: TypeId = if (has_anno)
                 try self.lowererLowerWithTypeParams(pp.type_annotation)
             else
                 types.Primitive.any;
             try param_types.append(self.gpa, t);
             self.hir.setType(p, t);
             if (pp.name != hir_mod.none_node_id) self.hir.setType(pp.name, t);
+            if (!has_anno and self.strict_flags.no_implicit_any) {
+                const param_name: []const u8 = if (pp.name != hir_mod.none_node_id and self.hir.kindOf(pp.name) == .identifier)
+                    self.string_interner.get(hir_mod.identifierOf(self.hir, pp.name).name)
+                else
+                    "<anonymous>";
+                const msg = try std.fmt.allocPrint(
+                    self.diag_arena.allocator(),
+                    "Parameter '{s}' implicitly has an 'any' type.",
+                    .{param_name},
+                );
+                try self.diagnostics.append(self.gpa, .{
+                    .node = p,
+                    .code = TsCodes.parameter_implicitly_any,
+                    .message = msg,
+                });
+            }
         }
 
         const ret_t: TypeId = if (f.return_type != hir_mod.none_node_id)
@@ -540,6 +576,28 @@ pub const Checker = struct {
         // Propagate the declaration's type to the name identifier
         // so hover-on-identifier returns the right type.
         if (v.name != hir_mod.none_node_id) self.hir.setType(v.name, final_type);
+
+        // TS7005: variable declared without an annotation and
+        // without an initializer falls through to `any`.
+        if (self.strict_flags.no_implicit_any and
+            v.type_annotation == hir_mod.none_node_id and
+            v.init == hir_mod.none_node_id)
+        {
+            const var_name: []const u8 = if (v.name != hir_mod.none_node_id and self.hir.kindOf(v.name) == .identifier)
+                self.string_interner.get(hir_mod.identifierOf(self.hir, v.name).name)
+            else
+                "<anonymous>";
+            const msg = try std.fmt.allocPrint(
+                self.diag_arena.allocator(),
+                "Variable '{s}' implicitly has an 'any' type.",
+                .{var_name},
+            );
+            try self.diagnostics.append(self.gpa, .{
+                .node = node,
+                .code = TsCodes.variable_implicitly_any,
+                .message = msg,
+            });
+        }
     }
 
     /// Type an expression. Returns its TypeId and also records it
@@ -1780,4 +1838,40 @@ test "checker: `as` cast feeds the var-decl's declared type without TS2322" {
     defer destroySetup(s);
     try s.checker.checkSourceFile(s.root);
     try T.expect(s.checker.diagnostics.items.len == 0);
+}
+
+test "checker: noImplicitAny emits TS7006 for unannotated parameter" {
+    const s = try newSetup(
+        \\function id(x) { return x; }
+    );
+    defer destroySetup(s);
+    s.checker.setStrictFlags(.{ .no_implicit_any = true });
+    try s.checker.checkSourceFile(s.root);
+    var found = false;
+    for (s.checker.diagnostics.items) |d| {
+        if (d.code == TsCodes.parameter_implicitly_any) found = true;
+    }
+    try T.expect(found);
+}
+
+test "checker: noImplicitAny silent when parameter has annotation" {
+    const s = try newSetup(
+        \\function id(x: number): number { return x; }
+    );
+    defer destroySetup(s);
+    s.checker.setStrictFlags(.{ .no_implicit_any = true });
+    try s.checker.checkSourceFile(s.root);
+    try T.expect(s.checker.diagnostics.items.len == 0);
+}
+
+test "checker: noImplicitAny emits TS7005 for bare `let x` declaration" {
+    const s = try newSetup("let x;");
+    defer destroySetup(s);
+    s.checker.setStrictFlags(.{ .no_implicit_any = true });
+    try s.checker.checkSourceFile(s.root);
+    var found = false;
+    for (s.checker.diagnostics.items) |d| {
+        if (d.code == TsCodes.variable_implicitly_any) found = true;
+    }
+    try T.expect(found);
 }
