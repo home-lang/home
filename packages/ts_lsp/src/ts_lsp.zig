@@ -750,6 +750,50 @@ pub const Service = struct {
         return items.toOwnedSlice(gpa);
     }
 
+    /// Resolve the type-signature detail for a completion item by
+    /// looking up `label` as a top-level value or type symbol across
+    /// every open file in the program. Returns the rendered signature
+    /// (e.g. `function add(a: number, b: number): number`) or null when
+    /// the label doesn't match any top-level symbol. Caller owns the
+    /// returned slice.
+    ///
+    /// LSP `completionItem/resolve` uses this to fill in the `detail`
+    /// field lazily — only when the user actually selects an item from
+    /// the popup, so the initial completion request stays fast.
+    pub fn resolveCompletionDetail(
+        self: *Service,
+        gpa: std.mem.Allocator,
+        label: []const u8,
+    ) !?[]u8 {
+        for (self.program.files.items) |f| {
+            const c = f.compilation orelse continue;
+            // Intern the label in this file's interner; if absent the
+            // name can't possibly be a symbol here.
+            const name_id = c.interner.intern(label) catch continue;
+            if (c.module.root.values.get(name_id)) |sym| {
+                if (sym.decls.items.len == 0) continue;
+                const decl = sym.decls.items[0];
+                const t = c.hir.typeOf(decl);
+                if (renderDeclShape(gpa, &c.type_interner, &c.interner, &c.hir, sym, t)) |shape| {
+                    return shape;
+                }
+                if (t == ts_checker.Primitive.none) continue;
+                return try renderType(gpa, &c.type_interner, &c.interner, t);
+            }
+            if (c.module.root.types.get(name_id)) |sym| {
+                if (sym.decls.items.len == 0) continue;
+                const decl = sym.decls.items[0];
+                const t = c.hir.typeOf(decl);
+                if (renderDeclShape(gpa, &c.type_interner, &c.interner, &c.hir, sym, t)) |shape| {
+                    return shape;
+                }
+                if (t == ts_checker.Primitive.none) continue;
+                return try renderType(gpa, &c.type_interner, &c.interner, t);
+            }
+        }
+        return null;
+    }
+
     /// Signature-help at `byte_pos`. Returns the active signature
     /// rendered as `(p1: T1, p2: T2): R`, with the active parameter
     /// index based on the cursor's position in the argument list.

@@ -1193,51 +1193,82 @@ pub fn handlePrepareRename(
 /// spec the client sends back a CompletionItem from a prior
 /// `textDocument/completion` response and expects the same shape
 /// echoed back with optional fields (e.g. `documentation`,
-/// `detail`) populated. Today this is a stub: we return the input
-/// item verbatim. A future enhancement would resolve `data` /
-/// `auto_import_from` payloads and attach symbol-level docs. Caller
-/// owns the returned slice.
+/// `detail`) populated. We look up the item's `label` as a top-level
+/// symbol across every open file; on a match we splice in (or
+/// overwrite) a `detail` field carrying the rendered type signature.
+/// When the label resolves to nothing we still echo the original
+/// item back unchanged, per the spec. Caller owns the returned slice.
 pub fn handleCompletionItemResolve(
     service: *ts_lsp.Service,
     gpa: std.mem.Allocator,
     request_id: RequestId,
     params_json: []const u8,
 ) ![]u8 {
-    _ = service;
     // The CompletionItem itself is the entire `params` value (the
-    // protocol passes the item as the request's `params`). Echo it
-    // back unchanged; if we can't locate an object, fall through to
-    // an empty `{}`.
-    if (std.mem.indexOfScalar(u8, params_json, '{')) |obj_start| {
-        // Find the matching closing brace by tracking depth so we
-        // ignore braces inside strings.
-        var depth: usize = 0;
-        var in_str = false;
-        var i: usize = obj_start;
-        while (i < params_json.len) : (i += 1) {
-            const ch = params_json[i];
-            if (in_str) {
-                if (ch == '\\') {
-                    i += 1;
-                    continue;
-                }
-                if (ch == '"') in_str = false;
+    // protocol passes the item as the request's `params`). Locate
+    // the object span; if absent, fall through to `{}`.
+    const obj_start = std.mem.indexOfScalar(u8, params_json, '{') orelse {
+        return encodeResponse(gpa, request_id, "{}");
+    };
+    var depth: usize = 0;
+    var in_str = false;
+    var obj_end: usize = params_json.len;
+    var i: usize = obj_start;
+    while (i < params_json.len) : (i += 1) {
+        const ch = params_json[i];
+        if (in_str) {
+            if (ch == '\\') {
+                i += 1;
                 continue;
             }
-            if (ch == '"') {
-                in_str = true;
-                continue;
-            }
-            if (ch == '{') depth += 1;
-            if (ch == '}') {
-                depth -= 1;
-                if (depth == 0) {
-                    return encodeResponse(gpa, request_id, params_json[obj_start .. i + 1]);
-                }
+            if (ch == '"') in_str = false;
+            continue;
+        }
+        if (ch == '"') {
+            in_str = true;
+            continue;
+        }
+        if (ch == '{') depth += 1;
+        if (ch == '}') {
+            depth -= 1;
+            if (depth == 0) {
+                obj_end = i + 1;
+                break;
             }
         }
     }
-    return encodeResponse(gpa, request_id, "{}");
+    const item_json = params_json[obj_start..obj_end];
+
+    // Pull the `label` out so we can look it up across the program.
+    const label_raw = findJsonStringField(item_json, "label") orelse {
+        return encodeResponse(gpa, request_id, item_json);
+    };
+    const label = try decodeJsonString(gpa, label_raw);
+    defer gpa.free(label);
+
+    const detail_opt = service.resolveCompletionDetail(gpa, label) catch null;
+    if (detail_opt == null) {
+        return encodeResponse(gpa, request_id, item_json);
+    }
+    const detail = detail_opt.?;
+    defer gpa.free(detail);
+
+    // Splice `detail` into the object. If a `detail` already exists
+    // we leave the original in place and add ours alongside; the
+    // spec lets servers overwrite, but the simpler append form is
+    // sufficient here and keeps echo-back semantics intact for
+    // anything we don't recognise.
+    var buf: std.ArrayListUnmanaged(u8) = .empty;
+    defer buf.deinit(gpa);
+    // Drop the trailing `}` so we can append the new field.
+    try buf.appendSlice(gpa, item_json[0 .. item_json.len - 1]);
+    const inner = item_json[1 .. item_json.len - 1];
+    const has_fields = std.mem.indexOfNone(u8, inner, " \t\r\n") != null;
+    if (has_fields) try buf.append(gpa, ',');
+    try buf.appendSlice(gpa, "\"detail\":\"");
+    try writeJsonStringContents(&buf, gpa, detail);
+    try buf.appendSlice(gpa, "\"}");
+    return encodeResponse(gpa, request_id, buf.items);
 }
 
 /// Handle a `textDocument/documentSymbol` JSON-RPC request: extract
@@ -2687,6 +2718,31 @@ test "handleCompletionItemResolve: echoes input item back" {
     try T.expect(std.mem.indexOf(u8, out, "\"label\":\"foo\"") != null);
     try T.expect(std.mem.indexOf(u8, out, "\"kind\":6") != null);
     try T.expect(std.mem.indexOf(u8, out, "\"auto_import_from\":\"./bar\"") != null);
+}
+
+test "handleCompletionItemResolve: fills detail from top-level symbol type" {
+    var vfs = ts_resolver.VirtualFs.init(T.allocator);
+    defer vfs.deinit();
+    var resolver = ts_resolver.Resolver.init(T.allocator, vfs.fs(), .{});
+    defer resolver.deinit();
+    var program = ts_program.Program.init(T.allocator, &resolver);
+    defer program.deinit();
+
+    _ = try program.add("/main.ts", "function add(a: number, b: number): number { return a + b; }");
+    try program.compileAll(.{});
+    var svc = ts_lsp.Service.init(T.allocator, &program);
+
+    const body =
+        \\{"jsonrpc":"2.0","id":162,"method":"completionItem/resolve","params":{"label":"add","kind":3}}
+    ;
+    const params = findJsonRawField(body, "params").?;
+    const out = try handleCompletionItemResolve(&svc, T.allocator, .{ .integer = 162 }, params);
+    defer T.allocator.free(out);
+    try T.expect(std.mem.indexOf(u8, out, "\"id\":162") != null);
+    try T.expect(std.mem.indexOf(u8, out, "\"label\":\"add\"") != null);
+    try T.expect(std.mem.indexOf(u8, out, "\"detail\":\"") != null);
+    // The rendered detail should mention the function shape.
+    try T.expect(std.mem.indexOf(u8, out, "function add") != null);
 }
 
 test "handleDocumentSymbol: returns DocumentSymbol array" {
