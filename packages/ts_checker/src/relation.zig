@@ -85,12 +85,22 @@ pub const RelationCache = struct {
 pub const Engine = struct {
     interner: *Interner,
     cache: RelationCache,
+    /// When true, function-type parameters are checked
+    /// contravariantly (sound — matches `strictFunctionTypes`).
+    /// When false (TS default for method declarations), parameters
+    /// are checked bivariantly: source `(p: T) => R` assigns to
+    /// target `(p: U) => R` iff `T` and `U` are mutually assignable.
+    strict_function_types: bool = false,
 
     pub fn init(gpa: std.mem.Allocator, ti: *Interner) Engine {
         return .{
             .interner = ti,
             .cache = RelationCache.init(gpa),
         };
+    }
+
+    pub fn setStrictFunctionTypes(self: *Engine, on: bool) void {
+        self.strict_function_types = on;
     }
 
     pub fn deinit(self: *Engine) void {
@@ -288,7 +298,16 @@ pub const Engine = struct {
         if (sp.len > tp.len) return false;
         for (sp, 0..) |s_param, i| {
             const t_param = tp[i];
-            if (!try self.isAssignableTo(t_param, s_param)) return false;
+            // Strict mode: target's param must be assignable to
+            // source's (contravariant). Non-strict: bivariant —
+            // accept either direction.
+            if (self.strict_function_types) {
+                if (!try self.isAssignableTo(t_param, s_param)) return false;
+            } else {
+                const ct = try self.isAssignableTo(t_param, s_param);
+                const co = try self.isAssignableTo(s_param, t_param);
+                if (!ct and !co) return false;
+            }
         }
         const s_ret = self.interner.signatureReturn(source) orelse return true;
         const t_ret = self.interner.signatureReturn(target) orelse return true;

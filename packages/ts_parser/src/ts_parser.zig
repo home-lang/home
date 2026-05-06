@@ -1982,6 +1982,32 @@ pub const Parser = struct {
         return null;
     }
 
+    /// Parse the comma-separated type arguments of an explicit
+    /// generic call. Cursor enters at `<`; returns with the cursor
+    /// positioned at `(` (the index `after_gt` returned by
+    /// `findCallTypeArgsEnd`). The caller owns the returned slice.
+    fn parseExplicitCallTypeArgs(self: *Parser, after_gt: u32) ParseError![]NodeId {
+        var args: std.ArrayListUnmanaged(NodeId) = .empty;
+        errdefer args.deinit(self.gpa);
+        // Skip the opening `<`.
+        std.debug.assert(self.peek().kind == .less_than);
+        _ = self.advance();
+        while (self.peek().kind != .greater_than) {
+            const t = try self.parseTypeAnnotation();
+            try args.append(self.gpa, t);
+            if (self.peek().kind == .comma) {
+                _ = self.advance();
+                continue;
+            }
+            // No comma + no `>` → bail to checkpoint.
+            if (self.peek().kind != .greater_than) break;
+        }
+        // Force-advance to `(` even if structural recovery failed; the
+        // caller already verified `after_gt` lands on `(`.
+        self.cursor = after_gt;
+        return args.toOwnedSlice(self.gpa);
+    }
+
     /// Skip a balanced (), [], or {} starting at `start`. Returns
     /// the cursor *after* the matching closer, or null on mismatch.
     fn skipBalancedFrom(self: *Parser, start: u32) ?u32 {
@@ -2262,15 +2288,15 @@ pub const Parser = struct {
                     // Otherwise we bail out and leave `<` to the binop
                     // path.
                     if (self.findCallTypeArgsEnd(self.cursor)) |after_gt| {
-                        // Skip the type args entirely (Phase 6 follow-up
-                        // intern + thread them into call_expr; for now
-                        // we just type-check via call-site inference).
-                        self.cursor = after_gt;
+                        // Parse the type args so the checker can use
+                        // them to override call-site inference.
+                        const type_args = try self.parseExplicitCallTypeArgs(after_gt);
+                        defer self.gpa.free(type_args);
                         const args = try self.parseArgumentList();
                         defer self.gpa.free(args);
                         const close_pos = self.tokens[self.cursor - 1].span.end;
                         const sp: Span = .{ .start = self.hir.spanOf(node).start, .end = close_pos };
-                        node = try self.builder.addCall(sp, node, args);
+                        node = try self.builder.addCallWithTypeArgs(sp, node, args, type_args);
                     } else break;
                 },
                 .open_bracket => {

@@ -119,6 +119,16 @@ pub fn optionsFromConfig(cfg: *const tsconfig_mod.TsConfig) CompileOptions {
         switch (jsx) {
             .preserve, .react, .react_jsx, .react_jsxdev, .react_native => opts.is_tsx = true,
         }
+        // Map tsconfig's JSX setting onto the emitter's runtime mode.
+        opts.emit.jsx_runtime = switch (jsx) {
+            .react => .classic,
+            .react_jsx => .automatic,
+            .react_jsxdev => .automatic_dev,
+            .preserve, .react_native => .preserve,
+        };
+    }
+    if (cfg.compiler_options.jsx_factory) |fac| {
+        opts.emit.jsx_factory = fac;
     }
     return opts;
 }
@@ -310,13 +320,16 @@ pub fn compileSource(
         const co = cfg.compiler_options;
         const strict_on = co.strict orelse false;
         const no_implicit_any = co.no_implicit_any orelse strict_on;
+        const strict_fn_types = co.strict_function_types orelse strict_on;
         // `strict` does NOT imply noUnusedLocals / noUnusedParameters
         // — those are independent in tsc.
         checker.setStrictFlags(.{
             .no_implicit_any = no_implicit_any,
             .no_unused_parameters = co.no_unused_parameters orelse false,
             .no_unused_locals = co.no_unused_locals orelse false,
+            .strict_function_types = strict_fn_types,
         });
+        c.type_engine.setStrictFunctionTypes(strict_fn_types);
     }
     if (c.root != hir_mod.none_node_id) {
         checker.checkSourceFile(c.root) catch |err| switch (err) {
@@ -802,21 +815,55 @@ test "driver: typeof narrowing in else branch flips" {
         c.deinit();
         T.allocator.destroy(c);
     }
-    // Within the else branch, x is narrowed to never (because
-    // the static type is `any` and we negated typeof===string).
-    // Phase 6 follow-up: proper union subtraction; for now we
-    // only verify the else branch does some narrowing.
+    // Within the else branch, x narrows by subtracting `string`
+    // from x's current type. For `any`, subtraction is a no-op
+    // (matches tsc — `any minus T = any`), so the else branch
+    // keeps `any`. The narrowing is still observable in the then
+    // branch where x narrows to `string`.
     const stmts = hir_mod.blockStmts(&c.hir, c.root);
     const fn_node = stmts[0];
     const f = hir_mod.fnDeclOf(&c.hir, fn_node);
     const body_stmts = hir_mod.blockStmts(&c.hir, f.body);
     const if_stmt = body_stmts[0];
     const ifp = hir_mod.ifOf(&c.hir, if_stmt);
+    const then_stmts = hir_mod.blockStmts(&c.hir, ifp.then_branch);
+    const s_decl = then_stmts[0];
+    const s_init = hir_mod.varDeclOf(&c.hir, s_decl).init;
+    try T.expectEqual(@as(u32, ts_checker.Primitive.string_t), c.hir.typeOf(s_init));
     const else_stmts = hir_mod.blockStmts(&c.hir, ifp.else_branch);
     const n_decl = else_stmts[0];
     const n_init = hir_mod.varDeclOf(&c.hir, n_decl).init;
-    // never (negation of typeof===string).
-    try T.expectEqual(@as(u32, ts_checker.Primitive.never), c.hir.typeOf(n_init));
+    // any minus string = any (tsc-compatible behavior).
+    try T.expectEqual(@as(u32, ts_checker.Primitive.any), c.hir.typeOf(n_init));
+}
+
+test "driver: typeof narrowing on union subtracts in else branch" {
+    var c = try compileSource(T.allocator,
+        \\function f(x: string | number) {
+        \\  if (typeof x === "string") {
+        \\    let s = x;
+        \\  } else {
+        \\    let n = x;
+        \\  }
+        \\}
+    , .{});
+    defer {
+        c.deinit();
+        T.allocator.destroy(c);
+    }
+    const stmts = hir_mod.blockStmts(&c.hir, c.root);
+    const fn_node = stmts[0];
+    const f = hir_mod.fnDeclOf(&c.hir, fn_node);
+    const body_stmts = hir_mod.blockStmts(&c.hir, f.body);
+    const if_stmt = body_stmts[0];
+    const ifp = hir_mod.ifOf(&c.hir, if_stmt);
+    const then_stmts = hir_mod.blockStmts(&c.hir, ifp.then_branch);
+    const s_init = hir_mod.varDeclOf(&c.hir, then_stmts[0]).init;
+    try T.expectEqual(@as(u32, ts_checker.Primitive.string_t), c.hir.typeOf(s_init));
+    const else_stmts = hir_mod.blockStmts(&c.hir, ifp.else_branch);
+    const n_init = hir_mod.varDeclOf(&c.hir, else_stmts[0]).init;
+    // (string | number) minus string = number.
+    try T.expectEqual(@as(u32, ts_checker.Primitive.number_t), c.hir.typeOf(n_init));
 }
 
 test "driver: null guard narrows in then branch" {

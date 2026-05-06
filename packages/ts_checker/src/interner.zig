@@ -611,6 +611,16 @@ pub const Interner = struct {
         std.debug.assert(self.pool.flagsOf(id).is_literal);
         return self.pool.literal_payloads.items[self.pool.payloadOf(id)];
     }
+
+    pub fn conditionalPayload(self: *const Interner, id: TypeId) types.ConditionalPayload {
+        std.debug.assert(self.pool.flagsOf(id).is_conditional);
+        return self.pool.conditional_payloads.items[self.pool.payloadOf(id)];
+    }
+
+    pub fn mappedPayload(self: *const Interner, id: TypeId) types.MappedPayload {
+        std.debug.assert(self.pool.flagsOf(id).is_mapped);
+        return self.pool.mapped_payloads.items[self.pool.payloadOf(id)];
+    }
 };
 
 fn objectMemberLessThan(_: void, a: types.ObjectMember, b: types.ObjectMember) bool {

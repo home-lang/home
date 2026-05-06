@@ -100,6 +100,12 @@ pub const StrictFlags = struct {
     /// declarations whose name isn't referenced after the
     /// declaration. Names beginning with `_` are excluded.
     no_unused_locals: bool = false,
+    /// `strictFunctionTypes` (also implied by `strict`). When true,
+    /// function-type parameters are checked contravariantly (the
+    /// sound rule). When false, parameters are bivariant (legacy
+    /// flexibility — matches `tsc`'s pre-3.0 default and current
+    /// behavior on method declarations).
+    strict_function_types: bool = false,
 };
 
 pub const Checker = struct {
@@ -139,6 +145,12 @@ pub const Checker = struct {
     /// Consulted by `lowererLowerWithTypeParams` to instantiate
     /// `Box<number>`-style references against the aliased body.
     generic_aliases: std.AutoHashMapUnmanaged(hir_mod.StringId, GenericAliasInfo),
+    /// Generic function name → owned `[]TypeId` of TypeParameter ids
+    /// (in declaration order). Populated by `checkFnSignatureOnly`.
+    /// Consulted by call-expression typing when explicit type args
+    /// are present so they substitute the parameter types directly
+    /// rather than going through argument-driven inference.
+    generic_fns: std.AutoHashMapUnmanaged(hir_mod.StringId, []TypeId),
     /// Strictness flags driving optional diagnostics.
     strict_flags: StrictFlags = .{},
     diagnostics: std.ArrayListUnmanaged(Diagnostic),
@@ -164,6 +176,7 @@ pub const Checker = struct {
             .class_constructor_sigs = .empty,
             .type_names = .empty,
             .generic_aliases = .empty,
+            .generic_fns = .empty,
             .diagnostics = .empty,
             .diag_arena = std.heap.ArenaAllocator.init(gpa),
         };
@@ -192,6 +205,9 @@ pub const Checker = struct {
         var ga_it = self.generic_aliases.valueIterator();
         while (ga_it.next()) |info| self.gpa.free(info.params);
         self.generic_aliases.deinit(self.gpa);
+        var gf_it = self.generic_fns.valueIterator();
+        while (gf_it.next()) |params| self.gpa.free(params.*);
+        self.generic_fns.deinit(self.gpa);
         self.diagnostics.deinit(self.gpa);
         self.diag_arena.deinit();
     }
@@ -664,6 +680,8 @@ pub const Checker = struct {
         const f = hir_mod.fnDeclOf(self.hir, node);
         const type_params = hir_mod.fnTypeParams(self.hir, node);
         if (type_params.len > 0) try self.pushNarrowScope();
+        var captured_tp_ids: std.ArrayListUnmanaged(TypeId) = .empty;
+        defer captured_tp_ids.deinit(self.gpa);
         for (type_params) |tp| {
             if (self.hir.kindOf(tp) != .type_parameter) continue;
             const tpp = hir_mod.typeParameterOf(self.hir, tp);
@@ -678,6 +696,7 @@ pub const Checker = struct {
             const tp_id = self.interner.internTypeParameter(tpp.name, constraint, def) catch return error.OutOfMemory;
             self.hir.setType(tp, tp_id);
             try self.recordNarrow(tpp.name, tp_id);
+            try captured_tp_ids.append(self.gpa, tp_id);
         }
 
         var param_types: std.ArrayListUnmanaged(TypeId) = .empty;
@@ -725,6 +744,15 @@ pub const Checker = struct {
         const sig = self.interner.internSignature(param_types.items, ret_t, false) catch return error.OutOfMemory;
         self.hir.setType(node, sig);
         if (f.name != hir_mod.none_node_id) self.hir.setType(f.name, sig);
+        // Record the function's generic type parameters keyed by name
+        // so call sites with explicit type args (`f<T>(args)`) can
+        // substitute directly. Drop any prior recording on shadow.
+        if (captured_tp_ids.items.len > 0 and f.name != hir_mod.none_node_id and self.hir.kindOf(f.name) == .identifier) {
+            const fn_name = hir_mod.identifierOf(self.hir, f.name).name;
+            if (self.generic_fns.fetchRemove(fn_name)) |old| self.gpa.free(old.value);
+            const owned = captured_tp_ids.toOwnedSlice(self.gpa) catch return error.OutOfMemory;
+            try self.generic_fns.put(self.gpa, fn_name, owned);
+        }
         return sig;
     }
 
@@ -1166,9 +1194,168 @@ pub const Checker = struct {
                 }
                 return self.interner.internKeyof(operand) catch return error.OutOfMemory;
             },
+            .conditional_type => {
+                // `T extends U ? X : Y` — eagerly evaluate when neither
+                // `T` nor `U` contains an unresolved type parameter.
+                // Distributive: when `T` resolves to a union, distribute
+                // the conditional across each member and union the
+                // results.
+                const c = hir_mod.conditionalTypeOf(self.hir, type_node);
+                const check = try self.lowererLowerWithTypeParams(c.check);
+                const ext = try self.lowererLowerWithTypeParams(c.extends);
+                const tt = try self.lowererLowerWithTypeParams(c.true_branch);
+                const ff = try self.lowererLowerWithTypeParams(c.false_branch);
+                return self.evalConditional(check, ext, tt, ff);
+            },
+            .mapped_type => {
+                // `{ [K in T]: V }` — when `T` resolves to a known
+                // string-literal union, materialize the result as an
+                // object type with one property per literal. Each
+                // property's type is the value template with `K`
+                // substituted for that literal.
+                return self.evalMappedType(type_node);
+            },
             else => {},
         }
         return self.lowerer.lower(type_node);
+    }
+
+    /// Evaluate `check extends ext ? tt : ff`. If either side carries a
+    /// free type parameter (or a downstream conditional/keyof that
+    /// hasn't reduced), defer by interning the conditional. If `check`
+    /// is a union and itself a naked type parameter substitution,
+    /// distribute. Otherwise pick the branch by structural assignability.
+    fn evalConditional(
+        self: *Checker,
+        check: TypeId,
+        ext: TypeId,
+        tt: TypeId,
+        ff: TypeId,
+    ) CheckError!TypeId {
+        // Distribute over a union check.
+        if (self.interner.pool.flagsOf(check).is_union) {
+            const members = self.interner.unionMembers(check);
+            var built: std.ArrayListUnmanaged(TypeId) = .empty;
+            defer built.deinit(self.gpa);
+            for (members) |m| {
+                const r = try self.evalConditional(m, ext, tt, ff);
+                try built.append(self.gpa, r);
+            }
+            return self.interner.internUnion(built.items) catch return error.OutOfMemory;
+        }
+        // Defer if the check or extends type carries a free type parameter.
+        if (self.containsFreeTypeParameter(check) or self.containsFreeTypeParameter(ext)) {
+            return self.interner.internConditional(check, ext, tt, ff) catch return error.OutOfMemory;
+        }
+        const ok = self.engine.isAssignableTo(check, ext) catch false;
+        return if (ok) tt else ff;
+    }
+
+    fn containsFreeTypeParameter(self: *Checker, t: TypeId) bool {
+        const flags = self.interner.pool.flagsOf(t);
+        if (flags.is_type_parameter) return true;
+        if (flags.is_union) {
+            for (self.interner.unionMembers(t)) |m| if (self.containsFreeTypeParameter(m)) return true;
+            return false;
+        }
+        if (flags.is_intersection) {
+            for (self.interner.intersectionMembers(t)) |m| if (self.containsFreeTypeParameter(m)) return true;
+            return false;
+        }
+        if (flags.is_object_type) {
+            const members = self.interner.objectMembers(t);
+            for (members) |m| if (self.containsFreeTypeParameter(m.type)) return true;
+            return false;
+        }
+        if (flags.is_signature) {
+            const params = self.interner.signatureParams(t);
+            for (params) |p| if (self.containsFreeTypeParameter(p)) return true;
+            if (self.interner.signatureReturn(t)) |r| if (self.containsFreeTypeParameter(r)) return true;
+            return false;
+        }
+        return false;
+    }
+
+    fn evalMappedType(self: *Checker, node: NodeId) CheckError!TypeId {
+        const m = hir_mod.mappedTypeOf(self.hir, node);
+        if (m.constraint == hir_mod.none_node_id or m.value == hir_mod.none_node_id) {
+            // Fall back to plain lower.
+            return self.lowerer.lower(node);
+        }
+        const constraint_t = try self.lowererLowerWithTypeParams(m.constraint);
+        // The type-parameter NodeId — its `name` is the StringId we
+        // bind for the value template.
+        if (m.type_param == hir_mod.none_node_id or self.hir.kindOf(m.type_param) != .type_parameter) {
+            return self.lowerer.lower(node);
+        }
+        const tp = hir_mod.typeParameterOf(self.hir, m.type_param);
+        const tp_id = self.interner.internTypeParameter(tp.name, types.Primitive.unknown, types.Primitive.none) catch
+            return error.OutOfMemory;
+        try self.pushNarrowScope();
+        defer self.popNarrowScope();
+        try self.recordNarrow(tp.name, tp_id);
+
+        // Materialize when the constraint is a string-literal union or
+        // a single string-literal type.
+        var literal_keys: std.ArrayListUnmanaged(hir_mod.StringId) = .empty;
+        defer literal_keys.deinit(self.gpa);
+        const can_materialize = self.collectStringLiteralKeys(constraint_t, &literal_keys);
+        if (!can_materialize or literal_keys.items.len == 0) {
+            // Defer with a plain lowering.
+            return self.lowerer.lower(node);
+        }
+
+        var built: std.ArrayListUnmanaged(types.ObjectMember) = .empty;
+        defer built.deinit(self.gpa);
+        const make_optional = m.optional == 1; // 1=add
+        const make_readonly = m.readonly == 1;
+        const value_template = try self.lowererLowerWithTypeParams(m.value);
+        for (literal_keys.items) |key_name| {
+            // Substitute `K -> literal` in the value template.
+            const key_lit = self.interner.internStringLiteral(key_name) catch continue;
+            var subs: std.AutoHashMapUnmanaged(TypeId, TypeId) = .empty;
+            defer subs.deinit(self.gpa);
+            try subs.put(self.gpa, tp_id, key_lit);
+            const value_t = self.substituteType(value_template, &subs) catch value_template;
+            try built.append(self.gpa, .{
+                .name = key_name,
+                .type = value_t,
+                .is_optional = make_optional,
+                .is_readonly = make_readonly,
+                .is_method = false,
+            });
+        }
+        return self.interner.internObjectType(built.items) catch return error.OutOfMemory;
+    }
+
+    /// Walk a type and accumulate the StringIds of every string-literal
+    /// member. Returns false if any member isn't a string literal —
+    /// in that case the mapped type can't be materialized eagerly.
+    fn collectStringLiteralKeys(
+        self: *Checker,
+        t: TypeId,
+        out: *std.ArrayListUnmanaged(hir_mod.StringId),
+    ) bool {
+        const flags = self.interner.pool.flagsOf(t);
+        // Check `is_union` *first* because the union's propagated flag
+        // set OR-folds in `is_string`/`is_literal` from each member,
+        // which would otherwise misroute through the literal branch.
+        if (flags.is_union) {
+            const members = self.interner.unionMembers(t);
+            for (members) |mt| if (!self.collectStringLiteralKeys(mt, out)) return false;
+            return true;
+        }
+        if (flags.is_literal and flags.is_string) {
+            const lit = self.interner.literalOf(t);
+            switch (lit) {
+                .string_lit => |sid| {
+                    out.append(self.gpa, sid) catch return false;
+                    return true;
+                },
+                else => return false,
+            }
+        }
+        return false;
     }
 
     fn checkVarDecl(self: *Checker, node: NodeId) CheckError!void {
@@ -1285,15 +1472,44 @@ pub const Checker = struct {
                     const t = try self.checkExpression(arg);
                     try arg_types.append(self.gpa, t);
                 }
-                if (self.interner.pool.flagsOf(callee_t).is_signature) {
-                    try self.checkArgsAgainstSignature(node, args, arg_types.items, callee_t);
-                    if (self.interner.signatureReturn(callee_t)) |ret| {
-                        const param_ts = self.interner.signatureParams(callee_t);
+                // Explicit type arguments (`f<T>(args)`): if the
+                // callee resolves to a generic fn we recorded, lower
+                // each explicit arg, build a substitution, and
+                // substitute against the signature. Substituted
+                // signature drives both arg-checking (so TS2345
+                // fires against the explicit-instantiated parameter
+                // types) and the return type.
+                const type_arg_nodes = hir_mod.callTypeArgs(self.hir, node);
+                var effective_callee_t = callee_t;
+                if (type_arg_nodes.len > 0 and self.interner.pool.flagsOf(callee_t).is_signature and self.hir.kindOf(c.callee) == .identifier) {
+                    const callee_name = hir_mod.identifierOf(self.hir, c.callee).name;
+                    if (self.generic_fns.get(callee_name)) |type_params| {
+                        var subs: std.AutoHashMapUnmanaged(TypeId, TypeId) = .empty;
+                        defer subs.deinit(self.gpa);
+                        const n = @min(type_params.len, type_arg_nodes.len);
+                        for (0..n) |i| {
+                            const explicit_t = self.lowererLowerWithTypeParams(type_arg_nodes[i]) catch types.Primitive.unknown;
+                            try subs.put(self.gpa, type_params[i], explicit_t);
+                        }
+                        if (subs.count() > 0) {
+                            effective_callee_t = self.substituteType(callee_t, &subs) catch callee_t;
+                        }
+                    }
+                }
+                if (self.interner.pool.flagsOf(effective_callee_t).is_signature) {
+                    try self.checkArgsAgainstSignature(node, args, arg_types.items, effective_callee_t);
+                    if (self.interner.signatureReturn(effective_callee_t)) |ret| {
+                        // If explicit type args already substituted,
+                        // skip argument-driven inference (it's
+                        // redundant and the substituted return is
+                        // canonical).
+                        if (effective_callee_t != callee_t) break :blk ret;
+                        const param_ts = self.interner.signatureParams(effective_callee_t);
                         const instantiated = self.instantiateReturn(param_ts, arg_types.items, ret) catch ret;
                         break :blk instantiated;
                     }
                 }
-                if (self.interner.signatureReturn(callee_t)) |ret| break :blk ret;
+                if (self.interner.signatureReturn(effective_callee_t)) |ret| break :blk ret;
                 break :blk types.Primitive.any;
             },
             .member_access => blk: {
@@ -1555,13 +1771,13 @@ pub const Checker = struct {
                         try self.recordNarrow(id.name, narrowed);
                     } else {
                         // Negative branch: subtract `narrowed` from
-                        // the variable's static type. Phase 6
-                        // follow-up does proper union subtraction;
-                        // for now we only handle the simple case
-                        // where the static type is exactly `narrowed`
-                        // (in which case the negative branch
-                        // contradicts and `never` applies).
-                        try self.recordNarrow(id.name, types.Primitive.never);
+                        // the variable's current type. Works for
+                        // unions of primitives (`string | number`
+                        // minus `string` → `number`). Falls through
+                        // to `never` for the bare-equality case.
+                        const current = self.lookupNarrow(id.name) orelse self.typeOfIdentifier(u.operand);
+                        const subbed = self.subtractType(current, narrowed) catch current;
+                        try self.recordNarrow(id.name, subbed);
                     }
                 }
                 return;
@@ -1575,12 +1791,13 @@ pub const Checker = struct {
             if (positive) {
                 try self.recordNarrow(id.name, types.Primitive.null_t);
             } else {
-                // X !== null inside then-branch → narrow away null;
-                // we record the original-minus-null. With proper
-                // union subtraction this is exact; for now we record
-                // 'unknown' which is at least correct as a
-                // supertype.
-                try self.recordNarrow(id.name, types.Primitive.unknown);
+                // X !== null in then-branch → subtract null from X's
+                // current static type. If X was `string | null`, the
+                // narrowed type is `string`. If X was just `null`,
+                // the narrowed type is `never` (unreachable).
+                const current = self.lookupNarrow(id.name) orelse self.typeOfIdentifier(b.lhs);
+                const narrowed = self.subtractType(current, types.Primitive.null_t) catch current;
+                try self.recordNarrow(id.name, narrowed);
             }
             return;
         }
@@ -1596,7 +1813,9 @@ pub const Checker = struct {
                 if (positive) {
                     try self.recordNarrow(lhs.name, types.Primitive.undefined_t);
                 } else {
-                    try self.recordNarrow(lhs.name, types.Primitive.unknown);
+                    const current = self.lookupNarrow(lhs.name) orelse self.typeOfIdentifier(b.lhs);
+                    const narrowed = self.subtractType(current, types.Primitive.undefined_t) catch current;
+                    try self.recordNarrow(lhs.name, narrowed);
                 }
                 return;
             }
@@ -1912,6 +2131,35 @@ pub const Checker = struct {
             }
             return self.interner.internObjectType(new_members.items) catch return t;
         }
+        if (flags.is_conditional) {
+            // Substitute into each leaf, then re-attempt eager
+            // evaluation. If the check is now concrete, this
+            // collapses to the picked branch.
+            const c = self.interner.conditionalPayload(t);
+            const new_check = try self.substituteType(c.check_type, subs);
+            const new_ext = try self.substituteType(c.extends_type, subs);
+            const new_tt = try self.substituteType(c.true_branch, subs);
+            const new_ff = try self.substituteType(c.false_branch, subs);
+            return self.evalConditional(new_check, new_ext, new_tt, new_ff);
+        }
+        if (flags.is_keyof) {
+            // `keyof T` after substitution may resolve eagerly.
+            const k = self.interner.pool.keyof_payloads.items[self.interner.pool.payloadOf(t)];
+            const new_operand = try self.substituteType(k.operand, subs);
+            if (self.interner.pool.flagsOf(new_operand).is_object_type) {
+                const members = self.interner.objectMembers(new_operand);
+                if (members.len == 0) return types.Primitive.never;
+                var lits: std.ArrayListUnmanaged(TypeId) = .empty;
+                defer lits.deinit(self.gpa);
+                for (members) |m| {
+                    const lit = self.interner.internStringLiteral(m.name) catch continue;
+                    try lits.append(self.gpa, lit);
+                }
+                if (lits.items.len == 1) return lits.items[0];
+                return self.interner.internUnion(lits.items) catch return t;
+            }
+            return self.interner.internKeyof(new_operand) catch return t;
+        }
         return t;
     }
 
@@ -2121,6 +2369,25 @@ pub const Checker = struct {
         for (members) |m| {
             const f = self.interner.pool.flagsOf(m);
             if (f.is_null or f.is_undefined) continue;
+            try kept.append(self.gpa, m);
+        }
+        if (kept.items.len == 0) return types.Primitive.never;
+        if (kept.items.len == 1) return kept.items[0];
+        return self.interner.internUnion(kept.items) catch return error.OutOfMemory;
+    }
+
+    /// Subtract a single type from a union (or return `t` unchanged
+    /// if `t` isn't a union or doesn't contain `to_remove`). Used by
+    /// negative-branch narrowing on `=== null`, `=== undefined`,
+    /// `=== "literal"`, etc.
+    fn subtractType(self: *Checker, t: TypeId, to_remove: TypeId) !TypeId {
+        if (t == to_remove) return types.Primitive.never;
+        if (!self.interner.pool.flagsOf(t).is_union) return t;
+        const members = self.interner.unionMembers(t);
+        var kept: std.ArrayListUnmanaged(TypeId) = .empty;
+        defer kept.deinit(self.gpa);
+        for (members) |m| {
+            if (m == to_remove) continue;
             try kept.append(self.gpa, m);
         }
         if (kept.items.len == 0) return types.Primitive.never;
@@ -3396,4 +3663,105 @@ test "checker: function with branches unions the return types" {
     }
     try T.expect(has_num);
     try T.expect(has_str);
+}
+
+test "checker: explicit type args override call-site inference" {
+    // Without inference (no value args to drive it), explicit type
+    // args still resolve the return type.
+    const s = try newSetup(
+        \\function id<T>(): T { return null as any; }
+        \\let n = id<number>();
+        \\let s = id<string>();
+    );
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+    const stmts = hir_mod.blockStmts(&s.hir, s.root);
+    // stmts[1] = let n = id<number>(); stmts[2] = let s = id<string>();
+    const n_decl = stmts[1];
+    const s_decl = stmts[2];
+    try T.expectEqual(types.Primitive.number_t, s.hir.typeOf(n_decl));
+    try T.expectEqual(types.Primitive.string_t, s.hir.typeOf(s_decl));
+}
+
+test "checker: explicit type args take precedence over inference" {
+    // Inference would say `T = number`, but explicit `<string>`
+    // wins. The arg is then checked against the substituted
+    // signature, so passing a number to `id<string>` is TS2345.
+    const s = try newSetup(
+        \\function id<T>(x: T): T { return x; }
+        \\let r = id<string>(42);
+    );
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+    const stmts = hir_mod.blockStmts(&s.hir, s.root);
+    const r_decl = stmts[1];
+    // r should be `string` because the explicit type-arg wins.
+    try T.expectEqual(types.Primitive.string_t, s.hir.typeOf(r_decl));
+    // And we should have a TS2345 diagnostic for passing number to string.
+    var saw_2345 = false;
+    for (s.checker.diagnostics.items) |d| {
+        if (d.code == TsCodes.argument_type_mismatch) saw_2345 = true;
+    }
+    try T.expect(saw_2345);
+}
+
+test "checker: conditional type with concrete check evaluates true branch" {
+    // `string extends string ? number : boolean` should resolve to
+    // `number` eagerly.
+    const s = try newSetup(
+        \\type Pick<T> = T extends string ? number : boolean;
+        \\let r: Pick<string> = 1;
+    );
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+    const stmts = hir_mod.blockStmts(&s.hir, s.root);
+    // stmts[1] = `let r: Pick<string> = 1`
+    const r_decl = stmts[1];
+    try T.expectEqual(types.Primitive.number_t, s.hir.typeOf(r_decl));
+}
+
+test "checker: conditional type with concrete check evaluates false branch" {
+    const s = try newSetup(
+        \\type Pick<T> = T extends string ? number : boolean;
+        \\let r: Pick<number> = true;
+    );
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+    const stmts = hir_mod.blockStmts(&s.hir, s.root);
+    const r_decl = stmts[1];
+    try T.expectEqual(types.Primitive.boolean_t, s.hir.typeOf(r_decl));
+}
+
+test "checker: conditional distributes over a union check" {
+    // `(string | number) extends string ? "yes" : "no"`
+    // distributes to `("yes" | "no")` (literal types).
+    const s = try newSetup(
+        \\type T = (string | number) extends string ? 1 : 0;
+        \\let r: T = 0;
+    );
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+    const stmts = hir_mod.blockStmts(&s.hir, s.root);
+    const r_decl = stmts[1];
+    const t = s.hir.typeOf(r_decl);
+    // The result should be a union of the literal types `1 | 0`.
+    try T.expect(s.ti.pool.flagsOf(t).is_union);
+}
+
+test "checker: mapped type over keyof T materializes properties" {
+    // `{ [K in "x" | "y"]: number }` should produce `{ x: number; y: number }`.
+    const s = try newSetup(
+        \\type Map = { [K in "x" | "y"]: number };
+        \\let r: Map = { x: 1, y: 2 };
+    );
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+    const stmts = hir_mod.blockStmts(&s.hir, s.root);
+    const r_decl = stmts[1];
+    const t = s.hir.typeOf(r_decl);
+    try T.expect(s.ti.pool.flagsOf(t).is_object_type);
+    const members = s.ti.objectMembers(t);
+    try T.expectEqual(@as(usize, 2), members.len);
+    // Both members should be number_t.
+    for (members) |m| try T.expectEqual(types.Primitive.number_t, m.type);
 }

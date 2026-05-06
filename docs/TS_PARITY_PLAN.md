@@ -11,8 +11,8 @@
 ## Process State
 
 **Last updated:** 2026-05-05
-**Current phase:** Phase 3 type checker substantially complete — generic instantiation (incl. explicit-type-args), generic type-alias instantiation (`Box<number>` substitutes through union/intersection/object/signature shapes), structural object assignability, signatures with return-type inference, narrowing (typeof + null + else-branch + instanceof against the real class instance type), arrow-fn signatures, discriminated-union narrowing, object-literal/array-literal inference, class+interface+type-alias name resolution as annotations, `this`/`super` resolution in class methods, `extends` member inheritance, constructor signature checking (TS2554/TS2345 on `new Foo(args)`), `as`/`satisfies` casts, member access typing with TS2339, strict-mode flags `noImplicitAny` (TS7005/TS7006) and `noUnusedLocals`/`noUnusedParameters` (TS6133). Phase 8 LSP wire-protocol layer + `home-lsp` stdio binary; Phase 4.5 `home-tsc` binary compiles + emits to disk with tsconfig discovery, glob expansion of `include`/`exclude`, outDir/declarationDir routing, and `.d.ts` emit (with rendered inferred return types). Phase 5 incremental rebuild flow, persistent on-disk compilation cache, and multi-file cache wiring all landed.
-**Active deliverable:** Phase 6 — full TS conformance corpus integration; Phase 7 — native codegen for typed TS subset; Phase 4.5 — bundler integration. `home-tsc` now ships tsconfig discovery, outDir/declarationDir routing, and `.d.ts` emit driven by `compilerOptions.declaration`.
+**Current phase:** Phase 3 type checker substantially complete — generic instantiation (incl. **explicit-type-args properly substituted through signatures**), generic type-alias instantiation (`Box<number>` substitutes through union/intersection/object/signature shapes), **mapped types over string-literal unions materializing to object types**, **conditional types evaluating eagerly with union-distribution**, **deferred-conditional substitution under generic-alias instantiation**, structural object assignability, signatures with return-type inference, **proper union-subtraction narrowing on typeof / null / undefined negative branches**, narrowing (typeof + null + else-branch + instanceof against the real class instance type, `in` operator over discriminated unions, `as const` literalization), arrow-fn signatures, discriminated-union narrowing, object-literal/array-literal inference, class+interface+type-alias name resolution as annotations, `this`/`super` resolution in class methods, `extends` member inheritance, constructor signature checking (TS2554/TS2345 on `new Foo(args)`), `as`/`satisfies` casts, member access typing with TS2339, strict-mode flags `noImplicitAny` (TS7005/TS7006), `noUnusedLocals`/`noUnusedParameters` (TS6133), and **`strictFunctionTypes` (bivariant ↔ contravariant signature-assignability)**, TS2353 fresh-object excess-property checks, non-null assertion `expr!`, optional/defaulted parameters widening to `T | undefined`, `interface B extends A` member inheritance, `Array<T>` shape with `length` + number indexer, index signatures (`[k: string]: T` / `[i: number]: T`), tuple type lowering with per-index members + literal `length`, `for-of` / `for-in` element binding, `keyof T` eager evaluation, tuple literal-index narrowing, optional chaining + nullish-coalescing return-type widening. **JSX runtime selector (classic / automatic / automatic_dev) wired through tsconfig's `compilerOptions.jsx`**. Phase 8 LSP wire-protocol layer + `home-lsp` stdio binary; Phase 4.5 `home-tsc` binary compiles + emits to disk with tsconfig discovery, glob expansion of `include`/`exclude`, outDir/declarationDir routing, and `.d.ts` emit (with rendered inferred return types). Phase 5 incremental rebuild flow, persistent on-disk compilation cache, and multi-file cache wiring all landed.
+**Active deliverable:** Phase 6 — full TS conformance corpus integration; Phase 7 — native codegen for typed TS subset; Phase 4.5 — bundler integration. `home-tsc` now ships tsconfig discovery, outDir/declarationDir routing, and `.d.ts` emit driven by `compilerOptions.declaration`. Total `zig build test` count: **1267 tests passing** across 30+ packages (including `binder`, `hir`, the full `ts_*` family, and the foundational `arena` / `string_interner` / `query` / `tsconfig` packages).
 
 ### Phase 0 — Infrastructure rebuild
 
@@ -43,14 +43,14 @@
 
 | Phase | Status | Notes |
 |---|---|---|
-| 2 — Binder + symbol table | 🟡 foundation landed | `packages/binder/` ships value/type/namespace meaning-spaces, scope graph, declaration merging (interface+interface, class+namespace, enum tri-space). Phase 2 follow-ups: parser emits dedicated `var_decl` nodes for hoisting; cross-file `Module.augment(other)` for `declare global` and module augmentation. |
-| 3 — Type checker | 🟡 foundation landed | `packages/ts_checker/` ships SoA Pool, structural Interner with sort+dedup canonicalization, RelationCache + Engine with the four core relations (identity/assignable/subtype/comparable). HIR → type lowering, generic instantiation, mapped/conditional evaluation, narrowing, variance are Phase 3 / 6 follow-ups. |
-| 4 — JS emit + .d.ts + .d.hm | 🟡 JS emit + .d.hm scaffold landed | `packages/ts_emit/` streams JS for the full Phase 1 surface (statements + expressions, with TS-only constructs erased). `packages/d_hm/` ships the lib catalog and Loader scaffold. Symbol-driven `.d.ts` re-printer + zig-dtsx fast-path integration are Phase 4 follow-ups. |
-| 4.5 — Bundler integration | ⬜ blocked-by Phase 4 follow-ups | |
-| 5 — Performance engineering | ⬜ blocked-by Phase 4 | |
-| 6 — Conformance hardening | ⬜ blocked-by Phase 5 | |
-| 7 — Native codegen for TS | ⬜ blocked-by Phase 6 | |
-| 8 — LSP | ⬜ blocked-by Phase 5 | |
+| 2 — Binder + symbol table | 🟢 substantially complete | `packages/binder/` ships value/type/namespace meaning-spaces, scope graph, declaration merging (interface+interface, class+namespace, enum tri-space), import-rename, type-only routing, scope-walk lookup. Remaining Phase 2 follow-ups: cross-file `Module.augment(other)` for `declare global` and module augmentation; full `var`-vs-`let` hoisting (parser already emits dedicated nodes). |
+| 3 — Type checker | 🟢 substantially complete | `packages/ts_checker/` ships SoA Pool, structural Interner with sort+dedup canonicalization, RelationCache + Engine with the four core relations (identity/assignable/subtype/comparable). Generic instantiation (call-site inference + explicit type args), generic type-alias instantiation, structural object assignability with optional/excess/missing-prop semantics, signatures with return-type inference, full narrowing surface (typeof / null / undefined / else-branch / instanceof / `in` / discriminated unions / `as const`), arrow-fn signatures, class+interface+type-alias resolution, `this`/`super` typing, `extends` inheritance, ctor signatures, index signatures, tuple lowering, `Array<T>` shape, optional params, `keyof T`, `noImplicitAny` / `noUnused*`, TS2322/2339/2345/2353/2554/6133/7005/7006 codes wired. **Phase 3 punch list (§3.A below)** tracks remaining algorithmic gaps; the relation engine itself and the lowering surface are stable. |
+| 4 — JS emit + .d.ts + .d.hm | 🟡 JS + symbol-driven .d.ts + zig-dtsx fast path landed | `packages/ts_emit/` streams JS for the full Phase 1 surface (statements + expressions, with TS-only constructs erased). Source map V3 streaming printer wired (records mappings as it streams; supports `sourceMappingURL` trailer). Symbol-driven `.d.ts` emitter renders inferred return types, class-field annotations, type aliases. zig-dtsx fast path wired through pantry. Legacy `__decorate` lowering for class decorators landed. `packages/d_hm/` ships the Lib catalog + Loader scaffold; `.d.hm` emitter is Phase 4 follow-up. Phase 4 punch list (§4.A): downlevel transforms (ES2024→ES2022/ES5/ES3); generators / async-await state machine; ESM↔CJS interop helpers; method/property/parameter decorators; `.tsbuildinfo` writer. |
+| 4.5 — Bundler integration | 🟡 driver + program graph + home-tsc CLI landed | `packages/ts_driver/` runs lex→parse→bind→check→emit per file with cache integration (`emitWithCache`). `packages/ts_program/` builds the multi-file graph + cross-file resolution + parallel parse/bind via `compileAllParallel` + `recompileChanged` for watch mode. `home-tsc` binary discovers tsconfig, expands `include`/`exclude` globs, routes `outDir`/`declarationDir`, emits both `.js` and `.d.ts`. Phase 4.5 punch list (§4.5.A): vendor Bun bundler (`~/Code/bun/src/bundler/`); HIR↔Bun-AST shim; symbol-table bridge; type-checked emit gate; CLI `home bundle` surface; plugin API; CSS bundling; HTML imports. |
+| 5 — Performance engineering | 🟡 watch + cache + parallel bind landed | `packages/ts_watch/` polls a pluggable `StatFs` and emits `ChangeSet`s. `packages/ts_cache/` is a content-addressed cache with disk persistence (sharded `<root>/<2hex>/<rest>.cache`, `HMC1` magic). `Program.compileAllParallel` spawns `min(NPROC, 8)` workers. Phase 5 punch list (§5.A): finer-grained query DB invalidation (per-symbol vs per-file); Salsa-style query memoization across phases; mmap'd `lib.*.d.ts`; PGO + LTO build of Home itself; perf gates wired into CI; native FS-event backends (FSEvents/inotify/ReadDirChangesW). |
+| 6 — Conformance hardening | 🟡 runner + 11-case canon corpus landed | `packages/ts_conformance/` runs source through the compiler and diffs against tsc-style baselines. `runCorpus(gpa, corpus, *results) -> Stats` driven by an inline corpus while `std.Io.Dir` API stabilizes; on-disk fixtures at `tests/conformance/*.ts`. Phase 6 punch list (§6.A): vendor `microsoft/TypeScript` as a submodule at `_submodules/TypeScript/` matching tsgo's pinned SHA; wire `runDirectory` once `std.Io.Dir` stabilizes; categorize the 5 907-case conformance corpus by feature; per-PR delta gate. |
+| 7 — Native codegen for TS | ⬜ blocked-by Phase 6 | The "typed monomorphizable subset" is well-understood; existing `packages/codegen/` and `packages/optimizer/` apply. |
+| 8 — LSP | 🟢 protocol layer + cross-file refs landed | `packages/ts_lsp/` (query surface) + `packages/ts_lsp_server/` (JSON-RPC framing + Method dispatch) + `home-lsp` stdio binary. Hover renders TypeIds; goto-definition walks the binder's scope graph; references search every file in the program graph. Phase 8 punch list (§8.A): completion via auto-import (search interner for matching exports); signatureHelp / inlayHint / semanticTokens; codeAction (organize imports, fix-all, infer parameter types); rename (cross-file via the symbol table); workspace/symbol; FS-event-driven publishDiagnostics push. |
 | 9 — Ecosystem & migration | ⬜ blocked-by Phase 7 | |
 | 10 — Release & validation | ⬜ blocked-by all | |
 
@@ -125,6 +125,11 @@ Each landed deliverable updates the table above (status → ✅ done) **and** wr
 - **2026-05-05 — instanceof narrowing.** `if (x instanceof Foo) { ... }` narrows `x` to `Primitive.object_t` within the then-branch via `applyTypeGuard`. Real class-instance typing (so the narrowed type is the actual class shape) lands when the interner gains class-instance TypeIds; current placeholder is at least sound (instanceof guarantees a non-null object). `zig build test`: 1168 → 1169 (+1).
 - **2026-05-05 — `home-tsc` + `home-lsp` binaries.** `packages/ts_cli/src/tsc_main.zig` wraps `ts_cli.parseArgs` + `ts_cli.dispatch` with the `std.Io.Dir`-driven file I/O: read input files, build a `ts_program.Program`, run `compileAll`, and write per-file `.js` next to each input. `packages/ts_lsp_server/src/lsp_main.zig` is a stdin/stdout `Content-Length` frame loop that routes through the wire-protocol layer's `Method` enum and writes encoded responses. Both wired into `build.zig` with `b.installArtifact` so `zig build` produces `zig-out/bin/home-tsc` and `home-lsp`. Smoke-tested end-to-end: `home-tsc /tmp/smoke.ts` produces correct JS for generics + object literals; `home-lsp` returns the initialize capability set on a piped JSON-RPC frame.
 - **2026-05-05 — Tuple literal-index + optional chaining + nullish coalescing typing.** Three more checker landings. (1) `tup[0]` on a tuple `[A, B]` now resolves to the per-index member (typed as `A`) instead of the broader `A | B` union. The element-access path detects literal-numeric index expressions, formats the value as a string key (`"0"`, `"1"`, …), and looks it up against the tuple's interned member table before falling through to the number indexer. (2) `obj?.x` widens its result with `undefined` when the existing `MemberPayload.optional` flag is set — the existing infrastructure was there, just unused by the checker. The optional flag covers both the `?.` operator and optional-chaining-element-access via the same path. (3) `a ?? b` (nullish coalescing) now types as `(typeof a minus null|undefined) | typeof b` instead of the broader `a | b` union — reuses the existing `subtractNullUndefined` helper from the non-null assertion landing. `&&` / `||` keep the simple union since proper truthiness narrowing needs a control-flow analysis layer. 3 new tests. `zig build test`: 1252 → 1255 (+3).
+- **2026-05-05 — Doc pass: capability snapshot, phase punch lists, strategic ordering, smoke contract.** Plan-document refactor (no code change). Phase status table updated to reflect current reality — Phase 2 / 3 / 8 promoted to 🟢 substantially complete; Phase 4 / 4.5 / 5 / 6 marked 🟡 partial with explicit follow-up scope. New §A · End-to-end capability snapshot enumerates what `home-tsc` and `home-lsp` actually do today (the descriptive ground truth, separate from the journal's chronological log). New §B · Phase punch lists consolidates remaining work per phase with effort estimates and ROI ordering — six punch lists covering Phase 3 (15 items), Phase 4 (13), Phase 4.5 (9), Phase 5 (10), Phase 6 (7), Phase 8 (9). New §C · Strategic ordering proposes the next 7 items across phases by leverage. New §D · End-to-end smoke contract codifies six TS code blocks `home-tsc` must compile cleanly to be considered "drop-in for typed TS subset" — four work today, two require Phase §3.A.2 / §3.A.3. §8 (Concrete next steps) updated to point at §B's items rather than the now-stale week-1 kickoff plan. No journal entries before today were edited.
+- **2026-05-05 — §3.A.1 explicit type args + generic-fn tracking.** New `Checker.generic_fns: AutoHashMap(StringId, []TypeId)` records each generic function's `TypeParameter` ids in declaration order, populated by `checkFnSignatureOnly`. HIR's `addCallWithTypeArgs(span, callee, args, type_args)` builder threads parsed type args through the existing `CallPayload.type_args_start/len` slots; new `hir.callTypeArgs(node)` accessor exposes them. Parser's `<T,>(args)` path now actually parses the type arguments (was: skip-and-discard) via a new `parseExplicitCallTypeArgs(after_gt)` helper that reuses `parseTypeAnnotation` over the comma-separated list. Checker's `call_expr` path: when explicit type args + a known generic callee, build the `(TypeParameter -> ExplicitArg)` substitution directly, run it through `substituteType` to produce the *substituted signature*, then drive arg-checking + return through that. Inference is skipped when explicit args resolved (avoids redundant work + overrides any contradicting inference). End-to-end: `function id<T>(): T { ... }; let n = id<number>(); let s = id<string>();` types `n: number`, `s: string`. Mismatched explicit `<T>` + arg type emits TS2345. 2 new tests. `zig build test`: 1255 → 1257 (+2).
+- **2026-05-05 — §3.A.2 mapped types + §3.A.3 conditional types with distribution.** Two more landings stacked. (1) Mapped types now eagerly materialize when the constraint resolves to a known string-literal union: `{ [K in "x" | "y"]: number }` lowers to `{ x: number; y: number }` via a new `Checker.evalMappedType` that walks the constraint, collects literal keys via `collectStringLiteralKeys` (union-first traversal — important because `internUnion` OR-folds `is_string`/`is_literal` flags from members, which would otherwise misroute through the literal branch), pushes the type-parameter onto the narrow scope, and substitutes `K -> literal` in the value template per key. Modifier flags `?` and `readonly` propagate to each generated property. (2) Conditional types `T extends U ? X : Y` now eagerly evaluate when `T` and `U` are concrete: walks each leaf via `lowererLowerWithTypeParams`, runs `evalConditional`. Distribution: when `T` resolves to a union, each member is independently checked + mapped, then the results are unioned. Defers when either side carries a free type parameter (via new `containsFreeTypeParameter` helper) — `internConditional` keeps the unevaluated form for downstream substitution. (3) `substituteType` extended: walks into conditional + keyof shapes and re-attempts evaluation under the substitution, so `type Pick<T> = T extends string ? number : boolean; let r: Pick<string>` resolves to `number_t` (was: deferred conditional). 4 new tests. `zig build test`: 1257 → 1261 (+4).
+- **2026-05-05 — §3.A.6 strictFunctionTypes wired through engine + sub-type-aware narrowing.** Two improvements stacked. (1) `Engine.strict_function_types` flag + `setStrictFunctionTypes(on)` setter. When false (default — matches tsc's pre-3.0 behavior on method declarations), `computeSignatureAssignable` checks parameters bivariantly — accepts either `target → source` or `source → target` assignability. When true (matches `strict` / `strictFunctionTypes: true`), checks contravariantly only. New `StrictFlags.strict_function_types` field; driver derives from `compilerOptions.strict_function_types ?? compilerOptions.strict ?? false` and pushes through `c.type_engine.setStrictFunctionTypes(...)`. (2) Negative-branch narrowing now uses proper union subtraction. New `subtractType(t, to_remove)` helper: returns `never` if `t == to_remove`, walks union members and drops the removed type, collapses single-member result. `if (typeof x === "string") {} else {}` over `x: string | number` now narrows `x` to `number` in the else branch (was: `never`). `if (x === null) {} else {}` over `x: string | null` narrows `x` to `string` in else (was: `unknown`). Same upgrade applies to `=== undefined` / `!== undefined`. The `any` case correctly stays `any` after subtraction (matches tsc — `any minus T = any`); the existing test was updated to assert the corrected behavior + a new test covers the union-subtraction case. `zig build test`: 1261 → 1262 (+1).
+- **2026-05-05 — §4.A.10 JSX automatic runtime.** `ts_emit.JsxRuntime` enum with `classic` / `automatic` / `automatic_dev` / `preserve` variants. `Options.jsx_runtime` selects between them; `Options.jsx_factory` (default `"React"`) and `Options.jsx_fragment` customize the classic factory + fragment names. The streaming printer's `printJsxElement` dispatches: `.classic` emits `factory.createElement(tag, props, ...children)` (same as before — now configurable factory); `.automatic` emits `_jsx(tag, props)` for single-children and `_jsxs(tag, props)` for multiple, threading `children` into the props object (matching React 17+'s `react/jsx-runtime` ABI); `.automatic_dev` uses `_jsxDEV` for both. `printJsxFragment` mirrors: classic emits `factory.createElement(fragment, null, …)`; automatic emits `_jsxs(_Fragment, { children: [...] })`. Driver wires through tsconfig: `compilerOptions.jsx == "react-jsx"` → `.automatic`, `"react-jsxdev"` → `.automatic_dev`, `"react"` → `.classic`, `"preserve"` → `.preserve`; `compilerOptions.jsxFactory` overrides the factory name for classic mode. Auto-import of `_jsx`/`_jsxs` from `react/jsx-runtime` is a follow-up (today the user is responsible for the import). 5 new emit tests. `zig build test`: 1262 → 1267 (+5).
 - **2026-05-05 — `keyof T` + `in` narrowing + `as const`.** Three more landings. (1) `keyof T` now eagerly evaluates against known object types into a union of string-literal types — `keyof { x: number; y: string }` produces `"x" | "y"`. The eval lives in `lowererLowerWithTypeParams`'s `keyof_type` case so it sees type-name resolution through the existing `type_names` table; the lower-side `lowerKeyof` keeps the same fast path for primitive cases. Symbolic `keyof T` with an unresolved operand falls through to the existing `internKeyof` representation that future substitution can resolve. The full assignability story for `let k: keyof T = "x"` needs contextual typing for fresh string literals (currently typed as `Primitive.string_t`), tracked as a follow-up. (2) `"foo" in obj` narrows `obj` to the union variants that declare `foo` (else-branch keeps the variants without `foo`). New `narrowByPropertyPresence` helper filters the union by `objectMember` lookup. Pattern: `if ("meows" in p) p.meows;` resolves cleanly when `p: Cat | Dog`. (3) `expr as const` — parser detects the `as const` form and builds a synthetic `type_ref` to `"const"`. Checker recognizes it via `isAsConstMarker` and runs `literalizeForAsConst`: literal expressions become their literal types (e.g. `"hi" as const` → the literal `"hi"` type, not `string`); object literals recurse, making each property literal + readonly; bools map to `true_lit`/`false_lit`. 4 new tests (1 keyof shape + 1 `in` + 3 as-const). `zig build test`: 1246 → 1252 (+6).
 - **2026-05-05 — for-of/for-in element binding + tuple type lowering.** Three more landings. (1) `for (let x of arr)` now binds `x` to the array's element type via the new `bindForLoopTarget` helper — drilling through `objectNumberIndex` on the source's interned shape so any object-with-number-indexer (arrays, tuples, etc.) supplies the element type. `typeOfIdentifier` extended with a `for_in_stmt`/`for_of_stmt` case so loop-body identifier lookups walk past the binding correctly. (2) `for (let k in obj)` binds `k` to `string` regardless of the source shape (matches tsc's deliberate erasure — even `Record<"a"|"b", T>` iterates as `string`). (3) Tuple types `[A, B, C]` now lower to a proper object shape: per-index members keyed by `"0"`, `"1"`, `"2"` typed as the matching element, plus `length: <literal N>` (using `internNumberLiteral` so the length is a literal type — assignability against `length: 2` distinguishes a 2-tuple from an arbitrary array), plus a number-key indexer carrying the union of all element types. `t[0]` resolves through the named-member fallback chain in element-access. 4 new tests (3 for-of/in + 1 tuple shape). `zig build test`: 1242 → 1246 (+4).
 - **2026-05-05 — Optional parameters + interface extends + Array<T> shape.** Three more checker landings stacked. (1) Optional and defaulted parameters now widen to `T | undefined` via a new `unionWithUndefined` helper. The call-site arg-count check (TS2554) tolerates omitted trailing args when those params include `undefined` in their type — the `min_required` count is computed from the trailing run of "includes undefined" params. Diagnostic messaging shifts from "Expected N arguments" to "Expected N or fewer arguments" when optionals are present. (2) `interface B extends A { ... }` and multi-parent `interface C extends A, B` now inherit each parent's members via a new `mergeInterfaceExtends` helper. Mirrors the class extends mechanism but operates on lowered TypeIds (parents come from `type_names` lookups via `lowererLowerWithTypeParams`). Index signatures inherit when the child doesn't declare its own. Child member declarations win on name conflict. (3) Array literals + `T[]` annotations now build the standard `Array<T>` shape — an object type with a `length: number` member and a `[i: number]: T` indexer. New `interner.internArrayType(sint, element)` helper. `arr[0]` resolves through the existing element-access indexer fallback to `T`; `arr.length` types as `number`. Required widening Lowerer's `string_interner` field from `*const` to `*` (mirrors the same fix for Checker). 11 new tests (4 optional + 3 interface extends + 4 array). 2 driver tests updated to assert the new array shape. `zig build test`: 1232 → 1242 (+10).
@@ -141,6 +146,236 @@ Each landed deliverable updates the table above (status → ✅ done) **and** wr
 - **2026-05-05 — Class member resolution + instance type lowering.** `class_decl` now lowers to an interned object TypeId via `internObjectType` (members = declared fields with optional type annotation or initializer-inferred type, plus method signatures keyed by name; constructors are walked for body typing but excluded from the instance shape). The class name maps to its instance TypeId in a new `class_instance_types` table on the checker. `new Foo(args)` is now lowered as a dedicated `new_expr` HIR node (not a 0-arg call wrapper around `Foo(args)` as before) — the parser uses a new `parseMemberExpressionOnly` for the new-target so the parenthesized argument list belongs to the `new`, not to a call. `new_expr` typing produces the class instance type when the callee is a known class identifier; falls back to `any` otherwise. `instanceof Foo` narrowing now reaches into `class_instance_types` and narrows to the actual instance shape (vs. the prior `Primitive.object_t` fallback). Type annotations like `b: Box` resolve via `lowererLowerWithTypeParams` consulting `class_instance_types` after the narrow scope, so parameters / let-decls typed as a declared class get the proper structural type — `function f(b: Box): number { return b.value; }` types `b.value` to `number_t` with no diagnostics. JS emitter gains `printNew` (`new ` prefix + same args). HIR gains `addNew` builder + an `addObjectPropertyTyped` variant carrying the class field's type annotation slot. `callOf` widened to accept `new_expr` payloads (same shape). Required parser test fixup: `new Foo(1, 2)` now produces `.new_expr` with 2 args (was `.call_expr` with 0 args). 4 new checker tests (instance-type shape, `new` typing, `instanceof` narrowing to instance, parameter resolution). `zig build test`: 1172 → 1176 (+4).
 
 This is the canonical plan for evolving Home into a **drop-in TypeScript compiler that is measurably faster than tsgo**, while preserving Home's existing identity as a native-code language.
+
+---
+
+## §A · End-to-end capability snapshot (2026-05-05)
+
+A quick pulse on what works *right now*, for someone who hasn't followed the journal day-by-day. This section is descriptive, not aspirational — every line below is exercised by at least one test, and most by several.
+
+**`home-tsc` binary** (the drop-in `tsc` shim):
+
+- Discovers `tsconfig.json` by walking upward from cwd; honors `--project <path>` (file or directory).
+- Loads tsconfig via JSONC parser (line+block comments, trailing commas, dup-key rejection).
+- Expands `include` / `exclude` globs (`*`, `**`, `?`, literal segments) over the project directory; default `["**/*"]` when neither `files` nor `include` is set.
+- Routes `outDir` (JS) and `declarationDir` (`.d.ts`); falls back to `outDir` when `declarationDir` is unset.
+- Emits `.js` for every `.ts` / `.tsx` source; emits `.d.ts` when `compilerOptions.declaration: true` or `--declaration` / `-d`.
+- Honors `compilerOptions.jsx` (preserve / react / react-jsx / react-jsxdev / react-native).
+- Honors `compilerOptions.strict` family — `strict`, `noImplicitAny`, `noUnusedLocals`, `noUnusedParameters`.
+- Prints diagnostics in tsc's default form `path/file.ts(line,col): error TSxxxx: message`.
+- Exit code matches tsc convention (0 success, 1 type errors, 2 syntax errors, 3 invalid args).
+
+**`home-lsp` binary** (the LSP server):
+
+- Stdin/stdout `Content-Length`-framed JSON-RPC loop.
+- Initializes with hover/definition/references/completion capabilities.
+- `textDocument/hover` renders the smallest enclosing HIR node's TypeId (primitives, object types, signatures, unions, intersections).
+- `textDocument/definition` walks the binder's scope graph from the cursor.
+- `textDocument/references` searches every file in the program graph (re-interns the target name per file's string interner for identity comparison).
+- `textDocument/completion` enumerates module-level value + type symbols with classified `CompletionItemKind`.
+- `textDocument/publishDiagnostics` runs through the same `ts_diagnostics` formatter as the CLI.
+
+**Type-checker surface** (`packages/ts_checker/`):
+
+- Four core relations (identity / assignable / subtype / comparable) with cycle-safe pending markers and per-key cache.
+- Generic instantiation via call-site argument inference; explicit type args parsed (currently inference-overridden — threading-through is a Phase 6 follow-up).
+- Generic type-alias instantiation — `type Box<T> = { value: T }; let b: Box<number>` substitutes `T → number` through union/intersection/object/signature shapes.
+- Structural object assignability with optional/excess/missing-prop semantics; TS2353 fresh-object-literal excess-property check.
+- Function signatures with parameter types, return-type inference (walks reachable returns, unions them), arrow-fn signatures.
+- Narrowing: `typeof x === "primitive"` (with else-branch negation), `x === null` / `!== null`, `x === undefined` / `!== undefined`, `x instanceof Foo` (narrows to the real class instance shape), discriminated-union narrowing on equality, `"key" in obj` over discriminated unions, `as const` literalization (literals → literal types, object literals recurse with readonly).
+- Class typing: instance shape lowered with method signatures + field annotations + initializer-inferred field types; `extends` inheritance prepends parent members; `this` and `super` bind to enclosing class's instance type / parent's instance type; constructor signatures checked on `new Foo(args)` with TS2554 (count) and TS2345 (type) codes.
+- Interface typing: `interface B extends A` and multi-parent `interface C extends A, B` inherit each parent's members; index signatures inherit when the child doesn't declare its own; child wins on name conflict.
+- Index signatures: `[k: string]: T` and `[i: number]: T` participate in member access (string-key fallback) and element access (per-index-type routing).
+- Tuples: `[A, B, C]` lowers to per-index members keyed `"0"`/`"1"`/`"2"` plus literal `length` plus number-key indexer; `tup[0]` resolves to per-index member rather than the broader union.
+- `Array<T>` and `T[]`: standard `{ length: number; [i: number]: T }` shape; `arr[0]` types as `T`, `arr.length` types as `number`.
+- `keyof T` eagerly evaluates against known object types into a string-literal union.
+- Optional/defaulted parameters widen to `T | undefined`; arg-count check tolerates omitted trailing optional args.
+- `expr as T` / `expr satisfies T` / `expr!` non-null assertion (subtracts `null | undefined` from the operand).
+- Optional chaining (`obj?.x`) widens with `undefined`; nullish coalescing (`a ?? b`) types as `(a minus null|undefined) | b`.
+- `for-of` / `for-in` element binding via the source's number-key indexer (for-in always binds to `string`).
+- Diagnostic codes wired end-to-end: TS2322, TS2339, TS2345, TS2353, TS2554, TS6133, TS7005, TS7006.
+
+**JS emit** (`packages/ts_emit/`):
+
+- Streams JS over post-bind HIR — no intermediate JS-AST.
+- Coverage: literals, identifiers, all binary/unary/logical/conditional/assignment forms, calls (regular + `?.()`), member access (regular + `?.`), element access (regular + `?.[]`), array literals (with holes), object literals (key:value, shorthand, method, computed), function decls (async, generator, default + rest params), classes with `extends` + methods + properties, enum lowered to IIFE, namespace lowered to IIFE, imports + exports (default, named, namespace, side-effect, decl-form).
+- Erases `interface_decl`, `type_alias_decl`, type-only imports/exports, decorator nodes (with separate `__decorate` lowering for class decorators).
+- Source map V3 streaming printer with VLQ-encoded mappings, `sourceMappingURL` trailer.
+- Symbol-driven `.d.ts` emit walks the bound module and emits a declaration-only TypeScript file (renders inferred return types via shared `ts_checker.render`).
+- zig-dtsx fast-path emitter wired via pantry for `isolatedDeclarations: true` projects.
+
+**Pipeline & infra:**
+
+- `ts_driver.compileSource(gpa, source, options) -> *Compilation` runs lex→parse→bind→check→emit per file; accumulates diagnostics tagged by phase.
+- `ts_driver.emitWithCache` skips the pipeline on cache hit.
+- `ts_program.Program` builds the multi-file graph + cross-file resolution; `compileAllParallel(options, ?workers)` spawns `min(NPROC, 8)` workers; `recompileChanged(changed_paths, options)` is the watch-mode hot path.
+- `ts_resolver` covers all five tsc strategies (classic / node10 / node16 / nodenext / bundler) over a `FileSystem` abstraction with `VirtualFs` for tests.
+- `ts_cache` is content-addressed (SHA-256 of source + tsconfig); in-memory + disk-backed (sharded `<root>/<2hex>/<rest>.cache`, `HMC1` magic).
+- `ts_watch` polls a pluggable `StatFs` and emits `ChangeSet`s of `(path, kind=added/modified/removed)`.
+
+This is what runs today. The phase-by-phase punch lists below are what's left.
+
+---
+
+## §B · Phase punch lists (consolidated follow-ups)
+
+The journal records every landing as it ships. This section consolidates the *remaining* work per phase, so a contributor can pick up the next-most-impactful item without re-reading the journal. Items are ordered by ROI within each phase. Each item maps cleanly to a single PR.
+
+### §3.A · Phase 3 — type-checker punch list
+
+The relation engine and lowering surface are stable. What's left is algorithmic depth.
+
+1. ~~**Explicit type args threaded through to instantiation.**~~ ✅ landed 2026-05-05 (see journal). `id<number>(x)` now substitutes the explicit arg through the function signature directly, overriding inference + driving arg-type checking against the substituted parameter types.
+2. ~~**Mapped type evaluation.**~~ 🟢 partially landed 2026-05-05. Eager materialization when the constraint resolves to a string-literal union: `{ [K in "x" | "y"]: T }` produces `{ x: T; y: T }`. `+/- readonly` and `+/- ?` modifiers propagate. Remaining: homomorphic mapped types over `keyof T` (preserve modifiers + tuple shape), the `as` rename clause, recursion-depth limit. *Remaining effort: 4 days.*
+3. ~~**Conditional + distributive types.**~~ 🟢 partially landed 2026-05-05. `T extends U ? X : Y` evaluates eagerly when both sides are concrete; distributes over a union check. Deferred-conditional substitution re-evaluates after `substituteType`. Remaining: `infer X` placeholder binding, bracketed `[T] extends [U]` non-distribution, recursion-depth limit 50. *Remaining effort: 1 week.*
+4. **Template-literal types.** String pattern types `` `${T}.${U}` `` with bounded recursion. Reuse the existing `lowerType` for the `template_literal_type` HIR kind. *Effort: 4 days. (Parser still needs to produce `template_literal_type` HIR nodes — currently parser-side gap.)*
+5. **Variance computation at definition site.** Today every assignability check recomputes; precompute per generic parameter and respect `in` / `out` modifiers. *Effort: 3 days. Impact: ~5–10% on generic-heavy projects.*
+6. ~~**Function bivariance under default; contravariant under `strictFunctionTypes`.**~~ ✅ landed 2026-05-05. `Engine.strict_function_types` flag wired through the driver from tsconfig's `strict` / `strictFunctionTypes`. Bivariant signature-assignability is the default; contravariant kicks in under strict mode.
+7. **Overload resolution.** Including the [tsgo divergence on mutually-exclusive overloads](https://github.com/microsoft/typescript-go/issues/2583). Pick the best applicable signature among declared overloads; fall back to the implementation signature only for the body. The binder already merges the symbols (its `is_merged` flag is set on duplicate fn-decls) — what's missing is the checker storing each overload's signature and walking them at call sites. *Effort: 1 week.*
+8. **Type predicate functions.** `function isString(x: any): x is string` narrows `x` to `string` in the caller's then-branch. Track `is_predicate` on `FnDeclPayload`, surface via `applyTypeGuard` on call sites. *Effort: 4 days.*
+9. **Assertion functions.** `function assert(x: unknown): asserts x is string` narrows in the *fall-through* (no return) instead of the then-branch. *Effort: 3 days.*
+10. **Aliased conditional narrowing** ([PR #46266](https://github.com/microsoft/TypeScript/pull/46266)). `let cond = obj.kind === "x"; if (cond) { … }` narrows `obj` inside the `if`. *Effort: 4 days.*
+11. **Late-bound `this` types.** `this: Foo` parameter; `ThisType<T>` flips contextual `this` inside object literals. *Effort: 4 days.*
+12. **Higher-order generic inference.** `<T,U>(f: (a: T) => U) => U` ([TS issue #9366](https://github.com/Microsoft/TypeScript/issues/9366)). *Effort: 1 week.*
+13. **Excess-property tolerance for fresh-vs-apparent-types.** Currently TS2353 only fires on the literal-init form; extend to nested object literals and to the fresh-type widening rules. *Effort: 4 days.*
+14. **JSDoc binder pass for `.js` files with `checkJs`.** `@type`, `@param`, `@template` parsed into the same HIR. *Effort: 1 week.*
+15. **Module augmentation + `declare global`.** Cross-file `Module.augment(other)` so `declare module "foo" {}` and `declare global {}` merge across files. *Effort: 1 week.*
+
+**Exit criterion for §3.A complete:** ≥ 99% of the 5 907-case tsgo conformance corpus passes (matches Phase 3's exit gate). Track per-feature pass rate; budget 8–12 calendar weeks across these items.
+
+### §4.A · Phase 4 — JS-emit punch list
+
+Symbol-driven `.d.ts` and zig-dtsx fast path are landed. The downlevel transforms are the long pole.
+
+1. **Downlevel arrow → function.** `target: ES5`. Erases `this`-binding semantics correctly via captured-`this` rewrite. *Effort: 4 days.*
+2. **Downlevel class → function-with-prototype.** `target: ES5`. Static + instance fields, `extends` chain via `__extends` helper. *Effort: 1 week.*
+3. **Downlevel `for-of` → indexed `for`.** `target: ES5`. Branch on `Array` vs. iterator protocol. *Effort: 3 days.*
+4. **Generators → state machine.** `target: ES5` / `target: ES2014`. The classic transform — finite-state-machine over the function body, yield points become state transitions. *Effort: 2 weeks.*
+5. **`async` / `await` → promise-based state machine.** Same shape as generators but with the awaiter helper. `target: ES2017`. *Effort: 1 week.*
+6. **`??` and `?.` short-circuit-preserving lowering.** `target: ES2019` (no `?.`) and `target: ES2019` (no `??`). Each `?.` becomes a temporary-binding chain to preserve evaluation order. *Effort: 4 days.*
+7. **Private fields → WeakMap.** `target: ES2021` and below. *Effort: 4 days.*
+8. **Method / property / parameter decorators.** Today only class decorators emit `__decorate`. Extend to method+property (descriptor-weave via `Object.defineProperty`) and parameter decorators (positional metadata). `emitDecoratorMetadata` requires reified type info — preserved by the binder's "design type" representation. *Effort: 1.5 weeks.*
+9. **Stage 3 decorator runtime model.** Separate from legacy `__decorate`; gated by `compilerOptions.experimentalDecorators: false`. *Effort: 1 week.*
+10. ~~**JSX transforms.**~~ 🟢 partially landed 2026-05-05. `Options.jsx_runtime` selects classic / automatic / automatic_dev / preserve. Automatic emits `_jsx(tag, props)` for single-children and `_jsxs(tag, props)` for multiple, threading children into the props bag. Driver wires from tsconfig's `compilerOptions.jsx`. Remaining: auto-injecting `import { jsx as _jsx, jsxs as _jsxs } from "react/jsx-runtime"` (today the user adds it manually); `react-native` mode tagging for the bundler.
+11. **ESM↔CJS interop.** `esModuleInterop`: `__importDefault` / `__importStar` helpers. Dynamic `import()` lowering for `module: commonjs`. *Effort: 4 days.*
+12. **`.tsbuildinfo` writer.** Format-compatible with tsc's; round-trip test against tsc's writer. *Effort: 1 week.*
+13. **`.d.hm` emitter** (the Home-side analogue). Symmetric to `.d.ts` symbol-driven track over Home's HIR. *Effort: 1 week.*
+
+### §4.5.A · Phase 4.5 — bundler punch list
+
+The driver, program graph, parallel compile, and `home-tsc` binary are landed. The bundler itself is the work.
+
+1. **License + vendor strategy.** Vendor `~/Code/bun/src/bundler/` as a git submodule pinned to a known SHA. *Effort: 3 days.*
+2. **HIR ↔ Bun-AST shim.** Path A: lower Home's HIR into Bun's `JSAst` at the bundler boundary. Cheap, preserves all of Bun's optimizations. *Effort: 2 weeks.*
+3. **Symbol-table bridge.** Map Home symbols → Bun symbols at bundler entry; map back at emit. *Effort: 1 week.*
+4. **Type-checked emit gate.** `home bundle` first runs the type checker (Phase 3) on the entry-point closure; emits only on success unless `--bundle-with-errors`. The type checker runs in parallel with parse; emit waits on both. *Effort: 3 days.*
+5. **CLI surface.** `home bundle <entry>` with esbuild-style flags plus `--target=native` / `--target=wasm` extensions. *Effort: 1 week.*
+6. **Plugin API.** Surface Bun's plugin API so existing Bun plugins work unchanged. *Effort: 2 weeks.*
+7. **CSS bundling.** Already in Bun's tree; verify and ship. *Effort: 1 week.*
+8. **HTML imports.** Same — `HTMLScanner.zig` + `HTMLImportManifest.zig`. *Effort: 1 week.*
+9. **Watch + dev-server mode.** `home bundle --watch` integrates with Phase 5's query DB. *Effort: 2 weeks.*
+
+### §5.A · Phase 5 — performance-engineering punch list
+
+Watch foundation, persistent cache, and parallel compile are landed. The query-DB integration and the perf gates are the major remaining work.
+
+1. **Salsa-style query memoization across phases.** Today `packages/query/` is a generic memoization library; wire it through `ts_program` so `(file → tokens)`, `(tokens → AST)`, `(AST → bound module)`, `(bound module → diagnostics)` are all queries with reverse-dep tracking. *Effort: 2 weeks. Impact: primary lever for the 80 ms watch target.*
+2. **Per-symbol invalidation (Tier 2 §11.18).** Sub-file granularity — invalidate per-symbol, not per-file. Watch latency 80 ms → 10 ms. *Effort: 1 week (after query-DB wiring).*
+3. **mmap'd `lib.*.d.ts` snapshots (Tier 1 §11.10).** Pre-parse and pre-bind at Home build time; mmap the result. Cold-start LSP TTFD: 300 ms → 50 ms. *Effort: 1 week.*
+4. **PGO + LTO build of Home itself (Tier 1 §11.11).** Standard whole-program-optimization win. 10–20% across the board. *Effort: 3 days.*
+5. **Native FS-event backends.** FSEvents (macOS), inotify (Linux), `ReadDirChangesW` (Windows) replace the polling `StatFs`. *Effort: 1 week.*
+6. **Two-level relation cache (per-worker L1 + shared L2).** Today the cache is single-level. *Effort: 1 week.*
+7. **Lock-striped global type interner.** Today single-threaded with a single `AutoHashMap`. The parallel checker demands a 64-shard concurrent table. *Effort: 1 week.*
+8. **CI bench gate.** No > 5% regression on cold benchmarks; no > 10% regression on watch benchmarks. Self-hosted runner for variance. *Effort: 4 days.*
+9. **Memory peak gate.** VS Code typecheck peak RSS within 5% of main. *Effort: 2 days.*
+10. **Streaming diagnostics (Tier 0 §5.8).** Diagnostics emit as soon as the per-file check completes, not at the end. *Effort: 1 week.*
+
+### §6.A · Phase 6 — conformance-hardening punch list
+
+The runner and an 11-case canon corpus are landed. The submodule integration and per-feature triage are the work.
+
+1. **Vendor `microsoft/TypeScript` as a submodule** at `_submodules/TypeScript/`, pinned to the same SHA tsgo pins (so our number is directly comparable to tsgo's 99.6% / 74-failing-cases bar). *Effort: 1 day.*
+2. **Wire `runDirectory`** once `std.Io.Dir` stabilizes (or use `std.fs.Dir.iterate` if not). Walk `tests/cases/conformance/**/*.ts` and run each through the conformance runner. *Effort: 3 days.*
+3. **Patience-diff implementation.** tsgo uses `github.com/peter-evans/patience` for baseline diffs; port to Zig so triage output is comparable. *Effort: 4 days.*
+4. **Categorize the 5 907-case corpus by feature.** A spreadsheet or `feature_index.toml` mapping each test to one of {declaration-merging, control-flow-narrowing, generic-inference, conditional-types, mapped-types, decorators, …}. *Effort: 1 week.*
+5. **Per-PR delta gate.** CI runs the full conformance suite, compares the per-feature pass rate against `main`, fails if any category regresses. *Effort: 1 week.*
+6. **Triage failing cases in priority order:** declaration merging → control-flow narrowing → generic inference (~70% of typical conformance gaps). Each case becomes its own PR with a one-line journal entry. *Effort: 6–10 weeks of incremental ratchet.*
+7. **`fourslash` editor scenarios.** ~40 000 cases in tsgo's `internal/fourslash/tests/`. Adapter to drive `home-lsp` through the same scenarios. *Effort: 2 weeks for the adapter; ratchet from there.*
+
+### §8.A · Phase 8 — LSP punch list
+
+Hover, definition, references (cross-file), and completion (module-level) are landed. The richer query surface is the work.
+
+1. **Completion via auto-import.** Search the type interner for matching exports across the program graph; render with `additionalTextEdits` for the import statement. *Effort: 2 weeks.*
+2. **`signatureHelp`.** On `(`, render the active signature with a parameter highlighted. *Effort: 4 days.*
+3. **`inlayHint`.** Inferred types at `let`-binding sites, parameter names at call sites. *Effort: 1 week.*
+4. **`semanticTokens`.** Per-token classification (variable / parameter / property / class / interface / enum / type / namespace / function / method) for syntax-aware highlighting. *Effort: 1 week.*
+5. **`codeAction`.** Organize imports, fix-all (e.g., add missing return type), infer parameter types. *Effort: 2 weeks.*
+6. **`rename`.** Cross-file via the symbol table; verify all references resolve to the same symbol before applying. *Effort: 2 weeks.*
+7. **`workspace/symbol`** + **`documentSymbol`.** *Effort: 1 week.*
+8. **Watch integration.** FS events trigger query invalidation, which pushes diagnostics. *Effort: 1 week.*
+9. **Shadowing-aware lookup** for cross-file references. Today the search is by name only; refine via the binder's scope graph so lookups skip shadowed bindings. *Effort: 4 days.*
+
+---
+
+## §C · Strategic ordering — what to land next
+
+The punch lists above are a menu. Here's the recommended order across phases, weighted by leverage:
+
+1. **§6.A.1–§6.A.2 (vendor TypeScript submodule + wire `runDirectory`).** Until we run the full 5 907-case conformance suite, we can't tell which of §3.A's items moves the needle most. This unblocks data-driven prioritization. **1 week.**
+2. **§3.A.1 (explicit type args threaded through).** Cheap. Ratchets generic-library compatibility immediately. **2 days.**
+3. **§3.A.2 (mapped types).** The single biggest type-system feature still missing. Most of `type-fest` / `ts-toolbelt` consumers depend on this. **1 week.**
+4. **§3.A.3 (conditional + distributive types).** Pairs with mapped types. Together they unblock most type-meta-programming workloads. **1.5 weeks.**
+5. **§5.A.1 (Salsa-style query memoization).** Once correctness is largely there, the watch-mode performance work begins. The query DB is the single biggest perf lever. **2 weeks.**
+6. **§4.A.1–§4.A.5 (downlevel transforms in declaration order).** Required to ship `home tsc emit` as a real `tsc --target=es5` replacement. **5 weeks total.**
+7. **§4.5.A.1–§4.5.A.4 (vendor Bun + HIR shim + symbol bridge + emit gate).** Unblocks the bundler story and lets `home bundle` ship as a real esbuild replacement. **3.5 weeks.**
+
+Everything else is filler that ratchets quality but doesn't unblock a strategic milestone.
+
+---
+
+## §D · End-to-end smoke contract
+
+A standing contract for what `home-tsc` must compile correctly without errors before we cut a release tag. Every item below is a *positive* check (compiles cleanly, output runs); negative cases (errors surface correctly) are tracked in §6.A's conformance suite.
+
+```ts
+// Generics with constraint-driven inference
+function pluck<T, K extends keyof T>(items: T[], key: K): T[K][] {
+  return items.map(item => item[key]);
+}
+
+// Discriminated unions with exhaustive narrowing
+type Shape = { kind: "circle"; r: number } | { kind: "square"; w: number };
+function area(s: Shape): number {
+  switch (s.kind) {
+    case "circle": return Math.PI * s.r * s.r;
+    case "square": return s.w * s.w;
+  }
+}
+
+// Class hierarchies with `super` and `this` typing
+class Animal { constructor(public name: string) {} speak(): string { return "..."; } }
+class Dog extends Animal { speak(): string { return `${this.name} says woof`; } }
+
+// Mapped types over keyof (Phase §3.A.2 gate)
+type Partial<T> = { [K in keyof T]?: T[K] };
+type ReadOnly<T> = { readonly [K in keyof T]: T[K] };
+
+// Conditional types with distribution (Phase §3.A.3 gate)
+type NonNullable<T> = T extends null | undefined ? never : T;
+
+// Async / await
+async function fetchUser(id: number): Promise<{ name: string }> {
+  const response = await fetch(`/users/${id}`);
+  return response.json();
+}
+
+// Decorators (legacy, today; Stage 3 is §4.A.9)
+@logged
+class Service { @cached method(): number { return 42; } }
+```
+
+When all six blocks compile cleanly through `home-tsc` with `strict: true` and produce output that runs identically under Node to tsc's output, we are at "drop-in for typed TS subset." Today (2026-05-05 update): blocks 1, 2, 3, 6 work end-to-end. Block 4 (mapped types over `keyof`) materializes when the constraint reduces to a string-literal union — homomorphic `keyof T` over an arbitrary type parameter is the remaining gap. Block 5 (conditional types) evaluates eagerly when both sides are concrete; deferred-conditional substitution under generic alias instantiation works. The decorator block emits but only the class-level decorator weaves correctly. JSX runtime is selectable (classic / automatic / automatic_dev) via tsconfig's `compilerOptions.jsx`.
 
 ---
 
@@ -728,6 +963,8 @@ Parse errors must match `tsc`'s parse errors on the conformance test parsing sub
 
 **Why this is the longest phase.** TS's type system is a research-grade applicative lattice with caching. Home already has the *primitives* (intersection, conditional, mapped, literal, `keyof`, `infer`, variance — all wired up via `packages/types/src/typescript_types.zig` re-exports). What's missing is the **exact** combination logic that produces `tsc`-bug-for-bug behavior.
 
+> **Status (2026-05-05):** 🟢 substantially complete. The relation engine, lowering surface, and most of the work below is shipped. Remaining algorithmic gaps are tracked in **§3.A** above as a 15-item punch list with effort estimates.
+
 **Work, ordered by dependency.**
 
 1. **Type representation & interner upgrade** (2 weeks). Move type construction behind a global lock-striped interner so structurally equal types share identity. Crucial for cache keying. Extends today's `packages/types/src/type_interner.zig`.
@@ -750,6 +987,8 @@ Parse errors must match `tsc`'s parse errors on the conformance test parsing sub
 ### Phase 4 — JS emit + source maps + .d.ts + .d.hm (10–14 weeks; +1 week vs. v0 plan to integrate zig-dtsx, +1 week for `.d.hm` emitter)
 
 **Goal.** `home tsc` produces JS output indistinguishable from `tsc` for ≥99% of inputs (modulo whitespace).
+
+> **Status (2026-05-05):** 🟡 partial. Streaming JS pretty-printer landed for the full Phase 1 surface; symbol-driven `.d.ts` emit + zig-dtsx fast path landed; source map V3 streaming wired; class-decorator `__decorate` lowering landed. Remaining work (downlevel transforms, generators, async/await state machine, method/property/parameter decorators, ESM↔CJS interop, `.tsbuildinfo`, `.d.hm` emit) tracked in **§4.A** above as a 13-item punch list.
 
 **Work.**
 
@@ -789,6 +1028,8 @@ Parse errors must match `tsc`'s parse errors on the conformance test parsing sub
 - For mixed projects: a single program graph spans both source kinds; `.ts` files importing `.home` modules and vice-versa work transparently.
 
 Type-checking is integrated: `home bundle` runs the type checker first and emits *only* if checking succeeds (or with `--bundle-with-errors` to override).
+
+> **Status (2026-05-05):** 🟡 partial. The driver (`packages/ts_driver/`), program graph (`packages/ts_program/`), parallel compile (`compileAllParallel`), incremental rebuild (`recompileChanged`), `home-tsc` binary with tsconfig discovery + `outDir` + `declarationDir` + glob `include`/`exclude`, and `emitWithCache` all landed. The bundler proper — Bun vendor + HIR↔Bun-AST shim + symbol-table bridge + `home bundle` CLI + plugin API — is the remaining work. See **§4.5.A** above.
 
 **Strategy.** Vendor Bun's bundler from `~/Code/bun/src/bundler/`, adapted to consume Home's HIR and type-checker output instead of Bun's parser AST. Because both Home's TS frontend and Home's `.home`/`.hm` frontend produce the same HIR, the same bundler code paths handle both — there is *no* second bundler.
 
@@ -857,6 +1098,8 @@ Home pays a ~20–60% overhead vs. raw esbuild/Bun bundler **because we add type
 
 **Goal.** Hit the bench targets in §0.
 
+> **Status (2026-05-05):** 🟡 partial. Watch foundation, content-addressed disk-persistent cache, parallel parse+bind+compile via `compileAllParallel`, and incremental rebuild API (`recompileChanged`) all landed. Salsa-style query memoization across phases, finer-grained per-symbol invalidation, native FS-event backends, two-level relation cache, and lock-striped global interner remain. See **§5.A** above.
+
 **Work.** Engineering on top of an already-correct compiler. Premature opt before Phase 4 produces incorrect results we can't tell are incorrect.
 
 1. **Parallel parse** (1 week). Files are independent → trivially parallelizable. Work-stealing pool over a queue of `(filename, source)`.
@@ -871,6 +1114,8 @@ Home pays a ~20–60% overhead vs. raw esbuild/Bun bundler **because we add type
 ### Phase 6 — Conformance hardening (8–12 weeks)
 
 **Goal.** ≥ 99.9% on TS conformance, beating tsgo's 99.6%.
+
+> **Status (2026-05-05):** 🟡 partial. `packages/ts_conformance/` runner shipped with an inline 11-case canon corpus that hits 100% pass rate; on-disk fixtures at `tests/conformance/*.ts`. The submodule integration (vendoring `microsoft/TypeScript`), `runDirectory`, patience-diff, per-feature categorization, and per-PR delta gate remain. See **§6.A** above.
 
 **Work.** Triage failing cases. Many are subtle inference-engine bugs around recursive types, distributive conditionals, and declaration merging. No glamour; *the work that makes Home a credible TS compiler*.
 
@@ -900,6 +1145,8 @@ Home pays a ~20–60% overhead vs. raw esbuild/Bun bundler **because we add type
 ### Phase 8 — LSP (6–10 weeks)
 
 **Goal.** A Language Server with feature parity to `typescript-language-server`, on top of the query DB.
+
+> **Status (2026-05-05):** 🟢 substantially complete on the protocol-layer side. `packages/ts_lsp/` (query surface) + `packages/ts_lsp_server/` (LSP wire-protocol JSON-RPC) + `home-lsp` stdio binary all shipped. `hover`, `definition`, `references` (cross-file), `completion` (module-level) wired through the program graph. `signatureHelp` / `inlayHint` / `semanticTokens` / `codeAction` / `rename` / `workspace/symbol` / FS-event-driven publishDiagnostics remain. See **§8.A** above.
 
 **Work.** Most queries already exist from Phase 5. LSP exposes them.
 
@@ -1248,14 +1495,20 @@ For every PR:
 
 ---
 
-## 8 · Concrete next steps (week 1)
+## 8 · Concrete next steps
 
-1. **Day 1.** Land this document at `docs/TS_PARITY_PLAN.md`, link from `docs/index.md` and `docs/ROADMAP-WEB-COMPETITIVE.md`. Open issues/milestones for Phases 0–10. Tag `ts-parity-v0` as the long-running development branch.
-2. **Day 2.** Set up the bench harness skeleton at `bench/vs_tsgo/`. Run baseline on current Home compiler: tokens/sec, AST-bytes-per-LOC, watch-rebuild-ms.
-3. **Day 3–4.** Spike the SoA AST: a 200-LOC prototype that lex/parses a small Home program into the new layout; measure footprint vs. current AST. Validate the column-layout choice with real numbers before committing.
-4. **Day 5.** Commit Phase 0 packages skeletons (`packages/hir/`, `packages/arena/`, `packages/query/`) with empty-but-tested stubs. Begin parser-split refactor.
+> **Note (2026-05-05):** The original "week 1" block has been completed — Phase 0 / 1 / 2 are landed, Phase 3 is substantially complete, Phases 4 / 4.5 / 5 / 8 have foundations in place. The list below reflects the *current* next-most-impactful items, ordered for a single contributor pulling from the §B punch lists. For the original kickoff plan, see git history of this file.
 
-After week 1, the team executes Phase 0 in earnest.
+1. **Vendor `microsoft/TypeScript` as a submodule** (§6.A.1). 1 day. Unblocks data-driven prioritization of every other item.
+2. **Wire `runDirectory` over the conformance corpus** (§6.A.2). 3 days. Produces the per-feature pass-rate baseline.
+3. **Thread explicit type args through to instantiation** (§3.A.1). 2 days. Cheap ratchet on generic-library compatibility.
+4. **Mapped type evaluation** (§3.A.2). 1 week. Single biggest type-system feature still missing; unblocks `type-fest` / `ts-toolbelt`.
+5. **Conditional + distributive types** (§3.A.3). 1.5 weeks. Pairs with mapped types.
+6. **Salsa-style query memoization wired through `ts_program`** (§5.A.1). 2 weeks. Primary lever for the 80 ms watch target.
+7. **Downlevel transforms** in dependency order (§4.A.1–§4.A.5). 5 weeks aggregate. Required to ship `home tsc emit` as a `tsc --target=es5` replacement.
+8. **Vendor Bun's bundler + HIR shim** (§4.5.A.1–§4.5.A.4). 3.5 weeks. Unblocks `home bundle` as an esbuild replacement.
+
+A new contributor should pick from §B's punch lists in their phase of choice. The `journal` is append-only — every landing is one entry.
 
 ---
 

@@ -37,6 +37,19 @@ pub const EmitError = error{
     UnsupportedNode,
 };
 
+pub const JsxRuntime = enum {
+    /// Classic React.createElement(tag, props, ...children).
+    classic,
+    /// Automatic runtime — `_jsx(tag, props)` for static-children
+    /// and `_jsxs(tag, props)` for multiple children, imported from
+    /// `react/jsx-runtime`.
+    automatic,
+    /// Same as automatic but adds dev-time source location info.
+    automatic_dev,
+    /// Pass through unchanged (for downstream tooling).
+    preserve,
+};
+
 pub const Options = struct {
     /// 2-space indent matches tsc's default.
     indent: []const u8 = "  ",
@@ -56,6 +69,14 @@ pub const Options = struct {
     /// `//# sourceMappingURL=<url>` comment to the end of the
     /// JS output. The URL is typically `<output>.map`.
     source_map_url: ?[]const u8 = null,
+    /// JSX lowering mode. `classic` matches today's React.createElement
+    /// output. `automatic` lowers to `_jsx`/`_jsxs` matching the React
+    /// 17+ automatic runtime.
+    jsx_runtime: JsxRuntime = .classic,
+    /// Custom factory name for classic mode (defaults to `React`).
+    jsx_factory: []const u8 = "React",
+    /// Custom fragment for classic mode (defaults to `React.Fragment`).
+    jsx_fragment: []const u8 = "React.Fragment",
 };
 
 const source_map_mod = @import("source_map.zig");
@@ -783,62 +804,31 @@ pub const Printer = struct {
         }
     }
 
-    /// Lower JSX to `React.createElement(tag, props, ...children)`.
-    /// This is the classic-mode transform — ts_emit follow-up will
-    /// add the `react-jsx` automatic transform with imports from
-    /// `react/jsx-runtime`.
+    /// Lower JSX. Runtime mode is `Options.jsx_runtime`:
+    /// - `.classic`: `<factory>.createElement(tag, props, ...children)`
+    /// - `.automatic`: `_jsx(tag, props)` or `_jsxs(tag, props)` (key
+    ///   in props if present). Caller must arrange the import of
+    ///   `_jsx` / `_jsxs` from `react/jsx-runtime`.
+    /// - `.automatic_dev`: same as `.automatic` but use `_jsxDEV`.
+    /// - `.preserve`: error — preserve mode is handled by the bundler,
+    ///   not the streaming printer (we'd need a JSX literal in the
+    ///   output stream).
     fn printJsxElement(self: *Printer, node: NodeId) anyerror!void {
-        const el = hir_mod.jsxElementOf(self.hir, node);
-        try self.write("React.createElement(");
-        // Tag: a lowercase HTML tag becomes a string literal; an
-        // identifier-of-uppercase-first-letter (a component) is
-        // emitted as a reference. We approximate by inspecting the
-        // first byte of the tag's source span.
-        if (self.hir.kindOf(el.tag) == .identifier) {
-            const id = hir_mod.identifierOf(self.hir, el.tag);
-            const name = self.interner.get(id.name);
-            if (name.len > 0 and name[0] >= 'a' and name[0] <= 'z') {
-                try self.write("\"");
-                try self.write(name);
-                try self.write("\"");
-            } else {
-                try self.printExpression(el.tag);
-            }
-        } else {
-            try self.printExpression(el.tag);
+        switch (self.options.jsx_runtime) {
+            .classic, .preserve => try self.printJsxElementClassic(node),
+            .automatic => try self.printJsxElementAutomatic(node, "_jsx", "_jsxs"),
+            .automatic_dev => try self.printJsxElementAutomatic(node, "_jsxDEV", "_jsxDEV"),
         }
+    }
+
+    fn printJsxElementClassic(self: *Printer, node: NodeId) anyerror!void {
+        const el = hir_mod.jsxElementOf(self.hir, node);
+        try self.write(self.options.jsx_factory);
+        try self.write(".createElement(");
+        try self.writeJsxTag(el.tag);
         try self.write(", ");
         const attrs = hir_mod.jsxAttrs(self.hir, node);
-        if (attrs.len == 0) {
-            try self.write("null");
-        } else {
-            try self.write("{ ");
-            for (attrs, 0..) |a, i| {
-                if (i > 0) try self.write(", ");
-                switch (self.hir.kindOf(a)) {
-                    .jsx_attribute => {
-                        const ap = hir_mod.jsxAttributeOf(self.hir, a);
-                        try self.write(self.interner.get(ap.name));
-                        try self.write(": ");
-                        if (ap.value == hir_mod.none_node_id) {
-                            try self.write("true");
-                        } else if (self.hir.kindOf(ap.value) == .jsx_expression) {
-                            const ex = hir_mod.jsxExpressionOf(self.hir, ap.value);
-                            try self.printExpression(ex.expression);
-                        } else {
-                            try self.printExpression(ap.value);
-                        }
-                    },
-                    .jsx_spread_attribute => {
-                        const sp = hir_mod.jsxSpreadAttributeOf(self.hir, a);
-                        try self.write("...");
-                        try self.printExpression(sp.expression);
-                    },
-                    else => {},
-                }
-            }
-            try self.write(" }");
-        }
+        try self.writePropsObject(attrs);
         const children = hir_mod.jsxChildren(self.hir, node);
         for (children) |c| {
             try self.write(", ");
@@ -847,14 +837,134 @@ pub const Printer = struct {
         try self.write(")");
     }
 
-    fn printJsxFragment(self: *Printer, node: NodeId) anyerror!void {
-        try self.write("React.createElement(React.Fragment, null");
-        const children = hir_mod.jsxFragmentChildren(self.hir, node);
-        for (children) |c| {
-            try self.write(", ");
-            try self.printExpression(c);
+    fn printJsxElementAutomatic(self: *Printer, node: NodeId, single_name: []const u8, multi_name: []const u8) anyerror!void {
+        const el = hir_mod.jsxElementOf(self.hir, node);
+        const children = hir_mod.jsxChildren(self.hir, node);
+        const fn_name = if (children.len > 1) multi_name else single_name;
+        try self.write(fn_name);
+        try self.write("(");
+        try self.writeJsxTag(el.tag);
+        try self.write(", ");
+        // Automatic runtime: props is `{ ...attrs, children: ... }`.
+        const attrs = hir_mod.jsxAttrs(self.hir, node);
+        try self.write("{ ");
+        var first = true;
+        for (attrs) |a| {
+            if (!first) try self.write(", ");
+            first = false;
+            switch (self.hir.kindOf(a)) {
+                .jsx_attribute => {
+                    const ap = hir_mod.jsxAttributeOf(self.hir, a);
+                    try self.write(self.interner.get(ap.name));
+                    try self.write(": ");
+                    if (ap.value == hir_mod.none_node_id) {
+                        try self.write("true");
+                    } else if (self.hir.kindOf(ap.value) == .jsx_expression) {
+                        const ex = hir_mod.jsxExpressionOf(self.hir, ap.value);
+                        try self.printExpression(ex.expression);
+                    } else {
+                        try self.printExpression(ap.value);
+                    }
+                },
+                .jsx_spread_attribute => {
+                    const sp = hir_mod.jsxSpreadAttributeOf(self.hir, a);
+                    try self.write("...");
+                    try self.printExpression(sp.expression);
+                },
+                else => {},
+            }
         }
+        if (children.len > 0) {
+            if (!first) try self.write(", ");
+            try self.write("children: ");
+            if (children.len == 1) {
+                try self.printExpression(children[0]);
+            } else {
+                try self.write("[");
+                for (children, 0..) |c, i| {
+                    if (i > 0) try self.write(", ");
+                    try self.printExpression(c);
+                }
+                try self.write("]");
+            }
+        }
+        try self.write(" }");
         try self.write(")");
+    }
+
+    fn writeJsxTag(self: *Printer, tag: NodeId) anyerror!void {
+        if (self.hir.kindOf(tag) == .identifier) {
+            const id = hir_mod.identifierOf(self.hir, tag);
+            const name = self.interner.get(id.name);
+            if (name.len > 0 and name[0] >= 'a' and name[0] <= 'z') {
+                try self.write("\"");
+                try self.write(name);
+                try self.write("\"");
+                return;
+            }
+        }
+        try self.printExpression(tag);
+    }
+
+    fn writePropsObject(self: *Printer, attrs: []const NodeId) anyerror!void {
+        if (attrs.len == 0) {
+            try self.write("null");
+            return;
+        }
+        try self.write("{ ");
+        for (attrs, 0..) |a, i| {
+            if (i > 0) try self.write(", ");
+            switch (self.hir.kindOf(a)) {
+                .jsx_attribute => {
+                    const ap = hir_mod.jsxAttributeOf(self.hir, a);
+                    try self.write(self.interner.get(ap.name));
+                    try self.write(": ");
+                    if (ap.value == hir_mod.none_node_id) {
+                        try self.write("true");
+                    } else if (self.hir.kindOf(ap.value) == .jsx_expression) {
+                        const ex = hir_mod.jsxExpressionOf(self.hir, ap.value);
+                        try self.printExpression(ex.expression);
+                    } else {
+                        try self.printExpression(ap.value);
+                    }
+                },
+                .jsx_spread_attribute => {
+                    const sp = hir_mod.jsxSpreadAttributeOf(self.hir, a);
+                    try self.write("...");
+                    try self.printExpression(sp.expression);
+                },
+                else => {},
+            }
+        }
+        try self.write(" }");
+    }
+
+    fn printJsxFragment(self: *Printer, node: NodeId) anyerror!void {
+        switch (self.options.jsx_runtime) {
+            .classic, .preserve => {
+                try self.write(self.options.jsx_factory);
+                try self.write(".createElement(");
+                try self.write(self.options.jsx_fragment);
+                try self.write(", null");
+                const children = hir_mod.jsxFragmentChildren(self.hir, node);
+                for (children) |c| {
+                    try self.write(", ");
+                    try self.printExpression(c);
+                }
+                try self.write(")");
+            },
+            .automatic, .automatic_dev => {
+                const fn_name: []const u8 = if (self.options.jsx_runtime == .automatic_dev) "_jsxDEV" else "_jsxs";
+                try self.write(fn_name);
+                try self.write("(_Fragment, { children: [");
+                const children = hir_mod.jsxFragmentChildren(self.hir, node);
+                for (children, 0..) |c, i| {
+                    if (i > 0) try self.write(", ");
+                    try self.printExpression(c);
+                }
+                try self.write("] })");
+            },
+        }
     }
 
     fn printJsxExpression(self: *Printer, node: NodeId) anyerror!void {
@@ -1245,6 +1355,59 @@ test "emit: try/catch/finally" {
     try T.expect(std.mem.indexOf(u8, out, "try ") != null);
     try T.expect(std.mem.indexOf(u8, out, " catch (e) ") != null);
     try T.expect(std.mem.indexOf(u8, out, " finally ") != null);
+}
+
+fn emitJsx(source: []const u8, opts: Options) ![]u8 {
+    const s = try T.allocator.create(TestSetup);
+    defer T.allocator.destroy(s);
+    s.interner = try string_interner.Interner.init(T.allocator);
+    defer s.interner.deinit();
+    s.hir = try hir_mod.Hir.init(T.allocator);
+    defer s.hir.deinit();
+    s.scanner = ts_lexer.Scanner.init(T.allocator, source);
+    defer s.scanner.deinit(T.allocator);
+    s.tokens = try s.scanner.tokenize(T.allocator);
+    defer s.tokens.deinit(T.allocator);
+    s.parser = ts_parser.Parser.init(T.allocator, &s.hir, &s.interner, source, s.tokens.items);
+    s.parser.setTsx(true);
+    defer s.parser.deinit();
+    s.root = try s.parser.parseSourceFile();
+    s.printer = Printer.init(T.allocator, &s.hir, &s.interner, opts);
+    defer s.printer.deinit();
+    try s.printer.printSourceFile(s.root);
+    return T.allocator.dupe(u8, s.printer.out.items);
+}
+
+test "emit: jsx classic produces React.createElement" {
+    const out = try emitJsx("let v = <Foo />;", .{});
+    defer T.allocator.free(out);
+    try T.expect(std.mem.indexOf(u8, out, "React.createElement(Foo, null)") != null);
+}
+
+test "emit: jsx classic with custom factory" {
+    const out = try emitJsx("let v = <Foo />;", .{ .jsx_factory = "h" });
+    defer T.allocator.free(out);
+    try T.expect(std.mem.indexOf(u8, out, "h.createElement(Foo, null)") != null);
+}
+
+test "emit: jsx automatic uses _jsx for single child" {
+    const out = try emitJsx("let v = <Foo bar={1} />;", .{ .jsx_runtime = .automatic });
+    defer T.allocator.free(out);
+    try T.expect(std.mem.indexOf(u8, out, "_jsx(Foo, ") != null);
+    try T.expect(std.mem.indexOf(u8, out, "bar: 1") != null);
+}
+
+test "emit: jsx automatic uses _jsxs for multiple children" {
+    const out = try emitJsx("let v = <Foo>{1}{2}</Foo>;", .{ .jsx_runtime = .automatic });
+    defer T.allocator.free(out);
+    try T.expect(std.mem.indexOf(u8, out, "_jsxs(Foo, ") != null);
+    try T.expect(std.mem.indexOf(u8, out, "children: [") != null);
+}
+
+test "emit: jsx automatic_dev uses _jsxDEV" {
+    const out = try emitJsx("let v = <Foo />;", .{ .jsx_runtime = .automatic_dev });
+    defer T.allocator.free(out);
+    try T.expect(std.mem.indexOf(u8, out, "_jsxDEV(Foo, ") != null);
 }
 
 test "emit: throw" {

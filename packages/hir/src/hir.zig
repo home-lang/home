@@ -1329,20 +1329,30 @@ pub const Builder = struct {
     /// Add a call expression with `args` (already-allocated child nodes).
     /// Copies `args` into the shared child pool.
     pub fn addCall(self: *Builder, span: Span, callee: NodeId, args: []const NodeId) !NodeId {
+        return self.addCallWithTypeArgs(span, callee, args, &.{});
+    }
+
+    /// `callee<T1, T2>(args)` — explicit type arguments threaded through
+    /// to the checker so they override call-site inference.
+    pub fn addCallWithTypeArgs(self: *Builder, span: Span, callee: NodeId, args: []const NodeId, type_args: []const NodeId) !NodeId {
         const args_start: u32 = @intCast(self.hir.child_pool.items.len);
         try self.hir.child_pool.appendSlice(self.hir.gpa, args);
         const args_len: u16 = @intCast(args.len);
+        const type_args_start: u32 = @intCast(self.hir.child_pool.items.len);
+        try self.hir.child_pool.appendSlice(self.hir.gpa, type_args);
+        const type_args_len: u16 = @intCast(type_args.len);
         const payload_idx: u32 = @intCast(self.hir.call_payloads.items.len);
         try self.hir.call_payloads.append(self.hir.gpa, .{
             .callee = callee,
             .args_start = args_start,
             .args_len = args_len,
-            .type_args_start = 0,
-            .type_args_len = 0,
+            .type_args_start = type_args_start,
+            .type_args_len = type_args_len,
         });
         const id = try self.newNode(.call_expr, span, payload_idx);
         self.hir.setParent(callee, id);
         for (args) |arg| self.hir.setParent(arg, id);
+        for (type_args) |t| self.hir.setParent(t, id);
         return id;
     }
 
@@ -2405,6 +2415,13 @@ pub fn returnOf(hir: *const Hir, id: NodeId) ReturnPayload {
 pub fn callArgs(hir: *const Hir, id: NodeId) []const NodeId {
     const p = callOf(hir, id);
     return hir.childSlice(p.args_start, p.args_len);
+}
+
+/// Explicit type arguments on a generic call (`f<T>(args)`).
+/// Empty if the call site uses inference only.
+pub fn callTypeArgs(hir: *const Hir, id: NodeId) []const NodeId {
+    const p = callOf(hir, id);
+    return hir.childSlice(p.type_args_start, p.type_args_len);
 }
 
 pub fn blockStmts(hir: *const Hir, id: NodeId) []const NodeId {
