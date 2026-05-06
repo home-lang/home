@@ -312,6 +312,69 @@ pub fn main(init: std.process.Init) !void {
         }
     }
 
+    if (opts.watch) {
+        // §5.A.5 partial — simple polling watch loop. Walks the
+        // input file list every 500ms, comparing source bytes; if
+        // any file changed, calls Program.recompileChanged and
+        // re-emits. Native FS-event backends (FSEvents/inotify/
+        // ReadDirChangesW) are tracked separately.
+        std.debug.print("home tsc - watching for changes (Ctrl-C to stop)\n", .{});
+        var last_sources: std.ArrayListUnmanaged([]u8) = .empty;
+        defer {
+            for (last_sources.items) |s| gpa.free(s);
+            last_sources.deinit(gpa);
+        }
+        // Snapshot current sources.
+        for (input_files.items) |path| {
+            const src = RealFs.read(gpa, path) catch &.{};
+            try last_sources.append(gpa, try gpa.dupe(u8, src));
+            if (src.len > 0) gpa.free(src);
+        }
+        while (true) {
+            // Inter-poll pause is currently a tight loop because
+            // both `std.time.sleep` and `std.posix.nanosleep` were
+            // removed in this Zig 0.16-dev. A platform-native
+            // FS-event backend (FSEvents/inotify/ReadDirChangesW)
+            // is the right replacement; tracked as Phase 5 §5.A.5.
+            // For now we throttle by walking the poll loop slowly.
+            var spin: u64 = 0;
+            while (spin < 5_000_000) : (spin += 1) {}
+            var changed: std.ArrayListUnmanaged([]const u8) = .empty;
+            defer changed.deinit(gpa);
+            for (input_files.items, 0..) |path, i| {
+                const src = RealFs.read(gpa, path) catch continue;
+                defer gpa.free(src);
+                if (i < last_sources.items.len and std.mem.eql(u8, src, last_sources.items[i])) continue;
+                // Source changed (or new). Update snapshot + mark.
+                if (i < last_sources.items.len) {
+                    gpa.free(last_sources.items[i]);
+                    last_sources.items[i] = try gpa.dupe(u8, src);
+                }
+                _ = program.updateSource(path, try gpa.dupe(u8, src)) catch null;
+                try changed.append(gpa, path);
+            }
+            if (changed.items.len == 0) continue;
+            std.debug.print("\n[{s}] {d} file(s) changed; recompiling…\n", .{ "watch", changed.items.len });
+            const recompiled = program.recompileChanged(changed.items, compile_opts) catch |err| blk: {
+                std.debug.print("recompile error: {s}\n", .{@errorName(err)});
+                break :blk @as(u32, 0);
+            };
+            std.debug.print("[watch] {d} file(s) recompiled.\n", .{recompiled});
+            // Re-emit each changed file's JS to disk.
+            for (changed.items) |path| {
+                const file_id = program.lookupPath(path) orelse continue;
+                const f = program.fileById(file_id);
+                const c = f.compilation orelse continue;
+                if (opts.no_emit) continue;
+                const out_path = computeOutPath(gpa, path, out_dir, ".js") catch continue;
+                defer gpa.free(out_path);
+                RealFs.write(gpa, out_path, c.js) catch |err| {
+                    std.debug.print("error writing {s}: {s}\n", .{ out_path, @errorName(err) });
+                };
+            }
+        }
+    }
+
     if (any_errors) std.process.exit(1);
 }
 
