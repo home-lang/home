@@ -318,6 +318,51 @@ test "formatPretty: includes source excerpt and underline" {
     try T.expect(std.mem.indexOf(u8, out, "~~~") != null);
 }
 
+test "formatPretty: 5-char span produces 5 squigglies at correct column" {
+    const src = "const value = hello + 1;";
+    const d: Diagnostic = .{
+        .file = "demo.ts",
+        .line = 1,
+        .col = 15,
+        .code = 2304,
+        .code_prefix = .TS,
+        .severity = .err,
+        .message = "Cannot find name 'hello'.",
+        .span_len = 5,
+    };
+    const out = try formatPretty(T.allocator, d, src, false);
+    defer T.allocator.free(out);
+    // Header in pretty form uses ':' separators.
+    try T.expect(std.mem.indexOf(u8, out, "demo.ts:1:15 - error TS2304: Cannot find name 'hello'.") != null);
+    // Source line present.
+    try T.expect(std.mem.indexOf(u8, out, "const value = hello + 1;") != null);
+    // Squiggly: 6-char gutter ("   1  ") + (col-1=14) spaces + 5 tildes.
+    const expected_underline = "      " ++ "              " ++ "~~~~~";
+    try T.expect(std.mem.indexOf(u8, out, expected_underline) != null);
+    // Exactly 5 tildes (no more, no less).
+    try T.expect(std.mem.indexOf(u8, out, "~~~~~~") == null);
+}
+
+test "formatPretty: line 1 col 1 has correct gutter alignment" {
+    const src = "x;\ny;\n";
+    const d: Diagnostic = .{
+        .file = "a.ts",
+        .line = 1,
+        .col = 1,
+        .code = 2304,
+        .code_prefix = .TS,
+        .severity = .err,
+        .message = "Cannot find name 'x'.",
+        .span_len = 1,
+    };
+    const out = try formatPretty(T.allocator, d, src, false);
+    defer T.allocator.free(out);
+    // Gutter renders as "   1  " (4-wide right-aligned line number + 2 spaces).
+    try T.expect(std.mem.indexOf(u8, out, "   1  x;") != null);
+    // Underline gutter is 6 spaces, then a single tilde at col 1 (no leading spaces).
+    try T.expect(std.mem.indexOf(u8, out, "\n      ~\n") != null);
+}
+
 test "formatPretty: ANSI color when enabled" {
     const d: Diagnostic = .{
         .file = "x.ts",
