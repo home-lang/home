@@ -686,6 +686,560 @@ pub fn handleSignatureHelp(
     return encodeResponse(gpa, request_id, buf.items);
 }
 
+/// Map a `ts_lsp.SymbolInfo.SymbolKind` to the LSP `SymbolKind`
+/// integer constant from the spec.
+fn lspSymbolKind(k: ts_lsp.SymbolInfo.SymbolKind) u8 {
+    return switch (k) {
+        .function => 12,
+        .class => 5,
+        .interface => 11,
+        .variable => 13,
+        .type_alias => 26, // TypeParameter — closest stock kind for a TS type alias.
+        .enum_ => 10,
+        .namespace => 3,
+        .module => 2,
+        .property => 7,
+        .method => 6,
+        .enum_member => 22,
+    };
+}
+
+/// Map a `ts_lsp.CodeAction.Kind` to the LSP `CodeActionKind` string.
+fn lspCodeActionKind(k: ts_lsp.CodeAction.Kind) []const u8 {
+    return switch (k) {
+        .organize_imports => "source.organizeImports",
+        .sort_imports => "source.sortImports",
+        .fix_all => "source.fixAll",
+        .quick_fix => "quickfix",
+    };
+}
+
+/// Map a `ts_lsp.FoldingRange.Kind` to the LSP `FoldingRangeKind` string.
+fn lspFoldingRangeKind(k: ts_lsp.FoldingRange.Kind) []const u8 {
+    return switch (k) {
+        .region => "region",
+        .comment => "comment",
+        .imports => "imports",
+    };
+}
+
+/// Map a `ts_lsp.InlayHint` `kind` field to the LSP `InlayHintKind`
+/// integer constant (Type=1, Parameter=2). The kind is an anonymous
+/// enum nested inside `ts_lsp.InlayHint`, so we reach through a sample
+/// instance's field-type to keep the function signature in sync with
+/// the upstream definition.
+const InlayHintKind = @FieldType(ts_lsp.InlayHint, "kind");
+fn lspInlayHintKind(k: InlayHintKind) u8 {
+    return switch (k) {
+        .type_annotation => 1,
+        .parameter_name => 2,
+    };
+}
+
+/// Map a `ts_lsp.Highlight.Kind` to the LSP `DocumentHighlightKind`
+/// integer constant (Text=1, Read=2, Write=3).
+fn lspHighlightKind(k: ts_lsp.Highlight.Kind) u8 {
+    return switch (k) {
+        .text => 1,
+        .read => 2,
+        .write => 3,
+    };
+}
+
+/// Render a single `SymbolInfo` (recursively, with children) as an
+/// LSP `DocumentSymbol` JSON object.
+fn writeDocumentSymbol(
+    buf: *std.ArrayListUnmanaged(u8),
+    gpa: std.mem.Allocator,
+    sym: ts_lsp.SymbolInfo,
+) !void {
+    try buf.appendSlice(gpa, "{\"name\":\"");
+    try writeJsonStringContents(buf, gpa, sym.name);
+    try buf.appendSlice(gpa, "\",\"kind\":");
+    var nbuf: [4]u8 = undefined;
+    try buf.appendSlice(gpa, try std.fmt.bufPrint(&nbuf, "{d}", .{lspSymbolKind(sym.kind)}));
+    try buf.appendSlice(gpa, ",\"range\":");
+    try writeRange(buf, gpa, sym.span);
+    try buf.appendSlice(gpa, ",\"selectionRange\":");
+    try writeRange(buf, gpa, sym.span);
+    if (sym.children.len > 0) {
+        try buf.appendSlice(gpa, ",\"children\":[");
+        for (sym.children, 0..) |child, i| {
+            if (i > 0) try buf.append(gpa, ',');
+            try writeDocumentSymbol(buf, gpa, child);
+        }
+        try buf.append(gpa, ']');
+    }
+    try buf.append(gpa, '}');
+}
+
+/// Render a `TextEdit` produced by `Service.rename` / `formatDocument`
+/// / `codeActions` as an LSP `TextEdit` JSON object. The `TextEdit`
+/// struct already carries 0-based line/col, so no adjustment is needed
+/// (unlike `Span` which is 1-based and goes through `writeRange`).
+fn writeTextEdit(
+    buf: *std.ArrayListUnmanaged(u8),
+    gpa: std.mem.Allocator,
+    edit: ts_lsp.TextEdit,
+) !void {
+    var nbuf: [128]u8 = undefined;
+    const fmt = try std.fmt.bufPrint(
+        &nbuf,
+        "{{\"range\":{{\"start\":{{\"line\":{d},\"character\":{d}}},\"end\":{{\"line\":{d},\"character\":{d}}}}},\"newText\":\"",
+        .{ edit.start_line, edit.start_col, edit.end_line, edit.end_col },
+    );
+    try buf.appendSlice(gpa, fmt);
+    try writeJsonStringContents(buf, gpa, edit.new_text);
+    try buf.appendSlice(gpa, "\"}");
+}
+
+/// Handle a `textDocument/rename` JSON-RPC request. Extracts URI +
+/// `(line, character)` + `newName`, routes to `Service.rename`, and
+/// emits an LSP `WorkspaceEdit` whose `changes` map groups the
+/// returned `[]TextEdit` by URI. Caller owns the returned slice.
+pub fn handleRename(
+    service: *ts_lsp.Service,
+    gpa: std.mem.Allocator,
+    request_id: RequestId,
+    params_json: []const u8,
+) ![]u8 {
+    const uri = findJsonStringField(params_json, "uri") orelse return error.MissingUri;
+    const line = findJsonIntField(params_json, "line") orelse return error.MissingLine;
+    const character = findJsonIntField(params_json, "character") orelse return error.MissingCharacter;
+    const new_name_raw = findJsonStringField(params_json, "newName") orelse return error.MissingNewName;
+    const new_name = try decodeJsonString(gpa, new_name_raw);
+    defer gpa.free(new_name);
+    const path = uriToPath(uri);
+
+    const file_id = service.program.lookupPath(path) orelse {
+        return encodeResponse(gpa, request_id, "null");
+    };
+    const f = service.program.fileById(file_id);
+    const line_u: u32 = if (line < 0) 0 else @intCast(line);
+    const char_u: u32 = if (character < 0) 0 else @intCast(character);
+    const byte_pos = lineColToByte(f.source, line_u, char_u);
+
+    const edits = try service.rename(gpa, path, byte_pos, new_name);
+    defer gpa.free(edits);
+
+    // Group edits by file path so we can emit one `changes` entry per URI.
+    var by_file: std.StringArrayHashMapUnmanaged(std.ArrayListUnmanaged(usize)) = .empty;
+    defer {
+        var it = by_file.iterator();
+        while (it.next()) |entry| entry.value_ptr.*.deinit(gpa);
+        by_file.deinit(gpa);
+    }
+    for (edits, 0..) |e, idx| {
+        const gop = try by_file.getOrPut(gpa, e.file);
+        if (!gop.found_existing) gop.value_ptr.* = .empty;
+        try gop.value_ptr.*.append(gpa, idx);
+    }
+
+    var buf: std.ArrayListUnmanaged(u8) = .empty;
+    defer buf.deinit(gpa);
+    try buf.appendSlice(gpa, "{\"changes\":{");
+    var first = true;
+    var it = by_file.iterator();
+    while (it.next()) |entry| {
+        if (!first) try buf.append(gpa, ',');
+        first = false;
+        try buf.append(gpa, '"');
+        try buf.appendSlice(gpa, "file://");
+        try writeJsonStringContents(&buf, gpa, entry.key_ptr.*);
+        try buf.appendSlice(gpa, "\":[");
+        for (entry.value_ptr.*.items, 0..) |edit_idx, i| {
+            if (i > 0) try buf.append(gpa, ',');
+            try writeTextEdit(&buf, gpa, edits[edit_idx]);
+        }
+        try buf.append(gpa, ']');
+    }
+    try buf.appendSlice(gpa, "}}");
+    return encodeResponse(gpa, request_id, buf.items);
+}
+
+/// Handle a `textDocument/documentSymbol` JSON-RPC request: extract
+/// the URI, route to `Service.documentSymbols`, and emit an LSP
+/// `DocumentSymbol[]` array (with nested `children`). Caller owns
+/// the returned slice.
+pub fn handleDocumentSymbol(
+    service: *ts_lsp.Service,
+    gpa: std.mem.Allocator,
+    request_id: RequestId,
+    params_json: []const u8,
+) ![]u8 {
+    const uri = findJsonStringField(params_json, "uri") orelse return error.MissingUri;
+    const path = uriToPath(uri);
+
+    const symbols = try service.documentSymbols(gpa, path);
+    defer ts_lsp.freeSymbols(gpa, symbols);
+
+    var buf: std.ArrayListUnmanaged(u8) = .empty;
+    defer buf.deinit(gpa);
+    try buf.append(gpa, '[');
+    for (symbols, 0..) |sym, i| {
+        if (i > 0) try buf.append(gpa, ',');
+        try writeDocumentSymbol(&buf, gpa, sym);
+    }
+    try buf.append(gpa, ']');
+    return encodeResponse(gpa, request_id, buf.items);
+}
+
+/// Handle a `workspace/symbol` JSON-RPC request: extract the `query`
+/// string, route to `Service.workspaceSymbols`, and emit an LSP
+/// `WorkspaceSymbol[]` array (each item carries `name`, `kind`, and a
+/// `location` with the file URI + range). Caller owns the returned
+/// slice.
+pub fn handleWorkspaceSymbol(
+    service: *ts_lsp.Service,
+    gpa: std.mem.Allocator,
+    request_id: RequestId,
+    params_json: []const u8,
+) ![]u8 {
+    const query_raw_opt = findJsonStringField(params_json, "query");
+    const query: []const u8 = if (query_raw_opt) |q|
+        try decodeJsonString(gpa, q)
+    else
+        try gpa.dupe(u8, "");
+    defer gpa.free(query);
+
+    const symbols = try service.workspaceSymbols(gpa, query);
+    defer ts_lsp.freeSymbols(gpa, symbols);
+
+    var buf: std.ArrayListUnmanaged(u8) = .empty;
+    defer buf.deinit(gpa);
+    try buf.append(gpa, '[');
+    for (symbols, 0..) |sym, i| {
+        if (i > 0) try buf.append(gpa, ',');
+        try buf.appendSlice(gpa, "{\"name\":\"");
+        try writeJsonStringContents(&buf, gpa, sym.name);
+        try buf.appendSlice(gpa, "\",\"kind\":");
+        var nbuf: [4]u8 = undefined;
+        try buf.appendSlice(gpa, try std.fmt.bufPrint(&nbuf, "{d}", .{lspSymbolKind(sym.kind)}));
+        try buf.appendSlice(gpa, ",\"location\":{\"uri\":\"file://");
+        try writeJsonStringContents(&buf, gpa, sym.span.file);
+        try buf.appendSlice(gpa, "\",\"range\":");
+        try writeRange(&buf, gpa, sym.span);
+        try buf.appendSlice(gpa, "}}");
+    }
+    try buf.append(gpa, ']');
+    return encodeResponse(gpa, request_id, buf.items);
+}
+
+/// Handle a `textDocument/codeAction` JSON-RPC request: extract the
+/// URI, route to `Service.codeActions`, and emit an LSP
+/// `CodeAction[]` array (each item has `title`, `kind`, and an `edit`
+/// `WorkspaceEdit`). Caller owns the returned slice.
+pub fn handleCodeAction(
+    service: *ts_lsp.Service,
+    gpa: std.mem.Allocator,
+    request_id: RequestId,
+    params_json: []const u8,
+) ![]u8 {
+    const uri = findJsonStringField(params_json, "uri") orelse return error.MissingUri;
+    const path = uriToPath(uri);
+
+    const actions = try service.codeActions(gpa, path);
+    defer {
+        for (actions) |a| {
+            // `title` is sometimes static ("Organize Imports") and
+            // sometimes heap-allocated ("Add explicit type to x").
+            // We can't tell the two apart; mirror the test fixtures
+            // which only free the heap-allocated quick_fix titles.
+            if (a.kind == .quick_fix) gpa.free(a.title);
+            for (a.edits) |e| gpa.free(e.new_text);
+            gpa.free(a.edits);
+        }
+        gpa.free(actions);
+    }
+
+    var buf: std.ArrayListUnmanaged(u8) = .empty;
+    defer buf.deinit(gpa);
+    try buf.append(gpa, '[');
+    for (actions, 0..) |action, i| {
+        if (i > 0) try buf.append(gpa, ',');
+        try buf.appendSlice(gpa, "{\"title\":\"");
+        try writeJsonStringContents(&buf, gpa, action.title);
+        try buf.appendSlice(gpa, "\",\"kind\":\"");
+        try buf.appendSlice(gpa, lspCodeActionKind(action.kind));
+        try buf.appendSlice(gpa, "\",\"edit\":{\"changes\":{");
+        // All edits in a single CodeAction may target multiple files;
+        // group them by file like rename does.
+        var by_file: std.StringArrayHashMapUnmanaged(std.ArrayListUnmanaged(usize)) = .empty;
+        defer {
+            var it = by_file.iterator();
+            while (it.next()) |entry| entry.value_ptr.*.deinit(gpa);
+            by_file.deinit(gpa);
+        }
+        for (action.edits, 0..) |e, idx| {
+            const gop = try by_file.getOrPut(gpa, e.file);
+            if (!gop.found_existing) gop.value_ptr.* = .empty;
+            try gop.value_ptr.*.append(gpa, idx);
+        }
+        var first = true;
+        var it = by_file.iterator();
+        while (it.next()) |entry| {
+            if (!first) try buf.append(gpa, ',');
+            first = false;
+            try buf.append(gpa, '"');
+            try buf.appendSlice(gpa, "file://");
+            try writeJsonStringContents(&buf, gpa, entry.key_ptr.*);
+            try buf.appendSlice(gpa, "\":[");
+            for (entry.value_ptr.*.items, 0..) |edit_idx, j| {
+                if (j > 0) try buf.append(gpa, ',');
+                try writeTextEdit(&buf, gpa, action.edits[edit_idx]);
+            }
+            try buf.append(gpa, ']');
+        }
+        try buf.appendSlice(gpa, "}}}");
+    }
+    try buf.append(gpa, ']');
+    return encodeResponse(gpa, request_id, buf.items);
+}
+
+/// Render a `[]u32` semantic-tokens wire array as an LSP
+/// `SemanticTokens` `{ "data": [...] }` JSON object. Internal helper
+/// for the `full` and `range` handlers.
+fn renderSemanticTokensWire(
+    gpa: std.mem.Allocator,
+    data: []const u32,
+) ![]u8 {
+    var buf: std.ArrayListUnmanaged(u8) = .empty;
+    errdefer buf.deinit(gpa);
+    try buf.appendSlice(gpa, "{\"data\":[");
+    for (data, 0..) |v, i| {
+        if (i > 0) try buf.append(gpa, ',');
+        var nbuf: [16]u8 = undefined;
+        try buf.appendSlice(gpa, try std.fmt.bufPrint(&nbuf, "{d}", .{v}));
+    }
+    try buf.appendSlice(gpa, "]}");
+    return buf.toOwnedSlice(gpa);
+}
+
+/// Handle a `textDocument/semanticTokens/full` JSON-RPC request:
+/// extract the URI, route to `Service.semanticTokensWire`, and emit
+/// an LSP `SemanticTokens` `{ data: u32[] }` response. Caller owns
+/// the returned slice.
+pub fn handleSemanticTokensFull(
+    service: *ts_lsp.Service,
+    gpa: std.mem.Allocator,
+    request_id: RequestId,
+    params_json: []const u8,
+) ![]u8 {
+    const uri = findJsonStringField(params_json, "uri") orelse return error.MissingUri;
+    const path = uriToPath(uri);
+
+    const data = try service.semanticTokensWire(gpa, path);
+    defer gpa.free(data);
+
+    const result = try renderSemanticTokensWire(gpa, data);
+    defer gpa.free(result);
+    return encodeResponse(gpa, request_id, result);
+}
+
+/// Handle a `textDocument/semanticTokens/range` JSON-RPC request:
+/// extract the URI + range start/end lines, route to
+/// `Service.semanticTokensRange`, and emit an LSP `SemanticTokens`
+/// `{ data: u32[] }` response. Caller owns the returned slice.
+pub fn handleSemanticTokensRange(
+    service: *ts_lsp.Service,
+    gpa: std.mem.Allocator,
+    request_id: RequestId,
+    params_json: []const u8,
+) ![]u8 {
+    const uri = findJsonStringField(params_json, "uri") orelse return error.MissingUri;
+    const path = uriToPath(uri);
+
+    // The LSP spec wraps the range in a `range: { start: {...}, end: {...} }`
+    // sub-object. Both `start.line` and `end.line` are reachable by
+    // first-occurrence-wins lookups since they're both spelled `line`
+    // — so we hand-walk to find the second `line`. Easiest approach:
+    // locate the `"end":` substring and search for `line` after it.
+    var start_line: i64 = 0;
+    var end_line: i64 = std.math.maxInt(i64);
+    if (std.mem.indexOf(u8, params_json, "\"start\":")) |sp| {
+        start_line = findJsonIntField(params_json[sp..], "line") orelse 0;
+    }
+    if (std.mem.indexOf(u8, params_json, "\"end\":")) |ep| {
+        end_line = findJsonIntField(params_json[ep..], "line") orelse std.math.maxInt(i64);
+    }
+    const sl_u: u32 = if (start_line < 0) 0 else @intCast(@min(start_line, std.math.maxInt(u32)));
+    const el_u: u32 = if (end_line < 0) 0 else @intCast(@min(end_line, std.math.maxInt(u32)));
+
+    const data = try service.semanticTokensRange(gpa, path, sl_u, el_u);
+    defer gpa.free(data);
+
+    const result = try renderSemanticTokensWire(gpa, data);
+    defer gpa.free(result);
+    return encodeResponse(gpa, request_id, result);
+}
+
+/// Handle a `textDocument/foldingRange` JSON-RPC request: extract the
+/// URI, route to `Service.foldingRanges`, and emit an LSP
+/// `FoldingRange[]` array. Caller owns the returned slice.
+pub fn handleFoldingRange(
+    service: *ts_lsp.Service,
+    gpa: std.mem.Allocator,
+    request_id: RequestId,
+    params_json: []const u8,
+) ![]u8 {
+    const uri = findJsonStringField(params_json, "uri") orelse return error.MissingUri;
+    const path = uriToPath(uri);
+
+    const ranges = try service.foldingRanges(gpa, path);
+    defer gpa.free(ranges);
+
+    var buf: std.ArrayListUnmanaged(u8) = .empty;
+    defer buf.deinit(gpa);
+    try buf.append(gpa, '[');
+    for (ranges, 0..) |r, i| {
+        if (i > 0) try buf.append(gpa, ',');
+        var nbuf: [64]u8 = undefined;
+        const fmt = try std.fmt.bufPrint(
+            &nbuf,
+            "{{\"startLine\":{d},\"endLine\":{d},\"kind\":\"",
+            .{ r.start_line, r.end_line },
+        );
+        try buf.appendSlice(gpa, fmt);
+        try buf.appendSlice(gpa, lspFoldingRangeKind(r.kind));
+        try buf.appendSlice(gpa, "\"}");
+    }
+    try buf.append(gpa, ']');
+    return encodeResponse(gpa, request_id, buf.items);
+}
+
+/// Convert a 0-based byte offset into a 0-based `(line, character)`
+/// LSP position. Walks `source` once. Used by `handleInlayHint` to
+/// project `Service.inlayHints` byte positions back into LSP space.
+fn byteToLineCol(source: []const u8, byte_pos: u32) struct { line: u32, character: u32 } {
+    var line: u32 = 0;
+    var col: u32 = 0;
+    var i: u32 = 0;
+    while (i < byte_pos and i < source.len) : (i += 1) {
+        if (source[i] == '\n') {
+            line += 1;
+            col = 0;
+        } else {
+            col += 1;
+        }
+    }
+    return .{ .line = line, .character = col };
+}
+
+/// Handle a `textDocument/inlayHint` JSON-RPC request: extract the
+/// URI, route to `Service.inlayHints`, and emit an LSP `InlayHint[]`
+/// array. Each hint carries a `position` (line/character), a `label`,
+/// and a numeric `kind`. Caller owns the returned slice.
+pub fn handleInlayHint(
+    service: *ts_lsp.Service,
+    gpa: std.mem.Allocator,
+    request_id: RequestId,
+    params_json: []const u8,
+) ![]u8 {
+    const uri = findJsonStringField(params_json, "uri") orelse return error.MissingUri;
+    const path = uriToPath(uri);
+
+    const file_id = service.program.lookupPath(path) orelse {
+        return encodeResponse(gpa, request_id, "[]");
+    };
+    const f = service.program.fileById(file_id);
+
+    const hints = try service.inlayHints(gpa, path);
+    defer {
+        for (hints) |h| gpa.free(h.label);
+        gpa.free(hints);
+    }
+
+    var buf: std.ArrayListUnmanaged(u8) = .empty;
+    defer buf.deinit(gpa);
+    try buf.append(gpa, '[');
+    for (hints, 0..) |h, i| {
+        if (i > 0) try buf.append(gpa, ',');
+        const pos = byteToLineCol(f.source, h.pos);
+        var nbuf: [64]u8 = undefined;
+        const fmt = try std.fmt.bufPrint(
+            &nbuf,
+            "{{\"position\":{{\"line\":{d},\"character\":{d}}},\"label\":\"",
+            .{ pos.line, pos.character },
+        );
+        try buf.appendSlice(gpa, fmt);
+        try writeJsonStringContents(&buf, gpa, h.label);
+        try buf.appendSlice(gpa, "\",\"kind\":");
+        var nbuf2: [4]u8 = undefined;
+        try buf.appendSlice(gpa, try std.fmt.bufPrint(&nbuf2, "{d}", .{lspInlayHintKind(h.kind)}));
+        try buf.append(gpa, '}');
+    }
+    try buf.append(gpa, ']');
+    return encodeResponse(gpa, request_id, buf.items);
+}
+
+/// Handle a `textDocument/documentHighlight` JSON-RPC request: extract
+/// the URI + cursor position, route to `Service.documentHighlights`,
+/// and emit an LSP `DocumentHighlight[]` array (each item has a
+/// `range` and an integer `kind`). Caller owns the returned slice.
+pub fn handleDocumentHighlight(
+    service: *ts_lsp.Service,
+    gpa: std.mem.Allocator,
+    request_id: RequestId,
+    params_json: []const u8,
+) ![]u8 {
+    const uri = findJsonStringField(params_json, "uri") orelse return error.MissingUri;
+    const line = findJsonIntField(params_json, "line") orelse return error.MissingLine;
+    const character = findJsonIntField(params_json, "character") orelse return error.MissingCharacter;
+    const path = uriToPath(uri);
+
+    const file_id = service.program.lookupPath(path) orelse {
+        return encodeResponse(gpa, request_id, "[]");
+    };
+    const f = service.program.fileById(file_id);
+    const line_u: u32 = if (line < 0) 0 else @intCast(line);
+    const char_u: u32 = if (character < 0) 0 else @intCast(character);
+    const byte_pos = lineColToByte(f.source, line_u, char_u);
+
+    const hls = try service.documentHighlights(gpa, path, byte_pos);
+    defer gpa.free(hls);
+
+    var buf: std.ArrayListUnmanaged(u8) = .empty;
+    defer buf.deinit(gpa);
+    try buf.append(gpa, '[');
+    for (hls, 0..) |h, i| {
+        if (i > 0) try buf.append(gpa, ',');
+        try buf.appendSlice(gpa, "{\"range\":");
+        try writeRange(&buf, gpa, h.span);
+        try buf.appendSlice(gpa, ",\"kind\":");
+        var nbuf: [4]u8 = undefined;
+        try buf.appendSlice(gpa, try std.fmt.bufPrint(&nbuf, "{d}", .{lspHighlightKind(h.kind)}));
+        try buf.append(gpa, '}');
+    }
+    try buf.append(gpa, ']');
+    return encodeResponse(gpa, request_id, buf.items);
+}
+
+/// Handle a `textDocument/formatting` JSON-RPC request: extract the
+/// URI, route to `Service.formatDocument`, and emit an LSP
+/// `TextEdit[]` array. Caller owns the returned slice.
+pub fn handleFormatting(
+    service: *ts_lsp.Service,
+    gpa: std.mem.Allocator,
+    request_id: RequestId,
+    params_json: []const u8,
+) ![]u8 {
+    const uri = findJsonStringField(params_json, "uri") orelse return error.MissingUri;
+    const path = uriToPath(uri);
+
+    const edits = try service.formatDocument(gpa, path);
+    defer gpa.free(edits);
+
+    var buf: std.ArrayListUnmanaged(u8) = .empty;
+    defer buf.deinit(gpa);
+    try buf.append(gpa, '[');
+    for (edits, 0..) |e, i| {
+        if (i > 0) try buf.append(gpa, ',');
+        try writeTextEdit(&buf, gpa, e);
+    }
+    try buf.append(gpa, ']');
+    return encodeResponse(gpa, request_id, buf.items);
+}
+
 /// Encode a `textDocument/publishDiagnostics` JSON-RPC notification
 /// body. `rendered` is the `\n`-terminated tsc-style diagnostic
 /// listing returned by `Service.diagnostics` / `Service.didChangeFile`.
@@ -911,21 +1465,49 @@ pub fn dispatchRequest(
             if (is_notification) return &.{};
             return try handleSignatureHelp(service, gpa, id, params);
         },
-        // Methods we know about but don't yet implement, plus the
-        // catch-all `.unknown` — both fall through to the standard
+        .text_document_rename => {
+            if (is_notification) return &.{};
+            return try handleRename(service, gpa, id, params);
+        },
+        .text_document_document_symbol => {
+            if (is_notification) return &.{};
+            return try handleDocumentSymbol(service, gpa, id, params);
+        },
+        .workspace_symbol => {
+            if (is_notification) return &.{};
+            return try handleWorkspaceSymbol(service, gpa, id, params);
+        },
+        .text_document_code_action => {
+            if (is_notification) return &.{};
+            return try handleCodeAction(service, gpa, id, params);
+        },
+        .text_document_semantic_tokens_full => {
+            if (is_notification) return &.{};
+            return try handleSemanticTokensFull(service, gpa, id, params);
+        },
+        .text_document_semantic_tokens_range => {
+            if (is_notification) return &.{};
+            return try handleSemanticTokensRange(service, gpa, id, params);
+        },
+        .text_document_folding_range => {
+            if (is_notification) return &.{};
+            return try handleFoldingRange(service, gpa, id, params);
+        },
+        .text_document_inlay_hint => {
+            if (is_notification) return &.{};
+            return try handleInlayHint(service, gpa, id, params);
+        },
+        .text_document_document_highlight => {
+            if (is_notification) return &.{};
+            return try handleDocumentHighlight(service, gpa, id, params);
+        },
+        .text_document_formatting => {
+            if (is_notification) return &.{};
+            return try handleFormatting(service, gpa, id, params);
+        },
+        // Catch-all for unknown methods — fall through to standard
         // JSON-RPC `Method not found` error.
-        .text_document_rename,
-        .text_document_document_symbol,
-        .workspace_symbol,
-        .text_document_code_action,
-        .text_document_semantic_tokens_full,
-        .text_document_semantic_tokens_range,
-        .text_document_folding_range,
-        .text_document_inlay_hint,
-        .text_document_document_highlight,
-        .text_document_formatting,
-        .unknown,
-        => {
+        .unknown => {
             return try encodeError(gpa, id, .{ .code = -32601, .message = "Method not found" });
         },
     }
@@ -1438,4 +2020,238 @@ test "dispatchRequest: notification (no id) returns empty bytes" {
     const out = try dispatchRequest(&svc, T.allocator, frame);
     defer T.allocator.free(out);
     try T.expectEqual(@as(usize, 0), out.len);
+}
+
+test "handleRename: returns WorkspaceEdit with changes object" {
+    var vfs = ts_resolver.VirtualFs.init(T.allocator);
+    defer vfs.deinit();
+    var resolver = ts_resolver.Resolver.init(T.allocator, vfs.fs(), .{});
+    defer resolver.deinit();
+    var program = ts_program.Program.init(T.allocator, &resolver);
+    defer program.deinit();
+
+    _ = try program.add("/main.ts", "let count = 1; let total = count + count;");
+    try program.compileAll(.{});
+    var svc = ts_lsp.Service.init(T.allocator, &program);
+
+    const body =
+        \\{"jsonrpc":"2.0","id":51,"method":"textDocument/rename","params":{"textDocument":{"uri":"file:///main.ts"},"position":{"line":0,"character":4},"newName":"n"}}
+    ;
+    const out = try handleRename(&svc, T.allocator, .{ .integer = 51 }, body);
+    defer T.allocator.free(out);
+    try T.expect(std.mem.indexOf(u8, out, "\"id\":51") != null);
+    try T.expect(std.mem.indexOf(u8, out, "\"changes\":") != null);
+    try T.expect(std.mem.indexOf(u8, out, "\"file:///main.ts\":[") != null);
+    try T.expect(std.mem.indexOf(u8, out, "\"newText\":\"n\"") != null);
+}
+
+test "handleDocumentSymbol: returns DocumentSymbol array" {
+    var vfs = ts_resolver.VirtualFs.init(T.allocator);
+    defer vfs.deinit();
+    var resolver = ts_resolver.Resolver.init(T.allocator, vfs.fs(), .{});
+    defer resolver.deinit();
+    var program = ts_program.Program.init(T.allocator, &resolver);
+    defer program.deinit();
+
+    _ = try program.add("/main.ts", "function add(a: number, b: number) { return a + b; }\nlet x = 1;");
+    try program.compileAll(.{});
+    var svc = ts_lsp.Service.init(T.allocator, &program);
+
+    const body =
+        \\{"jsonrpc":"2.0","id":61,"method":"textDocument/documentSymbol","params":{"textDocument":{"uri":"file:///main.ts"}}}
+    ;
+    const out = try handleDocumentSymbol(&svc, T.allocator, .{ .integer = 61 }, body);
+    defer T.allocator.free(out);
+    try T.expect(std.mem.indexOf(u8, out, "\"id\":61") != null);
+    try T.expect(std.mem.indexOf(u8, out, "\"name\":\"add\"") != null);
+    try T.expect(std.mem.indexOf(u8, out, "\"selectionRange\":") != null);
+    try T.expect(std.mem.indexOf(u8, out, "\"range\":") != null);
+    try T.expect(std.mem.indexOf(u8, out, "\"kind\":12") != null); // function
+}
+
+test "handleWorkspaceSymbol: returns WorkspaceSymbol array with location" {
+    var vfs = ts_resolver.VirtualFs.init(T.allocator);
+    defer vfs.deinit();
+    var resolver = ts_resolver.Resolver.init(T.allocator, vfs.fs(), .{});
+    defer resolver.deinit();
+    var program = ts_program.Program.init(T.allocator, &resolver);
+    defer program.deinit();
+
+    _ = try program.add("/a.ts", "function helper() { }");
+    _ = try program.add("/b.ts", "class Helper { }");
+    try program.compileAll(.{});
+    var svc = ts_lsp.Service.init(T.allocator, &program);
+
+    const body =
+        \\{"jsonrpc":"2.0","id":71,"method":"workspace/symbol","params":{"query":"elper"}}
+    ;
+    const out = try handleWorkspaceSymbol(&svc, T.allocator, .{ .integer = 71 }, body);
+    defer T.allocator.free(out);
+    try T.expect(std.mem.indexOf(u8, out, "\"id\":71") != null);
+    try T.expect(std.mem.indexOf(u8, out, "\"location\":{\"uri\":") != null);
+    try T.expect(std.mem.indexOf(u8, out, "\"name\":\"helper\"") != null);
+    try T.expect(std.mem.indexOf(u8, out, "\"name\":\"Helper\"") != null);
+}
+
+test "handleCodeAction: returns CodeAction array with title/kind/edit" {
+    var vfs = ts_resolver.VirtualFs.init(T.allocator);
+    defer vfs.deinit();
+    var resolver = ts_resolver.Resolver.init(T.allocator, vfs.fs(), .{});
+    defer resolver.deinit();
+    var program = ts_program.Program.init(T.allocator, &resolver);
+    defer program.deinit();
+
+    _ = try program.add("/main.ts", "let x = 42;");
+    try program.compileAll(.{});
+    var svc = ts_lsp.Service.init(T.allocator, &program);
+
+    const body =
+        \\{"jsonrpc":"2.0","id":81,"method":"textDocument/codeAction","params":{"textDocument":{"uri":"file:///main.ts"},"range":{"start":{"line":0,"character":0},"end":{"line":0,"character":0}}}}
+    ;
+    const out = try handleCodeAction(&svc, T.allocator, .{ .integer = 81 }, body);
+    defer T.allocator.free(out);
+    try T.expect(std.mem.indexOf(u8, out, "\"id\":81") != null);
+    try T.expect(std.mem.indexOf(u8, out, "\"title\":\"Add explicit type to x\"") != null);
+    try T.expect(std.mem.indexOf(u8, out, "\"kind\":\"quickfix\"") != null);
+    try T.expect(std.mem.indexOf(u8, out, "\"edit\":{\"changes\":") != null);
+}
+
+test "handleSemanticTokensFull: returns object with data array" {
+    var vfs = ts_resolver.VirtualFs.init(T.allocator);
+    defer vfs.deinit();
+    var resolver = ts_resolver.Resolver.init(T.allocator, vfs.fs(), .{});
+    defer resolver.deinit();
+    var program = ts_program.Program.init(T.allocator, &resolver);
+    defer program.deinit();
+
+    _ = try program.add("/main.ts", "let x = 1; function foo() { }");
+    try program.compileAll(.{});
+    var svc = ts_lsp.Service.init(T.allocator, &program);
+
+    const body =
+        \\{"jsonrpc":"2.0","id":91,"method":"textDocument/semanticTokens/full","params":{"textDocument":{"uri":"file:///main.ts"}}}
+    ;
+    const out = try handleSemanticTokensFull(&svc, T.allocator, .{ .integer = 91 }, body);
+    defer T.allocator.free(out);
+    try T.expect(std.mem.indexOf(u8, out, "\"id\":91") != null);
+    try T.expect(std.mem.indexOf(u8, out, "\"data\":[") != null);
+}
+
+test "handleSemanticTokensRange: returns object with data array" {
+    var vfs = ts_resolver.VirtualFs.init(T.allocator);
+    defer vfs.deinit();
+    var resolver = ts_resolver.Resolver.init(T.allocator, vfs.fs(), .{});
+    defer resolver.deinit();
+    var program = ts_program.Program.init(T.allocator, &resolver);
+    defer program.deinit();
+
+    _ = try program.add("/main.ts", "let x = 1;\nlet y = 2;\nlet z = 3;");
+    try program.compileAll(.{});
+    var svc = ts_lsp.Service.init(T.allocator, &program);
+
+    const body =
+        \\{"jsonrpc":"2.0","id":101,"method":"textDocument/semanticTokens/range","params":{"textDocument":{"uri":"file:///main.ts"},"range":{"start":{"line":0,"character":0},"end":{"line":2,"character":0}}}}
+    ;
+    const out = try handleSemanticTokensRange(&svc, T.allocator, .{ .integer = 101 }, body);
+    defer T.allocator.free(out);
+    try T.expect(std.mem.indexOf(u8, out, "\"id\":101") != null);
+    try T.expect(std.mem.indexOf(u8, out, "\"data\":[") != null);
+}
+
+test "handleFoldingRange: returns FoldingRange array" {
+    var vfs = ts_resolver.VirtualFs.init(T.allocator);
+    defer vfs.deinit();
+    var resolver = ts_resolver.Resolver.init(T.allocator, vfs.fs(), .{});
+    defer resolver.deinit();
+    var program = ts_program.Program.init(T.allocator, &resolver);
+    defer program.deinit();
+
+    const src =
+        \\import { a } from "x";
+        \\import { b } from "y";
+        \\function foo() {
+        \\    let q = 1;
+        \\}
+    ;
+    _ = try program.add("/main.ts", src);
+    try program.compileAll(.{});
+    var svc = ts_lsp.Service.init(T.allocator, &program);
+
+    const body =
+        \\{"jsonrpc":"2.0","id":111,"method":"textDocument/foldingRange","params":{"textDocument":{"uri":"file:///main.ts"}}}
+    ;
+    const out = try handleFoldingRange(&svc, T.allocator, .{ .integer = 111 }, body);
+    defer T.allocator.free(out);
+    try T.expect(std.mem.indexOf(u8, out, "\"id\":111") != null);
+    try T.expect(std.mem.indexOf(u8, out, "\"startLine\":") != null);
+    try T.expect(std.mem.indexOf(u8, out, "\"endLine\":") != null);
+    try T.expect(std.mem.indexOf(u8, out, "\"kind\":\"") != null);
+}
+
+test "handleInlayHint: returns InlayHint array with position+label+kind" {
+    var vfs = ts_resolver.VirtualFs.init(T.allocator);
+    defer vfs.deinit();
+    var resolver = ts_resolver.Resolver.init(T.allocator, vfs.fs(), .{});
+    defer resolver.deinit();
+    var program = ts_program.Program.init(T.allocator, &resolver);
+    defer program.deinit();
+
+    _ = try program.add("/main.ts", "let x = 42;");
+    try program.compileAll(.{});
+    var svc = ts_lsp.Service.init(T.allocator, &program);
+
+    const body =
+        \\{"jsonrpc":"2.0","id":121,"method":"textDocument/inlayHint","params":{"textDocument":{"uri":"file:///main.ts"},"range":{"start":{"line":0,"character":0},"end":{"line":0,"character":11}}}}
+    ;
+    const out = try handleInlayHint(&svc, T.allocator, .{ .integer = 121 }, body);
+    defer T.allocator.free(out);
+    try T.expect(std.mem.indexOf(u8, out, "\"id\":121") != null);
+    try T.expect(std.mem.indexOf(u8, out, "\"position\":{") != null);
+    try T.expect(std.mem.indexOf(u8, out, "\"label\":\"") != null);
+    try T.expect(std.mem.indexOf(u8, out, "\"kind\":1") != null);
+}
+
+test "handleDocumentHighlight: returns DocumentHighlight array with range+kind" {
+    var vfs = ts_resolver.VirtualFs.init(T.allocator);
+    defer vfs.deinit();
+    var resolver = ts_resolver.Resolver.init(T.allocator, vfs.fs(), .{});
+    defer resolver.deinit();
+    var program = ts_program.Program.init(T.allocator, &resolver);
+    defer program.deinit();
+
+    _ = try program.add("/main.ts", "let count = 1; let total = count + count;");
+    try program.compileAll(.{});
+    var svc = ts_lsp.Service.init(T.allocator, &program);
+
+    const body =
+        \\{"jsonrpc":"2.0","id":131,"method":"textDocument/documentHighlight","params":{"textDocument":{"uri":"file:///main.ts"},"position":{"line":0,"character":4}}}
+    ;
+    const out = try handleDocumentHighlight(&svc, T.allocator, .{ .integer = 131 }, body);
+    defer T.allocator.free(out);
+    try T.expect(std.mem.indexOf(u8, out, "\"id\":131") != null);
+    try T.expect(std.mem.indexOf(u8, out, "\"result\":[") != null);
+    try T.expect(std.mem.indexOf(u8, out, "\"range\":") != null);
+    try T.expect(std.mem.indexOf(u8, out, "\"kind\":") != null);
+}
+
+test "handleFormatting: returns TextEdit array (no-op)" {
+    var vfs = ts_resolver.VirtualFs.init(T.allocator);
+    defer vfs.deinit();
+    var resolver = ts_resolver.Resolver.init(T.allocator, vfs.fs(), .{});
+    defer resolver.deinit();
+    var program = ts_program.Program.init(T.allocator, &resolver);
+    defer program.deinit();
+
+    _ = try program.add("/main.ts", "let x = 1;");
+    try program.compileAll(.{});
+    var svc = ts_lsp.Service.init(T.allocator, &program);
+
+    const body =
+        \\{"jsonrpc":"2.0","id":141,"method":"textDocument/formatting","params":{"textDocument":{"uri":"file:///main.ts"},"options":{"tabSize":2,"insertSpaces":true}}}
+    ;
+    const out = try handleFormatting(&svc, T.allocator, .{ .integer = 141 }, body);
+    defer T.allocator.free(out);
+    try T.expect(std.mem.indexOf(u8, out, "\"id\":141") != null);
+    // Service stub returns [] (already-formatted).
+    try T.expect(std.mem.indexOf(u8, out, "\"result\":[]") != null);
 }
