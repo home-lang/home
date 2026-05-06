@@ -8,30 +8,39 @@ const macho = @import("macho.zig");
 /// AArch64 native codegen — Path B-lite of issue #5.
 ///
 /// Mirrors the structure of `native_codegen.NativeCodegen` but emits arm64
-/// machine code via `arm64.Assembler`. Currently supports the M6 subset:
+/// machine code via `arm64.Assembler`. Currently supports the M7 subset:
 ///   - `FnDecl` (top-level functions, including non-`main`) with up to 8
 ///     i64 parameters delivered via x0..x7 per AAPCS64
+///   - `StructDecl` (registered into a layout table; emits no code)
 ///   - `LetDecl` (mutable or immutable; `is_static` not supported — note
-///     mutability isn't enforced, just respected when the source asks for it)
+///     mutability isn't enforced, just respected when the source asks for it).
+///     Both scalar and struct-typed initializers are supported; struct
+///     locals occupy N consecutive 8-byte slots.
 ///   - `IfStmt` with optional else
 ///   - `WhileStmt`
 ///   - `ReturnStmt`
-///   - integer + boolean literals, identifier reads, assignment to identifiers
+///   - integer + boolean literals, identifier reads, assignment to
+///     identifiers and struct field assignments
 ///   - binary expressions: `+ - * /`, `== != < <= > >=`
 ///   - call expressions: positional args only, callee must be a bare
 ///     identifier referencing a function in this program
 ///   - built-in `print(s)` / `println(s)` for string-literal arguments,
 ///     lowered to the BSD `write` syscall on macOS-arm64
+///   - struct field reads (`p.x`) and writes (`p.x = ...`)
 ///
-/// Other AST nodes return `error.NotImplemented`. The plan is to expand
-/// this milestone-by-milestone (M7 = structs, M8 = arrays, …) per the
-/// B-lite roadmap rather than refactoring NativeCodegen itself.
+/// Other AST nodes (pointers, methods, struct args/returns, nested
+/// structs, arrays, ...) return `error.NotImplemented`. The plan is to
+/// expand this milestone-by-milestone per the B-lite roadmap rather than
+/// refactoring NativeCodegen itself.
 pub const CodegenError = error{
     NotImplemented,
     UnsupportedPlatform,
     IntegerLiteralOutOfRange,
     UndefinedIdentifier,
     UndefinedFunction,
+    UndefinedStruct,
+    UndefinedField,
+    NotAStructLocal,
     TooManyArguments,
     InvalidCallTarget,
     FrameTooLarge,
@@ -70,9 +79,18 @@ pub const Aarch64NativeCodegen = struct {
     io: ?Io = null,
 
     /// Locals → byte offset from SP at prologue end. All locals are 8 bytes
-    /// (i64) for now. Cleared between functions. Includes function parameters
-    /// (which occupy the lowest slots) followed by `let` bindings.
+    /// for scalars; struct locals occupy multiple consecutive slots and the
+    /// map stores the offset of slot 0. Cleared between functions. Includes
+    /// function parameters (which occupy the lowest slots) followed by `let`
+    /// bindings.
     locals: std.StringHashMap(u32),
+    /// Local name → struct type name, for locals whose value is a struct.
+    /// Used by member expressions to look up field offsets. Cleared between
+    /// functions.
+    local_struct_types: std.StringHashMap([]const u8),
+    /// Next free slot offset (bytes from SP) for the local being allocated.
+    /// Reset in generateFnDecl.
+    next_slot: u32 = 0,
     /// Bytes pushed beyond the stable frame during expression evaluation.
     /// Used to fix up SP-relative local addresses while a binary expression
     /// has spilled an intermediate result. Always returns to 0 at statement
@@ -89,6 +107,10 @@ pub const Aarch64NativeCodegen = struct {
     strings: std.ArrayList(StringLit),
     /// ADR instructions that need to be patched once string offsets are known.
     string_fixups: std.ArrayList(StringFixup),
+    /// Struct name → AST node. Populated by a pre-pass over the program's
+    /// top-level statements before any function body is emitted, so frame
+    /// sizing and member expressions can look up sizes and field offsets.
+    struct_layouts: std.StringHashMap(*const ast.StructDecl),
 
     pub fn init(allocator: std.mem.Allocator, program: *const ast.Program) Aarch64NativeCodegen {
         return .{
@@ -97,9 +119,11 @@ pub const Aarch64NativeCodegen = struct {
             .assembler = arm64.Assembler.init(allocator),
             .functions = std.StringHashMap(usize).init(allocator),
             .locals = std.StringHashMap(u32).init(allocator),
+            .local_struct_types = std.StringHashMap([]const u8).init(allocator),
             .pending_calls = std.ArrayList(PendingCall).empty,
             .strings = std.ArrayList(StringLit).empty,
             .string_fixups = std.ArrayList(StringFixup).empty,
+            .struct_layouts = std.StringHashMap(*const ast.StructDecl).init(allocator),
         };
     }
 
@@ -107,13 +131,24 @@ pub const Aarch64NativeCodegen = struct {
         self.assembler.deinit();
         self.functions.deinit();
         self.locals.deinit();
+        self.local_struct_types.deinit();
         self.pending_calls.deinit(self.allocator);
         for (self.strings.items) |str| self.allocator.free(str.bytes);
         self.strings.deinit(self.allocator);
         self.string_fixups.deinit(self.allocator);
+        self.struct_layouts.deinit();
     }
 
     pub fn writeExecutable(self: *Aarch64NativeCodegen, path: []const u8) !void {
+        // Pass 0: register every StructDecl so frame sizing and member
+        // accesses inside function bodies can look layouts up.
+        for (self.program.statements) |stmt| {
+            switch (stmt) {
+                .StructDecl => |decl| try self.struct_layouts.put(decl.name, decl),
+                else => {},
+            }
+        }
+
         // Two-pass emission to dodge forward-reference pain: first emit every
         // non-main function (so any `bl foo` from main lands on a known
         // address), then emit main last. Calls between non-main functions or
@@ -173,6 +208,7 @@ pub const Aarch64NativeCodegen = struct {
     fn generateStmt(self: *Aarch64NativeCodegen, stmt: ast.Stmt) CodegenError!void {
         switch (stmt) {
             .FnDecl => |func| try self.generateFnDecl(func),
+            .StructDecl => {}, // registered in writeExecutable's pass 0
             .LetDecl => |decl| try self.generateLetDecl(decl),
             .IfStmt => |if_stmt| try self.generateIfStmt(if_stmt),
             .WhileStmt => |while_stmt| try self.generateWhileStmt(while_stmt),
@@ -257,15 +293,18 @@ pub const Aarch64NativeCodegen = struct {
 
         // Reset per-function state.
         self.locals.clearRetainingCapacity();
+        self.local_struct_types.clearRetainingCapacity();
         self.stack_delta = 0;
+        self.next_slot = 0;
 
-        // Pre-pass: count `let` bindings reachable from this function's body
-        // (including those nested in if/else and while branches) plus the
-        // parameter slots. Over-allocates when if/else branches are mutually
-        // exclusive; an optimal allocator can reuse slots later.
+        // Pre-pass: total slot count = parameter slots (1 each, scalar-only
+        // for now) + slots required by every reachable `let` binding (1 for
+        // scalars, N for struct-typed initializers). Over-allocates when
+        // if/else branches are mutually exclusive; an optimal allocator can
+        // reuse slots later.
         const param_count: u32 = @intCast(func.params.len);
-        const let_count: u32 = countLetDeclsInBlock(func.body);
-        const raw_frame: u32 = (param_count + let_count) * 8;
+        const let_slot_count: u32 = countSlotsInBlock(func.body, &self.struct_layouts);
+        const raw_frame: u32 = (param_count + let_slot_count) * 8;
         self.frame_size = std.mem.alignForward(u32, raw_frame, 16);
         if (self.frame_size > 4095) return error.FrameTooLarge; // single ADD/SUB imm12
 
@@ -285,6 +324,7 @@ pub const Aarch64NativeCodegen = struct {
             const slot: u32 = @intCast(i * 8);
             try self.locals.put(param.name, slot);
             try self.assembler.strRegMem(argRegister(i), .sp, @intCast(slot));
+            self.next_slot = slot + 8;
         }
 
         for (func.body.statements) |stmt| {
@@ -320,19 +360,46 @@ pub const Aarch64NativeCodegen = struct {
     fn generateLetDecl(self: *Aarch64NativeCodegen, decl: *ast.LetDecl) CodegenError!void {
         if (decl.is_static) return error.NotImplemented;
 
+        // Struct-typed initializer: allocate N consecutive slots and write
+        // each field into its own slot.
+        if (decl.value) |value| {
+            if (value.* == .StructLiteral) {
+                return self.generateLetStruct(decl.name, value.StructLiteral);
+            }
+        }
+
+        // Scalar path.
         if (decl.value) |value| {
             try self.generateExpr(value);
         } else {
             try self.assembler.movRegImm64(.x0, 0);
         }
 
-        // Allocate the next free slot. Since params are inserted first by
-        // generateFnDecl, this naturally lands after them.
-        const slot: u32 = @intCast(self.locals.count() * 8);
+        const slot = self.next_slot;
+        self.next_slot += 8;
         try self.locals.put(decl.name, slot);
 
         // delta is 0 here — top-level statement, no expr in flight.
         try self.assembler.strRegMem(.x0, .sp, @intCast(slot));
+    }
+
+    fn generateLetStruct(self: *Aarch64NativeCodegen, name: []const u8, lit: *const ast.StructLiteralExpr) CodegenError!void {
+        const sdecl = self.struct_layouts.get(lit.type_name) orelse return error.UndefinedStruct;
+
+        const base_slot = self.next_slot;
+        const field_count: u32 = @intCast(sdecl.fields.len);
+        self.next_slot += field_count * 8;
+        try self.locals.put(name, base_slot);
+        try self.local_struct_types.put(name, lit.type_name);
+
+        // Write each field. Each FieldInit's name has to map to one of the
+        // declared fields; we look up the offset from the StructDecl and
+        // emit a store. Order of evaluation follows source order.
+        for (lit.fields) |field| {
+            try self.generateExpr(field.value); // x0 = field value
+            const offset = fieldOffset(sdecl, field.name) orelse return error.UndefinedField;
+            try self.assembler.strRegMem(.x0, .sp, @intCast(base_slot + offset));
+        }
     }
 
     fn generateReturn(self: *Aarch64NativeCodegen, ret: *ast.ReturnStmt) CodegenError!void {
@@ -392,8 +459,25 @@ pub const Aarch64NativeCodegen = struct {
             .BinaryExpr => |bin| try self.generateBinaryExpr(bin),
             .AssignmentExpr => |assign| try self.generateAssignment(assign),
             .CallExpr => |call| try self.generateCallExpr(call),
+            .MemberExpr => |member| try self.generateMemberRead(member),
             else => return error.NotImplemented,
         }
+    }
+
+    fn generateMemberRead(self: *Aarch64NativeCodegen, member: *ast.MemberExpr) CodegenError!void {
+        // M7 only handles the `local.field` shape — `obj.method()` chains,
+        // pointer dereference, etc. are M-later.
+        const ident = switch (member.object.*) {
+            .Identifier => |id| id.name,
+            else => return error.NotImplemented,
+        };
+        const base = self.locals.get(ident) orelse return error.UndefinedIdentifier;
+        const struct_name = self.local_struct_types.get(ident) orelse return error.NotAStructLocal;
+        const sdecl = self.struct_layouts.get(struct_name) orelse return error.UndefinedStruct;
+        const off = fieldOffset(sdecl, member.member) orelse return error.UndefinedField;
+
+        const total: u32 = base + off + self.stack_delta;
+        try self.assembler.ldrRegMem(.x0, .sp, @intCast(total));
     }
 
     fn generateCallExpr(self: *Aarch64NativeCodegen, call: *ast.CallExpr) CodegenError!void {
@@ -447,9 +531,8 @@ pub const Aarch64NativeCodegen = struct {
     }
 
     fn generateAssignment(self: *Aarch64NativeCodegen, assign: *ast.AssignmentExpr) CodegenError!void {
-        // Evaluate value into x0, then store to the target's slot. Only
-        // identifier targets are supported in M4 (no IndexExpr / MemberExpr
-        // lvalues yet).
+        // Evaluate value into x0, then store to the target's slot. Supports
+        // identifier targets and `local.field` member targets.
         try self.generateExpr(assign.value);
 
         switch (assign.target.*) {
@@ -457,6 +540,18 @@ pub const Aarch64NativeCodegen = struct {
                 const base = self.locals.get(ident.name) orelse return error.UndefinedIdentifier;
                 const offset: u32 = base + self.stack_delta;
                 try self.assembler.strRegMem(.x0, .sp, @intCast(offset));
+            },
+            .MemberExpr => |member| {
+                const ident = switch (member.object.*) {
+                    .Identifier => |id| id.name,
+                    else => return error.NotImplemented,
+                };
+                const base = self.locals.get(ident) orelse return error.UndefinedIdentifier;
+                const struct_name = self.local_struct_types.get(ident) orelse return error.NotAStructLocal;
+                const sdecl = self.struct_layouts.get(struct_name) orelse return error.UndefinedStruct;
+                const off = fieldOffset(sdecl, member.member) orelse return error.UndefinedField;
+                const total: u32 = base + off + self.stack_delta;
+                try self.assembler.strRegMem(.x0, .sp, @intCast(total));
             },
             else => return error.NotImplemented,
         }
@@ -578,26 +673,49 @@ fn argRegister(i: usize) arm64.Assembler.Register {
     };
 }
 
-/// Recursively count `let` bindings reachable from a block. Branches of an
-/// if/else are summed (over-allocates when branches are mutually exclusive,
-/// which is fine for now).
-fn countLetDeclsInBlock(block: *const ast.BlockStmt) u32 {
+/// Recursively count slot-equivalents for `let` bindings reachable from a
+/// block. Scalars contribute 1 slot, struct-typed `let`s contribute N slots
+/// (where N is the field count). Branches of an if/else are summed
+/// (over-allocates when branches are mutually exclusive — fine for now).
+fn countSlotsInBlock(block: *const ast.BlockStmt, struct_layouts: *std.StringHashMap(*const ast.StructDecl)) u32 {
     var count: u32 = 0;
     for (block.statements) |stmt| {
-        count += countLetDeclsInStmt(stmt);
+        count += countSlotsInStmt(stmt, struct_layouts);
     }
     return count;
 }
 
-fn countLetDeclsInStmt(stmt: ast.Stmt) u32 {
+fn countSlotsInStmt(stmt: ast.Stmt, struct_layouts: *std.StringHashMap(*const ast.StructDecl)) u32 {
     return switch (stmt) {
-        .LetDecl => 1,
+        .LetDecl => |decl| blk: {
+            // Struct-typed initializer? If we know the struct, claim one
+            // slot per field; otherwise fall back to one slot.
+            if (decl.value) |v| {
+                if (v.* == .StructLiteral) {
+                    if (struct_layouts.get(v.StructLiteral.type_name)) |sdecl| {
+                        break :blk @intCast(sdecl.fields.len);
+                    }
+                }
+            }
+            break :blk 1;
+        },
         .IfStmt => |if_stmt| blk: {
-            var c = countLetDeclsInBlock(if_stmt.then_block);
-            if (if_stmt.else_block) |eb| c += countLetDeclsInBlock(eb);
+            var c = countSlotsInBlock(if_stmt.then_block, struct_layouts);
+            if (if_stmt.else_block) |eb| c += countSlotsInBlock(eb, struct_layouts);
             break :blk c;
         },
-        .WhileStmt => |while_stmt| countLetDeclsInBlock(while_stmt.body),
+        .WhileStmt => |while_stmt| countSlotsInBlock(while_stmt.body, struct_layouts),
         else => 0,
     };
+}
+
+/// Linear search for a field by name; returns its byte offset within the
+/// struct (each field is 8 bytes). All fields scalar for now.
+fn fieldOffset(decl: *const ast.StructDecl, name: []const u8) ?u32 {
+    var offset: u32 = 0;
+    for (decl.fields) |f| {
+        if (std.mem.eql(u8, f.name, name)) return offset;
+        offset += 8;
+    }
+    return null;
 }
