@@ -81,6 +81,12 @@ pub const TsCodes = struct {
 pub const GenericAliasInfo = struct {
     params: []TypeId,
     body: TypeId,
+    /// HIR node for the alias body. Used when the body contains a
+    /// mapped type whose constraint can't materialize until the
+    /// outer parameters are substituted (homomorphic case:
+    /// `type Partial<T> = { [K in keyof T]?: T[K] }`). Falls back
+    /// to `body` lookup when the HIR node has been re-evaluated.
+    body_node: hir_mod.NodeId = hir_mod.none_node_id,
 };
 
 /// Subset of compiler-options flags the checker consults. Defaults
@@ -1163,6 +1169,7 @@ pub const Checker = struct {
             try self.generic_aliases.put(self.gpa, id.name, .{
                 .params = owned_params,
                 .body = body_t,
+                .body_node = ta.aliased,
             });
             // Also expose the un-instantiated body via `type_names`
             // so a bare `Alias` (no type-args) resolves — TS treats
@@ -1257,6 +1264,30 @@ pub const Checker = struct {
                             const arg_t = try self.lowererLowerWithTypeParams(args[i]);
                             try subs.put(self.gpa, info.params[i], arg_t);
                         }
+                        // Homomorphic mapped-type alias: when the
+                        // alias body is `{ [K in keyof T]: F<K> }`,
+                        // the static `body_t` collapsed to `unknown`
+                        // because `keyof T` couldn't materialize at
+                        // alias-decl time. Re-evaluate the mapped
+                        // body now under the outer-parameter
+                        // substitution so `Partial<{x: number}>`
+                        // returns `{ x?: number }`.
+                        if (info.body_node != hir_mod.none_node_id and
+                            self.hir.kindOf(info.body_node) == .mapped_type)
+                        {
+                            try self.pushNarrowScope();
+                            defer self.popNarrowScope();
+                            // Push T → arg_t into the narrow scope so
+                            // type-refs inside the mapped body
+                            // resolve through `lookupNarrow`.
+                            for (info.params, 0..) |param_t, idx| {
+                                if (idx >= args.len) break;
+                                const tp = self.interner.pool.type_parameter_payloads.items[self.interner.pool.payloadOf(param_t)];
+                                const arg_t = subs.get(param_t) orelse continue;
+                                try self.recordNarrow(tp.name, arg_t);
+                            }
+                            return self.evalMappedType(info.body_node) catch info.body;
+                        }
                         return self.substituteType(info.body, &subs) catch info.body;
                     }
                 }
@@ -1290,6 +1321,26 @@ pub const Checker = struct {
                     return self.interner.internUnion(lits.items) catch return error.OutOfMemory;
                 }
                 return self.interner.internKeyof(operand) catch return error.OutOfMemory;
+            },
+            .indexed_access_type => {
+                // `T[K]` — resolve both sides through the narrow-aware
+                // path. If T is now an object type and K is a known
+                // string literal, return the matching member directly.
+                const ia = hir_mod.indexedAccessTypeOf(self.hir, type_node);
+                const obj = try self.lowererLowerWithTypeParams(ia.object);
+                const idx = try self.lowererLowerWithTypeParams(ia.index);
+                const obj_flags = self.interner.pool.flagsOf(obj);
+                const idx_flags = self.interner.pool.flagsOf(idx);
+                if (obj_flags.is_object_type and idx_flags.is_literal and idx_flags.is_string) {
+                    const lit = self.interner.literalOf(idx);
+                    switch (lit) {
+                        .string_lit => |sid| {
+                            if (self.interner.objectMember(obj, sid)) |member_t| return member_t;
+                        },
+                        else => {},
+                    }
+                }
+                return self.interner.internIndexedAccess(obj, idx) catch return error.OutOfMemory;
             },
             .conditional_type => {
                 // `T extends U ? X : Y` — eagerly evaluate when neither
@@ -2395,6 +2446,28 @@ pub const Checker = struct {
                 return self.interner.internUnion(lits.items) catch return t;
             }
             return self.interner.internKeyof(new_operand) catch return t;
+        }
+        if (flags.is_indexed_access) {
+            // T[K] after substitution. If the substituted T is an
+            // object type and K resolves to a string literal, look
+            // up the matching member's type. Otherwise re-intern.
+            const ia = self.interner.pool.indexed_access_payloads.items[self.interner.pool.payloadOf(t)];
+            const new_obj = try self.substituteType(ia.object, subs);
+            const new_idx = try self.substituteType(ia.index, subs);
+            const obj_flags = self.interner.pool.flagsOf(new_obj);
+            const idx_flags = self.interner.pool.flagsOf(new_idx);
+            if (obj_flags.is_object_type and idx_flags.is_literal and idx_flags.is_string) {
+                const lit = self.interner.literalOf(new_idx);
+                switch (lit) {
+                    .string_lit => |sid| {
+                        if (self.interner.objectMember(new_obj, sid)) |member_t| {
+                            return member_t;
+                        }
+                    },
+                    else => {},
+                }
+            }
+            return self.interner.internIndexedAccess(new_obj, new_idx) catch return t;
         }
         return t;
     }
@@ -4136,4 +4209,29 @@ test "checker: mapped type over keyof T materializes properties" {
     try T.expectEqual(@as(usize, 2), members.len);
     // Both members should be number_t.
     for (members) |m| try T.expectEqual(types.Primitive.number_t, m.type);
+}
+
+test "checker: homomorphic Partial<T> preserves field types" {
+    const s = try newSetup(
+        \\type Partial<T> = { [K in keyof T]?: T[K] };
+        \\let p: Partial<{ x: number; y: string }>;
+    );
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+    const stmts = hir_mod.blockStmts(&s.hir, s.root);
+    const p_decl = stmts[1];
+    const t = s.hir.typeOf(p_decl);
+    try T.expect(s.ti.pool.flagsOf(t).is_object_type);
+    const members = s.ti.objectMembers(t);
+    try T.expectEqual(@as(usize, 2), members.len);
+    // Each member should be optional + carry the original type.
+    var saw_x_number = false;
+    var saw_y_string = false;
+    for (members) |m| {
+        try T.expect(m.is_optional);
+        if (m.type == types.Primitive.number_t) saw_x_number = true;
+        if (m.type == types.Primitive.string_t) saw_y_string = true;
+    }
+    try T.expect(saw_x_number);
+    try T.expect(saw_y_string);
 }
