@@ -1216,6 +1216,17 @@ pub const Hir = struct {
     pub fn childSlice(self: *const Hir, start: u32, len: u32) []const NodeId {
         return self.child_pool.items[start .. start + len];
     }
+
+    /// Set the `is_async` flag on an existing fn-decl. Used by the
+    /// parser when `async function f()` is parsed as a statement —
+    /// the inner `parseFunctionDeclaration` doesn't see the leading
+    /// `async`, so we patch the flag in afterward.
+    pub fn markFnAsync(self: *Hir, id: NodeId) void {
+        const k = self.kindOf(id);
+        std.debug.assert(k == .fn_decl or k == .fn_expr or k == .arrow_fn);
+        const payload_idx = self.payloads.items[id];
+        self.fn_decl_payloads.items[payload_idx].flags.is_async = true;
+    }
 };
 
 // ============================================================================
@@ -2190,6 +2201,35 @@ pub const Builder = struct {
         return id;
     }
 
+    /// `await expr` — reuses the AsExpression shape with no type-node.
+    /// The checker types it as `T` when the operand is `Promise<T>`.
+    pub fn addAwaitExpr(self: *Builder, span: Span, expr: NodeId) !NodeId {
+        const payload_idx: u32 = @intCast(self.hir.as_expression_payloads.items.len);
+        try self.hir.as_expression_payloads.append(self.hir.gpa, .{
+            .expr = expr,
+            .type_node = none_node_id,
+        });
+        const id = try self.newNode(.await_expr, span, payload_idx);
+        self.hir.setParent(expr, id);
+        return id;
+    }
+
+    /// `yield expr` / `yield* expr` — reuses the AsExpression shape;
+    /// `type_node` is `none_node_id` for plain yield, set to a
+    /// sentinel-shape for `yield*` (delegated yield).
+    pub fn addYieldExpr(self: *Builder, span: Span, expr: NodeId, is_delegated: bool) !NodeId {
+        const payload_idx: u32 = @intCast(self.hir.as_expression_payloads.items.len);
+        try self.hir.as_expression_payloads.append(self.hir.gpa, .{
+            .expr = expr,
+            // We encode is_delegated as a non-zero sentinel in
+            // type_node — yield's `type_node` slot is otherwise unused.
+            .type_node = if (is_delegated) 1 else none_node_id,
+        });
+        const id = try self.newNode(.yield_expr, span, payload_idx);
+        if (expr != none_node_id) self.hir.setParent(expr, id);
+        return id;
+    }
+
     /// Build an `[k: K]: V` index signature member.
     pub fn addIndexSignature(
         self: *Builder,
@@ -2763,6 +2803,16 @@ pub fn indexedAccessTypeOf(hir: *const Hir, id: NodeId) IndexedAccessTypePayload
 pub fn keyofTypeOf(hir: *const Hir, id: NodeId) KeyofTypePayload {
     std.debug.assert(hir.kindOf(id) == .keyof_type);
     return hir.keyof_type_payloads.items[hir.payloads.items[id]];
+}
+
+pub fn awaitExprOf(hir: *const Hir, id: NodeId) AsExpressionPayload {
+    std.debug.assert(hir.kindOf(id) == .await_expr);
+    return hir.as_expression_payloads.items[hir.payloads.items[id]];
+}
+
+pub fn yieldExprOf(hir: *const Hir, id: NodeId) AsExpressionPayload {
+    std.debug.assert(hir.kindOf(id) == .yield_expr);
+    return hir.as_expression_payloads.items[hir.payloads.items[id]];
 }
 
 pub fn asExpressionOf(hir: *const Hir, id: NodeId) AsExpressionPayload {

@@ -1297,6 +1297,20 @@ pub const Printer = struct {
             .jsx_element, .jsx_self_closing => try self.printJsxElement(node),
             .jsx_fragment => try self.printJsxFragment(node),
             .jsx_expression => try self.printJsxExpression(node),
+            .await_expr => {
+                const a = hir_mod.awaitExprOf(self.hir, node);
+                try self.write("await ");
+                try self.printExpression(a.expr);
+            },
+            .yield_expr => {
+                const y = hir_mod.yieldExprOf(self.hir, node);
+                try self.write("yield");
+                if (y.type_node != hir_mod.none_node_id) try self.write("*");
+                if (y.expr != hir_mod.none_node_id) {
+                    try self.write(" ");
+                    try self.printExpression(y.expr);
+                }
+            },
             else => return error.UnsupportedNode,
         }
     }
@@ -2102,6 +2116,26 @@ test "emit: dynamic import lowers to Promise.resolve(require) for cjs" {
     const out = try emitWithOpts("let mod = import(\"foo\");", .{ .module_kind = .commonjs });
     defer T.allocator.free(out);
     try T.expect(std.mem.indexOf(u8, out, "Promise.resolve(require(\"foo\"))") != null);
+}
+
+test "emit: await expression emits 'await <expr>'" {
+    const out = try emit("async function f() { let x = await g(); return x; }");
+    defer T.allocator.free(out);
+    try T.expect(std.mem.indexOf(u8, out, "async function") != null);
+    try T.expect(std.mem.indexOf(u8, out, "await g()") != null);
+}
+
+test "emit: yield expression emits 'yield'" {
+    const out = try emit("function* gen() { yield 1; yield* other(); }");
+    defer T.allocator.free(out);
+    try T.expect(std.mem.indexOf(u8, out, "yield 1") != null);
+    try T.expect(std.mem.indexOf(u8, out, "yield* other()") != null);
+}
+
+test "emit: bare yield emits without operand" {
+    const out = try emit("function* g() { yield; }");
+    defer T.allocator.free(out);
+    try T.expect(std.mem.indexOf(u8, out, "yield") != null);
 }
 
 test "emit: dynamic import preserved for esm" {

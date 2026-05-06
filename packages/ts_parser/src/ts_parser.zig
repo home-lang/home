@@ -221,6 +221,19 @@ pub const Parser = struct {
             .kw_try => try self.parseTryStatement(),
             .kw_switch => try self.parseSwitchStatement(),
             .kw_function => try self.parseFunctionDeclaration(),
+            .kw_async => blk: {
+                // `async function f() { ... }` — consume the async
+                // keyword and parse as a function decl with the
+                // is_async flag set. Arrow async (`async () => ...`)
+                // is handled in expression position.
+                if (self.peekAt(1).kind == .kw_function) {
+                    _ = self.advance(); // async
+                    const fd = try self.parseFunctionDeclaration();
+                    self.hir.markFnAsync(fd);
+                    break :blk fd;
+                }
+                break :blk try self.parseExpressionStatement();
+            },
             .kw_class => try self.parseClassDeclaration(),
             .kw_interface => try self.parseInterfaceDeclaration(),
             .kw_enum => try self.parseEnumDeclaration(),
@@ -2372,6 +2385,36 @@ pub const Parser = struct {
                 const operand = try self.parseUnaryExpression();
                 const sp: Span = .{ .start = t.span.start, .end = self.hir.spanOf(operand).end };
                 return try self.builder.addUnaryOp(sp, .delete, operand);
+            },
+            .kw_await => {
+                // `await expr` — parses as a unary expression.
+                // Per spec, `await` is only valid inside async fns or
+                // module top-level; we don't enforce that here (the
+                // checker will). The HIR lands as `await_expr`.
+                _ = self.advance();
+                const operand = try self.parseUnaryExpression();
+                const sp: Span = .{ .start = t.span.start, .end = self.hir.spanOf(operand).end };
+                return try self.builder.addAwaitExpr(sp, operand);
+            },
+            .kw_yield => {
+                // `yield` / `yield expr` / `yield* expr`.
+                _ = self.advance();
+                const is_delegated = self.match(.asterisk);
+                // `yield` with no operand is allowed at expression
+                // statement position; we accept any expression that
+                // a unary parser would.
+                if (self.peek().kind == .semicolon or
+                    self.peek().kind == .close_paren or
+                    self.peek().kind == .close_bracket or
+                    self.peek().kind == .close_brace or
+                    self.peek().kind == .comma or
+                    self.peek().kind == .eof)
+                {
+                    return try self.builder.addYieldExpr(tokenSpan(t), hir_mod.none_node_id, is_delegated);
+                }
+                const operand = try self.parseUnaryExpression();
+                const sp: Span = .{ .start = t.span.start, .end = self.hir.spanOf(operand).end };
+                return try self.builder.addYieldExpr(sp, operand, is_delegated);
             },
             else => return try self.parseCallOrMemberExpression(),
         }
