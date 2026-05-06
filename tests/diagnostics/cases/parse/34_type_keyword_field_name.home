@@ -1,0 +1,25 @@
+// Regression test for issue #34 — `type` (and other type-introducing
+// soft keywords) used as a struct-field name. Before the fix the
+// unified struct-body parser saw `type` after the opening brace,
+// dispatched to the nested-type-decl skip routine, which decided we
+// were already on a new member and returned without consuming a
+// token — spinning the outer loop forever. 17 home-os kernel
+// modules hit this hang in the 2026-05-05-evening audit.
+//
+// The fix peeks one token ahead: a type keyword followed by `:` is
+// a field name, not a nested decl. A progress guard in the outer
+// struct-body loop and a no-progress fallback in the dispatch
+// site provide defense-in-depth so future struct-body changes can
+// not silently re-introduce the same hang.
+struct S {
+    type: u32,
+    x: u32,
+}
+
+struct Packet {
+    type: u32,
+    union: u32,
+    enum: u32,
+    impl: u32,
+    payload: [u8; 64],
+}

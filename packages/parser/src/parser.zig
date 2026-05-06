@@ -1435,6 +1435,16 @@ pub const Parser = struct {
         defer methods.deinit(self.allocator);
 
         while (!self.check(.RightBrace) and !self.isAtEnd()) {
+            // Progress guard — mirrors the top-level parse loop
+            // protection added in #16. Each iteration MUST consume at
+            // least one token (or `break`/`continue` to a path that
+            // does). If a future change re-introduces a no-progress
+            // path the loop would otherwise spin forever (issue #34
+            // was exactly this — `type` as a struct-field name caused
+            // the nested-type-decl skip routine to return without
+            // advancing). Bailing with an error is preferable to a
+            // wedged compiler.
+            const iter_start = self.current;
             // Look-ahead for member modifiers: `pub fn`, `inline fn`,
             // `pub inline fn`, `inline pub fn`. Only consume them when
             // the next non-modifier token introduces a recognized
@@ -1504,11 +1514,29 @@ pub const Parser = struct {
             // Nested type-keyword declarations. We accept these so
             // home-os can sit `pub enum SomeKind { ... }` next to
             // fields, but skip-parse them for now.
-            if (self.check(.Enum) or self.check(.Struct) or self.check(.Union) or
+            //
+            // Disambiguation: a type-introducing keyword followed
+            // immediately by `:` is a field name, not a nested decl
+            // (e.g. `struct S { type: u32 }` — kernel code routinely
+            // uses `type` as a field name). Without this guard the
+            // skip-parser sees `type` at a newline boundary, decides
+            // the previous decl ended, and bails without consuming a
+            // token — which spins the outer loop forever. (Issue #34.)
+            if ((self.check(.Enum) or self.check(.Struct) or self.check(.Union) or
                 self.check(.Trait) or self.check(.Impl) or self.check(.Type) or
-                self.check(.Packed) or self.check(.Extern))
+                self.check(.Packed) or self.check(.Extern)) and
+                self.peekNext().type != .Colon)
             {
+                const before = self.current;
                 try self.skipNestedTypeDecl();
+                // Defense-in-depth: if the skip routine somehow fails
+                // to make progress (a future change re-introduces the
+                // pre-#34 hang condition), advance one token so the
+                // outer loop can terminate via the field path or end-
+                // of-body check instead of spinning.
+                if (self.current == before and !self.isAtEnd()) {
+                    _ = self.advance();
+                }
                 continue;
             }
 
@@ -1611,6 +1639,15 @@ pub const Parser = struct {
 
             // Optional comma between fields
             _ = self.match(&.{.Comma});
+
+            // Progress guard (paired with the `iter_start` capture at
+            // the top of the loop). If after a full iteration we are
+            // still on the same token we were, none of the paths
+            // above advanced — bail with an error rather than spin.
+            if (self.current == iter_start) {
+                try self.reportError("Parser made no progress in struct body");
+                return error.UnexpectedToken;
+            }
         }
 
         _ = try self.expect(.RightBrace, "Expected '}' after struct fields");
