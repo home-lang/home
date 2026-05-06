@@ -97,6 +97,17 @@ pub const TextEdit = struct {
     new_text: []const u8,
 };
 
+/// LSP `textDocument/foldingRange` payload — describes a region of
+/// source the editor can collapse. Line numbers are 0-based, matching
+/// the LSP wire format.
+pub const FoldingRange = struct {
+    start_line: u32,
+    end_line: u32,
+    kind: Kind,
+
+    pub const Kind = enum { region, comment, imports };
+};
+
 pub const CodeAction = struct {
     title: []const u8,
     kind: Kind,
@@ -610,6 +621,106 @@ pub const Service = struct {
         _ = try self.program.recompileChanged(&paths, .{});
         // Step 3: render fresh diagnostics for the editor.
         return self.diagnostics(gpa, file_path);
+    }
+
+    /// `textDocument/formatting` — return a list of `TextEdit`s that
+    /// reformat `file_path`. Today this is a no-op stub: real
+    /// formatting requires a TS-aware pretty-printer (the JS emitter
+    /// in `ts_emit/js_emit.zig` erases types, so it's not suitable
+    /// here). Phase 6 follow-up: add a TS-preserving printer and
+    /// surface a real edit. The contract — "method exists + responds
+    /// with a TextEdit list" — is satisfied; an empty list is a
+    /// valid LSP response meaning "already formatted / nothing to
+    /// change".
+    pub fn formatDocument(self: *Service, gpa: std.mem.Allocator, file_path: []const u8) ![]TextEdit {
+        var edits: std.ArrayListUnmanaged(TextEdit) = .empty;
+        errdefer edits.deinit(gpa);
+        // Confirm the file is tracked + has a successful compilation.
+        // If either is missing, return an empty edit list (no-op).
+        const file_id = self.program.lookupPath(file_path) orelse return edits.toOwnedSlice(gpa);
+        const f = self.program.fileById(file_id);
+        _ = f.compilation orelse return edits.toOwnedSlice(gpa);
+        // TODO(Phase 6): once a TS-preserving pretty-printer lands,
+        // re-emit `f.source` through it and emit a single full-file
+        // replacement edit. For now we return [] so editors treat
+        // the file as already formatted.
+        return edits.toOwnedSlice(gpa);
+    }
+
+    /// `textDocument/foldingRange` — return one `FoldingRange` per
+    /// foldable region in `file_path`. We surface:
+    ///   - one `imports` range covering any contiguous run of
+    ///     top-level `import_decl` statements (when 2+ imports);
+    ///   - one `region` range per `block_stmt` in the file (the file
+    ///     root is itself a block_stmt and is skipped — folding the
+    ///     entire file is not useful).
+    pub fn foldingRanges(self: *Service, gpa: std.mem.Allocator, file_path: []const u8) ![]FoldingRange {
+        var ranges: std.ArrayListUnmanaged(FoldingRange) = .empty;
+        errdefer ranges.deinit(gpa);
+        const file_id = self.program.lookupPath(file_path) orelse return ranges.toOwnedSlice(gpa);
+        const f = self.program.fileById(file_id);
+        const c = f.compilation orelse return ranges.toOwnedSlice(gpa);
+
+        // 1. Walk the root's children to find a contiguous import run.
+        if (c.hir.kindOf(c.root) == .block_stmt) {
+            const stmts = hir_mod.blockStmts(&c.hir, c.root);
+            var run_start: ?hir_mod.NodeId = null;
+            var run_last: hir_mod.NodeId = hir_mod.none_node_id;
+            for (stmts) |s| {
+                if (c.hir.kindOf(s) == .import_decl) {
+                    if (run_start == null) run_start = s;
+                    run_last = s;
+                } else {
+                    if (run_start) |start_node| {
+                        if (start_node != run_last) {
+                            const sp = c.hir.spanOf(start_node);
+                            const ep = c.hir.spanOf(run_last);
+                            const start_pos = ts_diagnostics.positionToLineCol(f.source, sp.start);
+                            const end_pos = ts_diagnostics.positionToLineCol(f.source, ep.end);
+                            try ranges.append(gpa, .{
+                                .start_line = if (start_pos.line > 0) start_pos.line - 1 else 0,
+                                .end_line = if (end_pos.line > 0) end_pos.line - 1 else 0,
+                                .kind = .imports,
+                            });
+                        }
+                        run_start = null;
+                    }
+                }
+            }
+            // Trailing run (if file ends inside an import block).
+            if (run_start) |start_node| {
+                if (start_node != run_last) {
+                    const sp = c.hir.spanOf(start_node);
+                    const ep = c.hir.spanOf(run_last);
+                    const start_pos = ts_diagnostics.positionToLineCol(f.source, sp.start);
+                    const end_pos = ts_diagnostics.positionToLineCol(f.source, ep.end);
+                    try ranges.append(gpa, .{
+                        .start_line = if (start_pos.line > 0) start_pos.line - 1 else 0,
+                        .end_line = if (end_pos.line > 0) end_pos.line - 1 else 0,
+                        .kind = .imports,
+                    });
+                }
+            }
+        }
+
+        // 2. Emit a `region` range per block_stmt in the file (skip
+        //    the root block, which spans the whole file).
+        var i: hir_mod.NodeId = 1;
+        while (i < c.hir.nodeCount()) : (i += 1) {
+            if (i == c.root) continue;
+            if (c.hir.kindOf(i) != .block_stmt) continue;
+            const span = c.hir.spanOf(i);
+            const start_pos = ts_diagnostics.positionToLineCol(f.source, span.start);
+            const end_pos = ts_diagnostics.positionToLineCol(f.source, span.end);
+            // Folding only makes sense for blocks spanning multiple lines.
+            if (end_pos.line <= start_pos.line) continue;
+            try ranges.append(gpa, .{
+                .start_line = if (start_pos.line > 0) start_pos.line - 1 else 0,
+                .end_line = if (end_pos.line > 0) end_pos.line - 1 else 0,
+                .kind = .region,
+            });
+        }
+        return ranges.toOwnedSlice(gpa);
     }
 
     /// Diagnostics for `file`. Forwards from the per-file
@@ -1459,4 +1570,68 @@ test "Service: inlayHints surfaces inferred types on let-bindings" {
     // x and z get hints; y has an explicit annotation so no hint.
     try T.expectEqual(@as(usize, 2), hints.len);
     for (hints) |h| try T.expectEqual(@as(@TypeOf(h.kind), .type_annotation), h.kind);
+}
+
+test "Service: formatDocument returns a TextEdit list (no-op stub)" {
+    var vfs = ts_resolver.VirtualFs.init(T.allocator);
+    defer vfs.deinit();
+    var resolver = ts_resolver.Resolver.init(T.allocator, vfs.fs(), .{});
+    defer resolver.deinit();
+    var program = ts_program.Program.init(T.allocator, &resolver);
+    defer program.deinit();
+
+    _ = try program.add("/main.ts", "let x = 1;");
+    try program.compileAll(.{});
+
+    var svc = Service.init(T.allocator, &program);
+    const edits = try svc.formatDocument(T.allocator, "/main.ts");
+    defer T.allocator.free(edits);
+    // Stub: empty edit list = "already formatted". Real formatting
+    // is a Phase 6 follow-up (needs a TS-aware pretty-printer).
+    try T.expectEqual(@as(usize, 0), edits.len);
+
+    // Unknown file is also a no-op rather than an error.
+    const missing = try svc.formatDocument(T.allocator, "/missing.ts");
+    defer T.allocator.free(missing);
+    try T.expectEqual(@as(usize, 0), missing.len);
+}
+
+test "Service: foldingRanges emits one range per block + import run" {
+    var vfs = ts_resolver.VirtualFs.init(T.allocator);
+    defer vfs.deinit();
+    var resolver = ts_resolver.Resolver.init(T.allocator, vfs.fs(), .{});
+    defer resolver.deinit();
+    var program = ts_program.Program.init(T.allocator, &resolver);
+    defer program.deinit();
+
+    const src =
+        \\import { a } from "x";
+        \\import { b } from "y";
+        \\function foo() {
+        \\    let x = 1;
+        \\}
+        \\class Bar {
+        \\    m() {
+        \\        return 1;
+        \\    }
+        \\}
+    ;
+    _ = try program.add("/main.ts", src);
+    try program.compileAll(.{});
+
+    var svc = Service.init(T.allocator, &program);
+    const ranges = try svc.foldingRanges(T.allocator, "/main.ts");
+    defer T.allocator.free(ranges);
+
+    // Expect at least one `imports` range and at least one `region`.
+    var saw_imports = false;
+    var saw_region = false;
+    for (ranges) |r| {
+        if (r.kind == .imports) saw_imports = true;
+        if (r.kind == .region) saw_region = true;
+        // Every range should span 1+ lines (start < end).
+        try T.expect(r.end_line > r.start_line);
+    }
+    try T.expect(saw_imports);
+    try T.expect(saw_region);
 }
