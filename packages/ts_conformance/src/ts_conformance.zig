@@ -458,6 +458,22 @@ pub const builtin_corpus = [_]CorpusEntry{
     .{ .name = "53-optional-chaining", .source = "let p: { x?: number } = {}; let n = p?.x;" },
     .{ .name = "54-nullish-coalescing", .source = "function pick(): string | null { return \"\"; } let s = pick() ?? \"default\";" },
     .{ .name = "55-generic-alias-instantiation", .source = "type Box<T> = { value: T }; let b: Box<number> = { value: 42 };" },
+    // ----- Cases exercising 2026-05-06 landings -----
+    .{ .name = "56-overload-resolution", .source = "function p(x: string): number; function p(x: number): string; function p(x: any): any { return x; } let n = p(\"a\"); let s = p(1);" },
+    .{ .name = "57-aliased-narrowing", .source = "function isS(x: any): x is string { return true; } function f(x: any) { let cond = isS(x); if (cond) { let s = x; } }" },
+    .{ .name = "58-asserts-narrowing", .source = "function assert(x: unknown): asserts x is string {} function f(x: unknown) { assert(x); let s = x; }" },
+    .{ .name = "59-this-param", .source = "function f(this: { x: number }, y: number): number { return y; }" },
+    .{ .name = "60-template-literal-type", .source = "type T = `hello`; let x: T;" },
+    .{ .name = "61-homomorphic-partial", .source = "type Partial<T> = { [K in keyof T]?: T[K] }; let p: Partial<{ x: number }>;" },
+    .{ .name = "62-readonly-mapped", .source = "type Readonly<T> = { readonly [K in keyof T]: T[K] }; let r: Readonly<{ x: number }>;" },
+    .{ .name = "63-infer-return", .source = "type Return<T> = T extends (...a: any[]) => infer R ? R : never; let r: Return<() => string>;" },
+    .{ .name = "64-explicit-type-args", .source = "function id<T>(): T { return null as any; } let n = id<number>();" },
+    .{ .name = "65-cjs-import", .source = "import { x } from \"y\";" },
+    .{ .name = "66-arrow-with-types", .source = "let inc = (n: number): number => n + 1;" },
+    .{ .name = "67-class-with-method-decorator", .source = "class C { greet() { return 1; } }" },
+    .{ .name = "68-enum-numeric", .source = "enum Color { Red = 0, Green = 1, Blue = 2 }" },
+    .{ .name = "69-module-namespace", .source = "namespace N { export function f(): number { return 1; } }" },
+    .{ .name = "70-dynamic-import", .source = "let mod = import(\"foo\");" },
 };
 
 // =============================================================================
