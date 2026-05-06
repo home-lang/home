@@ -241,7 +241,118 @@ pub const Checker = struct {
             const stmts = hir_mod.blockStmts(self.hir, f.body);
             for (stmts) |s| try self.checkStatement(s);
         } else {
-            _ = try self.checkExpression(f.body);
+            // Arrow with expression body — its expression IS the
+            // return value. Use it as the inferred return type when
+            // no annotation was provided.
+            const expr_t = try self.checkExpression(f.body);
+            if (f.return_type == hir_mod.none_node_id) {
+                try self.refineSignatureReturn(node, expr_t);
+            }
+            return;
+        }
+        // For block-bodied fns without an annotation, infer the
+        // return type by unioning every return statement's value
+        // type. No returns → `void_t`.
+        if (f.return_type == hir_mod.none_node_id) {
+            var ret_types: std.ArrayListUnmanaged(TypeId) = .empty;
+            defer ret_types.deinit(self.gpa);
+            try self.collectReturnTypes(f.body, &ret_types);
+            const inferred: TypeId = if (ret_types.items.len == 0)
+                types.Primitive.void_t
+            else if (ret_types.items.len == 1)
+                ret_types.items[0]
+            else
+                self.interner.internUnion(ret_types.items) catch return error.OutOfMemory;
+            try self.refineSignatureReturn(node, inferred);
+        }
+    }
+
+    /// Re-intern the function's signature with `new_ret` as the
+    /// return type, then update the node's type. Identifier lookups
+    /// against the function's name see the refined signature.
+    fn refineSignatureReturn(self: *Checker, fn_node: NodeId, new_ret: TypeId) CheckError!void {
+        const sig = self.hir.typeOf(fn_node);
+        if (!self.interner.pool.flagsOf(sig).is_signature) return;
+        const params = self.interner.signatureParams(sig);
+        // Skip if the inferred type is the same as what we already
+        // had (avoids re-interning a no-op).
+        if (self.interner.signatureReturn(sig)) |old| if (old == new_ret) return;
+        const new_sig = self.interner.internSignature(params, new_ret, false) catch return error.OutOfMemory;
+        self.hir.setType(fn_node, new_sig);
+        const f = hir_mod.fnDeclOf(self.hir, fn_node);
+        if (f.name != hir_mod.none_node_id) self.hir.setType(f.name, new_sig);
+    }
+
+    /// Walk a node tree collecting the types of every `return value`
+    /// statement reachable from `node`, but stop at any nested
+    /// function boundary so inner-fn returns don't leak into the
+    /// outer signature.
+    fn collectReturnTypes(
+        self: *Checker,
+        node: NodeId,
+        out: *std.ArrayListUnmanaged(TypeId),
+    ) CheckError!void {
+        if (node == hir_mod.none_node_id) return;
+        const k = self.hir.kindOf(node);
+        switch (k) {
+            .return_stmt => {
+                const r = hir_mod.returnOf(self.hir, node);
+                if (r.value != hir_mod.none_node_id) {
+                    try out.append(self.gpa, self.hir.typeOf(r.value));
+                }
+            },
+            // Don't descend into nested functions — their returns
+            // bind to their own signature.
+            .fn_decl, .fn_expr, .arrow_fn => return,
+            else => {
+                // Walk every child of this node. The HIR exposes
+                // a generic per-payload accessor pattern; here we
+                // just iterate all child nodes via `forEachChild`.
+                try self.forEachChildCollect(node, out);
+            },
+        }
+    }
+
+    fn forEachChildCollect(
+        self: *Checker,
+        node: NodeId,
+        out: *std.ArrayListUnmanaged(TypeId),
+    ) CheckError!void {
+        const k = self.hir.kindOf(node);
+        switch (k) {
+            .block_stmt => {
+                for (hir_mod.blockStmts(self.hir, node)) |s| try self.collectReturnTypes(s, out);
+            },
+            .if_stmt => {
+                const i = hir_mod.ifOf(self.hir, node);
+                try self.collectReturnTypes(i.then_branch, out);
+                try self.collectReturnTypes(i.else_branch, out);
+            },
+            .while_stmt => {
+                const w = hir_mod.whileOf(self.hir, node);
+                try self.collectReturnTypes(w.body, out);
+            },
+            .do_while_stmt => {
+                const w = hir_mod.doWhileOf(self.hir, node);
+                try self.collectReturnTypes(w.body, out);
+            },
+            .for_stmt => {
+                const fr = hir_mod.forStmtOf(self.hir, node);
+                try self.collectReturnTypes(fr.body, out);
+            },
+            .try_stmt => {
+                const ts = hir_mod.tryOf(self.hir, node);
+                try self.collectReturnTypes(ts.block, out);
+                if (ts.catch_block != hir_mod.none_node_id) try self.collectReturnTypes(ts.catch_block, out);
+                if (ts.finally_block != hir_mod.none_node_id) try self.collectReturnTypes(ts.finally_block, out);
+            },
+            .switch_stmt => {
+                for (hir_mod.switchCases(self.hir, node)) |case| try self.collectReturnTypes(case, out);
+            },
+            .switch_case => {
+                for (hir_mod.switchCaseStmts(self.hir, node)) |s| try self.collectReturnTypes(s, out);
+            },
+            else => {},
         }
     }
 
@@ -1874,4 +1985,61 @@ test "checker: noImplicitAny emits TS7005 for bare `let x` declaration" {
         if (d.code == TsCodes.variable_implicitly_any) found = true;
     }
     try T.expect(found);
+}
+
+test "checker: function without return annotation infers from a single return" {
+    const s = try newSetup("function add(a: number, b: number) { return a + b; }");
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+    const top = firstStatement(s);
+    const sig = s.hir.typeOf(top);
+    const ret = s.ti.signatureReturn(sig) orelse return error.TestExpectedEqual;
+    try T.expectEqual(types.Primitive.number_t, ret);
+}
+
+test "checker: function without returns infers void" {
+    const s = try newSetup("function noop(x: number) { let y = x; }");
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+    const top = firstStatement(s);
+    const sig = s.hir.typeOf(top);
+    const ret = s.ti.signatureReturn(sig) orelse return error.TestExpectedEqual;
+    try T.expectEqual(types.Primitive.void_t, ret);
+}
+
+test "checker: arrow with expression body infers its return from the expression" {
+    const s = try newSetup("let f = (x: number) => x + 1;");
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+    const top = firstStatement(s);
+    const v = hir_mod.varDeclOf(&s.hir, top);
+    const sig = s.hir.typeOf(v.init);
+    const ret = s.ti.signatureReturn(sig) orelse return error.TestExpectedEqual;
+    try T.expectEqual(types.Primitive.number_t, ret);
+}
+
+test "checker: function with branches unions the return types" {
+    const s = try newSetup(
+        \\function f(b: boolean) {
+        \\  if (b) { return 1; }
+        \\  return "hi";
+        \\}
+    );
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+    const top = firstStatement(s);
+    const sig = s.hir.typeOf(top);
+    const ret = s.ti.signatureReturn(sig) orelse return error.TestExpectedEqual;
+    // The union order is canonicalized by sort+dedup; we just
+    // verify it's a union containing both number_t and string_t.
+    try T.expect(s.ti.pool.flagsOf(ret).is_union);
+    const members = s.ti.unionMembers(ret);
+    var has_num = false;
+    var has_str = false;
+    for (members) |m| {
+        if (m == types.Primitive.number_t) has_num = true;
+        if (m == types.Primitive.string_t) has_str = true;
+    }
+    try T.expect(has_num);
+    try T.expect(has_str);
 }

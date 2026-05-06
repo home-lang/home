@@ -180,9 +180,10 @@ pub const Emitter = struct {
                 .object_property => {
                     const op = hir_mod.objectPropertyOf(self.hir, m);
                     try self.emitIdentifier(op.key);
-                    // No type annotations recorded on these today;
-                    // when we add member-list type lowering we'll
-                    // emit ': T' here.
+                    if (op.type_annotation != hir_mod.none_node_id) {
+                        try self.write(": ");
+                        try self.emitTypeNode(op.type_annotation);
+                    }
                     try self.write(";");
                 },
                 else => {},
@@ -631,6 +632,15 @@ test "d.ts: class declaration with method" {
     try T.expect(std.mem.indexOf(u8, out, "declare class Foo") != null);
     try T.expect(std.mem.indexOf(u8, out, "bar(x: number): string;") != null);
     try T.expect(std.mem.indexOf(u8, out, "return") == null);
+}
+
+test "d.ts: class field with annotation emits its type" {
+    const out = try emitTest("class Box { value: number = 0; }");
+    defer T.allocator.free(out);
+    try T.expect(std.mem.indexOf(u8, out, "declare class Box") != null);
+    try T.expect(std.mem.indexOf(u8, out, "value: number;") != null);
+    // Initializer must not leak into the .d.ts.
+    try T.expect(std.mem.indexOf(u8, out, "= 0") == null);
 }
 
 test "d.ts: enum declaration" {
