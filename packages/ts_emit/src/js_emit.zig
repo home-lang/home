@@ -678,10 +678,7 @@ pub const Printer = struct {
                 if (f.flags.is_async) try self.write("async ");
                 try self.write("function (");
                 const params = hir_mod.fnParams(self.hir, node);
-                for (params, 0..) |p, i| {
-                    if (i > 0) try self.write(", ");
-                    try self.printParameter(p);
-                }
+                try self.printRuntimeParams(params);
                 try self.write(") { ");
                 if (f.body != hir_mod.none_node_id) {
                     if (self.hir.kindOf(f.body) == .block_stmt) {
@@ -702,10 +699,7 @@ pub const Printer = struct {
             if (f.flags.is_async) try self.write("async ");
             try self.write("(");
             const params = hir_mod.fnParams(self.hir, node);
-            for (params, 0..) |p, i| {
-                if (i > 0) try self.write(", ");
-                try self.printParameter(p);
-            }
+            try self.printRuntimeParams(params);
             try self.write(") => ");
             if (f.body != hir_mod.none_node_id) {
                 if (self.hir.kindOf(f.body) == .block_stmt) {
@@ -740,10 +734,7 @@ pub const Printer = struct {
         }
         try self.write("(");
         const params = hir_mod.fnParams(self.hir, node);
-        for (params, 0..) |p, i| {
-            if (i > 0) try self.write(", ");
-            try self.printParameter(p);
-        }
+        try self.printRuntimeParams(params);
         try self.write(")");
         if (f.body != hir_mod.none_node_id) {
             try self.write(" ");
@@ -789,6 +780,30 @@ pub const Printer = struct {
         if (p.default_value != hir_mod.none_node_id) {
             try self.write(" = ");
             try self.printExpression(p.default_value);
+        }
+    }
+
+    /// True if `param` is an explicit `this: T` first-parameter
+    /// (TS-only — must not appear in the runtime JS output).
+    fn isThisParam(self: *const Printer, param: NodeId) bool {
+        if (self.hir.kindOf(param) != .parameter) return false;
+        const p = hir_mod.parameterOf(self.hir, param);
+        if (p.name == hir_mod.none_node_id) return false;
+        if (self.hir.kindOf(p.name) != .identifier) return false;
+        const id = hir_mod.identifierOf(self.hir, p.name);
+        return std.mem.eql(u8, self.interner.get(id.name), "this");
+    }
+
+    /// Print a comma-separated parameter list, skipping any
+    /// `this: T` parameter (TS-only — runtime JS doesn't surface
+    /// it). Caller writes the surrounding parens.
+    fn printRuntimeParams(self: *Printer, params: []const NodeId) !void {
+        var first = true;
+        for (params) |p| {
+            if (self.isThisParam(p)) continue;
+            if (!first) try self.write(", ");
+            try self.printParameter(p);
+            first = false;
         }
     }
 
@@ -1039,10 +1054,7 @@ pub const Printer = struct {
         try self.write("(");
         if (ctor) |ct| {
             const params = hir_mod.fnParams(self.hir, ct);
-            for (params, 0..) |p, i| {
-                if (i > 0) try self.write(", ");
-                try self.printParameter(p);
-            }
+            try self.printRuntimeParams(params);
         }
         try self.write(") { ");
         if (c.extends != hir_mod.none_node_id) {
@@ -1083,10 +1095,7 @@ pub const Printer = struct {
             try self.printExpression(fd.name);
             try self.write(" = function (");
             const params = hir_mod.fnParams(self.hir, m);
-            for (params, 0..) |p, i| {
-                if (i > 0) try self.write(", ");
-                try self.printParameter(p);
-            }
+            try self.printRuntimeParams(params);
             try self.write(") ");
             if (fd.body != hir_mod.none_node_id) {
                 try self.printStatementInline(fd.body);

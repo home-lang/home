@@ -592,16 +592,26 @@ pub const Parser = struct {
                     _ = self.advance();
                 }
                 if (self.match(.dot_dot_dot)) flags.is_rest = true;
-                // `this: T` parameter — TS doesn't surface it at
-                // runtime, but the type annotation matters for typing
-                // `this` inside the body. We consume the form and
-                // skip; full plumbing through the checker is a
-                // follow-up. Comma-or-closeparen logic still applies.
+                // §3.A.11 — explicit `this: T` first parameter. TS
+                // doesn't surface it at runtime; we capture it as a
+                // parameter named "this" so the checker's existing
+                // parameter-walk in `typeOfIdentifier` resolves
+                // `this` inside the body. The JS emitter strips
+                // any parameter named "this" before lowering.
                 if (self.peek().kind == .kw_this) {
-                    _ = self.advance(); // this
-                    if (self.match(.colon)) {
-                        _ = try self.parseTypeAnnotation();
-                    }
+                    const this_tok = self.advance();
+                    var this_ann: NodeId = hir_mod.none_node_id;
+                    if (self.match(.colon)) this_ann = try self.parseTypeAnnotation();
+                    const this_name_id = self.interner.intern("this") catch return error.OutOfMemory;
+                    const this_ident = try self.builder.addIdentifier(tokenSpan(this_tok), this_name_id);
+                    const this_param = try self.builder.addParameter(
+                        .{ .start = this_tok.span.start, .end = self.tokens[self.cursor - 1].span.end },
+                        this_ident,
+                        this_ann,
+                        hir_mod.none_node_id,
+                        .{},
+                    );
+                    try params.append(self.gpa, this_param);
                     if (!self.match(.comma)) break;
                     if (self.peek().kind == .close_paren) break;
                     continue;
@@ -4279,15 +4289,20 @@ test "parser: function expression in let-binding" {
     try T.expectEqual(hir_mod.NodeKind.fn_decl, s.hir.kindOf(init_node));
 }
 
-test "parser: this parameter is consumed and skipped" {
+test "parser: this parameter captured as named-this parameter" {
     var s = try newTestSetup("function f(this: Foo, x: number): number { return x; }");
     defer destroyTestSetup(s);
     const root = try s.parser.parseSourceFile();
     const top = hir_mod.blockStmts(&s.hir, root)[0];
     try T.expectEqual(hir_mod.NodeKind.fn_decl, s.hir.kindOf(top));
-    // The `this` param is skipped; only `x` lands in the param list.
+    // §3.A.11: `this` lands in the param list as a regular
+    // parameter named "this"; the JS emitter strips it before
+    // lowering. So both `this` and `x` are present here.
     const params = hir_mod.fnParams(&s.hir, top);
-    try T.expectEqual(@as(usize, 1), params.len);
+    try T.expectEqual(@as(usize, 2), params.len);
+    const this_p = hir_mod.parameterOf(&s.hir, params[0]);
+    const this_id = hir_mod.identifierOf(&s.hir, this_p.name);
+    try T.expectEqualStrings("this", s.interner.get(this_id.name));
 }
 
 test "parser: this parameter alone parses cleanly" {
@@ -4297,7 +4312,9 @@ test "parser: this parameter alone parses cleanly" {
     const top = hir_mod.blockStmts(&s.hir, root)[0];
     try T.expectEqual(hir_mod.NodeKind.fn_decl, s.hir.kindOf(top));
     const params = hir_mod.fnParams(&s.hir, top);
-    try T.expectEqual(@as(usize, 0), params.len);
+    // The `this:` parameter is captured (named "this"); JS emit
+    // strips it. This was previously asserted as 0 — see §3.A.11.
+    try T.expectEqual(@as(usize, 1), params.len);
 }
 
 test "parser: template literal type with no substitution" {

@@ -413,6 +413,26 @@ pub const Checker = struct {
         // narrowed types. Popped on return.
         try self.pushNarrowScope();
         defer self.popNarrowScope();
+        // §3.A.11 — bind `this` from an explicit `this: T` parameter.
+        // The parser captures these as a regular parameter whose name
+        // identifier interned as "this". When found, lower its
+        // annotation and record it in the narrow scope so member
+        // accesses like `this.x` inside the body resolve through the
+        // declared type.
+        const fn_params = hir_mod.fnParams(self.hir, node);
+        const this_name_id = self.string_interner.intern("this") catch null;
+        if (this_name_id) |tid| for (fn_params) |p| {
+            if (self.hir.kindOf(p) != .parameter) continue;
+            const pp = hir_mod.parameterOf(self.hir, p);
+            if (pp.name == hir_mod.none_node_id) continue;
+            if (self.hir.kindOf(pp.name) != .identifier) continue;
+            const id = hir_mod.identifierOf(self.hir, pp.name);
+            if (id.name != tid) continue;
+            if (pp.type_annotation == hir_mod.none_node_id) continue;
+            const this_t = self.lowererLowerWithTypeParams(pp.type_annotation) catch continue;
+            try self.recordNarrow(tid, this_t);
+            break;
+        };
         if (self.hir.kindOf(f.body) == .block_stmt) {
             const stmts = hir_mod.blockStmts(self.hir, f.body);
             for (stmts) |s| {
