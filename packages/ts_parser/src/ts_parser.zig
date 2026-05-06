@@ -608,10 +608,18 @@ pub const Parser = struct {
         var members: std.ArrayListUnmanaged(NodeId) = .empty;
         defer members.deinit(self.gpa);
         while (self.peek().kind != .close_brace and self.peek().kind != .eof) {
-            // Decorators `@dec` on members.
+            // Decorators `@dec` on members. We capture each as a
+            // sibling `decorator` node in the member list — emitter
+            // walks back from each member to collect preceding
+            // decorator nodes.
             while (self.peek().kind == .at) {
-                _ = self.advance();
-                _ = try self.parseLeftHandSideExpression();
+                const dec_tok = self.advance();
+                const dec_expr = try self.parseLeftHandSideExpression();
+                const dec_node = try self.builder.addDecorator(.{
+                    .start = dec_tok.span.start,
+                    .end = self.hir.spanOf(dec_expr).end,
+                }, dec_expr);
+                try members.append(self.gpa, dec_node);
             }
             try self.skipClassModifiers();
             const member_start = self.peek();

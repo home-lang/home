@@ -714,7 +714,14 @@ pub const Printer = struct {
             return;
         }
         self.depth += 1;
-        for (members) |m| {
+        var i: usize = 0;
+        while (i < members.len) : (i += 1) {
+            const m = members[i];
+            // Decorators are members whose kind is `.decorator`.
+            // They're emitted as preceding siblings of the actual
+            // member; we skip them in the in-class output and
+            // collect them for the post-class __decorate calls.
+            if (self.hir.kindOf(m) == .decorator) continue;
             try self.write(self.options.newline);
             try self.indent();
             switch (self.hir.kindOf(m)) {
@@ -734,6 +741,68 @@ pub const Printer = struct {
         self.depth -= 1;
         try self.writeNewlineIndent();
         try self.write("}");
+        // §4.A.8 — emit `__decorate` calls for each decorated member.
+        try self.emitMethodDecorateCalls(node);
+    }
+
+    /// Walk class members; for each run of decorator siblings preceding
+    /// a method or property, emit a post-class `__decorate(...)` call.
+    /// Class-level decorators are handled by the existing
+    /// `emitClassDecorateCall` from the source-file walker.
+    fn emitMethodDecorateCalls(self: *Printer, class_node: NodeId) anyerror!void {
+        const c = hir_mod.classOf(self.hir, class_node);
+        if (c.name == hir_mod.none_node_id) return;
+        const members = hir_mod.classMembers(self.hir, class_node);
+        var i: usize = 0;
+        while (i < members.len) : (i += 1) {
+            const m = members[i];
+            if (self.hir.kindOf(m) != .decorator) continue;
+            // Collect a run of decorators...
+            var j = i;
+            while (j < members.len and self.hir.kindOf(members[j]) == .decorator) j += 1;
+            // ...followed by the actual member they decorate.
+            if (j >= members.len) {
+                i = j;
+                continue;
+            }
+            const target = members[j];
+            const decorators = members[i..j];
+            const tk = self.hir.kindOf(target);
+            // Method or property: emit
+            //   __decorate([decs], ClassName.prototype, "name", null);
+            const target_name: ?NodeId = blk: {
+                if (tk == .fn_decl or tk == .fn_expr) {
+                    const fd = hir_mod.fnDeclOf(self.hir, target);
+                    if (fd.flags.is_constructor) break :blk null; // constructors don't decorate
+                    break :blk fd.name;
+                }
+                if (tk == .object_property) {
+                    const op = hir_mod.objectPropertyOf(self.hir, target);
+                    break :blk op.key;
+                }
+                break :blk null;
+            };
+            const name_node = target_name orelse {
+                i = j;
+                continue;
+            };
+            try self.write(self.options.newline);
+            try self.write("__decorate([");
+            for (decorators, 0..) |d, k| {
+                if (k > 0) try self.write(", ");
+                const dp = hir_mod.decoratorOf(self.hir, d);
+                try self.printExpression(dp.expression);
+            }
+            try self.write("], ");
+            try self.printExpression(c.name);
+            try self.write(".prototype, \"");
+            if (self.hir.kindOf(name_node) == .identifier) {
+                const id = hir_mod.identifierOf(self.hir, name_node);
+                try self.write(self.interner.get(id.name));
+            }
+            try self.write("\", null);");
+            i = j;
+        }
     }
 
     /// Lower a class to ES5 function-with-prototype. Pattern:
@@ -2040,6 +2109,28 @@ test "emit: dynamic import preserved for esm" {
     defer T.allocator.free(out);
     try T.expect(std.mem.indexOf(u8, out, "import(\"foo\")") != null);
     try T.expect(std.mem.indexOf(u8, out, "require") == null);
+}
+
+test "emit: method decorators emit __decorate against prototype" {
+    const out = try emit(
+        \\class Foo {
+        \\  @logged
+        \\  greet() { return 1; }
+        \\}
+    );
+    defer T.allocator.free(out);
+    try T.expect(std.mem.indexOf(u8, out, "__decorate([logged], Foo.prototype, \"greet\", null);") != null);
+}
+
+test "emit: property decorators emit __decorate against prototype" {
+    const out = try emit(
+        \\class Foo {
+        \\  @observe
+        \\  count = 0;
+        \\}
+    );
+    defer T.allocator.free(out);
+    try T.expect(std.mem.indexOf(u8, out, "__decorate([observe], Foo.prototype, \"count\", null);") != null);
 }
 
 test "emit: non-jsx file with automatic mode skips the import" {
