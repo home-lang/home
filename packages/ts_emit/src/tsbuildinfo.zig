@@ -289,6 +289,16 @@ test "tsbuildinfo: round-trip emit then read preserves fields" {
     try T.expectEqual(true, info.file_infos[2].is_declaration);
 }
 
+test "tsbuildinfo: round-trip on empty inputs is a no-op" {
+    const out = try emit(T.allocator, &.{}, &.{}, "{}", .{});
+    defer T.allocator.free(out);
+    var info = try read(T.allocator, out);
+    defer info.deinit(T.allocator);
+    try T.expectEqualStrings("5.6.0", info.version);
+    try T.expectEqual(@as(usize, 0), info.file_names.len);
+    try T.expectEqual(@as(usize, 0), info.file_infos.len);
+}
+
 test "tsbuildinfo: read parses a hand-written minimal document" {
     const json =
         \\{

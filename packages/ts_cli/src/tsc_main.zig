@@ -162,6 +162,40 @@ pub fn main(init: std.process.Init) !void {
         std.process.exit(2);
     }
 
+    // §4.A.12 — read-side of `.tsbuildinfo` round-trip. When
+    // `compilerOptions.incremental` is on and a prior buildinfo
+    // exists, parse it and surface a one-liner so callers can see
+    // the round-trip is wired. Actually skipping unchanged files
+    // is a follow-up — for now we just demonstrate the read path
+    // can be invoked without breaking the pipeline.
+    if (loaded_cfg) |cfg_ptr| {
+        const want_buildinfo = cfg_ptr.compiler_options.incremental orelse false;
+        if (want_buildinfo) {
+            const out_dir_for_read: ?[]const u8 = opts.out_dir orelse blk: {
+                if (cfg_ptr.compiler_options.out_dir) |d| break :blk d;
+                break :blk null;
+            };
+            const bi_path: ?[]u8 = blk: {
+                if (cfg_ptr.compiler_options.ts_buildinfo_file) |p| break :blk gpa.dupe(u8, p) catch null;
+                break :blk if (out_dir_for_read) |od|
+                    std.fs.path.join(gpa, &.{ od, "tsconfig.tsbuildinfo" }) catch null
+                else
+                    gpa.dupe(u8, "tsconfig.tsbuildinfo") catch null;
+            };
+            if (bi_path) |p| {
+                defer gpa.free(p);
+                if (RealFs.read(gpa, p)) |bi_src| {
+                    defer gpa.free(bi_src);
+                    if (ts_emit.tsbuildinfo.read(gpa, bi_src)) |info_const| {
+                        var info = info_const;
+                        defer info.deinit(gpa);
+                        std.debug.print("home tsc: loaded incremental info ({d} previously-compiled files)\n", .{info.file_names.len});
+                    } else |_| {}
+                } else |_| {}
+            }
+        }
+    }
+
     var virtual = ts_resolver.VirtualFs.init(gpa);
     defer virtual.deinit();
     var resolver = ts_resolver.Resolver.init(gpa, virtual.fs(), .{});
@@ -249,6 +283,13 @@ pub fn main(init: std.process.Init) !void {
         break :blk false;
     };
 
+    // Resolve `sourceMap` from CLI or tsconfig. CLI wins.
+    const emit_source_map: bool = blk: {
+        if (opts.source_map) |s| break :blk s;
+        if (loaded_cfg) |c| if (c.compiler_options.source_map) |s| break :blk s;
+        break :blk false;
+    };
+
     // Declaration output dir: tsconfig `declarationDir` if set,
     // otherwise alongside the .js (which itself respects outDir).
     const declaration_dir: ?[]const u8 = blk: {
@@ -265,10 +306,58 @@ pub fn main(init: std.process.Init) !void {
         if (opts.no_emit) continue;
         const out_path = try computeOutPath(gpa, f.path, out_dir, ".js");
         defer gpa.free(out_path);
-        RealFs.write(gpa, out_path, c.js) catch |err| {
+
+        // §4.A.13 — when sourceMap is enabled, re-emit through a
+        // Printer hooked up to a SourceMap so the printer records
+        // mappings as it streams. The compileSource path produced
+        // `c.js` without mappings, so we discard it here in favor
+        // of the freshly-emitted bytes that include the trailing
+        // `//# sourceMappingURL=…` comment.
+        var sm_owned_js: ?[]u8 = null;
+        defer if (sm_owned_js) |b| gpa.free(b);
+        var sm_owned_map: ?[]u8 = null;
+        defer if (sm_owned_map) |b| gpa.free(b);
+        var sm_map_path_owned: ?[]u8 = null;
+        defer if (sm_map_path_owned) |b| gpa.free(b);
+
+        if (emit_source_map) {
+            const map_path = std.fmt.allocPrint(gpa, "{s}.map", .{out_path}) catch unreachable;
+            sm_map_path_owned = map_path;
+            const map_basename = std.fs.path.basename(map_path);
+            const out_basename = std.fs.path.basename(out_path);
+            var sm = ts_emit.SourceMap.init(gpa, out_basename);
+            defer sm.deinit();
+            const src_idx = sm.addSource(f.path, f.source) catch 0;
+
+            var emit_options = compile_opts.emit;
+            emit_options.source_map = &sm;
+            emit_options.source_map_src_idx = src_idx;
+            emit_options.source_map_url = map_basename;
+
+            var printer = ts_emit.Printer.init(gpa, &c.hir, &c.interner, emit_options);
+            defer printer.deinit();
+            printer.setSource(f.source);
+            printer.printSourceFile(c.root) catch |err| {
+                std.debug.print("warning: source-map emit failed for {s}: {s}\n", .{ f.path, @errorName(err) });
+            };
+            sm_owned_js = printer.toOwnedSlice() catch null;
+            sm_owned_map = sm.toJson() catch null;
+        }
+
+        const js_bytes: []const u8 = sm_owned_js orelse c.js;
+        RealFs.write(gpa, out_path, js_bytes) catch |err| {
             std.debug.print("error writing {s}: {s}\n", .{ out_path, @errorName(err) });
             std.process.exit(1);
         };
+        if (emit_source_map) {
+            const map_bytes: []const u8 = sm_owned_map orelse "{}";
+            const map_path = sm_map_path_owned.?;
+            RealFs.write(gpa, map_path, map_bytes) catch |err| {
+                std.debug.print("error writing {s}: {s}\n", .{ map_path, @errorName(err) });
+                std.process.exit(1);
+            };
+        }
+
         if (emit_dts) {
             var emitter = ts_emit.DtsEmitter.initWithTypes(gpa, &c.hir, &c.interner, &c.type_interner, .{});
             defer emitter.deinit();
