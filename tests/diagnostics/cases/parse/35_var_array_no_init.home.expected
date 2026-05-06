@@ -1,0 +1,3 @@
+Checking: <repo>/tests/diagnostics/cases/parse/35_var_array_no_init.home
+
+Success: Type checking passed ✓

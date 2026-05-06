@@ -1,0 +1,24 @@
+// Regression test for issue #35 (shape 2) — `var x: [T; N] align(M)`
+// with an alignment qualifier. Same root cause as shape 1: the
+// fallback path inside `parseTypeAnnotation` saw `align` after the
+// closing `]` and concluded the array type was size-element-form
+// (collecting `T ; N` as the "size", then taking `align` as the
+// element type). The var declaration was silently dropped and the
+// `(16) = undefined` tail tripped "Expected semicolon".
+//
+// Used in home-os kernel modules:
+//   - kernel/src/arch/arm64/rpi/bcm2711.home
+//
+// The fix layers two checks: bail on `;` at depth 1, and also
+// reject the size-element interpretation when the token after `]`
+// is on a new line OR is the soft keyword `align`. The dedicated
+// `[T; N]` path below then parses the type correctly, and
+// `consumeOptionalAlignSuffix` picks up the alignment qualifier.
+var packet: [u32; 4] align(16) = undefined
+
+var ring: [u8; 256] align(64)
+
+fn h() {
+    var page: [u8; 4096] align(4096)
+    page[0] = 0
+}

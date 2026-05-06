@@ -2586,9 +2586,18 @@ pub const Parser = struct {
             // only if the next token after `]` looks like the start
             // of a type. Otherwise rewind and let the `[T]` /
             // `[T; N]` generic path below handle it.
+            //
+            // Bail if we encounter a `;` before the matching `]` —
+            // that means this is the Zig-style element-first form
+            // `[T; N]`, which the dedicated code path below handles
+            // correctly. Without this guard the fallback greedily
+            // collects `T ; N` as the "size", producing nonsense
+            // types and silently swallowing the next statement as
+            // the element type. (Issue #35.)
             if (self.check(.Identifier) or self.check(.Integer) or self.check(.LeftParen)) {
                 const save = self.current;
                 var depth: i32 = 1;
+                var saw_semicolon = false;
                 var size_buf = std.ArrayList(u8).empty;
                 defer size_buf.deinit(self.allocator);
                 while (depth > 0 and !self.isAtEnd()) {
@@ -2598,18 +2607,29 @@ pub const Parser = struct {
                         depth -= 1;
                         if (depth == 0) break;
                     }
+                    if (tok.type == .Semicolon and depth == 1) {
+                        saw_semicolon = true;
+                    }
                     if (size_buf.items.len > 0) {
                         try size_buf.append(self.allocator, ' ');
                     }
                     try size_buf.appendSlice(self.allocator, tok.lexeme);
                     _ = self.advance();
                 }
-                if (depth == 0 and self.check(.RightBracket)) {
+                if (!saw_semicolon and depth == 0 and self.check(.RightBracket)) {
                     _ = self.advance();
                     const nt = self.peek().type;
-                    const looks_like_type =
-                        nt == .Identifier or nt == .Star or nt == .StarStar or
-                        nt == .LeftBracket or nt == .Question or nt == .Ampersand;
+                    // Reject the size-element interpretation when the
+                    // next token is on a new line — it's the next
+                    // statement, not the element type. Also reject
+                    // `align` (a soft keyword that introduces an
+                    // alignment qualifier on the var declaration).
+                    // Both surfaced as silent-drop bugs in #35.
+                    const next_is_align = nt == .Identifier and
+                        std.mem.eql(u8, self.peek().lexeme, "align");
+                    const looks_like_type = (nt == .Identifier or nt == .Star or nt == .StarStar or
+                        nt == .LeftBracket or nt == .Question or nt == .Ampersand) and
+                        !self.isAtNewLine() and !next_is_align;
                     if (looks_like_type and size_buf.items.len > 0) {
                         const elem_type = try self.parseTypeAnnotation();
                         return try std.fmt.allocPrint(self.allocator, "[{s}]{s}", .{ size_buf.items, elem_type });

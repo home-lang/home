@@ -1,0 +1,3 @@
+Checking: <repo>/tests/diagnostics/cases/parse/36_var_array_with_align.home
+
+Success: Type checking passed ✓

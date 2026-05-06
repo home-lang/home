@@ -1,0 +1,29 @@
+// Regression test for issue #35 (shape 1) — `var x: [T; N]` with no
+// initializer. Before the fix the array-type fallback inside
+// `parseTypeAnnotation` greedily collected `T ; N` as a single
+// "compound size expression" (the path that handles cases like
+// `[N / 8]u8`) and then consumed the *next statement's* leading
+// identifier as the element type. The var declaration itself was
+// silently dropped, the next line tripped "Expected semicolon",
+// and the function body ended up with zero statements.
+//
+// Used in home-os kernel modules:
+//   - kernel/src/fs/fat32.home
+//   - kernel/src/fs/ntfs.home
+//   - kernel/src/iot/mqtt.home
+//
+// The fix bails out of the compound-size fallback as soon as it
+// sees a `;` at bracket depth 1 — that's the unambiguous signal
+// that this is the Zig-style element-first form `[T; N]`, which
+// the dedicated path below handles correctly.
+fn f() {
+    var packet: [u8; 16]
+    packet[0] = 1
+}
+
+fn g() {
+    var buf: [u32; 4]
+    var name: [u8; 64]
+    buf[0] = 0
+    name[0] = 65
+}
