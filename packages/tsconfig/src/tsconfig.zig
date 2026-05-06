@@ -771,3 +771,127 @@ test "tsconfig.merge: child overrides base on every set field" {
     // `noEmit` was only in base — preserved.
     try t.expectEqual(@as(?bool, true), m.compiler_options.no_emit);
 }
+
+// ============================================================================
+// tsconfig-style glob matcher
+// ============================================================================
+//
+// Pure pattern → path matching that mirrors `tsc`'s behavior for
+// `include` / `exclude` entries:
+//
+//   - `*` matches any run of characters except `/`
+//   - `**` matches any number of path segments (including zero)
+//   - `?` matches a single non-`/` character
+//   - everything else is literal
+//
+// Patterns and paths are forward-slash-normalized. The matcher does
+// not touch the filesystem — pair it with a directory walker
+// (e.g. `home-tsc`'s project-mode file enumerator) to expand a
+// pattern into the actual file set.
+
+/// Return true if `path` matches the tsconfig-style glob `pattern`.
+/// Both are forward-slash-normalized; the caller is responsible for
+/// converting `\` → `/` on Windows-shaped inputs.
+pub fn matchGlob(pattern: []const u8, path: []const u8) bool {
+    return matchGlobAt(pattern, 0, path, 0);
+}
+
+fn matchGlobAt(pattern: []const u8, pi_in: usize, path: []const u8, si_in: usize) bool {
+    var pi = pi_in;
+    var si = si_in;
+    while (pi < pattern.len) {
+        // `**` — zero or more segments. Try every position from `si`
+        // forward as the resumption point.
+        if (pi + 1 < pattern.len and pattern[pi] == '*' and pattern[pi + 1] == '*') {
+            // Skip a trailing `/` after `**` so `src/**/foo` and
+            // `src/**foo` behave per tsc (the former requires at
+            // least the separator at the join, the latter is rare).
+            var rest_start = pi + 2;
+            if (rest_start < pattern.len and pattern[rest_start] == '/') rest_start += 1;
+            // `**` at end matches the rest unconditionally.
+            if (rest_start == pattern.len) return true;
+            // Try every cursor position (including beyond `/`).
+            var probe = si;
+            while (probe <= path.len) : (probe += 1) {
+                if (matchGlobAt(pattern, rest_start, path, probe)) return true;
+                if (probe < path.len) {
+                    // Skip past one segment per attempt; we resume
+                    // matching at every byte to handle glob inside
+                    // a basename.
+                }
+            }
+            return false;
+        }
+        // `*` — zero or more chars except `/`.
+        if (pattern[pi] == '*') {
+            const rest_start = pi + 1;
+            if (rest_start == pattern.len) {
+                // Match the rest of the segment but not past `/`.
+                while (si < path.len and path[si] != '/') si += 1;
+                return si == path.len;
+            }
+            var probe = si;
+            while (true) {
+                if (matchGlobAt(pattern, rest_start, path, probe)) return true;
+                if (probe == path.len) return false;
+                if (path[probe] == '/') return false;
+                probe += 1;
+            }
+        }
+        // `?` — single non-`/` char.
+        if (pattern[pi] == '?') {
+            if (si >= path.len or path[si] == '/') return false;
+            pi += 1;
+            si += 1;
+            continue;
+        }
+        // Literal.
+        if (si >= path.len or pattern[pi] != path[si]) return false;
+        pi += 1;
+        si += 1;
+    }
+    return si == path.len;
+}
+
+test "matchGlob: literal" {
+    // top-level `t = std.testing` already in scope
+    try t.expect(matchGlob("src/main.ts", "src/main.ts"));
+    try t.expect(!matchGlob("src/main.ts", "src/other.ts"));
+}
+
+test "matchGlob: single star matches within segment" {
+    // top-level `t = std.testing` already in scope
+    try t.expect(matchGlob("src/*.ts", "src/main.ts"));
+    try t.expect(matchGlob("src/*.ts", "src/a.ts"));
+    try t.expect(!matchGlob("src/*.ts", "src/sub/main.ts"));
+}
+
+test "matchGlob: double-star spans segments" {
+    // top-level `t = std.testing` already in scope
+    try t.expect(matchGlob("src/**/*.ts", "src/main.ts"));
+    try t.expect(matchGlob("src/**/*.ts", "src/sub/main.ts"));
+    try t.expect(matchGlob("src/**/*.ts", "src/sub/deep/main.ts"));
+    try t.expect(!matchGlob("src/**/*.ts", "lib/main.ts"));
+}
+
+test "matchGlob: leading double-star matches any prefix" {
+    // top-level `t = std.testing` already in scope
+    try t.expect(matchGlob("**/foo.ts", "foo.ts"));
+    try t.expect(matchGlob("**/foo.ts", "a/foo.ts"));
+    try t.expect(matchGlob("**/foo.ts", "a/b/foo.ts"));
+}
+
+test "matchGlob: question matches single char" {
+    // top-level `t = std.testing` already in scope
+    try t.expect(matchGlob("a?c.ts", "abc.ts"));
+    try t.expect(matchGlob("a?c.ts", "axc.ts"));
+    try t.expect(!matchGlob("a?c.ts", "ac.ts"));
+    try t.expect(!matchGlob("a?c.ts", "abbc.ts"));
+}
+
+test "matchGlob: trailing double-star matches everything" {
+    // top-level `t = std.testing` already in scope
+    try t.expect(matchGlob("dist/**", "dist/a.js"));
+    try t.expect(matchGlob("dist/**", "dist/a/b.js"));
+    try t.expect(!matchGlob("dist/**", "src/a.js"));
+}

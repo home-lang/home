@@ -121,15 +121,38 @@ pub fn main(init: std.process.Init) !void {
         }
     }
 
-    // Determine the file list: positional args win; otherwise pull
-    // from the resolved tsconfig's `files` (a single literal list).
-    // Glob expansion for `include` / `exclude` is a follow-up.
+    // Determine the file list. Precedence:
+    //   1. positional args (CLI wins)
+    //   2. tsconfig `files`: literal list, used as-is
+    //   3. tsconfig `include` / `exclude`: glob-expanded against the
+    //      tsconfig's directory; default ext filter is `.ts` / `.tsx`
+    //      / `.d.ts` / `.mts` / `.cts`.
     var input_files: std.ArrayListUnmanaged([]const u8) = .empty;
-    defer input_files.deinit(gpa);
+    var owned_paths: std.ArrayListUnmanaged([]u8) = .empty;
+    defer {
+        input_files.deinit(gpa);
+        for (owned_paths.items) |p| gpa.free(p);
+        owned_paths.deinit(gpa);
+    }
     for (opts.files) |f| try input_files.append(gpa, f);
     if (input_files.items.len == 0) {
         if (loaded_cfg) |c| {
             if (c.files) |fs_list| for (fs_list) |f| try input_files.append(gpa, f);
+        }
+    }
+    if (input_files.items.len == 0) {
+        if (loaded_cfg) |c| {
+            const project_dir = std.fs.path.dirname(c.file_path) orelse ".";
+            const include_patterns: []const []const u8 = c.include orelse &[_][]const u8{"**/*"};
+            const exclude_patterns: []const []const u8 = c.exclude orelse &.{};
+            try expandProjectGlobs(
+                gpa,
+                project_dir,
+                include_patterns,
+                exclude_patterns,
+                &input_files,
+                &owned_paths,
+            );
         }
     }
 
@@ -248,6 +271,101 @@ fn mapPhaseToCode(phase: ts_driver.Diagnostic.Phase) u32 {
         .bind => 2304,
         .emit => 5024,
     };
+}
+
+/// Walk `project_dir` recursively, collect every TypeScript-shaped
+/// file whose path (relative to the project) matches at least one
+/// `include` glob and no `exclude` glob. Owned paths are stored in
+/// `owned` so the caller can free them after compilation; borrowed
+/// `[]const u8` slices into those owned bytes are appended to
+/// `out`. Mirrors the file shapes tsc accepts by default (no
+/// `allowJs` yet).
+fn expandProjectGlobs(
+    gpa: std.mem.Allocator,
+    project_dir: []const u8,
+    include: []const []const u8,
+    exclude: []const []const u8,
+    out: *std.ArrayListUnmanaged([]const u8),
+    owned: *std.ArrayListUnmanaged([]u8),
+) !void {
+    var threaded = std.Io.Threaded.init(gpa, .{});
+    defer threaded.deinit();
+    const io = threaded.io();
+    const cwd = std.Io.Dir.cwd();
+    var dir = cwd.openDir(io, project_dir, .{ .iterate = true }) catch return;
+    defer dir.close(io);
+
+    var stack: std.ArrayListUnmanaged([]u8) = .empty;
+    defer {
+        for (stack.items) |s| gpa.free(s);
+        stack.deinit(gpa);
+    }
+    try stack.append(gpa, try gpa.dupe(u8, ""));
+
+    while (stack.items.len > 0) {
+        const rel = stack.pop().?;
+        defer gpa.free(rel);
+
+        const subdir_path = if (rel.len == 0)
+            try gpa.dupe(u8, project_dir)
+        else
+            try std.fmt.allocPrint(gpa, "{s}/{s}", .{ project_dir, rel });
+        defer gpa.free(subdir_path);
+
+        var sub = cwd.openDir(io, subdir_path, .{ .iterate = true }) catch continue;
+        defer sub.close(io);
+        var iter = sub.iterate();
+        while (iter.next(io) catch null) |entry| {
+            const child_rel = if (rel.len == 0)
+                try gpa.dupe(u8, entry.name)
+            else
+                try std.fmt.allocPrint(gpa, "{s}/{s}", .{ rel, entry.name });
+
+            switch (entry.kind) {
+                .directory => {
+                    // Skip dotfiles and node_modules so we don't walk
+                    // into massive trees by default.
+                    if (std.mem.startsWith(u8, entry.name, ".") or
+                        std.mem.eql(u8, entry.name, "node_modules"))
+                    {
+                        gpa.free(child_rel);
+                        continue;
+                    }
+                    if (anyMatches(exclude, child_rel)) {
+                        gpa.free(child_rel);
+                        continue;
+                    }
+                    try stack.append(gpa, child_rel);
+                },
+                .file => {
+                    defer gpa.free(child_rel);
+                    if (!isTsLikeExtension(child_rel)) continue;
+                    if (anyMatches(exclude, child_rel)) continue;
+                    if (!anyMatches(include, child_rel)) continue;
+                    const full = try std.fmt.allocPrint(gpa, "{s}/{s}", .{ project_dir, child_rel });
+                    try owned.append(gpa, full);
+                    try out.append(gpa, full);
+                },
+                else => gpa.free(child_rel),
+            }
+        }
+    }
+}
+
+fn anyMatches(patterns: []const []const u8, path: []const u8) bool {
+    for (patterns) |pat| {
+        if (tsconfig_mod.matchGlob(pat, path)) return true;
+    }
+    return false;
+}
+
+fn isTsLikeExtension(path: []const u8) bool {
+    if (std.mem.endsWith(u8, path, ".d.ts")) return true;
+    if (std.mem.endsWith(u8, path, ".ts")) return true;
+    if (std.mem.endsWith(u8, path, ".tsx")) return true;
+    if (std.mem.endsWith(u8, path, ".mts")) return true;
+    if (std.mem.endsWith(u8, path, ".cts")) return true;
+    return false;
 }
 
 /// Compute the output path for a source file with the given extension

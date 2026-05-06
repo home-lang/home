@@ -368,15 +368,24 @@ pub const Checker = struct {
 
         // Pass 2: re-run each method through `checkFnDecl` (which
         // re-derives the signature idempotently and walks the body)
-        // with `this` bound to the instance type via a narrow
-        // scope. Identifier lookup consults narrow scopes first,
-        // so `this.x` typing falls through the narrow binding into
-        // the instance object's member table.
+        // with `this` bound to the instance type and `super` bound
+        // to the parent class's instance type (when this class
+        // `extends`). Identifier lookup consults narrow scopes
+        // first, so `this.x` and `super.foo()` resolve through the
+        // matching object type's member table.
         const this_id = self.string_interner.intern("this") catch return error.OutOfMemory;
+        const super_id = self.string_interner.intern("super") catch return error.OutOfMemory;
+        const super_t: ?TypeId = blk: {
+            if (c.extends == hir_mod.none_node_id) break :blk null;
+            if (self.hir.kindOf(c.extends) != .identifier) break :blk null;
+            const ext_id = hir_mod.identifierOf(self.hir, c.extends);
+            break :blk self.class_instance_types.get(ext_id.name);
+        };
         for (members) |m| switch (self.hir.kindOf(m)) {
             .fn_decl, .fn_expr, .arrow_fn => {
                 try self.pushNarrowScope();
                 try self.recordNarrow(this_id, instance_t);
+                if (super_t) |st| try self.recordNarrow(super_id, st);
                 try self.checkFnDecl(m);
                 self.popNarrowScope();
             },
@@ -479,12 +488,25 @@ pub const Checker = struct {
     /// narrow scope (for in-scope type parameters) and the
     /// named-type table (for class / interface / type-alias names).
     fn lowererLowerWithTypeParams(self: *Checker, type_node: NodeId) CheckError!TypeId {
-        if (self.hir.kindOf(type_node) == .type_ref) {
-            const r = hir_mod.typeRefOf(self.hir, type_node);
-            if (r.qualifier_len == 0 and r.args_len == 0) {
-                if (self.lookupNarrow(r.name)) |t| return t;
-                if (self.type_names.get(r.name)) |t| return t;
-            }
+        switch (self.hir.kindOf(type_node)) {
+            .type_ref => {
+                const r = hir_mod.typeRefOf(self.hir, type_node);
+                if (r.qualifier_len == 0 and r.args_len == 0) {
+                    if (self.lookupNarrow(r.name)) |t| return t;
+                    if (self.type_names.get(r.name)) |t| return t;
+                }
+            },
+            .typeof_type => {
+                // `type T = typeof x` — query the value-namespace for
+                // the identifier's TypeId. We reuse the same lookup
+                // path identifier expressions go through, so the
+                // result honors module-level scoping + nested scopes.
+                const tt = hir_mod.typeofTypeOf(self.hir, type_node);
+                if (self.hir.kindOf(tt.operand) == .identifier) {
+                    return self.typeOfIdentifier(tt.operand);
+                }
+            },
+            else => {},
         }
         return self.lowerer.lower(type_node);
     }
@@ -1677,4 +1699,48 @@ test "checker: new with correct constructor args type-checks cleanly" {
     defer destroySetup(s);
     try s.checker.checkSourceFile(s.root);
     try T.expect(s.checker.diagnostics.items.len == 0);
+}
+
+test "checker: super.x in subclass method resolves to parent member" {
+    const s = try newSetup(
+        \\class Shape { kind: string = ""; }
+        \\class Box extends Shape {
+        \\  what(): string { return super.kind; }
+        \\}
+    );
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+    try T.expect(s.checker.diagnostics.items.len == 0);
+}
+
+test "checker: super property miss emits TS2339" {
+    const s = try newSetup(
+        \\class Shape { kind: string = ""; }
+        \\class Box extends Shape {
+        \\  bad(): string { return super.missing; }
+        \\}
+    );
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+    var found = false;
+    for (s.checker.diagnostics.items) |d| {
+        if (d.code == TsCodes.property_does_not_exist) found = true;
+    }
+    try T.expect(found);
+}
+
+test "checker: typeof type query resolves an identifier's static type" {
+    const s = try newSetup(
+        \\function add(a: number, b: number): number { return a + b; }
+        \\type AddSig = typeof add;
+        \\let f: AddSig = add;
+    );
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+    try T.expect(s.checker.diagnostics.items.len == 0);
+    const stmts = hir_mod.blockStmts(&s.hir, s.root);
+    const fn_t = s.hir.typeOf(stmts[0]);
+    const alias_t = s.hir.typeOf(stmts[1]);
+    // `typeof add` reuses the function's signature TypeId.
+    try T.expectEqual(fn_t, alias_t);
 }
