@@ -102,6 +102,15 @@ pub const FnPredicate = struct {
     is_asserts: bool,
 };
 
+/// Composite key for member-access narrowing. `obj_name` is the
+/// interned identifier name on the LHS of the access; `prop_name`
+/// is the property name. Hashed via `AutoHashMap`'s default
+/// derivation.
+pub const MemberKey = struct {
+    obj_name: hir_mod.StringId,
+    prop_name: hir_mod.StringId,
+};
+
 pub const StrictFlags = struct {
     /// `noImplicitAny` (also implied by `strict`). When true, a
     /// parameter / variable that ends up typed as `any` because it
@@ -138,6 +147,13 @@ pub const Checker = struct {
     /// pushes a scope; identifier resolution consults the top of
     /// the stack first before falling back to the static type.
     narrow_scopes: std.ArrayListUnmanaged(std.AutoHashMapUnmanaged(hir_mod.StringId, TypeId)),
+    /// Parallel stack of member-access narrows keyed by
+    /// `(obj_name, prop_name)`. Populated by `applyTypeGuard` when
+    /// a guard's LHS is a member-access on an identifier root (e.g.
+    /// `obj.x !== null`); consulted by `member_access` typing so
+    /// the then-branch sees the narrowed property type.
+    /// Pushed/popped in lockstep with `narrow_scopes`.
+    member_narrow_scopes: std.ArrayListUnmanaged(std.AutoHashMapUnmanaged(MemberKey, TypeId)),
     /// Class-name → instance type. Populated by `checkClassDecl`
     /// when a class is declared; consulted by `instanceof` narrowing
     /// and `new` expression typing — both of which require the name
@@ -214,6 +230,7 @@ pub const Checker = struct {
             .lowerer = lower.Lowerer.init(gpa, hir, ti, si),
             .module = null,
             .narrow_scopes = .empty,
+            .member_narrow_scopes = .empty,
             .class_instance_types = .empty,
             .class_constructor_sigs = .empty,
             .type_names = .empty,
@@ -245,6 +262,11 @@ pub const Checker = struct {
             s.deinit(self.gpa);
         }
         self.narrow_scopes.deinit(self.gpa);
+        for (self.member_narrow_scopes.items) |*scope| {
+            var s = scope.*;
+            s.deinit(self.gpa);
+        }
+        self.member_narrow_scopes.deinit(self.gpa);
         self.class_instance_types.deinit(self.gpa);
         self.class_constructor_sigs.deinit(self.gpa);
         self.type_names.deinit(self.gpa);
@@ -2122,6 +2144,17 @@ pub const Checker = struct {
             .member_access => blk: {
                 const m = hir_mod.memberOf(self.hir, node);
                 const obj_t = try self.checkExpression(m.object);
+                // Member-access narrowing: `if (obj.x !== null) { …
+                // obj.x … }` — when the object is a bare identifier
+                // and a guard recorded a narrow for `(obj, x)`, the
+                // narrowed type wins over the static lookup.
+                if (self.hir.kindOf(m.object) == .identifier) {
+                    const obj_id = hir_mod.identifierOf(self.hir, m.object);
+                    const key: MemberKey = .{ .obj_name = obj_id.name, .prop_name = m.name };
+                    if (self.lookupMemberNarrow(key)) |nt| {
+                        break :blk if (m.optional) self.unionWithUndefined(nt) catch nt else nt;
+                    }
+                }
                 // Optional chaining (`obj?.x`) widens the result to
                 // include `undefined` regardless of whether the
                 // object's static type already does.
@@ -2295,6 +2328,8 @@ pub const Checker = struct {
     fn pushNarrowScope(self: *Checker) !void {
         const empty: std.AutoHashMapUnmanaged(hir_mod.StringId, TypeId) = .empty;
         try self.narrow_scopes.append(self.gpa, empty);
+        const empty_mem: std.AutoHashMapUnmanaged(MemberKey, TypeId) = .empty;
+        try self.member_narrow_scopes.append(self.gpa, empty_mem);
     }
 
     fn popNarrowScope(self: *Checker) void {
@@ -2302,6 +2337,28 @@ pub const Checker = struct {
         var top = self.narrow_scopes.items[self.narrow_scopes.items.len - 1];
         top.deinit(self.gpa);
         _ = self.narrow_scopes.pop();
+        if (self.member_narrow_scopes.items.len == 0) return;
+        var mtop = self.member_narrow_scopes.items[self.member_narrow_scopes.items.len - 1];
+        mtop.deinit(self.gpa);
+        _ = self.member_narrow_scopes.pop();
+    }
+
+    /// Look up the topmost narrowed type for a member access keyed
+    /// by `(obj_name, prop_name)`. Walks the scope stack inner →
+    /// outer.
+    fn lookupMemberNarrow(self: *Checker, key: MemberKey) ?TypeId {
+        var i = self.member_narrow_scopes.items.len;
+        while (i > 0) {
+            i -= 1;
+            if (self.member_narrow_scopes.items[i].get(key)) |t| return t;
+        }
+        return null;
+    }
+
+    fn recordMemberNarrow(self: *Checker, key: MemberKey, t: TypeId) !void {
+        if (self.member_narrow_scopes.items.len == 0) return;
+        var top = &self.member_narrow_scopes.items[self.member_narrow_scopes.items.len - 1];
+        try top.put(self.gpa, key, t);
     }
 
     /// Look up the topmost narrowed type for `name`, walking the
@@ -2574,6 +2631,87 @@ pub const Checker = struct {
                     try self.recordNarrow(lhs.name, narrowed);
                 }
                 return;
+            }
+        }
+
+        // Member-access narrowing on an identifier-rooted access:
+        //   obj.x === null / obj.x !== null
+        //   obj.x === undefined / obj.x !== undefined
+        //   obj.x === <literal> / obj.x !== <literal>
+        // The narrow is keyed by `(obj_name, prop_name)` so the
+        // `member_access` typing path sees it inside the branch.
+        if (self.hir.kindOf(b.lhs) == .member_access) {
+            const m = hir_mod.memberOf(self.hir, b.lhs);
+            if (self.hir.kindOf(m.object) == .identifier) {
+                const obj_id = hir_mod.identifierOf(self.hir, m.object);
+                const key: MemberKey = .{ .obj_name = obj_id.name, .prop_name = m.name };
+                // RHS == null
+                if (self.hir.kindOf(b.rhs) == .literal_null) {
+                    if (positive) {
+                        try self.recordMemberNarrow(key, types.Primitive.null_t);
+                    } else {
+                        const obj_t = self.typeOfIdentifier(m.object);
+                        const current = self.lookupMemberNarrow(key) orelse
+                            (self.interner.objectMember(obj_t, m.name) orelse types.Primitive.any);
+                        const narrowed = self.subtractType(current, types.Primitive.null_t) catch current;
+                        try self.recordMemberNarrow(key, narrowed);
+                    }
+                    return;
+                }
+                // RHS == identifier 'undefined'
+                if (self.hir.kindOf(b.rhs) == .identifier) {
+                    const rhs2 = hir_mod.identifierOf(self.hir, b.rhs);
+                    const rhs2_name = self.string_interner.get(rhs2.name);
+                    if (std.mem.eql(u8, rhs2_name, "undefined")) {
+                        if (positive) {
+                            try self.recordMemberNarrow(key, types.Primitive.undefined_t);
+                        } else {
+                            const obj_t = self.typeOfIdentifier(m.object);
+                            const current = self.lookupMemberNarrow(key) orelse
+                                (self.interner.objectMember(obj_t, m.name) orelse types.Primitive.any);
+                            const narrowed = self.subtractType(current, types.Primitive.undefined_t) catch current;
+                            try self.recordMemberNarrow(key, narrowed);
+                        }
+                        return;
+                    }
+                }
+                // RHS == primitive literal (string/number/bool).
+                // The discriminated-union path above narrows the
+                // whole object when its type is a union; this
+                // records a property-level narrow so non-union
+                // object roots also see the literal type.
+                if (self.hir.kindOf(b.rhs) == .literal_string or
+                    self.hir.kindOf(b.rhs) == .literal_number or
+                    self.hir.kindOf(b.rhs) == .literal_bool)
+                {
+                    const lit_t: TypeId = blk: {
+                        switch (self.hir.kindOf(b.rhs)) {
+                            .literal_string => {
+                                const lit = hir_mod.literalStringOf(self.hir, b.rhs);
+                                break :blk self.interner.internStringLiteral(lit.value) catch return;
+                            },
+                            .literal_number => {
+                                const v = hir_mod.literalNumberOf(self.hir, b.rhs);
+                                break :blk self.interner.internNumberLiteral(v) catch return;
+                            },
+                            .literal_bool => {
+                                const v = hir_mod.literalBoolOf(self.hir, b.rhs);
+                                break :blk self.interner.internBooleanLiteral(v);
+                            },
+                            else => unreachable,
+                        }
+                    };
+                    if (positive) {
+                        try self.recordMemberNarrow(key, lit_t);
+                    } else {
+                        const obj_t = self.typeOfIdentifier(m.object);
+                        const current = self.lookupMemberNarrow(key) orelse
+                            (self.interner.objectMember(obj_t, m.name) orelse types.Primitive.any);
+                        const narrowed = self.subtractType(current, lit_t) catch current;
+                        try self.recordMemberNarrow(key, narrowed);
+                    }
+                    return;
+                }
             }
         }
     }
@@ -4977,4 +5115,53 @@ test "checker: n === number-literal narrows to literal type" {
     const x_init = hir_mod.varDeclOf(&s.hir, x_decl).init;
     const expected = try s.ti.internNumberLiteral(42);
     try T.expectEqual(expected, s.hir.typeOf(x_init));
+}
+
+test "checker: obj.x !== null narrows obj.x in then-branch" {
+    const s = try newSetup(
+        \\interface Box { x: string | null; }
+        \\function f(obj: Box) {
+        \\  if (obj.x !== null) {
+        \\    let v = obj.x;
+        \\  }
+        \\}
+    );
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+    const stmts = hir_mod.blockStmts(&s.hir, s.root);
+    const fn_node = stmts[1];
+    const f = hir_mod.fnDeclOf(&s.hir, fn_node);
+    const body_stmts = hir_mod.blockStmts(&s.hir, f.body);
+    const if_stmt = body_stmts[0];
+    const ifp = hir_mod.ifOf(&s.hir, if_stmt);
+    const then_stmts = hir_mod.blockStmts(&s.hir, ifp.then_branch);
+    const v_decl = then_stmts[0];
+    const v_init = hir_mod.varDeclOf(&s.hir, v_decl).init;
+    // The narrowed `obj.x` should be string_t — null subtracted out.
+    try T.expectEqual(types.Primitive.string_t, s.hir.typeOf(v_init));
+}
+
+test "checker: obj.x === <literal> narrows obj.x to literal type" {
+    const s = try newSetup(
+        \\interface Box { x: number; }
+        \\function f(obj: Box) {
+        \\  if (obj.x === 42) {
+        \\    let v = obj.x;
+        \\  }
+        \\}
+    );
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+    const stmts = hir_mod.blockStmts(&s.hir, s.root);
+    const fn_node = stmts[1];
+    const f = hir_mod.fnDeclOf(&s.hir, fn_node);
+    const body_stmts = hir_mod.blockStmts(&s.hir, f.body);
+    const if_stmt = body_stmts[0];
+    const ifp = hir_mod.ifOf(&s.hir, if_stmt);
+    const then_stmts = hir_mod.blockStmts(&s.hir, ifp.then_branch);
+    const v_decl = then_stmts[0];
+    const v_init = hir_mod.varDeclOf(&s.hir, v_decl).init;
+    // The narrowed `obj.x` should be the literal 42, not number_t.
+    const expected = try s.ti.internNumberLiteral(42);
+    try T.expectEqual(expected, s.hir.typeOf(v_init));
 }
