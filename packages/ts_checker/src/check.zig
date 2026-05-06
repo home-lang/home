@@ -1640,8 +1640,17 @@ pub const Checker = struct {
 
         var built: std.ArrayListUnmanaged(types.ObjectMember) = .empty;
         defer built.deinit(self.gpa);
-        const make_optional = m.optional == 1; // 1=add
-        const make_readonly = m.readonly == 1;
+        // Modifier values: 0 = unspecified (inherit from source),
+        // 1 = add, 2 = remove. The homomorphic case
+        // (`{ [K in keyof T]: ... }`) inherits the source object's
+        // is_optional / is_readonly when the modifier is unspecified.
+        const homomorphic_source: ?TypeId = blk: {
+            if (self.hir.kindOf(m.constraint) != .keyof_type) break :blk null;
+            const k = hir_mod.keyofTypeOf(self.hir, m.constraint);
+            const operand = self.lowererLowerWithTypeParams(k.operand) catch break :blk null;
+            if (self.interner.pool.flagsOf(operand).is_object_type) break :blk operand;
+            break :blk null;
+        };
         const value_template = try self.lowererLowerWithTypeParams(m.value);
         for (literal_keys.items) |key_name| {
             // Substitute `K -> literal` in the value template.
@@ -1650,11 +1659,31 @@ pub const Checker = struct {
             defer subs.deinit(self.gpa);
             try subs.put(self.gpa, tp_id, key_lit);
             const value_t = self.substituteType(value_template, &subs) catch value_template;
+            // Inherit source flags when homomorphic + modifier
+            // unspecified; apply +/- modifiers otherwise.
+            var src_optional = false;
+            var src_readonly = false;
+            if (homomorphic_source) |src_t| {
+                if (self.interner.objectMemberInfo(src_t, key_name)) |info| {
+                    src_optional = info.is_optional;
+                    src_readonly = info.is_readonly;
+                }
+            }
+            const is_optional = switch (m.optional) {
+                1 => true, // +?
+                2 => false, // -?
+                else => src_optional, // inherit (or false when no source)
+            };
+            const is_readonly = switch (m.readonly) {
+                1 => true,
+                2 => false,
+                else => src_readonly,
+            };
             try built.append(self.gpa, .{
                 .name = key_name,
                 .type = value_t,
-                .is_optional = make_optional,
-                .is_readonly = make_readonly,
+                .is_optional = is_optional,
+                .is_readonly = is_readonly,
                 .is_method = false,
             });
         }
@@ -4420,6 +4449,54 @@ test "checker: ReturnType<T> infers signature return via infer R" {
     const r_decl = stmts[1];
     // r should resolve to `string`.
     try T.expectEqual(types.Primitive.string_t, s.hir.typeOf(r_decl));
+}
+
+test "checker: Required<T> -? strips optional from source" {
+    const s = try newSetup(
+        \\type Required<T> = { [K in keyof T]-?: T[K] };
+        \\let r: Required<{ x?: number; y?: string }>;
+    );
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+    const stmts = hir_mod.blockStmts(&s.hir, s.root);
+    const r_decl = stmts[1];
+    const t = s.hir.typeOf(r_decl);
+    try T.expect(s.ti.pool.flagsOf(t).is_object_type);
+    const members = s.ti.objectMembers(t);
+    try T.expectEqual(@as(usize, 2), members.len);
+    // Both members should NOT be optional (was: optional in source).
+    for (members) |m| try T.expect(!m.is_optional);
+}
+
+test "checker: Mutable<T> -readonly strips readonly from source" {
+    const s = try newSetup(
+        \\type Mutable<T> = { -readonly [K in keyof T]: T[K] };
+        \\let r: Mutable<{ readonly x: number; readonly y: string }>;
+    );
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+    const stmts = hir_mod.blockStmts(&s.hir, s.root);
+    const r_decl = stmts[1];
+    const t = s.hir.typeOf(r_decl);
+    try T.expect(s.ti.pool.flagsOf(t).is_object_type);
+    const members = s.ti.objectMembers(t);
+    try T.expectEqual(@as(usize, 2), members.len);
+    for (members) |m| try T.expect(!m.is_readonly);
+}
+
+test "checker: homomorphic Readonly<T> adds readonly to source" {
+    const s = try newSetup(
+        \\type Readonly<T> = { readonly [K in keyof T]: T[K] };
+        \\let r: Readonly<{ x: number }>;
+    );
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+    const stmts = hir_mod.blockStmts(&s.hir, s.root);
+    const r_decl = stmts[1];
+    const t = s.hir.typeOf(r_decl);
+    const members = s.ti.objectMembers(t);
+    try T.expectEqual(@as(usize, 1), members.len);
+    try T.expect(members[0].is_readonly);
 }
 
 test "checker: homomorphic Partial<T> preserves field types" {

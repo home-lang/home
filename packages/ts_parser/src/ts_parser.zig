@@ -1617,23 +1617,60 @@ pub const Parser = struct {
     /// (`{ [K in T]: V }`) are still parsed via the dedicated path.
     fn parseObjectOrMappedType(self: *Parser) ParseError!NodeId {
         const open = try self.expect(.open_brace, "'{' to start object type");
-        // Detect mapped type: `{ [K in T]: V }`.
-        if (self.peek().kind == .open_bracket and self.peekAt(2).kind == .kw_in) {
+        // Detect mapped type. The leading shape is one of:
+        //   { [K in T]: V }
+        //   { readonly [K in T]: V }
+        //   { -readonly [K in T]: V }
+        //   { +readonly [K in T]: V }
+        // We also need to look two tokens ahead for `-readonly` /
+        // `+readonly` because the modifier prefixes the bracket.
+        var readonly_mod: u8 = 0;
+        var lead_consumed: usize = 0;
+        if (self.peek().kind == .kw_readonly and self.peekAt(1).kind == .open_bracket) {
+            readonly_mod = 1;
+            lead_consumed = 1;
+        } else if (self.peek().kind == .minus and self.peekAt(1).kind == .kw_readonly and self.peekAt(2).kind == .open_bracket) {
+            readonly_mod = 2;
+            lead_consumed = 2;
+        } else if (self.peek().kind == .plus and self.peekAt(1).kind == .kw_readonly and self.peekAt(2).kind == .open_bracket) {
+            readonly_mod = 1;
+            lead_consumed = 2;
+        }
+        var bracket_idx: usize = 0;
+        if (lead_consumed > 0) bracket_idx = lead_consumed;
+        const at_bracket = self.peek().kind == .open_bracket or
+            (lead_consumed > 0 and self.peekAt(@intCast(bracket_idx)).kind == .open_bracket);
+        const has_in = if (lead_consumed > 0)
+            self.peekAt(@intCast(bracket_idx + 2)).kind == .kw_in
+        else
+            self.peekAt(2).kind == .kw_in;
+        if (at_bracket and has_in) {
+            // Consume any leading readonly modifier tokens.
+            var c: usize = 0;
+            while (c < lead_consumed) : (c += 1) _ = self.advance();
             _ = self.advance(); // `[`
             const k_tok = try self.expect(.identifier, "key in mapped type");
             const k_id = try self.internToken(k_tok);
             _ = try self.expect(.kw_in, "'in' in mapped type");
             const constraint = try self.parseTypeAnnotation();
             _ = try self.expect(.close_bracket, "']' to close mapped type key");
-            // Optional `?` modifier
+            // Optional `?` / `+?` / `-?` modifier
             var optional_mod: u8 = 0;
-            if (self.match(.question)) optional_mod = 1;
+            if (self.match(.minus)) {
+                _ = try self.expect(.question, "'?' after '-' in mapped type");
+                optional_mod = 2;
+            } else if (self.match(.plus)) {
+                _ = try self.expect(.question, "'?' after '+' in mapped type");
+                optional_mod = 1;
+            } else if (self.match(.question)) {
+                optional_mod = 1;
+            }
             _ = try self.expect(.colon, "':' in mapped type");
             const value = try self.parseTypeAnnotation();
             _ = self.match(.semicolon);
             const close = try self.expect(.close_brace, "'}' to close mapped type");
             const tp = try self.builder.addTypeParameter(tokenSpan(k_tok), k_id, hir_mod.none_node_id, hir_mod.none_node_id, 0);
-            return try self.builder.addMappedType(.{ .start = open.span.start, .end = close.span.end }, tp, constraint, value, 0, optional_mod);
+            return try self.builder.addMappedType(.{ .start = open.span.start, .end = close.span.end }, tp, constraint, value, readonly_mod, optional_mod);
         }
         var members: std.ArrayListUnmanaged(NodeId) = .empty;
         defer members.deinit(self.gpa);
