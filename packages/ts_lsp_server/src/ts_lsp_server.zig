@@ -409,6 +409,47 @@ pub fn handleDidChange(
     return encodePublishDiagnostics(gpa, uri, rendered);
 }
 
+/// Handle a `textDocument/didOpen` notification: parse `uri` + `text`
+/// from `params_json`, register the file with the program graph
+/// (adding it if new, updating its source if already tracked), then
+/// re-typecheck the program. No response is emitted (notifications
+/// have no reply); diagnostics are surfaced via subsequent
+/// `publishDiagnostics` notifications.
+pub fn handleDidOpen(
+    service: *ts_lsp.Service,
+    gpa: std.mem.Allocator,
+    params_json: []const u8,
+) !void {
+    const uri = findJsonStringField(params_json, "uri") orelse return error.MissingUri;
+    const text_raw = findJsonStringField(params_json, "text") orelse return error.MissingText;
+
+    const source = try decodeJsonString(gpa, text_raw);
+    defer gpa.free(source);
+    const path = uriToPath(uri);
+
+    if (service.program.lookupPath(path) != null) {
+        _ = try service.program.updateSource(path, source);
+    } else {
+        _ = try service.program.add(path, source);
+    }
+    try service.program.compileAll(.{});
+}
+
+/// Handle a `textDocument/didClose` notification: parse `uri` from
+/// `params_json` and acknowledge. Today this is a no-op — the file
+/// stays tracked in the program graph so subsequent requests still
+/// resolve. A future enhancement would unload the file (drop its
+/// compilation, remove from `Program.by_path`).
+pub fn handleDidClose(
+    service: *ts_lsp.Service,
+    gpa: std.mem.Allocator,
+    params_json: []const u8,
+) !void {
+    _ = service;
+    _ = gpa;
+    _ = findJsonStringField(params_json, "uri") orelse return error.MissingUri;
+}
+
 /// Locate an integer JSON field by `key` inside `body`. Walks the
 /// raw bytes looking for `"key":` and parses a base-10 integer that
 /// follows (skipping whitespace). Returns null when the key isn't
@@ -1441,8 +1482,16 @@ pub fn dispatchRequest(
         .text_document_did_change => {
             return try handleDidChange(service, gpa, params);
         },
-        .text_document_did_open, .text_document_did_close, .text_document_publish_diagnostics => {
-            // Notifications we currently accept but don't act on.
+        .text_document_did_open => {
+            try handleDidOpen(service, gpa, params);
+            return &.{};
+        },
+        .text_document_did_close => {
+            try handleDidClose(service, gpa, params);
+            return &.{};
+        },
+        .text_document_publish_diagnostics => {
+            // Server-pushed notification we accept inbound but ignore.
             return &.{};
         },
         .text_document_hover => {
@@ -1739,6 +1788,53 @@ test "handleDidChange: routes notification to Service.didChangeFile" {
     defer T.allocator.free(out2);
     try T.expect(std.mem.indexOf(u8, out2, "\"diagnostics\":[]") == null);
     try T.expect(std.mem.indexOf(u8, out2, "error TS") != null);
+}
+
+test "handleDidOpen: adds a new file to the program" {
+    var vfs = ts_resolver.VirtualFs.init(T.allocator);
+    defer vfs.deinit();
+    var resolver = ts_resolver.Resolver.init(T.allocator, vfs.fs(), .{});
+    defer resolver.deinit();
+    var program = ts_program.Program.init(T.allocator, &resolver);
+    defer program.deinit();
+
+    var svc = ts_lsp.Service.init(T.allocator, &program);
+
+    // File not yet tracked.
+    try T.expect(program.lookupPath("/main.ts") == null);
+
+    const body =
+        \\{"jsonrpc":"2.0","method":"textDocument/didOpen","params":{"textDocument":{"uri":"file:///main.ts","languageId":"typescript","version":1,"text":"let x: number = 1;"}}}
+    ;
+    const params = findJsonRawField(body, "params").?;
+    try handleDidOpen(&svc, T.allocator, params);
+
+    // After didOpen the file is tracked + has a compilation.
+    const id = program.lookupPath("/main.ts") orelse return error.TestUnexpectedResult;
+    const f = program.fileById(id);
+    try T.expect(f.compilation != null);
+    try T.expectEqualStrings("let x: number = 1;", f.source);
+}
+
+test "handleDidClose: accepts notification (no-op)" {
+    var vfs = ts_resolver.VirtualFs.init(T.allocator);
+    defer vfs.deinit();
+    var resolver = ts_resolver.Resolver.init(T.allocator, vfs.fs(), .{});
+    defer resolver.deinit();
+    var program = ts_program.Program.init(T.allocator, &resolver);
+    defer program.deinit();
+
+    _ = try program.add("/main.ts", "let x = 1;");
+    var svc = ts_lsp.Service.init(T.allocator, &program);
+
+    const body =
+        \\{"jsonrpc":"2.0","method":"textDocument/didClose","params":{"textDocument":{"uri":"file:///main.ts"}}}
+    ;
+    const params = findJsonRawField(body, "params").?;
+    try handleDidClose(&svc, T.allocator, params);
+
+    // File remains tracked (no-op semantics today).
+    try T.expect(program.lookupPath("/main.ts") != null);
 }
 
 test "lineColToByte: walks lines + columns" {
