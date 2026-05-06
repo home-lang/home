@@ -216,6 +216,25 @@ pub const TsCodes = struct {
     pub const unterminated_regex: u32 = 1161;
 };
 
+/// Home-only diagnostic codes (`HMxxxx`). These cover constructs that
+/// have no tsc analogue: native-frontend features used in TS context,
+/// HIR-side mismatches, exhaustiveness/borrow checks, FFI, and native
+/// codegen limitations.
+pub const HmCodes = struct {
+    /// Home-only feature 'X' used in TS context.
+    pub const home_feature_in_ts_context: u32 = 1000;
+    /// Cross-frontend type mismatch (HIR-side).
+    pub const cross_frontend_type_mismatch: u32 = 1001;
+    /// Pattern non-exhaustive.
+    pub const pattern_non_exhaustive: u32 = 2000;
+    /// Borrow-checker violation.
+    pub const borrow_checker_violation: u32 = 2001;
+    /// FFI signature mismatch.
+    pub const ffi_signature_mismatch: u32 = 3000;
+    /// Native codegen unsupported subset.
+    pub const native_codegen_unsupported: u32 = 5000;
+};
+
 // =============================================================================
 // Tests
 // =============================================================================
@@ -410,4 +429,13 @@ test "Severity: exit codes match tsc" {
 test "Severity: labels match tsc" {
     try T.expectEqualStrings("error", Severity.err.label());
     try T.expectEqualStrings("warning", Severity.warning.label());
+}
+
+test "HmCodes: stable values for Home-only diagnostics" {
+    try T.expectEqual(@as(u32, 1000), HmCodes.home_feature_in_ts_context);
+    try T.expectEqual(@as(u32, 1001), HmCodes.cross_frontend_type_mismatch);
+    try T.expectEqual(@as(u32, 2000), HmCodes.pattern_non_exhaustive);
+    try T.expectEqual(@as(u32, 2001), HmCodes.borrow_checker_violation);
+    try T.expectEqual(@as(u32, 3000), HmCodes.ffi_signature_mismatch);
+    try T.expectEqual(@as(u32, 5000), HmCodes.native_codegen_unsupported);
 }
