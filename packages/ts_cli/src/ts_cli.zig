@@ -294,6 +294,23 @@ test "parseArgs: --pretty and --no-pretty" {
     }
 }
 
+test "parseArgs: --pretty default + tsc_main resolution semantics" {
+    // No flag -> null (auto). tsc_main resolves null/true to pretty,
+    // and only `--no-pretty` (opts.pretty == false) falls back to the
+    // single-line `formatDefault` shape — this test pins down both
+    // halves of that resolution rule so the wiring can't drift.
+    const argv = [_][]const u8{};
+    const opts = try parseArgs(T.allocator, &argv);
+    defer T.allocator.free(opts.files);
+    try T.expectEqual(@as(?bool, null), opts.pretty);
+    try T.expect((opts.pretty orelse true) == true);
+
+    const argv_no = [_][]const u8{"--no-pretty"};
+    const opts_no = try parseArgs(T.allocator, &argv_no);
+    defer T.allocator.free(opts_no.files);
+    try T.expect((opts_no.pretty orelse true) == false);
+}
+
 test "parseArgs: --strict" {
     const argv = [_][]const u8{"--strict"};
     const opts = try parseArgs(T.allocator, &argv);

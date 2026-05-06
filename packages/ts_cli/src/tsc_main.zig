@@ -267,7 +267,14 @@ pub fn main(init: std.process.Init) !void {
                 .message = d.message,
                 .span_len = 0,
             };
-            const formatted = ts_diagnostics.formatDefault(gpa, fdiag) catch continue;
+            // Default to `--pretty` to match tsc 5.x behavior; honor
+            // `--no-pretty` (opts.pretty == false) to produce the
+            // single-line tsc-classic header instead.
+            const use_pretty = opts.pretty orelse true;
+            const formatted = if (use_pretty)
+                ts_diagnostics.formatPretty(gpa, fdiag, c.source, false) catch continue
+            else
+                ts_diagnostics.formatDefault(gpa, fdiag) catch continue;
             defer gpa.free(formatted);
             std.debug.print("{s}\n", .{formatted});
             if (d.phase != .emit) any_errors = true;
