@@ -750,7 +750,12 @@ pub const Checker = struct {
                 try self.lowerer.lower(tpp.default)
             else
                 types.Primitive.none;
-            const tp_id = self.interner.internTypeParameter(tpp.name, constraint, def) catch return error.OutOfMemory;
+            const tp_id = self.interner.internTypeParameterWithVariance(
+                tpp.name,
+                constraint,
+                def,
+                types.Variance.fromHirBits(tpp.variance),
+            ) catch return error.OutOfMemory;
             self.hir.setType(tp, tp_id);
             try self.recordNarrow(tpp.name, tp_id);
             try captured_tp_ids.append(self.gpa, tp_id);
@@ -1156,7 +1161,12 @@ pub const Checker = struct {
                 try self.lowerer.lower(tpp.default)
             else
                 types.Primitive.none;
-            const tp_id = self.interner.internTypeParameter(tpp.name, constraint, def) catch return error.OutOfMemory;
+            const tp_id = self.interner.internTypeParameterWithVariance(
+                tpp.name,
+                constraint,
+                def,
+                types.Variance.fromHirBits(tpp.variance),
+            ) catch return error.OutOfMemory;
             self.hir.setType(tp, tp_id);
             try self.recordNarrow(tpp.name, tp_id);
             try param_ids.append(self.gpa, tp_id);
@@ -4435,4 +4445,53 @@ test "checker: homomorphic Partial<T> preserves field types" {
     }
     try T.expect(saw_x_number);
     try T.expect(saw_y_string);
+}
+
+test "checker: type-parameter variance — `in` modifier becomes contravariant TypeId" {
+    const s = try newSetup("function f<in T>(x: T): void {}");
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+    const stmts = hir_mod.blockStmts(&s.hir, s.root);
+    const fn_node = stmts[0];
+    const tps = hir_mod.fnTypeParams(&s.hir, fn_node);
+    try T.expectEqual(@as(usize, 1), tps.len);
+    const tp_id = s.hir.typeOf(tps[0]);
+    try T.expect(s.ti.pool.flagsOf(tp_id).is_type_parameter);
+    try T.expectEqual(types.Variance.contravariant, s.ti.typeParameterVariance(tp_id));
+}
+
+test "checker: type-parameter variance — `out` modifier becomes covariant TypeId" {
+    const s = try newSetup("function f<out T>(): void {}");
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+    const stmts = hir_mod.blockStmts(&s.hir, s.root);
+    const fn_node = stmts[0];
+    const tps = hir_mod.fnTypeParams(&s.hir, fn_node);
+    try T.expectEqual(@as(usize, 1), tps.len);
+    const tp_id = s.hir.typeOf(tps[0]);
+    try T.expectEqual(types.Variance.covariant, s.ti.typeParameterVariance(tp_id));
+}
+
+test "checker: type-parameter variance — `in out` modifier becomes invariant TypeId" {
+    const s = try newSetup("function f<in out T>(x: T): T { return x; }");
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+    const stmts = hir_mod.blockStmts(&s.hir, s.root);
+    const fn_node = stmts[0];
+    const tps = hir_mod.fnTypeParams(&s.hir, fn_node);
+    try T.expectEqual(@as(usize, 1), tps.len);
+    const tp_id = s.hir.typeOf(tps[0]);
+    try T.expectEqual(types.Variance.invariant, s.ti.typeParameterVariance(tp_id));
+}
+
+test "checker: type-parameter variance — no modifier defaults to bivariant" {
+    const s = try newSetup("function f<T>(x: T): T { return x; }");
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+    const stmts = hir_mod.blockStmts(&s.hir, s.root);
+    const fn_node = stmts[0];
+    const tps = hir_mod.fnTypeParams(&s.hir, fn_node);
+    try T.expectEqual(@as(usize, 1), tps.len);
+    const tp_id = s.hir.typeOf(tps[0]);
+    try T.expectEqual(types.Variance.bivariant, s.ti.typeParameterVariance(tp_id));
 }

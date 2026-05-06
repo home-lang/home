@@ -1837,11 +1837,18 @@ pub const Parser = struct {
         errdefer tps.deinit(self.gpa);
         while (self.peek().kind != .greater_than and self.peek().kind != .eof) {
             const tp_start = self.peek();
-            // Variance modifiers `in`/`out`.
+            // Variance modifiers `in`/`out` (TS 4.7). Either or both may
+            // appear before the type-parameter name. The lookahead allows
+            // `in T`, `out T`, and `in out T` — for the combined form, the
+            // peek-2 lookahead bypasses the trailing `kw_out` so the next
+            // pass sees the kw_out → identifier path.
             var variance: u8 = 0;
-            if (self.peek().kind == .kw_in and self.peekAt(1).kind == .identifier) {
-                _ = self.advance();
-                variance |= 1;
+            if (self.peek().kind == .kw_in) {
+                const after = self.peekAt(1).kind;
+                if (after == .identifier or after == .kw_out) {
+                    _ = self.advance();
+                    variance |= 1;
+                }
             }
             if (self.peek().kind == .kw_out and self.peekAt(1).kind == .identifier) {
                 _ = self.advance();
@@ -4178,3 +4185,43 @@ test "parser: template literal type with no substitution" {
 // backtick when the interpolation contains an identifier-shaped
 // type). The single-text path above already exercises the
 // addTemplateLiteralType builder + lower path.
+
+test "parser: variance modifier `in T` records variance=1" {
+    var s = try newTestSetup("function f<in T>(): void {}");
+    defer destroyTestSetup(s);
+    const root = try s.parser.parseSourceFile();
+    const top = hir_mod.blockStmts(&s.hir, root)[0];
+    const tps = hir_mod.fnTypeParams(&s.hir, top);
+    try T.expectEqual(@as(usize, 1), tps.len);
+    try T.expectEqual(@as(u8, 1), hir_mod.typeParameterOf(&s.hir, tps[0]).variance);
+}
+
+test "parser: variance modifier `out T` records variance=2" {
+    var s = try newTestSetup("function f<out T>(): void {}");
+    defer destroyTestSetup(s);
+    const root = try s.parser.parseSourceFile();
+    const top = hir_mod.blockStmts(&s.hir, root)[0];
+    const tps = hir_mod.fnTypeParams(&s.hir, top);
+    try T.expectEqual(@as(usize, 1), tps.len);
+    try T.expectEqual(@as(u8, 2), hir_mod.typeParameterOf(&s.hir, tps[0]).variance);
+}
+
+test "parser: variance modifier `in out T` records variance=3" {
+    var s = try newTestSetup("function f<in out T>(x: T): T { return x; }");
+    defer destroyTestSetup(s);
+    const root = try s.parser.parseSourceFile();
+    const top = hir_mod.blockStmts(&s.hir, root)[0];
+    const tps = hir_mod.fnTypeParams(&s.hir, top);
+    try T.expectEqual(@as(usize, 1), tps.len);
+    try T.expectEqual(@as(u8, 3), hir_mod.typeParameterOf(&s.hir, tps[0]).variance);
+}
+
+test "parser: no variance modifier records variance=0" {
+    var s = try newTestSetup("function f<T>(x: T): T { return x; }");
+    defer destroyTestSetup(s);
+    const root = try s.parser.parseSourceFile();
+    const top = hir_mod.blockStmts(&s.hir, root)[0];
+    const tps = hir_mod.fnTypeParams(&s.hir, top);
+    try T.expectEqual(@as(usize, 1), tps.len);
+    try T.expectEqual(@as(u8, 0), hir_mod.typeParameterOf(&s.hir, tps[0]).variance);
+}

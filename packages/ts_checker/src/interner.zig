@@ -113,6 +113,7 @@ pub const TypeKey = union(Kind) {
                 hasher.update(std.mem.asBytes(&tp.name));
                 hasher.update(std.mem.asBytes(&tp.constraint));
                 hasher.update(std.mem.asBytes(&tp.default));
+                hasher.update(&[_]u8{@intFromEnum(tp.variance)});
             },
             .instantiation => |inst| {
                 hasher.update(std.mem.asBytes(&inst.origin));
@@ -167,7 +168,10 @@ pub const TypeKey = union(Kind) {
             },
             .type_parameter => |a| {
                 const b = other.type_parameter;
-                return a.name == b.name and a.constraint == b.constraint and a.default == b.default;
+                return a.name == b.name and
+                    a.constraint == b.constraint and
+                    a.default == b.default and
+                    a.variance == b.variance;
             },
             .instantiation => |a| {
                 const b = other.instantiation;
@@ -324,13 +328,42 @@ pub const Interner = struct {
     }
 
     pub fn internTypeParameter(self: *Interner, name: StringId, constraint: TypeId, default: TypeId) !TypeId {
+        return self.internTypeParameterWithVariance(name, constraint, default, .bivariant);
+    }
+
+    /// Like `internTypeParameter` but lets the caller pass an explicit
+    /// declaration-site variance (`in` / `out`). Variance participates
+    /// in the interner key, so `T` and `in T` produce distinct ids.
+    pub fn internTypeParameterWithVariance(
+        self: *Interner,
+        name: StringId,
+        constraint: TypeId,
+        default: TypeId,
+        variance: types.Variance,
+    ) !TypeId {
         const payload: types.TypeParameterPayload = .{
             .name = name,
             .constraint = constraint,
             .default = default,
+            .variance = variance,
         };
         const key: TypeKey = .{ .type_parameter = payload };
         return try self.internKey(key, .{ .is_type_parameter = true });
+    }
+
+    /// Look up the declaration-site variance of a type-parameter type.
+    /// Returns `.bivariant` for non-type-parameter ids (caller filters).
+    pub fn typeParameterVariance(self: *const Interner, id: TypeId) types.Variance {
+        if (!self.pool.flagsOf(id).is_type_parameter) return .bivariant;
+        const payload = self.pool.type_parameter_payloads.items[self.pool.payloadOf(id)];
+        return payload.variance;
+    }
+
+    /// Look up the name (StringId) of a type-parameter type.
+    pub fn typeParameterName(self: *const Interner, id: TypeId) ?StringId {
+        if (!self.pool.flagsOf(id).is_type_parameter) return null;
+        const payload = self.pool.type_parameter_payloads.items[self.pool.payloadOf(id)];
+        return payload.name;
     }
 
     /// Intern a function signature type: `(p1: T1, p2: T2) => R`.
@@ -733,4 +766,64 @@ test "Interner: conditional dedup" {
     const b = try i.internConditional(Primitive.string_t, Primitive.string_t, Primitive.true_lit, Primitive.false_lit);
     try T.expectEqual(a, b);
     try T.expect(i.pool.flagsOf(a).is_conditional);
+}
+
+test "Interner: type parameter variance — default is bivariant" {
+    var i = try Interner.init(T.allocator);
+    defer i.deinit();
+    var sint = try string_interner.Interner.init(T.allocator);
+    defer sint.deinit();
+    const id_t = try sint.intern("T");
+
+    const tp = try i.internTypeParameter(id_t, types.Primitive.unknown, types.Primitive.none);
+    try T.expectEqual(types.Variance.bivariant, i.typeParameterVariance(tp));
+    try T.expectEqual(@as(?StringId, id_t), i.typeParameterName(tp));
+}
+
+test "Interner: type parameter variance — explicit in/out modifiers distinct ids" {
+    var i = try Interner.init(T.allocator);
+    defer i.deinit();
+    var sint = try string_interner.Interner.init(T.allocator);
+    defer sint.deinit();
+    const id_t = try sint.intern("T");
+
+    const bi = try i.internTypeParameterWithVariance(id_t, types.Primitive.unknown, types.Primitive.none, .bivariant);
+    const co = try i.internTypeParameterWithVariance(id_t, types.Primitive.unknown, types.Primitive.none, .covariant);
+    const ct = try i.internTypeParameterWithVariance(id_t, types.Primitive.unknown, types.Primitive.none, .contravariant);
+    const inv = try i.internTypeParameterWithVariance(id_t, types.Primitive.unknown, types.Primitive.none, .invariant);
+
+    // Variance is part of the interner key — same name + constraint +
+    // default but different variance must produce distinct ids.
+    try T.expect(bi != co);
+    try T.expect(bi != ct);
+    try T.expect(bi != inv);
+    try T.expect(co != ct);
+    try T.expect(co != inv);
+    try T.expect(ct != inv);
+
+    try T.expectEqual(types.Variance.bivariant, i.typeParameterVariance(bi));
+    try T.expectEqual(types.Variance.covariant, i.typeParameterVariance(co));
+    try T.expectEqual(types.Variance.contravariant, i.typeParameterVariance(ct));
+    try T.expectEqual(types.Variance.invariant, i.typeParameterVariance(inv));
+}
+
+test "Interner: type parameter variance — same variance dedups" {
+    var i = try Interner.init(T.allocator);
+    defer i.deinit();
+    var sint = try string_interner.Interner.init(T.allocator);
+    defer sint.deinit();
+    const id_t = try sint.intern("T");
+
+    const a = try i.internTypeParameterWithVariance(id_t, types.Primitive.unknown, types.Primitive.none, .covariant);
+    const b = try i.internTypeParameterWithVariance(id_t, types.Primitive.unknown, types.Primitive.none, .covariant);
+    try T.expectEqual(a, b);
+}
+
+test "Variance: HIR bit encoding round-trip" {
+    try T.expectEqual(types.Variance.bivariant, types.Variance.fromHirBits(0));
+    try T.expectEqual(types.Variance.contravariant, types.Variance.fromHirBits(1));
+    try T.expectEqual(types.Variance.covariant, types.Variance.fromHirBits(2));
+    try T.expectEqual(types.Variance.invariant, types.Variance.fromHirBits(3));
+    // Out-of-range falls back to bivariant.
+    try T.expectEqual(types.Variance.bivariant, types.Variance.fromHirBits(255));
 }

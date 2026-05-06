@@ -185,12 +185,43 @@ pub const TuplePayload = struct {
     elements_len: u32,
 };
 
+/// Variance of a generic type parameter at its declaration site.
+/// Honors the explicit `in` / `out` modifiers introduced in TS 4.7
+/// (auto-variance inference is a §3.A.5 follow-up). Matches the
+/// HIR-level encoding (`hir.TypeParameterPayload.variance`).
+///
+///   - `bivariant`: no modifier; default for parameters that don't
+///     drive `strictFunctionTypes` flow. Both directions accepted.
+///   - `covariant`: `out T` — T appears only in output (read) position.
+///     `Foo<Dog>` assigns to `Foo<Animal>`.
+///   - `contravariant`: `in T` — T appears only in input (write) position.
+///     `Foo<Animal>` assigns to `Foo<Dog>`.
+///   - `invariant`: `in out T` — both directions; types must match exactly.
+pub const Variance = enum(u8) {
+    bivariant = 0,
+    contravariant = 1, // `in`
+    covariant = 2, //     `out`
+    invariant = 3, //     `in out`
+
+    pub fn fromHirBits(bits: u8) Variance {
+        return switch (bits) {
+            0 => .bivariant,
+            1 => .contravariant,
+            2 => .covariant,
+            3 => .invariant,
+            else => .bivariant,
+        };
+    }
+};
+
 pub const TypeParameterPayload = struct {
     name: StringId,
     /// Constraint type (`extends Foo`), `Primitive.none` if none.
     constraint: TypeId,
     /// Default value type (`= Bar`), `Primitive.none` if none.
     default: TypeId,
+    /// Declaration-site variance (`in` / `out` modifiers).
+    variance: Variance = .bivariant,
 };
 
 pub const SignatureParameter = struct {
