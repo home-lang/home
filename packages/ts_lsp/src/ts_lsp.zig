@@ -384,9 +384,13 @@ pub const Service = struct {
     }
 
     /// Find every reference to the symbol at `byte_pos` across
-    /// every file in the program. Identifier matches are filtered
-    /// by name (string identity); shadowing-aware lookup via the
-    /// binder's scope graph is a Phase 8 follow-up.
+    /// every file in the program. Within the cursor's own file the
+    /// search is shadowing-aware: each candidate's enclosing scope
+    /// is consulted via the binder's scope graph and the candidate
+    /// is filtered out if its name resolves to a different symbol
+    /// than the cursor's. Cross-file matches still match by name
+    /// only — the import-resolution path in `gotoDefinition`
+    /// handles the cross-module symbol identity question.
     pub fn findReferences(self: *Service, gpa: std.mem.Allocator, file_path: []const u8, byte_pos: u32) ![]Span {
         var spans: std.ArrayListUnmanaged(Span) = .empty;
         errdefer spans.deinit(gpa);
@@ -400,19 +404,40 @@ pub const Service = struct {
         const target = hir_mod.identifierOf(&oc.hir, node);
         const target_name = oc.interner.get(target.name);
 
+        // Resolve the cursor's identifier to its declaring symbol so
+        // we can compare candidate-site lookups against it. Compare
+        // by opaque pointer so this layer doesn't import binder.
+        const target_sym_addr: usize = blk: {
+            const s = enclosingScopeOf(oc.module, &oc.hir, node);
+            if (s.lookup(target.name)) |sym| break :blk @intFromPtr(sym);
+            if (oc.module.root.lookup(target.name)) |sym| break :blk @intFromPtr(sym);
+            break :blk 0;
+        };
+
         // Walk every program file's HIR. Each file has its own
         // string_interner, so we re-intern the target name into
         // the visited file's interner to compare ids.
         for (self.program.files.items) |f| {
             const c = f.compilation orelse continue;
-            // Look the name up in this file's interner (without
-            // adding to it). If absent, no reference is possible.
             const local_id = c.interner.lookup(target_name) orelse continue;
+            const is_origin = (f.id == file_id);
             var i: hir_mod.NodeId = 0;
             while (i < c.hir.nodeCount()) : (i += 1) {
                 if (c.hir.kindOf(i) != .identifier) continue;
                 const id = hir_mod.identifierOf(&c.hir, i);
                 if (id.name != local_id) continue;
+
+                // In-file shadowing filter: resolve this candidate's
+                // name in its enclosing scope. If it doesn't resolve
+                // to the same symbol the cursor does, the candidate
+                // shadows or is shadowed by a different binding —
+                // skip it.
+                if (is_origin and target_sym_addr != 0) {
+                    const cand_scope = enclosingScopeOf(c.module, &c.hir, i);
+                    const cand_addr: usize = if (cand_scope.lookup(local_id)) |s| @intFromPtr(s) else 0;
+                    if (cand_addr != target_sym_addr) continue;
+                }
+
                 const span = c.hir.spanOf(i);
                 const sp = ts_diagnostics.positionToLineCol(f.source, span.start);
                 const ep = ts_diagnostics.positionToLineCol(f.source, span.end);
@@ -1211,6 +1236,23 @@ fn findInnermostNode(hir: *const hir_mod.Hir, root: hir_mod.NodeId, byte_pos: u3
     return best;
 }
 
+/// Walk the HIR ancestor chain from `node` upward and return the
+/// innermost scope whose `introducing_node` lies on that chain.
+/// Falls back to the module root when no inner scope contains the
+/// node — the binder always opens the module scope at root.
+fn enclosingScopeOf(module: anytype, hir: *const hir_mod.Hir, node: hir_mod.NodeId) *const @TypeOf(module.root.*) {
+    var cur: hir_mod.NodeId = node;
+    while (cur != hir_mod.none_node_id) {
+        for (module.scopes.items) |s| {
+            if (s.introducing_node == cur and s != module.root) return s;
+        }
+        const parent = hir.parentOf(cur);
+        if (parent == cur) break; // self-loop guard
+        cur = parent;
+    }
+    return module.root;
+}
+
 /// Render a TypeId as a human-readable string. Caller owns the
 /// returned slice. Walks the actual structure of compound types
 /// (unions / intersections / object types / signatures) so the
@@ -1588,6 +1630,37 @@ test "Service: findReferences returns all identifier sites" {
     defer T.allocator.free(refs);
     // Three occurrences of x: declaration + two refs.
     try T.expectEqual(@as(usize, 3), refs.len);
+}
+
+test "Service: findReferences excludes shadowed bindings" {
+    var vfs = ts_resolver.VirtualFs.init(T.allocator);
+    defer vfs.deinit();
+    var resolver = ts_resolver.Resolver.init(T.allocator, vfs.fs(), .{});
+    defer resolver.deinit();
+    var program = ts_program.Program.init(T.allocator, &resolver);
+    defer program.deinit();
+
+    // Outer `x` and inner `x` (inside the function body) are
+    // distinct bindings. Asking for references to the outer `x`
+    // must skip both occurrences inside the function body — those
+    // refer to a different symbol introduced by the inner `let x`.
+    const src =
+        "let x = 1;\n" ++
+        "function f() { let x = 2; return x; }\n" ++
+        "let y = x;\n";
+    _ = try program.add("/main.ts", src);
+    try program.compileAll(.{});
+
+    var svc = Service.init(T.allocator, &program);
+    // Position of the outer `x` declaration: column 5 of line 1.
+    const outer_pos: u32 = @intCast(std.mem.indexOf(u8, src, "x").?);
+    const refs = try svc.findReferences(T.allocator, "/main.ts", outer_pos);
+    defer T.allocator.free(refs);
+    // Outer-x sites: declaration on line 1 + reference on line 3.
+    // Lines are 1-indexed; line 2 is the function body and must be
+    // skipped on both the inner declaration and the inner `return x`.
+    try T.expectEqual(@as(usize, 2), refs.len);
+    for (refs) |r| try T.expect(r.start_line != 2);
 }
 
 test "Service: findReferences walks every file in the program" {
