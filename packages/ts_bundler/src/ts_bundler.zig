@@ -160,6 +160,23 @@ fn treeShake(gpa: std.mem.Allocator, js: []const u8) ![]u8 {
         while (line_end < js.len and js[line_end] != '\n') : (line_end += 1) {}
         const line = js[line_start..line_end];
 
+        // Detect a top-level `import ...` line. We extract the bound
+        // names and drop the entire import if none of them are
+        // referenced anywhere else in the bundle. Naive: doesn't
+        // attempt to remove individual unused bindings within an
+        // otherwise-used import.
+        const import_kw = "import ";
+        if (std.mem.startsWith(u8, line, import_kw)) {
+            const before = js[0..line_start];
+            const line_advance_end = if (line_end < js.len) line_end + 1 else js.len;
+            const after = if (line_advance_end < js.len) js[line_advance_end..] else js[js.len..js.len];
+            if (importHasUsedBinding(line, before, after)) {
+                try out.appendSlice(gpa, js[line_start..line_advance_end]);
+            } // else: skip — fully-unused import.
+            i = line_advance_end;
+            continue;
+        }
+
         // Detect a top-level `function NAME(` at column 0 (no leading
         // whitespace). Anything indented is treated as nested and
         // preserved untouched.
@@ -211,6 +228,74 @@ fn containsIdent(haystack: []const u8, needle: []const u8) bool {
         const right_ok = i + needle.len == haystack.len or !isIdentChar(haystack[i + needle.len]);
         if (left_ok and right_ok) return true;
     }
+    return false;
+}
+
+/// Inspect a single `import ...` line and return true if at least one
+/// of its bound names is referenced in `before` or `after`. Handles
+/// the three v0 import shapes:
+///   - `import x from "..."`
+///   - `import { a, b as c } from "..."`
+///   - `import * as ns from "..."`
+/// Anything we don't recognize is conservatively treated as "used"
+/// (i.e. preserved) so we never drop a side-effect import.
+fn importHasUsedBinding(line: []const u8, before: []const u8, after: []const u8) bool {
+    // Strip the leading `import ` keyword.
+    const import_kw = "import ";
+    if (!std.mem.startsWith(u8, line, import_kw)) return true;
+    var rest = line[import_kw.len..];
+    // Trim leading whitespace.
+    while (rest.len > 0 and (rest[0] == ' ' or rest[0] == '\t')) rest = rest[1..];
+    if (rest.len == 0) return true;
+
+    // Side-effect-only import: `import "mod";` — no bindings, must keep.
+    if (rest[0] == '"' or rest[0] == '\'') return true;
+
+    // Locate the ` from ` keyword that separates bindings from the
+    // module specifier. If absent we conservatively keep the line.
+    const from_idx = std.mem.indexOf(u8, rest, " from ") orelse return true;
+    const bindings_part = rest[0..from_idx];
+
+    // Namespace import: `* as ns`.
+    if (std.mem.startsWith(u8, bindings_part, "*")) {
+        const as_idx = std.mem.indexOf(u8, bindings_part, " as ") orelse return true;
+        var ns = bindings_part[as_idx + 4 ..];
+        ns = std.mem.trim(u8, ns, " \t");
+        if (ns.len == 0) return true;
+        return containsIdent(before, ns) or containsIdent(after, ns);
+    }
+
+    // Split bindings into a default name (before any `{`) and a named
+    // list (between `{` and `}`).
+    var default_name: []const u8 = &[_]u8{};
+    var named_list: []const u8 = &[_]u8{};
+    if (std.mem.indexOfScalar(u8, bindings_part, '{')) |lb| {
+        default_name = std.mem.trim(u8, bindings_part[0..lb], " \t,");
+        const rb = std.mem.indexOfScalar(u8, bindings_part, '}') orelse bindings_part.len;
+        named_list = bindings_part[lb + 1 .. rb];
+    } else {
+        default_name = std.mem.trim(u8, bindings_part, " \t,");
+    }
+
+    if (default_name.len > 0) {
+        if (containsIdent(before, default_name) or containsIdent(after, default_name)) return true;
+    }
+
+    // Scan named bindings, splitting on commas. Each entry is either
+    // `foo` or `foo as bar` — we want the locally-bound name (after
+    // `as`, if present).
+    var it = std.mem.splitScalar(u8, named_list, ',');
+    while (it.next()) |raw| {
+        const piece = std.mem.trim(u8, raw, " \t");
+        if (piece.len == 0) continue;
+        const local = if (std.mem.indexOf(u8, piece, " as ")) |ai|
+            std.mem.trim(u8, piece[ai + 4 ..], " \t")
+        else
+            piece;
+        if (local.len == 0) continue;
+        if (containsIdent(before, local) or containsIdent(after, local)) return true;
+    }
+
     return false;
 }
 
@@ -372,6 +457,66 @@ test "Bundler: tree-shake drops unreachable top-level fn" {
 
     try T.expect(std.mem.indexOf(u8, js, "function used") != null);
     try T.expect(std.mem.indexOf(u8, js, "function unused") == null);
+}
+
+test "Bundler: tree-shake drops fully-unused import" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const io = std.testing.io;
+    {
+        var f = try tmp.dir.createFile(io, "main.ts", .{ .truncate = true });
+        defer f.close(io);
+        // `useState` is imported but never referenced — the v0 shaker
+        // should drop the entire import line.
+        try f.writeStreamingAll(io,
+            \\import { useState } from "react";
+            \\let x = 1;
+        );
+    }
+    const path_z = try tmp.dir.realPathFileAlloc(io, "main.ts", T.allocator);
+    defer T.allocator.free(path_z);
+    const path: []const u8 = path_z;
+
+    var b = Bundler.init(T.allocator);
+    defer b.deinit();
+    try b.addEntry(path);
+
+    const js = try b.bundle(T.allocator, .{ .tree_shake = true });
+    defer T.allocator.free(js);
+
+    try T.expect(std.mem.indexOf(u8, js, "useState") == null);
+    try T.expect(std.mem.indexOf(u8, js, "from \"react\"") == null);
+    try T.expect(std.mem.indexOf(u8, js, "let x") != null);
+}
+
+test "Bundler: tree-shake preserves import with used binding" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const io = std.testing.io;
+    {
+        var f = try tmp.dir.createFile(io, "main.ts", .{ .truncate = true });
+        defer f.close(io);
+        // `useState` is referenced below — the import must survive.
+        try f.writeStreamingAll(io,
+            \\import { useState } from "react";
+            \\let s = useState(0);
+        );
+    }
+    const path_z = try tmp.dir.realPathFileAlloc(io, "main.ts", T.allocator);
+    defer T.allocator.free(path_z);
+    const path: []const u8 = path_z;
+
+    var b = Bundler.init(T.allocator);
+    defer b.deinit();
+    try b.addEntry(path);
+
+    const js = try b.bundle(T.allocator, .{ .tree_shake = true });
+    defer T.allocator.free(js);
+
+    try T.expect(std.mem.indexOf(u8, js, "useState") != null);
+    try T.expect(std.mem.indexOf(u8, js, "import {") != null);
 }
 
 test "Bundler: minify strips leading whitespace" {
