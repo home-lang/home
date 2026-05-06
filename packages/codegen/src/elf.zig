@@ -8,6 +8,13 @@ pub const ElfWriter = struct {
     data: []const u8,
     entry_point: u64,
     io: ?Io = null,
+    target_arch: Arch = .x86_64,
+
+    pub const Arch = enum { x86_64, aarch64 };
+
+    // ELF e_machine constants
+    const EM_X86_64: u16 = 0x3E;
+    const EM_AARCH64: u16 = 0xB7;
 
     pub fn init(allocator: std.mem.Allocator, code: []const u8, data: []const u8) ElfWriter {
         return .{
@@ -15,6 +22,16 @@ pub const ElfWriter = struct {
             .code = code,
             .data = data,
             .entry_point = 0x401000,
+        };
+    }
+
+    pub fn initArm64(allocator: std.mem.Allocator, code: []const u8, data: []const u8) ElfWriter {
+        return .{
+            .allocator = allocator,
+            .code = code,
+            .data = data,
+            .entry_point = 0x401000,
+            .target_arch = .aarch64,
         };
     }
 
@@ -59,8 +76,12 @@ pub const ElfWriter = struct {
         // e_type: ET_EXEC (executable file)
         std.mem.writeInt(u16, header[16..18], 2, .little);
 
-        // e_machine: x86-64
-        std.mem.writeInt(u16, header[18..20], 0x3E, .little);
+        // e_machine — branched on target arch.
+        const e_machine: u16 = switch (self.target_arch) {
+            .x86_64 => EM_X86_64,
+            .aarch64 => EM_AARCH64,
+        };
+        std.mem.writeInt(u16, header[18..20], e_machine, .little);
 
         // e_version: EV_CURRENT
         std.mem.writeInt(u32, header[20..24], 1, .little);

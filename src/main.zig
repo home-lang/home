@@ -1752,12 +1752,14 @@ fn buildCommand(allocator: std.mem.Allocator, file_path: []const u8, output_path
             break :blk "a.out";
         };
 
-        // Pick backend by host arch. The aarch64 path is M1 of issue #5
-        // (Path B-lite) — it currently only handles `fn main() { return <int>; }`.
+        // Pick backend by host arch. The aarch64 path implements Path B-lite
+        // of issue #5 (M1–M9 — return literals through match expressions).
         // Fall through to the x64 backend for any other host (the existing
         // behaviour, which on Apple Silicon produces an x86_64 binary that
         // runs under Rosetta 2).
-        if (builtin.target.cpu.arch == .aarch64 and builtin.os.tag == .macos) {
+        if (builtin.target.cpu.arch == .aarch64 and
+            (builtin.os.tag == .macos or builtin.os.tag == .linux))
+        {
             std.debug.print("{s}Generating native arm64 code...{s}\n", .{ Color.Green.code(), Color.Reset.code() });
 
             var codegen = Aarch64NativeCodegen.init(allocator, program);

@@ -457,6 +457,139 @@ test "arm64 encoding: b.ge via bcond" {
     try assertBcond(.ge, .{ 0x0A, 0x00, 0x00, 0x54 });
 }
 
+// ─── Encoders added during M3-M8 ────────────────────────────────────────────
+// CSET (M3), patchBl (M5), ADR + patchAdr (M6), and the LDR/STR register-
+// offset LSL #3 forms (M8) all landed in earlier milestones without
+// byte-level tests. Backfilled here so the assembler's full surface is
+// covered.
+
+test "arm64 encoding: cset x0, eq" {
+    // CSINC X0, XZR, XZR, ne  (CSET inverts the low bit of the condition).
+    // 0x9A9F07E0 | (1 << 12) = 0x9A9F17E0
+    try assertEncoding(&.{ 0xE0, 0x17, 0x9F, 0x9A }, struct {
+        fn f(a: *codegen.arm64.Assembler) anyerror!void {
+            try a.cset(.x0, .eq);
+        }
+    }.f);
+}
+
+test "arm64 encoding: cset x0, ne" {
+    // CSINC X0, XZR, XZR, eq → 0x9A9F07E0
+    try assertEncoding(&.{ 0xE0, 0x07, 0x9F, 0x9A }, struct {
+        fn f(a: *codegen.arm64.Assembler) anyerror!void {
+            try a.cset(.x0, .ne);
+        }
+    }.f);
+}
+
+test "arm64 encoding: cset x0, gt" {
+    // CSINC X0, XZR, XZR, le → 0x9A9F07E0 | (0xD << 12) = 0x9A9FD7E0
+    try assertEncoding(&.{ 0xE0, 0xD7, 0x9F, 0x9A }, struct {
+        fn f(a: *codegen.arm64.Assembler) anyerror!void {
+            try a.cset(.x0, .gt);
+        }
+    }.f);
+}
+
+test "arm64 encoding: cset x0, lt" {
+    // CSINC X0, XZR, XZR, ge → 0x9A9F07E0 | (0xA << 12) = 0x9A9FA7E0
+    try assertEncoding(&.{ 0xE0, 0xA7, 0x9F, 0x9A }, struct {
+        fn f(a: *codegen.arm64.Assembler) anyerror!void {
+            try a.cset(.x0, .lt);
+        }
+    }.f);
+}
+
+test "arm64 encoding: adr x1, +0" {
+    // 0x10000001
+    try assertEncoding(&.{ 0x01, 0x00, 0x00, 0x10 }, struct {
+        fn f(a: *codegen.arm64.Assembler) anyerror!void {
+            try a.adr(.x1, 0);
+        }
+    }.f);
+}
+
+test "arm64 encoding: adr x1, +12" {
+    // imm21=12 → immlo=0, immhi=3 → 0x10000000 | (3<<5) | 1 = 0x10000061
+    try assertEncoding(&.{ 0x61, 0x00, 0x00, 0x10 }, struct {
+        fn f(a: *codegen.arm64.Assembler) anyerror!void {
+            try a.adr(.x1, 12);
+        }
+    }.f);
+}
+
+test "arm64 encoding: adr x1, -4" {
+    // imm21=-4 (21-bit two's complement = 0x1FFFFC) → immlo=0, immhi=0x7FFFF
+    // 0x10000000 | (0x7FFFF << 5) | 1 = 0x10FFFFE1
+    try assertEncoding(&.{ 0xE1, 0xFF, 0xFF, 0x10 }, struct {
+        fn f(a: *codegen.arm64.Assembler) anyerror!void {
+            try a.adr(.x1, -4);
+        }
+    }.f);
+}
+
+test "arm64 encoding: ldr x0, [sp, x1, LSL #3]" {
+    // 0xF8607800 | (1<<16) | (31<<5) | 0 = 0xF8617BE0
+    try assertEncoding(&.{ 0xE0, 0x7B, 0x61, 0xF8 }, struct {
+        fn f(a: *codegen.arm64.Assembler) anyerror!void {
+            try a.ldrRegRegLsl3(.x0, .sp, .x1);
+        }
+    }.f);
+}
+
+test "arm64 encoding: ldr x2, [x0, x1, LSL #3]" {
+    // 0xF8607800 | (1<<16) | (0<<5) | 2 = 0xF8617802
+    try assertEncoding(&.{ 0x02, 0x78, 0x61, 0xF8 }, struct {
+        fn f(a: *codegen.arm64.Assembler) anyerror!void {
+            try a.ldrRegRegLsl3(.x2, .x0, .x1);
+        }
+    }.f);
+}
+
+test "arm64 encoding: str x0, [sp, x1, LSL #3]" {
+    // 0xF8207800 | (1<<16) | (31<<5) | 0 = 0xF8217BE0
+    try assertEncoding(&.{ 0xE0, 0x7B, 0x21, 0xF8 }, struct {
+        fn f(a: *codegen.arm64.Assembler) anyerror!void {
+            try a.strRegRegLsl3(.x0, .sp, .x1);
+        }
+    }.f);
+}
+
+test "arm64 encoding: str x2, [x0, x1, LSL #3]" {
+    // 0xF8207800 | (1<<16) | (0<<5) | 2 = 0xF8217802
+    try assertEncoding(&.{ 0x02, 0x78, 0x21, 0xF8 }, struct {
+        fn f(a: *codegen.arm64.Assembler) anyerror!void {
+            try a.strRegRegLsl3(.x2, .x0, .x1);
+        }
+    }.f);
+}
+
+test "arm64 encoding: patchBl rewrites bl offset" {
+    // Emit `bl 0`, then patchBl to retarget. Read back the rewritten 4 bytes.
+    const allocator = testing.allocator;
+    var asm_ = codegen.arm64.Assembler.init(allocator);
+    defer asm_.deinit();
+
+    try asm_.bl(0); // emits 0x94000000 → bytes 00 00 00 94
+    // Patch position 0 → target 8: offset = 8 - 0 = 8, imm26 = 2
+    // 0x94000000 | 2 = 0x94000002 → bytes 02 00 00 94
+    try asm_.patchBl(0, 8);
+    try testing.expectEqualSlices(u8, &.{ 0x02, 0x00, 0x00, 0x94 }, asm_.code.items);
+}
+
+test "arm64 encoding: patchAdr rewrites adr offset" {
+    // Emit `adr x1, 0`, then patchAdr to retarget. Verify bytes update.
+    const allocator = testing.allocator;
+    var asm_ = codegen.arm64.Assembler.init(allocator);
+    defer asm_.deinit();
+
+    try asm_.adr(.x1, 0); // 0x10000001 → bytes 01 00 00 10
+    // Patch position 0 → target 8 for x1: offset = 8 - 0 = 8
+    // imm21=8 → immlo=0, immhi=2 → 0x10000000 | (2<<5) | 1 = 0x10000041
+    try asm_.patchAdr(0, .x1, 8);
+    try testing.expectEqualSlices(u8, &.{ 0x41, 0x00, 0x00, 0x10 }, asm_.code.items);
+}
+
 // ─── JIT smoke test (aarch64 host only) ─────────────────────────────────────
 // Emits a tiny `fn () -> i64 { return 42; }` function, marks it executable,
 // flushes the I-cache, and calls it. Confirms our encodings actually decode

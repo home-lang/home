@@ -4,6 +4,7 @@ const Io = std.Io;
 const ast = @import("ast");
 const arm64 = @import("arm64.zig");
 const macho = @import("macho.zig");
+const elf = @import("elf.zig");
 
 /// AArch64 native codegen — Path B-lite of issue #5.
 ///
@@ -210,8 +211,10 @@ pub const Aarch64NativeCodegen = struct {
                 try writer.writeWithEntryPoint(path, main_offset);
             },
             .linux => {
-                // M1.5 — arm64 ELF (EM_AARCH64 = 0xB7) not yet wired.
-                return error.UnsupportedPlatform;
+                var writer = elf.ElfWriter.initArm64(self.allocator, code, data);
+                writer.io = self.io;
+                writer.entry_point = 0x401000 + main_offset;
+                try writer.write(path);
             },
             else => return error.UnsupportedPlatform,
         }
