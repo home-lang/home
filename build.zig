@@ -238,6 +238,14 @@ pub fn build(b: *std.Build) void {
     ts_program_pkg.addImport("ts_driver", ts_driver_pkg);
     ts_program_pkg.addImport("ts_resolver", ts_resolver_pkg);
 
+    // TS-parity §5.A.1 — Salsa-style incremental wrapper around
+    // ts_program. Demonstrates per-file content-hash caching so
+    // repeated `query()` calls skip unchanged files.
+    const ts_query_pkg = createPackage(b, "packages/ts_query/src/ts_query.zig", target, optimize, zig_test_framework);
+    ts_query_pkg.addImport("ts_program", ts_program_pkg);
+    ts_query_pkg.addImport("ts_driver", ts_driver_pkg);
+    ts_query_pkg.addImport("ts_resolver", ts_resolver_pkg);
+
     // TS-parity Phase 4.5 — `home tsc` CLI.
     const ts_cli_pkg = createPackage(b, "packages/ts_cli/src/ts_cli.zig", target, optimize, zig_test_framework);
     ts_cli_pkg.addImport("ts_diagnostics", ts_diagnostics_pkg);
@@ -974,6 +982,10 @@ pub fn build(b: *std.Build) void {
     const ts_program_tests = b.addTest(.{ .root_module = ts_program_pkg });
     const run_ts_program_tests = b.addRunArtifact(ts_program_tests);
     test_step.dependOn(&run_ts_program_tests.step);
+
+    const ts_query_tests = b.addTest(.{ .root_module = ts_query_pkg });
+    const run_ts_query_tests = b.addRunArtifact(ts_query_tests);
+    test_step.dependOn(&run_ts_query_tests.step);
 
     const ts_cli_tests = b.addTest(.{ .root_module = ts_cli_pkg });
     const run_ts_cli_tests = b.addRunArtifact(ts_cli_tests);
