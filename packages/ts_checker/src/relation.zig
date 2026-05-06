@@ -486,6 +486,23 @@ pub const Engine = struct {
         return false;
     }
 
+    /// Positional type-parameter rewrite entry: `from` (a target
+    /// type-parameter id) is treated as `to` (the source's tp at the
+    /// matching position) for the remainder of a signature comparison.
+    const TpPair = struct { from: TypeId, to: TypeId };
+
+    /// Apply a tiny positional tp-map at the surface level. The map
+    /// is short (one entry per generic position) so a linear scan is
+    /// the right shape; a hash map would be overkill. Only the head
+    /// type id is rewritten — deep substitution lands when generic
+    /// instantiation does (Phase 6).
+    fn substituteTp(t: TypeId, map: []const TpPair) TypeId {
+        for (map) |pair| {
+            if (pair.from == t) return pair.to;
+        }
+        return t;
+    }
+
     /// Function-signature assignability:
     ///
     ///   source: (P1', P2') => R'
@@ -499,12 +516,41 @@ pub const Engine = struct {
     ///   * source return is assignable to target return (COVARIANT).
     ///
     /// `any` on either side flows in both directions per tsc.
+    ///
+    /// Generic identity: when both `source.params[i]` and
+    /// `target.params[i]` are type-parameter types, we treat them as
+    /// the *same* type-parameter for the rest of the comparison —
+    /// `<T>(x: T) => T` is structurally identical to `<U>(x: U) => U`.
+    /// This is a minimal positional unification: each target tp is
+    /// mapped to the source tp at the matching position, and that
+    /// substitution is honoured when comparing the return types.
     fn computeSignatureAssignable(self: *Engine, source: TypeId, target: TypeId) anyerror!bool {
         const sp = self.interner.signatureParams(source);
         const tp = self.interner.signatureParams(target);
         if (sp.len > tp.len) return false;
+
+        // Positional type-parameter map: target tp -> source tp at the
+        // same param position. Stack-bounded to keep the hot path
+        // allocation-free for typical signature arities.
+        var tp_map_buf: [16]TpPair = undefined;
+        var tp_map_len: usize = 0;
+
         for (sp, 0..) |s_param, i| {
             const t_param = tp[i];
+            const sf = self.pool().flagsOf(s_param);
+            const tf = self.pool().flagsOf(t_param);
+            // Both sides are type-parameters at the same position —
+            // unify them as the same tp for the rest of the
+            // comparison and skip the assignability check (the
+            // caller can pass anything for `T`/`U`, so the param-type
+            // constraint is the type-parameter itself).
+            if (sf.is_type_parameter and tf.is_type_parameter) {
+                if (tp_map_len < tp_map_buf.len) {
+                    tp_map_buf[tp_map_len] = .{ .from = t_param, .to = s_param };
+                    tp_map_len += 1;
+                }
+                continue;
+            }
             // Strict mode: target's param must be assignable to
             // source's (contravariant). Non-strict: bivariant —
             // accept either direction.
@@ -517,7 +563,11 @@ pub const Engine = struct {
             }
         }
         const s_ret = self.interner.signatureReturn(source) orelse return true;
-        const t_ret = self.interner.signatureReturn(target) orelse return true;
+        const t_ret_raw = self.interner.signatureReturn(target) orelse return true;
+        // Substitute target type-parameters with their source
+        // counterparts so `<T>(x: T) => T` matches `<U>(x: U) => U`
+        // even though `T` and `U` intern to distinct ids.
+        const t_ret = substituteTp(t_ret_raw, tp_map_buf[0..tp_map_len]);
         return self.isAssignableTo(s_ret, t_ret);
     }
 
@@ -883,6 +933,29 @@ test "TwoLevelCache: L2 hit backfills L1" {
     c.l2.ring_head = 0;
     c.l2.ring_len = 0;
     try T.expectEqual(Result.yes, c.lookup(.subtype, 7, 9));
+}
+
+test "Engine: generic identity — <T>(x: T) => T assigns to <U>(x: U) => U" {
+    var ti = try Interner.init(T.allocator);
+    defer ti.deinit();
+    var e = try Engine.init(T.allocator, &ti);
+    defer e.deinit();
+    var sint = try string_interner.Interner.init(T.allocator);
+    defer sint.deinit();
+
+    const t_name = try sint.intern("T");
+    const u_name = try sint.intern("U");
+    const t_tp = try ti.internTypeParameter(t_name, Primitive.unknown, Primitive.none);
+    const u_tp = try ti.internTypeParameter(u_name, Primitive.unknown, Primitive.none);
+    // `T` and `U` intern to distinct ids (different StringId names).
+    try T.expect(t_tp != u_tp);
+
+    // Source: `<U>(x: U) => U` ; Target: `<T>(x: T) => T`.
+    const src = try ti.internSignature(&.{u_tp}, u_tp, false);
+    const tgt = try ti.internSignature(&.{t_tp}, t_tp, false);
+    try T.expect(try e.isAssignableTo(src, tgt));
+    // Symmetric: also assignable in the opposite direction.
+    try T.expect(try e.isAssignableTo(tgt, src));
 }
 
 test "TwoLevelCache: pending markers are not promoted to L2" {
