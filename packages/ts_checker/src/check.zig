@@ -3308,18 +3308,33 @@ pub const Checker = struct {
     fn isBuiltinName(self: *const Checker, name: hir_mod.StringId) bool {
         const s = self.string_interner.get(name);
         const builtins = [_][]const u8{
-            "console",   "undefined",  "NaN",       "Infinity",
-            "globalThis", "this",      "process",   "Math",
-            "JSON",      "Object",     "Array",     "String",
-            "Number",    "Boolean",    "Symbol",    "BigInt",
-            "Error",     "TypeError",  "RangeError", "SyntaxError",
-            "Promise",   "Map",        "Set",       "WeakMap",
-            "WeakSet",   "Date",       "RegExp",    "Function",
-            "parseInt",  "parseFloat", "isNaN",     "isFinite",
-            "encodeURI", "decodeURI",  "encodeURIComponent",
-            "decodeURIComponent",
-            "arguments", "require",    "module",    "exports",
-            "__dirname", "__filename",
+            // Core globals / values.
+            "console",     "undefined",          "NaN",
+            "Infinity",    "globalThis",         "this",
+            "window",      "document",
+            // Constructors / namespaces.
+            "Math",        "JSON",               "Object",
+            "Array",       "String",             "Number",
+            "Boolean",     "Symbol",             "BigInt",
+            "Error",       "TypeError",          "RangeError",
+            "SyntaxError", "Promise",            "Map",
+            "Set",         "WeakMap",            "WeakSet",
+            "Date",        "RegExp",             "Function",
+            "Proxy",       "Reflect",
+            // Global functions.
+            "parseInt",    "parseFloat",         "isNaN",
+            "isFinite",    "encodeURI",          "decodeURI",
+            "encodeURIComponent",                "decodeURIComponent",
+            // Timers / scheduling.
+            "setTimeout",  "clearTimeout",       "setInterval",
+            "clearInterval",                     "setImmediate",
+            "clearImmediate",                    "queueMicrotask",
+            // Node.js / CommonJS.
+            "process",     "Buffer",             "require",
+            "module",      "exports",            "__dirname",
+            "__filename",
+            // Function-scoped magic.
+            "arguments",
             // Dynamic `import("…")` parses the keyword as an
             // identifier callee — exempt it from TS2304.
             "import",
@@ -4021,6 +4036,24 @@ test "checker: unresolved identifier emits TS2304" {
         if (d.code == TsCodes.cannot_find_name) found = true;
     }
     try T.expect(found);
+}
+
+test "checker: console.log does not emit TS2304" {
+    const b = try newBoundSetup("console.log(\"hi\");");
+    defer destroyBoundSetup(b);
+    try b.base.checker.checkSourceFile(b.base.root);
+    for (b.base.checker.diagnostics.items) |d| {
+        try T.expect(d.code != TsCodes.cannot_find_name);
+    }
+}
+
+test "checker: Math.PI does not emit TS2304" {
+    const b = try newBoundSetup("Math.PI;");
+    defer destroyBoundSetup(b);
+    try b.base.checker.checkSourceFile(b.base.root);
+    for (b.base.checker.diagnostics.items) |d| {
+        try T.expect(d.code != TsCodes.cannot_find_name);
+    }
 }
 
 test "checker: assigning to const emits TS2588" {
