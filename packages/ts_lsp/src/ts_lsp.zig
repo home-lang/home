@@ -1366,6 +1366,22 @@ pub const Service = struct {
         return ranges.toOwnedSlice(gpa);
     }
 
+    /// LSP `textDocument/prepareCallHierarchy`: return the
+    /// `CallHierarchyItem` describing the function under the cursor,
+    /// or `null` if the cursor is not inside a named function.
+    pub fn callHierarchyPrepare(
+        self: *Service,
+        file_path: []const u8,
+        byte_pos: u32,
+    ) ?CallHierarchyItem {
+        const file_id = self.program.lookupPath(file_path) orelse return null;
+        const f = self.program.fileById(file_id);
+        const c = f.compilation orelse return null;
+        const start = findInnermostNode(&c.hir, c.root, byte_pos) orelse return null;
+        const target_fn = enclosingFnDecl(&c.hir, start) orelse return null;
+        return describeFnDeclItem(&c.hir, &c.interner, target_fn, f.source, f.path);
+    }
+
     /// LSP `callHierarchy/incomingCalls`: return one item per
     /// function in the program that calls the function under the
     /// cursor. The cursor must land inside (or on the name of) a

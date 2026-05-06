@@ -57,7 +57,11 @@ pub const Method = enum {
     text_document_did_close,
     text_document_hover,
     text_document_definition,
+    text_document_type_definition,
     text_document_references,
+    text_document_prepare_call_hierarchy,
+    call_hierarchy_incoming_calls,
+    call_hierarchy_outgoing_calls,
     text_document_completion,
     text_document_signature_help,
     text_document_publish_diagnostics,
@@ -87,7 +91,11 @@ pub const Method = enum {
             .{ "textDocument/didClose", Method.text_document_did_close },
             .{ "textDocument/hover", Method.text_document_hover },
             .{ "textDocument/definition", Method.text_document_definition },
+            .{ "textDocument/typeDefinition", Method.text_document_type_definition },
             .{ "textDocument/references", Method.text_document_references },
+            .{ "textDocument/prepareCallHierarchy", Method.text_document_prepare_call_hierarchy },
+            .{ "callHierarchy/incomingCalls", Method.call_hierarchy_incoming_calls },
+            .{ "callHierarchy/outgoingCalls", Method.call_hierarchy_outgoing_calls },
             .{ "textDocument/completion", Method.text_document_completion },
             .{ "textDocument/signatureHelp", Method.text_document_signature_help },
             .{ "textDocument/publishDiagnostics", Method.text_document_publish_diagnostics },
@@ -596,6 +604,192 @@ pub fn handleDefinition(
         return encodeResponse(gpa, request_id, buf.items);
     }
     return encodeResponse(gpa, request_id, "null");
+}
+
+/// Handle a `textDocument/typeDefinition` JSON-RPC request. Same
+/// shape as `handleDefinition` but routes to
+/// `service.typeDefinition` so the cursor on `let x: Foo = ...`
+/// jumps to the `Foo` declaration rather than the `let_decl`.
+/// Caller owns the returned slice.
+pub fn handleTypeDefinition(
+    service: *ts_lsp.Service,
+    gpa: std.mem.Allocator,
+    request_id: RequestId,
+    params_json: []const u8,
+) ![]u8 {
+    const uri = findJsonStringField(params_json, "uri") orelse return error.MissingUri;
+    const line = findJsonIntField(params_json, "line") orelse return error.MissingLine;
+    const character = findJsonIntField(params_json, "character") orelse return error.MissingCharacter;
+    const path = uriToPath(uri);
+
+    const file_id = service.program.lookupPath(path) orelse {
+        return encodeResponse(gpa, request_id, "null");
+    };
+    const f = service.program.fileById(file_id);
+    const line_u: u32 = if (line < 0) 0 else @intCast(line);
+    const char_u: u32 = if (character < 0) 0 else @intCast(character);
+    const byte_pos = lineColToByte(f.source, line_u, char_u);
+
+    if (service.typeDefinition(path, byte_pos)) |def| {
+        var buf: std.ArrayListUnmanaged(u8) = .empty;
+        defer buf.deinit(gpa);
+        try buf.appendSlice(gpa, "{\"uri\":\"file://");
+        try writeJsonStringContents(&buf, gpa, def.file);
+        try buf.appendSlice(gpa, "\",\"range\":");
+        try writeRange(&buf, gpa, def.span);
+        try buf.append(gpa, '}');
+        return encodeResponse(gpa, request_id, buf.items);
+    }
+    return encodeResponse(gpa, request_id, "null");
+}
+
+/// Render a single `ts_lsp.CallHierarchyItem` as an LSP
+/// `CallHierarchyItem` JSON object. We use the declaration span for
+/// both `range` and `selectionRange`.
+fn writeCallHierarchyItem(
+    buf: *std.ArrayListUnmanaged(u8),
+    gpa: std.mem.Allocator,
+    item: ts_lsp.CallHierarchyItem,
+) !void {
+    try buf.appendSlice(gpa, "{\"name\":\"");
+    try writeJsonStringContents(buf, gpa, item.name);
+    try buf.appendSlice(gpa, "\",\"kind\":");
+    var nbuf: [4]u8 = undefined;
+    try buf.appendSlice(gpa, try std.fmt.bufPrint(&nbuf, "{d}", .{lspSymbolKind(item.kind)}));
+    try buf.appendSlice(gpa, ",\"uri\":\"file://");
+    try writeJsonStringContents(buf, gpa, item.span.file);
+    try buf.appendSlice(gpa, "\",\"range\":");
+    try writeRange(buf, gpa, item.span);
+    try buf.appendSlice(gpa, ",\"selectionRange\":");
+    try writeRange(buf, gpa, item.span);
+    try buf.append(gpa, '}');
+}
+
+/// Render a `[]ts_lsp.CallHierarchyItem` either as a top-level JSON
+/// array (for `prepareCallHierarchy`) or wrapped under `from` /
+/// `to` per the spec's incoming/outgoing call shape. `wrap_key` is
+/// `null` for the prepare array, `"from"` for incoming, `"to"` for
+/// outgoing. Caller owns the returned slice.
+fn renderCallHierarchyResult(
+    gpa: std.mem.Allocator,
+    items: []const ts_lsp.CallHierarchyItem,
+    wrap_key: ?[]const u8,
+) ![]u8 {
+    var buf: std.ArrayListUnmanaged(u8) = .empty;
+    errdefer buf.deinit(gpa);
+    try buf.append(gpa, '[');
+    for (items, 0..) |it, i| {
+        if (i > 0) try buf.append(gpa, ',');
+        if (wrap_key) |key| {
+            try buf.append(gpa, '{');
+            try buf.append(gpa, '"');
+            try buf.appendSlice(gpa, key);
+            try buf.appendSlice(gpa, "\":");
+            try writeCallHierarchyItem(&buf, gpa, it);
+            const ranges_key = if (std.mem.eql(u8, key, "from")) "fromRanges" else "toRanges";
+            try buf.appendSlice(gpa, ",\"");
+            try buf.appendSlice(gpa, ranges_key);
+            try buf.appendSlice(gpa, "\":[]}");
+        } else {
+            try writeCallHierarchyItem(&buf, gpa, it);
+        }
+    }
+    try buf.append(gpa, ']');
+    return buf.toOwnedSlice(gpa);
+}
+
+/// Handle a `textDocument/prepareCallHierarchy` JSON-RPC request:
+/// emit a single-element `CallHierarchyItem[]` describing the
+/// function under the cursor, or `null` if the cursor isn't inside
+/// a named fn. Caller owns the returned slice.
+pub fn handleCallHierarchyPrepare(
+    service: *ts_lsp.Service,
+    gpa: std.mem.Allocator,
+    request_id: RequestId,
+    params_json: []const u8,
+) ![]u8 {
+    const uri = findJsonStringField(params_json, "uri") orelse return error.MissingUri;
+    const line = findJsonIntField(params_json, "line") orelse return error.MissingLine;
+    const character = findJsonIntField(params_json, "character") orelse return error.MissingCharacter;
+    const path = uriToPath(uri);
+
+    const file_id = service.program.lookupPath(path) orelse {
+        return encodeResponse(gpa, request_id, "null");
+    };
+    const f = service.program.fileById(file_id);
+    const line_u: u32 = if (line < 0) 0 else @intCast(line);
+    const char_u: u32 = if (character < 0) 0 else @intCast(character);
+    const byte_pos = lineColToByte(f.source, line_u, char_u);
+
+    const item = service.callHierarchyPrepare(path, byte_pos) orelse {
+        return encodeResponse(gpa, request_id, "null");
+    };
+    const items = [_]ts_lsp.CallHierarchyItem{item};
+    const rendered = try renderCallHierarchyResult(gpa, &items, null);
+    defer gpa.free(rendered);
+    return encodeResponse(gpa, request_id, rendered);
+}
+
+/// Handle a `callHierarchy/incomingCalls` JSON-RPC request. The
+/// editor's prior `prepareCallHierarchy` round produced a
+/// `CallHierarchyItem` whose URI + `range.start` we pull out here
+/// to seed the cursor, then forward to
+/// `Service.callHierarchyIncoming`. Result is a
+/// `CallHierarchyIncomingCall[]`. Caller owns the returned slice.
+pub fn handleCallHierarchyIncomingCalls(
+    service: *ts_lsp.Service,
+    gpa: std.mem.Allocator,
+    request_id: RequestId,
+    params_json: []const u8,
+) ![]u8 {
+    const uri = findJsonStringField(params_json, "uri") orelse return error.MissingUri;
+    const line = findJsonIntField(params_json, "line") orelse return error.MissingLine;
+    const character = findJsonIntField(params_json, "character") orelse return error.MissingCharacter;
+    const path = uriToPath(uri);
+
+    const file_id = service.program.lookupPath(path) orelse {
+        return encodeResponse(gpa, request_id, "[]");
+    };
+    const f = service.program.fileById(file_id);
+    const line_u: u32 = if (line < 0) 0 else @intCast(line);
+    const char_u: u32 = if (character < 0) 0 else @intCast(character);
+    const byte_pos = lineColToByte(f.source, line_u, char_u);
+
+    const items = try service.callHierarchyIncoming(gpa, path, byte_pos);
+    defer gpa.free(items);
+    const rendered = try renderCallHierarchyResult(gpa, items, "from");
+    defer gpa.free(rendered);
+    return encodeResponse(gpa, request_id, rendered);
+}
+
+/// Handle a `callHierarchy/outgoingCalls` JSON-RPC request. Mirrors
+/// `handleCallHierarchyIncomingCalls` but routes to
+/// `Service.callHierarchyOutgoing` and wraps each item under `to`.
+/// Caller owns the returned slice.
+pub fn handleCallHierarchyOutgoingCalls(
+    service: *ts_lsp.Service,
+    gpa: std.mem.Allocator,
+    request_id: RequestId,
+    params_json: []const u8,
+) ![]u8 {
+    const uri = findJsonStringField(params_json, "uri") orelse return error.MissingUri;
+    const line = findJsonIntField(params_json, "line") orelse return error.MissingLine;
+    const character = findJsonIntField(params_json, "character") orelse return error.MissingCharacter;
+    const path = uriToPath(uri);
+
+    const file_id = service.program.lookupPath(path) orelse {
+        return encodeResponse(gpa, request_id, "[]");
+    };
+    const f = service.program.fileById(file_id);
+    const line_u: u32 = if (line < 0) 0 else @intCast(line);
+    const char_u: u32 = if (character < 0) 0 else @intCast(character);
+    const byte_pos = lineColToByte(f.source, line_u, char_u);
+
+    const items = try service.callHierarchyOutgoing(gpa, path, byte_pos);
+    defer gpa.free(items);
+    const rendered = try renderCallHierarchyResult(gpa, items, "to");
+    defer gpa.free(rendered);
+    return encodeResponse(gpa, request_id, rendered);
 }
 
 /// Handle a `textDocument/references` JSON-RPC request: extract the
@@ -1676,9 +1870,25 @@ pub fn dispatchRequest(
             if (is_notification) return &.{};
             return try handleDefinition(service, gpa, id, params);
         },
+        .text_document_type_definition => {
+            if (is_notification) return &.{};
+            return try handleTypeDefinition(service, gpa, id, params);
+        },
         .text_document_references => {
             if (is_notification) return &.{};
             return try handleReferences(service, gpa, id, params);
+        },
+        .text_document_prepare_call_hierarchy => {
+            if (is_notification) return &.{};
+            return try handleCallHierarchyPrepare(service, gpa, id, params);
+        },
+        .call_hierarchy_incoming_calls => {
+            if (is_notification) return &.{};
+            return try handleCallHierarchyIncomingCalls(service, gpa, id, params);
+        },
+        .call_hierarchy_outgoing_calls => {
+            if (is_notification) return &.{};
+            return try handleCallHierarchyOutgoingCalls(service, gpa, id, params);
         },
         .text_document_completion => {
             if (is_notification) return &.{};
@@ -2615,4 +2825,119 @@ test "handleCodeLens: returns CodeLens array with range+command title" {
     try T.expect(std.mem.indexOf(u8, out, "\"range\":") != null);
     try T.expect(std.mem.indexOf(u8, out, "\"command\":{\"title\":\"") != null);
     try T.expect(std.mem.indexOf(u8, out, "2 references") != null);
+}
+
+test "handleTypeDefinition: routes request and returns Location response" {
+    var vfs = ts_resolver.VirtualFs.init(T.allocator);
+    defer vfs.deinit();
+    var resolver = ts_resolver.Resolver.init(T.allocator, vfs.fs(), .{});
+    defer resolver.deinit();
+    var program = ts_program.Program.init(T.allocator, &resolver);
+    defer program.deinit();
+
+    // `let x: Foo = ...` — typeDefinition on `x` resolves to the
+    // `interface Foo` declaration on line 0.
+    const src =
+        \\interface Foo { a: number }
+        \\let x: Foo = { a: 1 };
+    ;
+    _ = try program.add("/main.ts", src);
+    try program.compileAll(.{});
+    var svc = ts_lsp.Service.init(T.allocator, &program);
+
+    const body =
+        \\{"jsonrpc":"2.0","id":211,"method":"textDocument/typeDefinition","params":{"textDocument":{"uri":"file:///main.ts"},"position":{"line":1,"character":4}}}
+    ;
+    const out = try handleTypeDefinition(&svc, T.allocator, .{ .integer = 211 }, body);
+    defer T.allocator.free(out);
+    try T.expect(std.mem.indexOf(u8, out, "\"id\":211") != null);
+    try T.expect(std.mem.indexOf(u8, out, "\"result\":{\"uri\":\"file:///main.ts\"") != null);
+    try T.expect(std.mem.indexOf(u8, out, "\"range\":") != null);
+
+    const empty =
+        \\{"jsonrpc":"2.0","id":212,"method":"textDocument/typeDefinition","params":{"textDocument":{"uri":"file:///main.ts"},"position":{"line":99,"character":0}}}
+    ;
+    const out2 = try handleTypeDefinition(&svc, T.allocator, .{ .integer = 212 }, empty);
+    defer T.allocator.free(out2);
+    try T.expect(std.mem.indexOf(u8, out2, "\"result\":null") != null);
+}
+
+test "handleCallHierarchyPrepare: returns single-item array for fn under cursor" {
+    var vfs = ts_resolver.VirtualFs.init(T.allocator);
+    defer vfs.deinit();
+    var resolver = ts_resolver.Resolver.init(T.allocator, vfs.fs(), .{});
+    defer resolver.deinit();
+    var program = ts_program.Program.init(T.allocator, &resolver);
+    defer program.deinit();
+
+    _ = try program.add("/main.ts", "function target() { return 1; }\n");
+    try program.compileAll(.{});
+    var svc = ts_lsp.Service.init(T.allocator, &program);
+
+    const body =
+        \\{"jsonrpc":"2.0","id":221,"method":"textDocument/prepareCallHierarchy","params":{"textDocument":{"uri":"file:///main.ts"},"position":{"line":0,"character":9}}}
+    ;
+    const out = try handleCallHierarchyPrepare(&svc, T.allocator, .{ .integer = 221 }, body);
+    defer T.allocator.free(out);
+    try T.expect(std.mem.indexOf(u8, out, "\"id\":221") != null);
+    try T.expect(std.mem.indexOf(u8, out, "\"result\":[{\"name\":\"target\"") != null);
+    try T.expect(std.mem.indexOf(u8, out, "\"kind\":12") != null); // SymbolKind.function
+    try T.expect(std.mem.indexOf(u8, out, "\"selectionRange\":") != null);
+
+    const empty =
+        \\{"jsonrpc":"2.0","id":222,"method":"textDocument/prepareCallHierarchy","params":{"textDocument":{"uri":"file:///main.ts"},"position":{"line":99,"character":0}}}
+    ;
+    const out2 = try handleCallHierarchyPrepare(&svc, T.allocator, .{ .integer = 222 }, empty);
+    defer T.allocator.free(out2);
+    try T.expect(std.mem.indexOf(u8, out2, "\"result\":null") != null);
+}
+
+test "handleCallHierarchyIncomingCalls: returns wrapped from-items" {
+    var vfs = ts_resolver.VirtualFs.init(T.allocator);
+    defer vfs.deinit();
+    var resolver = ts_resolver.Resolver.init(T.allocator, vfs.fs(), .{});
+    defer resolver.deinit();
+    var program = ts_program.Program.init(T.allocator, &resolver);
+    defer program.deinit();
+
+    const src =
+        "function target() { return 1; }\n" ++
+        "function caller_a() { return target(); }\n";
+    _ = try program.add("/main.ts", src);
+    try program.compileAll(.{});
+    var svc = ts_lsp.Service.init(T.allocator, &program);
+
+    const body =
+        \\{"jsonrpc":"2.0","id":231,"method":"callHierarchy/incomingCalls","params":{"item":{"name":"target","kind":12,"uri":"file:///main.ts","range":{"start":{"line":0,"character":9},"end":{"line":0,"character":15}},"selectionRange":{"start":{"line":0,"character":9},"end":{"line":0,"character":15}}}}}
+    ;
+    const out = try handleCallHierarchyIncomingCalls(&svc, T.allocator, .{ .integer = 231 }, body);
+    defer T.allocator.free(out);
+    try T.expect(std.mem.indexOf(u8, out, "\"id\":231") != null);
+    try T.expect(std.mem.indexOf(u8, out, "\"from\":{\"name\":\"caller_a\"") != null);
+    try T.expect(std.mem.indexOf(u8, out, "\"fromRanges\":[]") != null);
+}
+
+test "handleCallHierarchyOutgoingCalls: returns wrapped to-items" {
+    var vfs = ts_resolver.VirtualFs.init(T.allocator);
+    defer vfs.deinit();
+    var resolver = ts_resolver.Resolver.init(T.allocator, vfs.fs(), .{});
+    defer resolver.deinit();
+    var program = ts_program.Program.init(T.allocator, &resolver);
+    defer program.deinit();
+
+    const src =
+        "function helper_a() { return 1; }\n" ++
+        "function caller() { return helper_a(); }\n";
+    _ = try program.add("/main.ts", src);
+    try program.compileAll(.{});
+    var svc = ts_lsp.Service.init(T.allocator, &program);
+
+    const body =
+        \\{"jsonrpc":"2.0","id":241,"method":"callHierarchy/outgoingCalls","params":{"item":{"name":"caller","kind":12,"uri":"file:///main.ts","range":{"start":{"line":1,"character":9},"end":{"line":1,"character":15}},"selectionRange":{"start":{"line":1,"character":9},"end":{"line":1,"character":15}}}}}
+    ;
+    const out = try handleCallHierarchyOutgoingCalls(&svc, T.allocator, .{ .integer = 241 }, body);
+    defer T.allocator.free(out);
+    try T.expect(std.mem.indexOf(u8, out, "\"id\":241") != null);
+    try T.expect(std.mem.indexOf(u8, out, "\"to\":{\"name\":\"helper_a\"") != null);
+    try T.expect(std.mem.indexOf(u8, out, "\"toRanges\":[]") != null);
 }
