@@ -1,0 +1,3 @@
+Checking: <repo>/tests/diagnostics/cases/types/39_uninit_flow_deref_write.home
+
+Success: Type checking passed ✓

@@ -1,0 +1,13 @@
+// Issue #38 (case 3): writes through the dereferenced form of a
+// let-bound pointer alias (`*p = expr`) clear the underlying
+// local's may-uninit bit. `rootIdentName` already walks through
+// `Deref` so the assignment-target machinery sees `p`, and
+// `aliasedRootIdent` follows one alias edge to the local `p`
+// points at. This snapshot pins the positive (no diagnostics)
+// behaviour.
+fn caller() {
+    var local: u32
+    let p = &local
+    *p = 42
+    let val: u32 = local
+}

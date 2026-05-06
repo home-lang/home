@@ -1,0 +1,17 @@
+// Issue #38 (case 1): the may-uninit dataflow now follows
+// pointer-aliases produced by `let p = &local`. Once the alias is
+// recorded, any operation that would initialise the local through
+// the alias — passing it to a callee, writing through the deref,
+// or assigning to a sub-component — clears the local's
+// may-uninit bit. Without this the compiler reported
+// "use of possibly uninitialized variable" at the read after
+// `fill(alias)`. This snapshot pins the positive (no diagnostics)
+// behaviour.
+fn fill(buf: *[16]u8) {}
+
+fn caller() {
+    var local: [16]u8
+    let alias = &local
+    fill(alias)
+    let first: u8 = local[0]
+}

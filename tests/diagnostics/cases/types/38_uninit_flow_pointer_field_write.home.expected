@@ -1,0 +1,3 @@
+Checking: <repo>/tests/diagnostics/cases/types/38_uninit_flow_pointer_field_write.home
+
+Success: Type checking passed ✓

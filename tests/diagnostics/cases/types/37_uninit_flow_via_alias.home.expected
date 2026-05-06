@@ -1,0 +1,3 @@
+Checking: <repo>/tests/diagnostics/cases/types/37_uninit_flow_via_alias.home
+
+Success: Type checking passed ✓

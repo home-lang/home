@@ -868,6 +868,14 @@ pub const TypeChecker = struct {
     /// received a value. Reads of these names trigger a "used before
     /// initialization" warning. A later assignment removes the name.
     uninitialized_vars: std.StringHashMap(ast.SourceLocation),
+    /// Pointer-alias map: when `let p = &local` (or any wrapper around
+    /// `&local` such as a cast or builtin), `p` aliases `local`. Any
+    /// initialisation flowing through `p` (`*p = …`, `p.field = …`, or
+    /// `&p` being handed to another callee) is treated as an
+    /// initialisation of `local` for may-uninit dataflow. Conservative:
+    /// only aliases produced by clear AddressOf-of-local expressions
+    /// are recorded; ambiguous let-bindings are not aliased.
+    pointer_aliases: std.StringHashMap([]const u8),
 
     pub const TypeErrorInfo = struct {
         message: []const u8,
@@ -894,6 +902,7 @@ pub const TypeChecker = struct {
             .source_path = null,
             .loaded_modules = std.StringHashMap(bool).init(allocator),
             .uninitialized_vars = std.StringHashMap(ast.SourceLocation).init(allocator),
+            .pointer_aliases = std.StringHashMap([]const u8).init(allocator),
         };
     }
 
@@ -939,6 +948,7 @@ pub const TypeChecker = struct {
         self.error_handler.deinit();
         self.loaded_modules.deinit();
         self.uninitialized_vars.deinit();
+        self.pointer_aliases.deinit();
     }
 
     pub fn check(self: *TypeChecker) !bool {
@@ -1414,6 +1424,24 @@ pub const TypeChecker = struct {
                     if (value.* == .Identifier) {
                         const id_name = value.Identifier.name;
                         try self.ownership_tracker.markMoved(id_name);
+                    }
+
+                    // Record pointer-aliasing: `let p = &local` (or any
+                    // wrapper such as `&local as *u8`,
+                    // `@ptrFromInt(&local)`) makes `p` an alias of
+                    // `local` for may-uninit dataflow. Subsequent
+                    // initialisations through `p` (`*p = …`, `p.f =
+                    // …`, `&p` handed to a callee) clear `local`'s
+                    // may-uninit bit. Conservative: we only record the
+                    // alias when the rhs is a clear AddressOf-of-local.
+                    // `let q = p` propagates an existing alias so chains
+                    // (`let q = p` after `let p = &local`) still work.
+                    if (addressOfTarget(value)) |target_local| {
+                        try self.pointer_aliases.put(decl.name, target_local);
+                    } else if (value.* == .Identifier) {
+                        if (self.pointer_aliases.get(value.Identifier.name)) |chained| {
+                            try self.pointer_aliases.put(decl.name, chained);
+                        }
                     }
 
                     try self.env.define(decl.name, value_type);
@@ -2433,7 +2461,7 @@ pub const TypeChecker = struct {
             // we evaluate the operand, so the operand itself doesn't
             // trigger the "use of possibly uninitialized variable"
             // warning and downstream reads are accepted.
-            if (rootIdentName(unary.operand)) |root| {
+            if (self.aliasedRootIdent(unary.operand)) |root| {
                 _ = self.uninitialized_vars.remove(root);
             }
             const operand_hint: ?Type = if (hint) |h|
@@ -2550,14 +2578,75 @@ pub const TypeChecker = struct {
                 // Clear the may-uninit bit for the root local: this covers
                 // direct `x = …`, sub-component writes like `x.f = …` and
                 // `x[i] = …`, and writes through a pointer alias such as
-                // `*x = …`. Conservative: any l-value that bottoms out at
-                // a local treats the whole local as potentially initialised
-                // from this point on, which matches what the runtime would
-                // observe.
-                if (rootIdentName(assign.target)) |root| {
+                // `*x = …` or `x.f = …` where `x` is itself a `let p =
+                // &local` alias of a local. `aliasedRootIdent` follows
+                // one alias edge so a write through the alias clears the
+                // underlying local's may-uninit bit.
+                if (self.aliasedRootIdent(assign.target)) |root| {
                     _ = self.uninitialized_vars.remove(root);
                 }
                 break :blk val_type;
+            },
+            // Type-rewrap expressions are pass-throughs for dataflow:
+            // recurse into the inner expression so any `&local` hidden
+            // inside `&local as *u8` or `@ptrFromInt(&local)` still
+            // triggers the may-uninit init-tracking. Without this, the
+            // outer expression returned `Void` without ever visiting
+            // the operand, masking initialisation through casts.
+            .TypeCastExpr => |cast| blk: {
+                // `&local as *u8` is a write-through-pointer pattern:
+                // clear the may-uninit bit on the underlying local
+                // before evaluating the operand, so the identifier
+                // read inside doesn't surface a spurious warning.
+                if (addressOfTarget(cast.value)) |target_local| {
+                    _ = self.uninitialized_vars.remove(target_local);
+                } else if (cast.value.* == .Identifier) {
+                    const arg_name = cast.value.Identifier.name;
+                    if (self.pointer_aliases.get(arg_name)) |target_local| {
+                        _ = self.uninitialized_vars.remove(target_local);
+                    }
+                }
+                _ = try self.inferExpression(cast.value);
+                break :blk Type.Void;
+            },
+            .ReflectExpr => |refl| blk: {
+                // Pointer-flavoured reflection builtins
+                // (`@ptrFromInt`, `@ptrCast`, `@bitCast`, `@as`,
+                // `@intFromPtr`) hand a writable pointer to whatever
+                // consumes their target. Clear the may-uninit bit on
+                // the pointed-at local BEFORE evaluating the operand,
+                // so the identifier read inside the operand doesn't
+                // surface a spurious warning. Same rule applies to
+                // `@memset` / `@memcpy` whose first argument is the
+                // destination pointer.
+                const is_pointer_builtin = switch (refl.kind) {
+                    .PtrFromInt, .PtrCast, .BitCast, .As, .IntFromPtr,
+                    .PtrToInt, .MemSet, .MemCpy,
+                    => true,
+                    else => false,
+                };
+                if (is_pointer_builtin) {
+                    if (addressOfTarget(refl.target)) |target_local| {
+                        _ = self.uninitialized_vars.remove(target_local);
+                    } else if (refl.target.* == .Identifier) {
+                        const arg_name = refl.target.Identifier.name;
+                        if (self.pointer_aliases.get(arg_name)) |target_local| {
+                            _ = self.uninitialized_vars.remove(target_local);
+                        } else if (self.env.get(arg_name)) |arg_local_type| {
+                            const decays = arg_local_type == .Array or
+                                arg_local_type == .Struct or
+                                arg_local_type == .Reference or
+                                arg_local_type == .MutableReference;
+                            if (decays) {
+                                _ = self.uninitialized_vars.remove(arg_name);
+                            }
+                        }
+                    }
+                }
+                _ = try self.inferExpression(refl.target);
+                if (refl.second_arg) |a| _ = try self.inferExpression(a);
+                if (refl.third_arg) |a| _ = try self.inferExpression(a);
+                break :blk Type.Void;
             },
             // Expression types whose inference is known but was previously
             // falling through to Void.
@@ -2674,8 +2763,40 @@ pub const TypeChecker = struct {
         if (call.callee.* == .Identifier) {
             const func_name = call.callee.Identifier.name;
             const func_type = self.env.get(func_name) orelse {
-                // Function might be from an imported module, return unknown type
-                // to allow type checking to continue
+                // Function may be from an imported module — we don't
+                // know its parameter types, so we walk arguments for
+                // init-tracking side effects in the obvious cases:
+                //   - `&local` (or wrapped in casts/`@ptrFromInt`)
+                //   - a let-bound alias of a local
+                // Without this, an imported `fill(&buf)` would never
+                // visit `&buf` and the may-uninit bit would persist.
+                // We clear the bit BEFORE evaluating the arg so the
+                // identifier read inside the arg doesn't surface a
+                // spurious warning. Bare-integer arguments are NOT
+                // cleared here — only pointer-shaped expressions —
+                // so a `var x: u32` passed by value still warns.
+                for (call.args) |arg| {
+                    if (addressOfTarget(arg)) |target_local| {
+                        _ = self.uninitialized_vars.remove(target_local);
+                    } else if (arg.* == .Identifier) {
+                        const arg_name = arg.Identifier.name;
+                        if (self.pointer_aliases.get(arg_name)) |target_local| {
+                            _ = self.uninitialized_vars.remove(target_local);
+                        } else if (self.env.get(arg_name)) |arg_local_type| {
+                            // Bare array/struct local decays to a
+                            // pointer at the call boundary; treat as
+                            // a potential init through the callee.
+                            const decays = arg_local_type == .Array or
+                                arg_local_type == .Struct or
+                                arg_local_type == .Reference or
+                                arg_local_type == .MutableReference;
+                            if (decays) {
+                                _ = self.uninitialized_vars.remove(arg_name);
+                            }
+                        }
+                    }
+                    _ = self.inferExpression(arg) catch {};
+                }
                 return Type.Void;
             };
 
@@ -2704,6 +2825,61 @@ pub const TypeChecker = struct {
                     // type instead of the default `int`.
                     for (call.args, 0..) |arg, i| {
                         const param_hint: ?Type = if (i < expected_params.len) expected_params[i] else null;
+                        // When the parameter is pointer-like (`*T`,
+                        // `&mut T`, or a raw integer pointer like `u64`
+                        // used kernel-style) and the argument is one
+                        // of: an `&local` (possibly through casts), a
+                        // let-bound alias of a local, or a bare array
+                        // / struct local variable (decaying to a
+                        // pointer at the call site), the callee may
+                        // write through that pointer. Conservatively
+                        // clear the local's may-uninit bit BEFORE
+                        // evaluating the operand so the identifier
+                        // read inside the arg doesn't surface a
+                        // spurious "use of possibly uninitialized
+                        // variable" warning. Bare numeric locals
+                        // passed by value are intentionally excluded
+                        // so genuinely uninitialised reads still warn.
+                        if (i < expected_params.len) {
+                            const expected = expected_params[i];
+                            // `Array` covers kernel-style signatures
+                            // like `fn copy_str(buf: [u8; N], …)` where
+                            // the buffer decays to a write-through
+                            // pointer at the call boundary.
+                            const is_pointer_like = expected == .Reference or
+                                expected == .MutableReference or
+                                expected == .U64 or expected == .I64 or
+                                expected == .Array;
+                            if (is_pointer_like) {
+                                if (addressOfTarget(arg)) |target_local| {
+                                    _ = self.uninitialized_vars.remove(target_local);
+                                } else if (arg.* == .Identifier) {
+                                    const arg_name = arg.Identifier.name;
+                                    if (self.pointer_aliases.get(arg_name)) |target_local| {
+                                        _ = self.uninitialized_vars.remove(target_local);
+                                    } else {
+                                        // Bare local identifier of a
+                                        // non-numeric kind — most
+                                        // likely an array/struct whose
+                                        // address is being taken
+                                        // implicitly at the call
+                                        // boundary. Clear its bit too;
+                                        // the type-mismatch path below
+                                        // will still flag genuinely
+                                        // wrong calls.
+                                        if (self.env.get(arg_name)) |arg_local_type| {
+                                            const decays = arg_local_type == .Array or
+                                                arg_local_type == .Struct or
+                                                arg_local_type == .Reference or
+                                                arg_local_type == .MutableReference;
+                                            if (decays) {
+                                                _ = self.uninitialized_vars.remove(arg_name);
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                        }
                         const arg_type = try self.inferExpressionWithHint(arg, param_hint);
                         // Allow Void (unknown/inferred type) to match any expected type
                         // This handles cases where .get() returns unknown type from generic collections.
@@ -2870,6 +3046,32 @@ pub const TypeChecker = struct {
                     }
                 }
             }
+        }
+
+        // Fallback for MemberExpr / unknown callees that we couldn't
+        // route through the typed-arg loop above (e.g. method calls
+        // like `i2c.i2c_read(dev, …, @ptrFromInt(buf), len)` where
+        // the callee module isn't in scope). Walk every argument for
+        // its init-tracking side effects: `&local`, alias-of-local,
+        // or a bare array/struct local passed as an implicit pointer.
+        for (call.args) |arg| {
+            if (addressOfTarget(arg)) |target_local| {
+                _ = self.uninitialized_vars.remove(target_local);
+            } else if (arg.* == .Identifier) {
+                const arg_name = arg.Identifier.name;
+                if (self.pointer_aliases.get(arg_name)) |target_local| {
+                    _ = self.uninitialized_vars.remove(target_local);
+                } else if (self.env.get(arg_name)) |arg_local_type| {
+                    const decays = arg_local_type == .Array or
+                        arg_local_type == .Struct or
+                        arg_local_type == .Reference or
+                        arg_local_type == .MutableReference;
+                    if (decays) {
+                        _ = self.uninitialized_vars.remove(arg_name);
+                    }
+                }
+            }
+            _ = self.inferExpression(arg) catch {};
         }
 
         return Type.Void;
@@ -3302,6 +3504,56 @@ pub const TypeChecker = struct {
                 .Deref, .AddressOf, .Borrow, .BorrowMut => rootIdentName(u.operand),
                 else => null,
             },
+            // A cast (`&local as *u8`) or reflection builtin
+            // (`@ptrFromInt(&local)`, `@as(*u8, &local)`) is just a
+            // type rewrap of the inner expression — treat its operand
+            // as the l-value root for init-tracking purposes.
+            .TypeCastExpr => |c| rootIdentName(c.value),
+            .ReflectExpr => |r| rootIdentName(r.target),
+            else => null,
+        };
+    }
+
+    /// Like `rootIdentName`, but additionally follows the pointer-alias
+    /// map: if the root identifier is itself an alias of a local
+    /// (`let p = &local; *p = …`), return the underlying local. Used at
+    /// every site that wants to clear the may-uninit bit on a write
+    /// flowing through a pointer.
+    fn aliasedRootIdent(self: *const TypeChecker, expr: *const ast.Expr) ?[]const u8 {
+        const root = rootIdentName(expr) orelse return null;
+        if (self.pointer_aliases.get(root)) |target| return target;
+        return root;
+    }
+
+    /// Strip type-rewrap wrappers (`as`, `@as`, `@ptrFromInt`, `@ptrCast`,
+    /// `@bitCast`, `@intFromPtr`) from `expr` so an `&local` hidden
+    /// inside any combination of casts/builtins is still discoverable.
+    fn unwrapTypeRewrap(expr: *const ast.Expr) *const ast.Expr {
+        return switch (expr.*) {
+            .TypeCastExpr => |c| unwrapTypeRewrap(c.value),
+            .ReflectExpr => |r| switch (r.kind) {
+                .As, .BitCast, .IntCast, .FloatCast, .PtrCast, .Truncate,
+                .PtrFromInt, .PtrToInt, .IntFromPtr, .IntToFloat, .FloatToInt,
+                .EnumToInt, .IntToEnum,
+                => unwrapTypeRewrap(r.target),
+                else => expr,
+            },
+            else => expr,
+        };
+    }
+
+    /// If `expr` (after stripping casts and reflection wrappers) is
+    /// `&X` for some l-value X bottoming out at a local, return that
+    /// local's name. Used to record `let p = &local` aliases and to
+    /// recognise `&local` hidden inside `&local as *u8`,
+    /// `@ptrFromInt(&local)`, etc.
+    fn addressOfTarget(expr: *const ast.Expr) ?[]const u8 {
+        const inner = unwrapTypeRewrap(expr);
+        return switch (inner.*) {
+            .UnaryExpr => |u| switch (u.op) {
+                .AddressOf, .Borrow, .BorrowMut => rootIdentName(u.operand),
+                else => null,
+            },
             else => null,
         };
     }
@@ -3315,7 +3567,7 @@ pub const TypeChecker = struct {
         // "use of possibly uninitialized variable" warning and any
         // downstream reads are accepted.
         if (unary.op == .AddressOf) {
-            if (rootIdentName(unary.operand)) |root| {
+            if (self.aliasedRootIdent(unary.operand)) |root| {
                 _ = self.uninitialized_vars.remove(root);
             }
         }

@@ -1,0 +1,15 @@
+// Issue #38 (case 2): writes through a let-bound pointer alias to
+// a sub-component of the pointed-at local (`p.field = …`,
+// `p.field[i] = …`) clear the underlying local's may-uninit bit.
+// The pointer-alias map records `let p = &s` so the assignments
+// land on `s` for dataflow purposes, just as the runtime store
+// would. This snapshot pins the positive (no diagnostics) behaviour.
+struct State { count: u32, name: [u8; 16] }
+
+fn caller() {
+    var s: State
+    let p = &s
+    p.count = 1
+    p.name[0] = 65
+    let c: u32 = s.count
+}
