@@ -1490,9 +1490,21 @@ pub const Parser = struct {
     fn parseTypeMemberList(self: *Parser, out: *std.ArrayListUnmanaged(NodeId)) ParseError!void {
         while (self.peek().kind != .close_brace and self.peek().kind != .eof) {
             const t = self.peek();
-            // Skip index/call/construct signatures and other complex
-            // forms by walking until the next separator.
-            if (t.kind == .open_bracket or t.kind == .open_paren or t.kind == .kw_new) {
+            // Index signature: `[k: K]: V` or `readonly [k: K]: V`.
+            // Detect via `[ ident : ident ]` shape, then commit.
+            if (t.kind == .open_bracket or
+                (t.kind == .kw_readonly and self.peekAt(1).kind == .open_bracket))
+            {
+                if (try self.tryParseIndexSignature(out)) continue;
+                // Not an index signature — fall through to skip
+                // (could be a computed key or other form we don't
+                // model yet).
+                try self.skipUntilTypeMemberSeparator();
+                continue;
+            }
+            // Call / construct signatures still skip — they're
+            // a Phase 6 follow-up.
+            if (t.kind == .open_paren or t.kind == .kw_new) {
                 try self.skipUntilTypeMemberSeparator();
                 continue;
             }
@@ -1551,6 +1563,64 @@ pub const Parser = struct {
             );
             try out.append(self.gpa, member);
         }
+    }
+
+    /// Attempt to parse a `[k: K]: V` (or `readonly [k: K]: V`)
+    /// index signature. Returns true if one was consumed and
+    /// appended to `out`; returns false (cursor unchanged) when
+    /// the bracketed form turns out to be something else (e.g. a
+    /// computed key or mapped-type form). Mapped types live in a
+    /// dedicated `mapped_type` HIR node and are dispatched
+    /// separately by `parseTypeAnnotation`.
+    fn tryParseIndexSignature(self: *Parser, out: *std.ArrayListUnmanaged(NodeId)) ParseError!bool {
+        const checkpoint = self.cursor;
+        const start_tok = self.peek();
+        var is_readonly = false;
+        if (self.peek().kind == .kw_readonly and self.peekAt(1).kind == .open_bracket) {
+            _ = self.advance();
+            is_readonly = true;
+        }
+        if (self.peek().kind != .open_bracket) {
+            self.cursor = checkpoint;
+            return false;
+        }
+        // Look for the `[ident : ident]` pattern, optionally followed
+        // by `:` (annotation) or `in` (mapped type).
+        const after_bracket = self.cursor + 1;
+        if (after_bracket >= self.tokens.len) {
+            self.cursor = checkpoint;
+            return false;
+        }
+        const id1 = self.tokens[after_bracket];
+        if (id1.kind != .identifier) {
+            self.cursor = checkpoint;
+            return false;
+        }
+        const colon_pos = after_bracket + 1;
+        if (colon_pos >= self.tokens.len or self.tokens[colon_pos].kind != .colon) {
+            self.cursor = checkpoint;
+            return false;
+        }
+        // Commit to parsing the index signature.
+        _ = self.advance(); // [
+        _ = self.advance(); // key name
+        _ = self.advance(); // :
+        const key_type = try self.parseTypeAnnotation();
+        // If the next token is `in`, this is actually a mapped
+        // type — back out so the higher-level parser handles it.
+        if (self.peek().kind == .kw_in) {
+            self.cursor = checkpoint;
+            return false;
+        }
+        _ = try self.expect(.close_bracket, "']' to close index signature");
+        _ = try self.expect(.colon, "':' before index-signature value type");
+        const value_type = try self.parseTypeAnnotation();
+        _ = self.match(.semicolon);
+        _ = self.match(.comma);
+        const sp: Span = .{ .start = start_tok.span.start, .end = self.tokens[self.cursor - 1].span.end };
+        const node = try self.builder.addIndexSignature(sp, key_type, value_type, is_readonly);
+        try out.append(self.gpa, node);
+        return true;
     }
 
     fn skipUntilTypeMemberSeparator(self: *Parser) ParseError!void {

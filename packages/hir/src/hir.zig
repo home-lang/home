@@ -163,6 +163,7 @@ pub const NodeKind = enum(u8) {
     satisfies_expr,
     as_expr,
     non_null_expr,
+    index_signature,
     spread,
     yield_expr,
     await_expr,
@@ -717,6 +718,15 @@ pub const AsExpressionPayload = struct {
     type_node: NodeId,
 };
 
+/// `[k: K]: V` index signature inside an interface or object type.
+pub const IndexSignaturePayload = struct {
+    /// Key type — typically a `type_ref` to `string` or `number`.
+    key_type: NodeId,
+    /// Value type — the type of any indexed access.
+    value_type: NodeId,
+    is_readonly: bool,
+};
+
 /// `T extends U ? X : Y`.
 pub const ConditionalTypePayload = struct {
     check: NodeId,
@@ -949,6 +959,7 @@ pub const Hir = struct {
     keyof_type_payloads: std.ArrayListUnmanaged(KeyofTypePayload),
     typeof_type_payloads: std.ArrayListUnmanaged(TypeofTypePayload),
     as_expression_payloads: std.ArrayListUnmanaged(AsExpressionPayload),
+    index_signature_payloads: std.ArrayListUnmanaged(IndexSignaturePayload),
     conditional_type_payloads: std.ArrayListUnmanaged(ConditionalTypePayload),
     infer_type_payloads: std.ArrayListUnmanaged(InferTypePayload),
     mapped_type_payloads: std.ArrayListUnmanaged(MappedTypePayload),
@@ -1028,6 +1039,7 @@ pub const Hir = struct {
             .keyof_type_payloads = .empty,
             .typeof_type_payloads = .empty,
             .as_expression_payloads = .empty,
+            .index_signature_payloads = .empty,
             .conditional_type_payloads = .empty,
             .infer_type_payloads = .empty,
             .mapped_type_payloads = .empty,
@@ -1114,6 +1126,7 @@ pub const Hir = struct {
         self.keyof_type_payloads.deinit(self.gpa);
         self.typeof_type_payloads.deinit(self.gpa);
         self.as_expression_payloads.deinit(self.gpa);
+        self.index_signature_payloads.deinit(self.gpa);
         self.conditional_type_payloads.deinit(self.gpa);
         self.infer_type_payloads.deinit(self.gpa);
         self.mapped_type_payloads.deinit(self.gpa);
@@ -2081,6 +2094,26 @@ pub const Builder = struct {
         return id;
     }
 
+    /// Build an `[k: K]: V` index signature member.
+    pub fn addIndexSignature(
+        self: *Builder,
+        span: Span,
+        key_type: NodeId,
+        value_type: NodeId,
+        is_readonly: bool,
+    ) !NodeId {
+        const payload_idx: u32 = @intCast(self.hir.index_signature_payloads.items.len);
+        try self.hir.index_signature_payloads.append(self.hir.gpa, .{
+            .key_type = key_type,
+            .value_type = value_type,
+            .is_readonly = is_readonly,
+        });
+        const id = try self.newNode(.index_signature, span, payload_idx);
+        if (key_type != none_node_id) self.hir.setParent(key_type, id);
+        if (value_type != none_node_id) self.hir.setParent(value_type, id);
+        return id;
+    }
+
     pub fn addConditionalType(
         self: *Builder,
         span: Span,
@@ -2628,6 +2661,11 @@ pub fn asExpressionOf(hir: *const Hir, id: NodeId) AsExpressionPayload {
     const k = hir.kindOf(id);
     std.debug.assert(k == .as_expr or k == .satisfies_expr or k == .type_assertion or k == .non_null_expr);
     return hir.as_expression_payloads.items[hir.payloads.items[id]];
+}
+
+pub fn indexSignatureOf(hir: *const Hir, id: NodeId) IndexSignaturePayload {
+    std.debug.assert(hir.kindOf(id) == .index_signature);
+    return hir.index_signature_payloads.items[hir.payloads.items[id]];
 }
 
 pub fn typeofTypeOf(hir: *const Hir, id: NodeId) TypeofTypePayload {

@@ -366,13 +366,21 @@ pub const Interner = struct {
     /// on a duped copy). The resulting TypeId can be queried via
     /// `objectMember(id, name)` to get a property's type.
     pub fn internObjectType(self: *Interner, members: []const types.ObjectMember) !TypeId {
+        return self.internObjectTypeWithIndex(members, types.Primitive.none, types.Primitive.none);
+    }
+
+    /// Like `internObjectType` but also wires `string`-key and
+    /// `number`-key index signatures (use `Primitive.none` to skip
+    /// either). Index types accessed via `member_access` /
+    /// `element_access` when the named-property lookup misses.
+    pub fn internObjectTypeWithIndex(
+        self: *Interner,
+        members: []const types.ObjectMember,
+        string_index_type: TypeId,
+        number_index_type: TypeId,
+    ) !TypeId {
         const dup = try self.key_arena.allocator().dupe(types.ObjectMember, members);
         std.mem.sort(types.ObjectMember, dup, {}, objectMemberLessThan);
-        // Object types use their own per-instance side payload —
-        // we don't need a TypeKey-based intern table for them
-        // because each parsed `{...}` is structurally distinct
-        // (Phase 6 follow-up: add structural dedup so equivalent
-        // shapes share a TypeId). For now allocate fresh.
         const member_start: u32 = @intCast(self.pool.object_member_pool.items.len);
         try self.pool.object_member_pool.appendSlice(self.gpa, dup);
         const payload_idx: u32 = @intCast(self.pool.object_type_payloads.items.len);
@@ -381,8 +389,8 @@ pub const Interner = struct {
             .members_len = @intCast(dup.len),
             .call_sig = 0,
             .construct_sig = 0,
-            .string_index_type = types.Primitive.none,
-            .number_index_type = types.Primitive.none,
+            .string_index_type = string_index_type,
+            .number_index_type = number_index_type,
         });
         const id: TypeId = @intCast(self.pool.headers.items.len);
         try self.pool.headers.append(self.gpa, .{
@@ -391,6 +399,23 @@ pub const Interner = struct {
             .payload = payload_idx,
         });
         return id;
+    }
+
+    /// Look up the string-key index signature's value type, if
+    /// present. Returns `Primitive.none` when this object type has
+    /// no string indexer.
+    pub fn objectStringIndex(self: *const Interner, id: TypeId) TypeId {
+        if (!self.pool.flagsOf(id).is_object_type) return types.Primitive.none;
+        const payload = self.pool.object_type_payloads.items[self.pool.payloadOf(id)];
+        return payload.string_index_type;
+    }
+
+    /// Look up the number-key index signature's value type, if
+    /// present.
+    pub fn objectNumberIndex(self: *const Interner, id: TypeId) TypeId {
+        if (!self.pool.flagsOf(id).is_object_type) return types.Primitive.none;
+        const payload = self.pool.object_type_payloads.items[self.pool.payloadOf(id)];
+        return payload.number_index_type;
     }
 
     /// Lookup a property by name on an object type. Returns its

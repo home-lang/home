@@ -858,7 +858,23 @@ pub const Checker = struct {
         var iface_members: std.ArrayListUnmanaged(types.ObjectMember) = .empty;
         defer iface_members.deinit(self.gpa);
 
+        var string_idx: TypeId = types.Primitive.none;
+        var number_idx: TypeId = types.Primitive.none;
         for (members) |m| {
+            if (self.hir.kindOf(m) == .index_signature) {
+                const ix = hir_mod.indexSignatureOf(self.hir, m);
+                const value_t = if (ix.value_type != hir_mod.none_node_id)
+                    try self.lowererLowerWithTypeParams(ix.value_type)
+                else
+                    types.Primitive.any;
+                const key_t = if (ix.key_type != hir_mod.none_node_id)
+                    try self.lowererLowerWithTypeParams(ix.key_type)
+                else
+                    types.Primitive.string_t;
+                if (key_t == types.Primitive.string_t) string_idx = value_t;
+                if (key_t == types.Primitive.number_t) number_idx = value_t;
+                continue;
+            }
             if (self.hir.kindOf(m) != .interface_member) continue;
             const im = hir_mod.interfaceMemberOf(self.hir, m);
             // name == 0 means a computed key — skip until we have
@@ -879,7 +895,7 @@ pub const Checker = struct {
             });
         }
 
-        const iface_t = self.interner.internObjectType(iface_members.items) catch return error.OutOfMemory;
+        const iface_t = self.interner.internObjectTypeWithIndex(iface_members.items, string_idx, number_idx) catch return error.OutOfMemory;
         self.hir.setType(node, iface_t);
         if (it.name != hir_mod.none_node_id and self.hir.kindOf(it.name) == .identifier) {
             const id = hir_mod.identifierOf(self.hir, it.name);
@@ -965,7 +981,23 @@ pub const Checker = struct {
                 const members = hir_mod.objectTypeMembers(self.hir, type_node);
                 var built: std.ArrayListUnmanaged(types.ObjectMember) = .empty;
                 defer built.deinit(self.gpa);
+                var string_idx: TypeId = types.Primitive.none;
+                var number_idx: TypeId = types.Primitive.none;
                 for (members) |m| {
+                    if (self.hir.kindOf(m) == .index_signature) {
+                        const ix = hir_mod.indexSignatureOf(self.hir, m);
+                        const value_t = if (ix.value_type != hir_mod.none_node_id)
+                            try self.lowererLowerWithTypeParams(ix.value_type)
+                        else
+                            types.Primitive.any;
+                        const key_t = if (ix.key_type != hir_mod.none_node_id)
+                            try self.lowererLowerWithTypeParams(ix.key_type)
+                        else
+                            types.Primitive.string_t;
+                        if (key_t == types.Primitive.string_t) string_idx = value_t;
+                        if (key_t == types.Primitive.number_t) number_idx = value_t;
+                        continue;
+                    }
                     if (self.hir.kindOf(m) != .interface_member) continue;
                     const im = hir_mod.interfaceMemberOf(self.hir, m);
                     if (im.name == 0) continue;
@@ -981,7 +1013,7 @@ pub const Checker = struct {
                         .is_method = im.is_method,
                     });
                 }
-                return self.interner.internObjectType(built.items) catch return error.OutOfMemory;
+                return self.interner.internObjectTypeWithIndex(built.items, string_idx, number_idx) catch return error.OutOfMemory;
             },
             .union_type => {
                 const members = hir_mod.unionTypeMembers(self.hir, type_node);
@@ -1168,12 +1200,12 @@ pub const Checker = struct {
                 const m = hir_mod.memberOf(self.hir, node);
                 const obj_t = try self.checkExpression(m.object);
                 if (self.interner.objectMember(obj_t, m.name)) |t| break :blk t;
-                // No matching member on a known object type → TS2339
-                // 'Property X does not exist on type ...'. We only
-                // emit when the object is known to be an object
-                // type (not any/unknown/etc) — otherwise property
-                // access on `any` is unrestricted.
+                // Index-signature fallback: `obj.foo` on a type
+                // with a `[k: string]: V` indexer resolves to V.
                 if (self.interner.pool.flagsOf(obj_t).is_object_type) {
+                    const string_idx = self.interner.objectStringIndex(obj_t);
+                    if (string_idx != types.Primitive.none) break :blk string_idx;
+                    // No matching member and no indexer → TS2339.
                     const name_str = self.string_interner.get(m.name);
                     const msg = try std.fmt.allocPrint(
                         self.diag_arena.allocator(),
@@ -1190,8 +1222,21 @@ pub const Checker = struct {
             },
             .element_access => blk: {
                 const e = hir_mod.elementOf(self.hir, node);
-                _ = try self.checkExpression(e.object);
-                _ = try self.checkExpression(e.index);
+                const obj_t = try self.checkExpression(e.object);
+                const idx_t = try self.checkExpression(e.index);
+                // Index-signature path: `obj[key]` resolves to the
+                // matching index signature's value type.
+                if (self.interner.pool.flagsOf(obj_t).is_object_type) {
+                    const idx_flags = self.interner.pool.flagsOf(idx_t);
+                    if (idx_flags.is_string) {
+                        const v = self.interner.objectStringIndex(obj_t);
+                        if (v != types.Primitive.none) break :blk v;
+                    }
+                    if (idx_flags.is_number) {
+                        const v = self.interner.objectNumberIndex(obj_t);
+                        if (v != types.Primitive.none) break :blk v;
+                    }
+                }
                 break :blk types.Primitive.any;
             },
             .as_expr, .satisfies_expr, .type_assertion => blk: {
@@ -2547,6 +2592,45 @@ test "checker: object-literal excess property emits TS2353" {
 
 test "checker: matching object literal compiles without TS2353" {
     const s = try newSetup("let p: { x: number; y: number } = { x: 1, y: 2 };");
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+    try T.expect(s.checker.diagnostics.items.len == 0);
+}
+
+test "checker: string-index signature resolves member access" {
+    const s = try newSetup(
+        \\interface MapLike { [k: string]: number; }
+        \\function f(m: MapLike): number { return m.anything; }
+    );
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+    try T.expect(s.checker.diagnostics.items.len == 0);
+    const stmts = hir_mod.blockStmts(&s.hir, s.root);
+    const f = hir_mod.fnDeclOf(&s.hir, stmts[1]);
+    const body = hir_mod.blockStmts(&s.hir, f.body);
+    const ret_p = hir_mod.returnOf(&s.hir, body[0]);
+    try T.expectEqual(types.Primitive.number_t, s.hir.typeOf(ret_p.value));
+}
+
+test "checker: number-index signature resolves element access" {
+    const s = try newSetup(
+        \\interface NumIdx { [i: number]: string; }
+        \\function f(a: NumIdx): string { return a[0]; }
+    );
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+    try T.expect(s.checker.diagnostics.items.len == 0);
+    const stmts = hir_mod.blockStmts(&s.hir, s.root);
+    const f = hir_mod.fnDeclOf(&s.hir, stmts[1]);
+    const body = hir_mod.blockStmts(&s.hir, f.body);
+    const ret_p = hir_mod.returnOf(&s.hir, body[0]);
+    try T.expectEqual(types.Primitive.string_t, s.hir.typeOf(ret_p.value));
+}
+
+test "checker: object type literal with string index signature" {
+    const s = try newSetup(
+        \\function f(m: { [k: string]: boolean }): boolean { return m.flag; }
+    );
     defer destroySetup(s);
     try s.checker.checkSourceFile(s.root);
     try T.expect(s.checker.diagnostics.items.len == 0);
