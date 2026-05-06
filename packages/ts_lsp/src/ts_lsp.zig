@@ -370,6 +370,29 @@ pub const Service = struct {
         return hints.toOwnedSlice(gpa);
     }
 
+    /// All top-level declarations across every file in the program,
+    /// optionally filtered by a substring of the symbol name.
+    /// `query == ""` returns everything. Used by VS Code's
+    /// `Ctrl+T` quick-open-symbol palette.
+    pub fn workspaceSymbols(
+        self: *Service,
+        gpa: std.mem.Allocator,
+        query: []const u8,
+    ) ![]SymbolInfo {
+        var out: std.ArrayListUnmanaged(SymbolInfo) = .empty;
+        errdefer out.deinit(gpa);
+        for (self.program.files.items) |f| {
+            const c = f.compilation orelse continue;
+            const stmts = hir_mod.blockStmts(&c.hir, c.root);
+            for (stmts) |s| {
+                const info = describeTopLevelSymbol(&c.hir, &c.interner, s, f.source, f.path) orelse continue;
+                if (query.len > 0 and std.mem.indexOf(u8, info.name, query) == null) continue;
+                try out.append(gpa, info);
+            }
+        }
+        return out.toOwnedSlice(gpa);
+    }
+
     /// All top-level declarations in `file`, useful for an editor
     /// outline view.
     pub fn documentSymbols(self: *Service, gpa: std.mem.Allocator, file_path: []const u8) ![]SymbolInfo {
@@ -1077,6 +1100,30 @@ test "Service: hover on missing file returns null" {
 
     var svc = Service.init(T.allocator, &program);
     try T.expect(svc.hover("/missing.ts", 0) == null);
+}
+
+test "Service: workspaceSymbols searches across files" {
+    var vfs = ts_resolver.VirtualFs.init(T.allocator);
+    defer vfs.deinit();
+    var resolver = ts_resolver.Resolver.init(T.allocator, vfs.fs(), .{});
+    defer resolver.deinit();
+    var program = ts_program.Program.init(T.allocator, &resolver);
+    defer program.deinit();
+
+    _ = try program.add("/a.ts", "function helperA() { }");
+    _ = try program.add("/b.ts", "class HelperB { }");
+    _ = try program.add("/c.ts", "let other = 1;");
+    try program.compileAll(.{});
+
+    var svc = Service.init(T.allocator, &program);
+    const all = try svc.workspaceSymbols(T.allocator, "");
+    defer T.allocator.free(all);
+    try T.expectEqual(@as(usize, 3), all.len);
+
+    const filtered = try svc.workspaceSymbols(T.allocator, "elper");
+    defer T.allocator.free(filtered);
+    // Both `helperA` and `HelperB` contain "elper".
+    try T.expectEqual(@as(usize, 2), filtered.len);
 }
 
 test "Service: documentSymbols enumerates top-level decls" {
