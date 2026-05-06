@@ -764,6 +764,12 @@ pub const Printer = struct {
             .assignment => try self.printAssignment(node),
             .call_expr => try self.printCall(node),
             .new_expr => try self.printNew(node),
+            .as_expr, .satisfies_expr, .type_assertion => {
+                // Type assertions erase at runtime — print the inner
+                // expression only.
+                const a = hir_mod.asExpressionOf(self.hir, node);
+                try self.printExpression(a.expr);
+            },
             .member_access => try self.printMember(node),
             .element_access => try self.printElement(node),
             .array_literal => try self.printArrayLiteral(node),
@@ -1193,6 +1199,14 @@ test "emit: interface erases" {
     const out = try emit("interface Foo { x: number; }");
     defer T.allocator.free(out);
     try T.expectEqualStrings("", out);
+}
+
+test "emit: as-cast erases at runtime" {
+    const out = try emit("let n = (\"hi\" as any) as number;");
+    defer T.allocator.free(out);
+    // Both casts erase; the inner string literal is what remains.
+    try T.expect(std.mem.indexOf(u8, out, "let n = \"hi\"") != null);
+    try T.expect(std.mem.indexOf(u8, out, " as ") == null);
 }
 
 test "emit: export interface erases without dangling token" {

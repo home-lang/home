@@ -2017,6 +2017,17 @@ pub const Parser = struct {
             const prec = prec_mod.binaryPrec(t.kind) orelse break;
             if (@intFromEnum(prec) < @intFromEnum(min_prec)) break;
             _ = self.advance();
+            // `as` / `satisfies` take a TYPE on the right, not an
+            // expression — handle them before the generic
+            // expression-RHS path so we don't try to parse `number`
+            // as an identifier.
+            if (t.kind == .kw_as or t.kind == .kw_satisfies) {
+                const type_node = try self.parseTypeAnnotation();
+                const sp: Span = .{ .start = self.hir.spanOf(left).start, .end = self.hir.spanOf(type_node).end };
+                const kind: hir_mod.NodeKind = if (t.kind == .kw_as) .as_expr else .satisfies_expr;
+                left = try self.builder.addAsExpression(kind, sp, left, type_node);
+                continue;
+            }
             // Right-associative operators recurse with `prec`,
             // left-associative with `prec + 1`.
             const next_min: prec_mod.Prec = if (prec_mod.isRightAssociative(prec))
@@ -2030,11 +2041,6 @@ pub const Parser = struct {
             } else if (prec_mod.logicalOpOf(t.kind)) |lop| {
                 left = try self.builder.addLogicalOp(sp, lop, left, right);
             } else {
-                // `as` / `satisfies`: Phase 1.D treats them as a no-op
-                // pass-through (the type assertion's right side is
-                // skipped via `skipTypeAnnotation`-style consumption,
-                // which would have eaten the operand). Future work
-                // gives them dedicated HIR nodes.
                 left = right;
             }
         }

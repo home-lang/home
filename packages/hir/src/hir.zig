@@ -709,6 +709,13 @@ pub const TypeofTypePayload = struct {
     operand: NodeId,
 };
 
+/// `expr as T` / `expr satisfies T` / `<T>expr` (legacy form). All
+/// three share the same shape — the kind enum disambiguates.
+pub const AsExpressionPayload = struct {
+    expr: NodeId,
+    type_node: NodeId,
+};
+
 /// `T extends U ? X : Y`.
 pub const ConditionalTypePayload = struct {
     check: NodeId,
@@ -940,6 +947,7 @@ pub const Hir = struct {
     indexed_access_type_payloads: std.ArrayListUnmanaged(IndexedAccessTypePayload),
     keyof_type_payloads: std.ArrayListUnmanaged(KeyofTypePayload),
     typeof_type_payloads: std.ArrayListUnmanaged(TypeofTypePayload),
+    as_expression_payloads: std.ArrayListUnmanaged(AsExpressionPayload),
     conditional_type_payloads: std.ArrayListUnmanaged(ConditionalTypePayload),
     infer_type_payloads: std.ArrayListUnmanaged(InferTypePayload),
     mapped_type_payloads: std.ArrayListUnmanaged(MappedTypePayload),
@@ -1018,6 +1026,7 @@ pub const Hir = struct {
             .indexed_access_type_payloads = .empty,
             .keyof_type_payloads = .empty,
             .typeof_type_payloads = .empty,
+            .as_expression_payloads = .empty,
             .conditional_type_payloads = .empty,
             .infer_type_payloads = .empty,
             .mapped_type_payloads = .empty,
@@ -1103,6 +1112,7 @@ pub const Hir = struct {
         self.indexed_access_type_payloads.deinit(self.gpa);
         self.keyof_type_payloads.deinit(self.gpa);
         self.typeof_type_payloads.deinit(self.gpa);
+        self.as_expression_payloads.deinit(self.gpa);
         self.conditional_type_payloads.deinit(self.gpa);
         self.infer_type_payloads.deinit(self.gpa);
         self.mapped_type_payloads.deinit(self.gpa);
@@ -2032,6 +2042,29 @@ pub const Builder = struct {
         return id;
     }
 
+    /// Build an `as` / `satisfies` / legacy `<T>x` type-assertion
+    /// expression. `kind` must be one of `.as_expr`, `.satisfies_expr`,
+    /// `.type_assertion`. The shape is the same — `expr` is the
+    /// inner runtime expression, `type_node` is the asserted type.
+    pub fn addAsExpression(
+        self: *Builder,
+        kind: NodeKind,
+        span: Span,
+        expr: NodeId,
+        type_node: NodeId,
+    ) !NodeId {
+        std.debug.assert(kind == .as_expr or kind == .satisfies_expr or kind == .type_assertion);
+        const payload_idx: u32 = @intCast(self.hir.as_expression_payloads.items.len);
+        try self.hir.as_expression_payloads.append(self.hir.gpa, .{
+            .expr = expr,
+            .type_node = type_node,
+        });
+        const id = try self.newNode(kind, span, payload_idx);
+        self.hir.setParent(expr, id);
+        if (type_node != none_node_id) self.hir.setParent(type_node, id);
+        return id;
+    }
+
     pub fn addConditionalType(
         self: *Builder,
         span: Span,
@@ -2573,6 +2606,12 @@ pub fn indexedAccessTypeOf(hir: *const Hir, id: NodeId) IndexedAccessTypePayload
 pub fn keyofTypeOf(hir: *const Hir, id: NodeId) KeyofTypePayload {
     std.debug.assert(hir.kindOf(id) == .keyof_type);
     return hir.keyof_type_payloads.items[hir.payloads.items[id]];
+}
+
+pub fn asExpressionOf(hir: *const Hir, id: NodeId) AsExpressionPayload {
+    const k = hir.kindOf(id);
+    std.debug.assert(k == .as_expr or k == .satisfies_expr or k == .type_assertion);
+    return hir.as_expression_payloads.items[hir.payloads.items[id]];
 }
 
 pub fn typeofTypeOf(hir: *const Hir, id: NodeId) TypeofTypePayload {

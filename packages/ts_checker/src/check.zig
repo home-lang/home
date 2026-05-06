@@ -639,6 +639,17 @@ pub const Checker = struct {
                 _ = try self.checkExpression(e.index);
                 break :blk types.Primitive.any;
             },
+            .as_expr, .satisfies_expr, .type_assertion => blk: {
+                // `expr as T` / `expr satisfies T` / `<T>expr` — type
+                // the inner expression for diagnostics, then return
+                // the asserted type. `satisfies` should also check
+                // that the expression is assignable to T (TS2322 on
+                // miss); a follow-up will tighten that path.
+                const a = hir_mod.asExpressionOf(self.hir, node);
+                _ = try self.checkExpression(a.expr);
+                if (a.type_node == hir_mod.none_node_id) break :blk types.Primitive.any;
+                break :blk try self.lowererLowerWithTypeParams(a.type_node);
+            },
             .array_literal => blk: {
                 const elements = hir_mod.arrayLiteralElements(self.hir, node);
                 var elem_types: std.ArrayListUnmanaged(TypeId) = .empty;
@@ -1743,4 +1754,30 @@ test "checker: typeof type query resolves an identifier's static type" {
     const alias_t = s.hir.typeOf(stmts[1]);
     // `typeof add` reuses the function's signature TypeId.
     try T.expectEqual(fn_t, alias_t);
+}
+
+test "checker: `as` cast yields the asserted type" {
+    const s = try newSetup(
+        \\let raw: any = 1;
+        \\let n = raw as number;
+    );
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+    try T.expect(s.checker.diagnostics.items.len == 0);
+    const stmts = hir_mod.blockStmts(&s.hir, s.root);
+    const n_decl = stmts[1];
+    try T.expectEqual(hir_mod.NodeKind.let_decl, s.hir.kindOf(n_decl));
+    const v = hir_mod.varDeclOf(&s.hir, n_decl);
+    try T.expectEqual(hir_mod.NodeKind.as_expr, s.hir.kindOf(v.init));
+    try T.expectEqual(types.Primitive.number_t, s.hir.typeOf(v.init));
+}
+
+test "checker: `as` cast feeds the var-decl's declared type without TS2322" {
+    const s = try newSetup(
+        \\let raw: any = "hi";
+        \\let n: number = raw as number;
+    );
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+    try T.expect(s.checker.diagnostics.items.len == 0);
 }
