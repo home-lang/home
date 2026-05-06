@@ -70,6 +70,16 @@ pub const TsCodes = struct {
     pub const this_implicitly_any: u32 = 2683;
     pub const parameter_implicitly_any: u32 = 7006;
     pub const variable_implicitly_any: u32 = 7005;
+    pub const declared_but_not_read: u32 = 6133;
+};
+
+/// Per-alias generic info: the type-parameter TypeIds in
+/// declaration order plus the body TypeId those parameters
+/// substitute into. Owned by the checker; the slice lives in the
+/// checker's diag/scratch arena.
+pub const GenericAliasInfo = struct {
+    params: []TypeId,
+    body: TypeId,
 };
 
 /// Subset of compiler-options flags the checker consults. Defaults
@@ -81,6 +91,14 @@ pub const StrictFlags = struct {
     /// has no annotation and no inferable initializer raises TS7006
     /// / TS7005.
     no_implicit_any: bool = false,
+    /// `noUnusedParameters`. Emits TS6133 for parameters whose name
+    /// isn't referenced inside the function body. Names beginning
+    /// with `_` are excluded by convention (matches tsc).
+    no_unused_parameters: bool = false,
+    /// `noUnusedLocals`. Emits TS6133 for `let` / `const` / `var`
+    /// declarations whose name isn't referenced after the
+    /// declaration. Names beginning with `_` are excluded.
+    no_unused_locals: bool = false,
 };
 
 pub const Checker = struct {
@@ -115,6 +133,11 @@ pub const Checker = struct {
     /// `lowererLowerWithTypeParams` so `b: Box`, `b: SomeInterface`,
     /// or `b: SomeAlias` all resolve at the annotation site.
     type_names: std.AutoHashMapUnmanaged(hir_mod.StringId, TypeId),
+    /// Generic alias name → (params, body) mapping. Populated by
+    /// `checkTypeAliasDecl` when an alias declares type parameters.
+    /// Consulted by `lowererLowerWithTypeParams` to instantiate
+    /// `Box<number>`-style references against the aliased body.
+    generic_aliases: std.AutoHashMapUnmanaged(hir_mod.StringId, GenericAliasInfo),
     /// Strictness flags driving optional diagnostics.
     strict_flags: StrictFlags = .{},
     diagnostics: std.ArrayListUnmanaged(Diagnostic),
@@ -139,6 +162,7 @@ pub const Checker = struct {
             .class_instance_types = .empty,
             .class_constructor_sigs = .empty,
             .type_names = .empty,
+            .generic_aliases = .empty,
             .diagnostics = .empty,
             .diag_arena = std.heap.ArenaAllocator.init(gpa),
         };
@@ -164,6 +188,9 @@ pub const Checker = struct {
         self.class_instance_types.deinit(self.gpa);
         self.class_constructor_sigs.deinit(self.gpa);
         self.type_names.deinit(self.gpa);
+        var ga_it = self.generic_aliases.valueIterator();
+        while (ga_it.next()) |info| self.gpa.free(info.params);
+        self.generic_aliases.deinit(self.gpa);
         self.diagnostics.deinit(self.gpa);
         self.diag_arena.deinit();
     }
@@ -182,6 +209,15 @@ pub const Checker = struct {
             .class_decl => try self.checkClassDecl(node),
             .interface_decl => try self.checkInterfaceDecl(node),
             .type_alias_decl => try self.checkTypeAliasDecl(node),
+            .export_decl => {
+                // `export <decl>` — the inner decl needs the same
+                // typing pass as a top-level decl. Named-only forms
+                // (`export { x }`) and re-exports (`export … from
+                // "m"`) have no inner decl and are handled later by
+                // cross-file resolution.
+                const ex = hir_mod.exportOf(self.hir, node);
+                if (ex.decl != hir_mod.none_node_id) try self.checkStatement(ex.decl);
+            },
             .return_stmt => {
                 const r = hir_mod.returnOf(self.hir, node);
                 if (r.value != hir_mod.none_node_id) {
@@ -248,6 +284,7 @@ pub const Checker = struct {
             if (f.return_type == hir_mod.none_node_id) {
                 try self.refineSignatureReturn(node, expr_t);
             }
+            try self.checkUnusedParameters(node, f.body);
             return;
         }
         // For block-bodied fns without an annotation, infer the
@@ -264,6 +301,240 @@ pub const Checker = struct {
             else
                 self.interner.internUnion(ret_types.items) catch return error.OutOfMemory;
             try self.refineSignatureReturn(node, inferred);
+        }
+        try self.checkUnusedParameters(node, f.body);
+        try self.checkUnusedLocals(f.body);
+    }
+
+    /// `noUnusedLocals` (TS6133): walk a function body's
+    /// statements, find every `let` / `const` / `var` declaration,
+    /// and report names not referenced from elsewhere in the body.
+    /// Names beginning with `_` are exempt by convention.
+    fn checkUnusedLocals(self: *Checker, body: NodeId) CheckError!void {
+        if (!self.strict_flags.no_unused_locals) return;
+        if (body == hir_mod.none_node_id) return;
+        if (self.hir.kindOf(body) != .block_stmt) return;
+        var refs: std.AutoHashMapUnmanaged(hir_mod.StringId, void) = .empty;
+        defer refs.deinit(self.gpa);
+        try self.collectIdentifierRefs(body, &refs);
+        for (hir_mod.blockStmts(self.hir, body)) |s| {
+            const k = self.hir.kindOf(s);
+            if (k != .var_decl and k != .let_decl and k != .const_decl) continue;
+            const v = hir_mod.varDeclOf(self.hir, s);
+            if (v.name == hir_mod.none_node_id or self.hir.kindOf(v.name) != .identifier) continue;
+            const id = hir_mod.identifierOf(self.hir, v.name);
+            const name_str = self.string_interner.get(id.name);
+            if (name_str.len > 0 and name_str[0] == '_') continue;
+            if (refs.contains(id.name)) continue;
+            const msg = try std.fmt.allocPrint(
+                self.diag_arena.allocator(),
+                "'{s}' is declared but its value is never read.",
+                .{name_str},
+            );
+            try self.diagnostics.append(self.gpa, .{
+                .node = s,
+                .code = TsCodes.declared_but_not_read,
+                .message = msg,
+            });
+        }
+    }
+
+    /// `noUnusedParameters` (TS6133): walks the function body and
+    /// collects every identifier StringId referenced *outside* a
+    /// declaration's name slot, then reports any parameter whose
+    /// name doesn't appear. Names starting with `_` are exempt
+    /// (matches tsc).
+    fn checkUnusedParameters(self: *Checker, fn_node: NodeId, body: NodeId) CheckError!void {
+        if (!self.strict_flags.no_unused_parameters) return;
+        const params = hir_mod.fnParams(self.hir, fn_node);
+        if (params.len == 0) return;
+        var refs: std.AutoHashMapUnmanaged(hir_mod.StringId, void) = .empty;
+        defer refs.deinit(self.gpa);
+        try self.collectIdentifierRefs(body, &refs);
+        for (params) |p| {
+            const pp = hir_mod.parameterOf(self.hir, p);
+            if (pp.name == hir_mod.none_node_id or self.hir.kindOf(pp.name) != .identifier) continue;
+            const id = hir_mod.identifierOf(self.hir, pp.name);
+            const name_str = self.string_interner.get(id.name);
+            if (name_str.len > 0 and name_str[0] == '_') continue;
+            if (refs.contains(id.name)) continue;
+            const msg = try std.fmt.allocPrint(
+                self.diag_arena.allocator(),
+                "'{s}' is declared but its value is never read.",
+                .{name_str},
+            );
+            try self.diagnostics.append(self.gpa, .{
+                .node = p,
+                .code = TsCodes.declared_but_not_read,
+                .message = msg,
+            });
+        }
+    }
+
+    /// Recursively collect every identifier StringId reachable from
+    /// `node` that is *not* the name slot of a declaration. Stops
+    /// at nested function boundaries so inner-fn references don't
+    /// satisfy outer-fn parameters.
+    fn collectIdentifierRefs(
+        self: *Checker,
+        node: NodeId,
+        out: *std.AutoHashMapUnmanaged(hir_mod.StringId, void),
+    ) CheckError!void {
+        if (node == hir_mod.none_node_id) return;
+        const k = self.hir.kindOf(node);
+        switch (k) {
+            .identifier => {
+                const id = hir_mod.identifierOf(self.hir, node);
+                if (!self.isDeclNameSlot(node)) try out.put(self.gpa, id.name, {});
+            },
+            // Nested fns shadow the outer scope — skip them.
+            .fn_decl, .fn_expr, .arrow_fn => return,
+            .block_stmt => {
+                for (hir_mod.blockStmts(self.hir, node)) |s| try self.collectIdentifierRefs(s, out);
+            },
+            .if_stmt => {
+                const i = hir_mod.ifOf(self.hir, node);
+                try self.collectIdentifierRefs(i.cond, out);
+                try self.collectIdentifierRefs(i.then_branch, out);
+                try self.collectIdentifierRefs(i.else_branch, out);
+            },
+            .while_stmt => {
+                const w = hir_mod.whileOf(self.hir, node);
+                try self.collectIdentifierRefs(w.cond, out);
+                try self.collectIdentifierRefs(w.body, out);
+            },
+            .do_while_stmt => {
+                const w = hir_mod.doWhileOf(self.hir, node);
+                try self.collectIdentifierRefs(w.cond, out);
+                try self.collectIdentifierRefs(w.body, out);
+            },
+            .for_stmt => {
+                const fr = hir_mod.forStmtOf(self.hir, node);
+                try self.collectIdentifierRefs(fr.init, out);
+                try self.collectIdentifierRefs(fr.cond, out);
+                try self.collectIdentifierRefs(fr.update, out);
+                try self.collectIdentifierRefs(fr.body, out);
+            },
+            .return_stmt => {
+                const r = hir_mod.returnOf(self.hir, node);
+                try self.collectIdentifierRefs(r.value, out);
+            },
+            .var_decl, .let_decl, .const_decl => {
+                const v = hir_mod.varDeclOf(self.hir, node);
+                // Skip `v.name` — it's the declaration site.
+                try self.collectIdentifierRefs(v.init, out);
+            },
+            .binary_op => {
+                const b = hir_mod.binopOf(self.hir, node);
+                try self.collectIdentifierRefs(b.lhs, out);
+                try self.collectIdentifierRefs(b.rhs, out);
+            },
+            .unary_op => {
+                const u = hir_mod.unaryOf(self.hir, node);
+                try self.collectIdentifierRefs(u.operand, out);
+            },
+            .logical_op => {
+                const l = hir_mod.logicalOf(self.hir, node);
+                try self.collectIdentifierRefs(l.lhs, out);
+                try self.collectIdentifierRefs(l.rhs, out);
+            },
+            .conditional => {
+                const c = hir_mod.conditionalOf(self.hir, node);
+                try self.collectIdentifierRefs(c.cond, out);
+                try self.collectIdentifierRefs(c.then_branch, out);
+                try self.collectIdentifierRefs(c.else_branch, out);
+            },
+            .assignment => {
+                const a = hir_mod.assignmentOf(self.hir, node);
+                try self.collectIdentifierRefs(a.target, out);
+                try self.collectIdentifierRefs(a.value, out);
+            },
+            .call_expr, .new_expr => {
+                const c = hir_mod.callOf(self.hir, node);
+                try self.collectIdentifierRefs(c.callee, out);
+                for (hir_mod.callArgs(self.hir, node)) |arg| try self.collectIdentifierRefs(arg, out);
+            },
+            .member_access => {
+                const m = hir_mod.memberOf(self.hir, node);
+                try self.collectIdentifierRefs(m.object, out);
+                // `m.name` is a StringId, not a node — no descend.
+            },
+            .element_access => {
+                const e = hir_mod.elementOf(self.hir, node);
+                try self.collectIdentifierRefs(e.object, out);
+                try self.collectIdentifierRefs(e.index, out);
+            },
+            .as_expr, .satisfies_expr, .type_assertion => {
+                const a = hir_mod.asExpressionOf(self.hir, node);
+                try self.collectIdentifierRefs(a.expr, out);
+            },
+            .throw_stmt => {
+                const t = hir_mod.throwOf(self.hir, node);
+                try self.collectIdentifierRefs(t.value, out);
+            },
+            .try_stmt => {
+                const ts = hir_mod.tryOf(self.hir, node);
+                try self.collectIdentifierRefs(ts.block, out);
+                try self.collectIdentifierRefs(ts.catch_block, out);
+                try self.collectIdentifierRefs(ts.finally_block, out);
+            },
+            .switch_stmt => {
+                const sw = hir_mod.switchOf(self.hir, node);
+                try self.collectIdentifierRefs(sw.discriminant, out);
+                for (hir_mod.switchCases(self.hir, node)) |case| try self.collectIdentifierRefs(case, out);
+            },
+            .switch_case => {
+                for (hir_mod.switchCaseStmts(self.hir, node)) |s| try self.collectIdentifierRefs(s, out);
+            },
+            .array_literal => {
+                for (hir_mod.arrayLiteralElements(self.hir, node)) |el| try self.collectIdentifierRefs(el, out);
+            },
+            .object_literal => {
+                for (hir_mod.objectLiteralProps(self.hir, node)) |p| try self.collectIdentifierRefs(p, out);
+            },
+            .object_property => {
+                const op = hir_mod.objectPropertyOf(self.hir, node);
+                try self.collectIdentifierRefs(op.value, out);
+                // Computed keys reference identifiers; skip the name slot.
+                if (op.is_computed) try self.collectIdentifierRefs(op.key, out);
+            },
+            else => {},
+        }
+    }
+
+    /// True when `node` is the name slot of its enclosing
+    /// declaration (parameter / var / fn / class / interface /
+    /// type alias). Used to filter declarations out of the
+    /// reference-counting walk.
+    fn isDeclNameSlot(self: *Checker, node: NodeId) bool {
+        const parent = self.hir.parentOf(node);
+        if (parent == hir_mod.none_node_id) return false;
+        switch (self.hir.kindOf(parent)) {
+            .parameter => {
+                const p = hir_mod.parameterOf(self.hir, parent);
+                return p.name == node;
+            },
+            .var_decl, .let_decl, .const_decl => {
+                const v = hir_mod.varDeclOf(self.hir, parent);
+                return v.name == node;
+            },
+            .fn_decl, .fn_expr, .arrow_fn => {
+                const f = hir_mod.fnDeclOf(self.hir, parent);
+                return f.name == node;
+            },
+            .class_decl, .class_expr => {
+                const c = hir_mod.classOf(self.hir, parent);
+                return c.name == node;
+            },
+            .interface_decl => {
+                const it = hir_mod.interfaceOf(self.hir, parent);
+                return it.name == node;
+            },
+            .type_alias_decl => {
+                const ta = hir_mod.typeAliasOf(self.hir, parent);
+                return ta.name == node;
+            },
+            else => return false,
         }
     }
 
@@ -616,18 +887,66 @@ pub const Checker = struct {
         }
     }
 
-    /// Lower a type alias `type Alias = T` into the underlying
-    /// type's TypeId and record it under the alias name so
-    /// `b: Alias` resolves at the annotation site.
+    /// Lower a type alias `type Alias<T...> = U` into the
+    /// underlying type's TypeId and record it under the alias name.
+    /// For non-generic aliases the body lowers directly. For
+    /// generic aliases, we intern each type parameter, push it onto
+    /// the narrow scope so the body resolves under that binding,
+    /// and store `(params, body)` in `generic_aliases` so later
+    /// `Alias<X>` references can substitute X for the original
+    /// parameter.
     fn checkTypeAliasDecl(self: *Checker, node: NodeId) CheckError!void {
         const ta = hir_mod.typeAliasOf(self.hir, node);
         if (ta.aliased == hir_mod.none_node_id) return;
-        const aliased_t = try self.lowererLowerWithTypeParams(ta.aliased);
-        self.hir.setType(node, aliased_t);
+        const type_params = self.hir.childSlice(ta.type_params_start, ta.type_params_len);
+        if (type_params.len == 0) {
+            const aliased_t = try self.lowererLowerWithTypeParams(ta.aliased);
+            self.hir.setType(node, aliased_t);
+            if (ta.name != hir_mod.none_node_id and self.hir.kindOf(ta.name) == .identifier) {
+                const id = hir_mod.identifierOf(self.hir, ta.name);
+                try self.type_names.put(self.gpa, id.name, aliased_t);
+                self.hir.setType(ta.name, aliased_t);
+            }
+            return;
+        }
+
+        // Generic alias: intern each type parameter, lower body
+        // under their narrow binding, then store the (params, body)
+        // for later instantiation.
+        try self.pushNarrowScope();
+        defer self.popNarrowScope();
+        var param_ids: std.ArrayListUnmanaged(TypeId) = .empty;
+        errdefer param_ids.deinit(self.gpa);
+        for (type_params) |tp| {
+            if (self.hir.kindOf(tp) != .type_parameter) continue;
+            const tpp = hir_mod.typeParameterOf(self.hir, tp);
+            const constraint: TypeId = if (tpp.constraint != hir_mod.none_node_id)
+                try self.lowerer.lower(tpp.constraint)
+            else
+                types.Primitive.unknown;
+            const def: TypeId = if (tpp.default != hir_mod.none_node_id)
+                try self.lowerer.lower(tpp.default)
+            else
+                types.Primitive.none;
+            const tp_id = self.interner.internTypeParameter(tpp.name, constraint, def) catch return error.OutOfMemory;
+            self.hir.setType(tp, tp_id);
+            try self.recordNarrow(tpp.name, tp_id);
+            try param_ids.append(self.gpa, tp_id);
+        }
+        const body_t = try self.lowererLowerWithTypeParams(ta.aliased);
+        self.hir.setType(node, body_t);
+        const owned_params = param_ids.toOwnedSlice(self.gpa) catch return error.OutOfMemory;
         if (ta.name != hir_mod.none_node_id and self.hir.kindOf(ta.name) == .identifier) {
             const id = hir_mod.identifierOf(self.hir, ta.name);
-            try self.type_names.put(self.gpa, id.name, aliased_t);
-            self.hir.setType(ta.name, aliased_t);
+            try self.generic_aliases.put(self.gpa, id.name, .{
+                .params = owned_params,
+                .body = body_t,
+            });
+            // Also expose the un-instantiated body via `type_names`
+            // so a bare `Alias` (no type-args) resolves — TS treats
+            // it as `Alias<unknown, …>`.
+            try self.type_names.put(self.gpa, id.name, body_t);
+            self.hir.setType(ta.name, body_t);
         }
     }
 
@@ -636,11 +955,72 @@ pub const Checker = struct {
     /// named-type table (for class / interface / type-alias names).
     fn lowererLowerWithTypeParams(self: *Checker, type_node: NodeId) CheckError!TypeId {
         switch (self.hir.kindOf(type_node)) {
+            .object_type => {
+                // Member types must lower under the same narrow
+                // scope as the enclosing annotation so that type
+                // parameters bound by an enclosing alias / fn
+                // resolve. The raw `lowerObjectType` doesn't see
+                // them — re-implement it here.
+                const members = hir_mod.objectTypeMembers(self.hir, type_node);
+                var built: std.ArrayListUnmanaged(types.ObjectMember) = .empty;
+                defer built.deinit(self.gpa);
+                for (members) |m| {
+                    if (self.hir.kindOf(m) != .interface_member) continue;
+                    const im = hir_mod.interfaceMemberOf(self.hir, m);
+                    if (im.name == 0) continue;
+                    const t: TypeId = if (im.type_node != hir_mod.none_node_id)
+                        try self.lowererLowerWithTypeParams(im.type_node)
+                    else
+                        types.Primitive.any;
+                    try built.append(self.gpa, .{
+                        .name = im.name,
+                        .type = t,
+                        .is_optional = im.is_optional,
+                        .is_readonly = im.is_readonly,
+                        .is_method = im.is_method,
+                    });
+                }
+                return self.interner.internObjectType(built.items) catch return error.OutOfMemory;
+            },
+            .union_type => {
+                const members = hir_mod.unionTypeMembers(self.hir, type_node);
+                var ms: std.ArrayListUnmanaged(TypeId) = .empty;
+                defer ms.deinit(self.gpa);
+                for (members) |m| try ms.append(self.gpa, try self.lowererLowerWithTypeParams(m));
+                return self.interner.internUnion(ms.items) catch return error.OutOfMemory;
+            },
+            .intersection_type => {
+                const members = hir_mod.intersectionTypeMembers(self.hir, type_node);
+                var ms: std.ArrayListUnmanaged(TypeId) = .empty;
+                defer ms.deinit(self.gpa);
+                for (members) |m| try ms.append(self.gpa, try self.lowererLowerWithTypeParams(m));
+                return self.interner.internIntersection(ms.items) catch return error.OutOfMemory;
+            },
             .type_ref => {
                 const r = hir_mod.typeRefOf(self.hir, type_node);
                 if (r.qualifier_len == 0 and r.args_len == 0) {
                     if (self.lookupNarrow(r.name)) |t| return t;
                     if (self.type_names.get(r.name)) |t| return t;
+                }
+                // `Alias<X, Y>` — instantiate the generic alias by
+                // substituting each declared parameter with the
+                // corresponding lowered argument. Extra args are
+                // ignored; missing args fall back to the parameter's
+                // own TypeId (so partial application leaves the
+                // remaining slot in place).
+                if (r.qualifier_len == 0 and r.args_len > 0) {
+                    if (self.generic_aliases.get(r.name)) |info| {
+                        const args = hir_mod.typeRefArgs(self.hir, type_node);
+                        var subs: std.AutoHashMapUnmanaged(TypeId, TypeId) = .empty;
+                        defer subs.deinit(self.gpa);
+                        const npairs = @min(args.len, info.params.len);
+                        var i: usize = 0;
+                        while (i < npairs) : (i += 1) {
+                            const arg_t = try self.lowererLowerWithTypeParams(args[i]);
+                            try subs.put(self.gpa, info.params[i], arg_t);
+                        }
+                        return self.substituteType(info.body, &subs) catch info.body;
+                    }
                 }
             },
             .typeof_type => {
@@ -1241,10 +1621,9 @@ pub const Checker = struct {
     }
 
     /// Substitute occurrences of type-parameter ids in `t` per the
-    /// `subs` map. Phase 3 simplification: handles direct type-
-    /// parameter, union-of-substitutables, and array element
-    /// (when array is lowered to its element). Other compound
-    /// shapes pass through unchanged.
+    /// `subs` map. Recurses into compound types — unions,
+    /// intersections, signatures, object types — so a parameterized
+    /// alias body fully resolves under instantiation.
     fn substituteType(
         self: *Checker,
         t: TypeId,
@@ -1265,6 +1644,32 @@ pub const Checker = struct {
             defer new.deinit(self.gpa);
             for (members) |m| try new.append(self.gpa, try self.substituteType(m, subs));
             return self.interner.internIntersection(new.items) catch return t;
+        }
+        if (flags.is_signature) {
+            const params = self.interner.signatureParams(t);
+            var new: std.ArrayListUnmanaged(TypeId) = .empty;
+            defer new.deinit(self.gpa);
+            for (params) |p| try new.append(self.gpa, try self.substituteType(p, subs));
+            const ret = if (self.interner.signatureReturn(t)) |r|
+                try self.substituteType(r, subs)
+            else
+                types.Primitive.void_t;
+            return self.interner.internSignature(new.items, ret, false) catch return t;
+        }
+        if (flags.is_object_type) {
+            const orig = self.interner.objectMembers(t);
+            var new_members: std.ArrayListUnmanaged(types.ObjectMember) = .empty;
+            defer new_members.deinit(self.gpa);
+            for (orig) |om| {
+                try new_members.append(self.gpa, .{
+                    .name = om.name,
+                    .type = try self.substituteType(om.type, subs),
+                    .is_optional = om.is_optional,
+                    .is_readonly = om.is_readonly,
+                    .is_method = om.is_method,
+                });
+            }
+            return self.interner.internObjectType(new_members.items) catch return t;
         }
         return t;
     }
@@ -2016,6 +2421,89 @@ test "checker: arrow with expression body infers its return from the expression"
     const sig = s.hir.typeOf(v.init);
     const ret = s.ti.signatureReturn(sig) orelse return error.TestExpectedEqual;
     try T.expectEqual(types.Primitive.number_t, ret);
+}
+
+test "checker: noUnusedParameters emits TS6133 for unread param" {
+    const s = try newSetup("function f(x: number, y: number): number { return x; }");
+    defer destroySetup(s);
+    s.checker.setStrictFlags(.{ .no_unused_parameters = true });
+    try s.checker.checkSourceFile(s.root);
+    var has_y = false;
+    var only_y = true;
+    for (s.checker.diagnostics.items) |d| {
+        if (d.code != TsCodes.declared_but_not_read) continue;
+        const msg = d.message;
+        if (std.mem.indexOf(u8, msg, "'y'") != null) has_y = true;
+        if (std.mem.indexOf(u8, msg, "'x'") != null) only_y = false;
+    }
+    try T.expect(has_y);
+    try T.expect(only_y);
+}
+
+test "checker: noUnusedParameters honors leading-underscore convention" {
+    const s = try newSetup("function f(_unused: number, x: number): number { return x; }");
+    defer destroySetup(s);
+    s.checker.setStrictFlags(.{ .no_unused_parameters = true });
+    try s.checker.checkSourceFile(s.root);
+    try T.expect(s.checker.diagnostics.items.len == 0);
+}
+
+test "checker: noUnusedParameters skips when flag is off" {
+    const s = try newSetup("function f(x: number, y: number): number { return x; }");
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+    try T.expect(s.checker.diagnostics.items.len == 0);
+}
+
+test "checker: generic alias `Box<number>` substitutes the type parameter" {
+    const s = try newSetup(
+        \\type Box<T> = { value: T };
+        \\function f(b: Box<number>): number { return b.value; }
+    );
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+    try T.expect(s.checker.diagnostics.items.len == 0);
+    const stmts = hir_mod.blockStmts(&s.hir, s.root);
+    const f = hir_mod.fnDeclOf(&s.hir, stmts[1]);
+    const body = hir_mod.blockStmts(&s.hir, f.body);
+    const ret_p = hir_mod.returnOf(&s.hir, body[0]);
+    try T.expectEqual(types.Primitive.number_t, s.hir.typeOf(ret_p.value));
+}
+
+test "checker: generic alias mismatch emits TS2322" {
+    const s = try newSetup(
+        \\type Box<T> = { value: T };
+        \\let b: Box<number> = { value: "hi" };
+    );
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+    var found = false;
+    for (s.checker.diagnostics.items) |d| {
+        if (d.code == TsCodes.type_not_assignable) found = true;
+    }
+    try T.expect(found);
+}
+
+test "checker: noUnusedLocals emits TS6133 for unread let" {
+    const s = try newSetup(
+        \\function f(): number {
+        \\  let unused = 1;
+        \\  let used = 2;
+        \\  return used;
+        \\}
+    );
+    defer destroySetup(s);
+    s.checker.setStrictFlags(.{ .no_unused_locals = true });
+    try s.checker.checkSourceFile(s.root);
+    var has_unused = false;
+    var has_used = false;
+    for (s.checker.diagnostics.items) |d| {
+        if (d.code != TsCodes.declared_but_not_read) continue;
+        if (std.mem.indexOf(u8, d.message, "'unused'") != null) has_unused = true;
+        if (std.mem.indexOf(u8, d.message, "'used'") != null) has_used = true;
+    }
+    try T.expect(has_unused);
+    try T.expect(!has_used);
 }
 
 test "checker: function with branches unions the return types" {

@@ -211,6 +211,7 @@ pub fn build(b: *std.Build) void {
         .optimize = optimize,
     });
     ts_emit_pkg.addImport("zig_dtsx", dtsx_pkg);
+    ts_emit_pkg.addImport("ts_checker", ts_checker_pkg);
 
     const d_hm_pkg = createPackage(b, "packages/d_hm/src/d_hm.zig", target, optimize, zig_test_framework);
 

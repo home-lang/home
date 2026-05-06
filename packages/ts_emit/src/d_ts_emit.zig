@@ -27,6 +27,7 @@
 const std = @import("std");
 const hir_mod = @import("hir");
 const string_interner = @import("string_interner");
+const ts_checker = @import("ts_checker");
 
 pub const NodeId = hir_mod.NodeId;
 pub const Hir = hir_mod.Hir;
@@ -45,6 +46,12 @@ pub const Emitter = struct {
     gpa: std.mem.Allocator,
     hir: *const Hir,
     interner: *const string_interner.Interner,
+    /// Optional type interner — when set, the emitter renders
+    /// inferred types (e.g. a function's checker-derived return
+    /// type when no annotation was supplied) into the .d.ts output.
+    /// Without it the emitter falls back to skipping unannotated
+    /// types, matching the old behavior.
+    type_interner: ?*const ts_checker.Interner = null,
     out: std.ArrayListUnmanaged(u8),
     options: Options,
     depth: u32,
@@ -59,6 +66,27 @@ pub const Emitter = struct {
             .gpa = gpa,
             .hir = hir,
             .interner = interner,
+            .type_interner = null,
+            .out = .empty,
+            .options = options,
+            .depth = 0,
+        };
+    }
+
+    /// Constructor variant that also wires the type interner so
+    /// inferred return types can be rendered.
+    pub fn initWithTypes(
+        gpa: std.mem.Allocator,
+        hir: *const Hir,
+        interner: *const string_interner.Interner,
+        type_interner: *const ts_checker.Interner,
+        options: Options,
+    ) Emitter {
+        return .{
+            .gpa = gpa,
+            .hir = hir,
+            .interner = interner,
+            .type_interner = type_interner,
             .out = .empty,
             .options = options,
             .depth = 0,
@@ -142,8 +170,25 @@ pub const Emitter = struct {
         if (f.return_type != hir_mod.none_node_id) {
             try self.write(": ");
             try self.emitTypeNode(f.return_type);
+        } else if (self.renderInferredReturn(node)) |rendered| {
+            defer self.gpa.free(rendered);
+            try self.write(": ");
+            try self.write(rendered);
         }
         try self.write(";");
+    }
+
+    /// If a type interner is available and the function's HIR node
+    /// has a checker-assigned signature TypeId, render its return
+    /// type. Returns null when the type interner is absent or the
+    /// node lacks a usable signature.
+    fn renderInferredReturn(self: *Emitter, node: NodeId) ?[]u8 {
+        const ti = self.type_interner orelse return null;
+        const t = self.hir.typeOf(node);
+        if (t == 0) return null;
+        if (!ti.pool.flagsOf(t).is_signature) return null;
+        const ret = ti.signatureReturn(t) orelse return null;
+        return ts_checker.renderType(self.gpa, ti, self.interner, ret) catch null;
     }
 
     fn emitParameter(self: *Emitter, node: NodeId) !void {
@@ -594,6 +639,24 @@ fn emitTest(source: []const u8) ![]u8 {
     return T.allocator.dupe(u8, em.out.items);
 }
 
+/// Same as `emitTest` but runs the checker first so the d.ts
+/// emitter sees inferred return types via the type interner.
+fn emitTestTyped(source: []const u8) ![]u8 {
+    const s = try newSetup(source);
+    defer destroySetup(s);
+    var ti = try ts_checker.Interner.init(T.allocator);
+    defer ti.deinit();
+    var engine = ts_checker.Engine.init(T.allocator, &ti);
+    defer engine.deinit();
+    var checker = ts_checker.Checker.init(T.allocator, &s.hir, &ti, &s.sint, &engine);
+    defer checker.deinit();
+    try checker.checkSourceFile(s.root);
+    var em = Emitter.initWithTypes(T.allocator, &s.hir, &s.sint, &ti, .{});
+    defer em.deinit();
+    try em.emitSourceFile(s.root);
+    return T.allocator.dupe(u8, em.out.items);
+}
+
 test "d.ts: function strips body" {
     const out = try emitTest("function add(a: number, b: number): number { return a + b; }");
     defer T.allocator.free(out);
@@ -660,6 +723,33 @@ test "d.ts: export decl" {
     const out = try emitTest("export function id(x: number): number { return x; }");
     defer T.allocator.free(out);
     try T.expect(std.mem.indexOf(u8, out, "export declare function id(x: number): number;") != null);
+}
+
+test "d.ts: inferred return type renders when annotation is missing" {
+    const out = try emitTestTyped("function add(a: number, b: number) { return a + b; }");
+    defer T.allocator.free(out);
+    try T.expect(std.mem.indexOf(u8, out, "declare function add(a: number, b: number): number;") != null);
+}
+
+test "d.ts: inferred void return for body without returns" {
+    const out = try emitTestTyped("function noop(x: number) { let y = x; }");
+    defer T.allocator.free(out);
+    try T.expect(std.mem.indexOf(u8, out, "declare function noop(x: number): void;") != null);
+}
+
+test "d.ts: inferred union return across branches" {
+    const out = try emitTestTyped(
+        \\function pick(b: boolean) {
+        \\  if (b) { return 1; }
+        \\  return "hi";
+        \\}
+    );
+    defer T.allocator.free(out);
+    try T.expect(std.mem.indexOf(u8, out, "declare function pick(b: boolean):") != null);
+    // Both branches must surface in the union; order is interner-canonical.
+    try T.expect(std.mem.indexOf(u8, out, "number") != null);
+    try T.expect(std.mem.indexOf(u8, out, "string") != null);
+    try T.expect(std.mem.indexOf(u8, out, " | ") != null);
 }
 
 test "d.ts: interface body emits members" {

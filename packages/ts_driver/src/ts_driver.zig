@@ -310,7 +310,13 @@ pub fn compileSource(
         const co = cfg.compiler_options;
         const strict_on = co.strict orelse false;
         const no_implicit_any = co.no_implicit_any orelse strict_on;
-        checker.setStrictFlags(.{ .no_implicit_any = no_implicit_any });
+        // `strict` does NOT imply noUnusedLocals / noUnusedParameters
+        // — those are independent in tsc.
+        checker.setStrictFlags(.{
+            .no_implicit_any = no_implicit_any,
+            .no_unused_parameters = co.no_unused_parameters orelse false,
+            .no_unused_locals = co.no_unused_locals orelse false,
+        });
     }
     if (c.root != hir_mod.none_node_id) {
         checker.checkSourceFile(c.root) catch |err| switch (err) {

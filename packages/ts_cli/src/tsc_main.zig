@@ -245,7 +245,7 @@ pub fn main(init: std.process.Init) !void {
             std.process.exit(1);
         };
         if (emit_dts) {
-            var emitter = ts_emit.DtsEmitter.init(gpa, &c.hir, &c.interner, .{});
+            var emitter = ts_emit.DtsEmitter.initWithTypes(gpa, &c.hir, &c.interner, &c.type_interner, .{});
             defer emitter.deinit();
             emitter.emitSourceFile(c.root) catch |err| {
                 std.debug.print("error emitting d.ts for {s}: {s}\n", .{ f.path, @errorName(err) });
