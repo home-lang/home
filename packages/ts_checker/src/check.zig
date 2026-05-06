@@ -2945,17 +2945,39 @@ pub const Checker = struct {
         // X === <literal> / X !== <literal> — narrow X to the
         // literal type in the positive branch, subtract it in the
         // negative branch. Covers `s === "hello"`, `n === 42`,
-        // `b === true`, `x === 42n`. Discriminated-union narrowing
-        // above handles the member-access case (`x.kind === "circle"`);
-        // this branch handles the bare-identifier case.
+        // `b === true`, `x === 42n`, `x === -42n` (parsed as
+        // `unary_op(neg, literal_bigint(42))`). Discriminated-union
+        // narrowing above handles the member-access case
+        // (`x.kind === "circle"`); this branch handles the
+        // bare-identifier case.
+        const rhs_is_neg_bigint = blk: {
+            if (self.hir.kindOf(b.rhs) != .unary_op) break :blk false;
+            const u = hir_mod.unaryOf(self.hir, b.rhs);
+            break :blk u.op == .neg and self.hir.kindOf(u.operand) == .literal_bigint;
+        };
         if (self.hir.kindOf(b.lhs) == .identifier and
             (self.hir.kindOf(b.rhs) == .literal_string or
                 self.hir.kindOf(b.rhs) == .literal_number or
                 self.hir.kindOf(b.rhs) == .literal_bigint or
-                self.hir.kindOf(b.rhs) == .literal_bool))
+                self.hir.kindOf(b.rhs) == .literal_bool or
+                rhs_is_neg_bigint))
         {
             const id = hir_mod.identifierOf(self.hir, b.lhs);
             const lit_t: TypeId = blk: {
+                if (rhs_is_neg_bigint) {
+                    const u = hir_mod.unaryOf(self.hir, b.rhs);
+                    const lit = hir_mod.literalBigIntOf(self.hir, u.operand);
+                    const digits_str = self.string_interner.get(lit.digits);
+                    // Build "-<digits>" so the rendered literal is
+                    // `-<digits>n` and equality of TypeIds tracks
+                    // sign + magnitude.
+                    var buf: [64]u8 = undefined;
+                    if (digits_str.len + 1 > buf.len) return;
+                    buf[0] = '-';
+                    @memcpy(buf[1 .. 1 + digits_str.len], digits_str);
+                    const neg_digits_id = self.string_interner.intern(buf[0 .. 1 + digits_str.len]) catch return;
+                    break :blk self.interner.internBigIntLiteral(neg_digits_id) catch return;
+                }
                 switch (self.hir.kindOf(b.rhs)) {
                     .literal_string => {
                         const lit = hir_mod.literalStringOf(self.hir, b.rhs);
@@ -5821,6 +5843,30 @@ test "checker: x === bigint-literal narrows to literal type" {
     const y_decl = then_stmts[0];
     const y_init = hir_mod.varDeclOf(&s.hir, y_decl).init;
     const digits_id = try s.sint.intern("42");
+    const expected = try s.ti.internBigIntLiteral(digits_id);
+    try T.expectEqual(expected, s.hir.typeOf(y_init));
+}
+
+test "checker: x === negative bigint-literal narrows to negative literal" {
+    const s = try newSetup(
+        \\function f(x: bigint) {
+        \\  if (x === -42n) {
+        \\    let y = x;
+        \\  }
+        \\}
+    );
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+    const stmts = hir_mod.blockStmts(&s.hir, s.root);
+    const fn_node = stmts[0];
+    const f = hir_mod.fnDeclOf(&s.hir, fn_node);
+    const body_stmts = hir_mod.blockStmts(&s.hir, f.body);
+    const if_stmt = body_stmts[0];
+    const ifp = hir_mod.ifOf(&s.hir, if_stmt);
+    const then_stmts = hir_mod.blockStmts(&s.hir, ifp.then_branch);
+    const y_decl = then_stmts[0];
+    const y_init = hir_mod.varDeclOf(&s.hir, y_decl).init;
+    const digits_id = try s.sint.intern("-42");
     const expected = try s.ti.internBigIntLiteral(digits_id);
     try T.expectEqual(expected, s.hir.typeOf(y_init));
 }
