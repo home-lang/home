@@ -36,6 +36,11 @@ pub const Hir = hir_mod.Hir;
 pub const NodeId = hir_mod.NodeId;
 pub const Span = hir_mod.Span;
 
+pub const jsdoc = @import("jsdoc.zig");
+test {
+    _ = jsdoc;
+}
+
 pub const ParseError = error{
     UnexpectedToken,
     UnexpectedEof,
