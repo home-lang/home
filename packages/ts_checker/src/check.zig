@@ -244,6 +244,32 @@ pub const Checker = struct {
                 _ = try self.checkExpression(w.cond);
                 try self.checkStatement(w.body);
             },
+            .for_in_stmt => {
+                // `for (let k in obj)` — `k` types to `string`
+                // regardless of `obj`'s shape (matches tsc).
+                const fr = hir_mod.forInOf(self.hir, node);
+                _ = try self.checkExpression(fr.source);
+                try self.bindForLoopTarget(fr.target, types.Primitive.string_t);
+                try self.checkStatement(fr.body);
+            },
+            .for_of_stmt => {
+                // `for (let x of arr)` — `x` types to `arr`'s
+                // element type. We discover that via the array
+                // shape's number-key indexer (which is how
+                // `internArrayType` exposes it). For unknown
+                // sources we fall through to `any`.
+                const fr = hir_mod.forInOf(self.hir, node);
+                const src_t = try self.checkExpression(fr.source);
+                const elem_t: TypeId = blk: {
+                    if (self.interner.pool.flagsOf(src_t).is_object_type) {
+                        const idx = self.interner.objectNumberIndex(src_t);
+                        if (idx != types.Primitive.none) break :blk idx;
+                    }
+                    break :blk types.Primitive.any;
+                };
+                try self.bindForLoopTarget(fr.target, elem_t);
+                try self.checkStatement(fr.body);
+            },
             .block_stmt => {
                 const stmts = hir_mod.blockStmts(self.hir, node);
                 for (stmts) |s| try self.checkStatement(s);
@@ -1633,6 +1659,26 @@ pub const Checker = struct {
                     }
                 }
             }
+            if (k == .for_in_stmt or k == .for_of_stmt) {
+                // The loop binding lives directly on the for node;
+                // it isn't a sibling in any block. Match against
+                // the binding's name slot if it's a let/const/var
+                // form.
+                const fr = hir_mod.forInOf(self.hir, cur);
+                if (fr.target != hir_mod.none_node_id) {
+                    const tk = self.hir.kindOf(fr.target);
+                    if (tk == .var_decl or tk == .let_decl or tk == .const_decl) {
+                        const v = hir_mod.varDeclOf(self.hir, fr.target);
+                        if (v.name != hir_mod.none_node_id and self.hir.kindOf(v.name) == .identifier) {
+                            const vid = hir_mod.identifierOf(self.hir, v.name);
+                            if (vid.name == id.name) {
+                                const t = self.hir.typeOf(fr.target);
+                                if (t != types.Primitive.none) return t;
+                            }
+                        }
+                    }
+                }
+            }
             cur = self.hir.parentOf(cur);
         }
 
@@ -1858,6 +1904,26 @@ pub const Checker = struct {
             .code = code,
             .message = msg,
         });
+    }
+
+    /// Bind the loop variable in `for (TARGET in/of SOURCE) ...`
+    /// to `elem_t`. Target may be a `let`/`const`/`var` decl
+    /// (binding shape) or a bare identifier (assignment shape).
+    /// Both get the loop's element type recorded on the binding's
+    /// HIR node so identifier lookups inside the body see it.
+    fn bindForLoopTarget(self: *Checker, target: NodeId, elem_t: TypeId) CheckError!void {
+        if (target == hir_mod.none_node_id) return;
+        switch (self.hir.kindOf(target)) {
+            .var_decl, .let_decl, .const_decl => {
+                const v = hir_mod.varDeclOf(self.hir, target);
+                self.hir.setType(target, elem_t);
+                if (v.name != hir_mod.none_node_id) self.hir.setType(v.name, elem_t);
+            },
+            .identifier => {
+                self.hir.setType(target, elem_t);
+            },
+            else => {},
+        }
     }
 
     /// True when `t` admits `undefined` — either directly or as a
@@ -2733,6 +2799,44 @@ test "checker: interface extends multiple parents merges all members" {
     try T.expect(s.ti.objectMember(c_t, c_id) != null);
 }
 
+test "checker: for-of binds the loop variable to the array's element type" {
+    const s = try newSetup(
+        \\function sum(xs: number[]): number {
+        \\  let total: number = 0;
+        \\  for (let x of xs) { total = total + x; }
+        \\  return total;
+        \\}
+    );
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+    try T.expect(s.checker.diagnostics.items.len == 0);
+}
+
+test "checker: for-of element references a typed identifier" {
+    // Sanity check that the loop variable becomes number, then
+    // that an arithmetic op against it stays number.
+    const s = try newSetup(
+        \\let xs: number[] = [1, 2, 3];
+        \\let total: number = 0;
+        \\for (let x of xs) { total = total + x; }
+    );
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+    try T.expect(s.checker.diagnostics.items.len == 0);
+}
+
+test "checker: for-in binds the key variable to string" {
+    const s = try newSetup(
+        \\function f(o: { [k: string]: number }): string {
+        \\  for (let k in o) { let s: string = k; return s; }
+        \\  return "";
+        \\}
+    );
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+    try T.expect(s.checker.diagnostics.items.len == 0);
+}
+
 test "checker: array literal indexes to its element type" {
     const s = try newSetup(
         \\let xs = [1, 2, 3];
@@ -2756,6 +2860,27 @@ test "checker: array literal exposes length: number" {
     const stmts = hir_mod.blockStmts(&s.hir, s.root);
     const v = hir_mod.varDeclOf(&s.hir, stmts[1]);
     try T.expectEqual(types.Primitive.number_t, s.hir.typeOf(v.init));
+}
+
+test "checker: tuple type exposes per-index members + length literal" {
+    const s = try newSetup(
+        \\function fst(p: [number, string]): number { return p[0]; }
+    );
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+    try T.expect(s.checker.diagnostics.items.len == 0);
+    const stmts = hir_mod.blockStmts(&s.hir, s.root);
+    const params = hir_mod.fnParams(&s.hir, stmts[0]);
+    const tuple_t = s.hir.typeOf(params[0]);
+    // Tuple → object with `length` (literal 2), `0`/`1` keyed members,
+    // and a number indexer for the union.
+    try T.expect(s.ti.pool.flagsOf(tuple_t).is_object_type);
+    const length_id = try s.sint.intern("length");
+    try T.expect(s.ti.objectMember(tuple_t, length_id) != null);
+    const zero_id = try s.sint.intern("0");
+    const one_id = try s.sint.intern("1");
+    try T.expect(s.ti.objectMember(tuple_t, zero_id) != null);
+    try T.expect(s.ti.objectMember(tuple_t, one_id) != null);
 }
 
 test "checker: T[] annotation indexes to T" {

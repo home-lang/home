@@ -231,18 +231,51 @@ pub const Lowerer = struct {
     }
 
     fn lowerTuple(self: *Lowerer, node: NodeId) LowerError!TypeId {
-        // Tuple lowering produces a union of element types as a
-        // first-order approximation. Real tuple-type lowering needs
-        // the Pool's tuple-payload column wiring + ordered-element
-        // semantics — Phase 3 follow-up.
+        // Tuple lowering: build an object type with `length: N`
+        // (literal), per-index members keyed by "0", "1", … typed
+        // as the matching element, and a number-key indexer typed
+        // as the union of all element types so out-of-bound or
+        // dynamic-index access still resolves to something useful.
+        // Proper structural tuple semantics (tuple-vs-array
+        // assignability subtleties) lands as a follow-up.
         const elems = hir_mod.tupleTypeElements(self.hir, node);
-        var ids: std.ArrayListUnmanaged(TypeId) = .empty;
-        defer ids.deinit(self.gpa);
-        for (elems) |e| {
-            const id = try self.lower(e);
-            try ids.append(self.gpa, id);
+        var element_ids: std.ArrayListUnmanaged(TypeId) = .empty;
+        defer element_ids.deinit(self.gpa);
+        var members: std.ArrayListUnmanaged(types.ObjectMember) = .empty;
+        defer members.deinit(self.gpa);
+
+        for (elems, 0..) |e, i| {
+            const t = try self.lower(e);
+            try element_ids.append(self.gpa, t);
+            // Intern the index name as a string key.
+            var nbuf: [12]u8 = undefined;
+            const name_str = std.fmt.bufPrint(&nbuf, "{d}", .{i}) catch continue;
+            const name = self.string_interner.intern(name_str) catch continue;
+            try members.append(self.gpa, .{
+                .name = name,
+                .type = t,
+                .is_optional = false,
+                .is_readonly = false,
+                .is_method = false,
+            });
         }
-        return self.interner.internUnion(ids.items) catch error.OutOfMemory;
+        // length: the literal `elems.len` number.
+        const length_id = self.string_interner.intern("length") catch return error.OutOfMemory;
+        const length_t = self.interner.internNumberLiteral(@floatFromInt(elems.len)) catch types.Primitive.number_t;
+        try members.append(self.gpa, .{
+            .name = length_id,
+            .type = length_t,
+            .is_optional = false,
+            .is_readonly = true,
+            .is_method = false,
+        });
+        const elem_union: TypeId = if (element_ids.items.len == 0)
+            types.Primitive.never
+        else if (element_ids.items.len == 1)
+            element_ids.items[0]
+        else
+            self.interner.internUnion(element_ids.items) catch types.Primitive.any;
+        return self.interner.internObjectTypeWithIndex(members.items, types.Primitive.none, elem_union) catch error.OutOfMemory;
     }
 };
 
