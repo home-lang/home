@@ -205,6 +205,16 @@ pub const Highlight = struct {
     pub const Kind = enum { text, read, write };
 };
 
+/// LSP `textDocument/prepareCallHierarchy` element. Represents one
+/// caller (incoming) or callee (outgoing) of the function under the
+/// cursor. The `span` points at the symbol's declaration, mirroring
+/// LSP's `CallHierarchyItem.range`.
+pub const CallHierarchyItem = struct {
+    name: []const u8,
+    kind: SymbolInfo.SymbolKind,
+    span: Span,
+};
+
 pub const Service = struct {
     gpa: std.mem.Allocator,
     program: *ts_program.Program,
@@ -1074,6 +1084,104 @@ pub const Service = struct {
         return ranges.toOwnedSlice(gpa);
     }
 
+    /// LSP `callHierarchy/incomingCalls`: return one item per
+    /// function in the program that calls the function under the
+    /// cursor. The cursor must land inside (or on the name of) a
+    /// function declaration; we match call sites by callee-identifier
+    /// name and credit each match to its enclosing fn declaration.
+    /// Each returned item points at the calling fn's declaration span.
+    pub fn callHierarchyIncoming(
+        self: *Service,
+        gpa: std.mem.Allocator,
+        file_path: []const u8,
+        byte_pos: u32,
+    ) ![]CallHierarchyItem {
+        var out: std.ArrayListUnmanaged(CallHierarchyItem) = .empty;
+        errdefer out.deinit(gpa);
+
+        const file_id = self.program.lookupPath(file_path) orelse return out.toOwnedSlice(gpa);
+        const origin = self.program.fileById(file_id);
+        const oc = origin.compilation orelse return out.toOwnedSlice(gpa);
+        const start = findInnermostNode(&oc.hir, oc.root, byte_pos) orelse return out.toOwnedSlice(gpa);
+        const target_fn = enclosingFnDecl(&oc.hir, start) orelse return out.toOwnedSlice(gpa);
+        const target_fn_p = hir_mod.fnDeclOf(&oc.hir, target_fn);
+        if (target_fn_p.name == hir_mod.none_node_id) return out.toOwnedSlice(gpa);
+        const target_name_id = hir_mod.identifierOf(&oc.hir, target_fn_p.name).name;
+        const target_name = oc.interner.get(target_name_id);
+
+        // Walk every program file's HIR. For each call_expr whose
+        // callee is an identifier matching the target name, find the
+        // enclosing fn declaration and record it. Top-level calls
+        // (no enclosing fn) are skipped.
+        for (self.program.files.items) |f| {
+            const c = f.compilation orelse continue;
+            const local_id = c.interner.lookup(target_name) orelse continue;
+            var i: hir_mod.NodeId = 1;
+            while (i < c.hir.nodeCount()) : (i += 1) {
+                if (c.hir.kindOf(i) != .call_expr) continue;
+                const call = hir_mod.callOf(&c.hir, i);
+                if (call.callee == hir_mod.none_node_id) continue;
+                if (c.hir.kindOf(call.callee) != .identifier) continue;
+                const cid = hir_mod.identifierOf(&c.hir, call.callee);
+                if (cid.name != local_id) continue;
+
+                const caller_fn = enclosingFnDecl(&c.hir, i) orelse continue;
+                // Skip self-recursive matches against the target itself.
+                if (f.id == file_id and caller_fn == target_fn) continue;
+                const item = describeFnDeclItem(&c.hir, &c.interner, caller_fn, f.source, f.path) orelse continue;
+                if (containsCallHierarchyItem(out.items, item)) continue;
+                try out.append(gpa, item);
+            }
+        }
+        return out.toOwnedSlice(gpa);
+    }
+
+    /// LSP `callHierarchy/outgoingCalls`: return one item per
+    /// function called BY the function under the cursor. Walks the
+    /// target fn's body for `call_expr` nodes; for each, the callee
+    /// identifier is resolved against the file's module-scope symbol
+    /// table to find its declaration. Calls whose callee isn't a
+    /// resolvable top-level fn name are skipped.
+    pub fn callHierarchyOutgoing(
+        self: *Service,
+        gpa: std.mem.Allocator,
+        file_path: []const u8,
+        byte_pos: u32,
+    ) ![]CallHierarchyItem {
+        var out: std.ArrayListUnmanaged(CallHierarchyItem) = .empty;
+        errdefer out.deinit(gpa);
+
+        const file_id = self.program.lookupPath(file_path) orelse return out.toOwnedSlice(gpa);
+        const f = self.program.fileById(file_id);
+        const c = f.compilation orelse return out.toOwnedSlice(gpa);
+        const start = findInnermostNode(&c.hir, c.root, byte_pos) orelse return out.toOwnedSlice(gpa);
+        const target_fn = enclosingFnDecl(&c.hir, start) orelse return out.toOwnedSlice(gpa);
+        const target_fn_p = hir_mod.fnDeclOf(&c.hir, target_fn);
+        if (target_fn_p.body == hir_mod.none_node_id) return out.toOwnedSlice(gpa);
+
+        // Walk every node in the file and check if it's a descendant
+        // of the target fn. We use parent-chain walks to test
+        // containment so we don't need a recursive HIR walker here.
+        var i: hir_mod.NodeId = 1;
+        while (i < c.hir.nodeCount()) : (i += 1) {
+            if (c.hir.kindOf(i) != .call_expr) continue;
+            if (!nodeContainedIn(&c.hir, i, target_fn)) continue;
+            const call = hir_mod.callOf(&c.hir, i);
+            if (call.callee == hir_mod.none_node_id) continue;
+            if (c.hir.kindOf(call.callee) != .identifier) continue;
+            const cid = hir_mod.identifierOf(&c.hir, call.callee);
+            const sym = c.module.root.lookup(cid.name) orelse continue;
+            if (sym.decls.items.len == 0) continue;
+            const decl = sym.decls.items[0];
+            const decl_kind = c.hir.kindOf(decl);
+            if (decl_kind != .fn_decl and decl_kind != .fn_expr and decl_kind != .arrow_fn) continue;
+            const item = describeFnDeclItem(&c.hir, &c.interner, decl, f.source, f.path) orelse continue;
+            if (containsCallHierarchyItem(out.items, item)) continue;
+            try out.append(gpa, item);
+        }
+        return out.toOwnedSlice(gpa);
+    }
+
     /// Diagnostics for `file`. Forwards from the per-file
     /// Compilation and renders them in tsc-default format.
     pub fn diagnostics(self: *Service, gpa: std.mem.Allocator, file_path: []const u8) ![]const u8 {
@@ -1196,6 +1304,75 @@ fn walkUpToCallExpr(hir: *const hir_mod.Hir, start: hir_mod.NodeId) ?hir_mod.Nod
         cur = p;
     }
     return null;
+}
+
+/// Walk up the parent chain from `start` until we find an
+/// fn_decl/fn_expr/arrow_fn, or return null if we reach the root
+/// without one. Used by call-hierarchy to anchor a cursor inside a
+/// function body to that function's declaration node.
+fn enclosingFnDecl(hir: *const hir_mod.Hir, start: hir_mod.NodeId) ?hir_mod.NodeId {
+    var cur = start;
+    while (cur != hir_mod.none_node_id) {
+        const k = hir.kindOf(cur);
+        if (k == .fn_decl or k == .fn_expr or k == .arrow_fn) return cur;
+        const p = hir.parentOf(cur);
+        if (p == cur) return null;
+        cur = p;
+    }
+    return null;
+}
+
+/// Test whether `node` is `ancestor` or a transitive descendant of
+/// it, by walking the parent chain upward from `node`.
+fn nodeContainedIn(hir: *const hir_mod.Hir, node: hir_mod.NodeId, ancestor: hir_mod.NodeId) bool {
+    var cur = node;
+    while (cur != hir_mod.none_node_id) {
+        if (cur == ancestor) return true;
+        const p = hir.parentOf(cur);
+        if (p == cur) return false;
+        cur = p;
+    }
+    return false;
+}
+
+/// Build a `CallHierarchyItem` from a fn_decl-shaped node. Returns
+/// null when the function has no name (anonymous fn_expr / arrow).
+fn describeFnDeclItem(
+    hir: *const hir_mod.Hir,
+    sint: *const string_interner.Interner,
+    fn_node: hir_mod.NodeId,
+    source: []const u8,
+    file_path: []const u8,
+) ?CallHierarchyItem {
+    const f = hir_mod.fnDeclOf(hir, fn_node);
+    if (f.name == hir_mod.none_node_id) return null;
+    if (hir.kindOf(f.name) != .identifier) return null;
+    const name_id = hir_mod.identifierOf(hir, f.name).name;
+    const span = hir.spanOf(fn_node);
+    const sp = ts_diagnostics.positionToLineCol(source, span.start);
+    const ep = ts_diagnostics.positionToLineCol(source, span.end);
+    return .{
+        .name = sint.get(name_id),
+        .kind = .function,
+        .span = .{
+            .file = file_path,
+            .start_line = sp.line,
+            .start_col = sp.col,
+            .end_line = ep.line,
+            .end_col = ep.col,
+        },
+    };
+}
+
+/// Linear de-dup helper for the call-hierarchy result list. Items
+/// match by file+name (call sites can repeat within the same caller).
+fn containsCallHierarchyItem(items: []const CallHierarchyItem, item: CallHierarchyItem) bool {
+    for (items) |it| {
+        if (std.mem.eql(u8, it.name, item.name) and std.mem.eql(u8, it.span.file, item.span.file)) {
+            return true;
+        }
+    }
+    return false;
 }
 
 /// Walk the file's top-level statements and emit type-annotation
@@ -2341,6 +2518,77 @@ test "Service: rename returns one edit per occurrence" {
     // 3 occurrences: declaration + 2 references.
     try T.expectEqual(@as(usize, 3), edits.len);
     for (edits) |e| try T.expectEqualStrings("n", e.new_text);
+}
+
+test "Service: callHierarchyIncoming finds callers of the target fn" {
+    var vfs = ts_resolver.VirtualFs.init(T.allocator);
+    defer vfs.deinit();
+    var resolver = ts_resolver.Resolver.init(T.allocator, vfs.fs(), .{});
+    defer resolver.deinit();
+    var program = ts_program.Program.init(T.allocator, &resolver);
+    defer program.deinit();
+
+    // `target` is called from inside `caller_a` and `caller_b`.
+    // A top-level call to `target` is intentionally ignored — only
+    // calls from inside another fn count as incoming callers.
+    const src =
+        "function target() { return 1; }\n" ++
+        "function caller_a() { return target(); }\n" ++
+        "function caller_b() { return target() + 1; }\n" ++
+        "target();\n";
+    _ = try program.add("/main.ts", src);
+    try program.compileAll(.{});
+
+    var svc = Service.init(T.allocator, &program);
+    // Cursor on the name `target` in its declaration.
+    const pos: u32 = @intCast(std.mem.indexOf(u8, src, "target").?);
+    const incoming = try svc.callHierarchyIncoming(T.allocator, "/main.ts", pos);
+    defer T.allocator.free(incoming);
+
+    try T.expectEqual(@as(usize, 2), incoming.len);
+    var saw_a = false;
+    var saw_b = false;
+    for (incoming) |it| {
+        try T.expectEqual(SymbolInfo.SymbolKind.function, it.kind);
+        if (std.mem.eql(u8, it.name, "caller_a")) saw_a = true;
+        if (std.mem.eql(u8, it.name, "caller_b")) saw_b = true;
+    }
+    try T.expect(saw_a);
+    try T.expect(saw_b);
+}
+
+test "Service: callHierarchyOutgoing finds callees of the target fn" {
+    var vfs = ts_resolver.VirtualFs.init(T.allocator);
+    defer vfs.deinit();
+    var resolver = ts_resolver.Resolver.init(T.allocator, vfs.fs(), .{});
+    defer resolver.deinit();
+    var program = ts_program.Program.init(T.allocator, &resolver);
+    defer program.deinit();
+
+    // `caller` invokes `helper_a` and `helper_b`.
+    const src =
+        "function helper_a() { return 1; }\n" ++
+        "function helper_b() { return 2; }\n" ++
+        "function caller() { return helper_a() + helper_b(); }\n";
+    _ = try program.add("/main.ts", src);
+    try program.compileAll(.{});
+
+    var svc = Service.init(T.allocator, &program);
+    // Cursor on the name `caller` in its declaration.
+    const pos: u32 = @intCast(std.mem.indexOf(u8, src, "caller").?);
+    const outgoing = try svc.callHierarchyOutgoing(T.allocator, "/main.ts", pos);
+    defer T.allocator.free(outgoing);
+
+    try T.expectEqual(@as(usize, 2), outgoing.len);
+    var saw_a = false;
+    var saw_b = false;
+    for (outgoing) |it| {
+        try T.expectEqual(SymbolInfo.SymbolKind.function, it.kind);
+        if (std.mem.eql(u8, it.name, "helper_a")) saw_a = true;
+        if (std.mem.eql(u8, it.name, "helper_b")) saw_b = true;
+    }
+    try T.expect(saw_a);
+    try T.expect(saw_b);
 }
 
 test "Service: codeActions sorts top-level imports" {
