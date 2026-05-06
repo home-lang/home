@@ -23,6 +23,7 @@ const ts_program = @import("ts_program");
 const ts_driver = @import("ts_driver");
 const ts_diagnostics = @import("ts_diagnostics");
 const ts_checker = @import("ts_checker");
+const ts_lexer = @import("ts_lexer");
 const string_interner = @import("string_interner");
 
 pub const Span = struct {
@@ -905,6 +906,25 @@ pub const Service = struct {
                 .modifiers = 0,
             });
         }
+        // Walk the saved scanner token stream so keyword tokens
+        // (`let`, `function`, `class`, `if`, ...) get a `.keyword`
+        // semantic-token classification. The HIR encodes keywords
+        // implicitly via node kind, so without this pass editors
+        // would miss them. Comments are scanner trivia and aren't
+        // retained as tokens — once `.line_comment` /
+        // `.block_comment` token kinds exist they get classified the
+        // same way (see `classifyLexerToken`).
+        for (c.tokens.items) |tok| {
+            const tt = classifyLexerToken(tok.kind) orelse continue;
+            const pos = ts_diagnostics.positionToLineCol(f.source, tok.span.start);
+            try tokens.append(gpa, .{
+                .line = pos.line - 1,
+                .col = pos.col - 1,
+                .length = tok.span.end - tok.span.start,
+                .token_type = tt,
+                .modifiers = 0,
+            });
+        }
         // Sort by (line, col) for deterministic delta output.
         std.mem.sort(SemanticToken, tokens.items, {}, semanticTokenLessThan);
         return tokens.toOwnedSlice(gpa);
@@ -1291,6 +1311,17 @@ fn classifyNodeForSemantic(hir: *const hir_mod.Hir, node: hir_mod.NodeId) ?Seman
         },
         else => return null,
     }
+}
+
+/// Map a scanner `TokenKind` to a semantic-token type. Today this
+/// surfaces keywords as `.keyword`; comment trivia is not retained
+/// as a token kind by the lexer (whitespace + comments are skipped
+/// during scanning), so this returns `null` for everything else.
+/// When the lexer grows `.line_comment` / `.block_comment` token
+/// kinds, add them here mapped to `.comment`.
+fn classifyLexerToken(kind: ts_lexer.TokenKind) ?SemanticToken.TokenType {
+    if (kind.isKeyword()) return .keyword;
+    return null;
 }
 
 /// Walk up the parent chain from `start` until we find a call_expr,
@@ -2654,6 +2685,57 @@ test "Service: semanticTokens classifies identifiers by declaring kind" {
     try T.expect(has_class);
     try T.expect(has_parameter);
     try T.expect(has_variable);
+}
+
+test "Service: semanticTokens emits keyword tokens from the scanner stream" {
+    var vfs = ts_resolver.VirtualFs.init(T.allocator);
+    defer vfs.deinit();
+    var resolver = ts_resolver.Resolver.init(T.allocator, vfs.fs(), .{});
+    defer resolver.deinit();
+    var program = ts_program.Program.init(T.allocator, &resolver);
+    defer program.deinit();
+
+    const src = "function add(a, b) { return a + b; } class Box {} let x = 1;";
+    _ = try program.add("/main.ts", src);
+    try program.compileAll(.{});
+
+    var svc = Service.init(T.allocator, &program);
+    const tokens = try svc.semanticTokens(T.allocator, "/main.ts");
+    defer T.allocator.free(tokens);
+
+    var keyword_count: usize = 0;
+    for (tokens) |tok| {
+        if (tok.token_type == .keyword) keyword_count += 1;
+    }
+    // Source has at least: `function`, `return`, `class`, `let` -> 4 keywords.
+    try T.expect(keyword_count >= 4);
+}
+
+test "Service: semanticTokens covers `let` keyword span exactly" {
+    var vfs = ts_resolver.VirtualFs.init(T.allocator);
+    defer vfs.deinit();
+    var resolver = ts_resolver.Resolver.init(T.allocator, vfs.fs(), .{});
+    defer resolver.deinit();
+    var program = ts_program.Program.init(T.allocator, &resolver);
+    defer program.deinit();
+
+    // `let` starts at byte 0 -> line 0, col 0, length 3.
+    const src = "let x = 1;";
+    _ = try program.add("/main.ts", src);
+    try program.compileAll(.{});
+
+    var svc = Service.init(T.allocator, &program);
+    const tokens = try svc.semanticTokens(T.allocator, "/main.ts");
+    defer T.allocator.free(tokens);
+
+    var found = false;
+    for (tokens) |tok| {
+        if (tok.token_type == .keyword and tok.line == 0 and tok.col == 0 and tok.length == 3) {
+            found = true;
+            break;
+        }
+    }
+    try T.expect(found);
 }
 
 test "Service: inlayHints surfaces inferred types on let-bindings" {
