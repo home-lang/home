@@ -55,6 +55,12 @@ pub const CompletionItem = struct {
     kind: ItemKind,
     /// Optional type signature shown alongside the label.
     detail: []const u8,
+    /// When non-empty, an auto-import candidate: the file path the
+    /// symbol was discovered in. The editor renders this as a
+    /// secondary `additionalTextEdits` insertion (`import { name }
+    /// from "<path>"`) when the user selects this completion.
+    /// Empty for module-local completions.
+    auto_import_from: []const u8 = "",
 
     pub const ItemKind = enum { variable, function, class, interface, type_alias, module, keyword, member };
 };
@@ -311,6 +317,40 @@ pub const Service = struct {
                 .kind = kind,
                 .detail = "",
             });
+        }
+        // §8.A.1 — auto-import candidates from other files in the
+        // program. We surface every top-level declaration in any
+        // *other* file, tagged with `auto_import_from = <path>`.
+        // The editor renders these as secondary completions and
+        // adds the matching `import { name } from "<path>"` when
+        // the user accepts. Names already present in the local
+        // file are not duplicated as auto-import candidates.
+        for (self.program.files.items) |other| {
+            if (std.mem.eql(u8, other.path, file_path)) continue;
+            const oc = other.compilation orelse continue;
+            const ostmts = hir_mod.blockStmts(&oc.hir, oc.root);
+            for (ostmts) |s| {
+                const info = describeTopLevelSymbol(&oc.hir, &oc.interner, s, oc.source, other.path) orelse continue;
+                // Skip if already in local scope.
+                const local_name_id = c.interner.intern(info.name) catch continue;
+                if (c.module.root.values.contains(local_name_id)) continue;
+                if (c.module.root.types.contains(local_name_id)) continue;
+                const item_kind: CompletionItem.ItemKind = switch (info.kind) {
+                    .function => .function,
+                    .class => .class,
+                    .interface => .interface,
+                    .type_alias => .type_alias,
+                    .enum_ => .type_alias,
+                    .variable => .variable,
+                    else => .variable,
+                };
+                try items.append(gpa, .{
+                    .label = info.name,
+                    .kind = item_kind,
+                    .detail = "Auto import",
+                    .auto_import_from = other.path,
+                });
+            }
         }
         return items.toOwnedSlice(gpa);
     }
@@ -672,10 +712,17 @@ fn collectInlayHints(
 fn describeTopLevelSymbol(
     hir: *const hir_mod.Hir,
     sint: *const string_interner.Interner,
-    node: hir_mod.NodeId,
+    node_in: hir_mod.NodeId,
     source: []const u8,
     file_path: []const u8,
 ) ?SymbolInfo {
+    // Unwrap `export <decl>` to the inner decl so the symbol name + kind
+    // come from `<decl>` rather than the export shell.
+    var node = node_in;
+    if (hir.kindOf(node) == .export_decl) {
+        const ex = hir_mod.exportOf(hir, node);
+        if (ex.decl != hir_mod.none_node_id) node = ex.decl;
+    }
     const k = hir.kindOf(node);
     const span = hir.spanOf(node);
     const sp = ts_diagnostics.positionToLineCol(source, span.start);
@@ -1100,6 +1147,32 @@ test "Service: hover on missing file returns null" {
 
     var svc = Service.init(T.allocator, &program);
     try T.expect(svc.hover("/missing.ts", 0) == null);
+}
+
+test "Service: completions surfaces auto-import candidates from other files" {
+    var vfs = ts_resolver.VirtualFs.init(T.allocator);
+    defer vfs.deinit();
+    var resolver = ts_resolver.Resolver.init(T.allocator, vfs.fs(), .{});
+    defer resolver.deinit();
+    var program = ts_program.Program.init(T.allocator, &resolver);
+    defer program.deinit();
+
+    _ = try program.add("/lib.ts", "export function libFn() { } export class LibClass { }");
+    _ = try program.add("/main.ts", "let x = 1;");
+    try program.compileAll(.{});
+
+    var svc = Service.init(T.allocator, &program);
+    const items = try svc.completions(T.allocator, "/main.ts", 0);
+    defer T.allocator.free(items);
+
+    var saw_lib_fn = false;
+    var saw_lib_class = false;
+    for (items) |it| {
+        if (std.mem.eql(u8, it.label, "libFn") and std.mem.eql(u8, it.auto_import_from, "/lib.ts")) saw_lib_fn = true;
+        if (std.mem.eql(u8, it.label, "LibClass") and std.mem.eql(u8, it.auto_import_from, "/lib.ts")) saw_lib_class = true;
+    }
+    try T.expect(saw_lib_fn);
+    try T.expect(saw_lib_class);
 }
 
 test "Service: workspaceSymbols searches across files" {
