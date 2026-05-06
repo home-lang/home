@@ -213,6 +213,14 @@ Each landed deliverable updates the table above (status → ✅ done) **and** wr
   - `339d13b` §3.A.10 ratchet — narrow on `===` with literal RHS (string / number / bool / null / undefined)
   Total `zig build test`: **1354 → 1421** (+67 tests this session).
 
+- **2026-05-06 — Afternoon batch: streaming diagnostics, .d.hm members, shadowing-aware refs, this:T binding, parameter inlay hints, plus parallel work from a second agent.**
+  - `daf97fa` §5.A.10 — `home-tsc` consumes `Program.compileAllStreaming`; diagnostics print as each file finishes compiling
+  - `85ae6e2` §4.A.13 — `.d.hm` enum / trait / declare-module emitters (writeEnum / writeTrait / openDeclareModule)
+  - `ba87cfe` §8.A.9 — `findReferences` shadowing-aware via `enclosingScopeOf` walking `Module.scopes` against the HIR ancestor chain
+  - `d1a9810` §3.A.11 — `this: T` parameter captured as a regular param named "this"; checker's `walkFnBody` lowers its annotation and binds `this` in the narrow scope; JS emit strips it via `printRuntimeParams`
+  - `534a901` §8.A.3 — `inlayHints` surfaces `paramName:` hints at call-expression arg sites
+  - Parallel landings (from a second agent on the same project): codeAction "Add explicit type", member-access narrowing on identifier-rooted access, tsbuildinfo round-trip reader + read-on-startup, sourceMap → `.js.map` write, basic `ThisType<T>` recognition, LSP `textDocument/hover` wire handler, gotoDefinition follows imports across files, hover renders function/class/let declaration shape, semantic-tokens delta-encoded wire format.
+
 This is the canonical plan for evolving Home into a **drop-in TypeScript compiler that is measurably faster than tsgo**, while preserving Home's existing identity as a native-code language.
 
 ---
