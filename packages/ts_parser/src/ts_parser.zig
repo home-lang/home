@@ -238,6 +238,41 @@ pub const Parser = struct {
             .kw_interface => try self.parseInterfaceDeclaration(),
             .kw_enum => try self.parseEnumDeclaration(),
             .kw_namespace, .kw_module => try self.parseNamespaceDeclaration(),
+            .kw_declare => blk: {
+                // `declare global { … }` — consume `declare` and let
+                // the `kw_global` arm below lower it to a namespace
+                // named "global". Other `declare …` forms (`declare
+                // const`, `declare function`, etc.) fall through to be
+                // parsed as their non-ambient counterparts; the ambient
+                // flag is recoverable from the modifier list once we
+                // wire it through. For Phase 4.5 we only need
+                // `declare global` for cross-file augmentation.
+                _ = self.advance(); // declare
+                break :blk try self.parseStatement();
+            },
+            .kw_global => blk: {
+                // `global { … }` (or after `declare`) — lower as a
+                // namespace_decl named "global". This is the AST shape
+                // `Program.collectGlobalAugmentations` looks for.
+                if (self.peekAt(1).kind == .open_brace) {
+                    const start = self.advance(); // global
+                    const name_id = try self.internToken(start);
+                    const name_node = try self.builder.addIdentifier(tokenSpan(start), name_id);
+                    _ = try self.expect(.open_brace, "'{' to open global body");
+                    var body: std.ArrayListUnmanaged(NodeId) = .empty;
+                    defer body.deinit(self.gpa);
+                    while (self.peek().kind != .close_brace and self.peek().kind != .eof) {
+                        try body.append(self.gpa, try self.parseStatement());
+                    }
+                    const close = try self.expect(.close_brace, "'}' to close global body");
+                    break :blk try self.builder.addNamespace(
+                        .{ .start = start.span.start, .end = close.span.end },
+                        name_node,
+                        body.items,
+                    );
+                }
+                break :blk try self.parseExpressionStatement();
+            },
             .kw_import => try self.parseImportDeclaration(),
             .kw_export => try self.parseExportDeclaration(),
             .kw_type => blk: {

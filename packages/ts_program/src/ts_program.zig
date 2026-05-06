@@ -20,6 +20,7 @@ const std = @import("std");
 const ts_driver = @import("ts_driver");
 const ts_resolver = @import("ts_resolver");
 const ts_cache = @import("ts_cache");
+const hir_mod_ns = @import("hir");
 
 pub const FileId = u32;
 
@@ -217,6 +218,47 @@ pub const Program = struct {
         }
 
         try self.resolveImports();
+    }
+
+    /// One `declare global { … }` block discovered at a file's top
+    /// level. The eventual cross-file symbol-table merge — driven by
+    /// `binder.Module.augment` — needs to know which files contribute
+    /// to the program's global scope. For v1 we just surface the
+    /// (file, namespace_node) pairs so downstream consumers can decide
+    /// how to consume them. The actual `augment` call requires shared
+    /// string-interning across files which the program graph does
+    /// not yet provide.
+    pub const GlobalAugmentation = struct {
+        file_id: FileId,
+        namespace_node_id: hir_mod_ns.NodeId,
+    };
+
+    /// Walk every compiled file's top-level statements and return a
+    /// slice of `GlobalAugmentation` records — one per top-level
+    /// `namespace_decl` whose name is `"global"`. Caller frees with
+    /// `gpa.free`.
+    pub fn collectGlobalAugmentations(self: *const Program) ProgramError![]GlobalAugmentation {
+        var out: std.ArrayListUnmanaged(GlobalAugmentation) = .empty;
+        errdefer out.deinit(self.gpa);
+        for (self.files.items) |f| {
+            const c = f.compilation orelse continue;
+            const root = c.root;
+            if (c.hir.kindOf(root) != .block_stmt) continue;
+            const stmts = hir_mod_ns.blockStmts(&c.hir, root);
+            for (stmts) |s| {
+                if (c.hir.kindOf(s) != .namespace_decl) continue;
+                const ns = hir_mod_ns.namespaceOf(&c.hir, s);
+                if (c.hir.kindOf(ns.name) != .identifier) continue;
+                const ident = hir_mod_ns.identifierOf(&c.hir, ns.name);
+                const name_bytes = c.interner.get(ident.name);
+                if (!std.mem.eql(u8, name_bytes, "global")) continue;
+                try out.append(self.gpa, .{
+                    .file_id = f.id,
+                    .namespace_node_id = s,
+                });
+            }
+        }
+        return try out.toOwnedSlice(self.gpa);
     }
 
     /// Per-file cached emit summary. Populated by `emitAllToCache`.
@@ -775,4 +817,38 @@ test "Program: cycle does not infinite loop" {
     const order = try p.topologicalOrder();
     defer T.allocator.free(order);
     try T.expectEqual(@as(usize, 2), order.len);
+}
+
+test "Program: collectGlobalAugmentations finds none for plain files" {
+    var vfs = ts_resolver.VirtualFs.init(T.allocator);
+    defer vfs.deinit();
+    var resolver = ts_resolver.Resolver.init(T.allocator, vfs.fs(), .{});
+    defer resolver.deinit();
+    var p = Program.init(T.allocator, &resolver);
+    defer p.deinit();
+    _ = try p.add("/a.ts", "let x: number = 1;");
+    _ = try p.add("/b.ts", "let y: string = \"hi\";");
+    try p.compileAll(.{});
+    const augments = try p.collectGlobalAugmentations();
+    defer T.allocator.free(augments);
+    try T.expectEqual(@as(usize, 0), augments.len);
+}
+
+test "Program: collectGlobalAugmentations finds declare global block" {
+    var vfs = ts_resolver.VirtualFs.init(T.allocator);
+    defer vfs.deinit();
+    var resolver = ts_resolver.Resolver.init(T.allocator, vfs.fs(), .{});
+    defer resolver.deinit();
+    var p = Program.init(T.allocator, &resolver);
+    defer p.deinit();
+    // A `declare global { … }` block lowers to a top-level
+    // `namespace_decl` named "global". v1 surfaces these so a future
+    // pass can call `binder.Module.augment` to merge them into the
+    // program's global scope.
+    const id = try p.add("/g.ts", "declare global { interface Window {} }");
+    try p.compileAll(.{});
+    const augments = try p.collectGlobalAugmentations();
+    defer T.allocator.free(augments);
+    try T.expectEqual(@as(usize, 1), augments.len);
+    try T.expectEqual(id, augments[0].file_id);
 }
