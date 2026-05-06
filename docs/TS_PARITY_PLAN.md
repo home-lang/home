@@ -250,6 +250,24 @@ Each landed deliverable updates the table above (status → ✅ done) **and** wr
   - `bd29088` §6.A.3 — `ts_conformance` patience-diff unified output on baseline mismatch
   Total `zig build test`: **1421 → 1459** (+38 tests this session, all passing).
 
+- **2026-05-06 — Session landings: LSP wire-protocol substantially complete + `ts_bundler` v0 scaffold + checker depth (TS2769, satisfies, bigint) + diagnostics polish.**
+  - `13c57c2` §6 — `ts_diagnostics` `formatPretty` ANSI color support
+  - `4f8af28` §8.A — `ts_lsp` `documentHighlights` for identifier-under-cursor
+  - `76d3a2e` §4.5.A.10 — `ts_bundler` v0 concat-mode scaffold
+  - `e7a3b54` §8 — `ts_lsp_server` `textDocument/completion` wire handler
+  - `3ad141e` §8 — `ts_lsp_server` `textDocument/signatureHelp` wire handler
+  - `e512875` §8 — `ts_lsp_server` `dispatchRequest` routes JSON-RPC frames to handlers
+  - `c9dc339` §8 — `ts_lsp_server` wires 10 more LSP method handlers (definition / references / documentSymbol / workspaceSymbol / codeAction / semanticTokens full + range / foldingRange / inlayHint / formatting)
+  - `c4e12c7` §8 — `ts_lsp_server` `textDocument/didOpen` + `didClose` wire handlers
+  - `84109e4` §4.5.A.10 — `ts_bundler` basic tree-shaking + minify passes
+  - `71acd93` §6 — `ts_diagnostics` `HmCodes` registry for Home-only diagnostics
+  - `d5ff71d` §8.A — `ts_lsp_server` `prepareRename` + `completionItem/resolve` handlers
+  - `479d9ee` §3.A.7 — `ts_checker` TS2769 "No overload matches this call" diagnostic (also lands `typeof x === "bigint"` narrowing)
+  - `bbc7174` §8.A — `ts_lsp` call hierarchy incoming + outgoing
+  - `931f614` §3.A.16 — `ts_checker` `satisfies` preserves the original (more-specific) inferred expression type
+  - `afdf20a` §8.A.4 — `ts_lsp` `semanticTokens` includes keywords (and comments where available)
+  Total `zig build test`: **1459 → 1491** (+32 tests this session, all passing).
+
 This is the canonical plan for evolving Home into a **drop-in TypeScript compiler that is measurably faster than tsgo**, while preserving Home's existing identity as a native-code language.
 
 ---
@@ -397,9 +415,9 @@ Watch foundation, persistent cache, and parallel compile are landed. The query-D
 
 ### §6.A · Phase 6 — conformance-hardening punch list
 
-The runner and an 11-case canon corpus are landed. The submodule integration and per-feature triage are the work.
+The runner and a 56-case canon corpus are landed. Per-feature triage against the local TypeScript install is the work.
 
-1. **Vendor `microsoft/TypeScript` as a submodule** at `_submodules/TypeScript/`, pinned to the same SHA tsgo pins (so our number is directly comparable to tsgo's 99.6% / 74-failing-cases bar). *Effort: 1 day.*
+1. ~~**Vendor `microsoft/TypeScript` as a submodule.**~~ ❌ REMOVED — per user direction we use the locally-installed TypeScript checkout (no submodules in this repo). The conformance runner reads `tests/conformance/` fixtures + smoke-runs against the local TypeScript install instead. Apples-to-apples comparison against tsgo's 99.6% / 74-failing-cases bar relies on running the same SHA locally rather than pinning it in-tree.
 2. ~~**Wire `runDirectory`.**~~ ✅ landed 2026-05-05. `loadDirectory(gpa, dir_path)` walks via `std.fs.cwd().openDir().walk()`; `runDirectory(gpa, dir_path, results)` is the convenience wrapper. `.errors.ts` naming convention maps to `expects_error = true` (matches tsgo).
 3. ~~**Patience-diff implementation + unified output on baseline mismatch.**~~ ✅ landed 2026-05-05/06. Pure-Zig `patience.zig` with anchor-finding + LIS + recursive gap diffing. **Conformance runner now emits the patience-diff result as a unified diff with hunk headers + per-line context** when a baseline mismatches, matching tsgo's triage output (commit `bd29088`).
 4. ~~**Categorize the 5 907-case corpus by feature.**~~ 🟢 partially started 2026-05-05. The `builtin_corpus` array now has 56 cases keyed by feature (00..55). The full 5907-case external suite needs to be loaded once §6.A.2 lands. *Remaining: load + categorize disk corpus.*
@@ -409,7 +427,7 @@ The runner and an 11-case canon corpus are landed. The submodule integration and
 
 ### §8.A · Phase 8 — LSP punch list
 
-Hover, definition, references (cross-file), and completion (module-level) are landed. The richer query surface is the work.
+**Phase 8 LSP wire-protocol layer is now substantially complete — most LSP-spec methods routed.** Hover, definition, references (cross-file), and completion (module-level) are landed. The JSON-RPC `dispatchRequest` (commit `e512875`) routes 25+ methods to handlers — `initialize` / `initialized` / `shutdown` / `exit` lifecycle, `textDocument/didOpen` / `didChange` / `didClose` (commits `c4e12c7` / `6ec5870`), `textDocument/hover` (commit `47c3214`), `textDocument/definition`, `textDocument/references`, `textDocument/completion` (commit `e7a3b54`), `completionItem/resolve` (commit `d5ff71d`), `textDocument/signatureHelp` (commit `3ad141e`), `textDocument/rename` + `textDocument/prepareRename` (commit `d5ff71d`), `textDocument/documentSymbol`, `workspace/symbol`, `textDocument/codeAction`, `textDocument/semanticTokens/full` + `range` (full + range variants, now including keywords + comments — commit `afdf20a`), `textDocument/foldingRange`, `textDocument/inlayHint`, `textDocument/documentHighlight` (commit `4f8af28`), `textDocument/formatting`, `callHierarchy/incomingCalls` + `callHierarchy/outgoingCalls` (commit `bbc7174`). The richer-query / quick-fix surface is the remaining work.
 
 1. ~~**Completion via auto-import.**~~ ✅ landed 2026-05-05. `Service.completions` extends results with cross-file candidates tagged `auto_import_from = <path>`. New `auto_import_from` field on `CompletionItem`. Locally-scoped names skip duplication. Editor renders via `additionalTextEdits` for the import statement.
 2. ~~**`signatureHelp`.**~~ ✅ landed 2026-05-05. Walks up to the enclosing call_expr, renders the callee's signature label, reports active parameter index from the cursor's arg-span position.
@@ -429,7 +447,7 @@ Hover, definition, references (cross-file), and completion (module-level) are la
 
 The punch lists above are a menu. Here's the recommended order across phases, weighted by leverage:
 
-1. **§6.A.1–§6.A.2 (vendor TypeScript submodule + wire `runDirectory`).** Until we run the full 5 907-case conformance suite, we can't tell which of §3.A's items moves the needle most. This unblocks data-driven prioritization. **1 week.**
+1. **§6.A.4 (load + categorize the local TypeScript conformance corpus).** Until we run the full 5 907-case conformance suite (now via the local TypeScript install per user direction — no submodule), we can't tell which of §3.A's items moves the needle most. This unblocks data-driven prioritization. **1 week.**
 2. **§3.A.1 (explicit type args threaded through).** Cheap. Ratchets generic-library compatibility immediately. **2 days.**
 3. **§3.A.2 (mapped types).** The single biggest type-system feature still missing. Most of `type-fest` / `ts-toolbelt` consumers depend on this. **1 week.**
 4. **§3.A.3 (conditional + distributive types).** Pairs with mapped types. Together they unblock most type-meta-programming workloads. **1.5 weeks.**
