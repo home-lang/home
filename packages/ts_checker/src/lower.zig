@@ -76,6 +76,11 @@ pub const Lowerer = struct {
             .object_type => try self.lowerObjectType(node),
             .fn_type, .constructor_type => try self.lowerFnType(node),
             .mapped_type => types.Primitive.unknown, // mapped pending
+            // Type predicates (`arg is T` / `asserts arg is T`) in
+            // return-type position lower to `boolean` because that's
+            // their runtime type. The narrowing semantics are
+            // separately recorded in the checker via `fn_predicates`.
+            .type_predicate_type => types.Primitive.boolean_t,
             else => types.Primitive.unknown,
         };
     }

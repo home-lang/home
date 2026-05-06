@@ -86,6 +86,16 @@ pub const GenericAliasInfo = struct {
 /// Subset of compiler-options flags the checker consults. Defaults
 /// match `tsc`'s no-flag baseline (everything off). The driver
 /// populates this from a parsed `tsconfig` before `checkSourceFile`.
+pub const FnPredicate = struct {
+    /// 0xFFFF for `this is T`; otherwise the parameter index.
+    param_index: u16,
+    /// The asserted type (TypeId).
+    target_type: TypeId,
+    /// True for `asserts arg is T` — narrows in fall-through, not
+    /// just then-branch.
+    is_asserts: bool,
+};
+
 pub const StrictFlags = struct {
     /// `noImplicitAny` (also implied by `strict`). When true, a
     /// parameter / variable that ends up typed as `any` because it
@@ -151,6 +161,12 @@ pub const Checker = struct {
     /// are present so they substitute the parameter types directly
     /// rather than going through argument-driven inference.
     generic_fns: std.AutoHashMapUnmanaged(hir_mod.StringId, []TypeId),
+    /// Function name → type-predicate info. Populated when the
+    /// function's return type is `arg is T` or `asserts arg is T`.
+    /// Consulted by `applyTypeGuard` at call sites so the caller's
+    /// `arg` identifier narrows in the then-branch (or fall-through
+    /// for assertion functions).
+    fn_predicates: std.AutoHashMapUnmanaged(hir_mod.StringId, FnPredicate),
     /// Strictness flags driving optional diagnostics.
     strict_flags: StrictFlags = .{},
     diagnostics: std.ArrayListUnmanaged(Diagnostic),
@@ -177,6 +193,7 @@ pub const Checker = struct {
             .type_names = .empty,
             .generic_aliases = .empty,
             .generic_fns = .empty,
+            .fn_predicates = .empty,
             .diagnostics = .empty,
             .diag_arena = std.heap.ArenaAllocator.init(gpa),
         };
@@ -208,6 +225,7 @@ pub const Checker = struct {
         var gf_it = self.generic_fns.valueIterator();
         while (gf_it.next()) |params| self.gpa.free(params.*);
         self.generic_fns.deinit(self.gpa);
+        self.fn_predicates.deinit(self.gpa);
         self.diagnostics.deinit(self.gpa);
         self.diag_arena.deinit();
     }
@@ -736,8 +754,15 @@ pub const Checker = struct {
             }
         }
 
+        // Detect a `arg is T` / `asserts arg is T` return-type
+        // before lowering — the predicate's target type is the
+        // *return type* for assignability purposes (it always
+        // returns boolean), but we record the predicate separately
+        // so call sites can narrow the argument.
+        const is_predicate = f.return_type != hir_mod.none_node_id and
+            self.hir.kindOf(f.return_type) == .type_predicate_type;
         const ret_t: TypeId = if (f.return_type != hir_mod.none_node_id)
-            try self.lowererLowerWithTypeParams(f.return_type)
+            (if (is_predicate) types.Primitive.boolean_t else try self.lowererLowerWithTypeParams(f.return_type))
         else
             types.Primitive.any;
 
@@ -752,6 +777,20 @@ pub const Checker = struct {
             if (self.generic_fns.fetchRemove(fn_name)) |old| self.gpa.free(old.value);
             const owned = captured_tp_ids.toOwnedSlice(self.gpa) catch return error.OutOfMemory;
             try self.generic_fns.put(self.gpa, fn_name, owned);
+        }
+        // Record the predicate so call sites can narrow.
+        if (is_predicate and f.name != hir_mod.none_node_id and self.hir.kindOf(f.name) == .identifier) {
+            const pred = hir_mod.typePredicateOf(self.hir, f.return_type);
+            const target_t: TypeId = if (pred.target_type != hir_mod.none_node_id)
+                (self.lowererLowerWithTypeParams(pred.target_type) catch types.Primitive.unknown)
+            else
+                types.Primitive.unknown;
+            const fn_name = hir_mod.identifierOf(self.hir, f.name).name;
+            try self.fn_predicates.put(self.gpa, fn_name, .{
+                .param_index = pred.param_index,
+                .target_type = target_t,
+                .is_asserts = pred.is_asserts,
+            });
         }
         return sig;
     }
@@ -1697,6 +1736,34 @@ pub const Checker = struct {
     ///   X === null / X !== null
     ///   X === undefined / X !== undefined
     fn applyTypeGuard(self: *Checker, cond: NodeId, when_true: bool) !void {
+        // `if (isFoo(x))` — type-predicate call narrowing. When the
+        // condition is a call to a predicate function and the argument
+        // at the predicate's parameter index is an identifier, narrow
+        // the identifier in the then-branch to the predicate's target
+        // type (or subtract it in the else-branch).
+        if (self.hir.kindOf(cond) == .call_expr) {
+            const c = hir_mod.callOf(self.hir, cond);
+            if (self.hir.kindOf(c.callee) == .identifier) {
+                const callee_id = hir_mod.identifierOf(self.hir, c.callee);
+                if (self.fn_predicates.get(callee_id.name)) |pred| {
+                    const args = hir_mod.callArgs(self.hir, cond);
+                    if (pred.param_index < args.len) {
+                        const arg = args[pred.param_index];
+                        if (self.hir.kindOf(arg) == .identifier) {
+                            const arg_id = hir_mod.identifierOf(self.hir, arg);
+                            if (when_true) {
+                                try self.recordNarrow(arg_id.name, pred.target_type);
+                            } else {
+                                const current = self.lookupNarrow(arg_id.name) orelse self.typeOfIdentifier(arg);
+                                const narrowed = self.subtractType(current, pred.target_type) catch current;
+                                try self.recordNarrow(arg_id.name, narrowed);
+                            }
+                            return;
+                        }
+                    }
+                }
+            }
+        }
         if (self.hir.kindOf(cond) != .binary_op) return;
         const b = hir_mod.binopOf(self.hir, cond);
 
@@ -2410,18 +2477,27 @@ pub const Checker = struct {
             const op = hir_mod.objectPropertyOf(self.hir, p);
             if (self.hir.kindOf(op.key) != .identifier) continue;
             const id = hir_mod.identifierOf(self.hir, op.key);
-            if (self.interner.objectMember(declared_t, id.name) != null) continue;
-            const name_str = self.string_interner.get(id.name);
-            const msg = try std.fmt.allocPrint(
-                self.diag_arena.allocator(),
-                "Object literal may only specify known properties, and '{s}' does not exist on the target type.",
-                .{name_str},
-            );
-            try self.diagnostics.append(self.gpa, .{
-                .node = p,
-                .code = TsCodes.object_literal_excess_property,
-                .message = msg,
-            });
+            const declared_member = self.interner.objectMemberInfo(declared_t, id.name);
+            if (declared_member == null) {
+                const name_str = self.string_interner.get(id.name);
+                const msg = try std.fmt.allocPrint(
+                    self.diag_arena.allocator(),
+                    "Object literal may only specify known properties, and '{s}' does not exist on the target type.",
+                    .{name_str},
+                );
+                try self.diagnostics.append(self.gpa, .{
+                    .node = p,
+                    .code = TsCodes.object_literal_excess_property,
+                    .message = msg,
+                });
+                continue;
+            }
+            // Recurse into nested object-literal values: if the
+            // declared property is itself an object type, the
+            // nested literal also gets the freshness check.
+            if (self.hir.kindOf(op.value) == .object_literal) {
+                try self.checkExcessProperties(op.value, declared_member.?.type);
+            }
         }
     }
 };
@@ -3746,6 +3822,54 @@ test "checker: conditional distributes over a union check" {
     const t = s.hir.typeOf(r_decl);
     // The result should be a union of the literal types `1 | 0`.
     try T.expect(s.ti.pool.flagsOf(t).is_union);
+}
+
+test "checker: type predicate narrows in then-branch" {
+    const s = try newSetup(
+        \\function isString(x: any): x is string { return true; }
+        \\function f(x: any) {
+        \\  if (isString(x)) {
+        \\    let s = x;
+        \\  }
+        \\}
+    );
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+    const stmts = hir_mod.blockStmts(&s.hir, s.root);
+    const fn_node = stmts[1];
+    const f = hir_mod.fnDeclOf(&s.hir, fn_node);
+    const body_stmts = hir_mod.blockStmts(&s.hir, f.body);
+    const if_stmt = body_stmts[0];
+    const ifp = hir_mod.ifOf(&s.hir, if_stmt);
+    const then_stmts = hir_mod.blockStmts(&s.hir, ifp.then_branch);
+    const s_decl = then_stmts[0];
+    const s_init = hir_mod.varDeclOf(&s.hir, s_decl).init;
+    try T.expectEqual(types.Primitive.string_t, s.hir.typeOf(s_init));
+}
+
+test "checker: type predicate negative branch subtracts" {
+    const s = try newSetup(
+        \\function isString(x: string | number): x is string { return true; }
+        \\function f(x: string | number) {
+        \\  if (isString(x)) {
+        \\    let s = x;
+        \\  } else {
+        \\    let n = x;
+        \\  }
+        \\}
+    );
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+    const stmts = hir_mod.blockStmts(&s.hir, s.root);
+    const fn_node = stmts[1];
+    const f = hir_mod.fnDeclOf(&s.hir, fn_node);
+    const body_stmts = hir_mod.blockStmts(&s.hir, f.body);
+    const if_stmt = body_stmts[0];
+    const ifp = hir_mod.ifOf(&s.hir, if_stmt);
+    const else_stmts = hir_mod.blockStmts(&s.hir, ifp.else_branch);
+    const n_init = hir_mod.varDeclOf(&s.hir, else_stmts[0]).init;
+    // (string | number) minus string = number.
+    try T.expectEqual(types.Primitive.number_t, s.hir.typeOf(n_init));
 }
 
 test "checker: mapped type over keyof T materializes properties" {

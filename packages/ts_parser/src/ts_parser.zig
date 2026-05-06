@@ -485,7 +485,7 @@ pub const Parser = struct {
         defer self.gpa.free(params);
 
         var return_type: NodeId = hir_mod.none_node_id;
-        if (self.match(.colon)) return_type = try self.parseTypeAnnotation();
+        if (self.match(.colon)) return_type = try self.parseReturnTypeAnnotation(params);
 
         var body: NodeId = hir_mod.none_node_id;
         if (self.peek().kind == .open_brace) {
@@ -1134,6 +1134,78 @@ pub const Parser = struct {
     /// current cursor. Returns a HIR type node id.
     fn parseTypeAnnotation(self: *Parser) ParseError!NodeId {
         return try self.parseConditionalType();
+    }
+
+    /// Parse a return-type annotation, with detection of type
+    /// predicates (`arg is T`) and assertion functions (`asserts
+    /// arg is T`). Falls through to `parseTypeAnnotation` for the
+    /// regular case. `params` is the function's positional parameter
+    /// list — each is a `parameter` HIR node, looked up by name to
+    /// resolve the predicate's `arg`.
+    fn parseReturnTypeAnnotation(self: *Parser, params: []const NodeId) ParseError!NodeId {
+        const start_cursor = self.cursor;
+        const start_span_start = self.peek().span.start;
+        // `asserts <ident>` ...
+        if (self.peek().kind == .kw_asserts and self.peekAt(1).kind == .identifier) {
+            _ = self.advance(); // asserts
+            const arg_tok = self.advance();
+            const arg_id = try self.internToken(arg_tok);
+            // `asserts <ident>` (predicate-less) — narrows to truthy.
+            if (self.peek().kind != .kw_is) {
+                const idx = self.findParamIndex(params, arg_id) orelse 0xFFFF;
+                return try self.builder.addTypePredicate(
+                    .{ .start = start_span_start, .end = arg_tok.span.end },
+                    @intCast(idx),
+                    arg_id,
+                    hir_mod.none_node_id,
+                    true,
+                );
+            }
+            _ = self.advance(); // is
+            const target = try self.parseTypeAnnotation();
+            const idx = self.findParamIndex(params, arg_id) orelse 0xFFFF;
+            return try self.builder.addTypePredicate(
+                .{ .start = start_span_start, .end = self.hir.spanOf(target).end },
+                @intCast(idx),
+                arg_id,
+                target,
+                true,
+            );
+        }
+        // `<ident> is T`
+        if (self.peek().kind == .identifier and self.peekAt(1).kind == .kw_is) {
+            const arg_tok = self.advance();
+            const arg_id = try self.internToken(arg_tok);
+            _ = self.advance(); // is
+            const target = try self.parseTypeAnnotation();
+            const idx = self.findParamIndex(params, arg_id) orelse 0xFFFF;
+            return try self.builder.addTypePredicate(
+                .{ .start = start_span_start, .end = self.hir.spanOf(target).end },
+                @intCast(idx),
+                arg_id,
+                target,
+                false,
+            );
+        }
+        // Not a predicate — fall through. Restore cursor (we may
+        // have advanced past `asserts` only to find no `<ident>`).
+        self.cursor = start_cursor;
+        return self.parseTypeAnnotation();
+    }
+
+    /// Look up a parameter by interned name; return its 0-based
+    /// positional index or null. `this` parameters return null
+    /// (caller falls back to the 0xFFFF sentinel for `this`).
+    fn findParamIndex(self: *Parser, params: []const NodeId, name: hir_mod.StringId) ?usize {
+        for (params, 0..) |p, i| {
+            if (self.hir.kindOf(p) != .parameter) continue;
+            const pp = hir_mod.parameterOf(self.hir, p);
+            if (pp.name == hir_mod.none_node_id) continue;
+            if (self.hir.kindOf(pp.name) != .identifier) continue;
+            const id = hir_mod.identifierOf(self.hir, pp.name);
+            if (id.name == name) return i;
+        }
+        return null;
     }
 
     fn parseConditionalType(self: *Parser) ParseError!NodeId {

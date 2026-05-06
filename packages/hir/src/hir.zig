@@ -190,6 +190,8 @@ pub const NodeKind = enum(u8) {
     fn_type,
     constructor_type,
     object_type,
+    /// `arg is T` or `asserts arg is T` in return-type position.
+    type_predicate_type,
 
     // ----- JSX (TS frontend) -----
     jsx_element,
@@ -711,6 +713,22 @@ pub const TypeofTypePayload = struct {
     operand: NodeId,
 };
 
+/// `arg is T` or `asserts arg is T` in return-type position. The
+/// param_index records which positional parameter `arg` refers to
+/// (resolved at parse time) so the checker can apply narrowing on
+/// the argument at call sites.
+pub const TypePredicatePayload = struct {
+    /// 0xFFFF when the predicate is on `this` (`this is T`).
+    param_index: u16,
+    /// Interned name of the parameter (or "this") — informational.
+    param_name: StringId,
+    /// The asserted type.
+    target_type: NodeId,
+    /// True for `asserts arg is T` (assertion function — narrows in
+    /// fall-through, not just then-branch).
+    is_asserts: bool,
+};
+
 /// `expr as T` / `expr satisfies T` / `<T>expr` (legacy form). All
 /// three share the same shape — the kind enum disambiguates.
 pub const AsExpressionPayload = struct {
@@ -958,6 +976,7 @@ pub const Hir = struct {
     indexed_access_type_payloads: std.ArrayListUnmanaged(IndexedAccessTypePayload),
     keyof_type_payloads: std.ArrayListUnmanaged(KeyofTypePayload),
     typeof_type_payloads: std.ArrayListUnmanaged(TypeofTypePayload),
+    type_predicate_payloads: std.ArrayListUnmanaged(TypePredicatePayload),
     as_expression_payloads: std.ArrayListUnmanaged(AsExpressionPayload),
     index_signature_payloads: std.ArrayListUnmanaged(IndexSignaturePayload),
     conditional_type_payloads: std.ArrayListUnmanaged(ConditionalTypePayload),
@@ -1038,6 +1057,7 @@ pub const Hir = struct {
             .indexed_access_type_payloads = .empty,
             .keyof_type_payloads = .empty,
             .typeof_type_payloads = .empty,
+            .type_predicate_payloads = .empty,
             .as_expression_payloads = .empty,
             .index_signature_payloads = .empty,
             .conditional_type_payloads = .empty,
@@ -1125,6 +1145,7 @@ pub const Hir = struct {
         self.indexed_access_type_payloads.deinit(self.gpa);
         self.keyof_type_payloads.deinit(self.gpa);
         self.typeof_type_payloads.deinit(self.gpa);
+        self.type_predicate_payloads.deinit(self.gpa);
         self.as_expression_payloads.deinit(self.gpa);
         self.index_signature_payloads.deinit(self.gpa);
         self.conditional_type_payloads.deinit(self.gpa);
@@ -2066,6 +2087,26 @@ pub const Builder = struct {
         return id;
     }
 
+    pub fn addTypePredicate(
+        self: *Builder,
+        span: Span,
+        param_index: u16,
+        param_name: StringId,
+        target_type: NodeId,
+        is_asserts: bool,
+    ) !NodeId {
+        const payload_idx: u32 = @intCast(self.hir.type_predicate_payloads.items.len);
+        try self.hir.type_predicate_payloads.append(self.hir.gpa, .{
+            .param_index = param_index,
+            .param_name = param_name,
+            .target_type = target_type,
+            .is_asserts = is_asserts,
+        });
+        const id = try self.newNode(.type_predicate_type, span, payload_idx);
+        if (target_type != none_node_id) self.hir.setParent(target_type, id);
+        return id;
+    }
+
     /// Build an `as` / `satisfies` / legacy `<T>x` type-assertion
     /// expression. `kind` must be one of `.as_expr`, `.satisfies_expr`,
     /// `.type_assertion`. The shape is the same — `expr` is the
@@ -2693,6 +2734,11 @@ pub fn indexSignatureOf(hir: *const Hir, id: NodeId) IndexSignaturePayload {
 pub fn typeofTypeOf(hir: *const Hir, id: NodeId) TypeofTypePayload {
     std.debug.assert(hir.kindOf(id) == .typeof_type);
     return hir.typeof_type_payloads.items[hir.payloads.items[id]];
+}
+
+pub fn typePredicateOf(hir: *const Hir, id: NodeId) TypePredicatePayload {
+    std.debug.assert(hir.kindOf(id) == .type_predicate_type);
+    return hir.type_predicate_payloads.items[hir.payloads.items[id]];
 }
 
 pub fn conditionalTypeOf(hir: *const Hir, id: NodeId) ConditionalTypePayload {
