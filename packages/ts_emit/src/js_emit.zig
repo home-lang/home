@@ -1479,6 +1479,23 @@ pub const Printer = struct {
 
     fn printCall(self: *Printer, node: NodeId) !void {
         const p = hir_mod.callOf(self.hir, node);
+        // Dynamic `import("...")` lowering for CommonJS targets:
+        // emit `Promise.resolve(require("..."))`. ESM keeps the
+        // native `import()` form (handled by the runtime).
+        if (self.options.module_kind == .commonjs and self.hir.kindOf(p.callee) == .identifier) {
+            const id = hir_mod.identifierOf(self.hir, p.callee);
+            const name = self.interner.get(id.name);
+            if (std.mem.eql(u8, name, "import")) {
+                try self.write("Promise.resolve(require(");
+                const args = hir_mod.callArgs(self.hir, node);
+                for (args, 0..) |a, i| {
+                    if (i > 0) try self.write(", ");
+                    try self.printExpression(a);
+                }
+                try self.write("))");
+                return;
+            }
+        }
         try self.printExpression(p.callee);
         try self.write("(");
         const args = hir_mod.callArgs(self.hir, node);
@@ -2010,6 +2027,19 @@ test "emit: class preserved at es2015+" {
     defer T.allocator.free(out);
     try T.expect(std.mem.indexOf(u8, out, "class Foo") != null);
     try T.expect(std.mem.indexOf(u8, out, "prototype") == null);
+}
+
+test "emit: dynamic import lowers to Promise.resolve(require) for cjs" {
+    const out = try emitWithOpts("let mod = import(\"foo\");", .{ .module_kind = .commonjs });
+    defer T.allocator.free(out);
+    try T.expect(std.mem.indexOf(u8, out, "Promise.resolve(require(\"foo\"))") != null);
+}
+
+test "emit: dynamic import preserved for esm" {
+    const out = try emitWithOpts("let mod = import(\"foo\");", .{ .module_kind = .esm });
+    defer T.allocator.free(out);
+    try T.expect(std.mem.indexOf(u8, out, "import(\"foo\")") != null);
+    try T.expect(std.mem.indexOf(u8, out, "require") == null);
 }
 
 test "emit: non-jsx file with automatic mode skips the import" {

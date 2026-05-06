@@ -2593,6 +2593,26 @@ pub const Parser = struct {
                 }
                 return try self.builder.addNew(.{ .start = t.span.start, .end = self.hir.spanOf(callee).end }, callee, &.{});
             },
+            .kw_import => {
+                // Dynamic `import("module")` — parses as a call
+                // expression with `import` as the callee. We synthesize
+                // an identifier named `import` so downstream emit can
+                // route the call site through the appropriate
+                // module-system lowering (a no-op at .esm; an
+                // async require() at .commonjs).
+                _ = self.advance();
+                const import_id = self.interner.intern("import") catch return error.OutOfMemory;
+                const callee = try self.builder.addIdentifier(tokenSpan(t), import_id);
+                if (self.peek().kind != .open_paren) {
+                    // Not a dynamic import — fall through to whatever
+                    // the unexpected token produces.
+                    return callee;
+                }
+                const args = try self.parseArgumentList();
+                defer self.gpa.free(args);
+                const close_pos = self.tokens[self.cursor - 1].span.end;
+                return try self.builder.addCall(.{ .start = t.span.start, .end = close_pos }, callee, args);
+            },
             .kw_function => {
                 // Function expression — reuse declaration parser; it
                 // will emit `fn_decl` even when used as expression.
