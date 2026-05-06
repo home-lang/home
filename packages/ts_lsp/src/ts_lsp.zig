@@ -79,6 +79,70 @@ pub const InlayHint = struct {
     kind: enum { type_annotation, parameter_name },
 };
 
+/// A single text edit applied to a file. Used by `rename` and
+/// `codeAction` to communicate cross-file edits to the editor.
+pub const TextEdit = struct {
+    file: []const u8,
+    /// 0-based start position.
+    start_line: u32,
+    start_col: u32,
+    end_line: u32,
+    end_col: u32,
+    new_text: []const u8,
+};
+
+pub const CodeAction = struct {
+    title: []const u8,
+    kind: Kind,
+    edits: []TextEdit,
+
+    pub const Kind = enum {
+        organize_imports,
+        sort_imports,
+        fix_all,
+        quick_fix,
+    };
+};
+
+/// LSP semanticTokens — per-token classification for syntax-aware
+/// editor highlighting. Standard LSP token types are emitted by
+/// 0-based index; the editor's `legend` maps the index back to the
+/// LSP-spec name.
+pub const SemanticToken = struct {
+    line: u32,
+    col: u32,
+    length: u32,
+    /// Index into the semantic-token type legend.
+    token_type: TokenType,
+    /// Bitset of modifiers (today always 0).
+    modifiers: u32,
+
+    pub const TokenType = enum(u8) {
+        variable = 0,
+        parameter = 1,
+        function = 2,
+        method = 3,
+        class = 4,
+        interface = 5,
+        type_alias = 6,
+        enum_ = 7,
+        property = 8,
+        keyword = 9,
+        string = 10,
+        number = 11,
+        comment = 12,
+
+        pub fn legend() []const []const u8 {
+            return &.{
+                "variable",  "parameter", "function",  "method",
+                "class",     "interface", "type",      "enum",
+                "property",  "keyword",   "string",    "number",
+                "comment",
+            };
+        }
+    };
+};
+
 pub const SymbolInfo = struct {
     name: []const u8,
     kind: SymbolKind,
@@ -322,6 +386,128 @@ pub const Service = struct {
         return out.toOwnedSlice(gpa);
     }
 
+    /// Rename the symbol under the cursor across the entire program.
+    /// Reuses `findReferences`'s cross-file walk and produces one
+    /// `TextEdit` per occurrence. The caller applies them in batch.
+    pub fn rename(self: *Service, gpa: std.mem.Allocator, file_path: []const u8, byte_pos: u32, new_name: []const u8) ![]TextEdit {
+        var edits: std.ArrayListUnmanaged(TextEdit) = .empty;
+        errdefer edits.deinit(gpa);
+        const refs = try self.findReferences(gpa, file_path, byte_pos);
+        defer gpa.free(refs);
+        for (refs) |r| {
+            try edits.append(gpa, .{
+                .file = r.file,
+                .start_line = if (r.start_line > 0) r.start_line - 1 else 0,
+                .start_col = if (r.start_col > 0) r.start_col - 1 else 0,
+                .end_line = if (r.end_line > 0) r.end_line - 1 else 0,
+                .end_col = if (r.end_col > 0) r.end_col - 1 else 0,
+                .new_text = new_name,
+            });
+        }
+        return edits.toOwnedSlice(gpa);
+    }
+
+    /// Code actions available at `byte_pos`. Today implements
+    /// "Organize Imports" — sorts top-level import declarations by
+    /// module specifier and emits the replacement edit.
+    pub fn codeActions(self: *Service, gpa: std.mem.Allocator, file_path: []const u8) ![]CodeAction {
+        var actions: std.ArrayListUnmanaged(CodeAction) = .empty;
+        errdefer actions.deinit(gpa);
+        const file_id = self.program.lookupPath(file_path) orelse return actions.toOwnedSlice(gpa);
+        const f = self.program.fileById(file_id);
+        const c = f.compilation orelse return actions.toOwnedSlice(gpa);
+        // Collect import declarations (statement order).
+        var imports: std.ArrayListUnmanaged(hir_mod.NodeId) = .empty;
+        defer imports.deinit(gpa);
+        const stmts = hir_mod.blockStmts(&c.hir, c.root);
+        for (stmts) |s| {
+            if (c.hir.kindOf(s) == .import_decl) try imports.append(gpa, s);
+        }
+        if (imports.items.len < 2) return actions.toOwnedSlice(gpa);
+        // Sort by module specifier name.
+        const sorted = try gpa.dupe(hir_mod.NodeId, imports.items);
+        defer gpa.free(sorted);
+        const Ctx = struct {
+            hir: *const hir_mod.Hir,
+            sint: *const string_interner.Interner,
+            pub fn lessThan(ctx: @This(), a: hir_mod.NodeId, b: hir_mod.NodeId) bool {
+                const ia = hir_mod.importOf(ctx.hir, a);
+                const ib = hir_mod.importOf(ctx.hir, b);
+                const sa = ctx.sint.get(ia.module);
+                const sb = ctx.sint.get(ib.module);
+                return std.mem.lessThan(u8, sa, sb);
+            }
+        };
+        std.mem.sort(hir_mod.NodeId, sorted, Ctx{ .hir = &c.hir, .sint = &c.interner }, Ctx.lessThan);
+        // Already sorted? No-op.
+        var differs = false;
+        for (imports.items, 0..) |orig, i| {
+            if (orig != sorted[i]) {
+                differs = true;
+                break;
+            }
+        }
+        if (!differs) return actions.toOwnedSlice(gpa);
+        // Build the new text (rendered import lines, in sorted order).
+        var buf: std.ArrayListUnmanaged(u8) = .empty;
+        defer buf.deinit(gpa);
+        for (sorted, 0..) |id, i| {
+            if (i > 0) try buf.append(gpa, '\n');
+            const span = c.hir.spanOf(id);
+            try buf.appendSlice(gpa, f.source[span.start..span.end]);
+        }
+        const new_text = try buf.toOwnedSlice(gpa);
+        // The replacement edit covers the union span of all imports.
+        const first_span = c.hir.spanOf(imports.items[0]);
+        const last_span = c.hir.spanOf(imports.items[imports.items.len - 1]);
+        const start_pos = ts_diagnostics.positionToLineCol(f.source, first_span.start);
+        const end_pos = ts_diagnostics.positionToLineCol(f.source, last_span.end);
+        var edits = try gpa.alloc(TextEdit, 1);
+        edits[0] = .{
+            .file = f.path,
+            .start_line = if (start_pos.line > 0) start_pos.line - 1 else 0,
+            .start_col = if (start_pos.col > 0) start_pos.col - 1 else 0,
+            .end_line = if (end_pos.line > 0) end_pos.line - 1 else 0,
+            .end_col = if (end_pos.col > 0) end_pos.col - 1 else 0,
+            .new_text = new_text,
+        };
+        try actions.append(gpa, .{
+            .title = "Organize Imports",
+            .kind = .organize_imports,
+            .edits = edits,
+        });
+        return actions.toOwnedSlice(gpa);
+    }
+
+    /// Semantic tokens for `file`. Walks the HIR and emits one
+    /// classified token per identifier-bearing node, so the editor
+    /// can color code by symbol kind. The result is sorted by
+    /// (line, col) — matching LSP's `textDocument/semanticTokens/full`
+    /// expected ordering.
+    pub fn semanticTokens(self: *Service, gpa: std.mem.Allocator, file_path: []const u8) ![]SemanticToken {
+        var tokens: std.ArrayListUnmanaged(SemanticToken) = .empty;
+        errdefer tokens.deinit(gpa);
+        const file_id = self.program.lookupPath(file_path) orelse return tokens.toOwnedSlice(gpa);
+        const f = self.program.fileById(file_id);
+        const c = f.compilation orelse return tokens.toOwnedSlice(gpa);
+        var i: hir_mod.NodeId = 1;
+        while (i < c.hir.nodeCount()) : (i += 1) {
+            const tt = classifyNodeForSemantic(&c.hir, i) orelse continue;
+            const span = c.hir.spanOf(i);
+            const pos = ts_diagnostics.positionToLineCol(f.source, span.start);
+            try tokens.append(gpa, .{
+                .line = pos.line - 1, // LSP is 0-based; our positionToLineCol is 1-based.
+                .col = pos.col - 1,
+                .length = span.end - span.start,
+                .token_type = tt,
+                .modifiers = 0,
+            });
+        }
+        // Sort by (line, col) for deterministic delta output.
+        std.mem.sort(SemanticToken, tokens.items, {}, semanticTokenLessThan);
+        return tokens.toOwnedSlice(gpa);
+    }
+
     /// Diagnostics for `file`. Forwards from the per-file
     /// Compilation and renders them in tsc-default format.
     pub fn diagnostics(self: *Service, gpa: std.mem.Allocator, file_path: []const u8) ![]const u8 {
@@ -350,6 +536,60 @@ pub const Service = struct {
         return buf.toOwnedSlice(gpa);
     }
 };
+
+fn semanticTokenLessThan(_: void, a: SemanticToken, b: SemanticToken) bool {
+    if (a.line != b.line) return a.line < b.line;
+    return a.col < b.col;
+}
+
+/// Map a HIR node to a semantic-token type by inspecting the node's
+/// kind plus the kind of its parent (e.g., `identifier` inside a
+/// `fn_decl`'s name slot is a `function` token, but the same kind
+/// inside a `let_decl` is a `variable`).
+fn classifyNodeForSemantic(hir: *const hir_mod.Hir, node: hir_mod.NodeId) ?SemanticToken.TokenType {
+    const k = hir.kindOf(node);
+    switch (k) {
+        .literal_string => return .string,
+        .literal_number => return .number,
+        .identifier => {
+            // Look at the parent to disambiguate.
+            const p = hir.parentOf(node);
+            if (p == hir_mod.none_node_id) return .variable;
+            const pk = hir.kindOf(p);
+            switch (pk) {
+                .fn_decl, .fn_expr => {
+                    const f = hir_mod.fnDeclOf(hir, p);
+                    if (f.name == node) return .function;
+                    return .variable;
+                },
+                .class_decl, .class_expr => {
+                    const c = hir_mod.classOf(hir, p);
+                    if (c.name == node) return .class;
+                    return .variable;
+                },
+                .interface_decl => {
+                    const inf = hir_mod.interfaceOf(hir, p);
+                    if (inf.name == node) return .interface;
+                    return .variable;
+                },
+                .type_alias_decl => {
+                    const a = hir_mod.typeAliasOf(hir, p);
+                    if (a.name == node) return .type_alias;
+                    return .variable;
+                },
+                .enum_decl => {
+                    const e = hir_mod.enumOf(hir, p);
+                    if (e.name == node) return .enum_;
+                    return .variable;
+                },
+                .parameter => return .parameter,
+                .member_access => return .property,
+                else => return .variable,
+            }
+        },
+        else => return null,
+    }
+}
 
 /// Walk up the parent chain from `start` until we find a call_expr,
 /// or return null if we reach the root without one.
@@ -900,6 +1140,92 @@ test "Service: signatureHelp returns signature info inside a call" {
     }
     try T.expectEqual(@as(usize, 2), sig.parameters.len);
     try T.expect(sig.label.len > 0);
+}
+
+test "Service: rename returns one edit per occurrence" {
+    var vfs = ts_resolver.VirtualFs.init(T.allocator);
+    defer vfs.deinit();
+    var resolver = ts_resolver.Resolver.init(T.allocator, vfs.fs(), .{});
+    defer resolver.deinit();
+    var program = ts_program.Program.init(T.allocator, &resolver);
+    defer program.deinit();
+
+    const src = "let count = 1; let total = count + count;";
+    _ = try program.add("/main.ts", src);
+    try program.compileAll(.{});
+
+    var svc = Service.init(T.allocator, &program);
+    // Rename `count` (declared at byte 4).
+    const edits = try svc.rename(T.allocator, "/main.ts", 4, "n");
+    defer T.allocator.free(edits);
+    // 3 occurrences: declaration + 2 references.
+    try T.expectEqual(@as(usize, 3), edits.len);
+    for (edits) |e| try T.expectEqualStrings("n", e.new_text);
+}
+
+test "Service: codeActions sorts top-level imports" {
+    var vfs = ts_resolver.VirtualFs.init(T.allocator);
+    defer vfs.deinit();
+    var resolver = ts_resolver.Resolver.init(T.allocator, vfs.fs(), .{});
+    defer resolver.deinit();
+    var program = ts_program.Program.init(T.allocator, &resolver);
+    defer program.deinit();
+
+    const src = "import { a } from \"z\";\nimport { b } from \"a\";\n";
+    _ = try program.add("/main.ts", src);
+    try program.compileAll(.{});
+
+    var svc = Service.init(T.allocator, &program);
+    const actions = try svc.codeActions(T.allocator, "/main.ts");
+    defer {
+        for (actions) |a| {
+            for (a.edits) |e| T.allocator.free(e.new_text);
+            T.allocator.free(a.edits);
+        }
+        T.allocator.free(actions);
+    }
+    try T.expect(actions.len == 1);
+    try T.expectEqualStrings("Organize Imports", actions[0].title);
+    // The new text should mention `"a"` before `"z"`.
+    const nt = actions[0].edits[0].new_text;
+    const a_pos = std.mem.indexOf(u8, nt, "\"a\"") orelse return error.NotFound;
+    const z_pos = std.mem.indexOf(u8, nt, "\"z\"") orelse return error.NotFound;
+    try T.expect(a_pos < z_pos);
+}
+
+test "Service: semanticTokens classifies identifiers by declaring kind" {
+    var vfs = ts_resolver.VirtualFs.init(T.allocator);
+    defer vfs.deinit();
+    var resolver = ts_resolver.Resolver.init(T.allocator, vfs.fs(), .{});
+    defer resolver.deinit();
+    var program = ts_program.Program.init(T.allocator, &resolver);
+    defer program.deinit();
+
+    const src = "function add(a, b) { return a + b; } class Box {} let x = 1;";
+    _ = try program.add("/main.ts", src);
+    try program.compileAll(.{});
+
+    var svc = Service.init(T.allocator, &program);
+    const tokens = try svc.semanticTokens(T.allocator, "/main.ts");
+    defer T.allocator.free(tokens);
+
+    var has_function = false;
+    var has_class = false;
+    var has_parameter = false;
+    var has_variable = false;
+    for (tokens) |tok| {
+        switch (tok.token_type) {
+            .function => has_function = true,
+            .class => has_class = true,
+            .parameter => has_parameter = true,
+            .variable => has_variable = true,
+            else => {},
+        }
+    }
+    try T.expect(has_function);
+    try T.expect(has_class);
+    try T.expect(has_parameter);
+    try T.expect(has_variable);
 }
 
 test "Service: inlayHints surfaces inferred types on let-bindings" {
