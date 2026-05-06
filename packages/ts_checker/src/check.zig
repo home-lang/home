@@ -71,6 +71,7 @@ pub const TsCodes = struct {
     pub const parameter_implicitly_any: u32 = 7006;
     pub const variable_implicitly_any: u32 = 7005;
     pub const declared_but_not_read: u32 = 6133;
+    pub const object_literal_excess_property: u32 = 2353;
 };
 
 /// Per-alias generic info: the type-parameter TypeIds in
@@ -1061,6 +1062,11 @@ pub const Checker = struct {
             if (!ok) {
                 try self.report(node, TsCodes.type_not_assignable, "Type is not assignable to declared type.");
             }
+            // TS2353: fresh-object-literal excess-property check.
+            // Only fires when the init is a literal `{ … }` and the
+            // declared type is a known object — otherwise extra
+            // properties may legitimately come from elsewhere.
+            try self.checkExcessProperties(v.init, declared_type);
         } else if (declared_type == types.Primitive.none) {
             self.hir.setType(node, init_type);
         }
@@ -1198,6 +1204,15 @@ pub const Checker = struct {
                 _ = try self.checkExpression(a.expr);
                 if (a.type_node == hir_mod.none_node_id) break :blk types.Primitive.any;
                 break :blk try self.lowererLowerWithTypeParams(a.type_node);
+            },
+            .non_null_expr => blk: {
+                // `expr!` — postfix non-null assertion. Type the
+                // inner expression, then subtract null + undefined
+                // from the resulting union. Non-union types pass
+                // through (we don't error on a redundant assert).
+                const a = hir_mod.asExpressionOf(self.hir, node);
+                const inner = try self.checkExpression(a.expr);
+                break :blk self.subtractNullUndefined(inner) catch inner;
             },
             .array_literal => blk: {
                 const elements = hir_mod.arrayLiteralElements(self.hir, node);
@@ -1728,6 +1743,55 @@ pub const Checker = struct {
             .code = code,
             .message = msg,
         });
+    }
+
+    /// Remove `null` and `undefined` from `t` if it's a union; for
+    /// non-union types pass through unchanged. Used by the
+    /// `non_null_expr` typing path to support TS's `expr!` postfix
+    /// operator. An empty result collapses to `never`.
+    fn subtractNullUndefined(self: *Checker, t: TypeId) !TypeId {
+        if (!self.interner.pool.flagsOf(t).is_union) return t;
+        const members = self.interner.unionMembers(t);
+        var kept: std.ArrayListUnmanaged(TypeId) = .empty;
+        defer kept.deinit(self.gpa);
+        for (members) |m| {
+            const f = self.interner.pool.flagsOf(m);
+            if (f.is_null or f.is_undefined) continue;
+            try kept.append(self.gpa, m);
+        }
+        if (kept.items.len == 0) return types.Primitive.never;
+        if (kept.items.len == 1) return kept.items[0];
+        return self.interner.internUnion(kept.items) catch return error.OutOfMemory;
+    }
+
+    /// TS2353: when an object-literal init flows into a typed
+    /// destination, every property in the literal must be declared
+    /// on the target. Only fires for fresh literals (the actual
+    /// `{ … }` syntax) — the same shape passed through a variable
+    /// is treated as a regular structural assignment by tsc.
+    fn checkExcessProperties(self: *Checker, init_node: NodeId, declared_t: TypeId) CheckError!void {
+        if (init_node == hir_mod.none_node_id) return;
+        if (self.hir.kindOf(init_node) != .object_literal) return;
+        if (!self.interner.pool.flagsOf(declared_t).is_object_type) return;
+        const props = hir_mod.objectLiteralProps(self.hir, init_node);
+        for (props) |p| {
+            if (self.hir.kindOf(p) != .object_property) continue;
+            const op = hir_mod.objectPropertyOf(self.hir, p);
+            if (self.hir.kindOf(op.key) != .identifier) continue;
+            const id = hir_mod.identifierOf(self.hir, op.key);
+            if (self.interner.objectMember(declared_t, id.name) != null) continue;
+            const name_str = self.string_interner.get(id.name);
+            const msg = try std.fmt.allocPrint(
+                self.diag_arena.allocator(),
+                "Object literal may only specify known properties, and '{s}' does not exist on the target type.",
+                .{name_str},
+            );
+            try self.diagnostics.append(self.gpa, .{
+                .node = p,
+                .code = TsCodes.object_literal_excess_property,
+                .message = msg,
+            });
+        }
     }
 };
 
@@ -2468,6 +2532,37 @@ test "checker: generic alias `Box<number>` substitutes the type parameter" {
     const body = hir_mod.blockStmts(&s.hir, f.body);
     const ret_p = hir_mod.returnOf(&s.hir, body[0]);
     try T.expectEqual(types.Primitive.number_t, s.hir.typeOf(ret_p.value));
+}
+
+test "checker: object-literal excess property emits TS2353" {
+    const s = try newSetup("let p: { x: number } = { x: 1, y: 2 };");
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+    var found = false;
+    for (s.checker.diagnostics.items) |d| {
+        if (d.code == TsCodes.object_literal_excess_property) found = true;
+    }
+    try T.expect(found);
+}
+
+test "checker: matching object literal compiles without TS2353" {
+    const s = try newSetup("let p: { x: number; y: number } = { x: 1, y: 2 };");
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+    try T.expect(s.checker.diagnostics.items.len == 0);
+}
+
+test "checker: postfix `!` strips null/undefined from a union" {
+    const s = try newSetup(
+        \\function pickMaybe(): string | null { return null; }
+        \\let s = pickMaybe()!;
+    );
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+    const stmts = hir_mod.blockStmts(&s.hir, s.root);
+    const v = hir_mod.varDeclOf(&s.hir, stmts[1]);
+    try T.expectEqual(hir_mod.NodeKind.non_null_expr, s.hir.kindOf(v.init));
+    try T.expectEqual(types.Primitive.string_t, s.hir.typeOf(v.init));
 }
 
 test "checker: generic alias mismatch emits TS2322" {

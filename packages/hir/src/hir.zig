@@ -162,6 +162,7 @@ pub const NodeKind = enum(u8) {
     type_assertion,
     satisfies_expr,
     as_expr,
+    non_null_expr,
     spread,
     yield_expr,
     await_expr,
@@ -2065,6 +2066,21 @@ pub const Builder = struct {
         return id;
     }
 
+    /// Build a postfix non-null assertion `expr!`. Reuses the
+    /// `AsExpressionPayload` shape with `type_node = none_node_id`
+    /// — the checker subtracts `null | undefined` from `expr`'s
+    /// type rather than substituting an asserted type.
+    pub fn addNonNullExpression(self: *Builder, span: Span, expr: NodeId) !NodeId {
+        const payload_idx: u32 = @intCast(self.hir.as_expression_payloads.items.len);
+        try self.hir.as_expression_payloads.append(self.hir.gpa, .{
+            .expr = expr,
+            .type_node = none_node_id,
+        });
+        const id = try self.newNode(.non_null_expr, span, payload_idx);
+        self.hir.setParent(expr, id);
+        return id;
+    }
+
     pub fn addConditionalType(
         self: *Builder,
         span: Span,
@@ -2610,7 +2626,7 @@ pub fn keyofTypeOf(hir: *const Hir, id: NodeId) KeyofTypePayload {
 
 pub fn asExpressionOf(hir: *const Hir, id: NodeId) AsExpressionPayload {
     const k = hir.kindOf(id);
-    std.debug.assert(k == .as_expr or k == .satisfies_expr or k == .type_assertion);
+    std.debug.assert(k == .as_expr or k == .satisfies_expr or k == .type_assertion or k == .non_null_expr);
     return hir.as_expression_payloads.items[hir.payloads.items[id]];
 }
 

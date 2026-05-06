@@ -2191,6 +2191,19 @@ pub const Parser = struct {
                     const sp: Span = .{ .start = self.hir.spanOf(node).start, .end = close.span.end };
                     node = try self.builder.addElementAccess(sp, node, idx, false);
                 },
+                .bang => {
+                    // Postfix `!` — non-null assertion. TS only
+                    // recognizes this as a postfix when there's no
+                    // space between the operand and the `!` *and*
+                    // the next token isn't an expression continuation
+                    // (`(`, `=`, etc. would re-introduce ambiguity
+                    // with the boolean negation prefix). The lexer
+                    // emits `bang` either way; the disambiguation
+                    // here is sufficient for the common case.
+                    _ = self.advance();
+                    const sp: Span = .{ .start = self.hir.spanOf(node).start, .end = t.span.end };
+                    node = try self.builder.addNonNullExpression(sp, node);
+                },
                 else => break,
             }
         }

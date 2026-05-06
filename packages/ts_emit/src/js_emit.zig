@@ -764,9 +764,9 @@ pub const Printer = struct {
             .assignment => try self.printAssignment(node),
             .call_expr => try self.printCall(node),
             .new_expr => try self.printNew(node),
-            .as_expr, .satisfies_expr, .type_assertion => {
-                // Type assertions erase at runtime — print the inner
-                // expression only.
+            .as_expr, .satisfies_expr, .type_assertion, .non_null_expr => {
+                // Type assertions and `expr!` non-null assertions
+                // erase at runtime — print the inner expression only.
                 const a = hir_mod.asExpressionOf(self.hir, node);
                 try self.printExpression(a.expr);
             },
@@ -1207,6 +1207,13 @@ test "emit: as-cast erases at runtime" {
     // Both casts erase; the inner string literal is what remains.
     try T.expect(std.mem.indexOf(u8, out, "let n = \"hi\"") != null);
     try T.expect(std.mem.indexOf(u8, out, " as ") == null);
+}
+
+test "emit: postfix non-null assertion erases at runtime" {
+    const out = try emit("let s = x!;");
+    defer T.allocator.free(out);
+    try T.expect(std.mem.indexOf(u8, out, "let s = x") != null);
+    try T.expect(std.mem.indexOf(u8, out, "!") == null);
 }
 
 test "emit: export interface erases without dangling token" {
