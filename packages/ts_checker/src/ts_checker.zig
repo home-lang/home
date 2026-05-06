@@ -52,7 +52,7 @@ test {
 test "ts_checker: end-to-end smoke" {
     var ti = try Interner.init(T.allocator);
     defer ti.deinit();
-    var e = Engine.init(T.allocator, &ti);
+    var e = try Engine.init(T.allocator, &ti);
     defer e.deinit();
 
     // Build `"hello" | "world"`.

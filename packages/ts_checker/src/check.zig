@@ -3227,7 +3227,7 @@ fn newSetup(source: []const u8) !*TestSetup {
     s.root = try s.parser.parseSourceFile();
     s.ti = try interner.Interner.init(T.allocator);
     errdefer s.ti.deinit();
-    s.engine = relation.Engine.init(T.allocator, &s.ti);
+    s.engine = try relation.Engine.init(T.allocator, &s.ti);
     errdefer s.engine.deinit();
     s.checker = Checker.init(T.allocator, &s.hir, &s.ti, &s.sint, &s.engine);
     return s;

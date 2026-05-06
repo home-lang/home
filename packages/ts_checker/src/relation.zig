@@ -10,7 +10,9 @@
 //! Phase 3 ships the structural foundation; full conformance with tsc
 //! lands during Phase 6. The cache layout (§5.4) is designed for
 //! Phase 5 partition-parallel checking — the per-worker L1 + shared
-//! L2 split is wired here as a single-worker placeholder.
+//! L2 split is wired here even though only a single worker drives it
+//! today, so wiring the parallel checker tomorrow is a no-op for the
+//! relation surface.
 //!
 //! Verified architectural advantage: tsgo's relation cache is
 //! per-checker (Appendix D.3) — N partitions duplicate work on
@@ -52,33 +54,238 @@ pub fn packKey(rel: Relation, src: TypeId, tgt: TypeId) u64 {
         @as(u64, tgt);
 }
 
-/// Single-level relation cache (Phase 3 placeholder for the
-/// Phase 5 two-level structure). The map is open-addressed on the
-/// `u64` packed key.
-pub const RelationCache = struct {
+/// L1 capacity — per-worker, lockless, sized to fit the hot working
+/// set of a typical file's relation queries. When the table reaches
+/// this size we evict the oldest half (FIFO via insertion-order ring).
+pub const L1_CAPACITY: u32 = 256;
+
+/// L2 capacity — shared across workers, locked, sized to retain
+/// cross-cutting type-pair results (e.g. interfaces consulted by
+/// many partitions). Same FIFO eviction policy at the boundary.
+pub const L2_CAPACITY: u32 = 16384;
+
+/// Promote every Nth L1 insertion into L2. A small power-of-two
+/// stride keeps L2 hot for cross-worker sharing without flooding
+/// the locked path on every miss.
+pub const L2_PROMOTION_STRIDE: u32 = 4;
+
+/// Tiny atomic spin mutex for the L2 cache. We roll our own rather
+/// than depend on a specific `std.Thread.Mutex` shape — the std API
+/// is in flux on the targeted Zig version. The L2 hot path is short
+/// (one map lookup or insert), so a spin lock is fine.
+pub const SpinMutex = struct {
+    state: std.atomic.Value(bool) = std.atomic.Value(bool).init(false),
+
+    pub fn lock(self: *SpinMutex) void {
+        while (self.state.cmpxchgWeak(false, true, .acquire, .monotonic) != null) {
+            std.atomic.spinLoopHint();
+        }
+    }
+
+    pub fn unlock(self: *SpinMutex) void {
+        self.state.store(false, .release);
+    }
+};
+
+/// Per-worker L1 cache. Lockless; one of these lives inside each
+/// `TwoLevelCache` and (in the eventual parallel checker) per worker.
+/// Backed by an open-addressed `u64 → Result` map plus a small ring
+/// buffer of recently inserted keys for FIFO eviction at the cap.
+pub const L1Cache = struct {
     gpa: std.mem.Allocator,
     table: std.AutoHashMapUnmanaged(u64, Result),
+    /// Ring of insertion-ordered keys; size matches `cap`. Oldest at
+    /// `ring_head`; tail is `(ring_head + ring_len) % cap`.
+    ring: []u64,
+    ring_head: u32 = 0,
+    ring_len: u32 = 0,
+    cap: u32,
 
-    pub fn init(gpa: std.mem.Allocator) RelationCache {
-        return .{ .gpa = gpa, .table = .empty };
+    pub fn init(gpa: std.mem.Allocator) !L1Cache {
+        return initWithCapacity(gpa, L1_CAPACITY);
     }
 
-    pub fn deinit(self: *RelationCache) void {
+    pub fn initWithCapacity(gpa: std.mem.Allocator, cap: u32) !L1Cache {
+        const ring = try gpa.alloc(u64, cap);
+        return .{
+            .gpa = gpa,
+            .table = .empty,
+            .ring = ring,
+            .cap = cap,
+        };
+    }
+
+    pub fn deinit(self: *L1Cache) void {
         self.table.deinit(self.gpa);
+        self.gpa.free(self.ring);
     }
 
-    pub fn lookup(self: *const RelationCache, rel: Relation, src: TypeId, tgt: TypeId) Result {
-        return self.table.get(packKey(rel, src, tgt)) orelse .miss;
+    pub fn lookup(self: *const L1Cache, key: u64) Result {
+        return self.table.get(key) orelse .miss;
     }
 
-    pub fn put(self: *RelationCache, rel: Relation, src: TypeId, tgt: TypeId, r: Result) !void {
-        try self.table.put(self.gpa, packKey(rel, src, tgt), r);
+    /// Insert/overwrite; evicts the oldest half on overflow.
+    pub fn insert(self: *L1Cache, key: u64, r: Result) !void {
+        // Updating an existing key keeps insertion order — no eviction.
+        if (self.table.getPtr(key)) |slot| {
+            slot.* = r;
+            return;
+        }
+        if (self.ring_len >= self.cap) {
+            // Evict the oldest half of the ring in FIFO order.
+            const drop = self.cap / 2;
+            var i: u32 = 0;
+            while (i < drop) : (i += 1) {
+                const evict_key = self.ring[self.ring_head];
+                _ = self.table.remove(evict_key);
+                self.ring_head = (self.ring_head + 1) % self.cap;
+                self.ring_len -= 1;
+            }
+        }
+        try self.table.put(self.gpa, key, r);
+        const tail = (self.ring_head + self.ring_len) % self.cap;
+        self.ring[tail] = key;
+        self.ring_len += 1;
     }
 
-    pub fn count(self: *const RelationCache) u32 {
+    pub fn count(self: *const L1Cache) u32 {
         return self.table.count();
     }
 };
+
+/// Shared L2 cache — locked, larger capacity. The mutex is held for
+/// both lookups and inserts; lookups in the hot path should hit L1
+/// and skip L2 entirely.
+pub const L2Cache = struct {
+    gpa: std.mem.Allocator,
+    mu: SpinMutex = .{},
+    table: std.AutoHashMapUnmanaged(u64, Result),
+    ring: []u64,
+    ring_head: u32 = 0,
+    ring_len: u32 = 0,
+    cap: u32,
+
+    pub fn init(gpa: std.mem.Allocator) !L2Cache {
+        return initWithCapacity(gpa, L2_CAPACITY);
+    }
+
+    pub fn initWithCapacity(gpa: std.mem.Allocator, cap: u32) !L2Cache {
+        const ring = try gpa.alloc(u64, cap);
+        return .{
+            .gpa = gpa,
+            .table = .empty,
+            .ring = ring,
+            .cap = cap,
+        };
+    }
+
+    pub fn deinit(self: *L2Cache) void {
+        self.table.deinit(self.gpa);
+        self.gpa.free(self.ring);
+    }
+
+    pub fn lookup(self: *L2Cache, key: u64) Result {
+        self.mu.lock();
+        defer self.mu.unlock();
+        return self.table.get(key) orelse .miss;
+    }
+
+    pub fn insert(self: *L2Cache, key: u64, r: Result) !void {
+        self.mu.lock();
+        defer self.mu.unlock();
+        if (self.table.getPtr(key)) |slot| {
+            slot.* = r;
+            return;
+        }
+        if (self.ring_len >= self.cap) {
+            const drop = self.cap / 2;
+            var i: u32 = 0;
+            while (i < drop) : (i += 1) {
+                const evict_key = self.ring[self.ring_head];
+                _ = self.table.remove(evict_key);
+                self.ring_head = (self.ring_head + 1) % self.cap;
+                self.ring_len -= 1;
+            }
+        }
+        try self.table.put(self.gpa, key, r);
+        const tail = (self.ring_head + self.ring_len) % self.cap;
+        self.ring[tail] = key;
+        self.ring_len += 1;
+    }
+
+    pub fn count(self: *L2Cache) u32 {
+        self.mu.lock();
+        defer self.mu.unlock();
+        return self.table.count();
+    }
+};
+
+/// Two-level relation cache. `lookup` first probes the lockless L1;
+/// on miss it falls through to the locked L2 and (on hit) repopulates
+/// L1 so the next hit on this worker is lockless. `put` writes to L1
+/// always and to L2 every `L2_PROMOTION_STRIDE`-th insertion to keep
+/// L2 warm for cross-worker sharing without thrashing the lock.
+///
+/// Single-Engine usage works transparently: there's one L1 and one
+/// L2, and the promotion logic is harmless under sequential access.
+pub const TwoLevelCache = struct {
+    l1: L1Cache,
+    l2: L2Cache,
+    /// Counts L1 inserts; promotes to L2 when `% stride == 0`.
+    promotion_counter: u32 = 0,
+    promotion_stride: u32 = L2_PROMOTION_STRIDE,
+
+    pub fn init(gpa: std.mem.Allocator) !TwoLevelCache {
+        return .{
+            .l1 = try L1Cache.init(gpa),
+            .l2 = try L2Cache.init(gpa),
+        };
+    }
+
+    pub fn deinit(self: *TwoLevelCache) void {
+        self.l1.deinit();
+        self.l2.deinit();
+    }
+
+    /// Probe L1, then L2. On L2 hit, repopulate L1 (lockless after
+    /// this call) so subsequent lookups on this worker stay fast.
+    pub fn lookup(self: *TwoLevelCache, rel: Relation, src: TypeId, tgt: TypeId) Result {
+        const key = packKey(rel, src, tgt);
+        const l1_hit = self.l1.lookup(key);
+        if (l1_hit != .miss) return l1_hit;
+        const l2_hit = self.l2.lookup(key);
+        if (l2_hit != .miss) {
+            // Best-effort L1 backfill; allocation failure is non-fatal.
+            self.l1.insert(key, l2_hit) catch {};
+            return l2_hit;
+        }
+        return .miss;
+    }
+
+    pub fn put(self: *TwoLevelCache, rel: Relation, src: TypeId, tgt: TypeId, r: Result) !void {
+        const key = packKey(rel, src, tgt);
+        try self.l1.insert(key, r);
+        self.promotion_counter +%= 1;
+        // Promote every Nth insert to L2. `pending` markers are
+        // transient and would just be overwritten — skip them so L2
+        // doesn't fill with mid-computation noise.
+        if (r != .pending and self.promotion_counter % self.promotion_stride == 0) {
+            try self.l2.insert(key, r);
+        }
+    }
+
+    /// Total entries across L1 and L2. Used by tests and diagnostics.
+    /// Note: L1 ⊂ L2 is *not* guaranteed (entries can be evicted from
+    /// either independently), so this is an upper bound on uniques.
+    pub fn count(self: *TwoLevelCache) u32 {
+        return self.l1.count() + self.l2.count();
+    }
+};
+
+/// Backwards-compatible alias. The old single-level `RelationCache`
+/// is now a two-level cache transparently — single-Engine consumers
+/// see no behavioural change beyond cache eviction at large sizes.
+pub const RelationCache = TwoLevelCache;
 
 /// Relation engine. Wraps the interner + cache and exposes the
 /// `assignable`, `subtype`, `identity`, `comparable` queries.
@@ -92,10 +299,10 @@ pub const Engine = struct {
     /// target `(p: U) => R` iff `T` and `U` are mutually assignable.
     strict_function_types: bool = false,
 
-    pub fn init(gpa: std.mem.Allocator, ti: *Interner) Engine {
+    pub fn init(gpa: std.mem.Allocator, ti: *Interner) !Engine {
         return .{
             .interner = ti,
-            .cache = RelationCache.init(gpa),
+            .cache = try RelationCache.init(gpa),
         };
     }
 
@@ -383,7 +590,7 @@ const T = std.testing;
 test "Engine: identity short-circuits via interned ids" {
     var ti = try Interner.init(T.allocator);
     defer ti.deinit();
-    var e = Engine.init(T.allocator, &ti);
+    var e = try Engine.init(T.allocator, &ti);
     defer e.deinit();
     try T.expect(try e.isIdenticalTo(Primitive.string_t, Primitive.string_t));
     try T.expect(!try e.isIdenticalTo(Primitive.string_t, Primitive.number_t));
@@ -392,7 +599,7 @@ test "Engine: identity short-circuits via interned ids" {
 test "Engine: any flows in both directions" {
     var ti = try Interner.init(T.allocator);
     defer ti.deinit();
-    var e = Engine.init(T.allocator, &ti);
+    var e = try Engine.init(T.allocator, &ti);
     defer e.deinit();
     try T.expect(try e.isAssignableTo(Primitive.any, Primitive.string_t));
     try T.expect(try e.isAssignableTo(Primitive.string_t, Primitive.any));
@@ -401,7 +608,7 @@ test "Engine: any flows in both directions" {
 test "Engine: never assigns to anything" {
     var ti = try Interner.init(T.allocator);
     defer ti.deinit();
-    var e = Engine.init(T.allocator, &ti);
+    var e = try Engine.init(T.allocator, &ti);
     defer e.deinit();
     try T.expect(try e.isAssignableTo(Primitive.never, Primitive.string_t));
     try T.expect(try e.isAssignableTo(Primitive.never, Primitive.any));
@@ -412,7 +619,7 @@ test "Engine: never assigns to anything" {
 test "Engine: unknown is the universal sink" {
     var ti = try Interner.init(T.allocator);
     defer ti.deinit();
-    var e = Engine.init(T.allocator, &ti);
+    var e = try Engine.init(T.allocator, &ti);
     defer e.deinit();
     try T.expect(try e.isAssignableTo(Primitive.string_t, Primitive.unknown));
     try T.expect(try e.isAssignableTo(Primitive.number_t, Primitive.unknown));
@@ -423,7 +630,7 @@ test "Engine: unknown is the universal sink" {
 test "Engine: literal assigns to its primitive but not vice versa" {
     var ti = try Interner.init(T.allocator);
     defer ti.deinit();
-    var e = Engine.init(T.allocator, &ti);
+    var e = try Engine.init(T.allocator, &ti);
     defer e.deinit();
     const n42 = try ti.internNumberLiteral(42);
     try T.expect(try e.isAssignableTo(n42, Primitive.number_t));
@@ -433,7 +640,7 @@ test "Engine: literal assigns to its primitive but not vice versa" {
 test "Engine: union — every member of source assigns" {
     var ti = try Interner.init(T.allocator);
     defer ti.deinit();
-    var e = Engine.init(T.allocator, &ti);
+    var e = try Engine.init(T.allocator, &ti);
     defer e.deinit();
     const u = try ti.internUnion(&.{ Primitive.string_t, Primitive.number_t });
     // `string | number` does NOT assign to `string`.
@@ -445,7 +652,7 @@ test "Engine: union — every member of source assigns" {
 test "Engine: intersection — every member of target must accept" {
     var ti = try Interner.init(T.allocator);
     defer ti.deinit();
-    var e = Engine.init(T.allocator, &ti);
+    var e = try Engine.init(T.allocator, &ti);
     defer e.deinit();
     const inter = try ti.internIntersection(&.{ Primitive.string_t, Primitive.number_t });
     // `string` does not satisfy `string & number` (that intersection
@@ -456,7 +663,7 @@ test "Engine: intersection — every member of target must accept" {
 test "Engine: subtype — any is NOT a subtype" {
     var ti = try Interner.init(T.allocator);
     defer ti.deinit();
-    var e = Engine.init(T.allocator, &ti);
+    var e = try Engine.init(T.allocator, &ti);
     defer e.deinit();
     try T.expect(!try e.isSubtypeOf(Primitive.any, Primitive.string_t));
     try T.expect(!try e.isSubtypeOf(Primitive.string_t, Primitive.any));
@@ -467,7 +674,7 @@ test "Engine: subtype — any is NOT a subtype" {
 test "Engine: comparable is symmetric" {
     var ti = try Interner.init(T.allocator);
     defer ti.deinit();
-    var e = Engine.init(T.allocator, &ti);
+    var e = try Engine.init(T.allocator, &ti);
     defer e.deinit();
     const u = try ti.internUnion(&.{ Primitive.string_t, Primitive.number_t });
     try T.expect(try e.isComparableTo(Primitive.string_t, u));
@@ -477,7 +684,7 @@ test "Engine: comparable is symmetric" {
 test "Engine: undefined assigns to void" {
     var ti = try Interner.init(T.allocator);
     defer ti.deinit();
-    var e = Engine.init(T.allocator, &ti);
+    var e = try Engine.init(T.allocator, &ti);
     defer e.deinit();
     try T.expect(try e.isAssignableTo(Primitive.undefined_t, Primitive.void_t));
     try T.expect(!try e.isAssignableTo(Primitive.string_t, Primitive.void_t));
@@ -494,7 +701,7 @@ test "RelationCache: pack/unpack key" {
 test "Engine: structural object assignability — exact match" {
     var ti = try Interner.init(T.allocator);
     defer ti.deinit();
-    var e = Engine.init(T.allocator, &ti);
+    var e = try Engine.init(T.allocator, &ti);
     defer e.deinit();
 
     var sint = try string_interner.Interner.init(T.allocator);
@@ -513,7 +720,7 @@ test "Engine: structural object assignability — exact match" {
 test "Engine: structural object — source missing required prop fails" {
     var ti = try Interner.init(T.allocator);
     defer ti.deinit();
-    var e = Engine.init(T.allocator, &ti);
+    var e = try Engine.init(T.allocator, &ti);
     defer e.deinit();
     var sint = try string_interner.Interner.init(T.allocator);
     defer sint.deinit();
@@ -532,7 +739,7 @@ test "Engine: structural object — source missing required prop fails" {
 test "Engine: structural object — optional target prop allowed missing" {
     var ti = try Interner.init(T.allocator);
     defer ti.deinit();
-    var e = Engine.init(T.allocator, &ti);
+    var e = try Engine.init(T.allocator, &ti);
     defer e.deinit();
     var sint = try string_interner.Interner.init(T.allocator);
     defer sint.deinit();
@@ -551,7 +758,7 @@ test "Engine: structural object — optional target prop allowed missing" {
 test "Engine: structural object — extra source props allowed" {
     var ti = try Interner.init(T.allocator);
     defer ti.deinit();
-    var e = Engine.init(T.allocator, &ti);
+    var e = try Engine.init(T.allocator, &ti);
     defer e.deinit();
     var sint = try string_interner.Interner.init(T.allocator);
     defer sint.deinit();
@@ -570,7 +777,7 @@ test "Engine: structural object — extra source props allowed" {
 test "Engine: structural object — depth-checked" {
     var ti = try Interner.init(T.allocator);
     defer ti.deinit();
-    var e = Engine.init(T.allocator, &ti);
+    var e = try Engine.init(T.allocator, &ti);
     defer e.deinit();
     var sint = try string_interner.Interner.init(T.allocator);
     defer sint.deinit();
@@ -594,7 +801,7 @@ test "Engine: structural object — depth-checked" {
 test "Engine: cache populates on lookup" {
     var ti = try Interner.init(T.allocator);
     defer ti.deinit();
-    var e = Engine.init(T.allocator, &ti);
+    var e = try Engine.init(T.allocator, &ti);
     defer e.deinit();
     const before = e.cache.count();
     _ = try e.isAssignableTo(Primitive.string_t, Primitive.unknown);
@@ -603,4 +810,86 @@ test "Engine: cache populates on lookup" {
     const u = try ti.internUnion(&.{ Primitive.string_t, Primitive.number_t });
     _ = try e.isAssignableTo(Primitive.string_t, u);
     try T.expect(e.cache.count() > before);
+}
+
+test "L1Cache: insert + lookup + FIFO eviction" {
+    var l1 = try L1Cache.initWithCapacity(T.allocator, 8);
+    defer l1.deinit();
+    // Fill exactly to capacity.
+    var i: u32 = 0;
+    while (i < 8) : (i += 1) try l1.insert(@as(u64, i), .yes);
+    try T.expectEqual(@as(u32, 8), l1.count());
+    // The 9th insert evicts the oldest half (4 entries).
+    try l1.insert(100, .no);
+    try T.expectEqual(@as(u32, 5), l1.count());
+    try T.expectEqual(Result.miss, l1.lookup(0));
+    try T.expectEqual(Result.miss, l1.lookup(3));
+    try T.expectEqual(Result.yes, l1.lookup(4));
+    try T.expectEqual(Result.yes, l1.lookup(7));
+    try T.expectEqual(Result.no, l1.lookup(100));
+}
+
+test "L1Cache: overwrite preserves capacity" {
+    var l1 = try L1Cache.initWithCapacity(T.allocator, 4);
+    defer l1.deinit();
+    try l1.insert(1, .yes);
+    try l1.insert(1, .no);
+    try T.expectEqual(@as(u32, 1), l1.count());
+    try T.expectEqual(Result.no, l1.lookup(1));
+}
+
+test "L2Cache: insert + lookup under lock" {
+    var l2 = try L2Cache.initWithCapacity(T.allocator, 4);
+    defer l2.deinit();
+    try l2.insert(42, .yes);
+    try T.expectEqual(Result.yes, l2.lookup(42));
+    try T.expectEqual(Result.miss, l2.lookup(43));
+}
+
+test "TwoLevelCache: L1 hit avoids L2 entirely" {
+    var c = try TwoLevelCache.init(T.allocator);
+    defer c.deinit();
+    try c.put(.assignable, 1, 2, .yes);
+    // First insert went to L1 only (counter=1, not divisible by 4).
+    try T.expectEqual(@as(u32, 1), c.l1.count());
+    try T.expectEqual(@as(u32, 0), c.l2.count());
+    try T.expectEqual(Result.yes, c.lookup(.assignable, 1, 2));
+}
+
+test "TwoLevelCache: L2 promotion every Nth insert" {
+    var c = try TwoLevelCache.init(T.allocator);
+    defer c.deinit();
+    // Stride is 4 — the 4th insert (counter 4) lands in L2.
+    try c.put(.assignable, 1, 2, .yes);
+    try c.put(.assignable, 1, 3, .yes);
+    try c.put(.assignable, 1, 4, .yes);
+    try T.expectEqual(@as(u32, 0), c.l2.count());
+    try c.put(.assignable, 1, 5, .yes);
+    try T.expectEqual(@as(u32, 1), c.l2.count());
+}
+
+test "TwoLevelCache: L2 hit backfills L1" {
+    var c = try TwoLevelCache.init(T.allocator);
+    defer c.deinit();
+    // Seed L2 directly to simulate cross-worker promotion.
+    try c.l2.insert(packKey(.subtype, 7, 9), .yes);
+    // L1 is empty.
+    try T.expectEqual(@as(u32, 0), c.l1.count());
+    // First lookup pulls from L2 and warms L1.
+    try T.expectEqual(Result.yes, c.lookup(.subtype, 7, 9));
+    try T.expectEqual(@as(u32, 1), c.l1.count());
+    // Subsequent lookups are L1-only — verify by clearing L2 and re-checking.
+    c.l2.table.clearRetainingCapacity();
+    c.l2.ring_head = 0;
+    c.l2.ring_len = 0;
+    try T.expectEqual(Result.yes, c.lookup(.subtype, 7, 9));
+}
+
+test "TwoLevelCache: pending markers are not promoted to L2" {
+    var c = try TwoLevelCache.init(T.allocator);
+    defer c.deinit();
+    // Burn 4 pending inserts — L2 must stay empty.
+    var i: u32 = 0;
+    while (i < 16) : (i += 1) try c.put(.identity, i, i + 1, .pending);
+    try T.expectEqual(@as(u32, 0), c.l2.count());
 }

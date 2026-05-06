@@ -646,7 +646,7 @@ fn emitTestTyped(source: []const u8) ![]u8 {
     defer destroySetup(s);
     var ti = try ts_checker.Interner.init(T.allocator);
     defer ti.deinit();
-    var engine = ts_checker.Engine.init(T.allocator, &ti);
+    var engine = try ts_checker.Engine.init(T.allocator, &ti);
     defer engine.deinit();
     var checker = ts_checker.Checker.init(T.allocator, &s.hir, &ti, &s.sint, &engine);
     defer checker.deinit();

@@ -332,7 +332,7 @@ pub fn compileSource(
     // ------ Type check ------
     c.type_interner = ts_checker.Interner.init(gpa) catch return error.OutOfMemory;
     errdefer c.type_interner.deinit();
-    c.type_engine = ts_checker.Engine.init(gpa, &c.type_interner);
+    c.type_engine = ts_checker.Engine.init(gpa, &c.type_interner) catch return error.OutOfMemory;
     errdefer c.type_engine.deinit();
     var checker = ts_checker.Checker.init(gpa, &c.hir, &c.type_interner, &c.interner, &c.type_engine);
     defer checker.deinit();
