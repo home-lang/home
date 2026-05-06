@@ -1299,7 +1299,12 @@ pub const Checker = struct {
             .member_access => blk: {
                 const m = hir_mod.memberOf(self.hir, node);
                 const obj_t = try self.checkExpression(m.object);
-                if (self.interner.objectMember(obj_t, m.name)) |t| break :blk t;
+                // Optional chaining (`obj?.x`) widens the result to
+                // include `undefined` regardless of whether the
+                // object's static type already does.
+                if (self.interner.objectMember(obj_t, m.name)) |t| {
+                    break :blk if (m.optional) self.unionWithUndefined(t) catch t else t;
+                }
                 // Index-signature fallback: `obj.foo` on a type
                 // with a `[k: string]: V` indexer resolves to V.
                 if (self.interner.pool.flagsOf(obj_t).is_object_type) {
@@ -1324,9 +1329,28 @@ pub const Checker = struct {
                 const e = hir_mod.elementOf(self.hir, node);
                 const obj_t = try self.checkExpression(e.object);
                 const idx_t = try self.checkExpression(e.index);
-                // Index-signature path: `obj[key]` resolves to the
-                // matching index signature's value type.
                 if (self.interner.pool.flagsOf(obj_t).is_object_type) {
+                    // Tuple literal-index access: `tup[0]` should
+                    // pick the per-index member typed under "0", not
+                    // the broader number indexer's union. Only fires
+                    // when the index is a numeric literal expression.
+                    if (self.hir.kindOf(e.index) == .literal_number) {
+                        const v = hir_mod.literalNumberOf(self.hir, e.index);
+                        // Convert to integer; ignore non-integral
+                        // forms (e.g. `tup[0.5]`) and let the indexer
+                        // path handle them.
+                        if (v >= 0 and v == @floor(v)) {
+                            var nbuf: [12]u8 = undefined;
+                            const k = std.fmt.bufPrint(&nbuf, "{d}", .{@as(u64, @intFromFloat(v))}) catch null;
+                            if (k) |key_str| {
+                                const key_id = self.string_interner.intern(key_str) catch 0;
+                                if (key_id != 0) {
+                                    if (self.interner.objectMember(obj_t, key_id)) |t| break :blk t;
+                                }
+                            }
+                        }
+                    }
+                    // Index-signature fallback.
                     const idx_flags = self.interner.pool.flagsOf(idx_t);
                     if (idx_flags.is_string) {
                         const v = self.interner.objectStringIndex(obj_t);
@@ -1779,7 +1803,16 @@ pub const Checker = struct {
         const l = hir_mod.logicalOf(self.hir, node);
         const lhs = try self.checkExpression(l.lhs);
         const rhs = try self.checkExpression(l.rhs);
-        // Short-circuit operators produce a union of operand types.
+        // `a ?? b` — when `a` is non-null/undefined the result is
+        // `a`'s type minus null/undefined; otherwise it's `b`'s
+        // type. The runtime forks on nullish, so the result type
+        // is `(a minus null|undefined) | b`. For `&&`/`||` we keep
+        // the existing simple union — TS narrows further but our
+        // current relation engine doesn't yet model truthiness.
+        if (l.op == .nullish) {
+            const lhs_non_null = self.subtractNullUndefined(lhs) catch lhs;
+            return self.interner.internUnion(&.{ lhs_non_null, rhs }) catch error.OutOfMemory;
+        }
         return self.interner.internUnion(&.{ lhs, rhs }) catch error.OutOfMemory;
     }
 
@@ -3010,6 +3043,72 @@ test "checker: keyof T evaluates to a union of property name literals" {
     }
     try T.expect(has_x);
     try T.expect(has_y);
+}
+
+test "checker: nullish coalescing strips null/undefined from lhs" {
+    const s = try newSetup(
+        \\function pickMaybe(): string | null { return null; }
+        \\let s = pickMaybe() ?? "default";
+    );
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+    const stmts = hir_mod.blockStmts(&s.hir, s.root);
+    const v = hir_mod.varDeclOf(&s.hir, stmts[1]);
+    const t = s.hir.typeOf(v.init);
+    // Result is `string` (lhs minus null) | `string` (rhs literal type)
+    // → effectively just `string`. Either way `null` must NOT appear.
+    if (s.ti.pool.flagsOf(t).is_union) {
+        for (s.ti.unionMembers(t)) |m| {
+            try T.expect(m != types.Primitive.null_t);
+            try T.expect(m != types.Primitive.undefined_t);
+        }
+    }
+}
+
+test "checker: optional chaining widens the result with undefined" {
+    const s = try newSetup(
+        \\interface Box { value: number; }
+        \\function f(b: Box): number { return b?.value; }
+    );
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+    // The return value should be `number | undefined` (broader
+    // than the function's declared `number` return — we don't
+    // assert on the diagnostic since that's the assignability
+    // story; instead we check the inner expression's type.)
+    const stmts = hir_mod.blockStmts(&s.hir, s.root);
+    const f = hir_mod.fnDeclOf(&s.hir, stmts[1]);
+    const body = hir_mod.blockStmts(&s.hir, f.body);
+    const ret_p = hir_mod.returnOf(&s.hir, body[0]);
+    const t = s.hir.typeOf(ret_p.value);
+    try T.expect(s.ti.pool.flagsOf(t).is_union);
+    var has_num = false;
+    var has_undef = false;
+    for (s.ti.unionMembers(t)) |m| {
+        if (m == types.Primitive.number_t) has_num = true;
+        if (m == types.Primitive.undefined_t) has_undef = true;
+    }
+    try T.expect(has_num);
+    try T.expect(has_undef);
+}
+
+test "checker: tuple literal-index resolves to the specific member type" {
+    const s = try newSetup(
+        \\function fst(p: [number, string]): number { return p[0]; }
+        \\function snd(p: [number, string]): string { return p[1]; }
+    );
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+    try T.expect(s.checker.diagnostics.items.len == 0);
+    const stmts = hir_mod.blockStmts(&s.hir, s.root);
+    const f1 = hir_mod.fnDeclOf(&s.hir, stmts[0]);
+    const body1 = hir_mod.blockStmts(&s.hir, f1.body);
+    const ret1 = hir_mod.returnOf(&s.hir, body1[0]);
+    try T.expectEqual(types.Primitive.number_t, s.hir.typeOf(ret1.value));
+    const f2 = hir_mod.fnDeclOf(&s.hir, stmts[1]);
+    const body2 = hir_mod.blockStmts(&s.hir, f2.body);
+    const ret2 = hir_mod.returnOf(&s.hir, body2[0]);
+    try T.expectEqual(types.Primitive.string_t, s.hir.typeOf(ret2.value));
 }
 
 test "checker: `as const` on a string literal types as the literal" {
