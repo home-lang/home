@@ -81,13 +81,14 @@ pub const Lowerer = struct {
             // their runtime type. The narrowing semantics are
             // separately recorded in the checker via `fn_predicates`.
             .type_predicate_type => types.Primitive.boolean_t,
-            // Template literal types lower to `string` for now —
-            // structural-pattern matching against templates is a
-            // Phase 6 follow-up. The interner already supports
-            // string-literal types so a template with no
-            // interpolations could collapse to a literal type, but
-            // we keep things conservative.
-            .template_literal_type => types.Primitive.string_t,
+            // Template literal types: when every interpolated type
+            // resolves to a string-literal type, concatenate the
+            // text+lit parts into a single string-literal type
+            // (e.g. `\`prefix-${'foo'}\`` → "prefix-foo"). Otherwise
+            // fall back to the broad `string` type — full structural
+            // pattern matching against templates is a Phase 6
+            // follow-up.
+            .template_literal_type => try self.lowerTemplateLiteralType(node),
             else => types.Primitive.unknown,
         };
     }
@@ -318,6 +319,53 @@ pub const Lowerer = struct {
             self.interner.internUnion(element_ids.items) catch types.Primitive.any;
         return self.interner.internObjectTypeWithIndex(members.items, types.Primitive.none, elem_union) catch error.OutOfMemory;
     }
+
+    /// Lower a template-literal type. Walks the alternating
+    /// text/type parts; if every interpolated type lowers to a
+    /// string-literal, concatenate the whole template into a
+    /// single string-literal type. Otherwise fall back to the
+    /// broad `string` primitive.
+    fn lowerTemplateLiteralType(self: *Lowerer, node: NodeId) LowerError!TypeId {
+        const text_parts = hir_mod.templateLiteralTypeTexts(self.hir, node);
+        const type_parts = hir_mod.templateLiteralTypeTypes(self.hir, node);
+        // Builder invariant: text_parts.len == type_parts.len + 1.
+        if (text_parts.len == 0) return types.Primitive.string_t;
+
+        var buf: std.ArrayListUnmanaged(u8) = .empty;
+        defer buf.deinit(self.gpa);
+
+        for (text_parts, 0..) |text_node, i| {
+            // Append the text segment.
+            if (text_node != hir_mod.none_node_id and self.hir.kindOf(text_node) == .literal_string) {
+                const sp = hir_mod.literalStringOf(self.hir, text_node);
+                const bytes = self.string_interner.get(sp.value);
+                try buf.appendSlice(self.gpa, bytes);
+            } else {
+                // Malformed text part — can't materialize.
+                return types.Primitive.string_t;
+            }
+            // Append the substituted type's literal value, if any.
+            if (i < type_parts.len) {
+                const sub = try self.lower(type_parts[i]);
+                const flags = self.interner.pool.flagsOf(sub);
+                if (!(flags.is_literal and flags.is_string)) {
+                    // Non-string-literal interpolation — bail out.
+                    return types.Primitive.string_t;
+                }
+                const lit = self.interner.literalOf(sub);
+                switch (lit) {
+                    .string_lit => |sid| {
+                        const bytes = self.string_interner.get(sid);
+                        try buf.appendSlice(self.gpa, bytes);
+                    },
+                    else => return types.Primitive.string_t,
+                }
+            }
+        }
+
+        const sid = self.string_interner.intern(buf.items) catch return error.OutOfMemory;
+        return self.interner.internStringLiteral(sid) catch error.OutOfMemory;
+    }
 };
 
 // =============================================================================
@@ -496,6 +544,55 @@ test "lower: non-primitive named ref falls back to unknown" {
     defer destroySetup(s);
     const id = try s.lowerer.lower(typeAnnotationOf(s));
     try T.expectEqual(types.Primitive.unknown, id);
+}
+
+test "lower: template literal type with no interpolations evaluates to the literal" {
+    const s = try newSetup("let x: `hello-world`;");
+    defer destroySetup(s);
+    const id = try s.lowerer.lower(typeAnnotationOf(s));
+    const flags = s.ti.pool.flagsOf(id);
+    try T.expect(flags.is_literal);
+    try T.expect(flags.is_string);
+    const lit = s.ti.literalOf(id);
+    switch (lit) {
+        .string_lit => |sid| try T.expectEqualStrings("hello-world", s.sint.get(sid)),
+        else => return error.TestExpectedEqual,
+    }
+}
+
+test "lower: template literal type with string-literal interpolation evaluates" {
+    // The lexer's eager `tokenize` doesn't yet drive parser-side
+    // template re-scan after `${ … }`, so we build the HIR shape
+    // directly to exercise the lower path: `` `prefix-${'foo'}` ``
+    // → string-literal "prefix-foo".
+    const s = try newSetup("let x: string;");
+    defer destroySetup(s);
+
+    var b = hir_mod.Builder.init(&s.hir);
+    defer b.deinit();
+    const sp_zero: hir_mod.Span = .{ .start = 0, .end = 0 };
+    const prefix_id = try s.sint.intern("prefix-");
+    const empty_id = try s.sint.intern("");
+    const foo_id = try s.sint.intern("foo");
+    const t0 = try b.addLiteralString(sp_zero, prefix_id);
+    const t1 = try b.addLiteralString(sp_zero, empty_id);
+    const inner_str = try b.addLiteralString(sp_zero, foo_id);
+    const inner_lit_type = try b.addLiteralType(sp_zero, inner_str, false);
+    const tmpl = try b.addTemplateLiteralType(
+        sp_zero,
+        &.{ t0, t1 },
+        &.{inner_lit_type},
+    );
+
+    const id = try s.lowerer.lower(tmpl);
+    const flags = s.ti.pool.flagsOf(id);
+    try T.expect(flags.is_literal);
+    try T.expect(flags.is_string);
+    const lit = s.ti.literalOf(id);
+    switch (lit) {
+        .string_lit => |sid| try T.expectEqualStrings("prefix-foo", s.sint.get(sid)),
+        else => return error.TestExpectedEqual,
+    }
 }
 
 test "lower: union sort+dedup canonicalizes" {
