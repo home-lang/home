@@ -590,6 +590,47 @@ pub const Service = struct {
         return tokens.toOwnedSlice(gpa);
     }
 
+    /// Delta-encoded LSP wire form of `semanticTokens(file)` —
+    /// matches the `data` array shape required by
+    /// `textDocument/semanticTokens/full`.
+    ///
+    /// For each (line, col)-sorted token we emit 5 u32s:
+    /// `delta_line`, `delta_start`, `length`, `token_type_index`,
+    /// `token_modifiers_bitset`. `delta_line` is relative to the
+    /// previous token (or 0 for the first); `delta_start` is
+    /// relative to the previous token's `col` when on the same line,
+    /// otherwise the absolute column on the new line.
+    pub fn semanticTokensWire(self: *Service, gpa: std.mem.Allocator, file_path: []const u8) ![]u32 {
+        const toks = try self.semanticTokens(gpa, file_path);
+        defer gpa.free(toks);
+        return encodeSemanticTokensWire(gpa, toks);
+    }
+
+    /// Delta-encoded LSP wire form of the subset of tokens whose
+    /// `line` falls in `[start_line, end_line)` — matches
+    /// `textDocument/semanticTokens/range`. Encoding is identical to
+    /// `semanticTokensWire`, but only the in-range tokens contribute
+    /// to the delta sequence (and the first in-range token's deltas
+    /// are absolute vs (0, 0)).
+    pub fn semanticTokensRange(
+        self: *Service,
+        gpa: std.mem.Allocator,
+        file_path: []const u8,
+        start_line: u32,
+        end_line: u32,
+    ) ![]u32 {
+        const toks = try self.semanticTokens(gpa, file_path);
+        defer gpa.free(toks);
+        var filtered: std.ArrayListUnmanaged(SemanticToken) = .empty;
+        defer filtered.deinit(gpa);
+        for (toks) |t| {
+            if (t.line >= start_line and t.line < end_line) {
+                try filtered.append(gpa, t);
+            }
+        }
+        return encodeSemanticTokensWire(gpa, filtered.items);
+    }
+
     /// Apply an editor `textDocument/didChange` to `file_path`:
     /// replace the program's source bytes, recompile just that file
     /// (cross-file imports are re-resolved as part of the recompile),
@@ -755,6 +796,34 @@ pub const Service = struct {
 fn semanticTokenLessThan(_: void, a: SemanticToken, b: SemanticToken) bool {
     if (a.line != b.line) return a.line < b.line;
     return a.col < b.col;
+}
+
+/// Walk a (line, col)-sorted slice of `SemanticToken`s and produce
+/// the LSP-wire `[]u32` (5 u32s per token: `delta_line`,
+/// `delta_start`, `length`, `type`, `modifiers`). The first token's
+/// deltas are absolute (vs (0, 0)); subsequent `delta_start` resets
+/// to absolute on each new line.
+fn encodeSemanticTokensWire(gpa: std.mem.Allocator, tokens: []const SemanticToken) ![]u32 {
+    var data: std.ArrayListUnmanaged(u32) = .empty;
+    errdefer data.deinit(gpa);
+    var prev_line: u32 = 0;
+    var prev_col: u32 = 0;
+    for (tokens, 0..) |t, i| {
+        const delta_line = if (i == 0) t.line else t.line - prev_line;
+        const delta_start = blk: {
+            if (i == 0) break :blk t.col;
+            if (t.line == prev_line) break :blk t.col - prev_col;
+            break :blk t.col;
+        };
+        try data.append(gpa, delta_line);
+        try data.append(gpa, delta_start);
+        try data.append(gpa, t.length);
+        try data.append(gpa, @intFromEnum(t.token_type));
+        try data.append(gpa, t.modifiers);
+        prev_line = t.line;
+        prev_col = t.col;
+    }
+    return data.toOwnedSlice(gpa);
 }
 
 /// Map a HIR node to a semantic-token type by inspecting the node's
@@ -1634,4 +1703,87 @@ test "Service: foldingRanges emits one range per block + import run" {
     }
     try T.expect(saw_imports);
     try T.expect(saw_region);
+}
+
+test "Service: semanticTokensWire returns empty array for empty/unknown file" {
+    var vfs = ts_resolver.VirtualFs.init(T.allocator);
+    defer vfs.deinit();
+    var resolver = ts_resolver.Resolver.init(T.allocator, vfs.fs(), .{});
+    defer resolver.deinit();
+    var program = ts_program.Program.init(T.allocator, &resolver);
+    defer program.deinit();
+
+    _ = try program.add("/empty.ts", "");
+    try program.compileAll(.{});
+
+    var svc = Service.init(T.allocator, &program);
+    const wire = try svc.semanticTokensWire(T.allocator, "/empty.ts");
+    defer T.allocator.free(wire);
+    try T.expectEqual(@as(usize, 0), wire.len);
+
+    // Unknown file is also a no-op rather than an error.
+    const missing = try svc.semanticTokensWire(T.allocator, "/missing.ts");
+    defer T.allocator.free(missing);
+    try T.expectEqual(@as(usize, 0), missing.len);
+}
+
+test "Service: semanticTokensWire delta-encodes two tokens on the same line" {
+    // Hand-build two tokens on line 0 to assert the delta encoding
+    // exactly, without depending on the HIR walker's classification
+    // for any specific source.
+    const toks = [_]SemanticToken{
+        .{ .line = 0, .col = 4, .length = 3, .token_type = .variable, .modifiers = 0 },
+        .{ .line = 0, .col = 10, .length = 5, .token_type = .variable, .modifiers = 0 },
+    };
+    const wire = try encodeSemanticTokensWire(T.allocator, &toks);
+    defer T.allocator.free(wire);
+
+    const expected = [_]u32{
+        // First token: deltas are absolute vs (0, 0).
+        0, 4, 3, @intFromEnum(SemanticToken.TokenType.variable), 0,
+        // Second token: same line -> delta_start is col2 - col1 = 6.
+        0, 6, 5, @intFromEnum(SemanticToken.TokenType.variable), 0,
+    };
+    try T.expectEqual(@as(usize, expected.len), wire.len);
+    for (expected, 0..) |v, idx| try T.expectEqual(v, wire[idx]);
+}
+
+test "Service: semanticTokensRange filters tokens by line window" {
+    var vfs = ts_resolver.VirtualFs.init(T.allocator);
+    defer vfs.deinit();
+    var resolver = ts_resolver.Resolver.init(T.allocator, vfs.fs(), .{});
+    defer resolver.deinit();
+    var program = ts_program.Program.init(T.allocator, &resolver);
+    defer program.deinit();
+
+    const src =
+        \\let a = 1;
+        \\let b = 2;
+        \\let c = 3;
+    ;
+    _ = try program.add("/main.ts", src);
+    try program.compileAll(.{});
+
+    var svc = Service.init(T.allocator, &program);
+
+    // Full file produces some tokens.
+    const full = try svc.semanticTokensWire(T.allocator, "/main.ts");
+    defer T.allocator.free(full);
+    try T.expect(full.len > 0);
+    try T.expectEqual(@as(usize, 0), full.len % 5);
+
+    // [1, 2) keeps only line-1 tokens. Each token is 5 u32s; the
+    // first token's `delta_line` should be absolute (not 1), since
+    // the encoding restarts within the range.
+    const middle = try svc.semanticTokensRange(T.allocator, "/main.ts", 1, 2);
+    defer T.allocator.free(middle);
+    try T.expect(middle.len > 0);
+    try T.expectEqual(@as(usize, 0), middle.len % 5);
+    // First emitted token has absolute line=1, so delta_line == 1.
+    try T.expectEqual(@as(u32, 1), middle[0]);
+
+    // Empty range -> empty array.
+    const none = try svc.semanticTokensRange(T.allocator, "/main.ts", 5, 5);
+    defer T.allocator.free(none);
+    try T.expectEqual(@as(usize, 0), none.len);
 }
