@@ -692,6 +692,11 @@ pub const Printer = struct {
     }
 
     fn printClassDecl(self: *Printer, node: NodeId) !void {
+        // §4.A.2 — at ES5, lower class to function-with-prototype.
+        if (self.options.es_target == .es5) {
+            try self.printClassDeclEs5(node);
+            return;
+        }
         const c = hir_mod.classOf(self.hir, node);
         try self.write("class");
         if (c.name != hir_mod.none_node_id) {
@@ -729,6 +734,107 @@ pub const Printer = struct {
         self.depth -= 1;
         try self.writeNewlineIndent();
         try self.write("}");
+    }
+
+    /// Lower a class to ES5 function-with-prototype. Pattern:
+    ///   var Cls = (function(_super) {
+    ///     __extends(Cls, _super);  // when extends is set
+    ///     function Cls(args) { _super.call(this, ...); /* ctor body */ }
+    ///     Cls.prototype.method = function () { /* ... */ };
+    ///     return Cls;
+    ///   })(SuperClass);
+    fn printClassDeclEs5(self: *Printer, node: NodeId) anyerror!void {
+        const c = hir_mod.classOf(self.hir, node);
+        if (c.name == hir_mod.none_node_id) return; // anonymous class — fall back
+        try self.write("var ");
+        try self.printExpression(c.name);
+        try self.write(" = (function (");
+        if (c.extends != hir_mod.none_node_id) try self.write("_super");
+        try self.write(") { ");
+        if (c.extends != hir_mod.none_node_id) {
+            try self.write("__extends(");
+            try self.printExpression(c.name);
+            try self.write(", _super); ");
+        }
+        // Find the constructor; emit a function `<Name>(...)` for it
+        // (or a no-arg default).
+        const members = hir_mod.classMembers(self.hir, node);
+        var ctor: ?NodeId = null;
+        for (members) |m| {
+            const k = self.hir.kindOf(m);
+            if (k != .fn_decl and k != .fn_expr) continue;
+            const fd = hir_mod.fnDeclOf(self.hir, m);
+            if (fd.flags.is_constructor) {
+                ctor = m;
+                break;
+            }
+        }
+        try self.write("function ");
+        try self.printExpression(c.name);
+        try self.write("(");
+        if (ctor) |ct| {
+            const params = hir_mod.fnParams(self.hir, ct);
+            for (params, 0..) |p, i| {
+                if (i > 0) try self.write(", ");
+                try self.printParameter(p);
+            }
+        }
+        try self.write(") { ");
+        if (c.extends != hir_mod.none_node_id) {
+            try self.write("_super.call(this); ");
+        }
+        // Class fields with initializers go inside the ctor body.
+        for (members) |m| {
+            if (self.hir.kindOf(m) != .object_property) continue;
+            const op = hir_mod.objectPropertyOf(self.hir, m);
+            if (op.value == hir_mod.none_node_id) continue;
+            try self.write("this.");
+            try self.printExpression(op.key);
+            try self.write(" = ");
+            try self.printExpression(op.value);
+            try self.write("; ");
+        }
+        // Inline the ctor body if present.
+        if (ctor) |ct| {
+            const fd = hir_mod.fnDeclOf(self.hir, ct);
+            if (fd.body != hir_mod.none_node_id and self.hir.kindOf(fd.body) == .block_stmt) {
+                const stmts = hir_mod.blockStmts(self.hir, fd.body);
+                for (stmts) |s| {
+                    try self.printNonIndentStatement(s);
+                    try self.write(" ");
+                }
+            }
+        }
+        try self.write("} ");
+        // Methods → prototype assignments.
+        for (members) |m| {
+            const k = self.hir.kindOf(m);
+            if (k != .fn_decl and k != .fn_expr) continue;
+            const fd = hir_mod.fnDeclOf(self.hir, m);
+            if (fd.flags.is_constructor) continue;
+            if (fd.name == hir_mod.none_node_id) continue;
+            try self.printExpression(c.name);
+            try self.write(".prototype.");
+            try self.printExpression(fd.name);
+            try self.write(" = function (");
+            const params = hir_mod.fnParams(self.hir, m);
+            for (params, 0..) |p, i| {
+                if (i > 0) try self.write(", ");
+                try self.printParameter(p);
+            }
+            try self.write(") ");
+            if (fd.body != hir_mod.none_node_id) {
+                try self.printStatementInline(fd.body);
+            } else {
+                try self.write("{}");
+            }
+            try self.write("; ");
+        }
+        try self.write("return ");
+        try self.printExpression(c.name);
+        try self.write("; })(");
+        if (c.extends != hir_mod.none_node_id) try self.printExpression(c.extends);
+        try self.write(");");
     }
 
     fn printEnum(self: *Printer, node: NodeId) !void {
@@ -1875,6 +1981,35 @@ test "emit: for-in is unaffected by es_target" {
     const out = try emitWithOpts("for (let k in obj) { let v = k; }", .{ .es_target = .es5 });
     defer T.allocator.free(out);
     try T.expect(std.mem.indexOf(u8, out, " in ") != null);
+}
+
+test "emit: class downlevels to function-with-prototype at es5" {
+    const out = try emitWithOpts("class Foo { greet() { return 1; } }", .{ .es_target = .es5 });
+    defer T.allocator.free(out);
+    try T.expect(std.mem.indexOf(u8, out, "var Foo") != null);
+    try T.expect(std.mem.indexOf(u8, out, "function Foo(") != null);
+    try T.expect(std.mem.indexOf(u8, out, "Foo.prototype.greet") != null);
+    try T.expect(std.mem.indexOf(u8, out, "class ") == null);
+}
+
+test "emit: class with extends emits __extends + super.call at es5" {
+    const out = try emitWithOpts("class B extends A { }", .{ .es_target = .es5 });
+    defer T.allocator.free(out);
+    try T.expect(std.mem.indexOf(u8, out, "__extends(B, _super)") != null);
+    try T.expect(std.mem.indexOf(u8, out, "_super.call(this)") != null);
+}
+
+test "emit: class field initializer goes inside ctor at es5" {
+    const out = try emitWithOpts("class Box { value = 42; }", .{ .es_target = .es5 });
+    defer T.allocator.free(out);
+    try T.expect(std.mem.indexOf(u8, out, "this.value = 42") != null);
+}
+
+test "emit: class preserved at es2015+" {
+    const out = try emitWithOpts("class Foo { greet() { return 1; } }", .{ .es_target = .es2015 });
+    defer T.allocator.free(out);
+    try T.expect(std.mem.indexOf(u8, out, "class Foo") != null);
+    try T.expect(std.mem.indexOf(u8, out, "prototype") == null);
 }
 
 test "emit: non-jsx file with automatic mode skips the import" {
