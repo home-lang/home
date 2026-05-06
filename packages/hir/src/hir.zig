@@ -2505,6 +2505,11 @@ pub fn interfaceMembers(hir: *const Hir, id: NodeId) []const NodeId {
     return hir.childSlice(p.members_start, p.members_len);
 }
 
+pub fn interfaceExtends(hir: *const Hir, id: NodeId) []const NodeId {
+    const p = interfaceOf(hir, id);
+    return hir.childSlice(p.extends_start, p.extends_len);
+}
+
 pub fn classOf(hir: *const Hir, id: NodeId) ClassPayload {
     std.debug.assert(hir.kindOf(id) == .class_decl or hir.kindOf(id) == .class_expr);
     return hir.class_payloads.items[hir.payloads.items[id]];

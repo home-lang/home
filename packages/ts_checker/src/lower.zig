@@ -40,13 +40,13 @@ pub const Lowerer = struct {
     gpa: std.mem.Allocator,
     hir: *const Hir,
     interner: *interner.Interner,
-    string_interner: *const string_interner.Interner,
+    string_interner: *string_interner.Interner,
 
     pub fn init(
         gpa: std.mem.Allocator,
         hir: *const Hir,
         ti: *interner.Interner,
-        si: *const string_interner.Interner,
+        si: *string_interner.Interner,
     ) Lowerer {
         return .{
             .gpa = gpa,
@@ -222,12 +222,12 @@ pub const Lowerer = struct {
     }
 
     fn lowerArray(self: *Lowerer, node: NodeId) LowerError!TypeId {
-        // For now we lower `T[]` as `T | undefined` (overshoots — placeholder
-        // until we have a real Array<T> instantiation). The checker doesn't
-        // yet have generic instantiation, so this keeps the pipeline going.
+        // Lower `T[]` as the standard Array<T> shape: an object
+        // type with `length: number` plus a `[i: number]: T`
+        // indexer. Re-uses the same intern path as array literals.
         const a = hir_mod.arrayTypeOf(self.hir, node);
         const element = try self.lower(a.element);
-        return element; // simplification — tracked as Phase 3 follow-up
+        return self.interner.internArrayType(self.string_interner, element) catch error.OutOfMemory;
     }
 
     fn lowerTuple(self: *Lowerer, node: NodeId) LowerError!TypeId {

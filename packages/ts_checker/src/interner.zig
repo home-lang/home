@@ -401,6 +401,27 @@ pub const Interner = struct {
         return id;
     }
 
+    /// Build the standard `Array<T>` shape: an object type with a
+    /// `length: number` member and a `[i: number]: T` indexer. The
+    /// `string_interner` argument is needed to intern the `length`
+    /// property name. Subsequent `arr[0]` / `arr.length` accesses
+    /// resolve through the existing object-type machinery.
+    pub fn internArrayType(
+        self: *Interner,
+        sint: anytype,
+        element: TypeId,
+    ) !TypeId {
+        const length_id = try sint.intern("length");
+        const members = [_]types.ObjectMember{.{
+            .name = length_id,
+            .type = types.Primitive.number_t,
+            .is_optional = false,
+            .is_readonly = false,
+            .is_method = false,
+        }};
+        return self.internObjectTypeWithIndex(&members, types.Primitive.none, element);
+    }
+
     /// Look up the string-key index signature's value type, if
     /// present. Returns `Primitive.none` when this object type has
     /// no string indexer.

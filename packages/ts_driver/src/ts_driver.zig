@@ -582,7 +582,7 @@ test "driver: TS2345 silent for assignable arg" {
     }
 }
 
-test "driver: array literal infers element-type union" {
+test "driver: array literal builds Array<T> shape with number indexer" {
     var c = try compileSource(T.allocator, "let xs = [1, 2, 3];", .{});
     defer {
         c.deinit();
@@ -590,11 +590,13 @@ test "driver: array literal infers element-type union" {
     }
     const stmts = hir_mod.blockStmts(&c.hir, c.root);
     const init_node = hir_mod.varDeclOf(&c.hir, stmts[0]).init;
-    // [1, 2, 3] all have number_t — union collapses to number_t.
-    try T.expectEqual(@as(u32, ts_checker.Primitive.number_t), c.hir.typeOf(init_node));
+    const t = c.hir.typeOf(init_node);
+    // [1, 2, 3] → object type with `[i: number]: number` and `length: number`.
+    try T.expect(c.type_interner.pool.flagsOf(t).is_object_type);
+    try T.expectEqual(@as(u32, ts_checker.Primitive.number_t), c.type_interner.objectNumberIndex(t));
 }
 
-test "driver: heterogeneous array literal infers union" {
+test "driver: heterogeneous array literal builds Array<T|U>" {
     var c = try compileSource(T.allocator, "let xs = [1, \"hi\"];", .{});
     defer {
         c.deinit();
@@ -603,10 +605,9 @@ test "driver: heterogeneous array literal infers union" {
     const stmts = hir_mod.blockStmts(&c.hir, c.root);
     const init_node = hir_mod.varDeclOf(&c.hir, stmts[0]).init;
     const t = c.hir.typeOf(init_node);
-    // Union of number and string.
-    try T.expect(c.type_interner.pool.flagsOf(t).is_union);
-    try T.expect(c.type_interner.pool.flagsOf(t).is_number);
-    try T.expect(c.type_interner.pool.flagsOf(t).is_string);
+    try T.expect(c.type_interner.pool.flagsOf(t).is_object_type);
+    const elem_t = c.type_interner.objectNumberIndex(t);
+    try T.expect(c.type_interner.pool.flagsOf(elem_t).is_union);
 }
 
 test "driver: object literal infers shape; member access types correctly" {

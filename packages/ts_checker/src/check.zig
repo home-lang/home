@@ -660,10 +660,16 @@ pub const Checker = struct {
         for (params) |p| {
             const pp = hir_mod.parameterOf(self.hir, p);
             const has_anno = pp.type_annotation != hir_mod.none_node_id;
-            const t: TypeId = if (has_anno)
+            var t: TypeId = if (has_anno)
                 try self.lowererLowerWithTypeParams(pp.type_annotation)
             else
                 types.Primitive.any;
+            // `f(x?: T)` and `f(x: T = default)` both widen the
+            // parameter type to include `undefined` (matches the
+            // call-site behavior where the caller can omit the arg).
+            if (pp.flags.is_optional or pp.default_value != hir_mod.none_node_id) {
+                t = self.unionWithUndefined(t) catch t;
+            }
             try param_types.append(self.gpa, t);
             self.hir.setType(p, t);
             if (pp.name != hir_mod.none_node_id) self.hir.setType(pp.name, t);
@@ -895,12 +901,60 @@ pub const Checker = struct {
             });
         }
 
+        // `interface B extends A { ... }` — merge each parent's
+        // members into the child. Child decls win on name conflict.
+        const extends = hir_mod.interfaceExtends(self.hir, node);
+        if (extends.len > 0) {
+            try self.mergeInterfaceExtends(extends, &iface_members, &string_idx, &number_idx);
+        }
+
         const iface_t = self.interner.internObjectTypeWithIndex(iface_members.items, string_idx, number_idx) catch return error.OutOfMemory;
         self.hir.setType(node, iface_t);
         if (it.name != hir_mod.none_node_id and self.hir.kindOf(it.name) == .identifier) {
             const id = hir_mod.identifierOf(self.hir, it.name);
             try self.type_names.put(self.gpa, id.name, iface_t);
             self.hir.setType(it.name, iface_t);
+        }
+    }
+
+    /// Pull in members from every parent interface listed in
+    /// `extends`. Child entries already in `child_members` win on
+    /// name conflict. Index signatures inherit when the child
+    /// hasn't declared its own.
+    fn mergeInterfaceExtends(
+        self: *Checker,
+        extends: []const NodeId,
+        child_members: *std.ArrayListUnmanaged(types.ObjectMember),
+        string_idx: *TypeId,
+        number_idx: *TypeId,
+    ) CheckError!void {
+        var child_names: std.AutoHashMapUnmanaged(hir_mod.StringId, void) = .empty;
+        defer child_names.deinit(self.gpa);
+        for (child_members.items) |m| try child_names.put(self.gpa, m.name, {});
+
+        var inherited: std.ArrayListUnmanaged(types.ObjectMember) = .empty;
+        defer inherited.deinit(self.gpa);
+        for (extends) |ext_node| {
+            // Each entry is a `type_ref`; lower it through the
+            // type-name table to get the parent's interned shape.
+            const parent_t = self.lowererLowerWithTypeParams(ext_node) catch continue;
+            if (!self.interner.pool.flagsOf(parent_t).is_object_type) continue;
+            for (self.interner.objectMembers(parent_t)) |pm| {
+                if (child_names.contains(pm.name)) continue;
+                try inherited.append(self.gpa, pm);
+                try child_names.put(self.gpa, pm.name, {});
+            }
+            if (string_idx.* == types.Primitive.none) {
+                const pi = self.interner.objectStringIndex(parent_t);
+                if (pi != types.Primitive.none) string_idx.* = pi;
+            }
+            if (number_idx.* == types.Primitive.none) {
+                const pi = self.interner.objectNumberIndex(parent_t);
+                if (pi != types.Primitive.none) number_idx.* = pi;
+            }
+        }
+        if (inherited.items.len > 0) {
+            try child_members.insertSlice(self.gpa, 0, inherited.items);
         }
     }
 
@@ -1268,12 +1322,18 @@ pub const Checker = struct {
                     const t = try self.checkExpression(el);
                     try elem_types.append(self.gpa, t);
                 }
-                if (elem_types.items.len == 0) break :blk types.Primitive.any;
-                // Simplification (Phase 3): represent the array as
-                // the union of its element types. A proper Array<T>
-                // generic instantiation lands when the type system
-                // gets instantiation support.
-                break :blk self.interner.internUnion(elem_types.items) catch return error.OutOfMemory;
+                const elem_t: TypeId = if (elem_types.items.len == 0)
+                    types.Primitive.any
+                else if (elem_types.items.len == 1)
+                    elem_types.items[0]
+                else
+                    self.interner.internUnion(elem_types.items) catch return error.OutOfMemory;
+                // Build the standard Array<T> shape — `length:
+                // number` plus `[i: number]: T`. Lets `arr[0]`
+                // and `arr.length` resolve through the existing
+                // object-type machinery without a dedicated array
+                // TypeKind.
+                break :blk self.interner.internArrayType(self.string_interner, elem_t) catch return error.OutOfMemory;
             },
             .object_literal => blk: {
                 // Type each property and synthesize an object-type
@@ -1747,11 +1807,21 @@ pub const Checker = struct {
         sig: TypeId,
     ) CheckError!void {
         const param_ts = self.interner.signatureParams(sig);
-        if (args.len != param_ts.len) {
+        // Required-arg count = number of leading params whose type
+        // doesn't include `undefined`. Optional / defaulted params
+        // (typed as `T | undefined` by the signature pass) are
+        // permitted to be omitted at the call site, matching tsc.
+        var min_required: usize = param_ts.len;
+        while (min_required > 0) {
+            if (!self.typeIncludesUndefined(param_ts[min_required - 1])) break;
+            min_required -= 1;
+        }
+        if (args.len < min_required or args.len > param_ts.len) {
+            const expected_label: []const u8 = if (min_required == param_ts.len) "" else " or fewer";
             const msg = try std.fmt.allocPrint(
                 self.diag_arena.allocator(),
-                "Expected {d} arguments, but got {d}.",
-                .{ param_ts.len, args.len },
+                "Expected {d}{s} arguments, but got {d}.",
+                .{ param_ts.len, expected_label, args.len },
             );
             try self.diagnostics.append(self.gpa, .{
                 .node = call_node,
@@ -1788,6 +1858,35 @@ pub const Checker = struct {
             .code = code,
             .message = msg,
         });
+    }
+
+    /// True when `t` admits `undefined` — either directly or as a
+    /// member of a union. `any` and `unknown` count as well, since
+    /// they accept any value.
+    fn typeIncludesUndefined(self: *Checker, t: TypeId) bool {
+        const f = self.interner.pool.flagsOf(t);
+        if (f.is_undefined or f.is_any or f.is_unknown) return true;
+        if (!f.is_union) return false;
+        for (self.interner.unionMembers(t)) |m| {
+            if (self.interner.pool.flagsOf(m).is_undefined) return true;
+        }
+        return false;
+    }
+
+    /// Build `t | undefined` (or return `t` if it already includes
+    /// `undefined`). Used to widen optional parameters and defaulted
+    /// parameters so call sites can omit them.
+    fn unionWithUndefined(self: *Checker, t: TypeId) !TypeId {
+        // Already nullable — bail out so we don't create
+        // `(T | undefined) | undefined`.
+        const flags = self.interner.pool.flagsOf(t);
+        if (flags.is_undefined or flags.is_any or flags.is_unknown) return t;
+        if (flags.is_union) {
+            for (self.interner.unionMembers(t)) |m| {
+                if (self.interner.pool.flagsOf(m).is_undefined) return t;
+            }
+        }
+        return self.interner.internUnion(&.{ t, types.Primitive.undefined_t }) catch return error.OutOfMemory;
     }
 
     /// Remove `null` and `undefined` from `t` if it's a union; for
@@ -2592,6 +2691,146 @@ test "checker: object-literal excess property emits TS2353" {
 
 test "checker: matching object literal compiles without TS2353" {
     const s = try newSetup("let p: { x: number; y: number } = { x: 1, y: 2 };");
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+    try T.expect(s.checker.diagnostics.items.len == 0);
+}
+
+test "checker: interface extends inherits parent members" {
+    const s = try newSetup(
+        \\interface Named { name: string; }
+        \\interface Box extends Named { value: number; }
+        \\function f(b: Box): string { return b.name; }
+    );
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+    try T.expect(s.checker.diagnostics.items.len == 0);
+    const stmts = hir_mod.blockStmts(&s.hir, s.root);
+    const box_t = s.hir.typeOf(stmts[1]);
+    const name_id = try s.sint.intern("name");
+    const value_id = try s.sint.intern("value");
+    try T.expect(s.ti.objectMember(box_t, name_id) != null);
+    try T.expect(s.ti.objectMember(box_t, value_id) != null);
+}
+
+test "checker: interface extends multiple parents merges all members" {
+    const s = try newSetup(
+        \\interface A { a: number; }
+        \\interface B { b: string; }
+        \\interface C extends A, B { c: boolean; }
+        \\function f(c: C): number { return c.a; }
+    );
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+    try T.expect(s.checker.diagnostics.items.len == 0);
+    const stmts = hir_mod.blockStmts(&s.hir, s.root);
+    const c_t = s.hir.typeOf(stmts[2]);
+    const a_id = try s.sint.intern("a");
+    const b_id = try s.sint.intern("b");
+    const c_id = try s.sint.intern("c");
+    try T.expect(s.ti.objectMember(c_t, a_id) != null);
+    try T.expect(s.ti.objectMember(c_t, b_id) != null);
+    try T.expect(s.ti.objectMember(c_t, c_id) != null);
+}
+
+test "checker: array literal indexes to its element type" {
+    const s = try newSetup(
+        \\let xs = [1, 2, 3];
+        \\let n = xs[0];
+    );
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+    const stmts = hir_mod.blockStmts(&s.hir, s.root);
+    const v = hir_mod.varDeclOf(&s.hir, stmts[1]);
+    try T.expectEqual(types.Primitive.number_t, s.hir.typeOf(v.init));
+}
+
+test "checker: array literal exposes length: number" {
+    const s = try newSetup(
+        \\let xs = [1, 2, 3];
+        \\let n = xs.length;
+    );
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+    try T.expect(s.checker.diagnostics.items.len == 0);
+    const stmts = hir_mod.blockStmts(&s.hir, s.root);
+    const v = hir_mod.varDeclOf(&s.hir, stmts[1]);
+    try T.expectEqual(types.Primitive.number_t, s.hir.typeOf(v.init));
+}
+
+test "checker: T[] annotation indexes to T" {
+    const s = try newSetup(
+        \\function head(xs: number[]): number { return xs[0]; }
+    );
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+    try T.expect(s.checker.diagnostics.items.len == 0);
+    const stmts = hir_mod.blockStmts(&s.hir, s.root);
+    const f = hir_mod.fnDeclOf(&s.hir, stmts[0]);
+    const body = hir_mod.blockStmts(&s.hir, f.body);
+    const ret_p = hir_mod.returnOf(&s.hir, body[0]);
+    try T.expectEqual(types.Primitive.number_t, s.hir.typeOf(ret_p.value));
+}
+
+test "checker: interface extends with index signature inherits indexer" {
+    const s = try newSetup(
+        \\interface MapLike { [k: string]: number; }
+        \\interface NamedMap extends MapLike { name: string; }
+        \\function f(m: NamedMap): number { return m.anything; }
+    );
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+    try T.expect(s.checker.diagnostics.items.len == 0);
+}
+
+test "checker: optional parameter widens to T | undefined" {
+    const s = try newSetup("function f(x?: number): number { return 0; }");
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+    const top = firstStatement(s);
+    const params = hir_mod.fnParams(&s.hir, top);
+    const pt = s.hir.typeOf(params[0]);
+    // Type of `x` is a union — verify both `number` and `undefined` show up.
+    try T.expect(s.ti.pool.flagsOf(pt).is_union);
+    var has_num = false;
+    var has_undef = false;
+    for (s.ti.unionMembers(pt)) |m| {
+        if (m == types.Primitive.number_t) has_num = true;
+        if (m == types.Primitive.undefined_t) has_undef = true;
+    }
+    try T.expect(has_num);
+    try T.expect(has_undef);
+}
+
+test "checker: omitting an optional argument compiles cleanly" {
+    const s = try newSetup(
+        \\function f(a: number, b?: number): number { return a; }
+        \\let x = f(1);
+    );
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+    try T.expect(s.checker.diagnostics.items.len == 0);
+}
+
+test "checker: too many args still emits TS2554 even with optional params" {
+    const s = try newSetup(
+        \\function f(a: number, b?: number): number { return a; }
+        \\let x = f(1, 2, 3);
+    );
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+    var found = false;
+    for (s.checker.diagnostics.items) |d| {
+        if (d.code == TsCodes.expected_n_arguments) found = true;
+    }
+    try T.expect(found);
+}
+
+test "checker: defaulted parameter widens like optional" {
+    const s = try newSetup(
+        \\function f(a: number, b: number = 0): number { return a + b; }
+        \\let x = f(1);
+    );
     defer destroySetup(s);
     try s.checker.checkSourceFile(s.root);
     try T.expect(s.checker.diagnostics.items.len == 0);
