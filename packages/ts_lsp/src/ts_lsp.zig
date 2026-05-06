@@ -213,7 +213,10 @@ pub const Service = struct {
     }
 
     /// Goto-definition for the identifier at `byte_pos`. Walks the
-    /// binder's symbol table to find the declaration.
+    /// binder's symbol table to find the declaration. When the local
+    /// symbol is an import, follows the import declaration through
+    /// the resolver to the source file and returns the original
+    /// definition span there.
     pub fn gotoDefinition(self: *Service, file_path: []const u8, byte_pos: u32) ?Definition {
         const file_id = self.program.lookupPath(file_path) orelse return null;
         const f = self.program.fileById(file_id);
@@ -223,6 +226,16 @@ pub const Service = struct {
         const id = hir_mod.identifierOf(&c.hir, node);
         const sym = c.module.root.lookup(id.name) orelse return null;
         if (sym.decls.items.len == 0) return null;
+
+        // Cross-file: if the local binding is an import, walk the
+        // file's import declarations to find the source module and
+        // resolve the original definition in the imported file.
+        if (sym.flags.is_import) {
+            if (self.resolveImportedDefinition(c, f.path, id.name)) |def| {
+                return def;
+            }
+        }
+
         const decl = sym.decls.items[0];
         const span = c.hir.spanOf(decl);
         const start_pos = ts_diagnostics.positionToLineCol(f.source, span.start);
@@ -237,6 +250,116 @@ pub const Service = struct {
                 .end_col = end_pos.col,
             },
         };
+    }
+
+    /// Walk `c`'s import declarations looking for the one that
+    /// introduces `local_name`. When found, resolve the import's
+    /// module specifier through the program's resolver and return
+    /// the definition span of the matching exported symbol in the
+    /// imported file. Returns null when the import can't be matched,
+    /// the module doesn't resolve to a tracked file, or the foreign
+    /// file lacks the expected symbol.
+    fn resolveImportedDefinition(
+        self: *Service,
+        c: anytype,
+        importer_path: []const u8,
+        local_name: string_interner.StringId,
+    ) ?Definition {
+        if (c.hir.kindOf(c.root) != .block_stmt) return null;
+        const stmts = hir_mod.blockStmts(&c.hir, c.root);
+        for (stmts) |s| {
+            if (c.hir.kindOf(s) != .import_decl) continue;
+            const imp = hir_mod.importOf(&c.hir, s);
+
+            // Determine the foreign name introduced by the binding —
+            // the name as it is exported from the source module. For
+            // a default import the foreign name is `default`; for a
+            // namespace import there is no specific name (the
+            // "definition" is the foreign module root); for a named
+            // import it's the spec's `imported` field.
+            var foreign_name: ?[]const u8 = null;
+            var is_namespace = false;
+            var matched = false;
+
+            if (imp.default_binding != hir_mod.none_node_id and
+                c.hir.kindOf(imp.default_binding) == .identifier)
+            {
+                const did = hir_mod.identifierOf(&c.hir, imp.default_binding);
+                if (did.name == local_name) {
+                    foreign_name = "default";
+                    matched = true;
+                }
+            }
+            if (!matched and imp.namespace_binding != hir_mod.none_node_id and
+                c.hir.kindOf(imp.namespace_binding) == .identifier)
+            {
+                const nid = hir_mod.identifierOf(&c.hir, imp.namespace_binding);
+                if (nid.name == local_name) {
+                    is_namespace = true;
+                    matched = true;
+                }
+            }
+            if (!matched) {
+                const named = hir_mod.importNamed(&c.hir, s);
+                for (named) |spec| {
+                    if (c.hir.kindOf(spec) != .import_specifier) continue;
+                    const sp = hir_mod.importSpecifierOf(&c.hir, spec);
+                    if (sp.local == local_name) {
+                        foreign_name = c.interner.get(sp.imported);
+                        matched = true;
+                        break;
+                    }
+                }
+            }
+            if (!matched) continue;
+
+            // Resolve the module specifier to a file path.
+            const module_name = c.interner.get(imp.module);
+            if (module_name.len == 0) return null;
+            const res = self.program.resolver.resolve(module_name, importer_path) catch return null;
+            const target_id = self.program.lookupPath(res.path) orelse return null;
+            const tf = self.program.fileById(target_id);
+            const tc = tf.compilation orelse return null;
+
+            // Namespace imports point at the foreign module root.
+            if (is_namespace) {
+                const span = tc.hir.spanOf(tc.root);
+                const start_pos = ts_diagnostics.positionToLineCol(tf.source, span.start);
+                const end_pos = ts_diagnostics.positionToLineCol(tf.source, span.end);
+                return .{
+                    .file = tf.path,
+                    .span = .{
+                        .file = tf.path,
+                        .start_line = start_pos.line,
+                        .start_col = start_pos.col,
+                        .end_line = end_pos.line,
+                        .end_col = end_pos.col,
+                    },
+                };
+            }
+
+            // Look up the foreign name in the imported file's
+            // interner (without mutating it). Absent → no symbol.
+            const fname = foreign_name orelse return null;
+            const target_name_id = tc.interner.lookup(fname) orelse return null;
+            const target_sym = tc.module.root.lookup(target_name_id) orelse return null;
+            if (target_sym.decls.items.len == 0) return null;
+            const tdecl = target_sym.decls.items[0];
+            const tspan = tc.hir.spanOf(tdecl);
+            const tstart = ts_diagnostics.positionToLineCol(tf.source, tspan.start);
+            const tend = ts_diagnostics.positionToLineCol(tf.source, tspan.end);
+            return .{
+                .file = tf.path,
+                .span = .{
+                    .file = tf.path,
+                    .start_line = tstart.line,
+                    .start_col = tstart.col,
+                    .end_line = tend.line,
+                    .end_col = tend.col,
+                },
+            };
+        }
+        return null;
     }
 
     /// Find every reference to the symbol at `byte_pos` across
@@ -1224,6 +1347,31 @@ test "Service: gotoDefinition resolves a top-level reference" {
     const def = svc.gotoDefinition("/main.ts", 28) orelse return error.NoDefinition;
     // Definition is the let_decl starting at byte 0.
     try T.expectEqual(@as(u32, 1), def.span.start_line);
+}
+
+test "Service: gotoDefinition follows imports across files" {
+    var vfs = ts_resolver.VirtualFs.init(T.allocator);
+    defer vfs.deinit();
+    // The resolver consults the VFS to translate `./lib` to `/lib.ts`.
+    try vfs.addFile("/lib.ts", "export let foo = 1;");
+    try vfs.addFile("/main.ts", "import { foo } from './lib'; let x = foo;");
+    var resolver = ts_resolver.Resolver.init(T.allocator, vfs.fs(), .{});
+    defer resolver.deinit();
+    var program = ts_program.Program.init(T.allocator, &resolver);
+    defer program.deinit();
+
+    _ = try program.add("/lib.ts", "export let foo = 1;");
+    _ = try program.add("/main.ts", "import { foo } from './lib'; let x = foo;");
+    try program.compileAll(.{});
+
+    var svc = Service.init(T.allocator, &program);
+    // Use site of `foo` at the end of /main.ts: "...let x = foo;".
+    const main_src = "import { foo } from './lib'; let x = foo;";
+    const use_pos: u32 = @intCast(std.mem.lastIndexOf(u8, main_src, "foo").?);
+    const def = svc.gotoDefinition("/main.ts", use_pos + 1) orelse return error.NoDefinition;
+    // The definition should land in /lib.ts, not /main.ts.
+    try T.expectEqualStrings("/lib.ts", def.file);
+    try T.expectEqualStrings("/lib.ts", def.span.file);
 }
 
 test "Service: completions list module-level value symbols" {
