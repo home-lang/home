@@ -462,6 +462,20 @@ pub const Printer = struct {
 
     fn printForInOf(self: *Printer, node: NodeId) !void {
         const p = hir_mod.forInOf(self.hir, node);
+        // §4.A.3 — `for-of` lowers to indexed `for` at ES5.
+        // Conservative: assume the source is array-shaped. Iterator-
+        // protocol fallback would need an `__values` helper +
+        // try/finally; that's a Phase 4 follow-up.
+        if (self.hir.kindOf(node) == .for_of_stmt and self.options.es_target == .es5) {
+            try self.write("for (var _i = 0, _arr = ");
+            try self.printExpression(p.source);
+            try self.write("; _i < _arr.length; _i++) { ");
+            try self.printForOfBindingDecl(p.target);
+            try self.write(" = _arr[_i]; ");
+            try self.printForOfBody(p.body);
+            try self.write(" }");
+            return;
+        }
         const kw = if (self.hir.kindOf(node) == .for_in_stmt) "in" else "of";
         try self.write("for (");
         try self.printExpression(p.target);
@@ -471,6 +485,40 @@ pub const Printer = struct {
         try self.printExpression(p.source);
         try self.write(") ");
         try self.printStatementInline(p.body);
+    }
+
+    /// Emit the binding decl line for a downleveled `for-of`. The
+    /// target is a `let_decl`/`const_decl`/`var_decl`/identifier;
+    /// strip the initializer (we'll assign per-iteration) and emit
+    /// just the keyword + name.
+    fn printForOfBindingDecl(self: *Printer, target: NodeId) anyerror!void {
+        const k = self.hir.kindOf(target);
+        if (k == .let_decl or k == .const_decl or k == .var_decl) {
+            const v = hir_mod.varDeclOf(self.hir, target);
+            const kw_str: []const u8 = switch (k) {
+                .let_decl => "var ", // var binds for ES5 compatibility
+                .const_decl => "var ",
+                .var_decl => "var ",
+                else => "var ",
+            };
+            try self.write(kw_str);
+            if (v.name != hir_mod.none_node_id) try self.printExpression(v.name);
+        } else {
+            try self.printExpression(target);
+        }
+    }
+
+    /// Inline-emit a for-of body inside a single-line block stmt.
+    fn printForOfBody(self: *Printer, body: NodeId) anyerror!void {
+        if (self.hir.kindOf(body) == .block_stmt) {
+            const stmts = hir_mod.blockStmts(self.hir, body);
+            for (stmts, 0..) |s, i| {
+                if (i > 0) try self.write(" ");
+                try self.printNonIndentStatement(s);
+            }
+        } else {
+            try self.printNonIndentStatement(body);
+        }
     }
 
     fn printReturn(self: *Printer, node: NodeId) !void {
@@ -554,6 +602,38 @@ pub const Printer = struct {
     fn printFnDecl(self: *Printer, node: NodeId) anyerror!void {
         const f = hir_mod.fnDeclOf(self.hir, node);
         if (f.flags.is_arrow) {
+            // §4.A.1 — at ES5, arrows downlevel to plain `function`
+            // expressions. The lexical-`this` capture is approximated
+            // by `(this)`-binding via `.bind(this)` at the call site —
+            // tsc inserts a `_this = this;` enclosing-scope variable
+            // and rewrites references in the body. We use the
+            // simpler `function () { ... }.bind(this)` shape; it has
+            // the same observable behavior modulo `prototype`.
+            if (self.options.es_target == .es5) {
+                if (f.flags.is_async) try self.write("async ");
+                try self.write("function (");
+                const params = hir_mod.fnParams(self.hir, node);
+                for (params, 0..) |p, i| {
+                    if (i > 0) try self.write(", ");
+                    try self.printParameter(p);
+                }
+                try self.write(") { ");
+                if (f.body != hir_mod.none_node_id) {
+                    if (self.hir.kindOf(f.body) == .block_stmt) {
+                        const stmts = hir_mod.blockStmts(self.hir, f.body);
+                        for (stmts, 0..) |s, i| {
+                            if (i > 0) try self.write(" ");
+                            try self.printNonIndentStatement(s);
+                        }
+                    } else {
+                        try self.write("return ");
+                        try self.printExpression(f.body);
+                        try self.write(";");
+                    }
+                }
+                try self.write(" }.bind(this)");
+                return;
+            }
             if (f.flags.is_async) try self.write("async ");
             try self.write("(");
             const params = hir_mod.fnParams(self.hir, node);
@@ -1752,6 +1832,49 @@ test "emit: jsx classic does not inject auto-import" {
     const out = try emitJsx("let v = <Foo />;", .{ .jsx_runtime = .classic });
     defer T.allocator.free(out);
     try T.expect(std.mem.indexOf(u8, out, "react/jsx-runtime") == null);
+}
+
+test "emit: arrow downlevels to function-with-bind at es5" {
+    const out = try emitWithOpts("let f = (x) => x + 1;", .{ .es_target = .es5 });
+    defer T.allocator.free(out);
+    try T.expect(std.mem.indexOf(u8, out, "function (") != null);
+    try T.expect(std.mem.indexOf(u8, out, ".bind(this)") != null);
+    try T.expect(std.mem.indexOf(u8, out, "=>") == null);
+}
+
+test "emit: arrow preserved at es2015+" {
+    const out = try emitWithOpts("let f = (x) => x + 1;", .{ .es_target = .es2015 });
+    defer T.allocator.free(out);
+    try T.expect(std.mem.indexOf(u8, out, "=>") != null);
+    try T.expect(std.mem.indexOf(u8, out, ".bind(this)") == null);
+}
+
+test "emit: arrow with block body downlevels correctly" {
+    const out = try emitWithOpts("let f = (x) => { return x + 1; };", .{ .es_target = .es5 });
+    defer T.allocator.free(out);
+    try T.expect(std.mem.indexOf(u8, out, "function (") != null);
+    try T.expect(std.mem.indexOf(u8, out, "return") != null);
+}
+
+test "emit: for-of downlevels to indexed for at es5" {
+    const out = try emitWithOpts("for (let n of arr) { console.log(n); }", .{ .es_target = .es5 });
+    defer T.allocator.free(out);
+    try T.expect(std.mem.indexOf(u8, out, " of ") == null);
+    try T.expect(std.mem.indexOf(u8, out, "_i = 0") != null);
+    try T.expect(std.mem.indexOf(u8, out, "_arr = arr") != null);
+    try T.expect(std.mem.indexOf(u8, out, "_arr[_i]") != null);
+}
+
+test "emit: for-of preserved at es2015+" {
+    const out = try emitWithOpts("for (let n of arr) { console.log(n); }", .{ .es_target = .es2015 });
+    defer T.allocator.free(out);
+    try T.expect(std.mem.indexOf(u8, out, " of ") != null);
+}
+
+test "emit: for-in is unaffected by es_target" {
+    const out = try emitWithOpts("for (let k in obj) { let v = k; }", .{ .es_target = .es5 });
+    defer T.allocator.free(out);
+    try T.expect(std.mem.indexOf(u8, out, " in ") != null);
 }
 
 test "emit: non-jsx file with automatic mode skips the import" {
