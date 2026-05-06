@@ -103,6 +103,126 @@ fn appendJsonString(gpa: std.mem.Allocator, buf: *std.ArrayListUnmanaged(u8), s:
     };
 }
 
+/// Structured representation of a `.tsbuildinfo` document. `file_names[i]`
+/// corresponds to `file_infos[i]`, mirroring tsc's index-keyed `fileInfos`
+/// map. The reader normalises that map back into a parallel array.
+///
+/// Owns its allocations — callers must invoke `deinit` to release the
+/// duplicated strings and slice spines.
+pub const BuildInfo = struct {
+    version: []const u8,
+    file_names: [][]const u8,
+    file_infos: []FileInfo,
+
+    pub fn deinit(self: *BuildInfo, gpa: std.mem.Allocator) void {
+        gpa.free(self.version);
+        for (self.file_names) |n| gpa.free(n);
+        gpa.free(self.file_names);
+        for (self.file_infos) |fi| gpa.free(fi.version);
+        gpa.free(self.file_infos);
+        self.* = undefined;
+    }
+};
+
+pub const ReadError = error{
+    InvalidJson,
+    MissingVersion,
+    MissingFileNames,
+    MissingFileInfos,
+    InvalidFileInfoIndex,
+} || std.mem.Allocator.Error;
+
+/// Parse a `.tsbuildinfo` JSON document back into a `BuildInfo`.
+///
+/// Round-trips with `emit` — index-keyed `"fileInfos"` entries are
+/// re-aligned with `"fileNames"` so callers consume parallel arrays.
+/// Any `"options"` blob is intentionally ignored; reading it back
+/// would require an arbitrary value tree, and incremental builds key
+/// off file hashes plus the (separately tracked) tsconfig hash.
+pub fn read(gpa: std.mem.Allocator, json_bytes: []const u8) ReadError!BuildInfo {
+    var parsed = std.json.parseFromSlice(std.json.Value, gpa, json_bytes, .{}) catch
+        return error.InvalidJson;
+    defer parsed.deinit();
+
+    if (parsed.value != .object) return error.InvalidJson;
+    const root = parsed.value.object;
+
+    const version_val = root.get("version") orelse return error.MissingVersion;
+    if (version_val != .string) return error.MissingVersion;
+
+    const names_val = root.get("fileNames") orelse return error.MissingFileNames;
+    if (names_val != .array) return error.MissingFileNames;
+
+    const infos_val = root.get("fileInfos") orelse return error.MissingFileInfos;
+    if (infos_val != .object) return error.MissingFileInfos;
+
+    const names_src = names_val.array.items;
+    const file_names = try gpa.alloc([]const u8, names_src.len);
+    var names_filled: usize = 0;
+    errdefer {
+        var i: usize = 0;
+        while (i < names_filled) : (i += 1) gpa.free(file_names[i]);
+        gpa.free(file_names);
+    }
+    for (names_src, 0..) |item, i| {
+        if (item != .string) return error.InvalidJson;
+        file_names[i] = try gpa.dupe(u8, item.string);
+        names_filled = i + 1;
+    }
+
+    const file_infos = try gpa.alloc(FileInfo, names_src.len);
+    // `seen` tracks which slots have been written so the errdefer can
+    // free only those (and the BuildInfo's deinit can free a fully
+    // populated slice on success).
+    const seen = try gpa.alloc(bool, file_infos.len);
+    defer gpa.free(seen);
+    @memset(seen, false);
+    errdefer {
+        for (file_infos, seen) |fi, s| if (s) gpa.free(fi.version);
+        gpa.free(file_infos);
+    }
+
+    var it = infos_val.object.iterator();
+    while (it.next()) |entry| {
+        const idx = std.fmt.parseInt(usize, entry.key_ptr.*, 10) catch
+            return error.InvalidFileInfoIndex;
+        if (idx >= file_infos.len) return error.InvalidFileInfoIndex;
+        if (entry.value_ptr.* != .object) return error.InvalidJson;
+        const fi_obj = entry.value_ptr.*.object;
+
+        const ver_val = fi_obj.get("version") orelse return error.InvalidJson;
+        if (ver_val != .string) return error.InvalidJson;
+        const ver_dup = try gpa.dupe(u8, ver_val.string);
+
+        var affects_global = false;
+        if (fi_obj.get("affectsGlobalScope")) |v| {
+            if (v == .bool) affects_global = v.bool;
+        }
+        var is_decl = false;
+        if (fi_obj.get("isDeclaration")) |v| {
+            if (v == .bool) is_decl = v.bool;
+        }
+
+        // Duplicate keys: free the prior allocation so we don't leak.
+        if (seen[idx]) gpa.free(file_infos[idx].version);
+        file_infos[idx] = .{
+            .version = ver_dup,
+            .affects_global_scope = affects_global,
+            .is_declaration = is_decl,
+        };
+        seen[idx] = true;
+    }
+    for (seen) |s| if (!s) return error.InvalidFileInfoIndex;
+
+    const version_dup = try gpa.dupe(u8, version_val.string);
+
+    return BuildInfo{
+        .version = version_dup,
+        .file_names = file_names,
+        .file_infos = file_infos,
+    };
+}
+
 const T = std.testing;
 
 test "tsbuildinfo: emits the basic shape" {
@@ -134,4 +254,62 @@ test "tsbuildinfo: escapes special characters in paths" {
     defer T.allocator.free(out);
     try T.expect(std.mem.indexOf(u8, out, "\\\\") != null);
     try T.expect(std.mem.indexOf(u8, out, "\\\"") != null);
+}
+
+test "tsbuildinfo: round-trip emit then read preserves fields" {
+    const file_names = [_][]const u8{ "lib.es2024.d.ts", "src/main.ts", "src/util.ts" };
+    const file_infos = [_]FileInfo{
+        .{ .version = "lib-hash", .affects_global_scope = true, .is_declaration = true },
+        .{ .version = "main-hash" },
+        .{ .version = "util-hash", .is_declaration = true },
+    };
+    const out = try emit(T.allocator, &file_names, &file_infos, "{\"strict\": true}", .{});
+    defer T.allocator.free(out);
+
+    var info = try read(T.allocator, out);
+    defer info.deinit(T.allocator);
+
+    try T.expectEqualStrings("5.6.0", info.version);
+    try T.expectEqual(@as(usize, 3), info.file_names.len);
+    try T.expectEqualStrings("lib.es2024.d.ts", info.file_names[0]);
+    try T.expectEqualStrings("src/main.ts", info.file_names[1]);
+    try T.expectEqualStrings("src/util.ts", info.file_names[2]);
+
+    try T.expectEqual(@as(usize, 3), info.file_infos.len);
+    try T.expectEqualStrings("lib-hash", info.file_infos[0].version);
+    try T.expectEqual(true, info.file_infos[0].affects_global_scope);
+    try T.expectEqual(true, info.file_infos[0].is_declaration);
+
+    try T.expectEqualStrings("main-hash", info.file_infos[1].version);
+    try T.expectEqual(false, info.file_infos[1].affects_global_scope);
+    try T.expectEqual(false, info.file_infos[1].is_declaration);
+
+    try T.expectEqualStrings("util-hash", info.file_infos[2].version);
+    try T.expectEqual(false, info.file_infos[2].affects_global_scope);
+    try T.expectEqual(true, info.file_infos[2].is_declaration);
+}
+
+test "tsbuildinfo: read parses a hand-written minimal document" {
+    const json =
+        \\{
+        \\  "version": "5.4.2",
+        \\  "fileNames": ["a.ts", "b.ts"],
+        \\  "fileInfos": {
+        \\    "0": { "version": "h0" },
+        \\    "1": { "version": "h1", "affectsGlobalScope": true }
+        \\  },
+        \\  "options": { "target": 7 }
+        \\}
+    ;
+    var info = try read(T.allocator, json);
+    defer info.deinit(T.allocator);
+
+    try T.expectEqualStrings("5.4.2", info.version);
+    try T.expectEqual(@as(usize, 2), info.file_names.len);
+    try T.expectEqualStrings("a.ts", info.file_names[0]);
+    try T.expectEqualStrings("b.ts", info.file_names[1]);
+    try T.expectEqualStrings("h0", info.file_infos[0].version);
+    try T.expectEqual(false, info.file_infos[0].affects_global_scope);
+    try T.expectEqualStrings("h1", info.file_infos[1].version);
+    try T.expectEqual(true, info.file_infos[1].affects_global_scope);
 }
