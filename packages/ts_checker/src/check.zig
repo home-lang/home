@@ -1348,9 +1348,18 @@ pub const Checker = struct {
                 // Distributive: when `T` resolves to a union, distribute
                 // the conditional across each member and union the
                 // results.
+                //
+                // `infer R` placeholders in the extends-side need to
+                // be visible to the true-branch (`R`). We push a
+                // narrow scope around the conditional, lower the
+                // ext side first (registering each infer'd name), then
+                // lower the branches.
                 const c = hir_mod.conditionalTypeOf(self.hir, type_node);
+                try self.pushNarrowScope();
+                defer self.popNarrowScope();
                 const check = try self.lowererLowerWithTypeParams(c.check);
                 const ext = try self.lowererLowerWithTypeParams(c.extends);
+                try self.registerInferNames(c.extends, ext);
                 const tt = try self.lowererLowerWithTypeParams(c.true_branch);
                 const ff = try self.lowererLowerWithTypeParams(c.false_branch);
                 return self.evalConditional(check, ext, tt, ff);
@@ -1396,14 +1405,123 @@ pub const Checker = struct {
             }
             return self.interner.internUnion(built.items) catch return error.OutOfMemory;
         }
+        // `infer X` matching: when `ext` is a signature with infer'd
+        // type-parameter placeholders and `check` is also a signature,
+        // bind each infer'd placeholder structurally and substitute
+        // into `tt` before returning.
+        if (self.interner.pool.flagsOf(ext).is_signature and
+            self.interner.pool.flagsOf(check).is_signature)
+        {
+            var infer_subs: std.AutoHashMapUnmanaged(TypeId, TypeId) = .empty;
+            defer infer_subs.deinit(self.gpa);
+            const matched = self.matchInfer(check, ext, &infer_subs) catch false;
+            if (matched and infer_subs.count() > 0) {
+                return self.substituteType(tt, &infer_subs);
+            }
+        }
         // Defer if the check or extends type carries a free type parameter.
-        // (`infer X` is parsed but not yet matched structurally —
-        // tracked as Phase 6 follow-up.)
         if (self.containsFreeTypeParameter(check) or self.containsFreeTypeParameter(ext)) {
             return self.interner.internConditional(check, ext, tt, ff) catch return error.OutOfMemory;
         }
         const ok = self.engine.isAssignableTo(check, ext) catch false;
         return if (ok) tt else ff;
+    }
+
+    /// Walk the HIR ext-side of a conditional looking for `infer X`
+    /// nodes; for each, register the name → TypeParameter mapping
+    /// in the current narrow scope so subsequent `X` references in
+    /// the conditional's true-branch resolve.
+    fn registerInferNames(self: *Checker, ext_node: NodeId, ext_t: TypeId) !void {
+        _ = ext_t;
+        try self.walkAndRegisterInfer(ext_node);
+    }
+
+    fn walkAndRegisterInfer(self: *Checker, node: NodeId) !void {
+        if (node == hir_mod.none_node_id) return;
+        const k = self.hir.kindOf(node);
+        if (k == .infer_type) {
+            const ip = hir_mod.inferTypeOf(self.hir, node);
+            const constraint: TypeId = if (ip.constraint != hir_mod.none_node_id)
+                try self.lowerer.lower(ip.constraint)
+            else
+                types.Primitive.unknown;
+            const tp_id = self.interner.internTypeParameter(ip.name, constraint, types.Primitive.none) catch return;
+            try self.recordNarrow(ip.name, tp_id);
+            return;
+        }
+        if (k == .fn_type or k == .constructor_type) {
+            const ft = hir_mod.fnTypeOf(self.hir, node);
+            const params = self.hir.childSlice(ft.params_start, @intCast(ft.params_len));
+            for (params) |p| {
+                if (self.hir.kindOf(p) == .parameter) {
+                    const pp = hir_mod.parameterOf(self.hir, p);
+                    if (pp.type_annotation != hir_mod.none_node_id) {
+                        try self.walkAndRegisterInfer(pp.type_annotation);
+                    }
+                }
+            }
+            if (ft.return_type != hir_mod.none_node_id) {
+                try self.walkAndRegisterInfer(ft.return_type);
+            }
+            return;
+        }
+        if (k == .union_type) {
+            for (hir_mod.unionTypeMembers(self.hir, node)) |m| try self.walkAndRegisterInfer(m);
+            return;
+        }
+        if (k == .intersection_type) {
+            for (hir_mod.intersectionTypeMembers(self.hir, node)) |m| try self.walkAndRegisterInfer(m);
+            return;
+        }
+        if (k == .array_type) {
+            const a = hir_mod.arrayTypeOf(self.hir, node);
+            try self.walkAndRegisterInfer(a.element);
+            return;
+        }
+        if (k == .tuple_type) {
+            for (hir_mod.tupleTypeElements(self.hir, node)) |e| try self.walkAndRegisterInfer(e);
+            return;
+        }
+        if (k == .indexed_access_type) {
+            const ia = hir_mod.indexedAccessTypeOf(self.hir, node);
+            try self.walkAndRegisterInfer(ia.object);
+            try self.walkAndRegisterInfer(ia.index);
+            return;
+        }
+        // Other type-node kinds either don't carry infer placeholders
+        // in normal usage, or are deferred to a Phase 6 follow-up.
+    }
+
+    /// Structural match between `check` and `ext`, treating any
+    /// TypeParameter in `ext` as an infer'd placeholder. On match,
+    /// records `infer_param -> check_subterm` in `subs`. Returns
+    /// false if the structural shapes don't align.
+    fn matchInfer(
+        self: *Checker,
+        check: TypeId,
+        ext: TypeId,
+        subs: *std.AutoHashMapUnmanaged(TypeId, TypeId),
+    ) !bool {
+        if (self.interner.pool.flagsOf(ext).is_type_parameter) {
+            try subs.put(self.gpa, ext, check);
+            return true;
+        }
+        const ef = self.interner.pool.flagsOf(ext);
+        const cf = self.interner.pool.flagsOf(check);
+        if (ef.is_signature and cf.is_signature) {
+            // For the common ReturnType pattern `(...args: any[]) =>
+            // infer R`, the ext side may have a different parameter
+            // count than the check side. We don't enforce parameter
+            // matching here — only the return-type unification. This
+            // is the high-frequency `infer R` use case (ReturnType,
+            // Awaited, Parameters, etc.); structural param matching
+            // is a Phase 6 follow-up.
+            const er = self.interner.signatureReturn(ext) orelse return true;
+            const cr = self.interner.signatureReturn(check) orelse return true;
+            return self.matchInfer(cr, er, subs);
+        }
+        // Default: identity.
+        return check == ext;
     }
 
     fn containsFreeTypeParameter(self: *Checker, t: TypeId) bool {
@@ -4209,6 +4327,19 @@ test "checker: mapped type over keyof T materializes properties" {
     try T.expectEqual(@as(usize, 2), members.len);
     // Both members should be number_t.
     for (members) |m| try T.expectEqual(types.Primitive.number_t, m.type);
+}
+
+test "checker: ReturnType<T> infers signature return via infer R" {
+    const s = try newSetup(
+        \\type Return<T> = T extends (...args: any[]) => infer R ? R : never;
+        \\let r: Return<() => string>;
+    );
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+    const stmts = hir_mod.blockStmts(&s.hir, s.root);
+    const r_decl = stmts[1];
+    // r should resolve to `string`.
+    try T.expectEqual(types.Primitive.string_t, s.hir.typeOf(r_decl));
 }
 
 test "checker: homomorphic Partial<T> preserves field types" {

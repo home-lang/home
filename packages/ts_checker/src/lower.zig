@@ -69,7 +69,7 @@ pub const Lowerer = struct {
             .indexed_access_type => try self.lowerIndexedAccess(node),
             .typeof_type => types.Primitive.unknown, // requires symbol resolution
             .conditional_type => try self.lowerConditional(node),
-            .infer_type => types.Primitive.unknown, // synthesized at instantiation
+            .infer_type => try self.lowerInferType(node),
             .type_literal => try self.lowerLiteralType(node),
             .array_type => try self.lowerArray(node),
             .tuple_type => try self.lowerTuple(node),
@@ -214,6 +214,18 @@ pub const Lowerer = struct {
         const obj = try self.lower(ia.object);
         const idx = try self.lower(ia.index);
         return self.interner.internIndexedAccess(obj, idx) catch error.OutOfMemory;
+    }
+
+    /// `infer R` placeholder — interned as a TypeParameter with the
+    /// infer's name. Matching during conditional eval substitutes
+    /// this TypeParameter with the matched type.
+    fn lowerInferType(self: *Lowerer, node: NodeId) LowerError!TypeId {
+        const ip = hir_mod.inferTypeOf(self.hir, node);
+        const constraint: TypeId = if (ip.constraint != hir_mod.none_node_id)
+            try self.lower(ip.constraint)
+        else
+            types.Primitive.unknown;
+        return self.interner.internTypeParameter(ip.name, constraint, types.Primitive.none) catch error.OutOfMemory;
     }
 
     fn lowerConditional(self: *Lowerer, node: NodeId) LowerError!TypeId {
