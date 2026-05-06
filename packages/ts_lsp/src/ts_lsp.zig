@@ -579,6 +579,39 @@ pub const Service = struct {
         return tokens.toOwnedSlice(gpa);
     }
 
+    /// Apply an editor `textDocument/didChange` to `file_path`:
+    /// replace the program's source bytes, recompile just that file
+    /// (cross-file imports are re-resolved as part of the recompile),
+    /// and return the rendered diagnostics — the same shape
+    /// `diagnostics(file)` returns. The caller (e.g. the LSP wire
+    /// layer) is expected to push the result back to the editor as a
+    /// `textDocument/publishDiagnostics` notification.
+    ///
+    /// Returns an empty slice when `file_path` isn't tracked.
+    ///
+    /// §8.A.8: incremental edit -> recompile -> fresh diagnostics.
+    pub fn didChangeFile(
+        self: *Service,
+        gpa: std.mem.Allocator,
+        file_path: []const u8,
+        new_source: []const u8,
+    ) ![]const u8 {
+        // Step 1: swap the source bytes in. updateSource also
+        // invalidates the file's cached compilation.
+        const id_opt = try self.program.updateSource(file_path, new_source);
+        if (id_opt == null) {
+            // Unknown file — nothing to do, return empty rendered diagnostics.
+            return gpa.dupe(u8, "");
+        }
+        // Step 2: recompile this file (and re-resolve imports).
+        // v1 recompiles the changed file only; transitive
+        // re-typecheck of importers is a follow-up.
+        const paths = [_][]const u8{file_path};
+        _ = try self.program.recompileChanged(&paths, .{});
+        // Step 3: render fresh diagnostics for the editor.
+        return self.diagnostics(gpa, file_path);
+    }
+
     /// Diagnostics for `file`. Forwards from the per-file
     /// Compilation and renders them in tsc-default format.
     pub fn diagnostics(self: *Service, gpa: std.mem.Allocator, file_path: []const u8) ![]const u8 {
@@ -1103,6 +1136,55 @@ test "Service: diagnostics surface from compilation" {
     defer T.allocator.free(out);
     try T.expect(std.mem.indexOf(u8, out, "/main.ts") != null);
     try T.expect(std.mem.indexOf(u8, out, "error TS") != null);
+}
+
+test "Service: didChangeFile recompiles + returns fresh diagnostics" {
+    var vfs = ts_resolver.VirtualFs.init(T.allocator);
+    defer vfs.deinit();
+    var resolver = ts_resolver.Resolver.init(T.allocator, vfs.fs(), .{});
+    defer resolver.deinit();
+    var program = ts_program.Program.init(T.allocator, &resolver);
+    defer program.deinit();
+
+    // Initial source has a type error: assigning string to number.
+    _ = try program.add("/main.ts", "let x: number = \"hi\";");
+    try program.compileAll(.{});
+
+    var svc = Service.init(T.allocator, &program);
+
+    // Sanity-check: the original source produces at least one
+    // diagnostic line.
+    const before = try svc.diagnostics(T.allocator, "/main.ts");
+    defer T.allocator.free(before);
+    try T.expect(before.len > 0);
+    try T.expect(std.mem.indexOf(u8, before, "error TS") != null);
+
+    // Apply an edit that fixes the type error.
+    const after = try svc.didChangeFile(T.allocator, "/main.ts", "let x: number = 1;");
+    defer T.allocator.free(after);
+    // Diagnostics should shrink to zero (or at minimum become
+    // strictly smaller than the previous rendering).
+    try T.expect(after.len < before.len);
+    try T.expect(std.mem.indexOf(u8, after, "error TS") == null);
+
+    // The program's compilation should reflect the new source.
+    const f = program.fileById(0);
+    try T.expect(f.compilation != null);
+    try T.expectEqualStrings("let x: number = 1;", f.source);
+}
+
+test "Service: didChangeFile on unknown file returns empty diagnostics" {
+    var vfs = ts_resolver.VirtualFs.init(T.allocator);
+    defer vfs.deinit();
+    var resolver = ts_resolver.Resolver.init(T.allocator, vfs.fs(), .{});
+    defer resolver.deinit();
+    var program = ts_program.Program.init(T.allocator, &resolver);
+    defer program.deinit();
+
+    var svc = Service.init(T.allocator, &program);
+    const out = try svc.didChangeFile(T.allocator, "/missing.ts", "let x = 1;");
+    defer T.allocator.free(out);
+    try T.expectEqual(@as(usize, 0), out.len);
 }
 
 test "Service: hover renders structural object type" {
