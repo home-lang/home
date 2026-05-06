@@ -124,11 +124,7 @@ pub fn run(gpa: std.mem.Allocator, c: Case) !Result {
         };
     }
 
-    const detail = try std.fmt.allocPrint(
-        gpa,
-        "diagnostic mismatch.\n  expected:\n{s}\n  actual:\n{s}",
-        .{ expected_trimmed, actual_trimmed },
-    );
+    const detail = try renderUnifiedDiff(gpa, expected_trimmed, actual_trimmed);
     return .{
         .name = c.name,
         .outcome = .failed,
@@ -136,6 +132,52 @@ pub fn run(gpa: std.mem.Allocator, c: Case) !Result {
         .expected_diag_count = expected_count,
         .actual_diag_count = actual_count,
     };
+}
+
+/// Render a unified-diff style hunk between `expected` and `actual`
+/// using patience-diff. Each line gets a prefix:
+///   `  ` keep, `- ` removed (in expected, not actual), `+ ` added
+///   (in actual, not expected). The hunk header is `@@ diagnostic
+///   mismatch`. Caller owns the returned bytes.
+fn renderUnifiedDiff(
+    gpa: std.mem.Allocator,
+    expected: []const u8,
+    actual: []const u8,
+) ![]u8 {
+    const expected_lines = try splitLines(gpa, expected);
+    defer gpa.free(expected_lines);
+    const actual_lines = try splitLines(gpa, actual);
+    defer gpa.free(actual_lines);
+
+    const ops = try patience.diff(gpa, expected_lines, actual_lines);
+    defer gpa.free(ops);
+
+    var buf: std.ArrayListUnmanaged(u8) = .empty;
+    errdefer buf.deinit(gpa);
+    try buf.appendSlice(gpa, "@@ diagnostic mismatch");
+    for (ops) |op| {
+        try buf.append(gpa, '\n');
+        const prefix: []const u8 = switch (op.kind) {
+            .keep => "  ",
+            .add => "+ ",
+            .remove => "- ",
+        };
+        try buf.appendSlice(gpa, prefix);
+        try buf.appendSlice(gpa, op.text);
+    }
+    return buf.toOwnedSlice(gpa);
+}
+
+/// Split `s` on '\n' into a borrowed `[]const []const u8`. An empty
+/// input yields a zero-length slice (so identical empty baselines
+/// produce no diff lines). Caller owns the outer slice.
+fn splitLines(gpa: std.mem.Allocator, s: []const u8) ![]const []const u8 {
+    if (s.len == 0) return gpa.alloc([]const u8, 0);
+    var lines: std.ArrayListUnmanaged([]const u8) = .empty;
+    errdefer lines.deinit(gpa);
+    var it = std.mem.splitScalar(u8, s, '\n');
+    while (it.next()) |line| try lines.append(gpa, line);
+    return lines.toOwnedSlice(gpa);
 }
 
 fn trimRightNewlines(s: []const u8) []const u8 {
@@ -545,7 +587,41 @@ test "conformance: missing-error case fails" {
     });
     defer if (r.detail.len > 0) T.allocator.free(r.detail);
     try T.expectEqual(Outcome.failed, r.outcome);
-    try T.expect(std.mem.indexOf(u8, r.detail, "diagnostic mismatch") != null);
+    try T.expect(std.mem.indexOf(u8, r.detail, "@@ diagnostic mismatch") != null);
+}
+
+test "conformance: unified-diff output marks expected-only lines with '- '" {
+    // Source compiles cleanly but baseline expects a diagnostic;
+    // the rendered detail must include the expected line prefixed
+    // with `- ` (it was in expected but not actual).
+    const r = try run(T.allocator, .{
+        .name = "expected_only",
+        .source = "let x: number = 1;",
+        .path = "tests/eo.ts",
+        .expected_errors = "tests/eo.ts(1,1): error TS2304: Expected error.",
+    });
+    defer if (r.detail.len > 0) T.allocator.free(r.detail);
+    try T.expectEqual(Outcome.failed, r.outcome);
+    try T.expect(std.mem.startsWith(u8, r.detail, "@@ diagnostic mismatch"));
+    try T.expect(std.mem.indexOf(u8, r.detail, "- tests/eo.ts(1,1): error TS2304: Expected error.") != null);
+}
+
+test "conformance: unified-diff output marks actual-only lines with '+ '" {
+    // Source has a real type error but baseline expects none —
+    // detail must show the actual diagnostic prefixed with `+ `.
+    const r = try run(T.allocator, .{
+        .name = "actual_only",
+        .source = "let x: number = \"hi\";",
+        .path = "tests/ao.ts",
+        .expected_errors = "",
+    });
+    defer if (r.detail.len > 0) T.allocator.free(r.detail);
+    try T.expectEqual(Outcome.failed, r.outcome);
+    try T.expect(std.mem.startsWith(u8, r.detail, "@@ diagnostic mismatch"));
+    // The exact message text comes from the checker; we just need
+    // a `+ ` line referencing the test file path + TS code prefix.
+    try T.expect(std.mem.indexOf(u8, r.detail, "\n+ tests/ao.ts(") != null);
+    try T.expect(std.mem.indexOf(u8, r.detail, "error TS") != null);
 }
 
 test "conformance: Suite aggregates Stats" {
