@@ -221,7 +221,17 @@ pub fn main(init: std.process.Init) !void {
         return;
     }
 
-    program.compileAll(compile_opts) catch |err| {
+    // Stream diagnostics as each file finishes compiling. Brings
+    // time-to-first-diagnostic down from whole-program time to
+    // per-file check time — Phase 5 §5.8 / §5.A.10.
+    var any_errors_streaming: bool = false;
+    var stream_ctx: StreamCtx = .{
+        .gpa = gpa,
+        .program = &program,
+        .use_pretty = opts.pretty orelse true,
+        .any_errors = &any_errors_streaming,
+    };
+    program.compileAllStreaming(compile_opts, &stream_ctx, streamDiagsCallback) catch |err| {
         std.debug.print("compile error: {s}\n", .{@errorName(err)});
         std.process.exit(1);
     };
@@ -246,39 +256,12 @@ pub fn main(init: std.process.Init) !void {
         break :blk out_dir;
     };
 
-    // Print diagnostics + write JS outputs.
-    var any_errors = false;
+    // Diagnostics already printed above by the streaming callback;
+    // this loop only handles JS / .d.ts emission. The streaming
+    // any-errors flag flows into the final exit-code decision.
+    const any_errors = any_errors_streaming;
     for (program.files.items) |f| {
         const c = f.compilation orelse continue;
-        for (c.diagnostics.items) |d| {
-            const pos = ts_diagnostics.positionToLineCol(c.source, d.pos);
-            const code = if (d.code != 0) d.code else mapPhaseToCode(d.phase);
-            const prefix: ts_diagnostics.Diagnostic.CodePrefix = switch (d.code_prefix) {
-                .TS => .TS,
-                .HM => .HM,
-            };
-            const fdiag: ts_diagnostics.Diagnostic = .{
-                .file = f.path,
-                .line = pos.line,
-                .col = pos.col,
-                .code = code,
-                .code_prefix = prefix,
-                .severity = .err,
-                .message = d.message,
-                .span_len = 0,
-            };
-            // Default to `--pretty` to match tsc 5.x behavior; honor
-            // `--no-pretty` (opts.pretty == false) to produce the
-            // single-line tsc-classic header instead.
-            const use_pretty = opts.pretty orelse true;
-            const formatted = if (use_pretty)
-                ts_diagnostics.formatPretty(gpa, fdiag, c.source, false) catch continue
-            else
-                ts_diagnostics.formatDefault(gpa, fdiag) catch continue;
-            defer gpa.free(formatted);
-            std.debug.print("{s}\n", .{formatted});
-            if (d.phase != .emit) any_errors = true;
-        }
         if (opts.no_emit) continue;
         const out_path = try computeOutPath(gpa, f.path, out_dir, ".js");
         defer gpa.free(out_path);
@@ -446,6 +429,52 @@ fn mapPhaseToCode(phase: ts_driver.Diagnostic.Phase) u32 {
         .bind => 2304,
         .emit => 5024,
     };
+}
+
+/// Context carried through `Program.compileAllStreaming`'s
+/// per-file callback. `program` lets the callback resolve
+/// the file's source bytes for line/col rendering; `any_errors`
+/// is OR'd from each file's non-emit-phase diagnostics so the
+/// final exit code reflects what's been streamed.
+const StreamCtx = struct {
+    gpa: std.mem.Allocator,
+    program: *const ts_program.Program,
+    use_pretty: bool,
+    any_errors: *bool,
+};
+
+/// Invoked once per compiled file, in compilation order. Renders
+/// every diagnostic via the same formatter the post-compile loop
+/// used to use, but earlier — diagnostics for file 0 surface before
+/// file N has even been parsed.
+fn streamDiagsCallback(ctx: *StreamCtx, file_path: []const u8, diags: []const ts_driver.Diagnostic) void {
+    const fid = ctx.program.lookupPath(file_path) orelse return;
+    const f = ctx.program.fileById(fid);
+    for (diags) |d| {
+        const pos = ts_diagnostics.positionToLineCol(f.source, d.pos);
+        const code = if (d.code != 0) d.code else mapPhaseToCode(d.phase);
+        const prefix: ts_diagnostics.Diagnostic.CodePrefix = switch (d.code_prefix) {
+            .TS => .TS,
+            .HM => .HM,
+        };
+        const fdiag: ts_diagnostics.Diagnostic = .{
+            .file = f.path,
+            .line = pos.line,
+            .col = pos.col,
+            .code = code,
+            .code_prefix = prefix,
+            .severity = .err,
+            .message = d.message,
+            .span_len = 0,
+        };
+        const formatted = if (ctx.use_pretty)
+            ts_diagnostics.formatPretty(ctx.gpa, fdiag, f.source, false) catch continue
+        else
+            ts_diagnostics.formatDefault(ctx.gpa, fdiag) catch continue;
+        defer ctx.gpa.free(formatted);
+        std.debug.print("{s}\n", .{formatted});
+        if (d.phase != .emit) ctx.any_errors.* = true;
+    }
 }
 
 /// Walk `project_dir` recursively, collect every TypeScript-shaped

@@ -356,7 +356,7 @@ Watch foundation, persistent cache, and parallel compile are landed. The query-D
 7. **Lock-striped global type interner.** Today single-threaded with a single `AutoHashMap`. The parallel checker demands a 64-shard concurrent table. *Effort: 1 week.*
 8. **CI bench gate.** No > 5% regression on cold benchmarks; no > 10% regression on watch benchmarks. Self-hosted runner for variance. *Effort: 4 days.*
 9. **Memory peak gate.** VS Code typecheck peak RSS within 5% of main. *Effort: 2 days.*
-10. ~~**Streaming diagnostics (Tier 0 §5.8).**~~ 🟢 partially landed 2026-05-05. `Program.compileAllStreaming(options, ctx, cb)` invokes a per-file callback as soon as each file's diagnostics are ready. CLI / LSP wiring is the remaining bit (today the streaming hook exists but neither end consumes it yet).
+10. ~~**Streaming diagnostics (Tier 0 §5.8).**~~ 🟢 mostly landed 2026-05-06. `Program.compileAllStreaming(options, ctx, cb)` invokes a per-file callback as soon as each file's diagnostics are ready. **`home-tsc` now consumes the streaming hook** — diagnostics print as each file finishes compiling, well before the rest of the program graph is parsed (commit landed 2026-05-06). LSP `publishDiagnostics` push remains as the last consumer to wire in.
 
 ### §6.A · Phase 6 — conformance-hardening punch list
 
