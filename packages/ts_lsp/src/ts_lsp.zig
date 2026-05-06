@@ -283,6 +283,28 @@ pub fn freeLspDiagnostics(gpa: std.mem.Allocator, diags: []LspDiagnostic) void {
     gpa.free(diags);
 }
 
+/// LSP `textDocument/documentLink` payload — describes a clickable
+/// link inside the source. For TS we surface import-specifier strings
+/// (e.g. `"./foo"`) whose `target` is the resolved file path/URI.
+/// Lines/cols match the rest of the LSP surface (1-based, mirroring
+/// `Span`); the wire layer subtracts 1 when emitting 0-based LSP form.
+pub const DocumentLink = struct {
+    /// Range of the link text in the source (typically the contents
+    /// of the module-specifier string literal, excluding quotes).
+    span: Span,
+    /// URI to open. Owned by the link — `freeDocumentLinks` frees it.
+    target: []const u8,
+    /// Hover text shown by the editor. Borrowed; defaults to empty.
+    tooltip: []const u8 = "",
+};
+
+/// Free a `[]DocumentLink` produced by `Service.documentLinks`.
+/// Releases the per-link `target` allocations and the slice.
+pub fn freeDocumentLinks(gpa: std.mem.Allocator, links: []DocumentLink) void {
+    for (links) |l| gpa.free(l.target);
+    gpa.free(links);
+}
+
 pub const Service = struct {
     gpa: std.mem.Allocator,
     program: *ts_program.Program,
@@ -1599,6 +1621,61 @@ pub const Service = struct {
             });
         }
         return out.toOwnedSlice(gpa);
+    }
+
+    /// LSP `textDocument/documentLink`: return a list of clickable
+    /// links in `file_path`. v0 surfaces module specifiers from
+    /// top-level `import_decl` statements: each specifier whose
+    /// resolver result lands on a tracked file becomes a link
+    /// pointing at that file. Specifiers that fail to resolve are
+    /// silently skipped (no link surfaced).
+    pub fn documentLinks(self: *Service, gpa: std.mem.Allocator, file_path: []const u8) ![]DocumentLink {
+        var links: std.ArrayListUnmanaged(DocumentLink) = .empty;
+        errdefer {
+            for (links.items) |l| gpa.free(l.target);
+            links.deinit(gpa);
+        }
+        const file_id = self.program.lookupPath(file_path) orelse return links.toOwnedSlice(gpa);
+        const f = self.program.fileById(file_id);
+        const c = f.compilation orelse return links.toOwnedSlice(gpa);
+        if (c.hir.kindOf(c.root) != .block_stmt) return links.toOwnedSlice(gpa);
+        const stmts = hir_mod.blockStmts(&c.hir, c.root);
+        for (stmts) |s| {
+            if (c.hir.kindOf(s) != .import_decl) continue;
+            const imp = hir_mod.importOf(&c.hir, s);
+            const module_name = c.interner.get(imp.module);
+            if (module_name.len == 0) continue;
+            // Locate the module specifier string literal inside the
+            // import_decl's source span. The HIR doesn't track a
+            // dedicated span for the specifier, so we scan the
+            // statement's text for the literal — picking the LAST
+            // occurrence (so `import a from "./b"` doesn't match a
+            // local-binding identifier earlier in the line).
+            const stmt_span = c.hir.spanOf(s);
+            const stmt_src = f.source[stmt_span.start..stmt_span.end];
+            const rel = std.mem.lastIndexOf(u8, stmt_src, module_name) orelse continue;
+            const lit_start: u32 = stmt_span.start + @as(u32, @intCast(rel));
+            const lit_end: u32 = lit_start + @as(u32, @intCast(module_name.len));
+            // Resolve the specifier; skip unresolved/untracked.
+            const res = self.program.resolver.resolve(module_name, file_path) catch continue;
+            const target_id = self.program.lookupPath(res.path) orelse continue;
+            const tf = self.program.fileById(target_id);
+            const target = try gpa.dupe(u8, tf.path);
+            errdefer gpa.free(target);
+            const start_pos = ts_diagnostics.positionToLineCol(f.source, lit_start);
+            const end_pos = ts_diagnostics.positionToLineCol(f.source, lit_end);
+            try links.append(gpa, .{
+                .span = .{
+                    .file = f.path,
+                    .start_line = start_pos.line,
+                    .start_col = start_pos.col,
+                    .end_line = end_pos.line,
+                    .end_col = end_pos.col,
+                },
+                .target = target,
+            });
+        }
+        return links.toOwnedSlice(gpa);
     }
 };
 
@@ -3647,4 +3724,33 @@ test "Service: selectionRange + willSaveWaitUntil handle unknown files" {
         defer T.allocator.free(edits);
         try T.expectEqual(@as(usize, 0), edits.len);
     }
+}
+
+test "Service: documentLinks surfaces resolved import specifiers" {
+    var vfs = ts_resolver.VirtualFs.init(T.allocator);
+    defer vfs.deinit();
+    try vfs.addFile("/lib.ts", "export let foo = 1;");
+    try vfs.addFile("/main.ts", "import { foo } from './lib'; let x = foo;");
+    var resolver = ts_resolver.Resolver.init(T.allocator, vfs.fs(), .{});
+    defer resolver.deinit();
+    var program = ts_program.Program.init(T.allocator, &resolver);
+    defer program.deinit();
+
+    _ = try program.add("/lib.ts", "export let foo = 1;");
+    _ = try program.add("/main.ts", "import { foo } from './lib'; let x = foo;");
+    try program.compileAll(.{});
+
+    var svc = Service.init(T.allocator, &program);
+    const links = try svc.documentLinks(T.allocator, "/main.ts");
+    defer freeDocumentLinks(T.allocator, links);
+
+    try T.expectEqual(@as(usize, 1), links.len);
+    try T.expectEqualStrings("/lib.ts", links[0].target);
+    try T.expectEqualStrings("/main.ts", links[0].span.file);
+    // Specifier text "./lib" lives on line 1; verify the link covers
+    // the literal contents (excluding quotes) — single-line, with the
+    // end col strictly past the start col.
+    try T.expectEqual(@as(u32, 1), links[0].span.start_line);
+    try T.expectEqual(@as(u32, 1), links[0].span.end_line);
+    try T.expect(links[0].span.end_col > links[0].span.start_col);
 }
