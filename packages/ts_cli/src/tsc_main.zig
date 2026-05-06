@@ -262,6 +262,56 @@ pub fn main(init: std.process.Init) !void {
         }
     }
 
+    // §4.A.12 — write `.tsbuildinfo` when `compilerOptions.incremental: true`.
+    if (loaded_cfg) |cfg_ptr| {
+        const want_buildinfo = cfg_ptr.compiler_options.incremental orelse false;
+        if (want_buildinfo) {
+            // File names + per-file content-version (sha-1 over source).
+            var file_names: std.ArrayListUnmanaged([]const u8) = .empty;
+            defer file_names.deinit(gpa);
+            var file_infos: std.ArrayListUnmanaged(ts_emit.tsbuildinfo.FileInfo) = .empty;
+            defer {
+                for (file_infos.items) |fi| gpa.free(fi.version);
+                file_infos.deinit(gpa);
+            }
+            for (program.files.items) |f| {
+                try file_names.append(gpa, f.path);
+                var hasher = std.crypto.hash.Sha1.init(.{});
+                hasher.update(f.source);
+                var digest: [20]u8 = undefined;
+                hasher.final(&digest);
+                const hex = try gpa.alloc(u8, digest.len * 2);
+                const hex_chars = "0123456789abcdef";
+                for (digest, 0..) |b, i| {
+                    hex[i * 2] = hex_chars[b >> 4];
+                    hex[i * 2 + 1] = hex_chars[b & 0x0F];
+                }
+                try file_infos.append(gpa, .{ .version = hex });
+            }
+            const buildinfo = ts_emit.tsbuildinfo.emit(
+                gpa,
+                file_names.items,
+                file_infos.items,
+                "{}", // options blob: tsc serialises a few normalized options here; placeholder
+                .{},
+            ) catch null;
+            if (buildinfo) |bi| {
+                defer gpa.free(bi);
+                const bi_path: []const u8 = blk: {
+                    if (cfg_ptr.compiler_options.ts_buildinfo_file) |p| break :blk p;
+                    break :blk if (out_dir) |od|
+                        try std.fs.path.join(gpa, &.{ od, "tsconfig.tsbuildinfo" })
+                    else
+                        try gpa.dupe(u8, "tsconfig.tsbuildinfo");
+                };
+                defer if (cfg_ptr.compiler_options.ts_buildinfo_file == null) gpa.free(bi_path);
+                RealFs.write(gpa, bi_path, bi) catch |err| {
+                    std.debug.print("warning: could not write {s}: {s}\n", .{ bi_path, @errorName(err) });
+                };
+            }
+        }
+    }
+
     if (any_errors) std.process.exit(1);
 }
 
