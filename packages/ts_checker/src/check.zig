@@ -184,6 +184,15 @@ pub const Checker = struct {
     /// implementation signature lands last and is used to type the
     /// body; call sites resolve against the prior overload signatures.
     overloads: std.AutoHashMapUnmanaged(hir_mod.StringId, std.ArrayListUnmanaged(TypeId)),
+    /// Auto-inferred variance for type-parameter TypeIds whose
+    /// declaration site had no explicit `in` / `out` modifier.
+    /// Populated by `checkFnSignatureOnly` and `checkTypeAliasDecl`
+    /// after the body is lowered. Since the interner keys variance
+    /// into the TypeId, we can't mutate the interned payload — this
+    /// side table lets variance-sensitive callers consult the
+    /// inferred direction. Unmarked type parameters default to
+    /// `.bivariant`.
+    inferred_variance: std.AutoHashMapUnmanaged(TypeId, types.Variance),
     /// Strictness flags driving optional diagnostics.
     strict_flags: StrictFlags = .{},
     diagnostics: std.ArrayListUnmanaged(Diagnostic),
@@ -213,6 +222,7 @@ pub const Checker = struct {
             .fn_predicates = .empty,
             .cond_aliases = .empty,
             .overloads = .empty,
+            .inferred_variance = .empty,
             .diagnostics = .empty,
             .diag_arena = std.heap.ArenaAllocator.init(gpa),
         };
@@ -249,8 +259,19 @@ pub const Checker = struct {
         var ov_it = self.overloads.valueIterator();
         while (ov_it.next()) |list| list.deinit(self.gpa);
         self.overloads.deinit(self.gpa);
+        self.inferred_variance.deinit(self.gpa);
         self.diagnostics.deinit(self.gpa);
         self.diag_arena.deinit();
+    }
+
+    /// Look up the auto-inferred variance for a type-parameter
+    /// TypeId. Falls back to the variance baked into the interner
+    /// when no inference has run for this id (e.g. an explicit
+    /// `in` / `out` modifier was present), and to `.bivariant`
+    /// for non-type-parameter inputs.
+    pub fn typeParameterVariance(self: *const Checker, tp_id: TypeId) types.Variance {
+        if (self.inferred_variance.get(tp_id)) |v| return v;
+        return self.interner.typeParameterVariance(tp_id);
     }
 
     /// Check a complete source file. The HIR root must be a
@@ -727,6 +748,135 @@ pub const Checker = struct {
         }
     }
 
+    /// Walk a type's structural body in search of the given type
+    /// parameter, accumulating the variance positions in which it
+    /// occurs. Returns the combined variance:
+    ///   - `.covariant` only — output position (return / property /
+    ///     array element / union member).
+    ///   - `.contravariant` only — input position (signature param).
+    ///   - both → `.invariant`.
+    ///   - neither → `.bivariant` (T is unused, or only appears
+    ///     under `keyof` where it's treated as a key).
+    fn inferVariance(self: *Checker, body_t: TypeId, param_id: TypeId) types.Variance {
+        var saw_co = false;
+        var saw_ct = false;
+        self.scanVariance(body_t, param_id, .covariant, &saw_co, &saw_ct);
+        if (saw_co and saw_ct) return .invariant;
+        if (saw_co) return .covariant;
+        if (saw_ct) return .contravariant;
+        return .bivariant;
+    }
+
+    /// Recursive worker for `inferVariance`. `position` tracks the
+    /// polarity of the slot being entered: `.covariant` for output
+    /// positions, `.contravariant` for input positions, `.invariant`
+    /// for read+write slots (the object of an indexed access),
+    /// `.bivariant` to suppress recording (under `keyof`).
+    fn scanVariance(
+        self: *Checker,
+        t: TypeId,
+        param_id: TypeId,
+        position: types.Variance,
+        saw_co: *bool,
+        saw_ct: *bool,
+    ) void {
+        if (t == param_id) {
+            switch (position) {
+                .covariant => saw_co.* = true,
+                .contravariant => saw_ct.* = true,
+                .invariant => {
+                    saw_co.* = true;
+                    saw_ct.* = true;
+                },
+                .bivariant => {},
+            }
+            return;
+        }
+        if (t < types.Primitive.first_dynamic) return;
+        const flags = self.interner.pool.flagsOf(t);
+
+        if (flags.is_signature) {
+            for (self.interner.signatureParams(t)) |p| {
+                self.scanVariance(p, param_id, flipVariance(position), saw_co, saw_ct);
+            }
+            if (self.interner.signatureReturn(t)) |r| {
+                self.scanVariance(r, param_id, position, saw_co, saw_ct);
+            }
+            return;
+        }
+        if (flags.is_object_type) {
+            const members = self.interner.objectMembers(t);
+            for (members) |m| {
+                self.scanVariance(m.type, param_id, position, saw_co, saw_ct);
+            }
+            const si = self.interner.objectStringIndex(t);
+            if (si != types.Primitive.none) self.scanVariance(si, param_id, position, saw_co, saw_ct);
+            const ni = self.interner.objectNumberIndex(t);
+            if (ni != types.Primitive.none) self.scanVariance(ni, param_id, position, saw_co, saw_ct);
+            return;
+        }
+        if (flags.is_union) {
+            for (self.interner.unionMembers(t)) |m| {
+                self.scanVariance(m, param_id, position, saw_co, saw_ct);
+            }
+            return;
+        }
+        if (flags.is_intersection) {
+            for (self.interner.intersectionMembers(t)) |m| {
+                self.scanVariance(m, param_id, position, saw_co, saw_ct);
+            }
+            return;
+        }
+        if (flags.is_tuple) {
+            const payload = self.interner.pool.tuple_payloads.items[self.interner.pool.payloadOf(t)];
+            const elems = self.interner.pool.tuple_element_pool.items[payload.elements_start .. payload.elements_start + payload.elements_len];
+            for (elems) |e| {
+                self.scanVariance(e.type, param_id, position, saw_co, saw_ct);
+            }
+            return;
+        }
+        if (flags.is_keyof) {
+            // `keyof T` — T is consumed as a key; treat as bivariant
+            // (suppress recording inside the keyof operand).
+            return;
+        }
+        if (flags.is_indexed_access) {
+            const payload = self.interner.pool.indexed_access_payloads.items[self.interner.pool.payloadOf(t)];
+            // Object slot is read+write → invariant. Index slot
+            // stays at the surrounding polarity.
+            self.scanVariance(payload.object, param_id, .invariant, saw_co, saw_ct);
+            self.scanVariance(payload.index, param_id, position, saw_co, saw_ct);
+            return;
+        }
+        if (flags.is_conditional) {
+            const c = self.interner.conditionalPayload(t);
+            self.scanVariance(c.check_type, param_id, position, saw_co, saw_ct);
+            self.scanVariance(c.extends_type, param_id, position, saw_co, saw_ct);
+            self.scanVariance(c.true_branch, param_id, position, saw_co, saw_ct);
+            self.scanVariance(c.false_branch, param_id, position, saw_co, saw_ct);
+            return;
+        }
+        if (flags.is_mapped) {
+            const m = self.interner.mappedPayload(t);
+            self.scanVariance(m.constraint, param_id, position, saw_co, saw_ct);
+            self.scanVariance(m.template, param_id, position, saw_co, saw_ct);
+            return;
+        }
+        if (flags.is_instantiation) {
+            const payload = self.interner.pool.instantiation_payloads.items[self.interner.pool.payloadOf(t)];
+            const args = self.interner.pool.type_arg_pool.items[payload.args_start .. payload.args_start + payload.args_len];
+            // Without per-origin variance metadata, treat each
+            // type-argument slot at the surrounding polarity. A
+            // future fixed-point pass can refine this.
+            for (args) |a| {
+                self.scanVariance(a, param_id, position, saw_co, saw_ct);
+            }
+            return;
+        }
+        // Primitives, literals, and type parameters other than the
+        // target — nothing to walk.
+    }
+
     /// Run the signature-only pass of `checkFnDecl` — type
     /// parameters, parameter annotations, return type, intern the
     /// signature — without walking the body. The caller owns the
@@ -813,6 +963,25 @@ pub const Checker = struct {
         const sig = self.interner.internSignature(param_types.items, ret_t, false) catch return error.OutOfMemory;
         self.hir.setType(node, sig);
         if (f.name != hir_mod.none_node_id) self.hir.setType(f.name, sig);
+        // Auto-infer variance for any type parameter that had no
+        // explicit `in` / `out` modifier. We walk the signature —
+        // an occurrence of T in a param slot is contravariant, in
+        // the return slot covariant. The result lives in the
+        // `inferred_variance` side table since the interner keys
+        // variance into the TypeId.
+        if (captured_tp_ids.items.len > 0) {
+            var tp_ix: usize = 0;
+            for (type_params) |tp_node| {
+                if (self.hir.kindOf(tp_node) != .type_parameter) continue;
+                const tpp_h = hir_mod.typeParameterOf(self.hir, tp_node);
+                if (tp_ix >= captured_tp_ids.items.len) break;
+                const tp_id_v = captured_tp_ids.items[tp_ix];
+                tp_ix += 1;
+                if (tpp_h.variance != 0) continue; // explicit `in`/`out`
+                const v = self.inferVariance(sig, tp_id_v);
+                try self.inferred_variance.put(self.gpa, tp_id_v, v);
+            }
+        }
         // Record the function's generic type parameters keyed by name
         // so call sites with explicit type args (`f<T>(args)`) can
         // substitute directly. Drop any prior recording on shadow.
@@ -1173,6 +1342,21 @@ pub const Checker = struct {
         }
         const body_t = try self.lowererLowerWithTypeParams(ta.aliased);
         self.hir.setType(node, body_t);
+        // Auto-infer variance for any alias type parameter without
+        // an explicit `in` / `out` modifier. See `inferVariance`.
+        {
+            var tp_ix: usize = 0;
+            for (type_params) |tp_node| {
+                if (self.hir.kindOf(tp_node) != .type_parameter) continue;
+                const tpp_h = hir_mod.typeParameterOf(self.hir, tp_node);
+                if (tp_ix >= param_ids.items.len) break;
+                const tp_id_v = param_ids.items[tp_ix];
+                tp_ix += 1;
+                if (tpp_h.variance != 0) continue; // explicit `in`/`out`
+                const v = self.inferVariance(body_t, tp_id_v);
+                try self.inferred_variance.put(self.gpa, tp_id_v, v);
+            }
+        }
         const owned_params = param_ids.toOwnedSlice(self.gpa) catch return error.OutOfMemory;
         if (ta.name != hir_mod.none_node_id and self.hir.kindOf(ta.name) == .identifier) {
             const id = hir_mod.identifierOf(self.hir, ta.name);
@@ -2970,6 +3154,18 @@ pub const Checker = struct {
     }
 };
 
+/// Flip a polarity tag for the `inferVariance` walk. Covariant ⇄
+/// contravariant on each input boundary; invariant and bivariant
+/// are absorbing — they don't flip.
+fn flipVariance(v: types.Variance) types.Variance {
+    return switch (v) {
+        .covariant => .contravariant,
+        .contravariant => .covariant,
+        .invariant => .invariant,
+        .bivariant => .bivariant,
+    };
+}
+
 /// Recognise expressions that produce control-flow narrowing when
 /// used as conditions. Used by `cond_aliases` to decide whether to
 /// record `let cond = <expr>` for later aliased-narrow expansion.
@@ -4590,6 +4786,30 @@ test "checker: type-parameter variance — no modifier defaults to bivariant" {
     try T.expectEqual(@as(usize, 1), tps.len);
     const tp_id = s.hir.typeOf(tps[0]);
     try T.expectEqual(types.Variance.bivariant, s.ti.typeParameterVariance(tp_id));
+}
+
+test "checker: variance inference — T in return position is covariant" {
+    const s = try newSetup("function f<T>(): T { return null as any; }");
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+    const stmts = hir_mod.blockStmts(&s.hir, s.root);
+    const fn_node = stmts[0];
+    const tps = hir_mod.fnTypeParams(&s.hir, fn_node);
+    try T.expectEqual(@as(usize, 1), tps.len);
+    const tp_id = s.hir.typeOf(tps[0]);
+    try T.expectEqual(types.Variance.covariant, s.checker.typeParameterVariance(tp_id));
+}
+
+test "checker: variance inference — T in parameter position is contravariant" {
+    const s = try newSetup("function f<T>(x: T): void {}");
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+    const stmts = hir_mod.blockStmts(&s.hir, s.root);
+    const fn_node = stmts[0];
+    const tps = hir_mod.fnTypeParams(&s.hir, fn_node);
+    try T.expectEqual(@as(usize, 1), tps.len);
+    const tp_id = s.hir.typeOf(tps[0]);
+    try T.expectEqual(types.Variance.contravariant, s.checker.typeParameterVariance(tp_id));
 }
 
 test "checker: `await g()` types as the operand call's return type" {
