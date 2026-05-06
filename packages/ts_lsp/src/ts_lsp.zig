@@ -194,6 +194,17 @@ pub fn freeSymbols(gpa: std.mem.Allocator, symbols: []SymbolInfo) void {
     gpa.free(symbols);
 }
 
+/// LSP `textDocument/documentHighlight` payload — describes a single
+/// occurrence of the identifier under the cursor inside the current
+/// file. `kind` matches LSP's `DocumentHighlightKind` (text=1, read=2,
+/// write=3); the file-local nature mirrors the spec.
+pub const Highlight = struct {
+    span: Span,
+    kind: Kind,
+
+    pub const Kind = enum { text, read, write };
+};
+
 pub const Service = struct {
     gpa: std.mem.Allocator,
     program: *ts_program.Program,
@@ -466,6 +477,64 @@ pub const Service = struct {
             }
         }
         return spans.toOwnedSlice(gpa);
+    }
+
+    /// File-local highlights for the identifier under the cursor.
+    /// LSP `textDocument/documentHighlight`: returns one `Highlight`
+    /// per occurrence of the same identifier name in the cursor's
+    /// file, with `kind` distinguishing read vs write sites. Unlike
+    /// `findReferences`, this stops at the file boundary and never
+    /// crosses into other modules. Shadowing-aware: candidates whose
+    /// enclosing scope binds a different symbol are filtered out.
+    pub fn documentHighlights(self: *Service, gpa: std.mem.Allocator, file_path: []const u8, byte_pos: u32) ![]Highlight {
+        var hls: std.ArrayListUnmanaged(Highlight) = .empty;
+        errdefer hls.deinit(gpa);
+
+        const file_id = self.program.lookupPath(file_path) orelse return hls.toOwnedSlice(gpa);
+        const f = self.program.fileById(file_id);
+        const c = f.compilation orelse return hls.toOwnedSlice(gpa);
+        const node = findInnermostNode(&c.hir, c.root, byte_pos) orelse return hls.toOwnedSlice(gpa);
+        if (c.hir.kindOf(node) != .identifier) return hls.toOwnedSlice(gpa);
+        const target = hir_mod.identifierOf(&c.hir, node);
+
+        // Resolve the cursor's identifier to its declaring symbol so
+        // we can compare candidate-site lookups against it. Compare
+        // by opaque pointer so this layer doesn't import binder.
+        const target_sym_addr: usize = blk: {
+            const s = enclosingScopeOf(c.module, &c.hir, node);
+            if (s.lookup(target.name)) |sym| break :blk @intFromPtr(sym);
+            if (c.module.root.lookup(target.name)) |sym| break :blk @intFromPtr(sym);
+            break :blk 0;
+        };
+
+        var i: hir_mod.NodeId = 1;
+        while (i < c.hir.nodeCount()) : (i += 1) {
+            if (c.hir.kindOf(i) != .identifier) continue;
+            const id = hir_mod.identifierOf(&c.hir, i);
+            if (id.name != target.name) continue;
+
+            // In-file shadowing filter — same logic as findReferences.
+            if (target_sym_addr != 0) {
+                const cand_scope = enclosingScopeOf(c.module, &c.hir, i);
+                const cand_addr: usize = if (cand_scope.lookup(id.name)) |s| @intFromPtr(s) else 0;
+                if (cand_addr != target_sym_addr) continue;
+            }
+
+            const span = c.hir.spanOf(i);
+            const sp = ts_diagnostics.positionToLineCol(f.source, span.start);
+            const ep = ts_diagnostics.positionToLineCol(f.source, span.end);
+            try hls.append(gpa, .{
+                .span = .{
+                    .file = f.path,
+                    .start_line = sp.line,
+                    .start_col = sp.col,
+                    .end_line = ep.line,
+                    .end_col = ep.col,
+                },
+                .kind = classifyIdentifierKind(&c.hir, i),
+            });
+        }
+        return hls.toOwnedSlice(gpa);
     }
 
     /// Completions at `byte_pos`. Phase 8 v0: top-level
@@ -1399,6 +1468,41 @@ fn findInnermostNode(hir: *const hir_mod.Hir, root: hir_mod.NodeId, byte_pos: u3
     return best;
 }
 
+/// Classify an identifier node as `.read` or `.write` based on the
+/// shape of its parent. Writes: assignment targets, `++`/`--`
+/// operands, and the name slot of a declaration (var/let/const/fn/
+/// class/parameter/type-parameter). Everything else is a read.
+fn classifyIdentifierKind(hir: *const hir_mod.Hir, node: hir_mod.NodeId) Highlight.Kind {
+    const parent = hir.parentOf(node);
+    if (parent == hir_mod.none_node_id or parent == node) return .read;
+    switch (hir.kindOf(parent)) {
+        .assignment => {
+            const a = hir_mod.assignmentOf(hir, parent);
+            if (a.target == node) return .write;
+        },
+        .update_op => return .write,
+        .var_decl, .let_decl, .const_decl => {
+            const v = hir_mod.varDeclOf(hir, parent);
+            if (v.name == node) return .write;
+            if (v.init == node) return .read;
+        },
+        .fn_decl, .fn_expr, .arrow_fn => {
+            const fn_p = hir_mod.fnDeclOf(hir, parent);
+            if (fn_p.name == node) return .write;
+        },
+        .class_decl, .class_expr => {
+            const cp = hir_mod.classOf(hir, parent);
+            if (cp.name == node) return .write;
+        },
+        .parameter => {
+            const p = hir_mod.parameterOf(hir, parent);
+            if (p.name == node) return .write;
+        },
+        else => {},
+    }
+    return .read;
+}
+
 /// Walk the HIR ancestor chain from `node` upward and return the
 /// innermost scope whose `introducing_node` lies on that chain.
 /// Falls back to the module root when no inner scope contains the
@@ -1824,6 +1928,64 @@ test "Service: findReferences excludes shadowed bindings" {
     // skipped on both the inner declaration and the inner `return x`.
     try T.expectEqual(@as(usize, 2), refs.len);
     for (refs) |r| try T.expect(r.start_line != 2);
+}
+
+test "Service: documentHighlights classifies reads vs writes" {
+    var vfs = ts_resolver.VirtualFs.init(T.allocator);
+    defer vfs.deinit();
+    var resolver = ts_resolver.Resolver.init(T.allocator, vfs.fs(), .{});
+    defer resolver.deinit();
+    var program = ts_program.Program.init(T.allocator, &resolver);
+    defer program.deinit();
+
+    // Three `x` sites:
+    //   `let x = 1;` — declaration (write)
+    //   `x = 2;`     — assignment LHS (write)
+    //   `let y = x;` — RHS read.
+    const src = "let x = 1; x = 2; let y = x;";
+    _ = try program.add("/main.ts", src);
+    try program.compileAll(.{});
+
+    var svc = Service.init(T.allocator, &program);
+    // Cursor on the declaration's `x`.
+    const decl_pos: u32 = @intCast(std.mem.indexOf(u8, src, "x").?);
+    const hls = try svc.documentHighlights(T.allocator, "/main.ts", decl_pos);
+    defer T.allocator.free(hls);
+
+    try T.expectEqual(@as(usize, 3), hls.len);
+    var writes: usize = 0;
+    var reads: usize = 0;
+    for (hls) |h| {
+        switch (h.kind) {
+            .write => writes += 1,
+            .read => reads += 1,
+            .text => {},
+        }
+    }
+    try T.expectEqual(@as(usize, 2), writes);
+    try T.expectEqual(@as(usize, 1), reads);
+}
+
+test "Service: documentHighlights ignores other files" {
+    var vfs = ts_resolver.VirtualFs.init(T.allocator);
+    defer vfs.deinit();
+    var resolver = ts_resolver.Resolver.init(T.allocator, vfs.fs(), .{});
+    defer resolver.deinit();
+    var program = ts_program.Program.init(T.allocator, &resolver);
+    defer program.deinit();
+
+    _ = try program.add("/a.ts", "export let count = 1;");
+    _ = try program.add("/b.ts", "let other = count;");
+    try program.compileAll(.{});
+
+    var svc = Service.init(T.allocator, &program);
+    // Cursor on `count` declaration in /a.ts.
+    const hls = try svc.documentHighlights(T.allocator, "/a.ts", 11);
+    defer T.allocator.free(hls);
+
+    // /a.ts contains exactly one `count` (the declaration).
+    try T.expectEqual(@as(usize, 1), hls.len);
+    try T.expectEqual(Highlight.Kind.write, hls[0].kind);
 }
 
 test "Service: findReferences walks every file in the program" {
