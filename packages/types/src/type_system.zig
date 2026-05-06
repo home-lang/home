@@ -1012,6 +1012,7 @@ pub const TypeChecker = struct {
                 .StructDecl => |struct_decl| {
                     // Pre-register struct type
                     var fields = std.ArrayList(Type.StructType.Field).empty;
+                    defer fields.deinit(self.allocator);
                     for (struct_decl.fields) |field| {
                         const field_type = try self.parseTypeName(field.type_name);
                         try fields.append(self.allocator, .{
@@ -1019,10 +1020,16 @@ pub const TypeChecker = struct {
                             .type = field_type,
                         });
                     }
+                    const fields_slice = try fields.toOwnedSlice(self.allocator);
+                    // Track the allocated slice so it is freed at deinit;
+                    // the second pass may rebind this name, orphaning the
+                    // slice in env.bindings but the tracker keeps the
+                    // pointer reachable for cleanup.
+                    try self.env.trackAllocation(fields_slice);
                     const struct_type = Type{
                         .Struct = .{
                             .name = struct_decl.name,
-                            .fields = try fields.toOwnedSlice(self.allocator),
+                            .fields = fields_slice,
                         },
                     };
                     try self.env.define(struct_decl.name, struct_type);
@@ -1030,6 +1037,7 @@ pub const TypeChecker = struct {
                 .EnumDecl => |enum_decl| {
                     // Pre-register enum type
                     var variants = std.ArrayList(Type.EnumType.Variant).empty;
+                    defer variants.deinit(self.allocator);
                     for (enum_decl.variants) |variant| {
                         var data_type_val: ?Type = null;
                         if (variant.data_type) |type_name| {
@@ -1040,10 +1048,16 @@ pub const TypeChecker = struct {
                             .data_type = data_type_val,
                         });
                     }
+                    const variants_slice = try variants.toOwnedSlice(self.allocator);
+                    // Track the allocated slice so it is freed at deinit;
+                    // the second pass may rebind this name, orphaning the
+                    // slice in env.bindings but the tracker keeps the
+                    // pointer reachable for cleanup.
+                    try self.env.trackAllocation(variants_slice);
                     const enum_type = Type{
                         .Enum = .{
                             .name = enum_decl.name,
-                            .variants = try variants.toOwnedSlice(self.allocator),
+                            .variants = variants_slice,
                         },
                     };
                     try self.env.define(enum_decl.name, enum_type);
