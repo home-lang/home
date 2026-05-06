@@ -154,6 +154,9 @@ pub fn optionsFromConfig(cfg: *const tsconfig_mod.TsConfig) CompileOptions {
     if (cfg.compiler_options.es_module_interop) |on| {
         opts.emit.es_module_interop = on;
     }
+    if (cfg.compiler_options.experimental_decorators) |on| {
+        opts.emit.experimental_decorators = on;
+    }
     return opts;
 }
 
@@ -1090,6 +1093,30 @@ test "driver: optionsFromConfig enables tsx for jsx=react-jsx" {
     );
     const opts = optionsFromConfig(&cfg);
     try T.expect(opts.is_tsx);
+}
+
+test "driver: optionsFromConfig wires experimentalDecorators=false → Stage 3" {
+    var arena = std.heap.ArenaAllocator.init(T.allocator);
+    defer arena.deinit();
+    const cfg = try tsconfig_mod.parseString(
+        T.allocator,
+        arena.allocator(),
+        \\{ "compilerOptions": { "experimentalDecorators": false } }
+        ,
+    );
+    const opts = optionsFromConfig(&cfg);
+    try T.expect(!opts.emit.experimental_decorators);
+
+    // End-to-end: the emitter should pick the Stage 3 path.
+    var c = try compileSource(T.allocator, "@logged class Foo {}", opts);
+    defer {
+        c.deinit();
+        T.allocator.destroy(c);
+    }
+    // Stage 3 emit wraps decorators in a `__esDecorate` / context
+    // helper rather than the legacy `__decorate([logged], Foo)` call.
+    try T.expect(std.mem.indexOf(u8, c.js, "__esDecorate(") != null);
+    try T.expect(std.mem.indexOf(u8, c.js, "= __decorate(") == null);
 }
 
 test "driver: optionsFromConfig with no jsx leaves is_tsx false" {
