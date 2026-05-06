@@ -191,6 +191,7 @@ pub const CompilerOptions = struct {
     no_property_access_from_index_signature: ?bool = null,
     skip_lib_check: ?bool = null,
     skip_default_lib_check: ?bool = null,
+    force_consistent_casing_in_file_names: ?bool = null,
 
     // -- Modules --
     module: ?Module = null,
@@ -206,6 +207,8 @@ pub const CompilerOptions = struct {
     isolated_modules: ?bool = null,
     isolated_declarations: ?bool = null,
     verbatim_module_syntax: ?bool = null,
+    allow_synthetic_default_imports: ?bool = null,
+    module_detection: ?[]const u8 = null,
 
     // -- Emit --
     target: ?Target = null,
@@ -234,6 +237,9 @@ pub const CompilerOptions = struct {
     // -- JS support --
     allow_js: ?bool = null,
     check_js: ?bool = null,
+
+    // -- Class semantics --
+    use_define_for_class_fields: ?bool = null,
 
     /// Pass-through bag for keys not yet typed. Each entry is a raw
     /// `(key, jsonc.Value)` pair so unknown keys round-trip without loss.
@@ -395,6 +401,9 @@ fn fillCompilerOptions(arena: std.mem.Allocator, co: *CompilerOptions, obj: json
             .{ .name = "noPropertyAccessFromIndexSignature", .field = "no_property_access_from_index_signature" },
             .{ .name = "skipLibCheck", .field = "skip_lib_check" },
             .{ .name = "skipDefaultLibCheck", .field = "skip_default_lib_check" },
+            .{ .name = "forceConsistentCasingInFileNames", .field = "force_consistent_casing_in_file_names" },
+            .{ .name = "allowSyntheticDefaultImports", .field = "allow_synthetic_default_imports" },
+            .{ .name = "useDefineForClassFields", .field = "use_define_for_class_fields" },
             .{ .name = "resolveJsonModule", .field = "resolve_json_module" },
             .{ .name = "allowImportingTsExtensions", .field = "allow_importing_ts_extensions" },
             .{ .name = "esModuleInterop", .field = "es_module_interop" },
@@ -436,6 +445,7 @@ fn fillCompilerOptions(arena: std.mem.Allocator, co: *CompilerOptions, obj: json
             .{ .name = "jsxFactory", .field = "jsx_factory" },
             .{ .name = "jsxFragmentFactory", .field = "jsx_fragment_factory" },
             .{ .name = "jsxImportSource", .field = "jsx_import_source" },
+            .{ .name = "moduleDetection", .field = "module_detection" },
         };
         inline for (str_table) |entry| {
             if (std.mem.eql(u8, key, entry.name)) {
@@ -754,6 +764,63 @@ test "tsconfig: real-world tsconfig.json (with comments)" {
     try t.expectEqual(@as(usize, 3), co.lib.?.len);
     try t.expectEqualStrings("src/**/*", cfg.include.?[0]);
     try t.expectEqual(@as(usize, 3), cfg.exclude.?.len);
+}
+
+test "tsconfig: newly-added bool fields parse" {
+    var arena = std.heap.ArenaAllocator.init(t.allocator);
+    defer arena.deinit();
+    const cfg = try parseString(t.allocator, arena.allocator(),
+        \\{
+        \\  "compilerOptions": {
+        \\    "noImplicitReturns": true,
+        \\    "noFallthroughCasesInSwitch": true,
+        \\    "allowSyntheticDefaultImports": true,
+        \\    "forceConsistentCasingInFileNames": true,
+        \\    "skipLibCheck": true,
+        \\    "isolatedModules": true,
+        \\    "useDefineForClassFields": true,
+        \\    "verbatimModuleSyntax": true
+        \\  }
+        \\}
+    );
+    const co = cfg.compiler_options;
+    try t.expectEqual(@as(?bool, true), co.no_implicit_returns);
+    try t.expectEqual(@as(?bool, true), co.no_fallthrough_cases_in_switch);
+    try t.expectEqual(@as(?bool, true), co.allow_synthetic_default_imports);
+    try t.expectEqual(@as(?bool, true), co.force_consistent_casing_in_file_names);
+    try t.expectEqual(@as(?bool, true), co.skip_lib_check);
+    try t.expectEqual(@as(?bool, true), co.isolated_modules);
+    try t.expectEqual(@as(?bool, true), co.use_define_for_class_fields);
+    try t.expectEqual(@as(?bool, true), co.verbatim_module_syntax);
+    // None of these landed in the pass-through bag.
+    try t.expectEqual(@as(usize, 0), co.extra.items.len);
+}
+
+test "tsconfig: moduleDetection parses as string" {
+    var arena = std.heap.ArenaAllocator.init(t.allocator);
+    defer arena.deinit();
+    const cfg = try parseString(t.allocator, arena.allocator(),
+        \\{ "compilerOptions": { "moduleDetection": "force" } }
+    );
+    try t.expectEqualStrings("force", cfg.compiler_options.module_detection.?);
+}
+
+test "tsconfig: merge propagates new bool fields" {
+    var arena = std.heap.ArenaAllocator.init(t.allocator);
+    defer arena.deinit();
+    const base = try parseString(t.allocator, arena.allocator(),
+        \\{ "compilerOptions": { "skipLibCheck": false, "forceConsistentCasingInFileNames": true } }
+    );
+    const child = try parseString(t.allocator, arena.allocator(),
+        \\{ "compilerOptions": { "skipLibCheck": true, "useDefineForClassFields": true } }
+    );
+    const m = try merge(arena.allocator(), base, child);
+    // child overrides base
+    try t.expectEqual(@as(?bool, true), m.compiler_options.skip_lib_check);
+    // base-only field preserved
+    try t.expectEqual(@as(?bool, true), m.compiler_options.force_consistent_casing_in_file_names);
+    // child-only field present
+    try t.expectEqual(@as(?bool, true), m.compiler_options.use_define_for_class_fields);
 }
 
 test "tsconfig.merge: child overrides base on every set field" {
