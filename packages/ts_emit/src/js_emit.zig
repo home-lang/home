@@ -68,6 +68,13 @@ pub const EsTarget = enum {
     pub fn supportsNullishAndOptional(self: EsTarget) bool {
         return @intFromEnum(self) >= @intFromEnum(EsTarget.es2020);
     }
+
+    /// Native `async`/`await` is an ES2017 feature. Below that we
+    /// downlevel async functions to a `__awaiter`-wrapped generator
+    /// and rewrite `await E` inside the body to `yield E`.
+    pub fn supportsNativeAsync(self: EsTarget) bool {
+        return @intFromEnum(self) >= @intFromEnum(EsTarget.es2017);
+    }
 };
 
 pub const JsxRuntime = enum {
@@ -141,6 +148,11 @@ pub const Printer = struct {
     /// Source bytes for line/col lookup of HIR spans. Optional;
     /// when null, source-map mappings are skipped.
     source: ?[]const u8,
+    /// True while emitting the body of an async function that's been
+    /// lowered to a `__awaiter(this, void 0, void 0, function* () { … })`
+    /// wrapper. The `.await_expr` printer consults this to emit
+    /// `yield` instead of `await` within the generator body.
+    in_async_downlevel: bool,
 
     pub fn init(
         gpa: std.mem.Allocator,
@@ -159,6 +171,7 @@ pub const Printer = struct {
             .gen_line = 0,
             .gen_col = 0,
             .source = null,
+            .in_async_downlevel = false,
         };
     }
 
@@ -601,6 +614,13 @@ pub const Printer = struct {
 
     fn printFnDecl(self: *Printer, node: NodeId) anyerror!void {
         const f = hir_mod.fnDeclOf(self.hir, node);
+        // Each function introduces its own async-context boundary.
+        // `await` in a nested non-async function is a SyntaxError (and
+        // a nested async fn manages its own lowering); either way we
+        // shouldn't carry the parent's downlevel flag into the child.
+        const prev_downlevel = self.in_async_downlevel;
+        self.in_async_downlevel = false;
+        defer self.in_async_downlevel = prev_downlevel;
         if (f.flags.is_arrow) {
             // §4.A.1 — at ES5, arrows downlevel to plain `function`
             // expressions. The lexical-`this` capture is approximated
@@ -651,8 +671,15 @@ pub const Printer = struct {
             }
             return;
         }
+        // §4.A.5 — async/await downlevel. At ES2016 and below, an
+        // `async function f(args) { body }` is rewritten to
+        // `function f(args) { return __awaiter(this, void 0, void 0,
+        // function* () { body }); }` and `await E` inside the body
+        // becomes `yield E`. The `__awaiter` runtime helper is the
+        // same shape tsc emits.
+        const downlevel_async = f.flags.is_async and !self.options.es_target.supportsNativeAsync();
         if (!f.flags.is_method and !f.flags.is_constructor) {
-            if (f.flags.is_async) try self.write("async ");
+            if (f.flags.is_async and !downlevel_async) try self.write("async ");
             try self.write("function");
             if (f.flags.is_generator) try self.write("*");
             if (f.name != hir_mod.none_node_id) {
@@ -675,10 +702,39 @@ pub const Printer = struct {
         try self.write(")");
         if (f.body != hir_mod.none_node_id) {
             try self.write(" ");
-            try self.printStatementInline(f.body);
+            if (downlevel_async) {
+                try self.printAsyncDownlevelBody(f.body);
+            } else {
+                try self.printStatementInline(f.body);
+            }
         } else {
             try self.writeSemi();
         }
+    }
+
+    /// Emit `{ return __awaiter(this, void 0, void 0, function* () { body }); }`
+    /// — the shape tsc uses to lower async functions for ES2016 and
+    /// below. Inside the generator body we set `in_async_downlevel`
+    /// so the `await` printer lowers `await E` to `yield E`.
+    fn printAsyncDownlevelBody(self: *Printer, body: NodeId) anyerror!void {
+        try self.write("{");
+        self.depth += 1;
+        try self.writeNewlineIndent();
+        try self.write("return __awaiter(this, void 0, void 0, function* () ");
+        const prev = self.in_async_downlevel;
+        self.in_async_downlevel = true;
+        defer self.in_async_downlevel = prev;
+        if (self.hir.kindOf(body) == .block_stmt) {
+            try self.printBlock(body);
+        } else {
+            try self.write("{ return ");
+            try self.printExpression(body);
+            try self.write("; }");
+        }
+        try self.write(");");
+        self.depth -= 1;
+        try self.writeNewlineIndent();
+        try self.write("}");
     }
 
     fn printParameter(self: *Printer, node: NodeId) !void {
@@ -1329,7 +1385,15 @@ pub const Printer = struct {
             .jsx_expression => try self.printJsxExpression(node),
             .await_expr => {
                 const a = hir_mod.awaitExprOf(self.hir, node);
-                try self.write("await ");
+                // §4.A.5 — under ES2016 and below the enclosing async
+                // function is wrapped in `__awaiter(... function* ())`,
+                // so `await E` lowers to `yield E` inside the
+                // generator body.
+                if (self.in_async_downlevel) {
+                    try self.write("yield ");
+                } else {
+                    try self.write("await ");
+                }
                 try self.printExpression(a.expr);
             },
             .yield_expr => {
@@ -2153,6 +2217,42 @@ test "emit: await expression emits 'await <expr>'" {
     defer T.allocator.free(out);
     try T.expect(std.mem.indexOf(u8, out, "async function") != null);
     try T.expect(std.mem.indexOf(u8, out, "await g()") != null);
+}
+
+test "emit: async function preserved at es2017" {
+    const out = try emitWithOpts(
+        "async function f() { let x = await g(); return x; }",
+        .{ .es_target = .es2017 },
+    );
+    defer T.allocator.free(out);
+    try T.expect(std.mem.indexOf(u8, out, "async function") != null);
+    try T.expect(std.mem.indexOf(u8, out, "await g()") != null);
+    try T.expect(std.mem.indexOf(u8, out, "__awaiter") == null);
+}
+
+test "emit: async function lowers to __awaiter wrapper at es2015" {
+    const out = try emitWithOpts(
+        "async function f() { return await g(); }",
+        .{ .es_target = .es2015 },
+    );
+    defer T.allocator.free(out);
+    // No leading `async` keyword on the outer function.
+    try T.expect(std.mem.indexOf(u8, out, "async function") == null);
+    // The outer function is plain.
+    try T.expect(std.mem.indexOf(u8, out, "function f()") != null);
+    // `__awaiter(this, void 0, void 0, function* ()` wrapper appears.
+    try T.expect(std.mem.indexOf(u8, out, "__awaiter(this, void 0, void 0, function* ()") != null);
+}
+
+test "emit: await becomes yield only inside __awaiter wrapper" {
+    const out = try emitWithOpts(
+        "async function f() { return await g(); }",
+        .{ .es_target = .es2016 },
+    );
+    defer T.allocator.free(out);
+    try T.expect(std.mem.indexOf(u8, out, "yield g()") != null);
+    // No bare `await` left over — it was rewritten.
+    try T.expect(std.mem.indexOf(u8, out, "await g()") == null);
 }
 
 test "emit: yield expression emits 'yield'" {
