@@ -73,6 +73,7 @@ pub const Method = enum {
     text_document_inlay_hint,
     text_document_document_highlight,
     text_document_formatting,
+    text_document_code_lens,
     unknown,
 
     pub fn fromString(s: []const u8) Method {
@@ -102,6 +103,7 @@ pub const Method = enum {
             .{ "textDocument/inlayHint", Method.text_document_inlay_hint },
             .{ "textDocument/documentHighlight", Method.text_document_document_highlight },
             .{ "textDocument/formatting", Method.text_document_formatting },
+            .{ "textDocument/codeLens", Method.text_document_code_lens },
         };
         inline for (map) |entry| {
             if (std.mem.eql(u8, s, entry[0])) return entry[1];
@@ -1419,6 +1421,40 @@ pub fn handleFormatting(
     return encodeResponse(gpa, request_id, buf.items);
 }
 
+/// Handle a `textDocument/codeLens` JSON-RPC request: extract the
+/// URI, route to `Service.codeLenses`, and emit an LSP `CodeLens[]`
+/// array. Each lens has a `range` and a `command` carrying the
+/// title (e.g. `"5 references"`); the command id is empty so the
+/// lens is display-only. Caller owns the returned slice.
+pub fn handleCodeLens(
+    service: *ts_lsp.Service,
+    gpa: std.mem.Allocator,
+    request_id: RequestId,
+    params_json: []const u8,
+) ![]u8 {
+    const uri = findJsonStringField(params_json, "uri") orelse return error.MissingUri;
+    const path = uriToPath(uri);
+
+    const lenses = try service.codeLenses(gpa, path);
+    defer ts_lsp.freeCodeLenses(gpa, lenses);
+
+    var buf: std.ArrayListUnmanaged(u8) = .empty;
+    defer buf.deinit(gpa);
+    try buf.append(gpa, '[');
+    for (lenses, 0..) |l, i| {
+        if (i > 0) try buf.append(gpa, ',');
+        try buf.appendSlice(gpa, "{\"range\":");
+        try writeRange(&buf, gpa, l.span);
+        try buf.appendSlice(gpa, ",\"command\":{\"title\":\"");
+        try writeJsonStringContents(&buf, gpa, l.title);
+        try buf.appendSlice(gpa, "\",\"command\":\"");
+        try writeJsonStringContents(&buf, gpa, l.command);
+        try buf.appendSlice(gpa, "\"}}");
+    }
+    try buf.append(gpa, ']');
+    return encodeResponse(gpa, request_id, buf.items);
+}
+
 /// Encode a `textDocument/publishDiagnostics` JSON-RPC notification
 /// body. `rendered` is the `\n`-terminated tsc-style diagnostic
 /// listing returned by `Service.diagnostics` / `Service.didChangeFile`.
@@ -1699,6 +1735,10 @@ pub fn dispatchRequest(
         .text_document_formatting => {
             if (is_notification) return &.{};
             return try handleFormatting(service, gpa, id, params);
+        },
+        .text_document_code_lens => {
+            if (is_notification) return &.{};
+            return try handleCodeLens(service, gpa, id, params);
         },
         // Catch-all for unknown methods — fall through to standard
         // JSON-RPC `Method not found` error.
@@ -2551,4 +2591,28 @@ test "handleFormatting: returns TextEdit array (no-op)" {
     try T.expect(std.mem.indexOf(u8, out, "\"id\":141") != null);
     // Service stub returns [] (already-formatted).
     try T.expect(std.mem.indexOf(u8, out, "\"result\":[]") != null);
+}
+
+test "handleCodeLens: returns CodeLens array with range+command title" {
+    var vfs = ts_resolver.VirtualFs.init(T.allocator);
+    defer vfs.deinit();
+    var resolver = ts_resolver.Resolver.init(T.allocator, vfs.fs(), .{});
+    defer resolver.deinit();
+    var program = ts_program.Program.init(T.allocator, &resolver);
+    defer program.deinit();
+
+    _ = try program.add("/main.ts", "function foo() {} foo(); foo();");
+    try program.compileAll(.{});
+    var svc = ts_lsp.Service.init(T.allocator, &program);
+
+    const body =
+        \\{"jsonrpc":"2.0","id":151,"method":"textDocument/codeLens","params":{"textDocument":{"uri":"file:///main.ts"}}}
+    ;
+    const out = try handleCodeLens(&svc, T.allocator, .{ .integer = 151 }, body);
+    defer T.allocator.free(out);
+    try T.expect(std.mem.indexOf(u8, out, "\"id\":151") != null);
+    try T.expect(std.mem.indexOf(u8, out, "\"result\":[") != null);
+    try T.expect(std.mem.indexOf(u8, out, "\"range\":") != null);
+    try T.expect(std.mem.indexOf(u8, out, "\"command\":{\"title\":\"") != null);
+    try T.expect(std.mem.indexOf(u8, out, "2 references") != null);
 }
