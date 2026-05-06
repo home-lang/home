@@ -186,6 +186,40 @@ pub fn main(init: std.process.Init) !void {
     else
         .{};
 
+    // §2.1 — `--listFiles` / `--listFilesOnly`. Print every input
+    // path the program will compile. `--listFilesOnly` exits before
+    // running the pipeline; `--listFiles` continues afterward.
+    if (opts.list_files or opts.list_files_only) {
+        for (input_files.items) |path| {
+            std.debug.print("{s}\n", .{path});
+        }
+        if (opts.list_files_only) return;
+    }
+
+    // §2.1 — `--showConfig`. Print a minimal JSON view of the
+    // resolved tsconfig + the discovered file list. Then exit.
+    if (opts.show_config) {
+        std.debug.print("{{\n", .{});
+        std.debug.print("  \"compileOnSave\": false,\n", .{});
+        std.debug.print("  \"compilerOptions\": {{\n", .{});
+        if (loaded_cfg) |c| {
+            const co = c.compiler_options;
+            if (co.target) |t| std.debug.print("    \"target\": \"{s}\",\n", .{@tagName(t)});
+            if (co.module) |m| std.debug.print("    \"module\": \"{s}\",\n", .{@tagName(m)});
+            if (co.out_dir) |d| std.debug.print("    \"outDir\": \"{s}\",\n", .{d});
+            if (co.strict) |s| std.debug.print("    \"strict\": {s},\n", .{if (s) "true" else "false"});
+            if (co.declaration) |d| std.debug.print("    \"declaration\": {s},\n", .{if (d) "true" else "false"});
+        }
+        std.debug.print("  }},\n", .{});
+        std.debug.print("  \"files\": [\n", .{});
+        for (input_files.items, 0..) |path, i| {
+            std.debug.print("    \"{s}\"{s}\n", .{ path, if (i + 1 < input_files.items.len) "," else "" });
+        }
+        std.debug.print("  ]\n", .{});
+        std.debug.print("}}\n", .{});
+        return;
+    }
+
     program.compileAll(compile_opts) catch |err| {
         std.debug.print("compile error: {s}\n", .{@errorName(err)});
         std.process.exit(1);
