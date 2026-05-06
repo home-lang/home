@@ -192,6 +192,9 @@ pub const CompilerOptions = struct {
     skip_lib_check: ?bool = null,
     skip_default_lib_check: ?bool = null,
     force_consistent_casing_in_file_names: ?bool = null,
+    keyof_strings_only: ?bool = null,
+    suppress_excess_property_errors: ?bool = null,
+    suppress_implicit_any_index_errors: ?bool = null,
 
     // -- Modules --
     module: ?Module = null,
@@ -227,9 +230,16 @@ pub const CompilerOptions = struct {
     composite: ?bool = null,
     incremental: ?bool = null,
     ts_buildinfo_file: ?[]const u8 = null,
+    assume_changes_only_affect_direct_dependencies: ?bool = null,
+    disable_size_limit: ?bool = null,
     remove_comments: ?bool = null,
     no_emit: ?bool = null,
     import_helpers: ?bool = null,
+    no_emit_helpers: ?bool = null,
+    down_level_iteration: ?bool = null,
+    preserve_const_enums: ?bool = null,
+    experimental_decorators: ?bool = null,
+    emit_decorator_metadata: ?bool = null,
     source_map: ?bool = null,
     inline_source_map: ?bool = null,
     inline_sources: ?bool = null,
@@ -402,6 +412,9 @@ fn fillCompilerOptions(arena: std.mem.Allocator, co: *CompilerOptions, obj: json
             .{ .name = "skipLibCheck", .field = "skip_lib_check" },
             .{ .name = "skipDefaultLibCheck", .field = "skip_default_lib_check" },
             .{ .name = "forceConsistentCasingInFileNames", .field = "force_consistent_casing_in_file_names" },
+            .{ .name = "keyofStringsOnly", .field = "keyof_strings_only" },
+            .{ .name = "suppressExcessPropertyErrors", .field = "suppress_excess_property_errors" },
+            .{ .name = "suppressImplicitAnyIndexErrors", .field = "suppress_implicit_any_index_errors" },
             .{ .name = "allowSyntheticDefaultImports", .field = "allow_synthetic_default_imports" },
             .{ .name = "useDefineForClassFields", .field = "use_define_for_class_fields" },
             .{ .name = "resolveJsonModule", .field = "resolve_json_module" },
@@ -416,9 +429,16 @@ fn fillCompilerOptions(arena: std.mem.Allocator, co: *CompilerOptions, obj: json
             .{ .name = "emitDeclarationOnly", .field = "emit_declaration_only" },
             .{ .name = "composite", .field = "composite" },
             .{ .name = "incremental", .field = "incremental" },
+            .{ .name = "assumeChangesOnlyAffectDirectDependencies", .field = "assume_changes_only_affect_direct_dependencies" },
+            .{ .name = "disableSizeLimit", .field = "disable_size_limit" },
             .{ .name = "removeComments", .field = "remove_comments" },
             .{ .name = "noEmit", .field = "no_emit" },
             .{ .name = "importHelpers", .field = "import_helpers" },
+            .{ .name = "noEmitHelpers", .field = "no_emit_helpers" },
+            .{ .name = "downlevelIteration", .field = "down_level_iteration" },
+            .{ .name = "preserveConstEnums", .field = "preserve_const_enums" },
+            .{ .name = "experimentalDecorators", .field = "experimental_decorators" },
+            .{ .name = "emitDecoratorMetadata", .field = "emit_decorator_metadata" },
             .{ .name = "sourceMap", .field = "source_map" },
             .{ .name = "inlineSourceMap", .field = "inline_source_map" },
             .{ .name = "inlineSources", .field = "inline_sources" },
@@ -821,6 +841,56 @@ test "tsconfig: merge propagates new bool fields" {
     try t.expectEqual(@as(?bool, true), m.compiler_options.force_consistent_casing_in_file_names);
     // child-only field present
     try t.expectEqual(@as(?bool, true), m.compiler_options.use_define_for_class_fields);
+}
+
+test "tsconfig: emit-helper / decorator / suppress bool fields parse" {
+    var arena = std.heap.ArenaAllocator.init(t.allocator);
+    defer arena.deinit();
+    const cfg = try parseString(t.allocator, arena.allocator(),
+        \\{
+        \\  "compilerOptions": {
+        \\    "noEmitHelpers": true,
+        \\    "downlevelIteration": true,
+        \\    "preserveConstEnums": true,
+        \\    "experimentalDecorators": true,
+        \\    "emitDecoratorMetadata": true,
+        \\    "keyofStringsOnly": true,
+        \\    "suppressExcessPropertyErrors": true,
+        \\    "suppressImplicitAnyIndexErrors": true
+        \\  }
+        \\}
+    );
+    const co = cfg.compiler_options;
+    try t.expectEqual(@as(?bool, true), co.no_emit_helpers);
+    try t.expectEqual(@as(?bool, true), co.down_level_iteration);
+    try t.expectEqual(@as(?bool, true), co.preserve_const_enums);
+    try t.expectEqual(@as(?bool, true), co.experimental_decorators);
+    try t.expectEqual(@as(?bool, true), co.emit_decorator_metadata);
+    try t.expectEqual(@as(?bool, true), co.keyof_strings_only);
+    try t.expectEqual(@as(?bool, true), co.suppress_excess_property_errors);
+    try t.expectEqual(@as(?bool, true), co.suppress_implicit_any_index_errors);
+    try t.expectEqual(@as(usize, 0), co.extra.items.len);
+}
+
+test "tsconfig: incremental / build-affecting bool fields parse" {
+    var arena = std.heap.ArenaAllocator.init(t.allocator);
+    defer arena.deinit();
+    const cfg = try parseString(t.allocator, arena.allocator(),
+        \\{
+        \\  "compilerOptions": {
+        \\    "assumeChangesOnlyAffectDirectDependencies": true,
+        \\    "disableSizeLimit": true,
+        \\    "skipDefaultLibCheck": true,
+        \\    "composite": true
+        \\  }
+        \\}
+    );
+    const co = cfg.compiler_options;
+    try t.expectEqual(@as(?bool, true), co.assume_changes_only_affect_direct_dependencies);
+    try t.expectEqual(@as(?bool, true), co.disable_size_limit);
+    try t.expectEqual(@as(?bool, true), co.skip_default_lib_check);
+    try t.expectEqual(@as(?bool, true), co.composite);
+    try t.expectEqual(@as(usize, 0), co.extra.items.len);
 }
 
 test "tsconfig.merge: child overrides base on every set field" {
