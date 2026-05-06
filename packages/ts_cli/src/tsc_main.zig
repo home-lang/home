@@ -259,10 +259,19 @@ pub fn main(init: std.process.Init) !void {
     // time-to-first-diagnostic down from whole-program time to
     // per-file check time — Phase 5 §5.8 / §5.A.10.
     var any_errors_streaming: bool = false;
+    // Default ANSI colors on when stdout is a TTY; off when piped/redirected.
+    const stdout_is_tty: bool = blk: {
+        var tty_threaded = std.Io.Threaded.init(gpa, .{});
+        defer tty_threaded.deinit();
+        const tty_io = tty_threaded.io();
+        const stdout = std.Io.File.stdout();
+        break :blk stdout.isTty(tty_io) catch false;
+    };
     var stream_ctx: StreamCtx = .{
         .gpa = gpa,
         .program = &program,
         .use_pretty = opts.pretty orelse true,
+        .use_color = stdout_is_tty,
         .any_errors = &any_errors_streaming,
     };
     program.compileAllStreaming(compile_opts, &stream_ctx, streamDiagsCallback) catch |err| {
@@ -529,6 +538,7 @@ const StreamCtx = struct {
     gpa: std.mem.Allocator,
     program: *const ts_program.Program,
     use_pretty: bool,
+    use_color: bool,
     any_errors: *bool,
 };
 
@@ -557,7 +567,7 @@ fn streamDiagsCallback(ctx: *StreamCtx, file_path: []const u8, diags: []const ts
             .span_len = 0,
         };
         const formatted = if (ctx.use_pretty)
-            ts_diagnostics.formatPretty(ctx.gpa, fdiag, f.source, false) catch continue
+            ts_diagnostics.formatPretty(ctx.gpa, fdiag, f.source, ctx.use_color) catch continue
         else
             ts_diagnostics.formatDefault(ctx.gpa, fdiag) catch continue;
         defer ctx.gpa.free(formatted);

@@ -380,6 +380,27 @@ test "formatPretty: ANSI color when enabled" {
     try T.expect(std.mem.indexOf(u8, out, "\x1b[36m") != null); // cyan for path
 }
 
+test "formatPretty: ANSI escapes only present when with_colors=true" {
+    const src = "let x = foo + 1;";
+    const d: Diagnostic = .{
+        .file = "demo.ts",
+        .line = 1,
+        .col = 9,
+        .code = 2304,
+        .code_prefix = .TS,
+        .severity = .err,
+        .message = "Cannot find name 'foo'.",
+        .span_len = 3,
+    };
+    const colored = try formatPretty(T.allocator, d, src, true);
+    defer T.allocator.free(colored);
+    try T.expect(std.mem.indexOf(u8, colored, "\x1b[") != null);
+
+    const plain = try formatPretty(T.allocator, d, src, false);
+    defer T.allocator.free(plain);
+    try T.expect(std.mem.indexOf(u8, plain, "\x1b[") == null);
+}
+
 test "Severity: exit codes match tsc" {
     try T.expectEqual(@as(u8, 1), Severity.err.exitCode());
     try T.expectEqual(@as(u8, 0), Severity.warning.exitCode());
