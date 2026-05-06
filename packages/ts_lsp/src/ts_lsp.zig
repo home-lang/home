@@ -109,6 +109,23 @@ pub const FoldingRange = struct {
     pub const Kind = enum { region, comment, imports };
 };
 
+/// LSP `textDocument/selectionRange` payload — a single source range
+/// in a nested-range list. The list runs innermost-first, with each
+/// successive entry strictly enclosing the previous one. Lines/cols
+/// match the rest of the LSP surface (1-based, mirroring `Span`).
+pub const Range = struct {
+    start_line: u32,
+    start_col: u32,
+    end_line: u32,
+    end_col: u32,
+};
+
+/// LSP `TextDocumentSaveReason` — passed to `willSaveWaitUntil` so
+/// the server can adapt formatting/edit behavior per trigger source.
+/// Values mirror the LSP wire numbers (1..4) but are exposed as a
+/// Zig enum at this layer.
+pub const SaveReason = enum { manual, auto, after_delay, focus_out };
+
 pub const CodeAction = struct {
     title: []const u8,
     kind: Kind,
@@ -237,6 +254,34 @@ pub const CodeLens = struct {
     /// display-only lenses.
     command: []const u8,
 };
+
+/// Structured LSP `textDocument/publishDiagnostics` payload. One per
+/// underlying `ts_driver.Diagnostic`; the wire layer maps these
+/// directly to the LSP `Diagnostic[]` shape (range/severity/code/
+/// message/source) without re-parsing rendered text.
+///
+/// `range` follows the same 1-based line/col convention as the rest
+/// of `Span` in this module (the wire layer subtracts 1 when emitting
+/// the 0-based LSP wire form).
+pub const LspDiagnostic = struct {
+    range: Span,
+    severity: Severity,
+    code: u32,
+    /// Owned by the diagnostic — `freeLspDiagnostics` frees it.
+    message: []const u8,
+    /// Diagnostic source identifier (LSP `Diagnostic.source`).
+    /// Borrowed; defaults to the static `"ts"` literal.
+    source: []const u8 = "ts",
+
+    pub const Severity = enum { err, warning, info, hint };
+};
+
+/// Free a `[]LspDiagnostic` produced by `Service.diagnosticsStructured`.
+/// Releases the per-diagnostic `message` allocations and the slice.
+pub fn freeLspDiagnostics(gpa: std.mem.Allocator, diags: []LspDiagnostic) void {
+    for (diags) |d| gpa.free(d.message);
+    gpa.free(diags);
+}
 
 pub const Service = struct {
     gpa: std.mem.Allocator,
@@ -1132,6 +1177,68 @@ pub const Service = struct {
         return edits.toOwnedSlice(gpa);
     }
 
+    /// `textDocument/selectionRange` — return a list of nested ranges
+    /// at `byte_pos`, innermost first, walking up the HIR parent chain.
+    /// Editors use this to power "expand selection" / "shrink
+    /// selection" commands: each successive entry strictly encloses
+    /// the previous one, ending with the file root. When the cursor
+    /// doesn't land on any node (empty file / unknown path) the
+    /// returned slice is empty.
+    pub fn selectionRange(self: *Service, gpa: std.mem.Allocator, file_path: []const u8, byte_pos: u32) ![]Range {
+        var ranges: std.ArrayListUnmanaged(Range) = .empty;
+        errdefer ranges.deinit(gpa);
+
+        const file_id = self.program.lookupPath(file_path) orelse return ranges.toOwnedSlice(gpa);
+        const f = self.program.fileById(file_id);
+        const c = f.compilation orelse return ranges.toOwnedSlice(gpa);
+        const start = findInnermostNode(&c.hir, c.root, byte_pos) orelse return ranges.toOwnedSlice(gpa);
+
+        // Walk parent chain, emitting one range per ancestor. Skip
+        // duplicate spans (some HIR wrappers share their child's
+        // span exactly — collapsing those keeps "expand selection"
+        // visibly progressive).
+        var cur = start;
+        var last_start: u32 = std.math.maxInt(u32);
+        var last_end: u32 = std.math.maxInt(u32);
+        while (cur != hir_mod.none_node_id) {
+            const span = c.hir.spanOf(cur);
+            if (!(span.start == last_start and span.end == last_end)) {
+                const sp = ts_diagnostics.positionToLineCol(f.source, span.start);
+                const ep = ts_diagnostics.positionToLineCol(f.source, span.end);
+                try ranges.append(gpa, .{
+                    .start_line = sp.line,
+                    .start_col = sp.col,
+                    .end_line = ep.line,
+                    .end_col = ep.col,
+                });
+                last_start = span.start;
+                last_end = span.end;
+            }
+            const p = c.hir.parentOf(cur);
+            if (p == cur) break;
+            if (p == hir_mod.none_node_id) break;
+            cur = p;
+        }
+        return ranges.toOwnedSlice(gpa);
+    }
+
+    /// `textDocument/willSaveWaitUntil` — give the server a chance to
+    /// apply edits before the editor persists the file. The reason
+    /// mirrors LSP's `TextDocumentSaveReason` (1 = manual, 2 = auto,
+    /// 3 = after_delay, 4 = focus_out). For now we just delegate to
+    /// `formatDocument` for every save trigger; once we differentiate
+    /// auto-save behavior (e.g. skip heavy formatting on focus_out)
+    /// the per-reason branching lands here.
+    pub fn willSaveWaitUntil(
+        self: *Service,
+        gpa: std.mem.Allocator,
+        file_path: []const u8,
+        reason: SaveReason,
+    ) ![]TextEdit {
+        _ = reason;
+        return self.formatDocument(gpa, file_path);
+    }
+
     /// `textDocument/foldingRange` — return one `FoldingRange` per
     /// foldable region in `file_path`. We surface:
     ///   - one `imports` range covering any contiguous run of
@@ -1332,6 +1439,50 @@ pub const Service = struct {
             try buf.append(gpa, '\n');
         }
         return buf.toOwnedSlice(gpa);
+    }
+
+    /// Structured per-file diagnostics for the LSP wire layer.
+    /// Mirrors `diagnostics(file)` but returns a `[]LspDiagnostic`
+    /// (range/severity/code/message/source) instead of a rendered
+    /// blob, so the wire layer can emit the LSP `Diagnostic[]` shape
+    /// directly without re-parsing text.
+    ///
+    /// Caller owns the slice — release via `freeLspDiagnostics`.
+    pub fn diagnosticsStructured(self: *Service, gpa: std.mem.Allocator, file_path: []const u8) ![]LspDiagnostic {
+        var out: std.ArrayListUnmanaged(LspDiagnostic) = .empty;
+        errdefer {
+            for (out.items) |d| gpa.free(d.message);
+            out.deinit(gpa);
+        }
+        const file_id = self.program.lookupPath(file_path) orelse return out.toOwnedSlice(gpa);
+        const f = self.program.fileById(file_id);
+        const c = f.compilation orelse return out.toOwnedSlice(gpa);
+        for (c.diagnostics.items) |d| {
+            const start_pos = ts_diagnostics.positionToLineCol(f.source, d.pos);
+            // The driver `Diagnostic` doesn't track an explicit
+            // `span_len`; we render a single-char range starting at
+            // the diagnostic position. (When the upstream Diagnostic
+            // grows a span field, swap this for `pos + span_len`.)
+            const end_byte: u32 = d.pos + 1;
+            const end_pos = ts_diagnostics.positionToLineCol(f.source, end_byte);
+            const code: u32 = if (d.code != 0) d.code else 2300 + @as(u32, @intFromEnum(d.phase));
+            const message = try gpa.dupe(u8, d.message);
+            errdefer gpa.free(message);
+            try out.append(gpa, .{
+                .range = .{
+                    .file = f.path,
+                    .start_line = start_pos.line,
+                    .start_col = start_pos.col,
+                    .end_line = end_pos.line,
+                    .end_col = end_pos.col,
+                },
+                .severity = .err,
+                .code = code,
+                .message = message,
+                .source = "ts",
+            });
+        }
+        return out.toOwnedSlice(gpa);
     }
 };
 
@@ -3092,4 +3243,92 @@ test "Service: semanticTokensRange filters tokens by line window" {
     const none = try svc.semanticTokensRange(T.allocator, "/main.ts", 5, 5);
     defer T.allocator.free(none);
     try T.expectEqual(@as(usize, 0), none.len);
+}
+
+test "Service: selectionRange returns nested ranges innermost-first" {
+    var vfs = ts_resolver.VirtualFs.init(T.allocator);
+    defer vfs.deinit();
+    var resolver = ts_resolver.Resolver.init(T.allocator, vfs.fs(), .{});
+    defer resolver.deinit();
+    var program = ts_program.Program.init(T.allocator, &resolver);
+    defer program.deinit();
+
+    // Cursor lands on the identifier `x` in `return x;`. We expect
+    // ranges to nest: identifier -> some expression/stmt ancestors
+    // -> fn_decl -> file root. The exact ancestor count depends on
+    // HIR shape, so we assert the structural invariants (innermost
+    // first, strictly-enclosing, root at the end) rather than a
+    // precise list.
+    const src =
+        \\function foo() {
+        \\    let x = 1;
+        \\    return x;
+        \\}
+    ;
+    _ = try program.add("/main.ts", src);
+    try program.compileAll(.{});
+
+    var svc = Service.init(T.allocator, &program);
+    const pos: u32 = @intCast(std.mem.indexOf(u8, src, "return x").? + "return ".len);
+    const ranges = try svc.selectionRange(T.allocator, "/main.ts", pos);
+    defer T.allocator.free(ranges);
+
+    // We must have at least the innermost identifier + the file root.
+    try T.expect(ranges.len >= 2);
+
+    // Innermost-first: each successive range encloses the previous
+    // (start <= prev.start AND end >= prev.end), with at least one
+    // strict expansion across the whole list.
+    var saw_expansion = false;
+    var i: usize = 1;
+    while (i < ranges.len) : (i += 1) {
+        const prev = ranges[i - 1];
+        const cur = ranges[i];
+        const start_le = (cur.start_line < prev.start_line) or
+            (cur.start_line == prev.start_line and cur.start_col <= prev.start_col);
+        const end_ge = (cur.end_line > prev.end_line) or
+            (cur.end_line == prev.end_line and cur.end_col >= prev.end_col);
+        try T.expect(start_le);
+        try T.expect(end_ge);
+        if (!(cur.start_line == prev.start_line and cur.start_col == prev.start_col and
+            cur.end_line == prev.end_line and cur.end_col == prev.end_col))
+        {
+            saw_expansion = true;
+        }
+    }
+    try T.expect(saw_expansion);
+
+    // Last range = file root. It must start at line 1 col 1 and end
+    // at-or-after the last source line.
+    const last = ranges[ranges.len - 1];
+    try T.expectEqual(@as(u32, 1), last.start_line);
+    try T.expectEqual(@as(u32, 1), last.start_col);
+    try T.expect(last.end_line >= 4);
+}
+
+test "Service: selectionRange + willSaveWaitUntil handle unknown files" {
+    var vfs = ts_resolver.VirtualFs.init(T.allocator);
+    defer vfs.deinit();
+    var resolver = ts_resolver.Resolver.init(T.allocator, vfs.fs(), .{});
+    defer resolver.deinit();
+    var program = ts_program.Program.init(T.allocator, &resolver);
+    defer program.deinit();
+
+    _ = try program.add("/main.ts", "let x = 1;");
+    try program.compileAll(.{});
+
+    var svc = Service.init(T.allocator, &program);
+
+    // Unknown file -> empty range list.
+    const r = try svc.selectionRange(T.allocator, "/missing.ts", 0);
+    defer T.allocator.free(r);
+    try T.expectEqual(@as(usize, 0), r.len);
+
+    // willSaveWaitUntil delegates to formatDocument (still a stub),
+    // so all four save reasons return an empty edit list today.
+    inline for (.{ SaveReason.manual, SaveReason.auto, SaveReason.after_delay, SaveReason.focus_out }) |reason| {
+        const edits = try svc.willSaveWaitUntil(T.allocator, "/main.ts", reason);
+        defer T.allocator.free(edits);
+        try T.expectEqual(@as(usize, 0), edits.len);
+    }
 }
