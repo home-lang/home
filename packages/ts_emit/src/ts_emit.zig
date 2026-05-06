@@ -12,6 +12,7 @@ pub const js_emit = @import("js_emit.zig");
 pub const source_map = @import("source_map.zig");
 pub const d_ts_emit = @import("d_ts_emit.zig");
 pub const d_ts_fast = @import("d_ts_fast.zig");
+pub const tsbuildinfo = @import("tsbuildinfo.zig");
 
 pub const Printer = js_emit.Printer;
 pub const Options = js_emit.Options;
@@ -30,4 +31,5 @@ test {
     _ = source_map;
     _ = d_ts_emit;
     _ = d_ts_fast;
+    _ = tsbuildinfo;
 }

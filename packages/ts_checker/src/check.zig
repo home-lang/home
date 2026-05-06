@@ -167,6 +167,11 @@ pub const Checker = struct {
     /// `arg` identifier narrows in the then-branch (or fall-through
     /// for assertion functions).
     fn_predicates: std.AutoHashMapUnmanaged(hir_mod.StringId, FnPredicate),
+    /// Variable name → guard expression alias. Records `let cond =
+    /// <guard-expr>` so that `if (cond)` narrows the same way as
+    /// `if (<guard-expr>)`. Aliased-conditional narrowing per TS
+    /// PR #46266. Cleared when `cond` is reassigned.
+    cond_aliases: std.AutoHashMapUnmanaged(hir_mod.StringId, NodeId),
     /// Strictness flags driving optional diagnostics.
     strict_flags: StrictFlags = .{},
     diagnostics: std.ArrayListUnmanaged(Diagnostic),
@@ -194,6 +199,7 @@ pub const Checker = struct {
             .generic_aliases = .empty,
             .generic_fns = .empty,
             .fn_predicates = .empty,
+            .cond_aliases = .empty,
             .diagnostics = .empty,
             .diag_arena = std.heap.ArenaAllocator.init(gpa),
         };
@@ -226,6 +232,7 @@ pub const Checker = struct {
         while (gf_it.next()) |params| self.gpa.free(params.*);
         self.generic_fns.deinit(self.gpa);
         self.fn_predicates.deinit(self.gpa);
+        self.cond_aliases.deinit(self.gpa);
         self.diagnostics.deinit(self.gpa);
         self.diag_arena.deinit();
     }
@@ -1448,6 +1455,17 @@ pub const Checker = struct {
         // so hover-on-identifier returns the right type.
         if (v.name != hir_mod.none_node_id) self.hir.setType(v.name, final_type);
 
+        // Aliased conditional narrowing: `let cond = obj.kind === "x"`.
+        // Record `cond -> guard_expr_node` so a subsequent `if (cond)`
+        // applies the original guard. Only fires for `const`/`let`-style
+        // bindings whose init is a recognizably-narrowing expression.
+        if (v.name != hir_mod.none_node_id and self.hir.kindOf(v.name) == .identifier and
+            v.init != hir_mod.none_node_id and isNarrowingGuard(self.hir, v.init))
+        {
+            const id = hir_mod.identifierOf(self.hir, v.name);
+            try self.cond_aliases.put(self.gpa, id.name, v.init);
+        }
+
         // TS7005: variable declared without an annotation and
         // without an initializer falls through to `any`.
         if (self.strict_flags.no_implicit_any and
@@ -1781,6 +1799,16 @@ pub const Checker = struct {
     }
 
     fn applyTypeGuard(self: *Checker, cond: NodeId, when_true: bool) !void {
+        // Aliased conditional narrowing: `if (cond)` where `cond`
+        // was bound to a guard expression. Expand the alias and
+        // recurse on the original expression so all the existing
+        // guard logic applies.
+        if (self.hir.kindOf(cond) == .identifier) {
+            const id = hir_mod.identifierOf(self.hir, cond);
+            if (self.cond_aliases.get(id.name)) |aliased| {
+                return self.applyTypeGuard(aliased, when_true);
+            }
+        }
         // `if (isFoo(x))` — type-predicate call narrowing. When the
         // condition is a call to a predicate function and the argument
         // at the predicate's parameter index is an identifier, narrow
@@ -2546,6 +2574,20 @@ pub const Checker = struct {
         }
     }
 };
+
+/// Recognise expressions that produce control-flow narrowing when
+/// used as conditions. Used by `cond_aliases` to decide whether to
+/// record `let cond = <expr>` for later aliased-narrow expansion.
+fn isNarrowingGuard(hir: *const Hir, node: NodeId) bool {
+    const k = hir.kindOf(node);
+    if (k == .call_expr) return true; // could be a predicate call
+    if (k != .binary_op) return false;
+    const b = hir_mod.binopOf(hir, node);
+    return switch (b.op) {
+        .eq_strict, .neq_strict, .instanceof, .in => true,
+        else => false,
+    };
+}
 
 fn typeOfTypeofString(s: []const u8) ?TypeId {
     if (std.mem.eql(u8, s, "string")) return types.Primitive.string_t;
@@ -3885,6 +3927,32 @@ test "checker: type predicate narrows in then-branch" {
     const f = hir_mod.fnDeclOf(&s.hir, fn_node);
     const body_stmts = hir_mod.blockStmts(&s.hir, f.body);
     const if_stmt = body_stmts[0];
+    const ifp = hir_mod.ifOf(&s.hir, if_stmt);
+    const then_stmts = hir_mod.blockStmts(&s.hir, ifp.then_branch);
+    const s_decl = then_stmts[0];
+    const s_init = hir_mod.varDeclOf(&s.hir, s_decl).init;
+    try T.expectEqual(types.Primitive.string_t, s.hir.typeOf(s_init));
+}
+
+test "checker: aliased conditional narrows via stored guard" {
+    const s = try newSetup(
+        \\function isString(x: any): x is string { return true; }
+        \\function f(x: any) {
+        \\  let cond = isString(x);
+        \\  if (cond) {
+        \\    let s = x;
+        \\  }
+        \\}
+    );
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+    const stmts = hir_mod.blockStmts(&s.hir, s.root);
+    const fn_node = stmts[1];
+    const f = hir_mod.fnDeclOf(&s.hir, fn_node);
+    const body_stmts = hir_mod.blockStmts(&s.hir, f.body);
+    // body_stmts[0] = let cond = isString(x)
+    // body_stmts[1] = if (cond) { let s = x; }
+    const if_stmt = body_stmts[1];
     const ifp = hir_mod.ifOf(&s.hir, if_stmt);
     const then_stmts = hir_mod.blockStmts(&s.hir, ifp.then_branch);
     const s_decl = then_stmts[0];
