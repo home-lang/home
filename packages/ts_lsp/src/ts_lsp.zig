@@ -792,16 +792,21 @@ pub const Service = struct {
         };
     }
 
-    /// Inlay hints inside `file`. Today we surface inferred types
-    /// at `let`/`const` bindings without an explicit annotation.
-    /// Phase 8 follow-up: parameter-name hints at call sites.
+    /// Inlay hints inside `file`. Surfaces inferred types at
+    /// `let`/`const` bindings without an explicit annotation, and
+    /// parameter-name labels at call sites where the callee
+    /// signature is known.
     pub fn inlayHints(self: *Service, gpa: std.mem.Allocator, file_path: []const u8) ![]InlayHint {
         var hints: std.ArrayListUnmanaged(InlayHint) = .empty;
-        errdefer hints.deinit(gpa);
+        errdefer {
+            for (hints.items) |h| gpa.free(h.label);
+            hints.deinit(gpa);
+        }
         const file_id = self.program.lookupPath(file_path) orelse return hints.toOwnedSlice(gpa);
         const f = self.program.fileById(file_id);
         const c = f.compilation orelse return hints.toOwnedSlice(gpa);
         try collectInlayHints(gpa, &c.hir, &c.type_interner, &c.interner, c.root, &hints);
+        try collectParameterNameHints(gpa, c, &hints);
         return hints.toOwnedSlice(gpa);
     }
 
@@ -1767,6 +1772,60 @@ fn collectInlayHints(
             }
         },
         else => {},
+    }
+}
+
+/// Walk every `call_expr` in the file and emit a parameter-name
+/// hint at the start of each positional argument, when the callee
+/// resolves to a fn_decl/fn_expr/arrow_fn whose parameter name is
+/// known. Skips cases where the argument is already an identifier
+/// matching the parameter name (the label would be redundant).
+fn collectParameterNameHints(
+    gpa: std.mem.Allocator,
+    c: *ts_driver.Compilation,
+    out: *std.ArrayListUnmanaged(InlayHint),
+) !void {
+    var i: hir_mod.NodeId = 1;
+    while (i < c.hir.nodeCount()) : (i += 1) {
+        if (c.hir.kindOf(i) != .call_expr) continue;
+        const call = hir_mod.callOf(&c.hir, i);
+        if (call.callee == hir_mod.none_node_id) continue;
+        if (c.hir.kindOf(call.callee) != .identifier) continue;
+        const cid = hir_mod.identifierOf(&c.hir, call.callee);
+        const sym = c.module.root.lookup(cid.name) orelse continue;
+        if (sym.decls.items.len == 0) continue;
+        const decl = sym.decls.items[0];
+        const decl_kind = c.hir.kindOf(decl);
+        if (decl_kind != .fn_decl and decl_kind != .fn_expr and decl_kind != .arrow_fn) continue;
+
+        const params = hir_mod.fnParams(&c.hir, decl);
+        const args = hir_mod.callArgs(&c.hir, i);
+        const n = @min(params.len, args.len);
+        var ai: usize = 0;
+        while (ai < n) : (ai += 1) {
+            const param = params[ai];
+            if (c.hir.kindOf(param) != .parameter) continue;
+            const pp = hir_mod.parameterOf(&c.hir, param);
+            if (pp.name == hir_mod.none_node_id) continue;
+            if (c.hir.kindOf(pp.name) != .identifier) continue;
+            const param_name_id = hir_mod.identifierOf(&c.hir, pp.name).name;
+            const param_name = c.interner.get(param_name_id);
+
+            // Skip when the argument is an identifier that already
+            // matches the parameter name — the label would be redundant.
+            const arg = args[ai];
+            if (c.hir.kindOf(arg) == .identifier) {
+                const arg_name_id = hir_mod.identifierOf(&c.hir, arg).name;
+                if (arg_name_id == param_name_id) continue;
+            }
+
+            const label = try std.fmt.allocPrint(gpa, "{s}:", .{param_name});
+            try out.append(gpa, .{
+                .pos = c.hir.spanOf(arg).start,
+                .label = label,
+                .kind = .parameter_name,
+            });
+        }
     }
 }
 
@@ -3206,6 +3265,77 @@ test "Service: inlayHints surfaces inferred types on let-bindings" {
     // x and z get hints; y has an explicit annotation so no hint.
     try T.expectEqual(@as(usize, 2), hints.len);
     for (hints) |h| try T.expectEqual(@as(@TypeOf(h.kind), .type_annotation), h.kind);
+}
+
+test "Service: inlayHints surfaces parameter-name hints at call sites" {
+    var vfs = ts_resolver.VirtualFs.init(T.allocator);
+    defer vfs.deinit();
+    var resolver = ts_resolver.Resolver.init(T.allocator, vfs.fs(), .{});
+    defer resolver.deinit();
+    var program = ts_program.Program.init(T.allocator, &resolver);
+    defer program.deinit();
+
+    const src =
+        "function add(a: number, b: number): number { return a + b; }\n" ++
+        "let r = add(1, 2);";
+    _ = try program.add("/main.ts", src);
+    try program.compileAll(.{});
+
+    var svc = Service.init(T.allocator, &program);
+    const hints = try svc.inlayHints(T.allocator, "/main.ts");
+    defer {
+        for (hints) |h| T.allocator.free(h.label);
+        T.allocator.free(hints);
+    }
+
+    var saw_a = false;
+    var saw_b = false;
+    var param_count: usize = 0;
+    for (hints) |h| {
+        if (h.kind == .parameter_name) {
+            param_count += 1;
+            if (std.mem.eql(u8, h.label, "a:")) saw_a = true;
+            if (std.mem.eql(u8, h.label, "b:")) saw_b = true;
+        }
+    }
+    try T.expectEqual(@as(usize, 2), param_count);
+    try T.expect(saw_a);
+    try T.expect(saw_b);
+}
+
+test "Service: inlayHints skips parameter-name hints when arg name matches" {
+    var vfs = ts_resolver.VirtualFs.init(T.allocator);
+    defer vfs.deinit();
+    var resolver = ts_resolver.Resolver.init(T.allocator, vfs.fs(), .{});
+    defer resolver.deinit();
+    var program = ts_program.Program.init(T.allocator, &resolver);
+    defer program.deinit();
+
+    // `a` matches the param name, but `42` does not — so we expect
+    // exactly one parameter-name hint (`b:`).
+    const src =
+        "function add(a: number, b: number): number { return a + b; }\n" ++
+        "let a = 1; let r = add(a, 42);";
+    _ = try program.add("/main.ts", src);
+    try program.compileAll(.{});
+
+    var svc = Service.init(T.allocator, &program);
+    const hints = try svc.inlayHints(T.allocator, "/main.ts");
+    defer {
+        for (hints) |h| T.allocator.free(h.label);
+        T.allocator.free(hints);
+    }
+
+    var param_count: usize = 0;
+    var saw_b_only = true;
+    for (hints) |h| {
+        if (h.kind == .parameter_name) {
+            param_count += 1;
+            if (!std.mem.eql(u8, h.label, "b:")) saw_b_only = false;
+        }
+    }
+    try T.expectEqual(@as(usize, 1), param_count);
+    try T.expect(saw_b_only);
 }
 
 test "Service: codeActions adds explicit type annotation for inferred lets" {
