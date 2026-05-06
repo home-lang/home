@@ -13,10 +13,14 @@
 //!   - `name.symbols`       — expected `(file, line, col, symbol)`
 //!                            rows for every bound identifier
 //!
-//! Phase 6 ships the harness; the suite of cases under
-//! `_submodules/TypeScript/tests/cases/conformance/` is run from
-//! a separate test target so per-case failures don't gate the
-//! main suite.
+//! Phase 6 ships the harness; the suite of cases comes from the
+//! local `microsoft/TypeScript` checkout — typically already on
+//! disk for tooling reasons. Point `runDirectory` at
+//! `~/Code/typescript-go/_submodules/TypeScript/tests/cases/conformance/`
+//! (the canonical path tsgo uses) or wherever the upstream TS
+//! repo is installed locally. We deliberately do NOT vendor TS
+//! as a git submodule — every contributor with a Code workspace
+//! already has it, and pinning it here would bloat the repo.
 
 const std = @import("std");
 const ts_driver = @import("ts_driver");
