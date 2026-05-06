@@ -1120,3 +1120,82 @@ test "handleSignatureHelp: routes request and returns SignatureHelp response" {
     defer T.allocator.free(out2);
     try T.expect(std.mem.indexOf(u8, out2, "\"result\":null") != null);
 }
+
+test "handleDefinition: routes request and returns Location response" {
+    var vfs = ts_resolver.VirtualFs.init(T.allocator);
+    defer vfs.deinit();
+    var resolver = ts_resolver.Resolver.init(T.allocator, vfs.fs(), .{});
+    defer resolver.deinit();
+    var program = ts_program.Program.init(T.allocator, &resolver);
+    defer program.deinit();
+
+    // Source: `let foo = 1;\nlet bar = foo;` — cursor on the `foo`
+    // reference (line 1) should resolve back to the declaration on
+    // line 0.
+    const src =
+        \\let foo = 1;
+        \\let bar = foo;
+    ;
+    _ = try program.add("/main.ts", src);
+    try program.compileAll(.{});
+
+    var svc = ts_lsp.Service.init(T.allocator, &program);
+
+    const body =
+        \\{"jsonrpc":"2.0","id":31,"method":"textDocument/definition","params":{"textDocument":{"uri":"file:///main.ts"},"position":{"line":1,"character":10}}}
+    ;
+    const out = try handleDefinition(&svc, T.allocator, .{ .integer = 31 }, body);
+    defer T.allocator.free(out);
+    try T.expect(std.mem.indexOf(u8, out, "\"jsonrpc\":\"2.0\"") != null);
+    try T.expect(std.mem.indexOf(u8, out, "\"id\":31") != null);
+    try T.expect(std.mem.indexOf(u8, out, "\"result\":{\"uri\":\"file:///main.ts\"") != null);
+    try T.expect(std.mem.indexOf(u8, out, "\"range\":") != null);
+
+    // Cursor on a non-identifier (the `=` sign) -> result: null.
+    const oob =
+        \\{"jsonrpc":"2.0","id":32,"method":"textDocument/definition","params":{"textDocument":{"uri":"file:///main.ts"},"position":{"line":99,"character":0}}}
+    ;
+    const out2 = try handleDefinition(&svc, T.allocator, .{ .integer = 32 }, oob);
+    defer T.allocator.free(out2);
+    try T.expect(std.mem.indexOf(u8, out2, "\"result\":null") != null);
+}
+
+test "handleReferences: routes request and returns Location[] response" {
+    var vfs = ts_resolver.VirtualFs.init(T.allocator);
+    defer vfs.deinit();
+    var resolver = ts_resolver.Resolver.init(T.allocator, vfs.fs(), .{});
+    defer resolver.deinit();
+    var program = ts_program.Program.init(T.allocator, &resolver);
+    defer program.deinit();
+
+    // Two reference sites for `foo`: the declaration and the use.
+    const src =
+        \\let foo = 1;
+        \\let bar = foo;
+    ;
+    _ = try program.add("/main.ts", src);
+    try program.compileAll(.{});
+
+    var svc = ts_lsp.Service.init(T.allocator, &program);
+
+    // Cursor on the declaration `foo` (line 0, char 4).
+    const body =
+        \\{"jsonrpc":"2.0","id":41,"method":"textDocument/references","params":{"textDocument":{"uri":"file:///main.ts"},"position":{"line":0,"character":4}}}
+    ;
+    const out = try handleReferences(&svc, T.allocator, .{ .integer = 41 }, body);
+    defer T.allocator.free(out);
+    try T.expect(std.mem.indexOf(u8, out, "\"jsonrpc\":\"2.0\"") != null);
+    try T.expect(std.mem.indexOf(u8, out, "\"id\":41") != null);
+    // Result is a JSON array of Locations.
+    try T.expect(std.mem.indexOf(u8, out, "\"result\":[") != null);
+    try T.expect(std.mem.indexOf(u8, out, "\"uri\":\"file:///main.ts\"") != null);
+    try T.expect(std.mem.indexOf(u8, out, "\"range\":") != null);
+
+    // Cursor not on any identifier -> empty array.
+    const empty =
+        \\{"jsonrpc":"2.0","id":42,"method":"textDocument/references","params":{"textDocument":{"uri":"file:///main.ts"},"position":{"line":99,"character":0}}}
+    ;
+    const out2 = try handleReferences(&svc, T.allocator, .{ .integer = 42 }, empty);
+    defer T.allocator.free(out2);
+    try T.expect(std.mem.indexOf(u8, out2, "\"result\":[]") != null);
+}
