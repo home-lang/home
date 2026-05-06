@@ -22,6 +22,11 @@ const std = @import("std");
 const ts_driver = @import("ts_driver");
 const ts_diagnostics = @import("ts_diagnostics");
 
+pub const patience = @import("patience.zig");
+test {
+    _ = patience;
+}
+
 pub const Outcome = enum {
     passed,
     failed,

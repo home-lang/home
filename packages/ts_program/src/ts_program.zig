@@ -184,6 +184,41 @@ pub const Program = struct {
         try self.resolveImports();
     }
 
+    /// Streaming variant of `compileAll`. Each file's diagnostics are
+    /// surfaced via `callback` as soon as that file finishes
+    /// compiling — driving "time-to-first-diagnostic" closer to the
+    /// per-file check time rather than the whole-program time.
+    /// Phase 5 §5.8 "streaming diagnostics" foundation.
+    pub fn compileAllStreaming(
+        self: *Program,
+        options: ts_driver.CompileOptions,
+        ctx: anytype,
+        comptime callback: fn (ctx_t: @TypeOf(ctx), file_path: []const u8, diags: []const ts_driver.Diagnostic) void,
+    ) ProgramError!void {
+        for (self.files.items) |f| {
+            if (f.compilation != null) {
+                // Already compiled — replay its diagnostics anyway so
+                // a streaming consumer that joined late doesn't miss
+                // them.
+                callback(ctx, f.path, f.compilation.?.diagnostics.items);
+                continue;
+            }
+            var per_file = options;
+            per_file.is_tsx = options.is_tsx or f.is_tsx;
+            const c = ts_driver.compileSource(self.gpa, f.source, per_file) catch |err| switch (err) {
+                error.OutOfMemory => return error.OutOfMemory,
+                error.LexError => return error.LexError,
+                error.ParseError => return error.ParseError,
+                error.BindError => return error.BindError,
+                error.EmitError => return error.EmitError,
+            };
+            f.compilation = c;
+            callback(ctx, f.path, c.diagnostics.items);
+        }
+
+        try self.resolveImports();
+    }
+
     /// Per-file cached emit summary. Populated by `emitAllToCache`.
     pub const EmitSummary = struct {
         file_id: FileId,
@@ -474,6 +509,32 @@ test "Program: compileAll produces JS for every file" {
         try T.expect(f.compilation != null);
         try T.expect(f.compilation.?.js.len > 0);
     }
+}
+
+test "Program: compileAllStreaming invokes callback per file" {
+    var vfs = ts_resolver.VirtualFs.init(T.allocator);
+    defer vfs.deinit();
+    var resolver = ts_resolver.Resolver.init(T.allocator, vfs.fs(), .{});
+    defer resolver.deinit();
+    var p = Program.init(T.allocator, &resolver);
+    defer p.deinit();
+    _ = try p.add("/a.ts", "let x: number = 1;");
+    _ = try p.add("/b.ts", "let y: string = \"hi\";");
+    _ = try p.add("/c.ts", "let z: boolean = true;");
+    var visited: [3][]const u8 = .{ "", "", "" };
+    var idx: usize = 0;
+    const Ctx = struct { v: *[3][]const u8, i: *usize };
+    const cb = struct {
+        pub fn call(c: Ctx, file_path: []const u8, _: []const ts_driver.Diagnostic) void {
+            c.v.*[c.i.*] = file_path;
+            c.i.* += 1;
+        }
+    }.call;
+    try p.compileAllStreaming(.{}, Ctx{ .v = &visited, .i = &idx }, cb);
+    try T.expectEqual(@as(usize, 3), idx);
+    try T.expectEqualStrings("/a.ts", visited[0]);
+    try T.expectEqualStrings("/b.ts", visited[1]);
+    try T.expectEqualStrings("/c.ts", visited[2]);
 }
 
 test "Program: resolves imports between files" {
