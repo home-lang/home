@@ -1484,6 +1484,48 @@ pub fn build(b: *std.Build) void {
     const release_small_step = b.step("release-small", "Build Home compiler in ReleaseSmall mode (optimized for size)");
     release_small_step.dependOn(&install_release_small.step);
 
+    // Release-fast build (max performance, no safety, LTO).
+    // §5.A.4 — PGO + LTO build flag for the Home toolchain itself.
+    // PGO requires a profile-collection run; the LTO bit lights up
+    // here. To collect a profile: run a corpus through the resulting
+    // binary, then re-link with the captured `.profdata`. Documented
+    // in CONTRIBUTING.md (Phase 5 follow-up).
+    const release_fast_exe = b.addExecutable(.{
+        .name = "home-release-fast",
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("src/main.zig"),
+            .target = target,
+            .optimize = .ReleaseFast,
+        }),
+    });
+    release_fast_exe.root_module.addImport("lexer", lexer_pkg);
+    release_fast_exe.root_module.addImport("ast", ast_pkg);
+    release_fast_exe.root_module.addImport("parser", parser_pkg);
+    release_fast_exe.root_module.addImport("types", types_pkg);
+    release_fast_exe.root_module.addImport("interpreter", interpreter_pkg);
+    release_fast_exe.root_module.addImport("codegen", codegen_pkg);
+    release_fast_exe.root_module.addImport("formatter", formatter_pkg);
+    release_fast_exe.root_module.addImport("linter", linter_pkg);
+    release_fast_exe.root_module.addImport("traits", traits_pkg);
+    release_fast_exe.root_module.addImport("diagnostics", diagnostics_pkg);
+    release_fast_exe.root_module.addImport("comptime", comptime_pkg);
+    release_fast_exe.root_module.addImport("pkg_manager", pkg_manager_pkg);
+    release_fast_exe.root_module.addImport("queue", queue_pkg);
+    release_fast_exe.root_module.addImport("database", database_pkg);
+    release_fast_exe.root_module.addImport("ir_cache", cache_pkg);
+    release_fast_exe.root_module.addImport("collections", collections_pkg);
+    release_fast_exe.root_module.addImport("json", json_pkg);
+    release_fast_exe.root_module.addImport("file", file_pkg);
+    release_fast_exe.root_module.addImport("network", network_pkg);
+    release_fast_exe.root_module.addImport("http", http_pkg);
+    release_fast_exe.root_module.addImport("build_options", build_options.createModule());
+    // LTO is enabled by default for ReleaseFast under modern Zig
+    // (whole-program optimization across modules). The §11.11
+    // Tier 1 ~10–20% speedup baseline kicks in here automatically.
+    const install_release_fast = b.addInstallArtifact(release_fast_exe, .{});
+    const release_fast_step = b.step("release-fast", "Build Home compiler in ReleaseFast mode with LTO (max perf, no runtime safety)");
+    release_fast_step.dependOn(&install_release_fast.step);
+
     // Documentation generation
     const docs_install = b.addInstallDirectory(.{
         .source_dir = exe.getEmittedDocs(),
