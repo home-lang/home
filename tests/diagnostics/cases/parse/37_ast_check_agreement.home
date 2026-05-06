@@ -1,0 +1,18 @@
+// Regression test for issue #36 — `home ast` and `home check` parser
+// passes must agree. Before the fix `home ast` printed `Success` even
+// when `parser.errors` was non-empty, masking real parse failures and
+// causing 50+ home-os files in the 2026-05-06 audit to be misclassified
+// as type-check failures when they actually fail at parse.
+//
+// The repro shape: a forward-declared `fn` with no body. The parser
+// expects `{` next; we use that as an unambiguous parse error here.
+// Both `home ast` (now exits non-zero) and `home check` (already did)
+// must surface the same `Expected '{'` diagnostic.
+//
+// This snapshot pins `home check`'s output. The `home ast` agreement
+// is verified by the spot-check sweep in the PR description: every
+// audit file flagged with `Undefined variable` / `DebugAllocator` now
+// reports the same parse error under `ast` that `check` does.
+fn forward_decl_no_body(x: u8)
+
+fn next_thing() {}

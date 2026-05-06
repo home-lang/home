@@ -479,6 +479,24 @@ fn astCommand(allocator: std.mem.Allocator, file_path: []const u8) !void {
         printStmt(stmt, 0);
     }
 
+    // Surface parse errors with the same shape `home check` does.
+    // Previously `ast` printed `Success` even when `parser.errors` was
+    // non-empty, which masked real parse failures from the audit and
+    // led to ~52 home-os files being misclassified as "type-check
+    // failures" when they actually fail at parse. (Issue #36.)
+    //
+    // The Parser already prints each error inline via `reportError` and
+    // emits a `N parse error(s) found` summary at the end of `parse()`.
+    // Here we just refuse to claim success and exit non-zero so the
+    // audit and downstream tooling sees a parse failure.
+    if (parser.errors.items.len > 0) {
+        std.debug.print(
+            "\n{s}Failure:{s} {d} parse error(s) — AST is partial\n",
+            .{ Color.Red.code(), Color.Reset.code(), parser.errors.items.len },
+        );
+        std.process.exit(1);
+    }
+
     std.debug.print("\n{s}Success:{s} Parsed {d} statements\n", .{ Color.Green.code(), Color.Reset.code(), program.statements.len });
 }
 
