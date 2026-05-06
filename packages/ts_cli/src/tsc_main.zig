@@ -18,6 +18,7 @@ const ts_driver = @import("ts_driver");
 const ts_diagnostics = @import("ts_diagnostics");
 const ts_emit = @import("ts_emit");
 const tsconfig_mod = @import("tsconfig");
+const ts_watch = @import("ts_watch");
 
 const RealFs = struct {
     fn read(gpa: std.mem.Allocator, path: []const u8) ![]const u8 {
@@ -347,31 +348,21 @@ pub fn main(init: std.process.Init) !void {
     }
 
     if (opts.watch) {
-        // §5.A.5 partial — simple polling watch loop. Walks the
-        // input file list every 500ms, comparing source bytes; if
-        // any file changed, calls Program.recompileChanged and
-        // re-emits. Native FS-event backends (FSEvents/inotify/
-        // ReadDirChangesW) are tracked separately.
-        //
-        // §5.A.5 follow-up: `ts_watch.RealStatFs` is now in place
-        // and can drive `ts_watch.Watcher` against real disk stats
-        // (mtime + size), avoiding the per-tick byte-comparison.
-        // Wiring it through here means importing `ts_watch` into
-        // `home-tsc`'s build module — a follow-up step keeps this
-        // landing low-risk; the abstraction is unit-tested in the
-        // `ts_watch` package against both `VirtualWatchFs` and
-        // `RealStatFs`, so the swap is mechanical.
+        // §5.A.5 — polling watch loop driven by `ts_watch.Watcher`
+        // over `RealStatFs`. Each tick compares mtime+size for every
+        // tracked path and reports a `ChangeSet`; we re-read, update
+        // the program, recompile changed files, and re-emit JS.
+        // Native FS-event backends (FSEvents/inotify/ReadDirChangesW)
+        // are tracked separately.
         std.debug.print("home tsc - watching for changes (Ctrl-C to stop)\n", .{});
-        var last_sources: std.ArrayListUnmanaged([]u8) = .empty;
-        defer {
-            for (last_sources.items) |s| gpa.free(s);
-            last_sources.deinit(gpa);
-        }
-        // Snapshot current sources.
+        var rfs = ts_watch.RealStatFs.init(gpa);
+        defer rfs.deinit();
+        var watcher = ts_watch.Watcher.init(gpa, rfs.fs());
+        defer watcher.deinit();
+        // Pre-populate the tracked set so the first tick records a
+        // real baseline rather than reporting every input as added.
         for (input_files.items) |path| {
-            const src = RealFs.read(gpa, path) catch &.{};
-            try last_sources.append(gpa, try gpa.dupe(u8, src));
-            if (src.len > 0) gpa.free(src);
+            try watcher.track(path);
         }
         while (true) {
             // Inter-poll pause is currently a tight loop because
@@ -382,19 +373,37 @@ pub fn main(init: std.process.Init) !void {
             // For now we throttle by walking the poll loop slowly.
             var spin: u64 = 0;
             while (spin < 5_000_000) : (spin += 1) {}
+            var change_set = watcher.tick() catch |err| {
+                std.debug.print("watch error: {s}\n", .{@errorName(err)});
+                continue;
+            };
+            defer change_set.deinit(gpa);
+            if (change_set.isEmpty()) continue;
+
             var changed: std.ArrayListUnmanaged([]const u8) = .empty;
             defer changed.deinit(gpa);
-            for (input_files.items, 0..) |path, i| {
-                const src = RealFs.read(gpa, path) catch continue;
+            for (change_set.changes.items) |ch| {
+                if (ch.kind == .removed) continue;
+                const src = RealFs.read(gpa, ch.path) catch |err| {
+                    std.debug.print("error reading {s}: {s}\n", .{ ch.path, @errorName(err) });
+                    continue;
+                };
                 defer gpa.free(src);
-                if (i < last_sources.items.len and std.mem.eql(u8, src, last_sources.items[i])) continue;
-                // Source changed (or new). Update snapshot + mark.
-                if (i < last_sources.items.len) {
-                    gpa.free(last_sources.items[i]);
-                    last_sources.items[i] = try gpa.dupe(u8, src);
-                }
-                _ = program.updateSource(path, try gpa.dupe(u8, src)) catch null;
-                try changed.append(gpa, path);
+                // `updateSource` dupes the buffer internally.
+                _ = program.updateSource(ch.path, src) catch |err| {
+                    std.debug.print("error updating source {s}: {s}\n", .{ ch.path, @errorName(err) });
+                    continue;
+                };
+                // The watcher's tracked-set keys are owned strings
+                // independent of `input_files`, so it's safe to
+                // borrow the input_files slice here for re-emit.
+                const path_borrow = blk: {
+                    for (input_files.items) |p| {
+                        if (std.mem.eql(u8, p, ch.path)) break :blk p;
+                    }
+                    break :blk ch.path;
+                };
+                try changed.append(gpa, path_borrow);
             }
             if (changed.items.len == 0) continue;
             std.debug.print("\n[{s}] {d} file(s) changed; recompiling…\n", .{ "watch", changed.items.len });
