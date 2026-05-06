@@ -710,6 +710,56 @@ test "Engine: intersection — every member of target must accept" {
     try T.expect(!try e.isAssignableTo(Primitive.string_t, inter));
 }
 
+test "Engine: intersection of object types — accepts object with all required props" {
+    var ti = try Interner.init(T.allocator);
+    defer ti.deinit();
+    var e = try Engine.init(T.allocator, &ti);
+    defer e.deinit();
+    var sint = try string_interner.Interner.init(T.allocator);
+    defer sint.deinit();
+    const x = try sint.intern("x");
+    const y = try sint.intern("y");
+    // Target: `{ x: number } & { y: string }`.
+    const a = try ti.internObjectType(&.{
+        .{ .name = x, .type = Primitive.number_t, .is_optional = false, .is_readonly = false, .is_method = false },
+    });
+    const b = try ti.internObjectType(&.{
+        .{ .name = y, .type = Primitive.string_t, .is_optional = false, .is_readonly = false, .is_method = false },
+    });
+    const inter = try ti.internIntersection(&.{ a, b });
+    // Source: `{ x: 1, y: "hi" }` — has both `x: number` and `y: string`.
+    const src_full = try ti.internObjectType(&.{
+        .{ .name = x, .type = Primitive.number_t, .is_optional = false, .is_readonly = false, .is_method = false },
+        .{ .name = y, .type = Primitive.string_t, .is_optional = false, .is_readonly = false, .is_method = false },
+    });
+    try T.expect(try e.isAssignableTo(src_full, inter));
+}
+
+test "Engine: intersection of object types — rejects source missing a member's prop" {
+    var ti = try Interner.init(T.allocator);
+    defer ti.deinit();
+    var e = try Engine.init(T.allocator, &ti);
+    defer e.deinit();
+    var sint = try string_interner.Interner.init(T.allocator);
+    defer sint.deinit();
+    const x = try sint.intern("x");
+    const y = try sint.intern("y");
+    // Target: `{ x: number } & { y: string }`.
+    const a = try ti.internObjectType(&.{
+        .{ .name = x, .type = Primitive.number_t, .is_optional = false, .is_readonly = false, .is_method = false },
+    });
+    const b = try ti.internObjectType(&.{
+        .{ .name = y, .type = Primitive.string_t, .is_optional = false, .is_readonly = false, .is_method = false },
+    });
+    const inter = try ti.internIntersection(&.{ a, b });
+    // Source: `{ x: 1 }` — missing required `y`, should fail the
+    // intersection (assigns to `a` but not to `b`).
+    const src_partial = try ti.internObjectType(&.{
+        .{ .name = x, .type = Primitive.number_t, .is_optional = false, .is_readonly = false, .is_method = false },
+    });
+    try T.expect(!try e.isAssignableTo(src_partial, inter));
+}
+
 test "Engine: subtype — any is NOT a subtype" {
     var ti = try Interner.init(T.allocator);
     defer ti.deinit();
