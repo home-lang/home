@@ -73,6 +73,7 @@ pub const TsCodes = struct {
     pub const variable_implicitly_any: u32 = 7005;
     pub const declared_but_not_read: u32 = 6133;
     pub const object_literal_excess_property: u32 = 2353;
+    pub const satisfies_constraint: u32 = 1360;
 };
 
 /// Per-alias generic info: the type-parameter TypeIds in
@@ -2262,12 +2263,11 @@ pub const Checker = struct {
                 }
                 break :blk types.Primitive.any;
             },
-            .as_expr, .satisfies_expr, .type_assertion => blk: {
-                // `expr as T` / `expr satisfies T` / `<T>expr` — type
-                // the inner expression for diagnostics, then return
-                // the asserted type. `satisfies` should also check
-                // that the expression is assignable to T (TS2322 on
-                // miss); a follow-up will tighten that path.
+            .as_expr, .type_assertion => blk: {
+                // `expr as T` / `<T>expr` — type the inner
+                // expression for diagnostics, then return the
+                // asserted type. No assignability check: `as` is
+                // an explicit override.
                 const a = hir_mod.asExpressionOf(self.hir, node);
                 const inner_t = try self.checkExpression(a.expr);
                 if (a.type_node == hir_mod.none_node_id) break :blk types.Primitive.any;
@@ -2277,6 +2277,21 @@ pub const Checker = struct {
                     break :blk self.literalizeForAsConst(a.expr, inner_t) catch inner_t;
                 }
                 break :blk try self.lowererLowerWithTypeParams(a.type_node);
+            },
+            .satisfies_expr => blk: {
+                // `expr satisfies T` — verify that `expr` is
+                // assignable to T (TS1360 on miss) but PRESERVE
+                // `expr`'s narrower type as the result. Distinct
+                // from `as T` which uses T as the result type.
+                const a = hir_mod.asExpressionOf(self.hir, node);
+                const inner_t = try self.checkExpression(a.expr);
+                if (a.type_node == hir_mod.none_node_id) break :blk inner_t;
+                const target_t = try self.lowererLowerWithTypeParams(a.type_node);
+                const ok = self.engine.isAssignableTo(inner_t, target_t) catch false;
+                if (!ok) {
+                    try self.report(node, TsCodes.satisfies_constraint, "Type does not satisfy the expected constraint.");
+                }
+                break :blk inner_t;
             },
             .non_null_expr => blk: {
                 // `expr!` — postfix non-null assertion. Type the
@@ -4048,6 +4063,37 @@ test "checker: `as` cast feeds the var-decl's declared type without TS2322" {
     defer destroySetup(s);
     try s.checker.checkSourceFile(s.root);
     try T.expect(s.checker.diagnostics.items.len == 0);
+}
+
+test "checker: `satisfies` preserves the original expression type" {
+    const s = try newSetup(
+        \\let x = { kind: "circle", r: 1 } satisfies { kind: string };
+    );
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+    try T.expect(s.checker.diagnostics.items.len == 0);
+    const stmts = hir_mod.blockStmts(&s.hir, s.root);
+    const x_decl = stmts[0];
+    const v = hir_mod.varDeclOf(&s.hir, x_decl);
+    try T.expectEqual(hir_mod.NodeKind.satisfies_expr, s.hir.kindOf(v.init));
+    // The result type must retain the `r` member from the original
+    // object literal — `satisfies` does not widen to the constraint.
+    const x_t = s.hir.typeOf(v.init);
+    const r_id = try s.sint.intern("r");
+    try T.expect(s.ti.objectMember(x_t, r_id) != types.Primitive.none);
+}
+
+test "checker: `satisfies` emits TS1360 when expr is not assignable to constraint" {
+    const s = try newSetup(
+        \\let y = ({ kind: 42 }) satisfies { kind: string };
+    );
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+    var found = false;
+    for (s.checker.diagnostics.items) |d| {
+        if (d.code == TsCodes.satisfies_constraint) found = true;
+    }
+    try T.expect(found);
 }
 
 test "checker: noImplicitAny emits TS7006 for unannotated parameter" {
