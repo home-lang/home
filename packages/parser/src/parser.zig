@@ -6080,10 +6080,12 @@ pub const Parser = struct {
         if (self.match(&.{.At})) {
             const at_token = self.previous();
             // Several reserved keywords are also valid @-builtin names:
-            // `@as(T, v)`, `@import("…")`, etc. Accept any of them so
-            // the reflection parser doesn't trip on the reserved token.
+            // `@as(T, v)`, `@import("…")`, `@asm(...)`, etc. Accept any
+            // of them so the reflection parser doesn't trip on the
+            // reserved token. `@asm(...)` is treated as opaque and
+            // routed through the builtin block below.
             const name_token = if (self.check(.As) or self.check(.Import) or
-                self.check(.Return) or self.check(.Export))
+                self.check(.Return) or self.check(.Export) or self.check(.Asm))
                 self.advance()
             else
                 try self.expect(.Identifier, "Expected reflection function name after '@'");
@@ -6108,12 +6110,34 @@ pub const Parser = struct {
                 return expr;
             }
 
+            // `@ptrDeref(ptr)` is a thin alias for `*ptr` — the parser
+            // lowers it directly into a `UnaryExpr(Deref, …)` so the
+            // rest of the pipeline treats it identically to a regular
+            // pointer dereference. Kernel code uses it as both an
+            // r-value (`return @ptrDeref(p)`) and an l-value
+            // (`@ptrDeref(out) = value`).
+            if (std.mem.eql(u8, name, "ptrDeref")) {
+                _ = try self.expect(.LeftParen, "Expected '(' after '@ptrDeref'");
+                const target = try self.expression();
+                _ = try self.expect(.RightParen, "Expected ')' after '@ptrDeref' argument");
+                const unary = try ast.UnaryExpr.init(
+                    self.allocator,
+                    .Deref,
+                    target,
+                    ast.SourceLocation.fromToken(at_token),
+                );
+                const expr = try self.allocator.create(ast.Expr);
+                expr.* = ast.Expr{ .UnaryExpr = unary };
+                return expr;
+            }
+
             // Opaque builtins (parsed before the known-reflection kind
             // table so we never hit the "Unknown reflection" error for
             // these). Used by kernel code for raw memory, atomics, and
             // import intrinsics. Arguments are consumed as raw tokens
             // and the call lowers to a Void literal at parse time.
             if (std.mem.eql(u8, name, "import") or
+                std.mem.eql(u8, name, "asm") or
                 std.mem.eql(u8, name, "ptrFromString") or
                 std.mem.eql(u8, name, "ptrLoad") or std.mem.eql(u8, name, "ptrStore") or
                 std.mem.eql(u8, name, "atomicLoad") or std.mem.eql(u8, name, "atomicStore") or
@@ -6241,6 +6265,15 @@ pub const Parser = struct {
                 kind == .FloatCast or kind == .PtrCast or kind == .IntToEnum or
                 kind == .Truncate or kind == .BitCast or kind == .As or
                 kind == .PtrFromInt or kind == .PtrToInt or kind == .IntFromPtr;
+            // Type-only builtins: the single argument is a type
+            // expression, not a value (`@sizeOf([16]u8)`,
+            // `@alignOf(*u32)`, `@TypeOf(MyStruct)`). For these we
+            // accept type-prefix tokens (`[`, `*`, `?`) directly and
+            // store the result in `target_type`, leaving `target` as a
+            // null-literal placeholder.
+            const is_type_only =
+                kind == .SizeOf or kind == .AlignOf or kind == .TypeOf or
+                kind == .TypeInfo;
             if (has_type_arg) {
                 const looks_type_first = blk: {
                     const t = self.peek().type;
@@ -6254,11 +6287,16 @@ pub const Parser = struct {
                     {
                         break :blk true;
                     }
-                    // Bare primitive identifier — only commit to
-                    // type-first if it is directly followed by `,`.
-                    // Otherwise it is a value-position identifier
-                    // shadowing a primitive name (e.g. `str`).
-                    if (self.isPrimitiveTypeStart() and self.peekNext().type == .Comma) {
+                    // Identifier directly followed by `,` — treat as
+                    // type-first. Covers both primitive names
+                    // (`u64`, `i32`) and user-defined type aliases
+                    // (`AudioFloat`, `WifiTxDesc`). The single-arg
+                    // case `@ptrFromInt(str)` where `str` is a
+                    // value-position identifier is unaffected because
+                    // it is not followed by `,`.
+                    if (self.peek().type == .Identifier and
+                        self.peekNext().type == .Comma)
+                    {
                         break :blk true;
                     }
                     break :blk false;
@@ -6268,12 +6306,53 @@ pub const Parser = struct {
                     target_type = try self.parseTypeAnnotation();
                     _ = try self.expect(.Comma, "Expected ',' after type argument");
                     target = try self.expression();
+                    // Optional trailing source-type hint:
+                    // `@as(*u64, expr, *WifiTxDesc)` — kernel code uses
+                    // this 3-arg form to record the source type for
+                    // documentation / future codegen. We accept and
+                    // discard it so the call parses.
+                    if (self.check(.Comma) and self.peekNext().type != .RightParen) {
+                        // Peek past the comma to see if it's a type.
+                        const save = self.current;
+                        _ = self.advance(); // consume comma
+                        const next_t = self.peek().type;
+                        const looks_like_type = next_t == .Star or
+                            next_t == .StarStar or next_t == .LeftBracket or
+                            next_t == .Question or next_t == .QuestionBracket or
+                            next_t == .Ampersand or
+                            (next_t == .Identifier and
+                                (self.peekNext().type == .RightParen or
+                                    self.peekNext().type == .Dot));
+                        if (looks_like_type) {
+                            _ = self.parseTypeAnnotation() catch {
+                                self.current = save;
+                            };
+                        } else {
+                            self.current = save;
+                        }
+                    }
                 } else {
                     // Expression-first: `@intCast(value, i32)` kernel style.
                     target = try self.expression();
                     if (self.match(&.{.Comma})) {
                         target_type = try self.parseTypeAnnotation();
                     }
+                }
+            } else if (is_type_only) {
+                // Type-only argument forms: accept type-prefix tokens
+                // (`[N]T`, `*T`, `?T`) as the lone argument.
+                const t = self.peek().type;
+                if (t == .Star or t == .StarStar or t == .LeftBracket or
+                    t == .Question or t == .QuestionBracket)
+                {
+                    target_type = try self.parseTypeAnnotation();
+                    const placeholder = try self.allocator.create(ast.Expr);
+                    placeholder.* = ast.Expr{
+                        .NullLiteral = ast.NullLiteral.init(ast.SourceLocation.fromToken(at_token)),
+                    };
+                    target = placeholder;
+                } else {
+                    target = try self.expression();
                 }
             } else {
                 // Parse target expression (non-cast builtins)

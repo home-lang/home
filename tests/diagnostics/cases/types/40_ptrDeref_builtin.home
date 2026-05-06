@@ -1,0 +1,13 @@
+// Issue #40: `@ptrDeref(p)` is the Zig-style alias for `*p`. The
+// parser lowers it directly into a UnaryExpr(Deref, …) so the rest
+// of the pipeline treats it identically to a regular pointer
+// dereference. Kernel modules use it both as an r-value
+// (`return @ptrDeref(p)`) and as an l-value
+// (`@ptrDeref(out) = value`).
+fn read_through(p: *u32): u32 {
+    return @ptrDeref(p)
+}
+
+fn write_through(out: *u32, value: u32) {
+    @ptrDeref(out) = value
+}

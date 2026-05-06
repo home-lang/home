@@ -1,0 +1,31 @@
+// Issue #40: tighten reflection arg-list parsing.
+//
+// 1. Type-first heuristic now accepts user-defined type aliases
+//    (not just primitives) when followed by `,` — so
+//    `@intToFloat(AudioFloat, expr)` parses with `AudioFloat` as
+//    the target type and a binary `expr` as the value.
+// 2. `@as(T, expr, U)` 3-arg form (kernel-style trailing source
+//    type hint) is accepted and the trailing type is discarded.
+// 3. `@asm(...)` parses identically to bare `asm(...)` — the `@`
+//    prefix is accepted for parity with other Zig-style builtins.
+// 4. Type-only builtins (`@sizeOf`, `@alignOf`, `@TypeOf`,
+//    `@typeInfo`) accept type-prefix tokens (`[N]T`, `*T`, `?T`)
+//    as the lone argument, so `@sizeOf([16]u8)` parses.
+type AudioFloat = f64
+const FFT_SIZE: i32 = 1024
+
+fn cast_with_alias(): AudioFloat {
+    return @intToFloat(AudioFloat, FFT_SIZE - 1)
+}
+
+fn three_arg_as(x: u64): u64 {
+    return @as(*u64, x, u64)
+}
+
+fn array_size(): u32 {
+    return @sizeOf([16]u8)
+}
+
+fn inline_asm() {
+    @asm("hlt")
+}
