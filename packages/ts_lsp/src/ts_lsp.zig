@@ -631,77 +631,129 @@ pub const Service = struct {
         return edits.toOwnedSlice(gpa);
     }
 
-    /// Code actions available at `byte_pos`. Today implements
-    /// "Organize Imports" — sorts top-level import declarations by
-    /// module specifier and emits the replacement edit.
+    /// Code actions available for `file`. Implements:
+    ///   - "Organize Imports" — sorts top-level import declarations
+    ///     by module specifier and emits the replacement edit.
+    ///   - "Add explicit type annotation" — for each top-level
+    ///     `let`/`const`/`var` with no annotation but a well-defined
+    ///     (non-`any`) inferred type, emits an insertion of
+    ///     `: <rendered_type>` right after the binding's name.
     pub fn codeActions(self: *Service, gpa: std.mem.Allocator, file_path: []const u8) ![]CodeAction {
         var actions: std.ArrayListUnmanaged(CodeAction) = .empty;
         errdefer actions.deinit(gpa);
         const file_id = self.program.lookupPath(file_path) orelse return actions.toOwnedSlice(gpa);
         const f = self.program.fileById(file_id);
         const c = f.compilation orelse return actions.toOwnedSlice(gpa);
-        // Collect import declarations (statement order).
-        var imports: std.ArrayListUnmanaged(hir_mod.NodeId) = .empty;
-        defer imports.deinit(gpa);
         // Skip files whose parse left a non-block root (malformed).
         if (c.hir.kindOf(c.root) != .block_stmt) return actions.toOwnedSlice(gpa);
         const stmts = hir_mod.blockStmts(&c.hir, c.root);
+
+        // ---- Organize Imports ---------------------------------------------
+        organize_imports: {
+            var imports: std.ArrayListUnmanaged(hir_mod.NodeId) = .empty;
+            defer imports.deinit(gpa);
+            for (stmts) |s| {
+                if (c.hir.kindOf(s) == .import_decl) try imports.append(gpa, s);
+            }
+            if (imports.items.len < 2) break :organize_imports;
+            const sorted = try gpa.dupe(hir_mod.NodeId, imports.items);
+            defer gpa.free(sorted);
+            const Ctx = struct {
+                hir: *const hir_mod.Hir,
+                sint: *const string_interner.Interner,
+                pub fn lessThan(ctx: @This(), a: hir_mod.NodeId, b: hir_mod.NodeId) bool {
+                    const ia = hir_mod.importOf(ctx.hir, a);
+                    const ib = hir_mod.importOf(ctx.hir, b);
+                    const sa = ctx.sint.get(ia.module);
+                    const sb = ctx.sint.get(ib.module);
+                    return std.mem.lessThan(u8, sa, sb);
+                }
+            };
+            std.mem.sort(hir_mod.NodeId, sorted, Ctx{ .hir = &c.hir, .sint = &c.interner }, Ctx.lessThan);
+            var differs = false;
+            for (imports.items, 0..) |orig, i| {
+                if (orig != sorted[i]) {
+                    differs = true;
+                    break;
+                }
+            }
+            if (!differs) break :organize_imports;
+            var buf: std.ArrayListUnmanaged(u8) = .empty;
+            defer buf.deinit(gpa);
+            for (sorted, 0..) |id, i| {
+                if (i > 0) try buf.append(gpa, '\n');
+                const span = c.hir.spanOf(id);
+                try buf.appendSlice(gpa, f.source[span.start..span.end]);
+            }
+            const new_text = try buf.toOwnedSlice(gpa);
+            const first_span = c.hir.spanOf(imports.items[0]);
+            const last_span = c.hir.spanOf(imports.items[imports.items.len - 1]);
+            const start_pos = ts_diagnostics.positionToLineCol(f.source, first_span.start);
+            const end_pos = ts_diagnostics.positionToLineCol(f.source, last_span.end);
+            var edits = try gpa.alloc(TextEdit, 1);
+            edits[0] = .{
+                .file = f.path,
+                .start_line = if (start_pos.line > 0) start_pos.line - 1 else 0,
+                .start_col = if (start_pos.col > 0) start_pos.col - 1 else 0,
+                .end_line = if (end_pos.line > 0) end_pos.line - 1 else 0,
+                .end_col = if (end_pos.col > 0) end_pos.col - 1 else 0,
+                .new_text = new_text,
+            };
+            try actions.append(gpa, .{
+                .title = "Organize Imports",
+                .kind = .organize_imports,
+                .edits = edits,
+            });
+        }
+
+        // ---- Add explicit type annotation ---------------------------------
+        // For each top-level let/const/var with no annotation but a
+        // well-defined inferred type, surface a quick-fix that
+        // inserts `: <rendered_type>` after the binding's name.
         for (stmts) |s| {
-            if (c.hir.kindOf(s) == .import_decl) try imports.append(gpa, s);
+            const k = c.hir.kindOf(s);
+            if (k != .let_decl and k != .const_decl and k != .var_decl) continue;
+            const v = hir_mod.varDeclOf(&c.hir, s);
+            if (v.type_annotation != hir_mod.none_node_id) continue;
+            if (v.init == hir_mod.none_node_id) continue;
+            if (v.name == hir_mod.none_node_id) continue;
+            // Only handle plain identifier bindings (skip destructuring).
+            if (c.hir.kindOf(v.name) != .identifier) continue;
+            const t = c.hir.typeOf(v.name);
+            // Skip none / any / unknown — not useful to surface.
+            if (t == ts_checker.Primitive.none) continue;
+            if (t == ts_checker.Primitive.any) continue;
+            if (t == ts_checker.Primitive.unknown) continue;
+            const repr = renderType(gpa, &c.type_interner, &c.interner, t) catch continue;
+            defer gpa.free(repr);
+            const new_text = try std.fmt.allocPrint(gpa, ": {s}", .{repr});
+            errdefer gpa.free(new_text);
+            const name_id = hir_mod.identifierOf(&c.hir, v.name).name;
+            const name_str = c.interner.get(name_id);
+            const title = try std.fmt.allocPrint(gpa, "Add explicit type to {s}", .{name_str});
+            errdefer gpa.free(title);
+            // Insertion is a zero-width edit at the byte right after
+            // the binding's name.
+            const ins_byte = c.hir.spanOf(v.name).end;
+            const ins_pos = ts_diagnostics.positionToLineCol(f.source, ins_byte);
+            const ln: u32 = if (ins_pos.line > 0) ins_pos.line - 1 else 0;
+            const co: u32 = if (ins_pos.col > 0) ins_pos.col - 1 else 0;
+            var edits = try gpa.alloc(TextEdit, 1);
+            edits[0] = .{
+                .file = f.path,
+                .start_line = ln,
+                .start_col = co,
+                .end_line = ln,
+                .end_col = co,
+                .new_text = new_text,
+            };
+            try actions.append(gpa, .{
+                .title = title,
+                .kind = .quick_fix,
+                .edits = edits,
+            });
         }
-        if (imports.items.len < 2) return actions.toOwnedSlice(gpa);
-        // Sort by module specifier name.
-        const sorted = try gpa.dupe(hir_mod.NodeId, imports.items);
-        defer gpa.free(sorted);
-        const Ctx = struct {
-            hir: *const hir_mod.Hir,
-            sint: *const string_interner.Interner,
-            pub fn lessThan(ctx: @This(), a: hir_mod.NodeId, b: hir_mod.NodeId) bool {
-                const ia = hir_mod.importOf(ctx.hir, a);
-                const ib = hir_mod.importOf(ctx.hir, b);
-                const sa = ctx.sint.get(ia.module);
-                const sb = ctx.sint.get(ib.module);
-                return std.mem.lessThan(u8, sa, sb);
-            }
-        };
-        std.mem.sort(hir_mod.NodeId, sorted, Ctx{ .hir = &c.hir, .sint = &c.interner }, Ctx.lessThan);
-        // Already sorted? No-op.
-        var differs = false;
-        for (imports.items, 0..) |orig, i| {
-            if (orig != sorted[i]) {
-                differs = true;
-                break;
-            }
-        }
-        if (!differs) return actions.toOwnedSlice(gpa);
-        // Build the new text (rendered import lines, in sorted order).
-        var buf: std.ArrayListUnmanaged(u8) = .empty;
-        defer buf.deinit(gpa);
-        for (sorted, 0..) |id, i| {
-            if (i > 0) try buf.append(gpa, '\n');
-            const span = c.hir.spanOf(id);
-            try buf.appendSlice(gpa, f.source[span.start..span.end]);
-        }
-        const new_text = try buf.toOwnedSlice(gpa);
-        // The replacement edit covers the union span of all imports.
-        const first_span = c.hir.spanOf(imports.items[0]);
-        const last_span = c.hir.spanOf(imports.items[imports.items.len - 1]);
-        const start_pos = ts_diagnostics.positionToLineCol(f.source, first_span.start);
-        const end_pos = ts_diagnostics.positionToLineCol(f.source, last_span.end);
-        var edits = try gpa.alloc(TextEdit, 1);
-        edits[0] = .{
-            .file = f.path,
-            .start_line = if (start_pos.line > 0) start_pos.line - 1 else 0,
-            .start_col = if (start_pos.col > 0) start_pos.col - 1 else 0,
-            .end_line = if (end_pos.line > 0) end_pos.line - 1 else 0,
-            .end_col = if (end_pos.col > 0) end_pos.col - 1 else 0,
-            .new_text = new_text,
-        };
-        try actions.append(gpa, .{
-            .title = "Organize Imports",
-            .kind = .organize_imports,
-            .edits = edits,
-        });
+
         return actions.toOwnedSlice(gpa);
     }
 
@@ -1922,6 +1974,38 @@ test "Service: inlayHints surfaces inferred types on let-bindings" {
     // x and z get hints; y has an explicit annotation so no hint.
     try T.expectEqual(@as(usize, 2), hints.len);
     for (hints) |h| try T.expectEqual(@as(@TypeOf(h.kind), .type_annotation), h.kind);
+}
+
+test "Service: codeActions adds explicit type annotation for inferred lets" {
+    var vfs = ts_resolver.VirtualFs.init(T.allocator);
+    defer vfs.deinit();
+    var resolver = ts_resolver.Resolver.init(T.allocator, vfs.fs(), .{});
+    defer resolver.deinit();
+    var program = ts_program.Program.init(T.allocator, &resolver);
+    defer program.deinit();
+
+    _ = try program.add("/main.ts", "let x = 42;");
+    try program.compileAll(.{});
+
+    var svc = Service.init(T.allocator, &program);
+    const actions = try svc.codeActions(T.allocator, "/main.ts");
+    defer {
+        for (actions) |a| {
+            T.allocator.free(a.title);
+            for (a.edits) |e| T.allocator.free(e.new_text);
+            T.allocator.free(a.edits);
+        }
+        T.allocator.free(actions);
+    }
+    try T.expectEqual(@as(usize, 1), actions.len);
+    try T.expectEqual(@as(CodeAction.Kind, .quick_fix), actions[0].kind);
+    try T.expectEqualStrings("Add explicit type to x", actions[0].title);
+    try T.expectEqual(@as(usize, 1), actions[0].edits.len);
+    try T.expectEqualStrings(": number", actions[0].edits[0].new_text);
+    // Insertion is zero-width — start and end positions match.
+    const e = actions[0].edits[0];
+    try T.expectEqual(e.start_line, e.end_line);
+    try T.expectEqual(e.start_col, e.end_col);
 }
 
 test "Service: formatDocument returns a TextEdit list (no-op stub)" {
