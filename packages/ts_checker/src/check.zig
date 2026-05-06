@@ -172,6 +172,12 @@ pub const Checker = struct {
     /// `if (<guard-expr>)`. Aliased-conditional narrowing per TS
     /// PR #46266. Cleared when `cond` is reassigned.
     cond_aliases: std.AutoHashMapUnmanaged(hir_mod.StringId, NodeId),
+    /// Function name → list of overload signature TypeIds in
+    /// declaration order. Populated when multiple `function f(...)`
+    /// declarations share a name (overloads + implementation). The
+    /// implementation signature lands last and is used to type the
+    /// body; call sites resolve against the prior overload signatures.
+    overloads: std.AutoHashMapUnmanaged(hir_mod.StringId, std.ArrayListUnmanaged(TypeId)),
     /// Strictness flags driving optional diagnostics.
     strict_flags: StrictFlags = .{},
     diagnostics: std.ArrayListUnmanaged(Diagnostic),
@@ -200,6 +206,7 @@ pub const Checker = struct {
             .generic_fns = .empty,
             .fn_predicates = .empty,
             .cond_aliases = .empty,
+            .overloads = .empty,
             .diagnostics = .empty,
             .diag_arena = std.heap.ArenaAllocator.init(gpa),
         };
@@ -233,6 +240,9 @@ pub const Checker = struct {
         self.generic_fns.deinit(self.gpa);
         self.fn_predicates.deinit(self.gpa);
         self.cond_aliases.deinit(self.gpa);
+        var ov_it = self.overloads.valueIterator();
+        while (ov_it.next()) |list| list.deinit(self.gpa);
+        self.overloads.deinit(self.gpa);
         self.diagnostics.deinit(self.gpa);
         self.diag_arena.deinit();
     }
@@ -800,6 +810,31 @@ pub const Checker = struct {
             if (self.generic_fns.fetchRemove(fn_name)) |old| self.gpa.free(old.value);
             const owned = captured_tp_ids.toOwnedSlice(self.gpa) catch return error.OutOfMemory;
             try self.generic_fns.put(self.gpa, fn_name, owned);
+        }
+        // Overload tracking: when multiple `function f(...)` decls
+        // share a name, we treat the body-less ones as overload
+        // signatures. The body-bearing one is the implementation
+        // (used only for body typing — never picked by call-site
+        // resolution).
+        if (f.name != hir_mod.none_node_id and self.hir.kindOf(f.name) == .identifier) {
+            const fn_name = hir_mod.identifierOf(self.hir, f.name).name;
+            const has_body = f.body != hir_mod.none_node_id;
+            const gop = try self.overloads.getOrPut(self.gpa, fn_name);
+            if (!gop.found_existing) gop.value_ptr.* = .empty;
+            // The implementation signature is appended last but
+            // marked-by-position (not by flag). Caller picks the
+            // first compatible non-final entry; falls back to
+            // last (the impl) when none match.
+            if (!has_body) {
+                try gop.value_ptr.*.append(self.gpa, sig);
+            } else {
+                // Implementation signature: only append if there
+                // are existing overloads — a single-decl function
+                // doesn't need overload resolution.
+                if (gop.value_ptr.*.items.len > 0) {
+                    try gop.value_ptr.*.append(self.gpa, sig);
+                }
+            }
         }
         // Record the predicate so call sites can narrow.
         if (is_predicate and f.name != hir_mod.none_node_id and self.hir.kindOf(f.name) == .identifier) {
@@ -1545,6 +1580,28 @@ pub const Checker = struct {
                     const t = try self.checkExpression(arg);
                     try arg_types.append(self.gpa, t);
                 }
+                // Overload resolution: when the callee is a known
+                // overloaded fn, pick the first applicable signature.
+                // "Applicable" = arg_count fits and each arg type is
+                // assignable to the corresponding param type.
+                if (self.hir.kindOf(c.callee) == .identifier) {
+                    const callee_name = hir_mod.identifierOf(self.hir, c.callee).name;
+                    if (self.overloads.get(callee_name)) |overload_list| {
+                        if (overload_list.items.len > 1) {
+                            // The last entry is the implementation;
+                            // walk only the leading overloads.
+                            const overloads = overload_list.items[0 .. overload_list.items.len - 1];
+                            for (overloads) |sig| {
+                                if (try self.signatureAccepts(sig, arg_types.items)) {
+                                    try self.checkArgsAgainstSignature(node, args, arg_types.items, sig);
+                                    if (self.interner.signatureReturn(sig)) |ret| {
+                                        break :blk ret;
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
                 // Explicit type arguments (`f<T>(args)`): if the
                 // callee resolves to a generic fn we recorded, lower
                 // each explicit arg, build a substitution, and
@@ -1769,6 +1826,29 @@ pub const Checker = struct {
     ///     and the !== negation (with `when_true` flipped)
     ///   X === null / X !== null
     ///   X === undefined / X !== undefined
+    /// True if `sig` accepts the given `arg_types` — i.e., the call
+    /// would type-check without TS2554 / TS2345. Used by overload
+    /// resolution to pick the first applicable signature.
+    fn signatureAccepts(self: *Checker, sig: TypeId, arg_types: []const TypeId) !bool {
+        const params = self.interner.signatureParams(sig);
+        // Required-arg count = params not including a trailing run
+        // that includes `undefined`.
+        var min_required: usize = params.len;
+        while (min_required > 0) {
+            if (!self.typeIncludesUndefined(params[min_required - 1])) break;
+            min_required -= 1;
+        }
+        if (arg_types.len < min_required) return false;
+        if (arg_types.len > params.len) return false;
+        const n = @min(arg_types.len, params.len);
+        for (0..n) |i| {
+            if (self.interner.pool.flagsOf(params[i]).is_type_parameter) continue;
+            const ok = self.engine.isAssignableTo(arg_types[i], params[i]) catch false;
+            if (!ok) return false;
+        }
+        return true;
+    }
+
     /// Assertion-function flow narrowing. If `stmt` is a call to a
     /// function whose return type is `asserts arg is T`, record
     /// `arg -> T` in the surrounding narrow scope so subsequent
@@ -3932,6 +4012,25 @@ test "checker: type predicate narrows in then-branch" {
     const s_decl = then_stmts[0];
     const s_init = hir_mod.varDeclOf(&s.hir, s_decl).init;
     try T.expectEqual(types.Primitive.string_t, s.hir.typeOf(s_init));
+}
+
+test "checker: overload resolution picks the matching signature" {
+    // Two overloads + one implementation. Calling with a string
+    // should resolve to the string overload's return type.
+    const s = try newSetup(
+        \\function pick(x: string): number;
+        \\function pick(x: number): string;
+        \\function pick(x: any): any { return x; }
+        \\let n = pick("hello");
+        \\let s2 = pick(42);
+    );
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+    const stmts = hir_mod.blockStmts(&s.hir, s.root);
+    // stmts[3] = let n = pick("hello") — return is number.
+    // stmts[4] = let s2 = pick(42) — return is string.
+    try T.expectEqual(types.Primitive.number_t, s.hir.typeOf(stmts[3]));
+    try T.expectEqual(types.Primitive.string_t, s.hir.typeOf(stmts[4]));
 }
 
 test "checker: aliased conditional narrows via stored guard" {
