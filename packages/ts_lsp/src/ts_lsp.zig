@@ -22,6 +22,7 @@ const hir_mod = @import("hir");
 const ts_program = @import("ts_program");
 const ts_driver = @import("ts_driver");
 const ts_diagnostics = @import("ts_diagnostics");
+const ts_checker = @import("ts_checker");
 const string_interner = @import("string_interner");
 
 pub const Span = struct {
@@ -56,6 +57,45 @@ pub const CompletionItem = struct {
     detail: []const u8,
 
     pub const ItemKind = enum { variable, function, class, interface, type_alias, module, keyword, member };
+};
+
+pub const SignatureInfo = struct {
+    /// Rendered signature, e.g. "(x: number, y: string): boolean".
+    label: []const u8,
+    /// Index of the active parameter (the one cursor is currently
+    /// hovering over inside the call).
+    active_parameter: u32,
+    /// Per-parameter labels (for highlighting in the editor).
+    parameters: []const []const u8,
+};
+
+pub const InlayHint = struct {
+    /// 0-based byte position the hint anchors at.
+    pos: u32,
+    /// Hint text — typically `: T` for `let x` or parameter names
+    /// at call sites.
+    label: []const u8,
+    /// Hint kind — affects editor presentation.
+    kind: enum { type_annotation, parameter_name },
+};
+
+pub const SymbolInfo = struct {
+    name: []const u8,
+    kind: SymbolKind,
+    span: Span,
+
+    pub const SymbolKind = enum {
+        function,
+        class,
+        interface,
+        variable,
+        type_alias,
+        enum_,
+        namespace,
+        module,
+        property,
+        method,
+    };
 };
 
 pub const Service = struct {
@@ -211,6 +251,77 @@ pub const Service = struct {
         return items.toOwnedSlice(gpa);
     }
 
+    /// Signature-help at `byte_pos`. Returns the active signature
+    /// rendered as `(p1: T1, p2: T2): R`, with the active parameter
+    /// index based on the cursor's position in the argument list.
+    /// Returns null when no enclosing call expression is found.
+    pub fn signatureHelp(self: *Service, gpa: std.mem.Allocator, file_path: []const u8, byte_pos: u32) !?SignatureInfo {
+        const file_id = self.program.lookupPath(file_path) orelse return null;
+        const f = self.program.fileById(file_id);
+        const c = f.compilation orelse return null;
+        // Walk up from the innermost node looking for a call_expr.
+        const start = findInnermostNode(&c.hir, c.root, byte_pos) orelse return null;
+        const call_node = walkUpToCallExpr(&c.hir, start) orelse return null;
+        const call = hir_mod.callOf(&c.hir, call_node);
+        const callee_t = c.hir.typeOf(call.callee);
+        if (!c.type_interner.pool.flagsOf(callee_t).is_signature) return null;
+        const sig_label = renderType(gpa, &c.type_interner, &c.interner, callee_t) catch return null;
+        // Determine active parameter — count comma-separated args
+        // before byte_pos by walking the call's argument spans.
+        var active_index: u32 = 0;
+        const args = hir_mod.callArgs(&c.hir, call_node);
+        for (args, 0..) |arg, i| {
+            const sp = c.hir.spanOf(arg);
+            if (byte_pos > sp.end) {
+                active_index = @intCast(i + 1);
+            } else if (byte_pos >= sp.start) {
+                active_index = @intCast(i);
+                break;
+            }
+        }
+        const params = c.type_interner.signatureParams(callee_t);
+        var labels = std.ArrayListUnmanaged([]const u8).empty;
+        errdefer labels.deinit(gpa);
+        for (params) |p| {
+            const lbl = renderType(gpa, &c.type_interner, &c.interner, p) catch "";
+            try labels.append(gpa, lbl);
+        }
+        return .{
+            .label = sig_label,
+            .active_parameter = active_index,
+            .parameters = try labels.toOwnedSlice(gpa),
+        };
+    }
+
+    /// Inlay hints inside `file`. Today we surface inferred types
+    /// at `let`/`const` bindings without an explicit annotation.
+    /// Phase 8 follow-up: parameter-name hints at call sites.
+    pub fn inlayHints(self: *Service, gpa: std.mem.Allocator, file_path: []const u8) ![]InlayHint {
+        var hints: std.ArrayListUnmanaged(InlayHint) = .empty;
+        errdefer hints.deinit(gpa);
+        const file_id = self.program.lookupPath(file_path) orelse return hints.toOwnedSlice(gpa);
+        const f = self.program.fileById(file_id);
+        const c = f.compilation orelse return hints.toOwnedSlice(gpa);
+        try collectInlayHints(gpa, &c.hir, &c.type_interner, &c.interner, c.root, &hints);
+        return hints.toOwnedSlice(gpa);
+    }
+
+    /// All top-level declarations in `file`, useful for an editor
+    /// outline view.
+    pub fn documentSymbols(self: *Service, gpa: std.mem.Allocator, file_path: []const u8) ![]SymbolInfo {
+        var out: std.ArrayListUnmanaged(SymbolInfo) = .empty;
+        errdefer out.deinit(gpa);
+        const file_id = self.program.lookupPath(file_path) orelse return out.toOwnedSlice(gpa);
+        const f = self.program.fileById(file_id);
+        const c = f.compilation orelse return out.toOwnedSlice(gpa);
+        const stmts = hir_mod.blockStmts(&c.hir, c.root);
+        for (stmts) |s| {
+            const info = describeTopLevelSymbol(&c.hir, &c.interner, s, f.source, f.path) orelse continue;
+            try out.append(gpa, info);
+        }
+        return out.toOwnedSlice(gpa);
+    }
+
     /// Diagnostics for `file`. Forwards from the per-file
     /// Compilation and renders them in tsc-default format.
     pub fn diagnostics(self: *Service, gpa: std.mem.Allocator, file_path: []const u8) ![]const u8 {
@@ -239,6 +350,120 @@ pub const Service = struct {
         return buf.toOwnedSlice(gpa);
     }
 };
+
+/// Walk up the parent chain from `start` until we find a call_expr,
+/// or return null if we reach the root without one.
+fn walkUpToCallExpr(hir: *const hir_mod.Hir, start: hir_mod.NodeId) ?hir_mod.NodeId {
+    var cur = start;
+    while (cur != hir_mod.none_node_id) {
+        if (hir.kindOf(cur) == .call_expr) return cur;
+        const p = hir.parentOf(cur);
+        if (p == cur) return null;
+        cur = p;
+    }
+    return null;
+}
+
+/// Walk the file's top-level statements and emit type-annotation
+/// hints at unannotated `let`/`const` declarations.
+fn collectInlayHints(
+    gpa: std.mem.Allocator,
+    hir: *const hir_mod.Hir,
+    type_interner: *const ts_checker.Interner,
+    sint: *const string_interner.Interner,
+    root: hir_mod.NodeId,
+    out: *std.ArrayListUnmanaged(InlayHint),
+) !void {
+    if (root == hir_mod.none_node_id) return;
+    const k = hir.kindOf(root);
+    switch (k) {
+        .let_decl, .const_decl, .var_decl => {
+            const v = hir_mod.varDeclOf(hir, root);
+            // Hint only when no explicit annotation but a type was inferred.
+            if (v.type_annotation != hir_mod.none_node_id) return;
+            if (v.name == hir_mod.none_node_id) return;
+            const t = hir.typeOf(v.name);
+            const repr = renderType(gpa, type_interner, sint, t) catch return;
+            const label = try std.fmt.allocPrint(gpa, ": {s}", .{repr});
+            gpa.free(repr);
+            try out.append(gpa, .{
+                .pos = hir.spanOf(v.name).end,
+                .label = label,
+                .kind = .type_annotation,
+            });
+        },
+        .block_stmt => {
+            const stmts = hir_mod.blockStmts(hir, root);
+            for (stmts) |s| try collectInlayHints(gpa, hir, type_interner, sint, s, out);
+        },
+        .fn_decl => {
+            const f = hir_mod.fnDeclOf(hir, root);
+            if (f.body != hir_mod.none_node_id) {
+                try collectInlayHints(gpa, hir, type_interner, sint, f.body, out);
+            }
+        },
+        else => {},
+    }
+}
+
+fn describeTopLevelSymbol(
+    hir: *const hir_mod.Hir,
+    sint: *const string_interner.Interner,
+    node: hir_mod.NodeId,
+    source: []const u8,
+    file_path: []const u8,
+) ?SymbolInfo {
+    const k = hir.kindOf(node);
+    const span = hir.spanOf(node);
+    const sp = ts_diagnostics.positionToLineCol(source, span.start);
+    const ep = ts_diagnostics.positionToLineCol(source, span.end);
+    const span_info: Span = .{
+        .file = file_path,
+        .start_line = sp.line,
+        .start_col = sp.col,
+        .end_line = ep.line,
+        .end_col = ep.col,
+    };
+    switch (k) {
+        .fn_decl => {
+            const f = hir_mod.fnDeclOf(hir, node);
+            if (f.name == hir_mod.none_node_id) return null;
+            const name_id = hir_mod.identifierOf(hir, f.name).name;
+            return .{ .name = sint.get(name_id), .kind = .function, .span = span_info };
+        },
+        .class_decl => {
+            const c = hir_mod.classOf(hir, node);
+            if (c.name == hir_mod.none_node_id) return null;
+            const name_id = hir_mod.identifierOf(hir, c.name).name;
+            return .{ .name = sint.get(name_id), .kind = .class, .span = span_info };
+        },
+        .interface_decl => {
+            const inf = hir_mod.interfaceOf(hir, node);
+            if (inf.name == hir_mod.none_node_id) return null;
+            const name_id = hir_mod.identifierOf(hir, inf.name).name;
+            return .{ .name = sint.get(name_id), .kind = .interface, .span = span_info };
+        },
+        .type_alias_decl => {
+            const a = hir_mod.typeAliasOf(hir, node);
+            if (a.name == hir_mod.none_node_id) return null;
+            const name_id = hir_mod.identifierOf(hir, a.name).name;
+            return .{ .name = sint.get(name_id), .kind = .type_alias, .span = span_info };
+        },
+        .enum_decl => {
+            const e = hir_mod.enumOf(hir, node);
+            if (e.name == hir_mod.none_node_id) return null;
+            const name_id = hir_mod.identifierOf(hir, e.name).name;
+            return .{ .name = sint.get(name_id), .kind = .enum_, .span = span_info };
+        },
+        .let_decl, .const_decl, .var_decl => {
+            const v = hir_mod.varDeclOf(hir, node);
+            if (v.name == hir_mod.none_node_id) return null;
+            const name_id = hir_mod.identifierOf(hir, v.name).name;
+            return .{ .name = sint.get(name_id), .kind = .variable, .span = span_info };
+        },
+        else => return null,
+    }
+}
 
 /// Walk the HIR depth-first and return the smallest node whose
 /// span contains `byte_pos`.
@@ -612,4 +837,90 @@ test "Service: hover on missing file returns null" {
 
     var svc = Service.init(T.allocator, &program);
     try T.expect(svc.hover("/missing.ts", 0) == null);
+}
+
+test "Service: documentSymbols enumerates top-level decls" {
+    var vfs = ts_resolver.VirtualFs.init(T.allocator);
+    defer vfs.deinit();
+    var resolver = ts_resolver.Resolver.init(T.allocator, vfs.fs(), .{});
+    defer resolver.deinit();
+    var program = ts_program.Program.init(T.allocator, &resolver);
+    defer program.deinit();
+
+    const src =
+        \\function add(a: number, b: number) { return a + b; }
+        \\class Box { value: number = 0; }
+        \\interface I { x: number; }
+        \\type Pair = [number, number];
+        \\let counter = 0;
+    ;
+    _ = try program.add("/main.ts", src);
+    try program.compileAll(.{});
+
+    var svc = Service.init(T.allocator, &program);
+    const symbols = try svc.documentSymbols(T.allocator, "/main.ts");
+    defer T.allocator.free(symbols);
+
+    try T.expectEqual(@as(usize, 5), symbols.len);
+    try T.expectEqualStrings("add", symbols[0].name);
+    try T.expectEqual(SymbolInfo.SymbolKind.function, symbols[0].kind);
+    try T.expectEqualStrings("Box", symbols[1].name);
+    try T.expectEqual(SymbolInfo.SymbolKind.class, symbols[1].kind);
+    try T.expectEqualStrings("I", symbols[2].name);
+    try T.expectEqual(SymbolInfo.SymbolKind.interface, symbols[2].kind);
+    try T.expectEqualStrings("Pair", symbols[3].name);
+    try T.expectEqual(SymbolInfo.SymbolKind.type_alias, symbols[3].kind);
+    try T.expectEqualStrings("counter", symbols[4].name);
+    try T.expectEqual(SymbolInfo.SymbolKind.variable, symbols[4].kind);
+}
+
+test "Service: signatureHelp returns signature info inside a call" {
+    var vfs = ts_resolver.VirtualFs.init(T.allocator);
+    defer vfs.deinit();
+    var resolver = ts_resolver.Resolver.init(T.allocator, vfs.fs(), .{});
+    defer resolver.deinit();
+    var program = ts_program.Program.init(T.allocator, &resolver);
+    defer program.deinit();
+
+    const src =
+        \\function add(a: number, b: number): number { return a + b; }
+        \\let r = add(1, 2);
+    ;
+    _ = try program.add("/main.ts", src);
+    try program.compileAll(.{});
+
+    var svc = Service.init(T.allocator, &program);
+    // Position somewhere inside the call expression's argument list.
+    const at_call = std.mem.indexOf(u8, src, "add(1, 2)").? + 4; // inside the args
+    const sig = (try svc.signatureHelp(T.allocator, "/main.ts", @intCast(at_call))) orelse return error.NoSignature;
+    defer T.allocator.free(sig.label);
+    defer {
+        for (sig.parameters) |p| T.allocator.free(p);
+        T.allocator.free(sig.parameters);
+    }
+    try T.expectEqual(@as(usize, 2), sig.parameters.len);
+    try T.expect(sig.label.len > 0);
+}
+
+test "Service: inlayHints surfaces inferred types on let-bindings" {
+    var vfs = ts_resolver.VirtualFs.init(T.allocator);
+    defer vfs.deinit();
+    var resolver = ts_resolver.Resolver.init(T.allocator, vfs.fs(), .{});
+    defer resolver.deinit();
+    var program = ts_program.Program.init(T.allocator, &resolver);
+    defer program.deinit();
+
+    const src = "let x = 42; let y: string = \"hi\"; let z = true;";
+    _ = try program.add("/main.ts", src);
+    try program.compileAll(.{});
+
+    var svc = Service.init(T.allocator, &program);
+    const hints = try svc.inlayHints(T.allocator, "/main.ts");
+    defer {
+        for (hints) |h| T.allocator.free(h.label);
+        T.allocator.free(hints);
+    }
+    // x and z get hints; y has an explicit annotation so no hint.
+    try T.expectEqual(@as(usize, 2), hints.len);
+    for (hints) |h| try T.expectEqual(@as(@TypeOf(h.kind), .type_annotation), h.kind);
 }
