@@ -1,0 +1,22 @@
+// Regression test for issue #37 — module-scope `var x: [T; N] = undefined`
+// (and the no-init / align-suffix variants). The function-scope versions
+// were already covered by the existing `35_var_array_no_init.home` and
+// `36_var_array_with_align.home` snapshots after #35; this snapshot
+// pins the same shapes at module scope.
+//
+// Used in home-os kernel modules:
+//   - kernel/src/drivers/pci.home   (var pci_devices: [PCIDevice; 64] = undefined)
+//   - kernel/src/drivers/ahci.home  (var ahci_ports:  [AhciPort; 32]  = undefined)
+//
+// All four shapes — explicit `= undefined`, no init, align(M) with init,
+// and align(M) without init — must parse cleanly at module scope.
+struct PCIDevice {
+    vendor: u16,
+    device: u16,
+}
+
+var pci_devices: [PCIDevice; 64] = undefined
+var pci_bus_visited: [u8; 32] = undefined
+var ring_buffer: [u32; 256]
+var aligned_init: [u32; 4] align(16) = undefined
+var aligned_no_init: [u32; 4] align(16)
