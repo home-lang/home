@@ -8,7 +8,7 @@ const macho = @import("macho.zig");
 /// AArch64 native codegen — Path B-lite of issue #5.
 ///
 /// Mirrors the structure of `native_codegen.NativeCodegen` but emits arm64
-/// machine code via `arm64.Assembler`. Currently supports the M5 subset:
+/// machine code via `arm64.Assembler`. Currently supports the M6 subset:
 ///   - `FnDecl` (top-level functions, including non-`main`) with up to 8
 ///     i64 parameters delivered via x0..x7 per AAPCS64
 ///   - `LetDecl` (mutable or immutable; `is_static` not supported — note
@@ -20,10 +20,12 @@ const macho = @import("macho.zig");
 ///   - binary expressions: `+ - * /`, `== != < <= > >=`
 ///   - call expressions: positional args only, callee must be a bare
 ///     identifier referencing a function in this program
+///   - built-in `print(s)` / `println(s)` for string-literal arguments,
+///     lowered to the BSD `write` syscall on macOS-arm64
 ///
 /// Other AST nodes return `error.NotImplemented`. The plan is to expand
-/// this milestone-by-milestone (M6 = strings + print, M7 = structs, …) per
-/// the B-lite roadmap rather than refactoring NativeCodegen itself.
+/// this milestone-by-milestone (M7 = structs, M8 = arrays, …) per the
+/// B-lite roadmap rather than refactoring NativeCodegen itself.
 pub const CodegenError = error{
     NotImplemented,
     UnsupportedPlatform,
@@ -43,6 +45,20 @@ const PendingCall = struct {
     /// Name of the callee. Borrowed from the AST (Identifier slice), valid
     /// for the lifetime of the program.
     callee: []const u8,
+};
+
+/// A string literal ready to be appended to the code buffer once function
+/// emission is complete. `bytes` is owned by this codegen instance.
+const StringLit = struct {
+    bytes: []u8,
+    /// Offset within the code buffer once appended (filled in just before
+    /// patching).
+    offset: usize = 0,
+};
+
+const StringFixup = struct {
+    adr_pos: usize,
+    string_index: usize,
 };
 
 pub const Aarch64NativeCodegen = struct {
@@ -68,6 +84,11 @@ pub const Aarch64NativeCodegen = struct {
     /// BL call sites awaiting backpatch once the callee's address is known.
     /// Resolved after every top-level FnDecl has been emitted.
     pending_calls: std.ArrayList(PendingCall),
+    /// Interned string literals, appended to the code buffer just before
+    /// finalising the binary (still inside the __TEXT segment).
+    strings: std.ArrayList(StringLit),
+    /// ADR instructions that need to be patched once string offsets are known.
+    string_fixups: std.ArrayList(StringFixup),
 
     pub fn init(allocator: std.mem.Allocator, program: *const ast.Program) Aarch64NativeCodegen {
         return .{
@@ -77,6 +98,8 @@ pub const Aarch64NativeCodegen = struct {
             .functions = std.StringHashMap(usize).init(allocator),
             .locals = std.StringHashMap(u32).init(allocator),
             .pending_calls = std.ArrayList(PendingCall).empty,
+            .strings = std.ArrayList(StringLit).empty,
+            .string_fixups = std.ArrayList(StringFixup).empty,
         };
     }
 
@@ -85,6 +108,9 @@ pub const Aarch64NativeCodegen = struct {
         self.functions.deinit();
         self.locals.deinit();
         self.pending_calls.deinit(self.allocator);
+        for (self.strings.items) |str| self.allocator.free(str.bytes);
+        self.strings.deinit(self.allocator);
+        self.string_fixups.deinit(self.allocator);
     }
 
     pub fn writeExecutable(self: *Aarch64NativeCodegen, path: []const u8) !void {
@@ -119,6 +145,12 @@ pub const Aarch64NativeCodegen = struct {
             const target = self.functions.get(pc.callee) orelse return error.UndefinedFunction;
             try self.assembler.patchBl(pc.pos, target);
         }
+
+        // Append string literals to the code buffer (still inside the
+        // __TEXT segment) and patch each ADR fixup with the now-known
+        // offset. ADR has a ±1 MiB range — easy reach for the modest
+        // programs we currently compile.
+        try self.appendStringsAndPatch();
 
         const code = self.assembler.code.items;
         const data: []const u8 = &.{};
@@ -258,6 +290,31 @@ pub const Aarch64NativeCodegen = struct {
         for (func.body.statements) |stmt| {
             try self.generateStmt(stmt);
         }
+
+        // Implicit return-0 / fall-through-ret at the end of the function so
+        // bodies that don't end in an explicit `return` still exit cleanly
+        // (otherwise control would walk past the function into whatever
+        // bytes follow — strings, the next function, etc.).
+        const is_main = std.mem.eql(u8, func.name, "main");
+        if (is_main) {
+            try self.assembler.movRegImm64(.x0, 0);
+            switch (builtin.os.tag) {
+                .macos => {
+                    try self.assembler.movRegImm64(.x16, 1);
+                    try self.assembler.svc(0x80);
+                },
+                .linux => {
+                    try self.assembler.movRegImm64(.x8, 93);
+                    try self.assembler.svc(0);
+                },
+                else => return error.UnsupportedPlatform,
+            }
+        } else {
+            if (self.frame_size > 0) {
+                try self.assembler.addRegImm(.sp, .sp, @intCast(self.frame_size));
+            }
+            try self.assembler.functionEpilogue();
+        }
     }
 
     fn generateLetDecl(self: *Aarch64NativeCodegen, decl: *ast.LetDecl) CodegenError!void {
@@ -348,6 +405,14 @@ pub const Aarch64NativeCodegen = struct {
             else => return error.InvalidCallTarget,
         };
 
+        // Built-in print/println for string-literal arguments. Anything more
+        // ambitious (interpolation, integer arguments, etc.) is M-later.
+        if (std.mem.eql(u8, callee_name, "print") or
+            std.mem.eql(u8, callee_name, "println"))
+        {
+            return self.emitPrintBuiltin(call, std.mem.eql(u8, callee_name, "println"));
+        }
+
         // Evaluate args in source order, spilling each to the stack so later
         // arg evaluation can freely clobber x0/x1. After all are evaluated,
         // pop them in reverse so x0..xN-1 hold args 0..N-1.
@@ -430,6 +495,71 @@ pub const Aarch64NativeCodegen = struct {
     fn emitCompare(self: *Aarch64NativeCodegen, cond: arm64.Assembler.Cond) !void {
         try self.assembler.cmpRegReg(.x1, .x0);
         try self.assembler.cset(.x0, cond);
+    }
+
+    fn emitPrintBuiltin(self: *Aarch64NativeCodegen, call: *ast.CallExpr, append_newline: bool) CodegenError!void {
+        if (call.args.len != 1) return error.NotImplemented;
+        const lit = switch (call.args[0].*) {
+            .StringLiteral => |s| s,
+            else => return error.NotImplemented, // M6 only supports string literals
+        };
+
+        // Build the final byte sequence (with optional trailing newline) and
+        // intern it. Bytes are owned by this codegen instance and freed in
+        // deinit.
+        const len_with_nl: usize = lit.value.len + @as(usize, if (append_newline) 1 else 0);
+        const owned = try self.allocator.alloc(u8, len_with_nl);
+        @memcpy(owned[0..lit.value.len], lit.value);
+        if (append_newline) owned[lit.value.len] = '\n';
+
+        const string_index: usize = self.strings.items.len;
+        try self.strings.append(self.allocator, .{ .bytes = owned });
+
+        // Emit the syscall sequence:
+        //   adr  x1, <string addr>      ; ptr   (patched after string layout)
+        //   mov  x0, #1                  ; fd = stdout
+        //   mov  x2, #<len>              ; count
+        //   mov  x16, #4 / x8, #64       ; SYS_write (Darwin / Linux)
+        //   svc  #0x80   / svc #0
+        const adr_pos = self.assembler.getPosition();
+        try self.assembler.adr(.x1, 0); // placeholder
+        try self.string_fixups.append(self.allocator, .{ .adr_pos = adr_pos, .string_index = string_index });
+
+        try self.assembler.movRegImm64(.x0, 1);
+        try self.assembler.movRegImm64(.x2, @intCast(len_with_nl));
+        switch (builtin.os.tag) {
+            .macos => {
+                try self.assembler.movRegImm64(.x16, 4);
+                try self.assembler.svc(0x80);
+            },
+            .linux => {
+                try self.assembler.movRegImm64(.x8, 64);
+                try self.assembler.svc(0);
+            },
+            else => return error.UnsupportedPlatform,
+        }
+    }
+
+    /// Append every interned string to the end of the code buffer (still
+    /// inside the __TEXT segment) and patch each ADR fixup so callers point
+    /// at the right offset.
+    fn appendStringsAndPatch(self: *Aarch64NativeCodegen) CodegenError!void {
+        if (self.strings.items.len == 0) return;
+
+        // Pad code to 8-byte alignment before string data.
+        while (self.assembler.code.items.len % 8 != 0) {
+            try self.assembler.code.append(self.assembler.allocator, 0);
+        }
+
+        for (self.strings.items) |*str| {
+            str.offset = self.assembler.code.items.len;
+            try self.assembler.code.appendSlice(self.assembler.allocator, str.bytes);
+        }
+
+        for (self.string_fixups.items) |fixup| {
+            const target = self.strings.items[fixup.string_index].offset;
+            try self.assembler.patchAdr(fixup.adr_pos, .x1, target);
+        }
     }
 };
 

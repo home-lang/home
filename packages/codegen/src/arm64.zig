@@ -380,6 +380,30 @@ pub const Assembler = struct {
         try self.emitU32(instr);
     }
 
+    /// ADR Xd, label - PC-relative byte address (signed 21-bit, ±1 MiB).
+    /// `offset` is the byte offset from this instruction to the target.
+    pub fn adr(self: *Assembler, dest: Register, offset: i32) !void {
+        const imm_u: u32 = @as(u32, @bitCast(offset)) & 0x1FFFFF; // 21 bits
+        const immlo: u32 = imm_u & 0x3;
+        const immhi: u32 = (imm_u >> 2) & 0x7FFFF;
+        const rd = @intFromEnum(dest);
+        const instr = 0x10000000 | (immlo << 29) | (immhi << 5) | rd;
+        try self.emitU32(instr);
+    }
+
+    /// Patch a previously-emitted ADR at `position` to point at byte
+    /// offset `target` within the code buffer.
+    pub fn patchAdr(self: *Assembler, position: usize, dest: Register, target: usize) !void {
+        const offset: i32 = @as(i32, @intCast(target)) - @as(i32, @intCast(position));
+        const imm_u: u32 = @as(u32, @bitCast(offset)) & 0x1FFFFF;
+        const immlo: u32 = imm_u & 0x3;
+        const immhi: u32 = (imm_u >> 2) & 0x7FFFF;
+        const rd = @intFromEnum(dest);
+        const instr = 0x10000000 | (immlo << 29) | (immhi << 5) | rd;
+        const buf = std.mem.toBytes(instr);
+        @memcpy(self.code.items[position .. position + 4], &buf);
+    }
+
     /// CSET Xd, cond - Conditional set: writes 1 if `cond` is true after the
     /// most recent flag-setting instruction, else 0. Aliases CSINC with the
     /// low bit of the condition inverted (CSET Xd, eq → CSINC Xd, XZR, XZR, ne).
