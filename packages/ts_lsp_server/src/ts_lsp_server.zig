@@ -515,6 +515,62 @@ pub fn renderInitializeResult(gpa: std.mem.Allocator) ![]u8 {
     );
 }
 
+/// Render the full InitializeResult capabilities response advertised
+/// by `initialize`. This is the long-form descriptor used by the
+/// lifecycle handler — the older `renderInitializeResult` remains for
+/// the legacy stdio loop in `lsp_main.zig`.
+pub fn renderInitializeCapabilities(gpa: std.mem.Allocator) ![]u8 {
+    return gpa.dupe(u8,
+        \\{"capabilities":{"textDocumentSync":1,"hoverProvider":true,"definitionProvider":true,"referencesProvider":true,"completionProvider":{"triggerCharacters":["."," "]},"documentSymbolProvider":true,"workspaceSymbolProvider":true,"renameProvider":true,"codeActionProvider":true,"semanticTokensProvider":{"legend":{"tokenTypes":["variable","parameter","function","method","class","interface","type","enum","property","keyword","string","number","operator","comment"],"tokenModifiers":[]},"full":true,"range":true},"signatureHelpProvider":{"triggerCharacters":["(",","]},"documentHighlightProvider":false,"documentFormattingProvider":true,"foldingRangeProvider":true},"serverInfo":{"name":"home-lsp","version":"0.1.0"}}
+    );
+}
+
+/// Handle an `initialize` JSON-RPC request. Returns a fully encoded
+/// JSON-RPC response body advertising the server's capabilities. The
+/// `params_json` is currently unused — once we honor client
+/// `workspaceFolders` / `clientCapabilities`, that's where they'll be
+/// extracted from. Caller owns the returned slice.
+pub fn handleInitialize(
+    gpa: std.mem.Allocator,
+    request_id: RequestId,
+    params_json: []const u8,
+) ![]u8 {
+    _ = params_json;
+    const result = try renderInitializeCapabilities(gpa);
+    defer gpa.free(result);
+    return encodeResponse(gpa, request_id, result);
+}
+
+/// Handle a `shutdown` JSON-RPC request. Per the LSP spec the server
+/// must respond with `result: null`; the actual process termination
+/// is deferred to a subsequent `exit` notification. Caller owns the
+/// returned slice.
+pub fn handleShutdown(
+    gpa: std.mem.Allocator,
+    request_id: RequestId,
+) ![]u8 {
+    return encodeResponse(gpa, request_id, "null");
+}
+
+/// Handle the `initialized` notification — sent by the client once it
+/// has processed `InitializeResult`. No-op acknowledgment; we don't
+/// emit a response (notifications never have one).
+pub fn handleInitialized(
+    gpa: std.mem.Allocator,
+    params_json: []const u8,
+) !void {
+    _ = gpa;
+    _ = params_json;
+}
+
+/// Handle the `exit` notification — terminates the server with status
+/// code 0. Per the LSP spec this fires after `shutdown`. Does not
+/// return.
+pub fn handleExit(gpa: std.mem.Allocator) !void {
+    _ = gpa;
+    std.process.exit(0);
+}
+
 // =============================================================================
 // Tests
 // =============================================================================
@@ -590,6 +646,46 @@ test "renderInitializeResult: declares capabilities" {
     try T.expect(std.mem.indexOf(u8, r, "definitionProvider") != null);
     try T.expect(std.mem.indexOf(u8, r, "referencesProvider") != null);
     try T.expect(std.mem.indexOf(u8, r, "completionProvider") != null);
+}
+
+test "handleInitialize: response advertises full capability set" {
+    const r = try handleInitialize(T.allocator, .{ .integer = 1 }, "{}");
+    defer T.allocator.free(r);
+    // Envelope.
+    try T.expect(std.mem.indexOf(u8, r, "\"jsonrpc\":\"2.0\"") != null);
+    try T.expect(std.mem.indexOf(u8, r, "\"id\":1") != null);
+    try T.expect(std.mem.indexOf(u8, r, "\"result\":{\"capabilities\":") != null);
+    // Required capability flags.
+    try T.expect(std.mem.indexOf(u8, r, "\"textDocumentSync\":1") != null);
+    try T.expect(std.mem.indexOf(u8, r, "\"hoverProvider\":true") != null);
+    try T.expect(std.mem.indexOf(u8, r, "\"definitionProvider\":true") != null);
+    try T.expect(std.mem.indexOf(u8, r, "\"referencesProvider\":true") != null);
+    try T.expect(std.mem.indexOf(u8, r, "\"documentSymbolProvider\":true") != null);
+    try T.expect(std.mem.indexOf(u8, r, "\"workspaceSymbolProvider\":true") != null);
+    try T.expect(std.mem.indexOf(u8, r, "\"renameProvider\":true") != null);
+    try T.expect(std.mem.indexOf(u8, r, "\"codeActionProvider\":true") != null);
+    try T.expect(std.mem.indexOf(u8, r, "\"documentFormattingProvider\":true") != null);
+    try T.expect(std.mem.indexOf(u8, r, "\"foldingRangeProvider\":true") != null);
+    try T.expect(std.mem.indexOf(u8, r, "\"documentHighlightProvider\":false") != null);
+    // Provider sub-objects.
+    try T.expect(std.mem.indexOf(u8, r, "\"completionProvider\":{\"triggerCharacters\":[\".\",\" \"]}") != null);
+    try T.expect(std.mem.indexOf(u8, r, "\"signatureHelpProvider\":{\"triggerCharacters\":[\"(\",\",\"]}") != null);
+    try T.expect(std.mem.indexOf(u8, r, "\"semanticTokensProvider\"") != null);
+    try T.expect(std.mem.indexOf(u8, r, "\"tokenTypes\":[") != null);
+    try T.expect(std.mem.indexOf(u8, r, "\"full\":true") != null);
+    try T.expect(std.mem.indexOf(u8, r, "\"range\":true") != null);
+}
+
+test "handleShutdown: returns null result envelope" {
+    const r = try handleShutdown(T.allocator, .{ .integer = 99 });
+    defer T.allocator.free(r);
+    try T.expect(std.mem.indexOf(u8, r, "\"jsonrpc\":\"2.0\"") != null);
+    try T.expect(std.mem.indexOf(u8, r, "\"id\":99") != null);
+    try T.expect(std.mem.indexOf(u8, r, "\"result\":null") != null);
+}
+
+test "handleInitialized: notification is a no-op" {
+    try handleInitialized(T.allocator, "{}");
 }
 
 test "renderHoverResult: includes plaintext content + range" {
