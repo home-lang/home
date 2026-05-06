@@ -394,12 +394,62 @@ pub const Checker = struct {
                 if (ts.finally_block != hir_mod.none_node_id) try self.checkStatement(ts.finally_block);
                 try self.checkUnusedCatchParam(node);
             },
+            .switch_stmt => try self.checkSwitchStatement(node),
             // Expressions used as statements.
             else => {
                 if (hir_mod.NodeKind.isExpression(self.hir.kindOf(node))) {
                     _ = try self.checkExpression(node);
                 }
             },
+        }
+    }
+
+    /// Type a `switch_stmt` body. Beyond walking each case's
+    /// statements, this also performs discriminated-union narrowing
+    /// so `switch (x.kind) { case "circle": ... }` narrows `x` to
+    /// the matching variant inside that case's body. The default
+    /// case sees `x` narrowed to the union minus every listed case.
+    fn checkSwitchStatement(self: *Checker, node: NodeId) CheckError!void {
+        const sw = hir_mod.switchOf(self.hir, node);
+        _ = try self.checkExpression(sw.discriminant);
+        const cases = hir_mod.switchCases(self.hir, node);
+
+        // Only the `x.kind` shape opts into narrowing — the
+        // discriminant must be a member access on a bare identifier
+        // for the existing `applyDiscriminatedNarrow` helper to fire.
+        const is_disc_narrowable = self.hir.kindOf(sw.discriminant) == .member_access and blk: {
+            const m = hir_mod.memberOf(self.hir, sw.discriminant);
+            break :blk self.hir.kindOf(m.object) == .identifier;
+        };
+
+        for (cases) |case_node| {
+            const case_p = hir_mod.switchCaseOf(self.hir, case_node);
+            const stmts = hir_mod.switchCaseStmts(self.hir, case_node);
+
+            try self.pushNarrowScope();
+            defer self.popNarrowScope();
+
+            if (case_p.value != hir_mod.none_node_id) {
+                // `case <literal>:` — type the literal, then narrow
+                // the discriminant's object to the matching variant.
+                _ = try self.checkExpression(case_p.value);
+                if (is_disc_narrowable) {
+                    try self.applyDiscriminatedNarrow(sw.discriminant, case_p.value, true);
+                }
+            } else if (is_disc_narrowable) {
+                // `default:` — narrow to the union minus every
+                // listed case. Each call to `applyDiscriminatedNarrow`
+                // with `positive=false` consults the current narrow
+                // (via `typeOfIdentifier`), so successive calls
+                // accumulate.
+                for (cases) |other| {
+                    const other_p = hir_mod.switchCaseOf(self.hir, other);
+                    if (other_p.value == hir_mod.none_node_id) continue;
+                    try self.applyDiscriminatedNarrow(sw.discriminant, other_p.value, false);
+                }
+            }
+
+            for (stmts) |s| try self.checkStatement(s);
         }
     }
 
@@ -5876,4 +5926,69 @@ test "checker: typeof x === \"function\" narrows x in then-branch" {
     const v_decl = then_stmts[0];
     const v_init = hir_mod.varDeclOf(&s.hir, v_decl).init;
     try T.expectEqual(types.Primitive.object_t, s.hir.typeOf(v_init));
+}
+
+test "checker: switch on x.kind narrows x per case body" {
+    // Discriminated-union narrowing inside switch cases — `s.v`
+    // resolves to each variant's `v` type rather than the wider
+    // `number | string`.
+    const s = try newSetup(
+        \\type S = { k: "a"; v: number } | { k: "b"; v: string };
+        \\function f(s: S) {
+        \\  switch (s.k) {
+        \\    case "a": let n = s.v; break;
+        \\    case "b": let str = s.v; break;
+        \\  }
+        \\}
+    );
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+    try T.expect(s.checker.diagnostics.items.len == 0);
+    const stmts = hir_mod.blockStmts(&s.hir, s.root);
+    const fn_node = stmts[1];
+    const f = hir_mod.fnDeclOf(&s.hir, fn_node);
+    const body_stmts = hir_mod.blockStmts(&s.hir, f.body);
+    const sw_node = body_stmts[0];
+    const cases = hir_mod.switchCases(&s.hir, sw_node);
+
+    // case "a" → n init = s.v should type to number_t.
+    const a_stmts = hir_mod.switchCaseStmts(&s.hir, cases[0]);
+    const n_init = hir_mod.varDeclOf(&s.hir, a_stmts[0]).init;
+    try T.expectEqual(types.Primitive.number_t, s.hir.typeOf(n_init));
+
+    // case "b" → str init = s.v should type to string_t.
+    const b_stmts = hir_mod.switchCaseStmts(&s.hir, cases[1]);
+    const str_init = hir_mod.varDeclOf(&s.hir, b_stmts[0]).init;
+    try T.expectEqual(types.Primitive.string_t, s.hir.typeOf(str_init));
+}
+
+test "checker: switch default narrows x to union minus listed cases" {
+    // The default case sees `x` narrowed to the union members not
+    // matched by any listed case. With two variants and one case
+    // listed, default narrows to the remaining variant — so
+    // `s.v` resolves to that variant's `v` type.
+    const s = try newSetup(
+        \\type S = { k: "a"; v: number } | { k: "b"; v: string };
+        \\function f(s: S) {
+        \\  switch (s.k) {
+        \\    case "a": let n = s.v; break;
+        \\    default: let other = s.v; break;
+        \\  }
+        \\}
+    );
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+    try T.expect(s.checker.diagnostics.items.len == 0);
+    const stmts = hir_mod.blockStmts(&s.hir, s.root);
+    const fn_node = stmts[1];
+    const f = hir_mod.fnDeclOf(&s.hir, fn_node);
+    const body_stmts = hir_mod.blockStmts(&s.hir, f.body);
+    const sw_node = body_stmts[0];
+    const cases = hir_mod.switchCases(&s.hir, sw_node);
+    // Default case body: `let other = s.v` — `s` was narrowed to
+    // the only remaining variant ({ k: "b"; v: string }), so
+    // `s.v` types to `string`.
+    const def_stmts = hir_mod.switchCaseStmts(&s.hir, cases[1]);
+    const other_init = hir_mod.varDeclOf(&s.hir, def_stmts[0]).init;
+    try T.expectEqual(types.Primitive.string_t, s.hir.typeOf(other_init));
 }
