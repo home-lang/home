@@ -2062,6 +2062,25 @@ pub const Checker = struct {
                 try self.checkFnDecl(node);
                 break :blk self.hir.typeOf(node);
             },
+            .await_expr => blk: {
+                // `await expr` — type-check the operand and pass its
+                // type through. TODO(Phase 6): when the operand's type
+                // is a known `Promise<T>`-shaped object with a `.then`
+                // member, unwrap to `T`.
+                const a = hir_mod.awaitExprOf(self.hir, node);
+                const inner_t = try self.checkExpression(a.expr);
+                break :blk inner_t;
+            },
+            .yield_expr => blk: {
+                // `yield expr` / `yield* expr` — type-check the
+                // operand and pass its type through. TODO(Phase 6):
+                // model generator yield/return type pairs and unwrap
+                // delegated yields' iterables.
+                const y = hir_mod.yieldExprOf(self.hir, node);
+                if (y.expr == hir_mod.none_node_id) break :blk types.Primitive.undefined_t;
+                const inner_t = try self.checkExpression(y.expr);
+                break :blk inner_t;
+            },
             else => types.Primitive.any,
         };
         self.hir.setType(node, t);
@@ -4571,4 +4590,35 @@ test "checker: type-parameter variance — no modifier defaults to bivariant" {
     try T.expectEqual(@as(usize, 1), tps.len);
     const tp_id = s.hir.typeOf(tps[0]);
     try T.expectEqual(types.Variance.bivariant, s.ti.typeParameterVariance(tp_id));
+}
+
+test "checker: `await g()` types as the operand call's return type" {
+    const s = try newSetup(
+        \\function g(): number { return 1; }
+        \\let x = await g();
+    );
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+    const stmts = hir_mod.blockStmts(&s.hir, s.root);
+    const x_decl = stmts[1];
+    try T.expectEqual(hir_mod.NodeKind.let_decl, s.hir.kindOf(x_decl));
+    const v = hir_mod.varDeclOf(&s.hir, x_decl);
+    try T.expectEqual(hir_mod.NodeKind.await_expr, s.hir.kindOf(v.init));
+    // v1: await passes the operand type through (TODO: Promise<T> unwrap).
+    try T.expectEqual(types.Primitive.number_t, s.hir.typeOf(v.init));
+}
+
+test "checker: `yield expr` types as the operand expression's type" {
+    const s = try newSetup("function* gen() { yield 1; }");
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+    const stmts = hir_mod.blockStmts(&s.hir, s.root);
+    const fn_node = stmts[0];
+    const fn_payload = hir_mod.fnDeclOf(&s.hir, fn_node);
+    const body_stmts = hir_mod.blockStmts(&s.hir, fn_payload.body);
+    // The parser drops expression-statement wrappers, so body_stmts[0]
+    // is the yield_expr directly.
+    const expr_id = body_stmts[0];
+    try T.expectEqual(hir_mod.NodeKind.yield_expr, s.hir.kindOf(expr_id));
+    try T.expectEqual(types.Primitive.number_t, s.hir.typeOf(expr_id));
 }
