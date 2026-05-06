@@ -460,4 +460,14 @@ pub const Assembler = struct {
         const bytes = std.mem.toBytes(instr);
         @memcpy(self.code.items[position .. position + 4], &bytes);
     }
+
+    /// Patch a previously-emitted BL at `position` to call `target`.
+    pub fn patchBl(self: *Assembler, position: usize, target: usize) !void {
+        const offset = @as(i32, @intCast(target)) - @as(i32, @intCast(position));
+        const imm26 = @as(u32, @bitCast(offset >> 2)) & 0x3FFFFFF;
+        const instr = 0x94000000 | imm26;
+
+        const bytes = std.mem.toBytes(instr);
+        @memcpy(self.code.items[position .. position + 4], &bytes);
+    }
 };
