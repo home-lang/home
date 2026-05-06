@@ -9,6 +9,7 @@ const ast = @import("ast");
 const Interpreter = @import("interpreter").Interpreter;
 const codegen_mod = @import("codegen");
 const NativeCodegen = codegen_mod.NativeCodegen;
+const Aarch64NativeCodegen = codegen_mod.Aarch64NativeCodegen;
 const TypeRegistry = codegen_mod.TypeRegistry;
 const HomeKernelCodegen = codegen_mod.HomeKernelCodegen;
 const TypeChecker = @import("types").TypeChecker;
@@ -1732,6 +1733,39 @@ fn buildCommand(allocator: std.mem.Allocator, file_path: []const u8, output_path
             }
             break :blk "a.out";
         };
+
+        // Pick backend by host arch. The aarch64 path is M1 of issue #5
+        // (Path B-lite) — it currently only handles `fn main() { return <int>; }`.
+        // Fall through to the x64 backend for any other host (the existing
+        // behaviour, which on Apple Silicon produces an x86_64 binary that
+        // runs under Rosetta 2).
+        if (builtin.target.cpu.arch == .aarch64 and builtin.os.tag == .macos) {
+            std.debug.print("{s}Generating native arm64 code...{s}\n", .{ Color.Green.code(), Color.Reset.code() });
+
+            var codegen = Aarch64NativeCodegen.init(allocator, program);
+            defer codegen.deinit();
+            codegen.io = g_io;
+
+            codegen.writeExecutable(out_path) catch |err| {
+                if (codegen.io) |cio| {
+                    Io.Dir.cwd().deleteFile(cio, out_path) catch {};
+                }
+                return err;
+            };
+
+            // Apple Silicon refuses to execute unsigned arm64 binaries.
+            // An ad-hoc signature (`codesign --sign - <path>`) is enough
+            // to satisfy the kernel without requiring a developer cert.
+            adhocCodesign(allocator, out_path) catch |err| {
+                std.debug.print("{s}Warning:{s} codesign failed ({}); binary may not run\n", .{ Color.Yellow.code(), Color.Reset.code(), err });
+            };
+
+            std.debug.print("\n{s}Success:{s} Built native executable {s}\n", .{ Color.Green.code(), Color.Reset.code(), out_path });
+            std.debug.print("{s}Info:{s} Run with: ./{s}\n", .{ Color.Blue.code(), Color.Reset.code(), out_path });
+
+            // Skip the x64 path below (incremental cache is x64-only for now).
+            return;
+        }
 
         std.debug.print("{s}Generating native x86-64 code...{s}\n", .{ Color.Green.code(), Color.Reset.code() });
 
@@ -4376,5 +4410,24 @@ fn pkgWhoami(allocator: std.mem.Allocator) !void {
                 std.debug.print("    {s}Status: Active{s}\n", .{ Color.Green.code(), Color.Reset.code() });
             }
         }
+    }
+}
+
+/// Apply an ad-hoc code signature to a freshly-built macOS arm64 binary.
+/// Apple Silicon's kernel refuses to execute unsigned arm64 binaries; an
+/// ad-hoc signature (no developer cert) is enough to satisfy that check.
+fn adhocCodesign(_: std.mem.Allocator, path: []const u8) !void {
+    if (builtin.os.tag != .macos) return;
+
+    var child = try std.process.spawn(g_io, .{
+        .argv = &.{ "codesign", "--sign", "-", "--force", path },
+        .stdin = .ignore,
+        .stdout = .ignore,
+        .stderr = .ignore,
+    });
+    const term = try child.wait(g_io);
+    switch (term) {
+        .exited => |code| if (code != 0) return error.CodesignFailed,
+        else => return error.CodesignFailed,
     }
 }

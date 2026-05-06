@@ -2,6 +2,7 @@
 // Exports all codegen modules
 
 pub const native_codegen = @import("native_codegen.zig");
+pub const aarch64_native_codegen = @import("aarch64_native_codegen.zig");
 pub const kernel_codegen = @import("kernel_codegen.zig");
 pub const home_kernel_codegen = @import("home_kernel_codegen.zig");
 pub const llvm_codegen = @import("llvm_codegen.zig");
@@ -23,6 +24,7 @@ pub const checked_cast = @import("checked_cast.zig");
 
 // Re-export commonly used types
 pub const NativeCodegen = native_codegen.NativeCodegen;
+pub const Aarch64NativeCodegen = aarch64_native_codegen.Aarch64NativeCodegen;
 pub const TypeRegistry = native_codegen.TypeRegistry;
 pub const HomeKernelCodegen = home_kernel_codegen.HomeKernelCodegen;
 pub const LLVMCodegen = llvm_codegen.LLVMCodegen;

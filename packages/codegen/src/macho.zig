@@ -8,11 +8,16 @@ pub const MachOWriter = struct {
     data: []const u8, // Data section (for string literals, etc.)
     entry_point: u64,
     io: ?Io = null,
+    target_arch: Arch = .x86_64,
+
+    pub const Arch = enum { x86_64, aarch64 };
 
     // Mach-O constants
     const MH_MAGIC_64: u32 = 0xfeedfacf;
     const CPU_TYPE_X86_64: i32 = 0x01000007;
     const CPU_SUBTYPE_X86_64_ALL: i32 = 3;
+    const CPU_TYPE_ARM64: i32 = 0x0100000c;
+    const CPU_SUBTYPE_ARM64_ALL: i32 = 0;
     const MH_EXECUTE: u32 = 2;
     const MH_NOUNDEFS: u32 = 1;
     const LC_SEGMENT_64: u32 = 0x19;
@@ -25,12 +30,38 @@ pub const MachOWriter = struct {
     const VM_PROT_WRITE: u32 = 2;
     const VM_PROT_EXECUTE: u32 = 4;
 
+    // MH header flags
+    const MH_DYLDLINK: u32 = 0x00000004;
+    const MH_TWOLEVEL: u32 = 0x00000080;
+    const MH_PIE: u32 = 0x00200000;
+
     pub fn init(allocator: std.mem.Allocator, code: []const u8, data: []const u8) MachOWriter {
         return .{
             .allocator = allocator,
             .code = code,
             .data = data,
             .entry_point = 0x100000000 + 0x1000, // Standard macOS load address + offset
+        };
+    }
+
+    pub fn initArm64(allocator: std.mem.Allocator, code: []const u8, data: []const u8) MachOWriter {
+        return .{
+            .allocator = allocator,
+            .code = code,
+            .data = data,
+            // Apple Silicon requires the __TEXT segment to be 16 KiB aligned;
+            // file offsets and segment vmaddrs follow the same constraint.
+            .entry_point = 0x100000000 + 0x4000,
+            .target_arch = .aarch64,
+        };
+    }
+
+    /// File and VM page size for this target. macOS-x86_64 uses 4 KiB pages;
+    /// macOS-arm64 (Apple Silicon) requires 16 KiB.
+    fn pageSize(self: *const MachOWriter) u64 {
+        return switch (self.target_arch) {
+            .x86_64 => 0x1000,
+            .aarch64 => 0x4000,
         };
     }
 
@@ -41,13 +72,13 @@ pub const MachOWriter = struct {
     pub fn writeWithEntryPoint(self: *MachOWriter, path: []const u8, entry_offset: u64) !void {
         const io_val = self.io orelse return error.FileSystemAccessDenied;
 
-        self.entry_point = 0x100000000 + 0x1000 + entry_offset;
+        const page_size = self.pageSize();
+        self.entry_point = 0x100000000 + page_size + entry_offset;
 
         const file = try Io.Dir.cwd().createFile(io_val, path, .{});
         defer file.close(io_val);
 
         // Calculate sizes
-        const page_size: u64 = 0x1000;
         const code_size_aligned = std.mem.alignForward(u64, self.code.len, page_size);
         const data_size_aligned = if (self.data.len > 0)
             std.mem.alignForward(u64, self.data.len, page_size)
@@ -55,7 +86,7 @@ pub const MachOWriter = struct {
             0;
 
         // Calculate file offsets
-        const text_file_offset: u64 = 0x1000; // __TEXT at page 1
+        const text_file_offset: u64 = page_size; // __TEXT at page 1
         const data_file_offset: u64 = text_file_offset + code_size_aligned; // __DATA after __TEXT
         const linkedit_offset: u64 = data_file_offset + data_size_aligned; // __LINKEDIT after __DATA
 
@@ -128,18 +159,23 @@ pub const MachOWriter = struct {
     }
 
     fn writeMachHeader(self: *MachOWriter, io_val: Io, file: Io.File, has_data: bool) !void {
-        _ = self;
         var header: [32]u8 = undefined;
         @memset(&header, 0);
 
         // magic
         std.mem.writeInt(u32, header[0..4], MH_MAGIC_64, .little);
 
-        // cputype
-        std.mem.writeInt(i32, header[4..8], CPU_TYPE_X86_64, .little);
-
-        // cpusubtype
-        std.mem.writeInt(i32, header[8..12], CPU_SUBTYPE_X86_64_ALL, .little);
+        // cputype + cpusubtype, branched on target arch
+        const cputype: i32 = switch (self.target_arch) {
+            .x86_64 => CPU_TYPE_X86_64,
+            .aarch64 => CPU_TYPE_ARM64,
+        };
+        const cpusubtype: i32 = switch (self.target_arch) {
+            .x86_64 => CPU_SUBTYPE_X86_64_ALL,
+            .aarch64 => CPU_SUBTYPE_ARM64_ALL,
+        };
+        std.mem.writeInt(i32, header[4..8], cputype, .little);
+        std.mem.writeInt(i32, header[8..12], cpusubtype, .little);
 
         // filetype
         std.mem.writeInt(u32, header[12..16], MH_EXECUTE, .little);
@@ -166,8 +202,14 @@ pub const MachOWriter = struct {
         }
         std.mem.writeInt(u32, header[20..24], total_cmd_size, .little);
 
-        // flags
-        std.mem.writeInt(u32, header[24..28], MH_NOUNDEFS, .little);
+        // flags. Apple Silicon refuses to execute arm64 binaries that lack
+        // MH_PIE (the kernel SIGKILLs them). Add MH_DYLDLINK + MH_TWOLEVEL on
+        // arm64 too — clang sets all three on every Apple Silicon binary.
+        const flags: u32 = switch (self.target_arch) {
+            .x86_64 => MH_NOUNDEFS,
+            .aarch64 => MH_NOUNDEFS | MH_DYLDLINK | MH_TWOLEVEL | MH_PIE,
+        };
+        std.mem.writeInt(u32, header[24..28], flags, .little);
 
         // reserved
         std.mem.writeInt(u32, header[28..32], 0, .little);
@@ -194,7 +236,7 @@ pub const MachOWriter = struct {
     }
 
     fn writeTextSegment(self: *MachOWriter, io_val: Io, file: Io.File, code_size: u64) !void {
-        _ = self;
+        const page_size = self.pageSize();
         // Segment command (72 bytes) + section header (80 bytes) = 152 bytes
         var cmd: [152]u8 = undefined;
         @memset(&cmd, 0);
@@ -204,9 +246,9 @@ pub const MachOWriter = struct {
         std.mem.writeInt(u32, cmd[4..8], 152, .little); // cmdsize includes section
         @memcpy(cmd[8..14], "__TEXT");
         std.mem.writeInt(u64, cmd[24..32], 0x100000000, .little); // vmaddr
-        std.mem.writeInt(u64, cmd[32..40], code_size + 0x1000, .little); // vmsize
+        std.mem.writeInt(u64, cmd[32..40], code_size + page_size, .little); // vmsize
         std.mem.writeInt(u64, cmd[40..48], 0, .little); // fileoff
-        std.mem.writeInt(u64, cmd[48..56], code_size + 0x1000, .little); // filesize
+        std.mem.writeInt(u64, cmd[48..56], code_size + page_size, .little); // filesize
         std.mem.writeInt(i32, cmd[56..60], @as(i32, @intCast(VM_PROT_READ | VM_PROT_EXECUTE)), .little); // maxprot (no write)
         std.mem.writeInt(i32, cmd[60..64], @as(i32, @intCast(VM_PROT_READ | VM_PROT_EXECUTE)), .little); // initprot
         std.mem.writeInt(u32, cmd[64..68], 1, .little); // nsects - 1 section (__text)
@@ -215,9 +257,9 @@ pub const MachOWriter = struct {
         // __text section header (80 bytes starting at offset 72)
         @memcpy(cmd[72..78], "__text"); // sectname (0-15, using 0-5)
         @memcpy(cmd[88..94], "__TEXT"); // segname (16-31, using 16-21)
-        std.mem.writeInt(u64, cmd[104..112], 0x100000000 + 0x1000, .little); // addr (32-39)
+        std.mem.writeInt(u64, cmd[104..112], 0x100000000 + page_size, .little); // addr (32-39)
         std.mem.writeInt(u64, cmd[112..120], code_size, .little); // size (40-47)
-        std.mem.writeInt(u32, cmd[120..124], 0x1000, .little); // offset in file (48-51)
+        std.mem.writeInt(u32, cmd[120..124], @intCast(page_size), .little); // offset in file (48-51)
         std.mem.writeInt(u32, cmd[124..128], 4, .little); // align (52-55) - 2^4 = 16 bytes
         std.mem.writeInt(u32, cmd[128..132], 0, .little); // reloff (56-59)
         std.mem.writeInt(u32, cmd[132..136], 0, .little); // nreloc (60-63)
@@ -273,7 +315,6 @@ pub const MachOWriter = struct {
     }
 
     fn writeLinkedItSegment(self: *MachOWriter, io_val: Io, file: Io.File, linkedit_offset: u64) !void {
-        _ = self;
         var cmd: [72]u8 = undefined;
         @memset(&cmd, 0);
 
@@ -283,7 +324,7 @@ pub const MachOWriter = struct {
         std.mem.writeInt(u64, cmd[24..32], 0x100000000 + linkedit_offset, .little); // vmaddr
         // vmsize must be page-aligned; filesize is the actual on-disk
         // bytes (1 null byte). The loader zero-fills the difference.
-        std.mem.writeInt(u64, cmd[32..40], 0x1000, .little); // vmsize
+        std.mem.writeInt(u64, cmd[32..40], self.pageSize(), .little); // vmsize
         std.mem.writeInt(u64, cmd[40..48], linkedit_offset, .little); // fileoff
         std.mem.writeInt(u64, cmd[48..56], 1, .little); // filesize (1 null byte)
         std.mem.writeInt(i32, cmd[56..60], @as(i32, @intCast(VM_PROT_READ)), .little); // maxprot
@@ -313,7 +354,6 @@ pub const MachOWriter = struct {
     }
 
     fn writeMainCommand(self: *MachOWriter, io_val: Io, file: Io.File, entry_offset: u64) !void {
-        _ = self;
         var cmd: [24]u8 = undefined;
         @memset(&cmd, 0);
 
@@ -324,7 +364,7 @@ pub const MachOWriter = struct {
         std.mem.writeInt(u32, cmd[4..8], 24, .little);
 
         // entryoff - offset of main() from start of __TEXT segment
-        std.mem.writeInt(u64, cmd[8..16], 0x1000 + entry_offset, .little);
+        std.mem.writeInt(u64, cmd[8..16], self.pageSize() + entry_offset, .little);
 
         // stacksize - initial stack size (0 = use default)
         std.mem.writeInt(u64, cmd[16..24], 0, .little);
