@@ -487,6 +487,57 @@ pub const Service = struct {
         return null;
     }
 
+    /// LSP `textDocument/typeDefinition` — return the location of the
+    /// *type* of the expression at `byte_pos`, not the expression's
+    /// own declaration. For `let x: Foo = ...`, gotoDefinition on `x`
+    /// goes to the `let_decl`; typeDefinition goes to the `Foo`
+    /// interface/type/class declaration.
+    ///
+    /// v0: handles the common case where the cursor is on an
+    /// identifier whose binding is a variable with an explicit
+    /// `type_ref` annotation that names a top-level interface,
+    /// class, or type alias (a member of `module.root.types`).
+    /// Object literals, anonymous types, and inferred-only types
+    /// fall through to `null`.
+    pub fn typeDefinition(self: *Service, file_path: []const u8, byte_pos: u32) ?Definition {
+        const file_id = self.program.lookupPath(file_path) orelse return null;
+        const f = self.program.fileById(file_id);
+        const c = f.compilation orelse return null;
+        const node = findInnermostNode(&c.hir, c.root, byte_pos) orelse return null;
+        if (c.hir.kindOf(node) != .identifier) return null;
+        const id = hir_mod.identifierOf(&c.hir, node);
+        const sym = c.module.root.lookup(id.name) orelse return null;
+        if (sym.decls.items.len == 0) return null;
+
+        // Walk the variable's declarations looking for an explicit
+        // type-ref annotation pointing at a named top-level type.
+        for (sym.decls.items) |decl| {
+            const dk = c.hir.kindOf(decl);
+            if (dk != .var_decl and dk != .let_decl and dk != .const_decl) continue;
+            const v = hir_mod.varDeclOf(&c.hir, decl);
+            if (v.type_annotation == hir_mod.none_node_id) continue;
+            if (c.hir.kindOf(v.type_annotation) != .type_ref) continue;
+            const tref = hir_mod.typeRefOf(&c.hir, v.type_annotation);
+            const type_sym = c.module.root.types.get(tref.name) orelse continue;
+            if (type_sym.decls.items.len == 0) continue;
+            const tdecl = type_sym.decls.items[0];
+            const tspan = c.hir.spanOf(tdecl);
+            const start_pos = ts_diagnostics.positionToLineCol(f.source, tspan.start);
+            const end_pos = ts_diagnostics.positionToLineCol(f.source, tspan.end);
+            return .{
+                .file = f.path,
+                .span = .{
+                    .file = f.path,
+                    .start_line = start_pos.line,
+                    .start_col = start_pos.col,
+                    .end_line = end_pos.line,
+                    .end_col = end_pos.col,
+                },
+            };
+        }
+        return null;
+    }
+
     /// Find every reference to the symbol at `byte_pos` across
     /// every file in the program. Within the cursor's own file the
     /// search is shadowing-aware: each candidate's enclosing scope
@@ -2283,6 +2334,30 @@ test "Service: gotoDefinition resolves a top-level reference" {
     const def = svc.gotoDefinition("/main.ts", 28) orelse return error.NoDefinition;
     // Definition is the let_decl starting at byte 0.
     try T.expectEqual(@as(u32, 1), def.span.start_line);
+}
+
+test "Service: typeDefinition resolves a named interface annotation" {
+    var vfs = ts_resolver.VirtualFs.init(T.allocator);
+    defer vfs.deinit();
+    var resolver = ts_resolver.Resolver.init(T.allocator, vfs.fs(), .{});
+    defer resolver.deinit();
+    var program = ts_program.Program.init(T.allocator, &resolver);
+    defer program.deinit();
+
+    const src = "interface Foo {} let x: Foo;";
+    _ = try program.add("/main.ts", src);
+    try program.compileAll(.{});
+
+    var svc = Service.init(T.allocator, &program);
+    // Cursor on `x` in `let x: Foo;`.
+    const x_pos: u32 = @intCast(std.mem.indexOf(u8, src, "let x").? + 4);
+    const def = svc.typeDefinition("/main.ts", x_pos) orelse return error.NoTypeDefinition;
+    // The interface decl starts at byte 0 ("interface Foo {}").
+    const iface_start = std.mem.indexOf(u8, src, "interface Foo").?;
+    const expected = ts_diagnostics.positionToLineCol(src, @intCast(iface_start));
+    try T.expectEqualStrings("/main.ts", def.file);
+    try T.expectEqual(expected.line, def.span.start_line);
+    try T.expectEqual(expected.col, def.span.start_col);
 }
 
 test "Service: gotoDefinition follows imports across files" {
