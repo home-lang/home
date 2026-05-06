@@ -8,16 +8,18 @@ const macho = @import("macho.zig");
 /// AArch64 native codegen — Path B-lite of issue #5.
 ///
 /// Mirrors the structure of `native_codegen.NativeCodegen` but emits arm64
-/// machine code via `arm64.Assembler`. Currently supports the M3 subset:
+/// machine code via `arm64.Assembler`. Currently supports the M4 subset:
 ///   - top-level `FnDecl` named `main` (other functions still NotImplemented)
-///   - `LetDecl` (immutable; `is_static` not supported)
+///   - `LetDecl` (mutable or immutable; `is_static` not supported — note
+///     mutability isn't enforced, just respected when the source asks for it)
 ///   - `IfStmt` with optional else
+///   - `WhileStmt`
 ///   - `ReturnStmt`
-///   - integer + boolean literals, identifier reads
+///   - integer + boolean literals, identifier reads, assignment to identifiers
 ///   - binary expressions: `+ - * /`, `== != < <= > >=`
 ///
 /// Other AST nodes return `error.NotImplemented`. The plan is to expand
-/// this milestone-by-milestone (M4 = loops, M5 = function calls, …) per
+/// this milestone-by-milestone (M5 = function calls, M6 = strings, …) per
 /// the B-lite roadmap rather than refactoring NativeCodegen itself.
 pub const CodegenError = error{
     NotImplemented,
@@ -93,10 +95,40 @@ pub const Aarch64NativeCodegen = struct {
             .FnDecl => |func| try self.generateFnDecl(func),
             .LetDecl => |decl| try self.generateLetDecl(decl),
             .IfStmt => |if_stmt| try self.generateIfStmt(if_stmt),
+            .WhileStmt => |while_stmt| try self.generateWhileStmt(while_stmt),
             .ReturnStmt => |ret| try self.generateReturn(ret),
             .ExprStmt => |expr| try self.generateExpr(expr),
             else => return error.NotImplemented,
         }
+    }
+
+    fn generateWhileStmt(self: *Aarch64NativeCodegen, while_stmt: *ast.WhileStmt) CodegenError!void {
+        // Loop layout:
+        //   loop_top:  eval cond → x0
+        //              cmp x0, #0
+        //              b.eq exit              ; placeholder, patched
+        //              <body>
+        //              b loop_top             ; backward, computed inline
+        //   exit:
+        const loop_top = self.assembler.getPosition();
+
+        try self.generateExpr(while_stmt.condition);
+        try self.assembler.cmpRegImm(.x0, 0);
+
+        const exit_branch_pos = self.assembler.getPosition();
+        try self.assembler.bcond(.eq, 0); // placeholder
+
+        for (while_stmt.body.statements) |stmt| {
+            try self.generateStmt(stmt);
+        }
+
+        // Unconditional backward branch to the top of the loop.
+        const branch_pos = self.assembler.getPosition();
+        const back_offset: i32 = @as(i32, @intCast(loop_top)) - @as(i32, @intCast(branch_pos));
+        try self.assembler.b(back_offset);
+
+        // Patch the conditional exit to land just past the back-edge.
+        try self.assembler.patchBcond(exit_branch_pos, .eq, self.assembler.getPosition());
     }
 
     fn generateIfStmt(self: *Aarch64NativeCodegen, if_stmt: *ast.IfStmt) CodegenError!void {
@@ -238,6 +270,23 @@ pub const Aarch64NativeCodegen = struct {
                 try self.assembler.ldrRegMem(.x0, .sp, @intCast(offset));
             },
             .BinaryExpr => |bin| try self.generateBinaryExpr(bin),
+            .AssignmentExpr => |assign| try self.generateAssignment(assign),
+            else => return error.NotImplemented,
+        }
+    }
+
+    fn generateAssignment(self: *Aarch64NativeCodegen, assign: *ast.AssignmentExpr) CodegenError!void {
+        // Evaluate value into x0, then store to the target's slot. Only
+        // identifier targets are supported in M4 (no IndexExpr / MemberExpr
+        // lvalues yet).
+        try self.generateExpr(assign.value);
+
+        switch (assign.target.*) {
+            .Identifier => |ident| {
+                const base = self.locals.get(ident.name) orelse return error.UndefinedIdentifier;
+                const offset: u32 = base + self.stack_delta;
+                try self.assembler.strRegMem(.x0, .sp, @intCast(offset));
+            },
             else => return error.NotImplemented,
         }
     }
@@ -297,6 +346,7 @@ fn countLetDeclsInStmt(stmt: ast.Stmt) u32 {
             if (if_stmt.else_block) |eb| c += countLetDeclsInBlock(eb);
             break :blk c;
         },
+        .WhileStmt => |while_stmt| countLetDeclsInBlock(while_stmt.body),
         else => 0,
     };
 }
