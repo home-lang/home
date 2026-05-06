@@ -231,6 +231,21 @@ pub const Printer = struct {
     /// Public entry: emit a complete source-file as JavaScript.
     pub fn printSourceFile(self: *Printer, root: NodeId) !void {
         const stmts = hir_mod.blockStmts(self.hir, root);
+        // §4.A.10 — auto-import the runtime helpers when the file
+        // uses any JSX *and* the runtime mode is automatic. The
+        // imports land before any user-level statement so they're
+        // visible to the lowered JSX expressions below.
+        const needs_auto_jsx_import = (self.options.jsx_runtime == .automatic or
+            self.options.jsx_runtime == .automatic_dev) and
+            anyJsxIn(self.hir, root);
+        if (needs_auto_jsx_import) {
+            const helpers: []const u8 = if (self.options.jsx_runtime == .automatic_dev)
+                "import { jsxDEV as _jsxDEV, Fragment as _Fragment } from \"react/jsx-dev-runtime\";"
+            else
+                "import { jsx as _jsx, jsxs as _jsxs, Fragment as _Fragment } from \"react/jsx-runtime\";";
+            try self.write(helpers);
+            try self.write(self.options.newline);
+        }
         var i: usize = 0;
         while (i < stmts.len) : (i += 1) {
             const stmt = stmts[i];
@@ -1390,6 +1405,21 @@ pub const Printer = struct {
     }
 };
 
+/// True if the HIR rooted at `root` (or any reachable subtree)
+/// contains a JSX-shape node. Walked by the auto-import logic to
+/// decide whether to inject the `react/jsx-runtime` imports.
+fn anyJsxIn(hir: *const Hir, root: NodeId) bool {
+    if (root == hir_mod.none_node_id) return false;
+    var i: hir_mod.NodeId = 1;
+    while (i < hir.nodeCount()) : (i += 1) {
+        switch (hir.kindOf(i)) {
+            .jsx_element, .jsx_self_closing, .jsx_fragment => return true,
+            else => {},
+        }
+    }
+    return false;
+}
+
 /// Return the StringId of the bound name for a top-level
 /// declaration (function / class / let / const). Returns null
 /// when the decl has no bindable name (e.g. anonymous function
@@ -1709,6 +1739,25 @@ test "emit: jsx automatic_dev uses _jsxDEV" {
     const out = try emitJsx("let v = <Foo />;", .{ .jsx_runtime = .automatic_dev });
     defer T.allocator.free(out);
     try T.expect(std.mem.indexOf(u8, out, "_jsxDEV(Foo, ") != null);
+}
+
+test "emit: jsx automatic injects react/jsx-runtime import" {
+    const out = try emitJsx("let v = <Foo />;", .{ .jsx_runtime = .automatic });
+    defer T.allocator.free(out);
+    try T.expect(std.mem.indexOf(u8, out, "import { jsx as _jsx") != null);
+    try T.expect(std.mem.indexOf(u8, out, "from \"react/jsx-runtime\"") != null);
+}
+
+test "emit: jsx classic does not inject auto-import" {
+    const out = try emitJsx("let v = <Foo />;", .{ .jsx_runtime = .classic });
+    defer T.allocator.free(out);
+    try T.expect(std.mem.indexOf(u8, out, "react/jsx-runtime") == null);
+}
+
+test "emit: non-jsx file with automatic mode skips the import" {
+    const out = try emitWithOpts("let x = 1;", .{ .jsx_runtime = .automatic });
+    defer T.allocator.free(out);
+    try T.expect(std.mem.indexOf(u8, out, "react/jsx-runtime") == null);
 }
 
 fn emitWithOpts(source: []const u8, opts: Options) ![]u8 {
