@@ -376,6 +376,107 @@ pub fn handleDidChange(
     return encodePublishDiagnostics(gpa, uri, rendered);
 }
 
+/// Locate an integer JSON field by `key` inside `body`. Walks the
+/// raw bytes looking for `"key":` and parses a base-10 integer that
+/// follows (skipping whitespace). Returns null when the key isn't
+/// found or the value isn't a number.
+fn findJsonIntField(body: []const u8, key: []const u8) ?i64 {
+    var needle_buf: [64]u8 = undefined;
+    if (key.len + 3 > needle_buf.len) return null;
+    needle_buf[0] = '"';
+    @memcpy(needle_buf[1 .. 1 + key.len], key);
+    needle_buf[1 + key.len] = '"';
+    needle_buf[2 + key.len] = ':';
+    const needle = needle_buf[0 .. 3 + key.len];
+
+    var search_from: usize = 0;
+    while (std.mem.indexOfPos(u8, body, search_from, needle)) |pos| {
+        var i = pos + needle.len;
+        while (i < body.len and (body[i] == ' ' or body[i] == '\t' or body[i] == '\n' or body[i] == '\r')) : (i += 1) {}
+        if (i >= body.len) return null;
+        if (body[i] == '-' or (body[i] >= '0' and body[i] <= '9')) {
+            const start = i;
+            if (body[i] == '-') i += 1;
+            while (i < body.len and body[i] >= '0' and body[i] <= '9') : (i += 1) {}
+            if (i == start) {
+                search_from = pos + needle.len;
+                continue;
+            }
+            return std.fmt.parseInt(i64, body[start..i], 10) catch {
+                search_from = pos + needle.len;
+                continue;
+            };
+        }
+        search_from = pos + needle.len;
+    }
+    return null;
+}
+
+/// Convert a 0-based `(line, character)` LSP position into a byte
+/// offset within `source`. `character` is interpreted as a UTF-8
+/// byte count (LSP technically uses UTF-16 code units, but ASCII
+/// inputs match either way and this matches the rest of the
+/// pipeline). When the position falls past the end of a line, the
+/// offset clamps to the line's terminating newline. When `line` is
+/// past EOF, the offset clamps to `source.len`.
+pub fn lineColToByte(source: []const u8, line: u32, character: u32) u32 {
+    var current_line: u32 = 0;
+    var line_start: usize = 0;
+    var i: usize = 0;
+    while (i < source.len and current_line < line) : (i += 1) {
+        if (source[i] == '\n') {
+            current_line += 1;
+            line_start = i + 1;
+        }
+    }
+    if (current_line < line) return @intCast(source.len);
+    var col: u32 = 0;
+    var j: usize = line_start;
+    while (j < source.len and col < character and source[j] != '\n') : (j += 1) {
+        col += 1;
+    }
+    return @intCast(j);
+}
+
+/// Handle a `textDocument/hover` JSON-RPC request: extract the URI +
+/// `(line, character)` from `params_json`, convert to a byte offset
+/// into the file's source, route to `service.hover`, and encode the
+/// LSP `Hover` response (or `result: null` when no hover info is
+/// available). Caller owns the returned slice.
+pub fn handleHover(
+    service: *ts_lsp.Service,
+    gpa: std.mem.Allocator,
+    request_id: RequestId,
+    params_json: []const u8,
+) ![]u8 {
+    const uri = findJsonStringField(params_json, "uri") orelse return error.MissingUri;
+    const line = findJsonIntField(params_json, "line") orelse return error.MissingLine;
+    const character = findJsonIntField(params_json, "character") orelse return error.MissingCharacter;
+    const path = uriToPath(uri);
+
+    const file_id = service.program.lookupPath(path) orelse {
+        return encodeResponse(gpa, request_id, "null");
+    };
+    const f = service.program.fileById(file_id);
+    const line_u: u32 = if (line < 0) 0 else @intCast(line);
+    const char_u: u32 = if (character < 0) 0 else @intCast(character);
+    const byte_pos = lineColToByte(f.source, line_u, char_u);
+
+    if (service.hover(path, byte_pos)) |hover| {
+        // The service heap-allocates `hover.type_repr`; we own it.
+        defer service.gpa.free(hover.type_repr);
+        var buf: std.ArrayListUnmanaged(u8) = .empty;
+        defer buf.deinit(gpa);
+        try buf.appendSlice(gpa, "{\"contents\":{\"kind\":\"markdown\",\"value\":\"");
+        try writeJsonStringContents(&buf, gpa, hover.type_repr);
+        try buf.appendSlice(gpa, "\"},\"range\":");
+        try writeRange(&buf, gpa, hover.span);
+        try buf.append(gpa, '}');
+        return encodeResponse(gpa, request_id, buf.items);
+    }
+    return encodeResponse(gpa, request_id, "null");
+}
+
 /// Encode a `textDocument/publishDiagnostics` JSON-RPC notification
 /// body. `rendered` is the `\n`-terminated tsc-style diagnostic
 /// listing returned by `Service.diagnostics` / `Service.didChangeFile`.
@@ -600,6 +701,56 @@ test "handleDidChange: routes notification to Service.didChangeFile" {
     defer T.allocator.free(out2);
     try T.expect(std.mem.indexOf(u8, out2, "\"diagnostics\":[]") == null);
     try T.expect(std.mem.indexOf(u8, out2, "error TS") != null);
+}
+
+test "lineColToByte: walks lines + columns" {
+    const src = "let x = 1;\nlet yy = 22;\nlet z = 3;";
+    try T.expectEqual(@as(u32, 0), lineColToByte(src, 0, 0));
+    try T.expectEqual(@as(u32, 4), lineColToByte(src, 0, 4));
+    try T.expectEqual(@as(u32, 11), lineColToByte(src, 1, 0));
+    try T.expectEqual(@as(u32, 15), lineColToByte(src, 1, 4));
+    const past_eol = lineColToByte(src, 0, 999);
+    try T.expectEqual(@as(u8, '\n'), src[past_eol]);
+}
+
+test "findJsonIntField: locates line + character" {
+    const body =
+        \\{"params":{"position":{"line":2,"character":7}}}
+    ;
+    try T.expectEqual(@as(i64, 2), findJsonIntField(body, "line").?);
+    try T.expectEqual(@as(i64, 7), findJsonIntField(body, "character").?);
+    try T.expect(findJsonIntField(body, "missing") == null);
+}
+
+test "handleHover: routes request and returns Hover response" {
+    var vfs = ts_resolver.VirtualFs.init(T.allocator);
+    defer vfs.deinit();
+    var resolver = ts_resolver.Resolver.init(T.allocator, vfs.fs(), .{});
+    defer resolver.deinit();
+    var program = ts_program.Program.init(T.allocator, &resolver);
+    defer program.deinit();
+
+    _ = try program.add("/main.ts", "let x: number = 1;");
+    try program.compileAll(.{});
+
+    var svc = ts_lsp.Service.init(T.allocator, &program);
+
+    const body =
+        \\{"jsonrpc":"2.0","id":7,"method":"textDocument/hover","params":{"textDocument":{"uri":"file:///main.ts"},"position":{"line":0,"character":4}}}
+    ;
+    const out = try handleHover(&svc, T.allocator, .{ .integer = 7 }, body);
+    defer T.allocator.free(out);
+    try T.expect(std.mem.indexOf(u8, out, "\"id\":7") != null);
+    try T.expect(std.mem.indexOf(u8, out, "\"jsonrpc\":\"2.0\"") != null);
+    try T.expect(std.mem.indexOf(u8, out, "\"contents\":{\"kind\":\"markdown\"") != null);
+    try T.expect(std.mem.indexOf(u8, out, "\"range\":") != null);
+
+    const oob =
+        \\{"jsonrpc":"2.0","id":8,"method":"textDocument/hover","params":{"textDocument":{"uri":"file:///main.ts"},"position":{"line":99,"character":0}}}
+    ;
+    const out2 = try handleHover(&svc, T.allocator, .{ .integer = 8 }, oob);
+    defer T.allocator.free(out2);
+    try T.expect(std.mem.indexOf(u8, out2, "\"result\":null") != null);
 }
 
 test "encodePublishDiagnostics: empty rendered -> empty array" {
