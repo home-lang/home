@@ -289,6 +289,7 @@ pub fn build(b: *std.Build) void {
     const ts_bundler_pkg = createPackage(b, "packages/ts_bundler/src/ts_bundler.zig", target, optimize, zig_test_framework);
     ts_bundler_pkg.addImport("ts_program", ts_program_pkg);
     ts_bundler_pkg.addImport("ts_resolver", ts_resolver_pkg);
+    ts_bundler_pkg.addImport("ts_driver", ts_driver_pkg);
 
     // ====================================================================
     // TS-parity binaries: `home-tsc` (compiler driver) + `home-lsp`
