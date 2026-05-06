@@ -1357,6 +1357,20 @@ pub const Printer = struct {
             try self.printNonIndentStatement(ex.decl);
             return;
         }
+        // `export * [as ns] from "m"` — namespace re-export.
+        if (ex.is_namespace) {
+            try self.write("*");
+            const alias = self.interner.get(ex.namespace_alias);
+            if (alias.len > 0) {
+                try self.write(" as ");
+                try self.write(alias);
+            }
+            try self.write(" from \"");
+            try self.write(self.interner.get(ex.module));
+            try self.write("\"");
+            try self.writeSemi();
+            return;
+        }
         const named = hir_mod.exportNamed(self.hir, node);
         try self.write("{ ");
         for (named, 0..) |spec, i| {
@@ -1415,26 +1429,50 @@ pub const Printer = struct {
             }
             return;
         }
-        // `export { a, b as c }` → `module.exports.a = a; module.exports.c = b;`.
-        const named = hir_mod.exportNamed(self.hir, node);
+        // `export * [as ns] from "m"` — namespace re-export.
         const re_export_module = self.interner.get(ex.module);
+        if (ex.is_namespace) {
+            const alias = self.interner.get(ex.namespace_alias);
+            if (alias.len > 0) {
+                // `export * as ns from "m"` → `module.exports.ns = require("m");`
+                try self.write("module.exports.");
+                try self.write(alias);
+                try self.write(" = require(\"");
+                try self.write(re_export_module);
+                try self.write("\")");
+                try self.writeSemi();
+            } else {
+                // `export * from "m"` → copy own enumerable keys, skipping
+                // `default` (mirrors tsc's `__exportStar` semantics).
+                try self.write("Object.keys(require(\"");
+                try self.write(re_export_module);
+                try self.write("\")).forEach(function (k) { if (k !== \"default\" && !Object.prototype.hasOwnProperty.call(module.exports, k)) Object.defineProperty(module.exports, k, { enumerable: true, get: function () { return require(\"");
+                try self.write(re_export_module);
+                try self.write("\")[k]; } }); })");
+                try self.writeSemi();
+            }
+            return;
+        }
+        // `export { a, b as c } [from "m"]`.
+        const named = hir_mod.exportNamed(self.hir, node);
         if (re_export_module.len > 0) {
-            // `export { a } from "x"` → `({ a } = require("x")); module.exports.a = a;`
-            // Conservative: use a temporary.
-            try self.write("(function() { const _re = require(\"");
-            try self.write(re_export_module);
-            try self.write("\"); ");
+            // `export { a, b as c } from "m"` →
+            //   module.exports.a = require("m").a;
+            //   module.exports.c = require("m").b;
+            // Each binding takes a fresh `require()` so callers see the
+            // live module instance (matches tsc's "live binding" emit
+            // for re-exports under `module: commonjs`).
             for (named) |spec| {
                 if (self.hir.kindOf(spec) != .import_specifier) continue;
                 const sp = hir_mod.importSpecifierOf(self.hir, spec);
                 try self.write("module.exports.");
                 try self.write(self.interner.get(sp.local));
-                try self.write(" = _re.");
+                try self.write(" = require(\"");
+                try self.write(re_export_module);
+                try self.write("\").");
                 try self.write(self.interner.get(sp.imported));
-                try self.write("; ");
+                try self.writeSemi();
             }
-            try self.write("})()");
-            try self.writeSemi();
             return;
         }
         for (named) |spec| {
@@ -2541,6 +2579,61 @@ test "emit: cjs export-default-fn assigns to module.exports.default" {
     const out = try emitWithOpts("export default function f() { return 1; }", .{ .module_kind = .commonjs });
     defer T.allocator.free(out);
     try T.expect(std.mem.indexOf(u8, out, "module.exports.default = f") != null);
+}
+
+test "emit: esm export-star preserves star form" {
+    const out = try emitWithOpts("export * from \"./foo\";", .{});
+    defer T.allocator.free(out);
+    try T.expectEqualStrings("export * from \"./foo\";", out);
+}
+
+test "emit: esm export-star-as preserves alias" {
+    const out = try emitWithOpts("export * as ns from \"./foo\";", .{});
+    defer T.allocator.free(out);
+    try T.expectEqualStrings("export * as ns from \"./foo\";", out);
+}
+
+test "emit: esm named re-export preserves from clause" {
+    const out = try emitWithOpts("export { x, y as z } from \"./bar\";", .{});
+    defer T.allocator.free(out);
+    try T.expect(std.mem.indexOf(u8, out, "export { x, y as z } from \"./bar\";") != null);
+}
+
+test "emit: esm export-default-as re-exports default binding" {
+    const out = try emitWithOpts("export { default as foo } from \"./bar\";", .{});
+    defer T.allocator.free(out);
+    try T.expect(std.mem.indexOf(u8, out, "export { default as foo } from \"./bar\";") != null);
+}
+
+test "emit: cjs export-star lowers via Object.defineProperty loop" {
+    const out = try emitWithOpts("export * from \"./foo\";", .{ .module_kind = .commonjs });
+    defer T.allocator.free(out);
+    // No bare `export *` survives.
+    try T.expect(std.mem.indexOf(u8, out, "export *") == null);
+    // Lowering walks the source module's keys and forwards each to
+    // module.exports, skipping `default`.
+    try T.expect(std.mem.indexOf(u8, out, "Object.keys(require(\"./foo\"))") != null);
+    try T.expect(std.mem.indexOf(u8, out, "k !== \"default\"") != null);
+    try T.expect(std.mem.indexOf(u8, out, "Object.defineProperty(module.exports, k") != null);
+}
+
+test "emit: cjs export-star-as assigns whole module to alias" {
+    const out = try emitWithOpts("export * as ns from \"./foo\";", .{ .module_kind = .commonjs });
+    defer T.allocator.free(out);
+    try T.expect(std.mem.indexOf(u8, out, "module.exports.ns = require(\"./foo\");") != null);
+}
+
+test "emit: cjs named re-export assigns each binding" {
+    const out = try emitWithOpts("export { x, y as z } from \"./bar\";", .{ .module_kind = .commonjs });
+    defer T.allocator.free(out);
+    try T.expect(std.mem.indexOf(u8, out, "module.exports.x = require(\"./bar\").x;") != null);
+    try T.expect(std.mem.indexOf(u8, out, "module.exports.z = require(\"./bar\").y;") != null);
+}
+
+test "emit: cjs export-default-as re-exports default binding" {
+    const out = try emitWithOpts("export { default as foo } from \"./bar\";", .{ .module_kind = .commonjs });
+    defer T.allocator.free(out);
+    try T.expect(std.mem.indexOf(u8, out, "module.exports.foo = require(\"./bar\").default;") != null);
 }
 
 test "emit: throw" {

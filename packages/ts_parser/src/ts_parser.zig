@@ -1063,21 +1063,25 @@ pub const Parser = struct {
 
         // export * [as ns] from "m";
         if (self.match(.asterisk)) {
+            var ns_alias: hir_mod.StringId = empty_string;
             if (self.match(.kw_as)) {
-                _ = try self.expect(.identifier, "namespace name");
+                const ns_tok = try self.expect(.identifier, "namespace name");
+                ns_alias = try self.internToken(ns_tok);
             }
             _ = try self.expect(.kw_from, "'from' after 'export *'");
             const mod_tok = try self.expect(.string_literal, "module specifier");
             try self.consumeStatementTerminator();
             const mod_id = try self.internStringLiteral(mod_tok);
             const end_pos = self.tokens[self.cursor - 1].span.end;
-            return try self.builder.addExport(
+            return try self.builder.addExportFull(
                 .{ .start = start.span.start, .end = end_pos },
                 hir_mod.none_node_id,
                 &.{},
                 mod_id,
                 is_type_only,
                 false,
+                true,
+                ns_alias,
             );
         }
 

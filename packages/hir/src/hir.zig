@@ -606,6 +606,12 @@ pub const ExportPayload = struct {
     module: StringId,
     is_type_only: bool,
     is_default: bool,
+    /// `export * from "m"` / `export * as ns from "m"`. When set,
+    /// `module` is non-empty and `named_len` is 0.
+    is_namespace: bool,
+    /// For `export * as ns from "m"` — the local namespace binding,
+    /// or `string_interner.empty_id` for plain `export *`.
+    namespace_alias: StringId,
 };
 
 pub const ImportSpecifierPayload = struct {
@@ -1904,6 +1910,26 @@ pub const Builder = struct {
         is_type_only: bool,
         is_default: bool,
     ) !NodeId {
+        return self.addExportFull(span, decl, named, module, is_type_only, is_default, false, 0);
+    }
+
+    /// Extended form of `addExport` for `export * [as ns] from "m"`
+    /// re-exports. `is_namespace = true` marks the namespace re-export
+    /// shape (so the printer can distinguish it from an empty-named
+    /// `export {} from`); `namespace_alias` is the local binding name
+    /// for `export * as ns from "m"`, or the interner's empty id for
+    /// plain `export *`.
+    pub fn addExportFull(
+        self: *Builder,
+        span: Span,
+        decl: NodeId,
+        named: []const NodeId,
+        module: StringId,
+        is_type_only: bool,
+        is_default: bool,
+        is_namespace: bool,
+        namespace_alias: StringId,
+    ) !NodeId {
         const named_start: u32 = @intCast(self.hir.child_pool.items.len);
         try self.hir.child_pool.appendSlice(self.hir.gpa, named);
         const payload_idx: u32 = @intCast(self.hir.export_payloads.items.len);
@@ -1914,6 +1940,8 @@ pub const Builder = struct {
             .module = module,
             .is_type_only = is_type_only,
             .is_default = is_default,
+            .is_namespace = is_namespace,
+            .namespace_alias = namespace_alias,
         });
         const id = try self.newNode(.export_decl, span, payload_idx);
         if (decl != none_node_id) self.hir.setParent(decl, id);
