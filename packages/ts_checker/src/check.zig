@@ -74,6 +74,7 @@ pub const TsCodes = struct {
     pub const declared_but_not_read: u32 = 6133;
     pub const object_literal_excess_property: u32 = 2353;
     pub const satisfies_constraint: u32 = 1360;
+    pub const used_before_assignment: u32 = 2454;
 };
 
 /// Per-alias generic info: the type-parameter TypeIds in
@@ -303,6 +304,7 @@ pub const Checker = struct {
     pub fn checkSourceFile(self: *Checker, root: NodeId) CheckError!void {
         const stmts = hir_mod.blockStmts(self.hir, root);
         for (stmts) |s| try self.checkStatement(s);
+        try self.checkUsedBeforeAssignment(stmts);
     }
 
     fn checkStatement(self: *Checker, node: NodeId) CheckError!void {
@@ -502,6 +504,193 @@ pub const Checker = struct {
                 .message = msg,
             });
         }
+    }
+
+    /// TS2454 — "Variable 'X' is used before being assigned."
+    ///
+    /// Linear-scan, approximate: walks `stmts` in source order
+    /// tracking every `let_decl` whose declaration carries a type
+    /// annotation but no initializer. A subsequent identifier read
+    /// of such a name (anywhere except as the LHS of a plain
+    /// assignment) emits TS2454. A plain `name = ...` removes the
+    /// name from the tracked set. This intentionally does *not*
+    /// build a control-flow graph — branches collapse to a flat
+    /// scan, so it catches the common case but misses anything
+    /// involving conditionals.
+    fn checkUsedBeforeAssignment(self: *Checker, stmts: []const NodeId) CheckError!void {
+        var pending: std.AutoHashMapUnmanaged(hir_mod.StringId, NodeId) = .empty;
+        defer pending.deinit(self.gpa);
+        for (stmts) |s| try self.scanForUsedBeforeAssign(s, &pending);
+    }
+
+    fn scanForUsedBeforeAssign(
+        self: *Checker,
+        node: NodeId,
+        pending: *std.AutoHashMapUnmanaged(hir_mod.StringId, NodeId),
+    ) CheckError!void {
+        if (node == hir_mod.none_node_id) return;
+        const k = self.hir.kindOf(node);
+        switch (k) {
+            .let_decl => {
+                const v = hir_mod.varDeclOf(self.hir, node);
+                if (v.init == hir_mod.none_node_id and
+                    v.type_annotation != hir_mod.none_node_id and
+                    v.name != hir_mod.none_node_id and
+                    self.hir.kindOf(v.name) == .identifier)
+                {
+                    const id = hir_mod.identifierOf(self.hir, v.name);
+                    try pending.put(self.gpa, id.name, node);
+                }
+                if (v.init != hir_mod.none_node_id) {
+                    try self.scanExprForUsedBeforeAssign(v.init, pending);
+                }
+            },
+            .var_decl, .const_decl => {
+                const v = hir_mod.varDeclOf(self.hir, node);
+                if (v.init != hir_mod.none_node_id) {
+                    try self.scanExprForUsedBeforeAssign(v.init, pending);
+                }
+            },
+            .assignment => {
+                const a = hir_mod.assignmentOf(self.hir, node);
+                try self.scanExprForUsedBeforeAssign(a.value, pending);
+                if (a.target != hir_mod.none_node_id and
+                    self.hir.kindOf(a.target) == .identifier)
+                {
+                    const id = hir_mod.identifierOf(self.hir, a.target);
+                    if (a.op != null) {
+                        try self.flagIfPending(a.target, id.name, pending);
+                    } else {
+                        _ = pending.remove(id.name);
+                    }
+                } else if (a.target != hir_mod.none_node_id) {
+                    try self.scanExprForUsedBeforeAssign(a.target, pending);
+                }
+            },
+            .block_stmt => {
+                for (hir_mod.blockStmts(self.hir, node)) |s| {
+                    try self.scanForUsedBeforeAssign(s, pending);
+                }
+            },
+            .return_stmt => {
+                const r = hir_mod.returnOf(self.hir, node);
+                try self.scanExprForUsedBeforeAssign(r.value, pending);
+            },
+            // Branching / nested-fn constructs — the linear scan
+            // gives up here. Treat the body as opaque so we don't
+            // emit false positives across control-flow boundaries.
+            .if_stmt,
+            .while_stmt,
+            .do_while_stmt,
+            .for_stmt,
+            .for_in_stmt,
+            .for_of_stmt,
+            .try_stmt,
+            .switch_stmt,
+            .fn_decl,
+            .fn_expr,
+            .arrow_fn,
+            .class_decl,
+            => return,
+            else => {
+                if (hir_mod.NodeKind.isExpression(k)) {
+                    try self.scanExprForUsedBeforeAssign(node, pending);
+                }
+            },
+        }
+    }
+
+    fn scanExprForUsedBeforeAssign(
+        self: *Checker,
+        node: NodeId,
+        pending: *std.AutoHashMapUnmanaged(hir_mod.StringId, NodeId),
+    ) CheckError!void {
+        if (node == hir_mod.none_node_id) return;
+        const k = self.hir.kindOf(node);
+        switch (k) {
+            .identifier => {
+                const id = hir_mod.identifierOf(self.hir, node);
+                try self.flagIfPending(node, id.name, pending);
+            },
+            .binary_op => {
+                const b = hir_mod.binopOf(self.hir, node);
+                try self.scanExprForUsedBeforeAssign(b.lhs, pending);
+                try self.scanExprForUsedBeforeAssign(b.rhs, pending);
+            },
+            .unary_op => {
+                const u = hir_mod.unaryOf(self.hir, node);
+                try self.scanExprForUsedBeforeAssign(u.operand, pending);
+            },
+            .logical_op => {
+                const l = hir_mod.logicalOf(self.hir, node);
+                try self.scanExprForUsedBeforeAssign(l.lhs, pending);
+                try self.scanExprForUsedBeforeAssign(l.rhs, pending);
+            },
+            .conditional => {
+                const c = hir_mod.conditionalOf(self.hir, node);
+                try self.scanExprForUsedBeforeAssign(c.cond, pending);
+                try self.scanExprForUsedBeforeAssign(c.then_branch, pending);
+                try self.scanExprForUsedBeforeAssign(c.else_branch, pending);
+            },
+            .call_expr, .new_expr => {
+                const c = hir_mod.callOf(self.hir, node);
+                try self.scanExprForUsedBeforeAssign(c.callee, pending);
+                for (hir_mod.callArgs(self.hir, node)) |arg| {
+                    try self.scanExprForUsedBeforeAssign(arg, pending);
+                }
+            },
+            .member_access => {
+                const m = hir_mod.memberOf(self.hir, node);
+                try self.scanExprForUsedBeforeAssign(m.object, pending);
+            },
+            .element_access => {
+                const e = hir_mod.elementOf(self.hir, node);
+                try self.scanExprForUsedBeforeAssign(e.object, pending);
+                try self.scanExprForUsedBeforeAssign(e.index, pending);
+            },
+            .as_expr, .satisfies_expr, .type_assertion => {
+                const a = hir_mod.asExpressionOf(self.hir, node);
+                try self.scanExprForUsedBeforeAssign(a.expr, pending);
+            },
+            .assignment => {
+                const a = hir_mod.assignmentOf(self.hir, node);
+                try self.scanExprForUsedBeforeAssign(a.value, pending);
+                if (a.target != hir_mod.none_node_id and
+                    self.hir.kindOf(a.target) == .identifier)
+                {
+                    const id = hir_mod.identifierOf(self.hir, a.target);
+                    if (a.op != null) {
+                        try self.flagIfPending(a.target, id.name, pending);
+                    } else {
+                        _ = pending.remove(id.name);
+                    }
+                }
+            },
+            else => {},
+        }
+    }
+
+    fn flagIfPending(
+        self: *Checker,
+        ref_node: NodeId,
+        name: hir_mod.StringId,
+        pending: *std.AutoHashMapUnmanaged(hir_mod.StringId, NodeId),
+    ) CheckError!void {
+        if (!pending.contains(name)) return;
+        const name_str = self.string_interner.get(name);
+        const msg = try std.fmt.allocPrint(
+            self.diag_arena.allocator(),
+            "Variable '{s}' is used before being assigned.",
+            .{name_str},
+        );
+        try self.diagnostics.append(self.gpa, .{
+            .node = ref_node,
+            .code = TsCodes.used_before_assignment,
+            .message = msg,
+        });
+        // Remove from pending so we only flag the first use; later
+        // reads are noisy.
+        _ = pending.remove(name);
     }
 
     /// `noUnusedParameters` (TS6133): walks the function body and
@@ -3796,6 +3985,20 @@ test "checker: var-decl type mismatch emits TS2322" {
     try s.checker.checkSourceFile(s.root);
     try T.expectEqual(@as(usize, 1), s.checker.diagnostics.items.len);
     try T.expectEqual(TsCodes.type_not_assignable, s.checker.diagnostics.items[0].code);
+}
+
+test "checker: use-before-assign emits TS2454" {
+    const s = try newSetup(
+        \\let x: number;
+        \\let y = x;
+    );
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+    var found = false;
+    for (s.checker.diagnostics.items) |d| {
+        if (d.code == TsCodes.used_before_assignment) found = true;
+    }
+    try T.expect(found);
 }
 
 test "checker: argument count mismatch emits TS2554" {
