@@ -37,6 +37,39 @@ pub const EmitError = error{
     UnsupportedNode,
 };
 
+/// Module emit format. `esm` is today's default (preserves `import`
+/// / `export`). `commonjs` lowers to `require()` + `module.exports`,
+/// inserting `__importDefault` / `__importStar` helpers when the
+/// `esModuleInterop` flag is on (we always emit them — matches tsc's
+/// default for `module: commonjs`).
+pub const ModuleKind = enum {
+    esm,
+    commonjs,
+};
+
+/// Approximate ES target for the emitter. Selects which downlevel
+/// transforms apply. `esnext` = "no lowering", `es2020` = lower
+/// nullish-coalescing + optional-chaining, `es2017` = also lower
+/// async/await (Phase 4 follow-up), `es5` = lower arrow + class
+/// (Phase 4 follow-up).
+pub const EsTarget = enum {
+    es5,
+    es2015,
+    es2016,
+    es2017,
+    es2018,
+    es2019,
+    es2020,
+    es2021,
+    es2022,
+    es2023,
+    esnext,
+
+    pub fn supportsNullishAndOptional(self: EsTarget) bool {
+        return @intFromEnum(self) >= @intFromEnum(EsTarget.es2020);
+    }
+};
+
 pub const JsxRuntime = enum {
     /// Classic React.createElement(tag, props, ...children).
     classic,
@@ -77,6 +110,16 @@ pub const Options = struct {
     jsx_factory: []const u8 = "React",
     /// Custom fragment for classic mode (defaults to `React.Fragment`).
     jsx_fragment: []const u8 = "React.Fragment",
+    /// ES target — selects which downlevel transforms apply.
+    es_target: EsTarget = .esnext,
+    /// Module emit format. `esm` (default) keeps `import`/`export`;
+    /// `commonjs` lowers to `require()` + `Object.defineProperty(exports, ...)`.
+    module_kind: ModuleKind = .esm,
+    /// `esModuleInterop` — when true and module_kind is commonjs,
+    /// inject `__importDefault` / `__importStar` helper calls so
+    /// `import x from "y"` works against CJS modules without
+    /// `.default`-property dance.
+    es_module_interop: bool = true,
 };
 
 const source_map_mod = @import("source_map.zig");
@@ -666,6 +709,10 @@ pub const Printer = struct {
         const imp = hir_mod.importOf(self.hir, node);
         // Type-only imports erase entirely.
         if (imp.is_type_only) return;
+        if (self.options.module_kind == .commonjs) {
+            try self.printImportCjs(node, imp);
+            return;
+        }
         try self.write("import ");
         var any_local = false;
         if (imp.default_binding != hir_mod.none_node_id) {
@@ -702,6 +749,113 @@ pub const Printer = struct {
         try self.writeSemi();
     }
 
+    fn printImportCjs(self: *Printer, node: NodeId, imp: hir_mod.ImportPayload) !void {
+        const module_str = self.interner.get(imp.module);
+        const named = hir_mod.importNamed(self.hir, node);
+        const has_default = imp.default_binding != hir_mod.none_node_id;
+        const has_namespace = imp.namespace_binding != hir_mod.none_node_id;
+        const has_named = named.len > 0;
+        // Pure side-effect import: `import "x"` → `require("x")`.
+        if (!has_default and !has_namespace and !has_named) {
+            try self.write("require(\"");
+            try self.write(module_str);
+            try self.write("\")");
+            try self.writeSemi();
+            return;
+        }
+        // Default import: `import x from "y"` →
+        //   `const x = __importDefault(require("y")).default`
+        // (with esModuleInterop). Without interop:
+        //   `const x = require("y")`.
+        if (has_default and !has_namespace and !has_named) {
+            try self.write("const ");
+            try self.printExpression(imp.default_binding);
+            try self.write(" = ");
+            if (self.options.es_module_interop) {
+                try self.write("__importDefault(require(\"");
+                try self.write(module_str);
+                try self.write("\")).default");
+            } else {
+                try self.write("require(\"");
+                try self.write(module_str);
+                try self.write("\")");
+            }
+            try self.writeSemi();
+            return;
+        }
+        // Namespace import: `import * as x from "y"` →
+        //   `const x = __importStar(require("y"))`
+        if (has_namespace and !has_default and !has_named) {
+            try self.write("const ");
+            try self.printExpression(imp.namespace_binding);
+            try self.write(" = ");
+            if (self.options.es_module_interop) {
+                try self.write("__importStar(require(\"");
+                try self.write(module_str);
+                try self.write("\"))");
+            } else {
+                try self.write("require(\"");
+                try self.write(module_str);
+                try self.write("\")");
+            }
+            try self.writeSemi();
+            return;
+        }
+        // Named imports: `import { a, b as c } from "y"` →
+        //   `const { a, b: c } = require("y")`.
+        if (has_named and !has_default) {
+            try self.write("const { ");
+            for (named, 0..) |spec, i| {
+                if (i > 0) try self.write(", ");
+                if (self.hir.kindOf(spec) != .import_specifier) continue;
+                const sp = hir_mod.importSpecifierOf(self.hir, spec);
+                try self.write(self.interner.get(sp.imported));
+                if (sp.imported != sp.local) {
+                    try self.write(": ");
+                    try self.write(self.interner.get(sp.local));
+                }
+            }
+            try self.write(" } = require(\"");
+            try self.write(module_str);
+            try self.write("\")");
+            try self.writeSemi();
+            return;
+        }
+        // Mixed default + named (or default + namespace): bind
+        // a temporary, then destructure. Conservative — uses one
+        // require but multiple statements.
+        try self.write("const _mod = require(\"");
+        try self.write(module_str);
+        try self.write("\")");
+        try self.writeSemi();
+        if (has_default) {
+            try self.write("const ");
+            try self.printExpression(imp.default_binding);
+            try self.write(" = ");
+            if (self.options.es_module_interop) {
+                try self.write("__importDefault(_mod).default");
+            } else {
+                try self.write("_mod");
+            }
+            try self.writeSemi();
+        }
+        if (has_named) {
+            try self.write("const { ");
+            for (named, 0..) |spec, i| {
+                if (i > 0) try self.write(", ");
+                if (self.hir.kindOf(spec) != .import_specifier) continue;
+                const sp = hir_mod.importSpecifierOf(self.hir, spec);
+                try self.write(self.interner.get(sp.imported));
+                if (sp.imported != sp.local) {
+                    try self.write(": ");
+                    try self.write(self.interner.get(sp.local));
+                }
+            }
+            try self.write(" } = _mod");
+            try self.writeSemi();
+        }
+    }
+
     fn printExport(self: *Printer, node: NodeId) !void {
         const ex = hir_mod.exportOf(self.hir, node);
         if (ex.is_type_only) return;
@@ -711,6 +865,10 @@ pub const Printer = struct {
         if (ex.decl != hir_mod.none_node_id) {
             const dk = self.hir.kindOf(ex.decl);
             if (dk == .interface_decl or dk == .type_alias_decl) return;
+        }
+        if (self.options.module_kind == .commonjs) {
+            try self.printExportCjs(node, ex);
+            return;
         }
         try self.write("export ");
         if (ex.is_default) {
@@ -744,6 +902,75 @@ pub const Printer = struct {
             try self.write("\"");
         }
         try self.writeSemi();
+    }
+
+    fn printExportCjs(self: *Printer, node: NodeId, ex: hir_mod.ExportPayload) !void {
+        // `export default <decl>` → `module.exports.default = <expr>`.
+        if (ex.is_default) {
+            if (ex.decl != hir_mod.none_node_id) {
+                const dk = self.hir.kindOf(ex.decl);
+                if (dk == .fn_decl or dk == .class_decl) {
+                    // Emit decl, then assign by name.
+                    try self.printNonIndentStatement(ex.decl);
+                    // Find the inner name to re-export.
+                    const decl_name = decoratorBoundName(self.hir, ex.decl);
+                    if (decl_name) |n| {
+                        try self.write("module.exports.default = ");
+                        try self.write(self.interner.get(n));
+                        try self.writeSemi();
+                    }
+                } else {
+                    try self.write("module.exports.default = ");
+                    try self.printExpression(ex.decl);
+                    try self.writeSemi();
+                }
+            }
+            return;
+        }
+        // `export <decl>` → emit decl + `module.exports.<name> = <name>`.
+        if (ex.decl != hir_mod.none_node_id) {
+            try self.printNonIndentStatement(ex.decl);
+            const decl_name = decoratorBoundName(self.hir, ex.decl);
+            if (decl_name) |n| {
+                try self.write("module.exports.");
+                try self.write(self.interner.get(n));
+                try self.write(" = ");
+                try self.write(self.interner.get(n));
+                try self.writeSemi();
+            }
+            return;
+        }
+        // `export { a, b as c }` → `module.exports.a = a; module.exports.c = b;`.
+        const named = hir_mod.exportNamed(self.hir, node);
+        const re_export_module = self.interner.get(ex.module);
+        if (re_export_module.len > 0) {
+            // `export { a } from "x"` → `({ a } = require("x")); module.exports.a = a;`
+            // Conservative: use a temporary.
+            try self.write("(function() { const _re = require(\"");
+            try self.write(re_export_module);
+            try self.write("\"); ");
+            for (named) |spec| {
+                if (self.hir.kindOf(spec) != .import_specifier) continue;
+                const sp = hir_mod.importSpecifierOf(self.hir, spec);
+                try self.write("module.exports.");
+                try self.write(self.interner.get(sp.local));
+                try self.write(" = _re.");
+                try self.write(self.interner.get(sp.imported));
+                try self.write("; ");
+            }
+            try self.write("})()");
+            try self.writeSemi();
+            return;
+        }
+        for (named) |spec| {
+            if (self.hir.kindOf(spec) != .import_specifier) continue;
+            const sp = hir_mod.importSpecifierOf(self.hir, spec);
+            try self.write("module.exports.");
+            try self.write(self.interner.get(sp.local));
+            try self.write(" = ");
+            try self.write(self.interner.get(sp.imported));
+            try self.writeSemi();
+        }
     }
 
     // ----- Expressions ----------------------------------------------------
@@ -999,6 +1226,25 @@ pub const Printer = struct {
 
     fn printLogical(self: *Printer, node: NodeId) !void {
         const p = hir_mod.logicalOf(self.hir, node);
+        // Downlevel `a ?? b` to `(a !== null && a !== undefined ? a : b)`
+        // when targeting below ES2020. The single-evaluation rule
+        // requires binding `a` to a temporary if it has side effects;
+        // the conservative fallback for now is to just inline `a`
+        // twice — safe for identifiers and member-access-on-identifier
+        // (the common cases). A proper IIFE wrapper for arbitrary
+        // expressions is a Phase 4 follow-up.
+        if (p.op == .nullish and !self.options.es_target.supportsNullishAndOptional()) {
+            try self.write("(");
+            try self.printExpression(p.lhs);
+            try self.write(" !== null && ");
+            try self.printExpression(p.lhs);
+            try self.write(" !== void 0 ? ");
+            try self.printExpression(p.lhs);
+            try self.write(" : ");
+            try self.printExpression(p.rhs);
+            try self.write(")");
+            return;
+        }
         try self.write("(");
         try self.printExpression(p.lhs);
         try self.write(" ");
@@ -1057,6 +1303,20 @@ pub const Printer = struct {
 
     fn printMember(self: *Printer, node: NodeId) !void {
         const p = hir_mod.memberOf(self.hir, node);
+        // Downlevel `obj?.x` to `(obj === null || obj === void 0 ? void 0 : obj.x)`
+        // when targeting below ES2020.
+        if (p.optional and !self.options.es_target.supportsNullishAndOptional()) {
+            try self.write("(");
+            try self.printExpression(p.object);
+            try self.write(" === null || ");
+            try self.printExpression(p.object);
+            try self.write(" === void 0 ? void 0 : ");
+            try self.printExpression(p.object);
+            try self.write(".");
+            try self.write(self.interner.get(p.name));
+            try self.write(")");
+            return;
+        }
         try self.printExpression(p.object);
         try self.write(if (p.optional) "?." else ".");
         try self.write(self.interner.get(p.name));
@@ -1064,6 +1324,18 @@ pub const Printer = struct {
 
     fn printElement(self: *Printer, node: NodeId) !void {
         const p = hir_mod.elementOf(self.hir, node);
+        if (p.optional and !self.options.es_target.supportsNullishAndOptional()) {
+            try self.write("(");
+            try self.printExpression(p.object);
+            try self.write(" === null || ");
+            try self.printExpression(p.object);
+            try self.write(" === void 0 ? void 0 : ");
+            try self.printExpression(p.object);
+            try self.write("[");
+            try self.printExpression(p.index);
+            try self.write("])");
+            return;
+        }
         try self.printExpression(p.object);
         try self.write(if (p.optional) "?.[" else "[");
         try self.printExpression(p.index);
@@ -1117,6 +1389,35 @@ pub const Printer = struct {
         try self.write(" }");
     }
 };
+
+/// Return the StringId of the bound name for a top-level
+/// declaration (function / class / let / const). Returns null
+/// when the decl has no bindable name (e.g. anonymous function
+/// expression).
+fn decoratorBoundName(hir: *const Hir, decl: NodeId) ?hir_mod.StringId {
+    const k = hir.kindOf(decl);
+    switch (k) {
+        .fn_decl, .fn_expr => {
+            const f = hir_mod.fnDeclOf(hir, decl);
+            if (f.name == hir_mod.none_node_id) return null;
+            if (hir.kindOf(f.name) != .identifier) return null;
+            return hir_mod.identifierOf(hir, f.name).name;
+        },
+        .class_decl, .class_expr => {
+            const c = hir_mod.classOf(hir, decl);
+            if (c.name == hir_mod.none_node_id) return null;
+            if (hir.kindOf(c.name) != .identifier) return null;
+            return hir_mod.identifierOf(hir, c.name).name;
+        },
+        .let_decl, .const_decl, .var_decl => {
+            const v = hir_mod.varDeclOf(hir, decl);
+            if (v.name == hir_mod.none_node_id) return null;
+            if (hir.kindOf(v.name) != .identifier) return null;
+            return hir_mod.identifierOf(hir, v.name).name;
+        },
+        else => return null,
+    }
+}
 
 fn binOpString(op: hir_mod.BinOp) []const u8 {
     return switch (op) {
@@ -1408,6 +1709,100 @@ test "emit: jsx automatic_dev uses _jsxDEV" {
     const out = try emitJsx("let v = <Foo />;", .{ .jsx_runtime = .automatic_dev });
     defer T.allocator.free(out);
     try T.expect(std.mem.indexOf(u8, out, "_jsxDEV(Foo, ") != null);
+}
+
+fn emitWithOpts(source: []const u8, opts: Options) ![]u8 {
+    const s = try T.allocator.create(TestSetup);
+    defer T.allocator.destroy(s);
+    s.interner = try string_interner.Interner.init(T.allocator);
+    defer s.interner.deinit();
+    s.hir = try hir_mod.Hir.init(T.allocator);
+    defer s.hir.deinit();
+    s.scanner = ts_lexer.Scanner.init(T.allocator, source);
+    defer s.scanner.deinit(T.allocator);
+    s.tokens = try s.scanner.tokenize(T.allocator);
+    defer s.tokens.deinit(T.allocator);
+    s.parser = ts_parser.Parser.init(T.allocator, &s.hir, &s.interner, source, s.tokens.items);
+    defer s.parser.deinit();
+    s.root = try s.parser.parseSourceFile();
+    s.printer = Printer.init(T.allocator, &s.hir, &s.interner, opts);
+    defer s.printer.deinit();
+    try s.printer.printSourceFile(s.root);
+    return T.allocator.dupe(u8, s.printer.out.items);
+}
+
+test "emit: nullish-coalescing lowers under es2019" {
+    const out = try emitWithOpts("let r = a ?? b;", .{ .es_target = .es2019 });
+    defer T.allocator.free(out);
+    // Expect a ternary, not `??`.
+    try T.expect(std.mem.indexOf(u8, out, "??") == null);
+    try T.expect(std.mem.indexOf(u8, out, "!== null") != null);
+    try T.expect(std.mem.indexOf(u8, out, "!== void 0") != null);
+}
+
+test "emit: optional-chaining lowers under es2019" {
+    const out = try emitWithOpts("let r = obj?.x;", .{ .es_target = .es2019 });
+    defer T.allocator.free(out);
+    try T.expect(std.mem.indexOf(u8, out, "?.") == null);
+    try T.expect(std.mem.indexOf(u8, out, "=== null") != null);
+}
+
+test "emit: optional element-access lowers under es2019" {
+    const out = try emitWithOpts("let r = arr?.[0];", .{ .es_target = .es2019 });
+    defer T.allocator.free(out);
+    try T.expect(std.mem.indexOf(u8, out, "?.[") == null);
+}
+
+test "emit: nullish/optional preserved at es2020+" {
+    const out = try emitWithOpts("let r = a ?? b;", .{ .es_target = .es2020 });
+    defer T.allocator.free(out);
+    try T.expect(std.mem.indexOf(u8, out, "??") != null);
+}
+
+test "emit: cjs default import lowers via __importDefault" {
+    const out = try emitWithOpts("import x from \"y\";", .{ .module_kind = .commonjs, .es_module_interop = true });
+    defer T.allocator.free(out);
+    try T.expect(std.mem.indexOf(u8, out, "__importDefault(require(\"y\"))") != null);
+    try T.expect(std.mem.indexOf(u8, out, ".default") != null);
+}
+
+test "emit: cjs default import without interop is plain require" {
+    const out = try emitWithOpts("import x from \"y\";", .{ .module_kind = .commonjs, .es_module_interop = false });
+    defer T.allocator.free(out);
+    try T.expect(std.mem.indexOf(u8, out, "require(\"y\")") != null);
+    try T.expect(std.mem.indexOf(u8, out, "__importDefault") == null);
+}
+
+test "emit: cjs namespace import lowers via __importStar" {
+    const out = try emitWithOpts("import * as x from \"y\";", .{ .module_kind = .commonjs });
+    defer T.allocator.free(out);
+    try T.expect(std.mem.indexOf(u8, out, "__importStar(require(\"y\"))") != null);
+}
+
+test "emit: cjs named import destructures from require" {
+    const out = try emitWithOpts("import { a, b } from \"y\";", .{ .module_kind = .commonjs });
+    defer T.allocator.free(out);
+    try T.expect(std.mem.indexOf(u8, out, "const { a, b } = require(\"y\")") != null);
+}
+
+test "emit: cjs side-effect import emits bare require" {
+    const out = try emitWithOpts("import \"y\";", .{ .module_kind = .commonjs });
+    defer T.allocator.free(out);
+    try T.expect(std.mem.indexOf(u8, out, "require(\"y\")") != null);
+    try T.expect(std.mem.indexOf(u8, out, "const") == null);
+}
+
+test "emit: cjs export-decl assigns to module.exports" {
+    const out = try emitWithOpts("export function add(a, b) { return a + b; }", .{ .module_kind = .commonjs });
+    defer T.allocator.free(out);
+    try T.expect(std.mem.indexOf(u8, out, "function add") != null);
+    try T.expect(std.mem.indexOf(u8, out, "module.exports.add = add") != null);
+}
+
+test "emit: cjs export-default-fn assigns to module.exports.default" {
+    const out = try emitWithOpts("export default function f() { return 1; }", .{ .module_kind = .commonjs });
+    defer T.allocator.free(out);
+    try T.expect(std.mem.indexOf(u8, out, "module.exports.default = f") != null);
 }
 
 test "emit: throw" {

@@ -130,6 +130,30 @@ pub fn optionsFromConfig(cfg: *const tsconfig_mod.TsConfig) CompileOptions {
     if (cfg.compiler_options.jsx_factory) |fac| {
         opts.emit.jsx_factory = fac;
     }
+    if (cfg.compiler_options.target) |t| {
+        opts.emit.es_target = switch (t) {
+            .es3, .es5 => .es5,
+            .es2015 => .es2015,
+            .es2016 => .es2016,
+            .es2017 => .es2017,
+            .es2018 => .es2018,
+            .es2019 => .es2019,
+            .es2020 => .es2020,
+            .es2021 => .es2021,
+            .es2022 => .es2022,
+            .es2023 => .es2023,
+            .es2024, .esnext => .esnext,
+        };
+    }
+    if (cfg.compiler_options.module) |m| {
+        opts.emit.module_kind = switch (m) {
+            .commonjs, .amd, .umd, .system => .commonjs,
+            else => .esm,
+        };
+    }
+    if (cfg.compiler_options.es_module_interop) |on| {
+        opts.emit.es_module_interop = on;
+    }
     return opts;
 }
 
