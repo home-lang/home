@@ -291,6 +291,37 @@ pub const builtin_corpus = [_]CorpusEntry{
     .{ .name = "23-import-default", .source = "import React from \"react\"; React;" },
     .{ .name = "24-namespace", .source = "namespace N { let x: number = 1; }" },
     .{ .name = "25-enum", .source = "enum Color { Red, Green, Blue }" },
+    // ----- Cases exercising recently-landed features -----
+    .{ .name = "26-explicit-type-args", .source = "function id<T>(x: T): T { return x; } let r = id<number>(42);" },
+    .{ .name = "27-mapped-type-literal-keys", .source = "type M = { [K in \"x\" | \"y\"]: number }; let r: M = { x: 1, y: 2 };" },
+    .{ .name = "28-conditional-eager", .source = "type Pick<T> = T extends string ? number : boolean; let r: Pick<string> = 1;" },
+    .{ .name = "29-conditional-distributes", .source = "type T = (string | number) extends string ? \"x\" : \"y\"; let r: T;" },
+    .{ .name = "30-type-predicate", .source = "function isString(x: any): x is string { return true; } function f(x: any) { if (isString(x)) { let s = x; } }" },
+    .{ .name = "31-asserts-predicate", .source = "function assert(x: unknown): asserts x is string { } function f(x: unknown) { assert(x); let s = x; }" },
+    .{ .name = "32-non-null-assertion", .source = "function pick(): string | null { return \"\"; } let s = pick()!;" },
+    .{ .name = "33-tuple-literal-index", .source = "let t: [number, string]; let n = t[0]; let s = t[1];" },
+    .{ .name = "34-array-shape", .source = "let a: number[] = [1, 2, 3]; let n = a[0]; let len = a.length;" },
+    .{ .name = "35-keyof-eval", .source = "type O = { x: number; y: string }; type K = keyof O; let k: K;" },
+    .{ .name = "36-discriminated-union", .source = "type S = { kind: \"a\"; v: number } | { kind: \"b\"; v: string }; function f(s: S) { if (s.kind === \"a\") { let n = s.v; } }" },
+    .{ .name = "37-in-narrowing", .source = "function f(p: { x: number } | { y: string }) { if (\"x\" in p) { let n = p.x; } }" },
+    .{ .name = "38-as-const", .source = "let x = \"hi\" as const;" },
+    .{ .name = "39-for-of", .source = "let arr = [1, 2, 3]; for (let n of arr) { let v = n; }" },
+    .{ .name = "40-index-signature-string", .source = "let m: { [k: string]: number } = {}; let v = m.foo;" },
+    .{ .name = "41-index-signature-number", .source = "let m: { [i: number]: string } = {}; let v = m[0];" },
+    .{ .name = "42-interface-extends", .source = "interface A { x: number } interface B extends A { y: string } let b: B = { x: 1, y: \"\" };" },
+    .{ .name = "43-optional-params", .source = "function f(a: number, b?: string): number { return a; } let r = f(1);" },
+    .{ .name = "44-default-params", .source = "function f(a: number, b: string = \"x\"): number { return a; } let r = f(1);" },
+    .{ .name = "45-strict-fn-types", .source = "function inner(s: string): void {} function outer(f: (s: string) => void): void {} outer(inner);" },
+    .{ .name = "46-fresh-excess-prop", .source = "let p: { x: number } = { x: 1, y: 2 };", .expects_error = true },
+    .{ .name = "47-noImplicitAny-let", .source = "let x;", .expects_error = false }, // expected only with strict; included as smoke
+    .{ .name = "48-this-in-class", .source = "class C { v: number = 0; m(): number { return this.v; } }" },
+    .{ .name = "49-super-call", .source = "class A { hello(): string { return \"a\"; } } class B extends A { hello(): string { return super.hello(); } }" },
+    .{ .name = "50-class-instance-type", .source = "class P { x: number = 0 } function f(p: P): number { return p.x; }" },
+    .{ .name = "51-instanceof-narrowing", .source = "class P { v: number = 0 } function f(o: any) { if (o instanceof P) { let v = o.v; } }" },
+    .{ .name = "52-typeof-type-query", .source = "let f = (n: number) => n + 1; type F = typeof f;" },
+    .{ .name = "53-optional-chaining", .source = "let p: { x?: number } = {}; let n = p?.x;" },
+    .{ .name = "54-nullish-coalescing", .source = "function pick(): string | null { return \"\"; } let s = pick() ?? \"default\";" },
+    .{ .name = "55-generic-alias-instantiation", .source = "type Box<T> = { value: T }; let b: Box<number> = { value: 42 };" },
 };
 
 // =============================================================================
@@ -381,6 +412,13 @@ test "conformance: builtin corpus runs and reports pass rate" {
     }
 
     const stats = try runCorpus(T.allocator, &builtin_corpus, &results);
+
+    // Print any failures to stderr so triage during PR review is easy.
+    for (results.items) |r| {
+        if (r.outcome == .failed) {
+            std.debug.print("[conformance fail] {s}: {s}\n", .{ r.name, r.detail });
+        }
+    }
 
     // Smoke: every built-in case must compile (or fail per its
     // expects_error flag). 100% pass rate on the canon corpus is

@@ -306,7 +306,15 @@ pub const Checker = struct {
             },
             .block_stmt => {
                 const stmts = hir_mod.blockStmts(self.hir, node);
-                for (stmts) |s| try self.checkStatement(s);
+                for (stmts) |s| {
+                    try self.checkStatement(s);
+                    // Assertion-function call as a statement: narrow
+                    // the asserted variable for subsequent statements
+                    // in the same block. `assert(x)` where `assert`
+                    // has return type `asserts x is string` narrows
+                    // `x` to `string` from this point forward.
+                    try self.applyAssertionFlow(s);
+                }
             },
             // Expressions used as statements.
             else => {
@@ -334,9 +342,17 @@ pub const Checker = struct {
     fn walkFnBody(self: *Checker, node: NodeId) CheckError!void {
         const f = hir_mod.fnDeclOf(self.hir, node);
         if (f.body == hir_mod.none_node_id) return;
+        // Push a function-local narrow scope so assertion-function
+        // calls and other body-level guards have somewhere to record
+        // narrowed types. Popped on return.
+        try self.pushNarrowScope();
+        defer self.popNarrowScope();
         if (self.hir.kindOf(f.body) == .block_stmt) {
             const stmts = hir_mod.blockStmts(self.hir, f.body);
-            for (stmts) |s| try self.checkStatement(s);
+            for (stmts) |s| {
+                try self.checkStatement(s);
+                try self.applyAssertionFlow(s);
+            }
         } else {
             // Arrow with expression body — its expression IS the
             // return value. Use it as the inferred return type when
@@ -1735,6 +1751,35 @@ pub const Checker = struct {
     ///     and the !== negation (with `when_true` flipped)
     ///   X === null / X !== null
     ///   X === undefined / X !== undefined
+    /// Assertion-function flow narrowing. If `stmt` is a call to a
+    /// function whose return type is `asserts arg is T`, record
+    /// `arg -> T` in the surrounding narrow scope so subsequent
+    /// statements in the same block see the narrowed type.
+    fn applyAssertionFlow(self: *Checker, stmt: NodeId) !void {
+        const k = self.hir.kindOf(stmt);
+        if (k != .call_expr) return;
+        const c = hir_mod.callOf(self.hir, stmt);
+        if (self.hir.kindOf(c.callee) != .identifier) return;
+        const callee_id = hir_mod.identifierOf(self.hir, c.callee);
+        const pred = self.fn_predicates.get(callee_id.name) orelse return;
+        if (!pred.is_asserts) return;
+        const args = hir_mod.callArgs(self.hir, stmt);
+        if (pred.param_index >= args.len) return;
+        const arg = args[pred.param_index];
+        if (self.hir.kindOf(arg) != .identifier) return;
+        const arg_id = hir_mod.identifierOf(self.hir, arg);
+        // Predicate-less `asserts arg` (no `is T`): narrow to a
+        // truthy approximation by subtracting `null | undefined`
+        // from the current type.
+        if (pred.target_type == types.Primitive.unknown or pred.target_type == types.Primitive.none) {
+            const current = self.lookupNarrow(arg_id.name) orelse self.typeOfIdentifier(arg);
+            const narrowed = self.subtractNullUndefined(current) catch current;
+            try self.recordNarrow(arg_id.name, narrowed);
+            return;
+        }
+        try self.recordNarrow(arg_id.name, pred.target_type);
+    }
+
     fn applyTypeGuard(self: *Checker, cond: NodeId, when_true: bool) !void {
         // `if (isFoo(x))` — type-predicate call narrowing. When the
         // condition is a call to a predicate function and the argument
@@ -3843,6 +3888,26 @@ test "checker: type predicate narrows in then-branch" {
     const ifp = hir_mod.ifOf(&s.hir, if_stmt);
     const then_stmts = hir_mod.blockStmts(&s.hir, ifp.then_branch);
     const s_decl = then_stmts[0];
+    const s_init = hir_mod.varDeclOf(&s.hir, s_decl).init;
+    try T.expectEqual(types.Primitive.string_t, s.hir.typeOf(s_init));
+}
+
+test "checker: asserts predicate narrows in fall-through" {
+    const s = try newSetup(
+        \\function assertString(x: unknown): asserts x is string { }
+        \\function f(x: unknown) {
+        \\  assertString(x);
+        \\  let s = x;
+        \\}
+    );
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+    const stmts = hir_mod.blockStmts(&s.hir, s.root);
+    const fn_node = stmts[1];
+    const f = hir_mod.fnDeclOf(&s.hir, fn_node);
+    const body_stmts = hir_mod.blockStmts(&s.hir, f.body);
+    // body_stmts[0] = assertString(x); body_stmts[1] = let s = x;
+    const s_decl = body_stmts[1];
     const s_init = hir_mod.varDeclOf(&s.hir, s_decl).init;
     try T.expectEqual(types.Primitive.string_t, s.hir.typeOf(s_init));
 }
