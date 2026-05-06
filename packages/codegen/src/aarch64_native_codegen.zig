@@ -131,6 +131,11 @@ pub const Aarch64NativeCodegen = struct {
     /// supports bare-tag variants (no payload); the codegen lowers an enum
     /// value to a single i64 holding the variant's index.
     enum_layouts: std.StringHashMap(*const ast.EnumDecl),
+    /// Function name → AST node. Populated in pass 0. Lets call sites
+    /// introspect parameter types (M10c needs this to know which args
+    /// take a register pair) and return types (so let-decl can spill
+    /// returned 16-byte enums correctly).
+    fn_decls: std.StringHashMap(*const ast.FnDecl),
 
     pub fn init(allocator: std.mem.Allocator, program: *const ast.Program) Aarch64NativeCodegen {
         return .{
@@ -147,6 +152,7 @@ pub const Aarch64NativeCodegen = struct {
             .string_fixups = std.ArrayList(StringFixup).empty,
             .struct_layouts = std.StringHashMap(*const ast.StructDecl).init(allocator),
             .enum_layouts = std.StringHashMap(*const ast.EnumDecl).init(allocator),
+            .fn_decls = std.StringHashMap(*const ast.FnDecl).init(allocator),
         };
     }
 
@@ -163,6 +169,7 @@ pub const Aarch64NativeCodegen = struct {
         self.string_fixups.deinit(self.allocator);
         self.struct_layouts.deinit();
         self.enum_layouts.deinit();
+        self.fn_decls.deinit();
     }
 
     pub fn writeExecutable(self: *Aarch64NativeCodegen, path: []const u8) !void {
@@ -172,6 +179,7 @@ pub const Aarch64NativeCodegen = struct {
             switch (stmt) {
                 .StructDecl => |decl| try self.struct_layouts.put(decl.name, decl),
                 .EnumDecl => |decl| try self.enum_layouts.put(decl.name, decl),
+                .FnDecl => |decl| try self.fn_decls.put(decl.name, decl),
                 else => {},
             }
         }
@@ -312,7 +320,16 @@ pub const Aarch64NativeCodegen = struct {
     }
 
     fn generateFnDecl(self: *Aarch64NativeCodegen, func: *ast.FnDecl) CodegenError!void {
-        if (func.params.len > 8) return error.TooManyArguments; // 9th+ on stack: M-later
+        // Compute per-param register/slot counts up front so we can validate
+        // the AAPCS64 budget (8 regs total) before emitting any code.
+        var total_param_regs: u32 = 0;
+        var total_param_slots: u32 = 0;
+        for (func.params) |param| {
+            const sc = self.paramSlotCount(param);
+            total_param_regs += sc;
+            total_param_slots += sc;
+        }
+        if (total_param_regs > 8) return error.TooManyArguments;
 
         const offset = self.assembler.getPosition();
         try self.functions.put(func.name, offset);
@@ -329,14 +346,13 @@ pub const Aarch64NativeCodegen = struct {
         self.stack_delta = 0;
         self.next_slot = 0;
 
-        // Pre-pass: total slot count = parameter slots (1 each, scalar-only
-        // for now) + slots required by every reachable `let` binding (1 for
-        // scalars, N for struct-typed initializers). Over-allocates when
-        // if/else branches are mutually exclusive; an optimal allocator can
-        // reuse slots later.
-        const param_count: u32 = @intCast(func.params.len);
+        // Pre-pass: total slot count = parameter slots (scalars 1 each,
+        // payload-bearing-enum params 2 each) + slots required by every
+        // reachable `let` binding (1 for scalars, N for struct-typed,
+        // 2 for payload enums). Over-allocates when if/else branches are
+        // mutually exclusive; an optimal allocator can reuse slots later.
         const let_slot_count: u32 = countSlotsInBlock(func.body, &self.struct_layouts, &self.enum_layouts);
-        const raw_frame: u32 = (param_count + let_slot_count) * 8;
+        const raw_frame: u32 = (total_param_slots + let_slot_count) * 8;
         self.frame_size = std.mem.alignForward(u32, raw_frame, 16);
         if (self.frame_size > 4095) return error.FrameTooLarge; // single ADD/SUB imm12
 
@@ -348,15 +364,29 @@ pub const Aarch64NativeCodegen = struct {
             try self.assembler.subRegImm(.sp, .sp, @intCast(self.frame_size));
         }
 
-        // Spill incoming argument registers (x0..x7) into local slots so
-        // subsequent expression eval (which clobbers x0/x1) doesn't lose
-        // them. Each parameter occupies one 8-byte slot at the bottom of the
-        // frame; the locals map lets identifier reads load them back.
-        for (func.params, 0..) |param, i| {
-            const slot: u32 = @intCast(i * 8);
-            try self.locals.put(param.name, slot);
-            try self.assembler.strRegMem(argRegister(i), .sp, @intCast(slot));
-            self.next_slot = slot + 8;
+        // Spill incoming argument registers into local slots so subsequent
+        // expression eval (which clobbers x0/x1) doesn't lose them. Scalar
+        // params occupy one slot; payload-bearing enum params occupy two
+        // (tag at +0, payload at +8) and consume two consecutive arg regs.
+        var reg_idx: u32 = 0;
+        var slot_off: u32 = 0;
+        for (func.params) |param| {
+            const sc = self.paramSlotCount(param);
+            try self.locals.put(param.name, slot_off);
+            try self.assembler.strRegMem(argRegister(reg_idx), .sp, @intCast(slot_off));
+            if (sc == 2) {
+                try self.assembler.strRegMem(argRegister(reg_idx + 1), .sp, @intCast(slot_off + 8));
+                if (self.enum_layouts.get(param.type_name)) |edecl| {
+                    try self.local_enum_types.put(param.name, edecl.name);
+                }
+            } else if (self.enum_layouts.get(param.type_name)) |edecl| {
+                // Bare-tag enum param — single-slot, but still record type
+                // so match-on-Identifier can see it.
+                try self.local_enum_types.put(param.name, edecl.name);
+            }
+            reg_idx += sc;
+            slot_off += sc * 8;
+            self.next_slot = slot_off;
         }
 
         for (func.body.statements) |stmt| {
@@ -418,6 +448,30 @@ pub const Aarch64NativeCodegen = struct {
                 try self.local_enum_types.put(decl.name, edecl.name);
                 try self.assembler.strRegMem(.x0, .sp, @intCast(slot));
                 return;
+            }
+            // Call to a function returning a payload-bearing enum
+            // (`let r = divide(a, b)` where `divide` returns Result).
+            if (value.* == .CallExpr) {
+                const cn = switch (value.CallExpr.callee.*) {
+                    .Identifier => |id| id.name,
+                    else => null,
+                };
+                if (cn) |name| {
+                    if (self.fn_decls.get(name)) |fdecl| {
+                        if (self.fnReturnsPayloadEnum(fdecl)) {
+                            const rt = fdecl.return_type.?;
+                            const edecl = self.enum_layouts.get(rt).?;
+                            const slot = self.next_slot;
+                            self.next_slot += 16;
+                            try self.locals.put(decl.name, slot);
+                            try self.local_enum_types.put(decl.name, edecl.name);
+                            try self.generateCallExpr(value.CallExpr); // x0=tag, x1=payload
+                            try self.assembler.strRegMem(.x0, .sp, @intCast(slot));
+                            try self.assembler.strRegMem(.x1, .sp, @intCast(slot + 8));
+                            return;
+                        }
+                    }
+                }
             }
         }
 
@@ -522,8 +576,21 @@ pub const Aarch64NativeCodegen = struct {
     }
 
     fn generateReturn(self: *Aarch64NativeCodegen, ret: *ast.ReturnStmt) CodegenError!void {
+        // If the current function returns a payload-bearing enum, we must
+        // produce tag in x0 *and* payload in x1 — generateExprEnumAware
+        // does both. Scalar returns stay in x0.
+        const returns_enum = blk: {
+            const name = self.current_function_name orelse break :blk false;
+            const fdecl = self.fn_decls.get(name) orelse break :blk false;
+            break :blk self.fnReturnsPayloadEnum(fdecl);
+        };
+
         if (ret.value) |value| {
-            try self.generateExpr(value); // result lands in x0
+            if (returns_enum) {
+                _ = try self.generateExprEnumAware(value);
+            } else {
+                try self.generateExpr(value);
+            }
         } else {
             try self.assembler.movRegImm64(.x0, 0);
         }
@@ -770,6 +837,97 @@ pub const Aarch64NativeCodegen = struct {
         return variantIndex(edecl, member.member) orelse error.UndefinedField;
     }
 
+    /// Number of register/slot units a parameter occupies in AAPCS64
+    /// terms: 1 for scalar types and bare-tag enums, 2 for payload-
+    /// bearing enums (tag in xN, payload in xN+1).
+    fn paramSlotCount(self: *Aarch64NativeCodegen, param: ast.Parameter) u32 {
+        if (self.enum_layouts.get(param.type_name)) |edecl| {
+            return enumSlotCount(edecl);
+        }
+        return 1;
+    }
+
+    /// True if this function returns a payload-bearing enum (16-byte
+    /// register pair x0/x1 result).
+    fn fnReturnsPayloadEnum(self: *Aarch64NativeCodegen, decl: *const ast.FnDecl) bool {
+        const rt = decl.return_type orelse return false;
+        const edecl = self.enum_layouts.get(rt) orelse return false;
+        return enumIsPayloadBearing(edecl);
+    }
+
+    /// Evaluate `expr` as a (potentially) enum-typed value. On return,
+    /// x0 holds the tag and x1 holds the payload — or just x0 for scalar
+    /// expressions, with x1 left untouched. Returns the enum decl if the
+    /// result is an enum value, or null for a scalar.
+    ///
+    /// Supports: enum-typed Identifier, bare/payload enum construction,
+    /// and CallExpr to a function whose return type is a payload enum.
+    /// Other shapes fall back to plain `generateExpr` (scalar in x0).
+    fn generateExprEnumAware(
+        self: *Aarch64NativeCodegen,
+        expr: *ast.Expr,
+    ) CodegenError!?*const ast.EnumDecl {
+        switch (expr.*) {
+            .Identifier => |id| {
+                if (self.local_enum_types.get(id.name)) |ename| {
+                    if (self.enum_layouts.get(ename)) |edecl| {
+                        const base = self.locals.get(id.name) orelse return error.UndefinedIdentifier;
+                        const off = base + self.stack_delta;
+                        try self.assembler.ldrRegMem(.x0, .sp, @intCast(off));
+                        if (enumIsPayloadBearing(edecl)) {
+                            try self.assembler.ldrRegMem(.x1, .sp, @intCast(off + 8));
+                        }
+                        return edecl;
+                    }
+                }
+            },
+            .MemberExpr => |member| {
+                if (matchEnumConstruction(expr, &self.enum_layouts)) |edecl| {
+                    const tag = variantIndex(edecl, member.member) orelse return error.UndefinedField;
+                    try self.assembler.movRegImm64(.x0, tag);
+                    if (enumIsPayloadBearing(edecl)) {
+                        try self.assembler.movRegImm64(.x1, 0);
+                    }
+                    return edecl;
+                }
+            },
+            .CallExpr => |call| {
+                // Enum construction `EnumName.Variant(arg)`?
+                if (matchEnumConstruction(expr, &self.enum_layouts)) |edecl| {
+                    const member = call.callee.MemberExpr;
+                    const tag = variantIndex(edecl, member.member) orelse return error.UndefinedField;
+                    if (call.args.len > 1 or call.named_args.len != 0) return error.NotImplemented;
+                    if (call.args.len == 1) {
+                        // Evaluate payload, leave in x1 without clobbering x0.
+                        try self.generateExpr(call.args[0]); // → x0
+                        // Move x0 → x1, then load tag → x0.
+                        try self.assembler.movRegReg(.x1, .x0);
+                    } else if (enumIsPayloadBearing(edecl)) {
+                        try self.assembler.movRegImm64(.x1, 0);
+                    }
+                    try self.assembler.movRegImm64(.x0, tag);
+                    return edecl;
+                }
+                // Call to a function returning a payload enum?
+                const callee_name = switch (call.callee.*) {
+                    .Identifier => |i| i.name,
+                    else => return null,
+                };
+                if (self.fn_decls.get(callee_name)) |fdecl| {
+                    if (self.fnReturnsPayloadEnum(fdecl)) {
+                        try self.generateCallExpr(call); // returns x0 (tag) + x1 (payload)
+                        const rt = fdecl.return_type.?;
+                        return self.enum_layouts.get(rt);
+                    }
+                }
+            },
+            else => {},
+        }
+        // Fallback: treat as scalar.
+        try self.generateExpr(expr);
+        return null;
+    }
+
     /// Emit `ldr x1, [sp + scrut_slot + delta]; cmp x1, #tag; bcond ne, 0`.
     /// Caller patches the bcond once the next-arm address is known.
     fn emitEnumTagCheck(self: *Aarch64NativeCodegen, scrut_slot: u32, tag: i64) CodegenError!void {
@@ -891,7 +1049,6 @@ pub const Aarch64NativeCodegen = struct {
     }
 
     fn generateCallExpr(self: *Aarch64NativeCodegen, call: *ast.CallExpr) CodegenError!void {
-        if (call.args.len > 8) return error.TooManyArguments;
         if (call.named_args.len != 0) return error.NotImplemented;
 
         const callee_name: []const u8 = switch (call.callee.*) {
@@ -907,22 +1064,56 @@ pub const Aarch64NativeCodegen = struct {
             return self.emitPrintBuiltin(call, std.mem.eql(u8, callee_name, "println"));
         }
 
-        // Evaluate args in source order, spilling each to the stack so later
-        // arg evaluation can freely clobber x0/x1. After all are evaluated,
-        // pop them in reverse so x0..xN-1 hold args 0..N-1.
+        // If we know the callee's signature, walk its params to determine
+        // each arg's register footprint (1 or 2 slots). Unknown callees
+        // default to 1 slot per arg.
+        const callee_params: []const ast.Parameter = if (self.fn_decls.get(callee_name)) |fd|
+            fd.params
+        else
+            &[_]ast.Parameter{};
+
+        var total_reg_slots: u32 = 0;
+        for (call.args, 0..) |_, i| {
+            total_reg_slots += if (i < callee_params.len)
+                self.paramSlotCount(callee_params[i])
+            else
+                1;
+        }
+        if (total_reg_slots > 8) return error.TooManyArguments;
+
+        // Fast path: single arg. Whether scalar or enum, produce in xN
+        // registers directly — generateExprEnumAware lands tag in x0
+        // and payload in x1 with no spill needed.
         if (call.args.len == 1) {
-            // Fast path: only one arg, leave it in x0 directly.
-            try self.generateExpr(call.args[0]);
-        } else {
-            for (call.args) |arg| {
-                try self.generateExpr(arg);
-                try self.assembler.pushReg(.x0);
-                self.stack_delta += 16;
+            const sc: u32 = if (callee_params.len >= 1) self.paramSlotCount(callee_params[0]) else 1;
+            if (sc == 2) {
+                _ = try self.generateExprEnumAware(call.args[0]);
+            } else {
+                try self.generateExpr(call.args[0]);
             }
-            var i: usize = call.args.len;
-            while (i > 0) {
-                i -= 1;
-                try self.assembler.popReg(argRegister(i));
+        } else if (call.args.len > 1) {
+            // General path: spill each arg's halves to the stack, then
+            // pop into xN..x0 so register N holds the last arg's last
+            // slot. Push a 2-slot enum arg as (tag, payload) — popping
+            // in reverse register order gives the right placement.
+            for (call.args, 0..) |arg, i| {
+                const sc: u32 = if (i < callee_params.len) self.paramSlotCount(callee_params[i]) else 1;
+                if (sc == 2) {
+                    _ = try self.generateExprEnumAware(arg);
+                    try self.assembler.pushReg(.x0);
+                    self.stack_delta += 16;
+                    try self.assembler.pushReg(.x1);
+                    self.stack_delta += 16;
+                } else {
+                    try self.generateExpr(arg);
+                    try self.assembler.pushReg(.x0);
+                    self.stack_delta += 16;
+                }
+            }
+            var ri: u32 = total_reg_slots;
+            while (ri > 0) {
+                ri -= 1;
+                try self.assembler.popReg(argRegister(ri));
                 self.stack_delta -= 16;
             }
         }
@@ -937,7 +1128,8 @@ pub const Aarch64NativeCodegen = struct {
             try self.pending_calls.append(self.allocator, .{ .pos = call_pos, .callee = callee_name });
             try self.assembler.bl(0); // placeholder
         }
-        // Result is now in x0; nothing more to do.
+        // Result lives in x0 (and x1 for payload-enum returns); the caller
+        // is responsible for knowing which.
     }
 
     fn generateAssignment(self: *Aarch64NativeCodegen, assign: *ast.AssignmentExpr) CodegenError!void {
