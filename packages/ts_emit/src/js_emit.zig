@@ -127,6 +127,13 @@ pub const Options = struct {
     /// `import x from "y"` works against CJS modules without
     /// `.default`-property dance.
     es_module_interop: bool = true,
+    /// `experimentalDecorators` — when true (default), emit the
+    /// legacy `__decorate(...)` shape that matches tsc with
+    /// `experimentalDecorators: true`. When false, emit the Stage 3
+    /// (TC39) `__esDecorate` shape that tsc uses by default in
+    /// TS 5.0+. v1 only handles class-level decorators in Stage 3
+    /// mode; per-member Stage 3 emit still uses the legacy form.
+    experimental_decorators: bool = true,
 };
 
 const source_map_mod = @import("source_map.zig");
@@ -289,21 +296,45 @@ pub const Printer = struct {
         }
     }
 
-    /// Emit `<Name> = __decorate([dec1, dec2, ...], <Name>);` after
-    /// a class declaration that had decorators attached.
+    /// Emit the post-class-decl runtime call for class-level
+    /// decorators. Two shapes are supported:
+    ///
+    ///   - Legacy (`experimental_decorators: true`, default):
+    ///     `Foo = __decorate([dec1, dec2], Foo);` — matches tsc
+    ///     with `experimentalDecorators: true`.
+    ///
+    ///   - Stage 3 / TC39 (`experimental_decorators: false`),
+    ///     simplified v1:
+    ///     `__esDecorate(null, null, [dec1, dec2], { kind: "class", name: "Foo" }, null, []);`
+    ///     A full Stage 3 lowering wraps the class in an IIFE with a
+    ///     static initializer block; we emit the helper call alone
+    ///     to keep the v1 transform local. Per-member decorators
+    ///     still go through the legacy `__decorate` walk.
     fn emitClassDecorateCall(self: *Printer, decorators: []const NodeId, class_node: NodeId) anyerror!void {
         const c = hir_mod.classOf(self.hir, class_node);
         if (c.name == hir_mod.none_node_id) return;
-        try self.printExpression(c.name);
-        try self.write(" = __decorate([");
-        for (decorators, 0..) |d, i| {
-            if (i > 0) try self.write(", ");
-            const dp = hir_mod.decoratorOf(self.hir, d);
-            try self.printExpression(dp.expression);
+        if (self.options.experimental_decorators) {
+            try self.printExpression(c.name);
+            try self.write(" = __decorate([");
+            for (decorators, 0..) |d, i| {
+                if (i > 0) try self.write(", ");
+                const dp = hir_mod.decoratorOf(self.hir, d);
+                try self.printExpression(dp.expression);
+            }
+            try self.write("], ");
+            try self.printExpression(c.name);
+            try self.write(");");
+        } else {
+            try self.write("__esDecorate(null, null, [");
+            for (decorators, 0..) |d, i| {
+                if (i > 0) try self.write(", ");
+                const dp = hir_mod.decoratorOf(self.hir, d);
+                try self.printExpression(dp.expression);
+            }
+            try self.write("], { kind: \"class\", name: \"");
+            try self.printExpression(c.name);
+            try self.write("\" }, null, []);");
         }
-        try self.write("], ");
-        try self.printExpression(c.name);
-        try self.write(");");
     }
 
     fn printStatement(self: *Printer, node: NodeId) anyerror!void {
@@ -2526,6 +2557,21 @@ test "emit: class with decorator-call expression" {
     const out = try emit("@inject(Foo) class Bar {}");
     defer T.allocator.free(out);
     try T.expect(std.mem.indexOf(u8, out, "__decorate([inject(Foo)], Bar)") != null);
+}
+
+test "emit: stage 3 class decorator emits __esDecorate helper" {
+    const out = try emitWithOpts("@logged class Foo {}", .{ .experimental_decorators = false });
+    defer T.allocator.free(out);
+    try T.expect(std.mem.indexOf(u8, out, "class Foo") != null);
+    try T.expect(std.mem.indexOf(u8, out, "__esDecorate(null, null, [logged], { kind: \"class\", name: \"Foo\" }, null, []);") != null);
+    // Stage 3 must NOT emit the legacy `__decorate` form.
+    try T.expect(std.mem.indexOf(u8, out, "= __decorate(") == null);
+}
+
+test "emit: stage 3 multiple class decorators preserve order" {
+    const out = try emitWithOpts("@a @b @c class Bar {}", .{ .experimental_decorators = false });
+    defer T.allocator.free(out);
+    try T.expect(std.mem.indexOf(u8, out, "__esDecorate(null, null, [a, b, c], { kind: \"class\", name: \"Bar\" }, null, []);") != null);
 }
 
 test "emit: sourceMappingURL trailer appended when configured" {
