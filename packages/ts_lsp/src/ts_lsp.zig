@@ -2491,6 +2491,57 @@ test "Service: diagnostics surface from compilation" {
     try T.expect(std.mem.indexOf(u8, out, "error TS") != null);
 }
 
+test "Service: diagnosticsStructured returns LspDiagnostic shape" {
+    var vfs = ts_resolver.VirtualFs.init(T.allocator);
+    defer vfs.deinit();
+    var resolver = ts_resolver.Resolver.init(T.allocator, vfs.fs(), .{});
+    defer resolver.deinit();
+    var program = ts_program.Program.init(T.allocator, &resolver);
+    defer program.deinit();
+
+    const src = "let x: number = \"hi\";";
+    _ = try program.add("/main.ts", src);
+    try program.compileAll(.{});
+
+    var svc = Service.init(T.allocator, &program);
+    const diags = try svc.diagnosticsStructured(T.allocator, "/main.ts");
+    defer freeLspDiagnostics(T.allocator, diags);
+
+    try T.expect(diags.len > 0);
+    const d = diags[0];
+    try T.expectEqualStrings("/main.ts", d.range.file);
+    try T.expectEqualStrings("ts", d.source);
+    try T.expectEqual(LspDiagnostic.Severity.err, d.severity);
+    // Range covers a non-empty extent (single-char fallback).
+    try T.expect(d.range.start_line == d.range.end_line);
+    try T.expect(d.range.end_col > d.range.start_col);
+    // Code is a real number, not zero.
+    try T.expect(d.code != 0);
+    // Message is non-empty.
+    try T.expect(d.message.len > 0);
+}
+
+test "Service: diagnosticsStructured returns empty on clean / unknown files" {
+    var vfs = ts_resolver.VirtualFs.init(T.allocator);
+    defer vfs.deinit();
+    var resolver = ts_resolver.Resolver.init(T.allocator, vfs.fs(), .{});
+    defer resolver.deinit();
+    var program = ts_program.Program.init(T.allocator, &resolver);
+    defer program.deinit();
+
+    _ = try program.add("/clean.ts", "let x: number = 1;");
+    try program.compileAll(.{});
+
+    var svc = Service.init(T.allocator, &program);
+    const clean = try svc.diagnosticsStructured(T.allocator, "/clean.ts");
+    defer freeLspDiagnostics(T.allocator, clean);
+    try T.expectEqual(@as(usize, 0), clean.len);
+
+    const missing = try svc.diagnosticsStructured(T.allocator, "/missing.ts");
+    defer freeLspDiagnostics(T.allocator, missing);
+    try T.expectEqual(@as(usize, 0), missing.len);
+}
+
 test "Service: didChangeFile recompiles + returns fresh diagnostics" {
     var vfs = ts_resolver.VirtualFs.init(T.allocator);
     defer vfs.deinit();
