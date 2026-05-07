@@ -220,6 +220,13 @@ pub const Printer = struct {
     /// rewrite `this.#x` -> `_<Class>_x.get(this)`. `null` outside a
     /// class body or when the target supports native private fields.
     current_class_name: ?StringId,
+    /// True while emitting the inside of an ES5-lowered derived class
+    /// IIFE body. Causes `super(args)` to lower to
+    /// `_super.call(this, args)`, `super.m(args)` to
+    /// `_super.prototype.m.call(this, args)`, and bare `super.x` reads
+    /// to `_super.prototype.x`. Outside this scope `super` is printed
+    /// verbatim (preserved at ES2015+ where the keyword is legal).
+    in_es5_super_lowering: bool,
 
     pub fn init(
         gpa: std.mem.Allocator,
@@ -240,6 +247,7 @@ pub const Printer = struct {
             .source = null,
             .in_async_downlevel = false,
             .current_class_name = null,
+            .in_es5_super_lowering = false,
         };
     }
 
@@ -1374,12 +1382,19 @@ pub const Printer = struct {
     fn printClassDeclEs5(self: *Printer, node: NodeId) anyerror!void {
         const c = hir_mod.classOf(self.hir, node);
         if (c.name == hir_mod.none_node_id) return; // anonymous class — fall back
+        const has_extends = c.extends != hir_mod.none_node_id;
+        // Enable `super` lowering for the derived-class body. Restored
+        // on exit so unrelated nested code (e.g. an inner non-derived
+        // class declaration) sees its outer state.
+        const prev_super = self.in_es5_super_lowering;
+        if (has_extends) self.in_es5_super_lowering = true;
+        defer self.in_es5_super_lowering = prev_super;
         try self.write("var ");
         try self.printExpression(c.name);
         try self.write(" = (function (");
-        if (c.extends != hir_mod.none_node_id) try self.write("_super");
+        if (has_extends) try self.write("_super");
         try self.write(") { ");
-        if (c.extends != hir_mod.none_node_id) {
+        if (has_extends) {
             try self.write("__extends(");
             try self.printExpression(c.name);
             try self.write(", _super); ");
@@ -1405,7 +1420,11 @@ pub const Printer = struct {
             try self.printRuntimeParams(params);
         }
         try self.write(") { ");
-        if (c.extends != hir_mod.none_node_id) {
+        // Synthesize `_super.call(this)` only when there is no
+        // explicit constructor — an explicit ctor body already
+        // contains a `super(...)` call which will be lowered to
+        // `_super.call(this, ...)` by `printCall`.
+        if (has_extends and ctor == null) {
             try self.write("_super.call(this); ");
         }
         // Class fields with initializers go inside the ctor body.
@@ -2266,6 +2285,44 @@ pub const Printer = struct {
                 return;
             }
         }
+        // §4.A.2 — when lowering a derived class to ES5 we must
+        // rewrite `super(args)` -> `_super.call(this, args)` and
+        // `super.m(args)` -> `_super.prototype.m.call(this, args)`
+        // because the `super` keyword has no meaning inside the
+        // generated IIFE body.
+        if (self.in_es5_super_lowering) {
+            const callee_kind = self.hir.kindOf(p.callee);
+            if (callee_kind == .identifier) {
+                const id = hir_mod.identifierOf(self.hir, p.callee);
+                if (std.mem.eql(u8, self.interner.get(id.name), "super")) {
+                    try self.write("_super.call(this");
+                    const args = hir_mod.callArgs(self.hir, node);
+                    for (args) |a| {
+                        try self.write(", ");
+                        try self.printExpression(a);
+                    }
+                    try self.write(")");
+                    return;
+                }
+            } else if (callee_kind == .member_access) {
+                const m = hir_mod.memberOf(self.hir, p.callee);
+                if (self.hir.kindOf(m.object) == .identifier) {
+                    const obj_id = hir_mod.identifierOf(self.hir, m.object);
+                    if (std.mem.eql(u8, self.interner.get(obj_id.name), "super")) {
+                        try self.write("_super.prototype.");
+                        try self.write(self.interner.get(m.name));
+                        try self.write(".call(this");
+                        const args = hir_mod.callArgs(self.hir, node);
+                        for (args) |a| {
+                            try self.write(", ");
+                            try self.printExpression(a);
+                        }
+                        try self.write(")");
+                        return;
+                    }
+                }
+            }
+        }
         try self.printExpression(p.callee);
         try self.write("(");
         const args = hir_mod.callArgs(self.hir, node);
@@ -2291,6 +2348,17 @@ pub const Printer = struct {
 
     fn printMember(self: *Printer, node: NodeId) !void {
         const p = hir_mod.memberOf(self.hir, node);
+        // §4.A.2 — bare `super.x` reads become `_super.prototype.x`
+        // inside the ES5 derived-class IIFE body. Calls of the form
+        // `super.x(args)` are handled in `printCall`.
+        if (self.in_es5_super_lowering and self.hir.kindOf(p.object) == .identifier) {
+            const obj_id = hir_mod.identifierOf(self.hir, p.object);
+            if (std.mem.eql(u8, self.interner.get(obj_id.name), "super")) {
+                try self.write("_super.prototype.");
+                try self.write(self.interner.get(p.name));
+                return;
+            }
+        }
         // §4.A.7 — rewrite `<obj>.#field` to `_<Class>_field.get(<obj>)`
         // when private-field downlevel is active inside a class body.
         if (self.current_class_name) |class_name| {
@@ -2868,6 +2936,50 @@ test "emit: class field initializer goes inside ctor at es5" {
     const out = try emitWithOpts("class Box { value = 42; }", .{ .es_target = .es5 });
     defer T.allocator.free(out);
     try T.expect(std.mem.indexOf(u8, out, "this.value = 42") != null);
+}
+
+test "emit: plain class extends at es5 emits __extends helper call" {
+    const out = try emitWithOpts("class B extends A {}", .{ .es_target = .es5 });
+    defer T.allocator.free(out);
+    // IIFE wrapper with `_super` parameter applied to `A`.
+    try T.expect(std.mem.indexOf(u8, out, "var B = (function (_super)") != null);
+    try T.expect(std.mem.indexOf(u8, out, "__extends(B, _super)") != null);
+    try T.expect(std.mem.indexOf(u8, out, "function B()") != null);
+    try T.expect(std.mem.indexOf(u8, out, "_super.call(this)") != null);
+    try T.expect(std.mem.indexOf(u8, out, "return B;") != null);
+    try T.expect(std.mem.indexOf(u8, out, "})(A)") != null);
+    // No leftover `class` keyword.
+    try T.expect(std.mem.indexOf(u8, out, "class ") == null);
+}
+
+test "emit: super.method() in derived method lowers to _super.prototype.method.call(this) at es5" {
+    const out = try emitWithOpts(
+        "class B extends A { m() { super.m(); } }",
+        .{ .es_target = .es5 },
+    );
+    defer T.allocator.free(out);
+    // The method is hung off the prototype.
+    try T.expect(std.mem.indexOf(u8, out, "B.prototype.m = function ()") != null);
+    // `super.m()` inside a method becomes `_super.prototype.m.call(this)`.
+    try T.expect(std.mem.indexOf(u8, out, "_super.prototype.m.call(this)") != null);
+    // Bare `super.` should not survive lowering — only `_super.` is allowed.
+    var idx: usize = 0;
+    while (std.mem.indexOfPos(u8, out, idx, "super.")) |pos| : (idx = pos + 1) {
+        try T.expect(pos > 0 and out[pos - 1] == '_');
+    }
+}
+
+test "emit: derived constructor with super(arg) lowers to _super.call(this, arg) at es5" {
+    const out = try emitWithOpts(
+        "class B extends A { constructor() { super(1); } }",
+        .{ .es_target = .es5 },
+    );
+    defer T.allocator.free(out);
+    try T.expect(std.mem.indexOf(u8, out, "__extends(B, _super)") != null);
+    // `super(1)` in the ctor body becomes `_super.call(this, 1)`.
+    try T.expect(std.mem.indexOf(u8, out, "_super.call(this, 1)") != null);
+    // `super(...)` token should not survive lowering.
+    try T.expect(std.mem.indexOf(u8, out, "super(") == null);
 }
 
 test "emit: class preserved at es2015+" {
