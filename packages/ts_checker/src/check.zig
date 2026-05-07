@@ -1123,6 +1123,44 @@ pub const Checker = struct {
         return cb_params[0];
     }
 
+    /// `Awaited<T>` (TS 4.5) — recursively unwrap `Promise<U>` until
+    /// the operand is no longer a structural Promise. For non-Promise
+    /// types this is a no-op and `t` is returned unchanged.
+    fn evalAwaited(self: *Checker, t: TypeId) TypeId {
+        var cur = t;
+        // Cap recursion in case of pathological self-referential
+        // Promise shapes; TS itself imposes no fixed depth, but a
+        // small bound matches the practical universe of Promise<...>
+        // chains and prevents runaway loops on cyclic types.
+        var i: usize = 0;
+        while (i < 64) : (i += 1) {
+            const next = self.unwrapPromise(cur);
+            if (next == cur) return cur;
+            cur = next;
+        }
+        return cur;
+    }
+
+    /// Build a minimal structural `Promise<T>` object type — `{ then:
+    /// (cb: (value: T) => any) => any }` — used when intercepting
+    /// `Promise<T>` type-refs so downstream Awaited / await unwrap
+    /// machinery can recognize and peel them.
+    fn buildStructuralPromise(self: *Checker, value_t: TypeId) CheckError!TypeId {
+        const cb_params = [_]TypeId{value_t};
+        const cb_sig = self.interner.internSignature(&cb_params, types.Primitive.any, false) catch return error.OutOfMemory;
+        const then_params = [_]TypeId{cb_sig};
+        const then_sig = self.interner.internSignature(&then_params, types.Primitive.any, false) catch return error.OutOfMemory;
+        const then_id = self.string_interner.intern("then") catch return error.OutOfMemory;
+        const members = [_]types.ObjectMember{.{
+            .name = then_id,
+            .type = then_sig,
+            .is_optional = false,
+            .is_readonly = false,
+            .is_method = true,
+        }};
+        return self.interner.internObjectType(&members) catch return error.OutOfMemory;
+    }
+
     /// Re-intern the function's signature with `new_ret` as the
     /// return type, then update the node's type. Identifier lookups
     /// against the function's name see the refined signature.
@@ -1936,6 +1974,24 @@ pub const Checker = struct {
                         if (std.mem.eql(u8, name_str, "NoInfer")) {
                             const args = hir_mod.typeRefArgs(self.hir, type_node);
                             return try self.lowererLowerWithTypeParams(args[0]);
+                        }
+                        // `Promise<T>` — there is no real lib.d.ts
+                        // wired up yet, so synthesize a minimal
+                        // structural Promise (`{ then: (cb: (v: T) =>
+                        // any) => any }`) on the fly. This lets
+                        // downstream `Awaited<…>` / `await …` peel it.
+                        if (std.mem.eql(u8, name_str, "Promise")) {
+                            const args = hir_mod.typeRefArgs(self.hir, type_node);
+                            const inner = try self.lowererLowerWithTypeParams(args[0]);
+                            return try self.buildStructuralPromise(inner);
+                        }
+                        // `Awaited<T>` (TS 4.5) — recursively unwrap
+                        // any structural `Promise<U>` chain. Non-
+                        // Promise operands pass through unchanged.
+                        if (std.mem.eql(u8, name_str, "Awaited")) {
+                            const args = hir_mod.typeRefArgs(self.hir, type_node);
+                            const inner = try self.lowererLowerWithTypeParams(args[0]);
+                            return self.evalAwaited(inner);
                         }
                     }
                     if (self.generic_aliases.get(r.name)) |info| {
@@ -6599,6 +6655,51 @@ test "checker: NoInfer<T> as alias result type unwraps" {
     defer destroySetup(s);
     try s.checker.checkSourceFile(s.root);
     try T.expectEqual(@as(usize, 0), s.checker.diagnostics.items.len);
+}
+
+test "checker: Awaited<Promise<number>> resolves to number" {
+    // The lexer collapses `>>` into a single `greater_greater` token
+    // and the parser doesn't currently split it back out for nested
+    // type arguments — so we route the inner `Promise<number>`
+    // through an intermediate alias to keep the source free of `>>`.
+    const s = try newSetup(
+        \\type P = Promise<number>;
+        \\type R = Awaited<P>;
+        \\let r: R;
+    );
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+    const stmts = hir_mod.blockStmts(&s.hir, s.root);
+    const r_decl = stmts[2];
+    try T.expectEqual(types.Primitive.number_t, s.hir.typeOf(r_decl));
+}
+
+test "checker: Awaited<Promise<Promise<string>>> recursively unwraps to string" {
+    // Same `>>` parser caveat as above — stage the doubly-nested
+    // Promise through a pair of aliases so the source has no `>>`.
+    const s = try newSetup(
+        \\type Inner = Promise<string>;
+        \\type Outer = Promise<Inner>;
+        \\type R = Awaited<Outer>;
+        \\let r: R;
+    );
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+    const stmts = hir_mod.blockStmts(&s.hir, s.root);
+    const r_decl = stmts[3];
+    try T.expectEqual(types.Primitive.string_t, s.hir.typeOf(r_decl));
+}
+
+test "checker: Awaited<number> on a non-Promise passes through unchanged" {
+    const s = try newSetup(
+        \\type R = Awaited<number>;
+        \\let r: R;
+    );
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+    const stmts = hir_mod.blockStmts(&s.hir, s.root);
+    const r_decl = stmts[1];
+    try T.expectEqual(types.Primitive.number_t, s.hir.typeOf(r_decl));
 }
 
 test "checker: Array.isArray(x) narrows x in then-branch" {
