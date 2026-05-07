@@ -4759,3 +4759,38 @@ test "parser: non-assertion `x is T` is still a type predicate (is_asserts=false
     try T.expectEqual(false, pred.is_asserts);
     try T.expect(pred.target_type != hir_mod.none_node_id);
 }
+
+test "parser: `yield* h()` parses with delegated flag set" {
+    var s = try newTestSetup("function* g() { yield* h(); }");
+    defer destroyTestSetup(s);
+    const root = try s.parser.parseSourceFile();
+    const fn_decl = hir_mod.blockStmts(&s.hir, root)[0];
+    try T.expectEqual(hir_mod.NodeKind.fn_decl, s.hir.kindOf(fn_decl));
+    const body = hir_mod.fnDeclOf(&s.hir, fn_decl).body;
+    const inner = hir_mod.blockStmts(&s.hir, body);
+    try T.expectEqual(@as(usize, 1), inner.len);
+    try T.expectEqual(hir_mod.NodeKind.yield_expr, s.hir.kindOf(inner[0]));
+    const y = hir_mod.yieldExprOf(&s.hir, inner[0]);
+    // `type_node` slot is reused as the delegated-yield flag.
+    try T.expect(y.type_node != hir_mod.none_node_id);
+    try T.expect(y.expr != hir_mod.none_node_id);
+}
+
+test "parser: `yield 1; yield* h();` parses both forms with correct flags" {
+    var s = try newTestSetup("function* g() { yield 1; yield* h(); }");
+    defer destroyTestSetup(s);
+    const root = try s.parser.parseSourceFile();
+    const fn_decl = hir_mod.blockStmts(&s.hir, root)[0];
+    try T.expectEqual(hir_mod.NodeKind.fn_decl, s.hir.kindOf(fn_decl));
+    const body = hir_mod.fnDeclOf(&s.hir, fn_decl).body;
+    const inner = hir_mod.blockStmts(&s.hir, body);
+    try T.expectEqual(@as(usize, 2), inner.len);
+    try T.expectEqual(hir_mod.NodeKind.yield_expr, s.hir.kindOf(inner[0]));
+    try T.expectEqual(hir_mod.NodeKind.yield_expr, s.hir.kindOf(inner[1]));
+    const plain = hir_mod.yieldExprOf(&s.hir, inner[0]);
+    const delegated = hir_mod.yieldExprOf(&s.hir, inner[1]);
+    try T.expectEqual(hir_mod.none_node_id, plain.type_node);
+    try T.expect(delegated.type_node != hir_mod.none_node_id);
+    try T.expect(plain.expr != hir_mod.none_node_id);
+    try T.expect(delegated.expr != hir_mod.none_node_id);
+}
