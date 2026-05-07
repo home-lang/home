@@ -1,0 +1,3 @@
+Checking: <repo>/tests/diagnostics/cases/parse/44_variadic_param_trailing.home
+
+Success: Type checking passed ✓

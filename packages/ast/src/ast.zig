@@ -1488,6 +1488,13 @@ pub const Parameter = struct {
     type_name: []const u8,
     default_value: ?*Expr,
     loc: SourceLocation,
+    /// True for C-style variadic parameters declared as `name: ...`
+    /// (e.g. `fn kprintf(fmt: &str, args: ...)`). When set, `type_name`
+    /// is the placeholder `"..."` and the parameter must be the last
+    /// in the parameter list. Full va_args lowering is left to codegen
+    /// for now; the type checker / codegen can treat it as an opaque
+    /// pass-through identifier so printf-family forwarders compile.
+    is_variadic: bool = false,
 };
 
 /// Import declaration

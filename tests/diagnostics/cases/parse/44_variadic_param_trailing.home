@@ -1,0 +1,13 @@
+// Issue #49 — accept C-style variadic parameter `name: ...` as the
+// trailing parameter of a function signature. Used by printf-family
+// forwarders in the home-os kernel (e.g. `kprintf(fmt: &str, args: ...)`,
+// `format_message(..., args: ...): u32`).
+//
+// This is a *positive* case: the parser must accept the form. Snapshot
+// asserts no parse error is emitted.
+export fn kprintf(fmt: &str, args: ...) {
+}
+
+export fn format_message(format: *u8, buffer: *u8, max_len: u32, args: ...): u32 {
+    return 0
+}

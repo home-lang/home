@@ -1311,6 +1311,7 @@ pub const Parser = struct {
 
                 // For shorthand self (&self, mut self, or plain self), infer the type
                 var param_type: []const u8 = undefined;
+                var is_variadic_param = false;
                 const is_self_param = std.mem.eql(u8, param_name.lexeme, "self");
                 // Check if this is a shorthand self (no colon follows)
                 const has_colon = self.check(.Colon);
@@ -1319,7 +1320,21 @@ pub const Parser = struct {
                     param_type = try self.allocator.dupe(u8, "Self");
                 } else if (has_colon) {
                     _ = self.advance(); // consume the colon
-                    param_type = try self.parseTypeAnnotation();
+                    // Variadic parameter shape: `name: ...` (C-style varargs).
+                    // Used by printf-family forwarders like
+                    //   fn kprintf(fmt: &str, args: ...)
+                    // The `...` stands in as an opaque type marker; full
+                    // va_args lowering is deferred to codegen, but the
+                    // parameter name remains usable as an identifier so
+                    // forwarders such as `vsnprintf(buf, n, fmt, args)`
+                    // type-check.
+                    if (self.check(.DotDotDot)) {
+                        _ = self.advance(); // consume '...'
+                        is_variadic_param = true;
+                        param_type = try self.allocator.dupe(u8, "...");
+                    } else {
+                        param_type = try self.parseTypeAnnotation();
+                    }
                 } else {
                     // Allow untyped parameters - use "any" as default type
                     param_type = try self.allocator.dupe(u8, "any");
@@ -1336,11 +1351,21 @@ pub const Parser = struct {
                     .type_name = param_type,
                     .default_value = default_value,
                     .loc = ast.SourceLocation.fromToken(param_name),
+                    .is_variadic = is_variadic_param,
                 });
 
                 if (!self.match(&.{.Comma})) break;
                 // Handle trailing comma: if next token is ), we're done
                 if (self.check(.RightParen)) break;
+
+                // A variadic parameter must be the last in the list.
+                // Anything after `name: ...,` is a hard error so users
+                // get a clear diagnostic instead of a confusing parse
+                // cascade on the next parameter.
+                if (is_variadic_param) {
+                    try self.reportError("Variadic parameter 'name: ...' must be the last parameter");
+                    return error.UnexpectedToken;
+                }
             }
         }
 

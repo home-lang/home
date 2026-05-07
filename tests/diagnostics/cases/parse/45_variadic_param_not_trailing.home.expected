@@ -1,0 +1,8 @@
+<repo>/tests/diagnostics/cases/parse/45_variadic_param_not_trailing.home:4:19: error[EP0001]: Variadic parameter 'name: ...' must be the last parameter
+  fn foo(args: ..., x: u32) {
+                     ^
+
+1 parse error(s) found
+Checking: <repo>/tests/diagnostics/cases/parse/45_variadic_param_not_trailing.home
+
+Success: Type checking passed ✓

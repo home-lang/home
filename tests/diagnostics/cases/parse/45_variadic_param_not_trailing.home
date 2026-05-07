@@ -1,0 +1,5 @@
+// Issue #49 — variadic parameter `name: ...` must be the LAST parameter.
+// Anything after the variadic should produce a clean diagnostic instead
+// of a confusing parse cascade.
+fn foo(args: ..., x: u32) {
+}
