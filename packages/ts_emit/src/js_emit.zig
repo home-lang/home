@@ -150,6 +150,12 @@ pub const Options = struct {
     /// TS 5.0+. v1 only handles class-level decorators in Stage 3
     /// mode; per-member Stage 3 emit still uses the legacy form.
     experimental_decorators: bool = true,
+    /// `emitDecoratorMetadata` — when true (and `experimentalDecorators`
+    /// is also true), emit `__metadata("design:type", T)`,
+    /// `__metadata("design:paramtypes", [...])`, and
+    /// `__metadata("design:returntype", T)` calls inside the
+    /// `__decorate([...])` array for decorated members.
+    emit_decorator_metadata: bool = false,
     /// `importHelpers` — when true, prepend an
     /// `import { __awaiter, __decorate, __extends, __param,
     /// __importDefault, __importStar } from "tslib";` line at the top
@@ -296,7 +302,7 @@ pub const Printer = struct {
         // before any user-level statement so the helpers are in
         // scope for the lowered code below.
         if (self.options.import_helpers) {
-            try self.write("import { __awaiter, __decorate, __extends, __param, __importDefault, __importStar } from \"tslib\";");
+            try self.write("import { __awaiter, __decorate, __extends, __metadata, __param, __importDefault, __importStar } from \"tslib\";");
             try self.write(self.options.newline);
         }
         // §4.A.10 — auto-import the runtime helpers when the file
@@ -1180,6 +1186,11 @@ pub const Printer = struct {
                 const dp = hir_mod.decoratorOf(self.hir, d);
                 try self.printExpression(dp.expression);
             }
+            // `emitDecoratorMetadata` — append `__metadata(...)` entries
+            // inside the same array.
+            if (self.options.emit_decorator_metadata and self.options.experimental_decorators) {
+                try self.emitMemberMetadata(target);
+            }
             try self.write("], ");
             try self.printExpression(c.name);
             try self.write(".prototype, \"");
@@ -1220,6 +1231,101 @@ pub const Printer = struct {
             }
             i = j;
         }
+    }
+
+    /// Emit the trailing `, __metadata(...)` entries inside a
+    /// `__decorate([...])` array for a decorated class member.
+    fn emitMemberMetadata(self: *Printer, target: NodeId) anyerror!void {
+        const tk = self.hir.kindOf(target);
+        if (tk == .fn_decl or tk == .fn_expr) {
+            const fd = hir_mod.fnDeclOf(self.hir, target);
+            if (fd.flags.is_constructor) return;
+            if (fd.flags.is_getter or fd.flags.is_setter) {
+                try self.write(", __metadata(\"design:type\", ");
+                if (fd.flags.is_setter) {
+                    const params = hir_mod.fnParams(self.hir, target);
+                    if (params.len > 0 and self.hir.kindOf(params[0]) == .parameter) {
+                        const pp = hir_mod.parameterOf(self.hir, params[0]);
+                        try self.writeDesignTypeFromAnno(pp.type_annotation);
+                    } else {
+                        try self.write("Object");
+                    }
+                } else {
+                    try self.writeDesignTypeFromAnno(fd.return_type);
+                }
+                try self.write(")");
+                return;
+            }
+            try self.write(", __metadata(\"design:type\", Function)");
+            try self.write(", __metadata(\"design:paramtypes\", [");
+            const params = hir_mod.fnParams(self.hir, target);
+            var emitted: usize = 0;
+            for (params) |p| {
+                if (self.hir.kindOf(p) != .parameter) continue;
+                if (emitted > 0) try self.write(", ");
+                const pp = hir_mod.parameterOf(self.hir, p);
+                try self.writeDesignTypeFromAnno(pp.type_annotation);
+                emitted += 1;
+            }
+            try self.write("])");
+            try self.write(", __metadata(\"design:returntype\", ");
+            try self.writeDesignTypeFromAnno(fd.return_type);
+            try self.write(")");
+            return;
+        }
+        if (tk == .object_property) {
+            const op = hir_mod.objectPropertyOf(self.hir, target);
+            try self.write(", __metadata(\"design:type\", ");
+            try self.writeDesignTypeFromAnno(op.type_annotation);
+            try self.write(")");
+            return;
+        }
+    }
+
+    /// Map a type-annotation HIR node to a runtime expression suitable
+    /// for `__metadata("design:type", X)`.
+    fn writeDesignTypeFromAnno(self: *Printer, type_node: NodeId) anyerror!void {
+        if (type_node == hir_mod.none_node_id) {
+            try self.write("Object");
+            return;
+        }
+        const k = self.hir.kindOf(type_node);
+        if (k == .type_ref) {
+            const tr = hir_mod.typeRefOf(self.hir, type_node);
+            const name = self.interner.get(tr.name);
+            const qual = hir_mod.typeRefQualifier(self.hir, type_node);
+            if (qual.len > 0) {
+                try self.write("Object");
+                return;
+            }
+            if (std.mem.eql(u8, name, "string")) { try self.write("String"); return; }
+            if (std.mem.eql(u8, name, "number")) { try self.write("Number"); return; }
+            if (std.mem.eql(u8, name, "boolean")) { try self.write("Boolean"); return; }
+            if (std.mem.eql(u8, name, "bigint")) { try self.write("BigInt"); return; }
+            if (std.mem.eql(u8, name, "symbol")) { try self.write("Symbol"); return; }
+            if (std.mem.eql(u8, name, "void") or
+                std.mem.eql(u8, name, "undefined") or
+                std.mem.eql(u8, name, "null") or
+                std.mem.eql(u8, name, "never"))
+            {
+                try self.write("void 0");
+                return;
+            }
+            if (std.mem.eql(u8, name, "Function")) { try self.write("Function"); return; }
+            if (std.mem.eql(u8, name, "Array")) { try self.write("Array"); return; }
+            if (std.mem.eql(u8, name, "Object") or
+                std.mem.eql(u8, name, "any") or
+                std.mem.eql(u8, name, "unknown"))
+            {
+                try self.write("Object");
+                return;
+            }
+            try self.write(name);
+            return;
+        }
+        if (k == .array_type or k == .tuple_type) { try self.write("Array"); return; }
+        if (k == .fn_type or k == .constructor_type) { try self.write("Function"); return; }
+        try self.write("Object");
     }
 
     /// Lower a class to ES5 function-with-prototype. Pattern:
@@ -2637,7 +2743,7 @@ test "emit: importHelpers prepends tslib import when async lowers at es2015" {
         .{ .es_target = .es2015, .import_helpers = true },
     );
     defer T.allocator.free(out);
-    try T.expect(std.mem.indexOf(u8, out, "import { __awaiter, __decorate, __extends, __param, __importDefault, __importStar } from \"tslib\";") != null);
+    try T.expect(std.mem.indexOf(u8, out, "import { __awaiter, __decorate, __extends, __metadata, __param, __importDefault, __importStar } from \"tslib\";") != null);
     // Helper still gets referenced from user code.
     try T.expect(std.mem.indexOf(u8, out, "__awaiter(this, void 0, void 0, function* ()") != null);
 }
@@ -3165,4 +3271,40 @@ test "emit: removeComments strips JSDoc" {
     try T.expect(std.mem.indexOf(u8, out, "/**") == null);
     try T.expect(std.mem.indexOf(u8, out, "A docstring") == null);
     try T.expect(std.mem.indexOf(u8, out, "function add") != null);
+}
+
+test "emit: emitDecoratorMetadata adds design:type for property decorators" {
+    const out = try emitWithOpts(
+        \\class Foo {
+        \\  @observe
+        \\  count: number = 0;
+        \\}
+    , .{ .emit_decorator_metadata = true });
+    defer T.allocator.free(out);
+    try T.expect(std.mem.indexOf(u8, out, "__metadata(\"design:type\", Number)") != null);
+    try T.expect(std.mem.indexOf(u8, out, "__decorate([observe, __metadata(\"design:type\", Number)], Foo.prototype, \"count\", null);") != null);
+}
+
+test "emit: emitDecoratorMetadata adds design:paramtypes and returntype for methods" {
+    const out = try emitWithOpts(
+        \\class Service {
+        \\  @logged
+        \\  greet(name: string, age: number): boolean { return true; }
+        \\}
+    , .{ .emit_decorator_metadata = true });
+    defer T.allocator.free(out);
+    try T.expect(std.mem.indexOf(u8, out, "__metadata(\"design:type\", Function)") != null);
+    try T.expect(std.mem.indexOf(u8, out, "__metadata(\"design:paramtypes\", [String, Number])") != null);
+    try T.expect(std.mem.indexOf(u8, out, "__metadata(\"design:returntype\", Boolean)") != null);
+}
+
+test "emit: emitDecoratorMetadata off by default — no __metadata calls" {
+    const out = try emit(
+        \\class Foo {
+        \\  @observe
+        \\  count: number = 0;
+        \\}
+    );
+    defer T.allocator.free(out);
+    try T.expect(std.mem.indexOf(u8, out, "__metadata(") == null);
 }
