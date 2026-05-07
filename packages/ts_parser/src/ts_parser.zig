@@ -3145,12 +3145,22 @@ pub const Parser = struct {
                 // route the call site through the appropriate
                 // module-system lowering (a no-op at .esm; an
                 // async require() at .commonjs).
+                //
+                // `import.meta` — ES2020 module-meta property. The
+                // `import` keyword is materialized as an identifier
+                // and the surrounding `parseCallOrMemberExpression`
+                // loop consumes the `.meta` (and any further
+                // chains like `.url`) as ordinary member accesses.
+                // The checker treats `import` as a builtin so the
+                // chain types as `any` for now (full `ImportMeta`
+                // shape is a follow-up).
                 _ = self.advance();
                 const import_id = self.interner.intern("import") catch return error.OutOfMemory;
                 const callee = try self.builder.addIdentifier(tokenSpan(t), import_id);
                 if (self.peek().kind != .open_paren) {
-                    // Not a dynamic import — fall through to whatever
-                    // the unexpected token produces.
+                    // Not a dynamic import — return the synthesized
+                    // identifier so postfix `.meta`/`.meta.url` can
+                    // attach as member accesses upstream.
                     return callee;
                 }
                 const args = try self.parseArgumentList();
@@ -4154,6 +4164,34 @@ test "parser: dynamic import with attributes argument" {
     // Just assert it parses without error — the dynamic-import call
     // shape is exercised here for compatibility only.
     _ = root;
+}
+
+test "parser: import.meta member access" {
+    var s = try newTestSetup("const u = import.meta;");
+    defer destroyTestSetup(s);
+    const root = try s.parser.parseSourceFile();
+    const top = hir_mod.blockStmts(&s.hir, root)[0];
+    const init_node = hir_mod.varDeclOf(&s.hir, top).init;
+    try T.expectEqual(hir_mod.NodeKind.member_access, s.hir.kindOf(init_node));
+    const m = hir_mod.memberOf(&s.hir, init_node);
+    try T.expectEqualStrings("meta", s.interner.get(m.name));
+    try T.expectEqual(hir_mod.NodeKind.identifier, s.hir.kindOf(m.object));
+    const obj_id = hir_mod.identifierOf(&s.hir, m.object);
+    try T.expectEqualStrings("import", s.interner.get(obj_id.name));
+}
+
+test "parser: import.meta.url chained access" {
+    var s = try newTestSetup("const u: string = import.meta.url;");
+    defer destroyTestSetup(s);
+    const root = try s.parser.parseSourceFile();
+    const top = hir_mod.blockStmts(&s.hir, root)[0];
+    const init_node = hir_mod.varDeclOf(&s.hir, top).init;
+    try T.expectEqual(hir_mod.NodeKind.member_access, s.hir.kindOf(init_node));
+    const outer = hir_mod.memberOf(&s.hir, init_node);
+    try T.expectEqualStrings("url", s.interner.get(outer.name));
+    try T.expectEqual(hir_mod.NodeKind.member_access, s.hir.kindOf(outer.object));
+    const inner = hir_mod.memberOf(&s.hir, outer.object);
+    try T.expectEqualStrings("meta", s.interner.get(inner.name));
 }
 
 test "parser: export default" {

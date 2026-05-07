@@ -5945,6 +5945,15 @@ test "checker: Math.PI does not emit TS2304" {
     }
 }
 
+test "checker: import.meta.url types as any (no TS2304)" {
+    const b = try newBoundSetup("const u: string = import.meta.url;");
+    defer destroyBoundSetup(b);
+    try b.base.checker.checkSourceFile(b.base.root);
+    for (b.base.checker.diagnostics.items) |d| {
+        try T.expect(d.code != TsCodes.cannot_find_name);
+    }
+}
+
 test "checker: typo of in-scope name emits TS2552 with suggestion" {
     const b = try newBoundSetup("const myVar = 1; mvVar;");
     defer destroyBoundSetup(b);
