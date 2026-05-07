@@ -117,6 +117,10 @@ pub const TsCodes = struct {
     /// `new X()` where `X` is an abstract class. Abstract classes
     /// cannot be instantiated directly — only concrete subclasses can.
     pub const abstract_class_instantiation: u32 = 2511;
+    /// TS2515 — a non-abstract class extends an abstract class but
+    /// fails to implement one or more inherited abstract members.
+    /// Emitted once per missing member at the child class declaration.
+    pub const abstract_member_not_implemented: u32 = 2515;
 };
 
 /// Per-alias generic info: the type-parameter TypeIds in
@@ -272,6 +276,17 @@ pub const Checker = struct {
     /// of an abstract class.") when the construction target resolves
     /// to an abstract class.
     abstract_classes: std.AutoHashMapUnmanaged(hir_mod.StringId, void),
+    /// Class-name → set of member names declared as abstract members
+    /// inside that class body. v0 approximates "abstract member" as
+    /// "method without a body inside an abstract class" — the parser
+    /// discards the per-member `abstract` modifier so a missing body
+    /// is the only signal we have. Populated by `checkClassDecl`;
+    /// consulted on each non-abstract subclass to emit TS2515 for
+    /// inherited abstract members the child fails to implement.
+    class_abstract_members: std.AutoHashMapUnmanaged(
+        hir_mod.StringId,
+        std.AutoHashMapUnmanaged(hir_mod.StringId, void),
+    ),
     /// Generic name → TypeId table for type-annotation resolution.
     /// A superset of `class_instance_types` that also covers
     /// `interface I { ... }` and `type Alias = T`. Consulted by
@@ -365,6 +380,7 @@ pub const Checker = struct {
             .class_protected_members = .empty,
             .class_parent = .empty,
             .abstract_classes = .empty,
+            .class_abstract_members = .empty,
             .type_names = .empty,
             .generic_aliases = .empty,
             .generic_fns = .empty,
@@ -417,6 +433,9 @@ pub const Checker = struct {
         self.class_protected_members.deinit(self.gpa);
         self.class_parent.deinit(self.gpa);
         self.abstract_classes.deinit(self.gpa);
+        var am_it = self.class_abstract_members.valueIterator();
+        while (am_it.next()) |set| set.deinit(self.gpa);
+        self.class_abstract_members.deinit(self.gpa);
         self.type_names.deinit(self.gpa);
         var ga_it = self.generic_aliases.valueIterator();
         while (ga_it.next()) |info| self.gpa.free(info.params);
@@ -1841,6 +1860,15 @@ pub const Checker = struct {
         defer private_names.deinit(self.gpa);
         var protected_names: std.AutoHashMapUnmanaged(hir_mod.StringId, void) = .empty;
         defer protected_names.deinit(self.gpa);
+        // Names of class members treated as abstract (v0 heuristic:
+        // bodyless methods inside an `abstract` class). Moved into
+        // `class_abstract_members` once the class name is known.
+        var abstract_names: std.AutoHashMapUnmanaged(hir_mod.StringId, void) = .empty;
+        defer abstract_names.deinit(self.gpa);
+        // Names the child concretely implements (methods with a body
+        // or any field). Used to satisfy inherited abstract members.
+        var concrete_names: std.AutoHashMapUnmanaged(hir_mod.StringId, void) = .empty;
+        defer concrete_names.deinit(self.gpa);
 
         for (members) |m| {
             switch (self.hir.kindOf(m)) {
@@ -1858,6 +1886,16 @@ pub const Checker = struct {
                     const id = hir_mod.identifierOf(self.hir, fn_p.name);
                     if (fn_p.flags.is_private) try private_names.put(self.gpa, id.name, {});
                     if (fn_p.flags.is_protected) try protected_names.put(self.gpa, id.name, {});
+                    // v0 abstract-member heuristic: a method without
+                    // a body inside an `abstract` class is treated as
+                    // abstract. Methods with a body count as concrete
+                    // implementations and satisfy any inherited
+                    // abstract member of the same name.
+                    if (c.is_abstract and fn_p.body == hir_mod.none_node_id) {
+                        try abstract_names.put(self.gpa, id.name, {});
+                    } else {
+                        try concrete_names.put(self.gpa, id.name, {});
+                    }
                     try instance_members.append(self.gpa, .{
                         .name = id.name,
                         .type = sig,
@@ -1872,6 +1910,10 @@ pub const Checker = struct {
                     const id = hir_mod.identifierOf(self.hir, op.key);
                     if (op.visibility == .private) try private_names.put(self.gpa, id.name, {});
                     if (op.visibility == .protected) try protected_names.put(self.gpa, id.name, {});
+                    // Class fields count as concrete implementations
+                    // for the purpose of satisfying inherited abstract
+                    // members (v0 has no syntax for abstract fields).
+                    try concrete_names.put(self.gpa, id.name, {});
                     const field_t: TypeId = blk: {
                         if (op.type_annotation != hir_mod.none_node_id) {
                             break :blk try self.lowererLowerWithTypeParams(op.type_annotation);
@@ -1934,10 +1976,44 @@ pub const Checker = struct {
             }
             try self.class_protected_members.put(self.gpa, cid.name, protected_names);
             protected_names = .empty;
+            // Register abstract-member set for this class so subclass
+            // checks can consult it. Replace any prior entry.
+            if (self.class_abstract_members.fetchRemove(cid.name)) |old| {
+                var owned = old.value;
+                owned.deinit(self.gpa);
+            }
+            try self.class_abstract_members.put(self.gpa, cid.name, abstract_names);
+            abstract_names = .empty;
             if (c.extends != hir_mod.none_node_id and self.hir.kindOf(c.extends) == .identifier) {
                 const ext_id = hir_mod.identifierOf(self.hir, c.extends);
                 if (self.class_instance_types.contains(ext_id.name)) {
                     try self.class_parent.put(self.gpa, cid.name, ext_id.name);
+                }
+                // TS2515: a non-abstract class extending an abstract
+                // parent must implement each inherited abstract
+                // member. v0 walks one level only and emits one
+                // diagnostic per missing member.
+                if (!c.is_abstract) {
+                    if (self.class_abstract_members.getPtr(ext_id.name)) |parent_abs| {
+                        var it = parent_abs.keyIterator();
+                        while (it.next()) |name_ptr| {
+                            const member_name = name_ptr.*;
+                            if (concrete_names.contains(member_name)) continue;
+                            const member_str = self.string_interner.get(member_name);
+                            const child_str = self.string_interner.get(cid.name);
+                            const parent_str = self.string_interner.get(ext_id.name);
+                            const msg = try std.fmt.allocPrint(
+                                self.diag_arena.allocator(),
+                                "Non-abstract class '{s}' does not implement inherited abstract member '{s}' from class '{s}'.",
+                                .{ child_str, member_str, parent_str },
+                            );
+                            try self.diagnostics.append(self.gpa, .{
+                                .node = node,
+                                .code = TsCodes.abstract_member_not_implemented,
+                                .message = msg,
+                            });
+                        }
+                    }
                 }
             }
             // The class name as a value is the constructor — we don't
@@ -8101,6 +8177,32 @@ test "checker: `new ConcreteSubclass()` of an abstract class is allowed" {
     try s.checker.checkSourceFile(s.root);
     for (s.checker.diagnostics.items) |d| {
         try T.expect(d.code != TsCodes.abstract_class_instantiation);
+    }
+}
+
+test "checker: non-abstract subclass missing abstract member emits TS2515" {
+    const s = try newSetup(
+        \\abstract class A { abstract m(): void }
+        \\class B extends A {}
+    );
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+    var found = false;
+    for (s.checker.diagnostics.items) |d| {
+        if (d.code == TsCodes.abstract_member_not_implemented) found = true;
+    }
+    try T.expect(found);
+}
+
+test "checker: non-abstract subclass implementing abstract member passes (no TS2515)" {
+    const s = try newSetup(
+        \\abstract class A { abstract m(): void }
+        \\class B extends A { m() {} }
+    );
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+    for (s.checker.diagnostics.items) |d| {
+        try T.expect(d.code != TsCodes.abstract_member_not_implemented);
     }
 }
 
