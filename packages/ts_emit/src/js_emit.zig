@@ -541,10 +541,13 @@ pub const Printer = struct {
 
     fn printVarDecl(self: *Printer, node: NodeId) anyerror!void {
         const kind = self.hir.kindOf(node);
+        // ES5 has no block-scoped declarations — collapse `let`/`const`
+        // to `var`. Block-scoping rewrites for shadowed names are
+        // deferred; v0 trusts user code not to rely on TDZ.
         const kw: []const u8 = switch (kind) {
             .var_decl => "var",
-            .let_decl => "let",
-            .const_decl => "const",
+            .let_decl => if (self.options.es_target == .es5) "var" else "let",
+            .const_decl => if (self.options.es_target == .es5) "var" else "const",
             else => unreachable,
         };
         const v = hir_mod.varDeclOf(self.hir, node);
@@ -3311,6 +3314,28 @@ test "emit: destructuring keeps const keyword at es2015+" {
     // reads since native pattern emit isn't wired up yet).
     try T.expect(std.mem.indexOf(u8, out, "const _o = obj") != null);
     try T.expect(std.mem.indexOf(u8, out, "a = _o.a") != null);
+    try T.expect(std.mem.indexOf(u8, out, "var ") == null);
+}
+
+test "emit: const lowers to var at es5" {
+    const out = try emitWithOpts("const x = 1;", .{ .es_target = .es5 });
+    defer T.allocator.free(out);
+    try T.expect(std.mem.indexOf(u8, out, "var x = 1") != null);
+    try T.expect(std.mem.indexOf(u8, out, "const ") == null);
+}
+
+test "emit: let lowers to var at es5" {
+    const out = try emitWithOpts("let x = 1;", .{ .es_target = .es5 });
+    defer T.allocator.free(out);
+    try T.expect(std.mem.indexOf(u8, out, "var x = 1") != null);
+    try T.expect(std.mem.indexOf(u8, out, "let ") == null);
+}
+
+test "emit: let and const preserved at es2015+" {
+    const out = try emitWithOpts("let x = 1; const y = 2;", .{ .es_target = .es2015 });
+    defer T.allocator.free(out);
+    try T.expect(std.mem.indexOf(u8, out, "let x = 1") != null);
+    try T.expect(std.mem.indexOf(u8, out, "const y = 2") != null);
     try T.expect(std.mem.indexOf(u8, out, "var ") == null);
 }
 
