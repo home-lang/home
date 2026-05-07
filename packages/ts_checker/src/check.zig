@@ -364,6 +364,10 @@ pub const Checker = struct {
     /// `scanDirectives`; lines that fail to suppress at least one
     /// diagnostic become a TS2578 in `applyDirectives`.
     ts_expect_error_lines: std.AutoHashMapUnmanaged(u32, void) = .empty,
+    /// True when a `// @ts-nocheck` directive appears anywhere in the
+    /// source. Populated by `scanDirectives`; consulted by
+    /// `applyDirectives` to drop all diagnostics for this file.
+    nocheck_file: bool = false,
 
     pub fn init(
         gpa: std.mem.Allocator,
@@ -499,6 +503,7 @@ pub const Checker = struct {
     fn scanDirectives(self: *Checker, src: []const u8) CheckError!void {
         self.ts_ignore_lines.clearRetainingCapacity();
         self.ts_expect_error_lines.clearRetainingCapacity();
+        self.nocheck_file = false;
 
         var line: u32 = 0;
         var i: usize = 0;
@@ -519,10 +524,12 @@ pub const Checker = struct {
             const is_blank = trimmed.len == 0;
             const is_ignore_directive = matchDirective(trimmed, "@ts-ignore");
             const is_expect_directive = matchDirective(trimmed, "@ts-expect-error");
-            const is_directive = is_ignore_directive or is_expect_directive;
+            const is_nocheck_directive = matchDirective(trimmed, "@ts-nocheck");
+            const is_directive = is_ignore_directive or is_expect_directive or is_nocheck_directive;
 
             if (is_ignore_directive) pending_ignore = true;
             if (is_expect_directive) pending_expect = true;
+            if (is_nocheck_directive) self.nocheck_file = true;
 
             if (!is_blank and !is_directive) {
                 if (pending_ignore) {
@@ -546,6 +553,13 @@ pub const Checker = struct {
     /// `@ts-expect-error` lines that didn't suppress at least one
     /// diagnostic, emit TS2578 ("Unused @ts-expect-error directive").
     fn applyDirectives(self: *Checker, root: NodeId) CheckError!void {
+        // `// @ts-nocheck` disables all diagnostics for the file —
+        // including any TS2578 we'd otherwise emit for unused
+        // `@ts-expect-error` directives.
+        if (self.nocheck_file) {
+            self.diagnostics.clearRetainingCapacity();
+            return;
+        }
         if (self.ts_ignore_lines.count() == 0 and self.ts_expect_error_lines.count() == 0) return;
         const src = self.source orelse return;
 
@@ -5732,6 +5746,24 @@ test "checker: unused @ts-expect-error emits TS2578" {
     var found = false;
     for (s.checker.diagnostics.items) |d| {
         if (d.code == TsCodes.unused_ts_expect_error) found = true;
+    }
+    try T.expect(found);
+}
+
+test "checker: @ts-nocheck disables all file diagnostics" {
+    const s = try newSetup("// @ts-nocheck\nconst x: number = \"s\";");
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+    try T.expectEqual(@as(usize, 0), s.checker.diagnostics.items.len);
+}
+
+test "checker: without @ts-nocheck, type mismatch reports TS2322" {
+    const s = try newSetup("const x: number = \"s\";");
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+    var found = false;
+    for (s.checker.diagnostics.items) |d| {
+        if (d.code == TsCodes.type_not_assignable) found = true;
     }
     try T.expect(found);
 }
