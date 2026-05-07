@@ -668,6 +668,8 @@ pub const Checker = struct {
             const expr_t = try self.checkExpression(f.body);
             if (f.return_type == hir_mod.none_node_id) {
                 try self.refineSignatureReturn(node, expr_t);
+                // TS 5.5 inferred type predicate.
+                try self.tryInferTypePredicate(node, f.body);
             }
             try self.checkUnusedParameters(node, f.body);
             return;
@@ -686,9 +688,152 @@ pub const Checker = struct {
             else
                 self.interner.internUnion(ret_types.items) catch return error.OutOfMemory;
             try self.refineSignatureReturn(node, inferred);
+            // TS 5.5 inferred type predicate: only when the body is
+            // exactly one `return <narrowing>;` statement.
+            const body_stmts = hir_mod.blockStmts(self.hir, f.body);
+            if (body_stmts.len == 1 and self.hir.kindOf(body_stmts[0]) == .return_stmt) {
+                const r = hir_mod.returnOf(self.hir, body_stmts[0]);
+                if (r.value != hir_mod.none_node_id) {
+                    try self.tryInferTypePredicate(node, r.value);
+                }
+            }
         }
         try self.checkUnusedParameters(node, f.body);
         try self.checkUnusedLocals(f.body);
+    }
+
+    /// TS 5.5 — inferred type predicates.
+    ///
+    /// When a function returns a boolean derived from a known
+    /// type-narrowing operation on one of its parameters, infer an
+    /// `arg is T` predicate so call sites narrow as if the predicate
+    /// had been declared explicitly. v0 covers:
+    ///   - `typeof x === "string" | "number" | "boolean"`
+    ///   - `x !== null` / `x !== undefined`
+    ///   - `x !== null && x !== undefined`
+    ///   - `x instanceof Foo` (when Foo is a known class)
+    ///
+    /// The expression must reference a parameter of `fn_node` by
+    /// name; otherwise we bail out. Records the predicate in
+    /// `fn_predicates` keyed by the function's declared name so the
+    /// existing call-site narrowing path picks it up unchanged.
+    fn tryInferTypePredicate(
+        self: *Checker,
+        fn_node: NodeId,
+        body_expr: NodeId,
+    ) CheckError!void {
+        const f = hir_mod.fnDeclOf(self.hir, fn_node);
+        if (f.name == hir_mod.none_node_id) return;
+        if (self.hir.kindOf(f.name) != .identifier) return;
+        const params = hir_mod.fnParams(self.hir, fn_node);
+        if (params.len == 0) return;
+        const inferred = self.recognizePredicateExpr(body_expr, params) orelse return;
+        const fn_name = hir_mod.identifierOf(self.hir, f.name).name;
+        // Don't clobber an explicit predicate (handled in
+        // `checkFnSignatureOnly`).
+        if (self.fn_predicates.contains(fn_name)) return;
+        try self.fn_predicates.put(self.gpa, fn_name, inferred);
+    }
+
+    /// Match `expr` against the small set of narrowing patterns in
+    /// `tryInferTypePredicate` and return the implied predicate.
+    /// Returns null when no pattern matches.
+    fn recognizePredicateExpr(
+        self: *Checker,
+        expr: NodeId,
+        params: []const NodeId,
+    ) ?FnPredicate {
+        const k = self.hir.kindOf(expr);
+        // `x !== null && x !== undefined` — x is non-nullish.
+        if (k == .logical_op) {
+            const lp = hir_mod.logicalOf(self.hir, expr);
+            if (lp.op == .@"and") {
+                const left = self.recognizePredicateExpr(lp.lhs, params) orelse return null;
+                const right = self.recognizePredicateExpr(lp.rhs, params) orelse return null;
+                if (left.param_index != right.param_index) return null;
+                const param_t = self.hir.typeOf(params[left.param_index]);
+                const sub1 = self.subtractType(param_t, types.Primitive.null_t) catch param_t;
+                const sub2 = self.subtractType(sub1, types.Primitive.undefined_t) catch sub1;
+                return .{ .param_index = left.param_index, .target_type = sub2, .is_asserts = false };
+            }
+        }
+        if (k != .binary_op) return null;
+        const b = hir_mod.binopOf(self.hir, expr);
+
+        // `x instanceof Foo` — narrow `x` to the class instance type.
+        if (b.op == .instanceof and self.hir.kindOf(b.lhs) == .identifier) {
+            const idx = self.paramIndexOfIdentifier(b.lhs, params) orelse return null;
+            var narrowed: TypeId = types.Primitive.object_t;
+            if (self.hir.kindOf(b.rhs) == .identifier) {
+                const rhs_id = hir_mod.identifierOf(self.hir, b.rhs);
+                if (self.class_instance_types.get(rhs_id.name)) |inst| narrowed = inst;
+            }
+            return .{ .param_index = idx, .target_type = narrowed, .is_asserts = false };
+        }
+
+        if (b.op != .eq_strict and b.op != .neq_strict) return null;
+
+        // `typeof x === "string" | "number" | "boolean"`.
+        if (b.op == .eq_strict and
+            self.hir.kindOf(b.lhs) == .unary_op and
+            self.hir.kindOf(b.rhs) == .literal_string)
+        {
+            const u = hir_mod.unaryOf(self.hir, b.lhs);
+            if (u.op == .typeof and self.hir.kindOf(u.operand) == .identifier) {
+                const idx = self.paramIndexOfIdentifier(u.operand, params) orelse return null;
+                const lit = hir_mod.literalStringOf(self.hir, b.rhs);
+                const lit_str = self.string_interner.get(lit.value);
+                const narrowed = typeOfTypeofString(lit_str) orelse return null;
+                if (narrowed != types.Primitive.string_t and
+                    narrowed != types.Primitive.number_t and
+                    narrowed != types.Primitive.boolean_t) return null;
+                return .{ .param_index = idx, .target_type = narrowed, .is_asserts = false };
+            }
+        }
+
+        // `x !== null` / `x !== undefined`.
+        if (b.op == .neq_strict and self.hir.kindOf(b.lhs) == .identifier) {
+            const idx = self.paramIndexOfIdentifier(b.lhs, params) orelse return null;
+            const param_t = self.hir.typeOf(params[idx]);
+            if (self.hir.kindOf(b.rhs) == .literal_null) {
+                const sub = self.subtractType(param_t, types.Primitive.null_t) catch param_t;
+                return .{ .param_index = idx, .target_type = sub, .is_asserts = false };
+            }
+            if (self.hir.kindOf(b.rhs) == .literal_undefined) {
+                const sub = self.subtractType(param_t, types.Primitive.undefined_t) catch param_t;
+                return .{ .param_index = idx, .target_type = sub, .is_asserts = false };
+            }
+            if (self.hir.kindOf(b.rhs) == .identifier) {
+                const rhs_id = hir_mod.identifierOf(self.hir, b.rhs);
+                const rhs_name = self.string_interner.get(rhs_id.name);
+                if (std.mem.eql(u8, rhs_name, "undefined")) {
+                    const sub = self.subtractType(param_t, types.Primitive.undefined_t) catch param_t;
+                    return .{ .param_index = idx, .target_type = sub, .is_asserts = false };
+                }
+            }
+        }
+        return null;
+    }
+
+    /// Return the index of the parameter in `params` whose name
+    /// matches the `identifier` node `id_node`. Returns null when
+    /// `id_node` isn't an identifier or doesn't match any parameter.
+    fn paramIndexOfIdentifier(
+        self: *Checker,
+        id_node: NodeId,
+        params: []const NodeId,
+    ) ?u16 {
+        if (self.hir.kindOf(id_node) != .identifier) return null;
+        const id = hir_mod.identifierOf(self.hir, id_node);
+        for (params, 0..) |p, i| {
+            if (self.hir.kindOf(p) != .parameter) continue;
+            const pp = hir_mod.parameterOf(self.hir, p);
+            if (pp.name == hir_mod.none_node_id) continue;
+            if (self.hir.kindOf(pp.name) != .identifier) continue;
+            const pname = hir_mod.identifierOf(self.hir, pp.name);
+            if (pname.name == id.name) return @intCast(i);
+        }
+        return null;
     }
 
     /// `noUnusedLocals` (TS6133): walk a function body's
@@ -6214,6 +6359,75 @@ test "checker: type predicate negative branch subtracts" {
     const n_init = hir_mod.varDeclOf(&s.hir, else_stmts[0]).init;
     // (string | number) minus string = number.
     try T.expectEqual(types.Primitive.number_t, s.hir.typeOf(n_init));
+}
+
+test "checker: TS 5.5 inferred type predicate from typeof === narrowing" {
+    // `function isString(x: unknown) { return typeof x === "string"; }`
+    // — no explicit `x is string` annotation, but the body is a single
+    // narrowing comparison. Call sites should narrow `x` to `string`.
+    const s = try newSetup(
+        \\function isString(x: unknown) { return typeof x === "string"; }
+        \\function f(x: unknown) {
+        \\  if (isString(x)) {
+        \\    let s = x;
+        \\  }
+        \\}
+    );
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+    const stmts = hir_mod.blockStmts(&s.hir, s.root);
+    const fn_node = stmts[1];
+    const f = hir_mod.fnDeclOf(&s.hir, fn_node);
+    const body_stmts = hir_mod.blockStmts(&s.hir, f.body);
+    const if_stmt = body_stmts[0];
+    const ifp = hir_mod.ifOf(&s.hir, if_stmt);
+    const then_stmts = hir_mod.blockStmts(&s.hir, ifp.then_branch);
+    const s_init = hir_mod.varDeclOf(&s.hir, then_stmts[0]).init;
+    try T.expectEqual(types.Primitive.string_t, s.hir.typeOf(s_init));
+}
+
+test "checker: TS 5.5 inferred predicate from x !== null narrows union" {
+    // `(string | null) !== null` returns true → infer `x is string`.
+    // Call site narrows `x` to `string` in the then-branch.
+    const s = try newSetup(
+        \\function isPresent(x: string | null) { return x !== null; }
+        \\function f(x: string | null) {
+        \\  if (isPresent(x)) {
+        \\    let s = x;
+        \\  }
+        \\}
+    );
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+    const stmts = hir_mod.blockStmts(&s.hir, s.root);
+    const fn_node = stmts[1];
+    const f = hir_mod.fnDeclOf(&s.hir, fn_node);
+    const body_stmts = hir_mod.blockStmts(&s.hir, f.body);
+    const if_stmt = body_stmts[0];
+    const ifp = hir_mod.ifOf(&s.hir, if_stmt);
+    const then_stmts = hir_mod.blockStmts(&s.hir, ifp.then_branch);
+    const s_init = hir_mod.varDeclOf(&s.hir, then_stmts[0]).init;
+    try T.expectEqual(types.Primitive.string_t, s.hir.typeOf(s_init));
+}
+
+test "checker: TS 5.5 inferred predicate skipped for multi-statement bodies" {
+    // Body has more than one statement → don't infer a predicate.
+    // Call site should leave `x` as `string | null`.
+    const s = try newSetup(
+        \\function isPresent(x: string | null) {
+        \\  let y = x;
+        \\  return y !== null;
+        \\}
+    );
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+    // The function shouldn't be recorded as a predicate — sanity-check
+    // by looking up its name in `fn_predicates`.
+    const stmts = hir_mod.blockStmts(&s.hir, s.root);
+    const fn_node = stmts[0];
+    const f = hir_mod.fnDeclOf(&s.hir, fn_node);
+    const fn_name = hir_mod.identifierOf(&s.hir, f.name).name;
+    try T.expect(!s.checker.fn_predicates.contains(fn_name));
 }
 
 test "checker: mapped type over keyof T materializes properties" {
