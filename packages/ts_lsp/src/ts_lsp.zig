@@ -424,6 +424,50 @@ pub fn freeMonikers(gpa: std.mem.Allocator, monikers: []Moniker) void {
     gpa.free(monikers);
 }
 
+/// LSP `textDocument/inlineValue` payload — identifies a value the
+/// editor's debugger UI should display inline when the program is
+/// stopped at a breakpoint. The LSP spec lets servers return three
+/// item shapes: a literal text overlay, a variable lookup against
+/// the debug runtime's frame, or an evaluatable expression. v0
+/// emits only the variable-lookup form (one per identifier in the
+/// requested viewport) since that's the one the debugger frontend
+/// resolves automatically against the active stack frame.
+///
+/// `range` follows the same 1-based line/col convention as the rest
+/// of the LSP surface (mirrors `Span`); the wire layer subtracts 1
+/// when emitting 0-based LSP form. `variable_name` is owned by the
+/// caller (free with `freeInlineValues`).
+pub const InlineValue = struct {
+    range: Range,
+    variable_name: []const u8,
+    /// Whether case-sensitive name matching should be used when
+    /// the debugger resolves the variable in the active frame.
+    /// Mirrors the LSP `caseSensitiveLookup` flag — defaults to
+    /// `true` for TS (which is case-sensitive).
+    case_sensitive_lookup: bool = true,
+};
+
+/// Free a `[]InlineValue` produced by `Service.inlineValues`.
+/// Releases the per-item `variable_name` allocations and the slice.
+pub fn freeInlineValues(gpa: std.mem.Allocator, values: []InlineValue) void {
+    for (values) |v| gpa.free(v.variable_name);
+    gpa.free(values);
+}
+
+/// LSP `InlineValueContext` — passed by the client and forwarded to
+/// `Service.inlineValues`. Carries the active stack-frame id and the
+/// stopped-location range so the server can scope identifier
+/// extraction (today we use the visible viewport range; the frame id
+/// is forwarded for future heuristics like "only show locals from
+/// the current frame's scope").
+pub const InlineValueContext = struct {
+    frame_id: i64 = 0,
+    /// 1-based stopped-location range (matches `Span`). Used for
+    /// future filtering; v0 emits values across the full requested
+    /// viewport range regardless of stop location.
+    stopped_location: Range,
+};
+
 pub const Service = struct {
     gpa: std.mem.Allocator,
     program: *ts_program.Program,
@@ -2463,6 +2507,88 @@ pub const Service = struct {
         return out.toOwnedSlice(gpa);
     }
 
+    /// LSP `textDocument/inlineValue` — used by debugger UIs to show
+    /// inline computed values next to source code while the program
+    /// is paused at a breakpoint. The client sends the visible
+    /// viewport range plus an `InlineValueContext` carrying the active
+    /// stack-frame id; the server returns one item per source location
+    /// the editor should annotate.
+    ///
+    /// LSP defines three result shapes — `InlineValueText` (literal
+    /// overlay), `InlineValueVariableLookup` (resolve a name against
+    /// the debug runtime's frame), and `InlineValueEvaluatableExpression`
+    /// (forward an expression to the debugger evaluator). v0 emits
+    /// only the variable-lookup form: one entry per identifier
+    /// expression whose span falls within the requested range. This
+    /// mirrors what tsserver's inline-value provider does in its
+    /// initial pass and lets the debugger fill in values for every
+    /// in-scope local without round-tripping each one through an
+    /// `evaluate` request.
+    ///
+    /// Filtering: identifiers used in declaration heads (e.g. the
+    /// binding identifier of `let x = ...`) are still emitted — the
+    /// debugger resolves them by name and either shows the live value
+    /// or skips the entry. We filter only on identifiers whose span is
+    /// fully contained inside the requested byte range.
+    ///
+    /// Returns an empty slice when the file isn't tracked or has no
+    /// compilation. Caller owns the returned slice (free with
+    /// `freeInlineValues`).
+    pub fn inlineValues(
+        self: *Service,
+        gpa: std.mem.Allocator,
+        file_path: []const u8,
+        range: Range,
+        context: InlineValueContext,
+    ) ![]InlineValue {
+        _ = context; // forwarded for future filtering; not used in v0.
+        var out: std.ArrayListUnmanaged(InlineValue) = .empty;
+        errdefer {
+            for (out.items) |v| gpa.free(v.variable_name);
+            out.deinit(gpa);
+        }
+
+        const file_id = self.program.lookupPath(file_path) orelse return out.toOwnedSlice(gpa);
+        const f = self.program.fileById(file_id);
+        const c = f.compilation orelse return out.toOwnedSlice(gpa);
+
+        // Resolve the requested 1-based line/col range to byte offsets
+        // so we can compare against HIR `Span`s (which are byte-based).
+        const range_start_byte = lineColOneBasedToByte(f.source, range.start_line, range.start_col);
+        const range_end_byte = lineColOneBasedToByte(f.source, range.end_line, range.end_col);
+
+        var i: hir_mod.NodeId = 0;
+        while (i < c.hir.nodeCount()) : (i += 1) {
+            if (c.hir.kindOf(i) != .identifier) continue;
+            const span = c.hir.spanOf(i);
+            // Skip zero-width / synthetic identifiers (binder-emitted
+            // placeholders carry empty spans).
+            if (span.end <= span.start) continue;
+            // Only include identifiers fully contained in the viewport.
+            if (span.start < range_start_byte) continue;
+            if (span.end > range_end_byte) continue;
+
+            const id = hir_mod.identifierOf(&c.hir, i);
+            const name = c.interner.get(id.name);
+            if (name.len == 0) continue;
+
+            const start_pos = ts_diagnostics.positionToLineCol(f.source, span.start);
+            const end_pos = ts_diagnostics.positionToLineCol(f.source, span.end);
+            const name_dup = try gpa.dupe(u8, name);
+            errdefer gpa.free(name_dup);
+            try out.append(gpa, .{
+                .range = .{
+                    .start_line = start_pos.line,
+                    .start_col = start_pos.col,
+                    .end_line = end_pos.line,
+                    .end_col = end_pos.col,
+                },
+                .variable_name = name_dup,
+            });
+        }
+        return out.toOwnedSlice(gpa);
+    }
+
     /// `workspace/willRenameFiles` — sent by the editor BEFORE a file
     /// is renamed. The server returns `TextEdit`s that update import
     /// specifiers in OTHER files referencing the renamed one, so
@@ -2670,6 +2796,28 @@ fn findMatchingOpener(gpa: std.mem.Allocator, src: []const u8, before: u32, tag_
         }
     }
     return null;
+}
+
+/// Convert a 1-based (line, col) pair (matching `Span` /
+/// `positionToLineCol`) to a 0-based byte offset into `source`.
+/// Out-of-range positions clamp to `source.len`. Used by
+/// `inlineValues` to map the requested viewport range back into the
+/// byte space HIR `Span`s live in.
+fn lineColOneBasedToByte(source: []const u8, line_1: u32, col_1: u32) u32 {
+    if (line_1 == 0) return 0;
+    const target_line = line_1;
+    const target_col = if (col_1 == 0) 1 else col_1;
+    var line: u32 = 1;
+    var i: usize = 0;
+    while (i < source.len and line < target_line) : (i += 1) {
+        if (source[i] == '\n') line += 1;
+    }
+    if (line < target_line) return @intCast(source.len);
+    var col: u32 = 1;
+    while (i < source.len and col < target_col and source[i] != '\n') : (i += 1) {
+        col += 1;
+    }
+    return @intCast(i);
 }
 
 /// Strip a leading `file://` (or `file:///`) scheme from an LSP URI,

@@ -147,6 +147,7 @@ pub const Method = enum {
     workspace_will_rename_files,
     workspace_execute_command,
     text_document_moniker,
+    text_document_inline_value,
     unknown,
 
     pub fn fromString(s: []const u8) Method {
@@ -195,6 +196,7 @@ pub const Method = enum {
             .{ "workspace/willRenameFiles", Method.workspace_will_rename_files },
             .{ "workspace/executeCommand", Method.workspace_execute_command },
             .{ "textDocument/moniker", Method.text_document_moniker },
+            .{ "textDocument/inlineValue", Method.text_document_inline_value },
         };
         inline for (map) |entry| {
             if (std.mem.eql(u8, s, entry[0])) return entry[1];
@@ -248,6 +250,7 @@ pub const SUPPORTED_METHODS = &[_][]const u8{
     "textDocument/semanticTokens/range",
     "textDocument/diagnostic",
     "textDocument/moniker",
+    "textDocument/inlineValue",
     // Resolve callbacks.
     "completionItem/resolve",
     "codeLens/resolve",
@@ -2253,6 +2256,115 @@ pub fn handleMoniker(
     return encodeResponse(gpa, request_id, buf.items);
 }
 
+/// Handle a `textDocument/inlineValue` JSON-RPC request: extract the
+/// `(uri, range, context)` triple, route to `Service.inlineValues`,
+/// and emit an LSP `InlineValue[]` array. v0 emits only the
+/// `InlineValueVariableLookup` shape — `{ range, variableName,
+/// caseSensitiveLookup }` — so debugger UIs can resolve every visible
+/// identifier against the active stack frame without round-tripping
+/// each one through an `evaluate` request. Caller owns the returned
+/// slice.
+pub fn handleInlineValue(
+    service: *ts_lsp.Service,
+    gpa: std.mem.Allocator,
+    request_id: RequestId,
+    params_json: []const u8,
+) ![]u8 {
+    const uri = findJsonStringField(params_json, "uri") orelse return error.MissingUri;
+    const path = uriToPath(uri);
+
+    // The LSP request wraps both the visible range and the stopped
+    // location's range under different keys, but `findJsonRawField`
+    // returns first-occurrence so the top-level `range` resolves
+    // before any nested one in `context.stoppedLocation`. Both
+    // `start.line` / `end.line` collisions are sidestepped by slicing
+    // the range object first and walking it for `start`/`end`.
+    const range_raw = findJsonRawField(params_json, "range") orelse return error.MissingRange;
+
+    var start_line: i64 = 0;
+    var start_char: i64 = 0;
+    var end_line: i64 = std.math.maxInt(i64);
+    var end_char: i64 = std.math.maxInt(i64);
+    if (std.mem.indexOf(u8, range_raw, "\"start\":")) |sp| {
+        const sub = range_raw[sp..];
+        start_line = findJsonIntField(sub, "line") orelse 0;
+        start_char = findJsonIntField(sub, "character") orelse 0;
+    }
+    if (std.mem.indexOf(u8, range_raw, "\"end\":")) |ep| {
+        const sub = range_raw[ep..];
+        end_line = findJsonIntField(sub, "line") orelse std.math.maxInt(i64);
+        end_char = findJsonIntField(sub, "character") orelse std.math.maxInt(i64);
+    }
+
+    // Extract the `context` (frameId + stoppedLocation). Both fields
+    // are optional in v0 — they're forwarded to the service for
+    // future filtering but the v0 implementation ignores them.
+    var frame_id: i64 = 0;
+    var ctx_stop: ts_lsp.Range = .{
+        .start_line = 0,
+        .start_col = 0,
+        .end_line = 0,
+        .end_col = 0,
+    };
+    if (findJsonRawField(params_json, "context")) |ctx_raw| {
+        frame_id = findJsonIntField(ctx_raw, "frameId") orelse 0;
+        if (findJsonRawField(ctx_raw, "stoppedLocation")) |sl_raw| {
+            var sl_start_line: i64 = 0;
+            var sl_start_char: i64 = 0;
+            var sl_end_line: i64 = 0;
+            var sl_end_char: i64 = 0;
+            if (std.mem.indexOf(u8, sl_raw, "\"start\":")) |sp| {
+                const sub = sl_raw[sp..];
+                sl_start_line = findJsonIntField(sub, "line") orelse 0;
+                sl_start_char = findJsonIntField(sub, "character") orelse 0;
+            }
+            if (std.mem.indexOf(u8, sl_raw, "\"end\":")) |ep| {
+                const sub = sl_raw[ep..];
+                sl_end_line = findJsonIntField(sub, "line") orelse 0;
+                sl_end_char = findJsonIntField(sub, "character") orelse 0;
+            }
+            // LSP wire form is 0-based; ts_lsp.Range is 1-based.
+            ctx_stop = .{
+                .start_line = @as(u32, @intCast(@max(sl_start_line, 0))) + 1,
+                .start_col = @as(u32, @intCast(@max(sl_start_char, 0))) + 1,
+                .end_line = @as(u32, @intCast(@max(sl_end_line, 0))) + 1,
+                .end_col = @as(u32, @intCast(@max(sl_end_char, 0))) + 1,
+            };
+        }
+    }
+
+    // LSP wire form is 0-based; ts_lsp.Range is 1-based.
+    const u32_max: u32 = std.math.maxInt(u32);
+    const range_in: ts_lsp.Range = .{
+        .start_line = @as(u32, @intCast(@max(start_line, 0))) + 1,
+        .start_col = @as(u32, @intCast(@max(start_char, 0))) + 1,
+        .end_line = if (end_line >= u32_max) u32_max else @as(u32, @intCast(@max(end_line, 0))) + 1,
+        .end_col = if (end_char >= u32_max) u32_max else @as(u32, @intCast(@max(end_char, 0))) + 1,
+    };
+
+    const values = try service.inlineValues(gpa, path, range_in, .{
+        .frame_id = frame_id,
+        .stopped_location = ctx_stop,
+    });
+    defer ts_lsp.freeInlineValues(gpa, values);
+
+    var buf: std.ArrayListUnmanaged(u8) = .empty;
+    defer buf.deinit(gpa);
+    try buf.append(gpa, '[');
+    for (values, 0..) |v, i| {
+        if (i > 0) try buf.append(gpa, ',');
+        try buf.appendSlice(gpa, "{\"range\":");
+        try writeRangeFromRange(&buf, gpa, v.range);
+        try buf.appendSlice(gpa, ",\"variableName\":\"");
+        try writeJsonStringContents(&buf, gpa, v.variable_name);
+        try buf.appendSlice(gpa, "\",\"caseSensitiveLookup\":");
+        try buf.appendSlice(gpa, if (v.case_sensitive_lookup) "true" else "false");
+        try buf.append(gpa, '}');
+    }
+    try buf.append(gpa, ']');
+    return encodeResponse(gpa, request_id, buf.items);
+}
+
 /// Handle a `workspace/willRenameFiles` JSON-RPC request: extract the
 /// `files` array (each entry has an `oldUri` + `newUri` LSP URI), route
 /// to `Service.workspaceWillRenameFiles`, and emit an LSP
@@ -2686,7 +2798,7 @@ pub fn renderInitializeCapabilities(gpa: std.mem.Allocator) ![]u8 {
     var buf: std.ArrayListUnmanaged(u8) = .empty;
     errdefer buf.deinit(gpa);
     try buf.appendSlice(gpa,
-        \\{"capabilities":{"textDocumentSync":1,"hoverProvider":true,"definitionProvider":true,"referencesProvider":true,"completionProvider":{"triggerCharacters":["."," "]},"documentSymbolProvider":true,"workspaceSymbolProvider":true,"renameProvider":{"prepareProvider":true},"codeActionProvider":true,"executeCommandProvider":{"commands":["home.organizeImports","home.applyCodeAction"]},"semanticTokensProvider":{"legend":{"tokenTypes":["variable","parameter","function","method","class","interface","type","enum","property","keyword","string","number","operator","comment"],"tokenModifiers":[]},"full":true,"range":true},"signatureHelpProvider":{"triggerCharacters":["(",","]},"documentHighlightProvider":false,"documentFormattingProvider":true,"foldingRangeProvider":true,"selectionRangeProvider":true,"monikerProvider":true,"typeHierarchyProvider":true},"serverInfo":{"name":"home-lsp","version":"0.1.0","supportedMethods":[
+        \\{"capabilities":{"textDocumentSync":1,"hoverProvider":true,"definitionProvider":true,"referencesProvider":true,"completionProvider":{"triggerCharacters":["."," "]},"documentSymbolProvider":true,"workspaceSymbolProvider":true,"renameProvider":{"prepareProvider":true},"codeActionProvider":true,"executeCommandProvider":{"commands":["home.organizeImports","home.applyCodeAction"]},"semanticTokensProvider":{"legend":{"tokenTypes":["variable","parameter","function","method","class","interface","type","enum","property","keyword","string","number","operator","comment"],"tokenModifiers":[]},"full":true,"range":true},"signatureHelpProvider":{"triggerCharacters":["(",","]},"documentHighlightProvider":false,"documentFormattingProvider":true,"foldingRangeProvider":true,"selectionRangeProvider":true,"monikerProvider":true,"typeHierarchyProvider":true,"inlineValueProvider":true},"serverInfo":{"name":"home-lsp","version":"0.1.0","supportedMethods":[
     );
     for (SUPPORTED_METHODS, 0..) |m, i| {
         if (i != 0) try buf.append(gpa, ',');
@@ -3006,6 +3118,10 @@ pub fn dispatchRequest(
         .text_document_moniker => {
             if (is_notification) return &.{};
             return try handleMoniker(service, gpa, id, params);
+        },
+        .text_document_inline_value => {
+            if (is_notification) return &.{};
+            return try handleInlineValue(service, gpa, id, params);
         },
         // Catch-all for unknown methods — fall through to standard
         // JSON-RPC `Method not found` error.
@@ -4496,4 +4612,35 @@ test "handleWillRenameFiles: returns null result for empty stub edit list" {
     // Service stub returns []; wire layer treats empty as `"result":null`
     // (LSP-permitted "no follow-up edits needed").
     try T.expect(std.mem.indexOf(u8, out, "\"result\":null") != null);
+}
+
+test "handleInlineValue: emits InlineValueVariableLookup per identifier in range" {
+    var vfs = ts_resolver.VirtualFs.init(T.allocator);
+    defer vfs.deinit();
+    var resolver = ts_resolver.Resolver.init(T.allocator, vfs.fs(), .{});
+    defer resolver.deinit();
+    var program = ts_program.Program.init(T.allocator, &resolver);
+    defer program.deinit();
+
+    _ = try program.add("/main.ts", "let count = 1; let total = count + 2;");
+    try program.compileAll(.{});
+    var svc = ts_lsp.Service.init(T.allocator, &program);
+
+    // Visible viewport covers the full single-line source. The
+    // service emits one InlineValueVariableLookup per identifier
+    // expression — both binding sites (`count`, `total`) and the
+    // read-site (`count` in `count + 2`) appear.
+    const body =
+        \\{"jsonrpc":"2.0","id":701,"method":"textDocument/inlineValue","params":{"textDocument":{"uri":"file:///main.ts"},"range":{"start":{"line":0,"character":0},"end":{"line":0,"character":40}},"context":{"frameId":1,"stoppedLocation":{"start":{"line":0,"character":0},"end":{"line":0,"character":40}}}}}
+    ;
+    const out = try handleInlineValue(&svc, T.allocator, .{ .integer = 701 }, body);
+    defer T.allocator.free(out);
+    try T.expect(std.mem.indexOf(u8, out, "\"jsonrpc\":\"2.0\"") != null);
+    try T.expect(std.mem.indexOf(u8, out, "\"id\":701") != null);
+    try T.expect(std.mem.indexOf(u8, out, "\"result\":[") != null);
+    try T.expect(std.mem.indexOf(u8, out, "\"variableName\":\"count\"") != null);
+    try T.expect(std.mem.indexOf(u8, out, "\"variableName\":\"total\"") != null);
+    try T.expect(std.mem.indexOf(u8, out, "\"caseSensitiveLookup\":true") != null);
+    // Each item carries a wire-shaped LSP range.
+    try T.expect(std.mem.indexOf(u8, out, "\"range\":{\"start\":{\"line\":") != null);
 }
