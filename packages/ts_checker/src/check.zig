@@ -76,6 +76,7 @@ pub const TsCodes = struct {
     pub const satisfies_constraint: u32 = 1360;
     pub const used_before_assignment: u32 = 2454;
     pub const cannot_assign_const: u32 = 2588;
+    pub const await_only_in_async: u32 = 1308;
 };
 
 /// Per-alias generic info: the type-parameter TypeIds in
@@ -2657,6 +2658,23 @@ pub const Checker = struct {
                 // through.
                 const a = hir_mod.awaitExprOf(self.hir, node);
                 const inner_t = try self.checkExpression(a.expr);
+                // TS1308: `await` is only allowed inside an async
+                // function or at the top level of a module. Walk up
+                // the parent chain looking for the nearest enclosing
+                // function. If found and it isn't async, diagnose.
+                // Reaching the root without finding any function is
+                // top-level await, which is allowed.
+                var cur: hir_mod.NodeId = self.hir.parentOf(node);
+                while (cur != hir_mod.none_node_id) : (cur = self.hir.parentOf(cur)) {
+                    const k = self.hir.kindOf(cur);
+                    if (k == .fn_decl or k == .fn_expr or k == .arrow_fn) {
+                        const fp = hir_mod.fnDeclOf(self.hir, cur);
+                        if (!fp.flags.is_async) {
+                            try self.report(node, TsCodes.await_only_in_async, "'await' expression is only allowed in async functions and at top levels of modules.");
+                        }
+                        break;
+                    }
+                }
                 break :blk self.unwrapPromise(inner_t);
             },
             .yield_expr => blk: {
@@ -5762,6 +5780,41 @@ test "checker: `await g()` types as the operand call's return type" {
     try T.expectEqual(hir_mod.NodeKind.await_expr, s.hir.kindOf(v.init));
     // The operand isn't Promise-shaped, so unwrapPromise is a passthrough.
     try T.expectEqual(types.Primitive.number_t, s.hir.typeOf(v.init));
+}
+
+test "checker: TS1308 `await` only allowed in async functions" {
+    // Sync function with `await` should diagnose; async function
+    // should not.
+    const s = try newSetup(
+        \\function g(): number { return 1; }
+        \\function f() { await g(); }
+        \\async function h() { await g(); }
+    );
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+    var found_in_sync: bool = false;
+    var found_in_async: bool = false;
+    for (s.checker.diagnostics.items) |d| {
+        if (d.code != TsCodes.await_only_in_async) continue;
+        // The await inside `f` lives at a smaller node id than the
+        // one inside `h`; either way, finding exactly one TS1308 is
+        // the contract. Track via the ancestor walk for clarity.
+        var cur: hir_mod.NodeId = s.hir.parentOf(d.node);
+        while (cur != hir_mod.none_node_id) : (cur = s.hir.parentOf(cur)) {
+            const k = s.hir.kindOf(cur);
+            if (k == .fn_decl or k == .fn_expr or k == .arrow_fn) {
+                const fp = hir_mod.fnDeclOf(&s.hir, cur);
+                if (fp.flags.is_async) {
+                    found_in_async = true;
+                } else {
+                    found_in_sync = true;
+                }
+                break;
+            }
+        }
+    }
+    try T.expect(found_in_sync);
+    try T.expect(!found_in_async);
 }
 
 test "checker: unwrapPromise extracts T from a structural Promise<T>" {
