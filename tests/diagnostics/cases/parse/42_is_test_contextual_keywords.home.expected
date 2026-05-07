@@ -1,0 +1,3 @@
+Checking: <repo>/tests/diagnostics/cases/parse/42_is_test_contextual_keywords.home
+
+Success: Type checking passed ✓

@@ -482,6 +482,43 @@ pub const Parser = struct {
         return false;
     }
 
+    /// Soft-keyword tokens accepted as plain identifiers in binding-name
+    /// slots (let/var/const/struct-field/parameter names). These are
+    /// reserved words that the lexer emits as their own token kinds, but
+    /// which the language treats as *contextual* keywords — meaningful
+    /// only in their grammatical position. Kernel and stdlib code use
+    /// many of these as ordinary names.
+    ///
+    /// Notably:
+    ///   * `is` is a keyword only in type-narrow position (`if x is T`).
+    ///   * `test` is a keyword only at top level (`test "name" { }`).
+    /// In binding-name slots they parse as identifiers.
+    pub const binding_name_soft_keywords = [_]TokenType{
+        .Default, .Type, .It,    .Match, .Union,
+        .In,      .Is,   .Test,  .As,    .Guard,
+    };
+
+    /// Returns true if `tok` can stand in for a plain `Identifier` in a
+    /// binding-name slot (variable, parameter, field). Used by the
+    /// helpers below and any future contextual-keyword sites.
+    pub fn isIdentifierLikeToken(tok: TokenType) bool {
+        if (tok == .Identifier) return true;
+        for (binding_name_soft_keywords) |kw| {
+            if (tok == kw) return true;
+        }
+        return false;
+    }
+
+    /// Match-and-consume an identifier-like token (Identifier or any of
+    /// the contextual soft keywords). Returns the consumed token, or
+    /// `null` if the current token is not identifier-like.
+    pub fn matchIdentifierLike(self: *Parser) ?Token {
+        if (isIdentifierLikeToken(self.peek().type)) {
+            return self.advance();
+        }
+        return null;
+    }
+
     /// Require a specific token type, consuming it or reporting an error.
     ///
     /// This is the primary way to enforce required syntax. If the expected
@@ -1028,8 +1065,14 @@ pub const Parser = struct {
             return try self.itTestDeclaration();
         }
 
-        // Check for test "description" { body } test syntax (Zig-style)
-        if (self.match(&.{.Test})) {
+        // Check for test "description" { body } test syntax (Zig-style).
+        // `test` is a *contextual* keyword: it only introduces a test
+        // declaration when immediately followed by a string literal.
+        // In any other position (`test.field = ...`, `test(...)`, `test +
+        // 1`) it parses as a plain identifier — kernel code uses `test`
+        // as a local variable name.
+        if (self.check(.Test) and self.peekNext().type == .String) {
+            _ = self.advance();
             return try self.testBlockDeclaration();
         }
 
@@ -1162,7 +1205,7 @@ pub const Parser = struct {
                     .Break, .Continue, .Return, .Import, .Export, .Pub, .Async, .Await,
                     .Try, .Catch, .Defer, .Comptime, .Static, .Unsafe, .Var,
                     .Assert, .True, .False, .Null, .Test, .It, .Finally, .Guard,
-                    .Union, .Default, .In, .As, .Where, .Switch, .Case, .Not, .And, .Or, .Asm, .Dyn,
+                    .Union, .Default, .In, .Is, .As, .Where, .Switch, .Case, .Not, .And, .Or, .Asm, .Dyn,
                 }))
                     self.previous()
                 else {
@@ -1655,7 +1698,7 @@ pub const Parser = struct {
                     .Break, .Continue, .Return, .Import, .Export, .Pub, .Async, .Await,
                     .Try, .Catch, .Defer, .Comptime, .Static, .Unsafe, .Var,
                     .Assert, .True, .False, .Null, .Test, .It, .Finally, .Guard,
-                    .Union, .Default, .In, .As, .Where, .Switch, .Case, .Not, .And, .Or, .Asm, .Dyn,
+                    .Union, .Default, .In, .Is, .As, .Where, .Switch, .Case, .Not, .And, .Or, .Asm, .Dyn,
                 })) {
                     const token = self.previous();
                     // Check if next token is a colon (indicating a field)
@@ -1762,9 +1805,7 @@ pub const Parser = struct {
     /// while the typechecker grows nested-symbol support.
     fn skipNestedConstDecl(self: *Parser) ParseError!void {
         // Name (allow soft-keywords as in letDeclaration)
-        if (!self.match(&.{
-            .Identifier, .Default, .Type, .It, .Match, .Union, .In,
-        })) {
+        if (self.matchIdentifierLike() == null) {
             try self.reportError("Expected name after 'const'");
             return error.UnexpectedToken;
         }
@@ -2886,25 +2927,12 @@ pub const Parser = struct {
             return ast.Stmt{ .TupleDestructureDecl = decl };
         }
 
-        // Accept Identifier or several soft-keywords as variable names.
-        // Kernel code uses `match`, `type`, `default` etc. as field
-        // or local variable names in contexts where the parser can
-        // disambiguate from the keyword form.
-        const name_token = if (self.match(&.{.Identifier}))
-            self.previous()
-        else if (self.match(&.{.Default}))
-            self.previous()
-        else if (self.match(&.{.Type}))
-            self.previous()
-        else if (self.match(&.{.It}))
-            self.previous()
-        else if (self.match(&.{.Match}))
-            self.previous()
-        else if (self.match(&.{.Union}))
-            self.previous()
-        else if (self.match(&.{.In}))
-            self.previous()
-        else blk: {
+        // Accept Identifier or any contextual soft-keyword token as the
+        // binding name (`let is = 1`, `let test = ...`, `let match = ...`).
+        // Kernel code uses `match`, `type`, `default`, `is`, `test` etc.
+        // as field or local variable names in contexts where the parser
+        // can unambiguously disambiguate from the keyword form.
+        const name_token = self.matchIdentifierLike() orelse blk: {
             try self.reportError("Expected variable name");
             break :blk self.previous(); // Return something to satisfy type system
         };
@@ -3094,13 +3122,11 @@ pub const Parser = struct {
     /// Parse a var declaration (module-level mutable variable)
     /// Syntax: var name: Type = value
     fn varDeclaration(self: *Parser) !ast.Stmt {
-        // Accept Identifier or soft-keywords as variable name. Kernel
-        // code uses `match`, `type`, `default` etc. as identifiers.
-        const name_token = if (self.match(&.{.Identifier}))
-            self.previous()
-        else if (self.match(&.{ .Match, .Default, .Type, .It, .Union, .In }))
-            self.previous()
-        else blk: {
+        // Accept Identifier or any contextual soft-keyword as variable
+        // name (`var is: u32 = ...`, `var test: T = ...`, `var match`).
+        // Kernel code uses `match`, `type`, `default`, `is`, `test` etc.
+        // as plain identifiers in binding slots.
+        const name_token = self.matchIdentifierLike() orelse blk: {
             try self.reportError("Expected variable name");
             break :blk self.previous();
         };
@@ -4536,6 +4562,15 @@ pub const Parser = struct {
                 if (t == .Star or t == .Ampersand or t == .Minus or t == .Plus or
                     t == .LeftParen)
                 {
+                    break;
+                }
+                // Contextual soft keywords (`as`, `is`, `test`) at the
+                // start of a new line are treated as the head of a fresh
+                // statement, not as postfix operators on the prior
+                // expression. Without this, `let x = null\n    as.foo = 1`
+                // parses the second line as a type cast (`null as .foo`)
+                // and emits a confusing "Expected type name" error.
+                if (t == .As or t == .Is or t == .Test) {
                     break;
                 }
             }
@@ -6764,6 +6799,29 @@ pub const Parser = struct {
             const token = self.previous();
             const expr = try self.allocator.create(ast.Expr);
             expr.* = ast.Expr{ .CharLiteral = ast.CharLiteral.init(token.lexeme, ast.SourceLocation.fromToken(token)) };
+            return expr;
+        }
+
+        // Contextual soft keywords (`is`, `test`, `as`, `guard`) used as
+        // plain identifier expressions. The keyword forms are recognised
+        // only in their grammatical positions:
+        //   * `is` is matched in postfix position (`if x is T`).
+        //   * `as` is matched in postfix position (cast: `x as T`).
+        //   * `test` introduces a unit-test decl only when followed by a
+        //     string literal (`test "name" { }`).
+        //   * `guard` is currently only a soft keyword (no special form).
+        // Reaching this point means the token is being used as a name.
+        // Emit a bare identifier expression — no macro/generic-args/
+        // struct-literal disambiguation applies (those need a real
+        // Identifier token).
+        if (self.check(.Is) or self.check(.Test) or
+            self.check(.As) or self.check(.Guard))
+        {
+            const token = self.advance();
+            const expr = try self.allocator.create(ast.Expr);
+            expr.* = ast.Expr{
+                .Identifier = ast.Identifier.init(token.lexeme, ast.SourceLocation.fromToken(token)),
+            };
             return expr;
         }
 

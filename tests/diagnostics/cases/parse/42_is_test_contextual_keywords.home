@@ -1,0 +1,89 @@
+// Regression test for issue #47 — `is` and `test` should be
+// *contextual* keywords. They are reserved only in their syntactic
+// positions (`if x is T`, top-level `test "name" { }`); in binding-
+// name slots they parse as plain identifiers. Six home-os kernel
+// modules used `is` / `test` (and the related contextual soft
+// keywords `as`, `guard`) as variable names and tripped
+// `error[EP0001]: Expected variable name` before the fix:
+//
+//   kernel/src/drivers/ahci.home
+//   kernel/src/drivers/storage/ahci.home
+//   kernel/src/test/framework.home
+//   kernel/src/net/network_stack_verification.home
+//   kernel/src/ml/autograd.home
+//   kernel/src/mm/user_space.home
+//
+// The fix introduces `Parser.binding_name_soft_keywords` /
+// `matchIdentifierLike` so let/var/const/struct-field/parameter
+// readers all share one identifier-like predicate. `test` only
+// introduces a unit-test decl when followed by a string literal.
+// `as` / `is` / `test` at the start of a new line break the
+// expression-continuation loop so the next statement starts fresh.
+
+// `is` as a var name — AHCI driver port-status register read.
+fn use_is(port: u32) -> u32 {
+    var is: u32 = port
+    is = is + 1
+    return is
+}
+
+// `test` as a let name — test-framework iterator.
+fn use_test() -> u32 {
+    let test = 0
+    return test + 1
+}
+
+// `test` with a typed annotation — verification-test pointer.
+struct VerificationTest {
+    category: u32,
+    status: u32,
+}
+
+fn use_typed_test(t: *VerificationTest) {
+    let test: *VerificationTest = t
+    test.category = 1
+    test.status = 0
+}
+
+// `as` and `guard` as contextual soft-keyword identifiers — kernel
+// VMA / no-grad-guard usages.
+struct UserAddressSpace {
+    vma_count: u32,
+    resident: u32,
+}
+
+struct NoGradGuard {
+    prev_enabled: bool,
+}
+
+fn use_as(addr: *UserAddressSpace) {
+    var as: *UserAddressSpace = addr
+    as.vma_count = 0
+    as.resident = as.resident + 1
+}
+
+fn use_guard(prev: bool) -> NoGradGuard {
+    let guard = NoGradGuard { prev_enabled: prev }
+    return guard
+}
+
+// Negative-regression coverage — `is` in postfix position still
+// parses as a type-narrow expression. This must remain functional;
+// the fix only relaxes the keyword in *binding-name* slots, not in
+// expression position.
+struct Foo { x: u32 }
+
+fn type_narrow(f: *Foo) -> bool {
+    if f is Foo {
+        return true
+    }
+    return false
+}
+
+// `test "name" { ... }` still parses as a Zig-style unit test
+// (contextual keyword: `test` followed by a string literal).
+test "is_and_test_contextual" {
+    let x = 1
+    let y = 2
+    let total = x + y
+}
