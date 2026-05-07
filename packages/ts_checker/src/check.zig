@@ -3838,6 +3838,19 @@ pub const Checker = struct {
                 defer elem_types.deinit(self.gpa);
                 for (elements) |el| {
                     if (el == hir_mod.none_node_id) continue;
+                    if (self.hir.kindOf(el) == .spread) {
+                        // `...expr` — the spread's element type
+                        // contributes to the result. v0: require
+                        // the spread operand to be an array type
+                        // (number indexer present); fall back to
+                        // the spread expression's own type otherwise.
+                        const sp = hir_mod.spreadOf(self.hir, el);
+                        const inner_t = try self.checkExpression(sp.expression);
+                        const elem_inner = self.interner.objectNumberIndex(inner_t);
+                        const contrib = if (elem_inner != types.Primitive.none) elem_inner else inner_t;
+                        try elem_types.append(self.gpa, contrib);
+                        continue;
+                    }
                     const t = try self.checkExpression(el);
                     try elem_types.append(self.gpa, t);
                 }
@@ -3864,6 +3877,11 @@ pub const Checker = struct {
                 const props = hir_mod.objectLiteralProps(self.hir, node);
                 var members: std.ArrayListUnmanaged(types.ObjectMember) = .empty;
                 defer members.deinit(self.gpa);
+                // Computed keys (v0): always treated as a `[k: string]: T`
+                // index signature with T equal to the union of all
+                // computed-key value types.
+                var computed_value_types: std.ArrayListUnmanaged(TypeId) = .empty;
+                defer computed_value_types.deinit(self.gpa);
                 const upsert = struct {
                     fn run(
                         gpa: std.mem.Allocator,
@@ -3892,6 +3910,16 @@ pub const Checker = struct {
                     }
                     const op = hir_mod.objectPropertyOf(self.hir, p);
                     if (op.value == hir_mod.none_node_id) continue;
+                    if (op.is_computed) {
+                        // v0: always treat computed keys as a
+                        // `[k: string]: T` index signature with T equal
+                        // to the union of all computed-key value types.
+                        // Walk the key for type-checking effects.
+                        _ = try self.checkExpression(op.key);
+                        const vt = try self.checkExpression(op.value);
+                        try computed_value_types.append(self.gpa, vt);
+                        continue;
+                    }
                     if (self.hir.kindOf(op.key) != .identifier) continue;
                     const k = hir_mod.identifierOf(self.hir, op.key);
                     const vt = try self.checkExpression(op.value);
@@ -3903,7 +3931,13 @@ pub const Checker = struct {
                         .is_method = op.is_method,
                     });
                 }
-                const obj_t = self.interner.internObjectType(members.items) catch return error.OutOfMemory;
+                var string_index: TypeId = types.Primitive.none;
+                if (computed_value_types.items.len == 1) {
+                    string_index = computed_value_types.items[0];
+                } else if (computed_value_types.items.len > 1) {
+                    string_index = self.interner.internUnion(computed_value_types.items) catch return error.OutOfMemory;
+                }
+                const obj_t = self.interner.internObjectTypeWithIndex(members.items, string_index, types.Primitive.none) catch return error.OutOfMemory;
                 break :blk obj_t;
             },
             // Arrow / function expression: lower the signature so the
@@ -8879,6 +8913,90 @@ test "checker: object spread — later spread overrides earlier members" {
         \\const b = { x: "s" };
         \\const c = { ...a, ...b };
         \\const r: string = c.x;
+    );
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+    for (s.checker.diagnostics.items) |d| {
+        try T.expect(d.code != TsCodes.type_not_assignable);
+    }
+}
+
+test "checker: computed property name with identifier key parses and types" {
+    // v0: computed key `[k]` is parsed; the resulting object type has
+    // a `[k: string]: T` index signature with T being the value's type.
+    const s = try newSetup(
+        \\const k = "foo";
+        \\const o = { [k]: 1 };
+    );
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+    for (s.checker.diagnostics.items) |d| {
+        try T.expect(d.code != TsCodes.type_not_assignable);
+    }
+    const stmts = hir_mod.blockStmts(&s.hir, s.root);
+    const v = hir_mod.varDeclOf(&s.hir, stmts[1]);
+    try T.expectEqual(hir_mod.NodeKind.object_literal, s.hir.kindOf(v.init));
+    const obj_t = s.hir.typeOf(v.init);
+    try T.expect(s.ti.pool.flagsOf(obj_t).is_object_type);
+    const idx_t = s.ti.objectStringIndex(obj_t);
+    try T.expectEqual(types.Primitive.number_t, idx_t);
+}
+
+test "checker: computed property mixed with regular keys parses and types" {
+    // `{ ["foo"]: 1, bar: 2 }` mixes a computed string-literal key with
+    // a regular identifier key. Both shapes parse; the resulting object
+    // type carries `bar: number` as a member and a `[k: string]: number`
+    // index signature for the computed entry (v0).
+    const s = try newSetup(
+        \\const o = { ["foo"]: 1, bar: 2 };
+    );
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+    for (s.checker.diagnostics.items) |d| {
+        try T.expect(d.code != TsCodes.type_not_assignable);
+    }
+    const stmts = hir_mod.blockStmts(&s.hir, s.root);
+    const v = hir_mod.varDeclOf(&s.hir, stmts[0]);
+    try T.expectEqual(hir_mod.NodeKind.object_literal, s.hir.kindOf(v.init));
+    const obj_t = s.hir.typeOf(v.init);
+    try T.expect(s.ti.pool.flagsOf(obj_t).is_object_type);
+    const idx_t = s.ti.objectStringIndex(obj_t);
+    try T.expectEqual(types.Primitive.number_t, idx_t);
+    // `bar` is a regular member.
+    const bar_id = try s.sint.intern("bar");
+    var found_bar = false;
+    for (s.ti.objectMembers(obj_t)) |m| {
+        if (m.name == bar_id) {
+            found_bar = true;
+            try T.expectEqual(types.Primitive.number_t, m.type);
+        }
+    }
+    try T.expect(found_bar);
+}
+
+test "checker: array spread mixes element types into a union" {
+    // `[...a, "s"]` where `a: number[]` should produce
+    // `(number | string)[]`. The explicit `(number | string)[]`
+    // annotation must accept the literal.
+    const s = try newSetup(
+        \\const a: number[] = [1, 2];
+        \\const c = [...a, "s"];
+        \\const r: (number | string)[] = c;
+    );
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+    for (s.checker.diagnostics.items) |d| {
+        try T.expect(d.code != TsCodes.type_not_assignable);
+    }
+}
+
+test "checker: array spread of T[] yields T[]" {
+    // `[...a]` with `a: string[]` produces `string[]`, which is
+    // assignable to a `string[]` declaration.
+    const s = try newSetup(
+        \\const a: string[] = ["a"];
+        \\const c = [...a];
+        \\const r: string[] = c;
     );
     defer destroySetup(s);
     try s.checker.checkSourceFile(s.root);

@@ -2517,6 +2517,17 @@ pub const Builder = struct {
         return id;
     }
 
+    /// `...expr` — a spread element inside an array literal or
+    /// argument list. Reuses `JsxSpreadAttributePayload`'s
+    /// `{ expression: NodeId }` shape.
+    pub fn addSpread(self: *Builder, span: Span, expr: NodeId) !NodeId {
+        const payload_idx: u32 = @intCast(self.hir.jsx_spread_attribute_payloads.items.len);
+        try self.hir.jsx_spread_attribute_payloads.append(self.hir.gpa, .{ .expression = expr });
+        const id = try self.newNode(.spread, span, payload_idx);
+        self.hir.setParent(expr, id);
+        return id;
+    }
+
     pub fn addJsxExpression(self: *Builder, span: Span, expr: NodeId) !NodeId {
         const payload_idx: u32 = @intCast(self.hir.jsx_expression_payloads.items.len);
         try self.hir.jsx_expression_payloads.append(self.hir.gpa, .{ .expression = expr });
@@ -3097,6 +3108,11 @@ pub fn jsxAttributeOf(hir: *const Hir, id: NodeId) JsxAttributePayload {
 
 pub fn jsxSpreadAttributeOf(hir: *const Hir, id: NodeId) JsxSpreadAttributePayload {
     std.debug.assert(hir.kindOf(id) == .jsx_spread_attribute);
+    return hir.jsx_spread_attribute_payloads.items[hir.payloads.items[id]];
+}
+
+pub fn spreadOf(hir: *const Hir, id: NodeId) JsxSpreadAttributePayload {
+    std.debug.assert(hir.kindOf(id) == .spread);
     return hir.jsx_spread_attribute_payloads.items[hir.payloads.items[id]];
 }
 

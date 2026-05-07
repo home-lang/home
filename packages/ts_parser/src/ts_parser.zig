@@ -3267,6 +3267,16 @@ pub const Parser = struct {
                 try elements.append(self.gpa, hir_mod.none_node_id);
                 continue;
             }
+            // Spread element: `...expr`.
+            if (self.peek().kind == .dot_dot_dot) {
+                const dot_tok = self.advance();
+                const inner = try self.parseAssignmentExpression();
+                const end = self.tokens[self.cursor - 1].span.end;
+                const sp = try self.builder.addSpread(.{ .start = dot_tok.span.start, .end = end }, inner);
+                try elements.append(self.gpa, sp);
+                if (!self.match(.comma)) break;
+                continue;
+            }
             const e = try self.parseAssignmentExpression();
             try elements.append(self.gpa, e);
             if (!self.match(.comma)) break;
