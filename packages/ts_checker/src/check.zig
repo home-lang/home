@@ -5248,6 +5248,22 @@ test "checker: T[] annotation indexes to T" {
     try T.expectEqual(types.Primitive.number_t, s.hir.typeOf(ret_p.value));
 }
 
+test "checker: let arr: number[] element access types as number" {
+    // Mirrors `Array<T>` element-access shape: `arr[0]` on an
+    // annotated `number[]` should resolve through the number-key
+    // indexer to plain `number` (not `number | undefined` or `any`).
+    const s = try newSetup(
+        \\let arr: number[] = [1];
+        \\let n = arr[0];
+    );
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+    try T.expect(s.checker.diagnostics.items.len == 0);
+    const stmts = hir_mod.blockStmts(&s.hir, s.root);
+    const v = hir_mod.varDeclOf(&s.hir, stmts[1]);
+    try T.expectEqual(types.Primitive.number_t, s.hir.typeOf(v.init));
+}
+
 test "checker: interface extends with index signature inherits indexer" {
     const s = try newSetup(
         \\interface MapLike { [k: string]: number; }
