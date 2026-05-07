@@ -121,6 +121,11 @@ pub const TsCodes = struct {
     /// fails to implement one or more inherited abstract members.
     /// Emitted once per missing member at the child class declaration.
     pub const abstract_member_not_implemented: u32 = 2515;
+    /// TS2553 — `enum E { A = "x", B }`. Once an enum member has a
+    /// string initializer, every subsequent member must have an
+    /// explicit initializer (or be string-valued); plain
+    /// auto-increment is only valid after a numeric predecessor.
+    pub const enum_computed_after_string: u32 = 2553;
 };
 
 /// Per-alias generic info: the type-parameter TypeIds in
@@ -330,6 +335,14 @@ pub const Checker = struct {
     /// inferred direction. Unmarked type parameters default to
     /// `.bivariant`.
     inferred_variance: std.AutoHashMapUnmanaged(TypeId, types.Variance),
+    /// `(enum_name, member_name) → numeric value` for enum members
+    /// whose value the checker resolved (either from an explicit
+    /// numeric initializer or auto-incremented from the prior
+    /// member). String-valued members are not recorded — their value
+    /// type is the string literal itself. Populated by
+    /// `checkEnumDecl`; consulted by member-access typing on enum
+    /// receivers and (in a follow-up) by `const enum` inlining.
+    enum_member_values: std.AutoHashMapUnmanaged(MemberKey, f64),
     /// Strictness flags driving optional diagnostics.
     strict_flags: StrictFlags = .{},
     /// Hard-coded `lib.d.ts` substitute — `String.prototype`,
@@ -796,23 +809,44 @@ pub const Checker = struct {
         // return type by unioning every return statement's value
         // type. No returns → `void_t`.
         if (f.return_type == hir_mod.none_node_id) {
-            var ret_types: std.ArrayListUnmanaged(TypeId) = .empty;
-            defer ret_types.deinit(self.gpa);
-            try self.collectReturnTypes(f.body, &ret_types);
-            const inferred: TypeId = if (ret_types.items.len == 0)
-                types.Primitive.void_t
-            else if (ret_types.items.len == 1)
-                ret_types.items[0]
-            else
-                self.interner.internUnion(ret_types.items) catch return error.OutOfMemory;
-            try self.refineSignatureReturn(node, inferred);
-            // TS 5.5 inferred type predicate: only when the body is
-            // exactly one `return <narrowing>;` statement.
-            const body_stmts = hir_mod.blockStmts(self.hir, f.body);
-            if (body_stmts.len == 1 and self.hir.kindOf(body_stmts[0]) == .return_stmt) {
-                const r = hir_mod.returnOf(self.hir, body_stmts[0]);
-                if (r.value != hir_mod.none_node_id) {
-                    try self.tryInferTypePredicate(node, r.value);
+            if (f.flags.is_generator) {
+                // §3.A — Generator return-type inference.
+                // Walk the body for `yield` expressions, collect their
+                // value types into T, then synthesize a structural
+                // `Generator<T, void, unknown>` shape. The shape has a
+                // `[i: number]: T` indexer so `for (const x of g())`
+                // discovers the element type via the existing for-of
+                // path that consults `objectNumberIndex`.
+                var yield_types: std.ArrayListUnmanaged(TypeId) = .empty;
+                defer yield_types.deinit(self.gpa);
+                try self.collectYieldTypes(f.body, &yield_types);
+                const yield_t: TypeId = if (yield_types.items.len == 0)
+                    types.Primitive.undefined_t
+                else if (yield_types.items.len == 1)
+                    yield_types.items[0]
+                else
+                    self.interner.internUnion(yield_types.items) catch return error.OutOfMemory;
+                const gen_t = try self.synthesizeGeneratorType(yield_t);
+                try self.refineSignatureReturn(node, gen_t);
+            } else {
+                var ret_types: std.ArrayListUnmanaged(TypeId) = .empty;
+                defer ret_types.deinit(self.gpa);
+                try self.collectReturnTypes(f.body, &ret_types);
+                const inferred: TypeId = if (ret_types.items.len == 0)
+                    types.Primitive.void_t
+                else if (ret_types.items.len == 1)
+                    ret_types.items[0]
+                else
+                    self.interner.internUnion(ret_types.items) catch return error.OutOfMemory;
+                try self.refineSignatureReturn(node, inferred);
+                // TS 5.5 inferred type predicate: only when the body is
+                // exactly one `return <narrowing>;` statement.
+                const body_stmts = hir_mod.blockStmts(self.hir, f.body);
+                if (body_stmts.len == 1 and self.hir.kindOf(body_stmts[0]) == .return_stmt) {
+                    const r = hir_mod.returnOf(self.hir, body_stmts[0]);
+                    if (r.value != hir_mod.none_node_id) {
+                        try self.tryInferTypePredicate(node, r.value);
+                    }
                 }
             }
         }
@@ -1547,6 +1581,111 @@ pub const Checker = struct {
             },
             else => {},
         }
+    }
+
+    /// Walk a node tree collecting the operand types of every
+    /// `yield expr` reachable from `node`, but stop at any nested
+    /// function boundary so inner-fn yields don't leak into the
+    /// outer generator's element type. Used by generator return-type
+    /// inference to discover the yield-type T.
+    fn collectYieldTypes(
+        self: *Checker,
+        node: NodeId,
+        out: *std.ArrayListUnmanaged(TypeId),
+    ) CheckError!void {
+        if (node == hir_mod.none_node_id) return;
+        const k = self.hir.kindOf(node);
+        switch (k) {
+            .yield_expr => {
+                const y = hir_mod.yieldExprOf(self.hir, node);
+                if (y.expr != hir_mod.none_node_id) {
+                    try out.append(self.gpa, self.hir.typeOf(y.expr));
+                } else {
+                    try out.append(self.gpa, types.Primitive.undefined_t);
+                }
+            },
+            // Don't descend into nested fns — their `yield`s belong
+            // to that inner generator, not us.
+            .fn_decl, .fn_expr, .arrow_fn => return,
+            .block_stmt => for (hir_mod.blockStmts(self.hir, node)) |s| try self.collectYieldTypes(s, out),
+            .if_stmt => {
+                const i = hir_mod.ifOf(self.hir, node);
+                try self.collectYieldTypes(i.then_branch, out);
+                try self.collectYieldTypes(i.else_branch, out);
+            },
+            .while_stmt => {
+                const w = hir_mod.whileOf(self.hir, node);
+                try self.collectYieldTypes(w.body, out);
+            },
+            .do_while_stmt => {
+                const w = hir_mod.doWhileOf(self.hir, node);
+                try self.collectYieldTypes(w.body, out);
+            },
+            .for_stmt => {
+                const fr = hir_mod.forStmtOf(self.hir, node);
+                try self.collectYieldTypes(fr.body, out);
+            },
+            .for_in_stmt, .for_of_stmt => {
+                const fr = hir_mod.forInOf(self.hir, node);
+                try self.collectYieldTypes(fr.body, out);
+            },
+            .try_stmt => {
+                const ts = hir_mod.tryOf(self.hir, node);
+                try self.collectYieldTypes(ts.block, out);
+                if (ts.catch_block != hir_mod.none_node_id) try self.collectYieldTypes(ts.catch_block, out);
+                if (ts.finally_block != hir_mod.none_node_id) try self.collectYieldTypes(ts.finally_block, out);
+            },
+            .switch_stmt => {
+                for (hir_mod.switchCases(self.hir, node)) |case| try self.collectYieldTypes(case, out);
+            },
+            .switch_case => {
+                for (hir_mod.switchCaseStmts(self.hir, node)) |s| try self.collectYieldTypes(s, out);
+            },
+            else => {},
+        }
+    }
+
+    /// Build a v0 `Generator<T, void, unknown>` shape for generator
+    /// return-type inference. The synthesized object exposes:
+    ///   - `next(): { value: T | undefined, done: boolean }`
+    ///   - `return(): { value: T | undefined, done: boolean }`
+    ///   - `throw(): { value: T | undefined, done: boolean }`
+    ///   - `[i: number]: T` indexer so `for (const x of g())` resolves
+    ///     `x` to T through the existing for-of element-type path.
+    /// Async generators get the same shape — for v0 we don't yet wrap
+    /// the result in a Promise.
+    fn synthesizeGeneratorType(self: *Checker, yield_t: TypeId) CheckError!TypeId {
+        const value_id = self.string_interner.intern("value") catch return error.OutOfMemory;
+        const done_id = self.string_interner.intern("done") catch return error.OutOfMemory;
+        const next_id = self.string_interner.intern("next") catch return error.OutOfMemory;
+        const return_id = self.string_interner.intern("return") catch return error.OutOfMemory;
+        const throw_id = self.string_interner.intern("throw") catch return error.OutOfMemory;
+
+        // IteratorResult<T> = { value: T | undefined, done: boolean }
+        const value_or_undef = self.unionWithUndefined(yield_t) catch yield_t;
+        const ir_members = [_]types.ObjectMember{
+            .{ .name = value_id, .type = value_or_undef, .is_optional = false, .is_readonly = false, .is_method = false },
+            .{ .name = done_id, .type = types.Primitive.boolean_t, .is_optional = false, .is_readonly = false, .is_method = false },
+        };
+        const iter_result = self.interner.internObjectType(&ir_members) catch return error.OutOfMemory;
+
+        // next/return/throw signatures all return IteratorResult<T>.
+        const empty_params: []const TypeId = &.{};
+        const next_sig = self.interner.internSignature(empty_params, iter_result, false) catch return error.OutOfMemory;
+        const return_sig = self.interner.internSignature(empty_params, iter_result, false) catch return error.OutOfMemory;
+        const throw_sig = self.interner.internSignature(empty_params, iter_result, false) catch return error.OutOfMemory;
+
+        const gen_members = [_]types.ObjectMember{
+            .{ .name = next_id, .type = next_sig, .is_optional = false, .is_readonly = false, .is_method = true },
+            .{ .name = return_id, .type = return_sig, .is_optional = false, .is_readonly = false, .is_method = true },
+            .{ .name = throw_id, .type = throw_sig, .is_optional = false, .is_readonly = false, .is_method = true },
+        };
+        // Number-key indexer = T so for-of binds the loop variable to T.
+        return self.interner.internObjectTypeWithIndex(
+            &gen_members,
+            types.Primitive.none,
+            yield_t,
+        ) catch return error.OutOfMemory;
     }
 
     /// Walk a type's structural body in search of the given type
@@ -7642,6 +7781,40 @@ test "checker: `yield expr` types as the operand expression's type" {
     const expr_id = body_stmts[0];
     try T.expectEqual(hir_mod.NodeKind.yield_expr, s.hir.kindOf(expr_id));
     try T.expectEqual(types.Primitive.number_t, s.hir.typeOf(expr_id));
+}
+
+test "checker: generator fn return type infers a Generator<T> shape" {
+    // §3.A — calling a generator function should yield a value with
+    // the synthesized Generator shape (an object type), not `void`.
+    // Test that `g()` is callable and its result type is an object
+    // type with a number-key indexer of T = number.
+    const s = try newSetup(
+        \\function* g() { yield 1; }
+        \\let it = g();
+    );
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+    try T.expect(s.checker.diagnostics.items.len == 0);
+    const stmts = hir_mod.blockStmts(&s.hir, s.root);
+    const v = hir_mod.varDeclOf(&s.hir, stmts[1]);
+    const it_t = s.hir.typeOf(v.init);
+    try T.expect(s.ti.pool.flagsOf(it_t).is_object_type);
+    try T.expectEqual(types.Primitive.number_t, s.ti.objectNumberIndex(it_t));
+}
+
+test "checker: for-of over a generator call binds element to yield type" {
+    // The synthesized Generator shape exposes `[i: number]: T`, so
+    // `for (const x of g())` resolves `x` to T via the existing
+    // for-of element-type path. Round-trip: arithmetic against
+    // `total: number` must remain consistent.
+    const s = try newSetup(
+        \\function* g() { yield 1; yield 2; }
+        \\let total: number = 0;
+        \\for (let x of g()) { total = total + x; }
+    );
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+    try T.expect(s.checker.diagnostics.items.len == 0);
 }
 
 test "checker: x === string-literal narrows to literal type" {
