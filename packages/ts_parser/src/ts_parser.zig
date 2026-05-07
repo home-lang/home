@@ -818,6 +818,49 @@ pub const Parser = struct {
             }
             const mods = try self.skipClassModifiers();
             const member_start = self.peek();
+            // Getter/setter: `get x(): T { ... }` / `set x(v: T) { ... }`.
+            // The `get`/`set` keyword is contextual — only treat it as
+            // an accessor when followed by a member name + `(`. Plain
+            // `get` or `get;` (no name + paren) falls through and is
+            // parsed as a regular method/property named `get`.
+            const accessor_kw = self.peek().kind;
+            if ((accessor_kw == .kw_get or accessor_kw == .kw_set) and
+                (self.peekAt(1).kind == .identifier or
+                    self.peekAt(1).kind == .private_identifier or
+                    self.peekAt(1).kind.isContextualKeyword()) and
+                self.peekAt(2).kind == .open_paren)
+            {
+                _ = self.advance(); // consume `get` / `set`
+                const name_tok = self.advance();
+                const params = try self.parseParameterList();
+                defer self.gpa.free(params);
+                var return_type: NodeId = hir_mod.none_node_id;
+                if (self.match(.colon)) return_type = try self.parseReturnTypeAnnotation(params);
+                var body: NodeId = hir_mod.none_node_id;
+                if (self.peek().kind == .open_brace) {
+                    body = try self.parseBlockStatement();
+                } else {
+                    try self.consumeStatementTerminator();
+                }
+                const name_id = try self.internToken(name_tok);
+                const name_node = try self.builder.addIdentifier(tokenSpan(name_tok), name_id);
+                const fn_node = try self.builder.addFnDecl(
+                    .{ .start = member_start.span.start, .end = self.tokens[self.cursor - 1].span.end },
+                    name_node,
+                    params,
+                    return_type,
+                    body,
+                    .{
+                        .is_method = true,
+                        .is_getter = accessor_kw == .kw_get,
+                        .is_setter = accessor_kw == .kw_set,
+                        .is_private = mods.visibility == .private,
+                        .is_protected = mods.visibility == .protected,
+                    },
+                );
+                try members.append(self.gpa, fn_node);
+                continue;
+            }
             // method?
             if (self.peek().kind == .identifier or self.peek().kind == .private_identifier or self.peek().kind == .kw_constructor or self.peek().kind.isContextualKeyword()) {
                 const name_tok = self.advance();
