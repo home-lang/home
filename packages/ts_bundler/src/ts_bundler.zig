@@ -47,6 +47,12 @@ pub const BundleOptions = struct {
     /// real position-mapping aggregation lands with the Bun-bundler
     /// integration (§4.5.A.5).
     source_map: bool = false,
+    /// When true, skip emitting an entry whose path has already been
+    /// bundled in this `bundle` call. Prevents duplicated module emit
+    /// when callers register the same shared module under multiple
+    /// entry points. Transitive-import deduplication is follow-up; v0
+    /// only dedupes at the entry-list level.
+    deduplicate: bool = true,
 };
 
 /// JS + optional source map pair returned by `bundleWithMap`. The
@@ -109,11 +115,22 @@ pub const Bundler = struct {
         var out: std.ArrayListUnmanaged(u8) = .empty;
         errdefer out.deinit(gpa);
 
+        // Track which entry paths have already been emitted in this
+        // bundle call so a shared module registered under multiple
+        // entries isn't duplicated. Keys reference `entry.path` slices
+        // owned by the bundler — no extra allocation needed.
+        var seen: std.StringHashMapUnmanaged(void) = .empty;
+        defer seen.deinit(gpa);
+
         if (options.format == .iife) {
             out.appendSlice(gpa, "(function () {\n") catch return error.OutOfMemory;
         }
 
         for (self.entries.items) |entry| {
+            if (options.deduplicate) {
+                const gop = seen.getOrPut(gpa, entry.path) catch return error.OutOfMemory;
+                if (gop.found_existing) continue;
+            }
             const source = readAll(gpa, io, cwd, entry.path) catch return error.FileReadFailed;
             defer gpa.free(source);
 
@@ -659,4 +676,49 @@ test "Bundler: bundleWithMap returns stub source map" {
     try T.expect(std.mem.indexOf(u8, map, "\"version\": 3") != null);
     try T.expect(std.mem.indexOf(u8, map, "\"sources\":") != null);
     try T.expect(std.mem.indexOf(u8, map, "\"mappings\":") != null);
+}
+
+test "Bundler: deduplicate skips a repeated entry path" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const io = std.testing.io;
+    {
+        var f = try tmp.dir.createFile(io, "main.ts", .{ .truncate = true });
+        defer f.close(io);
+        try f.writeStreamingAll(io, "let dedupSentinel = 99;");
+    }
+    const path_z = try tmp.dir.realPathFileAlloc(io, "main.ts", T.allocator);
+    defer T.allocator.free(path_z);
+    const path: []const u8 = path_z;
+
+    var b = Bundler.init(T.allocator);
+    defer b.deinit();
+    // Register the same path twice — without dedup the emit would
+    // appear twice; with dedup (default) it must appear exactly once.
+    try b.addEntry(path);
+    try b.addEntry(path);
+
+    const js = try b.bundle(T.allocator, .{});
+    defer T.allocator.free(js);
+
+    // Count occurrences of the unique sentinel — must be exactly 1.
+    var count: usize = 0;
+    var search: usize = 0;
+    while (std.mem.indexOfPos(u8, js, search, "dedupSentinel")) |idx| {
+        count += 1;
+        search = idx + "dedupSentinel".len;
+    }
+    try T.expectEqual(@as(usize, 1), count);
+
+    // Sanity-check: with dedup disabled, the sentinel appears twice.
+    const js_dup = try b.bundle(T.allocator, .{ .deduplicate = false });
+    defer T.allocator.free(js_dup);
+    var dup_count: usize = 0;
+    var dup_search: usize = 0;
+    while (std.mem.indexOfPos(u8, js_dup, dup_search, "dedupSentinel")) |idx| {
+        dup_count += 1;
+        dup_search = idx + "dedupSentinel".len;
+    }
+    try T.expectEqual(@as(usize, 2), dup_count);
 }
