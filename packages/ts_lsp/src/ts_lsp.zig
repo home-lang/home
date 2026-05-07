@@ -5643,6 +5643,95 @@ test "Service: semanticTokensDelta v0 returns full reset with non-empty data" {
     try T.expectEqual(@as(usize, 0), delta.data.len % 5);
 }
 
+test "encodeSemanticTokensWire: single-line file delta-encodes multiple tokens relative" {
+    // Three tokens on the same line. The first is absolute vs (0, 0);
+    // each subsequent token's `delta_start` is relative to the previous
+    // token's `col`, never absolute.
+    const toks = [_]SemanticToken{
+        .{ .line = 0, .col = 0, .length = 3, .token_type = .keyword, .modifiers = 0 },
+        .{ .line = 0, .col = 4, .length = 1, .token_type = .variable, .modifiers = 0 },
+        .{ .line = 0, .col = 8, .length = 1, .token_type = .number, .modifiers = 0 },
+    };
+    const wire = try encodeSemanticTokensWire(T.allocator, &toks);
+    defer T.allocator.free(wire);
+
+    const expected = [_]u32{
+        // First token: deltas are absolute vs (0, 0).
+        0, 0, 3, @intFromEnum(SemanticToken.TokenType.keyword), 0,
+        // Same line: delta_start = 4 - 0 = 4.
+        0, 4, 1, @intFromEnum(SemanticToken.TokenType.variable), 0,
+        // Same line: delta_start = 8 - 4 = 4 (relative, NOT absolute 8).
+        0, 4, 1, @intFromEnum(SemanticToken.TokenType.number), 0,
+    };
+    try T.expectEqual(@as(usize, expected.len), wire.len);
+    for (expected, 0..) |v, idx| try T.expectEqual(v, wire[idx]);
+}
+
+test "encodeSemanticTokensWire: multi-line first-of-line delta_start is absolute" {
+    // Tokens span three lines. On each new line, `delta_line` is the
+    // relative line jump and `delta_start` resets to the absolute
+    // column on that new line (not relative to the previous line's
+    // column). Same-line follow-ups stay relative.
+    const toks = [_]SemanticToken{
+        .{ .line = 0, .col = 4, .length = 3, .token_type = .variable, .modifiers = 0 },
+        .{ .line = 0, .col = 10, .length = 1, .token_type = .number, .modifiers = 0 },
+        .{ .line = 2, .col = 8, .length = 4, .token_type = .keyword, .modifiers = 0 },
+        .{ .line = 2, .col = 14, .length = 2, .token_type = .variable, .modifiers = 0 },
+        .{ .line = 5, .col = 2, .length = 5, .token_type = .string, .modifiers = 0 },
+    };
+    const wire = try encodeSemanticTokensWire(T.allocator, &toks);
+    defer T.allocator.free(wire);
+
+    const expected = [_]u32{
+        // First token: absolute (line 0, col 4).
+        0, 4, 3, @intFromEnum(SemanticToken.TokenType.variable), 0,
+        // Same line: delta_start = 10 - 4 = 6.
+        0, 6, 1, @intFromEnum(SemanticToken.TokenType.number), 0,
+        // New line (jump of 2): delta_start is the absolute col 8.
+        2, 8, 4, @intFromEnum(SemanticToken.TokenType.keyword), 0,
+        // Same line as previous: delta_start = 14 - 8 = 6.
+        0, 6, 2, @intFromEnum(SemanticToken.TokenType.variable), 0,
+        // New line (jump of 3): delta_start is absolute col 2 (not 2-14
+        // wrapping under as a u32, which would be a giant number).
+        3, 2, 5, @intFromEnum(SemanticToken.TokenType.string), 0,
+    };
+    try T.expectEqual(@as(usize, expected.len), wire.len);
+    for (expected, 0..) |v, idx| try T.expectEqual(v, wire[idx]);
+}
+
+test "SemanticToken.TokenType: indices match the legend ordering" {
+    // The wire encoding emits `@intFromEnum(token_type)` as the 4th u32
+    // per token; editors map that index back via the legend names. So
+    // the enum's integer value MUST match the position of the matching
+    // name in `legend()` for every token type.
+    const legend = SemanticToken.TokenType.legend();
+
+    const cases = [_]struct { tt: SemanticToken.TokenType, name: []const u8 }{
+        .{ .tt = .variable, .name = "variable" },
+        .{ .tt = .parameter, .name = "parameter" },
+        .{ .tt = .function, .name = "function" },
+        .{ .tt = .method, .name = "method" },
+        .{ .tt = .class, .name = "class" },
+        .{ .tt = .interface, .name = "interface" },
+        .{ .tt = .type_alias, .name = "type" },
+        .{ .tt = .enum_, .name = "enum" },
+        .{ .tt = .property, .name = "property" },
+        .{ .tt = .keyword, .name = "keyword" },
+        .{ .tt = .string, .name = "string" },
+        .{ .tt = .number, .name = "number" },
+        .{ .tt = .comment, .name = "comment" },
+    };
+
+    // Legend covers every enum variant exactly.
+    try T.expectEqual(@as(usize, cases.len), legend.len);
+
+    for (cases) |c| {
+        const idx: usize = @intFromEnum(c.tt);
+        try T.expect(idx < legend.len);
+        try T.expectEqualStrings(c.name, legend[idx]);
+    }
+}
+
 test "Service: selectionRange returns nested ranges innermost-first" {
     var vfs = ts_resolver.VirtualFs.init(T.allocator);
     defer vfs.deinit();
