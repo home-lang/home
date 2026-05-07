@@ -142,6 +142,7 @@ pub const Method = enum {
     text_document_selection_range,
     text_document_linked_editing_range,
     workspace_will_rename_files,
+    workspace_execute_command,
     unknown,
 
     pub fn fromString(s: []const u8) Method {
@@ -185,6 +186,7 @@ pub const Method = enum {
             .{ "textDocument/selectionRange", Method.text_document_selection_range },
             .{ "textDocument/linkedEditingRange", Method.text_document_linked_editing_range },
             .{ "workspace/willRenameFiles", Method.workspace_will_rename_files },
+            .{ "workspace/executeCommand", Method.workspace_execute_command },
         };
         inline for (map) |entry| {
             if (std.mem.eql(u8, s, entry[0])) return entry[1];
@@ -244,6 +246,7 @@ pub const SUPPORTED_METHODS = &[_][]const u8{
     // Workspace.
     "workspace/symbol",
     "workspace/willRenameFiles",
+    "workspace/executeCommand",
     // Call hierarchy.
     "callHierarchy/incomingCalls",
     "callHierarchy/outgoingCalls",
@@ -1632,6 +1635,111 @@ pub fn handleCodeAction(
     return encodeResponse(gpa, request_id, buf.items);
 }
 
+/// Handle a `workspace/executeCommand` JSON-RPC request. The client
+/// invokes a server-registered command (advertised via
+/// `executeCommandProvider.commands` in the initialize response).
+///
+/// Currently supported:
+///   * `home.organizeImports` — `arguments: [uri]`. Routes to
+///     `Service.codeActions` and returns the first action whose kind
+///     is `organize_imports` rendered as an LSP `WorkspaceEdit`. When
+///     no organize-imports action applies the response is `null`.
+///   * `home.applyCodeAction` — accepted for capability advertisement
+///     but currently dispatched as the default no-op (returns `null`)
+///     until persistent code-action IDs are wired.
+///
+/// All other commands return `null`. Caller owns the returned slice.
+pub fn handleExecuteCommand(
+    service: *ts_lsp.Service,
+    gpa: std.mem.Allocator,
+    request_id: RequestId,
+    params_json: []const u8,
+) ![]u8 {
+    const command = findJsonStringField(params_json, "command") orelse {
+        return encodeResponse(gpa, request_id, "null");
+    };
+
+    if (std.mem.eql(u8, command, "home.organizeImports")) {
+        const arguments = findJsonRawField(params_json, "arguments") orelse {
+            return encodeResponse(gpa, request_id, "null");
+        };
+        // `arguments` is a JSON array; we expect `[uri]` as the first
+        // element. Reuse `findJsonStringField`-style scan: the first
+        // string inside the array is the URI.
+        const uri = blk: {
+            var i: usize = 0;
+            while (i < arguments.len) : (i += 1) {
+                if (arguments[i] == '"') {
+                    const start = i + 1;
+                    var j = start;
+                    while (j < arguments.len) : (j += 1) {
+                        const c = arguments[j];
+                        if (c == '\\') {
+                            j += 1;
+                            continue;
+                        }
+                        if (c == '"') break :blk arguments[start..j];
+                    }
+                    break :blk null;
+                }
+            }
+            break :blk null;
+        };
+        if (uri == null) return encodeResponse(gpa, request_id, "null");
+        const path = uriToPath(uri.?);
+
+        const actions = try service.codeActions(gpa, path);
+        defer {
+            for (actions) |a| {
+                if (a.kind == .quick_fix) gpa.free(a.title);
+                for (a.edits) |e| gpa.free(e.new_text);
+                gpa.free(a.edits);
+            }
+            gpa.free(actions);
+        }
+
+        // Return the first organize-imports action's WorkspaceEdit, or
+        // `null` when no such action applies.
+        for (actions) |action| {
+            if (action.kind != .organize_imports) continue;
+            var buf: std.ArrayListUnmanaged(u8) = .empty;
+            defer buf.deinit(gpa);
+            try buf.appendSlice(gpa, "{\"changes\":{");
+            var by_file: std.StringArrayHashMapUnmanaged(std.ArrayListUnmanaged(usize)) = .empty;
+            defer {
+                var it = by_file.iterator();
+                while (it.next()) |entry| entry.value_ptr.*.deinit(gpa);
+                by_file.deinit(gpa);
+            }
+            for (action.edits, 0..) |e, idx| {
+                const gop = try by_file.getOrPut(gpa, e.file);
+                if (!gop.found_existing) gop.value_ptr.* = .empty;
+                try gop.value_ptr.*.append(gpa, idx);
+            }
+            var first = true;
+            var it = by_file.iterator();
+            while (it.next()) |entry| {
+                if (!first) try buf.append(gpa, ',');
+                first = false;
+                try buf.append(gpa, '"');
+                try buf.appendSlice(gpa, "file://");
+                try writeJsonStringContents(&buf, gpa, entry.key_ptr.*);
+                try buf.appendSlice(gpa, "\":[");
+                for (entry.value_ptr.*.items, 0..) |edit_idx, j| {
+                    if (j > 0) try buf.append(gpa, ',');
+                    try writeTextEdit(&buf, gpa, action.edits[edit_idx]);
+                }
+                try buf.append(gpa, ']');
+            }
+            try buf.appendSlice(gpa, "}}");
+            return encodeResponse(gpa, request_id, buf.items);
+        }
+        return encodeResponse(gpa, request_id, "null");
+    }
+
+    return encodeResponse(gpa, request_id, "null");
+}
+
 /// Render a `[]u32` semantic-tokens wire array as an LSP
 /// `SemanticTokens` `{ "data": [...] }` JSON object. Internal helper
 /// for the `full` and `range` handlers.
@@ -2030,7 +2138,10 @@ pub fn handleWillRenameFiles(
     }
 
     const edits = try service.workspaceWillRenameFiles(gpa, renames.items);
-    defer gpa.free(edits);
+    defer {
+        for (edits) |e| gpa.free(e.new_text);
+        gpa.free(edits);
+    }
 
     if (edits.len == 0) {
         // LSP allows `null` here to signal "no follow-up edits needed".
@@ -2397,7 +2508,7 @@ pub fn renderInitializeCapabilities(gpa: std.mem.Allocator) ![]u8 {
     var buf: std.ArrayListUnmanaged(u8) = .empty;
     errdefer buf.deinit(gpa);
     try buf.appendSlice(gpa,
-        \\{"capabilities":{"textDocumentSync":1,"hoverProvider":true,"definitionProvider":true,"referencesProvider":true,"completionProvider":{"triggerCharacters":["."," "]},"documentSymbolProvider":true,"workspaceSymbolProvider":true,"renameProvider":true,"codeActionProvider":true,"semanticTokensProvider":{"legend":{"tokenTypes":["variable","parameter","function","method","class","interface","type","enum","property","keyword","string","number","operator","comment"],"tokenModifiers":[]},"full":true,"range":true},"signatureHelpProvider":{"triggerCharacters":["(",","]},"documentHighlightProvider":false,"documentFormattingProvider":true,"foldingRangeProvider":true,"selectionRangeProvider":true},"serverInfo":{"name":"home-lsp","version":"0.1.0","supportedMethods":[
+        \\{"capabilities":{"textDocumentSync":1,"hoverProvider":true,"definitionProvider":true,"referencesProvider":true,"completionProvider":{"triggerCharacters":["."," "]},"documentSymbolProvider":true,"workspaceSymbolProvider":true,"renameProvider":true,"codeActionProvider":true,"executeCommandProvider":{"commands":["home.organizeImports","home.applyCodeAction"]},"semanticTokensProvider":{"legend":{"tokenTypes":["variable","parameter","function","method","class","interface","type","enum","property","keyword","string","number","operator","comment"],"tokenModifiers":[]},"full":true,"range":true},"signatureHelpProvider":{"triggerCharacters":["(",","]},"documentHighlightProvider":false,"documentFormattingProvider":true,"foldingRangeProvider":true,"selectionRangeProvider":true},"serverInfo":{"name":"home-lsp","version":"0.1.0","supportedMethods":[
     );
     for (SUPPORTED_METHODS, 0..) |m, i| {
         if (i != 0) try buf.append(gpa, ',');
@@ -2697,6 +2808,10 @@ pub fn dispatchRequest(
         .workspace_will_rename_files => {
             if (is_notification) return &.{};
             return try handleWillRenameFiles(service, gpa, id, params);
+        },
+        .workspace_execute_command => {
+            if (is_notification) return &.{};
+            return try handleExecuteCommand(service, gpa, id, params);
         },
         // Catch-all for unknown methods — fall through to standard
         // JSON-RPC `Method not found` error.
@@ -3516,6 +3631,39 @@ test "handleCodeAction: returns CodeAction array with title/kind/edit" {
     try T.expect(std.mem.indexOf(u8, out, "\"title\":\"Add explicit type to x\"") != null);
     try T.expect(std.mem.indexOf(u8, out, "\"kind\":\"quickfix\"") != null);
     try T.expect(std.mem.indexOf(u8, out, "\"edit\":{\"changes\":") != null);
+}
+
+test "handleExecuteCommand: home.organizeImports returns edits or null" {
+    var vfs = ts_resolver.VirtualFs.init(T.allocator);
+    defer vfs.deinit();
+    var resolver = ts_resolver.Resolver.init(T.allocator, vfs.fs(), .{});
+    defer resolver.deinit();
+    var program = ts_program.Program.init(T.allocator, &resolver);
+    defer program.deinit();
+
+    _ = try program.add("/main.ts", "let x = 42;");
+    try program.compileAll(.{});
+    var svc = ts_lsp.Service.init(T.allocator, &program);
+
+    const body =
+        \\{"jsonrpc":"2.0","id":82,"method":"workspace/executeCommand","params":{"command":"home.organizeImports","arguments":["file:///main.ts"]}}
+    ;
+    const out = try handleExecuteCommand(&svc, T.allocator, .{ .integer = 82 }, body);
+    defer T.allocator.free(out);
+    try T.expect(std.mem.indexOf(u8, out, "\"id\":82") != null);
+    // Either we got a WorkspaceEdit (changes map) or null — the
+    // important property is that the wire round-trip didn't crash.
+    const has_edit = std.mem.indexOf(u8, out, "\"changes\":") != null;
+    const has_null = std.mem.indexOf(u8, out, "\"result\":null") != null;
+    try T.expect(has_edit or has_null);
+
+    // Unknown command falls through to null.
+    const body_unknown =
+        \\{"jsonrpc":"2.0","id":83,"method":"workspace/executeCommand","params":{"command":"home.somethingElse","arguments":[]}}
+    ;
+    const out_unknown = try handleExecuteCommand(&svc, T.allocator, .{ .integer = 83 }, body_unknown);
+    defer T.allocator.free(out_unknown);
+    try T.expect(std.mem.indexOf(u8, out_unknown, "\"result\":null") != null);
 }
 
 test "handleSemanticTokensFull: returns object with data array" {
