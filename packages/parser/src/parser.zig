@@ -4542,15 +4542,20 @@ pub const Parser = struct {
                 // `else` arm is the default — must be last.
                 break;
             } else {
-                // match-style: `Pattern[, Pattern...] => <body>`.
+                // match-style: `Pattern[, Pattern...] => <body>` (issue #63).
+                // Use `parseSwitchArmPattern` so the leading-dot enum-variant
+                // shorthand (`.A`, `.B`) is accepted alongside bare names and
+                // qualified `Type.Variant` paths. Comma-separated patterns
+                // share a single body — emitted as multiple patterns on one
+                // CaseClause (codegen iterates patterns per clause).
                 var patterns = std.ArrayList(*ast.Expr).empty;
                 defer patterns.deinit(self.allocator);
 
-                const first_pattern = try self.expression();
+                const first_pattern = try self.parseSwitchArmPattern();
                 try patterns.append(self.allocator, first_pattern);
 
                 while (self.match(&.{.Comma}) and !self.check(.FatArrow)) {
-                    const pattern = try self.expression();
+                    const pattern = try self.parseSwitchArmPattern();
                     try patterns.append(self.allocator, pattern);
                 }
 
@@ -6668,21 +6673,30 @@ pub const Parser = struct {
         defer arms.deinit(self.allocator);
 
         while (!self.check(.RightBrace) and !self.isAtEnd()) {
-            // Pattern: either `else` (default arm) or a regular expr pattern.
-            // Multi-pattern arms (`A, B => body`) aren't accepted here yet —
-            // kernel code doesn't use that form in switch-expr position, and
-            // skipping it keeps the AST shape one-arm-per-pattern. Authors
-            // who need it can spell two arms with the same body.
-            var pattern: *ast.Expr = undefined;
+            // Pattern list: either `else` (default arm) or one-or-more
+            // comma-separated patterns. Multi-pattern arms (issue #63) are
+            // lowered into multiple `MatchExprArm` entries that share the
+            // body and guard expression — downstream consumers iterate arms
+            // independently so this preserves match-first-arm semantics with
+            // zero changes to type checker / pattern engine / codegen.
+            var patterns = std.ArrayList(*ast.Expr).empty;
+            defer patterns.deinit(self.allocator);
+
             if (self.match(&.{.Else})) {
                 const else_tok = self.previous();
                 const wildcard = try self.allocator.create(ast.Expr);
                 wildcard.* = ast.Expr{
                     .Identifier = ast.Identifier.init("_", ast.SourceLocation.fromToken(else_tok)),
                 };
-                pattern = wildcard;
+                try patterns.append(self.allocator, wildcard);
             } else {
-                pattern = try self.parseSwitchArmPattern();
+                const first_pattern = try self.parseSwitchArmPattern();
+                try patterns.append(self.allocator, first_pattern);
+
+                while (self.match(&.{.Comma}) and !self.check(.FatArrow)) {
+                    const next_pattern = try self.parseSwitchArmPattern();
+                    try patterns.append(self.allocator, next_pattern);
+                }
             }
 
             // Optional guard: `if cond`.
@@ -6718,11 +6732,17 @@ pub const Parser = struct {
             // Trailing comma (or newline) between arms.
             _ = self.match(&.{.Comma});
 
-            try arms.append(self.allocator, .{
-                .pattern = pattern,
-                .guard = guard,
-                .body = body,
-            });
+            // Emit one arm per pattern. body/guard pointers are shared
+            // between siblings — this is safe because `MatchExpr` deinit
+            // doesn't recurse into arm bodies, and downstream passes treat
+            // arms as read-only.
+            for (patterns.items) |pat| {
+                try arms.append(self.allocator, .{
+                    .pattern = pat,
+                    .guard = guard,
+                    .body = body,
+                });
+            }
         }
 
         _ = try self.expect(.RightBrace, "Expected '}' after switch arms");

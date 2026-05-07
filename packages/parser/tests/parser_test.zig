@@ -1756,3 +1756,123 @@ test "parser: regular if cond { body } still parses identically (issue #62 regre
     try testing.expect(first == .IfStmt);
     try testing.expect(first.IfStmt.else_block != null);
 }
+
+// ---------------------------------------------------------------------------
+// Multi-pattern switch arms (issue #63)
+//
+// `switch (x) { .A, .B => body, ... }` should parse into a single CaseClause
+// with `patterns.len == 2` (sharing one body). This is the canonical
+// fall-through alternative to C-style implicit fallthrough — Zig and Rust
+// both support it. Used heavily in the home-os kernel (~18 sites in 5
+// files) to collapse "any of these enum variants" to a single body.
+// ---------------------------------------------------------------------------
+
+test "parser: switch multi-pattern arm .A, .B => body (issue #63)" {
+    const program = try parseSource(testing.allocator,
+        \\fn foo(): u32 {
+        \\    switch (x) {
+        \\        .A, .B => return 1,
+        \\        else => return 0,
+        \\    }
+        \\    return 0
+        \\}
+    );
+    defer program.deinit(testing.allocator);
+
+    const fn_stmt = program.statements[0].FnDecl;
+    const first = fn_stmt.body.statements[0];
+    try testing.expect(first == .SwitchStmt);
+    const sw = first.SwitchStmt;
+    // 2 cases: the multi-pattern arm and the `else` default.
+    try testing.expectEqual(@as(usize, 2), sw.cases.len);
+    // First arm carries 2 patterns sharing the body.
+    try testing.expectEqual(@as(usize, 2), sw.cases[0].patterns.len);
+    try testing.expect(!sw.cases[0].is_default);
+    // Default arm is last.
+    try testing.expect(sw.cases[1].is_default);
+}
+
+test "parser: switch 4-pattern arm .A, .B, .C, .D => body (issue #63)" {
+    const program = try parseSource(testing.allocator,
+        \\fn foo(): u32 {
+        \\    switch (x) {
+        \\        .A, .B, .C, .D => return 1,
+        \\        else => return 0,
+        \\    }
+        \\    return 0
+        \\}
+    );
+    defer program.deinit(testing.allocator);
+
+    const fn_stmt = program.statements[0].FnDecl;
+    const sw = fn_stmt.body.statements[0].SwitchStmt;
+    try testing.expectEqual(@as(usize, 2), sw.cases.len);
+    try testing.expectEqual(@as(usize, 4), sw.cases[0].patterns.len);
+}
+
+test "parser: switch mixed single + multi-pattern arms (issue #63)" {
+    const program = try parseSource(testing.allocator,
+        \\fn foo(): u32 {
+        \\    switch (x) {
+        \\        .A, .B => return 1,
+        \\        .C => return 2,
+        \\        else => return 0,
+        \\    }
+        \\    return 0
+        \\}
+    );
+    defer program.deinit(testing.allocator);
+
+    const fn_stmt = program.statements[0].FnDecl;
+    const sw = fn_stmt.body.statements[0].SwitchStmt;
+    // 3 cases: multi-pattern, single-pattern, default.
+    try testing.expectEqual(@as(usize, 3), sw.cases.len);
+    try testing.expectEqual(@as(usize, 2), sw.cases[0].patterns.len);
+    try testing.expectEqual(@as(usize, 1), sw.cases[1].patterns.len);
+    try testing.expect(sw.cases[2].is_default);
+}
+
+test "parser: expression-form switch with multi-pattern arm (issue #63)" {
+    // Issue #45 added expression-form switch. Multi-pattern arms must work
+    // there too — patterns expand into multiple MatchExprArm entries that
+    // share the body.
+    const program = try parseSource(testing.allocator,
+        \\fn foo(): u32 {
+        \\    let v = switch (x) {
+        \\        .A, .B => 1,
+        \\        else => 0,
+        \\    }
+        \\    return v
+        \\}
+    );
+    defer program.deinit(testing.allocator);
+
+    const fn_stmt = program.statements[0].FnDecl;
+    const let_stmt = fn_stmt.body.statements[0];
+    try testing.expect(let_stmt == .LetDecl);
+    const init_expr = let_stmt.LetDecl.value orelse return error.MissingInit;
+    try testing.expect(init_expr.* == .MatchExpr);
+    // Multi-pattern .A, .B expands to 2 arms; plus the `else` arm = 3 total.
+    try testing.expectEqual(@as(usize, 3), init_expr.MatchExpr.arms.len);
+}
+
+test "parser: switch single-pattern arm still parses identically (issue #63 regression)" {
+    // Regression: the single-pattern path must not change shape — one
+    // CaseClause with `patterns.len == 1`, no surprises.
+    const program = try parseSource(testing.allocator,
+        \\fn foo(): u32 {
+        \\    switch (x) {
+        \\        .A => return 1,
+        \\        else => return 0,
+        \\    }
+        \\    return 0
+        \\}
+    );
+    defer program.deinit(testing.allocator);
+
+    const fn_stmt = program.statements[0].FnDecl;
+    const sw = fn_stmt.body.statements[0].SwitchStmt;
+    try testing.expectEqual(@as(usize, 2), sw.cases.len);
+    try testing.expectEqual(@as(usize, 1), sw.cases[0].patterns.len);
+    try testing.expect(sw.cases[1].is_default);
+}
