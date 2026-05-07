@@ -1,0 +1,8 @@
+// Negative test for issue #46 — a malformed anonymous struct return
+// type (missing `: T` after the field name) yields a clean diagnostic
+// rather than a parser hang or a generic "Expected type name" message
+// against the wrong token.
+
+fn broken(): struct { x, y: usize } {
+    return .{ .x = 0, .y = 0 }
+}

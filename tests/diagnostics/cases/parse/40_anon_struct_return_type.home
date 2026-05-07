@@ -1,0 +1,21 @@
+// Regression test for issue #46 — anonymous struct types are accepted
+// in function return-type position. The parser now routes the
+// return-type slot through the full `parseTypeAnnotation` entry, which
+// understands `struct { f1: T1, f2: T2, ... }`. The struct-literal
+// initializer `.{ .x = ..., .y = ... }` continues to coerce into the
+// inferred anonymous struct type.
+
+export fn getCursor(): struct { x: usize, y: usize } {
+    return .{ .x = 10, .y = 20 }
+}
+
+// Also accepted with the Rust-style `-> T` separator.
+fn getPair() -> struct { a: u32, b: u32 } {
+    return .{ .a = 1, .b = 2 }
+}
+
+// And in `let` annotations, mirroring the same grammar.
+fn use_anon() {
+    let p: struct { lo: u8, hi: u8 } = .{ .lo = 0, .hi = 255 }
+    return
+}

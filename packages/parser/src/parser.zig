@@ -2462,6 +2462,38 @@ pub const Parser = struct {
             return try self.allocator.dupe(u8, result.items);
         }
 
+        // Anonymous struct type in type position:
+        //   `struct { f1: T1, f2: T2, ... }`
+        // Surfaces in return-type slots (`fn getCursor(): struct { x: usize, y: usize } { ... }`)
+        // and `let x: struct { ... } = .{...}` annotations. The fields are
+        // collected and re-rendered as a textual encoding so the existing
+        // string-based `return_type` slot on `FnDecl` keeps working without
+        // an AST migration. The type checker currently falls through to
+        // `Type.Void` for unknown struct{...} strings, which is enough for
+        // the kernel `home check` path that just needs a clean parse. (#46)
+        if (self.match(&.{.Struct})) {
+            _ = try self.expect(.LeftBrace, "Expected '{' after 'struct' in type position");
+            var fields = std.ArrayList(u8).empty;
+            defer fields.deinit(self.allocator);
+            var first = true;
+            while (!self.check(.RightBrace) and !self.isAtEnd()) {
+                const name_tok = try self.expect(.Identifier, "Expected field name in anonymous struct type");
+                _ = try self.expect(.Colon, "Expected ':' after field name in anonymous struct type");
+                const field_type = try self.parseTypeAnnotation();
+                defer self.allocator.free(field_type);
+
+                if (!first) try fields.appendSlice(self.allocator, ", ");
+                first = false;
+                try fields.appendSlice(self.allocator, name_tok.lexeme);
+                try fields.appendSlice(self.allocator, ": ");
+                try fields.appendSlice(self.allocator, field_type);
+
+                if (!self.match(&.{.Comma})) break;
+            }
+            _ = try self.expect(.RightBrace, "Expected '}' to close anonymous struct type");
+            return try std.fmt.allocPrint(self.allocator, "struct {{ {s} }}", .{fields.items});
+        }
+
         // Check for reference type: &T or &mut T
         if (self.match(&.{.Ampersand})) {
             const is_mut = self.match(&.{.Mut});

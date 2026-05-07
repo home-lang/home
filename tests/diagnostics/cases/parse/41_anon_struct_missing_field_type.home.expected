@@ -1,0 +1,8 @@
+<repo>/tests/diagnostics/cases/parse/41_anon_struct_missing_field_type.home:6:24: error[EP0001]: Expected ':' after field name in anonymous struct type
+  fn broken(): struct { x, y: usize } {
+                          ^
+
+1 parse error(s) found
+Checking: <repo>/tests/diagnostics/cases/parse/41_anon_struct_missing_field_type.home
+
+Success: Type checking passed ✓

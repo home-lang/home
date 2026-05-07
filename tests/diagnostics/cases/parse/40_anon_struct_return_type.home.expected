@@ -1,0 +1,3 @@
+Checking: <repo>/tests/diagnostics/cases/parse/40_anon_struct_return_type.home
+
+Success: Type checking passed ✓
