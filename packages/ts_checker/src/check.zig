@@ -5040,12 +5040,49 @@ pub const Checker = struct {
             }
         }
         // Lib globals — `Object` carries the keys/values/entries/
-        // assign namespace. Other globals fall through to `any` for
-        // now (full lib.d.ts wiring is a follow-up).
+        // assign namespace. `NaN` / `Infinity` are number-typed values.
+        // `isNaN` / `isFinite` / `parseFloat` / `parseInt` get loose
+        // signatures so call sites typecheck (e.g. `const b: boolean =
+        // isNaN(1);`). Other globals fall through to `any` for now
+        // (full lib.d.ts wiring is a follow-up).
         const name_str = self.string_interner.get(id.name);
         if (std.mem.eql(u8, name_str, "Object")) {
             if (lib.objectGlobal(&self.lib_cache, self.interner, self.string_interner)) |og| {
                 return og;
+            } else |_| {}
+        }
+        if (std.mem.eql(u8, name_str, "NaN") or std.mem.eql(u8, name_str, "Infinity")) {
+            return types.Primitive.number_t;
+        }
+        if (std.mem.eql(u8, name_str, "isNaN") or std.mem.eql(u8, name_str, "isFinite")) {
+            // `(n: number): boolean`
+            if (self.interner.internSignature(
+                &[_]types.TypeId{types.Primitive.number_t},
+                types.Primitive.boolean_t,
+                false,
+            )) |sig| {
+                return sig;
+            } else |_| {}
+        }
+        if (std.mem.eql(u8, name_str, "parseFloat")) {
+            // `(s: string): number`
+            if (self.interner.internSignature(
+                &[_]types.TypeId{types.Primitive.string_t},
+                types.Primitive.number_t,
+                false,
+            )) |sig| {
+                return sig;
+            } else |_| {}
+        }
+        if (std.mem.eql(u8, name_str, "parseInt")) {
+            // `(s: string, radix?: number): number` — modeled as
+            // `(s: string): number`; arity check accepts >= required.
+            if (self.interner.internSignature(
+                &[_]types.TypeId{types.Primitive.string_t},
+                types.Primitive.number_t,
+                false,
+            )) |sig| {
+                return sig;
             } else |_| {}
         }
         return types.Primitive.any;
@@ -6322,6 +6359,26 @@ test "checker: Math.PI does not emit TS2304" {
     try b.base.checker.checkSourceFile(b.base.root);
     for (b.base.checker.diagnostics.items) |d| {
         try T.expect(d.code != TsCodes.cannot_find_name);
+    }
+}
+
+test "checker: NaN resolves as number (no TS2322)" {
+    const b = try newBoundSetup("const x: number = NaN;");
+    defer destroyBoundSetup(b);
+    try b.base.checker.checkSourceFile(b.base.root);
+    for (b.base.checker.diagnostics.items) |d| {
+        try T.expect(d.code != TsCodes.cannot_find_name);
+        try T.expect(d.code != TsCodes.type_not_assignable);
+    }
+}
+
+test "checker: isNaN(1) resolves as boolean (no TS2322)" {
+    const b = try newBoundSetup("const f: boolean = isNaN(1);");
+    defer destroyBoundSetup(b);
+    try b.base.checker.checkSourceFile(b.base.root);
+    for (b.base.checker.diagnostics.items) |d| {
+        try T.expect(d.code != TsCodes.cannot_find_name);
+        try T.expect(d.code != TsCodes.type_not_assignable);
     }
 }
 
