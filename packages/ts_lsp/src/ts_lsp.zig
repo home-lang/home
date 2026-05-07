@@ -134,6 +134,18 @@ pub const Range = struct {
 /// Zig enum at this layer.
 pub const SaveReason = enum { manual, auto, after_delay, focus_out };
 
+/// LSP `textDocument/linkedEditingRange` payload — a set of source
+/// ranges the editor should keep in sync as the user types in any
+/// one of them. The canonical case is JSX: editing the opening tag
+/// identifier should rename the matching closing tag too.
+/// `word_pattern` is an optional regex constraining the characters
+/// that remain valid inside the linked region; an empty string
+/// leaves it to the client default.
+pub const LinkedEditingRanges = struct {
+    ranges: []Range,
+    word_pattern: []const u8 = "",
+};
+
 pub const CodeAction = struct {
     title: []const u8,
     kind: Kind,
@@ -1491,6 +1503,29 @@ pub const Service = struct {
         return ranges.toOwnedSlice(gpa);
     }
 
+    /// `textDocument/linkedEditingRange` — return the set of ranges
+    /// the editor should edit in lock-step with the cursor's current
+    /// position. The flagship use is JSX: typing in an opening tag's
+    /// name should mirror into the matching closing tag.
+    ///
+    /// v0 stub: always returns `null`. Once the JSX HIR shape is
+    /// stable we'll resolve the innermost node at `byte_pos`, detect
+    /// when it's an identifier inside a `jsx_element`'s opening tag,
+    /// locate the paired closing tag, and emit both ranges.
+    /// TODO(jsx): implement opening/closing tag pairing for TSX.
+    pub fn linkedEditingRanges(
+        self: *Service,
+        gpa: std.mem.Allocator,
+        file_path: []const u8,
+        byte_pos: u32,
+    ) !?LinkedEditingRanges {
+        _ = self;
+        _ = gpa;
+        _ = file_path;
+        _ = byte_pos;
+        return null;
+    }
+
     /// `textDocument/willSaveWaitUntil` — give the server a chance to
     /// apply edits before the editor persists the file. The reason
     /// mirrors LSP's `TextDocumentSaveReason` (1 = manual, 2 = auto,
@@ -1514,7 +1549,17 @@ pub const Service = struct {
     ///     top-level `import_decl` statements (when 2+ imports);
     ///   - one `region` range per `block_stmt` in the file (the file
     ///     root is itself a block_stmt and is skipped — folding the
-    ///     entire file is not useful).
+    ///     entire file is not useful). This covers `if` / `while` /
+    ///     `for` block bodies as well, since those bodies are
+    ///     themselves `block_stmt` nodes;
+    ///   - one `region` range per multi-line `class_decl` whose
+    ///     body has 2+ members;
+    ///   - one `region` range per non-empty multi-line
+    ///     `switch_case` body;
+    ///   - one `region` range per `object_literal` that spans more
+    ///     than two source lines;
+    ///   - one `region` range per `array_literal` with more than
+    ///     five elements.
     pub fn foldingRanges(self: *Service, gpa: std.mem.Allocator, file_path: []const u8) ![]FoldingRange {
         var ranges: std.ArrayListUnmanaged(FoldingRange) = .empty;
         errdefer ranges.deinit(gpa);
@@ -1564,22 +1609,92 @@ pub const Service = struct {
             }
         }
 
-        // 2. Emit a `region` range per block_stmt in the file (skip
-        //    the root block, which spans the whole file).
+        // 2. Emit a `region` range for each foldable HIR node.
+        //    - `block_stmt`: every multi-line block (skip the root,
+        //      which spans the whole file). This covers function
+        //      bodies, `if` / `while` / `for` bodies, and bare
+        //      blocks in one pass.
+        //    - `class_decl`: classes with 2+ members get a range
+        //      across the full declaration span (no separate body
+        //      span is recorded by the HIR, so the decl span is the
+        //      best approximation of the foldable region).
+        //    - `switch_case`: each case clause's body span (from
+        //      its first statement to its last) is foldable when
+        //      it crosses lines.
+        //    - `object_literal`: literals that span more than two
+        //      source lines fold to their own span.
+        //    - `array_literal`: literals with more than five
+        //      elements fold across the literal's span.
         var i: hir_mod.NodeId = 1;
         while (i < c.hir.nodeCount()) : (i += 1) {
             if (i == c.root) continue;
-            if (c.hir.kindOf(i) != .block_stmt) continue;
-            const span = c.hir.spanOf(i);
-            const start_pos = ts_diagnostics.positionToLineCol(f.source, span.start);
-            const end_pos = ts_diagnostics.positionToLineCol(f.source, span.end);
-            // Folding only makes sense for blocks spanning multiple lines.
-            if (end_pos.line <= start_pos.line) continue;
-            try ranges.append(gpa, .{
-                .start_line = if (start_pos.line > 0) start_pos.line - 1 else 0,
-                .end_line = if (end_pos.line > 0) end_pos.line - 1 else 0,
-                .kind = .region,
-            });
+            const k = c.hir.kindOf(i);
+            switch (k) {
+                .block_stmt => {
+                    const span = c.hir.spanOf(i);
+                    const start_pos = ts_diagnostics.positionToLineCol(f.source, span.start);
+                    const end_pos = ts_diagnostics.positionToLineCol(f.source, span.end);
+                    if (end_pos.line <= start_pos.line) continue;
+                    try ranges.append(gpa, .{
+                        .start_line = if (start_pos.line > 0) start_pos.line - 1 else 0,
+                        .end_line = if (end_pos.line > 0) end_pos.line - 1 else 0,
+                        .kind = .region,
+                    });
+                },
+                .class_decl => {
+                    const members = hir_mod.classMembers(&c.hir, i);
+                    if (members.len < 2) continue;
+                    const span = c.hir.spanOf(i);
+                    const start_pos = ts_diagnostics.positionToLineCol(f.source, span.start);
+                    const end_pos = ts_diagnostics.positionToLineCol(f.source, span.end);
+                    if (end_pos.line <= start_pos.line) continue;
+                    try ranges.append(gpa, .{
+                        .start_line = if (start_pos.line > 0) start_pos.line - 1 else 0,
+                        .end_line = if (end_pos.line > 0) end_pos.line - 1 else 0,
+                        .kind = .region,
+                    });
+                },
+                .switch_case => {
+                    const stmts = hir_mod.switchCaseStmts(&c.hir, i);
+                    if (stmts.len == 0) continue;
+                    const sp = c.hir.spanOf(stmts[0]);
+                    const ep = c.hir.spanOf(stmts[stmts.len - 1]);
+                    const start_pos = ts_diagnostics.positionToLineCol(f.source, sp.start);
+                    const end_pos = ts_diagnostics.positionToLineCol(f.source, ep.end);
+                    if (end_pos.line <= start_pos.line) continue;
+                    try ranges.append(gpa, .{
+                        .start_line = if (start_pos.line > 0) start_pos.line - 1 else 0,
+                        .end_line = if (end_pos.line > 0) end_pos.line - 1 else 0,
+                        .kind = .region,
+                    });
+                },
+                .object_literal => {
+                    const span = c.hir.spanOf(i);
+                    const start_pos = ts_diagnostics.positionToLineCol(f.source, span.start);
+                    const end_pos = ts_diagnostics.positionToLineCol(f.source, span.end);
+                    // Only fold object literals spanning more than 2 lines.
+                    if (end_pos.line < start_pos.line + 2) continue;
+                    try ranges.append(gpa, .{
+                        .start_line = if (start_pos.line > 0) start_pos.line - 1 else 0,
+                        .end_line = if (end_pos.line > 0) end_pos.line - 1 else 0,
+                        .kind = .region,
+                    });
+                },
+                .array_literal => {
+                    const elems = hir_mod.arrayLiteralElements(&c.hir, i);
+                    if (elems.len <= 5) continue;
+                    const span = c.hir.spanOf(i);
+                    const start_pos = ts_diagnostics.positionToLineCol(f.source, span.start);
+                    const end_pos = ts_diagnostics.positionToLineCol(f.source, span.end);
+                    if (end_pos.line <= start_pos.line) continue;
+                    try ranges.append(gpa, .{
+                        .start_line = if (start_pos.line > 0) start_pos.line - 1 else 0,
+                        .end_line = if (end_pos.line > 0) end_pos.line - 1 else 0,
+                        .kind = .region,
+                    });
+                },
+                else => {},
+            }
         }
         return ranges.toOwnedSlice(gpa);
     }
@@ -3733,6 +3848,75 @@ test "Service: foldingRanges emits one range per block + import run" {
     try T.expect(saw_region);
 }
 
+test "Service: foldingRanges covers class body with 3+ methods" {
+    var vfs = ts_resolver.VirtualFs.init(T.allocator);
+    defer vfs.deinit();
+    var resolver = ts_resolver.Resolver.init(T.allocator, vfs.fs(), .{});
+    defer resolver.deinit();
+    var program = ts_program.Program.init(T.allocator, &resolver);
+    defer program.deinit();
+
+    // Class spans lines 1..N; we expect a region covering the
+    // full class declaration since it has 3 members.
+    const src =
+        \\class Widget {
+        \\    a() { return 1; }
+        \\    b() { return 2; }
+        \\    c() { return 3; }
+        \\}
+    ;
+    _ = try program.add("/main.ts", src);
+    try program.compileAll(.{});
+
+    var svc = Service.init(T.allocator, &program);
+    const ranges = try svc.foldingRanges(T.allocator, "/main.ts");
+    defer T.allocator.free(ranges);
+
+    // Find a region range whose start_line is 0 (the class line)
+    // and whose end_line is at least 4 (covers all three methods).
+    var saw_class_body = false;
+    for (ranges) |r| {
+        if (r.kind != .region) continue;
+        if (r.start_line == 0 and r.end_line >= 3) saw_class_body = true;
+    }
+    try T.expect(saw_class_body);
+}
+
+test "Service: foldingRanges folds long array literals" {
+    var vfs = ts_resolver.VirtualFs.init(T.allocator);
+    defer vfs.deinit();
+    var resolver = ts_resolver.Resolver.init(T.allocator, vfs.fs(), .{});
+    defer resolver.deinit();
+    var program = ts_program.Program.init(T.allocator, &resolver);
+    defer program.deinit();
+
+    // 6-element array literal split across lines — should fold.
+    const src =
+        \\const xs = [
+        \\    1,
+        \\    2,
+        \\    3,
+        \\    4,
+        \\    5,
+        \\    6,
+        \\];
+    ;
+    _ = try program.add("/main.ts", src);
+    try program.compileAll(.{});
+
+    var svc = Service.init(T.allocator, &program);
+    const ranges = try svc.foldingRanges(T.allocator, "/main.ts");
+    defer T.allocator.free(ranges);
+
+    var saw_array_region = false;
+    for (ranges) |r| {
+        if (r.kind == .region and r.end_line > r.start_line) {
+            saw_array_region = true;
+        }
+    }
+    try T.expect(saw_array_region);
+}
+
 test "Service: semanticTokensWire returns empty array for empty/unknown file" {
     var vfs = ts_resolver.VirtualFs.init(T.allocator);
     defer vfs.deinit();
@@ -3981,4 +4165,23 @@ test "Service: workspaceWillRenameFiles returns an empty TextEdit list (stub)" {
     // Stub: empty edit list = "no follow-up edits needed". Real
     // import-specifier rewriting is a Phase 6 follow-up.
     try T.expectEqual(@as(usize, 0), edits.len);
+}
+
+test "Service: linkedEditingRanges stub returns null off JSX" {
+    var vfs = ts_resolver.VirtualFs.init(T.allocator);
+    defer vfs.deinit();
+    var resolver = ts_resolver.Resolver.init(T.allocator, vfs.fs(), .{});
+    defer resolver.deinit();
+    var program = ts_program.Program.init(T.allocator, &resolver);
+    defer program.deinit();
+
+    const src = "let x = 1;";
+    _ = try program.add("/main.ts", src);
+    try program.compileAll(.{});
+
+    var svc = Service.init(T.allocator, &program);
+    // Position 4 lands on the identifier 'x' — plain TS, no JSX in
+    // sight. Stub must return null until the JSX matcher lands.
+    const r = try svc.linkedEditingRanges(T.allocator, "/main.ts", 4);
+    try T.expect(r == null);
 }
