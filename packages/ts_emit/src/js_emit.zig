@@ -237,6 +237,14 @@ pub const Printer = struct {
     /// to `_super.prototype.x`. Outside this scope `super` is printed
     /// verbatim (preserved at ES2015+ where the keyword is legal).
     in_es5_super_lowering: bool,
+    /// Function-nesting depth — bumped on entry to any function body
+    /// (decl/expr/arrow/method/ctor) and restored on exit. Used by the
+    /// `.await_expr` printer to detect *top-level* await: at depth 0
+    /// the await is at module scope, which is only legal in ESM at
+    /// ES2022+. At older targets we still emit `await E` but prefix
+    /// it with a `/* TODO: top-level await requires ES2022+ */` marker
+    /// so downstream tools can flag the unsupported emit.
+    fn_depth: u32,
 
     pub fn init(
         gpa: std.mem.Allocator,
@@ -258,6 +266,7 @@ pub const Printer = struct {
             .in_async_downlevel = false,
             .current_class_name = null,
             .in_es5_super_lowering = false,
+            .fn_depth = 0,
         };
     }
 
@@ -893,6 +902,10 @@ pub const Printer = struct {
         const prev_downlevel = self.in_async_downlevel;
         self.in_async_downlevel = false;
         defer self.in_async_downlevel = prev_downlevel;
+        // Track function-nesting depth so `await_expr` at module scope
+        // (depth 0) can be distinguished from `await` inside a function.
+        self.fn_depth += 1;
+        defer self.fn_depth -= 1;
         if (f.flags.is_arrow) {
             // §4.A.1 — at ES5, arrows downlevel to plain `function`
             // expressions. The lexical-`this` capture is approximated
@@ -2114,6 +2127,18 @@ pub const Printer = struct {
                 if (self.in_async_downlevel) {
                     try self.write("yield ");
                 } else {
+                    // Top-level await (ES2022, ESM only). At lower
+                    // targets we still emit `await E` but prefix it
+                    // with a `/* TODO: ... */` marker so downstream
+                    // tooling can see the unsupported emit. v0 skips
+                    // proper error reporting; the checker is the right
+                    // place for that.
+                    if (self.fn_depth == 0 and
+                        self.options.module_kind == .esm and
+                        @intFromEnum(self.options.es_target) < @intFromEnum(EsTarget.es2022))
+                    {
+                        try self.write("/* TODO: top-level await requires ES2022+ */ ");
+                    }
                     try self.write("await ");
                 }
                 try self.printExpression(a.expr);
@@ -3422,6 +3447,34 @@ test "emit: await becomes yield only inside __awaiter wrapper" {
     try T.expect(std.mem.indexOf(u8, out, "yield g()") != null);
     // No bare `await` left over — it was rewritten.
     try T.expect(std.mem.indexOf(u8, out, "await g()") == null);
+}
+
+test "emit: top-level await passes through in ESM at ES2022" {
+    // Top-level `await` is allowed in ESM modules at ES2022+. The
+    // parser accepts `await E` outside any async function and the
+    // emitter passes it through unchanged.
+    const out = try emitWithOpts(
+        "let res = await fetch(\"https://example.com\");",
+        .{ .module_kind = .esm, .es_target = .es2022 },
+    );
+    defer T.allocator.free(out);
+    try T.expect(std.mem.indexOf(u8, out, "await fetch(\"https://example.com\")") != null);
+    // No TODO marker on supported targets.
+    try T.expect(std.mem.indexOf(u8, out, "TODO: top-level await") == null);
+}
+
+test "emit: top-level await emits TODO marker for older ES targets" {
+    // ESM + ES5 doesn't support top-level await, but v0 still emits
+    // the `await E` form prefixed with a `/* TODO: ... */` marker so
+    // downstream tools can see the unsupported emit. (Proper error
+    // reporting belongs in the checker.)
+    const out = try emitWithOpts(
+        "let res = await fetch(\"https://example.com\");",
+        .{ .module_kind = .esm, .es_target = .es5 },
+    );
+    defer T.allocator.free(out);
+    try T.expect(std.mem.indexOf(u8, out, "TODO: top-level await requires ES2022+") != null);
+    try T.expect(std.mem.indexOf(u8, out, "await fetch(\"https://example.com\")") != null);
 }
 
 test "emit: yield expression emits 'yield'" {
