@@ -5264,6 +5264,25 @@ test "checker: let arr: number[] element access types as number" {
     try T.expectEqual(types.Primitive.number_t, s.hir.typeOf(v.init));
 }
 
+test "checker: `readonly T[]` annotation parses + types like `T[]`" {
+    // The parser strips the `readonly` modifier on type annotations
+    // (see `parseTypeOperator` for `kw_readonly`), so `readonly T[]`
+    // currently lowers to the same `Array<T>` shape as `T[]`. A
+    // proper readonly-vs-mutable assignability story is tracked as
+    // a Phase 6 follow-up; for now we lock in that the modifier is
+    // accepted at the type-annotation position without a diagnostic.
+    const s = try newSetup(
+        \\let a: readonly number[] = [1, 2, 3];
+        \\let n = a[0];
+    );
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+    try T.expect(s.checker.diagnostics.items.len == 0);
+    const stmts = hir_mod.blockStmts(&s.hir, s.root);
+    const v = hir_mod.varDeclOf(&s.hir, stmts[1]);
+    try T.expectEqual(types.Primitive.number_t, s.hir.typeOf(v.init));
+}
+
 test "checker: interface extends with index signature inherits indexer" {
     const s = try newSetup(
         \\interface MapLike { [k: string]: number; }
