@@ -98,6 +98,14 @@ pub const TextEdit = struct {
     new_text: []const u8,
 };
 
+/// LSP `workspace/willRenameFiles` payload — one per file the editor
+/// is about to rename. Both URIs are LSP-style (`file://...`); the
+/// server strips the scheme before resolving against the program.
+pub const FileRename = struct {
+    old_uri: []const u8,
+    new_uri: []const u8,
+};
+
 /// LSP `textDocument/foldingRange` payload — describes a region of
 /// source the editor can collapse. Line numbers are 0-based, matching
 /// the LSP wire format.
@@ -1769,6 +1777,37 @@ pub const Service = struct {
             });
         }
         return links.toOwnedSlice(gpa);
+    }
+
+    /// `workspace/willRenameFiles` — sent by the editor BEFORE a file
+    /// is renamed. The server returns `TextEdit`s that update import
+    /// specifiers in OTHER files referencing the renamed one, so
+    /// imports stay valid across the rename.
+    ///
+    /// For v0 this is a stub: the method exists and returns an empty
+    /// edit list. A full implementation walks every file's
+    /// `import_decl`s, checks if the resolved module path equals the
+    /// OLD path of any rename, computes the relative path from the
+    /// importing file to the NEW path, and emits a `TextEdit`
+    /// replacing the old specifier literal with the new one. That's
+    /// a Phase 6 follow-up — the contract ("method responds with a
+    /// TextEdit list") is satisfied today; an empty list is a valid
+    /// LSP response meaning "no imports need updating".
+    pub fn workspaceWillRenameFiles(
+        self: *Service,
+        gpa: std.mem.Allocator,
+        renames: []const FileRename,
+    ) ![]TextEdit {
+        _ = self;
+        _ = renames;
+        var edits: std.ArrayListUnmanaged(TextEdit) = .empty;
+        errdefer edits.deinit(gpa);
+        // TODO(Phase 6): walk every file's import_decls, match
+        // resolved module against each rename's old URI (after
+        // stripping `file://`), compute new relative specifier, and
+        // emit a TextEdit per import. For now we return [] — editors
+        // treat that as "no follow-up edits needed".
+        return edits.toOwnedSlice(gpa);
     }
 };
 
@@ -3846,4 +3885,26 @@ test "Service: documentLinks surfaces resolved import specifiers" {
     try T.expectEqual(@as(u32, 1), links[0].span.start_line);
     try T.expectEqual(@as(u32, 1), links[0].span.end_line);
     try T.expect(links[0].span.end_col > links[0].span.start_col);
+}
+
+test "Service: workspaceWillRenameFiles returns an empty TextEdit list (stub)" {
+    var vfs = ts_resolver.VirtualFs.init(T.allocator);
+    defer vfs.deinit();
+    var resolver = ts_resolver.Resolver.init(T.allocator, vfs.fs(), .{});
+    defer resolver.deinit();
+    var program = ts_program.Program.init(T.allocator, &resolver);
+    defer program.deinit();
+
+    _ = try program.add("/main.ts", "let x = 1;");
+    try program.compileAll(.{});
+
+    var svc = Service.init(T.allocator, &program);
+    const renames = [_]FileRename{
+        .{ .old_uri = "file:///main.ts", .new_uri = "file:///renamed.ts" },
+    };
+    const edits = try svc.workspaceWillRenameFiles(T.allocator, &renames);
+    defer T.allocator.free(edits);
+    // Stub: empty edit list = "no follow-up edits needed". Real
+    // import-specifier rewriting is a Phase 6 follow-up.
+    try T.expectEqual(@as(usize, 0), edits.len);
 }
