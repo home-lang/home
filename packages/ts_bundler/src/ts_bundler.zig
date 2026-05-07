@@ -41,6 +41,20 @@ pub const BundleOptions = struct {
     /// demonstrate the shape; the real graph-walking shaker lands with
     /// the Bun-bundler integration.
     tree_shake: bool = false,
+    /// When true, `bundleWithMap` will produce a stub source map
+    /// alongside the JS output. The v0 stub records `version: 3` and
+    /// the list of source paths but emits an empty `mappings` string —
+    /// real position-mapping aggregation lands with the Bun-bundler
+    /// integration (§4.5.A.5).
+    source_map: bool = false,
+};
+
+/// JS + optional source map pair returned by `bundleWithMap`. The
+/// `map` slice is non-null when `BundleOptions.source_map` is true.
+/// Caller owns both slices and must free them with `gpa`.
+pub const BundleResult = struct {
+    js: []u8,
+    map: ?[]u8,
 };
 
 pub const BundleError = error{
@@ -140,6 +154,42 @@ pub const Bundler = struct {
         }
 
         return out.toOwnedSlice(gpa) catch return error.OutOfMemory;
+    }
+
+    /// Run `bundle` and, when `options.source_map` is true, additionally
+    /// emit a stub v3 source map JSON document listing the registered
+    /// entry paths. The v0 stub deliberately produces an empty
+    /// `mappings` string — proper position aggregation lands with the
+    /// Bun-bundler integration. Caller owns both slices in the returned
+    /// `BundleResult` and must free them with `gpa`.
+    pub fn bundleWithMap(self: *Bundler, gpa: std.mem.Allocator, options: BundleOptions) BundleError!BundleResult {
+        const js = try self.bundle(gpa, options);
+        errdefer gpa.free(js);
+
+        if (!options.source_map) {
+            return .{ .js = js, .map = null };
+        }
+
+        var map: std.ArrayListUnmanaged(u8) = .empty;
+        errdefer map.deinit(gpa);
+
+        map.appendSlice(gpa, "{\"version\": 3, \"sources\": [") catch return error.OutOfMemory;
+        for (self.entries.items, 0..) |entry, idx| {
+            if (idx > 0) map.appendSlice(gpa, ", ") catch return error.OutOfMemory;
+            map.append(gpa, '"') catch return error.OutOfMemory;
+            for (entry.path) |c| {
+                // JSON-escape the two characters that could appear in a
+                // filesystem path and break the JSON shape: backslash
+                // (Windows separators) and double quote.
+                if (c == '\\' or c == '"') map.append(gpa, '\\') catch return error.OutOfMemory;
+                map.append(gpa, c) catch return error.OutOfMemory;
+            }
+            map.append(gpa, '"') catch return error.OutOfMemory;
+        }
+        map.appendSlice(gpa, "], \"mappings\": \"\"}") catch return error.OutOfMemory;
+
+        const map_slice = map.toOwnedSlice(gpa) catch return error.OutOfMemory;
+        return .{ .js = js, .map = map_slice };
     }
 };
 
@@ -580,4 +630,33 @@ test "Bundler: IIFE wrap shape" {
     try T.expect(std.mem.endsWith(u8, js, "})();\n"));
     // The compiled body sits between the wrappers.
     try T.expect(std.mem.indexOf(u8, js, "let y") != null);
+}
+
+test "Bundler: bundleWithMap returns stub source map" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const io = std.testing.io;
+    {
+        var f = try tmp.dir.createFile(io, "main.ts", .{ .truncate = true });
+        defer f.close(io);
+        try f.writeStreamingAll(io, "let z = 7;");
+    }
+    const path_z = try tmp.dir.realPathFileAlloc(io, "main.ts", T.allocator);
+    defer T.allocator.free(path_z);
+    const path: []const u8 = path_z;
+
+    var b = Bundler.init(T.allocator);
+    defer b.deinit();
+    try b.addEntry(path);
+
+    const result = try b.bundleWithMap(T.allocator, .{ .source_map = true });
+    defer T.allocator.free(result.js);
+    defer if (result.map) |m| T.allocator.free(m);
+
+    try T.expect(result.map != null);
+    const map = result.map.?;
+    try T.expect(std.mem.indexOf(u8, map, "\"version\": 3") != null);
+    try T.expect(std.mem.indexOf(u8, map, "\"sources\":") != null);
+    try T.expect(std.mem.indexOf(u8, map, "\"mappings\":") != null);
 }
