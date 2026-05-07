@@ -439,15 +439,12 @@
     "vscode:prepublish": "bun run compile",
     "compile": "bun run build.ts",
     "watch": "bun run build.ts --watch",
-    "lint": "eslint src --ext ts",
+    "lint": "bunx --bun pickier src",
     "package": "@vscode/vsce package"
   },
   "devDependencies": {
     "@types/node": "^18.0.0",
     "@types/vscode": "^1.80.0",
-    "@typescript-eslint/eslint-plugin": "^5.0.0",
-    "@typescript-eslint/parser": "^5.0.0",
-    "eslint": "^8.0.0",
     "typescript": "^5.0.0"
   },
   "dependencies": {
