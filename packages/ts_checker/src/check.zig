@@ -8764,3 +8764,65 @@ test "checker: tagged template — untyped tag (any) yields any" {
     const call_expr = decl.init;
     try T.expectEqual(types.Primitive.any, s.hir.typeOf(call_expr));
 }
+
+// =============================================================================
+// Template-literal *type* assignability — v0 pin.
+//
+// TODO(template-literal-narrow): the lowerer currently folds any
+// template literal type with non-string-literal placeholders down to
+// plain `string` (see `lowerTemplateLiteralType` in `lower.zig`), so a
+// declared type like `` `hello ${string}` `` assigns from any string
+// literal — even ones that don't begin with the fixed prefix. Real
+// pattern-matching against the fixed text segments is a follow-up.
+//
+// We can't yet write a checker test that *exercises* a template
+// literal type with placeholders end-to-end either: the scanner does
+// not (yet) re-enter `scanTemplate` after the parser closes the
+// `${ … }` interpolation (see the TODO at `ts_parser.zig`'s
+// "Phase 1.B follow-up: parser-driven rescanTemplate" note), so a
+// source like `` let x: `hello ${string}` = "hello world"; `` errors
+// at the lexer with `error.UnterminatedTemplate`. The two tests below
+// pin the no-substitution path — the only template-literal-type shape
+// that flows through the full pipeline today — so the follow-up
+// landing has a concrete regression target.
+// =============================================================================
+
+test "checker: template-literal type without substitution lowers to string-literal" {
+    // No-substitution template type `` `hello` `` lowers to a string
+    // literal type. Drive the lowerer directly (the checker widens
+    // expression-position string literals to `string`, which would
+    // otherwise mask the literal-vs-literal comparison).
+    const s = try newSetup(
+        \\type T = `hello`;
+    );
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+    const stmts = hir_mod.blockStmts(&s.hir, s.root);
+    const ta_t = s.hir.typeOf(stmts[0]);
+    const flags = s.ti.pool.flagsOf(ta_t);
+    try T.expect(flags.is_literal);
+    try T.expect(flags.is_string);
+    const lit = s.ti.literalOf(ta_t);
+    switch (lit) {
+        .string_lit => |sid| try T.expectEqualStrings("hello", s.sint.get(sid)),
+        else => return error.TestExpectedEqual,
+    }
+}
+
+test "checker: template-literal type rejects mismatched string init" {
+    // The widening of expression-position string literals to `string`
+    // means a `string` rhs is not assignable to the template's
+    // string-literal target — TS2322 fires. This pins behavior even
+    // though the diagnostic doesn't yet distinguish "wrong literal"
+    // from "wrong primitive".
+    const s = try newSetup(
+        \\let x: `hello` = "world";
+    );
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+    var found_ts2322 = false;
+    for (s.checker.diagnostics.items) |d| {
+        if (d.code == TsCodes.type_not_assignable) found_ts2322 = true;
+    }
+    try T.expect(found_ts2322);
+}
