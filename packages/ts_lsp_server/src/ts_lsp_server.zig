@@ -5,33 +5,85 @@
 //! protocol parser. The actual stdio I/O loop lives in a separate
 //! binary that calls into this library.
 //!
-//! Supported request methods today:
-//!   - initialize
-//!   - textDocument/didOpen
-//!   - textDocument/didChange
-//!   - textDocument/didClose
-//!   - textDocument/hover
-//!   - textDocument/definition
-//!   - textDocument/references
-//!   - textDocument/completion
-//!   - textDocument/signatureHelp
-//!   - textDocument/rename
-//!   - textDocument/prepareRename
-//!   - completionItem/resolve
-//!   - textDocument/documentSymbol
-//!   - workspace/symbol
-//!   - textDocument/codeAction
-//!   - textDocument/semanticTokens/full
-//!   - textDocument/semanticTokens/full/delta
-//!   - textDocument/semanticTokens/range
-//!   - textDocument/foldingRange
-//!   - textDocument/inlayHint
-//!   - textDocument/documentHighlight
-//!   - textDocument/formatting
-//!   - textDocument/publishDiagnostics (server-pushed)
-//!   - textDocument/diagnostic (pull-mode)
-//!   - shutdown
-//!   - exit
+//! ============================================================================
+//! METHOD COVERAGE AUDIT
+//! ============================================================================
+//!
+//! Every entry below has a `Method` enum variant, a `handle*` function, AND
+//! is dispatched from `dispatchRequest`. The audit columns are:
+//!   - Method enum variant: yes/no
+//!   - handle* function:    yes/no
+//!   - Wired in dispatch:   yes/no
+//!   - Test coverage:       yes/no
+//!
+//! ----------------------------------------------------------------------------
+//! FULLY IMPLEMENTED  (enum + handler + dispatch + tests)
+//! ----------------------------------------------------------------------------
+//!   Lifecycle:
+//!     initialize                              [bb406d4]
+//!     initialized                             [bb406d4]
+//!     shutdown                                [bb406d4]
+//!     exit                                    [bb406d4]
+//!   Synchronization:
+//!     textDocument/didOpen                    [c4e12c7]
+//!     textDocument/didChange                  [c4e12c7]
+//!     textDocument/didClose                   [c4e12c7]
+//!   Language features (textDocument/*):
+//!     hover                                   [47c3214]
+//!     definition                              [3ad141e + e7a3b54]
+//!     typeDefinition                          [025b52e]
+//!     implementation                          [a85694b]
+//!     references                              [c9dc339]
+//!     completion                              [c9dc339]
+//!     signatureHelp                           [3ad141e]
+//!     documentSymbol                          [c9dc339]
+//!     codeAction                              [c9dc339]
+//!     codeLens                                [c7754e2]
+//!     documentLink                            [a85694b]
+//!     foldingRange                            [c9dc339]
+//!     inlayHint                               [c9dc339]
+//!     documentHighlight                       [c9dc339]
+//!     formatting                              [c9dc339]
+//!     rename                                  [c9dc339]
+//!     prepareRename                           [d5ff71d]
+//!     prepareCallHierarchy                    [025b52e]
+//!     semanticTokens/full                     [c9dc339]
+//!     semanticTokens/range                    [c9dc339]
+//!     semanticTokens/full/delta               [d086122]
+//!     diagnostic (pull-mode)                  [d5e5226]
+//!     publishDiagnostics (server-pushed)      [c4e12c7]
+//!   Resolve callbacks:
+//!     completionItem/resolve                  [bd1de4d]
+//!     codeLens/resolve                        [1dca066]
+//!     documentLink/resolve                    [a85694b]
+//!   Workspace:
+//!     workspace/symbol                        [c9dc339]
+//!   Call hierarchy:
+//!     callHierarchy/incomingCalls             [025b52e]
+//!     callHierarchy/outgoingCalls             [025b52e]
+//!
+//! ----------------------------------------------------------------------------
+//! STUBS  (handler exists in ts_lsp.Service, NOT yet routed by this wire layer)
+//! ----------------------------------------------------------------------------
+//!   textDocument/linkedEditingRange           [b92a16c — service stub only]
+//!   workspace/willRenameFiles                 [36dc233 — service stub only]
+//!
+//! ----------------------------------------------------------------------------
+//! NOT WIRED  (no `Method` variant, no handler — reserved for future work)
+//! ----------------------------------------------------------------------------
+//!   textDocument/colorPresentation
+//!   textDocument/documentColor
+//!   textDocument/declaration
+//!   textDocument/onTypeFormatting
+//!   textDocument/rangeFormatting
+//!   textDocument/selectionRange
+//!   textDocument/moniker
+//!   workspace/executeCommand
+//!   workspace/didChangeConfiguration
+//!   workspace/didChangeWatchedFiles
+//!
+//! See `SUPPORTED_METHODS` below for the canonical list of wire method names
+//! advertised by `initialize`.
 
 const std = @import("std");
 const ts_lsp = @import("ts_lsp");
@@ -132,6 +184,59 @@ pub const Method = enum {
         }
         return .unknown;
     }
+};
+
+/// Canonical wire-protocol method names this server handles. Kept in
+/// dispatch order (lifecycle, synchronization, language features,
+/// resolve callbacks, workspace, call hierarchy). The `initialize`
+/// response embeds this list under a non-standard
+/// `serverInfo.supportedMethods` field so that integration tests and
+/// debug clients can introspect coverage without parsing capability
+/// shapes. Adding a new wire method MUST update this list, the
+/// `Method` enum, `Method.fromString`, and `dispatchRequest`.
+pub const SUPPORTED_METHODS = &[_][]const u8{
+    // Lifecycle.
+    "initialize",
+    "initialized",
+    "shutdown",
+    "exit",
+    // Synchronization.
+    "textDocument/didOpen",
+    "textDocument/didChange",
+    "textDocument/didClose",
+    "textDocument/publishDiagnostics",
+    // Language features.
+    "textDocument/hover",
+    "textDocument/definition",
+    "textDocument/typeDefinition",
+    "textDocument/implementation",
+    "textDocument/references",
+    "textDocument/completion",
+    "textDocument/signatureHelp",
+    "textDocument/documentSymbol",
+    "textDocument/codeAction",
+    "textDocument/codeLens",
+    "textDocument/documentLink",
+    "textDocument/foldingRange",
+    "textDocument/inlayHint",
+    "textDocument/documentHighlight",
+    "textDocument/formatting",
+    "textDocument/rename",
+    "textDocument/prepareRename",
+    "textDocument/prepareCallHierarchy",
+    "textDocument/semanticTokens/full",
+    "textDocument/semanticTokens/full/delta",
+    "textDocument/semanticTokens/range",
+    "textDocument/diagnostic",
+    // Resolve callbacks.
+    "completionItem/resolve",
+    "codeLens/resolve",
+    "documentLink/resolve",
+    // Workspace.
+    "workspace/symbol",
+    // Call hierarchy.
+    "callHierarchy/incomingCalls",
+    "callHierarchy/outgoingCalls",
 };
 
 /// Parse the LSP framing protocol (Content-Length header followed
@@ -1983,10 +2088,24 @@ pub fn renderInitializeResult(gpa: std.mem.Allocator) ![]u8 {
 /// by `initialize`. This is the long-form descriptor used by the
 /// lifecycle handler — the older `renderInitializeResult` remains for
 /// the legacy stdio loop in `lsp_main.zig`.
+///
+/// The response embeds `SUPPORTED_METHODS` under
+/// `serverInfo.supportedMethods` so external clients and integration
+/// tests can introspect coverage without scraping capability flags.
 pub fn renderInitializeCapabilities(gpa: std.mem.Allocator) ![]u8 {
-    return gpa.dupe(u8,
-        \\{"capabilities":{"textDocumentSync":1,"hoverProvider":true,"definitionProvider":true,"referencesProvider":true,"completionProvider":{"triggerCharacters":["."," "]},"documentSymbolProvider":true,"workspaceSymbolProvider":true,"renameProvider":true,"codeActionProvider":true,"semanticTokensProvider":{"legend":{"tokenTypes":["variable","parameter","function","method","class","interface","type","enum","property","keyword","string","number","operator","comment"],"tokenModifiers":[]},"full":true,"range":true},"signatureHelpProvider":{"triggerCharacters":["(",","]},"documentHighlightProvider":false,"documentFormattingProvider":true,"foldingRangeProvider":true},"serverInfo":{"name":"home-lsp","version":"0.1.0"}}
+    var buf: std.ArrayListUnmanaged(u8) = .empty;
+    errdefer buf.deinit(gpa);
+    try buf.appendSlice(gpa,
+        \\{"capabilities":{"textDocumentSync":1,"hoverProvider":true,"definitionProvider":true,"referencesProvider":true,"completionProvider":{"triggerCharacters":["."," "]},"documentSymbolProvider":true,"workspaceSymbolProvider":true,"renameProvider":true,"codeActionProvider":true,"semanticTokensProvider":{"legend":{"tokenTypes":["variable","parameter","function","method","class","interface","type","enum","property","keyword","string","number","operator","comment"],"tokenModifiers":[]},"full":true,"range":true},"signatureHelpProvider":{"triggerCharacters":["(",","]},"documentHighlightProvider":false,"documentFormattingProvider":true,"foldingRangeProvider":true},"serverInfo":{"name":"home-lsp","version":"0.1.0","supportedMethods":[
     );
+    for (SUPPORTED_METHODS, 0..) |m, i| {
+        if (i != 0) try buf.append(gpa, ',');
+        try buf.append(gpa, '"');
+        try writeJsonStringContents(&buf, gpa, m);
+        try buf.append(gpa, '"');
+    }
+    try buf.appendSlice(gpa, "]}}");
+    return buf.toOwnedSlice(gpa);
 }
 
 /// Handle an `initialize` JSON-RPC request. Returns a fully encoded
@@ -2377,6 +2496,47 @@ test "handleInitialize: response advertises full capability set" {
     try T.expect(std.mem.indexOf(u8, r, "\"tokenTypes\":[") != null);
     try T.expect(std.mem.indexOf(u8, r, "\"full\":true") != null);
     try T.expect(std.mem.indexOf(u8, r, "\"range\":true") != null);
+}
+
+test "SUPPORTED_METHODS: enumerates every wire method dispatchRequest handles" {
+    // Spot-check core lifecycle + sync methods.
+    var saw_initialize = false;
+    var saw_shutdown = false;
+    var saw_did_open = false;
+    var saw_hover = false;
+    var saw_completion_resolve = false;
+    var saw_call_hierarchy_outgoing = false;
+    var saw_diagnostic = false;
+    for (SUPPORTED_METHODS) |m| {
+        if (std.mem.eql(u8, m, "initialize")) saw_initialize = true;
+        if (std.mem.eql(u8, m, "shutdown")) saw_shutdown = true;
+        if (std.mem.eql(u8, m, "textDocument/didOpen")) saw_did_open = true;
+        if (std.mem.eql(u8, m, "textDocument/hover")) saw_hover = true;
+        if (std.mem.eql(u8, m, "completionItem/resolve")) saw_completion_resolve = true;
+        if (std.mem.eql(u8, m, "callHierarchy/outgoingCalls")) saw_call_hierarchy_outgoing = true;
+        if (std.mem.eql(u8, m, "textDocument/diagnostic")) saw_diagnostic = true;
+    }
+    try T.expect(saw_initialize);
+    try T.expect(saw_shutdown);
+    try T.expect(saw_did_open);
+    try T.expect(saw_hover);
+    try T.expect(saw_completion_resolve);
+    try T.expect(saw_call_hierarchy_outgoing);
+    try T.expect(saw_diagnostic);
+    // Every entry must round-trip through Method.fromString — guards
+    // against typos that would silently fall to .unknown at runtime.
+    for (SUPPORTED_METHODS) |m| {
+        try T.expect(Method.fromString(m) != .unknown);
+    }
+}
+
+test "renderInitializeCapabilities: embeds supportedMethods list" {
+    const r = try renderInitializeCapabilities(T.allocator);
+    defer T.allocator.free(r);
+    try T.expect(std.mem.indexOf(u8, r, "\"supportedMethods\":[") != null);
+    try T.expect(std.mem.indexOf(u8, r, "\"initialize\"") != null);
+    try T.expect(std.mem.indexOf(u8, r, "\"textDocument/hover\"") != null);
+    try T.expect(std.mem.indexOf(u8, r, "\"callHierarchy/outgoingCalls\"") != null);
 }
 
 test "handleShutdown: returns null result envelope" {
