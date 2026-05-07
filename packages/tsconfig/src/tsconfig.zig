@@ -279,6 +279,75 @@ pub const TsConfig = struct {
     exclude: ?[][]const u8,
     /// `references`: project-references entries. Phase 9 fills in.
     references: [][]const u8,
+
+    /// Walk the resolved config and report cross-field consistency
+    /// issues that the parser accepts but `tsc` would reject during
+    /// option resolution. Each individual field is already
+    /// well-formed (enum-typed values were checked at parse time);
+    /// this layer catches combinations like
+    /// `composite: true` without `declaration: true` (TS6304) or
+    /// `outDir == rootDir` (TS5009-style overlap).
+    ///
+    /// Returns an owned slice allocated with `gpa`. Caller frees with
+    /// `gpa.free`. Empty slice when the config is consistent.
+    ///
+    /// v0 covers two cross-field checks; the rest of the matrix
+    /// (noEmit + outFile contradiction, decorators mutual exclusion,
+    /// experimentalDecorators stage-3 conflict, lib/target sanity,
+    /// emitDeclarationOnly without declaration, etc.) is tracked as
+    /// follow-ups and will land alongside the option-resolution pass
+    /// in the type checker.
+    pub fn validate(self: TsConfig, gpa: std.mem.Allocator) ![]ValidationDiagnostic {
+        var diags: std.ArrayListUnmanaged(ValidationDiagnostic) = .empty;
+        errdefer diags.deinit(gpa);
+
+        const co = self.compiler_options;
+
+        // TS5009-shaped: `outDir` and `rootDir` must not be the same
+        // path string. (Strict literal equality is a v0 approximation
+        // — `tsc` resolves both to absolute paths first; we'll do
+        // that once the path resolver lands.)
+        if (co.out_dir) |o| {
+            if (co.root_dir) |r| {
+                if (std.mem.eql(u8, o, r)) {
+                    try diags.append(gpa, .{
+                        .code = 5009,
+                        .message = "Option 'outDir' must be different from 'rootDir'.",
+                        .field = "outDir",
+                    });
+                }
+            }
+        }
+
+        // TS6304-shaped: `composite: true` requires `declaration: true`.
+        // tsc auto-implies `declaration` when `composite` is set, but
+        // emits a diagnostic when the user *explicitly* set
+        // `declaration: false` alongside `composite: true`.
+        if (co.composite == true) {
+            if (co.declaration) |d| {
+                if (!d) {
+                    try diags.append(gpa, .{
+                        .code = 6304,
+                        .message = "Composite projects may not disable declaration emit.",
+                        .field = "declaration",
+                    });
+                }
+            }
+        }
+
+        return diags.toOwnedSlice(gpa);
+    }
+};
+
+/// Diagnostic emitted by `TsConfig.validate` for cross-field issues
+/// that the parser accepts (each field is individually well-formed)
+/// but `tsc` would reject during option-resolution.
+pub const ValidationDiagnostic = struct {
+    code: u32,
+    message: []const u8,
+    /// Which option triggered the diagnostic. Empty when the issue
+    /// spans multiple fields equally.
+    field: []const u8 = "",
 };
 
 pub const LoadError = error{
@@ -907,6 +976,43 @@ test "tsconfig.merge: child overrides base on every set field" {
     try t.expectEqual(@as(?Target, .es2024), m.compiler_options.target);
     // `noEmit` was only in base — preserved.
     try t.expectEqual(@as(?bool, true), m.compiler_options.no_emit);
+}
+
+test "tsconfig.validate: clean config produces no diagnostics" {
+    var arena = std.heap.ArenaAllocator.init(t.allocator);
+    defer arena.deinit();
+    const cfg = try parseString(t.allocator, arena.allocator(),
+        \\{ "compilerOptions": { "strict": true, "outDir": "dist", "rootDir": "src" } }
+    );
+    const diags = try cfg.validate(t.allocator);
+    defer t.allocator.free(diags);
+    try t.expectEqual(@as(usize, 0), diags.len);
+}
+
+test "tsconfig.validate: outDir == rootDir reports TS5009-shaped diagnostic" {
+    var arena = std.heap.ArenaAllocator.init(t.allocator);
+    defer arena.deinit();
+    const cfg = try parseString(t.allocator, arena.allocator(),
+        \\{ "compilerOptions": { "outDir": "build", "rootDir": "build" } }
+    );
+    const diags = try cfg.validate(t.allocator);
+    defer t.allocator.free(diags);
+    try t.expectEqual(@as(usize, 1), diags.len);
+    try t.expectEqual(@as(u32, 5009), diags[0].code);
+    try t.expectEqualStrings("outDir", diags[0].field);
+}
+
+test "tsconfig.validate: composite without declaration reports TS6304-shaped diagnostic" {
+    var arena = std.heap.ArenaAllocator.init(t.allocator);
+    defer arena.deinit();
+    const cfg = try parseString(t.allocator, arena.allocator(),
+        \\{ "compilerOptions": { "composite": true, "declaration": false } }
+    );
+    const diags = try cfg.validate(t.allocator);
+    defer t.allocator.free(diags);
+    try t.expectEqual(@as(usize, 1), diags.len);
+    try t.expectEqual(@as(u32, 6304), diags[0].code);
+    try t.expectEqualStrings("declaration", diags[0].field);
 }
 
 // ============================================================================
