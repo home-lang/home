@@ -47,6 +47,7 @@ test {
     _ = lower;
     _ = check;
     _ = render;
+    _ = @import("lib.zig");
 }
 
 test "ts_checker: end-to-end smoke" {
