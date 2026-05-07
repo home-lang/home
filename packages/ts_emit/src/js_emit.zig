@@ -547,14 +547,78 @@ pub const Printer = struct {
             .const_decl => "const",
             else => unreachable,
         };
+        const v = hir_mod.varDeclOf(self.hir, node);
+        // Destructuring binding: `const { a } = obj` / `const [x] = arr`.
+        // The native pattern syntax isn't yet wired through the
+        // expression printer, so we always lower to a comma-declarator
+        // chain that pulls each binding out of a single temporary
+        // holding the initializer:
+        //     `var _o = obj, a = _o.a;`
+        //     `var _arr = arr, x = _arr[0];`
+        // At ES5 the `let`/`const` keyword also collapses to `var`.
+        // v0 covers shorthand keys + plain array elements only —
+        // defaults, renames, rest, and nested patterns are TODOs.
+        if (v.name != hir_mod.none_node_id) {
+            const name_kind = self.hir.kindOf(v.name);
+            if (name_kind == .object_pattern or name_kind == .array_pattern) {
+                try self.printDestructuringVarDecl(kw, v.name, v.init);
+                return;
+            }
+        }
         try self.write(kw);
         try self.write(" ");
-        const v = hir_mod.varDeclOf(self.hir, node);
         if (v.name != hir_mod.none_node_id) try self.printExpression(v.name);
         // Type annotation erases at runtime.
         if (v.init != hir_mod.none_node_id) {
             try self.write(" = ");
             try self.printExpression(v.init);
+        }
+        try self.writeSemi();
+    }
+
+    /// Lower `const { a, b } = obj` / `const [x, y] = arr` to a
+    /// comma-declarator chain: `var _o = obj, a = _o.a, b = _o.b;`.
+    /// At ES5 the `let`/`const` keyword also collapses to `var`. v0
+    /// supports shorthand keys + plain array elements only — defaults,
+    /// renames, rest, and nested patterns are not yet handled.
+    fn printDestructuringVarDecl(
+        self: *Printer,
+        kw_in: []const u8,
+        pattern: NodeId,
+        initializer: NodeId,
+    ) anyerror!void {
+        const is_array = self.hir.kindOf(pattern) == .array_pattern;
+        const tmp = if (is_array) "_arr" else "_o";
+        // ES5 has no block-scoped declarations — collapse to `var`.
+        const kw = if (self.options.es_target == .es5) "var" else kw_in;
+        try self.write(kw);
+        try self.write(" ");
+        try self.write(tmp);
+        if (initializer != hir_mod.none_node_id) {
+            try self.write(" = ");
+            try self.printExpression(initializer);
+        }
+        const elements = hir_mod.patternElements(self.hir, pattern);
+        for (elements, 0..) |elem, i| {
+            if (self.hir.kindOf(elem) != .parameter) continue;
+            const param = hir_mod.parameterOf(self.hir, elem);
+            if (param.flags.is_rest) continue; // rest deferred
+            if (param.name == hir_mod.none_node_id) continue;
+            if (self.hir.kindOf(param.name) != .identifier) continue; // nested deferred
+            const id = hir_mod.identifierOf(self.hir, param.name);
+            const name_str = self.interner.get(id.name);
+            try self.write(", ");
+            try self.write(name_str);
+            try self.write(" = ");
+            try self.write(tmp);
+            if (is_array) {
+                var buf: [32]u8 = undefined;
+                const idx_str = std.fmt.bufPrint(&buf, "[{d}]", .{i}) catch unreachable;
+                try self.write(idx_str);
+            } else {
+                try self.write(".");
+                try self.write(name_str);
+            }
         }
         try self.writeSemi();
     }
@@ -3146,6 +3210,38 @@ test "emit: class preserved at es2015+" {
     defer T.allocator.free(out);
     try T.expect(std.mem.indexOf(u8, out, "class Foo") != null);
     try T.expect(std.mem.indexOf(u8, out, "prototype") == null);
+}
+
+test "emit: object destructuring lowers to temp + property reads at es5" {
+    const out = try emitWithOpts("const { a } = obj;", .{ .es_target = .es5 });
+    defer T.allocator.free(out);
+    // `const` collapses to `var`, single statement with a `_o` temp
+    // holding the initializer and one property read per binding.
+    try T.expect(std.mem.indexOf(u8, out, "var _o = obj") != null);
+    try T.expect(std.mem.indexOf(u8, out, "a = _o.a") != null);
+    // No native pattern survives.
+    try T.expect(std.mem.indexOf(u8, out, "{ a }") == null);
+    try T.expect(std.mem.indexOf(u8, out, "const ") == null);
+}
+
+test "emit: array destructuring lowers to temp + index reads at es5" {
+    const out = try emitWithOpts("const [x] = arr;", .{ .es_target = .es5 });
+    defer T.allocator.free(out);
+    try T.expect(std.mem.indexOf(u8, out, "var _arr = arr") != null);
+    try T.expect(std.mem.indexOf(u8, out, "x = _arr[0]") != null);
+    // No native pattern, no `const`.
+    try T.expect(std.mem.indexOf(u8, out, "[x]") == null);
+    try T.expect(std.mem.indexOf(u8, out, "const ") == null);
+}
+
+test "emit: destructuring keeps const keyword at es2015+" {
+    const out = try emitWithOpts("const { a } = obj;", .{ .es_target = .es2015 });
+    defer T.allocator.free(out);
+    // ES2015+ keeps `const` (the v0 lowering still chains property
+    // reads since native pattern emit isn't wired up yet).
+    try T.expect(std.mem.indexOf(u8, out, "const _o = obj") != null);
+    try T.expect(std.mem.indexOf(u8, out, "a = _o.a") != null);
+    try T.expect(std.mem.indexOf(u8, out, "var ") == null);
 }
 
 test "emit: dynamic import lowers to Promise.resolve(require) for cjs" {
