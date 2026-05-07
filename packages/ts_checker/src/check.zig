@@ -58,6 +58,10 @@ pub const Diagnostic = struct {
 /// copy to avoid a cross-package dependency from the checker.
 pub const TsCodes = struct {
     pub const cannot_find_name: u32 = 2304;
+    /// Emitted when the unresolved identifier closely resembles an
+    /// in-scope name (Levenshtein distance ≤ threshold). Same as
+    /// 2304 plus a `Did you mean 'X'?` suggestion.
+    pub const cannot_find_name_did_you_mean: u32 = 2552;
     pub const cannot_find_module: u32 = 2307;
     pub const type_not_assignable: u32 = 2322;
     pub const property_does_not_exist: u32 = 2339;
@@ -86,6 +90,12 @@ pub const TsCodes = struct {
     /// Also covers `export const enum` (whose runtime semantics
     /// require cross-module value substitution).
     pub const isolated_modules_reexport: u32 = 1205;
+    /// `exactOptionalPropertyTypes`. Emitted when an object literal
+    /// explicitly sets an optional property to `undefined` and the
+    /// declared property type doesn't include `undefined` in its
+    /// union — under the strict rule, `a?: T` means absent OR T,
+    /// not `T | undefined`.
+    pub const exact_optional_property: u32 = 2375;
 };
 
 /// Per-alias generic info: the type-parameter TypeIds in
@@ -158,6 +168,17 @@ pub const StrictFlags = struct {
     /// references to ambient `const enum`s, etc. v0 emits TS1205
     /// for the exported-const-enum case.
     isolated_modules: bool = false,
+    /// `resolveJsonModule`. When true, `import data from "./x.json"`
+    /// resolves and the default import takes the parsed JSON's shape
+    /// (typed as `any` in v0). When false, a `.json` import emits
+    /// TS2307 — matches tsc's behavior of refusing the resolution.
+    resolve_json_module: bool = false,
+    /// `exactOptionalPropertyTypes`. When true, `a?: T` means the
+    /// property is absent OR has type `T` — explicitly assigning
+    /// `undefined` is rejected (TS2375). When false (legacy), `a?: T`
+    /// is treated as `T | undefined` and `{ a: undefined }` is
+    /// permitted.
+    exact_optional_property_types: bool = false,
 };
 
 pub const Checker = struct {
@@ -457,6 +478,7 @@ pub const Checker = struct {
             .class_decl => try self.checkClassDecl(node),
             .interface_decl => try self.checkInterfaceDecl(node),
             .type_alias_decl => try self.checkTypeAliasDecl(node),
+            .import_decl => try self.checkImportDecl(node),
             .export_decl => {
                 // `export <decl>` — the inner decl needs the same
                 // typing pass as a top-level decl. Named-only forms
@@ -1865,6 +1887,30 @@ pub const Checker = struct {
         try child_members.insertSlice(self.gpa, 0, inherited.items);
     }
 
+    /// Per-statement check for `import … from "spec"`. The binder
+    /// already declared the local bindings; this pass enforces the
+    /// `resolveJsonModule` rule: when the option is OFF, an import
+    /// from a `.json` specifier is unresolved and emits TS2307.
+    /// When ON the import resolves and the default binding stays
+    /// `any` (v0 — TS would refine to the parsed JSON's shape).
+    fn checkImportDecl(self: *Checker, node: NodeId) CheckError!void {
+        const imp = hir_mod.importOf(self.hir, node);
+        const spec = self.string_interner.get(imp.module);
+        if (spec.len == 0) return;
+        if (!std.mem.endsWith(u8, spec, ".json")) return;
+        if (self.strict_flags.resolve_json_module) return;
+        const msg = try std.fmt.allocPrint(
+            self.diag_arena.allocator(),
+            "Cannot find module '{s}' or its corresponding type declarations.",
+            .{spec},
+        );
+        try self.diagnostics.append(self.gpa, .{
+            .node = node,
+            .code = TsCodes.cannot_find_module,
+            .message = msg,
+        });
+    }
+
     /// Lower an interface declaration into an interned object type
     /// matching its member list. Each `name: T` becomes a member
     /// typed as the lowering of `T`; each method shorthand `name(p):
@@ -2753,6 +2799,10 @@ pub const Checker = struct {
             // declared type is a known object — otherwise extra
             // properties may legitimately come from elsewhere.
             try self.checkExcessProperties(v.init, declared_type);
+            // TS2375: `exactOptionalPropertyTypes` rejects literal
+            // `undefined` flowing into an optional-but-not-undefined
+            // property.
+            try self.checkExactOptionalProperties(v.init, declared_type);
         } else if (declared_type == types.Primitive.none) {
             self.hir.setType(node, init_type);
         }
@@ -3862,16 +3912,133 @@ pub const Checker = struct {
         name: hir_mod.StringId,
     ) !void {
         const name_str = self.string_interner.get(name);
-        const msg = try std.fmt.allocPrint(
-            self.diag_arena.allocator(),
-            "Cannot find name '{s}'.",
-            .{name_str},
-        );
+
+        // Collect in-scope candidate names and find the closest one
+        // by Levenshtein distance. We accept a suggestion only if the
+        // distance is ≤ max(2, name.len/4) — matches tsc behavior of
+        // suggesting only "obvious" typos.
+        const Best = struct { name: []const u8 = "", dist: usize = std.math.maxInt(usize) };
+        var best: Best = .{};
+
+        const considerCandidate = struct {
+            fn call(typo: []const u8, cand_str: []const u8, b: *Best) void {
+                if (cand_str.len == 0) return;
+                if (std.mem.eql(u8, cand_str, typo)) return;
+                // Quick reject: length difference > 2 and > typo.len/4
+                // cannot satisfy the threshold.
+                const ll = if (cand_str.len > typo.len) cand_str.len - typo.len else typo.len - cand_str.len;
+                if (ll > 2 and ll > typo.len / 4) return;
+                const d = levenshtein(typo, cand_str);
+                if (d < b.dist) b.* = .{ .name = cand_str, .dist = d };
+            }
+        }.call;
+
+        // Walk the HIR parent chain and collect parameter / local
+        // decl names — mirrors the lookup in `typeOfIdentifier`.
+        var cur: hir_mod.NodeId = self.hir.parentOf(node);
+        while (cur != hir_mod.none_node_id) {
+            const k = self.hir.kindOf(cur);
+            if (k == .fn_decl or k == .fn_expr or k == .arrow_fn) {
+                const params = hir_mod.fnParams(self.hir, cur);
+                for (params) |p| {
+                    if (self.hir.kindOf(p) != .parameter) continue;
+                    const pp = hir_mod.parameterOf(self.hir, p);
+                    if (pp.name == hir_mod.none_node_id) continue;
+                    if (self.hir.kindOf(pp.name) != .identifier) continue;
+                    const pid = hir_mod.identifierOf(self.hir, pp.name);
+                    considerCandidate(name_str, self.string_interner.get(pid.name), &best);
+                }
+            } else if (k == .block_stmt) {
+                const stmts = hir_mod.blockStmts(self.hir, cur);
+                for (stmts) |s| {
+                    const sk = self.hir.kindOf(s);
+                    if (sk == .var_decl or sk == .let_decl or sk == .const_decl) {
+                        const v = hir_mod.varDeclOf(self.hir, s);
+                        if (v.name != hir_mod.none_node_id and self.hir.kindOf(v.name) == .identifier) {
+                            const vid = hir_mod.identifierOf(self.hir, v.name);
+                            considerCandidate(name_str, self.string_interner.get(vid.name), &best);
+                        }
+                    } else if (sk == .fn_decl or sk == .fn_expr) {
+                        const fp = hir_mod.fnDeclOf(self.hir, s);
+                        if (fp.name != hir_mod.none_node_id and self.hir.kindOf(fp.name) == .identifier) {
+                            const fid = hir_mod.identifierOf(self.hir, fp.name);
+                            considerCandidate(name_str, self.string_interner.get(fid.name), &best);
+                        }
+                    }
+                }
+            }
+            cur = self.hir.parentOf(cur);
+        }
+
+        // Module-level symbol names (value / type / namespace spaces).
+        if (self.module) |module| {
+            inline for (.{ "values", "types", "namespaces" }) |field_name| {
+                var it = @field(module.root, field_name).iterator();
+                while (it.next()) |entry| {
+                    const cand_id = entry.key_ptr.*;
+                    considerCandidate(name_str, self.string_interner.get(cand_id), &best);
+                }
+            }
+        }
+
+        // Threshold: max(2, name.len/4). For very short names we
+        // still allow distance 2 — matches tsc.
+        const threshold: usize = @max(@as(usize, 2), name_str.len / 4);
+        const has_suggestion = best.dist <= threshold and best.name.len > 0;
+
+        const msg = if (has_suggestion)
+            try std.fmt.allocPrint(
+                self.diag_arena.allocator(),
+                "Cannot find name '{s}'. Did you mean '{s}'?",
+                .{ name_str, best.name },
+            )
+        else
+            try std.fmt.allocPrint(
+                self.diag_arena.allocator(),
+                "Cannot find name '{s}'.",
+                .{name_str},
+            );
+
         try self.diagnostics.append(self.gpa, .{
             .node = node,
-            .code = TsCodes.cannot_find_name,
+            .code = if (has_suggestion) TsCodes.cannot_find_name_did_you_mean else TsCodes.cannot_find_name,
             .message = msg,
         });
+    }
+
+    /// Classic two-row Levenshtein edit distance. Computes the
+    /// minimum number of single-character insertions, deletions, or
+    /// substitutions to transform `a` into `b`. O(|a|·|b|) time,
+    /// O(min(|a|,|b|)) space. Used for "did you mean?" suggestions.
+    fn levenshtein(a: []const u8, b: []const u8) usize {
+        if (a.len == 0) return b.len;
+        if (b.len == 0) return a.len;
+        // Bound the DP arrays — identifier names rarely exceed 128
+        // bytes; anything over the cap is treated as max-distance to
+        // avoid heap allocation in the hot diagnostic path.
+        const cap: usize = 128;
+        if (a.len + 1 > cap or b.len + 1 > cap) return std.math.maxInt(usize);
+        var prev: [cap]usize = undefined;
+        var curr: [cap]usize = undefined;
+        var j: usize = 0;
+        while (j <= b.len) : (j += 1) prev[j] = j;
+        var i: usize = 1;
+        while (i <= a.len) : (i += 1) {
+            curr[0] = i;
+            var k: usize = 1;
+            while (k <= b.len) : (k += 1) {
+                const cost: usize = if (a[i - 1] == b[k - 1]) 0 else 1;
+                const del = prev[k] + 1;
+                const ins = curr[k - 1] + 1;
+                const sub = prev[k - 1] + cost;
+                var m = del;
+                if (ins < m) m = ins;
+                if (sub < m) m = sub;
+                curr[k] = m;
+            }
+            std.mem.copyForwards(usize, prev[0 .. b.len + 1], curr[0 .. b.len + 1]);
+        }
+        return prev[b.len];
     }
 
     /// Returns true when the identifier reference resolves to a
@@ -4470,6 +4637,46 @@ pub const Checker = struct {
             }
         }
     }
+
+    /// TS2375: when `exactOptionalPropertyTypes` is on, an object
+    /// literal that explicitly sets an optional property to
+    /// `undefined` is rejected unless the property's declared type
+    /// already includes `undefined`. Only fires for fresh literals
+    /// flowing into a known object-shaped destination.
+    fn checkExactOptionalProperties(self: *Checker, init_node: NodeId, declared_t: TypeId) CheckError!void {
+        if (!self.strict_flags.exact_optional_property_types) return;
+        if (init_node == hir_mod.none_node_id) return;
+        if (self.hir.kindOf(init_node) != .object_literal) return;
+        if (!self.interner.pool.flagsOf(declared_t).is_object_type) return;
+        const props = hir_mod.objectLiteralProps(self.hir, init_node);
+        for (props) |p| {
+            if (self.hir.kindOf(p) != .object_property) continue;
+            const op = hir_mod.objectPropertyOf(self.hir, p);
+            if (self.hir.kindOf(op.key) != .identifier) continue;
+            if (op.value == hir_mod.none_node_id) continue;
+            const id = hir_mod.identifierOf(self.hir, op.key);
+            const declared_member = self.interner.objectMemberInfo(declared_t, id.name) orelse continue;
+            if (!declared_member.is_optional) continue;
+            // Only flag literal `undefined` values — the strict v0
+            // doesn't try to track `undefined` through narrowing.
+            if (self.hir.kindOf(op.value) != .literal_undefined) continue;
+            // Skip if the declared type already includes `undefined`
+            // — `a?: number | undefined` permits explicit undefined
+            // even when the strict flag is on.
+            if (self.typeIncludesUndefined(declared_member.type)) continue;
+            const name_str = self.string_interner.get(id.name);
+            const msg = try std.fmt.allocPrint(
+                self.diag_arena.allocator(),
+                "Type 'undefined' is not assignable to type of property '{s}'. With 'exactOptionalPropertyTypes: true', 'undefined' is not assignable to an optional property whose type does not include it.",
+                .{name_str},
+            );
+            try self.diagnostics.append(self.gpa, .{
+                .node = p,
+                .code = TsCodes.exact_optional_property,
+                .message = msg,
+            });
+        }
+    }
 };
 
 /// Flip a polarity tag for the `inferVariance` walk. Covariant ⇄
@@ -4661,6 +4868,35 @@ test "checker: Math.PI does not emit TS2304" {
     for (b.base.checker.diagnostics.items) |d| {
         try T.expect(d.code != TsCodes.cannot_find_name);
     }
+}
+
+test "checker: typo of in-scope name emits TS2552 with suggestion" {
+    const b = try newBoundSetup("const myVar = 1; mvVar;");
+    defer destroyBoundSetup(b);
+    try b.base.checker.checkSourceFile(b.base.root);
+    var found = false;
+    for (b.base.checker.diagnostics.items) |d| {
+        if (d.code == TsCodes.cannot_find_name_did_you_mean) {
+            found = true;
+            try T.expect(std.mem.indexOf(u8, d.message, "myVar") != null);
+            try T.expect(std.mem.indexOf(u8, d.message, "Did you mean") != null);
+        }
+    }
+    try T.expect(found);
+}
+
+test "checker: unresolved identifier with no close match emits TS2304" {
+    const b = try newBoundSetup("const xxx = 1; abc;");
+    defer destroyBoundSetup(b);
+    try b.base.checker.checkSourceFile(b.base.root);
+    var found_2304 = false;
+    var found_2552 = false;
+    for (b.base.checker.diagnostics.items) |d| {
+        if (d.code == TsCodes.cannot_find_name) found_2304 = true;
+        if (d.code == TsCodes.cannot_find_name_did_you_mean) found_2552 = true;
+    }
+    try T.expect(found_2304);
+    try T.expect(!found_2552);
 }
 
 test "checker: assigning to const emits TS2588" {
@@ -5497,6 +5733,27 @@ test "checker: matching object literal compiles without TS2353" {
     defer destroySetup(s);
     try s.checker.checkSourceFile(s.root);
     try T.expect(s.checker.diagnostics.items.len == 0);
+}
+
+test "checker: exactOptionalPropertyTypes flags explicit undefined on optional property" {
+    const s = try newSetup("const x: { a?: number } = { a: undefined };");
+    defer destroySetup(s);
+    s.checker.setStrictFlags(.{ .exact_optional_property_types = true });
+    try s.checker.checkSourceFile(s.root);
+    var found = false;
+    for (s.checker.diagnostics.items) |d| {
+        if (d.code == TsCodes.exact_optional_property) found = true;
+    }
+    try T.expect(found);
+}
+
+test "checker: exactOptionalPropertyTypes off — explicit undefined on optional is silent" {
+    const s = try newSetup("const x: { a?: number } = { a: undefined };");
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+    for (s.checker.diagnostics.items) |d| {
+        try T.expect(d.code != TsCodes.exact_optional_property);
+    }
 }
 
 test "checker: interface extends inherits parent members" {
@@ -7185,4 +7442,31 @@ test "checker: isolatedModules off — `export const enum` passes silently" {
     for (s.checker.diagnostics.items) |d| {
         try T.expect(d.code != TsCodes.isolated_modules_reexport);
     }
+}
+
+test "checker: resolveJsonModule on — `.json` import resolves silently" {
+    const s = try newSetup(
+        \\import data from "./data.json";
+    );
+    defer destroySetup(s);
+    s.checker.setStrictFlags(.{ .resolve_json_module = true });
+    try s.checker.checkSourceFile(s.root);
+    // No TS2307 — the import is permitted.
+    for (s.checker.diagnostics.items) |d| {
+        try T.expect(d.code != TsCodes.cannot_find_module);
+    }
+}
+
+test "checker: resolveJsonModule off — `.json` import emits TS2307" {
+    const s = try newSetup(
+        \\import data from "./data.json";
+    );
+    defer destroySetup(s);
+    // Flag defaults to false; import should be rejected.
+    try s.checker.checkSourceFile(s.root);
+    var found = false;
+    for (s.checker.diagnostics.items) |d| {
+        if (d.code == TsCodes.cannot_find_module) found = true;
+    }
+    try T.expect(found);
 }
