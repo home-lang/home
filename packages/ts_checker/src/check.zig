@@ -7851,6 +7851,22 @@ test "checker: TS2769 when no overload matches the call" {
     try T.expect(found);
 }
 
+test "checker: untyped single function (no overloads) — call works" {
+    // No overload signatures, just a plain implementation. The
+    // overload table should not engage and the call uses the
+    // implementation's signature directly.
+    const s = try newSetup(
+        \\function id(x: any): any { return x; }
+        \\let r = id("hello");
+    );
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+    // No TS2769 should be emitted for a non-overloaded fn.
+    for (s.checker.diagnostics.items) |d| {
+        try T.expect(d.code != TsCodes.no_overload_matches);
+    }
+}
+
 test "checker: aliased conditional narrows via stored guard" {
     const s = try newSetup(
         \\function isString(x: any): x is string { return true; }
