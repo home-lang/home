@@ -502,9 +502,67 @@ pub const Checker = struct {
     pub fn checkSourceFile(self: *Checker, root: NodeId) CheckError!void {
         if (self.source) |src| try self.scanDirectives(src);
         const stmts = hir_mod.blockStmts(self.hir, root);
+        // Pre-register top-level type aliases so recursive and mutually
+        // recursive references (`type Tree<T> = { children: Tree<T>[] }`,
+        // `type A = { b: B }; type B = { a: A }`) resolve to a stub body
+        // when the alias body is being lowered. The stub is overwritten
+        // with the real body by `checkTypeAliasDecl` below.
+        for (stmts) |s| {
+            if (self.hir.kindOf(s) == .type_alias_decl) {
+                try self.preRegisterTypeAlias(s);
+            } else if (self.hir.kindOf(s) == .export_decl) {
+                const ex = hir_mod.exportOf(self.hir, s);
+                if (ex.decl != hir_mod.none_node_id and self.hir.kindOf(ex.decl) == .type_alias_decl) {
+                    try self.preRegisterTypeAlias(ex.decl);
+                }
+            }
+        }
         for (stmts) |s| try self.checkStatement(s);
         try self.checkUsedBeforeAssignment(stmts);
         if (self.source != null) try self.applyDirectives(root);
+    }
+
+    /// Pre-register a type alias's name + type-parameter shape with a
+    /// placeholder `unknown` body so other aliases (and the alias's own
+    /// body) can resolve references during the main pass. The real body
+    /// is filled in by `checkTypeAliasDecl`.
+    fn preRegisterTypeAlias(self: *Checker, node: NodeId) CheckError!void {
+        const ta = hir_mod.typeAliasOf(self.hir, node);
+        if (ta.name == hir_mod.none_node_id) return;
+        if (self.hir.kindOf(ta.name) != .identifier) return;
+        const id = hir_mod.identifierOf(self.hir, ta.name);
+        const type_params = self.hir.childSlice(ta.type_params_start, ta.type_params_len);
+        if (type_params.len == 0) {
+            // Non-generic alias — `type_names` lookup is enough; record
+            // a stub so forward references to plain `Alias` resolve.
+            if (!self.type_names.contains(id.name)) {
+                try self.type_names.put(self.gpa, id.name, types.Primitive.unknown);
+            }
+            return;
+        }
+        if (self.generic_aliases.contains(id.name)) return;
+        var param_ids: std.ArrayListUnmanaged(TypeId) = .empty;
+        errdefer param_ids.deinit(self.gpa);
+        for (type_params) |tp| {
+            if (self.hir.kindOf(tp) != .type_parameter) continue;
+            const tpp = hir_mod.typeParameterOf(self.hir, tp);
+            // Use minimal constraint/default during pre-registration —
+            // the real entry from `checkTypeAliasDecl` overwrites this.
+            const tp_id = self.interner.internTypeParameterWithVariance(
+                tpp.name,
+                types.Primitive.unknown,
+                types.Primitive.none,
+                types.Variance.fromHirBits(tpp.variance),
+            ) catch return error.OutOfMemory;
+            try param_ids.append(self.gpa, tp_id);
+        }
+        const owned_params = param_ids.toOwnedSlice(self.gpa) catch return error.OutOfMemory;
+        try self.generic_aliases.put(self.gpa, id.name, .{
+            .params = owned_params,
+            .body = types.Primitive.unknown,
+            .body_node = ta.aliased,
+        });
+        try self.type_names.put(self.gpa, id.name, types.Primitive.unknown);
     }
 
     /// Scan the source for `// @ts-ignore` and `// @ts-expect-error`
@@ -2719,6 +2777,11 @@ pub const Checker = struct {
         const owned_params = param_ids.toOwnedSlice(self.gpa) catch return error.OutOfMemory;
         if (ta.name != hir_mod.none_node_id and self.hir.kindOf(ta.name) == .identifier) {
             const id = hir_mod.identifierOf(self.hir, ta.name);
+            // Free any params slice from a placeholder entry put down by
+            // `preRegisterTypeAlias` before overwriting with the real body.
+            if (self.generic_aliases.get(id.name)) |old| {
+                self.gpa.free(old.params);
+            }
             try self.generic_aliases.put(self.gpa, id.name, .{
                 .params = owned_params,
                 .body = body_t,
@@ -9441,4 +9504,73 @@ test "checker: rest parameter — wrong-typed arg emits TS2345" {
     try T.expect(found);
 }
 
+test "checker: recursive type alias — `LinkedList<T>` self-referential body parses and types" {
+    // `type LinkedList<T> = { value: T; next: LinkedList<T> | null }`
+    // — the body references the alias being defined. Pre-registration
+    // in `checkSourceFile` lets the body lower without diverging or
+    // dropping the alias entry. The resulting type must be a real
+    // object (not `unknown`) with the `value` and `next` members.
+    const s = try newSetup(
+        \\type LinkedList<T> = { value: T; next: LinkedList<T> | null };
+        \\let head: LinkedList<number> = { value: 1, next: null };
+    );
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+    // The alias must be registered in `generic_aliases` after the pass.
+    const alias_name = try s.sint.intern("LinkedList");
+    try T.expect(s.checker.generic_aliases.contains(alias_name));
+    const info = s.checker.generic_aliases.get(alias_name).?;
+    // Body should resolve to a structural object type with the two
+    // declared members; recursive `next` is folded to `unknown | null`
+    // when the placeholder is consulted, but the alias body itself is
+    // a real object — not the `unknown` placeholder.
+    try T.expect(s.checker.interner.pool.flagsOf(info.body).is_object_type);
+    const members = s.checker.interner.objectMembers(info.body);
+    try T.expectEqual(@as(usize, 2), members.len);
+}
 
+test "checker: recursive type alias — `Tree<number>` with self-referential children typechecks" {
+    // `type Tree<T> = { value: T; children: Tree<T>[] }` — the recursive
+    // alias is the canonical TypeScript example. The pre-registration
+    // pass ensures `Tree<T>` resolves to (at least) a placeholder when
+    // the body lowers, so `Tree<number>` still produces a usable object
+    // type rather than panicking.
+    const s = try newSetup(
+        \\type Tree<T> = { value: T; children: Tree<T>[] };
+        \\let root: Tree<number> = { value: 1, children: [] };
+    );
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+    const alias_name = try s.sint.intern("Tree");
+    try T.expect(s.checker.generic_aliases.contains(alias_name));
+    // The annotation `Tree<number>` on `root` should lower to an
+    // object type (its `value` member typed as `number`). The
+    // assignment of `{ value: 1, children: [] }` should not emit a
+    // TS2322 (type-not-assignable) diagnostic.
+    for (s.checker.diagnostics.items) |d| {
+        try T.expect(d.code != TsCodes.type_not_assignable);
+    }
+}
+
+test "checker: mutually recursive type aliases — `A = { b: B }; B = { a: A }` register both names" {
+    // `type A = { b: B }; type B = { a: A };` — A's body sees B before
+    // B is encountered, and B's body refers back to A. Pre-registering
+    // both names with placeholder bodies makes mutual recursion work
+    // without infinite recursion or panic.
+    const s = try newSetup(
+        \\type A = { b: B };
+        \\type B = { a: A };
+        \\let x: A = { b: { a: { b: { a: null as any } } } };
+    );
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+    const a_name = try s.sint.intern("A");
+    const b_name = try s.sint.intern("B");
+    // Both aliases must be registered as named types after the pass.
+    try T.expect(s.checker.type_names.contains(a_name));
+    try T.expect(s.checker.type_names.contains(b_name));
+    // The stored type for A must be an object type with the `b` member,
+    // not the `unknown` placeholder left over from pre-registration.
+    const a_t = s.checker.type_names.get(a_name).?;
+    try T.expect(s.checker.interner.pool.flagsOf(a_t).is_object_type);
+}
