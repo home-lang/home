@@ -693,6 +693,9 @@ pub const Checker = struct {
                     // has return type `asserts x is string` narrows
                     // `x` to `string` from this point forward.
                     try self.applyAssertionFlow(s);
+                    // Logical-assignment narrowing: `x ??= "default"`
+                    // makes `x` non-nullish for subsequent statements.
+                    try self.applyLogicalAssignmentFlow(s);
                 }
             },
             .try_stmt => {
@@ -808,6 +811,7 @@ pub const Checker = struct {
             for (stmts) |s| {
                 try self.checkStatement(s);
                 try self.applyAssertionFlow(s);
+                try self.applyLogicalAssignmentFlow(s);
             }
         } else {
             // Arrow with expression body — its expression IS the
@@ -4071,6 +4075,37 @@ pub const Checker = struct {
         return true;
     }
 
+    /// Post-statement narrowing for logical assignments. Recognizes
+    /// the lowered shape `target = target <op> value` produced by
+    /// the parser for `??=` (and `||=`/`&&=`, which lower the same
+    /// way). After `x ??= "default"`, narrows `x` to its non-nullish
+    /// type unioned with the rhs's type — so a subsequent
+    /// `const r: string = x` where `x: string | null` typechecks.
+    /// v0 only narrows for `??=`; `||=`/`&&=` truthiness narrowing
+    /// is deferred.
+    fn applyLogicalAssignmentFlow(self: *Checker, stmt: NodeId) !void {
+        if (self.hir.kindOf(stmt) != .assignment) return;
+        const a = hir_mod.assignmentOf(self.hir, stmt);
+        if (a.op != null) return; // arithmetic compound assignment
+        if (self.hir.kindOf(a.target) != .identifier) return;
+        if (self.hir.kindOf(a.value) != .logical_op) return;
+        const target_id = hir_mod.identifierOf(self.hir, a.target);
+        const l = hir_mod.logicalOf(self.hir, a.value);
+        // Only act when the operator's lhs is the same identifier as
+        // the assignment target — that's the lowered `x = x ?? rhs`
+        // shape produced by `parseLogicalAssign`.
+        if (self.hir.kindOf(l.lhs) != .identifier) return;
+        const lhs_id = hir_mod.identifierOf(self.hir, l.lhs);
+        if (lhs_id.name != target_id.name) return;
+        if (l.op != .nullish) return; // v0: only `??=` narrows
+        // Use the assignment value's already-computed type — for the
+        // `target ?? rhs` shape this is `(target minus null|undefined)
+        // | rhs_type`, exactly what we want to narrow `target` to.
+        const value_t = self.hir.typeOf(a.value);
+        if (value_t == types.Primitive.none) return;
+        try self.recordNarrow(target_id.name, value_t);
+    }
+
     /// Assertion-function flow narrowing. If `stmt` is a call to a
     /// function whose return type is `asserts arg is T`, record
     /// `arg -> T` in the surrounding narrow scope so subsequent
@@ -6842,6 +6877,17 @@ test "checker: nullish coalescing strips null/undefined from lhs" {
     }
 }
 
+test "checker: ??= narrows the assignment target to non-nullish" {
+    // After `x ??= "default"`, `x` is non-nullish for subsequent
+    // statements — assigning it to `string` must not trigger TS2322.
+    const s = try newSetup(
+        \\function f(x: string | null) { x ??= "default"; const r: string = x; }
+    );
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+    try T.expectEqual(@as(usize, 0), s.checker.diagnostics.items.len);
+}
+
 test "checker: optional chaining widens the result with undefined" {
     const s = try newSetup(
         \\interface Box { value: number; }
@@ -9004,3 +9050,5 @@ test "checker: array spread of T[] yields T[]" {
         try T.expect(d.code != TsCodes.type_not_assignable);
     }
 }
+
+

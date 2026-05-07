@@ -2273,6 +2273,14 @@ pub const Parser = struct {
             .asterisk_equal => return self.parseCompoundAssign(left, .mul),
             .slash_equal => return self.parseCompoundAssign(left, .div),
             .percent_equal => return self.parseCompoundAssign(left, .mod),
+            // Logical assignments `??=`, `||=`, `&&=` (ES2021).
+            // Lowered to `a = a <op> b` so existing checker logic
+            // (nullish-coalescing strips null|undefined from lhs)
+            // produces the right result type. Post-statement
+            // narrowing for `??=` is applied by the checker.
+            .question_question_equal => return self.parseLogicalAssign(left, .nullish),
+            .pipe_pipe_equal => return self.parseLogicalAssign(left, .@"or"),
+            .ampersand_ampersand_equal => return self.parseLogicalAssign(left, .@"and"),
             else => return left,
         }
     }
@@ -2573,6 +2581,26 @@ pub const Parser = struct {
         const right = try self.parseAssignmentExpression();
         const sp: Span = .{ .start = self.hir.spanOf(left).start, .end = self.hir.spanOf(right).end };
         return try self.builder.addAssignment(sp, left, right, op);
+    }
+
+    /// Lower `a <op>= b` (where <op> is `??`, `||`, or `&&`) into
+    /// `a = a <op> b`. We duplicate the lhs identifier so the
+    /// assignment target and the operator's lhs are independent
+    /// HIR nodes. v0 only handles identifier targets — the common
+    /// `x ??= "default"` pattern. Non-identifier targets fall through
+    /// as `InvalidLeftHandSide`.
+    fn parseLogicalAssign(self: *Parser, left: NodeId, op: hir_mod.LogicalOp) ParseError!NodeId {
+        _ = self.advance();
+        const right = try self.parseAssignmentExpression();
+        if (self.hir.kindOf(left) != .identifier) {
+            return error.InvalidLeftHandSide;
+        }
+        const id_payload = hir_mod.identifierOf(self.hir, left);
+        const left_span = self.hir.spanOf(left);
+        const left_dup = try self.builder.addIdentifier(left_span, id_payload.name);
+        const op_span: Span = .{ .start = left_span.start, .end = self.hir.spanOf(right).end };
+        const logical = try self.builder.addLogicalOp(op_span, op, left_dup, right);
+        return try self.builder.addAssignment(op_span, left, logical, null);
     }
 
     fn parseConditionalExpression(self: *Parser) ParseError!NodeId {
