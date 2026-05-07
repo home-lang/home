@@ -80,6 +80,7 @@ pub const Method = enum {
     text_document_document_highlight,
     text_document_formatting,
     text_document_code_lens,
+    code_lens_resolve,
     text_document_implementation,
     text_document_document_link,
     document_link_resolve,
@@ -118,6 +119,7 @@ pub const Method = enum {
             .{ "textDocument/documentHighlight", Method.text_document_document_highlight },
             .{ "textDocument/formatting", Method.text_document_formatting },
             .{ "textDocument/codeLens", Method.text_document_code_lens },
+            .{ "codeLens/resolve", Method.code_lens_resolve },
             .{ "textDocument/implementation", Method.text_document_implementation },
             .{ "textDocument/documentLink", Method.text_document_document_link },
             .{ "documentLink/resolve", Method.document_link_resolve },
@@ -1790,6 +1792,22 @@ pub fn handleCodeLens(
     return encodeResponse(gpa, request_id, buf.items);
 }
 
+/// Handle a `codeLens/resolve` JSON-RPC request. Stub: echoes the
+/// input `CodeLens` back unchanged. The editor uses
+/// `codeLens/resolve` when a lens's `command` was omitted in the
+/// initial response and needs lazy resolution; our `codeLens`
+/// handler always emits `command` eagerly, so resolve is a no-op
+/// here. Caller owns the returned slice.
+pub fn handleCodeLensResolve(
+    service: *ts_lsp.Service,
+    gpa: std.mem.Allocator,
+    request_id: RequestId,
+    params_json: []const u8,
+) ![]u8 {
+    _ = service;
+    return encodeResponse(gpa, request_id, params_json);
+}
+
 /// Map `LspDiagnostic.Severity` to the LSP-wire severity number
 /// (1 = Error, 2 = Warning, 3 = Information, 4 = Hint).
 fn lspSeverityCode(s: ts_lsp.LspDiagnostic.Severity) u8 {
@@ -2186,6 +2204,10 @@ pub fn dispatchRequest(
         .text_document_code_lens => {
             if (is_notification) return &.{};
             return try handleCodeLens(service, gpa, id, params);
+        },
+        .code_lens_resolve => {
+            if (is_notification) return &.{};
+            return try handleCodeLensResolve(service, gpa, id, params);
         },
         .text_document_implementation => {
             if (is_notification) return &.{};
@@ -3369,4 +3391,24 @@ test "handleDocumentLinkResolve: stub echoes input params" {
     try T.expect(std.mem.indexOf(u8, out, "\"jsonrpc\":\"2.0\"") != null);
     try T.expect(std.mem.indexOf(u8, out, "\"id\":71") != null);
     try T.expect(std.mem.indexOf(u8, out, "\"target\":\"file:///lib.ts\"") != null);
+}
+
+test "handleCodeLensResolve: stub echoes input params" {
+    var vfs = ts_resolver.VirtualFs.init(T.allocator);
+    defer vfs.deinit();
+    var resolver = ts_resolver.Resolver.init(T.allocator, vfs.fs(), .{});
+    defer resolver.deinit();
+    var program = ts_program.Program.init(T.allocator, &resolver);
+    defer program.deinit();
+
+    var svc = ts_lsp.Service.init(T.allocator, &program);
+
+    const params =
+        \\{"range":{"start":{"line":0,"character":9},"end":{"line":0,"character":12}},"command":{"title":"2 references","command":""}}
+    ;
+    const out = try handleCodeLensResolve(&svc, T.allocator, .{ .integer = 152 }, params);
+    defer T.allocator.free(out);
+    try T.expect(std.mem.indexOf(u8, out, "\"jsonrpc\":\"2.0\"") != null);
+    try T.expect(std.mem.indexOf(u8, out, "\"id\":152") != null);
+    try T.expect(std.mem.indexOf(u8, out, "\"title\":\"2 references\"") != null);
 }
