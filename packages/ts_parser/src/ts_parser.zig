@@ -2860,6 +2860,10 @@ pub const Parser = struct {
                 _ = self.advance();
                 return try self.builder.addLiteralNull(tokenSpan(t));
             },
+            .kw_undefined => {
+                _ = self.advance();
+                return try self.builder.addLiteralUndefined(tokenSpan(t));
+            },
             .identifier => {
                 _ = self.advance();
                 if (std.mem.eql(u8, self.source[t.span.start..t.span.end], "undefined")) {
