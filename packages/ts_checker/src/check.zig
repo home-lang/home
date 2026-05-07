@@ -3857,17 +3857,45 @@ pub const Checker = struct {
             .object_literal => blk: {
                 // Type each property and synthesize an object-type
                 // mirroring the shape: '{ x: 1 }' -> '{ x: number }'.
+                // Spread elements (`...expr`) are stored as raw
+                // expression nodes; merge their members in declaration
+                // order. Later occurrences override earlier ones,
+                // matching TS's "last wins" semantics.
                 const props = hir_mod.objectLiteralProps(self.hir, node);
                 var members: std.ArrayListUnmanaged(types.ObjectMember) = .empty;
                 defer members.deinit(self.gpa);
+                const upsert = struct {
+                    fn run(
+                        gpa: std.mem.Allocator,
+                        list: *std.ArrayListUnmanaged(types.ObjectMember),
+                        m: types.ObjectMember,
+                    ) !void {
+                        for (list.items) |*existing| {
+                            if (existing.name == m.name) {
+                                existing.* = m;
+                                return;
+                            }
+                        }
+                        try list.append(gpa, m);
+                    }
+                }.run;
                 for (props) |p| {
-                    if (self.hir.kindOf(p) != .object_property) continue;
+                    if (self.hir.kindOf(p) != .object_property) {
+                        // Spread element: type the expression and
+                        // merge each of its members. Skip silently
+                        // when the spread source isn't an object
+                        // type (v0: ignore arrays / strings / any).
+                        const st = try self.checkExpression(p);
+                        const src_members = self.interner.objectMembers(st);
+                        for (src_members) |m| try upsert(self.gpa, &members, m);
+                        continue;
+                    }
                     const op = hir_mod.objectPropertyOf(self.hir, p);
                     if (op.value == hir_mod.none_node_id) continue;
                     if (self.hir.kindOf(op.key) != .identifier) continue;
                     const k = hir_mod.identifierOf(self.hir, op.key);
                     const vt = try self.checkExpression(op.value);
-                    try members.append(self.gpa, .{
+                    try upsert(self.gpa, &members, .{
                         .name = k.name,
                         .type = vt,
                         .is_optional = false,
@@ -8825,4 +8853,36 @@ test "checker: template-literal type rejects mismatched string init" {
         if (d.code == TsCodes.type_not_assignable) found_ts2322 = true;
     }
     try T.expect(found_ts2322);
+}
+
+test "checker: object spread merges members from source object" {
+    // `{ ...a, z: 3 }` should produce an object type carrying both
+    // `a`'s members and `z: number`. Reading `c.x` therefore types
+    // as `number`, satisfying the explicit `number` annotation.
+    const s = try newSetup(
+        \\const a = { x: 1, y: 2 };
+        \\const c = { ...a, z: 3 };
+        \\const r: number = c.x;
+    );
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+    for (s.checker.diagnostics.items) |d| {
+        try T.expect(d.code != TsCodes.type_not_assignable);
+    }
+}
+
+test "checker: object spread — later spread overrides earlier members" {
+    // `{ ...a, ...b }` with `a: { x: number }` and `b: { x: string }`
+    // should resolve `c.x` as `string` — the rightmost spread wins.
+    const s = try newSetup(
+        \\const a = { x: 1 };
+        \\const b = { x: "s" };
+        \\const c = { ...a, ...b };
+        \\const r: string = c.x;
+    );
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+    for (s.checker.diagnostics.items) |d| {
+        try T.expect(d.code != TsCodes.type_not_assignable);
+    }
 }
