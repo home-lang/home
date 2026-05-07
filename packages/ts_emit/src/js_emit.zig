@@ -158,6 +158,14 @@ pub const Options = struct {
     /// emits the full helper set unconditionally and lets the bundler
     /// tree-shake unused names.
     import_helpers: bool = false,
+    /// `removeComments` — when true, strip JSDoc `/** … */` comments
+    /// from the output. When false (default), JSDoc comments that
+    /// appear immediately before a top-level declaration in the
+    /// source are copied through to the emitted JS so documentation
+    /// generators (TypeDoc, JSDoc) keep working on the JS output.
+    /// Source bytes must be attached via `Printer.setSource` for
+    /// pass-through to take effect.
+    remove_comments: bool = false,
 };
 
 const source_map_mod = @import("source_map.zig");
@@ -317,6 +325,8 @@ pub const Printer = struct {
                 while (j < stmts.len and self.hir.kindOf(stmts[j]) == .decorator) j += 1;
                 if (j < stmts.len and self.hir.kindOf(stmts[j]) == .class_decl) {
                     if (i > 0) try self.write(self.options.newline);
+                    // JSDoc anchored on the run-leading decorator.
+                    try self.emitLeadingJsDoc(stmts[i]);
                     try self.printStatement(stmts[j]);
                     try self.write(self.options.newline);
                     try self.emitClassDecorateCall(stmts[i..j], stmts[j]);
@@ -325,6 +335,7 @@ pub const Printer = struct {
                 }
             }
             if (i > 0) try self.write(self.options.newline);
+            try self.emitLeadingJsDoc(stmt);
             try self.printStatement(stmt);
         }
         // Optional source-map URL trailer.
@@ -426,6 +437,55 @@ pub const Printer = struct {
         var i: u32 = 0;
         while (i < self.depth) : (i += 1) {
             try self.write(self.options.indent);
+        }
+    }
+
+    /// Emit any JSDoc `/** … */` comment that appears immediately
+    /// before `node` in the source. "Immediately before" means
+    /// the comment closes within the run of whitespace that
+    /// precedes the node. The comment is copied byte-for-byte and
+    /// followed by a newline plus the current indent so the
+    /// declaration lands on its own line.
+    ///
+    /// No-op when `options.remove_comments` is true, when source
+    /// bytes are unattached, or when no leading JSDoc is present.
+    fn emitLeadingJsDoc(self: *Printer, node: NodeId) !void {
+        if (self.options.remove_comments) return;
+        const src = self.source orelse return;
+        const span = self.hir.spanOf(node);
+        const start: usize = @intCast(span.start);
+        if (start == 0 or start > src.len) return;
+        // Walk backwards over horizontal + vertical whitespace.
+        var i: usize = start;
+        while (i > 0) {
+            const c = src[i - 1];
+            if (c == ' ' or c == '\t' or c == '\r' or c == '\n') {
+                i -= 1;
+                continue;
+            }
+            break;
+        }
+        // Need a closing `*/` immediately before the whitespace run.
+        if (i < 2) return;
+        if (!(src[i - 1] == '/' and src[i - 2] == '*')) return;
+        const close_end = i; // exclusive end of `*/`
+        // Walk back to the opening `/**`. Search for the literal
+        // "/**" with the second `*` distinct from the closing `*/`'s.
+        if (close_end < 5) return; // need at least `/** */`
+        var k: usize = close_end - 2; // index of the `*` of `*/`
+        // k must be at least 2 so that src[k-2..k+1] is a valid range.
+        while (k >= 2) : (k -= 1) {
+            if (src[k - 2] == '/' and src[k - 1] == '*' and src[k] == '*') {
+                const open_start = k - 2;
+                if (open_start + 3 > close_end) return;
+                const comment = src[open_start..close_end];
+                if (comment.len < 5) return;
+                try self.write(comment);
+                try self.write(self.options.newline);
+                try self.indent();
+                return;
+            }
+            if (k == 2) break;
         }
     }
 
@@ -2238,6 +2298,7 @@ fn newTestSetup(source: []const u8) !*TestSetup {
     errdefer s.parser.deinit();
     s.root = try s.parser.parseSourceFile();
     s.printer = Printer.init(T.allocator, &s.hir, &s.interner, .{});
+    s.printer.setSource(source);
     return s;
 }
 
@@ -2403,6 +2464,7 @@ fn emitJsx(source: []const u8, opts: Options) ![]u8 {
     s.root = try s.parser.parseSourceFile();
     s.printer = Printer.init(T.allocator, &s.hir, &s.interner, opts);
     defer s.printer.deinit();
+    s.printer.setSource(source);
     try s.printer.printSourceFile(s.root);
     return T.allocator.dupe(u8, s.printer.out.items);
 }
@@ -2679,6 +2741,7 @@ fn emitWithOpts(source: []const u8, opts: Options) ![]u8 {
     s.root = try s.parser.parseSourceFile();
     s.printer = Printer.init(T.allocator, &s.hir, &s.interner, opts);
     defer s.printer.deinit();
+    s.printer.setSource(source);
     try s.printer.printSourceFile(s.root);
     return T.allocator.dupe(u8, s.printer.out.items);
 }
@@ -3068,4 +3131,38 @@ test "emit: public field hoisted into existing ctor at es2017" {
     try T.expect(std.mem.indexOf(u8, out, "this.n = n;") != null);
     // No leftover native field declaration as a class member.
     try T.expect(std.mem.indexOf(u8, out, "\n  x = 1;") == null);
+}
+
+test "emit: preserves leading JSDoc on a function declaration" {
+    const src =
+        "/**\n" ++
+        " * Adds two numbers.\n" ++
+        " * @param {number} a\n" ++
+        " * @param {number} b\n" ++
+        " * @returns {number}\n" ++
+        " */\n" ++
+        "function add(a, b) { return a + b; }";
+    const out = try emit(src);
+    defer T.allocator.free(out);
+    // Full JSDoc block copied through verbatim, ahead of the decl.
+    try T.expect(std.mem.indexOf(u8, out, "/**") != null);
+    try T.expect(std.mem.indexOf(u8, out, "Adds two numbers.") != null);
+    try T.expect(std.mem.indexOf(u8, out, "@param {number} a") != null);
+    try T.expect(std.mem.indexOf(u8, out, "@returns {number}") != null);
+    try T.expect(std.mem.indexOf(u8, out, "*/") != null);
+    // The JSDoc must lead the declaration.
+    const doc_pos = std.mem.indexOf(u8, out, "/**").?;
+    const fn_pos = std.mem.indexOf(u8, out, "function add").?;
+    try T.expect(doc_pos < fn_pos);
+}
+
+test "emit: removeComments strips JSDoc" {
+    const src =
+        "/** A docstring. */\n" ++
+        "function add(a, b) { return a + b; }";
+    const out = try emitWithOpts(src, .{ .remove_comments = true });
+    defer T.allocator.free(out);
+    try T.expect(std.mem.indexOf(u8, out, "/**") == null);
+    try T.expect(std.mem.indexOf(u8, out, "A docstring") == null);
+    try T.expect(std.mem.indexOf(u8, out, "function add") != null);
 }
