@@ -142,6 +142,14 @@ pub const Options = struct {
     /// TS 5.0+. v1 only handles class-level decorators in Stage 3
     /// mode; per-member Stage 3 emit still uses the legacy form.
     experimental_decorators: bool = true,
+    /// `importHelpers` — when true, prepend an
+    /// `import { __awaiter, __decorate, __extends, __param,
+    /// __importDefault, __importStar } from "tslib";` line at the top
+    /// of the file so the runtime helpers come from the `tslib`
+    /// package rather than being expected as ambient globals. v0
+    /// emits the full helper set unconditionally and lets the bundler
+    /// tree-shake unused names.
+    import_helpers: bool = false,
 };
 
 const source_map_mod = @import("source_map.zig");
@@ -265,6 +273,16 @@ pub const Printer = struct {
     /// Public entry: emit a complete source-file as JavaScript.
     pub fn printSourceFile(self: *Printer, root: NodeId) !void {
         const stmts = hir_mod.blockStmts(self.hir, root);
+        // `importHelpers: true` — emit a tslib import for the runtime
+        // helpers we may reference (`__awaiter`, `__decorate`, etc.).
+        // v0 emits the full set unconditionally; the bundler's
+        // tree-shaker drops unreferenced names. The import lands
+        // before any user-level statement so the helpers are in
+        // scope for the lowered code below.
+        if (self.options.import_helpers) {
+            try self.write("import { __awaiter, __decorate, __extends, __param, __importDefault, __importStar } from \"tslib\";");
+            try self.write(self.options.newline);
+        }
         // §4.A.10 — auto-import the runtime helpers when the file
         // uses any JSX *and* the runtime mode is automatic. The
         // imports land before any user-level statement so they're
@@ -2413,6 +2431,29 @@ test "emit: async function lowers to __awaiter wrapper at es2015" {
     // The outer function is plain.
     try T.expect(std.mem.indexOf(u8, out, "function f()") != null);
     // `__awaiter(this, void 0, void 0, function* ()` wrapper appears.
+    try T.expect(std.mem.indexOf(u8, out, "__awaiter(this, void 0, void 0, function* ()") != null);
+}
+
+test "emit: importHelpers prepends tslib import when async lowers at es2015" {
+    const out = try emitWithOpts(
+        "async function f() { return await g(); }",
+        .{ .es_target = .es2015, .import_helpers = true },
+    );
+    defer T.allocator.free(out);
+    try T.expect(std.mem.indexOf(u8, out, "import { __awaiter, __decorate, __extends, __param, __importDefault, __importStar } from \"tslib\";") != null);
+    // Helper still gets referenced from user code.
+    try T.expect(std.mem.indexOf(u8, out, "__awaiter(this, void 0, void 0, function* ()") != null);
+}
+
+test "emit: no tslib import when import_helpers is off" {
+    const out = try emitWithOpts(
+        "async function f() { return await g(); }",
+        .{ .es_target = .es2015 },
+    );
+    defer T.allocator.free(out);
+    try T.expect(std.mem.indexOf(u8, out, "tslib") == null);
+    try T.expect(std.mem.indexOf(u8, out, "import {") == null);
+    // Helper is still referenced — runtime is expected to provide it.
     try T.expect(std.mem.indexOf(u8, out, "__awaiter(this, void 0, void 0, function* ()") != null);
 }
 
