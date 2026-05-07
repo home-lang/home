@@ -140,6 +140,12 @@ pub const StrictFlags = struct {
     /// flexibility — matches `tsc`'s pre-3.0 default and current
     /// behavior on method declarations).
     strict_function_types: bool = false,
+    /// `noUncheckedIndexedAccess`. When true, indexed access through
+    /// an array or index signature widens the result with `undefined`
+    /// — `arr[i]` types as `T | undefined` rather than `T`. Tuple
+    /// positional access (`tup[0]` against `[A, B]`) keeps the precise
+    /// element type since the arity is statically known.
+    no_unchecked_indexed_access: bool = false,
 };
 
 pub const Checker = struct {
@@ -2829,15 +2835,19 @@ pub const Checker = struct {
                             }
                         }
                     }
-                    // Index-signature fallback.
+                    // Index-signature fallback. With
+                    // `noUncheckedIndexedAccess`, widen the result
+                    // with `undefined` since dynamic indexing may
+                    // miss. Tuple positional access above is exempt
+                    // because the arity is statically known.
                     const idx_flags = self.interner.pool.flagsOf(idx_t);
                     if (idx_flags.is_string) {
                         const v = self.interner.objectStringIndex(obj_t);
-                        if (v != types.Primitive.none) break :blk v;
+                        if (v != types.Primitive.none) break :blk self.maybeWidenWithUndefined(v);
                     }
                     if (idx_flags.is_number) {
                         const v = self.interner.objectNumberIndex(obj_t);
-                        if (v != types.Primitive.none) break :blk v;
+                        if (v != types.Primitive.none) break :blk self.maybeWidenWithUndefined(v);
                     }
                 }
                 break :blk types.Primitive.any;
@@ -4210,6 +4220,24 @@ pub const Checker = struct {
         return self.interner.internUnion(kept.items) catch return error.OutOfMemory;
     }
 
+    /// Widen `t` with `undefined` when `noUncheckedIndexedAccess`
+    /// is enabled. Returns `t` unchanged when the option is off,
+    /// when `t` is already `undefined`, or when `t` already contains
+    /// `undefined` as a union member. Used by `element_access`
+    /// typing for index-signature paths so `arr[i]` types as
+    /// `T | undefined`.
+    fn maybeWidenWithUndefined(self: *Checker, t: TypeId) TypeId {
+        if (!self.strict_flags.no_unchecked_indexed_access) return t;
+        if (t == types.Primitive.undefined_t) return t;
+        const flags = self.interner.pool.flagsOf(t);
+        if (flags.is_union) {
+            for (self.interner.unionMembers(t)) |m| {
+                if (m == types.Primitive.undefined_t) return t;
+            }
+        }
+        return self.interner.internUnion(&.{ t, types.Primitive.undefined_t }) catch t;
+    }
+
     /// Subtract a single type from a union (or return `t` unchanged
     /// if `t` isn't a union or doesn't contain `to_remove`). Used by
     /// negative-branch narrowing on `=== null`, `=== undefined`,
@@ -5489,6 +5517,47 @@ test "checker: tuple literal-index resolves to the specific member type" {
     const body2 = hir_mod.blockStmts(&s.hir, f2.body);
     const ret2 = hir_mod.returnOf(&s.hir, body2[0]);
     try T.expectEqual(types.Primitive.string_t, s.hir.typeOf(ret2.value));
+}
+
+test "checker: noUncheckedIndexedAccess widens arr[i] with undefined" {
+    const s = try newSetup(
+        \\const arr: number[] = [1];
+        \\const x = arr[0];
+        \\let n: number = x;
+    );
+    defer destroySetup(s);
+    s.checker.setStrictFlags(.{ .no_unchecked_indexed_access = true });
+    try s.checker.checkSourceFile(s.root);
+    var found = false;
+    for (s.checker.diagnostics.items) |d| {
+        if (d.code == TsCodes.type_not_assignable) found = true;
+    }
+    try T.expect(found);
+    const stmts = hir_mod.blockStmts(&s.hir, s.root);
+    const x_decl = hir_mod.varDeclOf(&s.hir, stmts[1]);
+    const x_t = s.hir.typeOf(x_decl.init);
+    try T.expect(s.ti.pool.flagsOf(x_t).is_union);
+    var has_num = false;
+    var has_undef = false;
+    for (s.ti.unionMembers(x_t)) |m| {
+        if (m == types.Primitive.number_t) has_num = true;
+        if (m == types.Primitive.undefined_t) has_undef = true;
+    }
+    try T.expect(has_num);
+    try T.expect(has_undef);
+}
+
+test "checker: noUncheckedIndexedAccess off keeps arr[i] as T" {
+    const s = try newSetup(
+        \\const arr: number[] = [1];
+        \\const x = arr[0];
+        \\let n: number = x;
+    );
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+    for (s.checker.diagnostics.items) |d| {
+        try T.expect(d.code != TsCodes.type_not_assignable);
+    }
 }
 
 test "checker: `as const` on a string literal types as the literal" {
