@@ -77,7 +77,6 @@
 //! ----------------------------------------------------------------------------
 //! NOT WIRED  (no `Method` variant, no handler — reserved for future work)
 //! ----------------------------------------------------------------------------
-//!   textDocument/declaration
 //!   textDocument/rangeFormatting
 //!   textDocument/moniker
 //!   workspace/executeCommand
@@ -113,6 +112,7 @@ pub const Method = enum {
     text_document_did_close,
     text_document_hover,
     text_document_definition,
+    text_document_declaration,
     text_document_type_definition,
     text_document_references,
     text_document_prepare_call_hierarchy,
@@ -166,6 +166,7 @@ pub const Method = enum {
             .{ "textDocument/didClose", Method.text_document_did_close },
             .{ "textDocument/hover", Method.text_document_hover },
             .{ "textDocument/definition", Method.text_document_definition },
+            .{ "textDocument/declaration", Method.text_document_declaration },
             .{ "textDocument/typeDefinition", Method.text_document_type_definition },
             .{ "textDocument/references", Method.text_document_references },
             .{ "textDocument/prepareCallHierarchy", Method.text_document_prepare_call_hierarchy },
@@ -236,6 +237,7 @@ pub const SUPPORTED_METHODS = &[_][]const u8{
     // Language features.
     "textDocument/hover",
     "textDocument/definition",
+    "textDocument/declaration",
     "textDocument/typeDefinition",
     "textDocument/implementation",
     "textDocument/references",
@@ -773,6 +775,22 @@ pub fn handleDefinition(
         return encodeResponse(gpa, request_id, buf.items);
     }
     return encodeResponse(gpa, request_id, "null");
+}
+
+/// Handle a `textDocument/declaration` JSON-RPC request. Per the
+/// LSP spec the declaration of a symbol is a sibling concept to its
+/// definition: for variables, declaration is the `let/const/var`
+/// statement while definition is the type. For v0 we delegate to the
+/// same `Service.gotoDefinition` path used by `textDocument/definition`,
+/// emitting an identical `Location | null` response shape. Caller owns
+/// the returned slice.
+pub fn handleDeclaration(
+    service: *ts_lsp.Service,
+    gpa: std.mem.Allocator,
+    request_id: RequestId,
+    params_json: []const u8,
+) ![]u8 {
+    return handleDefinition(service, gpa, request_id, params_json);
 }
 
 /// Handle a `textDocument/typeDefinition` JSON-RPC request. Same
@@ -2949,7 +2967,7 @@ pub fn handleDiagnostic(
 /// every method we support.
 pub fn renderInitializeResult(gpa: std.mem.Allocator) ![]u8 {
     return gpa.dupe(u8,
-        \\{"capabilities":{"textDocumentSync":1,"hoverProvider":true,"definitionProvider":true,"referencesProvider":true,"completionProvider":{"triggerCharacters":[".","("]},"diagnosticProvider":{"interFileDependencies":true,"workspaceDiagnostics":true}},"serverInfo":{"name":"home-lsp","version":"0.1.0"}}
+        \\{"capabilities":{"textDocumentSync":1,"hoverProvider":true,"definitionProvider":true,"declarationProvider":true,"referencesProvider":true,"completionProvider":{"triggerCharacters":[".","("]},"diagnosticProvider":{"interFileDependencies":true,"workspaceDiagnostics":true}},"serverInfo":{"name":"home-lsp","version":"0.1.0"}}
     );
 }
 
@@ -2965,7 +2983,7 @@ pub fn renderInitializeCapabilities(gpa: std.mem.Allocator) ![]u8 {
     var buf: std.ArrayListUnmanaged(u8) = .empty;
     errdefer buf.deinit(gpa);
     try buf.appendSlice(gpa,
-        \\{"capabilities":{"textDocumentSync":1,"hoverProvider":true,"definitionProvider":true,"referencesProvider":true,"completionProvider":{"triggerCharacters":["."," "]},"documentSymbolProvider":true,"workspaceSymbolProvider":true,"renameProvider":{"prepareProvider":true},"codeActionProvider":true,"executeCommandProvider":{"commands":["home.organizeImports","home.applyCodeAction"]},"semanticTokensProvider":{"legend":{"tokenTypes":["variable","parameter","function","method","class","interface","type","enum","property","keyword","string","number","operator","comment"],"tokenModifiers":[]},"full":true,"range":true},"signatureHelpProvider":{"triggerCharacters":["(",","]},"documentHighlightProvider":false,"documentFormattingProvider":true,"documentOnTypeFormattingProvider":{"firstTriggerCharacter":"}","moreTriggerCharacters":[";","\n"]},"foldingRangeProvider":true,"selectionRangeProvider":true,"monikerProvider":true,"typeHierarchyProvider":true,"inlineValueProvider":true,"colorProvider":true,"inlayHintProvider":{"resolveProvider":false}},"serverInfo":{"name":"home-lsp","version":"0.1.0","supportedMethods":[
+        \\{"capabilities":{"textDocumentSync":1,"hoverProvider":true,"definitionProvider":true,"declarationProvider":true,"referencesProvider":true,"completionProvider":{"triggerCharacters":["."," "]},"documentSymbolProvider":true,"workspaceSymbolProvider":true,"renameProvider":{"prepareProvider":true},"codeActionProvider":true,"executeCommandProvider":{"commands":["home.organizeImports","home.applyCodeAction"]},"semanticTokensProvider":{"legend":{"tokenTypes":["variable","parameter","function","method","class","interface","type","enum","property","keyword","string","number","operator","comment"],"tokenModifiers":[]},"full":true,"range":true},"signatureHelpProvider":{"triggerCharacters":["(",","]},"documentHighlightProvider":false,"documentFormattingProvider":true,"documentOnTypeFormattingProvider":{"firstTriggerCharacter":"}","moreTriggerCharacters":[";","\n"]},"foldingRangeProvider":true,"selectionRangeProvider":true,"monikerProvider":true,"typeHierarchyProvider":true,"inlineValueProvider":true,"colorProvider":true,"inlayHintProvider":{"resolveProvider":false}},"serverInfo":{"name":"home-lsp","version":"0.1.0","supportedMethods":[
     );
     for (SUPPORTED_METHODS, 0..) |m, i| {
         if (i != 0) try buf.append(gpa, ',');
@@ -3153,6 +3171,10 @@ pub fn dispatchRequest(
         .text_document_definition => {
             if (is_notification) return &.{};
             return try handleDefinition(service, gpa, id, params);
+        },
+        .text_document_declaration => {
+            if (is_notification) return &.{};
+            return try handleDeclaration(service, gpa, id, params);
         },
         .text_document_type_definition => {
             if (is_notification) return &.{};
@@ -3849,6 +3871,44 @@ test "handleDefinition: routes request and returns Location response" {
         \\{"jsonrpc":"2.0","id":32,"method":"textDocument/definition","params":{"textDocument":{"uri":"file:///main.ts"},"position":{"line":99,"character":0}}}
     ;
     const out2 = try handleDefinition(&svc, T.allocator, .{ .integer = 32 }, oob);
+    defer T.allocator.free(out2);
+    try T.expect(std.mem.indexOf(u8, out2, "\"result\":null") != null);
+}
+
+test "handleDeclaration: returns same Location response shape as definition" {
+    var vfs = ts_resolver.VirtualFs.init(T.allocator);
+    defer vfs.deinit();
+    var resolver = ts_resolver.Resolver.init(T.allocator, vfs.fs(), .{});
+    defer resolver.deinit();
+    var program = ts_program.Program.init(T.allocator, &resolver);
+    defer program.deinit();
+
+    // Same shape exercise as handleDefinition: cursor on `foo`
+    // reference (line 1) should resolve back to the declaration.
+    const src =
+        \\let foo = 1;
+        \\let bar = foo;
+    ;
+    _ = try program.add("/main.ts", src);
+    try program.compileAll(.{});
+
+    var svc = ts_lsp.Service.init(T.allocator, &program);
+
+    const body =
+        \\{"jsonrpc":"2.0","id":131,"method":"textDocument/declaration","params":{"textDocument":{"uri":"file:///main.ts"},"position":{"line":1,"character":10}}}
+    ;
+    const out = try handleDeclaration(&svc, T.allocator, .{ .integer = 131 }, body);
+    defer T.allocator.free(out);
+    try T.expect(std.mem.indexOf(u8, out, "\"jsonrpc\":\"2.0\"") != null);
+    try T.expect(std.mem.indexOf(u8, out, "\"id\":131") != null);
+    try T.expect(std.mem.indexOf(u8, out, "\"result\":{\"uri\":\"file:///main.ts\"") != null);
+    try T.expect(std.mem.indexOf(u8, out, "\"range\":") != null);
+
+    // Cursor outside any identifier -> result: null.
+    const oob =
+        \\{"jsonrpc":"2.0","id":132,"method":"textDocument/declaration","params":{"textDocument":{"uri":"file:///main.ts"},"position":{"line":99,"character":0}}}
+    ;
+    const out2 = try handleDeclaration(&svc, T.allocator, .{ .integer = 132 }, oob);
     defer T.allocator.free(out2);
     try T.expect(std.mem.indexOf(u8, out2, "\"result\":null") != null);
 }
