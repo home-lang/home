@@ -1806,6 +1806,19 @@ pub const Checker = struct {
                             const args = hir_mod.typeRefArgs(self.hir, type_node);
                             return try self.lowererLowerWithTypeParams(args[0]);
                         }
+                        // `NoInfer<T>` (TS 5.4) — marks a type-arg
+                        // slot as non-inference so callers can't
+                        // contribute candidates from this position.
+                        // For v0 we treat it transparently: lower to
+                        // T directly. Inference still records the
+                        // first-seen T from any non-NoInfer slot;
+                        // remaining slots reuse the substituted T,
+                        // so explicit `<number>` + non-numeric arg
+                        // still emits TS2345 as expected.
+                        if (std.mem.eql(u8, name_str, "NoInfer")) {
+                            const args = hir_mod.typeRefArgs(self.hir, type_node);
+                            return try self.lowererLowerWithTypeParams(args[0]);
+                        }
                     }
                     if (self.generic_aliases.get(r.name)) |info| {
                         const args = hir_mod.typeRefArgs(self.hir, type_node);
@@ -6281,6 +6294,41 @@ test "checker: obj.x === <literal> narrows obj.x to literal type" {
 test "checker: ThisType<T> unwraps to T" {
     const s = try newSetup(
         \\let x: ThisType<{ value: number }> = { value: 1 };
+    );
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+    try T.expectEqual(@as(usize, 0), s.checker.diagnostics.items.len);
+}
+
+test "checker: NoInfer<T> in param parses without 'cannot find name'" {
+    const s = try newSetup(
+        \\function foo<T>(x: T, y: NoInfer<T>): T { return x; }
+        \\foo(1, 2);
+    );
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+    // NoInfer<T> should lower transparently to T; no diagnostics.
+    try T.expectEqual(@as(usize, 0), s.checker.diagnostics.items.len);
+}
+
+test "checker: NoInfer<T> with explicit type arg + bad arg emits TS2345" {
+    const s = try newSetup(
+        \\function foo<T>(x: T, y: NoInfer<T>): T { return x; }
+        \\foo<number>(1, "s");
+    );
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+    var found = false;
+    for (s.checker.diagnostics.items) |d| {
+        if (d.code == TsCodes.argument_type_mismatch) found = true;
+    }
+    try T.expect(found);
+}
+
+test "checker: NoInfer<T> as alias result type unwraps" {
+    const s = try newSetup(
+        \\type Id<T> = NoInfer<T>;
+        \\let v: Id<number> = 1;
     );
     defer destroySetup(s);
     try s.checker.checkSourceFile(s.root);
