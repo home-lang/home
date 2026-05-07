@@ -689,6 +689,13 @@ pub const Printer = struct {
     /// target is a `let_decl`/`const_decl`/`var_decl`/identifier;
     /// strip the initializer (we'll assign per-iteration) and emit
     /// just the keyword + name.
+    ///
+    /// When the parser sees `for (let|const|var x of …)` it collapses
+    /// the binding to a bare identifier (the decl keyword is consumed
+    /// but not preserved on the HIR target). To keep the lowered ES5
+    /// output well-formed we conservatively prefix `var ` for the
+    /// identifier case as well — `var` redeclaration is a hoisted
+    /// no-op so this is safe even for the rare bare `for (x of …)`.
     fn printForOfBindingDecl(self: *Printer, target: NodeId) anyerror!void {
         const k = self.hir.kindOf(target);
         if (k == .let_decl or k == .const_decl or k == .var_decl) {
@@ -701,6 +708,9 @@ pub const Printer = struct {
             };
             try self.write(kw_str);
             if (v.name != hir_mod.none_node_id) try self.printExpression(v.name);
+        } else if (k == .identifier) {
+            try self.write("var ");
+            try self.printExpression(target);
         } else {
             try self.printExpression(target);
         }
@@ -3033,6 +3043,36 @@ test "emit: for-in is unaffected by es_target" {
     const out = try emitWithOpts("for (let k in obj) { let v = k; }", .{ .es_target = .es5 });
     defer T.allocator.free(out);
     try T.expect(std.mem.indexOf(u8, out, " in ") != null);
+}
+
+test "emit: for-of with array literal source lowers at es5" {
+    const out = try emitWithOpts("for (const x of [1, 2, 3]) { console.log(x); }", .{ .es_target = .es5 });
+    defer T.allocator.free(out);
+    try T.expect(std.mem.indexOf(u8, out, " of ") == null);
+    try T.expect(std.mem.indexOf(u8, out, "_i = 0") != null);
+    try T.expect(std.mem.indexOf(u8, out, "_arr = [1, 2, 3]") != null);
+    try T.expect(std.mem.indexOf(u8, out, "_i < _arr.length") != null);
+    try T.expect(std.mem.indexOf(u8, out, "_i++") != null);
+    try T.expect(std.mem.indexOf(u8, out, "var x = _arr[_i]") != null);
+    try T.expect(std.mem.indexOf(u8, out, "console.log(x)") != null);
+}
+
+test "emit: for-of with array variable lowers at es5" {
+    const out = try emitWithOpts("for (const x of arr) { use(x); }", .{ .es_target = .es5 });
+    defer T.allocator.free(out);
+    try T.expect(std.mem.indexOf(u8, out, " of ") == null);
+    try T.expect(std.mem.indexOf(u8, out, "for (var _i = 0, _arr = arr;") != null);
+    try T.expect(std.mem.indexOf(u8, out, "_i < _arr.length") != null);
+    try T.expect(std.mem.indexOf(u8, out, "var x = _arr[_i]") != null);
+    try T.expect(std.mem.indexOf(u8, out, "use(x)") != null);
+}
+
+test "emit: for-of preserves native syntax at es2015 with array literal" {
+    const out = try emitWithOpts("for (const x of [1, 2, 3]) { console.log(x); }", .{ .es_target = .es2015 });
+    defer T.allocator.free(out);
+    try T.expect(std.mem.indexOf(u8, out, " of ") != null);
+    try T.expect(std.mem.indexOf(u8, out, "_arr") == null);
+    try T.expect(std.mem.indexOf(u8, out, "_i") == null);
 }
 
 test "emit: class downlevels to function-with-prototype at es5" {
