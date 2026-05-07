@@ -1220,8 +1220,10 @@ pub const Service = struct {
     /// the count of program-wide references (the declaration site
     /// itself is excluded from the count). Singular `"1 reference"`
     /// vs plural `"N references"` follows English plural agreement.
-    /// Title strings are owned by `gpa`; callers free them with
-    /// `freeCodeLenses`.
+    /// Each lens carries the `editor.action.showReferences` command id
+    /// so the editor opens the references peek view when the user
+    /// clicks the lens. Title strings are owned by `gpa`; callers
+    /// free them with `freeCodeLenses`.
     pub fn codeLenses(self: *Service, gpa: std.mem.Allocator, file_path: []const u8) ![]CodeLens {
         var out: std.ArrayListUnmanaged(CodeLens) = .empty;
         errdefer {
@@ -1291,7 +1293,7 @@ pub const Service = struct {
                     .end_col = ep.col,
                 },
                 .title = title,
-                .command = "",
+                .command = "editor.action.showReferences",
             });
         }
         return out.toOwnedSlice(gpa);
@@ -4461,8 +4463,10 @@ test "Service: codeLenses count references on top-level fn and class" {
     try T.expectEqual(@as(usize, 2), lenses.len);
     // `add` is referenced twice (in the two calls).
     try T.expectEqualStrings("2 references", lenses[0].title);
+    try T.expectEqualStrings("editor.action.showReferences", lenses[0].command);
     // `Box` is referenced once (in `new Box()`).
     try T.expectEqualStrings("1 reference", lenses[1].title);
+    try T.expectEqualStrings("editor.action.showReferences", lenses[1].command);
 }
 
 test "Service: codeLenses emits zero-reference lens for unused decl" {
@@ -4483,7 +4487,7 @@ test "Service: codeLenses emits zero-reference lens for unused decl" {
 
     try T.expectEqual(@as(usize, 1), lenses.len);
     try T.expectEqualStrings("0 references", lenses[0].title);
-    try T.expectEqualStrings("", lenses[0].command);
+    try T.expectEqualStrings("editor.action.showReferences", lenses[0].command);
 }
 
 test "Service: signatureHelp returns signature info inside a call" {
