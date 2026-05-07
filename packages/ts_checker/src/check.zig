@@ -4767,6 +4767,19 @@ test "checker: `satisfies` emits TS1360 when expr is not assignable to constrain
     try T.expect(found);
 }
 
+test "checker: `satisfies number[]` preserves array type — `.length` resolves" {
+    const s = try newSetup(
+        \\let arr = [1, 2, 3] satisfies number[];
+        \\let n = arr.length;
+    );
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+    try T.expect(s.checker.diagnostics.items.len == 0);
+    const stmts = hir_mod.blockStmts(&s.hir, s.root);
+    const v = hir_mod.varDeclOf(&s.hir, stmts[1]);
+    try T.expectEqual(types.Primitive.number_t, s.hir.typeOf(v.init));
+}
+
 test "checker: noImplicitAny emits TS7006 for unannotated parameter" {
     const s = try newSetup(
         \\function id(x) { return x; }
