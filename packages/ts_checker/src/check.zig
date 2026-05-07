@@ -78,6 +78,9 @@ pub const TsCodes = struct {
     pub const cannot_assign_const: u32 = 2588;
     pub const await_only_in_async: u32 = 1308;
     pub const no_overlap_comparison: u32 = 2367;
+    /// Emitted when `// @ts-expect-error` was placed above a line
+    /// that produced no diagnostics — the directive is unused.
+    pub const unused_ts_expect_error: u32 = 2578;
 };
 
 /// Per-alias generic info: the type-parameter TypeIds in
@@ -219,6 +222,19 @@ pub const Checker = struct {
     strict_flags: StrictFlags = .{},
     diagnostics: std.ArrayListUnmanaged(Diagnostic),
     diag_arena: std.heap.ArenaAllocator,
+    /// Source bytes used for directive scanning (`// @ts-ignore` /
+    /// `// @ts-expect-error`). Optional — when null, no directive
+    /// post-processing runs and the diagnostics list is left as-is.
+    source: ?[]const u8 = null,
+    /// 0-based source lines on which a `// @ts-ignore` directive
+    /// suppresses diagnostics. Populated by `scanDirectives` before
+    /// statement checking; consulted in `applyDirectives` after.
+    ts_ignore_lines: std.AutoHashMapUnmanaged(u32, void) = .empty,
+    /// 0-based source lines on which a `// @ts-expect-error`
+    /// directive suppresses diagnostics. Populated by
+    /// `scanDirectives`; lines that fail to suppress at least one
+    /// diagnostic become a TS2578 in `applyDirectives`.
+    ts_expect_error_lines: std.AutoHashMapUnmanaged(u32, void) = .empty,
 
     pub fn init(
         gpa: std.mem.Allocator,
@@ -266,6 +282,13 @@ pub const Checker = struct {
         self.strict_flags = flags;
     }
 
+    /// Attach the original source bytes so `checkSourceFile` can
+    /// honor `// @ts-ignore` and `// @ts-expect-error` directives.
+    /// The slice must outlive the checker; we don't copy it.
+    pub fn setSource(self: *Checker, source: []const u8) void {
+        self.source = source;
+    }
+
     pub fn deinit(self: *Checker) void {
         for (self.narrow_scopes.items) |*scope| {
             var s = scope.*;
@@ -293,6 +316,8 @@ pub const Checker = struct {
         self.overloads.deinit(self.gpa);
         self.inferred_variance.deinit(self.gpa);
         self.diagnostics.deinit(self.gpa);
+        self.ts_ignore_lines.deinit(self.gpa);
+        self.ts_expect_error_lines.deinit(self.gpa);
         self.diag_arena.deinit();
     }
 
@@ -309,9 +334,102 @@ pub const Checker = struct {
     /// Check a complete source file. The HIR root must be a
     /// block_stmt of top-level statements.
     pub fn checkSourceFile(self: *Checker, root: NodeId) CheckError!void {
+        if (self.source) |src| try self.scanDirectives(src);
         const stmts = hir_mod.blockStmts(self.hir, root);
         for (stmts) |s| try self.checkStatement(s);
         try self.checkUsedBeforeAssignment(stmts);
+        if (self.source != null) try self.applyDirectives(root);
+    }
+
+    /// Scan the source for `// @ts-ignore` and `// @ts-expect-error`
+    /// directives. A directive on line `N` suppresses diagnostics on
+    /// the first non-blank, non-directive line strictly after `N`.
+    /// Block-comment forms (`/* @ts-ignore */`) are out of scope for
+    /// this v0 implementation.
+    fn scanDirectives(self: *Checker, src: []const u8) CheckError!void {
+        self.ts_ignore_lines.clearRetainingCapacity();
+        self.ts_expect_error_lines.clearRetainingCapacity();
+
+        var line: u32 = 0;
+        var i: usize = 0;
+        var pending_ignore: bool = false;
+        var pending_expect: bool = false;
+
+        while (true) {
+            const line_start = i;
+            var line_end = line_start;
+            while (line_end < src.len and src[line_end] != '\n') : (line_end += 1) {}
+            const line_text = src[line_start..line_end];
+
+            // Trim leading whitespace for directive detection.
+            var t: usize = 0;
+            while (t < line_text.len and (line_text[t] == ' ' or line_text[t] == '\t')) : (t += 1) {}
+            const trimmed = line_text[t..];
+
+            const is_blank = trimmed.len == 0;
+            const is_ignore_directive = matchDirective(trimmed, "@ts-ignore");
+            const is_expect_directive = matchDirective(trimmed, "@ts-expect-error");
+            const is_directive = is_ignore_directive or is_expect_directive;
+
+            if (is_ignore_directive) pending_ignore = true;
+            if (is_expect_directive) pending_expect = true;
+
+            if (!is_blank and !is_directive) {
+                if (pending_ignore) {
+                    try self.ts_ignore_lines.put(self.gpa, line, {});
+                    pending_ignore = false;
+                }
+                if (pending_expect) {
+                    try self.ts_expect_error_lines.put(self.gpa, line, {});
+                    pending_expect = false;
+                }
+            }
+
+            if (line_end >= src.len) break;
+            i = line_end + 1;
+            line += 1;
+        }
+    }
+
+    /// Filter out diagnostics whose line is suppressed by an
+    /// `@ts-ignore` or `@ts-expect-error` directive. For
+    /// `@ts-expect-error` lines that didn't suppress at least one
+    /// diagnostic, emit TS2578 ("Unused @ts-expect-error directive").
+    fn applyDirectives(self: *Checker, root: NodeId) CheckError!void {
+        if (self.ts_ignore_lines.count() == 0 and self.ts_expect_error_lines.count() == 0) return;
+        const src = self.source orelse return;
+
+        var used_expect: std.AutoHashMapUnmanaged(u32, void) = .empty;
+        defer used_expect.deinit(self.gpa);
+
+        var i: usize = 0;
+        var keep_count: usize = 0;
+        while (i < self.diagnostics.items.len) : (i += 1) {
+            const d = self.diagnostics.items[i];
+            const span = self.hir.spanOf(d.node);
+            const dline = byteOffsetToLine(src, span.start);
+            const ignored = self.ts_ignore_lines.contains(dline);
+            const expected = self.ts_expect_error_lines.contains(dline);
+            if (ignored or expected) {
+                if (expected) try used_expect.put(self.gpa, dline, {});
+                continue;
+            }
+            self.diagnostics.items[keep_count] = d;
+            keep_count += 1;
+        }
+        self.diagnostics.shrinkRetainingCapacity(keep_count);
+
+        // Emit TS2578 for unused @ts-expect-error directives.
+        var it = self.ts_expect_error_lines.keyIterator();
+        while (it.next()) |line_ptr| {
+            if (used_expect.contains(line_ptr.*)) continue;
+            try self.diagnostics.append(self.gpa, .{
+                .node = root,
+                .code = TsCodes.unused_ts_expect_error,
+                .code_prefix = .TS,
+                .message = "Unused '@ts-expect-error' directive.",
+            });
+        }
     }
 
     fn checkStatement(self: *Checker, node: NodeId) CheckError!void {
@@ -2215,6 +2333,42 @@ pub const Checker = struct {
             defer subs.deinit(self.gpa);
             try subs.put(self.gpa, tp_id, key_lit);
             const value_t = self.substituteType(value_template, &subs) catch value_template;
+
+            // Resolve the per-key effective name. With an `as`
+            // clause (TS 4.1+ key remapping), re-lower the remap
+            // with `K` bound to the current key's string literal
+            // so template-literal / conditional / `Exclude<K, …>`
+            // shapes evaluate eagerly. If the remap reduces to
+            // `never` the key is dropped; otherwise the result
+            // must be a string-like literal and replaces `key_name`.
+            var effective_name: hir_mod.StringId = key_name;
+            if (m.remap != hir_mod.none_node_id) {
+                try self.pushNarrowScope();
+                try self.recordNarrow(tp.name, key_lit);
+                const remap_t = self.lowererLowerWithTypeParams(m.remap) catch types.Primitive.never;
+                self.popNarrowScope();
+                if (remap_t == types.Primitive.never) continue;
+                const rf = self.interner.pool.flagsOf(remap_t);
+                // Unwrap an intersection containing a string literal
+                // (e.g. `K & string` after substitution).
+                const named: TypeId = blk2: {
+                    if (rf.is_intersection) {
+                        const ms = self.interner.intersectionMembers(remap_t);
+                        for (ms) |mt| {
+                            const mf = self.interner.pool.flagsOf(mt);
+                            if (mf.is_literal and mf.is_string) break :blk2 mt;
+                        }
+                    }
+                    break :blk2 remap_t;
+                };
+                const nf = self.interner.pool.flagsOf(named);
+                if (!(nf.is_literal and nf.is_string)) continue;
+                const lit = self.interner.literalOf(named);
+                switch (lit) {
+                    .string_lit => |sid| effective_name = sid,
+                    else => continue,
+                }
+            }
             // Inherit source flags when homomorphic + modifier
             // unspecified; apply +/- modifiers otherwise.
             var src_optional = false;
@@ -2236,7 +2390,7 @@ pub const Checker = struct {
                 else => src_readonly,
             };
             try built.append(self.gpa, .{
-                .name = key_name,
+                .name = effective_name,
                 .type = value_t,
                 .is_optional = is_optional,
                 .is_readonly = is_readonly,
@@ -4085,6 +4239,33 @@ fn isNarrowingGuard(hir: *const Hir, node: NodeId) bool {
     };
 }
 
+/// Test whether a whitespace-trimmed line is a `// <name>` comment.
+/// Accepts arbitrary trailing text after `<name>` (e.g. a colon and
+/// reason: `// @ts-ignore: legacy api`). Block-comment forms aren't
+/// matched here — they'd require a separate scan.
+fn matchDirective(trimmed: []const u8, name: []const u8) bool {
+    if (trimmed.len < 2 + name.len) return false;
+    if (trimmed[0] != '/' or trimmed[1] != '/') return false;
+    var j: usize = 2;
+    while (j < trimmed.len and (trimmed[j] == ' ' or trimmed[j] == '\t')) : (j += 1) {}
+    if (trimmed.len - j < name.len) return false;
+    if (!std.mem.eql(u8, trimmed[j .. j + name.len], name)) return false;
+    if (j + name.len == trimmed.len) return true;
+    const c = trimmed[j + name.len];
+    return !(std.ascii.isAlphanumeric(c) or c == '_' or c == '-');
+}
+
+/// Convert a 0-based byte offset into a 0-based source-line number.
+fn byteOffsetToLine(source: []const u8, byte_pos: u32) u32 {
+    var line: u32 = 0;
+    const limit = @min(@as(usize, byte_pos), source.len);
+    var i: usize = 0;
+    while (i < limit) : (i += 1) {
+        if (source[i] == '\n') line += 1;
+    }
+    return line;
+}
+
 fn typeOfTypeofString(s: []const u8) ?TypeId {
     if (std.mem.eql(u8, s, "string")) return types.Primitive.string_t;
     if (std.mem.eql(u8, s, "number")) return types.Primitive.number_t;
@@ -4140,6 +4321,7 @@ fn newSetup(source: []const u8) !*TestSetup {
     errdefer s.engine.deinit();
     s.engine.setStringInterner(&s.sint);
     s.checker = Checker.init(T.allocator, &s.hir, &s.ti, &s.sint, &s.engine);
+    s.checker.setSource(source);
     return s;
 }
 
@@ -4315,6 +4497,31 @@ test "checker: var with annotation; mismatched init flags diagnostic" {
     defer destroySetup(s);
     try s.checker.checkSourceFile(s.root);
     try T.expect(s.checker.diagnostics.items.len > 0);
+}
+
+test "checker: @ts-ignore suppresses next-line diagnostic" {
+    const s = try newSetup("// @ts-ignore\nlet x: number = \"hi\";");
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+    try T.expectEqual(@as(usize, 0), s.checker.diagnostics.items.len);
+}
+
+test "checker: @ts-expect-error suppresses next-line diagnostic" {
+    const s = try newSetup("// @ts-expect-error\nlet x: number = \"hi\";");
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+    try T.expectEqual(@as(usize, 0), s.checker.diagnostics.items.len);
+}
+
+test "checker: unused @ts-expect-error emits TS2578" {
+    const s = try newSetup("// @ts-expect-error\nlet x: number = 1;");
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+    var found = false;
+    for (s.checker.diagnostics.items) |d| {
+        if (d.code == TsCodes.unused_ts_expect_error) found = true;
+    }
+    try T.expect(found);
 }
 
 test "checker: var without annotation infers from init" {

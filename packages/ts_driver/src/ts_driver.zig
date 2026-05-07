@@ -340,6 +340,7 @@ pub fn compileSource(
     var checker = ts_checker.Checker.init(gpa, &c.hir, &c.type_interner, &c.interner, &c.type_engine);
     defer checker.deinit();
     checker.setModule(c.module);
+    checker.setSource(source);
     // Translate tsconfig strictness flags. `strict: true` implies
     // every individual flag in TS — for now we propagate just
     // `noImplicitAny`, with the rest following as they're wired.
