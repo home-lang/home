@@ -75,3 +75,7 @@ packages/.DS_Store
 /examples/trait_basic
 /examples/fibonacci
 pantry
+
+# Test pass-count gate artifacts (scripts/check-test-count.sh)
+/test-summary.log
+/test-count.txt

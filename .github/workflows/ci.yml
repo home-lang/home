@@ -177,6 +177,45 @@ jobs:
           retention-days: 7
 
   # =========================================================================
+  # Test Pass-Count Gate
+  # =========================================================================
+  #
+  # Runs `zig build test --summary all` on a fixed platform (Linux x64) and
+  # asserts the total passing-test count is not lower than the baseline in
+  # docs/test-baseline.txt. Intentional drops require committing a new
+  # baseline in the same PR, which makes the regression auditable.
+  #
+  # v0 gates on the umbrella test count. Once `zig build test-conformance`
+  # exists as a dedicated step, switch the script to gate on that subset and
+  # rename docs/test-baseline.txt -> docs/conformance-baseline.txt.
+  test-count-gate:
+    name: Test Pass-Count Gate
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Setup Zig
+        uses: mlugg/setup-zig@v2
+        with:
+          version: '0.17.0-dev.56+a8226cd53'
+
+      - name: Check test pass-count vs baseline
+        run: |
+          chmod +x scripts/check-test-count.sh
+          ./scripts/check-test-count.sh
+
+      - name: Upload test summary log
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: test-summary-log
+          path: |
+            test-summary.log
+            test-count.txt
+          if-no-files-found: ignore
+          retention-days: 14
+
+  # =========================================================================
   # Kernel Tests
   # =========================================================================
   test-kernel:
