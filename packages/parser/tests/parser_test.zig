@@ -1876,3 +1876,111 @@ test "parser: switch single-pattern arm still parses identically (issue #63 regr
     try testing.expectEqual(@as(usize, 1), sw.cases[0].patterns.len);
     try testing.expect(sw.cases[1].is_default);
 }
+
+// Issue #64: Zig-style space-separated return type `fn(args) Ret { ... }`
+// must parse regardless of whether parameters are present. Previously the
+// inline type-starter check at the function-decl call site omitted fused
+// tokens (`QuestionBracket`, `StarStar`) and keyword-led starters
+// (`Fn`, `Struct`), which rejected signatures like
+// `fn foo(name: []const u8) ?[]const u8 { ... }`. The fix delegates to
+// `isReturnTypeStart`, the same predicate the function-type parser uses.
+
+test "parser: Zig-style return type — non-empty params, optional slice (issue #64)" {
+    const program = try parseSource(
+        testing.allocator,
+        "fn foo(name: []const u8) ?[]const u8 { return null }",
+    );
+    defer program.deinit(testing.allocator);
+    const fn_decl = program.statements[0].FnDecl;
+    try testing.expectEqualStrings("foo", fn_decl.name);
+    try testing.expectEqual(@as(usize, 1), fn_decl.params.len);
+    try testing.expect(fn_decl.return_type != null);
+    try testing.expectEqualStrings("?[]u8", fn_decl.return_type.?);
+}
+
+test "parser: Zig-style return type — non-empty params, optional primitive (issue #64)" {
+    const program = try parseSource(
+        testing.allocator,
+        "fn foo(x: u32) ?u32 { return null }",
+    );
+    defer program.deinit(testing.allocator);
+    const fn_decl = program.statements[0].FnDecl;
+    try testing.expectEqual(@as(usize, 1), fn_decl.params.len);
+    try testing.expect(fn_decl.return_type != null);
+    try testing.expectEqualStrings("?u32", fn_decl.return_type.?);
+}
+
+test "parser: Zig-style return type — multiple params, slice return (issue #64)" {
+    const program = try parseSource(
+        testing.allocator,
+        "fn foo(x: u32, y: u32) []const u8 { return [_]u8{} }",
+    );
+    defer program.deinit(testing.allocator);
+    const fn_decl = program.statements[0].FnDecl;
+    try testing.expectEqual(@as(usize, 2), fn_decl.params.len);
+    try testing.expect(fn_decl.return_type != null);
+    try testing.expectEqualStrings("[]u8", fn_decl.return_type.?);
+}
+
+test "parser: Zig-style return type — pointer param, identifier return (issue #64)" {
+    const program = try parseSource(
+        testing.allocator,
+        "fn foo(x: *const T) Result { return r }",
+    );
+    defer program.deinit(testing.allocator);
+    const fn_decl = program.statements[0].FnDecl;
+    try testing.expectEqual(@as(usize, 1), fn_decl.params.len);
+    try testing.expectEqualStrings("*const T", fn_decl.params[0].type_name);
+    try testing.expect(fn_decl.return_type != null);
+    try testing.expectEqualStrings("Result", fn_decl.return_type.?);
+}
+
+test "parser: Zig-style return type — empty params, optional slice regression (issue #64)" {
+    // The empty-params case must keep working — this exercises the same
+    // fused-token (`QuestionBracket`) path that was previously broken at
+    // the function-decl site.
+    const program = try parseSource(
+        testing.allocator,
+        "fn foo() ?[]const u8 { return null }",
+    );
+    defer program.deinit(testing.allocator);
+    const fn_decl = program.statements[0].FnDecl;
+    try testing.expectEqual(@as(usize, 0), fn_decl.params.len);
+    try testing.expect(fn_decl.return_type != null);
+    try testing.expectEqualStrings("?[]u8", fn_decl.return_type.?);
+}
+
+test "parser: TS-style return type — non-empty params still works (issue #64 regression)" {
+    const program = try parseSource(
+        testing.allocator,
+        "fn foo(name: []const u8): ?[]const u8 { return null }",
+    );
+    defer program.deinit(testing.allocator);
+    const fn_decl = program.statements[0].FnDecl;
+    try testing.expectEqual(@as(usize, 1), fn_decl.params.len);
+    try testing.expect(fn_decl.return_type != null);
+    try testing.expectEqualStrings("?[]u8", fn_decl.return_type.?);
+}
+
+test "parser: Rust-style return type — non-empty params still works (issue #64 regression)" {
+    const program = try parseSource(
+        testing.allocator,
+        "fn foo(x: u32) -> ?u32 { return null }",
+    );
+    defer program.deinit(testing.allocator);
+    const fn_decl = program.statements[0].FnDecl;
+    try testing.expectEqual(@as(usize, 1), fn_decl.params.len);
+    try testing.expect(fn_decl.return_type != null);
+    try testing.expectEqualStrings("?u32", fn_decl.return_type.?);
+}
+
+test "parser: void return — non-empty params still works (issue #64 regression)" {
+    const program = try parseSource(
+        testing.allocator,
+        "fn foo(x: u32) { return }",
+    );
+    defer program.deinit(testing.allocator);
+    const fn_decl = program.statements[0].FnDecl;
+    try testing.expectEqual(@as(usize, 1), fn_decl.params.len);
+    try testing.expect(fn_decl.return_type == null);
+}

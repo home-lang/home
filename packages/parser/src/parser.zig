@@ -1464,13 +1464,19 @@ pub const Parser = struct {
         //   TypeScript-style: `fn foo(x: int): int { ... }`
         //   Rust-style:       `fn foo(x: int) -> int { ... }`
         //   Zig-style:        `fn foo(x: int) int { ... }`
+        //
+        // Zig-style detection delegates to `isReturnTypeStart` so the same
+        // type-starter set is recognised here and inside the function-type
+        // parser. That keeps fused tokens like `QuestionBracket` (`?[`),
+        // `StarStar` (`**`), and keyword-led type forms (`fn(...) T`,
+        // `struct { ... }`) working when parameters are present — the
+        // earlier inline list omitted those and rejected signatures like
+        // `fn foo(name: []const u8) ?[]const u8 { ... }`. (Issue #64.)
         var return_type: ?[]const u8 = null;
         if (self.match(&.{.Colon}) or self.match(&.{.Arrow})) {
             return_type = try self.parseTypeAnnotation();
         } else if (!self.check(.LeftBrace) and !self.check(.Requires) and !self.check(.Ensures) and
-            (self.isPrimitiveTypeStart() or self.check(.Identifier) or self.check(.Star) or
-                self.check(.StarStar) or self.check(.LeftBracket) or self.check(.Ampersand) or
-                self.check(.Question) or self.check(.Bang)))
+            self.isReturnTypeStart())
         {
             return_type = try self.parseTypeAnnotation();
         }
