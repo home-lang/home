@@ -110,6 +110,12 @@ pub const InlayHint = struct {
     label: []const u8,
     /// Hint kind — affects editor presentation.
     kind: enum { type_annotation, parameter_name },
+    /// Markdown tooltip surfaced when the editor hovers the hint.
+    /// For type-annotation hints this carries the inferred type's
+    /// declaration shape; for parameter-name hints it carries the
+    /// parameter declaration. Always non-empty; callers free it
+    /// alongside `label`.
+    tooltip: []const u8,
 };
 
 /// A single text edit applied to a file. Used by `rename` and
@@ -1341,7 +1347,10 @@ pub const Service = struct {
     pub fn inlayHints(self: *Service, gpa: std.mem.Allocator, file_path: []const u8) ![]InlayHint {
         var hints: std.ArrayListUnmanaged(InlayHint) = .empty;
         errdefer {
-            for (hints.items) |h| gpa.free(h.label);
+            for (hints.items) |h| {
+                gpa.free(h.label);
+                gpa.free(h.tooltip);
+            }
             hints.deinit(gpa);
         }
         const file_id = self.program.lookupPath(file_path) orelse return hints.toOwnedSlice(gpa);
@@ -3565,12 +3574,20 @@ fn collectInlayHints(
             if (v.name == hir_mod.none_node_id) return;
             const t = hir.typeOf(v.name);
             const repr = renderType(gpa, type_interner, sint, t) catch return;
+            defer gpa.free(repr);
             const label = try std.fmt.allocPrint(gpa, ": {s}", .{repr});
-            gpa.free(repr);
+            errdefer gpa.free(label);
+            // Tooltip mirrors the inferred type's declaration shape.
+            // v0: reuse the rendered type so editors have a non-empty
+            // hover string. Future revisions can surface JSDoc and
+            // the full type alias body.
+            const tooltip = try gpa.dupe(u8, repr);
+            errdefer gpa.free(tooltip);
             try out.append(gpa, .{
                 .pos = hir.spanOf(v.name).end,
                 .label = label,
                 .kind = .type_annotation,
+                .tooltip = tooltip,
             });
         },
         .block_stmt => {
@@ -3632,10 +3649,21 @@ fn collectParameterNameHints(
             }
 
             const label = try std.fmt.allocPrint(gpa, "{s}:", .{param_name});
+            errdefer gpa.free(label);
+            // Tooltip describes the parameter declaration; v0 emits
+            // `(parameter) name: T` so editors have a non-empty hover
+            // string. Future revisions can pull JSDoc + default value.
+            const param_type = c.hir.typeOf(pp.name);
+            const param_repr = renderType(gpa, &c.type_interner, &c.interner, param_type) catch
+                try gpa.dupe(u8, "any");
+            defer gpa.free(param_repr);
+            const tooltip = try std.fmt.allocPrint(gpa, "(parameter) {s}: {s}", .{ param_name, param_repr });
+            errdefer gpa.free(tooltip);
             try out.append(gpa, .{
                 .pos = c.hir.spanOf(arg).start,
                 .label = label,
                 .kind = .parameter_name,
+                .tooltip = tooltip,
             });
         }
     }
@@ -5276,7 +5304,10 @@ test "Service: inlayHints surfaces inferred types on let-bindings" {
     var svc = Service.init(T.allocator, &program);
     const hints = try svc.inlayHints(T.allocator, "/main.ts");
     defer {
-        for (hints) |h| T.allocator.free(h.label);
+        for (hints) |h| {
+            T.allocator.free(h.label);
+            T.allocator.free(h.tooltip);
+        }
         T.allocator.free(hints);
     }
     // x and z get hints; y has an explicit annotation so no hint.
@@ -5301,7 +5332,10 @@ test "Service: inlayHints surfaces parameter-name hints at call sites" {
     var svc = Service.init(T.allocator, &program);
     const hints = try svc.inlayHints(T.allocator, "/main.ts");
     defer {
-        for (hints) |h| T.allocator.free(h.label);
+        for (hints) |h| {
+            T.allocator.free(h.label);
+            T.allocator.free(h.tooltip);
+        }
         T.allocator.free(hints);
     }
 
@@ -5339,7 +5373,10 @@ test "Service: inlayHints skips parameter-name hints when arg name matches" {
     var svc = Service.init(T.allocator, &program);
     const hints = try svc.inlayHints(T.allocator, "/main.ts");
     defer {
-        for (hints) |h| T.allocator.free(h.label);
+        for (hints) |h| {
+            T.allocator.free(h.label);
+            T.allocator.free(h.tooltip);
+        }
         T.allocator.free(hints);
     }
 
@@ -5353,6 +5390,45 @@ test "Service: inlayHints skips parameter-name hints when arg name matches" {
     }
     try T.expectEqual(@as(usize, 1), param_count);
     try T.expect(saw_b_only);
+}
+
+test "Service: inlayHints attaches non-empty tooltip text to each hint" {
+    var vfs = ts_resolver.VirtualFs.init(T.allocator);
+    defer vfs.deinit();
+    var resolver = ts_resolver.Resolver.init(T.allocator, vfs.fs(), .{});
+    defer resolver.deinit();
+    var program = ts_program.Program.init(T.allocator, &resolver);
+    defer program.deinit();
+
+    const src =
+        "function add(a: number, b: number): number { return a + b; }\n" ++
+        "let x = 42; let r = add(1, 2);";
+    _ = try program.add("/main.ts", src);
+    try program.compileAll(.{});
+
+    var svc = Service.init(T.allocator, &program);
+    const hints = try svc.inlayHints(T.allocator, "/main.ts");
+    defer {
+        for (hints) |h| {
+            T.allocator.free(h.label);
+            T.allocator.free(h.tooltip);
+        }
+        T.allocator.free(hints);
+    }
+
+    // We expect at least one type-annotation hint (for `x` and `r`)
+    // and one parameter-name hint (for `1`/`2`). Each hint must
+    // carry a non-empty tooltip string.
+    try T.expect(hints.len > 0);
+    var saw_type_tip = false;
+    var saw_param_tip = false;
+    for (hints) |h| {
+        try T.expect(h.tooltip.len > 0);
+        if (h.kind == .type_annotation) saw_type_tip = true;
+        if (h.kind == .parameter_name) saw_param_tip = true;
+    }
+    try T.expect(saw_type_tip);
+    try T.expect(saw_param_tip);
 }
 
 test "Service: codeActions adds explicit type annotation for inferred lets" {

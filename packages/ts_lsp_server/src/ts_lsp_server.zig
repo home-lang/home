@@ -2707,7 +2707,10 @@ pub fn handleInlayHint(
 
     const hints = try service.inlayHints(gpa, path);
     defer {
-        for (hints) |h| gpa.free(h.label);
+        for (hints) |h| {
+            gpa.free(h.label);
+            gpa.free(h.tooltip);
+        }
         gpa.free(hints);
     }
 
@@ -2728,6 +2731,10 @@ pub fn handleInlayHint(
         try buf.appendSlice(gpa, "\",\"kind\":");
         var nbuf2: [4]u8 = undefined;
         try buf.appendSlice(gpa, try std.fmt.bufPrint(&nbuf2, "{d}", .{lspInlayHintKind(h.kind)}));
+        // Tooltip is rendered as a MarkupContent value (markdown).
+        try buf.appendSlice(gpa, ",\"tooltip\":{\"kind\":\"markdown\",\"value\":\"");
+        try writeJsonStringContents(&buf, gpa, h.tooltip);
+        try buf.appendSlice(gpa, "\"}");
         try buf.append(gpa, '}');
     }
     try buf.append(gpa, ']');
@@ -4513,6 +4520,7 @@ test "handleInlayHint: returns InlayHint array with position+label+kind" {
     try T.expect(std.mem.indexOf(u8, out, "\"position\":{") != null);
     try T.expect(std.mem.indexOf(u8, out, "\"label\":\"") != null);
     try T.expect(std.mem.indexOf(u8, out, "\"kind\":1") != null);
+    try T.expect(std.mem.indexOf(u8, out, "\"tooltip\":{\"kind\":\"markdown\"") != null);
 }
 
 test "handleInlayHintResolve: stub echoes input params" {
