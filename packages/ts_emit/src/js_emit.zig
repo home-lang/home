@@ -3376,6 +3376,65 @@ test "emit: private field preserved at es2022+" {
     try T.expect(std.mem.indexOf(u8, out, "#count") != null);
 }
 
+test "emit: native private field with getter at es2022 emits both #x init and this.#x" {
+    // §4.A.7 — at native-private-field targets we keep both the
+    // class-body `#x = 1;` declaration and `this.#x` accesses
+    // verbatim, with no WeakMap helper around them.
+    const out = try emitWithOpts(
+        "class Foo { #x = 1; getX() { return this.#x; } }",
+        .{ .es_target = .es2022 },
+    );
+    defer T.allocator.free(out);
+    try T.expect(std.mem.indexOf(u8, out, "#x = 1") != null);
+    try T.expect(std.mem.indexOf(u8, out, "this.#x") != null);
+    try T.expect(std.mem.indexOf(u8, out, "WeakMap") == null);
+    try T.expect(std.mem.indexOf(u8, out, "getX()") != null);
+}
+
+test "emit: native private field at esnext target keeps #x literally" {
+    // The default `esnext` target is the highest tier — never
+    // downlevel. Useful sanity check that future EsTarget bumps
+    // don't accidentally trigger lowering.
+    const out = try emitWithOpts(
+        "class Foo { #x = 1; getX() { return this.#x; } }",
+        .{ .es_target = .esnext },
+    );
+    defer T.allocator.free(out);
+    try T.expect(std.mem.indexOf(u8, out, "#x = 1") != null);
+    try T.expect(std.mem.indexOf(u8, out, "this.#x") != null);
+    try T.expect(std.mem.indexOf(u8, out, "WeakMap") == null);
+}
+
+test "emit: private field downlevel to WeakMap at es2019" {
+    // §4.A.7 — at ES2019 (sub-ES2022) we synthesize a per-class
+    // `WeakMap` and rewrite `this.#x` reads to `_Foo_x.get(this)`.
+    // The `#x` token must not survive in the output.
+    const out = try emitWithOpts(
+        "class Foo { #x = 1; getX() { return this.#x; } }",
+        .{ .es_target = .es2019 },
+    );
+    defer T.allocator.free(out);
+    try T.expect(std.mem.indexOf(u8, out, "new WeakMap()") != null);
+    try T.expect(std.mem.indexOf(u8, out, "var _Foo_x = new WeakMap();") != null);
+    try T.expect(std.mem.indexOf(u8, out, "_Foo_x.get(this)") != null);
+    try T.expect(std.mem.indexOf(u8, out, "#x") == null);
+}
+
+test "emit: private method `#m()` preserved at es2022+" {
+    // Private methods are class-body `fn_decl` members whose name
+    // starts with `#`. At ES2022+ we emit them verbatim — no
+    // lowering. (Sub-ES2022 lowering of private *methods* is not
+    // implemented in v0; the WeakMap path covers fields only.)
+    const out = try emitWithOpts(
+        "class Foo { #m() { return 1; } call() { return this.#m(); } }",
+        .{ .es_target = .es2022 },
+    );
+    defer T.allocator.free(out);
+    try T.expect(std.mem.indexOf(u8, out, "#m()") != null);
+    try T.expect(std.mem.indexOf(u8, out, "this.#m()") != null);
+    try T.expect(std.mem.indexOf(u8, out, "WeakMap") == null);
+}
+
 test "emit: public class field native at es2022+" {
     const out = try emitWithOpts(
         "class Foo { x = 1; greet() { return this.x; } }",
