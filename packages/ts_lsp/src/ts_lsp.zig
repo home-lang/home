@@ -378,6 +378,50 @@ pub fn freeLspDiagnostics(gpa: std.mem.Allocator, diags: []LspDiagnostic) void {
     gpa.free(diags);
 }
 
+/// FNV-1a 64-bit hash of the content-bearing fields of a diagnostic
+/// set: `(code, severity, range tuple, message)` per entry, in order.
+/// Used by `Service.publishDiagnostics` to suppress redundant
+/// `textDocument/publishDiagnostics` notifications when nothing the
+/// editor cares about has changed.
+///
+/// Order matters — re-ordering diagnostics produces a different hash.
+/// This matches LSP semantics: `publishDiagnostics` carries an ordered
+/// array, so a re-ordered set IS a content change.
+pub fn hashLspDiagnostics(diags: []const LspDiagnostic) u64 {
+    const fnv_offset: u64 = 0xcbf29ce484222325;
+    const fnv_prime: u64 = 0x100000001b3;
+    var h: u64 = fnv_offset;
+    const mix = struct {
+        fn step(acc: *u64, byte: u8) void {
+            acc.* ^= byte;
+            acc.* = acc.* *% fnv_prime;
+        }
+        fn bytes(acc: *u64, slice: []const u8) void {
+            for (slice) |b| step(acc, b);
+        }
+        fn u32le(acc: *u64, v: u32) void {
+            var i: usize = 0;
+            while (i < 4) : (i += 1) {
+                step(acc, @as(u8, @truncate(v >> @intCast(i * 8))));
+            }
+        }
+    };
+    for (diags) |d| {
+        mix.u32le(&h, d.code);
+        mix.step(&h, @as(u8, @intFromEnum(d.severity)));
+        mix.u32le(&h, d.range.start_line);
+        mix.u32le(&h, d.range.start_col);
+        mix.u32le(&h, d.range.end_line);
+        mix.u32le(&h, d.range.end_col);
+        // Length-prefix the message so concatenation can't alias.
+        mix.u32le(&h, @as(u32, @truncate(d.message.len)));
+        mix.bytes(&h, d.message);
+        // Field separator between entries.
+        mix.step(&h, 0xff);
+    }
+    return h;
+}
+
 /// LSP `textDocument/documentLink` payload — describes a clickable
 /// link inside the source. For TS we surface import-specifier strings
 /// (e.g. `"./foo"`) whose `target` is the resolved file path/URI.
@@ -552,9 +596,69 @@ pub const InlineCompletionContext = struct {
 pub const Service = struct {
     gpa: std.mem.Allocator,
     program: *ts_program.Program,
+    /// Per-file FNV-1a 64-bit hash of the most recently published
+    /// diagnostic set. Used by `publishDiagnostics` to suppress
+    /// redundant `textDocument/publishDiagnostics` notifications when
+    /// the diagnostic content hasn't changed across recompiles.
+    /// Keys borrow `program.fileById(id).path`, which lives as long as
+    /// the program — no separate dup needed.
+    last_diagnostic_hash: std.StringHashMapUnmanaged(u64),
 
     pub fn init(gpa: std.mem.Allocator, program: *ts_program.Program) Service {
-        return .{ .gpa = gpa, .program = program };
+        return .{
+            .gpa = gpa,
+            .program = program,
+            .last_diagnostic_hash = .empty,
+        };
+    }
+
+    /// Release Service-owned scratch state. The underlying `program`
+    /// is owned by the caller and is NOT freed here.
+    pub fn deinit(self: *Service) void {
+        self.last_diagnostic_hash.deinit(self.gpa);
+    }
+
+    /// `textDocument/publishDiagnostics` deduplication helper.
+    ///
+    /// Computes the structured diagnostics for `file_path` and
+    /// compares an FNV-1a hash of the (code, severity, range, message)
+    /// tuples against the last value pushed for this file. When the
+    /// hash matches, returns `null` — the wire layer should skip
+    /// emitting a notification (no content changed). When the hash
+    /// differs (or this is the first call for the file), returns the
+    /// fresh `[]LspDiagnostic`; the caller owns it and must release
+    /// via `freeLspDiagnostics`.
+    ///
+    /// The internal hash map keys use the program's owned path slices
+    /// so the borrow stays valid for the program's lifetime.
+    pub fn publishDiagnostics(
+        self: *Service,
+        gpa: std.mem.Allocator,
+        file_path: []const u8,
+    ) !?[]LspDiagnostic {
+        const diags = try self.diagnosticsStructured(gpa, file_path);
+        errdefer freeLspDiagnostics(gpa, diags);
+
+        const hash = hashLspDiagnostics(diags);
+
+        // Reuse the program's owned path slice as the hash map key so
+        // we don't need a parallel allocation/free path.
+        const stable_key = blk: {
+            if (self.program.lookupPath(file_path)) |id| {
+                break :blk self.program.fileById(id).path;
+            }
+            break :blk file_path;
+        };
+
+        if (self.last_diagnostic_hash.get(stable_key)) |prev| {
+            if (prev == hash) {
+                // No change — caller skips the publish.
+                freeLspDiagnostics(gpa, diags);
+                return null;
+            }
+        }
+        try self.last_diagnostic_hash.put(self.gpa, stable_key, hash);
+        return diags;
     }
 
     /// Hover at `byte_pos` inside `file`. Walks the file's HIR
@@ -4462,6 +4566,35 @@ test "Service: diagnosticsStructured returns empty on clean / unknown files" {
     const missing = try svc.diagnosticsStructured(T.allocator, "/missing.ts");
     defer freeLspDiagnostics(T.allocator, missing);
     try T.expectEqual(@as(usize, 0), missing.len);
+}
+
+test "Service: publishDiagnostics dedupes by content hash" {
+    var vfs = ts_resolver.VirtualFs.init(T.allocator);
+    defer vfs.deinit();
+    var resolver = ts_resolver.Resolver.init(T.allocator, vfs.fs(), .{});
+    defer resolver.deinit();
+    var program = ts_program.Program.init(T.allocator, &resolver);
+    defer program.deinit();
+
+    _ = try program.add("/main.ts", "let x: number = \"hi\";");
+    try program.compileAll(.{});
+
+    var svc = Service.init(T.allocator, &program);
+    defer svc.deinit();
+
+    // First call: no prior hash recorded — must return the fresh
+    // diagnostic slice so the wire layer publishes it.
+    const first = try svc.publishDiagnostics(T.allocator, "/main.ts");
+    try T.expect(first != null);
+    const first_diags = first.?;
+    defer freeLspDiagnostics(T.allocator, first_diags);
+    try T.expect(first_diags.len > 0);
+
+    // Second call against an unchanged compilation must return null —
+    // the hash matches, so the wire layer should suppress the
+    // notification ("empty notification array").
+    const second = try svc.publishDiagnostics(T.allocator, "/main.ts");
+    try T.expect(second == null);
 }
 
 test "Service: didChangeFile recompiles + returns fresh diagnostics" {
