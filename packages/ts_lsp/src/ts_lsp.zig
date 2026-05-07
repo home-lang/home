@@ -1576,11 +1576,81 @@ pub const Service = struct {
         file_path: []const u8,
         byte_pos: u32,
     ) !?LinkedEditingRanges {
-        _ = self;
-        _ = gpa;
-        _ = file_path;
-        _ = byte_pos;
-        return null;
+        const file_id = self.program.lookupPath(file_path) orelse return null;
+        const f = self.program.fileById(file_id);
+        const src = f.source;
+        if (byte_pos > src.len) return null;
+
+        var lt_idx: ?u32 = null;
+        var is_closing = false;
+        var i: i64 = @as(i64, @intCast(byte_pos)) - 1;
+        while (i >= 0) : (i -= 1) {
+            const ch = src[@intCast(i)];
+            if (ch == '>') return null;
+            if (ch == '<') {
+                lt_idx = @intCast(i);
+                const next: u32 = @as(u32, @intCast(i)) + 1;
+                if (next < src.len and src[next] == '/') is_closing = true;
+                break;
+            }
+        }
+        const lt_pos = lt_idx orelse return null;
+
+        var name_start: u32 = lt_pos + 1;
+        if (is_closing) name_start += 1;
+        if (name_start >= src.len) return null;
+        if (!isIdentStart(src[name_start])) return null;
+
+        var name_end: u32 = name_start;
+        while (name_end < src.len and isIdentCont(src[name_end])) : (name_end += 1) {}
+        const tag_name = src[name_start..name_end];
+        if (tag_name.len == 0) return null;
+
+        var k: u32 = name_end;
+        var self_closing = false;
+        var saw_close = false;
+        while (k < src.len) : (k += 1) {
+            const ch = src[k];
+            if (ch == '<') return null;
+            if (ch == '>') {
+                if (k > 0 and src[k - 1] == '/') self_closing = true;
+                saw_close = true;
+                break;
+            }
+        }
+        if (!saw_close) return null;
+        if (self_closing) return null;
+        if (byte_pos < lt_pos or byte_pos > k) return null;
+
+        const counterpart: ?TagNameSpan = if (is_closing)
+            findMatchingOpener(gpa, src, lt_pos, tag_name)
+        else
+            findMatchingCloser(src, k + 1, tag_name);
+
+        const cp = counterpart orelse return null;
+
+        const a_start = ts_diagnostics.positionToLineCol(src, name_start);
+        const a_end = ts_diagnostics.positionToLineCol(src, name_end);
+        const b_start = ts_diagnostics.positionToLineCol(src, cp.start);
+        const b_end = ts_diagnostics.positionToLineCol(src, cp.end);
+
+        const ranges = try gpa.alloc(Range, 2);
+        ranges[0] = .{
+            .start_line = a_start.line,
+            .start_col = a_start.col,
+            .end_line = a_end.line,
+            .end_col = a_end.col,
+        };
+        ranges[1] = .{
+            .start_line = b_start.line,
+            .start_col = b_start.col,
+            .end_line = b_end.line,
+            .end_col = b_end.col,
+        };
+        return .{
+            .ranges = ranges,
+            .word_pattern = "[a-zA-Z_$][a-zA-Z0-9_$]*",
+        };
     }
 
     /// `textDocument/willSaveWaitUntil` — give the server a chance to
@@ -2016,18 +2086,240 @@ pub const Service = struct {
         gpa: std.mem.Allocator,
         renames: []const FileRename,
     ) ![]TextEdit {
-        _ = self;
-        _ = renames;
         var edits: std.ArrayListUnmanaged(TextEdit) = .empty;
-        errdefer edits.deinit(gpa);
-        // TODO(Phase 6): walk every file's import_decls, match
-        // resolved module against each rename's old URI (after
-        // stripping `file://`), compute new relative specifier, and
-        // emit a TextEdit per import. For now we return [] — editors
-        // treat that as "no follow-up edits needed".
+        errdefer {
+            for (edits.items) |e| gpa.free(e.new_text);
+            edits.deinit(gpa);
+        }
+        if (renames.len == 0) return edits.toOwnedSlice(gpa);
+
+        for (renames) |r| {
+            const old_path = stripFileUri(r.old_uri);
+            const new_path = stripFileUri(r.new_uri);
+
+            for (self.program.files.items) |importing| {
+                const c = importing.compilation orelse continue;
+                if (c.hir.kindOf(c.root) != .block_stmt) continue;
+                const stmts = hir_mod.blockStmts(&c.hir, c.root);
+                for (stmts) |s| {
+                    if (c.hir.kindOf(s) != .import_decl) continue;
+                    const imp = hir_mod.importOf(&c.hir, s);
+                    const module_name = c.interner.get(imp.module);
+                    if (module_name.len == 0) continue;
+                    // Resolve the specifier; only relative imports
+                    // that land on `old_path` are candidates for
+                    // rewriting.
+                    const res = self.program.resolver.resolve(module_name, importing.path) catch continue;
+                    if (!std.mem.eql(u8, res.path, old_path)) continue;
+
+                    // Locate the specifier literal in the import_decl
+                    // span — same trick `documentLinks` uses
+                    // (last-occurrence to dodge a same-named local
+                    // binding earlier in the line).
+                    const stmt_span = c.hir.spanOf(s);
+                    const stmt_src = importing.source[stmt_span.start..stmt_span.end];
+                    const rel_off = std.mem.lastIndexOf(u8, stmt_src, module_name) orelse continue;
+                    const lit_start: u32 = stmt_span.start + @as(u32, @intCast(rel_off));
+                    const lit_end: u32 = lit_start + @as(u32, @intCast(module_name.len));
+
+                    // New specifier text: keep the leading "./" for
+                    // sibling/descendant paths so the rewritten
+                    // import looks idiomatic. `std.fs.path.relative`
+                    // handles parent-directory traversal via "..".
+                    const importer_dir = std.fs.path.dirname(importing.path) orelse ".";
+                    const new_spec = try makeRelativeSpecifier(gpa, importer_dir, new_path);
+                    errdefer gpa.free(new_spec);
+
+                    const start_pos = ts_diagnostics.positionToLineCol(importing.source, lit_start);
+                    const end_pos = ts_diagnostics.positionToLineCol(importing.source, lit_end);
+                    try edits.append(gpa, .{
+                        .file = importing.path,
+                        .start_line = if (start_pos.line > 0) start_pos.line - 1 else 0,
+                        .start_col = if (start_pos.col > 0) start_pos.col - 1 else 0,
+                        .end_line = if (end_pos.line > 0) end_pos.line - 1 else 0,
+                        .end_col = if (end_pos.col > 0) end_pos.col - 1 else 0,
+                        .new_text = new_spec,
+                    });
+                }
+            }
+        }
         return edits.toOwnedSlice(gpa);
     }
 };
+
+/// Byte span of a JSX tag name. Used by `findMatchingOpener` /
+/// `findMatchingCloser` so callers can pin the result to a single
+/// named type — anonymous result structs don't unify across function
+/// boundaries.
+const TagNameSpan = struct { start: u32, end: u32 };
+
+fn isIdentStart(c: u8) bool {
+    return (c >= 'a' and c <= 'z') or (c >= 'A' and c <= 'Z') or c == '_' or c == '$';
+}
+
+fn isIdentCont(c: u8) bool {
+    return isIdentStart(c) or (c >= '0' and c <= '9');
+}
+
+/// Scan forward from `from` for the matching `</tag>` of `tag_name`,
+/// tracking nesting so `<div><div></div></div>` resolves the outer
+/// pair correctly. Returns the byte span of the closing-tag *name*
+/// (after `</`, before any whitespace or `>`), or null if no match.
+fn findMatchingCloser(src: []const u8, from: u32, tag_name: []const u8) ?TagNameSpan {
+    var depth: i32 = 1;
+    var i: u32 = from;
+    while (i < src.len) {
+        if (src[i] != '<') {
+            i += 1;
+            continue;
+        }
+        const after_lt: u32 = i + 1;
+        if (after_lt >= src.len) return null;
+        const closing = src[after_lt] == '/';
+        const name_start: u32 = if (closing) after_lt + 1 else after_lt;
+        if (name_start >= src.len or !isIdentStart(src[name_start])) {
+            i += 1;
+            continue;
+        }
+        var name_end: u32 = name_start;
+        while (name_end < src.len and isIdentCont(src[name_end])) : (name_end += 1) {}
+        const name = src[name_start..name_end];
+        const same = std.mem.eql(u8, name, tag_name);
+
+        var kk: u32 = name_end;
+        var self_closing = false;
+        while (kk < src.len and src[kk] != '>') : (kk += 1) {
+            if (src[kk] == '<') break;
+        }
+        if (kk >= src.len or src[kk] != '>') return null;
+        if (kk > 0 and src[kk - 1] == '/') self_closing = true;
+
+        if (same) {
+            if (closing) {
+                depth -= 1;
+                if (depth == 0) {
+                    return .{ .start = name_start, .end = name_end };
+                }
+            } else if (!self_closing) {
+                depth += 1;
+            }
+        }
+        i = kk + 1;
+    }
+    return null;
+}
+
+/// Scan backward from `before` (the `<` of the closing tag) for the
+/// matching `<tag` opener of `tag_name`. Two-pass: collect every
+/// `<...` form ahead of `before`, then walk in reverse with depth
+/// tracking — symmetric with `findMatchingCloser`.
+fn findMatchingOpener(gpa: std.mem.Allocator, src: []const u8, before: u32, tag_name: []const u8) ?TagNameSpan {
+    const Form = struct {
+        is_closing: bool,
+        self_closing: bool,
+        name_start: u32,
+        name_end: u32,
+        same: bool,
+    };
+    var forms: std.ArrayListUnmanaged(Form) = .empty;
+    defer forms.deinit(gpa);
+    var i: u32 = 0;
+    while (i < before) {
+        if (src[i] != '<') {
+            i += 1;
+            continue;
+        }
+        const after_lt: u32 = i + 1;
+        if (after_lt >= src.len) break;
+        const closing = src[after_lt] == '/';
+        const name_start: u32 = if (closing) after_lt + 1 else after_lt;
+        if (name_start >= src.len or !isIdentStart(src[name_start])) {
+            i += 1;
+            continue;
+        }
+        var name_end: u32 = name_start;
+        while (name_end < src.len and isIdentCont(src[name_end])) : (name_end += 1) {}
+        const name = src[name_start..name_end];
+
+        var kk: u32 = name_end;
+        var self_closing = false;
+        while (kk < src.len and src[kk] != '>') : (kk += 1) {
+            if (src[kk] == '<') break;
+        }
+        if (kk >= src.len or src[kk] != '>') return null;
+        if (kk > 0 and src[kk - 1] == '/') self_closing = true;
+
+        forms.append(gpa, .{
+            .is_closing = closing,
+            .self_closing = self_closing,
+            .name_start = name_start,
+            .name_end = name_end,
+            .same = std.mem.eql(u8, name, tag_name),
+        }) catch return null;
+        i = kk + 1;
+    }
+    var depth: i32 = 1;
+    var j: usize = forms.items.len;
+    while (j > 0) {
+        j -= 1;
+        const form = forms.items[j];
+        if (!form.same) continue;
+        if (form.is_closing) {
+            depth += 1;
+        } else if (!form.self_closing) {
+            depth -= 1;
+            if (depth == 0) {
+                return .{ .start = form.name_start, .end = form.name_end };
+            }
+        }
+    }
+    return null;
+}
+
+/// Strip a leading `file://` (or `file:///`) scheme from an LSP URI,
+/// returning the underlying filesystem path. URIs without the scheme
+/// are returned unchanged so callers can pass plain paths in tests.
+fn stripFileUri(uri: []const u8) []const u8 {
+    const prefix = "file://";
+    if (std.mem.startsWith(u8, uri, prefix)) return uri[prefix.len..];
+    return uri;
+}
+
+/// Build a relative module specifier from `importer_dir` to
+/// `target_path`. The result is gpa-allocated and owned by the
+/// caller. The returned string drops the trailing `.ts` / `.tsx` /
+/// `.hm` extension — matching the shape of typical TypeScript
+/// imports — and ensures a `./` prefix when the target is in the
+/// same directory or a descendant (so the result remains a relative
+/// specifier rather than reading like a bare module name).
+fn makeRelativeSpecifier(
+    gpa: std.mem.Allocator,
+    importer_dir: []const u8,
+    target_path: []const u8,
+) ![]const u8 {
+    const rel = try std.fs.path.relative(gpa, importer_dir, target_path);
+    defer gpa.free(rel);
+
+    // Trim a single TS-style extension if present.
+    var end: usize = rel.len;
+    const exts = [_][]const u8{ ".tsx", ".d.ts", ".ts", ".hm", ".jsx", ".js" };
+    for (exts) |ext| {
+        if (end >= ext.len and std.mem.endsWith(u8, rel[0..end], ext)) {
+            end -= ext.len;
+            break;
+        }
+    }
+    const trimmed = rel[0..end];
+
+    // Add the leading `./` when the relative path doesn't already
+    // start with `.` (e.g., `b` -> `./b`, but `../b` stays as-is).
+    const needs_dot = trimmed.len == 0 or trimmed[0] != '.';
+    var buf: std.ArrayListUnmanaged(u8) = .empty;
+    errdefer buf.deinit(gpa);
+    if (needs_dot) try buf.appendSlice(gpa, "./");
+    try buf.appendSlice(gpa, trimmed);
+    return buf.toOwnedSlice(gpa);
+}
 
 fn semanticTokenLessThan(_: void, a: SemanticToken, b: SemanticToken) bool {
     if (a.line != b.line) return a.line < b.line;
@@ -4278,7 +4570,7 @@ test "Service: workspaceWillRenameFiles returns an empty TextEdit list (stub)" {
     try T.expectEqual(@as(usize, 0), edits.len);
 }
 
-test "Service: linkedEditingRanges stub returns null off JSX" {
+test "Service: linkedEditingRanges returns null off JSX" {
     var vfs = ts_resolver.VirtualFs.init(T.allocator);
     defer vfs.deinit();
     var resolver = ts_resolver.Resolver.init(T.allocator, vfs.fs(), .{});
@@ -4292,7 +4584,77 @@ test "Service: linkedEditingRanges stub returns null off JSX" {
 
     var svc = Service.init(T.allocator, &program);
     // Position 4 lands on the identifier 'x' — plain TS, no JSX in
-    // sight. Stub must return null until the JSX matcher lands.
+    // sight. Walking backward we never hit a `<`, so we bail.
     const r = try svc.linkedEditingRanges(T.allocator, "/main.ts", 4);
+    try T.expect(r == null);
+}
+
+test "Service: linkedEditingRanges pairs <div>foo</div>" {
+    var vfs = ts_resolver.VirtualFs.init(T.allocator);
+    defer vfs.deinit();
+    var resolver = ts_resolver.Resolver.init(T.allocator, vfs.fs(), .{});
+    defer resolver.deinit();
+    var program = ts_program.Program.init(T.allocator, &resolver);
+    defer program.deinit();
+
+    // Layout (0-based bytes):
+    //   0:`<` 1:`d` 2:`i` 3:`v` 4:`>` 5:`f` 6:`o` 7:`o`
+    //   8:`<` 9:`/` 10:`d` 11:`i` 12:`v` 13:`>`
+    const src = "<div>foo</div>";
+    _ = try program.add("/main.tsx", src);
+    try program.compileAll(.{});
+
+    var svc = Service.init(T.allocator, &program);
+    const r = (try svc.linkedEditingRanges(T.allocator, "/main.tsx", 2)) orelse {
+        try T.expect(false);
+        return;
+    };
+    defer T.allocator.free(r.ranges);
+    try T.expectEqual(@as(usize, 2), r.ranges.len);
+    // Opener `div` lives at byte 1..4 → cols 2..5 (1-based, single line).
+    try T.expectEqual(@as(u32, 1), r.ranges[0].start_line);
+    try T.expectEqual(@as(u32, 2), r.ranges[0].start_col);
+    try T.expectEqual(@as(u32, 5), r.ranges[0].end_col);
+    // Closer `div` lives at byte 10..13 → cols 11..14.
+    try T.expectEqual(@as(u32, 11), r.ranges[1].start_col);
+    try T.expectEqual(@as(u32, 14), r.ranges[1].end_col);
+    try T.expect(r.word_pattern.len > 0);
+}
+
+test "Service: linkedEditingRanges returns null for unclosed tag" {
+    var vfs = ts_resolver.VirtualFs.init(T.allocator);
+    defer vfs.deinit();
+    var resolver = ts_resolver.Resolver.init(T.allocator, vfs.fs(), .{});
+    defer resolver.deinit();
+    var program = ts_program.Program.init(T.allocator, &resolver);
+    defer program.deinit();
+
+    const src = "<div>foo";
+    _ = try program.add("/main.tsx", src);
+    try program.compileAll(.{});
+
+    var svc = Service.init(T.allocator, &program);
+    // Cursor inside `div` of an unclosed opener — no matching closer
+    // means we have nothing to mirror to.
+    const r = try svc.linkedEditingRanges(T.allocator, "/main.tsx", 2);
+    try T.expect(r == null);
+}
+
+test "Service: linkedEditingRanges returns null for self-closing tag" {
+    var vfs = ts_resolver.VirtualFs.init(T.allocator);
+    defer vfs.deinit();
+    var resolver = ts_resolver.Resolver.init(T.allocator, vfs.fs(), .{});
+    defer resolver.deinit();
+    var program = ts_program.Program.init(T.allocator, &resolver);
+    defer program.deinit();
+
+    const src = "<Foo />";
+    _ = try program.add("/main.tsx", src);
+    try program.compileAll(.{});
+
+    var svc = Service.init(T.allocator, &program);
+    // Cursor inside `Foo`. Self-closing forms have no closing tag to
+    // pair with, so v0 declines to return ranges.
+    const r = try svc.linkedEditingRanges(T.allocator, "/main.tsx", 2);
     try T.expect(r == null);
 }
