@@ -841,6 +841,10 @@ pub const TypeParameterPayload = struct {
     default: NodeId,
     /// `in` / `out` variance modifier (0=none, 1=in, 2=out, 3=in_out).
     variance: u8,
+    /// TS 5.0 `const` type parameter modifier — `<const T>`. When true,
+    /// argument inference for T should be performed `as const` (readonly +
+    /// literal types preserved). TODO(checker): currently parsed-only.
+    is_const: bool = false,
 };
 
 /// `let`/`const`/`var` declaration. The `kind` on the `Hir.kindOf(node)`
@@ -2388,6 +2392,7 @@ pub const Builder = struct {
         constraint: NodeId,
         default: NodeId,
         variance: u8,
+        is_const: bool,
     ) !NodeId {
         const payload_idx: u32 = @intCast(self.hir.type_parameter_payloads.items.len);
         try self.hir.type_parameter_payloads.append(self.hir.gpa, .{
@@ -2395,6 +2400,7 @@ pub const Builder = struct {
             .constraint = constraint,
             .default = default,
             .variance = variance,
+            .is_const = is_const,
         });
         const id = try self.newNode(.type_parameter, span, payload_idx);
         if (constraint != none_node_id) self.hir.setParent(constraint, id);

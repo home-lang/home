@@ -1755,7 +1755,7 @@ pub const Parser = struct {
             const value = try self.parseTypeAnnotation();
             _ = self.match(.semicolon);
             const close = try self.expect(.close_brace, "'}' to close mapped type");
-            const tp = try self.builder.addTypeParameter(tokenSpan(k_tok), k_id, hir_mod.none_node_id, hir_mod.none_node_id, 0);
+            const tp = try self.builder.addTypeParameter(tokenSpan(k_tok), k_id, hir_mod.none_node_id, hir_mod.none_node_id, 0, false);
             return try self.builder.addMappedType(.{ .start = open.span.start, .end = close.span.end }, tp, constraint, value, remap, readonly_mod, optional_mod);
         }
         var members: std.ArrayListUnmanaged(NodeId) = .empty;
@@ -1978,6 +1978,17 @@ pub const Parser = struct {
         errdefer tps.deinit(self.gpa);
         while (self.peek().kind != .greater_than and self.peek().kind != .eof) {
             const tp_start = self.peek();
+            // TS 5.0 `const` type-parameter modifier (`<const T>`). When
+            // present, argument inference for T should be performed
+            // `as const` (readonly + literal types preserved).
+            // TODO(checker): currently parsed-only; the `is_const` flag is
+            // recorded on the type-parameter payload but inference still
+            // widens like a normal type parameter.
+            var is_const: bool = false;
+            if (self.peek().kind == .kw_const and self.peekAt(1).kind == .identifier) {
+                _ = self.advance();
+                is_const = true;
+            }
             // Variance modifiers `in`/`out` (TS 4.7). Either or both may
             // appear before the type-parameter name. The lookahead allows
             // `in T`, `out T`, and `in out T` — for the combined form, the
@@ -2007,6 +2018,7 @@ pub const Parser = struct {
                 constraint,
                 default,
                 variance,
+                is_const,
             );
             try tps.append(self.gpa, tp);
             if (!self.match(.comma)) break;
@@ -4412,4 +4424,26 @@ test "parser: no variance modifier records variance=0" {
     const tps = hir_mod.fnTypeParams(&s.hir, top);
     try T.expectEqual(@as(usize, 1), tps.len);
     try T.expectEqual(@as(u8, 0), hir_mod.typeParameterOf(&s.hir, tps[0]).variance);
+}
+
+test "parser: TS 5.0 const type parameter `<const T>` records is_const=true" {
+    var s = try newTestSetup("function f<const T>(x: T): T { return x; }");
+    defer destroyTestSetup(s);
+    const root = try s.parser.parseSourceFile();
+    const top = hir_mod.blockStmts(&s.hir, root)[0];
+    const tps = hir_mod.fnTypeParams(&s.hir, top);
+    try T.expectEqual(@as(usize, 1), tps.len);
+    try T.expectEqual(true, hir_mod.typeParameterOf(&s.hir, tps[0]).is_const);
+}
+
+test "parser: TS 5.0 const type parameter with constraint `<const T extends string[]>`" {
+    var s = try newTestSetup("function f<const T extends string[]>(x: T): T { return x; }");
+    defer destroyTestSetup(s);
+    const root = try s.parser.parseSourceFile();
+    const top = hir_mod.blockStmts(&s.hir, root)[0];
+    const tps = hir_mod.fnTypeParams(&s.hir, top);
+    try T.expectEqual(@as(usize, 1), tps.len);
+    const tp = hir_mod.typeParameterOf(&s.hir, tps[0]);
+    try T.expectEqual(true, tp.is_const);
+    try T.expect(tp.constraint != hir_mod.none_node_id);
 }
