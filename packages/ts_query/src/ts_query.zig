@@ -41,9 +41,21 @@ pub const QueryStats = struct {
 /// which that compile happened. A file is "current" iff its source
 /// bytes still hash to `source_hash` AND it has a non-null
 /// `compilation` on the program.
+///
+/// `dependencies` is the set of FileIds this file imports — captured
+/// at the time of the last successful compile. When a file's content
+/// hash changes, we walk back up the reverse-dependency graph and
+/// invalidate every dependent's cache entry (transitively). This
+/// mirrors how Salsa propagates "did the input change?" up to derived
+/// queries.
 const Entry = struct {
     source_hash: u64,
     last_compile_revision: u32,
+    dependencies: std.ArrayListUnmanaged(ts_program.FileId),
+
+    fn deinit(self: *Entry, gpa: std.mem.Allocator) void {
+        self.dependencies.deinit(gpa);
+    }
 };
 
 pub const QueryProgram = struct {
@@ -65,6 +77,8 @@ pub const QueryProgram = struct {
     }
 
     pub fn deinit(self: *QueryProgram) void {
+        var it = self.entries.iterator();
+        while (it.next()) |e| e.value_ptr.deinit(self.gpa);
         self.entries.deinit(self.gpa);
     }
 
@@ -106,9 +120,13 @@ pub const QueryProgram = struct {
                 error.EmitError => return error.EmitError,
             };
             f.compilation = c;
+            // Replace any pre-existing entry's dep list before we
+            // overwrite it (avoids leaking the prior ArrayListUnmanaged).
+            if (self.entries.getPtr(f.id)) |old| old.deinit(self.gpa);
             try self.entries.put(self.gpa, f.id, .{
                 .source_hash = h,
                 .last_compile_revision = self.revision,
+                .dependencies = .empty,
             });
             compiled += 1;
         }
@@ -120,6 +138,10 @@ pub const QueryProgram = struct {
         // resolveImports on every invocation.
         if (compiled > 0) {
             try self.program.compileAll(options);
+            // Snapshot each file's import set into its cache entry.
+            // We do this *after* compileAll so resolveImports has
+            // populated `f.imports` for fresh compiles.
+            try self.snapshotDependencies();
         }
 
         return .{
@@ -127,6 +149,110 @@ pub const QueryProgram = struct {
             .skipped = skipped,
             .revision = self.revision,
         };
+    }
+
+    /// Copy each file's resolved import list into its cache entry.
+    /// Called after every compile pass so the dependency graph the
+    /// invalidator walks is the one the most recent compile produced.
+    fn snapshotDependencies(self: *QueryProgram) QueryError!void {
+        for (self.program.files.items) |f| {
+            const entry = self.entries.getPtr(f.id) orelse continue;
+            entry.dependencies.clearRetainingCapacity();
+            try entry.dependencies.appendSlice(self.gpa, f.imports.items);
+        }
+    }
+
+    /// If `path` isn't tracked in the program, returns
+    /// `error.NotFound`. If the new content hashes to the same value
+    /// as the cached entry, returns `false` and does no work — the
+    /// existing compilation stays in place. Otherwise updates the
+    /// program's source, invalidates this file plus every transitive
+    /// dependent, runs the compile pipeline, and returns `true`.
+    pub fn recompileIfChanged(
+        self: *QueryProgram,
+        path: []const u8,
+        new_content: []const u8,
+    ) QueryError!bool {
+        const id = self.program.lookupPath(path) orelse return error.NotFound;
+        const new_hash = hashSource(new_content);
+        if (self.entries.get(id)) |entry| {
+            // Same content + still has a live compilation => no work.
+            const f = self.program.fileById(id);
+            if (entry.source_hash == new_hash and f.compilation != null) {
+                return false;
+            }
+        }
+
+        // Content changed (or we've never compiled it). Push the new
+        // bytes through the program and invalidate dependents.
+        _ = try self.program.updateSource(path, new_content);
+        self.invalidateDependents(id);
+        // Drop the changed file's own entry so the next query() pass
+        // recompiles it.
+        if (self.entries.fetchRemove(id)) |kv| {
+            var e = kv.value;
+            e.deinit(self.gpa);
+        }
+        _ = try self.query(.{});
+        return true;
+    }
+
+    /// Walk every cached entry and drop those that (transitively)
+    /// depend on `changed`. Uses the dependency snapshot stored in
+    /// each entry, not the live `f.imports` — so an entry is
+    /// invalidated based on the imports observed at *its* last
+    /// compile, which is what Salsa-style invalidation requires.
+    ///
+    /// Also nulls out each dependent file's `compilation` so the
+    /// next `query()` pass re-runs the per-file driver.
+    fn invalidateDependents(self: *QueryProgram, changed: ts_program.FileId) void {
+        // BFS over reverse-dependency edges. We rebuild the reverse
+        // graph from the snapshot each call — the cache is small and
+        // this keeps the data structure simple.
+        var dirty: std.AutoHashMapUnmanaged(ts_program.FileId, void) = .empty;
+        defer dirty.deinit(self.gpa);
+        dirty.put(self.gpa, changed, {}) catch return;
+
+        var changed_count_prev: usize = 0;
+        while (dirty.count() != changed_count_prev) {
+            changed_count_prev = dirty.count();
+            var it = self.entries.iterator();
+            while (it.next()) |kv| {
+                const file_id = kv.key_ptr.*;
+                if (dirty.contains(file_id)) continue;
+                for (kv.value_ptr.dependencies.items) |dep| {
+                    if (dirty.contains(dep)) {
+                        dirty.put(self.gpa, file_id, {}) catch return;
+                        break;
+                    }
+                }
+            }
+        }
+
+        // Drop entries + compilations for every file we marked dirty
+        // *except* `changed` itself — the caller handles that one.
+        var dit = dirty.iterator();
+        while (dit.next()) |d| {
+            const file_id = d.key_ptr.*;
+            if (file_id == changed) continue;
+            if (self.entries.fetchRemove(file_id)) |kv| {
+                var e = kv.value;
+                e.deinit(self.gpa);
+            }
+            const f = self.program.fileById(file_id);
+            if (f.compilation) |old| {
+                old.deinit();
+                self.gpa.destroy(old);
+                f.compilation = null;
+            }
+        }
+    }
+
+    /// Inspect: the cached dependency set for `id` from its last
+    /// compile, or `null` if we've never compiled it.
+    pub fn cachedDependencies(self: *const QueryProgram, id: ts_program.FileId) ?[]const ts_program.FileId {
+        const e = self.entries.getPtr(id) orelse return null;
+        return e.dependencies.items;
     }
 
     /// Inspect: was this file compiled (or skipped) on the most
@@ -218,6 +344,83 @@ test "QueryProgram: edited file recompiles, untouched files skip" {
     try T.expectEqual(@as(u32, 1), stats.compiled);
     try T.expectEqual(@as(u32, 2), stats.skipped);
     try T.expect(std.mem.indexOf(u8, p.fileById(a).compilation.?.js, "999") != null);
+}
+
+test "QueryProgram: recompileIfChanged returns false when content unchanged" {
+    var vfs = ts_resolver.VirtualFs.init(T.allocator);
+    defer vfs.deinit();
+    var resolver = ts_resolver.Resolver.init(T.allocator, vfs.fs(), .{});
+    defer resolver.deinit();
+    var p = ts_program.Program.init(T.allocator, &resolver);
+    defer p.deinit();
+    _ = try p.add("/a.ts", "let x = 1;");
+
+    var qp = QueryProgram.init(T.allocator, &p);
+    defer qp.deinit();
+
+    _ = try qp.query(.{});
+    const rev_before = qp.revision;
+    // Same bytes => no recompile, no revision bump.
+    const changed = try qp.recompileIfChanged("/a.ts", "let x = 1;");
+    try T.expect(!changed);
+    try T.expectEqual(rev_before, qp.revision);
+}
+
+test "QueryProgram: recompileIfChanged returns true when content differs" {
+    var vfs = ts_resolver.VirtualFs.init(T.allocator);
+    defer vfs.deinit();
+    var resolver = ts_resolver.Resolver.init(T.allocator, vfs.fs(), .{});
+    defer resolver.deinit();
+    var p = ts_program.Program.init(T.allocator, &resolver);
+    defer p.deinit();
+    const a = try p.add("/a.ts", "let x = 1;");
+
+    var qp = QueryProgram.init(T.allocator, &p);
+    defer qp.deinit();
+
+    _ = try qp.query(.{});
+    const rev_before = qp.revision;
+    const changed = try qp.recompileIfChanged("/a.ts", "let x = 42;");
+    try T.expect(changed);
+    try T.expect(qp.revision > rev_before);
+    try T.expect(std.mem.indexOf(u8, p.fileById(a).compilation.?.js, "42") != null);
+}
+
+test "QueryProgram: A imports B; B changing invalidates A" {
+    var vfs = ts_resolver.VirtualFs.init(T.allocator);
+    defer vfs.deinit();
+    try vfs.addFile("/proj/a.ts", "import { y } from './b'; export let z = y;");
+    try vfs.addFile("/proj/b.ts", "export let y = 1;");
+    var resolver = ts_resolver.Resolver.init(T.allocator, vfs.fs(), .{});
+    defer resolver.deinit();
+    var p = ts_program.Program.init(T.allocator, &resolver);
+    defer p.deinit();
+    const a_id = try p.add("/proj/a.ts", "import { y } from './b'; export let z = y;");
+    const b_id = try p.add("/proj/b.ts", "export let y = 1;");
+
+    var qp = QueryProgram.init(T.allocator, &p);
+    defer qp.deinit();
+
+    _ = try qp.query(.{});
+    // After the initial compile, A's cached dependency set should
+    // include B.
+    const a_deps = qp.cachedDependencies(a_id) orelse return error.MissingEntry;
+    var found_b = false;
+    for (a_deps) |d| {
+        if (d == b_id) found_b = true;
+    }
+    try T.expect(found_b);
+
+    // Touch B. Even though A's bytes are identical, A should be
+    // recompiled because its dependency changed.
+    const changed = try qp.recompileIfChanged("/proj/b.ts", "export let y = 999;");
+    try T.expect(changed);
+    // The latest query() bumped revision and recompiled both A
+    // (transitive) and B (direct).
+    const a_rev = qp.lastCompileRevision(a_id) orelse return error.MissingEntry;
+    const b_rev = qp.lastCompileRevision(b_id) orelse return error.MissingEntry;
+    try T.expectEqual(qp.revision, a_rev);
+    try T.expectEqual(qp.revision, b_rev);
 }
 
 test "QueryProgram: identical updateSource value still skips on next query" {
