@@ -2981,6 +2981,57 @@ test "emit: cjs export-default-as re-exports default binding" {
     try T.expect(std.mem.indexOf(u8, out, "module.exports.foo = require(\"./bar\").default;") != null);
 }
 
+// ----- ESM ↔ CJS interop: full-pattern coverage --------------------------
+// These tests pin down the exact emit shape for the five common ESM↔CJS
+// interop cases so a regression in helper insertion or assignment form
+// surfaces immediately rather than masquerading as a "looks close" diff.
+
+test "emit: cjs default import emits full __importDefault(...).default pattern" {
+    // `import x from "./y"` → `const x = __importDefault(require("./y")).default;`
+    const out = try emitWithOpts("import x from \"./y\";", .{ .module_kind = .commonjs, .es_module_interop = true });
+    defer T.allocator.free(out);
+    try T.expect(std.mem.indexOf(u8, out, "const x = __importDefault(require(\"./y\")).default") != null);
+}
+
+test "emit: cjs namespace import emits full __importStar(require) pattern" {
+    // `import * as x from "./y"` → `const x = __importStar(require("./y"));`
+    const out = try emitWithOpts("import * as x from \"./y\";", .{ .module_kind = .commonjs, .es_module_interop = true });
+    defer T.allocator.free(out);
+    try T.expect(std.mem.indexOf(u8, out, "const x = __importStar(require(\"./y\"))") != null);
+}
+
+test "emit: cjs named import emits exact destructure-from-require shape" {
+    // `import { a, b } from "./y"` → `const { a, b } = require("./y");`
+    const out = try emitWithOpts("import { a, b } from \"./y\";", .{ .module_kind = .commonjs });
+    defer T.allocator.free(out);
+    try T.expect(std.mem.indexOf(u8, out, "const { a, b } = require(\"./y\")") != null);
+    // No interop helpers should be injected for plain named imports.
+    try T.expect(std.mem.indexOf(u8, out, "__importDefault") == null);
+    try T.expect(std.mem.indexOf(u8, out, "__importStar") == null);
+}
+
+test "emit: cjs export-default expression assigns to module.exports.default" {
+    // `export default <expr>` → `module.exports.default = <expr>;` for
+    // non-decl payloads (number literals, identifiers, calls, ...).
+    const out = try emitWithOpts("export default 42;", .{ .module_kind = .commonjs });
+    defer T.allocator.free(out);
+    try T.expect(std.mem.indexOf(u8, out, "module.exports.default = 42") != null);
+    // Ensure no stray ESM `export default` keyword survived lowering.
+    try T.expect(std.mem.indexOf(u8, out, "export default") == null);
+}
+
+test "emit: cjs local export-clause assigns each binding to module.exports" {
+    // `export { x }` (no `from` clause) refers to a local binding and
+    // lowers to `module.exports.x = x;`. With aliasing, the alias goes
+    // on the LHS and the local name on the RHS.
+    const out = try emitWithOpts("const x = 1; const y = 2; export { x, y as renamed };", .{ .module_kind = .commonjs });
+    defer T.allocator.free(out);
+    try T.expect(std.mem.indexOf(u8, out, "module.exports.x = x") != null);
+    try T.expect(std.mem.indexOf(u8, out, "module.exports.renamed = y") != null);
+    // Should not look like a re-export from a module.
+    try T.expect(std.mem.indexOf(u8, out, "require(") == null);
+}
+
 test "emit: throw" {
     const out = try emit("throw new Error(\"bad\");");
     defer T.allocator.free(out);
