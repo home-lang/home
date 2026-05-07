@@ -28,6 +28,7 @@
 //!   - textDocument/documentHighlight
 //!   - textDocument/formatting
 //!   - textDocument/publishDiagnostics (server-pushed)
+//!   - textDocument/diagnostic (pull-mode)
 //!   - shutdown
 //!   - exit
 
@@ -65,6 +66,7 @@ pub const Method = enum {
     text_document_completion,
     text_document_signature_help,
     text_document_publish_diagnostics,
+    text_document_diagnostic,
     text_document_rename,
     text_document_prepare_rename,
     completion_item_resolve,
@@ -78,6 +80,9 @@ pub const Method = enum {
     text_document_document_highlight,
     text_document_formatting,
     text_document_code_lens,
+    text_document_implementation,
+    text_document_document_link,
+    document_link_resolve,
     unknown,
 
     pub fn fromString(s: []const u8) Method {
@@ -99,6 +104,7 @@ pub const Method = enum {
             .{ "textDocument/completion", Method.text_document_completion },
             .{ "textDocument/signatureHelp", Method.text_document_signature_help },
             .{ "textDocument/publishDiagnostics", Method.text_document_publish_diagnostics },
+            .{ "textDocument/diagnostic", Method.text_document_diagnostic },
             .{ "textDocument/rename", Method.text_document_rename },
             .{ "textDocument/prepareRename", Method.text_document_prepare_rename },
             .{ "completionItem/resolve", Method.completion_item_resolve },
@@ -112,6 +118,9 @@ pub const Method = enum {
             .{ "textDocument/documentHighlight", Method.text_document_document_highlight },
             .{ "textDocument/formatting", Method.text_document_formatting },
             .{ "textDocument/codeLens", Method.text_document_code_lens },
+            .{ "textDocument/implementation", Method.text_document_implementation },
+            .{ "textDocument/documentLink", Method.text_document_document_link },
+            .{ "documentLink/resolve", Method.document_link_resolve },
         };
         inline for (map) |entry| {
             if (std.mem.eql(u8, s, entry[0])) return entry[1];
@@ -1766,6 +1775,50 @@ pub fn encodePublishDiagnostics(
     return buf.toOwnedSlice(gpa);
 }
 
+/// Handle the LSP `textDocument/diagnostic` pull-mode request. Returns
+/// a `RelatedFullDocumentDiagnosticReport` JSON-RPC response —
+/// `{"kind":"full","items":[Diagnostic, ...]}`. Differs from the
+/// server-pushed `publishDiagnostics` notification in that the editor
+/// asks for diagnostics on demand (e.g. when a tab regains focus).
+/// Each item has the spec-required shape `range`, `severity`, `code`,
+/// `source`, `message` — coords go through `writeRange` for the
+/// 1-based -> 0-based conversion, severity via `lspSeverityCode`.
+/// Caller owns the returned slice.
+pub fn handleDiagnostic(
+    service: *ts_lsp.Service,
+    gpa: std.mem.Allocator,
+    request_id: RequestId,
+    params_json: []const u8,
+) ![]u8 {
+    const uri = findJsonStringField(params_json, "uri") orelse return error.MissingUri;
+    const path = uriToPath(uri);
+
+    const diags = try service.diagnosticsStructured(gpa, path);
+    defer ts_lsp.freeLspDiagnostics(gpa, diags);
+
+    var buf: std.ArrayListUnmanaged(u8) = .empty;
+    defer buf.deinit(gpa);
+    try buf.appendSlice(gpa, "{\"kind\":\"full\",\"items\":[");
+    for (diags, 0..) |d, i| {
+        if (i != 0) try buf.append(gpa, ',');
+        try buf.appendSlice(gpa, "{\"range\":");
+        try writeRange(&buf, gpa, d.range);
+        var nbuf: [64]u8 = undefined;
+        const sev_code = try std.fmt.bufPrint(
+            &nbuf,
+            ",\"severity\":{d},\"code\":{d},\"source\":\"",
+            .{ lspSeverityCode(d.severity), d.code },
+        );
+        try buf.appendSlice(gpa, sev_code);
+        try writeJsonStringContents(&buf, gpa, d.source);
+        try buf.appendSlice(gpa, "\",\"message\":\"");
+        try writeJsonStringContents(&buf, gpa, d.message);
+        try buf.appendSlice(gpa, "\"}");
+    }
+    try buf.appendSlice(gpa, "]}");
+    return encodeResponse(gpa, request_id, buf.items);
+}
+
 /// Render the InitializeResult body — declares capabilities for
 /// every method we support.
 pub fn renderInitializeResult(gpa: std.mem.Allocator) ![]u8 {
@@ -1948,6 +2001,10 @@ pub fn dispatchRequest(
         .text_document_publish_diagnostics => {
             // Server-pushed notification we accept inbound but ignore.
             return &.{};
+        },
+        .text_document_diagnostic => {
+            if (is_notification) return &.{};
+            return try handleDiagnostic(service, gpa, id, params);
         },
         .text_document_hover => {
             if (is_notification) return &.{};
@@ -2978,6 +3035,33 @@ test "handleCodeLens: returns CodeLens array with range+command title" {
     try T.expect(std.mem.indexOf(u8, out, "\"range\":") != null);
     try T.expect(std.mem.indexOf(u8, out, "\"command\":{\"title\":\"") != null);
     try T.expect(std.mem.indexOf(u8, out, "2 references") != null);
+}
+
+test "handleDiagnostic: returns RelatedFullDocumentDiagnosticReport with items" {
+    var vfs = ts_resolver.VirtualFs.init(T.allocator);
+    defer vfs.deinit();
+    var resolver = ts_resolver.Resolver.init(T.allocator, vfs.fs(), .{});
+    defer resolver.deinit();
+    var program = ts_program.Program.init(T.allocator, &resolver);
+    defer program.deinit();
+
+    // Type mismatch — guarantees at least one diagnostic.
+    _ = try program.add("/main.ts", "let x: number = \"oops\";");
+    try program.compileAll(.{});
+    var svc = ts_lsp.Service.init(T.allocator, &program);
+
+    const body =
+        \\{"jsonrpc":"2.0","id":171,"method":"textDocument/diagnostic","params":{"textDocument":{"uri":"file:///main.ts"}}}
+    ;
+    const out = try handleDiagnostic(&svc, T.allocator, .{ .integer = 171 }, body);
+    defer T.allocator.free(out);
+    try T.expect(std.mem.indexOf(u8, out, "\"id\":171") != null);
+    try T.expect(std.mem.indexOf(u8, out, "\"kind\":\"full\"") != null);
+    try T.expect(std.mem.indexOf(u8, out, "\"items\":[") != null);
+    try T.expect(std.mem.indexOf(u8, out, "\"range\":") != null);
+    try T.expect(std.mem.indexOf(u8, out, "\"severity\":1") != null);
+    try T.expect(std.mem.indexOf(u8, out, "\"source\":\"ts\"") != null);
+    try T.expect(std.mem.indexOf(u8, out, "\"message\":\"") != null);
 }
 
 test "handleTypeDefinition: routes request and returns Location response" {
