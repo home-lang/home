@@ -96,6 +96,11 @@ pub const TsCodes = struct {
     /// union — under the strict rule, `a?: T` means absent OR T,
     /// not `T | undefined`.
     pub const exact_optional_property: u32 = 2375;
+    /// `noPropertyAccessFromIndexSignature`. Emitted when `obj.foo`
+    /// resolves only through an index signature (no declared
+    /// property `foo`). Use `obj["foo"]` to make the unsafe access
+    /// explicit.
+    pub const index_signature_property_access: u32 = 4111;
 };
 
 /// Per-alias generic info: the type-parameter TypeIds in
@@ -179,6 +184,12 @@ pub const StrictFlags = struct {
     /// is treated as `T | undefined` and `{ a: undefined }` is
     /// permitted.
     exact_optional_property_types: bool = false,
+    /// `noPropertyAccessFromIndexSignature`. When true, `obj.foo`
+    /// is forbidden if `foo` only resolves via an index signature
+    /// (i.e. there's no declared property `foo`). The element-access
+    /// form `obj["foo"]` must be used instead — surfacing that the
+    /// key may or may not exist on the type. Emits TS4111.
+    no_property_access_from_index_signature: bool = false,
 };
 
 pub const Checker = struct {
@@ -3019,7 +3030,28 @@ pub const Checker = struct {
                 // with a `[k: string]: V` indexer resolves to V.
                 if (self.interner.pool.flagsOf(obj_t).is_object_type) {
                     const string_idx = self.interner.objectStringIndex(obj_t);
-                    if (string_idx != types.Primitive.none) break :blk string_idx;
+                    if (string_idx != types.Primitive.none) {
+                        // `noPropertyAccessFromIndexSignature`:
+                        // dot-access against a type whose only
+                        // matching member is the index signature
+                        // must use bracket form. Emit TS4111 but
+                        // still resolve the type so downstream
+                        // checks see the indexer's value type.
+                        if (self.strict_flags.no_property_access_from_index_signature) {
+                            const name_str = self.string_interner.get(m.name);
+                            const msg = try std.fmt.allocPrint(
+                                self.diag_arena.allocator(),
+                                "Property '{s}' comes from an index signature, so it must be accessed with ['{s}'].",
+                                .{ name_str, name_str },
+                            );
+                            try self.diagnostics.append(self.gpa, .{
+                                .node = node,
+                                .code = TsCodes.index_signature_property_access,
+                                .message = msg,
+                            });
+                        }
+                        break :blk string_idx;
+                    }
                     // No matching member and no indexer → TS2339.
                     const name_str = self.string_interner.get(m.name);
                     const msg = try std.fmt.allocPrint(
@@ -6326,6 +6358,35 @@ test "checker: object type literal with string index signature" {
     defer destroySetup(s);
     try s.checker.checkSourceFile(s.root);
     try T.expect(s.checker.diagnostics.items.len == 0);
+}
+
+test "checker: noPropertyAccessFromIndexSignature emits TS4111" {
+    const s = try newSetup(
+        \\interface I { [k: string]: number }
+        \\const o: I = {};
+        \\const v = o.foo;
+    );
+    defer destroySetup(s);
+    s.checker.setStrictFlags(.{ .no_property_access_from_index_signature = true });
+    try s.checker.checkSourceFile(s.root);
+    var found = false;
+    for (s.checker.diagnostics.items) |d| {
+        if (d.code == TsCodes.index_signature_property_access) found = true;
+    }
+    try T.expect(found);
+}
+
+test "checker: dot access via index signature is silent without flag" {
+    const s = try newSetup(
+        \\interface I { [k: string]: number }
+        \\const o: I = {};
+        \\const v = o.foo;
+    );
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+    for (s.checker.diagnostics.items) |d| {
+        try T.expect(d.code != TsCodes.index_signature_property_access);
+    }
 }
 
 test "checker: postfix `!` strips null/undefined from a union" {
