@@ -2072,11 +2072,101 @@ pub const Parser = struct {
 
         _ = try self.expect(.LeftBrace, "Expected '{' after enum name");
 
-        // Parse variants
+        // Parse variants and (optionally) associated declarations.
+        //
+        // Zig-style enum bodies double as a namespace: after (or
+        // interleaved with) the variant list you may declare
+        // `pub fn` / `fn` methods on the enum, plus `pub const` /
+        // `const` associated constants. This mirrors the struct-body
+        // grammar — we accept the same modifier prefixes here.
+        //
+        // Issue #52: previously the loop only accepted bare
+        // identifiers (variant names) and bailed with
+        // "Expected variant name" the moment it saw `pub` or `fn`.
         var variants = std.ArrayList(ast.EnumVariant).empty;
         defer variants.deinit(self.allocator);
 
+        var methods = std.ArrayList(*ast.FnDecl).empty;
+        defer methods.deinit(self.allocator);
+
         while (!self.check(.RightBrace) and !self.isAtEnd()) {
+            const iter_start = self.current;
+
+            // Look-ahead for member modifiers: `pub fn`, `inline fn`,
+            // `pub inline fn`, `inline pub fn`, `pub const`. Only
+            // commit to consuming them when the following token kicks
+            // off a recognized member kind; otherwise rewind so the
+            // variant-name path still works.
+            const member_checkpoint = self.current;
+            var member_is_pub = false;
+            var member_is_inline = false;
+            if (self.check(.Pub)) {
+                member_is_pub = true;
+                _ = self.advance();
+            } else if (self.check(.Inline)) {
+                member_is_inline = true;
+                _ = self.advance();
+            }
+            if (member_is_pub and self.check(.Inline)) {
+                member_is_inline = true;
+                _ = self.advance();
+            } else if (member_is_inline and self.check(.Pub)) {
+                member_is_pub = true;
+                _ = self.advance();
+            }
+            if (member_is_pub or member_is_inline) {
+                if (!self.check(.Fn) and !self.check(.Const)) {
+                    self.current = member_checkpoint;
+                    member_is_pub = false;
+                    member_is_inline = false;
+                }
+            }
+
+            // Associated `const` declaration. We skip-parse for now —
+            // mirrors the struct-body handling. The body still type-
+            // checks; future work can promote these to first-class
+            // enum-namespaced symbols.
+            if (self.match(&.{.Const})) {
+                try self.skipNestedConstDecl();
+                continue;
+            }
+
+            // Method declaration.
+            if (self.match(&.{.Fn})) {
+                if (self.functionDeclaration(false, false)) |method_stmt| {
+                    switch (method_stmt) {
+                        .FnDecl => |fn_decl| {
+                            if (member_is_pub) fn_decl.is_public = true;
+                            if (member_is_inline) fn_decl.is_inline = true;
+                            try methods.append(self.allocator, fn_decl);
+                        },
+                        else => {
+                            try self.reportError("Expected function declaration in enum");
+                            return error.UnexpectedToken;
+                        },
+                    }
+                } else |err| {
+                    if (err == error.OutOfMemory) return err;
+                    // Synchronize: skip to next `fn` or to the closing
+                    // brace of the enum body. Mirrors structDeclarationWithName.
+                    var brace_depth: i32 = 0;
+                    while (!self.isAtEnd()) {
+                        const tok = self.peek();
+                        if (tok.type == .LeftBrace) {
+                            brace_depth += 1;
+                        } else if (tok.type == .RightBrace) {
+                            if (brace_depth == 0) break;
+                            brace_depth -= 1;
+                        } else if (tok.type == .Fn and brace_depth == 0) {
+                            break;
+                        }
+                        _ = self.advance();
+                    }
+                }
+                continue;
+            }
+
+            // Otherwise: a variant declaration.
             const variant_name = try self.expect(.Identifier, "Expected variant name");
 
             // Check for associated data type
@@ -2115,6 +2205,13 @@ pub const Parser = struct {
 
             // Optional comma between variants
             _ = self.match(&.{.Comma});
+
+            // Progress guard — every iteration must consume at least
+            // one token. Mirrors the struct-body loop.
+            if (self.current == iter_start) {
+                try self.reportError("Parser made no progress in enum body");
+                return error.UnexpectedToken;
+            }
         }
 
         _ = try self.expect(.RightBrace, "Expected '}' after enum variants");
@@ -2122,12 +2219,24 @@ pub const Parser = struct {
         const variants_slice = try variants.toOwnedSlice(self.allocator);
         errdefer self.allocator.free(variants_slice);
 
-        const enum_decl = try ast.EnumDecl.init(
-            self.allocator,
-            name,
-            variants_slice,
-            ast.SourceLocation.fromToken(enum_token),
-        );
+        const methods_slice = try methods.toOwnedSlice(self.allocator);
+        errdefer self.allocator.free(methods_slice);
+
+        const enum_decl = if (methods_slice.len > 0)
+            try ast.EnumDecl.initWithMethods(
+                self.allocator,
+                name,
+                variants_slice,
+                methods_slice,
+                ast.SourceLocation.fromToken(enum_token),
+            )
+        else
+            try ast.EnumDecl.init(
+                self.allocator,
+                name,
+                variants_slice,
+                ast.SourceLocation.fromToken(enum_token),
+            );
         enum_decl.tag_type = tag_type;
 
         return ast.Stmt{ .EnumDecl = enum_decl };

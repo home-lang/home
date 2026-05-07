@@ -2173,6 +2173,10 @@ pub const EnumDecl = struct {
     node: Node,
     name: []const u8,
     variants: []const EnumVariant,
+    /// Methods defined inside the enum body (Zig-style associated
+    /// functions: `pub fn foo(self: EnumName) ... { ... }`). Empty
+    /// when the enum body has only variants.
+    methods: []const *FnDecl = &.{},
     is_public: bool = false,
     attributes: []const Attribute = &.{},
     /// Optional explicit tag (discriminant) type. Supports both
@@ -2187,6 +2191,23 @@ pub const EnumDecl = struct {
             .node = .{ .type = .EnumDecl, .loc = loc },
             .name = name,
             .variants = variants,
+        };
+        return decl;
+    }
+
+    pub fn initWithMethods(
+        allocator: std.mem.Allocator,
+        name: []const u8,
+        variants: []const EnumVariant,
+        methods: []const *FnDecl,
+        loc: SourceLocation,
+    ) !*EnumDecl {
+        const decl = try allocator.create(EnumDecl);
+        decl.* = .{
+            .node = .{ .type = .EnumDecl, .loc = loc },
+            .name = name,
+            .variants = variants,
+            .methods = methods,
         };
         return decl;
     }
