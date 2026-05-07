@@ -392,6 +392,82 @@ pub const Emitter = struct {
     }
 };
 
+// =============================================================================
+// Declaration source map (`.d.hm.map`).
+// =============================================================================
+//
+// Symmetric to TypeScript's `.d.ts.map`: when `declaration_map: true`,
+// the emitter writes a parallel `.d.hm.map` next to the `.d.hm`. The
+// map is a Source Map V3 JSON object whose `mappings` field, in the
+// fullness of time, will encode positions in the `.d.hm` back to the
+// original `.home` source. v0 ships the framing only — empty
+// `mappings` so consumers (LSP, devtools) parse the file successfully
+// without erroring. Real position-preserving mappings land alongside
+// the symbol-driven re-printer in a follow-up.
+//
+// Shape (Source Map V3, minimal):
+//   { "version": 3, "sources": ["mod.home"], "mappings": "" }
+//
+// Optional fields the spec allows but we omit at v0: `file`,
+// `sourcesContent`, `names`, `sourceRoot`. Tooling tolerates their
+// absence.
+
+pub const DeclarationMapOptions = struct {
+    /// Optional `file` field — the basename of the `.d.hm` this map
+    /// pairs with. When null, the field is omitted.
+    file: ?[]const u8 = null,
+};
+
+/// Render a minimal Source Map V3 JSON for a `.d.hm` file. `source`
+/// is the original `.home` source path that the declaration was
+/// generated from; it goes into the `sources` array as a single
+/// entry. Caller owns the returned bytes.
+pub fn renderDeclarationMap(
+    gpa: std.mem.Allocator,
+    source: []const u8,
+    options: DeclarationMapOptions,
+) ![]u8 {
+    var out: std.ArrayListUnmanaged(u8) = .empty;
+    defer out.deinit(gpa);
+    try out.appendSlice(gpa, "{\"version\":3");
+    if (options.file) |f| {
+        try out.appendSlice(gpa, ",\"file\":");
+        try writeJsonString(gpa, &out, f);
+    }
+    try out.appendSlice(gpa, ",\"sources\":[");
+    try writeJsonString(gpa, &out, source);
+    try out.appendSlice(gpa, "],\"mappings\":\"\"}");
+    return out.toOwnedSlice(gpa);
+}
+
+/// Append a JSON-encoded string literal (`"..."`) to `out`. Escapes
+/// the bare minimum required by RFC 8259: `\`, `"`, and ASCII
+/// control characters. Source-map paths are typically plain ASCII so
+/// this stays cheap on the hot path.
+fn writeJsonString(
+    gpa: std.mem.Allocator,
+    out: *std.ArrayListUnmanaged(u8),
+    s: []const u8,
+) !void {
+    try out.append(gpa, '"');
+    for (s) |c| {
+        switch (c) {
+            '"' => try out.appendSlice(gpa, "\\\""),
+            '\\' => try out.appendSlice(gpa, "\\\\"),
+            '\n' => try out.appendSlice(gpa, "\\n"),
+            '\r' => try out.appendSlice(gpa, "\\r"),
+            '\t' => try out.appendSlice(gpa, "\\t"),
+            0...0x08, 0x0B, 0x0C, 0x0E...0x1F => {
+                var buf: [6]u8 = undefined;
+                _ = std.fmt.bufPrint(&buf, "\\u{x:0>4}", .{c}) catch unreachable;
+                try out.appendSlice(gpa, &buf);
+            },
+            else => try out.append(gpa, c),
+        }
+    }
+    try out.append(gpa, '"');
+}
+
 /// Loader scaffold. Phase 4 follow-up: wire into the Home parser's
 /// declaration-only mode (the same Home lexer/parser, with a flag
 /// that rejects executable statements).
@@ -602,6 +678,34 @@ test "Emitter: declare module wraps inner decls" {
     const open_idx = std.mem.indexOf(u8, out, "declare module").?;
     const close_idx = std.mem.lastIndexOf(u8, out, "}").?;
     try T.expect(open_idx < close_idx);
+}
+
+test "renderDeclarationMap: minimal V3 framing parses as JSON" {
+    const out = try renderDeclarationMap(T.allocator, "src/mod.home", .{ .file = "mod.d.hm" });
+    defer T.allocator.free(out);
+
+    // Required V3 fields are present.
+    try T.expect(std.mem.indexOf(u8, out, "\"version\":3") != null);
+    try T.expect(std.mem.indexOf(u8, out, "\"sources\":[\"src/mod.home\"]") != null);
+    try T.expect(std.mem.indexOf(u8, out, "\"mappings\":\"\"") != null);
+    try T.expect(std.mem.indexOf(u8, out, "\"file\":\"mod.d.hm\"") != null);
+
+    // Output round-trips through std.json without diagnostics.
+    var parsed = try std.json.parseFromSlice(std.json.Value, T.allocator, out, .{});
+    defer parsed.deinit();
+    const root = parsed.value.object;
+    try T.expectEqual(@as(i64, 3), root.get("version").?.integer);
+    const sources = root.get("sources").?.array;
+    try T.expectEqual(@as(usize, 1), sources.items.len);
+    try T.expectEqualStrings("src/mod.home", sources.items[0].string);
+    try T.expectEqualStrings("", root.get("mappings").?.string);
+}
+
+test "renderDeclarationMap: omits `file` when null" {
+    const out = try renderDeclarationMap(T.allocator, "x.home", .{});
+    defer T.allocator.free(out);
+    try T.expect(std.mem.indexOf(u8, out, "\"file\"") == null);
+    try T.expect(std.mem.indexOf(u8, out, "\"sources\":[\"x.home\"]") != null);
 }
 
 test "DeclKind: enum is exhaustive" {

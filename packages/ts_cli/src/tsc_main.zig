@@ -19,6 +19,7 @@ const ts_diagnostics = @import("ts_diagnostics");
 const ts_emit = @import("ts_emit");
 const tsconfig_mod = @import("tsconfig");
 const ts_watch = @import("ts_watch");
+const d_hm = @import("d_hm");
 
 const RealFs = struct {
     fn read(gpa: std.mem.Allocator, path: []const u8) ![]const u8 {
@@ -299,6 +300,14 @@ pub fn main(init: std.process.Init) !void {
         break :blk false;
     };
 
+    // Resolve `declarationMap` from CLI or tsconfig. CLI wins. Has no
+    // effect unless `declaration` emission is also on (matches tsc).
+    const emit_decl_map: bool = blk: {
+        if (opts.declaration_map) |d| break :blk d;
+        if (loaded_cfg) |c| if (c.compiler_options.declaration_map) |d| break :blk d;
+        break :blk false;
+    };
+
     // Declaration output dir: tsconfig `declarationDir` if set,
     // otherwise alongside the .js (which itself respects outDir).
     const declaration_dir: ?[]const u8 = blk: {
@@ -382,6 +391,33 @@ pub fn main(init: std.process.Init) !void {
                 std.debug.print("error writing {s}: {s}\n", .{ dts_path, @errorName(err) });
                 std.process.exit(1);
             };
+
+            // §4.A.x — when `declarationMap` is on, write a parallel
+            // `.d.ts.map` next to the `.d.ts`. v0 emits Source Map V3
+            // framing only (empty `mappings`); the symbol-driven
+            // re-printer fills in real positions later. Reuses
+            // `d_hm.renderDeclarationMap` since the format is shared
+            // between `.d.hm.map` and `.d.ts.map`.
+            if (emit_decl_map) {
+                const dts_basename = std.fs.path.basename(dts_path);
+                const map_bytes = d_hm.renderDeclarationMap(
+                    gpa,
+                    f.path,
+                    .{ .file = dts_basename },
+                ) catch |err| blk: {
+                    std.debug.print("warning: declaration-map render failed for {s}: {s}\n", .{ f.path, @errorName(err) });
+                    break :blk null;
+                };
+                if (map_bytes) |mb| {
+                    defer gpa.free(mb);
+                    const map_path = try std.fmt.allocPrint(gpa, "{s}.map", .{dts_path});
+                    defer gpa.free(map_path);
+                    RealFs.write(gpa, map_path, mb) catch |err| {
+                        std.debug.print("error writing {s}: {s}\n", .{ map_path, @errorName(err) });
+                        std.process.exit(1);
+                    };
+                }
+            }
         }
     }
 

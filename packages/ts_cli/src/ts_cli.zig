@@ -67,6 +67,10 @@ pub const Options = struct {
     declaration: ?bool = null,
     /// `--sourceMap`. `null` means defer to tsconfig.
     source_map: ?bool = null,
+    /// `--declarationMap`. `null` means defer to tsconfig. When true,
+    /// emit a `.d.ts.map` (or `.d.hm.map`) alongside each `.d.ts` /
+    /// `.d.hm`. Implies `--declaration` at emit time.
+    declaration_map: ?bool = null,
 };
 
 pub const ParseError = error{
@@ -146,6 +150,10 @@ pub fn parseArgs(gpa: std.mem.Allocator, args: []const []const u8) ParseError!Op
             opts.source_map = true;
         } else if (std.mem.eql(u8, a, "--no-sourceMap")) {
             opts.source_map = false;
+        } else if (std.mem.eql(u8, a, "--declarationMap")) {
+            opts.declaration_map = true;
+        } else if (std.mem.eql(u8, a, "--no-declarationMap")) {
+            opts.declaration_map = false;
         } else if (a.len > 0 and a[0] == '-') {
             // Unknown flag — silently accept for forward-compat per
             // TS_PARITY_PLAN. A future cycle promotes selected
@@ -181,6 +189,7 @@ pub const helpText: []const u8 =
     \\  --outDir <dir>         Output directory for emitted files
     \\  --jsx <mode>           JSX mode (preserve / react / react-jsx / react-jsxdev)
     \\  --sourceMap            Emit a `.js.map` source map alongside each `.js`
+    \\  --declarationMap       Emit a `.d.ts.map` / `.d.hm.map` alongside each declaration
     \\  --strict               Enable all --strictXxx options
     \\  --pretty / --no-pretty Force-toggle ANSI-colored diagnostics
     \\  --listFiles            Print all included files and exit

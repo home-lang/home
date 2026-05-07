@@ -313,6 +313,7 @@ pub fn build(b: *std.Build) void {
     home_tsc_exe.root_module.addImport("ts_emit", ts_emit_pkg);
     home_tsc_exe.root_module.addImport("tsconfig", tsconfig_pkg);
     home_tsc_exe.root_module.addImport("ts_watch", ts_watch_pkg);
+    home_tsc_exe.root_module.addImport("d_hm", d_hm_pkg);
     b.installArtifact(home_tsc_exe);
 
     const home_lsp_exe = b.addExecutable(.{
