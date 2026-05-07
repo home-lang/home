@@ -763,6 +763,16 @@ pub const TypeofTypePayload = struct {
     operand: NodeId,
 };
 
+/// `\`hello ${name}\`` — template-literal *expression* (value
+/// position). Text parts are `literal_string` HIR nodes; there
+/// are exactly `exprs_len + 1` of them.
+pub const TemplateLiteralPayload = struct {
+    texts_start: u32,
+    texts_len: u16,
+    exprs_start: u32,
+    exprs_len: u16,
+};
+
 /// `\`hello-${T}-${U}\`` — template-literal type.
 /// `text_parts` and `type_parts` interleave: there are exactly
 /// `type_parts.len + 1` text parts. For `\`a${T}b${U}c\``,
@@ -1073,6 +1083,7 @@ pub const Hir = struct {
     typeof_type_payloads: std.ArrayListUnmanaged(TypeofTypePayload),
     type_predicate_payloads: std.ArrayListUnmanaged(TypePredicatePayload),
     template_literal_type_payloads: std.ArrayListUnmanaged(TemplateLiteralTypePayload),
+    template_literal_payloads: std.ArrayListUnmanaged(TemplateLiteralPayload),
     as_expression_payloads: std.ArrayListUnmanaged(AsExpressionPayload),
     index_signature_payloads: std.ArrayListUnmanaged(IndexSignaturePayload),
     conditional_type_payloads: std.ArrayListUnmanaged(ConditionalTypePayload),
@@ -1157,6 +1168,7 @@ pub const Hir = struct {
             .typeof_type_payloads = .empty,
             .type_predicate_payloads = .empty,
             .template_literal_type_payloads = .empty,
+            .template_literal_payloads = .empty,
             .as_expression_payloads = .empty,
             .index_signature_payloads = .empty,
             .conditional_type_payloads = .empty,
@@ -1248,6 +1260,7 @@ pub const Hir = struct {
         self.typeof_type_payloads.deinit(self.gpa);
         self.type_predicate_payloads.deinit(self.gpa);
         self.template_literal_type_payloads.deinit(self.gpa);
+        self.template_literal_payloads.deinit(self.gpa);
         self.as_expression_payloads.deinit(self.gpa);
         self.index_signature_payloads.deinit(self.gpa);
         self.conditional_type_payloads.deinit(self.gpa);
@@ -2362,6 +2375,35 @@ pub const Builder = struct {
         return id;
     }
 
+    /// Build a template-literal *expression* (value position):
+    /// `\`a${x}b${y}c\``. `texts` are `literal_string` nodes (one
+    /// more than `exprs`); `exprs` are arbitrary expression nodes.
+    pub fn addTemplateLiteralExpr(
+        self: *Builder,
+        span: Span,
+        texts: []const NodeId,
+        exprs: []const NodeId,
+    ) !NodeId {
+        std.debug.assert(texts.len == exprs.len + 1);
+        const tx_start: u32 = @intCast(self.hir.child_pool.items.len);
+        try self.hir.child_pool.appendSlice(self.hir.gpa, texts);
+        const tx_len: u16 = @intCast(texts.len);
+        const ex_start: u32 = @intCast(self.hir.child_pool.items.len);
+        try self.hir.child_pool.appendSlice(self.hir.gpa, exprs);
+        const ex_len: u16 = @intCast(exprs.len);
+        const payload_idx: u32 = @intCast(self.hir.template_literal_payloads.items.len);
+        try self.hir.template_literal_payloads.append(self.hir.gpa, .{
+            .texts_start = tx_start,
+            .texts_len = tx_len,
+            .exprs_start = ex_start,
+            .exprs_len = ex_len,
+        });
+        const id = try self.newNode(.template_literal, span, payload_idx);
+        for (texts) |t| if (t != none_node_id) self.hir.setParent(t, id);
+        for (exprs) |e| if (e != none_node_id) self.hir.setParent(e, id);
+        return id;
+    }
+
     pub fn addTypePredicate(
         self: *Builder,
         span: Span,
@@ -3106,6 +3148,21 @@ pub fn templateLiteralTypeTexts(hir: *const Hir, id: NodeId) []const NodeId {
 pub fn templateLiteralTypeTypes(hir: *const Hir, id: NodeId) []const NodeId {
     const p = templateLiteralTypeOf(hir, id);
     return hir.childSlice(p.type_parts_start, p.type_parts_len);
+}
+
+pub fn templateLiteralOf(hir: *const Hir, id: NodeId) TemplateLiteralPayload {
+    std.debug.assert(hir.kindOf(id) == .template_literal);
+    return hir.template_literal_payloads.items[hir.payloads.items[id]];
+}
+
+pub fn templateLiteralTexts(hir: *const Hir, id: NodeId) []const NodeId {
+    const p = templateLiteralOf(hir, id);
+    return hir.childSlice(p.texts_start, p.texts_len);
+}
+
+pub fn templateLiteralExprs(hir: *const Hir, id: NodeId) []const NodeId {
+    const p = templateLiteralOf(hir, id);
+    return hir.childSlice(p.exprs_start, p.exprs_len);
 }
 
 pub fn conditionalTypeOf(hir: *const Hir, id: NodeId) ConditionalTypePayload {

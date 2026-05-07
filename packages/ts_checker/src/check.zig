@@ -3615,6 +3615,13 @@ pub const Checker = struct {
     pub fn checkExpression(self: *Checker, node: NodeId) CheckError!TypeId {
         const t: TypeId = switch (self.hir.kindOf(node)) {
             .literal_string => types.Primitive.string_t,
+            .template_literal => blk: {
+                // Type-check substitutions but the whole expression's
+                // type is plain `string`.
+                const tpl_exprs = hir_mod.templateLiteralExprs(self.hir, node);
+                for (tpl_exprs) |e| _ = try self.checkExpression(e);
+                break :blk types.Primitive.string_t;
+            },
             .literal_number => types.Primitive.number_t,
             .literal_bigint => types.Primitive.bigint_t,
             .literal_bool => types.Primitive.boolean_t,

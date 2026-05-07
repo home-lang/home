@@ -2041,6 +2041,7 @@ pub const Printer = struct {
                 try self.write(self.interner.get(s.value));
                 try self.write("\"");
             },
+            .template_literal => try self.printTemplateLiteral(node),
             .literal_number => {
                 try self.printLiteralNumber(node);
             },
@@ -2331,6 +2332,75 @@ pub const Printer = struct {
         } else {
             try self.printExpression(ex.expression);
         }
+    }
+
+    /// Emit a template-literal expression. At ES2015+ we emit the
+    /// native backtick form; at ES5 we lower to string concatenation
+    /// (`"a" + x + "b"`). Tagged templates are lowered to a regular
+    /// `call_expr` by the parser, so by the time we reach this node
+    /// we know it's untagged.
+    fn printTemplateLiteral(self: *Printer, node: NodeId) anyerror!void {
+        const texts = hir_mod.templateLiteralTexts(self.hir, node);
+        const exprs = hir_mod.templateLiteralExprs(self.hir, node);
+
+        if (self.options.es_target == .es5) {
+            // No substitutions ⇒ just emit `"text"` (no concat needed).
+            if (exprs.len == 0) {
+                try self.write("\"");
+                if (texts.len == 1) {
+                    const s = hir_mod.literalStringOf(self.hir, texts[0]);
+                    try self.write(self.interner.get(s.value));
+                }
+                try self.write("\"");
+                return;
+            }
+            // `"t0" + e0 + "t1" + e1 + … + "tN"`. We elide empty text
+            // segments (common at start/end with `` `${x}` ``); when
+            // the very first emitted segment would be a substitution
+            // we wrap it in `String(...)` so the result is always a
+            // string (even if `e0` is e.g. a number).
+            try self.write("(");
+            var emitted_any = false;
+            var i: usize = 0;
+            while (i < texts.len) : (i += 1) {
+                const s = hir_mod.literalStringOf(self.hir, texts[i]);
+                const txt = self.interner.get(s.value);
+                if (txt.len > 0) {
+                    if (emitted_any) try self.write(" + ");
+                    try self.write("\"");
+                    try self.write(txt);
+                    try self.write("\"");
+                    emitted_any = true;
+                }
+                if (i < exprs.len) {
+                    if (emitted_any) {
+                        try self.write(" + ");
+                        try self.printExpression(exprs[i]);
+                    } else {
+                        try self.write("String(");
+                        try self.printExpression(exprs[i]);
+                        try self.write(")");
+                    }
+                    emitted_any = true;
+                }
+            }
+            try self.write(")");
+            return;
+        }
+
+        // ES2015+: native template literal — re-emit as `` `…${e}…` ``.
+        try self.write("`");
+        var i: usize = 0;
+        while (i < texts.len) : (i += 1) {
+            const s = hir_mod.literalStringOf(self.hir, texts[i]);
+            try self.write(self.interner.get(s.value));
+            if (i < exprs.len) {
+                try self.write("${");
+                try self.printExpression(exprs[i]);
+                try self.write("}");
+            }
+        }
+        try self.write("`");
     }
 
     /// Emit a numeric literal, preferring the original source bytes
@@ -3404,6 +3474,24 @@ test "emit: nullish-coalescing lowers under es2019" {
     try T.expect(std.mem.indexOf(u8, out, "??") == null);
     try T.expect(std.mem.indexOf(u8, out, "!== null") != null);
     try T.expect(std.mem.indexOf(u8, out, "!== void 0") != null);
+}
+
+test "emit: template literal preserved at es2015+" {
+    const out = try emitWithOpts("let s = `hi ${x}`;", .{ .es_target = .es2015 });
+    defer T.allocator.free(out);
+    // Native backtick form survives.
+    try T.expect(std.mem.indexOf(u8, out, "`hi ${x}`") != null);
+    // No string-concat lowering.
+    try T.expect(std.mem.indexOf(u8, out, "\"hi \" + x") == null);
+}
+
+test "emit: template literal lowers to string concat at es5" {
+    const out = try emitWithOpts("let s = `hi ${x}`;", .{ .es_target = .es5 });
+    defer T.allocator.free(out);
+    // Backtick form is gone.
+    try T.expect(std.mem.indexOf(u8, out, "`") == null);
+    // String concat appears.
+    try T.expect(std.mem.indexOf(u8, out, "\"hi \" + x") != null);
 }
 
 test "emit: optional-chaining lowers under es2019" {

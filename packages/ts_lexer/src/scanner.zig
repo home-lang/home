@@ -76,6 +76,12 @@ pub const Scanner = struct {
     jsx_context: bool,
     diagnostics: std.ArrayListUnmanaged(Diagnostic),
     diag_arena: std.heap.ArenaAllocator,
+    /// Template-substitution stack. Each entry is the number of
+    /// pending `{` opens inside the current substitution body. When
+    /// the stack is non-empty and we see `}` with `top == 0`, we
+    /// resume scanning the template body (emitting `template_middle`
+    /// or `template_tail`) instead of producing a `close_brace`.
+    template_brace_stack: std.ArrayListUnmanaged(u32),
 
     pub fn init(gpa: std.mem.Allocator, source: []const u8) Scanner {
         return .{
@@ -87,12 +93,14 @@ pub const Scanner = struct {
             .jsx_context = false,
             .diagnostics = .empty,
             .diag_arena = std.heap.ArenaAllocator.init(gpa),
+            .template_brace_stack = .empty,
         };
     }
 
     pub fn deinit(self: *Scanner, gpa: std.mem.Allocator) void {
         self.diagnostics.deinit(gpa);
         self.diag_arena.deinit();
+        self.template_brace_stack.deinit(gpa);
     }
 
     pub fn setInJsxContext(self: *Scanner, in_jsx: bool) void {
@@ -440,6 +448,12 @@ pub const Scanner = struct {
                 var f = flags;
                 f.is_template_part = saw_substitution;
                 const k: TokenKind = if (after_close_brace) .template_tail else if (saw_substitution) .template_tail else .no_substitution_template;
+                // Closing the template — pop the stack entry pushed
+                // for template_head/template_middle (only if we're
+                // returning from a `}`-resume).
+                if (after_close_brace and self.template_brace_stack.items.len > 0) {
+                    _ = self.template_brace_stack.pop();
+                }
                 return .{
                     .span = .{ .start = start, .end = self.pos },
                     .kind = k,
@@ -452,6 +466,12 @@ pub const Scanner = struct {
                 var f = flags;
                 f.is_template_part = true;
                 const k: TokenKind = if (after_close_brace) .template_middle else .template_head;
+                // Push a fresh substitution frame for template_head;
+                // for template_middle we reuse the existing frame
+                // (still on the stack — `}` didn't pop it).
+                if (!after_close_brace) {
+                    try self.template_brace_stack.append(gpa, 0);
+                }
                 return .{
                     .span = .{ .start = start, .end = self.pos },
                     .kind = k,
@@ -540,8 +560,27 @@ pub const Scanner = struct {
         // Punctuation / operators
         self.pos += 1;
         switch (c) {
-            '{' => return self.tok(start, .open_brace, flags, line),
-            '}' => return self.tok(start, .close_brace, flags, line),
+            '{' => {
+                // Inside a template substitution, count nested braces
+                // so the matching `}` doesn't end the substitution.
+                if (self.template_brace_stack.items.len > 0) {
+                    self.template_brace_stack.items[self.template_brace_stack.items.len - 1] += 1;
+                }
+                return self.tok(start, .open_brace, flags, line);
+            },
+            '}' => {
+                if (self.template_brace_stack.items.len > 0) {
+                    const top = &self.template_brace_stack.items[self.template_brace_stack.items.len - 1];
+                    if (top.* == 0) {
+                        // Resume template scan — emits template_middle
+                        // or template_tail and pops the frame on
+                        // template_tail (handled in scanTemplate).
+                        return self.scanTemplate(gpa, start, line, flags, true);
+                    }
+                    top.* -= 1;
+                }
+                return self.tok(start, .close_brace, flags, line);
+            },
             '(' => return self.tok(start, .open_paren, flags, line),
             ')' => return self.tok(start, .close_paren, flags, line),
             '[' => return self.tok(start, .open_bracket, flags, line),

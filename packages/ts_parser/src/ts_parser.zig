@@ -2939,6 +2939,56 @@ pub const Parser = struct {
         return node;
     }
 
+    /// Parse a substitution template literal expression
+    /// (`` `a${x}b` ``). Cursor at `template_head`. Produces a
+    /// `template_literal` HIR node with interleaved text/expr
+    /// children.
+    fn parseTemplateLiteralExpr(self: *Parser) ParseError!NodeId {
+        var texts: std.ArrayListUnmanaged(NodeId) = .empty;
+        defer texts.deinit(self.gpa);
+        var exprs: std.ArrayListUnmanaged(NodeId) = .empty;
+        defer exprs.deinit(self.gpa);
+
+        const head = self.advance(); // template_head: `` `…${ ``
+        const head_slice_full = self.source[head.span.start..head.span.end];
+        const head_inner = if (head_slice_full.len >= 3)
+            head_slice_full[1 .. head_slice_full.len - 2]
+        else
+            head_slice_full;
+        const head_id = self.interner.intern(head_inner) catch return error.OutOfMemory;
+        const head_lit = try self.builder.addLiteralString(tokenSpan(head), head_id);
+        try texts.append(self.gpa, head_lit);
+
+        while (true) {
+            const v = try self.parseExpression();
+            try exprs.append(self.gpa, v);
+            const next = self.peek();
+            if (next.kind == .template_middle) {
+                _ = self.advance();
+                const sl = self.source[next.span.start..next.span.end];
+                const inner = if (sl.len >= 3) sl[1 .. sl.len - 2] else sl;
+                const id = self.interner.intern(inner) catch return error.OutOfMemory;
+                const lit = try self.builder.addLiteralString(tokenSpan(next), id);
+                try texts.append(self.gpa, lit);
+                continue;
+            }
+            if (next.kind == .template_tail) {
+                _ = self.advance();
+                const sl = self.source[next.span.start..next.span.end];
+                const inner = if (sl.len >= 2) sl[1 .. sl.len - 1] else sl;
+                const id = self.interner.intern(inner) catch return error.OutOfMemory;
+                const lit = try self.builder.addLiteralString(tokenSpan(next), id);
+                try texts.append(self.gpa, lit);
+                break;
+            }
+            break;
+        }
+
+        const end_pos = if (self.cursor > 0) self.tokens[self.cursor - 1].span.end else head.span.end;
+        const sp: Span = .{ .start = head.span.start, .end = end_pos };
+        return try self.builder.addTemplateLiteralExpr(sp, texts.items, exprs.items);
+    }
+
     /// Parse a tagged template literal as a call expression. Cursor at
     /// `no_substitution_template` or `template_head`. We collect the
     /// string segments into an array literal and the interpolated
@@ -3053,14 +3103,17 @@ pub const Parser = struct {
             },
             .no_substitution_template => {
                 _ = self.advance();
-                // Phase 1.D: lower as a string literal of the inner
-                // bytes (between the backticks). Full template
-                // handling with substitution boundaries is a
-                // follow-up.
+                // Build a template_literal HIR node so the emitter can
+                // pick the right form for the target (native backticks
+                // at ES2015+, string concat at ES5).
                 const slice = self.source[t.span.start..t.span.end];
                 const inner = if (slice.len >= 2) slice[1 .. slice.len - 1] else slice;
                 const id = self.interner.intern(inner) catch return error.OutOfMemory;
-                return try self.builder.addLiteralString(tokenSpan(t), id);
+                const text_lit = try self.builder.addLiteralString(tokenSpan(t), id);
+                return try self.builder.addTemplateLiteralExpr(tokenSpan(t), &.{text_lit}, &.{});
+            },
+            .template_head => {
+                return try self.parseTemplateLiteralExpr();
             },
             .kw_true => {
                 _ = self.advance();
