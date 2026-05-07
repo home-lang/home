@@ -515,6 +515,40 @@ pub const InlineValueContext = struct {
     stopped_location: Range,
 };
 
+/// LSP `InlineCompletionItem` (3.18, experimental) — a single
+/// ghost-text suggestion inserted at the cursor without moving it.
+/// `insert_text` is the literal string the editor renders (and
+/// commits on accept); `filter_text` is an optional alternate the
+/// editor matches against the current word prefix when deciding
+/// whether to keep showing the ghost text. Both strings are owned by
+/// the caller (free with `freeInlineCompletions`).
+pub const InlineCompletion = struct {
+    insert_text: []const u8,
+    filter_text: []const u8 = "",
+};
+
+/// Free a `[]InlineCompletion` produced by
+/// `Service.inlineCompletions`. Releases the per-item string
+/// allocations and the slice.
+pub fn freeInlineCompletions(gpa: std.mem.Allocator, items: []InlineCompletion) void {
+    for (items) |it| {
+        if (it.insert_text.len > 0) gpa.free(it.insert_text);
+        if (it.filter_text.len > 0) gpa.free(it.filter_text);
+    }
+    gpa.free(items);
+}
+
+/// LSP `InlineCompletionContext` — forwarded to
+/// `Service.inlineCompletions`. `trigger_kind` mirrors the LSP enum
+/// (1 = Invoked, 2 = Automatic); `selected_text` carries the text of
+/// the currently selected standard-completion item when the inline
+/// request is firing alongside the regular completion popup. v0
+/// ignores both — they're plumbed for future AI-provider routing.
+pub const InlineCompletionContext = struct {
+    trigger_kind: i64 = 2,
+    selected_text: []const u8 = "",
+};
+
 pub const Service = struct {
     gpa: std.mem.Allocator,
     program: *ts_program.Program,
@@ -2902,6 +2936,30 @@ pub const Service = struct {
         _ = range;
         const empty: []ColorPresentation = &.{};
         return gpa.dupe(ColorPresentation, empty);
+    }
+
+    /// LSP `textDocument/inlineCompletion` (3.18, experimental) —
+    /// return ghost-text suggestions to display at the cursor without
+    /// moving it. Production deployments wire this to an AI provider
+    /// (Copilot, Codeium, a local model) that synthesizes the
+    /// continuation; v0 returns an empty list so the capability can
+    /// be advertised end-to-end without a runtime dependency on any
+    /// particular model. The `byte_pos` and `context` parameters are
+    /// forwarded for future routing. Caller owns the returned slice
+    /// (free via `freeInlineCompletions`).
+    pub fn inlineCompletions(
+        self: *Service,
+        gpa: std.mem.Allocator,
+        file_path: []const u8,
+        byte_pos: u32,
+        context: InlineCompletionContext,
+    ) ![]InlineCompletion {
+        _ = self;
+        _ = file_path;
+        _ = byte_pos;
+        _ = context;
+        const empty: []InlineCompletion = &.{};
+        return gpa.dupe(InlineCompletion, empty);
     }
 };
 

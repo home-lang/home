@@ -151,6 +151,7 @@ pub const Method = enum {
     workspace_execute_command,
     text_document_moniker,
     text_document_inline_value,
+    text_document_inline_completion,
     text_document_document_color,
     text_document_color_presentation,
     unknown,
@@ -205,6 +206,7 @@ pub const Method = enum {
             .{ "workspace/executeCommand", Method.workspace_execute_command },
             .{ "textDocument/moniker", Method.text_document_moniker },
             .{ "textDocument/inlineValue", Method.text_document_inline_value },
+            .{ "textDocument/inlineCompletion", Method.text_document_inline_completion },
             .{ "textDocument/documentColor", Method.text_document_document_color },
             .{ "textDocument/colorPresentation", Method.text_document_color_presentation },
         };
@@ -263,6 +265,7 @@ pub const SUPPORTED_METHODS = &[_][]const u8{
     "textDocument/diagnostic",
     "textDocument/moniker",
     "textDocument/inlineValue",
+    "textDocument/inlineCompletion",
     "textDocument/documentColor",
     "textDocument/colorPresentation",
     // Resolve callbacks.
@@ -2396,6 +2399,78 @@ pub fn handleInlineValue(
     return encodeResponse(gpa, request_id, buf.items);
 }
 
+/// Handle a `textDocument/inlineCompletion` JSON-RPC request (LSP
+/// 3.18, experimental): extract the URI + `(line, character)` cursor
+/// position and the optional `context` (trigger kind, selected
+/// completion info), route to `service.inlineCompletions`, and emit
+/// the LSP `InlineCompletionList` shape — `{ items: [] }`. Inline
+/// completion provides ghost-text suggestions inserted at the cursor
+/// without moving it. v0 returns an empty list (production
+/// deployments typically wire this to an AI provider like Copilot
+/// or a local model); the capability is advertised so editors stop
+/// probing and the wire shape is exercised end-to-end. Caller owns
+/// the returned slice.
+pub fn handleInlineCompletion(
+    service: *ts_lsp.Service,
+    gpa: std.mem.Allocator,
+    request_id: RequestId,
+    params_json: []const u8,
+) ![]u8 {
+    const uri = findJsonStringField(params_json, "uri") orelse return error.MissingUri;
+    const line = findJsonIntField(params_json, "line") orelse 0;
+    const character = findJsonIntField(params_json, "character") orelse 0;
+    const path = uriToPath(uri);
+
+    // Optional `context` carries `triggerKind` (1 = Invoked, 2 =
+    // Automatic) and an optional `selectedCompletionInfo` describing
+    // the currently selected item from the standard completion list.
+    // v0 forwards both to the service for future use; the stub
+    // ignores them.
+    var trigger_kind: i64 = 2;
+    var selected_text: []const u8 = "";
+    if (findJsonRawField(params_json, "context")) |ctx_raw| {
+        trigger_kind = findJsonIntField(ctx_raw, "triggerKind") orelse 2;
+        if (findJsonRawField(ctx_raw, "selectedCompletionInfo")) |sci_raw| {
+            selected_text = findJsonStringField(sci_raw, "text") orelse "";
+        }
+    }
+
+    // Convert `(line, character)` to a byte offset when the file is
+    // known to the program; otherwise pass 0 (the v0 stub ignores
+    // the value).
+    var byte_pos: u32 = 0;
+    if (service.program.lookupPath(path)) |file_id| {
+        const f = service.program.fileById(file_id);
+        const line_u: u32 = if (line < 0) 0 else @intCast(line);
+        const char_u: u32 = if (character < 0) 0 else @intCast(character);
+        byte_pos = lineColToByte(f.source, line_u, char_u);
+    }
+
+    const items = try service.inlineCompletions(gpa, path, byte_pos, .{
+        .trigger_kind = trigger_kind,
+        .selected_text = selected_text,
+    });
+    defer ts_lsp.freeInlineCompletions(gpa, items);
+
+    var buf: std.ArrayListUnmanaged(u8) = .empty;
+    defer buf.deinit(gpa);
+    try buf.appendSlice(gpa, "{\"items\":[");
+    for (items, 0..) |it, i| {
+        if (i > 0) try buf.append(gpa, ',');
+        try buf.appendSlice(gpa, "{\"insertText\":\"");
+        try writeJsonStringContents(&buf, gpa, it.insert_text);
+        try buf.append(gpa, '"');
+        if (it.filter_text.len > 0) {
+            try buf.appendSlice(gpa, ",\"filterText\":\"");
+            try writeJsonStringContents(&buf, gpa, it.filter_text);
+            try buf.append(gpa, '"');
+        }
+        try buf.append(gpa, '}');
+    }
+    try buf.appendSlice(gpa, "]}");
+    return encodeResponse(gpa, request_id, buf.items);
+}
+
 /// Handle a `textDocument/documentColor` JSON-RPC request: extract
 /// the URI from `params_json`, route to `service.documentColor`,
 /// and encode the LSP response as a `ColorInformation[]` array.
@@ -2983,7 +3058,7 @@ pub fn renderInitializeCapabilities(gpa: std.mem.Allocator) ![]u8 {
     var buf: std.ArrayListUnmanaged(u8) = .empty;
     errdefer buf.deinit(gpa);
     try buf.appendSlice(gpa,
-        \\{"capabilities":{"textDocumentSync":1,"hoverProvider":true,"definitionProvider":true,"declarationProvider":true,"referencesProvider":true,"completionProvider":{"triggerCharacters":["."," "]},"documentSymbolProvider":true,"workspaceSymbolProvider":true,"renameProvider":{"prepareProvider":true},"codeActionProvider":true,"executeCommandProvider":{"commands":["home.organizeImports","home.applyCodeAction"]},"semanticTokensProvider":{"legend":{"tokenTypes":["variable","parameter","function","method","class","interface","type","enum","property","keyword","string","number","operator","comment"],"tokenModifiers":[]},"full":true,"range":true},"signatureHelpProvider":{"triggerCharacters":["(",","]},"documentHighlightProvider":false,"documentFormattingProvider":true,"documentOnTypeFormattingProvider":{"firstTriggerCharacter":"}","moreTriggerCharacters":[";","\n"]},"foldingRangeProvider":true,"selectionRangeProvider":true,"monikerProvider":true,"typeHierarchyProvider":true,"inlineValueProvider":true,"colorProvider":true,"inlayHintProvider":{"resolveProvider":false}},"serverInfo":{"name":"home-lsp","version":"0.1.0","supportedMethods":[
+        \\{"capabilities":{"textDocumentSync":1,"hoverProvider":true,"definitionProvider":true,"declarationProvider":true,"referencesProvider":true,"completionProvider":{"triggerCharacters":["."," "]},"documentSymbolProvider":true,"workspaceSymbolProvider":true,"renameProvider":{"prepareProvider":true},"codeActionProvider":true,"executeCommandProvider":{"commands":["home.organizeImports","home.applyCodeAction"]},"semanticTokensProvider":{"legend":{"tokenTypes":["variable","parameter","function","method","class","interface","type","enum","property","keyword","string","number","operator","comment"],"tokenModifiers":[]},"full":true,"range":true},"signatureHelpProvider":{"triggerCharacters":["(",","]},"documentHighlightProvider":false,"documentFormattingProvider":true,"documentOnTypeFormattingProvider":{"firstTriggerCharacter":"}","moreTriggerCharacters":[";","\n"]},"foldingRangeProvider":true,"selectionRangeProvider":true,"monikerProvider":true,"typeHierarchyProvider":true,"inlineValueProvider":true,"inlineCompletionProvider":true,"colorProvider":true,"inlayHintProvider":{"resolveProvider":false}},"serverInfo":{"name":"home-lsp","version":"0.1.0","supportedMethods":[
     );
     for (SUPPORTED_METHODS, 0..) |m, i| {
         if (i != 0) try buf.append(gpa, ',');
@@ -3319,6 +3394,10 @@ pub fn dispatchRequest(
         .text_document_inline_value => {
             if (is_notification) return &.{};
             return try handleInlineValue(service, gpa, id, params);
+        },
+        .text_document_inline_completion => {
+            if (is_notification) return &.{};
+            return try handleInlineCompletion(service, gpa, id, params);
         },
         .text_document_document_color => {
             if (is_notification) return &.{};
@@ -4930,6 +5009,44 @@ test "handleInlineValue: emits InlineValueVariableLookup per identifier in range
     try T.expect(std.mem.indexOf(u8, out, "\"caseSensitiveLookup\":true") != null);
     // Each item carries a wire-shaped LSP range.
     try T.expect(std.mem.indexOf(u8, out, "\"range\":{\"start\":{\"line\":") != null);
+}
+
+test "handleInlineCompletion: stub returns InlineCompletionList shape" {
+    var vfs = ts_resolver.VirtualFs.init(T.allocator);
+    defer vfs.deinit();
+    var resolver = ts_resolver.Resolver.init(T.allocator, vfs.fs(), .{});
+    defer resolver.deinit();
+    var program = ts_program.Program.init(T.allocator, &resolver);
+    defer program.deinit();
+
+    _ = try program.add("/main.ts", "let count = 1;\n");
+    try program.compileAll(.{});
+    var svc = ts_lsp.Service.init(T.allocator, &program);
+
+    // Standard LSP inlineCompletion request: textDocument + position
+    // + context (triggerKind 2 = Automatic). v0 returns an empty
+    // `items` array under the InlineCompletionList wire shape.
+    const body =
+        \\{"jsonrpc":"2.0","id":901,"method":"textDocument/inlineCompletion","params":{"textDocument":{"uri":"file:///main.ts"},"position":{"line":0,"character":14},"context":{"triggerKind":2}}}
+    ;
+    const out = try handleInlineCompletion(&svc, T.allocator, .{ .integer = 901 }, body);
+    defer T.allocator.free(out);
+    try T.expect(std.mem.indexOf(u8, out, "\"jsonrpc\":\"2.0\"") != null);
+    try T.expect(std.mem.indexOf(u8, out, "\"id\":901") != null);
+    // InlineCompletionList shape: `{ "items": [] }` (not a bare array).
+    try T.expect(std.mem.indexOf(u8, out, "\"result\":{\"items\":[]}") != null);
+
+    // Capability advertised in initialize result + listed in supportedMethods.
+    const init_caps = try renderInitializeCapabilities(T.allocator);
+    defer T.allocator.free(init_caps);
+    try T.expect(std.mem.indexOf(u8, init_caps, "\"inlineCompletionProvider\":true") != null);
+    try T.expect(std.mem.indexOf(u8, init_caps, "\"textDocument/inlineCompletion\"") != null);
+
+    // Method enum round-trips through fromString.
+    try T.expectEqual(
+        Method.text_document_inline_completion,
+        Method.fromString("textDocument/inlineCompletion"),
+    );
 }
 
 test "handleDocumentColor + handleColorPresentation: stubs return empty arrays" {
