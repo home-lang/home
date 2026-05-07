@@ -1416,8 +1416,14 @@ pub const Service = struct {
     /// vs plural `"N references"` follows English plural agreement.
     /// Each lens carries the `editor.action.showReferences` command id
     /// so the editor opens the references peek view when the user
-    /// clicks the lens. Title strings are owned by `gpa`; callers
-    /// free them with `freeCodeLenses`.
+    /// clicks the lens.
+    ///
+    /// Additionally, for each top-level call expression whose callee
+    /// is one of `test`, `it`, `describe`, or `bench`, emit a
+    /// `"Run test"` lens carrying the `home.runTest` command id so
+    /// editors render Jest/Vitest/Bun-style runners above test
+    /// declarations. Title strings are owned by `gpa`; callers free
+    /// them with `freeCodeLenses`.
     pub fn codeLenses(self: *Service, gpa: std.mem.Allocator, file_path: []const u8) ![]CodeLens {
         var out: std.ArrayListUnmanaged(CodeLens) = .empty;
         errdefer {
@@ -1488,6 +1494,42 @@ pub const Service = struct {
                 },
                 .title = title,
                 .command = "editor.action.showReferences",
+            });
+        }
+
+        // Second pass: emit "Run test" lenses for top-level calls to
+        // recognized test-runner builtins. Detection is purely
+        // syntactic — the callee must be a bare identifier whose name
+        // matches one of the runners. This mirrors the heuristic used
+        // by Jest/Vitest/Bun integrations in editors.
+        for (stmts) |s_in| {
+            if (c.hir.kindOf(s_in) != .call_expr) continue;
+            const call = hir_mod.callOf(&c.hir, s_in);
+            if (call.callee == hir_mod.none_node_id) continue;
+            if (c.hir.kindOf(call.callee) != .identifier) continue;
+            const callee_id = hir_mod.identifierOf(&c.hir, call.callee);
+            const callee_name = c.interner.get(callee_id.name);
+            const is_runner =
+                std.mem.eql(u8, callee_name, "test") or
+                std.mem.eql(u8, callee_name, "it") or
+                std.mem.eql(u8, callee_name, "describe") or
+                std.mem.eql(u8, callee_name, "bench");
+            if (!is_runner) continue;
+
+            const call_span = c.hir.spanOf(s_in);
+            const sp = ts_diagnostics.positionToLineCol(f.source, call_span.start);
+            const ep = ts_diagnostics.positionToLineCol(f.source, call_span.end);
+            const title = try gpa.dupe(u8, "Run test");
+            try out.append(gpa, .{
+                .span = .{
+                    .file = f.path,
+                    .start_line = sp.line,
+                    .start_col = sp.col,
+                    .end_line = ep.line,
+                    .end_col = ep.col,
+                },
+                .title = title,
+                .command = "home.runTest",
             });
         }
         return out.toOwnedSlice(gpa);
