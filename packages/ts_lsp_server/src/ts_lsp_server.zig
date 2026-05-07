@@ -60,6 +60,7 @@
 //!     inlayHint/resolve                       [stub: echoes hint back]
 //!   Workspace:
 //!     workspace/symbol                        [c9dc339]
+//!     workspace/diagnostic (pull-mode)        [LSP 3.17]
 //!   Call hierarchy:
 //!     callHierarchy/incomingCalls             [025b52e]
 //!     callHierarchy/outgoingCalls             [025b52e]
@@ -125,6 +126,7 @@ pub const Method = enum {
     text_document_signature_help,
     text_document_publish_diagnostics,
     text_document_diagnostic,
+    workspace_diagnostic,
     text_document_rename,
     text_document_prepare_rename,
     completion_item_resolve,
@@ -180,6 +182,7 @@ pub const Method = enum {
             .{ "textDocument/signatureHelp", Method.text_document_signature_help },
             .{ "textDocument/publishDiagnostics", Method.text_document_publish_diagnostics },
             .{ "textDocument/diagnostic", Method.text_document_diagnostic },
+            .{ "workspace/diagnostic", Method.workspace_diagnostic },
             .{ "textDocument/rename", Method.text_document_rename },
             .{ "textDocument/prepareRename", Method.text_document_prepare_rename },
             .{ "completionItem/resolve", Method.completion_item_resolve },
@@ -275,6 +278,7 @@ pub const SUPPORTED_METHODS = &[_][]const u8{
     "inlayHint/resolve",
     // Workspace.
     "workspace/symbol",
+    "workspace/diagnostic",
     "workspace/willRenameFiles",
     "workspace/executeCommand",
     // Call hierarchy.
@@ -3038,6 +3042,72 @@ pub fn handleDiagnostic(
     return encodeResponse(gpa, request_id, buf.items);
 }
 
+/// LSP 3.17 `textDocument/diagnostic` pull-mode handler. Alias for
+/// `handleDiagnostic` exposed under the spec-aligned name; the editor
+/// asks for diagnostics on demand and we return a
+/// `RelatedFullDocumentDiagnosticReport` (`{kind:"full",items:[...]}`).
+pub fn handleDocumentDiagnostic(
+    service: *ts_lsp.Service,
+    gpa: std.mem.Allocator,
+    request_id: RequestId,
+    params_json: []const u8,
+) ![]u8 {
+    return handleDiagnostic(service, gpa, request_id, params_json);
+}
+
+/// LSP 3.17 `workspace/diagnostic` pull-mode handler. Walks every
+/// tracked program file, emits a `WorkspaceFullDocumentDiagnosticReport`
+/// per file (`{kind:"full",uri,version:null,items:[...]}`), and wraps
+/// the list in a `WorkspaceDiagnosticReport` (`{items:[...]}`). The
+/// `previousResultIds` and `partialResultToken` params are accepted
+/// but ignored — this server always emits full reports. Caller owns
+/// the returned slice.
+pub fn handleWorkspaceDiagnostic(
+    service: *ts_lsp.Service,
+    gpa: std.mem.Allocator,
+    request_id: RequestId,
+    params_json: []const u8,
+) ![]u8 {
+    _ = params_json;
+
+    var buf: std.ArrayListUnmanaged(u8) = .empty;
+    defer buf.deinit(gpa);
+    try buf.appendSlice(gpa, "{\"items\":[");
+
+    var first_file = true;
+    for (service.program.files.items) |f| {
+        const diags = try service.diagnosticsStructured(gpa, f.path);
+        defer ts_lsp.freeLspDiagnostics(gpa, diags);
+
+        if (!first_file) try buf.append(gpa, ',');
+        first_file = false;
+
+        try buf.appendSlice(gpa, "{\"kind\":\"full\",\"uri\":\"file://");
+        try writeJsonStringContents(&buf, gpa, f.path);
+        try buf.appendSlice(gpa, "\",\"version\":null,\"items\":[");
+        for (diags, 0..) |d, i| {
+            if (i != 0) try buf.append(gpa, ',');
+            try buf.appendSlice(gpa, "{\"range\":");
+            try writeRange(&buf, gpa, d.range);
+            var nbuf: [64]u8 = undefined;
+            const sev_code = try std.fmt.bufPrint(
+                &nbuf,
+                ",\"severity\":{d},\"code\":{d},\"source\":\"",
+                .{ lspSeverityCode(d.severity), d.code },
+            );
+            try buf.appendSlice(gpa, sev_code);
+            try writeJsonStringContents(&buf, gpa, d.source);
+            try buf.appendSlice(gpa, "\",\"message\":\"");
+            try writeJsonStringContents(&buf, gpa, d.message);
+            try buf.appendSlice(gpa, "\"}");
+        }
+        try buf.appendSlice(gpa, "]}");
+    }
+
+    try buf.appendSlice(gpa, "]}");
+    return encodeResponse(gpa, request_id, buf.items);
+}
+
 /// Render the InitializeResult body — declares capabilities for
 /// every method we support.
 pub fn renderInitializeResult(gpa: std.mem.Allocator) ![]u8 {
@@ -3237,7 +3307,11 @@ pub fn dispatchRequest(
         },
         .text_document_diagnostic => {
             if (is_notification) return &.{};
-            return try handleDiagnostic(service, gpa, id, params);
+            return try handleDocumentDiagnostic(service, gpa, id, params);
+        },
+        .workspace_diagnostic => {
+            if (is_notification) return &.{};
+            return try handleWorkspaceDiagnostic(service, gpa, id, params);
         },
         .text_document_hover => {
             if (is_notification) return &.{};
@@ -4579,6 +4653,63 @@ test "handleDiagnostic: returns RelatedFullDocumentDiagnosticReport with items" 
     try T.expect(std.mem.indexOf(u8, out, "\"severity\":1") != null);
     try T.expect(std.mem.indexOf(u8, out, "\"source\":\"ts\"") != null);
     try T.expect(std.mem.indexOf(u8, out, "\"message\":\"") != null);
+}
+
+test "handleDocumentDiagnostic: pull-mode response shape" {
+    var vfs = ts_resolver.VirtualFs.init(T.allocator);
+    defer vfs.deinit();
+    var resolver = ts_resolver.Resolver.init(T.allocator, vfs.fs(), .{});
+    defer resolver.deinit();
+    var program = ts_program.Program.init(T.allocator, &resolver);
+    defer program.deinit();
+
+    _ = try program.add("/main.ts", "let x: number = \"oops\";");
+    try program.compileAll(.{});
+    var svc = ts_lsp.Service.init(T.allocator, &program);
+
+    const body =
+        \\{"jsonrpc":"2.0","id":901,"method":"textDocument/diagnostic","params":{"textDocument":{"uri":"file:///main.ts"}}}
+    ;
+    const out = try handleDocumentDiagnostic(&svc, T.allocator, .{ .integer = 901 }, body);
+    defer T.allocator.free(out);
+    try T.expect(std.mem.indexOf(u8, out, "\"id\":901") != null);
+    try T.expect(std.mem.indexOf(u8, out, "\"kind\":\"full\"") != null);
+    try T.expect(std.mem.indexOf(u8, out, "\"items\":[") != null);
+    try T.expect(std.mem.indexOf(u8, out, "\"severity\":1") != null);
+    try T.expect(std.mem.indexOf(u8, out, "\"source\":\"ts\"") != null);
+}
+
+test "handleWorkspaceDiagnostic: returns WorkspaceDiagnosticReport across files" {
+    var vfs = ts_resolver.VirtualFs.init(T.allocator);
+    defer vfs.deinit();
+    var resolver = ts_resolver.Resolver.init(T.allocator, vfs.fs(), .{});
+    defer resolver.deinit();
+    var program = ts_program.Program.init(T.allocator, &resolver);
+    defer program.deinit();
+
+    // Two files, only one carries a type error — the wrapper still
+    // emits a full report per file (the clean file gets `items:[]`).
+    _ = try program.add("/a.ts", "let x: number = \"bad\";");
+    _ = try program.add("/b.ts", "let y: number = 42;");
+    try program.compileAll(.{});
+    var svc = ts_lsp.Service.init(T.allocator, &program);
+
+    const body =
+        \\{"jsonrpc":"2.0","id":902,"method":"workspace/diagnostic","params":{}}
+    ;
+    const out = try handleWorkspaceDiagnostic(&svc, T.allocator, .{ .integer = 902 }, body);
+    defer T.allocator.free(out);
+
+    try T.expect(std.mem.indexOf(u8, out, "\"id\":902") != null);
+    // Outer WorkspaceDiagnosticReport shape.
+    try T.expect(std.mem.indexOf(u8, out, "\"result\":{\"items\":[") != null);
+    // Per-file WorkspaceFullDocumentDiagnosticReport shape.
+    try T.expect(std.mem.indexOf(u8, out, "\"kind\":\"full\"") != null);
+    try T.expect(std.mem.indexOf(u8, out, "\"version\":null") != null);
+    try T.expect(std.mem.indexOf(u8, out, "\"uri\":\"file:///a.ts\"") != null);
+    try T.expect(std.mem.indexOf(u8, out, "\"uri\":\"file:///b.ts\"") != null);
+    try T.expect(std.mem.indexOf(u8, out, "\"severity\":1") != null);
+    try T.expect(std.mem.indexOf(u8, out, "\"source\":\"ts\"") != null);
 }
 
 test "handleTypeDefinition: routes request and returns Location response" {
