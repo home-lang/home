@@ -401,6 +401,7 @@ pub const Checker = struct {
             .cond_aliases = .empty,
             .overloads = .empty,
             .inferred_variance = .empty,
+            .enum_member_values = .empty,
             .diagnostics = .empty,
             .diag_arena = std.heap.ArenaAllocator.init(gpa),
         };
@@ -462,6 +463,7 @@ pub const Checker = struct {
         while (ov_it.next()) |list| list.deinit(self.gpa);
         self.overloads.deinit(self.gpa);
         self.inferred_variance.deinit(self.gpa);
+        self.enum_member_values.deinit(self.gpa);
         self.lib_cache.deinit(self.gpa);
         self.diagnostics.deinit(self.gpa);
         self.ts_ignore_lines.deinit(self.gpa);
@@ -586,6 +588,7 @@ pub const Checker = struct {
             .fn_decl, .fn_expr, .arrow_fn => try self.checkFnDecl(node),
             .class_decl => try self.checkClassDecl(node),
             .interface_decl => try self.checkInterfaceDecl(node),
+            .enum_decl => try self.checkEnumDecl(node),
             .type_alias_decl => try self.checkTypeAliasDecl(node),
             .import_decl => try self.checkImportDecl(node),
             .export_decl => {
@@ -2485,6 +2488,96 @@ pub const Checker = struct {
         }
         if (inherited.items.len > 0) {
             try child_members.insertSlice(self.gpa, 0, inherited.items);
+        }
+    }
+
+    /// Walk an `enum E { A, B = 5, C }` declaration: assign each
+    /// member its concrete numeric value, applying TS auto-increment
+    /// rules. The first member with no initializer starts at `0`;
+    /// each subsequent un-initialized member takes the previous
+    /// numeric value plus one. An explicit numeric initializer
+    /// resets the running counter. Once a string initializer
+    /// appears, a following un-initialized member raises TS2553
+    /// (matching tsc's "Computed values are not permitted in an
+    /// enum with string valued members").
+    ///
+    /// Initializer expressions resolve a small literal subset for
+    /// v0:
+    ///   - `literal_number` — direct value
+    ///   - `unary -<literal_number>` — negated value
+    ///   - `literal_string` — string-valued, blocks auto-increment
+    /// Anything else clears the running counter, so the next
+    /// un-initialized member won't auto-increment. Resolved numeric
+    /// values land in `enum_member_values` keyed by `(enum_name,
+    /// member_name)` for later access typing and (eventually) `const
+    /// enum` inlining.
+    fn checkEnumDecl(self: *Checker, node: NodeId) CheckError!void {
+        const e = hir_mod.enumOf(self.hir, node);
+        const enum_name: hir_mod.StringId = blk: {
+            if (self.hir.kindOf(e.name) != .identifier) return;
+            break :blk hir_mod.identifierOf(self.hir, e.name).name;
+        };
+        const members = hir_mod.enumMembers(self.hir, node);
+
+        // Running numeric value for the *next* un-initialized
+        // member. `null` means the previous member's value isn't a
+        // tracked number (string-valued or unresolvable expression),
+        // so an un-initialized successor is an error.
+        var next_numeric: ?f64 = 0;
+        // Once a string-valued member appears, plain auto-increment
+        // is forbidden for any later un-initialized member.
+        var saw_string: bool = false;
+
+        for (members) |m| {
+            if (self.hir.kindOf(m) != .object_property) continue;
+            const prop = hir_mod.objectPropertyOf(self.hir, m);
+            if (self.hir.kindOf(prop.key) != .identifier) continue;
+            const member_name = hir_mod.identifierOf(self.hir, prop.key).name;
+            const key: MemberKey = .{ .obj_name = enum_name, .prop_name = member_name };
+
+            if (prop.value == hir_mod.none_node_id) {
+                if (saw_string or next_numeric == null) {
+                    try self.report(
+                        m,
+                        TsCodes.enum_computed_after_string,
+                        "Enum member must have initializer.",
+                    );
+                    next_numeric = null;
+                    continue;
+                }
+                const v = next_numeric.?;
+                try self.enum_member_values.put(self.gpa, key, v);
+                next_numeric = v + 1;
+                continue;
+            }
+
+            // Has an initializer — resolve a small literal subset.
+            _ = try self.checkExpression(prop.value);
+            const init_kind = self.hir.kindOf(prop.value);
+            switch (init_kind) {
+                .literal_number => {
+                    const v = hir_mod.literalNumberOf(self.hir, prop.value);
+                    try self.enum_member_values.put(self.gpa, key, v);
+                    next_numeric = v + 1;
+                },
+                .unary_op => {
+                    const u = hir_mod.unaryOf(self.hir, prop.value);
+                    if (u.op == .neg and self.hir.kindOf(u.operand) == .literal_number) {
+                        const v = -hir_mod.literalNumberOf(self.hir, u.operand);
+                        try self.enum_member_values.put(self.gpa, key, v);
+                        next_numeric = v + 1;
+                    } else {
+                        next_numeric = null;
+                    }
+                },
+                .literal_string => {
+                    saw_string = true;
+                    next_numeric = null;
+                },
+                else => {
+                    next_numeric = null;
+                },
+            }
         }
     }
 
@@ -8408,4 +8501,52 @@ test "checker: default type parameter — `type Box<T = number>` resolves bare `
         try T.expect(d.code != TsCodes.generic_type_requires_args);
         try T.expect(d.code != TsCodes.type_not_assignable);
     }
+}
+
+test "checker: enum auto-increment — `enum E { A, B, C }` assigns A=0, B=1, C=2" {
+    const s = try newSetup(
+        \\enum E { A, B, C }
+    );
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+
+    const enum_id = try s.sint.intern("E");
+    const a_id = try s.sint.intern("A");
+    const b_id = try s.sint.intern("B");
+    const c_id = try s.sint.intern("C");
+
+    const a_v = s.checker.enum_member_values.get(.{ .obj_name = enum_id, .prop_name = a_id });
+    const b_v = s.checker.enum_member_values.get(.{ .obj_name = enum_id, .prop_name = b_id });
+    const c_v = s.checker.enum_member_values.get(.{ .obj_name = enum_id, .prop_name = c_id });
+
+    try T.expect(a_v != null);
+    try T.expect(b_v != null);
+    try T.expect(c_v != null);
+    try T.expectEqual(@as(f64, 0), a_v.?);
+    try T.expectEqual(@as(f64, 1), b_v.?);
+    try T.expectEqual(@as(f64, 2), c_v.?);
+}
+
+test "checker: enum auto-increment — explicit start `enum E { A = 5, B, C }` assigns A=5, B=6, C=7" {
+    const s = try newSetup(
+        \\enum E { A = 5, B, C }
+    );
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+
+    const enum_id = try s.sint.intern("E");
+    const a_id = try s.sint.intern("A");
+    const b_id = try s.sint.intern("B");
+    const c_id = try s.sint.intern("C");
+
+    const a_v = s.checker.enum_member_values.get(.{ .obj_name = enum_id, .prop_name = a_id });
+    const b_v = s.checker.enum_member_values.get(.{ .obj_name = enum_id, .prop_name = b_id });
+    const c_v = s.checker.enum_member_values.get(.{ .obj_name = enum_id, .prop_name = c_id });
+
+    try T.expect(a_v != null);
+    try T.expect(b_v != null);
+    try T.expect(c_v != null);
+    try T.expectEqual(@as(f64, 5), a_v.?);
+    try T.expectEqual(@as(f64, 6), b_v.?);
+    try T.expectEqual(@as(f64, 7), c_v.?);
 }
