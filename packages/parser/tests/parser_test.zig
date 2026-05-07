@@ -676,6 +676,73 @@ test "parser: array literal with trailing comma" {
     try testing.expectEqual(@as(usize, 3), expr.ArrayLiteral.elements.len);
 }
 
+// Issue #50 — typed array literals: `[_]T{...}` / `[N]T{...}` where the
+// element type can be a simple identifier, a namespaced path, or a
+// slice/array/pointer/optional prefix.
+
+test "parser: typed array literal with primitive element type" {
+    const program = try parseSource(testing.allocator, "[_]u8{1, 2, 3}");
+    defer program.deinit(testing.allocator);
+
+    try testing.expectEqual(@as(usize, 1), program.statements.len);
+    const expr = program.statements[0].ExprStmt;
+    try testing.expect(expr.* == .ArrayLiteral);
+    try testing.expectEqual(@as(usize, 3), expr.ArrayLiteral.elements.len);
+    try testing.expect(expr.ArrayLiteral.explicit_type != null);
+    try testing.expectEqualStrings("[_]u8", expr.ArrayLiteral.explicit_type.?);
+}
+
+test "parser: typed array literal with namespaced element type" {
+    const program = try parseSource(testing.allocator, "[_]usb.USBDeviceID{}");
+    defer program.deinit(testing.allocator);
+
+    try testing.expectEqual(@as(usize, 1), program.statements.len);
+    const expr = program.statements[0].ExprStmt;
+    try testing.expect(expr.* == .ArrayLiteral);
+    try testing.expect(expr.ArrayLiteral.explicit_type != null);
+    try testing.expectEqualStrings("[_]usb.USBDeviceID", expr.ArrayLiteral.explicit_type.?);
+}
+
+test "parser: typed array literal with deeply namespaced element type" {
+    const program = try parseSource(testing.allocator, "[_]a.b.c.Foo{}");
+    defer program.deinit(testing.allocator);
+
+    const expr = program.statements[0].ExprStmt;
+    try testing.expect(expr.* == .ArrayLiteral);
+    try testing.expect(expr.ArrayLiteral.explicit_type != null);
+    try testing.expectEqualStrings("[_]a.b.c.Foo", expr.ArrayLiteral.explicit_type.?);
+}
+
+test "parser: typed array literal with slice element type" {
+    const program = try parseSource(testing.allocator, "[_][]const u8{ \"a\", \"b\" }");
+    defer program.deinit(testing.allocator);
+
+    const expr = program.statements[0].ExprStmt;
+    try testing.expect(expr.* == .ArrayLiteral);
+    try testing.expectEqual(@as(usize, 2), expr.ArrayLiteral.elements.len);
+    try testing.expect(expr.ArrayLiteral.explicit_type != null);
+}
+
+test "parser: typed array literal with array-repeat operator" {
+    const program = try parseSource(testing.allocator, "[_]Foo{ Foo{} } ** 16");
+    defer program.deinit(testing.allocator);
+
+    const expr = program.statements[0].ExprStmt;
+    try testing.expect(expr.* == .BinaryExpr);
+    try testing.expectEqual(ast.BinaryOp.Power, expr.BinaryExpr.op);
+    try testing.expect(expr.BinaryExpr.left.* == .ArrayLiteral);
+}
+
+test "parser: typed array literal with explicit length" {
+    const program = try parseSource(testing.allocator, "[16]u8{1, 2, 3}");
+    defer program.deinit(testing.allocator);
+
+    const expr = program.statements[0].ExprStmt;
+    try testing.expect(expr.* == .ArrayLiteral);
+    try testing.expect(expr.ArrayLiteral.explicit_type != null);
+    try testing.expectEqualStrings("[16]u8", expr.ArrayLiteral.explicit_type.?);
+}
+
 test "parser: empty array" {
     const program = try parseSource(testing.allocator, "[]");
     defer program.deinit(testing.allocator);

@@ -327,6 +327,92 @@ pub const Parser = struct {
         return isPrimitiveTypeName(t.lexeme);
     }
 
+    /// Pure-lookahead scan to find where a type expression starting at
+    /// `start_idx` ends. Returns the token index just past the type
+    /// (or `start_idx` if no valid type prefix is found at that
+    /// position). Mutates no parser state.
+    ///
+    /// Used by the typed-array-literal path (`[_]T{...}`) so we can
+    /// commit only when the element type is followed by `{`. Supports
+    /// the element-type forms that actually appear in this position:
+    ///
+    ///   - simple identifier (`u8`, `Foo`)
+    ///   - dotted/qualified path (`usb.USBDeviceID`, `a.b.c.Foo`)
+    ///   - slice/array prefixes (`[]T`, `[]const T`, `[N]T`, `[*]T`)
+    ///   - pointer/reference prefixes (`*T`, `*const T`, `&T`, `&mut T`)
+    ///   - optional prefix (`?T`)
+    ///
+    /// Generic type arguments (`Foo<T>`) are not handled here — the
+    /// existing `[_]Foo<T>{...}` form is rare in practice and the
+    /// `<` would be ambiguous with a less-than expression in the
+    /// trailing element list. The fix targets the concrete forms
+    /// that hit kernel code today.
+    fn peekArrayElementTypeEnd(self: *Parser, start_idx: usize) usize {
+        var i: usize = start_idx;
+        // Walk through any number of stacked prefixes.
+        while (i < self.tokens.len) {
+            const t = self.tokens[i].type;
+            switch (t) {
+                .Question, .Ampersand => {
+                    i += 1;
+                    // `&mut T` — optional `mut` after `&`.
+                    if (i < self.tokens.len and self.tokens[i].type == .Mut) i += 1;
+                    continue;
+                },
+                .Star, .StarStar => {
+                    i += 1;
+                    // Optional `const` and/or `volatile` qualifier.
+                    if (i < self.tokens.len and self.tokens[i].type == .Const) i += 1;
+                    if (i < self.tokens.len and self.tokens[i].type == .Identifier and
+                        std.mem.eql(u8, self.tokens[i].lexeme, "volatile"))
+                    {
+                        i += 1;
+                    }
+                    continue;
+                },
+                .LeftBracket => {
+                    // Walk to the matching `]`. Element-type slice/array
+                    // forms in this position are simple enough that a
+                    // bracket-balance scan is sufficient.
+                    var depth: i32 = 1;
+                    i += 1;
+                    while (i < self.tokens.len and depth > 0) : (i += 1) {
+                        const tt = self.tokens[i].type;
+                        if (tt == .LeftBracket) depth += 1;
+                        if (tt == .RightBracket) depth -= 1;
+                        if (depth == 0) break;
+                    }
+                    if (i >= self.tokens.len) return start_idx;
+                    i += 1; // consume `]`
+                    // Optional `const` / `volatile` qualifier on the pointee.
+                    if (i < self.tokens.len and self.tokens[i].type == .Const) i += 1;
+                    if (i < self.tokens.len and self.tokens[i].type == .Identifier and
+                        std.mem.eql(u8, self.tokens[i].lexeme, "volatile"))
+                    {
+                        i += 1;
+                    }
+                    continue;
+                },
+                else => break,
+            }
+        }
+
+        // After prefixes, we must see an identifier-rooted name (or a
+        // primitive type name, which the lexer also tokenizes as an
+        // Identifier). Walk a dotted path: `a`, `a.b`, `a.b.c`, ...
+        if (i >= self.tokens.len or self.tokens[i].type != .Identifier) {
+            return start_idx;
+        }
+        i += 1;
+        while (i + 1 < self.tokens.len and
+            self.tokens[i].type == .Dot and
+            self.tokens[i + 1].type == .Identifier)
+        {
+            i += 2;
+        }
+        return i;
+    }
+
     /// Check if the current token is on a new line compared to the previous token.
     ///
     /// Used to implement optional semicolons - statements can be separated by
@@ -7333,48 +7419,63 @@ pub const Parser = struct {
             // Check for typed array literal:
             //   [N]Type{ values }       — explicit length
             //   [_]Type{ values }       — inferred length (Zig-style)
-            // Save checkpoint in case this isn't a typed array literal.
+            // The element type can be a simple identifier (`u8`, `Foo`),
+            // a namespaced path (`usb.USBDeviceID`, `a.b.c.Foo`), a slice
+            // (`[]const u8`), an array, a pointer/ref, or an optional —
+            // anything `parseTypeAnnotation` accepts.
+            //
+            // We use a peek-only scan to determine whether the position
+            // after `]` holds `<element-type> {` so we only commit to the
+            // typed-array-literal path when the trailing `{` is actually
+            // present. Otherwise we fall back to the regular array
+            // literal path (where `[_]` parses as a one-element array
+            // with `_` as the sole element).
             const is_size_token = self.check(.Integer) or
                 (self.check(.Identifier) and std.mem.eql(u8, self.peek().lexeme, "_"));
             if (is_size_token) {
                 const checkpoint = self.current;
                 const size_token = self.advance();
                 if (self.match(&.{.RightBracket})) {
-                    // We have [N] or [_] - now check for type followed by {
-                    if (self.check(.Identifier)) {
-                        const type_token = self.advance();
-                        if (self.match(&.{.LeftBrace})) {
-                            // This is a typed array literal: [N]Type{ values }
-                            var elements = std.ArrayList(*ast.Expr).empty;
-                            defer elements.deinit(self.allocator);
+                    // We have [N] or [_] - peek ahead to see if the
+                    // element type is followed by `{`.
+                    const type_end_idx = self.peekArrayElementTypeEnd(self.current);
+                    if (type_end_idx > self.current and
+                        type_end_idx < self.tokens.len and
+                        self.tokens[type_end_idx].type == .LeftBrace)
+                    {
+                        // Commit: parse the element type, then `{ ... }`.
+                        const elem_type = try self.parseTypeAnnotation();
+                        _ = try self.expect(.LeftBrace, "Expected '{' after typed array element type");
 
-                            if (!self.check(.RightBrace)) {
-                                while (true) {
-                                    const elem = try self.expression();
-                                    try elements.append(self.allocator, elem);
+                        var elements = std.ArrayList(*ast.Expr).empty;
+                        defer elements.deinit(self.allocator);
 
-                                    if (!self.match(&.{.Comma})) break;
-                                    // Allow trailing comma
-                                    if (self.check(.RightBrace)) break;
-                                }
+                        if (!self.check(.RightBrace)) {
+                            while (true) {
+                                const elem = try self.expression();
+                                try elements.append(self.allocator, elem);
+
+                                if (!self.match(&.{.Comma})) break;
+                                // Allow trailing comma
+                                if (self.check(.RightBrace)) break;
                             }
-
-                            _ = try self.expect(.RightBrace, "Expected '}' after typed array elements");
-
-                            // Create typed array literal with size and element type
-                            const array_type = try std.fmt.allocPrint(self.allocator, "[{s}]{s}", .{ size_token.lexeme, type_token.lexeme });
-                            const array_literal = try ast.ArrayLiteral.init(
-                                self.allocator,
-                                try elements.toOwnedSlice(self.allocator),
-                                ast.SourceLocation.fromToken(bracket_token),
-                            );
-                            // Store the explicit type in the array literal
-                            array_literal.explicit_type = array_type;
-
-                            const expr = try self.allocator.create(ast.Expr);
-                            expr.* = ast.Expr{ .ArrayLiteral = array_literal };
-                            return expr;
                         }
+
+                        _ = try self.expect(.RightBrace, "Expected '}' after typed array elements");
+
+                        // Create typed array literal with size and element type
+                        const array_type = try std.fmt.allocPrint(self.allocator, "[{s}]{s}", .{ size_token.lexeme, elem_type });
+                        const array_literal = try ast.ArrayLiteral.init(
+                            self.allocator,
+                            try elements.toOwnedSlice(self.allocator),
+                            ast.SourceLocation.fromToken(bracket_token),
+                        );
+                        // Store the explicit type in the array literal
+                        array_literal.explicit_type = array_type;
+
+                        const expr = try self.allocator.create(ast.Expr);
+                        expr.* = ast.Expr{ .ArrayLiteral = array_literal };
+                        return expr;
                     }
                 }
                 // Not a typed array literal - restore position and parse as regular array
