@@ -4329,6 +4329,42 @@ test "parser: parameter properties skip modifiers" {
     try T.expectEqual(hir_mod.NodeKind.class_decl, s.hir.kindOf(top));
 }
 
+test "parser: accessor class member modifier (TS 4.9)" {
+    // TS 4.9 introduced `accessor x = 0;` as a class member modifier
+    // that declares an auto-accessor (a getter/setter pair backed by
+    // a private field). For v0 we accept it as a modifier and lower
+    // the member to a regular field — the emitter / checker treat it
+    // identically to `x = 0;`.
+    var s = try newTestSetup("class Foo { accessor x = 0; }");
+    defer destroyTestSetup(s);
+    const root = try s.parser.parseSourceFile();
+    const top = hir_mod.blockStmts(&s.hir, root)[0];
+    try T.expectEqual(hir_mod.NodeKind.class_decl, s.hir.kindOf(top));
+    const members = hir_mod.classMembers(&s.hir, top);
+    try T.expectEqual(@as(usize, 1), members.len);
+    // The member is parsed as a regular property (object_property),
+    // with the `accessor` keyword stripped by skipClassModifiers.
+    try T.expectEqual(hir_mod.NodeKind.object_property, s.hir.kindOf(members[0]));
+}
+
+test "parser: accessor modifier preserves field name and initializer" {
+    // Verify that after the `accessor` modifier is consumed, the field
+    // name / initializer parse correctly so downstream type resolution
+    // (e.g. `new Foo().x` typed as `number`) still works.
+    var s = try newTestSetup("class Foo { accessor x = 0; }");
+    defer destroyTestSetup(s);
+    const root = try s.parser.parseSourceFile();
+    const top = hir_mod.blockStmts(&s.hir, root)[0];
+    const members = hir_mod.classMembers(&s.hir, top);
+    const prop = hir_mod.objectPropertyOf(&s.hir, members[0]);
+    try T.expectEqual(hir_mod.NodeKind.identifier, s.hir.kindOf(prop.key));
+    const ident = hir_mod.identifierOf(&s.hir, prop.key);
+    try T.expectEqualStrings("x", s.interner.get(ident.name));
+    // Initializer is the literal `0`.
+    try T.expect(prop.value != hir_mod.none_node_id);
+    try T.expectEqual(hir_mod.NodeKind.literal_number, s.hir.kindOf(prop.value));
+}
+
 // ====================================================================
 // Arrow functions
 // ====================================================================
