@@ -77,6 +77,7 @@ pub const TsCodes = struct {
     pub const used_before_assignment: u32 = 2454;
     pub const cannot_assign_const: u32 = 2588;
     pub const await_only_in_async: u32 = 1308;
+    pub const no_overlap_comparison: u32 = 2367;
 };
 
 /// Per-alias generic info: the type-parameter TypeIds in
@@ -3432,6 +3433,43 @@ pub const Checker = struct {
         return false;
     }
 
+    /// Conservative gate for TS2367: return true only when both
+    /// sides look like concrete primitives (string / number / boolean
+    /// / bigint / null / undefined / symbol) or literals of those.
+    /// Skips unions, intersections, object types, type parameters,
+    /// any/unknown/never, and other compound shapes — TS allows
+    /// many of those comparisons even when they look unrelated, and
+    /// our `isComparableTo` is too coarse to reproduce TS's
+    /// `comparableRelation` exactly.
+    fn shouldCheckNoOverlap(self: *Checker, a: TypeId, b: TypeId) bool {
+        return self.isConcretePrimitiveLike(a) and self.isConcretePrimitiveLike(b);
+    }
+
+    fn isConcretePrimitiveLike(self: *Checker, t: TypeId) bool {
+        if (t == types.Primitive.any or
+            t == types.Primitive.unknown or
+            t == types.Primitive.never or
+            t == types.Primitive.void_t)
+        {
+            return false;
+        }
+        const f = self.interner.pool.flagsOf(t);
+        if (f.is_union or f.is_intersection or
+            f.is_object_type or f.is_object or
+            f.is_signature or f.is_tuple or
+            f.is_type_parameter or f.is_instantiation or
+            f.is_conditional or f.is_mapped or
+            f.is_indexed_access or f.is_keyof or
+            f.is_typeof or f.is_infer or
+            f.is_template_literal)
+        {
+            return false;
+        }
+        return f.is_string or f.is_number or f.is_boolean or
+            f.is_bigint or f.is_symbol or
+            f.is_null or f.is_undefined;
+    }
+
     fn checkBinop(self: *Checker, node: NodeId) CheckError!TypeId {
         const b = hir_mod.binopOf(self.hir, node);
         const lhs = try self.checkExpression(b.lhs);
@@ -3454,7 +3492,23 @@ pub const Checker = struct {
             },
             .sub, .mul, .div, .mod, .pow => types.Primitive.number_t,
             .bit_and, .bit_or, .bit_xor, .shl, .shr, .shr_unsigned => types.Primitive.number_t,
-            .eq, .neq, .eq_strict, .neq_strict => types.Primitive.boolean_t,
+            .eq, .neq, .eq_strict, .neq_strict => blk: {
+                // TS2367: warn when `===` / `!==` compares two known
+                // types that have no overlap. We're conservative here
+                // and only fire when both sides are concrete
+                // primitives (or literals of those primitives) so we
+                // don't flag legitimate union / object / generic
+                // comparisons that TS itself allows.
+                if (b.op == .eq_strict or b.op == .neq_strict) {
+                    if (self.shouldCheckNoOverlap(lhs, rhs)) {
+                        const ok = self.engine.isComparableTo(lhs, rhs) catch true;
+                        if (!ok) {
+                            try self.report(node, TsCodes.no_overlap_comparison, "This comparison appears to be unintentional because the types have no overlap.");
+                        }
+                    }
+                }
+                break :blk types.Primitive.boolean_t;
+            },
             .lt, .le, .gt, .ge => types.Primitive.boolean_t,
             .instanceof, .in => types.Primitive.boolean_t,
             .comma => rhs,
@@ -6123,4 +6177,18 @@ test "checker: switch default narrows x to union minus listed cases" {
     const def_stmts = hir_mod.switchCaseStmts(&s.hir, cases[1]);
     const other_init = hir_mod.varDeclOf(&s.hir, def_stmts[0]).init;
     try T.expectEqual(types.Primitive.string_t, s.hir.typeOf(other_init));
+}
+
+test "checker: number === string-literal emits TS2367 (no overlap)" {
+    const s = try newSetup(
+        \\let x: number = 1;
+        \\if (x === "hello") {}
+    );
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+    var found = false;
+    for (s.checker.diagnostics.items) |d| {
+        if (d.code == TsCodes.no_overlap_comparison) found = true;
+    }
+    try T.expect(found);
 }
