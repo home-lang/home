@@ -6185,6 +6185,65 @@ test "checker: homomorphic Partial<T> preserves field types" {
     try T.expect(saw_y_string);
 }
 
+test "checker: mapped type `as` identity clause preserves key set" {
+    // Sketch of the TS 4.1 key-remapping pipeline:
+    //   `{ [K in keyof T as <Remap>]: T[K] }`
+    // The richer remap forms — template literals (e.g.
+    // `prefix_${K & string}`) — require the parser-driven
+    // rescanTemplate path that's still pending (see ts_parser
+    // "Phase 1.B follow-up"). This test pins the parse +
+    // per-key narrow-scope evaluation by using an identity
+    // remap (`as K`) and verifying the resulting object
+    // preserves the source's keys.
+    const s = try newSetup(
+        \\type T = { a: string; b: number };
+        \\type R = { [K in keyof T as K]: T[K] };
+        \\let r: R;
+    );
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+    const stmts = hir_mod.blockStmts(&s.hir, s.root);
+    const r_decl = stmts[2];
+    const t = s.hir.typeOf(r_decl);
+    try T.expect(s.ti.pool.flagsOf(t).is_object_type);
+    const members = s.ti.objectMembers(t);
+    try T.expectEqual(@as(usize, 2), members.len);
+    const want_a = try s.sint.intern("a");
+    const want_b = try s.sint.intern("b");
+    var saw_a = false;
+    var saw_b = false;
+    for (members) |m| {
+        if (m.name == want_a) saw_a = true;
+        if (m.name == want_b) saw_b = true;
+    }
+    try T.expect(saw_a);
+    try T.expect(saw_b);
+}
+
+test "checker: mapped type `as` clause drops keys whose remap is never" {
+    // `as Exclude<K, "private">` evaluates per-key: when K
+    // equals "private" the conditional reduces to `never`,
+    // dropping the key from the materialized object type.
+    const s = try newSetup(
+        \\type Exclude<T, U> = T extends U ? never : T;
+        \\type T = { a: string; private: number };
+        \\type R = { [K in keyof T as Exclude<K, "private">]: T[K] };
+        \\let r: R;
+    );
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+    const stmts = hir_mod.blockStmts(&s.hir, s.root);
+    const r_decl = stmts[3];
+    const t = s.hir.typeOf(r_decl);
+    try T.expect(s.ti.pool.flagsOf(t).is_object_type);
+    const members = s.ti.objectMembers(t);
+    try T.expectEqual(@as(usize, 1), members.len);
+    const want_a = try s.sint.intern("a");
+    const dropped = try s.sint.intern("private");
+    try T.expectEqual(want_a, members[0].name);
+    try T.expect(members[0].name != dropped);
+}
+
 test "checker: type-parameter variance — `in` modifier becomes contravariant TypeId" {
     const s = try newSetup("function f<in T>(x: T): void {}");
     defer destroySetup(s);

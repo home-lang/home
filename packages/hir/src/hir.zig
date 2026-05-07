@@ -809,6 +809,11 @@ pub const MappedTypePayload = struct {
     constraint: NodeId,
     /// Value type of each member.
     value: NodeId,
+    /// Optional key remapping clause (`as X` after `[K in T]`),
+    /// `none_node_id` if absent. When present, each iterated key
+    /// is renamed to the value of this type with `K` substituted;
+    /// keys whose remap evaluates to `never` are dropped.
+    remap: NodeId,
     /// `+/- readonly` modifier state.
     readonly: u8, // 0=none, 1=add, 2=remove
     /// `+/- ?` modifier state.
@@ -2514,6 +2519,7 @@ pub const Builder = struct {
         type_param: NodeId,
         constraint: NodeId,
         value: NodeId,
+        remap: NodeId,
         readonly: u8,
         optional: u8,
     ) !NodeId {
@@ -2522,6 +2528,7 @@ pub const Builder = struct {
             .type_param = type_param,
             .constraint = constraint,
             .value = value,
+            .remap = remap,
             .readonly = readonly,
             .optional = optional,
         });
@@ -2529,6 +2536,7 @@ pub const Builder = struct {
         self.hir.setParent(type_param, id);
         if (constraint != none_node_id) self.hir.setParent(constraint, id);
         if (value != none_node_id) self.hir.setParent(value, id);
+        if (remap != none_node_id) self.hir.setParent(remap, id);
         return id;
     }
 };

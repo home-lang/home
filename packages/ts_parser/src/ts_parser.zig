@@ -1729,6 +1729,16 @@ pub const Parser = struct {
             const k_id = try self.internToken(k_tok);
             _ = try self.expect(.kw_in, "'in' in mapped type");
             const constraint = try self.parseTypeAnnotation();
+            // Optional `as Type` key-remapping clause (TS 4.1+):
+            //   `{ [K in keyof T as Exclude<K, "private">]: T[K] }`
+            // The `as` sits between the constraint and the closing
+            // bracket. Its type is evaluated per-key during checking;
+            // keys whose remap reduces to `never` are dropped.
+            var remap: NodeId = hir_mod.none_node_id;
+            if (self.peek().kind == .kw_as) {
+                _ = self.advance();
+                remap = try self.parseTypeAnnotation();
+            }
             _ = try self.expect(.close_bracket, "']' to close mapped type key");
             // Optional `?` / `+?` / `-?` modifier
             var optional_mod: u8 = 0;
@@ -1746,7 +1756,7 @@ pub const Parser = struct {
             _ = self.match(.semicolon);
             const close = try self.expect(.close_brace, "'}' to close mapped type");
             const tp = try self.builder.addTypeParameter(tokenSpan(k_tok), k_id, hir_mod.none_node_id, hir_mod.none_node_id, 0);
-            return try self.builder.addMappedType(.{ .start = open.span.start, .end = close.span.end }, tp, constraint, value, readonly_mod, optional_mod);
+            return try self.builder.addMappedType(.{ .start = open.span.start, .end = close.span.end }, tp, constraint, value, remap, readonly_mod, optional_mod);
         }
         var members: std.ArrayListUnmanaged(NodeId) = .empty;
         defer members.deinit(self.gpa);
