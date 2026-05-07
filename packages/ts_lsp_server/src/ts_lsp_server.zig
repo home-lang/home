@@ -22,6 +22,7 @@
 //!   - workspace/symbol
 //!   - textDocument/codeAction
 //!   - textDocument/semanticTokens/full
+//!   - textDocument/semanticTokens/full/delta
 //!   - textDocument/semanticTokens/range
 //!   - textDocument/foldingRange
 //!   - textDocument/inlayHint
@@ -74,6 +75,7 @@ pub const Method = enum {
     workspace_symbol,
     text_document_code_action,
     text_document_semantic_tokens_full,
+    text_document_semantic_tokens_full_delta,
     text_document_semantic_tokens_range,
     text_document_folding_range,
     text_document_inlay_hint,
@@ -113,6 +115,7 @@ pub const Method = enum {
             .{ "workspace/symbol", Method.workspace_symbol },
             .{ "textDocument/codeAction", Method.text_document_code_action },
             .{ "textDocument/semanticTokens/full", Method.text_document_semantic_tokens_full },
+            .{ "textDocument/semanticTokens/full/delta", Method.text_document_semantic_tokens_full_delta },
             .{ "textDocument/semanticTokens/range", Method.text_document_semantic_tokens_range },
             .{ "textDocument/foldingRange", Method.text_document_folding_range },
             .{ "textDocument/inlayHint", Method.text_document_inlay_hint },
@@ -1554,6 +1557,44 @@ pub fn handleSemanticTokensFull(
     return encodeResponse(gpa, request_id, result);
 }
 
+/// Handle a `textDocument/semanticTokens/full/delta` JSON-RPC request:
+/// extract the URI + previousResultId, route to
+/// `Service.semanticTokensDelta`, and emit an LSP `SemanticTokens`
+/// `{ resultId, data: u32[] }` response. v0 always returns a full
+/// reset (no edits), since snapshot tracking isn't wired up yet — the
+/// `previousResultId` is accepted for protocol shape but ignored by
+/// the service. Caller owns the returned slice.
+pub fn handleSemanticTokensDelta(
+    service: *ts_lsp.Service,
+    gpa: std.mem.Allocator,
+    request_id: RequestId,
+    params_json: []const u8,
+) ![]u8 {
+    const uri = findJsonStringField(params_json, "uri") orelse return error.MissingUri;
+    const path = uriToPath(uri);
+    // `previousResultId` is required by the LSP spec; default to ""
+    // when missing so we still produce a useful (full-reset) response
+    // rather than failing the request.
+    const prev = findJsonStringField(params_json, "previousResultId") orelse "";
+
+    const delta = try service.semanticTokensDelta(gpa, path, prev);
+    defer gpa.free(delta.result_id);
+    defer gpa.free(delta.data);
+
+    var buf: std.ArrayListUnmanaged(u8) = .empty;
+    defer buf.deinit(gpa);
+    try buf.appendSlice(gpa, "{\"resultId\":\"");
+    try writeJsonStringContents(&buf, gpa, delta.result_id);
+    try buf.appendSlice(gpa, "\",\"data\":[");
+    for (delta.data, 0..) |v, i| {
+        if (i > 0) try buf.append(gpa, ',');
+        var nbuf: [16]u8 = undefined;
+        try buf.appendSlice(gpa, try std.fmt.bufPrint(&nbuf, "{d}", .{v}));
+    }
+    try buf.appendSlice(gpa, "]}");
+    return encodeResponse(gpa, request_id, buf.items);
+}
+
 /// Handle a `textDocument/semanticTokens/range` JSON-RPC request:
 /// extract the URI + range start/end lines, route to
 /// `Service.semanticTokensRange`, and emit an LSP `SemanticTokens`
@@ -2180,6 +2221,10 @@ pub fn dispatchRequest(
         .text_document_semantic_tokens_full => {
             if (is_notification) return &.{};
             return try handleSemanticTokensFull(service, gpa, id, params);
+        },
+        .text_document_semantic_tokens_full_delta => {
+            if (is_notification) return &.{};
+            return try handleSemanticTokensDelta(service, gpa, id, params);
         },
         .text_document_semantic_tokens_range => {
             if (is_notification) return &.{};
@@ -3018,6 +3063,28 @@ test "handleSemanticTokensFull: returns object with data array" {
     const out = try handleSemanticTokensFull(&svc, T.allocator, .{ .integer = 91 }, body);
     defer T.allocator.free(out);
     try T.expect(std.mem.indexOf(u8, out, "\"id\":91") != null);
+    try T.expect(std.mem.indexOf(u8, out, "\"data\":[") != null);
+}
+
+test "handleSemanticTokensDelta: returns object with resultId and data array" {
+    var vfs = ts_resolver.VirtualFs.init(T.allocator);
+    defer vfs.deinit();
+    var resolver = ts_resolver.Resolver.init(T.allocator, vfs.fs(), .{});
+    defer resolver.deinit();
+    var program = ts_program.Program.init(T.allocator, &resolver);
+    defer program.deinit();
+
+    _ = try program.add("/main.ts", "let x = 1; function foo() { }");
+    try program.compileAll(.{});
+    var svc = ts_lsp.Service.init(T.allocator, &program);
+
+    const body =
+        \\{"jsonrpc":"2.0","id":92,"method":"textDocument/semanticTokens/full/delta","params":{"textDocument":{"uri":"file:///main.ts"},"previousResultId":"stale-id"}}
+    ;
+    const out = try handleSemanticTokensDelta(&svc, T.allocator, .{ .integer = 92 }, body);
+    defer T.allocator.free(out);
+    try T.expect(std.mem.indexOf(u8, out, "\"id\":92") != null);
+    try T.expect(std.mem.indexOf(u8, out, "\"resultId\":\"v0-") != null);
     try T.expect(std.mem.indexOf(u8, out, "\"data\":[") != null);
 }
 
