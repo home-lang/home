@@ -57,6 +57,7 @@
 //!     completionItem/resolve                  [bd1de4d]
 //!     codeLens/resolve                        [1dca066]
 //!     documentLink/resolve                    [a85694b]
+//!     inlayHint/resolve                       [stub: echoes hint back]
 //!   Workspace:
 //!     workspace/symbol                        [c9dc339]
 //!   Call hierarchy:
@@ -135,6 +136,7 @@ pub const Method = enum {
     text_document_semantic_tokens_range,
     text_document_folding_range,
     text_document_inlay_hint,
+    inlay_hint_resolve,
     text_document_document_highlight,
     text_document_formatting,
     text_document_on_type_formatting,
@@ -185,6 +187,7 @@ pub const Method = enum {
             .{ "textDocument/semanticTokens/range", Method.text_document_semantic_tokens_range },
             .{ "textDocument/foldingRange", Method.text_document_folding_range },
             .{ "textDocument/inlayHint", Method.text_document_inlay_hint },
+            .{ "inlayHint/resolve", Method.inlay_hint_resolve },
             .{ "textDocument/documentHighlight", Method.text_document_document_highlight },
             .{ "textDocument/formatting", Method.text_document_formatting },
             .{ "textDocument/onTypeFormatting", Method.text_document_on_type_formatting },
@@ -258,6 +261,7 @@ pub const SUPPORTED_METHODS = &[_][]const u8{
     "completionItem/resolve",
     "codeLens/resolve",
     "documentLink/resolve",
+    "inlayHint/resolve",
     // Workspace.
     "workspace/symbol",
     "workspace/willRenameFiles",
@@ -2541,6 +2545,22 @@ pub fn handleInlayHint(
     return encodeResponse(gpa, request_id, buf.items);
 }
 
+/// Handle an `inlayHint/resolve` JSON-RPC request. Stub: echoes the
+/// input `InlayHint` back unchanged. The editor uses
+/// `inlayHint/resolve` when a hint's `tooltip` or `textEdits` were
+/// omitted in the initial response and need lazy resolution; our
+/// `inlayHint` handler emits complete hints, so resolve is a no-op
+/// here. Caller owns the returned slice.
+pub fn handleInlayHintResolve(
+    service: *ts_lsp.Service,
+    gpa: std.mem.Allocator,
+    request_id: RequestId,
+    params_json: []const u8,
+) ![]u8 {
+    _ = service;
+    return encodeResponse(gpa, request_id, params_json);
+}
+
 /// Handle a `textDocument/documentHighlight` JSON-RPC request: extract
 /// the URI + cursor position, route to `Service.documentHighlights`,
 /// and emit an LSP `DocumentHighlight[]` array (each item has a
@@ -2853,7 +2873,7 @@ pub fn renderInitializeCapabilities(gpa: std.mem.Allocator) ![]u8 {
     var buf: std.ArrayListUnmanaged(u8) = .empty;
     errdefer buf.deinit(gpa);
     try buf.appendSlice(gpa,
-        \\{"capabilities":{"textDocumentSync":1,"hoverProvider":true,"definitionProvider":true,"referencesProvider":true,"completionProvider":{"triggerCharacters":["."," "]},"documentSymbolProvider":true,"workspaceSymbolProvider":true,"renameProvider":{"prepareProvider":true},"codeActionProvider":true,"executeCommandProvider":{"commands":["home.organizeImports","home.applyCodeAction"]},"semanticTokensProvider":{"legend":{"tokenTypes":["variable","parameter","function","method","class","interface","type","enum","property","keyword","string","number","operator","comment"],"tokenModifiers":[]},"full":true,"range":true},"signatureHelpProvider":{"triggerCharacters":["(",","]},"documentHighlightProvider":false,"documentFormattingProvider":true,"documentOnTypeFormattingProvider":{"firstTriggerCharacter":"}","moreTriggerCharacters":[";","\n"]},"foldingRangeProvider":true,"selectionRangeProvider":true,"monikerProvider":true,"typeHierarchyProvider":true,"inlineValueProvider":true},"serverInfo":{"name":"home-lsp","version":"0.1.0","supportedMethods":[
+        \\{"capabilities":{"textDocumentSync":1,"hoverProvider":true,"definitionProvider":true,"referencesProvider":true,"completionProvider":{"triggerCharacters":["."," "]},"documentSymbolProvider":true,"workspaceSymbolProvider":true,"renameProvider":{"prepareProvider":true},"codeActionProvider":true,"executeCommandProvider":{"commands":["home.organizeImports","home.applyCodeAction"]},"semanticTokensProvider":{"legend":{"tokenTypes":["variable","parameter","function","method","class","interface","type","enum","property","keyword","string","number","operator","comment"],"tokenModifiers":[]},"full":true,"range":true},"signatureHelpProvider":{"triggerCharacters":["(",","]},"documentHighlightProvider":false,"documentFormattingProvider":true,"documentOnTypeFormattingProvider":{"firstTriggerCharacter":"}","moreTriggerCharacters":[";","\n"]},"foldingRangeProvider":true,"selectionRangeProvider":true,"monikerProvider":true,"typeHierarchyProvider":true,"inlineValueProvider":true,"inlayHintProvider":{"resolveProvider":false}},"serverInfo":{"name":"home-lsp","version":"0.1.0","supportedMethods":[
     );
     for (SUPPORTED_METHODS, 0..) |m, i| {
         if (i != 0) try buf.append(gpa, ',');
@@ -3125,6 +3145,10 @@ pub fn dispatchRequest(
         .text_document_inlay_hint => {
             if (is_notification) return &.{};
             return try handleInlayHint(service, gpa, id, params);
+        },
+        .inlay_hint_resolve => {
+            if (is_notification) return &.{};
+            return try handleInlayHintResolve(service, gpa, id, params);
         },
         .text_document_document_highlight => {
             if (is_notification) return &.{};
@@ -4175,6 +4199,28 @@ test "handleInlayHint: returns InlayHint array with position+label+kind" {
     try T.expect(std.mem.indexOf(u8, out, "\"id\":121") != null);
     try T.expect(std.mem.indexOf(u8, out, "\"position\":{") != null);
     try T.expect(std.mem.indexOf(u8, out, "\"label\":\"") != null);
+    try T.expect(std.mem.indexOf(u8, out, "\"kind\":1") != null);
+}
+
+test "handleInlayHintResolve: stub echoes input params" {
+    var vfs = ts_resolver.VirtualFs.init(T.allocator);
+    defer vfs.deinit();
+    var resolver = ts_resolver.Resolver.init(T.allocator, vfs.fs(), .{});
+    defer resolver.deinit();
+    var program = ts_program.Program.init(T.allocator, &resolver);
+    defer program.deinit();
+
+    var svc = ts_lsp.Service.init(T.allocator, &program);
+
+    const params =
+        \\{"position":{"line":0,"character":5},"label":": number","kind":1}
+    ;
+    const out = try handleInlayHintResolve(&svc, T.allocator, .{ .integer = 122 }, params);
+    defer T.allocator.free(out);
+    try T.expect(std.mem.indexOf(u8, out, "\"jsonrpc\":\"2.0\"") != null);
+    try T.expect(std.mem.indexOf(u8, out, "\"id\":122") != null);
+    try T.expect(std.mem.indexOf(u8, out, "\"position\":{\"line\":0,\"character\":5}") != null);
+    try T.expect(std.mem.indexOf(u8, out, "\"label\":\": number\"") != null);
     try T.expect(std.mem.indexOf(u8, out, "\"kind\":1") != null);
 }
 
