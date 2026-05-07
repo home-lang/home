@@ -335,6 +335,16 @@ pub const Checker = struct {
     /// inferred direction. Unmarked type parameters default to
     /// `.bivariant`.
     inferred_variance: std.AutoHashMapUnmanaged(TypeId, types.Variance),
+    /// Set of signature TypeIds whose final parameter was declared as
+    /// a rest parameter (`...rest: T[]`). The interner keys signatures
+    /// only by their flat parameter type list, so the rest-ness lives
+    /// in this side table. Consulted by `checkArgsAgainstSignature` to
+    /// allow variadic call sites: 0+ trailing args, each typed
+    /// against the array element type of the last param. Populated by
+    /// `checkFnSignatureOnly` when any HIR parameter has
+    /// `flags.is_rest = true`; carried forward by
+    /// `refineSignatureReturn` when the return type is later inferred.
+    rest_signatures: std.AutoHashMapUnmanaged(TypeId, void),
     /// `(enum_name, member_name) → numeric value` for enum members
     /// whose value the checker resolved (either from an explicit
     /// numeric initializer or auto-incremented from the prior
@@ -405,6 +415,7 @@ pub const Checker = struct {
             .cond_aliases = .empty,
             .overloads = .empty,
             .inferred_variance = .empty,
+            .rest_signatures = .empty,
             .enum_member_values = .empty,
             .diagnostics = .empty,
             .diag_arena = std.heap.ArenaAllocator.init(gpa),
@@ -467,6 +478,7 @@ pub const Checker = struct {
         while (ov_it.next()) |list| list.deinit(self.gpa);
         self.overloads.deinit(self.gpa);
         self.inferred_variance.deinit(self.gpa);
+        self.rest_signatures.deinit(self.gpa);
         self.enum_member_values.deinit(self.gpa);
         self.lib_cache.deinit(self.gpa);
         self.diagnostics.deinit(self.gpa);
@@ -1526,6 +1538,12 @@ pub const Checker = struct {
         // had (avoids re-interning a no-op).
         if (self.interner.signatureReturn(sig)) |old| if (old == new_ret) return;
         const new_sig = self.interner.internSignature(params, new_ret, false) catch return error.OutOfMemory;
+        // Carry the rest-parameter marker forward — re-interning with
+        // a refined return type produces a fresh TypeId, but the
+        // parameter list (incl. rest-ness) is unchanged.
+        if (self.rest_signatures.contains(sig)) {
+            try self.rest_signatures.put(self.gpa, new_sig, {});
+        }
         self.hir.setType(fn_node, new_sig);
         const f = hir_mod.fnDeclOf(self.hir, fn_node);
         if (f.name != hir_mod.none_node_id) self.hir.setType(f.name, new_sig);
@@ -1875,8 +1893,10 @@ pub const Checker = struct {
         var param_types: std.ArrayListUnmanaged(TypeId) = .empty;
         defer param_types.deinit(self.gpa);
         const params = hir_mod.fnParams(self.hir, node);
+        var has_rest_param = false;
         for (params) |p| {
             const pp = hir_mod.parameterOf(self.hir, p);
+            if (pp.flags.is_rest) has_rest_param = true;
             const has_anno = pp.type_annotation != hir_mod.none_node_id;
             var t: TypeId = if (has_anno)
                 try self.lowererLowerWithTypeParams(pp.type_annotation)
@@ -1924,6 +1944,13 @@ pub const Checker = struct {
         const sig = self.interner.internSignature(param_types.items, ret_t, false) catch return error.OutOfMemory;
         self.hir.setType(node, sig);
         if (f.name != hir_mod.none_node_id) self.hir.setType(f.name, sig);
+        // Record rest-parameter signatures so call-site argument
+        // checking can expand the trailing rest into a variadic match
+        // (the interner keys signatures only by their flat parameter
+        // type list, so rest-ness lives in `rest_signatures`).
+        if (has_rest_param) {
+            try self.rest_signatures.put(self.gpa, sig, {});
+        }
         // Auto-infer variance for any type parameter that had no
         // explicit `in` / `out` modifier. We walk the signature —
         // an occurrence of T in a param slot is contravariant, in
@@ -5344,21 +5371,32 @@ pub const Checker = struct {
         sig: TypeId,
     ) CheckError!void {
         const param_ts = self.interner.signatureParams(sig);
-        // Required-arg count = number of leading params whose type
-        // doesn't include `undefined`. Optional / defaulted params
-        // (typed as `T | undefined` by the signature pass) are
-        // permitted to be omitted at the call site, matching tsc.
-        var min_required: usize = param_ts.len;
+        const is_variadic = self.rest_signatures.contains(sig) and param_ts.len > 0;
+        // For rest signatures, the trailing slot accepts any number of
+        // args (including zero), each typed against the array-element
+        // type. Required-arg count drops the rest slot and trims
+        // trailing optional/defaulted params (typed as `T | undefined`
+        // by the signature pass, matching tsc's call-site behavior).
+        const fixed_count: usize = if (is_variadic) param_ts.len - 1 else param_ts.len;
+        var min_required: usize = fixed_count;
         while (min_required > 0) {
             if (!self.typeIncludesUndefined(param_ts[min_required - 1])) break;
             min_required -= 1;
         }
-        if (args.len < min_required or args.len > param_ts.len) {
-            const expected_label: []const u8 = if (min_required == param_ts.len) "" else " or fewer";
+        const too_few = args.len < min_required;
+        const too_many = !is_variadic and args.len > param_ts.len;
+        if (too_few or too_many) {
+            const expected_label: []const u8 = if (is_variadic)
+                " or more"
+            else if (min_required == param_ts.len)
+                ""
+            else
+                " or fewer";
+            const expected_n: usize = if (is_variadic) min_required else param_ts.len;
             const msg = try std.fmt.allocPrint(
                 self.diag_arena.allocator(),
                 "Expected {d}{s} arguments, but got {d}.",
-                .{ param_ts.len, expected_label, args.len },
+                .{ expected_n, expected_label, args.len },
             );
             try self.diagnostics.append(self.gpa, .{
                 .node = call_node,
@@ -5366,9 +5404,10 @@ pub const Checker = struct {
                 .message = msg,
             });
         }
-        const npairs = @min(args.len, param_ts.len);
+        // Fixed-position pairs.
+        const npairs_fixed = @min(args.len, fixed_count);
         var i: usize = 0;
-        while (i < npairs) : (i += 1) {
+        while (i < npairs_fixed) : (i += 1) {
             const param_t = param_ts[i];
             if (self.interner.pool.flagsOf(param_t).is_type_parameter) continue;
             const arg_t = arg_types[i];
@@ -5384,6 +5423,34 @@ pub const Checker = struct {
                     .code = TsCodes.argument_type_mismatch,
                     .message = msg,
                 });
+            }
+        }
+        if (is_variadic) {
+            // Trailing args bind to the rest slot. The rest's declared
+            // type is an array (`number[]`); each individual call-site
+            // arg is checked against the array's element type, which
+            // we read from the number-key index signature.
+            const rest_arr_t = param_ts[param_ts.len - 1];
+            const elem_t = self.interner.objectNumberIndex(rest_arr_t);
+            const target_t = if (elem_t == types.Primitive.none) rest_arr_t else elem_t;
+            if (!self.interner.pool.flagsOf(target_t).is_type_parameter) {
+                var j: usize = fixed_count;
+                while (j < args.len) : (j += 1) {
+                    const arg_t = arg_types[j];
+                    const ok = self.engine.isAssignableTo(arg_t, target_t) catch true;
+                    if (!ok) {
+                        const msg = try std.fmt.allocPrint(
+                            self.diag_arena.allocator(),
+                            "Argument is not assignable to parameter at position {d}.",
+                            .{j},
+                        );
+                        try self.diagnostics.append(self.gpa, .{
+                            .node = args[j],
+                            .code = TsCodes.argument_type_mismatch,
+                            .message = msg,
+                        });
+                    }
+                }
             }
         }
     }
