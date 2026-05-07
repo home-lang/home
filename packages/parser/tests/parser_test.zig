@@ -465,6 +465,107 @@ test "parser: struct declaration with commas" {
     try testing.expectEqualStrings("int", struct_decl.fields[1].type_name);
 }
 
+// Issue #55: doc-comments (///) inside struct/enum bodies should be
+// accepted between items. They are silently consumed for now (future
+// work: attach them to the next AST item).
+test "parser: struct body accepts /// doc-comments between items" {
+    const src =
+        \\pub const Foo = struct {
+        \\    /// leading doc on first field
+        \\    field_a: u32,
+        \\
+        \\    /// doc between fields
+        \\    field_b: u64,
+        \\
+        \\    /// doc before a method
+        \\    pub fn bar(self: *Foo) u32 {
+        \\        return self.field_a;
+        \\    }
+        \\
+        \\    /// doc before associated const
+        \\    pub const KIND: u8 = 1;
+        \\
+        \\    /// multi-line doc
+        \\    /// continued on next line
+        \\    pub fn baz(self: *Foo) u64 {
+        \\        return self.field_b;
+        \\    }
+        \\}
+    ;
+    const program = try parseSource(testing.allocator, src);
+    defer program.deinit(testing.allocator);
+
+    // Should parse cleanly into a single struct decl with two fields
+    // and two methods. The associated const is currently skip-parsed
+    // (mirrors enum-body / pre-existing struct-body behavior) so it
+    // does not appear in the AST yet.
+    try testing.expectEqual(@as(usize, 1), program.statements.len);
+    const stmt = program.statements[0];
+    try testing.expect(stmt == .StructDecl);
+    const struct_decl = stmt.StructDecl;
+    try testing.expectEqualStrings("Foo", struct_decl.name);
+    try testing.expectEqual(@as(usize, 2), struct_decl.fields.len);
+    try testing.expectEqualStrings("field_a", struct_decl.fields[0].name);
+    try testing.expectEqualStrings("field_b", struct_decl.fields[1].name);
+    try testing.expectEqual(@as(usize, 2), struct_decl.methods.len);
+    try testing.expectEqualStrings("bar", struct_decl.methods[0].name);
+    try testing.expectEqualStrings("baz", struct_decl.methods[1].name);
+}
+
+test "parser: enum body accepts /// doc-comments between items" {
+    // NOTE: associated `const` inside an enum body has a separate
+    // parser limitation that's out of scope for #55 — we exercise
+    // doc-comments before/between variants and before a method only.
+    const src =
+        \\pub const Color = enum(u8) {
+        \\    /// red channel
+        \\    RED,
+        \\    /// green channel
+        \\    GREEN,
+        \\
+        \\    /// doc before a method
+        \\    pub fn is_warm(self: Color) bool {
+        \\        return self == .RED;
+        \\    }
+        \\}
+    ;
+    const program = try parseSource(testing.allocator, src);
+    defer program.deinit(testing.allocator);
+
+    try testing.expectEqual(@as(usize, 1), program.statements.len);
+    const stmt = program.statements[0];
+    try testing.expect(stmt == .EnumDecl);
+    const enum_decl = stmt.EnumDecl;
+    try testing.expectEqualStrings("Color", enum_decl.name);
+    try testing.expectEqual(@as(usize, 2), enum_decl.variants.len);
+    try testing.expectEqualStrings("RED", enum_decl.variants[0].name);
+    try testing.expectEqualStrings("GREEN", enum_decl.variants[1].name);
+    try testing.expectEqual(@as(usize, 1), enum_decl.methods.len);
+    try testing.expectEqualStrings("is_warm", enum_decl.methods[0].name);
+}
+
+test "parser: struct without doc-comments still parses identically (regression)" {
+    const src =
+        \\pub const Bar = struct {
+        \\    a: u32,
+        \\    b: u32,
+        \\
+        \\    pub fn sum(self: *Bar) u32 {
+        \\        return self.a + self.b;
+        \\    }
+        \\}
+    ;
+    const program = try parseSource(testing.allocator, src);
+    defer program.deinit(testing.allocator);
+
+    try testing.expectEqual(@as(usize, 1), program.statements.len);
+    const struct_decl = program.statements[0].StructDecl;
+    try testing.expectEqualStrings("Bar", struct_decl.name);
+    try testing.expectEqual(@as(usize, 2), struct_decl.fields.len);
+    try testing.expectEqual(@as(usize, 1), struct_decl.methods.len);
+    try testing.expectEqualStrings("sum", struct_decl.methods[0].name);
+}
+
 test "parser: complex expression" {
     const program = try parseSource(testing.allocator, "(x + y) * z >= 100");
     defer program.deinit(testing.allocator);

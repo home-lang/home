@@ -1730,6 +1730,18 @@ pub const Parser = struct {
             // advancing). Bailing with an error is preferable to a
             // wedged compiler.
             const iter_start = self.current;
+
+            // Doc-comments (`///`) inside the body. Allowed before any
+            // item: first field, between fields, before a method,
+            // before nested const/type. We consume any contiguous run
+            // of doc-comment tokens as no-ops and continue. Issue #55.
+            // (Future work: attach the captured text to the next AST
+            // item for documentation generation.)
+            if (self.check(.DocComment)) {
+                while (self.check(.DocComment)) : (_ = self.advance()) {}
+                continue;
+            }
+
             // Look-ahead for member modifiers: `pub fn`, `inline fn`,
             // `pub inline fn`, `inline pub fn`. Only consume them when
             // the next non-modifier token introduces a recognized
@@ -2149,6 +2161,16 @@ pub const Parser = struct {
 
         while (!self.check(.RightBrace) and !self.isAtEnd()) {
             const iter_start = self.current;
+
+            // Doc-comments (`///`) inside the body. Allowed before any
+            // item: first variant, between variants, before a method,
+            // before associated const. Consume contiguous runs as
+            // no-ops and continue. Issue #55. Mirrors the struct-body
+            // handling.
+            if (self.check(.DocComment)) {
+                while (self.check(.DocComment)) : (_ = self.advance()) {}
+                continue;
+            }
 
             // Look-ahead for member modifiers: `pub fn`, `inline fn`,
             // `pub inline fn`, `inline pub fn`, `pub const`. Only
