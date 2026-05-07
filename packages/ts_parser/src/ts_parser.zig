@@ -908,6 +908,9 @@ pub const Parser = struct {
         if (self.peek().kind == .string_literal) {
             // bare side-effect import: `import "module";`
             const mod_tok = self.advance();
+            // Optional import attributes: `with { type: "json" }` (TS 5.3+)
+            // or legacy `assert { type: "json" }` — parsed and discarded.
+            try self.skipImportAttributesClause();
             try self.consumeStatementTerminator();
             const mod_id = try self.internStringLiteral(mod_tok);
             return try self.builder.addImport(
@@ -966,6 +969,9 @@ pub const Parser = struct {
 
         _ = try self.expect(.kw_from, "'from' in import declaration");
         const mod_tok = try self.expect(.string_literal, "module specifier");
+        // Optional import attributes: `with { type: "json" }` (TS 5.3+)
+        // or legacy `assert { type: "json" }` — parsed and discarded.
+        try self.skipImportAttributesClause();
         try self.consumeStatementTerminator();
         const mod_id = try self.internStringLiteral(mod_tok);
         const end_pos = self.tokens[self.cursor - 1].span.end;
@@ -977,6 +983,51 @@ pub const Parser = struct {
             named.items,
             is_type_only,
         );
+    }
+
+    /// Optional import-attributes clause appearing after a module
+    /// specifier or in a re-export's `from`. Accepts:
+    ///   * `with { type: "json", name: "foo" }` — TS 5.3+ syntax
+    ///   * `assert { type: "json" }` — legacy (deprecated) syntax
+    /// Both are parsed for compatibility and discarded — v0 does not
+    /// store the attribute payload on the HIR import node.
+    fn skipImportAttributesClause(self: *Parser) ParseError!void {
+        const k = self.peek().kind;
+        const is_with = k == .kw_with;
+        const is_assert = k == .identifier and std.mem.eql(
+            u8,
+            self.source[self.peek().span.start..self.peek().span.end],
+            "assert",
+        );
+        if (!is_with and !is_assert) return;
+        // Only treat the keyword as an attributes clause when followed
+        // by `{` — otherwise `with` is reserved for `with` statements
+        // (we just leave it for whatever surrounding context handles).
+        if (self.peekAt(1).kind != .open_brace) return;
+        _ = self.advance(); // `with` / `assert`
+        _ = try self.expect(.open_brace, "'{' to start import attributes");
+        while (self.peek().kind != .close_brace and self.peek().kind != .eof) {
+            // key: identifier-like or string literal
+            const key_kind = self.peek().kind;
+            if (key_kind == .string_literal) {
+                _ = self.advance();
+            } else if (key_kind == .identifier or key_kind.isKeyword()) {
+                _ = self.advance();
+            } else {
+                return error.UnexpectedToken;
+            }
+            _ = try self.expect(.colon, "':' in import attribute");
+            // value: string literal per spec; accept identifier too for
+            // forward-compatibility — discarded either way.
+            const val_kind = self.peek().kind;
+            if (val_kind == .string_literal or val_kind == .identifier) {
+                _ = self.advance();
+            } else {
+                return error.UnexpectedToken;
+            }
+            if (!self.match(.comma)) break;
+        }
+        _ = try self.expect(.close_brace, "'}' to close import attributes");
     }
 
     fn parseExportDeclaration(self: *Parser) ParseError!NodeId {
@@ -3768,6 +3819,35 @@ test "parser: bare side-effect import" {
     const imp = hir_mod.importOf(&s.hir, top);
     try T.expectEqual(hir_mod.none_node_id, imp.default_binding);
     try T.expectEqual(hir_mod.none_node_id, imp.namespace_binding);
+}
+
+test "parser: import attributes with-clause" {
+    var s = try newTestSetup("import x from \"./a.json\" with { type: \"json\" };");
+    defer destroyTestSetup(s);
+    const root = try s.parser.parseSourceFile();
+    const top = hir_mod.blockStmts(&s.hir, root)[0];
+    try T.expectEqual(hir_mod.NodeKind.import_decl, s.hir.kindOf(top));
+    const imp = hir_mod.importOf(&s.hir, top);
+    try T.expectEqualStrings("./a.json", s.interner.get(imp.module));
+}
+
+test "parser: import attributes assert-clause (legacy)" {
+    var s = try newTestSetup("import x from \"./a.json\" assert { type: \"json\" };");
+    defer destroyTestSetup(s);
+    const root = try s.parser.parseSourceFile();
+    const top = hir_mod.blockStmts(&s.hir, root)[0];
+    try T.expectEqual(hir_mod.NodeKind.import_decl, s.hir.kindOf(top));
+    const imp = hir_mod.importOf(&s.hir, top);
+    try T.expectEqualStrings("./a.json", s.interner.get(imp.module));
+}
+
+test "parser: dynamic import with attributes argument" {
+    var s = try newTestSetup("const p = import(\"./a.json\", { with: { type: \"json\" } });");
+    defer destroyTestSetup(s);
+    const root = try s.parser.parseSourceFile();
+    // Just assert it parses without error — the dynamic-import call
+    // shape is exercised here for compatibility only.
+    _ = root;
 }
 
 test "parser: export default" {
