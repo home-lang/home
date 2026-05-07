@@ -117,6 +117,9 @@ pub const Method = enum {
     text_document_prepare_call_hierarchy,
     call_hierarchy_incoming_calls,
     call_hierarchy_outgoing_calls,
+    text_document_prepare_type_hierarchy,
+    type_hierarchy_supertypes,
+    type_hierarchy_subtypes,
     text_document_completion,
     text_document_signature_help,
     text_document_publish_diagnostics,
@@ -162,6 +165,9 @@ pub const Method = enum {
             .{ "textDocument/prepareCallHierarchy", Method.text_document_prepare_call_hierarchy },
             .{ "callHierarchy/incomingCalls", Method.call_hierarchy_incoming_calls },
             .{ "callHierarchy/outgoingCalls", Method.call_hierarchy_outgoing_calls },
+            .{ "textDocument/prepareTypeHierarchy", Method.text_document_prepare_type_hierarchy },
+            .{ "typeHierarchy/supertypes", Method.type_hierarchy_supertypes },
+            .{ "typeHierarchy/subtypes", Method.type_hierarchy_subtypes },
             .{ "textDocument/completion", Method.text_document_completion },
             .{ "textDocument/signatureHelp", Method.text_document_signature_help },
             .{ "textDocument/publishDiagnostics", Method.text_document_publish_diagnostics },
@@ -253,6 +259,10 @@ pub const SUPPORTED_METHODS = &[_][]const u8{
     // Call hierarchy.
     "callHierarchy/incomingCalls",
     "callHierarchy/outgoingCalls",
+    // Type hierarchy.
+    "textDocument/prepareTypeHierarchy",
+    "typeHierarchy/supertypes",
+    "typeHierarchy/subtypes",
 };
 
 /// Parse the LSP framing protocol (Content-Length header followed
@@ -931,6 +941,142 @@ pub fn handleCallHierarchyOutgoingCalls(
     const items = try service.callHierarchyOutgoing(gpa, path, byte_pos);
     defer gpa.free(items);
     const rendered = try renderCallHierarchyResult(gpa, items, "to");
+    defer gpa.free(rendered);
+    return encodeResponse(gpa, request_id, rendered);
+}
+
+/// Render a single `ts_lsp.TypeHierarchyItem` as an LSP
+/// `TypeHierarchyItem` JSON object. We use the declaration span for
+/// both `range` and `selectionRange`.
+fn writeTypeHierarchyItem(
+    buf: *std.ArrayListUnmanaged(u8),
+    gpa: std.mem.Allocator,
+    item: ts_lsp.TypeHierarchyItem,
+) !void {
+    try buf.appendSlice(gpa, "{\"name\":\"");
+    try writeJsonStringContents(buf, gpa, item.name);
+    try buf.appendSlice(gpa, "\",\"kind\":");
+    var nbuf: [4]u8 = undefined;
+    try buf.appendSlice(gpa, try std.fmt.bufPrint(&nbuf, "{d}", .{lspSymbolKind(item.kind)}));
+    try buf.appendSlice(gpa, ",\"uri\":\"file://");
+    try writeJsonStringContents(buf, gpa, item.span.file);
+    try buf.appendSlice(gpa, "\",\"range\":");
+    try writeRange(buf, gpa, item.span);
+    try buf.appendSlice(gpa, ",\"selectionRange\":");
+    try writeRange(buf, gpa, item.span);
+    try buf.append(gpa, '}');
+}
+
+/// Render a `[]ts_lsp.TypeHierarchyItem` as a top-level JSON array
+/// of `TypeHierarchyItem` objects. Caller owns the returned slice.
+fn renderTypeHierarchyResult(
+    gpa: std.mem.Allocator,
+    items: []const ts_lsp.TypeHierarchyItem,
+) ![]u8 {
+    var buf: std.ArrayListUnmanaged(u8) = .empty;
+    errdefer buf.deinit(gpa);
+    try buf.append(gpa, '[');
+    for (items, 0..) |it, i| {
+        if (i > 0) try buf.append(gpa, ',');
+        try writeTypeHierarchyItem(&buf, gpa, it);
+    }
+    try buf.append(gpa, ']');
+    return buf.toOwnedSlice(gpa);
+}
+
+/// Pull a `TypeHierarchyItem` (name, uri, range.start) back out of
+/// a `params.item` JSON object so supertypes/subtypes handlers can
+/// reconstruct the cursor seed sent in the prior prepare round.
+fn parseTypeHierarchyItemFromParams(
+    params_json: []const u8,
+) ?ts_lsp.TypeHierarchyItem {
+    const name = findJsonStringField(params_json, "name") orelse return null;
+    const uri = findJsonStringField(params_json, "uri") orelse return null;
+    const line = findJsonIntField(params_json, "line") orelse return null;
+    const character = findJsonIntField(params_json, "character") orelse return null;
+    const path = uriToPath(uri);
+    const line_u: u32 = if (line < 0) 0 else @intCast(line);
+    const char_u: u32 = if (character < 0) 0 else @intCast(character);
+    return .{
+        .name = name,
+        .kind = .class,
+        .span = .{
+            .file = path,
+            .start_line = line_u + 1,
+            .start_col = char_u + 1,
+            .end_line = line_u + 1,
+            .end_col = char_u + 1,
+        },
+    };
+}
+
+/// Handle a `textDocument/prepareTypeHierarchy` JSON-RPC request:
+/// emit a single-element `TypeHierarchyItem[]` describing the
+/// class/interface under the cursor, or `null` if the cursor isn't
+/// inside a class/interface declaration. Caller owns the returned slice.
+pub fn handlePrepareTypeHierarchy(
+    service: *ts_lsp.Service,
+    gpa: std.mem.Allocator,
+    request_id: RequestId,
+    params_json: []const u8,
+) ![]u8 {
+    const uri = findJsonStringField(params_json, "uri") orelse return error.MissingUri;
+    const line = findJsonIntField(params_json, "line") orelse return error.MissingLine;
+    const character = findJsonIntField(params_json, "character") orelse return error.MissingCharacter;
+    const path = uriToPath(uri);
+
+    const file_id = service.program.lookupPath(path) orelse {
+        return encodeResponse(gpa, request_id, "null");
+    };
+    const f = service.program.fileById(file_id);
+    const line_u: u32 = if (line < 0) 0 else @intCast(line);
+    const char_u: u32 = if (character < 0) 0 else @intCast(character);
+    const byte_pos = lineColToByte(f.source, line_u, char_u);
+
+    const item = service.prepareTypeHierarchy(path, byte_pos) orelse {
+        return encodeResponse(gpa, request_id, "null");
+    };
+    const items = [_]ts_lsp.TypeHierarchyItem{item};
+    const rendered = try renderTypeHierarchyResult(gpa, &items);
+    defer gpa.free(rendered);
+    return encodeResponse(gpa, request_id, rendered);
+}
+
+/// Handle a `typeHierarchy/supertypes` JSON-RPC request. The editor's
+/// prior `prepareTypeHierarchy` round produced a `TypeHierarchyItem`
+/// whose `name` + URI we pull from `params.item` to re-seed the
+/// service. Returns a `TypeHierarchyItem[]`. Caller owns the slice.
+pub fn handleTypeHierarchySupertypes(
+    service: *ts_lsp.Service,
+    gpa: std.mem.Allocator,
+    request_id: RequestId,
+    params_json: []const u8,
+) ![]u8 {
+    const item = parseTypeHierarchyItemFromParams(params_json) orelse {
+        return encodeResponse(gpa, request_id, "[]");
+    };
+    const items = try service.typeHierarchySupertypes(gpa, item);
+    defer gpa.free(items);
+    const rendered = try renderTypeHierarchyResult(gpa, items);
+    defer gpa.free(rendered);
+    return encodeResponse(gpa, request_id, rendered);
+}
+
+/// Handle a `typeHierarchy/subtypes` JSON-RPC request. Mirrors
+/// `handleTypeHierarchySupertypes` but routes to
+/// `Service.typeHierarchySubtypes`. Caller owns the returned slice.
+pub fn handleTypeHierarchySubtypes(
+    service: *ts_lsp.Service,
+    gpa: std.mem.Allocator,
+    request_id: RequestId,
+    params_json: []const u8,
+) ![]u8 {
+    const item = parseTypeHierarchyItemFromParams(params_json) orelse {
+        return encodeResponse(gpa, request_id, "[]");
+    };
+    const items = try service.typeHierarchySubtypes(gpa, item);
+    defer gpa.free(items);
+    const rendered = try renderTypeHierarchyResult(gpa, items);
     defer gpa.free(rendered);
     return encodeResponse(gpa, request_id, rendered);
 }
@@ -2540,7 +2686,7 @@ pub fn renderInitializeCapabilities(gpa: std.mem.Allocator) ![]u8 {
     var buf: std.ArrayListUnmanaged(u8) = .empty;
     errdefer buf.deinit(gpa);
     try buf.appendSlice(gpa,
-        \\{"capabilities":{"textDocumentSync":1,"hoverProvider":true,"definitionProvider":true,"referencesProvider":true,"completionProvider":{"triggerCharacters":["."," "]},"documentSymbolProvider":true,"workspaceSymbolProvider":true,"renameProvider":{"prepareProvider":true},"codeActionProvider":true,"executeCommandProvider":{"commands":["home.organizeImports","home.applyCodeAction"]},"semanticTokensProvider":{"legend":{"tokenTypes":["variable","parameter","function","method","class","interface","type","enum","property","keyword","string","number","operator","comment"],"tokenModifiers":[]},"full":true,"range":true},"signatureHelpProvider":{"triggerCharacters":["(",","]},"documentHighlightProvider":false,"documentFormattingProvider":true,"foldingRangeProvider":true,"selectionRangeProvider":true,"monikerProvider":true},"serverInfo":{"name":"home-lsp","version":"0.1.0","supportedMethods":[
+        \\{"capabilities":{"textDocumentSync":1,"hoverProvider":true,"definitionProvider":true,"referencesProvider":true,"completionProvider":{"triggerCharacters":["."," "]},"documentSymbolProvider":true,"workspaceSymbolProvider":true,"renameProvider":{"prepareProvider":true},"codeActionProvider":true,"executeCommandProvider":{"commands":["home.organizeImports","home.applyCodeAction"]},"semanticTokensProvider":{"legend":{"tokenTypes":["variable","parameter","function","method","class","interface","type","enum","property","keyword","string","number","operator","comment"],"tokenModifiers":[]},"full":true,"range":true},"signatureHelpProvider":{"triggerCharacters":["(",","]},"documentHighlightProvider":false,"documentFormattingProvider":true,"foldingRangeProvider":true,"selectionRangeProvider":true,"monikerProvider":true,"typeHierarchyProvider":true},"serverInfo":{"name":"home-lsp","version":"0.1.0","supportedMethods":[
     );
     for (SUPPORTED_METHODS, 0..) |m, i| {
         if (i != 0) try buf.append(gpa, ',');
@@ -2748,6 +2894,18 @@ pub fn dispatchRequest(
         .call_hierarchy_outgoing_calls => {
             if (is_notification) return &.{};
             return try handleCallHierarchyOutgoingCalls(service, gpa, id, params);
+        },
+        .text_document_prepare_type_hierarchy => {
+            if (is_notification) return &.{};
+            return try handlePrepareTypeHierarchy(service, gpa, id, params);
+        },
+        .type_hierarchy_supertypes => {
+            if (is_notification) return &.{};
+            return try handleTypeHierarchySupertypes(service, gpa, id, params);
+        },
+        .type_hierarchy_subtypes => {
+            if (is_notification) return &.{};
+            return try handleTypeHierarchySubtypes(service, gpa, id, params);
         },
         .text_document_completion => {
             if (is_notification) return &.{};
@@ -4029,6 +4187,77 @@ test "handleCallHierarchyIncomingCalls: returns wrapped from-items" {
     try T.expect(std.mem.indexOf(u8, out, "\"id\":231") != null);
     try T.expect(std.mem.indexOf(u8, out, "\"from\":{\"name\":\"caller_a\"") != null);
     try T.expect(std.mem.indexOf(u8, out, "\"fromRanges\":[]") != null);
+}
+
+test "handlePrepareTypeHierarchy: returns single-item array for class under cursor" {
+    var vfs = ts_resolver.VirtualFs.init(T.allocator);
+    defer vfs.deinit();
+    var resolver = ts_resolver.Resolver.init(T.allocator, vfs.fs(), .{});
+    defer resolver.deinit();
+    var program = ts_program.Program.init(T.allocator, &resolver);
+    defer program.deinit();
+
+    const src =
+        "interface Animal { name: string; }\n" ++
+        "class Dog implements Animal { name: string = ''; }\n";
+    _ = try program.add("/main.ts", src);
+    try program.compileAll(.{});
+    var svc = ts_lsp.Service.init(T.allocator, &program);
+
+    // Cursor on `Dog` class name (line 1, char 6).
+    const body =
+        \\{"jsonrpc":"2.0","id":331,"method":"textDocument/prepareTypeHierarchy","params":{"textDocument":{"uri":"file:///main.ts"},"position":{"line":1,"character":6}}}
+    ;
+    const out = try handlePrepareTypeHierarchy(&svc, T.allocator, .{ .integer = 331 }, body);
+    defer T.allocator.free(out);
+    try T.expect(std.mem.indexOf(u8, out, "\"id\":331") != null);
+    try T.expect(std.mem.indexOf(u8, out, "\"result\":[{\"name\":\"Dog\"") != null);
+    try T.expect(std.mem.indexOf(u8, out, "\"kind\":5") != null); // SymbolKind.class
+    try T.expect(std.mem.indexOf(u8, out, "\"selectionRange\":") != null);
+
+    // Cursor not on any class/interface -> null.
+    const empty =
+        \\{"jsonrpc":"2.0","id":332,"method":"textDocument/prepareTypeHierarchy","params":{"textDocument":{"uri":"file:///main.ts"},"position":{"line":99,"character":0}}}
+    ;
+    const out2 = try handlePrepareTypeHierarchy(&svc, T.allocator, .{ .integer = 332 }, empty);
+    defer T.allocator.free(out2);
+    try T.expect(std.mem.indexOf(u8, out2, "\"result\":null") != null);
+}
+
+test "handleTypeHierarchySupertypes/subtypes: returns array response shape" {
+    var vfs = ts_resolver.VirtualFs.init(T.allocator);
+    defer vfs.deinit();
+    var resolver = ts_resolver.Resolver.init(T.allocator, vfs.fs(), .{});
+    defer resolver.deinit();
+    var program = ts_program.Program.init(T.allocator, &resolver);
+    defer program.deinit();
+
+    const src =
+        "interface Animal { name: string; }\n" ++
+        "class Dog implements Animal { name: string = ''; }\n";
+    _ = try program.add("/main.ts", src);
+    try program.compileAll(.{});
+    var svc = ts_lsp.Service.init(T.allocator, &program);
+
+    // Supertypes of `Dog` -> includes `Animal`.
+    const sup_body =
+        \\{"jsonrpc":"2.0","id":341,"method":"typeHierarchy/supertypes","params":{"item":{"name":"Dog","kind":5,"uri":"file:///main.ts","range":{"start":{"line":1,"character":6},"end":{"line":1,"character":9}},"selectionRange":{"start":{"line":1,"character":6},"end":{"line":1,"character":9}}}}}
+    ;
+    const sup_out = try handleTypeHierarchySupertypes(&svc, T.allocator, .{ .integer = 341 }, sup_body);
+    defer T.allocator.free(sup_out);
+    try T.expect(std.mem.indexOf(u8, sup_out, "\"id\":341") != null);
+    try T.expect(std.mem.indexOf(u8, sup_out, "\"result\":[") != null);
+    try T.expect(std.mem.indexOf(u8, sup_out, "\"name\":\"Animal\"") != null);
+
+    // Subtypes of `Animal` -> includes `Dog`.
+    const sub_body =
+        \\{"jsonrpc":"2.0","id":342,"method":"typeHierarchy/subtypes","params":{"item":{"name":"Animal","kind":11,"uri":"file:///main.ts","range":{"start":{"line":0,"character":10},"end":{"line":0,"character":16}},"selectionRange":{"start":{"line":0,"character":10},"end":{"line":0,"character":16}}}}}
+    ;
+    const sub_out = try handleTypeHierarchySubtypes(&svc, T.allocator, .{ .integer = 342 }, sub_body);
+    defer T.allocator.free(sub_out);
+    try T.expect(std.mem.indexOf(u8, sub_out, "\"id\":342") != null);
+    try T.expect(std.mem.indexOf(u8, sub_out, "\"result\":[") != null);
+    try T.expect(std.mem.indexOf(u8, sub_out, "\"name\":\"Dog\"") != null);
 }
 
 test "handleCallHierarchyOutgoingCalls: returns wrapped to-items" {

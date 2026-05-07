@@ -315,6 +315,16 @@ pub const CallHierarchyItem = struct {
     span: Span,
 };
 
+/// LSP `textDocument/prepareTypeHierarchy` element. Represents one
+/// supertype (parent) or subtype (child) of the class/interface under
+/// the cursor. The `span` points at the declaration, mirroring LSP's
+/// `TypeHierarchyItem.range` and `selectionRange`.
+pub const TypeHierarchyItem = struct {
+    name: []const u8,
+    kind: SymbolInfo.SymbolKind,
+    span: Span,
+};
+
 /// LSP `textDocument/codeLens` payload. Each lens is rendered inline
 /// above a top-level declaration with a short title (e.g.
 /// `"5 references"`). `command` is the LSP command id the editor
@@ -2075,6 +2085,132 @@ pub const Service = struct {
         return out.toOwnedSlice(gpa);
     }
 
+    /// LSP `textDocument/prepareTypeHierarchy`: return a single-item
+    /// `TypeHierarchyItem` describing the class or interface
+    /// declaration under the cursor, or `null` if the cursor doesn't
+    /// land on a class/interface.
+    pub fn prepareTypeHierarchy(
+        self: *Service,
+        file_path: []const u8,
+        byte_pos: u32,
+    ) ?TypeHierarchyItem {
+        const file_id = self.program.lookupPath(file_path) orelse return null;
+        const f = self.program.fileById(file_id);
+        const c = f.compilation orelse return null;
+        const start = findInnermostNode(&c.hir, c.root, byte_pos) orelse return null;
+        const decl = enclosingClassOrInterface(&c.hir, start) orelse return null;
+        return describeTypeHierarchyItem(&c.hir, &c.interner, decl, f.source, f.path);
+    }
+
+    /// LSP `typeHierarchy/supertypes`: return one item per type the
+    /// class/interface under the cursor extends or implements.
+    pub fn typeHierarchySupertypes(
+        self: *Service,
+        gpa: std.mem.Allocator,
+        item: TypeHierarchyItem,
+    ) ![]TypeHierarchyItem {
+        var out: std.ArrayListUnmanaged(TypeHierarchyItem) = .empty;
+        errdefer out.deinit(gpa);
+
+        const file_id = self.program.lookupPath(item.span.file) orelse return out.toOwnedSlice(gpa);
+        const f = self.program.fileById(file_id);
+        const c = f.compilation orelse return out.toOwnedSlice(gpa);
+        const decl = locateDeclByName(&c.hir, &c.interner, item.name) orelse return out.toOwnedSlice(gpa);
+
+        const dk = c.hir.kindOf(decl);
+        if (dk == .class_decl) {
+            const cls = hir_mod.classOf(&c.hir, decl);
+            if (cls.extends != hir_mod.none_node_id and c.hir.kindOf(cls.extends) == .identifier) {
+                const eid = hir_mod.identifierOf(&c.hir, cls.extends);
+                if (resolveSupertypeDecl(c, eid.name)) |parent| {
+                    if (describeTypeHierarchyItem(&c.hir, &c.interner, parent, f.source, f.path)) |it| {
+                        try out.append(gpa, it);
+                    }
+                }
+            }
+            const implements = c.hir.childSlice(cls.implements_start, cls.implements_len);
+            for (implements) |impl| {
+                if (c.hir.kindOf(impl) != .type_ref) continue;
+                const tref = hir_mod.typeRefOf(&c.hir, impl);
+                if (resolveSupertypeDecl(c, tref.name)) |parent| {
+                    if (describeTypeHierarchyItem(&c.hir, &c.interner, parent, f.source, f.path)) |it| {
+                        if (!containsTypeHierarchyItem(out.items, it)) try out.append(gpa, it);
+                    }
+                }
+            }
+        } else if (dk == .interface_decl) {
+            const iface = hir_mod.interfaceOf(&c.hir, decl);
+            const extends = c.hir.childSlice(iface.extends_start, iface.extends_len);
+            for (extends) |ext| {
+                if (c.hir.kindOf(ext) != .type_ref) continue;
+                const tref = hir_mod.typeRefOf(&c.hir, ext);
+                if (resolveSupertypeDecl(c, tref.name)) |parent| {
+                    if (describeTypeHierarchyItem(&c.hir, &c.interner, parent, f.source, f.path)) |it| {
+                        if (!containsTypeHierarchyItem(out.items, it)) try out.append(gpa, it);
+                    }
+                }
+            }
+        }
+        return out.toOwnedSlice(gpa);
+    }
+
+    /// LSP `typeHierarchy/subtypes`: return one item per class or
+    /// interface in the program that extends or implements `item`.
+    pub fn typeHierarchySubtypes(
+        self: *Service,
+        gpa: std.mem.Allocator,
+        item: TypeHierarchyItem,
+    ) ![]TypeHierarchyItem {
+        var out: std.ArrayListUnmanaged(TypeHierarchyItem) = .empty;
+        errdefer out.deinit(gpa);
+
+        const target_name = item.name;
+        for (self.program.files.items) |pf| {
+            const pc = pf.compilation orelse continue;
+            const local_id = pc.interner.lookup(target_name) orelse continue;
+            var i: hir_mod.NodeId = 1;
+            while (i < pc.hir.nodeCount()) : (i += 1) {
+                const k = pc.hir.kindOf(i);
+                var matches = false;
+                if (k == .class_decl) {
+                    const cls = hir_mod.classOf(&pc.hir, i);
+                    if (cls.extends != hir_mod.none_node_id and pc.hir.kindOf(cls.extends) == .identifier) {
+                        const eid = hir_mod.identifierOf(&pc.hir, cls.extends);
+                        if (eid.name == local_id) matches = true;
+                    }
+                    if (!matches) {
+                        const implements = pc.hir.childSlice(cls.implements_start, cls.implements_len);
+                        for (implements) |impl| {
+                            if (pc.hir.kindOf(impl) != .type_ref) continue;
+                            const tref = hir_mod.typeRefOf(&pc.hir, impl);
+                            if (tref.name == local_id) {
+                                matches = true;
+                                break;
+                            }
+                        }
+                    }
+                } else if (k == .interface_decl) {
+                    const iface = hir_mod.interfaceOf(&pc.hir, i);
+                    const extends = pc.hir.childSlice(iface.extends_start, iface.extends_len);
+                    for (extends) |ext| {
+                        if (pc.hir.kindOf(ext) != .type_ref) continue;
+                        const tref = hir_mod.typeRefOf(&pc.hir, ext);
+                        if (tref.name == local_id) {
+                            matches = true;
+                            break;
+                        }
+                    }
+                } else continue;
+
+                if (!matches) continue;
+                const it = describeTypeHierarchyItem(&pc.hir, &pc.interner, i, pf.source, pf.path) orelse continue;
+                if (containsTypeHierarchyItem(out.items, it)) continue;
+                try out.append(gpa, it);
+            }
+        }
+        return out.toOwnedSlice(gpa);
+    }
+
     /// Diagnostics for `file`. Forwards from the per-file
     /// Compilation and renders them in tsc-default format.
     pub fn diagnostics(self: *Service, gpa: std.mem.Allocator, file_path: []const u8) ![]const u8 {
@@ -2758,6 +2894,109 @@ fn containsCallHierarchyItem(items: []const CallHierarchyItem, item: CallHierarc
         }
     }
     return false;
+}
+
+/// Walk up the parent chain from `start` until we find a class_decl
+/// or interface_decl, or null. Used by type-hierarchy.
+fn enclosingClassOrInterface(hir: *const hir_mod.Hir, start: hir_mod.NodeId) ?hir_mod.NodeId {
+    var cur = start;
+    while (cur != hir_mod.none_node_id) {
+        const k = hir.kindOf(cur);
+        if (k == .class_decl or k == .interface_decl) return cur;
+        const p = hir.parentOf(cur);
+        if (p == cur) return null;
+        cur = p;
+    }
+    return null;
+}
+
+/// Build a `TypeHierarchyItem` from a class_decl or interface_decl
+/// node. Returns null when the declaration is anonymous.
+fn describeTypeHierarchyItem(
+    hir: *const hir_mod.Hir,
+    sint: *const string_interner.Interner,
+    decl: hir_mod.NodeId,
+    source: []const u8,
+    file_path: []const u8,
+) ?TypeHierarchyItem {
+    const k = hir.kindOf(decl);
+    var name_node: hir_mod.NodeId = hir_mod.none_node_id;
+    var kind: SymbolInfo.SymbolKind = .class;
+    if (k == .class_decl) {
+        name_node = hir_mod.classOf(hir, decl).name;
+        kind = .class;
+    } else if (k == .interface_decl) {
+        name_node = hir_mod.interfaceOf(hir, decl).name;
+        kind = .interface;
+    } else return null;
+    if (name_node == hir_mod.none_node_id) return null;
+    if (hir.kindOf(name_node) != .identifier) return null;
+    const name_id = hir_mod.identifierOf(hir, name_node).name;
+    const span = hir.spanOf(decl);
+    const sp = ts_diagnostics.positionToLineCol(source, span.start);
+    const ep = ts_diagnostics.positionToLineCol(source, span.end);
+    return .{
+        .name = sint.get(name_id),
+        .kind = kind,
+        .span = .{
+            .file = file_path,
+            .start_line = sp.line,
+            .start_col = sp.col,
+            .end_line = ep.line,
+            .end_col = ep.col,
+        },
+    };
+}
+
+/// Linear de-dup helper for the type-hierarchy result list.
+fn containsTypeHierarchyItem(items: []const TypeHierarchyItem, item: TypeHierarchyItem) bool {
+    for (items) |it| {
+        if (std.mem.eql(u8, it.name, item.name) and std.mem.eql(u8, it.span.file, item.span.file)) {
+            return true;
+        }
+    }
+    return false;
+}
+
+/// Locate a class_decl or interface_decl in `hir` whose name matches
+/// `target_name`. Returns the first match, or null.
+fn locateDeclByName(
+    hir: *const hir_mod.Hir,
+    sint: *const string_interner.Interner,
+    target_name: []const u8,
+) ?hir_mod.NodeId {
+    const local_id = sint.lookup(target_name) orelse return null;
+    var i: hir_mod.NodeId = 1;
+    while (i < hir.nodeCount()) : (i += 1) {
+        const k = hir.kindOf(i);
+        var name_node: hir_mod.NodeId = hir_mod.none_node_id;
+        if (k == .class_decl) name_node = hir_mod.classOf(hir, i).name;
+        if (k == .interface_decl) name_node = hir_mod.interfaceOf(hir, i).name;
+        if (name_node == hir_mod.none_node_id) continue;
+        if (hir.kindOf(name_node) != .identifier) continue;
+        if (hir_mod.identifierOf(hir, name_node).name == local_id) return i;
+    }
+    return null;
+}
+
+/// Resolve a name to a class_decl or interface_decl declaration in
+/// the same compilation. Returns null when the name doesn't resolve.
+fn resolveSupertypeDecl(c: *ts_driver.Compilation, name: string_interner.StringId) ?hir_mod.NodeId {
+    if (c.module.root.types.get(name)) |type_sym| {
+        if (type_sym.decls.items.len > 0) {
+            const decl = type_sym.decls.items[0];
+            const k = c.hir.kindOf(decl);
+            if (k == .interface_decl or k == .class_decl) return decl;
+        }
+    }
+    if (c.module.root.lookup(name)) |sym| {
+        if (sym.decls.items.len > 0) {
+            const decl = sym.decls.items[0];
+            const k = c.hir.kindOf(decl);
+            if (k == .class_decl or k == .interface_decl) return decl;
+        }
+    }
+    return null;
 }
 
 /// Walk the file's top-level statements and emit type-annotation
