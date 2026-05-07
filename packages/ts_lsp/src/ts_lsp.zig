@@ -1166,6 +1166,11 @@ pub const Service = struct {
     ///     `let`/`const`/`var` with no annotation but a well-defined
     ///     (non-`any`) inferred type, emits an insertion of
     ///     `: <rendered_type>` right after the binding's name.
+    ///   - "Add import for 'X'" — for each TS2304 ("Cannot find name")
+    ///     diagnostic, scans other files in the program for a top-level
+    ///     declaration matching the unresolved name and emits an
+    ///     insertion of `import { X } from "<path>";` at the top of
+    ///     the file. One quick-fix per matching file.
     pub fn codeActions(self: *Service, gpa: std.mem.Allocator, file_path: []const u8) ![]CodeAction {
         var actions: std.ArrayListUnmanaged(CodeAction) = .empty;
         errdefer actions.deinit(gpa);
@@ -1280,6 +1285,58 @@ pub const Service = struct {
                 .kind = .quick_fix,
                 .edits = edits,
             });
+        }
+
+        // ---- Add import for unresolved identifier (TS2304) ----------------
+        // For each "Cannot find name 'X'." diagnostic in this file,
+        // search every *other* file in the program for a top-level
+        // declaration named `X`. Each match becomes a quick-fix that
+        // inserts `import { X } from "<path>";\n` at the top of the
+        // file. Mirrors the auto-import-completion logic, but driven
+        // off the diagnostic stream rather than the cursor position.
+        for (c.diagnostics.items) |d| {
+            if (d.code != ts_checker.check.TsCodes.cannot_find_name) continue;
+            const ident = parseCannotFindName(d.message) orelse continue;
+            for (self.program.files.items) |other| {
+                if (std.mem.eql(u8, other.path, file_path)) continue;
+                const oc = other.compilation orelse continue;
+                if (oc.hir.kindOf(oc.root) != .block_stmt) continue;
+                const ostmts = hir_mod.blockStmts(&oc.hir, oc.root);
+                var matched = false;
+                for (ostmts) |s| {
+                    const info = describeTopLevelSymbol(&oc.hir, &oc.interner, s, oc.source, other.path) orelse continue;
+                    if (!std.mem.eql(u8, info.name, ident)) continue;
+                    matched = true;
+                    break;
+                }
+                if (!matched) continue;
+                const new_text = try std.fmt.allocPrint(
+                    gpa,
+                    "import {{ {s} }} from \"{s}\";\n",
+                    .{ ident, other.path },
+                );
+                errdefer gpa.free(new_text);
+                const title = try std.fmt.allocPrint(
+                    gpa,
+                    "Add import for '{s}' from \"{s}\"",
+                    .{ ident, other.path },
+                );
+                errdefer gpa.free(title);
+                var edits = try gpa.alloc(TextEdit, 1);
+                edits[0] = .{
+                    .file = f.path,
+                    .start_line = 0,
+                    .start_col = 0,
+                    .end_line = 0,
+                    .end_col = 0,
+                    .new_text = new_text,
+                };
+                try actions.append(gpa, .{
+                    .title = title,
+                    .kind = .quick_fix,
+                    .edits = edits,
+                });
+            }
         }
 
         return actions.toOwnedSlice(gpa);
@@ -2241,6 +2298,21 @@ fn collectParameterNameHints(
             });
         }
     }
+}
+
+/// Extract the identifier from a TS2304 diagnostic message. The
+/// checker formats these as `Cannot find name 'X'.` — we slice the
+/// quoted span so the codeAction layer can search for a matching
+/// export. Returns null when the message doesn't fit the expected
+/// shape (so future variants don't crash auto-import).
+fn parseCannotFindName(message: []const u8) ?[]const u8 {
+    const open = std.mem.indexOfScalar(u8, message, '\'') orelse return null;
+    const after = open + 1;
+    if (after >= message.len) return null;
+    const close_rel = std.mem.indexOfScalar(u8, message[after..], '\'') orelse return null;
+    const close = after + close_rel;
+    if (close <= after) return null;
+    return message[after..close];
 }
 
 fn describeTopLevelSymbol(
@@ -3782,6 +3854,45 @@ test "Service: codeActions adds explicit type annotation for inferred lets" {
     const e = actions[0].edits[0];
     try T.expectEqual(e.start_line, e.end_line);
     try T.expectEqual(e.start_col, e.end_col);
+}
+
+test "Service: codeActions surfaces add-import quick-fix for unresolved identifier" {
+    var vfs = ts_resolver.VirtualFs.init(T.allocator);
+    defer vfs.deinit();
+    var resolver = ts_resolver.Resolver.init(T.allocator, vfs.fs(), .{});
+    defer resolver.deinit();
+    var program = ts_program.Program.init(T.allocator, &resolver);
+    defer program.deinit();
+
+    _ = try program.add("/lib.ts", "export function foo() { }");
+    _ = try program.add("/main.ts", "foo();");
+    try program.compileAll(.{});
+
+    var svc = Service.init(T.allocator, &program);
+    const actions = try svc.codeActions(T.allocator, "/main.ts");
+    defer {
+        for (actions) |a| {
+            if (a.kind == .quick_fix) T.allocator.free(a.title);
+            for (a.edits) |e| T.allocator.free(e.new_text);
+            T.allocator.free(a.edits);
+        }
+        T.allocator.free(actions);
+    }
+
+    var saw_add_import = false;
+    for (actions) |a| {
+        if (a.kind != .quick_fix) continue;
+        if (std.mem.indexOf(u8, a.title, "Add import for 'foo'") == null) continue;
+        saw_add_import = true;
+        try T.expectEqual(@as(usize, 1), a.edits.len);
+        try T.expectEqualStrings("/main.ts", a.edits[0].file);
+        try T.expectEqualStrings("import { foo } from \"/lib.ts\";\n", a.edits[0].new_text);
+        try T.expectEqual(@as(u32, 0), a.edits[0].start_line);
+        try T.expectEqual(@as(u32, 0), a.edits[0].start_col);
+        try T.expectEqual(@as(u32, 0), a.edits[0].end_line);
+        try T.expectEqual(@as(u32, 0), a.edits[0].end_col);
+    }
+    try T.expect(saw_add_import);
 }
 
 test "Service: formatDocument returns a TextEdit list (no-op stub)" {
