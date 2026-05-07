@@ -2166,6 +2166,22 @@ pub const Checker = struct {
         var concrete_names: std.AutoHashMapUnmanaged(hir_mod.StringId, void) = .empty;
         defer concrete_names.deinit(self.gpa);
 
+        // Pre-scan for accessor pairs: a member name with both a
+        // `get` and a `set` accessor is a regular read+write property.
+        // A getter alone is `readonly`. Track which names have a
+        // setter so we can clear readonly when the getter lands.
+        var setter_names: std.AutoHashMapUnmanaged(hir_mod.StringId, void) = .empty;
+        defer setter_names.deinit(self.gpa);
+        for (members) |m| {
+            const k = self.hir.kindOf(m);
+            if (k != .fn_decl and k != .fn_expr and k != .arrow_fn) continue;
+            const fp = hir_mod.fnDeclOf(self.hir, m);
+            if (!fp.flags.is_setter) continue;
+            if (fp.name == hir_mod.none_node_id or self.hir.kindOf(fp.name) != .identifier) continue;
+            const nid = hir_mod.identifierOf(self.hir, fp.name).name;
+            try setter_names.put(self.gpa, nid, {});
+        }
+
         for (members) |m| {
             switch (self.hir.kindOf(m)) {
                 .fn_decl, .fn_expr, .arrow_fn => {
@@ -2182,6 +2198,41 @@ pub const Checker = struct {
                     const id = hir_mod.identifierOf(self.hir, fn_p.name);
                     if (fn_p.flags.is_private) try private_names.put(self.gpa, id.name, {});
                     if (fn_p.flags.is_protected) try protected_names.put(self.gpa, id.name, {});
+
+                    // Accessor (get/set): the property type is the
+                    // getter's return or the setter's first param.
+                    // `readonly` is true only if there is no sibling
+                    // setter for the same name. The first accessor
+                    // for a name appends the member; later sibling
+                    // accessors of either kind are folded by skipping.
+                    if (fn_p.flags.is_getter or fn_p.flags.is_setter) {
+                        try concrete_names.put(self.gpa, id.name, {});
+                        var already: bool = false;
+                        for (instance_members.items) |im| {
+                            if (im.name == id.name) {
+                                already = true;
+                                break;
+                            }
+                        }
+                        if (already) continue;
+                        const accessor_t: TypeId = blk: {
+                            if (fn_p.flags.is_getter) {
+                                break :blk self.interner.signatureReturn(sig) orelse types.Primitive.any;
+                            }
+                            const params = self.interner.signatureParams(sig);
+                            break :blk if (params.len > 0) params[0] else types.Primitive.any;
+                        };
+                        const has_setter = setter_names.contains(id.name);
+                        try instance_members.append(self.gpa, .{
+                            .name = id.name,
+                            .type = accessor_t,
+                            .is_optional = false,
+                            .is_readonly = !has_setter,
+                            .is_method = false,
+                        });
+                        continue;
+                    }
+
                     // v0 abstract-member heuristic: a method without
                     // a body inside an `abstract` class is treated as
                     // abstract. Methods with a body count as concrete
@@ -3108,12 +3159,51 @@ pub const Checker = struct {
                 // `T[K]` — resolve both sides through the narrow-aware
                 // path. If T is now an object type and K is a known
                 // string literal, return the matching member directly.
+                // If K is a union of string literals (typically from
+                // `keyof T`), distribute the indexed access over each
+                // member, yielding the union of value types.
                 const ia = hir_mod.indexedAccessTypeOf(self.hir, type_node);
                 const obj = try self.lowererLowerWithTypeParams(ia.object);
                 const idx = try self.lowererLowerWithTypeParams(ia.index);
                 const obj_flags = self.interner.pool.flagsOf(obj);
                 const idx_flags = self.interner.pool.flagsOf(idx);
-                if (obj_flags.is_object_type and idx_flags.is_literal and idx_flags.is_string) {
+                // Union check first: a union of string-literals also has
+                // `is_literal` and `is_string` set (flags OR'd from the
+                // members), so the literal-only branch below would
+                // otherwise mis-fire on a `keyof T`-shaped index.
+                if (obj_flags.is_object_type and idx_flags.is_union) {
+                    const idx_members = self.interner.unionMembers(idx);
+                    var vals: std.ArrayListUnmanaged(TypeId) = .empty;
+                    defer vals.deinit(self.gpa);
+                    var all_resolved = true;
+                    for (idx_members) |m| {
+                        const mf = self.interner.pool.flagsOf(m);
+                        if (!(mf.is_literal and mf.is_string)) {
+                            all_resolved = false;
+                            break;
+                        }
+                        const ml = self.interner.literalOf(m);
+                        switch (ml) {
+                            .string_lit => |sid| {
+                                if (self.interner.objectMember(obj, sid)) |member_t| {
+                                    try vals.append(self.gpa, member_t);
+                                } else {
+                                    all_resolved = false;
+                                    break;
+                                }
+                            },
+                            else => {
+                                all_resolved = false;
+                                break;
+                            },
+                        }
+                    }
+                    if (all_resolved and vals.items.len > 0) {
+                        if (vals.items.len == 1) return vals.items[0];
+                        return self.interner.internUnion(vals.items) catch return error.OutOfMemory;
+                    }
+                }
+                if (obj_flags.is_object_type and idx_flags.is_literal and idx_flags.is_string and !idx_flags.is_union) {
                     const lit = self.interner.literalOf(idx);
                     switch (lit) {
                         .string_lit => |sid| {
@@ -5051,6 +5141,21 @@ pub const Checker = struct {
                 return og;
             } else |_| {}
         }
+        if (std.mem.eql(u8, name_str, "Math")) {
+            if (lib.mathGlobal(&self.lib_cache, self.interner, self.string_interner, self.gpa, &self.rest_signatures)) |mg| {
+                return mg;
+            } else |_| {}
+        }
+        if (std.mem.eql(u8, name_str, "console")) {
+            if (lib.consoleGlobal(&self.lib_cache, self.interner, self.string_interner, self.gpa, &self.rest_signatures)) |cg| {
+                return cg;
+            } else |_| {}
+        }
+        if (std.mem.eql(u8, name_str, "Number")) {
+            if (lib.numberGlobal(&self.lib_cache, self.interner, self.string_interner)) |ng| {
+                return ng;
+            } else |_| {}
+        }
         if (std.mem.eql(u8, name_str, "NaN") or std.mem.eql(u8, name_str, "Infinity")) {
             return types.Primitive.number_t;
         }
@@ -5726,15 +5831,55 @@ pub const Checker = struct {
             return self.interner.internKeyof(new_operand) catch return t;
         }
         if (flags.is_indexed_access) {
-            // T[K] after substitution. If the substituted T is an
-            // object type and K resolves to a string literal, look
-            // up the matching member's type. Otherwise re-intern.
+            // T[K] after substitution. If K resolves to a union of
+            // string literals (typically `keyof T`), distribute the
+            // indexed access over each member. If K is a single
+            // string literal, look up the matching member's type.
+            // Otherwise re-intern.
             const ia = self.interner.pool.indexed_access_payloads.items[self.interner.pool.payloadOf(t)];
             const new_obj = try self.substituteType(ia.object, subs);
             const new_idx = try self.substituteType(ia.index, subs);
             const obj_flags = self.interner.pool.flagsOf(new_obj);
             const idx_flags = self.interner.pool.flagsOf(new_idx);
-            if (obj_flags.is_object_type and idx_flags.is_literal and idx_flags.is_string) {
+            // Union check first: a union of string-literals also has
+            // `is_literal` and `is_string` set (OR'd from members),
+            // so the single-literal branch would mis-fire.
+            if (obj_flags.is_object_type and idx_flags.is_union) {
+                const idx_members = self.interner.unionMembers(new_idx);
+                var vals: std.ArrayListUnmanaged(TypeId) = .empty;
+                defer vals.deinit(self.gpa);
+                var all_resolved = true;
+                for (idx_members) |m| {
+                    const mf = self.interner.pool.flagsOf(m);
+                    if (!(mf.is_literal and mf.is_string)) {
+                        all_resolved = false;
+                        break;
+                    }
+                    const ml = self.interner.literalOf(m);
+                    switch (ml) {
+                        .string_lit => |sid| {
+                            if (self.interner.objectMember(new_obj, sid)) |member_t| {
+                                vals.append(self.gpa, member_t) catch {
+                                    all_resolved = false;
+                                    break;
+                                };
+                            } else {
+                                all_resolved = false;
+                                break;
+                            }
+                        },
+                        else => {
+                            all_resolved = false;
+                            break;
+                        },
+                    }
+                }
+                if (all_resolved and vals.items.len > 0) {
+                    if (vals.items.len == 1) return vals.items[0];
+                    return self.interner.internUnion(vals.items) catch return t;
+                }
+            }
+            if (obj_flags.is_object_type and idx_flags.is_literal and idx_flags.is_string and !idx_flags.is_union) {
                 const lit = self.interner.literalOf(new_idx);
                 switch (lit) {
                     .string_lit => |sid| {
@@ -9576,6 +9721,43 @@ test "checker: lib — Object.keys is reachable as a member of `Object`" {
     }
 }
 
+test "checker: lib — `Math.PI` types as number" {
+    const b = try newBoundSetup("Math.PI;");
+    defer destroyBoundSetup(b);
+    try b.base.checker.checkSourceFile(b.base.root);
+    const stmts = hir_mod.blockStmts(&b.base.hir, b.base.root);
+    try T.expectEqual(types.Primitive.number_t, b.base.hir.typeOf(stmts[0]));
+    for (b.base.checker.diagnostics.items) |d| {
+        try T.expect(d.code != TsCodes.cannot_find_name);
+        try T.expect(d.code != TsCodes.property_does_not_exist);
+    }
+}
+
+test "checker: lib — `Math.floor(1.5)` types as number" {
+    const b = try newBoundSetup("Math.floor(1.5);");
+    defer destroyBoundSetup(b);
+    try b.base.checker.checkSourceFile(b.base.root);
+    const stmts = hir_mod.blockStmts(&b.base.hir, b.base.root);
+    try T.expectEqual(types.Primitive.number_t, b.base.hir.typeOf(stmts[0]));
+    for (b.base.checker.diagnostics.items) |d| {
+        try T.expect(d.code != TsCodes.property_does_not_exist);
+        try T.expect(d.code != TsCodes.expected_n_arguments);
+        try T.expect(d.code != TsCodes.argument_type_mismatch);
+    }
+}
+
+test "checker: lib — `console.log(\"hi\")` types as void" {
+    const b = try newBoundSetup("console.log(\"hi\");");
+    defer destroyBoundSetup(b);
+    try b.base.checker.checkSourceFile(b.base.root);
+    const stmts = hir_mod.blockStmts(&b.base.hir, b.base.root);
+    try T.expectEqual(types.Primitive.void_t, b.base.hir.typeOf(stmts[0]));
+    for (b.base.checker.diagnostics.items) |d| {
+        try T.expect(d.code != TsCodes.property_does_not_exist);
+        try T.expect(d.code != TsCodes.expected_n_arguments);
+    }
+}
+
 test "checker: assigning to an interface readonly property emits TS2540" {
     const s = try newSetup(
         \\interface P { readonly x: number }
@@ -10284,4 +10466,143 @@ test "checker: generic type-arg inference — callback `map<T,U>(arr: T[], fn: (
     try T.expect(s.checker.interner.pool.flagsOf(call_t).is_object_type);
     const elem = s.checker.interner.objectNumberIndex(call_t);
     try T.expectEqual(types.Primitive.string_t, elem);
+}
+
+test "checker: keyof T resolves to the literal union of property names" {
+    // `keyof { a: number; b: string }` should produce `"a" | "b"` —
+    // a two-member union of string-literal types. Pins the basic
+    // keyof-eval contract that downstream features (mapped types,
+    // `K extends keyof T` constraints, indexed access) depend on.
+    const s = try newSetup(
+        \\type T = { a: number; b: string };
+        \\type K = keyof T;
+    );
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+    const stmts = hir_mod.blockStmts(&s.hir, s.root);
+    const k_t = s.hir.typeOf(stmts[1]);
+    try T.expect(s.ti.pool.flagsOf(k_t).is_union);
+    const members = s.ti.unionMembers(k_t);
+    try T.expectEqual(@as(usize, 2), members.len);
+    var saw_a = false;
+    var saw_b = false;
+    for (members) |m| {
+        try T.expect(s.ti.pool.flagsOf(m).is_literal);
+        try T.expect(s.ti.pool.flagsOf(m).is_string);
+        const lit = s.ti.literalOf(m);
+        switch (lit) {
+            .string_lit => |sid| {
+                const text = s.sint.get(sid);
+                if (std.mem.eql(u8, text, "a")) saw_a = true;
+                if (std.mem.eql(u8, text, "b")) saw_b = true;
+            },
+            else => {},
+        }
+    }
+    try T.expect(saw_a);
+    try T.expect(saw_b);
+}
+
+test "checker: `K extends keyof T` parses and lowers without spurious diagnostics" {
+    // The classic `pick` shape: `function pick<T, K extends keyof T>(o: T, k: K): T[K]`.
+    // The constraint `K extends keyof T` and the indexed-access return
+    // type `T[K]` must both round-trip through the lowerer + checker
+    // without emitting spurious diagnostics. A call with an in-shape
+    // literal key must also type-check cleanly. Full out-of-shape
+    // rejection (TS2345 on a literal key not in `keyof T`) rides on
+    // call-site constraint propagation and is tracked as a follow-up;
+    // this test pins the well-formedness guarantee that downstream
+    // work can build on.
+    const decl_only = try newSetup(
+        \\function pick<T, K extends keyof T>(o: T, k: K): T[K] { return o[k]; }
+    );
+    defer destroySetup(decl_only);
+    try decl_only.checker.checkSourceFile(decl_only.root);
+    try T.expectEqual(@as(usize, 0), decl_only.checker.diagnostics.items.len);
+
+    const ok = try newSetup(
+        \\function pick<T, K extends keyof T>(o: T, k: K): T[K] { return o[k]; }
+        \\let p = pick({ a: 1, b: "x" }, "a");
+    );
+    defer destroySetup(ok);
+    try ok.checker.checkSourceFile(ok.root);
+    try T.expectEqual(@as(usize, 0), ok.checker.diagnostics.items.len);
+}
+
+test "checker: indexed access `T[keyof T]` distributes to the union of value types" {
+    // Given `T = { a: number; b: string }`, `keyof T` is `"a" | "b"`,
+    // and `T[keyof T]` should distribute the indexed access over the
+    // union of keys, producing `T["a"] | T["b"]` = `number | string`.
+    const s = try newSetup(
+        \\type T = { a: number; b: string };
+        \\type V = T[keyof T];
+    );
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+    const stmts = hir_mod.blockStmts(&s.hir, s.root);
+    const v_t = s.hir.typeOf(stmts[1]);
+    try T.expect(s.ti.pool.flagsOf(v_t).is_union);
+    const members = s.ti.unionMembers(v_t);
+    var saw_number = false;
+    var saw_string = false;
+    for (members) |m| {
+        if (m == types.Primitive.number_t) saw_number = true;
+        if (m == types.Primitive.string_t) saw_string = true;
+    }
+    try T.expect(saw_number);
+    try T.expect(saw_string);
+}
+
+test "checker: class getter — `c.x` reads at the getter's declared return type" {
+    // `get x(): number { ... }` defines a read-only property `x`
+    // typed as `number`. Reading `c.x` and assigning into a
+    // `number`-typed binding must typecheck cleanly.
+    const s = try newSetup(
+        \\class C { get x(): number { return 1; } }
+        \\const c = new C();
+        \\const n: number = c.x;
+    );
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+    for (s.checker.diagnostics.items) |d| {
+        try T.expect(d.code != TsCodes.type_not_assignable);
+    }
+    const stmts = hir_mod.blockStmts(&s.hir, s.root);
+    const decl = hir_mod.varDeclOf(&s.hir, stmts[2]);
+    try T.expectEqual(types.Primitive.number_t, s.hir.typeOf(decl.init));
+}
+
+test "checker: class setter — `c.x = 1` is allowed and types as the setter param" {
+    // `set x(v: number) { ... }` defines a writable property `x`
+    // typed as `number`. Assigning a number must not raise TS2540
+    // (read-only) — the assignment target accepts the param type.
+    const s = try newSetup(
+        \\class C { set x(v: number) {} }
+        \\const c = new C();
+        \\c.x = 1;
+    );
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+    for (s.checker.diagnostics.items) |d| {
+        try T.expect(d.code != TsCodes.readonly_property);
+        try T.expect(d.code != TsCodes.type_not_assignable);
+    }
+}
+
+test "checker: getter without setter is read-only — `c.x = 2` emits TS2540" {
+    // A class member declared with only a getter is a read-only
+    // property. Assignment to it must surface TS2540, mirroring
+    // tsc behavior.
+    const s = try newSetup(
+        \\class C { get x(): number { return 1; } }
+        \\const c = new C();
+        \\c.x = 2;
+    );
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+    var found: bool = false;
+    for (s.checker.diagnostics.items) |d| {
+        if (d.code == TsCodes.readonly_property) found = true;
+    }
+    try T.expect(found);
 }
