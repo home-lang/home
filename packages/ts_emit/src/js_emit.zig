@@ -2748,7 +2748,24 @@ pub const Printer = struct {
             if (op.is_shorthand) {
                 try self.printExpression(op.key);
             } else if (op.is_method) {
-                try self.printFnDecl(op.value);
+                // Object literal method shorthand: `{ foo() { … } }`.
+                // The HIR stores the property name on `op.key` and the
+                // method body on `op.value` (a `fn_expr` with
+                // `is_method = true`, `name = none`). At ES2015+ we
+                // emit the native shorthand `key(params) { body }`.
+                // At ES5 we lower to `key: function (params) { body }`,
+                // matching tsc's downlevel shape.
+                if (op.is_computed) {
+                    try self.write("[");
+                    try self.printExpression(op.key);
+                    try self.write("]");
+                } else {
+                    try self.printExpression(op.key);
+                }
+                if (self.options.es_target == .es5) {
+                    try self.write(": function ");
+                }
+                try self.printObjectMethodBody(op.value);
             } else {
                 if (op.is_computed) {
                     try self.write("[");
@@ -2762,6 +2779,35 @@ pub const Printer = struct {
             }
         }
         try self.write(" }");
+    }
+
+    /// Emit `(params) { body }` for an object-literal method value.
+    /// The key is printed by the caller (and at ES5 the caller also
+    /// prints `: function ` before delegating). The value node is a
+    /// `fn_expr` with `is_method = true`. Honors `is_generator` and
+    /// the ES5 default-param shim. (Async object-method shorthand is
+    /// a follow-up — the `async` prefix needs to land before the
+    /// method name, which the caller has already emitted.)
+    fn printObjectMethodBody(self: *Printer, fn_node: NodeId) anyerror!void {
+        const f = hir_mod.fnDeclOf(self.hir, fn_node);
+        const downlevel_async = f.flags.is_async and !self.options.es_target.supportsNativeAsync();
+        if (f.flags.is_generator) try self.write("*");
+        try self.write("(");
+        const params = hir_mod.fnParams(self.hir, fn_node);
+        try self.printRuntimeParams(params);
+        try self.write(")");
+        if (f.body != hir_mod.none_node_id) {
+            try self.write(" ");
+            if (downlevel_async) {
+                try self.printAsyncDownlevelBody(f.body);
+            } else if (self.options.es_target == .es5 and self.hasDefaultParam(params)) {
+                try self.printFnBodyWithDefaults(params, f.body);
+            } else {
+                try self.printStatementInline(f.body);
+            }
+        } else {
+            try self.write("{}");
+        }
     }
 };
 
@@ -4342,4 +4388,38 @@ test "emit: multiple default parameters lowered in source order at es5" {
     };
     // Source-order: `a`'s shim must precede `b`'s.
     try T.expect(a_shim < b_shim);
+}
+
+test "emit: object method shorthand preserved at es2015+" {
+    // ES2015 introduced object literal method shorthand:
+    //     const o = { foo() { return 1; } }
+    // At ES2015 and above the emitter must keep the shorthand form
+    // verbatim — `foo() { ... }` with no `function` keyword and no
+    // `foo:` separator. The HIR carries the property name on
+    // `op.key` and the method body on `op.value` (a `fn_expr` with
+    // `is_method = true`).
+    const out = try emitWithOpts(
+        "let o = { foo() { return 1; } };",
+        .{ .es_target = .es2015 },
+    );
+    defer T.allocator.free(out);
+    try T.expect(std.mem.indexOf(u8, out, "foo()") != null);
+    try T.expect(std.mem.indexOf(u8, out, "foo: function") == null);
+    try T.expect(std.mem.indexOf(u8, out, "return 1;") != null);
+}
+
+test "emit: object method shorthand lowers to property:function at es5" {
+    // ES5 has no object method shorthand — `{ foo() { ... } }` must
+    // expand to `{ foo: function () { ... } }` (anonymous function
+    // expression value). Matches tsc's downlevel shape.
+    const out = try emitWithOpts(
+        "let o = { foo() { return 1; } };",
+        .{ .es_target = .es5 },
+    );
+    defer T.allocator.free(out);
+    try T.expect(std.mem.indexOf(u8, out, "foo: function") != null);
+    try T.expect(std.mem.indexOf(u8, out, "return 1;") != null);
+    // Shorthand form must NOT survive at ES5 — the property name
+    // is followed by `:`, not directly by `(`.
+    try T.expect(std.mem.indexOf(u8, out, "foo(") == null);
 }
