@@ -235,9 +235,9 @@ pub const SemanticToken = struct {
 
         pub fn legend() []const []const u8 {
             return &.{
-                "variable",  "parameter", "function",  "method",
-                "class",     "interface", "type",      "enum",
-                "property",  "keyword",   "string",    "number",
+                "variable", "parameter", "function", "method",
+                "class",    "interface", "type",     "enum",
+                "property", "keyword",   "string",   "number",
                 "comment",
             };
         }
@@ -5657,11 +5657,11 @@ test "encodeSemanticTokensWire: single-line file delta-encodes multiple tokens r
 
     const expected = [_]u32{
         // First token: deltas are absolute vs (0, 0).
-        0, 0, 3, @intFromEnum(SemanticToken.TokenType.keyword), 0,
+        0, 0, 3, @intFromEnum(SemanticToken.TokenType.keyword),  0,
         // Same line: delta_start = 4 - 0 = 4.
         0, 4, 1, @intFromEnum(SemanticToken.TokenType.variable), 0,
         // Same line: delta_start = 8 - 4 = 4 (relative, NOT absolute 8).
-        0, 4, 1, @intFromEnum(SemanticToken.TokenType.number), 0,
+        0, 4, 1, @intFromEnum(SemanticToken.TokenType.number),   0,
     };
     try T.expectEqual(@as(usize, expected.len), wire.len);
     for (expected, 0..) |v, idx| try T.expectEqual(v, wire[idx]);
@@ -5686,14 +5686,14 @@ test "encodeSemanticTokensWire: multi-line first-of-line delta_start is absolute
         // First token: absolute (line 0, col 4).
         0, 4, 3, @intFromEnum(SemanticToken.TokenType.variable), 0,
         // Same line: delta_start = 10 - 4 = 6.
-        0, 6, 1, @intFromEnum(SemanticToken.TokenType.number), 0,
+        0, 6, 1, @intFromEnum(SemanticToken.TokenType.number),   0,
         // New line (jump of 2): delta_start is the absolute col 8.
-        2, 8, 4, @intFromEnum(SemanticToken.TokenType.keyword), 0,
+        2, 8, 4, @intFromEnum(SemanticToken.TokenType.keyword),  0,
         // Same line as previous: delta_start = 14 - 8 = 6.
         0, 6, 2, @intFromEnum(SemanticToken.TokenType.variable), 0,
         // New line (jump of 3): delta_start is absolute col 2 (not 2-14
         // wrapping under as a u32, which would be a giant number).
-        3, 2, 5, @intFromEnum(SemanticToken.TokenType.string), 0,
+        3, 2, 5, @intFromEnum(SemanticToken.TokenType.string),   0,
     };
     try T.expectEqual(@as(usize, expected.len), wire.len);
     for (expected, 0..) |v, idx| try T.expectEqual(v, wire[idx]);
@@ -5817,6 +5817,62 @@ test "Service: selectionRange + willSaveWaitUntil handle unknown files" {
         const edits = try svc.willSaveWaitUntil(T.allocator, "/main.ts", reason);
         defer T.allocator.free(edits);
         try T.expectEqual(@as(usize, 0), edits.len);
+    }
+}
+
+test "Service: willSaveWaitUntil returns empty edits for clean file" {
+    var vfs = ts_resolver.VirtualFs.init(T.allocator);
+    defer vfs.deinit();
+    var resolver = ts_resolver.Resolver.init(T.allocator, vfs.fs(), .{});
+    defer resolver.deinit();
+    var program = ts_program.Program.init(T.allocator, &resolver);
+    defer program.deinit();
+
+    // A "clean" idiomatic source — nothing for the formatter to fix.
+    _ = try program.add("/clean.ts", "let answer = 42;\n");
+    try program.compileAll(.{});
+
+    var svc = Service.init(T.allocator, &program);
+
+    // Manual save on a clean file: must return a valid (possibly empty)
+    // []TextEdit slice without crashing. v0 stub always returns 0 edits.
+    const edits = try svc.willSaveWaitUntil(T.allocator, "/clean.ts", .manual);
+    defer T.allocator.free(edits);
+    try T.expectEqual(@as(usize, 0), edits.len);
+}
+
+test "Service: willSaveWaitUntil response shape is well-formed" {
+    var vfs = ts_resolver.VirtualFs.init(T.allocator);
+    defer vfs.deinit();
+    var resolver = ts_resolver.Resolver.init(T.allocator, vfs.fs(), .{});
+    defer resolver.deinit();
+    var program = ts_program.Program.init(T.allocator, &resolver);
+    defer program.deinit();
+
+    // Source with a trailing import + small body — the kind of file a
+    // future organize-imports/format pass might rewrite. Today the v0
+    // stub returns 0 edits; the test asserts the contract (no crash,
+    // every returned edit has a sane Range) so it stays valid once the
+    // formatter starts emitting real edits.
+    _ = try program.add(
+        "/dirty.ts",
+        "import { y } from './y';\nimport { x } from './x';\nlet z = x + y;\n",
+    );
+    try program.compileAll(.{});
+
+    var svc = Service.init(T.allocator, &program);
+
+    inline for (.{ SaveReason.manual, SaveReason.auto, SaveReason.after_delay, SaveReason.focus_out }) |reason| {
+        const edits = try svc.willSaveWaitUntil(T.allocator, "/dirty.ts", reason);
+        defer T.allocator.free(edits);
+        // 0+ edits is fine — we only care that the slice is well-formed.
+        for (edits) |e| {
+            // start <= end in (line, col) lexicographic order.
+            try T.expect(e.start_line <= e.end_line);
+            if (e.start_line == e.end_line) {
+                try T.expect(e.start_col <= e.end_col);
+            }
+        }
     }
 }
 
