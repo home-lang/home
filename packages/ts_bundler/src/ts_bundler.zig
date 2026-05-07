@@ -440,55 +440,299 @@ fn findBlockEnd(js: []const u8, start: usize) ?usize {
     return null;
 }
 
-/// Naive minifier: trim leading/trailing whitespace per line, collapse
-/// runs of spaces inside lines to a single space, and drop a trailing
-/// `;` immediately before `}`. Returns a freshly-allocated slice owned
-/// by the caller.
+/// v0 minifier. Walks the emit byte-by-byte with awareness of string,
+/// template, and regex literals so their contents are preserved
+/// verbatim. Strips:
+///   - `// ...` line comments through the next newline.
+///   - `/* ... */` block comments.
+///   - Runs of spaces/tabs collapsed to a single space.
+///   - Runs of newlines compacted to at most one (and dropped entirely
+///     when adjacent to punctuation that doesn't need a separator).
+///   - A trailing `;` immediately before `}` (skipping whitespace).
+/// Identifier mangling is intentionally out of scope for v0.
+/// Returns a freshly-allocated slice owned by the caller.
 fn minify(gpa: std.mem.Allocator, js: []const u8) ![]u8 {
+    // First pass: strip comments and copy literal contents verbatim,
+    // collapsing horizontal whitespace runs and turning newlines into a
+    // single `\n` separator we can post-process.
+    var pass1: std.ArrayListUnmanaged(u8) = .empty;
+    errdefer pass1.deinit(gpa);
+
+    var i: usize = 0;
+    var prev_space = false;
+    while (i < js.len) {
+        const c = js[i];
+
+        // Line comment: `// ...` until newline.
+        if (c == '/' and i + 1 < js.len and js[i + 1] == '/') {
+            i += 2;
+            while (i < js.len and js[i] != '\n') : (i += 1) {}
+            // Leave the newline for the outer loop to handle.
+            continue;
+        }
+
+        // Block comment: `/* ... */`.
+        if (c == '/' and i + 1 < js.len and js[i + 1] == '*') {
+            i += 2;
+            while (i + 1 < js.len and !(js[i] == '*' and js[i + 1] == '/')) : (i += 1) {}
+            if (i + 1 < js.len) i += 2 else i = js.len;
+            // A block comment acts as a separator — emit a single
+            // space so adjacent tokens don't fuse (e.g. `a/*x*/b`).
+            if (!prev_space and pass1.items.len > 0) {
+                try pass1.append(gpa, ' ');
+                prev_space = true;
+            }
+            continue;
+        }
+
+        // String literal `"..."` or `'...'` — copy verbatim, honoring
+        // backslash escapes so an escaped closing quote doesn't end
+        // the literal early.
+        if (c == '"' or c == '\'') {
+            const quote = c;
+            try pass1.append(gpa, c);
+            i += 1;
+            while (i < js.len) {
+                const ch = js[i];
+                try pass1.append(gpa, ch);
+                if (ch == '\\' and i + 1 < js.len) {
+                    try pass1.append(gpa, js[i + 1]);
+                    i += 2;
+                    continue;
+                }
+                i += 1;
+                if (ch == quote) break;
+            }
+            prev_space = false;
+            continue;
+        }
+
+        // Template literal `` `...` `` — copy verbatim. We don't
+        // recurse into `${ ... }` interpolations: minifying expression
+        // segments is out of scope for v0 and risks corrupting strings.
+        if (c == '`') {
+            try pass1.append(gpa, c);
+            i += 1;
+            while (i < js.len) {
+                const ch = js[i];
+                try pass1.append(gpa, ch);
+                if (ch == '\\' and i + 1 < js.len) {
+                    try pass1.append(gpa, js[i + 1]);
+                    i += 2;
+                    continue;
+                }
+                i += 1;
+                if (ch == '`') break;
+            }
+            prev_space = false;
+            continue;
+        }
+
+        // Regex literal — only when `/` appears in a position where a
+        // regex is grammatically allowed (after an operator, keyword,
+        // or punctuator that can't be the LHS of a division). We use
+        // a lightweight heuristic that's good enough for the v0 emit.
+        if (c == '/' and isRegexContext(pass1.items)) {
+            try pass1.append(gpa, c);
+            i += 1;
+            var in_class = false;
+            while (i < js.len) {
+                const ch = js[i];
+                try pass1.append(gpa, ch);
+                if (ch == '\\' and i + 1 < js.len) {
+                    try pass1.append(gpa, js[i + 1]);
+                    i += 2;
+                    continue;
+                }
+                i += 1;
+                if (ch == '[') in_class = true
+                else if (ch == ']') in_class = false
+                else if (ch == '/' and !in_class) break
+                else if (ch == '\n') break;
+            }
+            // Copy regex flags (a-z) that follow.
+            while (i < js.len and js[i] >= 'a' and js[i] <= 'z') : (i += 1) {
+                try pass1.append(gpa, js[i]);
+            }
+            prev_space = false;
+            continue;
+        }
+
+        // Whitespace handling: collapse spaces/tabs; preserve a single
+        // newline as a marker for the second pass.
+        if (c == ' ' or c == '\t' or c == '\r') {
+            if (!prev_space and pass1.items.len > 0) {
+                try pass1.append(gpa, ' ');
+                prev_space = true;
+            }
+            i += 1;
+            continue;
+        }
+        if (c == '\n') {
+            // Drop a pending trailing space then emit a single newline.
+            if (pass1.items.len > 0 and pass1.items[pass1.items.len - 1] == ' ') {
+                _ = pass1.pop();
+            }
+            if (pass1.items.len > 0 and pass1.items[pass1.items.len - 1] != '\n') {
+                try pass1.append(gpa, '\n');
+            }
+            prev_space = false;
+            i += 1;
+            continue;
+        }
+
+        try pass1.append(gpa, c);
+        prev_space = false;
+        i += 1;
+    }
+
+    // Second pass: drop `;` before any `}` (skipping intervening
+    // whitespace/newlines), and remove unnecessary newlines/spaces
+    // next to punctuation. Literal-aware so we don't touch contents of
+    // strings, templates, or regex literals.
     var out: std.ArrayListUnmanaged(u8) = .empty;
     errdefer out.deinit(gpa);
 
-    var line_iter = std.mem.splitScalar(u8, js, '\n');
-    var first = true;
-    while (line_iter.next()) |raw_line| {
-        const trimmed = std.mem.trim(u8, raw_line, " \t\r");
-        if (trimmed.len == 0) continue;
+    var k: usize = 0;
+    while (k < pass1.items.len) {
+        const ch = pass1.items[k];
 
-        // Collapse runs of spaces inside the line.
-        var prev_space = false;
-        var line_buf: std.ArrayListUnmanaged(u8) = .empty;
-        defer line_buf.deinit(gpa);
-        for (trimmed) |c| {
-            if (c == ' ' or c == '\t') {
-                if (!prev_space) try line_buf.append(gpa, ' ');
-                prev_space = true;
-            } else {
-                try line_buf.append(gpa, c);
-                prev_space = false;
+        // Copy string/template literals verbatim. They were already
+        // copied verbatim into `pass1`, so we just relay them through.
+        if (ch == '"' or ch == '\'' or ch == '`') {
+            const quote = ch;
+            try out.append(gpa, ch);
+            k += 1;
+            while (k < pass1.items.len) {
+                const c2 = pass1.items[k];
+                try out.append(gpa, c2);
+                if (c2 == '\\' and k + 1 < pass1.items.len) {
+                    try out.append(gpa, pass1.items[k + 1]);
+                    k += 2;
+                    continue;
+                }
+                k += 1;
+                if (c2 == quote) break;
+            }
+            continue;
+        }
+
+        // Regex literals were also passed through verbatim. Detect and
+        // relay them so spaces inside `/[a b]/` survive.
+        if (ch == '/' and isRegexContext(out.items)) {
+            try out.append(gpa, ch);
+            k += 1;
+            var in_class = false;
+            while (k < pass1.items.len) {
+                const c2 = pass1.items[k];
+                try out.append(gpa, c2);
+                if (c2 == '\\' and k + 1 < pass1.items.len) {
+                    try out.append(gpa, pass1.items[k + 1]);
+                    k += 2;
+                    continue;
+                }
+                k += 1;
+                if (c2 == '[') in_class = true
+                else if (c2 == ']') in_class = false
+                else if (c2 == '/' and !in_class) break;
+            }
+            while (k < pass1.items.len and pass1.items[k] >= 'a' and pass1.items[k] <= 'z') : (k += 1) {
+                try out.append(gpa, pass1.items[k]);
+            }
+            continue;
+        }
+
+        // Skip `;` that is followed (after whitespace/newlines) by `}`.
+        if (ch == ';') {
+            var j: usize = k + 1;
+            while (j < pass1.items.len and (pass1.items[j] == ' ' or pass1.items[j] == '\n' or pass1.items[j] == '\t')) : (j += 1) {}
+            if (j < pass1.items.len and pass1.items[j] == '}') {
+                k += 1;
+                continue;
             }
         }
 
-        if (!first) try out.append(gpa, '\n');
-        first = false;
-        try out.appendSlice(gpa, line_buf.items);
+        // Drop redundant newlines. Collapse runs to a single `\n`, drop
+        // entirely when adjacent to punctuation that doesn't require a
+        // statement separator.
+        if (ch == '\n') {
+            const left = if (out.items.len == 0) 0 else out.items[out.items.len - 1];
+            const right = if (k + 1 < pass1.items.len) pass1.items[k + 1] else 0;
+            k += 1;
+            if (out.items.len == 0) continue; // leading
+            if (right == 0) continue; // trailing
+            if (left == '\n') continue; // duplicate
+            if (isPunct(left) or isPunct(right)) continue;
+            try out.append(gpa, '\n');
+            continue;
+        }
+
+        // Drop a space adjacent to punctuation.
+        if (ch == ' ') {
+            const left = if (out.items.len == 0) 0 else out.items[out.items.len - 1];
+            const right = if (k + 1 < pass1.items.len) pass1.items[k + 1] else 0;
+            k += 1;
+            if (left == 0 or right == 0) continue;
+            if (isPunct(left) or isPunct(right)) continue;
+            try out.append(gpa, ' ');
+            continue;
+        }
+
+        try out.append(gpa, ch);
+        k += 1;
     }
 
-    // Drop `;` before any `}` (skipping intervening whitespace/newlines).
-    var compacted: std.ArrayListUnmanaged(u8) = .empty;
-    errdefer compacted.deinit(gpa);
-    var i: usize = 0;
-    while (i < out.items.len) : (i += 1) {
-        if (out.items[i] == ';') {
-            var j: usize = i + 1;
-            while (j < out.items.len and (out.items[j] == ' ' or out.items[j] == '\n' or out.items[j] == '\t')) : (j += 1) {}
-            if (j < out.items.len and out.items[j] == '}') {
-                continue; // skip the `;`
-            }
+    pass1.deinit(gpa);
+    return out.toOwnedSlice(gpa);
+}
+
+/// Returns true when a `/` appearing at the current point should be
+/// interpreted as the opening of a regex literal rather than a division
+/// operator. The heuristic walks back over trailing whitespace and
+/// looks at the prior non-whitespace character: anything that can't end
+/// an expression (operators, opening punctuation, statement starts) is
+/// a regex context. Conservatively returns false when uncertain so we
+/// never accidentally swallow `/` in arithmetic.
+fn isRegexContext(buf: []const u8) bool {
+    if (buf.len == 0) return true;
+    var k: usize = buf.len;
+    while (k > 0) {
+        const c = buf[k - 1];
+        if (c == ' ' or c == '\t' or c == '\n' or c == '\r') {
+            k -= 1;
+            continue;
         }
-        try compacted.append(gpa, out.items[i]);
+        break;
     }
-    out.deinit(gpa);
-    return compacted.toOwnedSlice(gpa);
+    if (k == 0) return true;
+    const prev = buf[k - 1];
+    // Punctuation/operators that imply an expression start.
+    switch (prev) {
+        '(', ',', '=', ':', ';', '!', '&', '|', '?', '{', '}', '[', '+', '-', '*', '/', '%', '<', '>', '^', '~' => return true,
+        else => {},
+    }
+    // Keyword check: scan backwards over identifier chars and compare.
+    const w_end = k;
+    var w_start = w_end;
+    while (w_start > 0 and isIdentChar(buf[w_start - 1])) : (w_start -= 1) {}
+    const word = buf[w_start..w_end];
+    const kws = [_][]const u8{ "return", "typeof", "in", "of", "instanceof", "new", "delete", "void", "throw", "case", "do", "else", "yield", "await" };
+    for (kws) |kw| {
+        if (std.mem.eql(u8, word, kw)) return true;
+    }
+    return false;
+}
+
+/// Punctuation around which whitespace is unnecessary. Conservative —
+/// we keep spaces around alphanumerics so `let x` doesn't become `letx`.
+fn isPunct(c: u8) bool {
+    return switch (c) {
+        '{', '}', '(', ')', '[', ']', ',', ';', ':', '?',
+        '=', '+', '-', '*', '/', '%', '<', '>', '!',
+        '&', '|', '^', '~', '.',
+        => true,
+        else => false,
+    };
 }
 
 /// Slurp a file from `cwd` into a freshly-allocated buffer (caller
@@ -667,6 +911,76 @@ test "Bundler: minify strips leading whitespace" {
         if (line.len == 0) continue;
         try T.expect(line[0] != ' ' and line[0] != '\t');
     }
+}
+
+test "Bundler: minify strips line and block comments" {
+    const src =
+        \\let a = 1; // trailing line comment
+        \\// full-line comment
+        \\let b = /* inline block */ 2;
+        \\/* multi
+        \\   line block */
+        \\let c = 3;
+    ;
+    const out = try minify(T.allocator, src);
+    defer T.allocator.free(out);
+
+    try T.expect(std.mem.indexOf(u8, out, "//") == null);
+    try T.expect(std.mem.indexOf(u8, out, "/*") == null);
+    try T.expect(std.mem.indexOf(u8, out, "*/") == null);
+    try T.expect(std.mem.indexOf(u8, out, "let a=1") != null);
+    try T.expect(std.mem.indexOf(u8, out, "let b= 2") != null or std.mem.indexOf(u8, out, "let b=2") != null);
+    try T.expect(std.mem.indexOf(u8, out, "let c=3") != null);
+}
+
+test "Bundler: minify preserves comment-like text inside strings" {
+    const src =
+        \\let s = "keep // me";
+        \\let t = 'and /* me */ too';
+        \\let u = `template // ${x} */ ok`;
+    ;
+    const out = try minify(T.allocator, src);
+    defer T.allocator.free(out);
+
+    // The comment-shaped substrings must survive inside the literals.
+    try T.expect(std.mem.indexOf(u8, out, "\"keep // me\"") != null);
+    try T.expect(std.mem.indexOf(u8, out, "'and /* me */ too'") != null);
+    try T.expect(std.mem.indexOf(u8, out, "`template // ${x} */ ok`") != null);
+}
+
+test "Bundler: minify compacts multi-newline statements" {
+    const src =
+        \\let x = 1;
+        \\
+        \\
+        \\
+        \\let y = 2;
+        \\
+        \\let z = 3;
+    ;
+    const out = try minify(T.allocator, src);
+    defer T.allocator.free(out);
+
+    // No run of two consecutive newlines should remain.
+    try T.expect(std.mem.indexOf(u8, out, "\n\n") == null);
+    try T.expect(std.mem.indexOf(u8, out, "let x=1") != null);
+    try T.expect(std.mem.indexOf(u8, out, "let y=2") != null);
+    try T.expect(std.mem.indexOf(u8, out, "let z=3") != null);
+}
+
+test "Bundler: minify preserves regex literal contents" {
+    // `/[a-z]\/+/g` contains an escaped `/` and a class — the minifier
+    // must not treat the inner `/` as the literal terminator and must
+    // not touch any of the regex body.
+    const src =
+        \\let r = /[a-z]\/+/g;
+        \\let s = "x".replace(/\s+/g, " ");
+    ;
+    const out = try minify(T.allocator, src);
+    defer T.allocator.free(out);
+
+    try T.expect(std.mem.indexOf(u8, out, "/[a-z]\\/+/g") != null);
+    try T.expect(std.mem.indexOf(u8, out, "/\\s+/g") != null);
 }
 
 test "Bundler: IIFE wrap shape" {
