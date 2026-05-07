@@ -927,10 +927,83 @@ pub const Printer = struct {
         const p = hir_mod.parameterOf(self.hir, node);
         if (p.flags.is_rest) try self.write("...");
         if (p.name != hir_mod.none_node_id) try self.printExpression(p.name);
-        if (p.default_value != hir_mod.none_node_id) {
+        // §4.A — at ES5, default-parameter syntax (`x = 1`) is lowered
+        // to a body-prefix `if (x === void 0) { x = 1; }` shim. Skip
+        // the native default emit here so the parameter list stays
+        // ES5-clean; the shim is injected by `printFnBodyWithDefaults`.
+        if (p.default_value != hir_mod.none_node_id and self.options.es_target != .es5) {
             try self.write(" = ");
             try self.printExpression(p.default_value);
         }
+    }
+
+    /// True if any parameter in `params` carries a `default_value`
+    /// (i.e. was written `(x = expr)` in source). Used at ES5 to
+    /// decide whether to inject the `if (x === void 0)` shim into
+    /// the function body.
+    fn hasDefaultParam(self: *const Printer, params: []const NodeId) bool {
+        for (params) |pn| {
+            if (self.hir.kindOf(pn) != .parameter) continue;
+            const p = hir_mod.parameterOf(self.hir, pn);
+            if (p.default_value != hir_mod.none_node_id) return true;
+        }
+        return false;
+    }
+
+    /// Emit the `if (x === void 0) { x = <default>; }` shim for each
+    /// parameter that has a default value. Skips `this:T` params and
+    /// rest params (rest can't have a default in valid TS). Caller
+    /// positions the indent for the first shim; subsequent shims are
+    /// separated by newline + indent.
+    fn writeDefaultParamShims(self: *Printer, params: []const NodeId) !void {
+        var first = true;
+        for (params) |pn| {
+            if (self.hir.kindOf(pn) != .parameter) continue;
+            if (self.isThisParam(pn)) continue;
+            const p = hir_mod.parameterOf(self.hir, pn);
+            if (p.default_value == hir_mod.none_node_id) continue;
+            if (p.name == hir_mod.none_node_id) continue;
+            if (!first) try self.writeNewlineIndent();
+            first = false;
+            try self.write("if (");
+            try self.printExpression(p.name);
+            try self.write(" === void 0) { ");
+            try self.printExpression(p.name);
+            try self.write(" = ");
+            try self.printExpression(p.default_value);
+            try self.write("; }");
+        }
+    }
+
+    /// Emit a function body block (`{ ... }`) for a function whose
+    /// parameter list contains `= default` parameters. At ES5 this
+    /// prepends an `if (x === void 0) { x = <default>; }` shim for
+    /// each default-bearing parameter, then emits the original body
+    /// statements. `body` may be a `block_stmt` or an expression
+    /// (arrow concise-body).
+    fn printFnBodyWithDefaults(self: *Printer, params: []const NodeId, body: NodeId) !void {
+        try self.write("{");
+        self.depth += 1;
+        try self.writeNewlineIndent();
+        try self.writeDefaultParamShims(params);
+        if (body != hir_mod.none_node_id) {
+            if (self.hir.kindOf(body) == .block_stmt) {
+                const stmts = hir_mod.blockStmts(self.hir, body);
+                for (stmts) |s| {
+                    try self.write(self.options.newline);
+                    try self.printStatement(s);
+                }
+            } else {
+                try self.write(self.options.newline);
+                try self.indent();
+                try self.write("return ");
+                try self.printExpression(body);
+                try self.writeSemi();
+            }
+        }
+        self.depth -= 1;
+        try self.writeNewlineIndent();
+        try self.write("}");
     }
 
     /// True if `param` is an explicit `this: T` first-parameter
@@ -1430,6 +1503,17 @@ pub const Printer = struct {
             try self.printRuntimeParams(params);
         }
         try self.write(") { ");
+        // §4.A — ES5 default-parameter lowering for the constructor.
+        // Shims must run before any `_super.call(...)` synthesis or
+        // class-field initialization, so the defaulted bindings are
+        // visible everywhere downstream.
+        if (ctor) |ct| {
+            const params = hir_mod.fnParams(self.hir, ct);
+            if (self.hasDefaultParam(params)) {
+                try self.writeDefaultParamShims(params);
+                try self.write(" ");
+            }
+        }
         // Synthesize `_super.call(this)` only when there is no
         // explicit constructor — an explicit ctor body already
         // contains a `super(...)` call which will be lowered to
@@ -1475,7 +1559,12 @@ pub const Printer = struct {
             try self.printRuntimeParams(params);
             try self.write(") ");
             if (fd.body != hir_mod.none_node_id) {
-                try self.printStatementInline(fd.body);
+                if (self.hasDefaultParam(params)) {
+                    // §4.A — ES5 default-param lowering for class methods.
+                    try self.printFnBodyWithDefaults(params, fd.body);
+                } else {
+                    try self.printStatementInline(fd.body);
+                }
             } else {
                 try self.write("{}");
             }
@@ -3833,4 +3922,49 @@ test "emit: negative bigint round-trips at es2022 and downlevels at es2017" {
     const out_es2017 = try emitWithOpts("const x = -1n;", .{ .es_target = .es2017 });
     defer T.allocator.free(out_es2017);
     try T.expect(std.mem.indexOf(u8, out_es2017, "-BigInt(\"1\")") != null);
+}
+
+test "emit: default parameter preserved at es2017+" {
+    const out = try emitWithOpts(
+        "function f(x = 1) { return x; }",
+        .{ .es_target = .es2017 },
+    );
+    defer T.allocator.free(out);
+    // Native default in the parameter list; no shim in body.
+    try T.expect(std.mem.indexOf(u8, out, "x = 1") != null);
+    try T.expect(std.mem.indexOf(u8, out, "void 0") == null);
+    try T.expect(std.mem.indexOf(u8, out, "=== void 0") == null);
+}
+
+test "emit: default parameter lowered to void-0 shim at es5" {
+    const out = try emitWithOpts(
+        "function f(x = 1) { return x; }",
+        .{ .es_target = .es5 },
+    );
+    defer T.allocator.free(out);
+    // Parameter list itself stays bare — `(x)` not `(x = 1)`.
+    try T.expect(std.mem.indexOf(u8, out, "function f(x)") != null);
+    // Body opens with the standard `if (x === void 0)` shim.
+    try T.expect(std.mem.indexOf(u8, out, "if (x === void 0)") != null);
+    try T.expect(std.mem.indexOf(u8, out, "x = 1;") != null);
+}
+
+test "emit: multiple default parameters lowered in source order at es5" {
+    const out = try emitWithOpts(
+        "function f(a = 1, b = 2) { return a + b; }",
+        .{ .es_target = .es5 },
+    );
+    defer T.allocator.free(out);
+    // Both shims emitted, neither parameter retains its native default.
+    try T.expect(std.mem.indexOf(u8, out, "function f(a, b)") != null);
+    const a_shim = std.mem.indexOf(u8, out, "if (a === void 0) { a = 1; }") orelse {
+        try T.expect(false);
+        return;
+    };
+    const b_shim = std.mem.indexOf(u8, out, "if (b === void 0) { b = 2; }") orelse {
+        try T.expect(false);
+        return;
+    };
+    // Source-order: `a`'s shim must precede `b`'s.
+    try T.expect(a_shim < b_shim);
 }
