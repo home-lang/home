@@ -5000,9 +5000,32 @@ pub const Parser = struct {
         return error.UnexpectedToken;
     }
 
-    /// Parse a try-catch-finally statement
+    /// Parse a try-catch-finally statement, OR a Zig-style `try expr`
+    /// error-propagation statement.
+    ///
+    /// Two forms share the leading `try` keyword:
+    ///   1. `try { ... } catch { ... } finally { ... }` (JS/C++-style)
+    ///      — produces a `TryStmt` with try/catch/finally blocks.
+    ///   2. `try expr` (Zig-style error propagation, issue #60)
+    ///      — produces an `ExprStmt` wrapping a `TryExpr` that the
+    ///        type-checker / codegen lowers to `expr catch |err| return err`.
+    ///
+    /// Disambiguation: a `{` immediately after `try` selects form (1);
+    /// any other follow-on token starts an expression and selects form (2).
+    /// The expression form is also reachable via `primary()` for cases
+    /// like `let x = try foo()`; see `tryElseExpr`.
     fn tryStatement(self: *Parser) !ast.Stmt {
         const try_token = self.previous();
+
+        // Zig-style `try expr` propagation when not followed by `{`.
+        // Reuse `tryElseExpr` so the optional `else default` tail and
+        // any future expression-form extensions stay unified with the
+        // existing expression-position parser.
+        if (!self.check(.LeftBrace)) {
+            const expr = try self.tryElseExpr();
+            try self.optionalSemicolon();
+            return ast.Stmt{ .ExprStmt = expr };
+        }
 
         const try_block = try self.blockStatement();
         errdefer ast.Program.deinitBlockStmt(try_block, self.allocator);

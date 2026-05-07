@@ -1466,3 +1466,119 @@ test "parser: @memcpy 3-arg legacy form" {
     try testing.expect(reflect.second_arg != null);
     try testing.expect(reflect.third_arg != null);
 }
+
+// Issue #60: Zig-style `try expr` error-propagation statement form.
+// `try EXPR` (when not followed by `{`) is shorthand for
+// `EXPR catch |err| return err` and parses as an ExprStmt wrapping a
+// TryExpr with no else branch. The lowering itself is a typecheck-time
+// concern; the parser just emits the AST node.
+test "parser: try expr statement form (issue #60)" {
+    const program = try parseSource(testing.allocator,
+        \\fn foo(): u32 {
+        \\    try self.bar()
+        \\    return 0
+        \\}
+    );
+    defer program.deinit(testing.allocator);
+
+    try testing.expectEqual(@as(usize, 1), program.statements.len);
+    const fn_stmt = program.statements[0].FnDecl;
+    try testing.expect(fn_stmt.body.statements.len >= 1);
+
+    // First statement of body should be ExprStmt -> TryExpr (no else_branch).
+    const first = fn_stmt.body.statements[0];
+    try testing.expect(first == .ExprStmt);
+    try testing.expect(first.ExprStmt.* == .TryExpr);
+    try testing.expect(first.ExprStmt.TryExpr.else_branch == null);
+    // Operand is a call expression `self.bar()`.
+    try testing.expect(first.ExprStmt.TryExpr.operand.* == .CallExpr);
+}
+
+test "parser: try expr expression form in let binding (issue #60)" {
+    const program = try parseSource(testing.allocator,
+        \\fn foo(): u32 {
+        \\    let x = try foo()
+        \\    return 0
+        \\}
+    );
+    defer program.deinit(testing.allocator);
+
+    const fn_stmt = program.statements[0].FnDecl;
+    try testing.expect(fn_stmt.body.statements.len >= 1);
+
+    // First statement of body should be a LetDecl whose initializer is a TryExpr.
+    const first = fn_stmt.body.statements[0];
+    try testing.expect(first == .LetDecl);
+    const init_expr = first.LetDecl.value orelse return error.MissingInitializer;
+    try testing.expect(init_expr.* == .TryExpr);
+    try testing.expect(init_expr.TryExpr.else_branch == null);
+    try testing.expect(init_expr.TryExpr.operand.* == .CallExpr);
+}
+
+test "parser: try expr nested as call argument (issue #60)" {
+    // `try` as an expression should be usable wherever an expression
+    // is — including inside a call's argument list.
+    const program = try parseSource(testing.allocator,
+        \\fn foo(): u32 {
+        \\    let x = try self.method(try other(), 42)
+        \\    return 0
+        \\}
+    );
+    defer program.deinit(testing.allocator);
+
+    const fn_stmt = program.statements[0].FnDecl;
+    const first = fn_stmt.body.statements[0];
+    try testing.expect(first == .LetDecl);
+    const init_expr = first.LetDecl.value orelse return error.MissingInitializer;
+    try testing.expect(init_expr.* == .TryExpr);
+    // Outer try wraps a CallExpr.
+    try testing.expect(init_expr.TryExpr.operand.* == .CallExpr);
+}
+
+test "parser: try { ... } catch { ... } JS-style still works (regression)" {
+    // Issue #60 should not break the existing JS-style try-catch
+    // statement form; `try` followed by `{` still selects the
+    // try/catch/finally parser.
+    const program = try parseSource(testing.allocator,
+        \\fn foo(): u32 {
+        \\    try {
+        \\        risky()
+        \\    } catch (e) {
+        \\        log(e)
+        \\    }
+        \\    return 0
+        \\}
+    );
+    defer program.deinit(testing.allocator);
+
+    const fn_stmt = program.statements[0].FnDecl;
+    const first = fn_stmt.body.statements[0];
+    try testing.expect(first == .TryStmt);
+}
+
+test "parser: try expr else fallback expression form still works (regression)" {
+    // The pre-existing `try expr else default` form (used as an expression)
+    // must keep working — covered by `tryElseExpr` in primary() with the
+    // infix `else` operator in `parsePrecedence`. The fallback gets
+    // attached to the inner TryExpr because the operand parser already
+    // consumes the `else` infix as part of parsing `parse() else 0`.
+    const program = try parseSource(testing.allocator,
+        \\fn foo(): u32 {
+        \\    let x = try parse() else 0
+        \\    return x
+        \\}
+    );
+    defer program.deinit(testing.allocator);
+
+    const fn_stmt = program.statements[0].FnDecl;
+    const first = fn_stmt.body.statements[0];
+    try testing.expect(first == .LetDecl);
+    const init_expr = first.LetDecl.value orelse return error.MissingInitializer;
+    try testing.expect(init_expr.* == .TryExpr);
+    // Either the outer TryExpr or its inner TryExpr-wrapped operand must
+    // carry the else_branch — both shapes lower to the same semantics.
+    const has_else = init_expr.TryExpr.else_branch != null or
+        (init_expr.TryExpr.operand.* == .TryExpr and
+            init_expr.TryExpr.operand.TryExpr.else_branch != null);
+    try testing.expect(has_else);
+}
