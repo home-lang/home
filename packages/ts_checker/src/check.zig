@@ -3155,7 +3155,12 @@ pub const Checker = struct {
         if (self.hir.kindOf(m.object) != .identifier) return;
         const obj_id = hir_mod.identifierOf(self.hir, m.object);
         const static_t = self.typeOfIdentifier(m.object);
-        if (!self.interner.pool.flagsOf(static_t).is_union) return;
+        // If accumulated narrowing already produced `never`, there's
+        // nothing left to subtract — leave the narrow alone.
+        if (static_t == types.Primitive.never) return;
+        const is_union = self.interner.pool.flagsOf(static_t).is_union;
+        const is_object = self.interner.pool.flagsOf(static_t).is_object_type;
+        if (!is_union and !is_object) return;
 
         // Compute the literal's type id for comparison.
         const lit_t: TypeId = blk: {
@@ -3176,7 +3181,15 @@ pub const Checker = struct {
             }
         };
 
-        const members = self.interner.unionMembers(static_t);
+        // Treat a single-object narrow as a one-element union so the
+        // exhaustion logic below collapses it to `never` when the
+        // last remaining variant is also subtracted (the
+        // exhaustiveness-marker pattern in switch defaults).
+        const single_buf = [_]TypeId{static_t};
+        const members: []const TypeId = if (is_union)
+            self.interner.unionMembers(static_t)
+        else
+            single_buf[0..];
         var keep: std.ArrayListUnmanaged(TypeId) = .empty;
         defer keep.deinit(self.gpa);
         for (members) |variant| {
@@ -3193,8 +3206,13 @@ pub const Checker = struct {
                 }
             }
         }
-        if (keep.items.len == 0) return;
-        const narrowed: TypeId = if (keep.items.len == 1)
+        const narrowed: TypeId = if (keep.items.len == 0)
+            // Exhausted: every variant was excluded. The discriminant
+            // is `never` — TS uses this for exhaustiveness checks
+            // (e.g. `let x: never = s` in a switch's default branch
+            // after every case is covered).
+            types.Primitive.never
+        else if (keep.items.len == 1)
             keep.items[0]
         else
             self.interner.internUnion(keep.items) catch return;
@@ -6177,6 +6195,28 @@ test "checker: switch default narrows x to union minus listed cases" {
     const def_stmts = hir_mod.switchCaseStmts(&s.hir, cases[1]);
     const other_init = hir_mod.varDeclOf(&s.hir, def_stmts[0]).init;
     try T.expectEqual(types.Primitive.string_t, s.hir.typeOf(other_init));
+}
+
+test "checker: exhaustive switch narrows discriminant to never in default" {
+    // After every variant of a discriminated union is listed as a
+    // case, the default branch sees the discriminant as `never` —
+    // TS's exhaustiveness-marker pattern. `let x: never = s` must
+    // type-check without TS2322 because `s` is `never` there.
+    const s = try newSetup(
+        \\type S = { kind: "a" } | { kind: "b" };
+        \\function f(s: S) {
+        \\  switch (s.kind) {
+        \\    case "a": break;
+        \\    case "b": break;
+        \\    default: let x: never = s;
+        \\  }
+        \\}
+    );
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+    for (s.checker.diagnostics.items) |d| {
+        try T.expect(d.code != TsCodes.type_not_assignable);
+    }
 }
 
 test "checker: number === string-literal emits TS2367 (no overlap)" {
