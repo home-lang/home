@@ -327,6 +327,28 @@ pub const Parser = struct {
         return isPrimitiveTypeName(t.lexeme);
     }
 
+    /// True when the upcoming token can start a Zig-style return type in
+    /// `fn(...) T` position (no `:`/`->` separator). Recognises primitive
+    /// names, identifiers, and the prefix type forms (`?T`, `*T`, `&T`,
+    /// `[T]`, `!T`, `?[T]`). Used by the function-type parser inside
+    /// `parseTypeAnnotation` to decide whether to consume a return type.
+    fn isReturnTypeStart(self: *Parser) bool {
+        return switch (self.peek().type) {
+            .Identifier,
+            .Star,
+            .StarStar,
+            .Ampersand,
+            .Question,
+            .QuestionBracket,
+            .LeftBracket,
+            .Bang,
+            .Fn,
+            .Struct,
+            => true,
+            else => false,
+        };
+    }
+
     /// Pure-lookahead scan to find where a type expression starting at
     /// `start_idx` ends. Returns the token index just past the type
     /// (or `start_idx` if no valid type prefix is found at that
@@ -1010,6 +1032,12 @@ pub const Parser = struct {
             },
             .UnionDecl => {
                 if (is_pub) stmt.UnionDecl.is_public = true;
+            },
+            .TypeAliasDecl => {
+                // `pub const Name = fn(...) Ret` and friends route through
+                // letDeclaration but produce a TypeAliasDecl. Issue #51.
+                if (is_pub) stmt.TypeAliasDecl.is_public = true;
+                stmt.TypeAliasDecl.attributes = attributes;
             },
             else => {},
         }
@@ -2334,6 +2362,10 @@ pub const Parser = struct {
 
         // Check if this is a function type alias: type Foo = fn(...)
         var target_type: []const u8 = undefined;
+        // Tracks whether `target_type` is heap-owned (must be freed by the
+        // AST deinit) vs. a token lexeme / string literal (lifetime owned
+        // elsewhere). Mirrors the discriminator on TypeAliasDecl.
+        var target_owned: bool = false;
         if (self.check(.Fn)) {
             // Parse function type: fn(params): return_type
             _ = self.advance(); // consume 'fn'
@@ -2382,6 +2414,7 @@ pub const Parser = struct {
             _ = try self.expect(.RightParen, "Expected ')' after tuple type");
             try tuple_str.append(self.allocator, ')');
             target_type = try tuple_str.toOwnedSlice(self.allocator);
+            target_owned = true;
         } else if (self.check(.LeftBracket)) {
             // Parse array type: [T] or [T; N]
             _ = self.advance(); // consume '['
@@ -2402,17 +2435,26 @@ pub const Parser = struct {
             _ = try self.expect(.RightBracket, "Expected ']' after array type");
             try arr_str.append(self.allocator, ']');
             target_type = try arr_str.toOwnedSlice(self.allocator);
+            target_owned = true;
         } else {
             const target_type_token = try self.expect(.Identifier, "Expected target type");
             target_type = target_type_token.lexeme;
         }
 
-        const type_alias_decl = try ast.TypeAliasDecl.init(
-            self.allocator,
-            name,
-            target_type,
-            ast.SourceLocation.fromToken(type_token),
-        );
+        const type_alias_decl = if (target_owned)
+            try ast.TypeAliasDecl.initOwned(
+                self.allocator,
+                name,
+                target_type,
+                ast.SourceLocation.fromToken(type_token),
+            )
+        else
+            try ast.TypeAliasDecl.init(
+                self.allocator,
+                name,
+                target_type,
+                ast.SourceLocation.fromToken(type_token),
+            );
 
         return ast.Stmt{ .TypeAliasDecl = type_alias_decl };
     }
@@ -2723,14 +2765,34 @@ pub const Parser = struct {
             return try self.allocator.dupe(u8, result.items);
         }
 
-        // Check for function type: fn(T1, T2): ReturnType
+        // Check for function type: fn(T1, T2) ReturnType.
+        // Both unnamed (`fn(u64, u32) bool`) and named
+        // (`fn(lba: u64, count: u32) bool`) parameter forms are accepted —
+        // names are parsed and discarded since the type encoding only
+        // needs parameter types.
         if (self.match(&.{.Fn})) {
             _ = try self.expect(.LeftParen, "Expected '(' after 'fn' in function type");
 
             var param_types = std.ArrayList([]const u8).empty;
-            defer param_types.deinit(self.allocator);
+            // Each param type is a heap-allocated slice from a recursive
+            // `parseTypeAnnotation` — free them after the encoded
+            // function-type string has been built so they don't leak.
+            defer {
+                for (param_types.items) |t| self.allocator.free(t);
+                param_types.deinit(self.allocator);
+            }
 
             while (!self.check(.RightParen) and !self.isAtEnd()) {
+                // Optional parameter name: `name: T`. Detected by an
+                // Identifier (or soft-keyword binding name) followed by
+                // `:` — both must be present so a bare identifier in
+                // type position (e.g. `fn(MyType) bool`) keeps parsing
+                // as a type.
+                if (self.check(.Identifier) and self.peekNext().type == .Colon) {
+                    _ = self.advance(); // consume name
+                    _ = self.advance(); // consume ':'
+                }
+
                 const param_type = try self.parseTypeAnnotation();
                 try param_types.append(self.allocator, param_type);
 
@@ -2741,12 +2803,19 @@ pub const Parser = struct {
 
             // Parse optional return type. Accept `: T`, `-> T`, OR
             // Zig-style `fn(...) T` with no separator before the type.
+            // The token-class probe also covers prefix-style type
+            // starters (`?T`, `*T`, `&T`, `[T]`, `!T`) so kernel
+            // signatures like `fn(...) ?*Foo` parse cleanly.
             var return_type: []const u8 = "()";
+            var return_type_owned: bool = false;
             if (self.match(&.{.Colon}) or self.match(&.{.Arrow})) {
                 return_type = try self.parseTypeAnnotation();
-            } else if (self.isPrimitiveTypeStart() or self.check(.Identifier)) {
+                return_type_owned = true;
+            } else if (self.isReturnTypeStart()) {
                 return_type = try self.parseTypeAnnotation();
+                return_type_owned = true;
             }
+            defer if (return_type_owned) self.allocator.free(return_type);
 
             // Build function type string: fn(T1, T2): ReturnType
             var result = std.ArrayList(u8).empty;
@@ -2809,6 +2878,7 @@ pub const Parser = struct {
         // Check for nullable prefix: ?T
         if (self.match(&.{.Question})) {
             const inner_type = try self.parseTypeAnnotation();
+            defer self.allocator.free(inner_type);
             return try std.fmt.allocPrint(self.allocator, "?{s}", .{inner_type});
         }
 
@@ -2904,6 +2974,7 @@ pub const Parser = struct {
                     _ = self.advance();
                 }
                 const elem_type = try self.parseTypeAnnotation();
+                defer self.allocator.free(elem_type);
                 return try std.fmt.allocPrint(self.allocator, "[*]{s}", .{elem_type});
             }
             if (self.peek().type == .RightBracket) {
@@ -2914,6 +2985,7 @@ pub const Parser = struct {
                     _ = self.advance();
                 }
                 const elem_type = try self.parseTypeAnnotation();
+                defer self.allocator.free(elem_type);
                 const arr_type = try std.fmt.allocPrint(self.allocator, "[]{s}", .{elem_type});
                 return arr_type;
             }
@@ -3222,6 +3294,24 @@ pub const Parser = struct {
             }
         }
 
+        // Function-type alias: `const Name = fn(...) Ret` or
+        // `const Name = ?fn(...) Ret`. Routed through the same
+        // type-expression entry point used by struct-field types and
+        // variable annotations so the four parse positions share grammar.
+        // Issue #51.
+        if (type_name == null and self.peekFnTypeAliasAfterEquals()) {
+            _ = self.advance(); // consume '='
+            const target_type = try self.parseTypeAnnotation();
+            const type_alias_decl = try ast.TypeAliasDecl.initOwned(
+                self.allocator,
+                name_token.lexeme,
+                target_type,
+                ast.SourceLocation.fromToken(name_token),
+            );
+            try self.optionalSemicolon();
+            return ast.Stmt{ .TypeAliasDecl = type_alias_decl };
+        }
+
         // Optional initializer
         var value: ?*ast.Expr = null;
         if (self.match(&.{.Equal})) {
@@ -3291,6 +3381,28 @@ pub const Parser = struct {
             },
             else => null,
         };
+    }
+
+    /// True when the current parser position is `=` followed by a
+    /// function-type expression: `fn(...)` or `?fn(...)`. Stacked `?`
+    /// prefixes (e.g. `??fn(...)`) are accepted for forward
+    /// compatibility — `parseTypeAnnotation` handles arbitrary nesting.
+    /// Used by `letDeclaration` to route `const Name = fn(...) Ret` into
+    /// the type-alias path. Issue #51.
+    fn peekFnTypeAliasAfterEquals(self: *Parser) bool {
+        if (!self.check(.Equal)) return false;
+        var i: usize = self.current + 1;
+        // Skip any number of `?` prefixes (`?fn`, `??fn`, etc.).
+        while (i < self.tokens.len and self.tokens[i].type == .Question) : (i += 1) {}
+        if (i >= self.tokens.len) return false;
+        if (self.tokens[i].type != .Fn) return false;
+        // Require the following `(` to disambiguate from any future
+        // expression-position use of `fn` (closures, etc.). `fn` in
+        // expression position today is always followed by an
+        // identifier (function declaration), never `(`.
+        const after_fn = i + 1;
+        if (after_fn >= self.tokens.len) return false;
+        return self.tokens[after_fn].type == .LeftParen;
     }
 
     /// Parse the right-hand side of `const Name = <kind> { ... }`.

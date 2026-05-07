@@ -1001,3 +1001,87 @@ test "parser: inline asm volatile paren form (existing)" {
     const expr = program.statements[0].ExprStmt;
     try testing.expect(expr.* == .InlineAsm);
 }
+
+// Function type aliases (Issue #51) ----------------------------------------
+//
+// `pub const Name = fn(...) Ret` is routed through the same type-expression
+// entry point as struct-field types and variable annotations. The parser
+// produces a TypeAliasDecl carrying the function-type as a string in the
+// existing string-encoded type slot.
+
+test "parser: const fn-type alias with named params" {
+    const program = try parseSource(
+        testing.allocator,
+        "pub const BlockReadFn = fn(lba: u64, count: u32, buffer: [*]u8) bool",
+    );
+    defer program.deinit(testing.allocator);
+
+    try testing.expectEqual(@as(usize, 1), program.statements.len);
+    const stmt = program.statements[0];
+    try testing.expect(stmt == .TypeAliasDecl);
+    try testing.expectEqualStrings("BlockReadFn", stmt.TypeAliasDecl.name);
+    try testing.expect(stmt.TypeAliasDecl.is_public);
+    // Named parameters are accepted; only types appear in the encoding.
+    try testing.expect(std.mem.indexOf(u8, stmt.TypeAliasDecl.target_type, "u64") != null);
+    try testing.expect(std.mem.indexOf(u8, stmt.TypeAliasDecl.target_type, "lba") == null);
+    try testing.expect(std.mem.indexOf(u8, stmt.TypeAliasDecl.target_type, "bool") != null);
+}
+
+test "parser: const fn-type alias with unnamed params" {
+    const program = try parseSource(
+        testing.allocator,
+        "pub const SyscallHandler = fn(u64, u64, u64, u64, u64, u64) u64",
+    );
+    defer program.deinit(testing.allocator);
+
+    try testing.expectEqual(@as(usize, 1), program.statements.len);
+    const stmt = program.statements[0];
+    try testing.expect(stmt == .TypeAliasDecl);
+    try testing.expectEqualStrings("SyscallHandler", stmt.TypeAliasDecl.name);
+    try testing.expect(stmt.TypeAliasDecl.is_public);
+}
+
+test "parser: const fn-type alias with void return (no return type)" {
+    const program = try parseSource(
+        testing.allocator,
+        "pub const NoReturn = fn(u64);",
+    );
+    defer program.deinit(testing.allocator);
+
+    try testing.expectEqual(@as(usize, 1), program.statements.len);
+    const stmt = program.statements[0];
+    try testing.expect(stmt == .TypeAliasDecl);
+    try testing.expectEqualStrings("NoReturn", stmt.TypeAliasDecl.name);
+}
+
+test "parser: const fn-type alias optional (?fn)" {
+    const program = try parseSource(
+        testing.allocator,
+        "pub const OptArg = ?fn() void;",
+    );
+    defer program.deinit(testing.allocator);
+
+    try testing.expectEqual(@as(usize, 1), program.statements.len);
+    const stmt = program.statements[0];
+    try testing.expect(stmt == .TypeAliasDecl);
+    try testing.expectEqualStrings("OptArg", stmt.TypeAliasDecl.name);
+    // Encoding starts with `?` so downstream sees a nullable function type.
+    try testing.expect(stmt.TypeAliasDecl.target_type.len > 0);
+    try testing.expectEqual(@as(u8, '?'), stmt.TypeAliasDecl.target_type[0]);
+}
+
+test "parser: const primitive alias still parses as LetDecl" {
+    // Regression: only `fn(...)`-shaped RHS is rerouted; ordinary primitive
+    // aliases keep producing a LetDecl with an Identifier RHS.
+    const program = try parseSource(testing.allocator, "pub const Foo = u32;");
+    defer program.deinit(testing.allocator);
+
+    try testing.expectEqual(@as(usize, 1), program.statements.len);
+    const stmt = program.statements[0];
+    try testing.expect(stmt == .LetDecl);
+    try testing.expectEqualStrings("Foo", stmt.LetDecl.name);
+    try testing.expect(stmt.LetDecl.is_public);
+    try testing.expect(stmt.LetDecl.value != null);
+    try testing.expect(stmt.LetDecl.value.?.* == .Identifier);
+    try testing.expectEqualStrings("u32", stmt.LetDecl.value.?.Identifier.name);
+}

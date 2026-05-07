@@ -2242,7 +2242,13 @@ pub const UnionDecl = struct {
 pub const TypeAliasDecl = struct {
     node: Node,
     name: []const u8,
+    /// Function-type aliases (and tuple/array forms) produce a freshly
+    /// allocated string here; primitive aliases reuse the token lexeme
+    /// (which lives in the lexer's source buffer). The discriminator
+    /// `target_type_owned` tells the AST deinit which case applies so
+    /// it can free without double-free or freeing into source memory.
     target_type: []const u8,
+    target_type_owned: bool = false,
     is_public: bool = false,
     attributes: []const Attribute = &.{},
 
@@ -2252,6 +2258,20 @@ pub const TypeAliasDecl = struct {
             .node = .{ .type = .TypeAliasDecl, .loc = loc },
             .name = name,
             .target_type = target_type,
+        };
+        return decl;
+    }
+
+    /// Constructor variant used when `target_type` is heap-allocated by
+    /// the parser (function-type aliases, tuple/array forms). The AST
+    /// takes ownership and frees it during `deinitStmt`.
+    pub fn initOwned(allocator: std.mem.Allocator, name: []const u8, target_type: []const u8, loc: SourceLocation) !*TypeAliasDecl {
+        const decl = try allocator.create(TypeAliasDecl);
+        decl.* = .{
+            .node = .{ .type = .TypeAliasDecl, .loc = loc },
+            .name = name,
+            .target_type = target_type,
+            .target_type_owned = true,
         };
         return decl;
     }
@@ -2408,6 +2428,7 @@ pub const Program = struct {
                 allocator.destroy(decl);
             },
             .TypeAliasDecl => |decl| {
+                if (decl.target_type_owned) allocator.free(decl.target_type);
                 allocator.destroy(decl);
             },
             .ReturnStmt => |ret| {
