@@ -134,6 +134,15 @@ pub const Parser = struct {
     /// literal in the condition expression. Stack depth lets nested
     /// expressions (e.g. `while f({}) {}`) restore the inner context.
     suppress_struct_literal: u32,
+    /// When > 0, the expression parser stops at a top-level `else`
+    /// instead of folding it into a `try ... else fallback` expression.
+    /// Set while parsing the single-statement body of a brace-less
+    /// `if (cond) <stmt>` so the `else` token belongs to the surrounding
+    /// `if` (matching dangling-else convention) rather than being eaten
+    /// by an expression like `return 0 else return 1`. The braced form
+    /// is naturally protected by the closing `}` so this flag is not
+    /// engaged there.
+    suppress_else_in_expr: u32,
     /// Macro system for expanding macro invocations
     macro_system: MacroSystem,
 
@@ -168,6 +177,7 @@ pub const Parser = struct {
             .symbol_table = SymbolTable.init(allocator),
             .pending_greater = 0,
             .suppress_struct_literal = 0,
+            .suppress_else_in_expr = 0,
             .macro_system = macro_system,
         };
     }
@@ -3329,9 +3339,20 @@ pub const Parser = struct {
             return ast.Stmt{ .IfLetStmt = stmt };
         }
 
-        const then_block = try self.blockStatement();
+        // Then-branch: brace block `{ ... }` OR a single statement (e.g.
+        // `if (c) return 0;`). Single-statement form is wrapped in a synthetic
+        // block so downstream code (typechecker, codegen) sees the same shape.
+        const then_block = try self.braceOrSingleStatementBlock();
         errdefer ast.Program.deinitBlockStmt(then_block, self.allocator);
 
+        // Else-branch: same shape options as the then-branch — brace block,
+        // single statement, or chained `else if`.
+        //
+        // Dangling-else: the recursive descent here naturally binds `else` to
+        // the innermost `if` (matches C/Zig/Rust convention). When parsing
+        // `if (a) if (b) c() else d()`, the inner `ifStatement()` call eagerly
+        // consumes the `else d()` before returning, so the outer `if` never
+        // sees the `else` token.
         var else_block: ?*ast.BlockStmt = null;
         if (self.match(&.{.Else})) {
             // Handle else if as a nested if statement wrapped in a block
@@ -3350,7 +3371,7 @@ pub const Parser = struct {
                 };
                 else_block = else_block_ptr;
             } else {
-                else_block = try self.blockStatement();
+                else_block = try self.braceOrSingleStatementBlock();
             }
         }
         errdefer if (else_block) |eb| ast.Program.deinitBlockStmt(eb, self.allocator);
@@ -4415,6 +4436,44 @@ pub const Parser = struct {
         return ast.Stmt{ .ContinueStmt = stmt };
     }
 
+    /// Parse either a `{ ... }` brace block or a single statement, and return
+    /// it wrapped as a `BlockStmt`. Used for if/else branches so the body can
+    /// be either form (e.g. `if (c) return 0;` vs `if (c) { return 0; }`).
+    /// Downstream consumers always see a `BlockStmt`, matching the braced form.
+    fn braceOrSingleStatementBlock(self: *Parser) ParseError!*ast.BlockStmt {
+        if (self.check(.LeftBrace)) {
+            return self.blockStatement();
+        }
+
+        // Single-statement form: parse one statement and wrap it in a block.
+        // Suppress `expr else default` parsing inside the statement so a
+        // trailing `else` belongs to the surrounding `if`. Without this,
+        // `if (a) return 0 else return 1` parses `return 0 else return 1`
+        // as a single Try-with-fallback expression and the outer `if` never
+        // sees the `else`.
+        const start_token = self.peek();
+        self.suppress_else_in_expr += 1;
+        const stmt = self.statement() catch |err| {
+            self.suppress_else_in_expr -= 1;
+            return err;
+        };
+        self.suppress_else_in_expr -= 1;
+
+        const block = try self.allocator.create(ast.BlockStmt);
+        var stmts_list = std.ArrayList(ast.Stmt).empty;
+        errdefer {
+            for (stmts_list.items) |s| ast.Program.deinitStmt(s, self.allocator);
+            stmts_list.deinit(self.allocator);
+            self.allocator.destroy(block);
+        }
+        try stmts_list.append(self.allocator, stmt);
+        block.* = ast.BlockStmt{
+            .node = .{ .type = .BlockStmt, .loc = ast.SourceLocation.fromToken(start_token) },
+            .statements = try stmts_list.toOwnedSlice(self.allocator),
+        };
+        return block;
+    }
+
     /// Parse a block statement
     pub fn blockStatement(self: *Parser) !*ast.BlockStmt {
         // Expect the opening brace (or use previous if already consumed)
@@ -4615,8 +4674,11 @@ pub const Parser = struct {
                 expr = try self.safeNavExpr(expr);
             } else if (self.match(&.{.Question})) {
                 expr = try self.tryExpr(expr);
-            } else if (self.match(&.{.Else})) {
-                // expr else default - unwrap Result/Option with fallback
+            } else if (self.suppress_else_in_expr == 0 and self.match(&.{.Else})) {
+                // expr else default - unwrap Result/Option with fallback.
+                // Suppressed inside the body of a brace-less `if (cond) <stmt>`
+                // so the `else` token is left for the surrounding `if`'s
+                // dangling-else handling rather than being absorbed here.
                 expr = try self.elseExpr(expr);
             } else if (self.match(&.{.OrElse})) {
                 // expr orelse default - unwrap Optional with fallback

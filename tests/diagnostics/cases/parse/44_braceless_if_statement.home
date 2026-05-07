@@ -1,0 +1,59 @@
+// Regression test for issue #48 — `if` should accept either a brace
+// block `{ ... }` or a single statement after the parenthesized
+// condition. 189 home-os kernel sites use the terse single-statement
+// form (early-return guards, single assignments) and previously
+// failed with `Expected '{'`. Same applies to `else`.
+//
+// Dangling-else binds to the innermost `if` (matches C/Zig/Rust
+// convention) — see `parser.ifStatement` for the comment.
+//
+// Examples that all parse without error:
+//
+//   if (cond) return 0;
+//   if (cond) x = 1; else x = 2;
+//   if (a) if (b) c() else d();
+//   if (c) foo() else if (d) bar() else baz();
+
+fn early_return_guard(n: u32) -> u32 {
+    if (n >= 100) return 0
+    return n + 1
+}
+
+fn single_assign_with_else(flag: bool) -> u32 {
+    var x: u32 = 0
+    if (flag) x = 1
+    else x = 2
+    return x
+}
+
+fn dangling_else(a: bool, b: bool) -> u32 {
+    // `else` binds to the inner `if`.
+    if (a) if (b) return 1
+    else return 2
+    return 0
+}
+
+fn chained_else_if(c: u32) -> u32 {
+    if (c == 0) return 100
+    else if (c == 1) return 200
+    else return 300
+}
+
+// Regression: the braced form must still work unchanged.
+fn braced_form(c: bool) -> u32 {
+    if (c) {
+        return 1
+    } else {
+        return 2
+    }
+}
+
+fn braced_else_if(c: u32) -> u32 {
+    if (c == 0) {
+        return 100
+    } else if (c == 1) {
+        return 200
+    } else {
+        return 300
+    }
+}

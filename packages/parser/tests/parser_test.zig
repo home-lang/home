@@ -261,6 +261,78 @@ test "parser: if-else statement" {
     try testing.expectEqual(@as(usize, 1), if_stmt.else_block.?.statements.len);
 }
 
+test "parser: brace-less if statement (single return)" {
+    // Issue #48: `if (cond) <stmt>` should parse the same as
+    // `if (cond) { <stmt> }`. The single statement is wrapped in a
+    // synthetic block so downstream consumers see a uniform shape.
+    const program = try parseSource(testing.allocator, "if (cond) return 0;");
+    defer program.deinit(testing.allocator);
+
+    const stmt = program.statements[0];
+    try testing.expect(stmt == .IfStmt);
+    const if_stmt = stmt.IfStmt;
+    try testing.expectEqual(@as(usize, 1), if_stmt.then_block.statements.len);
+    try testing.expect(if_stmt.then_block.statements[0] == .ReturnStmt);
+    try testing.expect(if_stmt.else_block == null);
+}
+
+test "parser: brace-less if-else (single statements both sides)" {
+    const program = try parseSource(testing.allocator, "if (cond) x = 1; else x = 2;");
+    defer program.deinit(testing.allocator);
+
+    const if_stmt = program.statements[0].IfStmt;
+    try testing.expectEqual(@as(usize, 1), if_stmt.then_block.statements.len);
+    try testing.expect(if_stmt.else_block != null);
+    try testing.expectEqual(@as(usize, 1), if_stmt.else_block.?.statements.len);
+}
+
+test "parser: brace-less if dangling-else binds to innermost" {
+    // `if (a) if (b) c() else d()` — the `else` binds to the inner `if`,
+    // matching C/Zig/Rust convention. The outer `if` has no else branch.
+    const program = try parseSource(testing.allocator, "if (a) if (b) c(); else d();");
+    defer program.deinit(testing.allocator);
+
+    const outer = program.statements[0].IfStmt;
+    try testing.expect(outer.else_block == null);
+    try testing.expectEqual(@as(usize, 1), outer.then_block.statements.len);
+
+    // The wrapped then-block contains exactly the inner `if` statement.
+    const inner_stmt = outer.then_block.statements[0];
+    try testing.expect(inner_stmt == .IfStmt);
+    try testing.expect(inner_stmt.IfStmt.else_block != null);
+}
+
+test "parser: brace-less chained else-if" {
+    const program = try parseSource(testing.allocator, "if (c) foo(); else if (d) bar(); else baz();");
+    defer program.deinit(testing.allocator);
+
+    const outer = program.statements[0].IfStmt;
+    try testing.expect(outer.else_block != null);
+    // The else-block wraps the `else if` as a single nested IfStmt.
+    const else_block = outer.else_block.?;
+    try testing.expectEqual(@as(usize, 1), else_block.statements.len);
+    try testing.expect(else_block.statements[0] == .IfStmt);
+
+    const middle = else_block.statements[0].IfStmt;
+    try testing.expect(middle.else_block != null);
+    // The trailing `else baz();` is a single-statement block with one stmt.
+    try testing.expectEqual(@as(usize, 1), middle.else_block.?.statements.len);
+}
+
+test "parser: regression — braced if with else if and else still works" {
+    const program = try parseSource(testing.allocator,
+        \\if (c) { foo() } else if (d) { bar() } else { baz() }
+    );
+    defer program.deinit(testing.allocator);
+
+    const outer = program.statements[0].IfStmt;
+    try testing.expectEqual(@as(usize, 1), outer.then_block.statements.len);
+    try testing.expect(outer.else_block != null);
+    const middle = outer.else_block.?.statements[0].IfStmt;
+    try testing.expect(middle.else_block != null);
+    try testing.expectEqual(@as(usize, 1), middle.else_block.?.statements.len);
+}
+
 test "parser: while statement" {
     const program = try parseSource(testing.allocator, "while (x < 10) { increment(x) }");
     defer program.deinit(testing.allocator);
