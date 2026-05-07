@@ -2297,7 +2297,11 @@ fn makeRelativeSpecifier(
     importer_dir: []const u8,
     target_path: []const u8,
 ) ![]const u8 {
-    const rel = try std.fs.path.relative(gpa, importer_dir, target_path);
+    // Use the POSIX form so paths normalize the same way across host
+    // OSes — the program graph only sees forward-slash paths. Pass
+    // "/" as the cwd so absolute `importer_dir`/`target_path` resolve
+    // unchanged; relative inputs (rare) anchor at the program root.
+    const rel = try std.fs.path.relativePosix(gpa, "/", importer_dir, target_path);
     defer gpa.free(rel);
 
     // Trim a single TS-style extension if present.
@@ -4548,7 +4552,7 @@ test "Service: documentLinks surfaces resolved import specifiers" {
     try T.expect(links[0].span.end_col > links[0].span.start_col);
 }
 
-test "Service: workspaceWillRenameFiles returns an empty TextEdit list (stub)" {
+test "Service: workspaceWillRenameFiles returns no edits when no file imports the renamed one" {
     var vfs = ts_resolver.VirtualFs.init(T.allocator);
     defer vfs.deinit();
     var resolver = ts_resolver.Resolver.init(T.allocator, vfs.fs(), .{});
@@ -4564,10 +4568,49 @@ test "Service: workspaceWillRenameFiles returns an empty TextEdit list (stub)" {
         .{ .old_uri = "file:///main.ts", .new_uri = "file:///renamed.ts" },
     };
     const edits = try svc.workspaceWillRenameFiles(T.allocator, &renames);
-    defer T.allocator.free(edits);
-    // Stub: empty edit list = "no follow-up edits needed". Real
-    // import-specifier rewriting is a Phase 6 follow-up.
+    defer {
+        for (edits) |e| T.allocator.free(e.new_text);
+        T.allocator.free(edits);
+    }
+    // No file imports `/main.ts`, so there's nothing to rewrite.
     try T.expectEqual(@as(usize, 0), edits.len);
+}
+
+test "Service: workspaceWillRenameFiles rewrites import specifiers across files" {
+    var vfs = ts_resolver.VirtualFs.init(T.allocator);
+    defer vfs.deinit();
+    try vfs.addFile("/a.ts", "export let foo = 1;");
+    try vfs.addFile("/main.ts", "import { foo } from './a'; let x = foo;");
+    var resolver = ts_resolver.Resolver.init(T.allocator, vfs.fs(), .{});
+    defer resolver.deinit();
+    var program = ts_program.Program.init(T.allocator, &resolver);
+    defer program.deinit();
+
+    _ = try program.add("/a.ts", "export let foo = 1;");
+    const main_src = "import { foo } from './a'; let x = foo;";
+    _ = try program.add("/main.ts", main_src);
+    try program.compileAll(.{});
+
+    var svc = Service.init(T.allocator, &program);
+    const renames = [_]FileRename{
+        .{ .old_uri = "file:///a.ts", .new_uri = "file:///b.ts" },
+    };
+    const edits = try svc.workspaceWillRenameFiles(T.allocator, &renames);
+    defer {
+        for (edits) |e| T.allocator.free(e.new_text);
+        T.allocator.free(edits);
+    }
+    // One TextEdit: rewrite `./a` -> `./b` inside `/main.ts`.
+    try T.expectEqual(@as(usize, 1), edits.len);
+    try T.expectEqualStrings("/main.ts", edits[0].file);
+    try T.expectEqualStrings("./b", edits[0].new_text);
+    // Verify the edit's range actually covers the `./a` literal
+    // contents (excluding quotes) on line 0 of `main.ts`.
+    try T.expectEqual(@as(u32, 0), edits[0].start_line);
+    try T.expectEqual(@as(u32, 0), edits[0].end_line);
+    const start_byte = edits[0].start_col;
+    const end_byte = edits[0].end_col;
+    try T.expectEqualStrings("./a", main_src[start_byte..end_byte]);
 }
 
 test "Service: linkedEditingRanges returns null off JSX" {
