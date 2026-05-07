@@ -1272,6 +1272,16 @@ pub const Hir = struct {
         const payload_idx = self.payloads.items[id];
         self.fn_decl_payloads.items[payload_idx].flags.is_async = true;
     }
+
+    /// Set the `is_const` flag on an existing enum decl. Used by the
+    /// parser when `const enum E { ... }` is parsed at statement
+    /// position — the leading `const` is consumed before
+    /// `parseEnumDeclaration` runs, so we patch the flag afterward.
+    pub fn markEnumConst(self: *Hir, id: NodeId) void {
+        std.debug.assert(self.kindOf(id) == .enum_decl);
+        const payload_idx = self.payloads.items[id];
+        self.enum_payloads.items[payload_idx].is_const = true;
+    }
 };
 
 // ============================================================================

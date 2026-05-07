@@ -81,6 +81,11 @@ pub const TsCodes = struct {
     /// Emitted when `// @ts-expect-error` was placed above a line
     /// that produced no diagnostics — the directive is unused.
     pub const unused_ts_expect_error: u32 = 2578;
+    /// `isolatedModules` violation: re-exporting a type when
+    /// `isolatedModules` is enabled requires using `export type`.
+    /// Also covers `export const enum` (whose runtime semantics
+    /// require cross-module value substitution).
+    pub const isolated_modules_reexport: u32 = 1205;
 };
 
 /// Per-alias generic info: the type-parameter TypeIds in
@@ -146,6 +151,13 @@ pub const StrictFlags = struct {
     /// positional access (`tup[0]` against `[A, B]`) keeps the precise
     /// element type since the arity is statically known.
     no_unchecked_indexed_access: bool = false,
+    /// `isolatedModules`. Each file must be transpilable in
+    /// isolation (no cross-file type info). Forbids constructs that
+    /// rely on type-only / cross-module elision: `export const enum`,
+    /// type-only re-exports without an explicit `type` modifier,
+    /// references to ambient `const enum`s, etc. v0 emits TS1205
+    /// for the exported-const-enum case.
+    isolated_modules: bool = false,
 };
 
 pub const Checker = struct {
@@ -452,7 +464,25 @@ pub const Checker = struct {
                 // "m"`) have no inner decl and are handled later by
                 // cross-file resolution.
                 const ex = hir_mod.exportOf(self.hir, node);
-                if (ex.decl != hir_mod.none_node_id) try self.checkStatement(ex.decl);
+                if (ex.decl != hir_mod.none_node_id) {
+                    // isolatedModules: `export const enum E { ... }`
+                    // can't be transpiled in isolation because
+                    // consumers need the inlined member values. Emit
+                    // TS1205 to match `tsc --isolatedModules`.
+                    if (self.strict_flags.isolated_modules and
+                        self.hir.kindOf(ex.decl) == .enum_decl)
+                    {
+                        const ep = hir_mod.enumOf(self.hir, ex.decl);
+                        if (ep.is_const) {
+                            try self.report(
+                                node,
+                                TsCodes.isolated_modules_reexport,
+                                "Re-exporting a type when 'isolatedModules' is enabled requires using 'export type'.",
+                            );
+                        }
+                    }
+                    try self.checkStatement(ex.decl);
+                }
             },
             .return_stmt => {
                 const r = hir_mod.returnOf(self.hir, node);
@@ -6915,4 +6945,30 @@ test "checker: number === string-literal emits TS2367 (no overlap)" {
         if (d.code == TsCodes.no_overlap_comparison) found = true;
     }
     try T.expect(found);
+}
+
+test "checker: isolatedModules emits TS1205 for `export const enum`" {
+    const s = try newSetup(
+        \\export const enum E { A, B }
+    );
+    defer destroySetup(s);
+    s.checker.setStrictFlags(.{ .isolated_modules = true });
+    try s.checker.checkSourceFile(s.root);
+    var found = false;
+    for (s.checker.diagnostics.items) |d| {
+        if (d.code == TsCodes.isolated_modules_reexport) found = true;
+    }
+    try T.expect(found);
+}
+
+test "checker: isolatedModules off — `export const enum` passes silently" {
+    const s = try newSetup(
+        \\export const enum E { A, B }
+    );
+    defer destroySetup(s);
+    // No isolated_modules flag set — the const-enum is allowed.
+    try s.checker.checkSourceFile(s.root);
+    for (s.checker.diagnostics.items) |d| {
+        try T.expect(d.code != TsCodes.isolated_modules_reexport);
+    }
 }

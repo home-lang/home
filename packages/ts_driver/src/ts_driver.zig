@@ -357,6 +357,7 @@ pub fn compileSource(
             .no_unused_locals = co.no_unused_locals orelse false,
             .strict_function_types = strict_fn_types,
             .no_unchecked_indexed_access = co.no_unchecked_indexed_access orelse false,
+            .isolated_modules = co.isolated_modules orelse false,
         });
         c.type_engine.setStrictFunctionTypes(strict_fn_types);
     }

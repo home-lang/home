@@ -208,7 +208,20 @@ pub const Parser = struct {
         }
         const t = self.peek();
         return switch (t.kind) {
-            .kw_let, .kw_const, .kw_var => try self.parseVarDecl(),
+            .kw_let, .kw_const, .kw_var => blk: {
+                // `const enum E { ... }` — TS const-enum declaration.
+                // The `const` keyword here is part of the enum form,
+                // not a variable declaration. Lower it to an
+                // `enum_decl` with `is_const=true` so isolatedModules
+                // and downstream checks can consult the flag.
+                if (t.kind == .kw_const and self.peekAt(1).kind == .kw_enum) {
+                    _ = self.advance(); // const
+                    const ed = try self.parseEnumDeclaration();
+                    self.hir.markEnumConst(ed);
+                    break :blk ed;
+                }
+                break :blk try self.parseVarDecl();
+            },
             .kw_using => blk: {
                 // Stage 3 explicit resource management: `using x = expr;`.
                 // `using` is contextual — only treat it as a declaration
