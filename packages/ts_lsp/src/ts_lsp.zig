@@ -1724,6 +1724,86 @@ pub const Service = struct {
             }
         }
 
+        // ---- Disable next-line with @ts-ignore ----------------------------
+        // Universal escape hatch — for every error/warning diagnostic in
+        // this file, surface a quick-fix that inserts
+        // `// @ts-ignore\n` (with matching indentation) on the line
+        // immediately above the offending source line. We dedupe on
+        // (line) so multiple diagnostics on the same line collapse to a
+        // single action — one `// @ts-ignore` suppresses the whole
+        // next line.
+        var seen_lines: std.ArrayListUnmanaged(u32) = .empty;
+        defer seen_lines.deinit(gpa);
+        for (c.diagnostics.items) |d| {
+            // Driver fills `d.line` lazily — checker-phase diagnostics
+            // store `line = 0` and the line number is recovered from
+            // `d.pos` via `positionToLineCol`. Compute it here so the
+            // quick-fix targets the right line.
+            const dpos = ts_diagnostics.positionToLineCol(f.source, d.pos);
+            const dline: u32 = dpos.line;
+            if (dline == 0) continue;
+            // Dedupe — at most one action per line.
+            var already = false;
+            for (seen_lines.items) |sl| {
+                if (sl == dline) {
+                    already = true;
+                    break;
+                }
+            }
+            if (already) continue;
+            try seen_lines.append(gpa, dline);
+
+            // Find the byte offset of the start of `dline` (1-based)
+            // in `f.source` so we can read its leading indentation.
+            const target_line: u32 = dline;
+            var line_start: usize = 0;
+            var cur_line: u32 = 1;
+            var bi: usize = 0;
+            while (bi < f.source.len and cur_line < target_line) : (bi += 1) {
+                if (f.source[bi] == '\n') {
+                    cur_line += 1;
+                    line_start = bi + 1;
+                }
+            }
+            if (cur_line != target_line) continue;
+            // Capture the leading whitespace (spaces/tabs) so the
+            // inserted comment lines up with the offending statement.
+            var indent_end: usize = line_start;
+            while (indent_end < f.source.len) : (indent_end += 1) {
+                const ch = f.source[indent_end];
+                if (ch != ' ' and ch != '\t') break;
+            }
+            const indent = f.source[line_start..indent_end];
+            const new_text = try std.fmt.allocPrint(
+                gpa,
+                "{s}// @ts-ignore\n",
+                .{indent},
+            );
+            errdefer gpa.free(new_text);
+            const title = try std.fmt.allocPrint(
+                gpa,
+                "Disable next-line with @ts-ignore",
+                .{},
+            );
+            errdefer gpa.free(title);
+            // Zero-width edit at column 0 of the offending line.
+            const ln: u32 = if (target_line > 0) target_line - 1 else 0;
+            var edits = try gpa.alloc(TextEdit, 1);
+            edits[0] = .{
+                .file = f.path,
+                .start_line = ln,
+                .start_col = 0,
+                .end_line = ln,
+                .end_col = 0,
+                .new_text = new_text,
+            };
+            try actions.append(gpa, .{
+                .title = title,
+                .kind = .quick_fix,
+                .edits = edits,
+            });
+        }
+
         return actions.toOwnedSlice(gpa);
     }
 
@@ -5461,6 +5541,87 @@ test "Service: codeActions adds explicit type annotation for inferred lets" {
     const e = actions[0].edits[0];
     try T.expectEqual(e.start_line, e.end_line);
     try T.expectEqual(e.start_col, e.end_col);
+}
+
+test "Service: codeActions surfaces @ts-ignore quick-fix for TS2322 mismatch" {
+    var vfs = ts_resolver.VirtualFs.init(T.allocator);
+    defer vfs.deinit();
+    var resolver = ts_resolver.Resolver.init(T.allocator, vfs.fs(), .{});
+    defer resolver.deinit();
+    var program = ts_program.Program.init(T.allocator, &resolver);
+    defer program.deinit();
+
+    // `let x: string = 1;` -> TS2322 type-not-assignable on line 1.
+    _ = try program.add("/main.ts", "let x: string = 1;");
+    try program.compileAll(.{});
+
+    var svc = Service.init(T.allocator, &program);
+    const actions = try svc.codeActions(T.allocator, "/main.ts");
+    defer {
+        for (actions) |a| {
+            if (a.kind == .quick_fix) T.allocator.free(a.title);
+            for (a.edits) |e| T.allocator.free(e.new_text);
+            T.allocator.free(a.edits);
+        }
+        T.allocator.free(actions);
+    }
+
+    var saw_ts_ignore = false;
+    for (actions) |a| {
+        if (a.kind != .quick_fix) continue;
+        if (std.mem.indexOf(u8, a.title, "@ts-ignore") == null) continue;
+        saw_ts_ignore = true;
+        try T.expectEqual(@as(usize, 1), a.edits.len);
+        try T.expectEqualStrings("/main.ts", a.edits[0].file);
+        // Diagnostic is on line 1 (1-based) -> insert above => zero-width
+        // edit at the start of LSP line 0.
+        try T.expectEqual(@as(u32, 0), a.edits[0].start_line);
+        try T.expectEqual(@as(u32, 0), a.edits[0].start_col);
+        try T.expectEqual(a.edits[0].start_line, a.edits[0].end_line);
+        try T.expectEqual(a.edits[0].start_col, a.edits[0].end_col);
+        // No leading whitespace on line 1 -> just `// @ts-ignore\n`.
+        try T.expectEqualStrings("// @ts-ignore\n", a.edits[0].new_text);
+    }
+    try T.expect(saw_ts_ignore);
+}
+
+test "Service: codeActions @ts-ignore preserves indentation" {
+    var vfs = ts_resolver.VirtualFs.init(T.allocator);
+    defer vfs.deinit();
+    var resolver = ts_resolver.Resolver.init(T.allocator, vfs.fs(), .{});
+    defer resolver.deinit();
+    var program = ts_program.Program.init(T.allocator, &resolver);
+    defer program.deinit();
+
+    // Indented offending statement on line 2 (1-based). The
+    // quick-fix's inserted comment must keep the four-space indent so
+    // it lines up with the original statement.
+    _ = try program.add("/main.ts", "function f() {\n    let x: string = 1;\n}\n");
+    try program.compileAll(.{});
+
+    var svc = Service.init(T.allocator, &program);
+    const actions = try svc.codeActions(T.allocator, "/main.ts");
+    defer {
+        for (actions) |a| {
+            if (a.kind == .quick_fix) T.allocator.free(a.title);
+            for (a.edits) |e| T.allocator.free(e.new_text);
+            T.allocator.free(a.edits);
+        }
+        T.allocator.free(actions);
+    }
+
+    var saw_indented = false;
+    for (actions) |a| {
+        if (a.kind != .quick_fix) continue;
+        if (std.mem.indexOf(u8, a.title, "@ts-ignore") == null) continue;
+        // Edit is on LSP line 1 (= source line 2), col 0; new_text
+        // starts with the captured indent.
+        try T.expectEqualStrings("    // @ts-ignore\n", a.edits[0].new_text);
+        try T.expectEqual(@as(u32, 1), a.edits[0].start_line);
+        try T.expectEqual(@as(u32, 0), a.edits[0].start_col);
+        saw_indented = true;
+    }
+    try T.expect(saw_indented);
 }
 
 test "Service: codeActions surfaces add-import quick-fix for unresolved identifier" {
