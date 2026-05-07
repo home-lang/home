@@ -133,12 +133,16 @@ pub const Options = struct {
     source_map_url: ?[]const u8 = null,
     /// JSX lowering mode. `classic` matches today's React.createElement
     /// output. `automatic` lowers to `_jsx`/`_jsxs` matching the React
-    /// 17+ automatic runtime.
+    /// 17+ automatic runtime. `preserve` keeps JSX literals untouched
+    /// (copied from source bytes).
     jsx_runtime: JsxRuntime = .classic,
-    /// Custom factory name for classic mode (defaults to `React`).
-    jsx_factory: []const u8 = "React",
-    /// Custom fragment for classic mode (defaults to `React.Fragment`).
-    jsx_fragment: []const u8 = "React.Fragment",
+    /// Full callee for classic-mode element creation. Emitted verbatim
+    /// — set to `"h"` (Preact), `"React.createElement"` (the default,
+    /// matching tsc's `jsxFactory`), or any other expression.
+    jsx_factory: []const u8 = "React.createElement",
+    /// Fragment expression for classic mode (matches tsc's
+    /// `jsxFragmentFactory`, default `"React.Fragment"`).
+    jsx_fragment_factory: []const u8 = "React.Fragment",
     /// ES target — selects which downlevel transforms apply.
     es_target: EsTarget = .esnext,
     /// Module emit format. `esm` (default) keeps `import`/`export`;
@@ -1882,17 +1886,20 @@ pub const Printer = struct {
     }
 
     /// Lower JSX. Runtime mode is `Options.jsx_runtime`:
-    /// - `.classic`: `<factory>.createElement(tag, props, ...children)`
+    /// - `.classic`: `<jsx_factory>(tag, props, ...children)`. The
+    ///   factory is emitted verbatim (default `React.createElement`,
+    ///   matching tsc's `jsxFactory`).
     /// - `.automatic`: `_jsx(tag, props)` or `_jsxs(tag, props)` (key
     ///   in props if present). Caller must arrange the import of
     ///   `_jsx` / `_jsxs` from `react/jsx-runtime`.
     /// - `.automatic_dev`: same as `.automatic` but use `_jsxDEV`.
-    /// - `.preserve`: error — preserve mode is handled by the bundler,
-    ///   not the streaming printer (we'd need a JSX literal in the
-    ///   output stream).
+    /// - `.preserve`: copy the original JSX bytes through unchanged
+    ///   (requires `setSource`); falls back to classic when source
+    ///   bytes aren't attached so callers always get valid JS.
     fn printJsxElement(self: *Printer, node: NodeId) anyerror!void {
         switch (self.options.jsx_runtime) {
-            .classic, .preserve => try self.printJsxElementClassic(node),
+            .classic => try self.printJsxElementClassic(node),
+            .preserve => try self.printJsxPreserve(node),
             .automatic => try self.printJsxElementAutomatic(node, "_jsx", "_jsxs"),
             .automatic_dev => try self.printJsxElementAutomatic(node, "_jsxDEV", "_jsxDEV"),
         }
@@ -1901,7 +1908,7 @@ pub const Printer = struct {
     fn printJsxElementClassic(self: *Printer, node: NodeId) anyerror!void {
         const el = hir_mod.jsxElementOf(self.hir, node);
         try self.write(self.options.jsx_factory);
-        try self.write(".createElement(");
+        try self.write("(");
         try self.writeJsxTag(el.tag);
         try self.write(", ");
         const attrs = hir_mod.jsxAttrs(self.hir, node);
@@ -1912,6 +1919,22 @@ pub const Printer = struct {
             try self.printExpression(c);
         }
         try self.write(")");
+    }
+
+    /// `.preserve` mode: copy the original JSX bytes verbatim from
+    /// the attached source. When no source is attached, fall back to
+    /// the classic lowering so callers always get valid JS.
+    fn printJsxPreserve(self: *Printer, node: NodeId) anyerror!void {
+        if (self.source) |src| {
+            const span = self.hir.spanOf(node);
+            const start: usize = @intCast(span.start);
+            const end: usize = @intCast(span.end);
+            if (end > start and end <= src.len) {
+                try self.write(src[start..end]);
+                return;
+            }
+        }
+        try self.printJsxElementClassic(node);
     }
 
     fn printJsxElementAutomatic(self: *Printer, node: NodeId, single_name: []const u8, multi_name: []const u8) anyerror!void {
@@ -2018,17 +2041,18 @@ pub const Printer = struct {
 
     fn printJsxFragment(self: *Printer, node: NodeId) anyerror!void {
         switch (self.options.jsx_runtime) {
-            .classic, .preserve => {
-                try self.write(self.options.jsx_factory);
-                try self.write(".createElement(");
-                try self.write(self.options.jsx_fragment);
-                try self.write(", null");
-                const children = hir_mod.jsxFragmentChildren(self.hir, node);
-                for (children) |c| {
-                    try self.write(", ");
-                    try self.printExpression(c);
+            .classic => try self.printJsxFragmentClassic(node),
+            .preserve => {
+                if (self.source) |src| {
+                    const span = self.hir.spanOf(node);
+                    const start: usize = @intCast(span.start);
+                    const end: usize = @intCast(span.end);
+                    if (end > start and end <= src.len) {
+                        try self.write(src[start..end]);
+                        return;
+                    }
                 }
-                try self.write(")");
+                try self.printJsxFragmentClassic(node);
             },
             .automatic, .automatic_dev => {
                 const fn_name: []const u8 = if (self.options.jsx_runtime == .automatic_dev) "_jsxDEV" else "_jsxs";
@@ -2042,6 +2066,19 @@ pub const Printer = struct {
                 try self.write("] })");
             },
         }
+    }
+
+    fn printJsxFragmentClassic(self: *Printer, node: NodeId) anyerror!void {
+        try self.write(self.options.jsx_factory);
+        try self.write("(");
+        try self.write(self.options.jsx_fragment_factory);
+        try self.write(", null");
+        const children = hir_mod.jsxFragmentChildren(self.hir, node);
+        for (children) |c| {
+            try self.write(", ");
+            try self.printExpression(c);
+        }
+        try self.write(")");
     }
 
     fn printJsxExpression(self: *Printer, node: NodeId) anyerror!void {
@@ -2617,10 +2654,38 @@ test "emit: jsx classic produces React.createElement" {
     try T.expect(std.mem.indexOf(u8, out, "React.createElement(Foo, null)") != null);
 }
 
-test "emit: jsx classic with custom factory" {
-    const out = try emitJsx("let v = <Foo />;", .{ .jsx_factory = "h" });
+test "emit: jsx classic with attribute lowers to props object" {
+    const out = try emitJsx("let v = <Foo x={1}/>;", .{});
     defer T.allocator.free(out);
-    try T.expect(std.mem.indexOf(u8, out, "h.createElement(Foo, null)") != null);
+    try T.expect(std.mem.indexOf(u8, out, "React.createElement(Foo, { x: 1 })") != null);
+}
+
+test "emit: jsx classic with custom factory" {
+    const out = try emitJsx("let v = <Foo x={1}/>;", .{ .jsx_factory = "h" });
+    defer T.allocator.free(out);
+    try T.expect(std.mem.indexOf(u8, out, "h(Foo, { x: 1 })") != null);
+}
+
+test "emit: jsx classic fragment uses fragment factory" {
+    const out = try emitJsx("let v = <></>;", .{});
+    defer T.allocator.free(out);
+    try T.expect(std.mem.indexOf(u8, out, "React.createElement(React.Fragment, null)") != null);
+}
+
+test "emit: jsx classic fragment honors custom factory pair" {
+    const out = try emitJsx("let v = <></>;", .{
+        .jsx_factory = "h",
+        .jsx_fragment_factory = "Fragment",
+    });
+    defer T.allocator.free(out);
+    try T.expect(std.mem.indexOf(u8, out, "h(Fragment, null)") != null);
+}
+
+test "emit: jsx preserve passes elements through unchanged" {
+    const out = try emitJsx("let v = <Foo x={1}/>;", .{ .jsx_runtime = .preserve });
+    defer T.allocator.free(out);
+    try T.expect(std.mem.indexOf(u8, out, "<Foo x={1}/>") != null);
+    try T.expect(std.mem.indexOf(u8, out, "React.createElement") == null);
 }
 
 test "emit: jsx automatic uses _jsx for single child" {
