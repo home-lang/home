@@ -1959,6 +1959,7 @@ pub const Printer = struct {
     fn printJsxElementAutomatic(self: *Printer, node: NodeId, single_name: []const u8, multi_name: []const u8) anyerror!void {
         const el = hir_mod.jsxElementOf(self.hir, node);
         const children = hir_mod.jsxChildren(self.hir, node);
+        const is_dev = self.options.jsx_runtime == .automatic_dev;
         const fn_name = if (children.len > 1) multi_name else single_name;
         try self.write(fn_name);
         try self.write("(");
@@ -2008,6 +2009,14 @@ pub const Printer = struct {
             }
         }
         try self.write(" }");
+        // Dev runtime threads extra args:
+        // `_jsxDEV(tag, props, key, isStaticChildren, source, self)`.
+        // v0 emits placeholder source info `{}`.
+        if (is_dev) {
+            try self.write(", undefined, ");
+            try self.write(if (children.len > 1) "true" else "false");
+            try self.write(", {}, this");
+        }
         try self.write(")");
     }
 
@@ -2074,7 +2083,8 @@ pub const Printer = struct {
                 try self.printJsxFragmentClassic(node);
             },
             .automatic, .automatic_dev => {
-                const fn_name: []const u8 = if (self.options.jsx_runtime == .automatic_dev) "_jsxDEV" else "_jsxs";
+                const is_dev = self.options.jsx_runtime == .automatic_dev;
+                const fn_name: []const u8 = if (is_dev) "_jsxDEV" else "_jsxs";
                 try self.write(fn_name);
                 try self.write("(_Fragment, { children: [");
                 const children = hir_mod.jsxFragmentChildren(self.hir, node);
@@ -2082,7 +2092,11 @@ pub const Printer = struct {
                     if (i > 0) try self.write(", ");
                     try self.printExpression(c);
                 }
-                try self.write("] })");
+                try self.write("] }");
+                if (is_dev) {
+                    try self.write(", undefined, true, {}, this");
+                }
+                try self.write(")");
             },
         }
     }
@@ -2736,6 +2750,21 @@ test "emit: jsx automatic_dev uses _jsxDEV" {
     const out = try emitJsx("let v = <Foo />;", .{ .jsx_runtime = .automatic_dev });
     defer T.allocator.free(out);
     try T.expect(std.mem.indexOf(u8, out, "_jsxDEV(Foo, ") != null);
+}
+
+test "emit: jsx automatic_dev emits placeholder source info args" {
+    const out = try emitJsx("let v = <Foo />;", .{ .jsx_runtime = .automatic_dev });
+    defer T.allocator.free(out);
+    // Signature: `_jsxDEV(tag, props, key, isStaticChildren, source, self)`.
+    try T.expect(std.mem.indexOf(u8, out, "_jsxDEV(Foo, ") != null);
+    try T.expect(std.mem.indexOf(u8, out, ", undefined, false, {}, this)") != null);
+}
+
+test "emit: jsx automatic_dev injects react/jsx-dev-runtime import" {
+    const out = try emitJsx("let v = <Foo />;", .{ .jsx_runtime = .automatic_dev });
+    defer T.allocator.free(out);
+    try T.expect(std.mem.indexOf(u8, out, "import { jsxDEV as _jsxDEV") != null);
+    try T.expect(std.mem.indexOf(u8, out, "from \"react/jsx-dev-runtime\"") != null);
 }
 
 test "emit: jsx automatic injects react/jsx-runtime import" {
@@ -3569,4 +3598,39 @@ test "emit: numeric separator in hex/binary stripped below es2021" {
     try T.expect(std.mem.indexOf(u8, out, "_") == null);
     try T.expect(std.mem.indexOf(u8, out, "0xFFFF") != null);
     try T.expect(std.mem.indexOf(u8, out, "0b10101010") != null);
+}
+
+test "emit: hex literal preserved at es2021" {
+    const out = try emitWithOpts("const x = 0xFF;", .{ .es_target = .es2021 });
+    defer T.allocator.free(out);
+    try T.expect(std.mem.indexOf(u8, out, "0xFF") != null);
+}
+
+test "emit: binary literal preserved at es2020" {
+    const out = try emitWithOpts("const x = 0b1010;", .{ .es_target = .es2020 });
+    defer T.allocator.free(out);
+    try T.expect(std.mem.indexOf(u8, out, "0b1010") != null);
+}
+
+test "emit: octal literal preserved at es2020" {
+    const out = try emitWithOpts("const x = 0o17;", .{ .es_target = .es2020 });
+    defer T.allocator.free(out);
+    try T.expect(std.mem.indexOf(u8, out, "0o17") != null);
+}
+
+test "emit: exponent literal preserved" {
+    const out = try emit("const x = 1e10;");
+    defer T.allocator.free(out);
+    try T.expect(std.mem.indexOf(u8, out, "1e10") != null);
+}
+
+test "emit: numeric separator + hex preserved at es2021, stripped at es2017" {
+    const out_es2021 = try emitWithOpts("const x = 0xCAFE_BABE;", .{ .es_target = .es2021 });
+    defer T.allocator.free(out_es2021);
+    try T.expect(std.mem.indexOf(u8, out_es2021, "0xCAFE_BABE") != null);
+
+    const out_es2017 = try emitWithOpts("const x = 0xCAFE_BABE;", .{ .es_target = .es2017 });
+    defer T.allocator.free(out_es2017);
+    try T.expect(std.mem.indexOf(u8, out_es2017, "_") == null);
+    try T.expect(std.mem.indexOf(u8, out_es2017, "0xCAFEBABE") != null);
 }
