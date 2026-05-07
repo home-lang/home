@@ -189,6 +189,16 @@ pub const Options = struct {
     /// Source bytes must be attached via `Printer.setSource` for
     /// pass-through to take effect.
     remove_comments: bool = false,
+    /// `useDefineForClassFields` — when true (default for ES2022+),
+    /// public class fields use ES2022 `[[Define]]` semantics: the
+    /// emitter keeps the native `class Foo { x = 1 }` shape so the
+    /// runtime calls `Object.defineProperty(this, "x", { value: 1, … })`.
+    /// When false (TS legacy), public fields lower to plain
+    /// `this.x = 1;` assignments inside the (synthesized if absent)
+    /// constructor — matching tsc's pre-ES2022 / `useDefineForClassFields:
+    /// false` shape. v0 only plumbs the option; downlevel ES targets
+    /// already hoist fields into the ctor regardless of this flag.
+    use_define_for_class_fields: bool = true,
 };
 
 const source_map_mod = @import("source_map.zig");
@@ -1134,8 +1144,11 @@ pub const Printer = struct {
         // §4.A.9 — public class fields are an ES2022 feature. At
         // earlier ES2015–ES2021 targets we hoist `x = <init>;` into
         // the (synthesized if absent) constructor as `this.x = <init>;`,
-        // matching tsc's downlevel shape.
-        const downlevel_fields = !self.options.es_target.supportsNativeClassFields() and
+        // matching tsc's downlevel shape. We also force the same lowering
+        // when `useDefineForClassFields: false` so emitted JS uses the
+        // legacy assignment semantics rather than ES2022 [[Define]].
+        const downlevel_fields = (!self.options.es_target.supportsNativeClassFields() or
+            !self.options.use_define_for_class_fields) and
             self.classHasPublicFieldInit(node);
         try self.write("class");
         if (c.name != hir_mod.none_node_id) {
@@ -4005,6 +4018,31 @@ test "emit: public class field hoisted into synthesized ctor at es2019" {
     // Class shape is otherwise preserved.
     try T.expect(std.mem.indexOf(u8, out, "class Foo") != null);
     try T.expect(std.mem.indexOf(u8, out, "greet()") != null);
+}
+
+test "emit: useDefineForClassFields=true keeps native class field at es2022" {
+    const out = try emitWithOpts(
+        "class Foo { x = 1; }",
+        .{ .es_target = .es2022, .use_define_for_class_fields = true },
+    );
+    defer T.allocator.free(out);
+    // Default: native field declaration kept inside the class body.
+    try T.expect(std.mem.indexOf(u8, out, "x = 1;") != null);
+    try T.expect(std.mem.indexOf(u8, out, "constructor()") == null);
+    try T.expect(std.mem.indexOf(u8, out, "this.x = 1;") == null);
+}
+
+test "emit: useDefineForClassFields=false lowers field to ctor assignment at es2022" {
+    const out = try emitWithOpts(
+        "class Foo { x = 1; }",
+        .{ .es_target = .es2022, .use_define_for_class_fields = false },
+    );
+    defer T.allocator.free(out);
+    // Legacy TS semantics: synthesized ctor with `this.x = 1;`.
+    try T.expect(std.mem.indexOf(u8, out, "constructor()") != null);
+    try T.expect(std.mem.indexOf(u8, out, "this.x = 1;") != null);
+    // No bare native field declaration left behind.
+    try T.expect(std.mem.indexOf(u8, out, "\n  x = 1;") == null);
 }
 
 test "emit: public field hoisted into existing ctor at es2017" {

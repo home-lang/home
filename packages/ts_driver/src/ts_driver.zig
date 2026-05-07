@@ -157,6 +157,9 @@ pub fn optionsFromConfig(cfg: *const tsconfig_mod.TsConfig) CompileOptions {
     if (cfg.compiler_options.experimental_decorators) |on| {
         opts.emit.experimental_decorators = on;
     }
+    if (cfg.compiler_options.use_define_for_class_fields) |on| {
+        opts.emit.use_define_for_class_fields = on;
+    }
     return opts;
 }
 
@@ -1097,6 +1100,19 @@ test "driver: optionsFromConfig enables tsx for jsx=react-jsx" {
     );
     const opts = optionsFromConfig(&cfg);
     try T.expect(opts.is_tsx);
+}
+
+test "driver: optionsFromConfig wires useDefineForClassFields=false" {
+    var arena = std.heap.ArenaAllocator.init(T.allocator);
+    defer arena.deinit();
+    const cfg = try tsconfig_mod.parseString(
+        T.allocator,
+        arena.allocator(),
+        \\{ "compilerOptions": { "useDefineForClassFields": false } }
+        ,
+    );
+    const opts = optionsFromConfig(&cfg);
+    try T.expect(!opts.emit.use_define_for_class_fields);
 }
 
 test "driver: optionsFromConfig wires experimentalDecorators=false → Stage 3" {
