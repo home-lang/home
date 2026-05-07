@@ -35,6 +35,15 @@ pub const LibCache = struct {
     /// `Object` global — `keys / values / entries / assign`. Built
     /// once on first access.
     object_global: TypeId = types.Primitive.none,
+    /// `Math` global — `PI`, `E`, `abs`, `floor`, etc. Built once on
+    /// first access.
+    math_global: TypeId = types.Primitive.none,
+    /// `console` global — `log`, `error`, `warn`, `info`. Built once
+    /// on first access.
+    console_global: TypeId = types.Primitive.none,
+    /// `Number` global — `MAX_VALUE`, `isInteger`, etc. Built once
+    /// on first access.
+    number_global: TypeId = types.Primitive.none,
     /// Element-type → `Array<T>.prototype` shape mapping. Cached so a
     /// repeated `T[]` member access doesn't re-intern the dozen-ish
     /// methods on every lookup.
@@ -222,6 +231,114 @@ pub fn objectGlobal(
     return cache.object_global;
 }
 
+/// Build (or fetch from cache) the `Math` global — the namespace
+/// shape carrying the common numeric constants and helpers.
+///
+/// `Math.max` / `Math.min` are variadic (`(...n: number[]): number`).
+/// We model them as `(n: number[]): number` and register the resulting
+/// signature ids in `rest_set` so call-site arity checking treats the
+/// trailing slot as a rest binder (0+ `number` args).
+pub fn mathGlobal(
+    cache: *LibCache,
+    ti: *interner_mod.Interner,
+    sint: *string_interner.Interner,
+    gpa: std.mem.Allocator,
+    rest_set: *std.AutoHashMapUnmanaged(TypeId, void),
+) !TypeId {
+    if (cache.math_global != types.Primitive.none) return cache.math_global;
+
+    const number_t = types.Primitive.number_t;
+
+    // `number[]` — used as the rest-slot type for `max` / `min`.
+    const number_arr = try ti.internArrayType(sint, number_t);
+
+    // `(): number`
+    const sig_ret_num = try ti.internSignature(&[_]TypeId{}, number_t, false);
+    // `(x: number): number`
+    const sig_num_num = try ti.internSignature(&[_]TypeId{number_t}, number_t, false);
+    // `(x: number, y: number): number`
+    const sig_num2_num = try ti.internSignature(&[_]TypeId{ number_t, number_t }, number_t, false);
+    // `(...n: number[]): number` — modeled with a single `number[]`
+    // param + a rest-set entry so call-site checking expands it.
+    const sig_rest_num = try ti.internSignature(&[_]TypeId{number_arr}, number_t, false);
+    try rest_set.put(gpa, sig_rest_num, {});
+
+    const m = [_]types.ObjectMember{
+        .{ .name = try sint.intern("PI"), .type = number_t, .is_optional = false, .is_readonly = true, .is_method = false },
+        .{ .name = try sint.intern("E"), .type = number_t, .is_optional = false, .is_readonly = true, .is_method = false },
+        .{ .name = try sint.intern("abs"), .type = sig_num_num, .is_optional = false, .is_readonly = false, .is_method = true },
+        .{ .name = try sint.intern("floor"), .type = sig_num_num, .is_optional = false, .is_readonly = false, .is_method = true },
+        .{ .name = try sint.intern("ceil"), .type = sig_num_num, .is_optional = false, .is_readonly = false, .is_method = true },
+        .{ .name = try sint.intern("round"), .type = sig_num_num, .is_optional = false, .is_readonly = false, .is_method = true },
+        .{ .name = try sint.intern("sqrt"), .type = sig_num_num, .is_optional = false, .is_readonly = false, .is_method = true },
+        .{ .name = try sint.intern("pow"), .type = sig_num2_num, .is_optional = false, .is_readonly = false, .is_method = true },
+        .{ .name = try sint.intern("max"), .type = sig_rest_num, .is_optional = false, .is_readonly = false, .is_method = true },
+        .{ .name = try sint.intern("min"), .type = sig_rest_num, .is_optional = false, .is_readonly = false, .is_method = true },
+        .{ .name = try sint.intern("random"), .type = sig_ret_num, .is_optional = false, .is_readonly = false, .is_method = true },
+    };
+    cache.math_global = try ti.internObjectType(&m);
+    return cache.math_global;
+}
+
+/// Build (or fetch from cache) the `console` global. All four members
+/// share the same `(...args: any[]): void` shape — modeled as a
+/// single `any[]` param + rest-set entry.
+pub fn consoleGlobal(
+    cache: *LibCache,
+    ti: *interner_mod.Interner,
+    sint: *string_interner.Interner,
+    gpa: std.mem.Allocator,
+    rest_set: *std.AutoHashMapUnmanaged(TypeId, void),
+) !TypeId {
+    if (cache.console_global != types.Primitive.none) return cache.console_global;
+
+    const any_t = types.Primitive.any;
+    const void_t = types.Primitive.void_t;
+
+    // `any[]`
+    const any_arr = try ti.internArrayType(sint, any_t);
+    // `(...args: any[]): void`
+    const sig_log = try ti.internSignature(&[_]TypeId{any_arr}, void_t, false);
+    try rest_set.put(gpa, sig_log, {});
+
+    const m = [_]types.ObjectMember{
+        .{ .name = try sint.intern("log"), .type = sig_log, .is_optional = false, .is_readonly = false, .is_method = true },
+        .{ .name = try sint.intern("error"), .type = sig_log, .is_optional = false, .is_readonly = false, .is_method = true },
+        .{ .name = try sint.intern("warn"), .type = sig_log, .is_optional = false, .is_readonly = false, .is_method = true },
+        .{ .name = try sint.intern("info"), .type = sig_log, .is_optional = false, .is_readonly = false, .is_method = true },
+    };
+    cache.console_global = try ti.internObjectType(&m);
+    return cache.console_global;
+}
+
+/// Build (or fetch from cache) the `Number` global — common static
+/// constants (`MAX_VALUE`, `MIN_VALUE`, `MAX_SAFE_INTEGER`) and
+/// predicate helpers (`isInteger`, `isFinite`).
+pub fn numberGlobal(
+    cache: *LibCache,
+    ti: *interner_mod.Interner,
+    sint: *string_interner.Interner,
+) !TypeId {
+    if (cache.number_global != types.Primitive.none) return cache.number_global;
+
+    const number_t = types.Primitive.number_t;
+    const boolean_t = types.Primitive.boolean_t;
+    const any_t = types.Primitive.any;
+
+    // `(x: any): boolean`
+    const sig_any_bool = try ti.internSignature(&[_]TypeId{any_t}, boolean_t, false);
+
+    const m = [_]types.ObjectMember{
+        .{ .name = try sint.intern("MAX_VALUE"), .type = number_t, .is_optional = false, .is_readonly = true, .is_method = false },
+        .{ .name = try sint.intern("MIN_VALUE"), .type = number_t, .is_optional = false, .is_readonly = true, .is_method = false },
+        .{ .name = try sint.intern("MAX_SAFE_INTEGER"), .type = number_t, .is_optional = false, .is_readonly = true, .is_method = false },
+        .{ .name = try sint.intern("isInteger"), .type = sig_any_bool, .is_optional = false, .is_readonly = false, .is_method = true },
+        .{ .name = try sint.intern("isFinite"), .type = sig_any_bool, .is_optional = false, .is_readonly = false, .is_method = true },
+    };
+    cache.number_global = try ti.internObjectType(&m);
+    return cache.number_global;
+}
+
 // =============================================================================
 // Tests
 // =============================================================================
@@ -276,4 +393,59 @@ test "lib: objectGlobal exposes keys/values/entries/assign" {
     try T.expect(ti.objectMember(og, try sint.intern("values")) != null);
     try T.expect(ti.objectMember(og, try sint.intern("entries")) != null);
     try T.expect(ti.objectMember(og, try sint.intern("assign")) != null);
+}
+
+test "lib: mathGlobal exposes PI/floor/max" {
+    var sint = try string_interner.Interner.init(T.allocator);
+    defer sint.deinit();
+    var ti = try interner_mod.Interner.init(T.allocator);
+    defer ti.deinit();
+    var cache: LibCache = .{};
+    defer cache.deinit(T.allocator);
+    var rest_set: std.AutoHashMapUnmanaged(TypeId, void) = .empty;
+    defer rest_set.deinit(T.allocator);
+
+    const mg = try mathGlobal(&cache, &ti, &sint, T.allocator, &rest_set);
+    try T.expectEqual(types.Primitive.number_t, ti.objectMember(mg, try sint.intern("PI")).?);
+    try T.expect(ti.objectMember(mg, try sint.intern("floor")) != null);
+    try T.expect(ti.objectMember(mg, try sint.intern("max")) != null);
+    // `Math.max` is variadic — its signature must be in the rest set.
+    const max_sig = ti.objectMember(mg, try sint.intern("max")).?;
+    try T.expect(rest_set.contains(max_sig));
+}
+
+test "lib: consoleGlobal exposes log/error/warn/info" {
+    var sint = try string_interner.Interner.init(T.allocator);
+    defer sint.deinit();
+    var ti = try interner_mod.Interner.init(T.allocator);
+    defer ti.deinit();
+    var cache: LibCache = .{};
+    defer cache.deinit(T.allocator);
+    var rest_set: std.AutoHashMapUnmanaged(TypeId, void) = .empty;
+    defer rest_set.deinit(T.allocator);
+
+    const cg = try consoleGlobal(&cache, &ti, &sint, T.allocator, &rest_set);
+    try T.expect(ti.objectMember(cg, try sint.intern("log")) != null);
+    try T.expect(ti.objectMember(cg, try sint.intern("error")) != null);
+    try T.expect(ti.objectMember(cg, try sint.intern("warn")) != null);
+    try T.expect(ti.objectMember(cg, try sint.intern("info")) != null);
+    // `console.log` is `(...args: any[]): void`.
+    const log_sig = ti.objectMember(cg, try sint.intern("log")).?;
+    try T.expectEqual(types.Primitive.void_t, ti.signatureReturn(log_sig).?);
+    try T.expect(rest_set.contains(log_sig));
+}
+
+test "lib: numberGlobal exposes MAX_VALUE/isInteger" {
+    var sint = try string_interner.Interner.init(T.allocator);
+    defer sint.deinit();
+    var ti = try interner_mod.Interner.init(T.allocator);
+    defer ti.deinit();
+    var cache: LibCache = .{};
+    defer cache.deinit(T.allocator);
+
+    const ng = try numberGlobal(&cache, &ti, &sint);
+    try T.expectEqual(types.Primitive.number_t, ti.objectMember(ng, try sint.intern("MAX_VALUE")).?);
+    try T.expectEqual(types.Primitive.number_t, ti.objectMember(ng, try sint.intern("MAX_SAFE_INTEGER")).?);
+    try T.expect(ti.objectMember(ng, try sint.intern("isInteger")) != null);
+    try T.expect(ti.objectMember(ng, try sint.intern("isFinite")) != null);
 }
