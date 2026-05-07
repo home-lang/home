@@ -1263,8 +1263,9 @@ pub const ReflectExpr = struct {
         EnumToInt, // @enumToInt(enum) - convert enum to int
         IntToEnum, // @intToEnum(type, int) - convert int to enum
         // Memory builtins
-        MemSet, // @memset(ptr, value, len) - set memory
-        MemCpy, // @memcpy(dest, src, len) - copy memory
+        // Both 2-arg (Zig 0.11+ slice) and 3-arg (legacy ptr+len) forms accepted.
+        MemSet, // @memset(slice, byte) | @memset(ptr, value, len)
+        MemCpy, // @memcpy(dst_slice, src_slice) | @memcpy(dest, src, len)
         // Math builtins
         Sqrt, // @sqrt(value) - square root
         Sin, // @sin(value) - sine

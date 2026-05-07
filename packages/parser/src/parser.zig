@@ -7417,11 +7417,19 @@ pub const Parser = struct {
                 second_arg = try self.expression();
             }
 
-            // Parse third argument for three-arg builtins like @memcpy, @memset
+            // Parse third argument for three-arg builtins like @memcpy, @memset.
+            //
+            // Issue #58: Zig 0.11+ migrated `@memset(slice, byte)` and
+            // `@memcpy(dst_slice, src_slice)` to a 2-arg slice form.
+            // Accept BOTH the legacy 3-arg `(ptr, byte, len)` /
+            // `(dst, src, len)` form AND the modern 2-arg slice form.
+            // The typechecker validates the actual signature; the parser
+            // just needs to accept either shape.
             var third_arg: ?*ast.Expr = null;
             if (kind == .MemCpy or kind == .MemSet) {
-                _ = try self.expect(.Comma, "Expected ',' between arguments");
-                third_arg = try self.expression();
+                if (self.match(&.{.Comma})) {
+                    third_arg = try self.expression();
+                }
             }
 
             // Parse optional field name for @offsetOf, @fieldType

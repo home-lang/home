@@ -1264,3 +1264,55 @@ test "parser: double optional — ??T" {
     const struct_decl = program.statements[0].StructDecl;
     try testing.expectEqualStrings("??u32", struct_decl.fields[0].type_name);
 }
+
+// Issue #58: @memset / @memcpy accept both 2-arg (Zig 0.11+ slice) and
+// 3-arg (legacy ptr+len) forms. The parser only validates arity loosely;
+// the typechecker enforces real signatures against actual operand types.
+
+test "parser: @memset 2-arg slice form" {
+    const program = try parseSource(testing.allocator, "@memset(buf, 0)");
+    defer program.deinit(testing.allocator);
+
+    const expr = program.statements[0].ExprStmt;
+    try testing.expect(expr.* == .ReflectExpr);
+    const reflect = expr.ReflectExpr;
+    try testing.expectEqual(ast.ReflectExpr.ReflectKind.MemSet, reflect.kind);
+    try testing.expect(reflect.second_arg != null);
+    try testing.expect(reflect.third_arg == null);
+}
+
+test "parser: @memcpy 2-arg slice form" {
+    const program = try parseSource(testing.allocator, "@memcpy(dst, src)");
+    defer program.deinit(testing.allocator);
+
+    const expr = program.statements[0].ExprStmt;
+    try testing.expect(expr.* == .ReflectExpr);
+    const reflect = expr.ReflectExpr;
+    try testing.expectEqual(ast.ReflectExpr.ReflectKind.MemCpy, reflect.kind);
+    try testing.expect(reflect.second_arg != null);
+    try testing.expect(reflect.third_arg == null);
+}
+
+test "parser: @memset 3-arg legacy form" {
+    const program = try parseSource(testing.allocator, "@memset(p, 0, 8)");
+    defer program.deinit(testing.allocator);
+
+    const expr = program.statements[0].ExprStmt;
+    try testing.expect(expr.* == .ReflectExpr);
+    const reflect = expr.ReflectExpr;
+    try testing.expectEqual(ast.ReflectExpr.ReflectKind.MemSet, reflect.kind);
+    try testing.expect(reflect.second_arg != null);
+    try testing.expect(reflect.third_arg != null);
+}
+
+test "parser: @memcpy 3-arg legacy form" {
+    const program = try parseSource(testing.allocator, "@memcpy(d, s, 8)");
+    defer program.deinit(testing.allocator);
+
+    const expr = program.statements[0].ExprStmt;
+    try testing.expect(expr.* == .ReflectExpr);
+    const reflect = expr.ReflectExpr;
+    try testing.expectEqual(ast.ReflectExpr.ReflectKind.MemCpy, reflect.kind);
+    try testing.expect(reflect.second_arg != null);
+    try testing.expect(reflect.third_arg != null);
+}
