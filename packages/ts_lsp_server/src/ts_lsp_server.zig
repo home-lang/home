@@ -143,6 +143,7 @@ pub const Method = enum {
     text_document_linked_editing_range,
     workspace_will_rename_files,
     workspace_execute_command,
+    text_document_moniker,
     unknown,
 
     pub fn fromString(s: []const u8) Method {
@@ -187,6 +188,7 @@ pub const Method = enum {
             .{ "textDocument/linkedEditingRange", Method.text_document_linked_editing_range },
             .{ "workspace/willRenameFiles", Method.workspace_will_rename_files },
             .{ "workspace/executeCommand", Method.workspace_execute_command },
+            .{ "textDocument/moniker", Method.text_document_moniker },
         };
         inline for (map) |entry| {
             if (std.mem.eql(u8, s, entry[0])) return entry[1];
@@ -239,6 +241,7 @@ pub const SUPPORTED_METHODS = &[_][]const u8{
     "textDocument/semanticTokens/full/delta",
     "textDocument/semanticTokens/range",
     "textDocument/diagnostic",
+    "textDocument/moniker",
     // Resolve callbacks.
     "completionItem/resolve",
     "codeLens/resolve",
@@ -2045,6 +2048,60 @@ pub fn handleLinkedEditingRange(
     return encodeResponse(gpa, request_id, buf.items);
 }
 
+/// Handle a `textDocument/moniker` JSON-RPC request: extract the
+/// `(uri, line, character)` triple, route to `Service.moniker`, and
+/// emit an LSIF-style `Moniker[]` array. Each moniker carries
+/// `scheme`, `identifier`, `unique`, and `kind`. The service emits at
+/// most one moniker per cursor (covering the symbol at that
+/// position); the array shape lets us extend to multiple monikers
+/// per symbol later (e.g. one per index format) without breaking the
+/// wire contract. Caller owns the returned slice.
+pub fn handleMoniker(
+    service: *ts_lsp.Service,
+    gpa: std.mem.Allocator,
+    request_id: RequestId,
+    params_json: []const u8,
+) ![]u8 {
+    const uri = findJsonStringField(params_json, "uri") orelse return error.MissingUri;
+    const line = findJsonIntField(params_json, "line") orelse return error.MissingLine;
+    const character = findJsonIntField(params_json, "character") orelse return error.MissingCharacter;
+    const path = uriToPath(uri);
+
+    const file_id = service.program.lookupPath(path) orelse {
+        return encodeResponse(gpa, request_id, "[]");
+    };
+    const f = service.program.fileById(file_id);
+    const line_u: u32 = if (line < 0) 0 else @intCast(line);
+    const char_u: u32 = if (character < 0) 0 else @intCast(character);
+    const byte_pos = lineColToByte(f.source, line_u, char_u);
+
+    const monikers = try service.moniker(gpa, path, byte_pos);
+    defer ts_lsp.freeMonikers(gpa, monikers);
+
+    var buf: std.ArrayListUnmanaged(u8) = .empty;
+    defer buf.deinit(gpa);
+    try buf.append(gpa, '[');
+    for (monikers, 0..) |m, i| {
+        if (i > 0) try buf.append(gpa, ',');
+        try buf.appendSlice(gpa, "{\"scheme\":\"");
+        try writeJsonStringContents(&buf, gpa, m.scheme);
+        try buf.appendSlice(gpa, "\",\"identifier\":\"");
+        try writeJsonStringContents(&buf, gpa, m.identifier);
+        try buf.appendSlice(gpa, "\",\"unique\":\"");
+        try writeJsonStringContents(&buf, gpa, m.unique);
+        try buf.appendSlice(gpa, "\",\"kind\":\"");
+        const kind_str: []const u8 = switch (m.kind) {
+            .import => "import",
+            .@"export" => "export",
+            .local => "local",
+        };
+        try buf.appendSlice(gpa, kind_str);
+        try buf.appendSlice(gpa, "\"}");
+    }
+    try buf.append(gpa, ']');
+    return encodeResponse(gpa, request_id, buf.items);
+}
+
 /// Handle a `workspace/willRenameFiles` JSON-RPC request: extract the
 /// `files` array (each entry has an `oldUri` + `newUri` LSP URI), route
 /// to `Service.workspaceWillRenameFiles`, and emit an LSP
@@ -2478,7 +2535,7 @@ pub fn renderInitializeCapabilities(gpa: std.mem.Allocator) ![]u8 {
     var buf: std.ArrayListUnmanaged(u8) = .empty;
     errdefer buf.deinit(gpa);
     try buf.appendSlice(gpa,
-        \\{"capabilities":{"textDocumentSync":1,"hoverProvider":true,"definitionProvider":true,"referencesProvider":true,"completionProvider":{"triggerCharacters":["."," "]},"documentSymbolProvider":true,"workspaceSymbolProvider":true,"renameProvider":{"prepareProvider":true},"codeActionProvider":true,"executeCommandProvider":{"commands":["home.organizeImports","home.applyCodeAction"]},"semanticTokensProvider":{"legend":{"tokenTypes":["variable","parameter","function","method","class","interface","type","enum","property","keyword","string","number","operator","comment"],"tokenModifiers":[]},"full":true,"range":true},"signatureHelpProvider":{"triggerCharacters":["(",","]},"documentHighlightProvider":false,"documentFormattingProvider":true,"foldingRangeProvider":true,"selectionRangeProvider":true},"serverInfo":{"name":"home-lsp","version":"0.1.0","supportedMethods":[
+        \\{"capabilities":{"textDocumentSync":1,"hoverProvider":true,"definitionProvider":true,"referencesProvider":true,"completionProvider":{"triggerCharacters":["."," "]},"documentSymbolProvider":true,"workspaceSymbolProvider":true,"renameProvider":{"prepareProvider":true},"codeActionProvider":true,"executeCommandProvider":{"commands":["home.organizeImports","home.applyCodeAction"]},"semanticTokensProvider":{"legend":{"tokenTypes":["variable","parameter","function","method","class","interface","type","enum","property","keyword","string","number","operator","comment"],"tokenModifiers":[]},"full":true,"range":true},"signatureHelpProvider":{"triggerCharacters":["(",","]},"documentHighlightProvider":false,"documentFormattingProvider":true,"foldingRangeProvider":true,"selectionRangeProvider":true,"monikerProvider":true},"serverInfo":{"name":"home-lsp","version":"0.1.0","supportedMethods":[
     );
     for (SUPPORTED_METHODS, 0..) |m, i| {
         if (i != 0) try buf.append(gpa, ',');
@@ -2782,6 +2839,10 @@ pub fn dispatchRequest(
         .workspace_execute_command => {
             if (is_notification) return &.{};
             return try handleExecuteCommand(service, gpa, id, params);
+        },
+        .text_document_moniker => {
+            if (is_notification) return &.{};
+            return try handleMoniker(service, gpa, id, params);
         },
         // Catch-all for unknown methods — fall through to standard
         // JSON-RPC `Method not found` error.
@@ -4117,6 +4178,67 @@ test "handleLinkedEditingRange: returns null off JSX (service stub)" {
     try T.expect(std.mem.indexOf(u8, out, "\"id\":311") != null);
     // Service stub returns null; wire layer surfaces it as `"result":null`.
     try T.expect(std.mem.indexOf(u8, out, "\"result\":null") != null);
+}
+
+test "handleMoniker: returns LSIF moniker shape with kind classification" {
+    // Two-file program: `lib.ts` exports a helper; `main.ts` imports
+    // it as a *default* binding (the default-import identifier is a
+    // dedicated identifier node in the HIR, so the cursor lands on
+    // it cleanly), declares an `export function exposed`, and a
+    // private `function priv` for the local case.
+    const main_src = "import lib from './lib'; export function exposed() {} function priv() {}";
+    var vfs = ts_resolver.VirtualFs.init(T.allocator);
+    defer vfs.deinit();
+    try vfs.addFile("/lib.ts", "export default function helper() {}");
+    try vfs.addFile("/main.ts", main_src);
+    var resolver = ts_resolver.Resolver.init(T.allocator, vfs.fs(), .{});
+    defer resolver.deinit();
+    var program = ts_program.Program.init(T.allocator, &resolver);
+    defer program.deinit();
+
+    _ = try program.add("/lib.ts", "export default function helper() {}");
+    _ = try program.add("/main.ts", main_src);
+    try program.compileAll(.{});
+
+    var svc = ts_lsp.Service.init(T.allocator, &program);
+
+    // Cursor on `lib` (the default-import binding) — kind: import.
+    // Char 7 == start of `lib` in `import lib from './lib';`.
+    const body_import =
+        \\{"jsonrpc":"2.0","id":901,"method":"textDocument/moniker","params":{"textDocument":{"uri":"file:///main.ts"},"position":{"line":0,"character":7}}}
+    ;
+    const out_import = try handleMoniker(&svc, T.allocator, .{ .integer = 901 }, body_import);
+    defer T.allocator.free(out_import);
+    try T.expect(std.mem.indexOf(u8, out_import, "\"id\":901") != null);
+    try T.expect(std.mem.indexOf(u8, out_import, "\"scheme\":\"tsc\"") != null);
+    try T.expect(std.mem.indexOf(u8, out_import, "\"unique\":\"global\"") != null);
+    try T.expect(std.mem.indexOf(u8, out_import, "\"kind\":\"import\"") != null);
+    try T.expect(std.mem.indexOf(u8, out_import, ":default") != null);
+
+    // Cursor on `exposed` (the `function exposed` name) — kind: export.
+    // `import lib from './lib'; ` is 25 chars, then
+    // `export function exposed() {}` starts; `exposed` begins at
+    // 25 + 16 == 41.
+    const body_export =
+        \\{"jsonrpc":"2.0","id":902,"method":"textDocument/moniker","params":{"textDocument":{"uri":"file:///main.ts"},"position":{"line":0,"character":41}}}
+    ;
+    const out_export = try handleMoniker(&svc, T.allocator, .{ .integer = 902 }, body_export);
+    defer T.allocator.free(out_export);
+    try T.expect(std.mem.indexOf(u8, out_export, "\"id\":902") != null);
+    try T.expect(std.mem.indexOf(u8, out_export, "\"kind\":\"export\"") != null);
+    try T.expect(std.mem.indexOf(u8, out_export, "/main.ts:exposed") != null);
+
+    // Cursor on `priv` (a non-exported declaration) — kind: local.
+    // `priv` starts at byte 63 (after
+    // `import lib from './lib'; export function exposed() {} function `).
+    const body_local =
+        \\{"jsonrpc":"2.0","id":903,"method":"textDocument/moniker","params":{"textDocument":{"uri":"file:///main.ts"},"position":{"line":0,"character":63}}}
+    ;
+    const out_local = try handleMoniker(&svc, T.allocator, .{ .integer = 903 }, body_local);
+    defer T.allocator.free(out_local);
+    try T.expect(std.mem.indexOf(u8, out_local, "\"id\":903") != null);
+    try T.expect(std.mem.indexOf(u8, out_local, "\"kind\":\"local\"") != null);
+    try T.expect(std.mem.indexOf(u8, out_local, "/main.ts:priv") != null);
 }
 
 test "handleWillRenameFiles: returns null result for empty stub edit list" {

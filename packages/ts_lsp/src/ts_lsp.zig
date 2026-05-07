@@ -354,6 +354,40 @@ pub fn freeDocumentLinks(gpa: std.mem.Allocator, links: []DocumentLink) void {
     gpa.free(links);
 }
 
+/// LSP `textDocument/moniker` payload — an LSIF-style symbol moniker
+/// identifying a single declaration across projects. The wire shape
+/// emitted by `ts_lsp_server` is `{ scheme, identifier, unique, kind
+/// }`. We hard-code `scheme = "tsc"` (matching tsserver's LSIF
+/// indexer) and `unique = "global"` for top-level module symbols.
+/// `identifier` is `"<module-path>:<symbol-name>"` so cross-project
+/// indexers can reconstruct the symbol from its module + name pair.
+/// `kind` distinguishes import / export / local sites:
+///   - `.@"export"` — the symbol is declared and exported from its
+///     module, so external indexers should treat it as a public
+///     entry point.
+///   - `.import` — the symbol at the cursor is an imported binding;
+///     the moniker points at the foreign module's export.
+///   - `.local` — the symbol is module-private (no `export`, no
+///     `import`).
+/// `identifier` is owned by the caller.
+pub const Moniker = struct {
+    scheme: []const u8 = "tsc",
+    /// `"<module-path>:<symbol-name>"`. Owned by the caller —
+    /// `freeMonikers` frees it.
+    identifier: []const u8,
+    unique: []const u8 = "global",
+    kind: Kind,
+
+    pub const Kind = enum { import, @"export", local };
+};
+
+/// Free a `[]Moniker` produced by `Service.moniker`. Releases the
+/// per-moniker `identifier` allocations and the slice.
+pub fn freeMonikers(gpa: std.mem.Allocator, monikers: []Moniker) void {
+    for (monikers) |m| gpa.free(m.identifier);
+    gpa.free(monikers);
+}
+
 pub const Service = struct {
     gpa: std.mem.Allocator,
     program: *ts_program.Program,
@@ -2107,6 +2141,131 @@ pub const Service = struct {
         return links.toOwnedSlice(gpa);
     }
 
+    /// LSP `textDocument/moniker` — return LSIF-style monikers for the
+    /// symbol at `byte_pos`. Each moniker uniquely identifies a
+    /// declaration across project boundaries, so external indexers
+    /// (LSIF/SCIP) can stitch references together.
+    ///
+    /// v0 emits a single moniker for top-level identifiers:
+    ///   - If the cursor sits on an `import`-bound name, emit
+    ///     `kind: .import` whose identifier names the foreign
+    ///     module + the symbol's name in that module.
+    ///   - Else if the symbol is a top-level `export <decl>`, emit
+    ///     `kind: .@"export"`.
+    ///   - Else emit `kind: .local`.
+    ///
+    /// Returns an empty slice when the cursor isn't on an identifier
+    /// or the file isn't tracked. Caller owns the returned slice
+    /// (free with `freeMonikers`).
+    pub fn moniker(
+        self: *Service,
+        gpa: std.mem.Allocator,
+        file_path: []const u8,
+        byte_pos: u32,
+    ) ![]Moniker {
+        var out: std.ArrayListUnmanaged(Moniker) = .empty;
+        errdefer {
+            for (out.items) |m| gpa.free(m.identifier);
+            out.deinit(gpa);
+        }
+
+        const file_id = self.program.lookupPath(file_path) orelse return out.toOwnedSlice(gpa);
+        const f = self.program.fileById(file_id);
+        const c = f.compilation orelse return out.toOwnedSlice(gpa);
+        const node = findInnermostNode(&c.hir, c.root, byte_pos) orelse return out.toOwnedSlice(gpa);
+        if (c.hir.kindOf(node) != .identifier) return out.toOwnedSlice(gpa);
+        const id = hir_mod.identifierOf(&c.hir, node);
+        const local_name = c.interner.get(id.name);
+        if (local_name.len == 0) return out.toOwnedSlice(gpa);
+
+        // Detect `import` binding — and, when possible, lift the
+        // moniker over to the foreign module so the identifier names
+        // the originating export.
+        if (c.hir.kindOf(c.root) == .block_stmt) {
+            const stmts = hir_mod.blockStmts(&c.hir, c.root);
+            for (stmts) |s| {
+                if (c.hir.kindOf(s) != .import_decl) continue;
+                const imp = hir_mod.importOf(&c.hir, s);
+
+                var foreign_name: ?[]const u8 = null;
+                var matched = false;
+
+                if (imp.default_binding != hir_mod.none_node_id and
+                    c.hir.kindOf(imp.default_binding) == .identifier)
+                {
+                    const did = hir_mod.identifierOf(&c.hir, imp.default_binding);
+                    if (did.name == id.name) {
+                        foreign_name = "default";
+                        matched = true;
+                    }
+                }
+                if (!matched and imp.namespace_binding != hir_mod.none_node_id and
+                    c.hir.kindOf(imp.namespace_binding) == .identifier)
+                {
+                    const nid = hir_mod.identifierOf(&c.hir, imp.namespace_binding);
+                    if (nid.name == id.name) {
+                        // Namespace import — the moniker names the
+                        // module itself; use "*" as the symbol slot.
+                        foreign_name = "*";
+                        matched = true;
+                    }
+                }
+                if (!matched) {
+                    const named = hir_mod.importNamed(&c.hir, s);
+                    for (named) |spec| {
+                        if (c.hir.kindOf(spec) != .import_specifier) continue;
+                        const sp = hir_mod.importSpecifierOf(&c.hir, spec);
+                        if (sp.local == id.name) {
+                            foreign_name = c.interner.get(sp.imported);
+                            matched = true;
+                            break;
+                        }
+                    }
+                }
+                if (!matched) continue;
+
+                const module_name = c.interner.get(imp.module);
+                const fname = foreign_name orelse local_name;
+                // Try resolving the specifier so the identifier can
+                // pin the foreign module path; fall back to the raw
+                // specifier text when the resolver doesn't find it.
+                const target_path: []const u8 = blk: {
+                    if (module_name.len == 0) break :blk file_path;
+                    const res = self.program.resolver.resolve(module_name, file_path) catch break :blk module_name;
+                    break :blk res.path;
+                };
+                const ident = try std.fmt.allocPrint(gpa, "{s}:{s}", .{ target_path, fname });
+                errdefer gpa.free(ident);
+                try out.append(gpa, .{ .identifier = ident, .kind = .import });
+                return out.toOwnedSlice(gpa);
+            }
+        }
+
+        // Detect `export` — scan top-level export_decls for one
+        // whose inner declaration carries this name. v0 only
+        // recognizes `export <decl>` (declaration-mode); the bare
+        // `export { a, b }` specifier form is folded under `.local`
+        // for now, because the specifier payload isn't exposed at
+        // this layer.
+        const is_export: bool = blk: {
+            if (c.hir.kindOf(c.root) != .block_stmt) break :blk false;
+            const stmts = hir_mod.blockStmts(&c.hir, c.root);
+            for (stmts) |s| {
+                if (c.hir.kindOf(s) != .export_decl) continue;
+                const ex = hir_mod.exportOf(&c.hir, s);
+                if (ex.decl == hir_mod.none_node_id) continue;
+                if (declNameEquals(&c.hir, ex.decl, id.name)) break :blk true;
+            }
+            break :blk false;
+        };
+
+        const kind: Moniker.Kind = if (is_export) .@"export" else .local;
+        const ident = try std.fmt.allocPrint(gpa, "{s}:{s}", .{ file_path, local_name });
+        errdefer gpa.free(ident);
+        try out.append(gpa, .{ .identifier = ident, .kind = kind });
+        return out.toOwnedSlice(gpa);
+    }
+
     /// `workspace/willRenameFiles` — sent by the editor BEFORE a file
     /// is renamed. The server returns `TextEdit`s that update import
     /// specifiers in OTHER files referencing the renamed one, so
@@ -2649,6 +2808,26 @@ fn parseCannotFindName(message: []const u8) ?[]const u8 {
     const close = after + close_rel;
     if (close <= after) return null;
     return message[after..close];
+}
+
+/// Return `true` when `decl` is a top-level declaration whose name
+/// identifier interns to `name`. Used by `Service.moniker` to detect
+/// `export <decl>` matches without re-implementing the per-decl name
+/// lookups elsewhere.
+fn declNameEquals(hir: *const hir_mod.Hir, decl: hir_mod.NodeId, name: string_interner.StringId) bool {
+    const name_node: hir_mod.NodeId = switch (hir.kindOf(decl)) {
+        .fn_decl => hir_mod.fnDeclOf(hir, decl).name,
+        .class_decl => hir_mod.classOf(hir, decl).name,
+        .interface_decl => hir_mod.interfaceOf(hir, decl).name,
+        .type_alias_decl => hir_mod.typeAliasOf(hir, decl).name,
+        .enum_decl => hir_mod.enumOf(hir, decl).name,
+        .namespace_decl => hir_mod.namespaceOf(hir, decl).name,
+        .let_decl, .const_decl, .var_decl => hir_mod.varDeclOf(hir, decl).name,
+        else => return false,
+    };
+    if (name_node == hir_mod.none_node_id) return false;
+    if (hir.kindOf(name_node) != .identifier) return false;
+    return hir_mod.identifierOf(hir, name_node).name == name;
 }
 
 fn describeTopLevelSymbol(
