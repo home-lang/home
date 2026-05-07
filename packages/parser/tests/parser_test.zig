@@ -1186,3 +1186,81 @@ test "parser: const primitive alias still parses as LetDecl" {
     try testing.expect(stmt.LetDecl.value.?.* == .Identifier);
     try testing.expectEqualStrings("u32", stmt.LetDecl.value.?.Identifier.name);
 }
+
+// Issue #57 — `?T` accepts any compound type expression for `T`. Each test
+// asserts the encoded `type_name` round-trips so downstream passes see the
+// expected string. Parsed via struct-field type position; the same grammar
+// handles let-annotations, return types, and parameter types.
+
+test "parser: optional named type — ?Foo" {
+    const program = try parseSource(testing.allocator, "struct S { f: ?Foo }");
+    defer program.deinit(testing.allocator);
+    const struct_decl = program.statements[0].StructDecl;
+    try testing.expectEqual(@as(usize, 1), struct_decl.fields.len);
+    try testing.expectEqualStrings("?Foo", struct_decl.fields[0].type_name);
+}
+
+test "parser: optional primitive — ?u32" {
+    const program = try parseSource(testing.allocator, "struct S { f: ?u32 }");
+    defer program.deinit(testing.allocator);
+    const struct_decl = program.statements[0].StructDecl;
+    try testing.expectEqualStrings("?u32", struct_decl.fields[0].type_name);
+}
+
+test "parser: optional slice — ?[]T" {
+    const program = try parseSource(testing.allocator, "struct S { f: ?[]u8 }");
+    defer program.deinit(testing.allocator);
+    const struct_decl = program.statements[0].StructDecl;
+    try testing.expectEqualStrings("?[]u8", struct_decl.fields[0].type_name);
+}
+
+test "parser: optional const slice — ?[]const T" {
+    const program = try parseSource(testing.allocator, "struct S { f: ?[]const u8 }");
+    defer program.deinit(testing.allocator);
+    const struct_decl = program.statements[0].StructDecl;
+    try testing.expectEqualStrings("?[]u8", struct_decl.fields[0].type_name);
+}
+
+test "parser: optional pointer — ?*T" {
+    const program = try parseSource(testing.allocator, "struct S { f: ?*Foo }");
+    defer program.deinit(testing.allocator);
+    const struct_decl = program.statements[0].StructDecl;
+    try testing.expectEqualStrings("?*Foo", struct_decl.fields[0].type_name);
+}
+
+test "parser: optional const pointer — ?*const T" {
+    const program = try parseSource(testing.allocator, "struct S { f: ?*const Foo }");
+    defer program.deinit(testing.allocator);
+    const struct_decl = program.statements[0].StructDecl;
+    try testing.expectEqualStrings("?*const Foo", struct_decl.fields[0].type_name);
+}
+
+test "parser: chained optional pointer — ?*?*T" {
+    const program = try parseSource(testing.allocator, "struct S { f: ?*?*Foo }");
+    defer program.deinit(testing.allocator);
+    const struct_decl = program.statements[0].StructDecl;
+    try testing.expectEqualStrings("?*?*Foo", struct_decl.fields[0].type_name);
+}
+
+test "parser: optional fixed array — ?[N]T" {
+    const program = try parseSource(testing.allocator, "struct S { f: ?[16]u8 }");
+    defer program.deinit(testing.allocator);
+    const struct_decl = program.statements[0].StructDecl;
+    try testing.expectEqualStrings("?[16]u8", struct_decl.fields[0].type_name);
+}
+
+test "parser: optional fn-pointer — ?fn() Ret" {
+    const program = try parseSource(testing.allocator, "struct S { f: ?fn() void }");
+    defer program.deinit(testing.allocator);
+    const struct_decl = program.statements[0].StructDecl;
+    // Encoding starts with `?` so downstream sees a nullable function type.
+    try testing.expect(struct_decl.fields[0].type_name.len > 0);
+    try testing.expectEqual(@as(u8, '?'), struct_decl.fields[0].type_name[0]);
+}
+
+test "parser: double optional — ??T" {
+    const program = try parseSource(testing.allocator, "struct S { f: ??u32 }");
+    defer program.deinit(testing.allocator);
+    const struct_decl = program.statements[0].StructDecl;
+    try testing.expectEqualStrings("??u32", struct_decl.fields[0].type_name);
+}

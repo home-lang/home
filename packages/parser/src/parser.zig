@@ -2897,11 +2897,25 @@ pub const Parser = struct {
             }
         }
 
-        // Check for nullable prefix: ?T
+        // Check for nullable prefix: ?T. Recurses through the full
+        // type-annotation grammar so any compound type expression is
+        // accepted as the inner — slice (`?[]const u8`), fixed array
+        // (`?[N]T`), pointer (`?*T`, `?*const T`), nested optional
+        // (`?*?*T`), function pointer (`?fn(...) Ret`), etc. (Issue #57.)
         if (self.match(&.{.Question})) {
             const inner_type = try self.parseTypeAnnotation();
             defer self.allocator.free(inner_type);
             return try std.fmt.allocPrint(self.allocator, "?{s}", .{inner_type});
+        }
+
+        // `??T` — double optional. The lexer fuses two `?` characters into
+        // a single `QuestionQuestion` token (used by null-coalescing in
+        // expression position). In type position we re-split it into two
+        // optional prefixes around an inner type. (Issue #57.)
+        if (self.match(&.{.QuestionQuestion})) {
+            const inner_type = try self.parseTypeAnnotation();
+            defer self.allocator.free(inner_type);
+            return try std.fmt.allocPrint(self.allocator, "??{s}", .{inner_type});
         }
 
         // Zig-style error-union sugar: `!T` desugars to `Result<T, AnyError>`.
@@ -2914,20 +2928,34 @@ pub const Parser = struct {
             return try std.fmt.allocPrint(self.allocator, "Result<{s}, AnyError>", .{inner_type});
         }
 
-        // Check for optional array type: ?[]T or ?[N]T (lexer combines ?[ into QuestionBracket)
+        // Check for optional array type: ?[]T or ?[N]T (lexer combines ?[ into QuestionBracket).
+        // Mirrors the `[]T` path below — accepts `const` / `volatile`
+        // qualifiers on the pointee so `?[]const u8` and `?[]volatile u32`
+        // parse cleanly. (Issue #57.)
         if (self.match(&.{.QuestionBracket})) {
             if (self.peek().type == .RightBracket) {
-                // ?[]T - optional dynamic array
+                // ?[]T - optional dynamic array (slice).
                 _ = try self.expect(.RightBracket, "Expected ']'");
+                _ = self.match(&.{.Const});
+                if (self.check(.Identifier) and std.mem.eql(u8, self.peek().lexeme, "volatile")) {
+                    _ = self.advance();
+                }
                 const elem_type = try self.parseTypeAnnotation();
+                defer self.allocator.free(elem_type);
                 return try std.fmt.allocPrint(self.allocator, "?[]{s}", .{elem_type});
             }
 
-            // Check for ?[N]T syntax (optional fixed-size array)
+            // Check for ?[N]T syntax (optional fixed-size array). The element
+            // type allows the same `const` / `volatile` qualifiers as `[N]T`.
             if (self.check(.Integer)) {
                 const size_token = self.advance();
                 _ = try self.expect(.RightBracket, "Expected ']' after array size");
+                _ = self.match(&.{.Const});
+                if (self.check(.Identifier) and std.mem.eql(u8, self.peek().lexeme, "volatile")) {
+                    _ = self.advance();
+                }
                 const elem_type = try self.parseTypeAnnotation();
+                defer self.allocator.free(elem_type);
                 return try std.fmt.allocPrint(self.allocator, "?[{s}]{s}", .{ size_token.lexeme, elem_type });
             }
 
@@ -2935,6 +2963,18 @@ pub const Parser = struct {
             const inner = try self.parseTypeAnnotation();
             _ = try self.expect(.RightBracket, "Expected ']'");
             return try std.fmt.allocPrint(self.allocator, "?[{s}]", .{inner});
+        }
+
+        // `*?T` / `*?` chain — the lexer fuses `*?` into a single
+        // `StarQuestion` token (used by saturating multiplication in
+        // expression position). In type position we re-split it into a
+        // pointer prefix followed by an optional. Surfaces in signatures
+        // like `?*?*T` after the outer `?` is consumed: the recursive
+        // call lands here on the next `*?`. (Issue #57.)
+        if (self.match(&.{.StarQuestion})) {
+            const inner_type = try self.parseTypeAnnotation();
+            defer self.allocator.free(inner_type);
+            return try std.fmt.allocPrint(self.allocator, "*?{s}", .{inner_type});
         }
 
         // Check for pointer type: *T, *const T, *volatile T, *const volatile T.
