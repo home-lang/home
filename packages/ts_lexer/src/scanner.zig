@@ -155,6 +155,18 @@ pub const Scanner = struct {
     /// trivia run included a line terminator.
     fn skipTrivia(self: *Scanner) void {
         self.saw_newline = false;
+        // Shebang `#!` on the very first line of source is treated as a
+        // line comment (matches tsc's behaviour). Node CLI scripts often
+        // start with `#!/usr/bin/env node`; the JS emitter preserves the
+        // original line by re-emitting source[0..first_newline].
+        if (self.pos == 0 and self.source.len >= 2 and
+            self.source[0] == '#' and self.source[1] == '!')
+        {
+            self.pos += 2;
+            while (!self.isAtEnd() and self.source[self.pos] != '\n' and self.source[self.pos] != '\r') {
+                self.pos += 1;
+            }
+        }
         while (!self.isAtEnd()) {
             const c = self.source[self.pos];
             switch (c) {
@@ -947,6 +959,29 @@ test "Scanner: template — head only (no parser-driven re-scan in this test)" {
     const tok1 = try s.next(t.allocator);
     try t.expectEqual(TokenKind.template_head, tok1.kind);
     try t.expectEqualStrings("`a${", tok1.bytes(s.source));
+}
+
+test "Scanner: shebang line is treated as a leading comment" {
+    var s = Scanner.init(t.allocator, "#!/usr/bin/env node\nconst x = 1;");
+    defer s.deinit(t.allocator);
+    var toks = try s.tokenize(t.allocator);
+    defer toks.deinit(t.allocator);
+    try t.expectEqual(TokenKind.kw_const, toks.items[0].kind);
+    try t.expectEqual(TokenKind.identifier, toks.items[1].kind);
+    try t.expectEqualStrings("x", toks.items[1].bytes(s.source));
+    try t.expectEqual(TokenKind.equal, toks.items[2].kind);
+    try t.expectEqual(TokenKind.number_literal, toks.items[3].kind);
+    try t.expectEqual(TokenKind.semicolon, toks.items[4].kind);
+    try t.expectEqual(TokenKind.eof, toks.items[5].kind);
+}
+
+test "Scanner: shebang without trailing newline (file with only shebang)" {
+    var s = Scanner.init(t.allocator, "#!/usr/bin/env node");
+    defer s.deinit(t.allocator);
+    var toks = try s.tokenize(t.allocator);
+    defer toks.deinit(t.allocator);
+    try t.expectEqual(@as(usize, 1), toks.items.len);
+    try t.expectEqual(TokenKind.eof, toks.items[0].kind);
 }
 
 test "Scanner: punctuation — full ASCII set" {
