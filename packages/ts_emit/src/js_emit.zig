@@ -3904,6 +3904,41 @@ test "emit: stage 3 multiple class decorators preserve order" {
     try T.expect(std.mem.indexOf(u8, out, "__esDecorate(null, null, [a, b, c], { kind: \"class\", name: \"Bar\" }, null, []);") != null);
 }
 
+test "emit: stage 3 class decorator with call expression preserves arguments" {
+    const out = try emitWithOpts("@inject(Foo) class Bar {}", .{ .experimental_decorators = false });
+    defer T.allocator.free(out);
+    try T.expect(std.mem.indexOf(u8, out, "class Bar") != null);
+    try T.expect(std.mem.indexOf(u8, out, "__esDecorate(null, null, [inject(Foo)], { kind: \"class\", name: \"Bar\" }, null, []);") != null);
+    // Legacy form must NOT appear under stage 3.
+    try T.expect(std.mem.indexOf(u8, out, "Bar = __decorate(") == null);
+}
+
+test "emit: stage 3 method decorator on class method emits per-member decorate" {
+    const out = try emitWithOpts(
+        \\@logged class Foo {
+        \\  @traced
+        \\  greet() { return 1; }
+        \\}
+    , .{ .experimental_decorators = false });
+    defer T.allocator.free(out);
+    // Class-level decorator uses the Stage 3 helper.
+    try T.expect(std.mem.indexOf(u8, out, "__esDecorate(null, null, [logged], { kind: \"class\", name: \"Foo\" }, null, []);") != null);
+    // Per-member decorators still flow through the legacy `__decorate`
+    // walk in v1 (see emitClassDecorateCall doc comment).
+    try T.expect(std.mem.indexOf(u8, out, "__decorate([traced], Foo.prototype, \"greet\", null);") != null);
+}
+
+test "emit: stage 3 class-only decorator does not produce legacy class assignment" {
+    const out = try emitWithOpts("@a @b class Baz {}", .{ .experimental_decorators = false });
+    defer T.allocator.free(out);
+    // The class declaration is preserved.
+    try T.expect(std.mem.indexOf(u8, out, "class Baz") != null);
+    // Stage 3 helper call appears once with both decorators in source order.
+    try T.expect(std.mem.indexOf(u8, out, "__esDecorate(null, null, [a, b], { kind: \"class\", name: \"Baz\" }, null, []);") != null);
+    // No legacy `Name = __decorate(...)` rewiring under Stage 3.
+    try T.expect(std.mem.indexOf(u8, out, "Baz = __decorate(") == null);
+}
+
 test "emit: sourceMappingURL trailer appended when configured" {
     const s = try newTestSetup("let x = 1;");
     defer destroyTestSetup(s);
