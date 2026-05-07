@@ -1249,9 +1249,9 @@ pub const Service = struct {
     }
 
     /// All top-level declarations across every file in the program,
-    /// optionally filtered by a substring of the symbol name.
-    /// `query == ""` returns everything. Used by VS Code's
-    /// `Ctrl+T` quick-open-symbol palette.
+    /// optionally filtered by a case-insensitive substring of the
+    /// symbol name. `query == ""` returns everything. Used by VS
+    /// Code's `Ctrl+T` quick-open-symbol palette.
     pub fn workspaceSymbols(
         self: *Service,
         gpa: std.mem.Allocator,
@@ -1266,7 +1266,7 @@ pub const Service = struct {
             const stmts = hir_mod.blockStmts(&c.hir, c.root);
             for (stmts) |s| {
                 const info = describeTopLevelSymbol(&c.hir, &c.interner, s, f.source, f.path) orelse continue;
-                if (query.len > 0 and std.mem.indexOf(u8, info.name, query) == null) continue;
+                if (query.len > 0 and std.ascii.indexOfIgnoreCase(info.name, query) == null) continue;
                 try out.append(gpa, info);
             }
         }
@@ -4636,6 +4636,84 @@ test "Service: workspaceSymbols searches across files" {
     defer T.allocator.free(filtered);
     // Both `helperA` and `HelperB` contain "elper".
     try T.expectEqual(@as(usize, 2), filtered.len);
+}
+
+test "Service: workspaceSymbols returns top-level function with kind=function" {
+    var vfs = ts_resolver.VirtualFs.init(T.allocator);
+    defer vfs.deinit();
+    var resolver = ts_resolver.Resolver.init(T.allocator, vfs.fs(), .{});
+    defer resolver.deinit();
+    var program = ts_program.Program.init(T.allocator, &resolver);
+    defer program.deinit();
+
+    _ = try program.add("/main.ts", "function fooBar() {}\nfunction other() {}");
+    try program.compileAll(.{});
+
+    var svc = Service.init(T.allocator, &program);
+    const hits = try svc.workspaceSymbols(T.allocator, "foo");
+    defer T.allocator.free(hits);
+
+    try T.expectEqual(@as(usize, 1), hits.len);
+    try T.expectEqualStrings("fooBar", hits[0].name);
+    try T.expectEqual(SymbolInfo.SymbolKind.function, hits[0].kind);
+}
+
+test "Service: workspaceSymbols query is case-insensitive" {
+    var vfs = ts_resolver.VirtualFs.init(T.allocator);
+    defer vfs.deinit();
+    var resolver = ts_resolver.Resolver.init(T.allocator, vfs.fs(), .{});
+    defer resolver.deinit();
+    var program = ts_program.Program.init(T.allocator, &resolver);
+    defer program.deinit();
+
+    _ = try program.add("/main.ts", "function FOOBAR() {}\nfunction other() {}");
+    try program.compileAll(.{});
+
+    var svc = Service.init(T.allocator, &program);
+
+    // lowercase query matches uppercase symbol name
+    const lower = try svc.workspaceSymbols(T.allocator, "foo");
+    defer T.allocator.free(lower);
+    try T.expectEqual(@as(usize, 1), lower.len);
+    try T.expectEqualStrings("FOOBAR", lower[0].name);
+
+    // uppercase query also matches
+    const upper = try svc.workspaceSymbols(T.allocator, "FOO");
+    defer T.allocator.free(upper);
+    try T.expectEqual(@as(usize, 1), upper.len);
+    try T.expectEqualStrings("FOOBAR", upper[0].name);
+}
+
+test "Service: workspaceSymbols empty query returns all top-level symbols with proper kinds" {
+    var vfs = ts_resolver.VirtualFs.init(T.allocator);
+    defer vfs.deinit();
+    var resolver = ts_resolver.Resolver.init(T.allocator, vfs.fs(), .{});
+    defer resolver.deinit();
+    var program = ts_program.Program.init(T.allocator, &resolver);
+    defer program.deinit();
+
+    const src =
+        \\function fn1() {}
+        \\class Cls {}
+        \\interface If { x: number; }
+        \\type Alias = number;
+        \\const k = 1;
+        \\enum E { A }
+    ;
+    _ = try program.add("/main.ts", src);
+    try program.compileAll(.{});
+
+    var svc = Service.init(T.allocator, &program);
+    const all = try svc.workspaceSymbols(T.allocator, "");
+    defer T.allocator.free(all);
+
+    try T.expectEqual(@as(usize, 6), all.len);
+    try T.expectEqual(SymbolInfo.SymbolKind.function, all[0].kind);
+    try T.expectEqual(SymbolInfo.SymbolKind.class, all[1].kind);
+    try T.expectEqual(SymbolInfo.SymbolKind.interface, all[2].kind);
+    try T.expectEqual(SymbolInfo.SymbolKind.type_alias, all[3].kind);
+    try T.expectEqual(SymbolInfo.SymbolKind.variable, all[4].kind);
+    try T.expectEqual(SymbolInfo.SymbolKind.enum_, all[5].kind);
 }
 
 test "Service: documentSymbols enumerates top-level decls" {
