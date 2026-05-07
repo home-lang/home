@@ -795,13 +795,19 @@ pub const Checker = struct {
         _ = try self.checkExpression(sw.discriminant);
         const cases = hir_mod.switchCases(self.hir, node);
 
-        // Only the `x.kind` shape opts into narrowing — the
-        // discriminant must be a member access on a bare identifier
-        // for the existing `applyDiscriminatedNarrow` helper to fire.
+        // Two narrowing shapes are supported here:
+        //   1. `switch (x.kind)` — member-access discriminant on a
+        //      bare identifier (discriminated-union narrowing).
+        //   2. `switch (x)`     — bare-identifier discriminant over
+        //      a union of literal types (e.g. `"a" | "b"`). Each
+        //      `case` narrows `x` to that literal in its body; the
+        //      `default:` sees `x` narrowed to the static type minus
+        //      every listed case literal — `never` when exhaustive.
         const is_disc_narrowable = self.hir.kindOf(sw.discriminant) == .member_access and blk: {
             const m = hir_mod.memberOf(self.hir, sw.discriminant);
             break :blk self.hir.kindOf(m.object) == .identifier;
         };
+        const is_ident_narrowable = self.hir.kindOf(sw.discriminant) == .identifier;
 
         for (cases) |case_node| {
             const case_p = hir_mod.switchCaseOf(self.hir, case_node);
@@ -816,6 +822,8 @@ pub const Checker = struct {
                 _ = try self.checkExpression(case_p.value);
                 if (is_disc_narrowable) {
                     try self.applyDiscriminatedNarrow(sw.discriminant, case_p.value, true);
+                } else if (is_ident_narrowable) {
+                    try self.applyIdentifierLiteralNarrow(sw.discriminant, case_p.value, true);
                 }
             } else if (is_disc_narrowable) {
                 // `default:` — narrow to the union minus every
@@ -828,9 +836,52 @@ pub const Checker = struct {
                     if (other_p.value == hir_mod.none_node_id) continue;
                     try self.applyDiscriminatedNarrow(sw.discriminant, other_p.value, false);
                 }
+            } else if (is_ident_narrowable) {
+                // `default:` for `switch (x)` — subtract every
+                // listed case literal from `x`'s static type so the
+                // exhaustiveness-marker pattern `let _: never = x`
+                // type-checks once every variant is covered.
+                for (cases) |other| {
+                    const other_p = hir_mod.switchCaseOf(self.hir, other);
+                    if (other_p.value == hir_mod.none_node_id) continue;
+                    try self.applyIdentifierLiteralNarrow(sw.discriminant, other_p.value, false);
+                }
             }
 
             for (stmts) |s| try self.checkStatement(s);
+        }
+    }
+
+    /// Narrow a bare-identifier discriminant in a switch `case`
+    /// (or its default). Mirrors the bare-identifier branch of
+    /// `applyTypeGuard`: positive → record the literal type;
+    /// negative → subtract the literal from the current narrow.
+    fn applyIdentifierLiteralNarrow(self: *Checker, ident: NodeId, lit_node: NodeId, positive: bool) !void {
+        if (self.hir.kindOf(ident) != .identifier) return;
+        const id = hir_mod.identifierOf(self.hir, ident);
+        const lit_t: TypeId = blk: {
+            switch (self.hir.kindOf(lit_node)) {
+                .literal_string => {
+                    const lit = hir_mod.literalStringOf(self.hir, lit_node);
+                    break :blk self.interner.internStringLiteral(lit.value) catch return;
+                },
+                .literal_number => {
+                    const v = hir_mod.literalNumberOf(self.hir, lit_node);
+                    break :blk self.interner.internNumberLiteral(v) catch return;
+                },
+                .literal_bool => {
+                    const v = hir_mod.literalBoolOf(self.hir, lit_node);
+                    break :blk self.interner.internBooleanLiteral(v);
+                },
+                else => return,
+            }
+        };
+        if (positive) {
+            try self.recordNarrow(id.name, lit_t);
+        } else {
+            const current = self.lookupNarrow(id.name) orelse self.typeOfIdentifier(ident);
+            const narrowed = self.subtractType(current, lit_t) catch current;
+            try self.recordNarrow(id.name, narrowed);
         }
     }
 
@@ -9289,6 +9340,66 @@ test "checker: exhaustive switch narrows discriminant to never in default" {
     try s.checker.checkSourceFile(s.root);
     for (s.checker.diagnostics.items) |d| {
         try T.expect(d.code != TsCodes.type_not_assignable);
+    }
+}
+
+test "checker: exhaustive switch on string-literal union narrows to never in default" {
+    // Bare-identifier switch over `"a" | "b"`. After the two
+    // matching cases, the default sees the scrutinee as `never`,
+    // so `const _: never = x` is well-typed.
+    const s = try newSetup(
+        \\function f(x: "a" | "b") {
+        \\  switch (x) {
+        \\    case "a": break;
+        \\    case "b": break;
+        \\    default: { const _: never = x; }
+        \\  }
+        \\}
+    );
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+    for (s.checker.diagnostics.items) |d| {
+        try T.expect(d.code != TsCodes.type_not_assignable);
+    }
+}
+
+test "checker: exhaustive if/else chain narrows discriminant to never in final else" {
+    // Mirror of the switch exhaustiveness pattern using a
+    // chained `if (x === "a") ... else if (x === "b") ... else`.
+    // The trailing `else` branch's scope cumulatively subtracts
+    // both literals from `x`'s static type, leaving `never` —
+    // so `const _: never = x` must type-check.
+    const s = try newSetup(
+        \\function f(x: "a" | "b") {
+        \\  if (x === "a") {}
+        \\  else if (x === "b") {}
+        \\  else { const _: never = x; }
+        \\}
+    );
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+    for (s.checker.diagnostics.items) |d| {
+        try T.expect(d.code != TsCodes.type_not_assignable);
+    }
+}
+
+test "checker: assertNever helper accepts narrowed never in exhaustive default" {
+    // The `assertNever` (a.k.a. `unreachable`) idiom: a function
+    // typed as `(x: never) => never` is callable from an exhaustive
+    // default because the discriminant has been narrowed to `never`.
+    const s = try newSetup(
+        \\function unreachable(x: never): never { throw 0; }
+        \\function f(x: "a" | "b") {
+        \\  if (x === "a") {}
+        \\  else if (x === "b") {}
+        \\  else { unreachable(x); }
+        \\}
+    );
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+    for (s.checker.diagnostics.items) |d| {
+        try T.expect(d.code != TsCodes.type_not_assignable);
+        try T.expect(d.code != TsCodes.argument_type_mismatch);
     }
 }
 
