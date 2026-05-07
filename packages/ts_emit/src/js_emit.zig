@@ -820,6 +820,12 @@ pub const Printer = struct {
                 const params = hir_mod.fnParams(self.hir, node);
                 try self.printRuntimeParams(params);
                 try self.write(") { ");
+                // §4.A — inject `if (x === void 0) { x = ...; }` shims
+                // for any default-parameter, before the user body.
+                if (self.hasDefaultParam(params)) {
+                    try self.writeDefaultParamShims(params);
+                    try self.write(" ");
+                }
                 if (f.body != hir_mod.none_node_id) {
                     if (self.hir.kindOf(f.body) == .block_stmt) {
                         const stmts = hir_mod.blockStmts(self.hir, f.body);
@@ -880,6 +886,10 @@ pub const Printer = struct {
             try self.write(" ");
             if (downlevel_async) {
                 try self.printAsyncDownlevelBody(f.body);
+            } else if (self.options.es_target == .es5 and self.hasDefaultParam(params)) {
+                // §4.A — at ES5, lower default-parameter syntax to a
+                // body-prefix `if (x === void 0) { x = ...; }` shim.
+                try self.printFnBodyWithDefaults(params, f.body);
             } else {
                 try self.printStatementInline(f.body);
             }
@@ -2415,11 +2425,31 @@ pub const Printer = struct {
 
     fn printArrayLiteral(self: *Printer, node: NodeId) !void {
         const elements = hir_mod.arrayLiteralElements(self.hir, node);
+        // §4.A — array spread `[...a]` is an ES2015 feature. Below
+        // that we lower a pure single-spread `[...a]` to `a.slice()`,
+        // matching tsc's downlevel shape. Mixed/multi-spread cases
+        // (e.g. `[...a, b]`, `[...a, ...b]`) and call-site spread
+        // (`f(...args)` → `f.apply(null, args)`) are not yet lowered
+        // and fall through to native-syntax emission for now.
+        if (self.options.es_target == .es5 and
+            elements.len == 1 and
+            elements[0] != hir_mod.none_node_id and
+            self.hir.kindOf(elements[0]) == .spread)
+        {
+            const sp = hir_mod.spreadOf(self.hir, elements[0]);
+            try self.printExpression(sp.expression);
+            try self.write(".slice()");
+            return;
+        }
         try self.write("[");
         for (elements, 0..) |e, i| {
             if (i > 0) try self.write(", ");
             if (e == hir_mod.none_node_id) {
                 // hole
+            } else if (self.hir.kindOf(e) == .spread) {
+                const sp = hir_mod.spreadOf(self.hir, e);
+                try self.write("...");
+                try self.printExpression(sp.expression);
             } else {
                 try self.printExpression(e);
             }
@@ -3168,6 +3198,20 @@ test "emit: nullish/optional preserved at es2020+" {
     const out = try emitWithOpts("let r = a ?? b;", .{ .es_target = .es2020 });
     defer T.allocator.free(out);
     try T.expect(std.mem.indexOf(u8, out, "??") != null);
+}
+
+test "emit: array spread preserved at es2015+" {
+    const out = try emitWithOpts("let r = [...a];", .{ .es_target = .es2015 });
+    defer T.allocator.free(out);
+    try T.expect(std.mem.indexOf(u8, out, "[...a]") != null);
+    try T.expect(std.mem.indexOf(u8, out, ".slice()") == null);
+}
+
+test "emit: array spread lowers to slice() at es5" {
+    const out = try emitWithOpts("let r = [...a];", .{ .es_target = .es5 });
+    defer T.allocator.free(out);
+    try T.expect(std.mem.indexOf(u8, out, "a.slice()") != null);
+    try T.expect(std.mem.indexOf(u8, out, "[...") == null);
 }
 
 test "emit: cjs default import lowers via __importDefault" {
