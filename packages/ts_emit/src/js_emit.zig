@@ -69,6 +69,12 @@ pub const EsTarget = enum {
         return @intFromEnum(self) >= @intFromEnum(EsTarget.es2020);
     }
 
+    /// Numeric separators (`1_000_000`) are an ES2021 feature. Below
+    /// that we strip the underscores from the literal text on emit.
+    pub fn supportsNumericSeparators(self: EsTarget) bool {
+        return @intFromEnum(self) >= @intFromEnum(EsTarget.es2021);
+    }
+
     /// Native `async`/`await` is an ES2017 feature. Below that we
     /// downlevel async functions to a `__awaiter`-wrapped generator
     /// and rewrite `await E` inside the body to `yield E`.
@@ -1814,10 +1820,7 @@ pub const Printer = struct {
                 try self.write("\"");
             },
             .literal_number => {
-                const v = hir_mod.literalNumberOf(self.hir, node);
-                var buf: [32]u8 = undefined;
-                const fmt = std.fmt.bufPrint(&buf, "{d}", .{v}) catch "NaN";
-                try self.write(fmt);
+                try self.printLiteralNumber(node);
             },
             .literal_bigint => {
                 const b = hir_mod.literalBigIntOf(self.hir, node);
@@ -2048,6 +2051,39 @@ pub const Printer = struct {
         } else {
             try self.printExpression(ex.expression);
         }
+    }
+
+    /// Emit a numeric literal, preferring the original source bytes
+    /// when attached so user-chosen forms (`0xCAFE`, `1e10`, numeric
+    /// separators) round-trip. Strips `_` digit separators for ES
+    /// targets below ES2021 (where they aren't valid JS).
+    fn printLiteralNumber(self: *Printer, node: NodeId) !void {
+        const span = self.hir.spanOf(node);
+        if (self.source) |src| {
+            const start: usize = @intCast(span.start);
+            const end: usize = @intCast(span.end);
+            if (end > start and end <= src.len) {
+                const slice = src[start..end];
+                if (self.options.es_target.supportsNumericSeparators()) {
+                    try self.write(slice);
+                } else {
+                    var i: usize = 0;
+                    var run_start: usize = 0;
+                    while (i < slice.len) : (i += 1) {
+                        if (slice[i] == '_') {
+                            if (i > run_start) try self.write(slice[run_start..i]);
+                            run_start = i + 1;
+                        }
+                    }
+                    if (run_start < slice.len) try self.write(slice[run_start..]);
+                }
+                return;
+            }
+        }
+        const v = hir_mod.literalNumberOf(self.hir, node);
+        var buf: [32]u8 = undefined;
+        const fmt = std.fmt.bufPrint(&buf, "{d}", .{v}) catch "NaN";
+        try self.write(fmt);
     }
 
     fn printBinop(self: *Printer, node: NodeId) !void {
@@ -3358,4 +3394,25 @@ test "emit: emitDecoratorMetadata off by default — no __metadata calls" {
     );
     defer T.allocator.free(out);
     try T.expect(std.mem.indexOf(u8, out, "__metadata(") == null);
+}
+
+test "emit: numeric separator preserved at es2021+" {
+    const out = try emitWithOpts("const x = 1_000_000;", .{ .es_target = .es2021 });
+    defer T.allocator.free(out);
+    try T.expect(std.mem.indexOf(u8, out, "1_000_000") != null);
+}
+
+test "emit: numeric separator stripped below es2021" {
+    const out = try emitWithOpts("const x = 1_000_000;", .{ .es_target = .es2017 });
+    defer T.allocator.free(out);
+    try T.expect(std.mem.indexOf(u8, out, "1_000_000") == null);
+    try T.expect(std.mem.indexOf(u8, out, "1000000") != null);
+}
+
+test "emit: numeric separator in hex/binary stripped below es2021" {
+    const out = try emitWithOpts("const x = 0xFF_FF; const y = 0b1010_1010;", .{ .es_target = .es2020 });
+    defer T.allocator.free(out);
+    try T.expect(std.mem.indexOf(u8, out, "_") == null);
+    try T.expect(std.mem.indexOf(u8, out, "0xFFFF") != null);
+    try T.expect(std.mem.indexOf(u8, out, "0b10101010") != null);
 }

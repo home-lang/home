@@ -775,6 +775,21 @@ test "Scanner: numeric literals" {
     try t.expectEqual(TokenKind.bigint_literal, toks.items[11].kind);
 }
 
+test "Scanner: numeric separator — `const x = 1_000_000;`" {
+    var s = Scanner.init(t.allocator, "const x = 1_000_000;");
+    defer s.deinit(t.allocator);
+    var toks = try s.tokenize(t.allocator);
+    defer toks.deinit(t.allocator);
+
+    try t.expectEqual(TokenKind.kw_const, toks.items[0].kind);
+    try t.expectEqual(TokenKind.identifier, toks.items[1].kind);
+    try t.expectEqual(TokenKind.equal, toks.items[2].kind);
+    try t.expectEqual(TokenKind.number_literal, toks.items[3].kind);
+    try t.expectEqualStrings("1_000_000", toks.items[3].bytes(s.source));
+    try t.expect(toks.items[3].flags.has_separator);
+    try t.expectEqual(TokenKind.semicolon, toks.items[4].kind);
+}
+
 test "Scanner: string literals — single and double" {
     var s = Scanner.init(t.allocator, "'foo' \"bar\" 'with\\'quote'");
     defer s.deinit(t.allocator);
