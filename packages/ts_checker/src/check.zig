@@ -4253,6 +4253,21 @@ pub const Checker = struct {
                 }
             }
         }
+        // Bare-identifier truthy narrowing: `if (x)` / `x ? a : b`.
+        // In the truthy branch, subtract `null | undefined` from `x`'s
+        // current type — the v0 approximation that handles the
+        // canonical `string | null` → `string` case. (TS also strips
+        // `false | 0 | ""` from the truthy branch, but we don't yet
+        // model unit-falsy types here.) The falsy branch is left
+        // un-narrowed since broad falsy partitioning needs the
+        // discriminated-union machinery.
+        if (self.hir.kindOf(cond) == .identifier and when_true) {
+            const id = hir_mod.identifierOf(self.hir, cond);
+            const current = self.lookupNarrow(id.name) orelse self.typeOfIdentifier(cond);
+            const narrowed = self.subtractNullUndefined(current) catch current;
+            if (narrowed != current) try self.recordNarrow(id.name, narrowed);
+            return;
+        }
         if (self.hir.kindOf(cond) != .binary_op) return;
         const b = hir_mod.binopOf(self.hir, cond);
 
@@ -5172,8 +5187,19 @@ pub const Checker = struct {
     fn checkConditional(self: *Checker, node: NodeId) CheckError!TypeId {
         const c = hir_mod.conditionalOf(self.hir, node);
         _ = try self.checkExpression(c.cond);
+        // TS narrows through `cond ? then : else`: the test expression's
+        // truthy guard applies inside `then`, the falsy guard inside
+        // `else`. Mirror the if-statement scoping so e.g.
+        // `x ? x.length : -1` types `x` as the truthy half in the
+        // then-branch.
+        try self.pushNarrowScope();
+        try self.applyTypeGuard(c.cond, true);
         const tt = try self.checkExpression(c.then_branch);
+        self.popNarrowScope();
+        try self.pushNarrowScope();
+        try self.applyTypeGuard(c.cond, false);
         const ff = try self.checkExpression(c.else_branch);
+        self.popNarrowScope();
         return self.interner.internUnion(&.{ tt, ff }) catch error.OutOfMemory;
     }
 
@@ -6102,6 +6128,62 @@ test "checker: conditional produces union of branches" {
     const top = firstStatement(s);
     const t = s.hir.typeOf(top);
     try T.expect(s.ti.pool.flagsOf(t).is_union);
+}
+
+test "checker: conditional narrows identifier in then-branch" {
+    // `x ? x.length : -1` — inside the then-branch, `x` is narrowed
+    // from `string | null` down to `string` (truthy guard strips the
+    // nullish member). Verify the call type-checks without any
+    // diagnostics.
+    const s = try newSetup(
+        \\function f(x: string | null) { return x ? x.length : -1; }
+    );
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+    try T.expectEqual(@as(usize, 0), s.checker.diagnostics.items.len);
+}
+
+test "checker: conditional return type is union of branch types" {
+    // `x > 0 ? "pos" : 0` — branches type to a string-literal and a
+    // number-literal respectively. The conditional's overall type is
+    // their union (string-flavoured ∪ number-flavoured).
+    const s = try newSetup(
+        \\function f(x: number) { return x > 0 ? "pos" : 0; }
+    );
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+    const top = firstStatement(s);
+    const f = hir_mod.fnDeclOf(&s.hir, top);
+    const body_stmts = hir_mod.blockStmts(&s.hir, f.body);
+    const ret = body_stmts[0];
+    const ret_p = hir_mod.returnOf(&s.hir, ret);
+    const t = s.hir.typeOf(ret_p.value);
+    try T.expect(s.ti.pool.flagsOf(t).is_union);
+    try T.expect(s.ti.pool.flagsOf(t).is_string);
+    try T.expect(s.ti.pool.flagsOf(t).is_number);
+}
+
+test "checker: nested conditional types correctly" {
+    // `a ? (b ? 1 : "y") : 3` — the outer conditional's then-branch is
+    // itself a conditional. The inner types as `number | string`; the
+    // outer unions that with `number` ⇒ `number | string`. Exercises
+    // that nested conditionals push/pop their narrow scopes correctly
+    // without losing branch types.
+    const s = try newSetup(
+        \\function f(a: boolean, b: boolean) { return a ? (b ? 1 : "y") : 3; }
+    );
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+    const top = firstStatement(s);
+    const f = hir_mod.fnDeclOf(&s.hir, top);
+    const body_stmts = hir_mod.blockStmts(&s.hir, f.body);
+    const ret = body_stmts[0];
+    const ret_p = hir_mod.returnOf(&s.hir, ret);
+    const t = s.hir.typeOf(ret_p.value);
+    try T.expect(s.ti.pool.flagsOf(t).is_union);
+    try T.expect(s.ti.pool.flagsOf(t).is_number);
+    try T.expect(s.ti.pool.flagsOf(t).is_string);
+    try T.expectEqual(@as(usize, 0), s.checker.diagnostics.items.len);
 }
 
 test "checker: identifier is any (resolution follow-up)" {
