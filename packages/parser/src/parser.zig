@@ -349,6 +349,28 @@ pub const Parser = struct {
         };
     }
 
+    /// Same as `isReturnTypeStart` but at an arbitrary token index. Used by
+    /// the postfix error-union path (`ErrorSet!Payload`) to decide whether
+    /// the `!` after a type expression is followed by another type. Out-of-
+    /// range indices return false.
+    fn isReturnTypeStartAt(self: *Parser, idx: usize) bool {
+        if (idx >= self.tokens.len) return false;
+        return switch (self.tokens[idx].type) {
+            .Identifier,
+            .Star,
+            .StarStar,
+            .Ampersand,
+            .Question,
+            .QuestionBracket,
+            .LeftBracket,
+            .Bang,
+            .Fn,
+            .Struct,
+            => true,
+            else => false,
+        };
+    }
+
     /// Pure-lookahead scan to find where a type expression starting at
     /// `start_idx` ends. Returns the token index just past the type
     /// (or `start_idx` if no valid type prefix is found at that
@@ -3275,6 +3297,23 @@ pub const Parser = struct {
             const nullable_type = try std.fmt.allocPrint(self.allocator, "{s}?", .{result});
             self.allocator.free(result);
             result = nullable_type;
+        }
+
+        // Zig-style postfix error-union: `ErrorSet!Payload`. After parsing
+        // a complete type expression, if a `!` follows that itself looks
+        // like the start of a type, consume it and recurse for the payload.
+        // Encoded as `Result<Payload, ErrorSet>` to match the prefix `!T`
+        // convention above (which encodes as `Result<T, AnyError>`). This
+        // is only reached in type position — `parseTypeAnnotation` is
+        // never called from expression position — so it does not
+        // conflict with the unary `!` boolean-not operator. (Issue #61.)
+        if (self.check(.Bang) and self.isReturnTypeStartAt(self.current + 1)) {
+            _ = self.advance(); // consume `!`
+            const payload = try self.parseTypeAnnotation();
+            defer self.allocator.free(payload);
+            const wrapped = try std.fmt.allocPrint(self.allocator, "Result<{s}, {s}>", .{ payload, result });
+            self.allocator.free(result);
+            result = wrapped;
         }
 
         return result;

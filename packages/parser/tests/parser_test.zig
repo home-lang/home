@@ -1339,6 +1339,82 @@ test "parser: double optional — ??T" {
     try testing.expectEqualStrings("??u32", struct_decl.fields[0].type_name);
 }
 
+// Issue #61: Zig-style error-union types in type position.
+// Both `ErrorSet!T` (postfix, explicit error set) and `!T` (prefix,
+// anonymous error set) parse and encode as `Result<Payload, ErrorSet>`
+// (with `AnyError` as the implicit error set for the anonymous form).
+
+test "parser: error-union return — explicit error set" {
+    const program = try parseSource(testing.allocator, "fn foo(): MyError!u32 { return 0 }");
+    defer program.deinit(testing.allocator);
+    const fn_decl = program.statements[0].FnDecl;
+    try testing.expect(fn_decl.return_type != null);
+    try testing.expectEqualStrings("Result<u32, MyError>", fn_decl.return_type.?);
+}
+
+test "parser: error-union return — explicit error set, void payload" {
+    const program = try parseSource(
+        testing.allocator,
+        "pub fn check_kernel_buffer(ptr: usize, size: usize, write: bool) UsercopyError!void { return }",
+    );
+    defer program.deinit(testing.allocator);
+    const fn_decl = program.statements[0].FnDecl;
+    try testing.expect(fn_decl.return_type != null);
+    try testing.expectEqualStrings("Result<void, UsercopyError>", fn_decl.return_type.?);
+}
+
+test "parser: error-union return — anonymous error set" {
+    const program = try parseSource(testing.allocator, "fn foo(): !u32 { return 0 }");
+    defer program.deinit(testing.allocator);
+    const fn_decl = program.statements[0].FnDecl;
+    try testing.expect(fn_decl.return_type != null);
+    try testing.expectEqualStrings("Result<u32, AnyError>", fn_decl.return_type.?);
+}
+
+test "parser: error-union let-annotation" {
+    const program = try parseSource(testing.allocator, "let x: MyError!u32 = bar()");
+    defer program.deinit(testing.allocator);
+    const decl = program.statements[0].LetDecl;
+    try testing.expect(decl.type_name != null);
+    try testing.expectEqualStrings("Result<u32, MyError>", decl.type_name.?);
+}
+
+test "parser: error-union struct field" {
+    const program = try parseSource(testing.allocator, "struct S { f: MyError!u32 }");
+    defer program.deinit(testing.allocator);
+    const struct_decl = program.statements[0].StructDecl;
+    try testing.expectEqualStrings("Result<u32, MyError>", struct_decl.fields[0].type_name);
+}
+
+test "parser: error-union fn parameter" {
+    const program = try parseSource(testing.allocator, "fn process(r: MyError!u32) void { return }");
+    defer program.deinit(testing.allocator);
+    const fn_decl = program.statements[0].FnDecl;
+    try testing.expectEqual(@as(usize, 1), fn_decl.params.len);
+    try testing.expectEqualStrings("Result<u32, MyError>", fn_decl.params[0].type_name);
+}
+
+test "parser: error-union with pointer payload" {
+    const program = try parseSource(testing.allocator, "fn foo(): MyError!*Foo { return null }");
+    defer program.deinit(testing.allocator);
+    const fn_decl = program.statements[0].FnDecl;
+    try testing.expect(fn_decl.return_type != null);
+    try testing.expectEqualStrings("Result<*Foo, MyError>", fn_decl.return_type.?);
+}
+
+test "parser: regression — boolean-not still works in expression position" {
+    // After adding postfix `!` in type position, `!x` in expression
+    // position must still parse as a unary boolean-not.
+    const program = try parseSource(testing.allocator, "let y = !x");
+    defer program.deinit(testing.allocator);
+    const decl = program.statements[0].LetDecl;
+    try testing.expectEqualStrings("y", decl.name);
+    // The RHS is a unary `!` expression — encoded as UnaryExpr with .Not op.
+    try testing.expect(decl.value != null);
+    try testing.expect(decl.value.?.* == .UnaryExpr);
+    try testing.expectEqual(ast.UnaryOp.Not, decl.value.?.UnaryExpr.op);
+}
+
 // Issue #58: @memset / @memcpy accept both 2-arg (Zig 0.11+ slice) and
 // 3-arg (legacy ptr+len) forms. The parser only validates arity loosely;
 // the typechecker enforces real signatures against actual operand types.
