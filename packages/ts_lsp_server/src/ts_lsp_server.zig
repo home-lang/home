@@ -841,6 +841,99 @@ pub fn handleReferences(
     return encodeResponse(gpa, request_id, result);
 }
 
+/// Handle a `textDocument/implementation` JSON-RPC request: extract
+/// the URI + `(line, character)` from `params_json`, convert to a
+/// byte offset into the file's source, route to
+/// `service.implementation`, and encode the LSP response as a
+/// `Location[]` array (same wire shape as `handleReferences`).
+/// Caller owns the returned slice.
+pub fn handleImplementation(
+    service: *ts_lsp.Service,
+    gpa: std.mem.Allocator,
+    request_id: RequestId,
+    params_json: []const u8,
+) ![]u8 {
+    const uri = findJsonStringField(params_json, "uri") orelse return error.MissingUri;
+    const line = findJsonIntField(params_json, "line") orelse return error.MissingLine;
+    const character = findJsonIntField(params_json, "character") orelse return error.MissingCharacter;
+    const path = uriToPath(uri);
+
+    const file_id = service.program.lookupPath(path) orelse {
+        return encodeResponse(gpa, request_id, "[]");
+    };
+    const f = service.program.fileById(file_id);
+    const line_u: u32 = if (line < 0) 0 else @intCast(line);
+    const char_u: u32 = if (character < 0) 0 else @intCast(character);
+    const byte_pos = lineColToByte(f.source, line_u, char_u);
+
+    const defs = try service.implementation(gpa, path, byte_pos);
+    defer gpa.free(defs);
+
+    var buf: std.ArrayListUnmanaged(u8) = .empty;
+    defer buf.deinit(gpa);
+    try buf.append(gpa, '[');
+    for (defs, 0..) |d, i| {
+        if (i > 0) try buf.append(gpa, ',');
+        try buf.appendSlice(gpa, "{\"uri\":\"file://");
+        try writeJsonStringContents(&buf, gpa, d.file);
+        try buf.appendSlice(gpa, "\",\"range\":");
+        try writeRange(&buf, gpa, d.span);
+        try buf.append(gpa, '}');
+    }
+    try buf.append(gpa, ']');
+    return encodeResponse(gpa, request_id, buf.items);
+}
+
+/// Handle a `textDocument/documentLink` JSON-RPC request: extract
+/// the URI from `params_json`, route to `service.documentLinks`, and
+/// encode the LSP response as a `DocumentLink[]` array. Each entry
+/// carries `range`, `target` (file URI), and `tooltip` fields.
+/// Caller owns the returned slice.
+pub fn handleDocumentLink(
+    service: *ts_lsp.Service,
+    gpa: std.mem.Allocator,
+    request_id: RequestId,
+    params_json: []const u8,
+) ![]u8 {
+    const uri = findJsonStringField(params_json, "uri") orelse return error.MissingUri;
+    const path = uriToPath(uri);
+
+    const links = try service.documentLinks(gpa, path);
+    defer ts_lsp.freeDocumentLinks(gpa, links);
+
+    var buf: std.ArrayListUnmanaged(u8) = .empty;
+    defer buf.deinit(gpa);
+    try buf.append(gpa, '[');
+    for (links, 0..) |l, i| {
+        if (i > 0) try buf.append(gpa, ',');
+        try buf.appendSlice(gpa, "{\"range\":");
+        try writeRange(&buf, gpa, l.span);
+        try buf.appendSlice(gpa, ",\"target\":\"file://");
+        try writeJsonStringContents(&buf, gpa, l.target);
+        try buf.appendSlice(gpa, "\",\"tooltip\":\"");
+        try writeJsonStringContents(&buf, gpa, l.tooltip);
+        try buf.appendSlice(gpa, "\"}");
+    }
+    try buf.append(gpa, ']');
+    return encodeResponse(gpa, request_id, buf.items);
+}
+
+/// Handle a `documentLink/resolve` JSON-RPC request. Stub: echoes
+/// the input `DocumentLink` back unchanged. The editor uses
+/// `documentLink/resolve` when a link's `target` was omitted in the
+/// initial response and needs lazy resolution; our `documentLink`
+/// handler always emits `target` eagerly, so resolve is a no-op
+/// here. Caller owns the returned slice.
+pub fn handleDocumentLinkResolve(
+    service: *ts_lsp.Service,
+    gpa: std.mem.Allocator,
+    request_id: RequestId,
+    params_json: []const u8,
+) ![]u8 {
+    _ = service;
+    return encodeResponse(gpa, request_id, params_json);
+}
+
 /// Handle a `textDocument/completion` JSON-RPC request: extract the
 /// URI + `(line, character)` from `params_json`, convert to a byte
 /// offset into the file's source, route to `service.completions`,
@@ -2094,6 +2187,18 @@ pub fn dispatchRequest(
             if (is_notification) return &.{};
             return try handleCodeLens(service, gpa, id, params);
         },
+        .text_document_implementation => {
+            if (is_notification) return &.{};
+            return try handleImplementation(service, gpa, id, params);
+        },
+        .text_document_document_link => {
+            if (is_notification) return &.{};
+            return try handleDocumentLink(service, gpa, id, params);
+        },
+        .document_link_resolve => {
+            if (is_notification) return &.{};
+            return try handleDocumentLinkResolve(service, gpa, id, params);
+        },
         // Catch-all for unknown methods — fall through to standard
         // JSON-RPC `Method not found` error.
         .unknown => {
@@ -3177,4 +3282,91 @@ test "handleCallHierarchyOutgoingCalls: returns wrapped to-items" {
     try T.expect(std.mem.indexOf(u8, out, "\"id\":241") != null);
     try T.expect(std.mem.indexOf(u8, out, "\"to\":{\"name\":\"helper_a\"") != null);
     try T.expect(std.mem.indexOf(u8, out, "\"toRanges\":[]") != null);
+}
+
+test "handleImplementation: routes request and returns Location[] response" {
+    var vfs = ts_resolver.VirtualFs.init(T.allocator);
+    defer vfs.deinit();
+    var resolver = ts_resolver.Resolver.init(T.allocator, vfs.fs(), .{});
+    defer resolver.deinit();
+    var program = ts_program.Program.init(T.allocator, &resolver);
+    defer program.deinit();
+
+    // `interface Foo {}` plus `class Bar implements Foo {}` — cursor
+    // on the interface name should surface the class as an
+    // implementer.
+    const src =
+        \\interface Foo {}
+        \\class Bar implements Foo {}
+    ;
+    _ = try program.add("/main.ts", src);
+    try program.compileAll(.{});
+
+    var svc = ts_lsp.Service.init(T.allocator, &program);
+
+    // Cursor on `Foo` (line 0, char 10) — interface name.
+    const body =
+        \\{"jsonrpc":"2.0","id":51,"method":"textDocument/implementation","params":{"textDocument":{"uri":"file:///main.ts"},"position":{"line":0,"character":10}}}
+    ;
+    const out = try handleImplementation(&svc, T.allocator, .{ .integer = 51 }, body);
+    defer T.allocator.free(out);
+    try T.expect(std.mem.indexOf(u8, out, "\"jsonrpc\":\"2.0\"") != null);
+    try T.expect(std.mem.indexOf(u8, out, "\"id\":51") != null);
+    try T.expect(std.mem.indexOf(u8, out, "\"result\":[") != null);
+
+    // Cursor not on any identifier -> empty array.
+    const empty =
+        \\{"jsonrpc":"2.0","id":52,"method":"textDocument/implementation","params":{"textDocument":{"uri":"file:///main.ts"},"position":{"line":99,"character":0}}}
+    ;
+    const out2 = try handleImplementation(&svc, T.allocator, .{ .integer = 52 }, empty);
+    defer T.allocator.free(out2);
+    try T.expect(std.mem.indexOf(u8, out2, "\"result\":[]") != null);
+}
+
+test "handleDocumentLink: routes request and returns DocumentLink[] response" {
+    var vfs = ts_resolver.VirtualFs.init(T.allocator);
+    defer vfs.deinit();
+    try vfs.addFile("/lib.ts", "export let foo = 1;");
+    try vfs.addFile("/main.ts", "import { foo } from './lib'; let x = foo;");
+    var resolver = ts_resolver.Resolver.init(T.allocator, vfs.fs(), .{});
+    defer resolver.deinit();
+    var program = ts_program.Program.init(T.allocator, &resolver);
+    defer program.deinit();
+
+    _ = try program.add("/lib.ts", "export let foo = 1;");
+    _ = try program.add("/main.ts", "import { foo } from './lib'; let x = foo;");
+    try program.compileAll(.{});
+
+    var svc = ts_lsp.Service.init(T.allocator, &program);
+
+    const body =
+        \\{"jsonrpc":"2.0","id":61,"method":"textDocument/documentLink","params":{"textDocument":{"uri":"file:///main.ts"}}}
+    ;
+    const out = try handleDocumentLink(&svc, T.allocator, .{ .integer = 61 }, body);
+    defer T.allocator.free(out);
+    try T.expect(std.mem.indexOf(u8, out, "\"jsonrpc\":\"2.0\"") != null);
+    try T.expect(std.mem.indexOf(u8, out, "\"id\":61") != null);
+    try T.expect(std.mem.indexOf(u8, out, "\"result\":[{\"range\":") != null);
+    try T.expect(std.mem.indexOf(u8, out, "\"target\":\"file:///lib.ts\"") != null);
+    try T.expect(std.mem.indexOf(u8, out, "\"tooltip\":\"\"") != null);
+}
+
+test "handleDocumentLinkResolve: stub echoes input params" {
+    var vfs = ts_resolver.VirtualFs.init(T.allocator);
+    defer vfs.deinit();
+    var resolver = ts_resolver.Resolver.init(T.allocator, vfs.fs(), .{});
+    defer resolver.deinit();
+    var program = ts_program.Program.init(T.allocator, &resolver);
+    defer program.deinit();
+
+    var svc = ts_lsp.Service.init(T.allocator, &program);
+
+    const params =
+        \\{"range":{"start":{"line":0,"character":21},"end":{"line":0,"character":26}},"target":"file:///lib.ts"}
+    ;
+    const out = try handleDocumentLinkResolve(&svc, T.allocator, .{ .integer = 71 }, params);
+    defer T.allocator.free(out);
+    try T.expect(std.mem.indexOf(u8, out, "\"jsonrpc\":\"2.0\"") != null);
+    try T.expect(std.mem.indexOf(u8, out, "\"id\":71") != null);
+    try T.expect(std.mem.indexOf(u8, out, "\"target\":\"file:///lib.ts\"") != null);
 }

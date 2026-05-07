@@ -560,6 +560,99 @@ pub const Service = struct {
         return null;
     }
 
+    /// LSP `textDocument/implementation` — return locations of
+    /// concrete implementations of the symbol under the cursor.
+    ///
+    /// v0: when the cursor lands on an identifier whose binding is a
+    /// top-level interface (a member of `module.root.types`), scan
+    /// every program file for `class_decl` nodes whose `implements`
+    /// clause names that interface, and return one `Definition` per
+    /// matching class declaration. When the symbol isn't an
+    /// interface (or has no concrete implementers), fall back to the
+    /// symbol's own declaration sites — so for a function with
+    /// multiple decls we still surface each decl span. Returns an
+    /// empty slice when the cursor isn't on an identifier or the
+    /// symbol can't be resolved. Caller owns the returned slice.
+    pub fn implementation(self: *Service, gpa: std.mem.Allocator, file_path: []const u8, byte_pos: u32) ![]Definition {
+        var out: std.ArrayListUnmanaged(Definition) = .empty;
+        errdefer out.deinit(gpa);
+
+        const file_id = self.program.lookupPath(file_path) orelse return out.toOwnedSlice(gpa);
+        const f = self.program.fileById(file_id);
+        const c = f.compilation orelse return out.toOwnedSlice(gpa);
+        const node = findInnermostNode(&c.hir, c.root, byte_pos) orelse return out.toOwnedSlice(gpa);
+        if (c.hir.kindOf(node) != .identifier) return out.toOwnedSlice(gpa);
+        const id = hir_mod.identifierOf(&c.hir, node);
+        const target_name = c.interner.get(id.name);
+
+        // Interface case — search the program for class_decls whose
+        // implements clauses reference an interface with this name.
+        const is_interface = blk: {
+            if (c.module.root.types.get(id.name)) |type_sym| {
+                if (type_sym.decls.items.len == 0) break :blk false;
+                const tdecl = type_sym.decls.items[0];
+                break :blk c.hir.kindOf(tdecl) == .interface_decl;
+            }
+            break :blk false;
+        };
+        if (is_interface) {
+            for (self.program.files.items) |pf| {
+                const pc = pf.compilation orelse continue;
+                const local_id = pc.interner.lookup(target_name) orelse continue;
+                var i: hir_mod.NodeId = 0;
+                while (i < pc.hir.nodeCount()) : (i += 1) {
+                    if (pc.hir.kindOf(i) != .class_decl) continue;
+                    const cls = hir_mod.classOf(&pc.hir, i);
+                    const implements = pc.hir.childSlice(cls.implements_start, cls.implements_len);
+                    var matches = false;
+                    for (implements) |impl| {
+                        if (pc.hir.kindOf(impl) != .type_ref) continue;
+                        const tref = hir_mod.typeRefOf(&pc.hir, impl);
+                        if (tref.name == local_id) {
+                            matches = true;
+                            break;
+                        }
+                    }
+                    if (!matches) continue;
+                    const span = pc.hir.spanOf(i);
+                    const sp = ts_diagnostics.positionToLineCol(pf.source, span.start);
+                    const ep = ts_diagnostics.positionToLineCol(pf.source, span.end);
+                    try out.append(gpa, .{
+                        .file = pf.path,
+                        .span = .{
+                            .file = pf.path,
+                            .start_line = sp.line,
+                            .start_col = sp.col,
+                            .end_line = ep.line,
+                            .end_col = ep.col,
+                        },
+                    });
+                }
+            }
+            if (out.items.len > 0) return out.toOwnedSlice(gpa);
+        }
+
+        // Fallback: emit each declaration site of the symbol.
+        if (c.module.root.lookup(id.name)) |sym| {
+            for (sym.decls.items) |decl| {
+                const span = c.hir.spanOf(decl);
+                const sp = ts_diagnostics.positionToLineCol(f.source, span.start);
+                const ep = ts_diagnostics.positionToLineCol(f.source, span.end);
+                try out.append(gpa, .{
+                    .file = f.path,
+                    .span = .{
+                        .file = f.path,
+                        .start_line = sp.line,
+                        .start_col = sp.col,
+                        .end_line = ep.line,
+                        .end_col = ep.col,
+                    },
+                });
+            }
+        }
+        return out.toOwnedSlice(gpa);
+    }
+
     /// Find every reference to the symbol at `byte_pos` across
     /// every file in the program. Within the cursor's own file the
     /// search is shadowing-aware: each candidate's enclosing scope
