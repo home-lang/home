@@ -53,6 +53,12 @@ pub const BundleOptions = struct {
     /// entry points. Transitive-import deduplication is follow-up; v0
     /// only dedupes at the entry-list level.
     deduplicate: bool = true,
+    /// When true, `bundleWithManifest` will produce a JSON manifest
+    /// alongside the JS output. The manifest follows the conventional
+    /// bundler shape:
+    ///   `{ "version": 1, "outputs": { "out.js": { "entries": [...], "size": N } } }`
+    /// Frameworks consume this for SSR/hydration/asset versioning.
+    manifest: bool = false,
 };
 
 /// JS + optional source map pair returned by `bundleWithMap`. The
@@ -61,6 +67,13 @@ pub const BundleOptions = struct {
 pub const BundleResult = struct {
     js: []u8,
     map: ?[]u8,
+};
+
+/// JS bundle + JSON manifest pair returned by `bundleWithManifest`.
+/// Caller owns both slices and must free them with `gpa`.
+pub const ManifestResult = struct {
+    bundle: []u8,
+    manifest: []u8,
 };
 
 pub const BundleError = error{
@@ -207,6 +220,42 @@ pub const Bundler = struct {
 
         const map_slice = map.toOwnedSlice(gpa) catch return error.OutOfMemory;
         return .{ .js = js, .map = map_slice };
+    }
+
+    /// Run `bundle` and produce a JSON manifest describing the emit.
+    /// Manifest shape:
+    ///   `{ "version": 1, "outputs": { "out.js": { "entries": [...], "size": N } } }`
+    /// The output filename is fixed as `out.js` for the v0 single-chunk
+    /// emit; chunk-splitting follow-up will populate richer entries.
+    /// Caller owns both slices in the returned `ManifestResult` and must
+    /// free them with `gpa`.
+    pub fn bundleWithManifest(self: *Bundler, gpa: std.mem.Allocator, options: BundleOptions) BundleError!ManifestResult {
+        const js = try self.bundle(gpa, options);
+        errdefer gpa.free(js);
+
+        var manifest: std.ArrayListUnmanaged(u8) = .empty;
+        errdefer manifest.deinit(gpa);
+
+        manifest.appendSlice(gpa, "{\"version\": 1, \"outputs\": {\"out.js\": {\"entries\": [") catch return error.OutOfMemory;
+        for (self.entries.items, 0..) |entry, idx| {
+            if (idx > 0) manifest.appendSlice(gpa, ", ") catch return error.OutOfMemory;
+            manifest.append(gpa, '"') catch return error.OutOfMemory;
+            for (entry.path) |c| {
+                // JSON-escape the two characters that could appear in a
+                // filesystem path and break the JSON shape.
+                if (c == '\\' or c == '"') manifest.append(gpa, '\\') catch return error.OutOfMemory;
+                manifest.append(gpa, c) catch return error.OutOfMemory;
+            }
+            manifest.append(gpa, '"') catch return error.OutOfMemory;
+        }
+        manifest.appendSlice(gpa, "], \"size\": ") catch return error.OutOfMemory;
+        var size_buf: [32]u8 = undefined;
+        const size_str = std.fmt.bufPrint(&size_buf, "{d}", .{js.len}) catch return error.OutOfMemory;
+        manifest.appendSlice(gpa, size_str) catch return error.OutOfMemory;
+        manifest.appendSlice(gpa, "}}}") catch return error.OutOfMemory;
+
+        const manifest_slice = manifest.toOwnedSlice(gpa) catch return error.OutOfMemory;
+        return .{ .bundle = js, .manifest = manifest_slice };
     }
 };
 
@@ -721,4 +770,38 @@ test "Bundler: deduplicate skips a repeated entry path" {
         dup_search = idx + "dedupSentinel".len;
     }
     try T.expectEqual(@as(usize, 2), dup_count);
+}
+
+test "Bundler: bundleWithManifest emits expected JSON shape" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const io = std.testing.io;
+    {
+        var f = try tmp.dir.createFile(io, "main.ts", .{ .truncate = true });
+        defer f.close(io);
+        try f.writeStreamingAll(io, "let m = 5;");
+    }
+    const path_z = try tmp.dir.realPathFileAlloc(io, "main.ts", T.allocator);
+    defer T.allocator.free(path_z);
+    const path: []const u8 = path_z;
+
+    var b = Bundler.init(T.allocator);
+    defer b.deinit();
+    try b.addEntry(path);
+
+    const result = try b.bundleWithManifest(T.allocator, .{ .manifest = true });
+    defer T.allocator.free(result.bundle);
+    defer T.allocator.free(result.manifest);
+
+    // Manifest must contain the expected top-level keys.
+    try T.expect(std.mem.indexOf(u8, result.manifest, "\"version\": 1") != null);
+    try T.expect(std.mem.indexOf(u8, result.manifest, "\"outputs\":") != null);
+    try T.expect(std.mem.indexOf(u8, result.manifest, "\"out.js\":") != null);
+    try T.expect(std.mem.indexOf(u8, result.manifest, "\"entries\":") != null);
+    try T.expect(std.mem.indexOf(u8, result.manifest, "\"size\":") != null);
+    // The registered entry path appears inside the manifest.
+    try T.expect(std.mem.indexOf(u8, result.manifest, path) != null);
+    // The bundle is non-empty.
+    try T.expect(result.bundle.len > 0);
 }
