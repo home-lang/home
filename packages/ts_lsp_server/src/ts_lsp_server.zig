@@ -1085,7 +1085,7 @@ pub fn handleCompletion(
     const byte_pos = lineColToByte(f.source, line_u, char_u);
 
     const items = try service.completions(gpa, path, byte_pos);
-    defer gpa.free(items);
+    defer ts_lsp.deinitCompletionItems(gpa, items);
 
     var buf: std.ArrayListUnmanaged(u8) = .empty;
     defer buf.deinit(gpa);
@@ -1101,6 +1101,11 @@ pub fn handleCompletion(
         if (it.detail.len > 0) {
             try buf.appendSlice(gpa, ",\"detail\":\"");
             try writeJsonStringContents(&buf, gpa, it.detail);
+            try buf.append(gpa, '"');
+        }
+        if (it.documentation.len > 0) {
+            try buf.appendSlice(gpa, ",\"documentation\":\"");
+            try writeJsonStringContents(&buf, gpa, it.documentation);
             try buf.append(gpa, '"');
         }
         if (it.auto_import_from.len > 0) {

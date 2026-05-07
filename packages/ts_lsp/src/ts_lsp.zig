@@ -54,8 +54,20 @@ pub const CompletionItem = struct {
     label: []const u8,
     /// Item kind (variable / function / class / interface / type / module).
     kind: ItemKind,
-    /// Optional type signature shown alongside the label.
+    /// Optional type signature shown alongside the label
+    /// (e.g. `function add(a: number, b: number): number` or
+    /// `const x: number`). Allocated by `completions` when non-empty;
+    /// see `deinitCompletionItems` for the matching free.
     detail: []const u8,
+    /// Optional leading documentation (e.g. JSDoc) for the symbol.
+    /// Empty when the language has no doc-comment associated with
+    /// the declaration. Allocated alongside `detail` and freed by
+    /// `deinitCompletionItems`.
+    documentation: []const u8 = "",
+    /// True when `detail` / `documentation` were allocated by
+    /// `completions` and need to be freed. Auto-import candidates
+    /// reuse the static "Auto import" literal and skip the free.
+    detail_owned: bool = false,
     /// When non-empty, an auto-import candidate: the file path the
     /// symbol was discovered in. The editor renders this as a
     /// secondary `additionalTextEdits` insertion (`import { name }
@@ -65,6 +77,20 @@ pub const CompletionItem = struct {
 
     pub const ItemKind = enum { variable, function, class, interface, type_alias, module, keyword, member };
 };
+
+/// Free the per-item allocations (`detail`, `documentation`) inside
+/// the slice returned by `Service.completions`, then free the slice
+/// itself. Callers should prefer this helper over `gpa.free(items)`
+/// to avoid leaking the rendered declaration shapes.
+pub fn deinitCompletionItems(gpa: std.mem.Allocator, items: []CompletionItem) void {
+    for (items) |it| {
+        if (it.detail_owned) {
+            if (it.detail.len > 0) gpa.free(it.detail);
+            if (it.documentation.len > 0) gpa.free(it.documentation);
+        }
+    }
+    gpa.free(items);
+}
 
 pub const SignatureInfo = struct {
     /// Rendered signature, e.g. "(x: number, y: string): boolean".
@@ -871,13 +897,26 @@ pub const Service = struct {
     pub fn completions(self: *Service, gpa: std.mem.Allocator, file_path: []const u8, byte_pos: u32) ![]CompletionItem {
         _ = byte_pos;
         var items: std.ArrayListUnmanaged(CompletionItem) = .empty;
-        errdefer items.deinit(gpa);
+        errdefer {
+            for (items.items) |it| {
+                if (it.detail_owned) {
+                    if (it.detail.len > 0) gpa.free(it.detail);
+                    if (it.documentation.len > 0) gpa.free(it.documentation);
+                }
+            }
+            items.deinit(gpa);
+        }
 
         const file_id = self.program.lookupPath(file_path) orelse return items.toOwnedSlice(gpa);
         const f = self.program.fileById(file_id);
         const c = f.compilation orelse return items.toOwnedSlice(gpa);
 
-        // Module-level value symbols.
+        // Module-level value symbols. For each symbol we reuse the
+        // hover-side `renderDeclShape` helper to fill `detail` with
+        // the declaration shape (`function foo(x: number): string`
+        // / `const x: number`) — matches what TS-style LSPs surface
+        // alongside the completion label. JSDoc is not yet stored
+        // on HIR declarations, so `documentation` stays empty for v1.
         var it = c.module.root.values.iterator();
         while (it.next()) |entry| {
             const sym = entry.value_ptr.*;
@@ -887,10 +926,21 @@ pub const Service = struct {
                 .class
             else
                 .variable;
+            const shape: []const u8 = blk: {
+                if (sym.decls.items.len == 0) break :blk "";
+                const decl = sym.decls.items[0];
+                const t = c.hir.typeOf(decl);
+                if (renderDeclShape(gpa, &c.type_interner, &c.interner, &c.hir, sym, t)) |s| {
+                    break :blk s;
+                }
+                if (t == ts_checker.Primitive.none) break :blk "";
+                break :blk renderType(gpa, &c.type_interner, &c.interner, t) catch "";
+            };
             try items.append(gpa, .{
                 .label = c.interner.get(entry.key_ptr.*),
                 .kind = kind,
-                .detail = "",
+                .detail = shape,
+                .detail_owned = shape.len > 0,
             });
         }
         // Module-level type symbols.
@@ -903,10 +953,21 @@ pub const Service = struct {
                 .interface
             else
                 .type_alias;
+            const shape: []const u8 = blk: {
+                if (sym.decls.items.len == 0) break :blk "";
+                const decl = sym.decls.items[0];
+                const t = c.hir.typeOf(decl);
+                if (renderDeclShape(gpa, &c.type_interner, &c.interner, &c.hir, sym, t)) |s| {
+                    break :blk s;
+                }
+                if (t == ts_checker.Primitive.none) break :blk "";
+                break :blk renderType(gpa, &c.type_interner, &c.interner, t) catch "";
+            };
             try items.append(gpa, .{
                 .label = c.interner.get(entry.key_ptr.*),
                 .kind = kind,
-                .detail = "",
+                .detail = shape,
+                .detail_owned = shape.len > 0,
             });
         }
         // §8.A.1 — auto-import candidates from other files in the
@@ -3475,7 +3536,7 @@ test "Service: completions list module-level value symbols" {
 
     var svc = Service.init(T.allocator, &program);
     const items = try svc.completions(T.allocator, "/main.ts", 0);
-    defer T.allocator.free(items);
+    defer deinitCompletionItems(T.allocator, items);
 
     var saw_foo = false;
     var saw_bar = false;
@@ -3491,6 +3552,35 @@ test "Service: completions list module-level value symbols" {
     try T.expect(saw_bar);
     try T.expect(saw_baz);
     try T.expect(saw_i);
+}
+
+test "Service: completion items include declaration shape detail" {
+    var vfs = ts_resolver.VirtualFs.init(T.allocator);
+    defer vfs.deinit();
+    var resolver = ts_resolver.Resolver.init(T.allocator, vfs.fs(), .{});
+    defer resolver.deinit();
+    var program = ts_program.Program.init(T.allocator, &resolver);
+    defer program.deinit();
+
+    const src = "function add(a: number, b: number): number { return a + b; }";
+    _ = try program.add("/main.ts", src);
+    try program.compileAll(.{});
+
+    var svc = Service.init(T.allocator, &program);
+    const items = try svc.completions(T.allocator, "/main.ts", 0);
+    defer deinitCompletionItems(T.allocator, items);
+
+    var saw_add = false;
+    for (items) |item| {
+        if (std.mem.eql(u8, item.label, "add")) {
+            saw_add = true;
+            try T.expectEqualStrings(
+                "function add(a: number, b: number): number",
+                item.detail,
+            );
+        }
+    }
+    try T.expect(saw_add);
 }
 
 test "Service: findReferences returns all identifier sites" {
@@ -3831,7 +3921,7 @@ test "Service: completions surfaces auto-import candidates from other files" {
 
     var svc = Service.init(T.allocator, &program);
     const items = try svc.completions(T.allocator, "/main.ts", 0);
-    defer T.allocator.free(items);
+    defer deinitCompletionItems(T.allocator, items);
 
     var saw_lib_fn = false;
     var saw_lib_class = false;
