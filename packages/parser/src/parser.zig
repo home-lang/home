@@ -461,6 +461,36 @@ pub const Parser = struct {
         return false;
     }
 
+    /// Lookahead helper for Zig-style `for (slice) |item|` loop syntax.
+    /// When the parser is at `(`, scan forward to find the matching `)`
+    /// and check whether the next token is `|`. This is looser than
+    /// `afterMatchingParenLooksLikeCapturePipe` (no requirement that the
+    /// capture be `|ident|` shape) so we can disambiguate the for-loop
+    /// form before parsing the iterable expression — the actual capture
+    /// list is validated when consumed. Pure lookahead: no tokens are
+    /// consumed.
+    fn forParenIsZigStyle(self: *Parser) bool {
+        if (!self.check(.LeftParen)) return false;
+        var i: usize = self.current + 1;
+        var depth: usize = 1;
+        while (i < self.tokens.len) : (i += 1) {
+            const t = self.tokens[i].type;
+            if (t == .LeftParen) {
+                depth += 1;
+            } else if (t == .RightParen) {
+                depth -= 1;
+                if (depth == 0) {
+                    const after = i + 1;
+                    if (after >= self.tokens.len) return false;
+                    return self.tokens[after].type == .Pipe;
+                }
+            } else if (t == .Eof) {
+                return false;
+            }
+        }
+        return false;
+    }
+
     /// Consume an optional semicolon.
     ///
     /// Semicolons are optional in Home if:
@@ -3765,6 +3795,15 @@ pub const Parser = struct {
     fn forStatement(self: *Parser) !ast.Stmt {
         const for_token = self.previous();
 
+        // Zig-style: `for (EXPR) |IDENT| { body }` or
+        // `for (EXPR_A, EXPR_B) |a, b| { body }`. Disambiguated by
+        // peeking past the matching `)` for a `|` capture pipe so we
+        // don't mis-fire on Rust-style `for (x in items)` (which has no
+        // pipe after `)`).
+        if (self.forParenIsZigStyle()) {
+            return self.forStatementZigStyle(for_token, null);
+        }
+
         // Check for tuple destructuring: for (a, b, c) in items
         // or regular: for x in items / for (x in items)
         if (self.match(&.{.LeftParen})) {
@@ -3898,6 +3937,11 @@ pub const Parser = struct {
     fn forStatementWithLabel(self: *Parser, label: []const u8) !ast.Stmt {
         const for_token = self.previous();
 
+        // Zig-style with label: `'outer: for (EXPR) |IDENT| { body }`
+        if (self.forParenIsZigStyle()) {
+            return self.forStatementZigStyle(for_token, label);
+        }
+
         // Handle optional parentheses: for (x in items) or for x in items
         const has_paren = self.match(&.{.LeftParen});
 
@@ -3938,6 +3982,167 @@ pub const Parser = struct {
         );
 
         return ast.Stmt{ .ForStmt = stmt };
+    }
+
+    /// Parse a Zig-style for loop: `for (EXPR) |IDENT| { body }`.
+    ///
+    /// Also supports parallel iteration `for (A, B) |a, b|` and the
+    /// indexed form `for (slice, 0..) |item, idx|` where an open-ended
+    /// range `INT..` in the iterable list is treated as the index source
+    /// (mapped onto the existing `index` field of `ForStmt`).
+    ///
+    /// Caller must verify Zig-style shape via `forParenIsZigStyle()`
+    /// first (no rollback path on mismatch). On entry, the parser is
+    /// positioned at the `(`.
+    fn forStatementZigStyle(self: *Parser, for_token: Token, label: ?[]const u8) !ast.Stmt {
+        _ = try self.expect(.LeftParen, "Expected '(' after 'for'");
+
+        // Parse comma-separated iterable expressions. We track an
+        // optional "index iterable" position when we see an open-ended
+        // range like `0..` (lexed as `INT DotDot` followed by `,` or
+        // `)`). The current AST has no node for an open-ended range, so
+        // we capture the start as a synthetic index counter and bind
+        // its capture name to the `index` field below.
+        var iterables = std.ArrayList(*ast.Expr).empty;
+        defer iterables.deinit(self.allocator);
+        // Track whether each slot is an open-ended range (index source)
+        // via parallel array. When set, the corresponding pointer is
+        // a placeholder and the slot binds to `index` rather than
+        // `iterator` in the resulting ForStmt.
+        var slot_is_index = std.ArrayList(bool).empty;
+        defer slot_is_index.deinit(self.allocator);
+
+        while (true) {
+            // Detect open-ended range form `INT..` at this slot. Pure
+            // lookahead — only consume on a confirmed match.
+            if (self.check(.Integer)) {
+                const next = self.peekNext().type;
+                if (next == .DotDot) {
+                    const after = if (self.current + 2 < self.tokens.len)
+                        self.tokens[self.current + 2].type
+                    else
+                        .Eof;
+                    if (after == .Comma or after == .RightParen) {
+                        // Consume `INT ..` and treat this slot as index.
+                        _ = self.advance(); // INT
+                        _ = self.advance(); // ..
+                        // Sentinel placeholder so the parallel array
+                        // stays homogeneous; the `slot_is_index` flag
+                        // marks it so we don't read it as a real iter.
+                        const placeholder = try self.allocator.create(ast.Expr);
+                        placeholder.* = ast.Expr{ .IntegerLiteral = ast.IntegerLiteral.init(0, ast.SourceLocation.fromToken(for_token)) };
+                        try iterables.append(self.allocator, placeholder);
+                        try slot_is_index.append(self.allocator, true);
+                        if (!self.match(&.{.Comma})) break;
+                        continue;
+                    }
+                }
+            }
+
+            const expr = try self.expression();
+            try iterables.append(self.allocator, expr);
+            try slot_is_index.append(self.allocator, false);
+
+            if (!self.match(&.{.Comma})) break;
+            // Allow trailing comma before `)`.
+            if (self.check(.RightParen)) break;
+        }
+
+        _ = try self.expect(.RightParen, "Expected ')' after for iteration clause");
+        _ = try self.expect(.Pipe, "Expected '|' to begin capture list");
+
+        // Parse capture identifiers `|a|` or `|a, b|`. `_` is allowed
+        // as a discard binding (matches Zig).
+        var captures = std.ArrayList([]const u8).empty;
+        defer captures.deinit(self.allocator);
+
+        while (true) {
+            const cap_tok = self.advance();
+            if (cap_tok.type != .Identifier) {
+                try self.reportError("Expected identifier or '_' in for capture list");
+                return error.UnexpectedToken;
+            }
+            try captures.append(self.allocator, cap_tok.lexeme);
+            if (!self.match(&.{.Comma})) break;
+            if (self.check(.Pipe)) break;
+        }
+
+        _ = try self.expect(.Pipe, "Expected '|' after capture list");
+
+        if (captures.items.len != iterables.items.len) {
+            try self.reportError("Number of captures must match number of iterables in for loop");
+            return error.UnexpectedToken;
+        }
+
+        const body = try self.blockStatement();
+        errdefer ast.Program.deinitBlockStmt(body, self.allocator);
+
+        // Lower to existing ForStmt shape. Single iterable -> simple
+        // form; one iterable + one open-ended range -> indexed form;
+        // anything else is rejected as not yet representable.
+        const n = iterables.items.len;
+        if (n == 1) {
+            if (slot_is_index.items[0]) {
+                try self.reportError("for loop requires at least one non-range iterable");
+                return error.UnexpectedToken;
+            }
+            const stmt = if (label) |lbl| try ast.ForStmt.initWithLabel(
+                self.allocator,
+                captures.items[0],
+                iterables.items[0],
+                body,
+                null,
+                lbl,
+                ast.SourceLocation.fromToken(for_token),
+            ) else try ast.ForStmt.init(
+                self.allocator,
+                captures.items[0],
+                iterables.items[0],
+                body,
+                null,
+                ast.SourceLocation.fromToken(for_token),
+            );
+            return ast.Stmt{ .ForStmt = stmt };
+        }
+
+        if (n == 2) {
+            // Allowed shape: one real iterable + one index counter.
+            const a_is_idx = slot_is_index.items[0];
+            const b_is_idx = slot_is_index.items[1];
+            if (a_is_idx and b_is_idx) {
+                try self.reportError("for loop requires at least one non-range iterable");
+                return error.UnexpectedToken;
+            }
+            if (!a_is_idx and !b_is_idx) {
+                try self.reportError("parallel iteration over multiple slices is not yet supported; use a single slice with `0..` for an index");
+                return error.UnexpectedToken;
+            }
+            const iter_idx: usize = if (a_is_idx) 1 else 0;
+            const idx_pos: usize = if (a_is_idx) 0 else 1;
+            // Free the placeholder we allocated for the index slot — it
+            // never makes it into the AST since `index` is just a name.
+            ast.Program.deinitExpr(iterables.items[idx_pos], self.allocator);
+            const stmt = if (label) |lbl| try ast.ForStmt.initWithLabel(
+                self.allocator,
+                captures.items[iter_idx],
+                iterables.items[iter_idx],
+                body,
+                captures.items[idx_pos],
+                lbl,
+                ast.SourceLocation.fromToken(for_token),
+            ) else try ast.ForStmt.init(
+                self.allocator,
+                captures.items[iter_idx],
+                iterables.items[iter_idx],
+                body,
+                captures.items[idx_pos],
+                ast.SourceLocation.fromToken(for_token),
+            );
+            return ast.Stmt{ .ForStmt = stmt };
+        }
+
+        try self.reportError("for loops with more than two captures are not yet supported");
+        return error.UnexpectedToken;
     }
 
     /// Parse a do-while statement

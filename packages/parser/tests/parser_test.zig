@@ -363,6 +363,40 @@ test "parser: for statement" {
     try testing.expectEqual(@as(usize, 1), for_stmt.body.statements.len);
 }
 
+test "parser: for statement Zig-style single iterator" {
+    const program = try parseSource(testing.allocator, "for (items) |item| { process(item) }");
+    defer program.deinit(testing.allocator);
+
+    try testing.expectEqual(@as(usize, 1), program.statements.len);
+
+    const stmt = program.statements[0];
+    try testing.expect(stmt == .ForStmt);
+
+    const for_stmt = stmt.ForStmt;
+    try testing.expectEqualStrings("item", for_stmt.iterator);
+    try testing.expect(for_stmt.iterable.* == .Identifier);
+    try testing.expectEqualStrings("items", for_stmt.iterable.Identifier.name);
+    try testing.expect(for_stmt.index == null);
+    try testing.expectEqual(@as(usize, 1), for_stmt.body.statements.len);
+}
+
+test "parser: for statement Zig-style with index" {
+    const program = try parseSource(testing.allocator, "for (items, 0..) |item, idx| { process(item, idx) }");
+    defer program.deinit(testing.allocator);
+
+    try testing.expectEqual(@as(usize, 1), program.statements.len);
+
+    const stmt = program.statements[0];
+    try testing.expect(stmt == .ForStmt);
+
+    const for_stmt = stmt.ForStmt;
+    try testing.expectEqualStrings("item", for_stmt.iterator);
+    try testing.expect(for_stmt.index != null);
+    try testing.expectEqualStrings("idx", for_stmt.index.?);
+    try testing.expect(for_stmt.iterable.* == .Identifier);
+    try testing.expectEqualStrings("items", for_stmt.iterable.Identifier.name);
+}
+
 test "parser: block statement" {
     const program = try parseSource(testing.allocator, "{ let x = 1; let y = 2 }");
     defer program.deinit(testing.allocator);
