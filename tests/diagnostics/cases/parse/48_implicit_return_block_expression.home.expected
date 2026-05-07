@@ -1,0 +1,3 @@
+Checking: <repo>/tests/diagnostics/cases/parse/48_implicit_return_block_expression.home
+
+Success: Type checking passed ✓

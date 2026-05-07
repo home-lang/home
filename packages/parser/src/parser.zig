@@ -3637,6 +3637,24 @@ pub const Parser = struct {
             const block = try self.blockStatement();
             return ast.Stmt{ .BlockStmt = block };
         }
+        // `unsafe { ... }` as a statement is treated as a no-op block
+        // prefix — the inner block is parsed exactly like a regular
+        // brace block. Issue #56: kernel code uses `unsafe { ... }`
+        // pervasively (~234 sites) as a marker around raw-pointer
+        // dereferences and pointer-cast loads/stores. The block may
+        // also appear in expression position (`fn g(): u8 { unsafe {
+        // *p } }` — see `primary()` for the expression form).
+        //
+        // We recognize the keyword only when followed by `{` so a bare
+        // `unsafe` token in any other position (e.g. as a parameter
+        // name via the contextual-keyword fallback) keeps its existing
+        // behavior.
+        if (self.check(.Unsafe) and self.peekNext().type == .LeftBrace) {
+            _ = self.advance(); // consume `unsafe`
+            _ = self.advance(); // consume `{`
+            const block = try self.blockStatement();
+            return ast.Stmt{ .BlockStmt = block };
+        }
         return self.expressionStatement();
     }
 
@@ -6944,6 +6962,22 @@ pub const Parser = struct {
         // Closure expression: |params| body or || body (zero params)
         if (self.check(.Pipe) or self.check(.PipePipe)) {
             return try self.parseClosureExpr();
+        }
+
+        // `unsafe { ... }` as an expression is a no-op block prefix —
+        // the inner block parses as an ordinary block expression and
+        // may end with a tail-expression (issue #56). This is the
+        // expression-position counterpart of the statement form added
+        // in `statement()`. Used pervasively in kernel code for
+        // `fn read_u8(addr: u64): u8 { unsafe { *(addr as *const u8) } }`
+        // style implicit-return wrappers.
+        //
+        // Match only when followed by `{` so a bare `unsafe` token
+        // used as an identifier elsewhere keeps its existing behavior.
+        if (self.check(.Unsafe) and self.peekNext().type == .LeftBrace) {
+            _ = self.advance(); // consume `unsafe`
+            _ = self.advance(); // consume `{`
+            return try self.blockExprParse();
         }
 
         // Block expression or Map literal: { stmt1; stmt2; expr } or { "key": value }

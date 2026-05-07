@@ -1,0 +1,64 @@
+// Regression test for issue #56 — `{ expr }` is accepted as an
+// implicit-return block expression in any expression position
+// (let/const initializer, function-body tail, struct-field initializer).
+//
+// The kernel author wrote 234+ `unsafe { ... }` sites in this style
+// across `kernel/src/power/`, `kernel/src/arch/`, and
+// `kernel/src/drivers/`. The pattern that previously failed at parse
+// time was the "implicit-return through unsafe block" form:
+//
+//     fn read_u8(addr: u64): u8 {
+//         unsafe { *(addr as *const u8) }       // <- failed: no `;`
+//     }
+//
+// Two parser changes back this:
+//   1. `unsafe { ... }` as a statement is treated as a no-op block
+//      prefix — `statement()` consumes the keyword and forwards to
+//      `blockStatement`. Statement-form blocks (with explicit `return`
+//      or `;`-terminated last items) keep their old void-result shape.
+//   2. `unsafe { ... }` as an expression dispatches to
+//      `blockExprParse` from `primary()`, so it can be used as a let
+//      initializer, function argument, or function-body tail.
+//
+// The implicit-return semantics for plain `{ expr }` and
+// `fn f(): T { expr }` already worked — the function-body block already
+// keeps a trailing expression-statement without semicolon as the last
+// item, and downstream typecheck/codegen treats it as the result.
+
+// Plain block expression as a let initializer.
+fn make_one(): u32 {
+    let x = { 5 }
+    return x
+}
+
+// Multi-statement block expression with tail-expression result.
+fn add_one(): u32 {
+    let y = { let z = 1; z + 1 }
+    return y
+}
+
+// Implicit-return function body — the body is a single expression
+// without trailing semicolon.
+fn five(): u32 { 5 }
+
+// `unsafe { ... }` as a function body's tail-expression. The exact
+// pattern from `kernel/src/power/acpi.home:458`.
+fn read_u8(addr: u64): u8 {
+    unsafe { *(addr as *const u8) }
+}
+
+// `unsafe { ... }` as a let initializer — expression-position form.
+fn load_one(p: *u8): u8 {
+    let v = unsafe { *p }
+    return v
+}
+
+// Statement-form `unsafe { ... }` with `;`-terminated body — the
+// inner block evaluates to void as before; the trailing semicolon is
+// optional (newline-terminated also accepted).
+fn store_two(p: *u8): void {
+    unsafe {
+        *p = 1;
+        *p = 2;
+    }
+}
