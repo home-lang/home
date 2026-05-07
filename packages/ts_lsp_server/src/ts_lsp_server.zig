@@ -1333,25 +1333,28 @@ pub fn handleSignatureHelp(
 
     const maybe_sig = service.signatureHelp(gpa, path, byte_pos) catch null;
     const sig = maybe_sig orelse return encodeResponse(gpa, request_id, "null");
-    defer {
-        gpa.free(sig.label);
-        for (sig.parameters) |p| gpa.free(p);
-        gpa.free(sig.parameters);
-    }
+    defer ts_lsp.deinitSignatureInfo(gpa, sig);
 
     var buf: std.ArrayListUnmanaged(u8) = .empty;
     defer buf.deinit(gpa);
-    try buf.appendSlice(gpa, "{\"signatures\":[{\"label\":\"");
-    try writeJsonStringContents(&buf, gpa, sig.label);
-    try buf.appendSlice(gpa, "\",\"parameters\":[");
-    for (sig.parameters, 0..) |p, i| {
-        if (i > 0) try buf.append(gpa, ',');
+    try buf.appendSlice(gpa, "{\"signatures\":[");
+    for (sig.signatures, 0..) |s, si| {
+        if (si > 0) try buf.append(gpa, ',');
         try buf.appendSlice(gpa, "{\"label\":\"");
-        try writeJsonStringContents(&buf, gpa, p);
-        try buf.appendSlice(gpa, "\"}");
+        try writeJsonStringContents(&buf, gpa, s.label);
+        try buf.appendSlice(gpa, "\",\"parameters\":[");
+        for (s.parameters, 0..) |p, i| {
+            if (i > 0) try buf.append(gpa, ',');
+            try buf.appendSlice(gpa, "{\"label\":\"");
+            try writeJsonStringContents(&buf, gpa, p);
+            try buf.appendSlice(gpa, "\"}");
+        }
+        try buf.appendSlice(gpa, "]}");
     }
-    try buf.appendSlice(gpa, "]}],\"activeSignature\":0,\"activeParameter\":");
+    try buf.appendSlice(gpa, "],\"activeSignature\":");
     var nbuf: [16]u8 = undefined;
+    try buf.appendSlice(gpa, try std.fmt.bufPrint(&nbuf, "{d}", .{sig.active_signature}));
+    try buf.appendSlice(gpa, ",\"activeParameter\":");
     try buf.appendSlice(gpa, try std.fmt.bufPrint(&nbuf, "{d}", .{sig.active_parameter}));
     try buf.append(gpa, '}');
     return encodeResponse(gpa, request_id, buf.items);

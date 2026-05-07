@@ -93,14 +93,39 @@ pub fn deinitCompletionItems(gpa: std.mem.Allocator, items: []CompletionItem) vo
 }
 
 pub const SignatureInfo = struct {
-    /// Rendered signature, e.g. "(x: number, y: string): boolean".
+    /// Rendered signature of the active overload, e.g.
+    /// "(x: number, y: string): boolean".
     label: []const u8,
     /// Index of the active parameter (the one cursor is currently
     /// hovering over inside the call).
     active_parameter: u32,
-    /// Per-parameter labels (for highlighting in the editor).
+    /// Per-parameter labels for the active signature.
     parameters: []const []const u8,
+    /// All visible overload signatures for the call's callee, in
+    /// declaration order. Always contains at least one entry.
+    signatures: []const SingleSignature,
+    /// Index into `signatures` of the overload whose parameter list
+    /// best matches the supplied argument types. Defaults to 0 when
+    /// no overload accepts the current arguments.
+    active_signature: u32,
+
+    pub const SingleSignature = struct {
+        label: []const u8,
+        parameters: []const []const u8,
+    };
 };
+
+pub fn deinitSignatureInfo(gpa: std.mem.Allocator, sig: SignatureInfo) void {
+    gpa.free(sig.label);
+    for (sig.parameters) |p| gpa.free(p);
+    gpa.free(sig.parameters);
+    for (sig.signatures) |s| {
+        gpa.free(s.label);
+        for (s.parameters) |p| gpa.free(p);
+        gpa.free(s.parameters);
+    }
+    gpa.free(sig.signatures);
+}
 
 pub const InlayHint = struct {
     /// 0-based byte position the hint anchors at.
@@ -1301,6 +1326,10 @@ pub const Service = struct {
     /// Signature-help at `byte_pos`. Returns the active signature
     /// rendered as `(p1: T1, p2: T2): R`, with the active parameter
     /// index based on the cursor's position in the argument list.
+    /// When the callee has multiple overload declarations, all
+    /// overloads are surfaced via `signatures`, and `active_signature`
+    /// is set to the first overload whose parameter types accept the
+    /// current arg types — or 0 when no overload matches.
     /// Returns null when no enclosing call expression is found.
     pub fn signatureHelp(self: *Service, gpa: std.mem.Allocator, file_path: []const u8, byte_pos: u32) !?SignatureInfo {
         const file_id = self.program.lookupPath(file_path) orelse return null;
@@ -1312,7 +1341,7 @@ pub const Service = struct {
         const call = hir_mod.callOf(&c.hir, call_node);
         const callee_t = c.hir.typeOf(call.callee);
         if (!c.type_interner.pool.flagsOf(callee_t).is_signature) return null;
-        const sig_label = renderType(gpa, &c.type_interner, &c.interner, callee_t) catch return null;
+
         // Determine active parameter — count comma-separated args
         // before byte_pos by walking the call's argument spans.
         var active_index: u32 = 0;
@@ -1326,17 +1355,111 @@ pub const Service = struct {
                 break;
             }
         }
-        const params = c.type_interner.signatureParams(callee_t);
-        var labels = std.ArrayListUnmanaged([]const u8).empty;
-        errdefer labels.deinit(gpa);
-        for (params) |p| {
-            const lbl = renderType(gpa, &c.type_interner, &c.interner, p) catch "";
-            try labels.append(gpa, lbl);
+
+        // Collect overload signatures: when the callee is a bare
+        // identifier referencing a top-level function, gather every
+        // sibling fn_decl that shares the name. Multiple decls + a
+        // final decl with body = TS-style overload group; only the
+        // leading body-less decls are visible to call sites.
+        var sig_types = std.ArrayListUnmanaged(ts_checker.TypeId).empty;
+        defer sig_types.deinit(gpa);
+        if (c.hir.kindOf(call.callee) == .identifier) {
+            const callee_name = hir_mod.identifierOf(&c.hir, call.callee).name;
+            const top_stmts = hir_mod.blockStmts(&c.hir, c.root);
+            var matches = std.ArrayListUnmanaged(ts_checker.TypeId).empty;
+            defer matches.deinit(gpa);
+            for (top_stmts) |s_in| {
+                var s = s_in;
+                if (c.hir.kindOf(s) == .export_decl) {
+                    const ex = hir_mod.exportOf(&c.hir, s);
+                    if (ex.decl != hir_mod.none_node_id) s = ex.decl;
+                }
+                if (c.hir.kindOf(s) != .fn_decl) continue;
+                const fnp = hir_mod.fnDeclOf(&c.hir, s);
+                if (fnp.name == hir_mod.none_node_id) continue;
+                if (c.hir.kindOf(fnp.name) != .identifier) continue;
+                const nm = hir_mod.identifierOf(&c.hir, fnp.name).name;
+                if (nm != callee_name) continue;
+                const fn_t = c.hir.typeOf(fnp.name);
+                if (!c.type_interner.pool.flagsOf(fn_t).is_signature) continue;
+                try matches.append(gpa, fn_t);
+            }
+            if (matches.items.len >= 2) {
+                // Drop the trailing implementation signature.
+                try sig_types.appendSlice(gpa, matches.items[0 .. matches.items.len - 1]);
+            } else if (matches.items.len == 1) {
+                try sig_types.append(gpa, matches.items[0]);
+            }
         }
+        if (sig_types.items.len == 0) {
+            try sig_types.append(gpa, callee_t);
+        }
+
+        // Pick the active signature: first overload whose params
+        // accept the supplied arg types. Falls back to 0.
+        var active_sig: u32 = 0;
+        if (sig_types.items.len > 1) {
+            var arg_types = std.ArrayListUnmanaged(ts_checker.TypeId).empty;
+            defer arg_types.deinit(gpa);
+            for (args) |arg| try arg_types.append(gpa, c.hir.typeOf(arg));
+            for (sig_types.items, 0..) |sig, i| {
+                if (signatureAcceptsArgTypes(c, sig, arg_types.items)) {
+                    active_sig = @intCast(i);
+                    break;
+                }
+            }
+        }
+
+        // Render every overload (label + per-parameter labels).
+        var sigs = std.ArrayListUnmanaged(SignatureInfo.SingleSignature).empty;
+        errdefer {
+            for (sigs.items) |s| {
+                gpa.free(s.label);
+                for (s.parameters) |p| gpa.free(p);
+                gpa.free(s.parameters);
+            }
+            sigs.deinit(gpa);
+        }
+        for (sig_types.items) |sig| {
+            const lbl = renderType(gpa, &c.type_interner, &c.interner, sig) catch return null;
+            errdefer gpa.free(lbl);
+            const sig_params = c.type_interner.signatureParams(sig);
+            var plabels = std.ArrayListUnmanaged([]const u8).empty;
+            errdefer {
+                for (plabels.items) |p| gpa.free(p);
+                plabels.deinit(gpa);
+            }
+            for (sig_params) |p| {
+                const pl = renderType(gpa, &c.type_interner, &c.interner, p) catch try gpa.dupe(u8, "");
+                try plabels.append(gpa, pl);
+            }
+            try sigs.append(gpa, .{
+                .label = lbl,
+                .parameters = try plabels.toOwnedSlice(gpa),
+            });
+        }
+
+        // Mirror the active overload's label/parameters at the top
+        // level — duplicates so each owner can free independently.
+        const active = sigs.items[active_sig];
+        const top_label = try gpa.dupe(u8, active.label);
+        errdefer gpa.free(top_label);
+        var top_params = std.ArrayListUnmanaged([]const u8).empty;
+        errdefer {
+            for (top_params.items) |p| gpa.free(p);
+            top_params.deinit(gpa);
+        }
+        for (active.parameters) |p| {
+            const dup = try gpa.dupe(u8, p);
+            try top_params.append(gpa, dup);
+        }
+
         return .{
-            .label = sig_label,
+            .label = top_label,
             .active_parameter = active_index,
-            .parameters = try labels.toOwnedSlice(gpa),
+            .parameters = try top_params.toOwnedSlice(gpa),
+            .signatures = try sigs.toOwnedSlice(gpa),
+            .active_signature = active_sig,
         };
     }
 
@@ -3504,6 +3627,45 @@ fn walkUpToCallExpr(hir: *const hir_mod.Hir, start: hir_mod.NodeId) ?hir_mod.Nod
     return null;
 }
 
+/// Lightweight overload-applicability check used by `signatureHelp`
+/// to pick `active_signature`. Mirrors the checker's
+/// `signatureAccepts`: arg-count fits, and each arg type is
+/// assignable to the corresponding param type. Type-parameter slots
+/// are wildcards.
+fn signatureAcceptsArgTypes(
+    c: *ts_driver.Compilation,
+    sig: ts_checker.TypeId,
+    arg_types: []const ts_checker.TypeId,
+) bool {
+    const params = c.type_interner.signatureParams(sig);
+    var min_required: usize = params.len;
+    while (min_required > 0) {
+        const p = params[min_required - 1];
+        const flags = c.type_interner.pool.flagsOf(p);
+        var includes_undef = flags.is_undefined;
+        if (!includes_undef and flags.is_union) {
+            const members = c.type_interner.unionMembers(p);
+            for (members) |m| {
+                if (c.type_interner.pool.flagsOf(m).is_undefined) {
+                    includes_undef = true;
+                    break;
+                }
+            }
+        }
+        if (!includes_undef) break;
+        min_required -= 1;
+    }
+    if (arg_types.len < min_required) return false;
+    if (arg_types.len > params.len) return false;
+    const n = @min(arg_types.len, params.len);
+    for (0..n) |i| {
+        if (c.type_interner.pool.flagsOf(params[i]).is_type_parameter) continue;
+        const ok = c.type_engine.isAssignableTo(arg_types[i], params[i]) catch return false;
+        if (!ok) return false;
+    }
+    return true;
+}
+
 /// Walk up the parent chain from `start` until we find an
 /// fn_decl/fn_expr/arrow_fn, or return null if we reach the root
 /// without one. Used by call-hierarchy to anchor a cursor inside a
@@ -5162,13 +5324,90 @@ test "Service: signatureHelp returns signature info inside a call" {
     // Position somewhere inside the call expression's argument list.
     const at_call = std.mem.indexOf(u8, src, "add(1, 2)").? + 4; // inside the args
     const sig = (try svc.signatureHelp(T.allocator, "/main.ts", @intCast(at_call))) orelse return error.NoSignature;
-    defer T.allocator.free(sig.label);
-    defer {
-        for (sig.parameters) |p| T.allocator.free(p);
-        T.allocator.free(sig.parameters);
-    }
+    defer deinitSignatureInfo(T.allocator, sig);
     try T.expectEqual(@as(usize, 2), sig.parameters.len);
     try T.expect(sig.label.len > 0);
+    // Single, non-overloaded function: one signature, active = 0.
+    try T.expectEqual(@as(usize, 1), sig.signatures.len);
+    try T.expectEqual(@as(u32, 0), sig.active_signature);
+}
+
+test "Service: signatureHelp activeParameter is 0 at the first arg" {
+    var vfs = ts_resolver.VirtualFs.init(T.allocator);
+    defer vfs.deinit();
+    var resolver = ts_resolver.Resolver.init(T.allocator, vfs.fs(), .{});
+    defer resolver.deinit();
+    var program = ts_program.Program.init(T.allocator, &resolver);
+    defer program.deinit();
+
+    const src =
+        \\function add(a: number, b: number): number { return a + b; }
+        \\let r = add(1, 2);
+    ;
+    _ = try program.add("/main.ts", src);
+    try program.compileAll(.{});
+
+    var svc = Service.init(T.allocator, &program);
+    // Cursor sits on the first argument (`1`).
+    const at_first = std.mem.indexOf(u8, src, "add(1, 2)").? + 4;
+    const sig = (try svc.signatureHelp(T.allocator, "/main.ts", @intCast(at_first))) orelse return error.NoSignature;
+    defer deinitSignatureInfo(T.allocator, sig);
+    try T.expectEqual(@as(u32, 0), sig.active_parameter);
+}
+
+test "Service: signatureHelp activeParameter is 1 after the first comma" {
+    var vfs = ts_resolver.VirtualFs.init(T.allocator);
+    defer vfs.deinit();
+    var resolver = ts_resolver.Resolver.init(T.allocator, vfs.fs(), .{});
+    defer resolver.deinit();
+    var program = ts_program.Program.init(T.allocator, &resolver);
+    defer program.deinit();
+
+    const src =
+        \\function add(a: number, b: number): number { return a + b; }
+        \\let r = add(1, 2);
+    ;
+    _ = try program.add("/main.ts", src);
+    try program.compileAll(.{});
+
+    var svc = Service.init(T.allocator, &program);
+    // Cursor sits on the second argument (`2`) — past the comma.
+    const at_second = std.mem.indexOf(u8, src, "add(1, 2)").? + 7;
+    const sig = (try svc.signatureHelp(T.allocator, "/main.ts", @intCast(at_second))) orelse return error.NoSignature;
+    defer deinitSignatureInfo(T.allocator, sig);
+    try T.expectEqual(@as(u32, 1), sig.active_parameter);
+}
+
+test "Service: signatureHelp surfaces overloads and picks the matching activeSignature" {
+    var vfs = ts_resolver.VirtualFs.init(T.allocator);
+    defer vfs.deinit();
+    var resolver = ts_resolver.Resolver.init(T.allocator, vfs.fs(), .{});
+    defer resolver.deinit();
+    var program = ts_program.Program.init(T.allocator, &resolver);
+    defer program.deinit();
+
+    // Two overloads + an implementation. Calling with a number should
+    // pick the second overload (string-returning), so activeSignature
+    // = 1.
+    const src =
+        \\function pick(x: string): number;
+        \\function pick(x: number): string;
+        \\function pick(x: any): any { return x; }
+        \\let s = pick(42);
+    ;
+    _ = try program.add("/main.ts", src);
+    try program.compileAll(.{});
+
+    var svc = Service.init(T.allocator, &program);
+    const at_call = std.mem.indexOf(u8, src, "pick(42)").? + 5; // inside (42)
+    const sig = (try svc.signatureHelp(T.allocator, "/main.ts", @intCast(at_call))) orelse return error.NoSignature;
+    defer deinitSignatureInfo(T.allocator, sig);
+    // Only the leading two overloads are visible — the impl is dropped.
+    try T.expectEqual(@as(usize, 2), sig.signatures.len);
+    // Number-arg matches the second overload.
+    try T.expectEqual(@as(u32, 1), sig.active_signature);
+    // Top-level label/parameters mirror the active signature.
+    try T.expectEqualStrings(sig.signatures[1].label, sig.label);
 }
 
 test "Service: rename returns one edit per occurrence" {
