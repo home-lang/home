@@ -78,7 +78,6 @@
 //!   textDocument/declaration
 //!   textDocument/onTypeFormatting
 //!   textDocument/rangeFormatting
-//!   textDocument/selectionRange
 //!   textDocument/moniker
 //!   workspace/executeCommand
 //!   workspace/didChangeConfiguration
@@ -141,6 +140,8 @@ pub const Method = enum {
     text_document_document_link,
     document_link_resolve,
     text_document_selection_range,
+    text_document_linked_editing_range,
+    workspace_will_rename_files,
     unknown,
 
     pub fn fromString(s: []const u8) Method {
@@ -182,6 +183,8 @@ pub const Method = enum {
             .{ "textDocument/documentLink", Method.text_document_document_link },
             .{ "documentLink/resolve", Method.document_link_resolve },
             .{ "textDocument/selectionRange", Method.text_document_selection_range },
+            .{ "textDocument/linkedEditingRange", Method.text_document_linked_editing_range },
+            .{ "workspace/willRenameFiles", Method.workspace_will_rename_files },
         };
         inline for (map) |entry| {
             if (std.mem.eql(u8, s, entry[0])) return entry[1];
@@ -223,6 +226,7 @@ pub const SUPPORTED_METHODS = &[_][]const u8{
     "textDocument/documentLink",
     "textDocument/foldingRange",
     "textDocument/selectionRange",
+    "textDocument/linkedEditingRange",
     "textDocument/inlayHint",
     "textDocument/documentHighlight",
     "textDocument/formatting",
@@ -239,6 +243,7 @@ pub const SUPPORTED_METHODS = &[_][]const u8{
     "documentLink/resolve",
     // Workspace.
     "workspace/symbol",
+    "workspace/willRenameFiles",
     // Call hierarchy.
     "callHierarchy/incomingCalls",
     "callHierarchy/outgoingCalls",
@@ -1910,6 +1915,163 @@ pub fn handleSelectionRange(
     return encodeResponse(gpa, request_id, buf.items);
 }
 
+/// Handle a `textDocument/linkedEditingRange` JSON-RPC request: extract
+/// the URI + cursor position, route to `Service.linkedEditingRanges`,
+/// and emit either an LSP `LinkedEditingRanges` object
+/// (`{ ranges: [...], wordPattern: "..." }`) when the cursor is inside
+/// a paired construct (e.g. JSX opening/closing tag), or `null` when
+/// nothing should be linked. The service layer is currently a stub
+/// returning `null` until the JSX HIR pairing lands; this wire handler
+/// is feature-complete for whenever the service produces real data.
+/// Caller owns the returned slice.
+pub fn handleLinkedEditingRange(
+    service: *ts_lsp.Service,
+    gpa: std.mem.Allocator,
+    request_id: RequestId,
+    params_json: []const u8,
+) ![]u8 {
+    const uri = findJsonStringField(params_json, "uri") orelse return error.MissingUri;
+    const line = findJsonIntField(params_json, "line") orelse return error.MissingLine;
+    const character = findJsonIntField(params_json, "character") orelse return error.MissingCharacter;
+    const path = uriToPath(uri);
+
+    const file_id = service.program.lookupPath(path) orelse {
+        return encodeResponse(gpa, request_id, "null");
+    };
+    const f = service.program.fileById(file_id);
+    const line_u: u32 = if (line < 0) 0 else @intCast(line);
+    const char_u: u32 = if (character < 0) 0 else @intCast(character);
+    const byte_pos = lineColToByte(f.source, line_u, char_u);
+
+    const result = try service.linkedEditingRanges(gpa, path, byte_pos);
+    if (result == null) {
+        return encodeResponse(gpa, request_id, "null");
+    }
+    const linked = result.?;
+    defer gpa.free(linked.ranges);
+
+    var buf: std.ArrayListUnmanaged(u8) = .empty;
+    defer buf.deinit(gpa);
+    try buf.appendSlice(gpa, "{\"ranges\":[");
+    for (linked.ranges, 0..) |r, i| {
+        if (i > 0) try buf.append(gpa, ',');
+        try writeRangeFromRange(&buf, gpa, r);
+    }
+    try buf.append(gpa, ']');
+    if (linked.word_pattern.len > 0) {
+        try buf.appendSlice(gpa, ",\"wordPattern\":\"");
+        try writeJsonStringContents(&buf, gpa, linked.word_pattern);
+        try buf.append(gpa, '"');
+    }
+    try buf.append(gpa, '}');
+    return encodeResponse(gpa, request_id, buf.items);
+}
+
+/// Handle a `workspace/willRenameFiles` JSON-RPC request: extract the
+/// `files` array (each entry has an `oldUri` + `newUri` LSP URI), route
+/// to `Service.workspaceWillRenameFiles`, and emit an LSP
+/// `WorkspaceEdit` whose `changes` map groups the returned `[]TextEdit`
+/// by URI. When the service returns no edits — the current stub
+/// behavior — we return `null`, which LSP treats as "no follow-up
+/// edits needed". Caller owns the returned slice.
+pub fn handleWillRenameFiles(
+    service: *ts_lsp.Service,
+    gpa: std.mem.Allocator,
+    request_id: RequestId,
+    params_json: []const u8,
+) ![]u8 {
+    const files_raw = findJsonRawField(params_json, "files") orelse return error.MissingFiles;
+
+    // Walk the JSON array of file-rename objects, slicing out each
+    // `{ oldUri, newUri }` object so we don't accidentally lift fields
+    // across object boundaries.
+    var renames: std.ArrayListUnmanaged(ts_lsp.FileRename) = .empty;
+    defer renames.deinit(gpa);
+
+    var i: usize = 0;
+    while (i < files_raw.len) {
+        while (i < files_raw.len and (files_raw[i] == ' ' or files_raw[i] == '\t' or files_raw[i] == '\n' or files_raw[i] == '\r' or files_raw[i] == ',' or files_raw[i] == '[')) : (i += 1) {}
+        if (i >= files_raw.len or files_raw[i] == ']') break;
+        if (files_raw[i] != '{') {
+            i += 1;
+            continue;
+        }
+        const obj_start = i;
+        var depth: usize = 0;
+        var in_str = false;
+        var j = i;
+        while (j < files_raw.len) : (j += 1) {
+            const ch = files_raw[j];
+            if (in_str) {
+                if (ch == '\\') {
+                    j += 1;
+                    continue;
+                }
+                if (ch == '"') in_str = false;
+                continue;
+            }
+            if (ch == '"') {
+                in_str = true;
+                continue;
+            }
+            if (ch == '{') depth += 1;
+            if (ch == '}') {
+                depth -= 1;
+                if (depth == 0) break;
+            }
+        }
+        if (j >= files_raw.len) break;
+        const obj_slice = files_raw[obj_start .. j + 1];
+        i = j + 1;
+
+        const old_uri = findJsonStringField(obj_slice, "oldUri") orelse continue;
+        const new_uri = findJsonStringField(obj_slice, "newUri") orelse continue;
+        try renames.append(gpa, .{ .old_uri = old_uri, .new_uri = new_uri });
+    }
+
+    const edits = try service.workspaceWillRenameFiles(gpa, renames.items);
+    defer gpa.free(edits);
+
+    if (edits.len == 0) {
+        // LSP allows `null` here to signal "no follow-up edits needed".
+        return encodeResponse(gpa, request_id, "null");
+    }
+
+    // Group edits by file path so we can emit one `changes` entry per URI.
+    var by_file: std.StringArrayHashMapUnmanaged(std.ArrayListUnmanaged(usize)) = .empty;
+    defer {
+        var it = by_file.iterator();
+        while (it.next()) |entry| entry.value_ptr.*.deinit(gpa);
+        by_file.deinit(gpa);
+    }
+    for (edits, 0..) |e, idx| {
+        const gop = try by_file.getOrPut(gpa, e.file);
+        if (!gop.found_existing) gop.value_ptr.* = .empty;
+        try gop.value_ptr.*.append(gpa, idx);
+    }
+
+    var buf: std.ArrayListUnmanaged(u8) = .empty;
+    defer buf.deinit(gpa);
+    try buf.appendSlice(gpa, "{\"changes\":{");
+    var first = true;
+    var it = by_file.iterator();
+    while (it.next()) |entry| {
+        if (!first) try buf.append(gpa, ',');
+        first = false;
+        try buf.append(gpa, '"');
+        try buf.appendSlice(gpa, "file://");
+        try writeJsonStringContents(&buf, gpa, entry.key_ptr.*);
+        try buf.appendSlice(gpa, "\":[");
+        for (entry.value_ptr.*.items, 0..) |edit_idx, k| {
+            if (k > 0) try buf.append(gpa, ',');
+            try writeTextEdit(&buf, gpa, edits[edit_idx]);
+        }
+        try buf.append(gpa, ']');
+    }
+    try buf.appendSlice(gpa, "}}");
+    return encodeResponse(gpa, request_id, buf.items);
+}
+
 /// Convert a 0-based byte offset into a 0-based `(line, character)`
 /// LSP position. Walks `source` once. Used by `handleInlayHint` to
 /// project `Service.inlayHints` byte positions back into LSP space.
@@ -2527,6 +2689,14 @@ pub fn dispatchRequest(
         .text_document_selection_range => {
             if (is_notification) return &.{};
             return try handleSelectionRange(service, gpa, id, params);
+        },
+        .text_document_linked_editing_range => {
+            if (is_notification) return &.{};
+            return try handleLinkedEditingRange(service, gpa, id, params);
+        },
+        .workspace_will_rename_files => {
+            if (is_notification) return &.{};
+            return try handleWillRenameFiles(service, gpa, id, params);
         },
         // Catch-all for unknown methods — fall through to standard
         // JSON-RPC `Method not found` error.
@@ -3807,4 +3977,49 @@ test "handleCodeLensResolve: stub echoes input params" {
     try T.expect(std.mem.indexOf(u8, out, "\"jsonrpc\":\"2.0\"") != null);
     try T.expect(std.mem.indexOf(u8, out, "\"id\":152") != null);
     try T.expect(std.mem.indexOf(u8, out, "\"title\":\"2 references\"") != null);
+}
+
+test "handleLinkedEditingRange: returns null off JSX (service stub)" {
+    var vfs = ts_resolver.VirtualFs.init(T.allocator);
+    defer vfs.deinit();
+    var resolver = ts_resolver.Resolver.init(T.allocator, vfs.fs(), .{});
+    defer resolver.deinit();
+    var program = ts_program.Program.init(T.allocator, &resolver);
+    defer program.deinit();
+
+    _ = try program.add("/main.ts", "let x = 1;");
+    try program.compileAll(.{});
+    var svc = ts_lsp.Service.init(T.allocator, &program);
+
+    const body =
+        \\{"jsonrpc":"2.0","id":311,"method":"textDocument/linkedEditingRange","params":{"textDocument":{"uri":"file:///main.ts"},"position":{"line":0,"character":4}}}
+    ;
+    const out = try handleLinkedEditingRange(&svc, T.allocator, .{ .integer = 311 }, body);
+    defer T.allocator.free(out);
+    try T.expect(std.mem.indexOf(u8, out, "\"id\":311") != null);
+    // Service stub returns null; wire layer surfaces it as `"result":null`.
+    try T.expect(std.mem.indexOf(u8, out, "\"result\":null") != null);
+}
+
+test "handleWillRenameFiles: returns null result for empty stub edit list" {
+    var vfs = ts_resolver.VirtualFs.init(T.allocator);
+    defer vfs.deinit();
+    var resolver = ts_resolver.Resolver.init(T.allocator, vfs.fs(), .{});
+    defer resolver.deinit();
+    var program = ts_program.Program.init(T.allocator, &resolver);
+    defer program.deinit();
+
+    _ = try program.add("/main.ts", "let x = 1;");
+    try program.compileAll(.{});
+    var svc = ts_lsp.Service.init(T.allocator, &program);
+
+    const body =
+        \\{"jsonrpc":"2.0","id":321,"method":"workspace/willRenameFiles","params":{"files":[{"oldUri":"file:///main.ts","newUri":"file:///renamed.ts"}]}}
+    ;
+    const out = try handleWillRenameFiles(&svc, T.allocator, .{ .integer = 321 }, body);
+    defer T.allocator.free(out);
+    try T.expect(std.mem.indexOf(u8, out, "\"id\":321") != null);
+    // Service stub returns []; wire layer treats empty as `"result":null`
+    // (LSP-permitted "no follow-up edits needed").
+    try T.expect(std.mem.indexOf(u8, out, "\"result\":null") != null);
 }
