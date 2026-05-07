@@ -848,7 +848,11 @@ pub const TypeParameterPayload = struct {
 };
 
 /// `let`/`const`/`var` declaration. The `kind` on the `Hir.kindOf(node)`
-/// distinguishes `var_decl` / `let_decl` / `const_decl`.
+/// distinguishes `var_decl` / `let_decl` / `const_decl`. The
+/// `is_using` / `is_await_using` flags carry the Stage 3 explicit
+/// resource management qualifier (`using x = …` / `await using x = …`)
+/// — for v0 the parser stores these on a `const_decl`-shaped node so
+/// downstream consumers continue to treat the binding as `const`.
 pub const VarDeclPayload = struct {
     /// Identifier (or destructuring pattern).
     name: NodeId,
@@ -856,6 +860,10 @@ pub const VarDeclPayload = struct {
     type_annotation: NodeId,
     /// Initializer, or `none_node_id`.
     init: NodeId,
+    /// `using x = expr` — disposes via `[Symbol.dispose]()` at scope exit.
+    is_using: bool = false,
+    /// `await using x = expr` — disposes via `[Symbol.asyncDispose]()`.
+    is_await_using: bool = false,
 };
 
 /// Arrow function payload. Reuses `FnDeclPayload`'s shape with the
@@ -2041,12 +2049,31 @@ pub const Builder = struct {
         type_annotation: NodeId,
         init_node: NodeId,
     ) !NodeId {
+        return self.addVarDeclEx(kind, span, name, type_annotation, init_node, false, false);
+    }
+
+    /// Variant of `addVarDecl` that records the Stage 3 resource
+    /// management flags (`using` / `await using`). The binding is still
+    /// represented as a `const_decl` node — the flags ride on the
+    /// payload so v0 consumers continue to treat it as `const`.
+    pub fn addVarDeclEx(
+        self: *Builder,
+        kind: NodeKind,
+        span: Span,
+        name: NodeId,
+        type_annotation: NodeId,
+        init_node: NodeId,
+        is_using: bool,
+        is_await_using: bool,
+    ) !NodeId {
         std.debug.assert(kind == .var_decl or kind == .let_decl or kind == .const_decl);
         const payload_idx: u32 = @intCast(self.hir.var_decl_payloads.items.len);
         try self.hir.var_decl_payloads.append(self.hir.gpa, .{
             .name = name,
             .type_annotation = type_annotation,
             .init = init_node,
+            .is_using = is_using,
+            .is_await_using = is_await_using,
         });
         const id = try self.newNode(kind, span, payload_idx);
         if (name != none_node_id) self.hir.setParent(name, id);

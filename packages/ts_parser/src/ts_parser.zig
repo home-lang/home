@@ -209,6 +209,31 @@ pub const Parser = struct {
         const t = self.peek();
         return switch (t.kind) {
             .kw_let, .kw_const, .kw_var => try self.parseVarDecl(),
+            .kw_using => blk: {
+                // Stage 3 explicit resource management: `using x = expr;`.
+                // `using` is contextual — only treat it as a declaration
+                // when followed by an identifier on the same line. ASI
+                // would otherwise insert a terminator after `using`.
+                if (self.peekAt(1).kind == .identifier and
+                    !self.peekAt(1).flags.preceded_by_newline)
+                {
+                    break :blk try self.parseUsingDecl(false);
+                }
+                break :blk try self.parseExpressionStatement();
+            },
+            .kw_await => blk: {
+                // `await using x = expr;` — Stage 3 async dispose. The
+                // bare `await expr;` form falls through to be parsed as
+                // an expression statement.
+                if (self.peekAt(1).kind == .kw_using and
+                    !self.peekAt(1).flags.preceded_by_newline and
+                    self.peekAt(2).kind == .identifier and
+                    !self.peekAt(2).flags.preceded_by_newline)
+                {
+                    break :blk try self.parseUsingDecl(true);
+                }
+                break :blk try self.parseExpressionStatement();
+            },
             .kw_return => try self.parseReturnStatement(),
             .open_brace => try self.parseBlockStatement(),
             .kw_if => try self.parseIfStatement(),
@@ -1196,6 +1221,46 @@ pub const Parser = struct {
 
         const stmt_span: Span = .{ .start = start.span.start, .end = self.tokens[self.cursor - 1].span.end };
         return try self.builder.addVarDecl(decl_kind, stmt_span, name_node, type_annotation, init_node);
+    }
+
+    /// Parse a Stage 3 explicit-resource-management declaration:
+    ///   `using x = expr;`
+    ///   `await using x = expr;`
+    /// `await_using` selects the async-dispose form. The binding is
+    /// lowered to a `const_decl`-shaped HIR node with the `is_using` /
+    /// `is_await_using` flag set on its payload — for v0 emitters can
+    /// continue treating it as `const`. Try/finally lowering for
+    /// `[Symbol.dispose]()` / `[Symbol.asyncDispose]()` is a follow-up.
+    fn parseUsingDecl(self: *Parser, await_using: bool) ParseError!NodeId {
+        const start = self.advance(); // `using` or `await`
+        if (await_using) {
+            _ = self.advance(); // `using` token following `await`
+        }
+        const name_tok = try self.expect(.identifier, "identifier in using declaration");
+        const name_id = try self.internToken(name_tok);
+        const name_node = try self.builder.addIdentifier(tokenSpan(name_tok), name_id);
+
+        var type_annotation: NodeId = hir_mod.none_node_id;
+        if (self.match(.colon)) {
+            type_annotation = try self.parseTypeAnnotation();
+        }
+
+        var init_node: NodeId = hir_mod.none_node_id;
+        if (self.match(.equal)) {
+            init_node = try self.parseAssignmentExpression();
+        }
+        try self.consumeStatementTerminator();
+
+        const stmt_span: Span = .{ .start = start.span.start, .end = self.tokens[self.cursor - 1].span.end };
+        return try self.builder.addVarDeclEx(
+            .const_decl,
+            stmt_span,
+            name_node,
+            type_annotation,
+            init_node,
+            !await_using,
+            await_using,
+        );
     }
 
     fn parseReturnStatement(self: *Parser) ParseError!NodeId {
@@ -4419,6 +4484,38 @@ test "parser: arrow — body block" {
     try T.expectEqual(hir_mod.NodeKind.block_stmt, s.hir.kindOf(fn_p.body));
 }
 
+test "parser: `using x = getR();` parses with is_using=true on payload" {
+    var s = try newTestSetup("function f() { using x = getR(); }");
+    defer destroyTestSetup(s);
+    const root = try s.parser.parseSourceFile();
+    const fn_decl = hir_mod.blockStmts(&s.hir, root)[0];
+    try T.expectEqual(hir_mod.NodeKind.fn_decl, s.hir.kindOf(fn_decl));
+    const body = hir_mod.fnDeclOf(&s.hir, fn_decl).body;
+    const inner = hir_mod.blockStmts(&s.hir, body);
+    try T.expectEqual(@as(usize, 1), inner.len);
+    try T.expectEqual(hir_mod.NodeKind.const_decl, s.hir.kindOf(inner[0]));
+    const vd = hir_mod.varDeclOf(&s.hir, inner[0]);
+    try T.expectEqual(true, vd.is_using);
+    try T.expectEqual(false, vd.is_await_using);
+    try T.expect(vd.init != hir_mod.none_node_id);
+}
+
+test "parser: `await using x = getR();` parses with is_await_using=true" {
+    var s = try newTestSetup("async function f() { await using x = getR(); }");
+    defer destroyTestSetup(s);
+    const root = try s.parser.parseSourceFile();
+    const fn_decl = hir_mod.blockStmts(&s.hir, root)[0];
+    try T.expectEqual(hir_mod.NodeKind.fn_decl, s.hir.kindOf(fn_decl));
+    const body = hir_mod.fnDeclOf(&s.hir, fn_decl).body;
+    const inner = hir_mod.blockStmts(&s.hir, body);
+    try T.expectEqual(@as(usize, 1), inner.len);
+    try T.expectEqual(hir_mod.NodeKind.const_decl, s.hir.kindOf(inner[0]));
+    const vd = hir_mod.varDeclOf(&s.hir, inner[0]);
+    try T.expectEqual(false, vd.is_using);
+    try T.expectEqual(true, vd.is_await_using);
+    try T.expect(vd.init != hir_mod.none_node_id);
+}
+
 test "parser: arrow — async" {
     var s = try newTestSetup("let f = async (x) => x;");
     defer destroyTestSetup(s);
@@ -4562,4 +4659,47 @@ test "parser: TS 5.0 const type parameter with constraint `<const T extends stri
     const tp = hir_mod.typeParameterOf(&s.hir, tps[0]);
     try T.expectEqual(true, tp.is_const);
     try T.expect(tp.constraint != hir_mod.none_node_id);
+}
+
+test "parser: assertion return type — `asserts x` (predicate-less)" {
+    var s = try newTestSetup("function assert(x: any): asserts x { }");
+    defer destroyTestSetup(s);
+    const root = try s.parser.parseSourceFile();
+    const top = hir_mod.blockStmts(&s.hir, root)[0];
+    try T.expectEqual(hir_mod.NodeKind.fn_decl, s.hir.kindOf(top));
+    const fn_p = hir_mod.fnDeclOf(&s.hir, top);
+    try T.expect(fn_p.return_type != hir_mod.none_node_id);
+    try T.expectEqual(hir_mod.NodeKind.type_predicate_type, s.hir.kindOf(fn_p.return_type));
+    const pred = hir_mod.typePredicateOf(&s.hir, fn_p.return_type);
+    try T.expectEqual(true, pred.is_asserts);
+    try T.expectEqual(@as(u16, 0), pred.param_index);
+    // Predicate-less form: no `is T` target type recorded.
+    try T.expectEqual(hir_mod.none_node_id, pred.target_type);
+}
+
+test "parser: assertion return type — `asserts x is string`" {
+    var s = try newTestSetup("function assert(x: any): asserts x is string { }");
+    defer destroyTestSetup(s);
+    const root = try s.parser.parseSourceFile();
+    const top = hir_mod.blockStmts(&s.hir, root)[0];
+    try T.expectEqual(hir_mod.NodeKind.fn_decl, s.hir.kindOf(top));
+    const fn_p = hir_mod.fnDeclOf(&s.hir, top);
+    try T.expect(fn_p.return_type != hir_mod.none_node_id);
+    try T.expectEqual(hir_mod.NodeKind.type_predicate_type, s.hir.kindOf(fn_p.return_type));
+    const pred = hir_mod.typePredicateOf(&s.hir, fn_p.return_type);
+    try T.expectEqual(true, pred.is_asserts);
+    try T.expectEqual(@as(u16, 0), pred.param_index);
+    try T.expect(pred.target_type != hir_mod.none_node_id);
+}
+
+test "parser: non-assertion `x is T` is still a type predicate (is_asserts=false)" {
+    var s = try newTestSetup("function isStr(x: unknown): x is string { return true; }");
+    defer destroyTestSetup(s);
+    const root = try s.parser.parseSourceFile();
+    const top = hir_mod.blockStmts(&s.hir, root)[0];
+    const fn_p = hir_mod.fnDeclOf(&s.hir, top);
+    try T.expectEqual(hir_mod.NodeKind.type_predicate_type, s.hir.kindOf(fn_p.return_type));
+    const pred = hir_mod.typePredicateOf(&s.hir, fn_p.return_type);
+    try T.expectEqual(false, pred.is_asserts);
+    try T.expect(pred.target_type != hir_mod.none_node_id);
 }
