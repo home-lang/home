@@ -8732,3 +8732,35 @@ test "checker: switch on x.kind narrows non-discriminant field per case" {
     const s_init = hir_mod.varDeclOf(&s.hir, sq_stmts[0]).init;
     try T.expectEqual(types.Primitive.string_t, s.hir.typeOf(s_init));
 }
+
+test "checker: tagged template — typed tag returns its declared return type" {
+    // Tagged template literals desugar to a call
+    // `tag(stringsArr, …values)`; v0 types `stringsArr` as `string[]`
+    // (no TemplateStringsArray shape yet) and reads the call's return
+    // type from the tag's declared signature.
+    const s = try newSetup(
+        \\function tag(s: string[]): string { return ""; }
+        \\const r = tag`abc`;
+    );
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+    const stmts = hir_mod.blockStmts(&s.hir, s.root);
+    const decl = hir_mod.varDeclOf(&s.hir, stmts[1]);
+    const call_expr = decl.init;
+    try T.expectEqual(types.Primitive.string_t, s.hir.typeOf(call_expr));
+}
+
+test "checker: tagged template — untyped tag (any) yields any" {
+    // When the tag's type is `any`, the tagged-template call types
+    // through to `any` (the call-on-any rule).
+    const s = try newSetup(
+        \\const tag: any = null;
+        \\const r = tag`abc`;
+    );
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+    const stmts = hir_mod.blockStmts(&s.hir, s.root);
+    const decl = hir_mod.varDeclOf(&s.hir, stmts[1]);
+    const call_expr = decl.init;
+    try T.expectEqual(types.Primitive.any, s.hir.typeOf(call_expr));
+}

@@ -2831,10 +2831,90 @@ pub const Parser = struct {
                     const sp: Span = .{ .start = self.hir.spanOf(node).start, .end = t.span.end };
                     node = try self.builder.addNonNullExpression(sp, node);
                 },
+                .no_substitution_template, .template_head => {
+                    // Tagged template literal: `` tag`…` `` desugars to
+                    // a call `tag(stringsArr, …values)`. v0 just types
+                    // `stringsArr` as `string[]` (no
+                    // TemplateStringsArray shape yet).
+                    node = try self.parseTaggedTemplate(node);
+                },
                 else => break,
             }
         }
         return node;
+    }
+
+    /// Parse a tagged template literal as a call expression. Cursor at
+    /// `no_substitution_template` or `template_head`. We collect the
+    /// string segments into an array literal and the interpolated
+    /// expressions as call arguments.
+    fn parseTaggedTemplate(self: *Parser, tag: NodeId) ParseError!NodeId {
+        var strings: std.ArrayListUnmanaged(NodeId) = .empty;
+        defer strings.deinit(self.gpa);
+        var values: std.ArrayListUnmanaged(NodeId) = .empty;
+        defer values.deinit(self.gpa);
+
+        const head = self.advance();
+        const tag_span = self.hir.spanOf(tag);
+
+        if (head.kind == .no_substitution_template) {
+            // `` `…` `` — single string segment, no values.
+            const slice_full = self.source[head.span.start..head.span.end];
+            const inner = if (slice_full.len >= 2) slice_full[1 .. slice_full.len - 1] else slice_full;
+            const id = self.interner.intern(inner) catch return error.OutOfMemory;
+            const lit = try self.builder.addLiteralString(tokenSpan(head), id);
+            try strings.append(self.gpa, lit);
+        } else {
+            // template_head: `` `…${ ``
+            const head_slice_full = self.source[head.span.start..head.span.end];
+            const head_inner = if (head_slice_full.len >= 3)
+                head_slice_full[1 .. head_slice_full.len - 2]
+            else
+                head_slice_full;
+            const head_id = self.interner.intern(head_inner) catch return error.OutOfMemory;
+            const head_lit = try self.builder.addLiteralString(tokenSpan(head), head_id);
+            try strings.append(self.gpa, head_lit);
+
+            // Loop: parse expression, then template_middle / template_tail.
+            while (true) {
+                const v = try self.parseExpression();
+                try values.append(self.gpa, v);
+                const next = self.peek();
+                if (next.kind == .template_middle) {
+                    _ = self.advance();
+                    const sl = self.source[next.span.start..next.span.end];
+                    const inner = if (sl.len >= 3) sl[1 .. sl.len - 2] else sl;
+                    const id = self.interner.intern(inner) catch return error.OutOfMemory;
+                    const lit = try self.builder.addLiteralString(tokenSpan(next), id);
+                    try strings.append(self.gpa, lit);
+                    continue;
+                }
+                if (next.kind == .template_tail) {
+                    _ = self.advance();
+                    const sl = self.source[next.span.start..next.span.end];
+                    const inner = if (sl.len >= 2) sl[1 .. sl.len - 1] else sl;
+                    const id = self.interner.intern(inner) catch return error.OutOfMemory;
+                    const lit = try self.builder.addLiteralString(tokenSpan(next), id);
+                    try strings.append(self.gpa, lit);
+                    break;
+                }
+                // Malformed — bail out to avoid an infinite loop.
+                break;
+            }
+        }
+
+        const end_pos = if (self.cursor > 0) self.tokens[self.cursor - 1].span.end else head.span.end;
+        const call_sp: Span = .{ .start = tag_span.start, .end = end_pos };
+        const arr_span: Span = .{ .start = head.span.start, .end = end_pos };
+        const strings_arr = try self.builder.addArrayLiteral(arr_span, strings.items);
+
+        // Build args: [stringsArr, ...values]
+        var args: std.ArrayListUnmanaged(NodeId) = .empty;
+        defer args.deinit(self.gpa);
+        try args.append(self.gpa, strings_arr);
+        try args.appendSlice(self.gpa, values.items);
+
+        return try self.builder.addCall(call_sp, tag, args.items);
     }
 
     /// Allocates the args slice; caller must `gpa.free` it.
