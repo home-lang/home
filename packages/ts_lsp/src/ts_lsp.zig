@@ -464,6 +464,43 @@ pub fn freeInlineValues(gpa: std.mem.Allocator, values: []InlineValue) void {
     gpa.free(values);
 }
 
+/// LSP `textDocument/documentColor` payload — describes a single
+/// color literal in the source so the editor can render a swatch
+/// next to it. v0 surfaces no entries (TS color literals are
+/// detected lazily — see `Service.documentColor`); the type is
+/// declared up-front so the wire layer's empty-array shape compiles
+/// against a real struct rather than `void`. `range` follows the
+/// 1-based `Range` convention used elsewhere; the wire layer
+/// converts to LSP's 0-based form. `red`, `green`, `blue`, `alpha`
+/// are normalized 0..1 floats matching the LSP spec.
+pub const ColorInformation = struct {
+    range: Range,
+    red: f32,
+    green: f32,
+    blue: f32,
+    alpha: f32,
+};
+
+/// LSP `textDocument/colorPresentation` payload — describes one way
+/// the editor's color picker can render the chosen color back into
+/// source text (e.g. `"#ff0000"` vs `"rgb(255,0,0)"`). v0 surfaces
+/// no presentations; the type lets the wire layer's empty-array
+/// shape compile against a concrete struct. `label` is owned by the
+/// caller (free with `freeColorPresentations`).
+pub const ColorPresentation = struct {
+    /// Replacement text shown in the picker's dropdown and used as
+    /// the fallback `textEdit.newText` when omitted.
+    label: []const u8,
+};
+
+/// Free a `[]ColorPresentation` produced by
+/// `Service.colorPresentation`. Releases the per-item `label`
+/// allocations and the slice.
+pub fn freeColorPresentations(gpa: std.mem.Allocator, items: []ColorPresentation) void {
+    for (items) |c| if (c.label.len > 0) gpa.free(c.label);
+    gpa.free(items);
+}
+
 /// LSP `InlineValueContext` — passed by the client and forwarded to
 /// `Service.inlineValues`. Carries the active stack-frame id and the
 /// stopped-location range so the server can scope identifier
@@ -2702,6 +2739,46 @@ pub const Service = struct {
             }
         }
         return edits.toOwnedSlice(gpa);
+    }
+
+    /// LSP `textDocument/documentColor` — return the set of color
+    /// literals in the file so the editor can render a swatch next
+    /// to each one (theme files, CSS-in-JS, etc.). v0 returns an
+    /// empty list: the capability is advertised so editors stop
+    /// asking, and the detector (scanning string literals for
+    /// `"#rrggbb"` / `"rgb(...)"`) can be wired in incrementally
+    /// without changing the wire contract. Caller owns the returned
+    /// slice.
+    pub fn documentColor(
+        self: *Service,
+        gpa: std.mem.Allocator,
+        file_path: []const u8,
+    ) ![]ColorInformation {
+        _ = self;
+        _ = file_path;
+        const empty: []ColorInformation = &.{};
+        return gpa.dupe(ColorInformation, empty);
+    }
+
+    /// LSP `textDocument/colorPresentation` — given a color and the
+    /// range it covers, return the alternative source-text spellings
+    /// the editor's color picker can offer. v0 returns an empty
+    /// list: the dropdown stays empty until we wire up the
+    /// hex/rgb/hsl formatters. Caller owns the returned slice (free
+    /// via `freeColorPresentations`).
+    pub fn colorPresentation(
+        self: *Service,
+        gpa: std.mem.Allocator,
+        file_path: []const u8,
+        color: ColorInformation,
+        range: Range,
+    ) ![]ColorPresentation {
+        _ = self;
+        _ = file_path;
+        _ = color;
+        _ = range;
+        const empty: []ColorPresentation = &.{};
+        return gpa.dupe(ColorPresentation, empty);
     }
 };
 

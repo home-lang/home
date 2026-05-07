@@ -66,6 +66,8 @@
 //!   Misc:
 //!     textDocument/linkedEditingRange         [wire handler; service returns null]
 //!     workspace/willRenameFiles               [wire handler; service returns []]
+//!     textDocument/documentColor              [wire handler; service returns []]
+//!     textDocument/colorPresentation          [wire handler; service returns []]
 //!
 //! ----------------------------------------------------------------------------
 //! STUBS  (handler exists in ts_lsp.Service, NOT yet routed by this wire layer)
@@ -75,8 +77,6 @@
 //! ----------------------------------------------------------------------------
 //! NOT WIRED  (no `Method` variant, no handler — reserved for future work)
 //! ----------------------------------------------------------------------------
-//!   textDocument/colorPresentation
-//!   textDocument/documentColor
 //!   textDocument/declaration
 //!   textDocument/rangeFormatting
 //!   textDocument/moniker
@@ -151,6 +151,8 @@ pub const Method = enum {
     workspace_execute_command,
     text_document_moniker,
     text_document_inline_value,
+    text_document_document_color,
+    text_document_color_presentation,
     unknown,
 
     pub fn fromString(s: []const u8) Method {
@@ -202,6 +204,8 @@ pub const Method = enum {
             .{ "workspace/executeCommand", Method.workspace_execute_command },
             .{ "textDocument/moniker", Method.text_document_moniker },
             .{ "textDocument/inlineValue", Method.text_document_inline_value },
+            .{ "textDocument/documentColor", Method.text_document_document_color },
+            .{ "textDocument/colorPresentation", Method.text_document_color_presentation },
         };
         inline for (map) |entry| {
             if (std.mem.eql(u8, s, entry[0])) return entry[1];
@@ -257,6 +261,8 @@ pub const SUPPORTED_METHODS = &[_][]const u8{
     "textDocument/diagnostic",
     "textDocument/moniker",
     "textDocument/inlineValue",
+    "textDocument/documentColor",
+    "textDocument/colorPresentation",
     // Resolve callbacks.
     "completionItem/resolve",
     "codeLens/resolve",
@@ -2372,6 +2378,92 @@ pub fn handleInlineValue(
     return encodeResponse(gpa, request_id, buf.items);
 }
 
+/// Handle a `textDocument/documentColor` JSON-RPC request: extract
+/// the URI from `params_json`, route to `service.documentColor`,
+/// and encode the LSP response as a `ColorInformation[]` array.
+/// Each entry carries `range` plus `color: { red, green, blue,
+/// alpha }` (0..1 floats per the LSP spec). v0 returns `[]` —
+/// the capability is advertised so editors stop probing, but the
+/// color-literal scanner is still TODO. Caller owns the returned
+/// slice.
+pub fn handleDocumentColor(
+    service: *ts_lsp.Service,
+    gpa: std.mem.Allocator,
+    request_id: RequestId,
+    params_json: []const u8,
+) ![]u8 {
+    const uri = findJsonStringField(params_json, "uri") orelse return error.MissingUri;
+    const path = uriToPath(uri);
+
+    const colors = try service.documentColor(gpa, path);
+    defer gpa.free(colors);
+
+    var buf: std.ArrayListUnmanaged(u8) = .empty;
+    defer buf.deinit(gpa);
+    var fbuf: [64]u8 = undefined;
+    try buf.append(gpa, '[');
+    for (colors, 0..) |c, i| {
+        if (i > 0) try buf.append(gpa, ',');
+        try buf.appendSlice(gpa, "{\"range\":");
+        try writeRangeFromRange(&buf, gpa, c.range);
+        try buf.appendSlice(gpa, ",\"color\":{\"red\":");
+        try buf.appendSlice(gpa, try std.fmt.bufPrint(&fbuf, "{d}", .{c.red}));
+        try buf.appendSlice(gpa, ",\"green\":");
+        try buf.appendSlice(gpa, try std.fmt.bufPrint(&fbuf, "{d}", .{c.green}));
+        try buf.appendSlice(gpa, ",\"blue\":");
+        try buf.appendSlice(gpa, try std.fmt.bufPrint(&fbuf, "{d}", .{c.blue}));
+        try buf.appendSlice(gpa, ",\"alpha\":");
+        try buf.appendSlice(gpa, try std.fmt.bufPrint(&fbuf, "{d}", .{c.alpha}));
+        try buf.appendSlice(gpa, "}}");
+    }
+    try buf.append(gpa, ']');
+    return encodeResponse(gpa, request_id, buf.items);
+}
+
+/// Handle a `textDocument/colorPresentation` JSON-RPC request:
+/// extract `(uri, color, range)` from `params_json`, route to
+/// `service.colorPresentation`, and emit a `ColorPresentation[]`
+/// array. Each entry carries a `label` (the alternate spelling the
+/// editor's color picker offers — e.g. `"#ff0000"` vs
+/// `"rgb(255,0,0)"`). v0 returns `[]` until the formatter is wired
+/// up. Caller owns the returned slice.
+pub fn handleColorPresentation(
+    service: *ts_lsp.Service,
+    gpa: std.mem.Allocator,
+    request_id: RequestId,
+    params_json: []const u8,
+) ![]u8 {
+    const uri = findJsonStringField(params_json, "uri") orelse return error.MissingUri;
+    const path = uriToPath(uri);
+
+    // Param fields (color + range) are accepted but unused by the
+    // v0 stub — parsing them up-front keeps the wire-shape contract
+    // honest and matches what a real implementation would do.
+    const color = ts_lsp.ColorInformation{
+        .range = .{ .start_line = 0, .start_col = 0, .end_line = 0, .end_col = 0 },
+        .red = 0,
+        .green = 0,
+        .blue = 0,
+        .alpha = 0,
+    };
+    const range = ts_lsp.Range{ .start_line = 0, .start_col = 0, .end_line = 0, .end_col = 0 };
+
+    const items = try service.colorPresentation(gpa, path, color, range);
+    defer ts_lsp.freeColorPresentations(gpa, items);
+
+    var buf: std.ArrayListUnmanaged(u8) = .empty;
+    defer buf.deinit(gpa);
+    try buf.append(gpa, '[');
+    for (items, 0..) |p, i| {
+        if (i > 0) try buf.append(gpa, ',');
+        try buf.appendSlice(gpa, "{\"label\":\"");
+        try writeJsonStringContents(&buf, gpa, p.label);
+        try buf.appendSlice(gpa, "\"}");
+    }
+    try buf.append(gpa, ']');
+    return encodeResponse(gpa, request_id, buf.items);
+}
+
 /// Handle a `workspace/willRenameFiles` JSON-RPC request: extract the
 /// `files` array (each entry has an `oldUri` + `newUri` LSP URI), route
 /// to `Service.workspaceWillRenameFiles`, and emit an LSP
@@ -2873,7 +2965,7 @@ pub fn renderInitializeCapabilities(gpa: std.mem.Allocator) ![]u8 {
     var buf: std.ArrayListUnmanaged(u8) = .empty;
     errdefer buf.deinit(gpa);
     try buf.appendSlice(gpa,
-        \\{"capabilities":{"textDocumentSync":1,"hoverProvider":true,"definitionProvider":true,"referencesProvider":true,"completionProvider":{"triggerCharacters":["."," "]},"documentSymbolProvider":true,"workspaceSymbolProvider":true,"renameProvider":{"prepareProvider":true},"codeActionProvider":true,"executeCommandProvider":{"commands":["home.organizeImports","home.applyCodeAction"]},"semanticTokensProvider":{"legend":{"tokenTypes":["variable","parameter","function","method","class","interface","type","enum","property","keyword","string","number","operator","comment"],"tokenModifiers":[]},"full":true,"range":true},"signatureHelpProvider":{"triggerCharacters":["(",","]},"documentHighlightProvider":false,"documentFormattingProvider":true,"documentOnTypeFormattingProvider":{"firstTriggerCharacter":"}","moreTriggerCharacters":[";","\n"]},"foldingRangeProvider":true,"selectionRangeProvider":true,"monikerProvider":true,"typeHierarchyProvider":true,"inlineValueProvider":true,"inlayHintProvider":{"resolveProvider":false}},"serverInfo":{"name":"home-lsp","version":"0.1.0","supportedMethods":[
+        \\{"capabilities":{"textDocumentSync":1,"hoverProvider":true,"definitionProvider":true,"referencesProvider":true,"completionProvider":{"triggerCharacters":["."," "]},"documentSymbolProvider":true,"workspaceSymbolProvider":true,"renameProvider":{"prepareProvider":true},"codeActionProvider":true,"executeCommandProvider":{"commands":["home.organizeImports","home.applyCodeAction"]},"semanticTokensProvider":{"legend":{"tokenTypes":["variable","parameter","function","method","class","interface","type","enum","property","keyword","string","number","operator","comment"],"tokenModifiers":[]},"full":true,"range":true},"signatureHelpProvider":{"triggerCharacters":["(",","]},"documentHighlightProvider":false,"documentFormattingProvider":true,"documentOnTypeFormattingProvider":{"firstTriggerCharacter":"}","moreTriggerCharacters":[";","\n"]},"foldingRangeProvider":true,"selectionRangeProvider":true,"monikerProvider":true,"typeHierarchyProvider":true,"inlineValueProvider":true,"colorProvider":true,"inlayHintProvider":{"resolveProvider":false}},"serverInfo":{"name":"home-lsp","version":"0.1.0","supportedMethods":[
     );
     for (SUPPORTED_METHODS, 0..) |m, i| {
         if (i != 0) try buf.append(gpa, ',');
@@ -3205,6 +3297,14 @@ pub fn dispatchRequest(
         .text_document_inline_value => {
             if (is_notification) return &.{};
             return try handleInlineValue(service, gpa, id, params);
+        },
+        .text_document_document_color => {
+            if (is_notification) return &.{};
+            return try handleDocumentColor(service, gpa, id, params);
+        },
+        .text_document_color_presentation => {
+            if (is_notification) return &.{};
+            return try handleColorPresentation(service, gpa, id, params);
         },
         // Catch-all for unknown methods — fall through to standard
         // JSON-RPC `Method not found` error.
@@ -4770,4 +4870,43 @@ test "handleInlineValue: emits InlineValueVariableLookup per identifier in range
     try T.expect(std.mem.indexOf(u8, out, "\"caseSensitiveLookup\":true") != null);
     // Each item carries a wire-shaped LSP range.
     try T.expect(std.mem.indexOf(u8, out, "\"range\":{\"start\":{\"line\":") != null);
+}
+
+test "handleDocumentColor + handleColorPresentation: stubs return empty arrays" {
+    var vfs = ts_resolver.VirtualFs.init(T.allocator);
+    defer vfs.deinit();
+    var resolver = ts_resolver.Resolver.init(T.allocator, vfs.fs(), .{});
+    defer resolver.deinit();
+    var program = ts_program.Program.init(T.allocator, &resolver);
+    defer program.deinit();
+
+    _ = try program.add("/main.ts", "const RED = \"#ff0000\";");
+    try program.compileAll(.{});
+    var svc = ts_lsp.Service.init(T.allocator, &program);
+
+    // documentColor: empty `[]` array result envelope.
+    const dc_body =
+        \\{"jsonrpc":"2.0","id":820,"method":"textDocument/documentColor","params":{"textDocument":{"uri":"file:///main.ts"}}}
+    ;
+    const dc_out = try handleDocumentColor(&svc, T.allocator, .{ .integer = 820 }, dc_body);
+    defer T.allocator.free(dc_out);
+    try T.expect(std.mem.indexOf(u8, dc_out, "\"jsonrpc\":\"2.0\"") != null);
+    try T.expect(std.mem.indexOf(u8, dc_out, "\"id\":820") != null);
+    try T.expect(std.mem.indexOf(u8, dc_out, "\"result\":[]") != null);
+
+    // colorPresentation: empty `[]` array result envelope.
+    const cp_body =
+        \\{"jsonrpc":"2.0","id":821,"method":"textDocument/colorPresentation","params":{"textDocument":{"uri":"file:///main.ts"},"color":{"red":1,"green":0,"blue":0,"alpha":1},"range":{"start":{"line":0,"character":12},"end":{"line":0,"character":21}}}}
+    ;
+    const cp_out = try handleColorPresentation(&svc, T.allocator, .{ .integer = 821 }, cp_body);
+    defer T.allocator.free(cp_out);
+    try T.expect(std.mem.indexOf(u8, cp_out, "\"id\":821") != null);
+    try T.expect(std.mem.indexOf(u8, cp_out, "\"result\":[]") != null);
+
+    // Capability advertised in initialize result + listed in supportedMethods.
+    const init_caps = try renderInitializeCapabilities(T.allocator);
+    defer T.allocator.free(init_caps);
+    try T.expect(std.mem.indexOf(u8, init_caps, "\"colorProvider\":true") != null);
+    try T.expect(std.mem.indexOf(u8, init_caps, "\"textDocument/documentColor\"") != null);
+    try T.expect(std.mem.indexOf(u8, init_caps, "\"textDocument/colorPresentation\"") != null);
 }
