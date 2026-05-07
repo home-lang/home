@@ -2595,6 +2595,28 @@ pub const Checker = struct {
         }
     }
 
+    /// If `obj_name` resolves to a `const enum` declaration and
+    /// `prop_name` is one of its members with a tracked numeric
+    /// value, return the literal type for that value. Otherwise
+    /// `null`. Used by member-access typing so `E.A` types as the
+    /// literal `1` (the same shape `E.A as const` would produce).
+    fn constEnumLiteralAccess(
+        self: *Checker,
+        obj_name: hir_mod.StringId,
+        prop_name: hir_mod.StringId,
+    ) ?TypeId {
+        const module = self.module orelse return null;
+        const sym = module.root.lookup(obj_name) orelse return null;
+        if (sym.decls.items.len == 0) return null;
+        const decl = sym.decls.items[0];
+        if (self.hir.kindOf(decl) != .enum_decl) return null;
+        const ep = hir_mod.enumOf(self.hir, decl);
+        if (!ep.is_const) return null;
+        const key: MemberKey = .{ .obj_name = obj_name, .prop_name = prop_name };
+        const v = self.enum_member_values.get(key) orelse return null;
+        return self.interner.internNumberLiteral(v) catch null;
+    }
+
     /// Lower a type alias `type Alias<T...> = U` into the
     /// underlying type's TypeId and record it under the alias name.
     /// For non-generic aliases the body lowers directly. For
@@ -3641,6 +3663,17 @@ pub const Checker = struct {
                     const key: MemberKey = .{ .obj_name = obj_id.name, .prop_name = m.name };
                     if (self.lookupMemberNarrow(key)) |nt| {
                         break :blk if (m.optional) self.unionWithUndefined(nt) catch nt else nt;
+                    }
+                    // `const enum E { A = 1 }` — `E.A` should type as
+                    // the literal `1`. The checker has already
+                    // recorded a numeric value in `enum_member_values`;
+                    // resolving it to a literal type here lets
+                    // `const x: 1 = E.A` pass.
+                    // TODO(emit): plumb const-enum values through to
+                    // js_emit so `E.A` is rewritten to its literal
+                    // value at member access (TS const-enum inlining).
+                    if (self.constEnumLiteralAccess(obj_id.name, m.name)) |lit_t| {
+                        break :blk if (m.optional) self.unionWithUndefined(lit_t) catch lit_t else lit_t;
                     }
                 }
                 // Optional chaining (`obj?.x`) widens the result to
@@ -8581,4 +8614,30 @@ test "checker: enum auto-increment — explicit start `enum E { A = 5, B, C }` a
     try T.expectEqual(@as(f64, 5), a_v.?);
     try T.expectEqual(@as(f64, 6), b_v.?);
     try T.expectEqual(@as(f64, 7), c_v.?);
+}
+
+test "checker: const enum member access types as the literal value" {
+    const s = try newSetup(
+        \\const enum E { A = 1, B }
+        \\const x: 1 = E.A;
+    );
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+    // `E.A` should type as the literal `1`, satisfying `const x: 1 =
+    // E.A` without a TS2322 from the declared type.
+    for (s.checker.diagnostics.items) |d| {
+        try T.expect(d.code != TsCodes.type_not_assignable);
+    }
+}
+
+test "checker: const enum auto-incremented member types as its literal value" {
+    const s = try newSetup(
+        \\const enum E { A = 1, B = 2 }
+        \\const x: 2 = E.B;
+    );
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+    for (s.checker.diagnostics.items) |d| {
+        try T.expect(d.code != TsCodes.type_not_assignable);
+    }
 }
