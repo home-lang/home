@@ -186,6 +186,25 @@ pub const SemanticToken = struct {
     };
 };
 
+/// LSP `textDocument/semanticTokens/full/delta` response shape.
+/// For v0 we don't track snapshots, so every call returns a complete
+/// reset: a fresh `result_id` and the full `data` array (delta-encoded
+/// vs (0, 0) — same encoding as `semanticTokensWire`). When proper
+/// snapshot tracking lands, `data` will become a list of edits keyed
+/// off the caller's `previous_result_id`.
+pub const SemanticTokensDelta = struct {
+    /// Fresh result id for this snapshot. Owned by the caller.
+    result_id: []const u8,
+    /// Full token list, encoded the same way as `semanticTokensWire`.
+    /// Owned by the caller.
+    data: []u32,
+};
+
+/// Process-wide monotonic counter for fresh `SemanticTokensDelta`
+/// `result_id`s. v0 doesn't reuse ids across calls, so a simple
+/// monotonically-increasing seq is enough — no clock dependency.
+var result_id_counter: std.atomic.Value(u64) = .init(0);
+
 pub const SymbolInfo = struct {
     name: []const u8,
     kind: SymbolKind,
@@ -1341,6 +1360,33 @@ pub const Service = struct {
             }
         }
         return encodeSemanticTokensWire(gpa, filtered.items);
+    }
+
+    /// Delta-encoded LSP wire form for
+    /// `textDocument/semanticTokens/full/delta`. v0 doesn't track
+    /// snapshots, so every call returns a full reset: a fresh
+    /// `result_id` and the complete token list under `data`. The
+    /// `previous_result_id` argument is accepted for protocol shape
+    /// but currently ignored.
+    pub fn semanticTokensDelta(
+        self: *Service,
+        gpa: std.mem.Allocator,
+        file_path: []const u8,
+        previous_result_id: []const u8,
+    ) !SemanticTokensDelta {
+        _ = previous_result_id;
+        const data = try self.semanticTokensWire(gpa, file_path);
+        errdefer gpa.free(data);
+        // Fresh, monotonic id from a process-wide atomic counter.
+        // Combined with the data length so the id also reflects the
+        // payload shape (cheap collision avoidance for tooling).
+        const seq = result_id_counter.fetchAdd(1, .monotonic);
+        const result_id = try std.fmt.allocPrint(
+            gpa,
+            "v0-{x}-{x}",
+            .{ seq, data.len },
+        );
+        return .{ .result_id = result_id, .data = data };
     }
 
     /// Apply an editor `textDocument/didChange` to `file_path`:
@@ -3768,6 +3814,34 @@ test "Service: semanticTokensRange filters tokens by line window" {
     const none = try svc.semanticTokensRange(T.allocator, "/main.ts", 5, 5);
     defer T.allocator.free(none);
     try T.expectEqual(@as(usize, 0), none.len);
+}
+
+test "Service: semanticTokensDelta v0 returns full reset with non-empty data" {
+    var vfs = ts_resolver.VirtualFs.init(T.allocator);
+    defer vfs.deinit();
+    var resolver = ts_resolver.Resolver.init(T.allocator, vfs.fs(), .{});
+    defer resolver.deinit();
+    var program = ts_program.Program.init(T.allocator, &resolver);
+    defer program.deinit();
+
+    const src =
+        \\let a = 1;
+        \\let b = 2;
+    ;
+    _ = try program.add("/main.ts", src);
+    try program.compileAll(.{});
+
+    var svc = Service.init(T.allocator, &program);
+
+    // v0 ignores `previous_result_id` and always returns a full reset.
+    const delta = try svc.semanticTokensDelta(T.allocator, "/main.ts", "stale-id");
+    defer T.allocator.free(delta.result_id);
+    defer T.allocator.free(delta.data);
+
+    try T.expect(delta.result_id.len > 0);
+    try T.expect(delta.data.len > 0);
+    // Wire encoding emits exactly 5 u32s per token.
+    try T.expectEqual(@as(usize, 0), delta.data.len % 5);
 }
 
 test "Service: selectionRange returns nested ranges innermost-first" {
