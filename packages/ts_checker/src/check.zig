@@ -8641,3 +8641,94 @@ test "checker: const enum auto-incremented member types as its literal value" {
         try T.expect(d.code != TsCodes.type_not_assignable);
     }
 }
+
+test "checker: if x.kind === literal narrows non-discriminant field access" {
+    // Discriminated-union narrowing on if-equals: inside the
+    // then-branch `x` is narrowed to the matching variant, so access
+    // to `x.r` (only present on the circle variant) must type as
+    // `number` rather than failing or widening.
+    const s = try newSetup(
+        \\type Shape = { kind: "circle"; r: number } | { kind: "square"; s: number };
+        \\function area(x: Shape) {
+        \\  if (x.kind === "circle") {
+        \\    let r = x.r;
+        \\  }
+        \\}
+    );
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+    try T.expect(s.checker.diagnostics.items.len == 0);
+    const stmts = hir_mod.blockStmts(&s.hir, s.root);
+    const fn_node = stmts[1];
+    const f = hir_mod.fnDeclOf(&s.hir, fn_node);
+    const body_stmts = hir_mod.blockStmts(&s.hir, f.body);
+    const if_stmt = body_stmts[0];
+    const ifp = hir_mod.ifOf(&s.hir, if_stmt);
+    const then_stmts = hir_mod.blockStmts(&s.hir, ifp.then_branch);
+    // `let r = x.r` — `x.r` should resolve under the circle variant.
+    const r_init = hir_mod.varDeclOf(&s.hir, then_stmts[0]).init;
+    try T.expectEqual(types.Primitive.number_t, s.hir.typeOf(r_init));
+}
+
+test "checker: if x.kind !== literal narrows other variant in then-branch" {
+    // `!==` flips the polarity: the then-branch sees `x` narrowed to
+    // the union members whose discriminant *isn't* the literal. With
+    // two variants and one excluded, that's a single variant — so a
+    // field unique to the remaining variant types correctly.
+    const s = try newSetup(
+        \\type S = { k: "a"; va: number } | { k: "b"; vb: string };
+        \\function f(x: S) {
+        \\  if (x.k !== "a") {
+        \\    let v = x.vb;
+        \\  }
+        \\}
+    );
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+    try T.expect(s.checker.diagnostics.items.len == 0);
+    const stmts = hir_mod.blockStmts(&s.hir, s.root);
+    const fn_node = stmts[1];
+    const f = hir_mod.fnDeclOf(&s.hir, fn_node);
+    const body_stmts = hir_mod.blockStmts(&s.hir, f.body);
+    const if_stmt = body_stmts[0];
+    const ifp = hir_mod.ifOf(&s.hir, if_stmt);
+    const then_stmts = hir_mod.blockStmts(&s.hir, ifp.then_branch);
+    // `let v = x.vb` — only the `b` variant has `vb`, and it types as
+    // `string`.
+    const v_init = hir_mod.varDeclOf(&s.hir, then_stmts[0]).init;
+    try T.expectEqual(types.Primitive.string_t, s.hir.typeOf(v_init));
+}
+
+test "checker: switch on x.kind narrows non-discriminant field per case" {
+    // Switch-discriminant narrowing — each case body sees `x` as the
+    // matching variant, so a field that's unique to that variant
+    // types under the variant's declaration (rather than emitting a
+    // missing-property error or widening to a union of variant
+    // fields).
+    const s = try newSetup(
+        \\type Shape = { kind: "circle"; r: number } | { kind: "square"; s: string };
+        \\function area(x: Shape) {
+        \\  switch (x.kind) {
+        \\    case "circle": let r = x.r; break;
+        \\    case "square": let s = x.s; break;
+        \\  }
+        \\}
+    );
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+    try T.expect(s.checker.diagnostics.items.len == 0);
+    const stmts = hir_mod.blockStmts(&s.hir, s.root);
+    const fn_node = stmts[1];
+    const f = hir_mod.fnDeclOf(&s.hir, fn_node);
+    const body_stmts = hir_mod.blockStmts(&s.hir, f.body);
+    const sw_node = body_stmts[0];
+    const cases = hir_mod.switchCases(&s.hir, sw_node);
+    // case "circle" → `r` from circle's declaration types as number.
+    const c_stmts = hir_mod.switchCaseStmts(&s.hir, cases[0]);
+    const r_init = hir_mod.varDeclOf(&s.hir, c_stmts[0]).init;
+    try T.expectEqual(types.Primitive.number_t, s.hir.typeOf(r_init));
+    // case "square" → `s` from square's declaration types as string.
+    const sq_stmts = hir_mod.switchCaseStmts(&s.hir, cases[1]);
+    const s_init = hir_mod.varDeclOf(&s.hir, sq_stmts[0]).init;
+    try T.expectEqual(types.Primitive.string_t, s.hir.typeOf(s_init));
+}
