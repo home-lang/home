@@ -669,17 +669,26 @@ pub const Parser = struct {
                     if (self.peek().kind == .close_paren) break;
                     continue;
                 }
-                const name_tok = try self.expect(.identifier, "parameter name");
+                // Destructuring parameter: `function f({ a, b } : T)` or
+                // `function f([ x, y ] : T)`. The pattern stands in for
+                // the parameter's "name" — downstream the binder walks
+                // the pattern to declare each binding, and the checker
+                // resolves identifier types through the pattern.
+                const name_node: NodeId = if (self.peek().kind == .open_brace or self.peek().kind == .open_bracket) blk: {
+                    break :blk try self.parseBindingPattern();
+                } else id_blk: {
+                    const name_tok = try self.expect(.identifier, "parameter name");
+                    const name_id = try self.internToken(name_tok);
+                    break :id_blk try self.builder.addIdentifier(tokenSpan(name_tok), name_id);
+                };
                 if (self.match(.question)) flags.is_optional = true;
                 var type_ann: NodeId = hir_mod.none_node_id;
                 if (self.match(.colon)) type_ann = try self.parseTypeAnnotation();
                 var default_value: NodeId = hir_mod.none_node_id;
                 if (self.match(.equal)) default_value = try self.parseAssignmentExpression();
-                const name_id = try self.internToken(name_tok);
-                const ident = try self.builder.addIdentifier(tokenSpan(name_tok), name_id);
                 const param = try self.builder.addParameterWithDecorators(
                     .{ .start = param_start.span.start, .end = self.tokens[self.cursor - 1].span.end },
-                    ident,
+                    name_node,
                     type_ann,
                     default_value,
                     flags,
@@ -692,6 +701,57 @@ pub const Parser = struct {
         }
         _ = try self.expect(.close_paren, "')' to close parameter list");
         return try params.toOwnedSlice(self.gpa);
+    }
+
+    /// Parse an object or array destructuring pattern. Used in
+    /// parameter and `let`/`const`/`var` binding positions:
+    ///   `{ a }`, `{ a = 1 }`, `{ ...rest }`
+    ///   `[ a ]`, `[ a = 1 ]`, `[ ...rest ]`, `[ , a ]` (elision)
+    /// For v0 only shorthand keys are supported (no `{ a: b }`
+    /// renaming, no nested patterns) — the binding is reused as both
+    /// the property key (interned name) and the local identifier.
+    fn parseBindingPattern(self: *Parser) ParseError!NodeId {
+        const open = self.advance();
+        const is_object = open.kind == .open_brace;
+        const close_kind: TokenKind = if (is_object) .close_brace else .close_bracket;
+        var elements: std.ArrayListUnmanaged(NodeId) = .empty;
+        defer elements.deinit(self.gpa);
+        if (self.peek().kind != close_kind) {
+            while (true) {
+                // Array elision: `[ , b ]` — for v0 we just skip the
+                // comma and continue (no hole element is emitted).
+                if (!is_object and self.peek().kind == .comma) {
+                    _ = self.advance();
+                    if (self.peek().kind == close_kind) break;
+                    continue;
+                }
+                const elem_start = self.peek();
+                var flags: hir_mod.ParamFlags = .{};
+                if (self.match(.dot_dot_dot)) flags.is_rest = true;
+                const name_tok = try self.expect(.identifier, "binding name");
+                const name_id = try self.internToken(name_tok);
+                const ident = try self.builder.addIdentifier(tokenSpan(name_tok), name_id);
+                var default_value: NodeId = hir_mod.none_node_id;
+                if (self.match(.equal)) default_value = try self.parseAssignmentExpression();
+                const elem = try self.builder.addParameter(
+                    .{ .start = elem_start.span.start, .end = self.tokens[self.cursor - 1].span.end },
+                    ident,
+                    hir_mod.none_node_id,
+                    default_value,
+                    flags,
+                );
+                try elements.append(self.gpa, elem);
+                if (!self.match(.comma)) break;
+                if (self.peek().kind == close_kind) break; // trailing comma
+            }
+        }
+        const close_tok = try self.expect(close_kind, if (is_object) "'}' to close object pattern" else "']' to close array pattern");
+        const sp: Span = .{ .start = open.span.start, .end = close_tok.span.end };
+        return try self.builder.addPattern(
+            if (is_object) .object_pattern else .array_pattern,
+            sp,
+            elements.items,
+        );
     }
 
     fn parseClassDeclaration(self: *Parser) ParseError!NodeId {
@@ -1256,9 +1316,16 @@ pub const Parser = struct {
         };
         // Phase 1.D scope: single binding per declaration. Multiple
         // bindings (`let x = 1, y = 2`) are a follow-up.
-        const name_tok = try self.expect(.identifier, "identifier in variable declaration");
-        const name_id = try self.internToken(name_tok);
-        const name_node = try self.builder.addIdentifier(tokenSpan(name_tok), name_id);
+        // Destructuring binding (`const { a } = obj`, `const [b] = arr`)
+        // stores the pattern in the var-decl's `name` slot in the same
+        // way parameters stash an `object_pattern` / `array_pattern`.
+        const name_node: NodeId = if (self.peek().kind == .open_brace or self.peek().kind == .open_bracket) blk: {
+            break :blk try self.parseBindingPattern();
+        } else id_blk: {
+            const name_tok = try self.expect(.identifier, "identifier in variable declaration");
+            const name_id = try self.internToken(name_tok);
+            break :id_blk try self.builder.addIdentifier(tokenSpan(name_tok), name_id);
+        };
 
         var type_annotation: NodeId = hir_mod.none_node_id;
         if (self.match(.colon)) {

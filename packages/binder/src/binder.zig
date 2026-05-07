@@ -447,15 +447,33 @@ pub const Binder = struct {
         const kind = self.hir.kindOf(node);
         const v = hir_mod.varDeclOf(self.hir, node);
         if (v.name == hir_mod.none_node_id) return;
-        if (self.hir.kindOf(v.name) != .identifier) return;
-        const id = hir_mod.identifierOf(self.hir, v.name);
         const flags: SymbolFlags = .{
             .is_value = true,
             .is_const = kind == .const_decl,
             .is_let = kind == .let_decl,
             .is_var = kind == .var_decl,
         };
-        _ = try self.declare(.value, id.name, flags, node);
+        try self.bindVarDeclName(v.name, node, flags);
+    }
+
+    /// Walk a `let`/`const`/`var` binding name and declare each
+    /// identifier. Plain `const x = …` declares a single name.
+    /// `const { a, b } = …` and `const [ x, y ] = …` declare every
+    /// shorthand element. Nested patterns recurse.
+    fn bindVarDeclName(self: *Binder, name_node: NodeId, decl_node: NodeId, flags: SymbolFlags) !void {
+        if (name_node == hir_mod.none_node_id) return;
+        const k = self.hir.kindOf(name_node);
+        if (k == .identifier) {
+            const id = hir_mod.identifierOf(self.hir, name_node);
+            _ = try self.declare(.value, id.name, flags, decl_node);
+        } else if (k == .object_pattern or k == .array_pattern) {
+            const elements = hir_mod.patternElements(self.hir, name_node);
+            for (elements) |e| {
+                if (self.hir.kindOf(e) != .parameter) continue;
+                const ep = hir_mod.parameterOf(self.hir, e);
+                try self.bindVarDeclName(ep.name, decl_node, flags);
+            }
+        }
     }
 
     fn bindBlock(self: *Binder, node: NodeId) anyerror!void {
@@ -480,17 +498,35 @@ pub const Binder = struct {
         const params = hir_mod.fnParams(self.hir, node);
         for (params) |p| {
             const pp = hir_mod.parameterOf(self.hir, p);
-            if (self.hir.kindOf(pp.name) == .identifier) {
-                const id = hir_mod.identifierOf(self.hir, pp.name);
-                _ = try self.declare(.value, id.name, .{
-                    .is_value = true,
-                    .is_parameter = true,
-                }, p);
-            }
+            try self.bindParamName(pp.name, p);
         }
         if (f.body != hir_mod.none_node_id) {
             const body_stmts = hir_mod.blockStmts(self.hir, f.body);
             for (body_stmts) |s| try self.bindStatement(s);
+        }
+    }
+
+    /// Bind every identifier reachable from a parameter's name slot.
+    /// For plain `function f(x)` the name is the identifier itself.
+    /// Destructuring patterns (`{ a, b }`, `[ x, y ]`) wrap each
+    /// binding in a `parameter` element node — recurse so every
+    /// bound name lands in the function scope.
+    fn bindParamName(self: *Binder, name_node: NodeId, decl_node: NodeId) !void {
+        if (name_node == hir_mod.none_node_id) return;
+        const k = self.hir.kindOf(name_node);
+        if (k == .identifier) {
+            const id = hir_mod.identifierOf(self.hir, name_node);
+            _ = try self.declare(.value, id.name, .{
+                .is_value = true,
+                .is_parameter = true,
+            }, decl_node);
+        } else if (k == .object_pattern or k == .array_pattern) {
+            const elements = hir_mod.patternElements(self.hir, name_node);
+            for (elements) |e| {
+                if (self.hir.kindOf(e) != .parameter) continue;
+                const ep = hir_mod.parameterOf(self.hir, e);
+                try self.bindParamName(ep.name, decl_node);
+            }
         }
     }
 
@@ -534,13 +570,7 @@ pub const Binder = struct {
                     const params = hir_mod.fnParams(self.hir, m);
                     for (params) |p| {
                         const pp = hir_mod.parameterOf(self.hir, p);
-                        if (self.hir.kindOf(pp.name) == .identifier) {
-                            const id = hir_mod.identifierOf(self.hir, pp.name);
-                            _ = try self.declare(.value, id.name, .{
-                                .is_value = true,
-                                .is_parameter = true,
-                            }, p);
-                        }
+                        try self.bindParamName(pp.name, p);
                     }
                     if (fn_p.body != hir_mod.none_node_id) {
                         const body_stmts = hir_mod.blockStmts(self.hir, fn_p.body);

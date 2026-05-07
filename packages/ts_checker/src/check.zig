@@ -4558,6 +4558,95 @@ pub const Checker = struct {
         try top.put(self.gpa, name, t);
     }
 
+    /// Resolve the type of a binding identifier inside a destructuring
+    /// pattern. `pattern_node` is the `object_pattern` / `array_pattern`
+    /// HIR node that stands in for the parameter or var-decl name.
+    /// `container_t` is the lowered type of the parameter / initializer.
+    /// `target_name` is the identifier whose type we want.
+    ///
+    /// For object patterns: looks up `target_name` as a member of
+    /// `container_t`. The property's optionality (`a?: number`) shows
+    /// up either as an `is_optional` ObjectMember flag or as `T |
+    /// undefined` already; if the binding has a default expression,
+    /// strip `undefined` from the result so `{ a = 1 }: { a?: T }`
+    /// types `a` as `T`.
+    ///
+    /// For array patterns: looks up the matching tuple element by
+    /// position. Optional/rest elements receive the same default
+    /// stripping treatment.
+    fn typeOfPatternBinding(
+        self: *Checker,
+        pattern_node: NodeId,
+        container_t: TypeId,
+        target_name: hir_mod.StringId,
+    ) ?TypeId {
+        const pk = self.hir.kindOf(pattern_node);
+        const elements = hir_mod.patternElements(self.hir, pattern_node);
+        if (pk == .object_pattern) {
+            for (elements) |e| {
+                if (self.hir.kindOf(e) != .parameter) continue;
+                const ep = hir_mod.parameterOf(self.hir, e);
+                if (ep.name == hir_mod.none_node_id) continue;
+                if (self.hir.kindOf(ep.name) != .identifier) continue;
+                const eid = hir_mod.identifierOf(self.hir, ep.name);
+                if (eid.name != target_name) continue;
+                // Found the binding. Look up the property in
+                // `container_t`. The lowered type for `{ a?: T }`
+                // marks the member optional but stores T directly;
+                // union with `undefined` to reflect callers passing
+                // `{}`.
+                var member_t: TypeId = types.Primitive.any;
+                if (self.interner.objectMemberInfo(container_t, eid.name)) |info| {
+                    member_t = info.type;
+                    if (info.is_optional) {
+                        member_t = self.unionWithUndefined(member_t) catch member_t;
+                    }
+                }
+                if (ep.default_value != hir_mod.none_node_id) {
+                    member_t = self.subtractType(member_t, types.Primitive.undefined_t) catch member_t;
+                }
+                return member_t;
+            }
+            return null;
+        }
+        if (pk == .array_pattern) {
+            // Walk elements in order, tracking the tuple index. Rest
+            // elements are skipped for v0 (no slice typing).
+            const flags = self.interner.pool.flagsOf(container_t);
+            var idx: u32 = 0;
+            for (elements) |e| {
+                if (self.hir.kindOf(e) != .parameter) continue;
+                const ep = hir_mod.parameterOf(self.hir, e);
+                if (ep.name == hir_mod.none_node_id) continue;
+                if (self.hir.kindOf(ep.name) != .identifier) continue;
+                const eid = hir_mod.identifierOf(self.hir, ep.name);
+                if (eid.name != target_name) {
+                    if (!ep.flags.is_rest) idx += 1;
+                    continue;
+                }
+                if (ep.flags.is_rest) return types.Primitive.any;
+                var elem_t: TypeId = types.Primitive.any;
+                if (flags.is_tuple) {
+                    const payload = self.interner.pool.tuple_payloads.items[self.interner.pool.payloadOf(container_t)];
+                    const elems = self.interner.pool.tuple_element_pool.items[payload.elements_start .. payload.elements_start + payload.elements_len];
+                    if (idx < elems.len) {
+                        const te = elems[idx];
+                        elem_t = te.type;
+                        if (te.is_optional) {
+                            elem_t = self.unionWithUndefined(elem_t) catch elem_t;
+                        }
+                    }
+                }
+                if (ep.default_value != hir_mod.none_node_id) {
+                    elem_t = self.subtractType(elem_t, types.Primitive.undefined_t) catch elem_t;
+                }
+                return elem_t;
+            }
+            return null;
+        }
+        return null;
+    }
+
     /// Resolve an identifier reference's type. Walks up the HIR
     /// parent chain looking for an enclosing function whose
     /// parameter list declares this name; then falls back to the
@@ -4584,9 +4673,23 @@ pub const Checker = struct {
                     if (self.hir.kindOf(p) != .parameter) continue;
                     const pp = hir_mod.parameterOf(self.hir, p);
                     if (pp.name == hir_mod.none_node_id) continue;
-                    if (self.hir.kindOf(pp.name) != .identifier) continue;
-                    const pid = hir_mod.identifierOf(self.hir, pp.name);
-                    if (pid.name == id.name) return self.hir.typeOf(p);
+                    const pn_kind = self.hir.kindOf(pp.name);
+                    if (pn_kind == .identifier) {
+                        const pid = hir_mod.identifierOf(self.hir, pp.name);
+                        if (pid.name == id.name) return self.hir.typeOf(p);
+                    } else if (pn_kind == .object_pattern or pn_kind == .array_pattern) {
+                        // Destructuring parameter binding. Walk the
+                        // pattern's elements: each element is a
+                        // `parameter` whose own `name` is the bound
+                        // identifier. When it matches, resolve the
+                        // property's type through the parameter's
+                        // annotation (object: by key; array: by
+                        // index) and strip `undefined` if a default
+                        // expression is present.
+                        if (self.typeOfPatternBinding(pp.name, self.hir.typeOf(p), id.name)) |bt| {
+                            return bt;
+                        }
+                    }
                 }
                 // Don't continue past the function — outer scopes
                 // would shadow but we still want module-level
@@ -9043,6 +9146,33 @@ test "checker: array spread of T[] yields T[]" {
         \\const a: string[] = ["a"];
         \\const c = [...a];
         \\const r: string[] = c;
+    );
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+    for (s.checker.diagnostics.items) |d| {
+        try T.expect(d.code != TsCodes.type_not_assignable);
+    }
+}
+
+test "checker: object destructuring with default strips undefined" {
+    // `{ a = 1 }: { a?: number }` — the default ensures `a` is not
+    // undefined inside the body, so `const x: number = a` typechecks.
+    const s = try newSetup(
+        \\function f({ a = 1 }: { a?: number }) { const x: number = a; }
+    );
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+    for (s.checker.diagnostics.items) |d| {
+        try T.expect(d.code != TsCodes.type_not_assignable);
+    }
+}
+
+test "checker: array destructuring with default strips undefined" {
+    // `[ b = 2 ]: [number?]` — optional tuple slot widened to
+    // `number | undefined`; the default removes `undefined` so
+    // `const x: number = b` typechecks.
+    const s = try newSetup(
+        \\function f([b = 2]: [number?]) { const x: number = b; }
     );
     defer destroySetup(s);
     try s.checker.checkSourceFile(s.root);

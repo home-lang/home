@@ -891,6 +891,17 @@ pub const VarDeclPayload = struct {
     is_await_using: bool = false,
 };
 
+/// Object/array destructuring pattern payload. Each element is a
+/// `parameter` HIR node (re-using `ParameterPayload` for `name`,
+/// `default_value`, and `flags.is_rest`). For v0 only shorthand
+/// `{ key }` / `{ key = default }` and array element bindings
+/// `[ name ]` / `[ name = default ]` / `[ ...rest ]` are supported.
+pub const PatternPayload = struct {
+    /// Children-pool slice: `parameter` nodes describing each binding.
+    elements_start: u32,
+    elements_len: u32,
+};
+
 /// Arrow function payload. Reuses `FnDeclPayload`'s shape with the
 /// `is_arrow` flag set in `FnFlags`.
 pub const ArrowPayload = FnDeclPayload;
@@ -1077,6 +1088,7 @@ pub const Hir = struct {
     decorator_payloads: std.ArrayListUnmanaged(DecoratorPayload),
     interface_member_payloads: std.ArrayListUnmanaged(InterfaceMemberPayload),
     object_type_payloads: std.ArrayListUnmanaged(ObjectTypePayload),
+    pattern_payloads: std.ArrayListUnmanaged(PatternPayload),
 
     /// Shared variable-arity child pool. Per-node payloads reference
     /// slices into this with `(start: u32, len: u32)`.
@@ -1160,6 +1172,7 @@ pub const Hir = struct {
             .decorator_payloads = .empty,
             .interface_member_payloads = .empty,
             .object_type_payloads = .empty,
+            .pattern_payloads = .empty,
             .child_pool = .empty,
             .cold = ColdData.empty(),
         };
@@ -1250,6 +1263,7 @@ pub const Hir = struct {
         self.decorator_payloads.deinit(self.gpa);
         self.interface_member_payloads.deinit(self.gpa);
         self.object_type_payloads.deinit(self.gpa);
+        self.pattern_payloads.deinit(self.gpa);
         self.child_pool.deinit(self.gpa);
         self.cold.deinit(self.gpa);
     }
@@ -1759,6 +1773,30 @@ pub const Builder = struct {
         if (type_annotation != none_node_id) self.hir.setParent(type_annotation, id);
         if (default_value != none_node_id) self.hir.setParent(default_value, id);
         for (decorators) |d| if (d != none_node_id) self.hir.setParent(d, id);
+        return id;
+    }
+
+    /// Build an object/array destructuring pattern node. `elements`
+    /// is a slice of `parameter` HIR nodes — one per binding in the
+    /// pattern. Each element's `name` is the bound identifier (or
+    /// nested pattern), `default_value` carries any `= expr` form,
+    /// and `flags.is_rest` marks `...rest` elements.
+    pub fn addPattern(
+        self: *Builder,
+        kind: NodeKind,
+        span: Span,
+        elements: []const NodeId,
+    ) !NodeId {
+        std.debug.assert(kind == .object_pattern or kind == .array_pattern);
+        const elements_start: u32 = @intCast(self.hir.child_pool.items.len);
+        try self.hir.child_pool.appendSlice(self.hir.gpa, elements);
+        const payload_idx: u32 = @intCast(self.hir.pattern_payloads.items.len);
+        try self.hir.pattern_payloads.append(self.hir.gpa, .{
+            .elements_start = elements_start,
+            .elements_len = @intCast(elements.len),
+        });
+        const id = try self.newNode(kind, span, payload_idx);
+        for (elements) |e| if (e != none_node_id) self.hir.setParent(e, id);
         return id;
     }
 
@@ -2835,6 +2873,16 @@ pub fn parameterOf(hir: *const Hir, id: NodeId) ParameterPayload {
 pub fn parameterDecorators(hir: *const Hir, id: NodeId) []const NodeId {
     const p = parameterOf(hir, id);
     return hir.childSlice(p.decorators_start, p.decorators_len);
+}
+
+pub fn patternOf(hir: *const Hir, id: NodeId) PatternPayload {
+    std.debug.assert(hir.kindOf(id) == .object_pattern or hir.kindOf(id) == .array_pattern);
+    return hir.pattern_payloads.items[hir.payloads.items[id]];
+}
+
+pub fn patternElements(hir: *const Hir, id: NodeId) []const NodeId {
+    const p = patternOf(hir, id);
+    return hir.childSlice(p.elements_start, p.elements_len);
 }
 
 pub fn typeAliasOf(hir: *const Hir, id: NodeId) TypeAliasPayload {
