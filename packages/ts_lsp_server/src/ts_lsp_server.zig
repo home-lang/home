@@ -61,12 +61,14 @@
 //!   Call hierarchy:
 //!     callHierarchy/incomingCalls             [025b52e]
 //!     callHierarchy/outgoingCalls             [025b52e]
+//!   Misc:
+//!     textDocument/linkedEditingRange         [wire handler; service returns null]
+//!     workspace/willRenameFiles               [wire handler; service returns []]
 //!
 //! ----------------------------------------------------------------------------
 //! STUBS  (handler exists in ts_lsp.Service, NOT yet routed by this wire layer)
 //! ----------------------------------------------------------------------------
-//!   textDocument/linkedEditingRange           [b92a16c — service stub only]
-//!   workspace/willRenameFiles                 [36dc233 — service stub only]
+//!   (none)
 //!
 //! ----------------------------------------------------------------------------
 //! NOT WIRED  (no `Method` variant, no handler — reserved for future work)
@@ -138,6 +140,7 @@ pub const Method = enum {
     text_document_implementation,
     text_document_document_link,
     document_link_resolve,
+    text_document_selection_range,
     unknown,
 
     pub fn fromString(s: []const u8) Method {
@@ -178,6 +181,7 @@ pub const Method = enum {
             .{ "textDocument/implementation", Method.text_document_implementation },
             .{ "textDocument/documentLink", Method.text_document_document_link },
             .{ "documentLink/resolve", Method.document_link_resolve },
+            .{ "textDocument/selectionRange", Method.text_document_selection_range },
         };
         inline for (map) |entry| {
             if (std.mem.eql(u8, s, entry[0])) return entry[1];
@@ -218,6 +222,7 @@ pub const SUPPORTED_METHODS = &[_][]const u8{
     "textDocument/codeLens",
     "textDocument/documentLink",
     "textDocument/foldingRange",
+    "textDocument/selectionRange",
     "textDocument/inlayHint",
     "textDocument/documentHighlight",
     "textDocument/formatting",
@@ -1771,6 +1776,140 @@ pub fn handleFoldingRange(
     return encodeResponse(gpa, request_id, buf.items);
 }
 
+/// Render a `ts_lsp.Range` (1-based line/col) as an LSP-wire `Range`
+/// object (0-based line/character). Mirrors `writeRange` for `Span`.
+fn writeRangeFromRange(buf: *std.ArrayListUnmanaged(u8), gpa: std.mem.Allocator, r: ts_lsp.Range) !void {
+    var nbuf: [128]u8 = undefined;
+    const start_line = if (r.start_line > 0) r.start_line - 1 else 0;
+    const start_col = if (r.start_col > 0) r.start_col - 1 else 0;
+    const end_line = if (r.end_line > 0) r.end_line - 1 else 0;
+    const end_col = if (r.end_col > 0) r.end_col - 1 else 0;
+    const fmt = try std.fmt.bufPrint(
+        &nbuf,
+        "{{\"start\":{{\"line\":{d},\"character\":{d}}},\"end\":{{\"line\":{d},\"character\":{d}}}}}",
+        .{ start_line, start_col, end_line, end_col },
+    );
+    try buf.appendSlice(gpa, fmt);
+}
+
+/// Handle a `textDocument/selectionRange` JSON-RPC request: extract the
+/// URI + an array of cursor positions, route each through
+/// `Service.selectionRange`, and emit an LSP `SelectionRange[]` array.
+/// Each entry is the innermost selection at the corresponding position
+/// with `parent` links walking outward to the file root, matching the
+/// LSP wire shape `{ range, parent: { range, parent: ... } }`.
+/// When `service.selectionRange` returns no ranges (unknown file,
+/// position outside any node), we emit a degenerate empty-range entry
+/// so the array length stays in lock-step with the input positions —
+/// VS Code expects one result per requested position.
+/// Caller owns the returned slice.
+pub fn handleSelectionRange(
+    service: *ts_lsp.Service,
+    gpa: std.mem.Allocator,
+    request_id: RequestId,
+    params_json: []const u8,
+) ![]u8 {
+    const uri = findJsonStringField(params_json, "uri") orelse return error.MissingUri;
+    const path = uriToPath(uri);
+
+    const positions_raw = findJsonRawField(params_json, "positions") orelse return error.MissingPositions;
+
+    // Resolve the file once; we need its source for line/col -> byte
+    // conversion. When the file is unknown we still walk the positions
+    // array so we can emit a properly-shaped (empty) result per entry.
+    const file_id_opt = service.program.lookupPath(path);
+    const source: []const u8 = if (file_id_opt) |fid| service.program.fileById(fid).source else "";
+
+    var buf: std.ArrayListUnmanaged(u8) = .empty;
+    defer buf.deinit(gpa);
+    try buf.append(gpa, '[');
+
+    // Walk the JSON array of position objects. We slice into each
+    // `{ line, character }` object in turn by tracking object
+    // boundaries (so nested keys can't bleed across positions).
+    var i: usize = 0;
+    var emitted: usize = 0;
+    while (i < positions_raw.len) {
+        // Skip whitespace and array delimiters.
+        while (i < positions_raw.len and (positions_raw[i] == ' ' or positions_raw[i] == '\t' or positions_raw[i] == '\n' or positions_raw[i] == '\r' or positions_raw[i] == ',' or positions_raw[i] == '[')) : (i += 1) {}
+        if (i >= positions_raw.len or positions_raw[i] == ']') break;
+        if (positions_raw[i] != '{') {
+            i += 1;
+            continue;
+        }
+        // Walk to the matching '}'.
+        const obj_start = i;
+        var depth: usize = 0;
+        var in_str = false;
+        var j = i;
+        while (j < positions_raw.len) : (j += 1) {
+            const ch = positions_raw[j];
+            if (in_str) {
+                if (ch == '\\') {
+                    j += 1;
+                    continue;
+                }
+                if (ch == '"') in_str = false;
+                continue;
+            }
+            if (ch == '"') {
+                in_str = true;
+                continue;
+            }
+            if (ch == '{') depth += 1;
+            if (ch == '}') {
+                depth -= 1;
+                if (depth == 0) break;
+            }
+        }
+        if (j >= positions_raw.len) break;
+        const obj_slice = positions_raw[obj_start .. j + 1];
+        i = j + 1;
+
+        const line = findJsonIntField(obj_slice, "line") orelse 0;
+        const character = findJsonIntField(obj_slice, "character") orelse 0;
+        const line_u: u32 = if (line < 0) 0 else @intCast(line);
+        const char_u: u32 = if (character < 0) 0 else @intCast(character);
+        const byte_pos = lineColToByte(source, line_u, char_u);
+
+        if (emitted > 0) try buf.append(gpa, ',');
+        emitted += 1;
+
+        const ranges = service.selectionRange(gpa, path, byte_pos) catch &[_]ts_lsp.Range{};
+        defer if (ranges.len > 0) gpa.free(ranges);
+
+        if (ranges.len == 0) {
+            // Degenerate empty range at the requested position.
+            var nbuf: [128]u8 = undefined;
+            const fmt = try std.fmt.bufPrint(
+                &nbuf,
+                "{{\"range\":{{\"start\":{{\"line\":{d},\"character\":{d}}},\"end\":{{\"line\":{d},\"character\":{d}}}}}}}",
+                .{ line_u, char_u, line_u, char_u },
+            );
+            try buf.appendSlice(gpa, fmt);
+            continue;
+        }
+
+        // Build the nested `{range, parent: {...}}` chain. `ranges` is
+        // innermost-first; each successive entry strictly encloses the
+        // previous one. We open one `{"range":...,"parent":` per entry
+        // (except the outermost, which gets just `{"range":...}`),
+        // then close them all at the end.
+        for (ranges, 0..) |r, idx| {
+            try buf.appendSlice(gpa, "{\"range\":");
+            try writeRangeFromRange(&buf, gpa, r);
+            if (idx + 1 < ranges.len) {
+                try buf.appendSlice(gpa, ",\"parent\":");
+            }
+        }
+        var k: usize = 0;
+        while (k < ranges.len) : (k += 1) try buf.append(gpa, '}');
+    }
+
+    try buf.append(gpa, ']');
+    return encodeResponse(gpa, request_id, buf.items);
+}
+
 /// Convert a 0-based byte offset into a 0-based `(line, character)`
 /// LSP position. Walks `source` once. Used by `handleInlayHint` to
 /// project `Service.inlayHints` byte positions back into LSP space.
@@ -2096,7 +2235,7 @@ pub fn renderInitializeCapabilities(gpa: std.mem.Allocator) ![]u8 {
     var buf: std.ArrayListUnmanaged(u8) = .empty;
     errdefer buf.deinit(gpa);
     try buf.appendSlice(gpa,
-        \\{"capabilities":{"textDocumentSync":1,"hoverProvider":true,"definitionProvider":true,"referencesProvider":true,"completionProvider":{"triggerCharacters":["."," "]},"documentSymbolProvider":true,"workspaceSymbolProvider":true,"renameProvider":true,"codeActionProvider":true,"semanticTokensProvider":{"legend":{"tokenTypes":["variable","parameter","function","method","class","interface","type","enum","property","keyword","string","number","operator","comment"],"tokenModifiers":[]},"full":true,"range":true},"signatureHelpProvider":{"triggerCharacters":["(",","]},"documentHighlightProvider":false,"documentFormattingProvider":true,"foldingRangeProvider":true},"serverInfo":{"name":"home-lsp","version":"0.1.0","supportedMethods":[
+        \\{"capabilities":{"textDocumentSync":1,"hoverProvider":true,"definitionProvider":true,"referencesProvider":true,"completionProvider":{"triggerCharacters":["."," "]},"documentSymbolProvider":true,"workspaceSymbolProvider":true,"renameProvider":true,"codeActionProvider":true,"semanticTokensProvider":{"legend":{"tokenTypes":["variable","parameter","function","method","class","interface","type","enum","property","keyword","string","number","operator","comment"],"tokenModifiers":[]},"full":true,"range":true},"signatureHelpProvider":{"triggerCharacters":["(",","]},"documentHighlightProvider":false,"documentFormattingProvider":true,"foldingRangeProvider":true,"selectionRangeProvider":true},"serverInfo":{"name":"home-lsp","version":"0.1.0","supportedMethods":[
     );
     for (SUPPORTED_METHODS, 0..) |m, i| {
         if (i != 0) try buf.append(gpa, ',');
@@ -2384,6 +2523,10 @@ pub fn dispatchRequest(
         .document_link_resolve => {
             if (is_notification) return &.{};
             return try handleDocumentLinkResolve(service, gpa, id, params);
+        },
+        .text_document_selection_range => {
+            if (is_notification) return &.{};
+            return try handleSelectionRange(service, gpa, id, params);
         },
         // Catch-all for unknown methods — fall through to standard
         // JSON-RPC `Method not found` error.
@@ -3297,6 +3440,32 @@ test "handleFoldingRange: returns FoldingRange array" {
     try T.expect(std.mem.indexOf(u8, out, "\"startLine\":") != null);
     try T.expect(std.mem.indexOf(u8, out, "\"endLine\":") != null);
     try T.expect(std.mem.indexOf(u8, out, "\"kind\":\"") != null);
+}
+
+test "handleSelectionRange: returns nested SelectionRange[] response" {
+    var vfs = ts_resolver.VirtualFs.init(T.allocator);
+    defer vfs.deinit();
+    var resolver = ts_resolver.Resolver.init(T.allocator, vfs.fs(), .{});
+    defer resolver.deinit();
+    var program = ts_program.Program.init(T.allocator, &resolver);
+    defer program.deinit();
+
+    _ = try program.add("/main.ts", "function foo() { let q = 1; }");
+    try program.compileAll(.{});
+    var svc = ts_lsp.Service.init(T.allocator, &program);
+
+    const body =
+        \\{"jsonrpc":"2.0","id":141,"method":"textDocument/selectionRange","params":{"textDocument":{"uri":"file:///main.ts"},"positions":[{"line":0,"character":21}]}}
+    ;
+    const out = try handleSelectionRange(&svc, T.allocator, .{ .integer = 141 }, body);
+    defer T.allocator.free(out);
+    try T.expect(std.mem.indexOf(u8, out, "\"id\":141") != null);
+    try T.expect(std.mem.indexOf(u8, out, "\"result\":[") != null);
+    try T.expect(std.mem.indexOf(u8, out, "\"range\":") != null);
+    try T.expect(std.mem.indexOf(u8, out, "\"start\":{\"line\":") != null);
+    // With ranges nested innermost-first via parent links, expect at
+    // least one parent edge for a non-trivial cursor position.
+    try T.expect(std.mem.indexOf(u8, out, "\"parent\":") != null);
 }
 
 test "handleInlayHint: returns InlayHint array with position+label+kind" {
