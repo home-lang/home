@@ -354,6 +354,25 @@ pub const Printer = struct {
             try self.emitLeadingJsDoc(stmt);
             try self.printStatement(stmt);
         }
+        // Source-map fallback: if a SourceMap is attached but no
+        // per-token mappings were recorded (e.g. caller didn't supply
+        // source bytes via `setSource`), populate a basic line-level
+        // mapping so the generated `"mappings"` string is non-empty
+        // and decodes to a coherent line-by-line mapping. v0 emits
+        // one segment per generated line at column 0.
+        if (self.options.source_map) |sm| {
+            if (sm.mappings.items.len == 0) {
+                const src_line_count: ?u32 = if (self.source) |src|
+                    countLines(src)
+                else
+                    null;
+                try sm.fillLineMappings(
+                    self.out.items,
+                    self.options.source_map_src_idx,
+                    src_line_count,
+                );
+            }
+        }
         // Optional source-map URL trailer.
         if (self.options.source_map_url) |url| {
             try self.write(self.options.newline);
@@ -2341,6 +2360,17 @@ pub const Printer = struct {
         try self.write(" }");
     }
 };
+
+/// Count line breaks in `s` and return the number of lines (≥ 1).
+/// "a\nb" -> 2 lines, "a\nb\n" -> 3 lines (the line after the
+/// trailing newline still counts).
+fn countLines(s: []const u8) u32 {
+    var n: u32 = 1;
+    for (s) |c| {
+        if (c == '\n') n += 1;
+    }
+    return n;
+}
 
 /// True if the HIR rooted at `root` (or any reachable subtree)
 /// contains a JSX-shape node. Walked by the auto-import logic to

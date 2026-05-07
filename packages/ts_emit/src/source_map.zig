@@ -87,6 +87,53 @@ pub const SourceMap = struct {
         try self.mappings.append(self.gpa, m);
     }
 
+    /// Populate a basic line-level mapping for `generated` text:
+    /// for each generated line (0..N) emit a segment mapping
+    /// `(gen_col=0) -> (src_idx, src_line=line, src_col=0)`. Lines
+    /// in the generated text are determined by counting `\n` bytes.
+    ///
+    /// This is a v0 fallback for callers that don't (or can't) record
+    /// per-token mappings — it produces a non-empty `"mappings"`
+    /// string that decodes back to a coherent line-by-line mapping.
+    /// `src_line_count`, when non-null, caps the source line index so
+    /// the generated mapping doesn't run past the end of the source.
+    pub fn fillLineMappings(
+        self: *SourceMap,
+        generated: []const u8,
+        src_idx: u32,
+        src_line_count: ?u32,
+    ) !void {
+        var line: u32 = 0;
+        // First line always gets a mapping.
+        try self.addLineMappingClamped(0, src_idx, src_line_count);
+        for (generated) |c| {
+            if (c == '\n') {
+                line += 1;
+                try self.addLineMappingClamped(line, src_idx, src_line_count);
+            }
+        }
+    }
+
+    fn addLineMappingClamped(
+        self: *SourceMap,
+        line: u32,
+        src_idx: u32,
+        src_line_count: ?u32,
+    ) !void {
+        const src_line: u32 = if (src_line_count) |n|
+            (if (n == 0) 0 else @min(line, n - 1))
+        else
+            line;
+        try self.addMapping(.{
+            .gen_line = line,
+            .gen_col = 0,
+            .src_idx = src_idx,
+            .src_line = src_line,
+            .src_col = 0,
+            .name_idx = null,
+        });
+    }
+
     /// Render the source map as a JSON string. Caller owns the result.
     pub fn toJson(self: *SourceMap) ![]u8 {
         var buf: std.ArrayListUnmanaged(u8) = .empty;
@@ -354,4 +401,65 @@ test "SourceMap: JSON-escapes special chars in source content" {
     defer T.allocator.free(json);
     try T.expect(std.mem.indexOf(u8, json, "\\\"") != null);
     try T.expect(std.mem.indexOf(u8, json, "\\\\n") != null);
+}
+
+test "SourceMap: fillLineMappings produces non-empty mappings per line" {
+    var sm = SourceMap.init(T.allocator, "out.js");
+    defer sm.deinit();
+    const sidx = try sm.addSource("in.ts", "let x = 1;\nlet y = 2;\nlet z = 3;");
+    const generated = "let x = 1;\nlet y = 2;\nlet z = 3;";
+    try sm.fillLineMappings(generated, sidx, 3);
+    const json = try sm.toJson();
+    defer T.allocator.free(json);
+
+    const mp_pos = std.mem.indexOf(u8, json, "\"mappings\":\"").?;
+    const after = json[mp_pos + "\"mappings\":\"".len ..];
+    const close = std.mem.indexOf(u8, after, "\"").?;
+    const mappings = after[0..close];
+    try T.expect(mappings.len > 0);
+
+    // Three lines: ΔgenCol=0, ΔsrcIdx=0, ΔsrcLine=(0|1), ΔsrcCol=0.
+    // First "AAAA". Each subsequent "AACA". Joined by ';'.
+    try T.expectEqualStrings("AAAA;AACA;AACA", mappings);
+}
+
+test "SourceMap: fillLineMappings round-trips via decodeVlq" {
+    var sm = SourceMap.init(T.allocator, "out.js");
+    defer sm.deinit();
+    const sidx = try sm.addSource("in.ts", "a\nb\nc\nd");
+    const generated = "a\nb\nc\nd";
+    try sm.fillLineMappings(generated, sidx, 4);
+
+    const json = try sm.toJson();
+    defer T.allocator.free(json);
+    const mp_pos = std.mem.indexOf(u8, json, "\"mappings\":\"").?;
+    const after = json[mp_pos + "\"mappings\":\"".len ..];
+    const close = std.mem.indexOf(u8, after, "\"").?;
+    const mappings = after[0..close];
+
+    var line_idx: u32 = 0;
+    var prev_src_line: i32 = 0;
+    var iter = std.mem.splitScalar(u8, mappings, ';');
+    while (iter.next()) |seg_str| {
+        try T.expect(seg_str.len > 0);
+        var pos: usize = 0;
+        const v0 = decodeVlq(seg_str, pos) orelse return error.DecodeFailed;
+        pos = v0.next_pos;
+        const v1 = decodeVlq(seg_str, pos) orelse return error.DecodeFailed;
+        pos = v1.next_pos;
+        const v2 = decodeVlq(seg_str, pos) orelse return error.DecodeFailed;
+        pos = v2.next_pos;
+        const v3 = decodeVlq(seg_str, pos) orelse return error.DecodeFailed;
+        pos = v3.next_pos;
+        try T.expectEqual(seg_str.len, pos);
+        try T.expectEqual(@as(i32, 0), v0.value);
+        try T.expectEqual(@as(i32, 0), v1.value);
+        try T.expectEqual(@as(i32, 0), v3.value);
+        const expected_delta: i32 = if (line_idx == 0) 0 else 1;
+        try T.expectEqual(expected_delta, v2.value);
+        prev_src_line += v2.value;
+        try T.expectEqual(@as(i32, @intCast(line_idx)), prev_src_line);
+        line_idx += 1;
+    }
+    try T.expectEqual(@as(u32, 4), line_idx);
 }
