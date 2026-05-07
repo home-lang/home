@@ -44,6 +44,7 @@
 //!     inlayHint                               [c9dc339]
 //!     documentHighlight                       [c9dc339]
 //!     formatting                              [c9dc339]
+//!     onTypeFormatting                        [wire handler; service returns []]
 //!     rename                                  [c9dc339]
 //!     prepareRename                           [d5ff71d]
 //!     prepareCallHierarchy                    [025b52e]
@@ -76,7 +77,6 @@
 //!   textDocument/colorPresentation
 //!   textDocument/documentColor
 //!   textDocument/declaration
-//!   textDocument/onTypeFormatting
 //!   textDocument/rangeFormatting
 //!   textDocument/moniker
 //!   workspace/executeCommand
@@ -137,6 +137,7 @@ pub const Method = enum {
     text_document_inlay_hint,
     text_document_document_highlight,
     text_document_formatting,
+    text_document_on_type_formatting,
     text_document_code_lens,
     code_lens_resolve,
     text_document_implementation,
@@ -186,6 +187,7 @@ pub const Method = enum {
             .{ "textDocument/inlayHint", Method.text_document_inlay_hint },
             .{ "textDocument/documentHighlight", Method.text_document_document_highlight },
             .{ "textDocument/formatting", Method.text_document_formatting },
+            .{ "textDocument/onTypeFormatting", Method.text_document_on_type_formatting },
             .{ "textDocument/codeLens", Method.text_document_code_lens },
             .{ "codeLens/resolve", Method.code_lens_resolve },
             .{ "textDocument/implementation", Method.text_document_implementation },
@@ -242,6 +244,7 @@ pub const SUPPORTED_METHODS = &[_][]const u8{
     "textDocument/inlayHint",
     "textDocument/documentHighlight",
     "textDocument/formatting",
+    "textDocument/onTypeFormatting",
     "textDocument/rename",
     "textDocument/prepareRename",
     "textDocument/prepareCallHierarchy",
@@ -2606,6 +2609,58 @@ pub fn handleFormatting(
     return encodeResponse(gpa, request_id, buf.items);
 }
 
+/// Handle a `textDocument/onTypeFormatting` JSON-RPC request: extract
+/// the URI, position, trigger character, and `FormattingOptions`,
+/// route to `Service.onTypeFormatting`, and emit an LSP `TextEdit[]`
+/// array. v0 always returns `[]` — the wire surface is in place so
+/// editors that probe the capability succeed; smarter on-type edits
+/// (dedent on `}`, indent on `\n`, etc.) follow once the formatter
+/// can reason about partial input. Caller owns the returned slice.
+pub fn handleOnTypeFormatting(
+    service: *ts_lsp.Service,
+    gpa: std.mem.Allocator,
+    request_id: RequestId,
+    params_json: []const u8,
+) ![]u8 {
+    const uri = findJsonStringField(params_json, "uri") orelse return error.MissingUri;
+    const line = findJsonIntField(params_json, "line") orelse return error.MissingLine;
+    const character = findJsonIntField(params_json, "character") orelse return error.MissingCharacter;
+    const ch = findJsonStringField(params_json, "ch") orelse "";
+    const path = uriToPath(uri);
+
+    // FormattingOptions is optional in our v0 path — defaults match the
+    // LSP spec (`tabSize: 4`, `insertSpaces: true`).
+    var opts: ts_lsp.FormattingOptions = .{};
+    if (findJsonIntField(params_json, "tabSize")) |ts| {
+        if (ts > 0) opts.tab_size = @intCast(ts);
+    }
+    // `insertSpaces` is a bool — find it positionally; if absent leave default.
+    if (std.mem.indexOf(u8, params_json, "\"insertSpaces\":false") != null) {
+        opts.insert_spaces = false;
+    }
+
+    const file_id = service.program.lookupPath(path) orelse {
+        return encodeResponse(gpa, request_id, "[]");
+    };
+    const f = service.program.fileById(file_id);
+    const line_u: u32 = if (line < 0) 0 else @intCast(line);
+    const char_u: u32 = if (character < 0) 0 else @intCast(character);
+    const byte_pos = lineColToByte(f.source, line_u, char_u);
+
+    const edits = try service.onTypeFormatting(gpa, path, byte_pos, ch, opts);
+    defer gpa.free(edits);
+
+    var buf: std.ArrayListUnmanaged(u8) = .empty;
+    defer buf.deinit(gpa);
+    try buf.append(gpa, '[');
+    for (edits, 0..) |e, i| {
+        if (i > 0) try buf.append(gpa, ',');
+        try writeTextEdit(&buf, gpa, e);
+    }
+    try buf.append(gpa, ']');
+    return encodeResponse(gpa, request_id, buf.items);
+}
+
 /// Handle a `textDocument/codeLens` JSON-RPC request: extract the
 /// URI, route to `Service.codeLenses`, and emit an LSP `CodeLens[]`
 /// array. Each lens has a `range` and a `command` carrying the
@@ -2798,7 +2853,7 @@ pub fn renderInitializeCapabilities(gpa: std.mem.Allocator) ![]u8 {
     var buf: std.ArrayListUnmanaged(u8) = .empty;
     errdefer buf.deinit(gpa);
     try buf.appendSlice(gpa,
-        \\{"capabilities":{"textDocumentSync":1,"hoverProvider":true,"definitionProvider":true,"referencesProvider":true,"completionProvider":{"triggerCharacters":["."," "]},"documentSymbolProvider":true,"workspaceSymbolProvider":true,"renameProvider":{"prepareProvider":true},"codeActionProvider":true,"executeCommandProvider":{"commands":["home.organizeImports","home.applyCodeAction"]},"semanticTokensProvider":{"legend":{"tokenTypes":["variable","parameter","function","method","class","interface","type","enum","property","keyword","string","number","operator","comment"],"tokenModifiers":[]},"full":true,"range":true},"signatureHelpProvider":{"triggerCharacters":["(",","]},"documentHighlightProvider":false,"documentFormattingProvider":true,"foldingRangeProvider":true,"selectionRangeProvider":true,"monikerProvider":true,"typeHierarchyProvider":true,"inlineValueProvider":true},"serverInfo":{"name":"home-lsp","version":"0.1.0","supportedMethods":[
+        \\{"capabilities":{"textDocumentSync":1,"hoverProvider":true,"definitionProvider":true,"referencesProvider":true,"completionProvider":{"triggerCharacters":["."," "]},"documentSymbolProvider":true,"workspaceSymbolProvider":true,"renameProvider":{"prepareProvider":true},"codeActionProvider":true,"executeCommandProvider":{"commands":["home.organizeImports","home.applyCodeAction"]},"semanticTokensProvider":{"legend":{"tokenTypes":["variable","parameter","function","method","class","interface","type","enum","property","keyword","string","number","operator","comment"],"tokenModifiers":[]},"full":true,"range":true},"signatureHelpProvider":{"triggerCharacters":["(",","]},"documentHighlightProvider":false,"documentFormattingProvider":true,"documentOnTypeFormattingProvider":{"firstTriggerCharacter":"}","moreTriggerCharacters":[";","\n"]},"foldingRangeProvider":true,"selectionRangeProvider":true,"monikerProvider":true,"typeHierarchyProvider":true,"inlineValueProvider":true},"serverInfo":{"name":"home-lsp","version":"0.1.0","supportedMethods":[
     );
     for (SUPPORTED_METHODS, 0..) |m, i| {
         if (i != 0) try buf.append(gpa, ',');
@@ -3078,6 +3133,10 @@ pub fn dispatchRequest(
         .text_document_formatting => {
             if (is_notification) return &.{};
             return try handleFormatting(service, gpa, id, params);
+        },
+        .text_document_on_type_formatting => {
+            if (is_notification) return &.{};
+            return try handleOnTypeFormatting(service, gpa, id, params);
         },
         .text_document_code_lens => {
             if (is_notification) return &.{};
@@ -4161,6 +4220,28 @@ test "handleFormatting: returns TextEdit array (no-op)" {
     defer T.allocator.free(out);
     try T.expect(std.mem.indexOf(u8, out, "\"id\":141") != null);
     // Service stub returns [] (already-formatted).
+    try T.expect(std.mem.indexOf(u8, out, "\"result\":[]") != null);
+}
+
+test "handleOnTypeFormatting: returns TextEdit array (empty for v0)" {
+    var vfs = ts_resolver.VirtualFs.init(T.allocator);
+    defer vfs.deinit();
+    var resolver = ts_resolver.Resolver.init(T.allocator, vfs.fs(), .{});
+    defer resolver.deinit();
+    var program = ts_program.Program.init(T.allocator, &resolver);
+    defer program.deinit();
+
+    _ = try program.add("/main.ts", "function f() {\n  let x = 1;\n}\n");
+    try program.compileAll(.{});
+    var svc = ts_lsp.Service.init(T.allocator, &program);
+
+    const body =
+        \\{"jsonrpc":"2.0","id":142,"method":"textDocument/onTypeFormatting","params":{"textDocument":{"uri":"file:///main.ts"},"position":{"line":2,"character":1},"ch":"}","options":{"tabSize":2,"insertSpaces":true}}}
+    ;
+    const out = try handleOnTypeFormatting(&svc, T.allocator, .{ .integer = 142 }, body);
+    defer T.allocator.free(out);
+    try T.expect(std.mem.indexOf(u8, out, "\"id\":142") != null);
+    // v0 stub: edits list is empty.
     try T.expect(std.mem.indexOf(u8, out, "\"result\":[]") != null);
 }
 

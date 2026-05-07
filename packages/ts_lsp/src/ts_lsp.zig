@@ -170,6 +170,16 @@ pub const PrepareRenameResult = struct {
 /// Zig enum at this layer.
 pub const SaveReason = enum { manual, auto, after_delay, focus_out };
 
+/// LSP `FormattingOptions` — passed to formatting requests
+/// (`formatting`, `rangeFormatting`, `onTypeFormatting`). Only the
+/// two required fields are modeled today; additional client options
+/// (e.g. `trimTrailingWhitespace`, `insertFinalNewline`) can be
+/// added when a formatter starts honoring them.
+pub const FormattingOptions = struct {
+    tab_size: u32 = 4,
+    insert_spaces: bool = true,
+};
+
 /// LSP `textDocument/linkedEditingRange` payload — a set of source
 /// ranges the editor should keep in sync as the user types in any
 /// one of them. The canonical case is JSX: editing the opening tag
@@ -1842,6 +1852,30 @@ pub const Service = struct {
             .ranges = ranges,
             .word_pattern = "[a-zA-Z_$][a-zA-Z0-9_$]*",
         };
+    }
+
+    /// `textDocument/onTypeFormatting` — give the server a chance to
+    /// emit format edits when the user types one of the configured
+    /// trigger characters (e.g. `}`, `;`, `\n`). v0 stub: returns an
+    /// empty edit list for any trigger so editors that probe the
+    /// capability don't see errors. Future work: dedent on `}`, fix
+    /// indentation on newline, add spaces after `;` inside `for(...)`.
+    pub fn onTypeFormatting(
+        self: *Service,
+        gpa: std.mem.Allocator,
+        file_path: []const u8,
+        byte_pos: u32,
+        ch: []const u8,
+        options: FormattingOptions,
+    ) ![]TextEdit {
+        _ = self;
+        _ = file_path;
+        _ = byte_pos;
+        _ = ch;
+        _ = options;
+        var edits: std.ArrayListUnmanaged(TextEdit) = .empty;
+        errdefer edits.deinit(gpa);
+        return edits.toOwnedSlice(gpa);
     }
 
     /// `textDocument/willSaveWaitUntil` — give the server a chance to
