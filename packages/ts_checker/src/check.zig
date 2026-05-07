@@ -106,6 +106,17 @@ pub const TsCodes = struct {
     /// member declared `private` is accessed from outside the
     /// declaring class body.
     pub const private_member_access: u32 = 2341;
+    /// TS legacy `protected` modifier violation. Emitted when a
+    /// member declared `protected` is accessed from outside the
+    /// declaring class and its subclasses.
+    pub const protected_member_access: u32 = 2445;
+    /// TS2540 — assigning to a property declared `readonly`. Forbidden
+    /// outside of the class constructor (for class fields) or any
+    /// re-assignment (for object/interface readonly properties).
+    pub const readonly_property: u32 = 2540;
+    /// `new X()` where `X` is an abstract class. Abstract classes
+    /// cannot be instantiated directly — only concrete subclasses can.
+    pub const abstract_class_instantiation: u32 = 2511;
 };
 
 /// Per-alias generic info: the type-parameter TypeIds in
@@ -242,6 +253,25 @@ pub const Checker = struct {
         hir_mod.StringId,
         std.AutoHashMapUnmanaged(hir_mod.StringId, void),
     ),
+    /// Class-name → set of member names declared `protected`.
+    /// Populated by `checkClassDecl`; consulted on `member_access`
+    /// to flag TS2445 when the access site is outside the
+    /// declaring class and its subclass chain.
+    class_protected_members: std.AutoHashMapUnmanaged(
+        hir_mod.StringId,
+        std.AutoHashMapUnmanaged(hir_mod.StringId, void),
+    ),
+    /// Subclass-name → parent-class name. Records the immediate
+    /// `extends` target so the protected-access check can walk the
+    /// inheritance chain. Set when `class B extends A { ... }` is
+    /// declared and `A` is itself a known class identifier.
+    class_parent: std.AutoHashMapUnmanaged(hir_mod.StringId, hir_mod.StringId),
+    /// Set of class names whose declaration carried the `abstract`
+    /// modifier. Populated by `checkClassDecl`; consulted on
+    /// `new_expr` typing to emit TS2511 ("Cannot create an instance
+    /// of an abstract class.") when the construction target resolves
+    /// to an abstract class.
+    abstract_classes: std.AutoHashMapUnmanaged(hir_mod.StringId, void),
     /// Generic name → TypeId table for type-annotation resolution.
     /// A superset of `class_instance_types` that also covers
     /// `interface I { ... }` and `type Alias = T`. Consulted by
@@ -332,6 +362,9 @@ pub const Checker = struct {
             .class_constructor_sigs = .empty,
             .class_name_by_instance = .empty,
             .class_private_members = .empty,
+            .class_protected_members = .empty,
+            .class_parent = .empty,
+            .abstract_classes = .empty,
             .type_names = .empty,
             .generic_aliases = .empty,
             .generic_fns = .empty,
@@ -379,6 +412,11 @@ pub const Checker = struct {
         var pm_it = self.class_private_members.valueIterator();
         while (pm_it.next()) |set| set.deinit(self.gpa);
         self.class_private_members.deinit(self.gpa);
+        var pr_it = self.class_protected_members.valueIterator();
+        while (pr_it.next()) |set| set.deinit(self.gpa);
+        self.class_protected_members.deinit(self.gpa);
+        self.class_parent.deinit(self.gpa);
+        self.abstract_classes.deinit(self.gpa);
         self.type_names.deinit(self.gpa);
         var ga_it = self.generic_aliases.valueIterator();
         while (ga_it.next()) |info| self.gpa.free(info.params);
@@ -1801,6 +1839,8 @@ pub const Checker = struct {
         // a no-op on the success path.
         var private_names: std.AutoHashMapUnmanaged(hir_mod.StringId, void) = .empty;
         defer private_names.deinit(self.gpa);
+        var protected_names: std.AutoHashMapUnmanaged(hir_mod.StringId, void) = .empty;
+        defer protected_names.deinit(self.gpa);
 
         for (members) |m| {
             switch (self.hir.kindOf(m)) {
@@ -1817,6 +1857,7 @@ pub const Checker = struct {
                     if (fn_p.name == hir_mod.none_node_id or self.hir.kindOf(fn_p.name) != .identifier) continue;
                     const id = hir_mod.identifierOf(self.hir, fn_p.name);
                     if (fn_p.flags.is_private) try private_names.put(self.gpa, id.name, {});
+                    if (fn_p.flags.is_protected) try protected_names.put(self.gpa, id.name, {});
                     try instance_members.append(self.gpa, .{
                         .name = id.name,
                         .type = sig,
@@ -1830,6 +1871,7 @@ pub const Checker = struct {
                     if (self.hir.kindOf(op.key) != .identifier) continue;
                     const id = hir_mod.identifierOf(self.hir, op.key);
                     if (op.visibility == .private) try private_names.put(self.gpa, id.name, {});
+                    if (op.visibility == .protected) try protected_names.put(self.gpa, id.name, {});
                     const field_t: TypeId = blk: {
                         if (op.type_annotation != hir_mod.none_node_id) {
                             break :blk try self.lowererLowerWithTypeParams(op.type_annotation);
@@ -1868,6 +1910,12 @@ pub const Checker = struct {
             if (ctor_sig != types.Primitive.none) {
                 try self.class_constructor_sigs.put(self.gpa, cid.name, ctor_sig);
             }
+            // Track abstract classes so `new X()` can emit TS2511.
+            if (c.is_abstract) {
+                try self.abstract_classes.put(self.gpa, cid.name, {});
+            } else {
+                _ = self.abstract_classes.remove(cid.name);
+            }
             // Register the private-member set under the class name.
             // A prior registration (rare — repeated checks of the
             // same source) gets clobbered; release the old set's
@@ -1880,6 +1928,18 @@ pub const Checker = struct {
             // Ownership has moved into the map; reset the local so
             // the trailing `defer` is a no-op on the success path.
             private_names = .empty;
+            if (self.class_protected_members.fetchRemove(cid.name)) |old| {
+                var owned = old.value;
+                owned.deinit(self.gpa);
+            }
+            try self.class_protected_members.put(self.gpa, cid.name, protected_names);
+            protected_names = .empty;
+            if (c.extends != hir_mod.none_node_id and self.hir.kindOf(c.extends) == .identifier) {
+                const ext_id = hir_mod.identifierOf(self.hir, c.extends);
+                if (self.class_instance_types.contains(ext_id.name)) {
+                    try self.class_parent.put(self.gpa, cid.name, ext_id.name);
+                }
+            }
             // The class name as a value is the constructor — we don't
             // have a dedicated constructor signature TypeId yet, so
             // record the instance type on the name node. `new Foo()`
@@ -1961,6 +2021,90 @@ pub const Checker = struct {
         try self.diagnostics.append(self.gpa, .{
             .node = node,
             .code = TsCodes.private_member_access,
+            .message = msg,
+        });
+    }
+
+    /// TS2445: emit when `obj.name` reaches a member declared
+    /// `protected` from outside the declaring class and its
+    /// subclass chain. Mirrors `checkPrivateMemberAccess` but
+    /// allows access from any subclass body — walk the enclosing
+    /// `class_decl` chain via `class_parent` to see whether the
+    /// receiver's declaring class is reachable through `extends`.
+    fn checkProtectedMemberAccess(
+        self: *Checker,
+        node: NodeId,
+        obj_t: TypeId,
+        prop_name: hir_mod.StringId,
+    ) CheckError!void {
+        const class_name = self.class_name_by_instance.get(obj_t) orelse return;
+        const protected_set = self.class_protected_members.getPtr(class_name) orelse return;
+        if (!protected_set.contains(prop_name)) return;
+        var cur = self.hir.parentOf(node);
+        while (cur != hir_mod.none_node_id) : (cur = self.hir.parentOf(cur)) {
+            const k = self.hir.kindOf(cur);
+            if (k != .class_decl and k != .class_expr) continue;
+            const c = hir_mod.classOf(self.hir, cur);
+            if (c.name == hir_mod.none_node_id or self.hir.kindOf(c.name) != .identifier) continue;
+            const enclosing = hir_mod.identifierOf(self.hir, c.name).name;
+            var probe: ?hir_mod.StringId = enclosing;
+            while (probe) |p| {
+                if (p == class_name) return;
+                probe = self.class_parent.get(p);
+            }
+        }
+        const prop_str = self.string_interner.get(prop_name);
+        const class_str = self.string_interner.get(class_name);
+        const msg = try std.fmt.allocPrint(
+            self.diag_arena.allocator(),
+            "Property '{s}' is protected and only accessible within class '{s}' and its subclasses.",
+            .{ prop_str, class_str },
+        );
+        try self.diagnostics.append(self.gpa, .{
+            .node = node,
+            .code = TsCodes.protected_member_access,
+            .message = msg,
+        });
+    }
+
+    /// TS2540: emit when an assignment target `obj.x` resolves to a
+    /// property declared `readonly`. Object/interface readonly props
+    /// are always immutable; class-level readonly fields are
+    /// approximated by the constructor exception — `this.x = ...`
+    /// inside a constructor body is allowed. Bare `any` receivers and
+    /// non-object types are silently skipped (no readonly to enforce).
+    fn checkReadonlyAssignment(self: *Checker, target: NodeId) CheckError!void {
+        if (self.hir.kindOf(target) != .member_access) return;
+        const m = hir_mod.memberOf(self.hir, target);
+        const obj_t = self.hir.typeOf(m.object);
+        if (obj_t == types.Primitive.none) return;
+        if (!self.interner.pool.flagsOf(obj_t).is_object_type) return;
+        const info = self.interner.objectMemberInfo(obj_t, m.name) orelse return;
+        if (!info.is_readonly) return;
+        // Constructor exception: a class-level readonly field may be
+        // initialized inside the class's own constructor via
+        // `this.x = ...`. Approximate by allowing any `this.<x>`
+        // assignment whose nearest enclosing fn is a constructor.
+        if (self.hir.kindOf(m.object) == .this_expr) {
+            var cur = self.hir.parentOf(target);
+            while (cur != hir_mod.none_node_id) : (cur = self.hir.parentOf(cur)) {
+                const k = self.hir.kindOf(cur);
+                if (k == .fn_decl or k == .fn_expr or k == .arrow_fn) {
+                    const fp = hir_mod.fnDeclOf(self.hir, cur);
+                    if (fp.flags.is_constructor) return;
+                    break;
+                }
+            }
+        }
+        const prop_str = self.string_interner.get(m.name);
+        const msg = try std.fmt.allocPrint(
+            self.diag_arena.allocator(),
+            "Cannot assign to '{s}' because it is a read-only property.",
+            .{prop_str},
+        );
+        try self.diagnostics.append(self.gpa, .{
+            .node = target,
+            .code = TsCodes.readonly_property,
             .message = msg,
         });
     }
@@ -2279,6 +2423,29 @@ pub const Checker = struct {
                 const r = hir_mod.typeRefOf(self.hir, type_node);
                 if (r.qualifier_len == 0 and r.args_len == 0) {
                     if (self.lookupNarrow(r.name)) |t| return t;
+                    if (self.generic_aliases.get(r.name)) |info| {
+                        var all_defaulted: bool = info.params.len > 0;
+                        for (info.params) |p| {
+                            if (!self.interner.pool.flagsOf(p).is_type_parameter) {
+                                all_defaulted = false;
+                                break;
+                            }
+                            const tp = self.interner.pool.type_parameter_payloads.items[self.interner.pool.payloadOf(p)];
+                            if (tp.default == types.Primitive.none) {
+                                all_defaulted = false;
+                                break;
+                            }
+                        }
+                        if (all_defaulted) {
+                            var subs: std.AutoHashMapUnmanaged(TypeId, TypeId) = .empty;
+                            defer subs.deinit(self.gpa);
+                            for (info.params) |p| {
+                                const tp = self.interner.pool.type_parameter_payloads.items[self.interner.pool.payloadOf(p)];
+                                try subs.put(self.gpa, p, tp.default);
+                            }
+                            return self.substituteType(info.body, &subs) catch info.body;
+                        }
+                    }
                     if (self.type_names.get(r.name)) |t| return t;
                 }
                 // `Alias<X, Y>` — instantiate the generic alias by
@@ -2341,6 +2508,19 @@ pub const Checker = struct {
                         while (i < npairs) : (i += 1) {
                             const arg_t = try self.lowererLowerWithTypeParams(args[i]);
                             try subs.put(self.gpa, info.params[i], arg_t);
+                        }
+                        // Fill remaining type-parameters with their
+                        // declaration-site defaults (`<T, U = number>`)
+                        // for partial application like `Pair<string>`.
+                        if (args.len < info.params.len) {
+                            var j: usize = args.len;
+                            while (j < info.params.len) : (j += 1) {
+                                const p = info.params[j];
+                                if (!self.interner.pool.flagsOf(p).is_type_parameter) continue;
+                                const tp = self.interner.pool.type_parameter_payloads.items[self.interner.pool.payloadOf(p)];
+                                if (tp.default == types.Primitive.none) continue;
+                                try subs.put(self.gpa, p, tp.default);
+                            }
                         }
                         // Homomorphic mapped-type alias: when the
                         // alias body is `{ [K in keyof T]: F<K> }`,
@@ -2997,6 +3177,13 @@ pub const Checker = struct {
                         });
                     }
                 }
+                // TS2540: assigning to a property declared `readonly`.
+                // Object/interface readonly fields are immutable;
+                // class-field readonly is approximated by the
+                // constructor exception inside the helper.
+                if (self.hir.kindOf(a.target) == .member_access) {
+                    try self.checkReadonlyAssignment(a.target);
+                }
                 break :blk try self.checkExpression(a.value);
             },
             .new_expr => blk: {
@@ -3018,6 +3205,13 @@ pub const Checker = struct {
                 // `any`.
                 if (self.hir.kindOf(c.callee) == .identifier) {
                     const id = hir_mod.identifierOf(self.hir, c.callee);
+                    if (self.abstract_classes.contains(id.name)) {
+                        try self.report(
+                            node,
+                            TsCodes.abstract_class_instantiation,
+                            "Cannot create an instance of an abstract class.",
+                        );
+                    }
                     if (self.class_constructor_sigs.get(id.name)) |ctor_sig| {
                         try self.checkArgsAgainstSignature(node, args, arg_types.items, ctor_sig);
                     }
@@ -3115,6 +3309,7 @@ pub const Checker = struct {
                 // even when the resolved type is identical inside
                 // and outside the class.
                 try self.checkPrivateMemberAccess(node, obj_t, m.name);
+                try self.checkProtectedMemberAccess(node, obj_t, m.name);
                 // Member-access narrowing: `if (obj.x !== null) { …
                 // obj.x … }` — when the object is a bare identifier
                 // and a guard recorded a narrow for `(obj, x)`, the
@@ -4415,8 +4610,47 @@ pub const Checker = struct {
                 }
             }
         }
+        // Default-type fallback: walk every TypeId reachable from the
+        // signature (params + return) and, for any type-parameter id
+        // not already substituted, fall back to its declaration-site
+        // default (`<T = string>`). Lets `f()` resolve `T` to `string`
+        // when no value pins it. The walker reaches into unions /
+        // intersections so optional `x?: T` (lowered to `T |
+        // undefined`) still surfaces the underlying T.
+        for (param_ts) |p| try self.collectFreeTypeParamDefaults(p, &subs);
+        try self.collectFreeTypeParamDefaults(ret_type, &subs);
         if (subs.count() == 0) return ret_type;
         return self.substituteType(ret_type, &subs);
+    }
+
+    /// Walk `t` and, for any encountered type-parameter id with a
+    /// declaration-site default that isn't already in `subs`, record
+    /// `tp_id -> default`. Used by `instantiateReturn` so optional
+    /// params (`x?: T` → `T | undefined`) and nested generics still
+    /// surface T.
+    fn collectFreeTypeParamDefaults(
+        self: *Checker,
+        t: TypeId,
+        subs: *std.AutoHashMapUnmanaged(TypeId, TypeId),
+    ) !void {
+        const flags = self.interner.pool.flagsOf(t);
+        if (flags.is_type_parameter) {
+            if (!subs.contains(t)) {
+                const tp = self.interner.pool.type_parameter_payloads.items[self.interner.pool.payloadOf(t)];
+                if (tp.default != types.Primitive.none) {
+                    try subs.put(self.gpa, t, tp.default);
+                }
+            }
+            return;
+        }
+        if (flags.is_union) {
+            for (self.interner.unionMembers(t)) |m| try self.collectFreeTypeParamDefaults(m, subs);
+            return;
+        }
+        if (flags.is_intersection) {
+            for (self.interner.intersectionMembers(t)) |m| try self.collectFreeTypeParamDefaults(m, subs);
+            return;
+        }
     }
 
     /// Substitute occurrences of type-parameter ids in `t` per the
@@ -5405,6 +5639,53 @@ test "checker: public member accessed outside class is allowed" {
     try s.checker.checkSourceFile(s.root);
     for (s.checker.diagnostics.items) |d| {
         try T.expect(d.code != TsCodes.private_member_access);
+    }
+}
+
+test "checker: protected member accessed outside class emits TS2445" {
+    const s = try newSetup(
+        \\class A { protected x: number = 1; }
+        \\const a = new A();
+        \\a.x;
+    );
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+    var found = false;
+    for (s.checker.diagnostics.items) |d| {
+        if (d.code == TsCodes.protected_member_access) {
+            found = true;
+            try T.expect(std.mem.indexOf(u8, d.message, "A") != null);
+            try T.expect(std.mem.indexOf(u8, d.message, "protected") != null);
+        }
+    }
+    try T.expect(found);
+}
+
+test "checker: protected member accessed inside subclass via this is allowed" {
+    const s = try newSetup(
+        \\class A { protected x: number = 1; }
+        \\class B extends A {
+        \\  f(): number { return this.x; }
+        \\}
+    );
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+    for (s.checker.diagnostics.items) |d| {
+        try T.expect(d.code != TsCodes.protected_member_access);
+    }
+}
+
+test "checker: protected member accessed inside declaring class via this is allowed" {
+    const s = try newSetup(
+        \\class A {
+        \\  protected x: number = 1;
+        \\  f(): number { return this.x; }
+        \\}
+    );
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+    for (s.checker.diagnostics.items) |d| {
+        try T.expect(d.code != TsCodes.protected_member_access);
     }
 }
 
@@ -7767,5 +8048,58 @@ test "checker: lib — Object.keys is reachable as a member of `Object`" {
     for (b.base.checker.diagnostics.items) |d| {
         try T.expect(d.code != TsCodes.cannot_find_name);
         try T.expect(d.code != TsCodes.property_does_not_exist);
+    }
+}
+
+test "checker: assigning to an interface readonly property emits TS2540" {
+    const s = try newSetup(
+        \\interface P { readonly x: number }
+        \\const p: P = { x: 1 };
+        \\p.x = 2;
+    );
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+    var found: bool = false;
+    for (s.checker.diagnostics.items) |d| {
+        if (d.code == TsCodes.readonly_property) found = true;
+    }
+    try T.expect(found);
+}
+
+test "checker: `this.x = …` inside a class constructor passes (no TS2540)" {
+    const s = try newSetup(
+        \\class C { readonly x = 1; constructor() { this.x = 2; } }
+    );
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+    for (s.checker.diagnostics.items) |d| {
+        try T.expect(d.code != TsCodes.readonly_property);
+    }
+}
+
+test "checker: `new AbstractClass()` emits TS2511" {
+    const s = try newSetup(
+        \\abstract class A { m(): void {} }
+        \\new A();
+    );
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+    var found = false;
+    for (s.checker.diagnostics.items) |d| {
+        if (d.code == TsCodes.abstract_class_instantiation) found = true;
+    }
+    try T.expect(found);
+}
+
+test "checker: `new ConcreteSubclass()` of an abstract class is allowed" {
+    const s = try newSetup(
+        \\abstract class A { m(): void {} }
+        \\class B extends A { m(): void {} }
+        \\new B();
+    );
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+    for (s.checker.diagnostics.items) |d| {
+        try T.expect(d.code != TsCodes.abstract_class_instantiation);
     }
 }

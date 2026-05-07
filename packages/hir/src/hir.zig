@@ -501,7 +501,7 @@ pub const FnDeclPayload = struct {
     flags: FnFlags,
 };
 
-pub const FnFlags = packed struct(u8) {
+pub const FnFlags = packed struct(u16) {
     is_async: bool = false,
     is_generator: bool = false,
     is_arrow: bool = false,
@@ -509,12 +509,13 @@ pub const FnFlags = packed struct(u8) {
     is_constructor: bool = false,
     is_getter: bool = false,
     is_setter: bool = false,
-    /// TS legacy `private` modifier on a class method. Two bits
-    /// would let us model `protected` separately, but FnFlags is
-    /// locked at u8; we only need to distinguish `private` from
-    /// "everything else" for v0 compile-time access checks.
-    /// `protected` is parsed but currently treated as public.
+    /// TS legacy `private` modifier on a class method.
     is_private: bool = false,
+    /// TS legacy `protected` modifier on a class method.
+    /// Accessible from within the declaring class and any
+    /// subclass (transitive `extends` chain).
+    is_protected: bool = false,
+    _pad: u7 = 0,
 };
 
 pub const ParameterPayload = struct {
@@ -575,6 +576,10 @@ pub const ClassPayload = struct {
     /// Children pool slice: class member nodes.
     members_start: u32,
     members_len: u32,
+    /// True if the class declaration was prefixed with `abstract`.
+    /// Abstract classes can't be instantiated directly (TS2511) and
+    /// may declare abstract members that subclasses must implement.
+    is_abstract: bool = false,
 };
 
 pub const EnumPayload = struct {
@@ -1869,6 +1874,7 @@ pub const Builder = struct {
         extends: NodeId,
         implements: []const NodeId,
         members: []const NodeId,
+        is_abstract: bool,
     ) !NodeId {
         const tp_start: u32 = @intCast(self.hir.child_pool.items.len);
         try self.hir.child_pool.appendSlice(self.hir.gpa, type_params);
@@ -1886,6 +1892,7 @@ pub const Builder = struct {
             .implements_len = @intCast(implements.len),
             .members_start = mem_start,
             .members_len = @intCast(members.len),
+            .is_abstract = is_abstract,
         });
         const id = try self.newNode(.class_decl, span, payload_idx);
         if (name != none_node_id) self.hir.setParent(name, id);

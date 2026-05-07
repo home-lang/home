@@ -273,6 +273,15 @@ pub const Parser = struct {
                 break :blk try self.parseExpressionStatement();
             },
             .kw_class => try self.parseClassDeclaration(),
+            .kw_abstract => blk: {
+                // `abstract class Foo { ... }` at statement position.
+                // Other uses of `abstract` (member modifier inside a
+                // class body) are handled by the member-modifier loop.
+                if (self.peekAt(1).kind == .kw_class) {
+                    break :blk try self.parseClassDeclaration();
+                }
+                break :blk try self.parseExpressionStatement();
+            },
             .kw_interface => try self.parseInterfaceDeclaration(),
             .kw_enum => try self.parseEnumDeclaration(),
             .kw_namespace, .kw_module => try self.parseNamespaceDeclaration(),
@@ -686,7 +695,17 @@ pub const Parser = struct {
     }
 
     fn parseClassDeclaration(self: *Parser) ParseError!NodeId {
+        // `abstract class Foo { ... }` — TS allows the `abstract`
+        // modifier as a leading keyword before `class`. Capture it for
+        // the HIR payload so the checker can emit TS2511 on `new`.
+        var is_abstract = false;
+        var span_start: u32 = self.peek().span.start;
+        if (self.peek().kind == .kw_abstract and self.peekAt(1).kind == .kw_class) {
+            _ = self.advance(); // abstract
+            is_abstract = true;
+        }
         const start = self.advance(); // class
+        if (!is_abstract) span_start = start.span.start;
         var name: NodeId = hir_mod.none_node_id;
         if (self.peek().kind == .identifier) {
             const name_tok = self.advance();
@@ -769,6 +788,7 @@ pub const Parser = struct {
                             .is_method = true,
                             .is_constructor = name_tok.kind == .kw_constructor,
                             .is_private = mods.visibility == .private,
+                            .is_protected = mods.visibility == .protected,
                         },
                     );
                     try members.append(self.gpa, fn_node);
@@ -801,12 +821,13 @@ pub const Parser = struct {
         }
         const close = try self.expect(.close_brace, "'}' to close class body");
         return try self.builder.addClass(
-            .{ .start = start.span.start, .end = close.span.end },
+            .{ .start = span_start, .end = close.span.end },
             name,
             &.{},
             extends,
             implements_list.items,
             members.items,
+            is_abstract,
         );
     }
 
