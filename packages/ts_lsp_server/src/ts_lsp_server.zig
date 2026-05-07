@@ -1333,33 +1333,13 @@ pub fn handleRename(
     return encodeResponse(gpa, request_id, buf.items);
 }
 
-/// True when `c` is a valid identifier-continuation byte (ASCII
-/// letter, digit, underscore, or `$`). Mirrors the lexer's notion of
-/// `isIdentPart`. Pure ASCII — non-ASCII bytes are conservatively
-/// rejected, which is acceptable since the LSP layer only uses this
-/// for word-boundary detection in `handlePrepareRename`.
-fn isIdentChar(c: u8) bool {
-    return (c >= 'a' and c <= 'z') or
-        (c >= 'A' and c <= 'Z') or
-        (c >= '0' and c <= '9') or
-        c == '_' or c == '$';
-}
-
-/// True when `c` can start an identifier (excludes ASCII digits).
-fn isIdentStart(c: u8) bool {
-    return (c >= 'a' and c <= 'z') or
-        (c >= 'A' and c <= 'Z') or
-        c == '_' or c == '$';
-}
-
 /// Handle a `textDocument/prepareRename` JSON-RPC request: parse
-/// `uri` + `(line, character)`, find the identifier extents that
-/// straddle `byte_pos`, and emit either a
-/// `{ range, placeholder }` object or `null` when the cursor isn't on
-/// a renamable identifier. Per the LSP spec the response shape may
-/// also be a bare `Range`; we always return the richer
-/// `{ range, placeholder }` form so clients pre-fill the rename
-/// input. Caller owns the returned slice.
+/// `uri` + `(line, character)`, dispatch to `Service.prepareRename`,
+/// and emit either a `{ range, placeholder }` object or `null` when
+/// the cursor isn't on a renamable identifier. Per the LSP spec the
+/// response shape may also be a bare `Range`; we always return the
+/// richer `{ range, placeholder }` form so clients pre-fill the
+/// rename input. Caller owns the returned slice.
 pub fn handlePrepareRename(
     service: *ts_lsp.Service,
     gpa: std.mem.Allocator,
@@ -1379,37 +1359,27 @@ pub fn handlePrepareRename(
     const char_u: u32 = if (character < 0) 0 else @intCast(character);
     const byte_pos = lineColToByte(f.source, line_u, char_u);
 
-    // Walk left for the identifier start, right for the end. The
-    // cursor may sit one byte past the last identifier character (a
-    // common editor convention), so when `byte_pos` itself isn't an
-    // identifier byte we also try `byte_pos - 1`.
-    const src = f.source;
-    var probe: usize = byte_pos;
-    if (probe >= src.len or !isIdentChar(src[probe])) {
-        if (probe == 0) return encodeResponse(gpa, request_id, "null");
-        if (!isIdentChar(src[probe - 1])) return encodeResponse(gpa, request_id, "null");
-        probe -= 1;
-    }
-    var start: usize = probe;
-    while (start > 0 and isIdentChar(src[start - 1])) : (start -= 1) {}
-    if (!isIdentStart(src[start])) return encodeResponse(gpa, request_id, "null");
-    var end: usize = probe + 1;
-    while (end < src.len and isIdentChar(src[end])) : (end += 1) {}
-
-    const start_pos = byteToLineCol(src, @intCast(start));
-    const end_pos = byteToLineCol(src, @intCast(end));
-    const name = src[start..end];
+    const result = (try service.prepareRename(gpa, path, byte_pos)) orelse {
+        return encodeResponse(gpa, request_id, "null");
+    };
+    defer gpa.free(result.placeholder);
 
     var buf: std.ArrayListUnmanaged(u8) = .empty;
     defer buf.deinit(gpa);
     var nbuf: [128]u8 = undefined;
+    // `Range` in ts_lsp is 1-based (mirroring `Span`); LSP wire format
+    // is 0-based. Convert here so the response matches the spec.
+    const sl: u32 = if (result.range.start_line > 0) result.range.start_line - 1 else 0;
+    const sc: u32 = if (result.range.start_col > 0) result.range.start_col - 1 else 0;
+    const el: u32 = if (result.range.end_line > 0) result.range.end_line - 1 else 0;
+    const ec: u32 = if (result.range.end_col > 0) result.range.end_col - 1 else 0;
     const fmt = try std.fmt.bufPrint(
         &nbuf,
         "{{\"range\":{{\"start\":{{\"line\":{d},\"character\":{d}}},\"end\":{{\"line\":{d},\"character\":{d}}}}},\"placeholder\":\"",
-        .{ start_pos.line, start_pos.character, end_pos.line, end_pos.character },
+        .{ sl, sc, el, ec },
     );
     try buf.appendSlice(gpa, fmt);
-    try writeJsonStringContents(&buf, gpa, name);
+    try writeJsonStringContents(&buf, gpa, result.placeholder);
     try buf.appendSlice(gpa, "\"}");
     return encodeResponse(gpa, request_id, buf.items);
 }
@@ -2508,7 +2478,7 @@ pub fn renderInitializeCapabilities(gpa: std.mem.Allocator) ![]u8 {
     var buf: std.ArrayListUnmanaged(u8) = .empty;
     errdefer buf.deinit(gpa);
     try buf.appendSlice(gpa,
-        \\{"capabilities":{"textDocumentSync":1,"hoverProvider":true,"definitionProvider":true,"referencesProvider":true,"completionProvider":{"triggerCharacters":["."," "]},"documentSymbolProvider":true,"workspaceSymbolProvider":true,"renameProvider":true,"codeActionProvider":true,"executeCommandProvider":{"commands":["home.organizeImports","home.applyCodeAction"]},"semanticTokensProvider":{"legend":{"tokenTypes":["variable","parameter","function","method","class","interface","type","enum","property","keyword","string","number","operator","comment"],"tokenModifiers":[]},"full":true,"range":true},"signatureHelpProvider":{"triggerCharacters":["(",","]},"documentHighlightProvider":false,"documentFormattingProvider":true,"foldingRangeProvider":true,"selectionRangeProvider":true},"serverInfo":{"name":"home-lsp","version":"0.1.0","supportedMethods":[
+        \\{"capabilities":{"textDocumentSync":1,"hoverProvider":true,"definitionProvider":true,"referencesProvider":true,"completionProvider":{"triggerCharacters":["."," "]},"documentSymbolProvider":true,"workspaceSymbolProvider":true,"renameProvider":{"prepareProvider":true},"codeActionProvider":true,"executeCommandProvider":{"commands":["home.organizeImports","home.applyCodeAction"]},"semanticTokensProvider":{"legend":{"tokenTypes":["variable","parameter","function","method","class","interface","type","enum","property","keyword","string","number","operator","comment"],"tokenModifiers":[]},"full":true,"range":true},"signatureHelpProvider":{"triggerCharacters":["(",","]},"documentHighlightProvider":false,"documentFormattingProvider":true,"foldingRangeProvider":true,"selectionRangeProvider":true},"serverInfo":{"name":"home-lsp","version":"0.1.0","supportedMethods":[
     );
     for (SUPPORTED_METHODS, 0..) |m, i| {
         if (i != 0) try buf.append(gpa, ',');
@@ -2912,7 +2882,7 @@ test "handleInitialize: response advertises full capability set" {
     try T.expect(std.mem.indexOf(u8, r, "\"referencesProvider\":true") != null);
     try T.expect(std.mem.indexOf(u8, r, "\"documentSymbolProvider\":true") != null);
     try T.expect(std.mem.indexOf(u8, r, "\"workspaceSymbolProvider\":true") != null);
-    try T.expect(std.mem.indexOf(u8, r, "\"renameProvider\":true") != null);
+    try T.expect(std.mem.indexOf(u8, r, "\"renameProvider\":{\"prepareProvider\":true}") != null);
     try T.expect(std.mem.indexOf(u8, r, "\"codeActionProvider\":true") != null);
     try T.expect(std.mem.indexOf(u8, r, "\"documentFormattingProvider\":true") != null);
     try T.expect(std.mem.indexOf(u8, r, "\"foldingRangeProvider\":true") != null);

@@ -128,6 +128,16 @@ pub const Range = struct {
     end_col: u32,
 };
 
+/// LSP `textDocument/prepareRename` payload — the source range of
+/// the identifier under the cursor plus the identifier text itself,
+/// used by the editor to pre-populate the rename input. A `null`
+/// result (returned by `Service.prepareRename`) tells the editor the
+/// cursor isn't on a renamable identifier.
+pub const PrepareRenameResult = struct {
+    range: Range,
+    placeholder: []const u8,
+};
+
 /// LSP `TextDocumentSaveReason` — passed to `willSaveWaitUntil` so
 /// the server can adapt formatting/edit behavior per trigger source.
 /// Values mirror the LSP wire numbers (1..4) but are exposed as a
@@ -1136,6 +1146,36 @@ pub const Service = struct {
             });
         }
         return out.toOwnedSlice(gpa);
+    }
+
+    /// LSP `textDocument/prepareRename`: probe whether the cursor sits
+    /// on a renamable identifier. Returns `null` when the position
+    /// isn't on an identifier (whitespace, punctuation, comment), and
+    /// otherwise the identifier's source `Range` plus its current
+    /// text as the placeholder. Editors call this before
+    /// `textDocument/rename` to validate the position and pre-fill
+    /// the rename input. Caller owns `result.placeholder`.
+    pub fn prepareRename(self: *Service, gpa: std.mem.Allocator, file_path: []const u8, byte_pos: u32) !?PrepareRenameResult {
+        const file_id = self.program.lookupPath(file_path) orelse return null;
+        const f = self.program.fileById(file_id);
+        const c = f.compilation orelse return null;
+        const node = findInnermostNode(&c.hir, c.root, byte_pos) orelse return null;
+        if (c.hir.kindOf(node) != .identifier) return null;
+        const id = hir_mod.identifierOf(&c.hir, node);
+        const span = c.hir.spanOf(node);
+        const sp = ts_diagnostics.positionToLineCol(f.source, span.start);
+        const ep = ts_diagnostics.positionToLineCol(f.source, span.end);
+        const name = c.interner.get(id.name);
+        const placeholder = try gpa.dupe(u8, name);
+        return .{
+            .range = .{
+                .start_line = sp.line,
+                .start_col = sp.col,
+                .end_line = ep.line,
+                .end_col = ep.col,
+            },
+            .placeholder = placeholder,
+        };
     }
 
     /// Rename the symbol under the cursor across the entire program.
@@ -3837,6 +3877,38 @@ test "Service: rename returns one edit per occurrence" {
     // 3 occurrences: declaration + 2 references.
     try T.expectEqual(@as(usize, 3), edits.len);
     for (edits) |e| try T.expectEqualStrings("n", e.new_text);
+}
+
+test "Service: prepareRename returns range + placeholder for identifier" {
+    var vfs = ts_resolver.VirtualFs.init(T.allocator);
+    defer vfs.deinit();
+    var resolver = ts_resolver.Resolver.init(T.allocator, vfs.fs(), .{});
+    defer resolver.deinit();
+    var program = ts_program.Program.init(T.allocator, &resolver);
+    defer program.deinit();
+
+    // `count` lives at bytes 4..9 in `let count = 1;`.
+    _ = try program.add("/main.ts", "let count = 1;");
+    try program.compileAll(.{});
+
+    var svc = Service.init(T.allocator, &program);
+
+    // Cursor on identifier — middle of `count` — yields range + placeholder.
+    const hit = (try svc.prepareRename(T.allocator, "/main.ts", 6)) orelse {
+        return error.TestExpectedSome;
+    };
+    defer T.allocator.free(hit.placeholder);
+    try T.expectEqualStrings("count", hit.placeholder);
+    // 1-based span: line 1, cols 5..10.
+    try T.expectEqual(@as(u32, 1), hit.range.start_line);
+    try T.expectEqual(@as(u32, 5), hit.range.start_col);
+    try T.expectEqual(@as(u32, 1), hit.range.end_line);
+    try T.expectEqual(@as(u32, 10), hit.range.end_col);
+
+    // Cursor on whitespace (byte 3, the space between `let` and `count`)
+    // is not a renamable identifier — returns null.
+    const miss = try svc.prepareRename(T.allocator, "/main.ts", 3);
+    try T.expect(miss == null);
 }
 
 test "Service: callHierarchyIncoming finds callers of the target fn" {
