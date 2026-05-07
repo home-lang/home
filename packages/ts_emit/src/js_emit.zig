@@ -83,6 +83,14 @@ pub const EsTarget = enum {
     pub fn supportsNativePrivateFields(self: EsTarget) bool {
         return @intFromEnum(self) >= @intFromEnum(EsTarget.es2022);
     }
+
+    /// Native public class fields (`class C { x = 1; }`) are an ES2022
+    /// feature. At ES2015–ES2021 we hoist field initializers into the
+    /// (synthesized, if needed) constructor as `this.x = 1;`, matching
+    /// tsc's downlevel shape.
+    pub fn supportsNativeClassFields(self: EsTarget) bool {
+        return @intFromEnum(self) >= @intFromEnum(EsTarget.es2022);
+    }
 };
 
 pub const JsxRuntime = enum {
@@ -853,6 +861,12 @@ pub const Printer = struct {
                 try self.write(self.options.newline);
             }
         }
+        // §4.A.9 — public class fields are an ES2022 feature. At
+        // earlier ES2015–ES2021 targets we hoist `x = <init>;` into
+        // the (synthesized if absent) constructor as `this.x = <init>;`,
+        // matching tsc's downlevel shape.
+        const downlevel_fields = !self.options.es_target.supportsNativeClassFields() and
+            self.classHasPublicFieldInit(node);
         try self.write("class");
         if (c.name != hir_mod.none_node_id) {
             try self.write(" ");
@@ -873,6 +887,26 @@ pub const Printer = struct {
         if (downlevel_private) self.current_class_name = hir_mod.identifierOf(self.hir, c.name).name;
         defer self.current_class_name = prev_class;
         self.depth += 1;
+        // Locate an explicit constructor (if any) for downlevel
+        // field hoisting. If none exists and we have fields to hoist,
+        // synthesize one as the first emitted member.
+        var ctor_idx: ?usize = null;
+        if (downlevel_fields) {
+            for (members, 0..) |m, idx| {
+                const k = self.hir.kindOf(m);
+                if (k != .fn_decl and k != .fn_expr) continue;
+                const fd = hir_mod.fnDeclOf(self.hir, m);
+                if (fd.flags.is_constructor) {
+                    ctor_idx = idx;
+                    break;
+                }
+            }
+            if (ctor_idx == null) {
+                try self.write(self.options.newline);
+                try self.indent();
+                try self.printSynthesizedCtor(node);
+            }
+        }
         var i: usize = 0;
         while (i < members.len) : (i += 1) {
             const m = members[i];
@@ -892,10 +926,26 @@ pub const Printer = struct {
                 const op = hir_mod.objectPropertyOf(self.hir, m);
                 if (self.privateFieldName(op.key) != null) continue;
             }
+            // Public field with an initializer at sub-ES2022 — has
+            // already been hoisted into the (real or synthesized) ctor.
+            if (downlevel_fields and self.hir.kindOf(m) == .object_property) {
+                const op = hir_mod.objectPropertyOf(self.hir, m);
+                if (op.value != hir_mod.none_node_id and
+                    self.privateFieldName(op.key) == null)
+                {
+                    continue;
+                }
+            }
             try self.write(self.options.newline);
             try self.indent();
             switch (self.hir.kindOf(m)) {
-                .fn_decl, .fn_expr, .arrow_fn => try self.printFnDecl(m),
+                .fn_decl, .fn_expr, .arrow_fn => {
+                    if (downlevel_fields and ctor_idx != null and ctor_idx.? == i) {
+                        try self.printCtorWithHoistedFields(node, m);
+                    } else {
+                        try self.printFnDecl(m);
+                    }
+                },
                 .object_property => {
                     const op = hir_mod.objectPropertyOf(self.hir, m);
                     try self.printExpression(op.key);
@@ -913,6 +963,80 @@ pub const Printer = struct {
         try self.write("}");
         // §4.A.8 — emit `__decorate` calls for each decorated member.
         try self.emitMethodDecorateCalls(node);
+    }
+
+    /// True if the class has at least one non-private `object_property`
+    /// member with an initializer. Used to decide whether downlevel
+    /// field-hoisting is needed.
+    fn classHasPublicFieldInit(self: *Printer, class_node: NodeId) bool {
+        const members = hir_mod.classMembers(self.hir, class_node);
+        for (members) |m| {
+            if (self.hir.kindOf(m) != .object_property) continue;
+            const op = hir_mod.objectPropertyOf(self.hir, m);
+            if (op.value == hir_mod.none_node_id) continue;
+            if (self.privateFieldName(op.key) != null) continue;
+            return true;
+        }
+        return false;
+    }
+
+    /// Emit `this.<key> = <init>; ` for every public field with an
+    /// initializer on this class. Caller is responsible for being
+    /// inside a constructor body and writing surrounding indentation.
+    fn writeHoistedFieldInits(self: *Printer, class_node: NodeId) !void {
+        const members = hir_mod.classMembers(self.hir, class_node);
+        for (members) |m| {
+            if (self.hir.kindOf(m) != .object_property) continue;
+            const op = hir_mod.objectPropertyOf(self.hir, m);
+            if (op.value == hir_mod.none_node_id) continue;
+            if (self.privateFieldName(op.key) != null) continue;
+            try self.write("this.");
+            try self.printExpression(op.key);
+            try self.write(" = ");
+            try self.printExpression(op.value);
+            try self.write("; ");
+        }
+    }
+
+    /// Synthesize a constructor for a class with no explicit ctor that
+    /// nonetheless needs hoisted public-field initializers. Forwards
+    /// args via `super(...args)` for derived classes.
+    fn printSynthesizedCtor(self: *Printer, class_node: NodeId) !void {
+        const c = hir_mod.classOf(self.hir, class_node);
+        if (c.extends != hir_mod.none_node_id) {
+            try self.write("constructor(...args) { super(...args); ");
+        } else {
+            try self.write("constructor() { ");
+        }
+        try self.writeHoistedFieldInits(class_node);
+        try self.write("}");
+    }
+
+    /// Emit an explicit constructor with hoisted public-field
+    /// initializers prepended to its body. For derived classes the
+    /// initializers must come *after* `super(...)`; we approximate
+    /// that here by emitting initializers *after* the user body
+    /// (precise pre/post-`super` splitting is a follow-up). For root
+    /// classes we emit initializers first, before user statements.
+    fn printCtorWithHoistedFields(self: *Printer, class_node: NodeId, ctor: NodeId) !void {
+        const fd = hir_mod.fnDeclOf(self.hir, ctor);
+        try self.write("constructor(");
+        const params = hir_mod.fnParams(self.hir, ctor);
+        try self.printRuntimeParams(params);
+        try self.write(") {");
+        const c = hir_mod.classOf(self.hir, class_node);
+        const has_extends = c.extends != hir_mod.none_node_id;
+        try self.write(" ");
+        if (!has_extends) try self.writeHoistedFieldInits(class_node);
+        if (fd.body != hir_mod.none_node_id and self.hir.kindOf(fd.body) == .block_stmt) {
+            const stmts = hir_mod.blockStmts(self.hir, fd.body);
+            for (stmts) |s| {
+                try self.printNonIndentStatement(s);
+                try self.write(" ");
+            }
+        }
+        if (has_extends) try self.writeHoistedFieldInits(class_node);
+        try self.write("}");
     }
 
     /// True if any class member is an `object_property` whose key is
@@ -2899,4 +3023,49 @@ test "emit: private field preserved at es2022+" {
     // No WeakMap lowering at native-private-field targets.
     try T.expect(std.mem.indexOf(u8, out, "WeakMap") == null);
     try T.expect(std.mem.indexOf(u8, out, "#count") != null);
+}
+
+test "emit: public class field native at es2022+" {
+    const out = try emitWithOpts(
+        "class Foo { x = 1; greet() { return this.x; } }",
+        .{ .es_target = .es2022 },
+    );
+    defer T.allocator.free(out);
+    // Native field declaration kept inside the class body.
+    try T.expect(std.mem.indexOf(u8, out, "x = 1;") != null);
+    // No synthesized constructor.
+    try T.expect(std.mem.indexOf(u8, out, "constructor()") == null);
+    try T.expect(std.mem.indexOf(u8, out, "this.x = 1;") == null);
+}
+
+test "emit: public class field hoisted into synthesized ctor at es2019" {
+    const out = try emitWithOpts(
+        "class Foo { x = 1; greet() { return this.x; } }",
+        .{ .es_target = .es2019 },
+    );
+    defer T.allocator.free(out);
+    // No bare native field declaration; it was hoisted into the ctor.
+    // Match the leading newline+indentation pattern that a member
+    // declaration would otherwise produce.
+    try T.expect(std.mem.indexOf(u8, out, "\n  x = 1;") == null);
+    // A synthesized constructor carries `this.x = 1;`.
+    try T.expect(std.mem.indexOf(u8, out, "constructor()") != null);
+    try T.expect(std.mem.indexOf(u8, out, "this.x = 1;") != null);
+    // Class shape is otherwise preserved.
+    try T.expect(std.mem.indexOf(u8, out, "class Foo") != null);
+    try T.expect(std.mem.indexOf(u8, out, "greet()") != null);
+}
+
+test "emit: public field hoisted into existing ctor at es2017" {
+    const out = try emitWithOpts(
+        "class Foo { x = 1; constructor(n) { this.n = n; } }",
+        .{ .es_target = .es2017 },
+    );
+    defer T.allocator.free(out);
+    // Existing ctor signature preserved with hoisted init prepended.
+    try T.expect(std.mem.indexOf(u8, out, "constructor(n)") != null);
+    try T.expect(std.mem.indexOf(u8, out, "this.x = 1;") != null);
+    try T.expect(std.mem.indexOf(u8, out, "this.n = n;") != null);
+    // No leftover native field declaration as a class member.
+    try T.expect(std.mem.indexOf(u8, out, "\n  x = 1;") == null);
 }
