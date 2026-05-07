@@ -97,6 +97,13 @@ pub const EsTarget = enum {
     pub fn supportsNativeClassFields(self: EsTarget) bool {
         return @intFromEnum(self) >= @intFromEnum(EsTarget.es2022);
     }
+
+    /// Native `123n` BigInt literal syntax landed in ES2020. Below
+    /// that we lower `123n` to `BigInt("123")`, matching tsc's
+    /// downlevel shape.
+    pub fn supportsNativeBigInt(self: EsTarget) bool {
+        return @intFromEnum(self) >= @intFromEnum(EsTarget.es2020);
+    }
 };
 
 pub const JsxRuntime = enum {
@@ -1847,8 +1854,19 @@ pub const Printer = struct {
             },
             .literal_bigint => {
                 const b = hir_mod.literalBigIntOf(self.hir, node);
-                try self.write(self.interner.get(b.digits));
-                try self.write("n");
+                const digits = self.interner.get(b.digits);
+                if (self.options.es_target.supportsNativeBigInt()) {
+                    try self.write(digits);
+                    try self.write("n");
+                } else {
+                    // Below ES2020 there is no BigInt literal syntax.
+                    // Lower to a `BigInt("123")` call — matches tsc's
+                    // downlevel shape and preserves arbitrary-precision
+                    // semantics.
+                    try self.write("BigInt(\"");
+                    try self.write(digits);
+                    try self.write("\")");
+                }
             },
             .literal_bool => {
                 const v = hir_mod.literalBoolOf(self.hir, node);
@@ -3633,4 +3651,30 @@ test "emit: numeric separator + hex preserved at es2021, stripped at es2017" {
     defer T.allocator.free(out_es2017);
     try T.expect(std.mem.indexOf(u8, out_es2017, "_") == null);
     try T.expect(std.mem.indexOf(u8, out_es2017, "0xCAFEBABE") != null);
+}
+
+test "emit: bigint literal preserved at es2022" {
+    const out = try emitWithOpts("const x = 123n;", .{ .es_target = .es2022 });
+    defer T.allocator.free(out);
+    try T.expect(std.mem.indexOf(u8, out, "123n") != null);
+    try T.expect(std.mem.indexOf(u8, out, "BigInt(") == null);
+}
+
+test "emit: bigint literal lowered to BigInt() below es2020" {
+    const out = try emitWithOpts("const x = 123n;", .{ .es_target = .es2017 });
+    defer T.allocator.free(out);
+    try T.expect(std.mem.indexOf(u8, out, "BigInt(\"123\")") != null);
+    // The native `123n` suffix must NOT leak through at older targets —
+    // it would be a SyntaxError on any pre-ES2020 engine.
+    try T.expect(std.mem.indexOf(u8, out, "123n") == null);
+}
+
+test "emit: negative bigint round-trips at es2022 and downlevels at es2017" {
+    const out_es2022 = try emitWithOpts("const x = -1n;", .{ .es_target = .es2022 });
+    defer T.allocator.free(out_es2022);
+    try T.expect(std.mem.indexOf(u8, out_es2022, "-1n") != null);
+
+    const out_es2017 = try emitWithOpts("const x = -1n;", .{ .es_target = .es2017 });
+    defer T.allocator.free(out_es2017);
+    try T.expect(std.mem.indexOf(u8, out_es2017, "-BigInt(\"1\")") != null);
 }
