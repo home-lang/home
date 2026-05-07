@@ -31,6 +31,7 @@ const types = @import("types.zig");
 const interner = @import("interner.zig");
 const relation = @import("relation.zig");
 const lower = @import("lower.zig");
+const lib = @import("lib.zig");
 const string_interner = @import("string_interner");
 const binder_mod = @import("binder");
 
@@ -101,6 +102,10 @@ pub const TsCodes = struct {
     /// property `foo`). Use `obj["foo"]` to make the unsafe access
     /// explicit.
     pub const index_signature_property_access: u32 = 4111;
+    /// TS legacy `private` modifier violation. Emitted when a
+    /// member declared `private` is accessed from outside the
+    /// declaring class body.
+    pub const private_member_access: u32 = 2341;
 };
 
 /// Per-alias generic info: the type-parameter TypeIds in
@@ -225,6 +230,18 @@ pub const Checker = struct {
     /// without an explicit constructor produce no entry — `new Foo()`
     /// then accepts any args (matches TS's implicit no-arg default).
     class_constructor_sigs: std.AutoHashMapUnmanaged(hir_mod.StringId, TypeId),
+    /// Instance TypeId → declaring class name (StringId). Inverse
+    /// of `class_instance_types`. The member-access path uses it
+    /// to map the receiver type back to a class for privacy checks.
+    class_name_by_instance: std.AutoHashMapUnmanaged(TypeId, hir_mod.StringId),
+    /// Class-name → set of member names declared `private`.
+    /// Populated by `checkClassDecl`; consulted on `member_access`
+    /// to flag TS2341 when the access site is outside the
+    /// declaring class body.
+    class_private_members: std.AutoHashMapUnmanaged(
+        hir_mod.StringId,
+        std.AutoHashMapUnmanaged(hir_mod.StringId, void),
+    ),
     /// Generic name → TypeId table for type-annotation resolution.
     /// A superset of `class_instance_types` that also covers
     /// `interface I { ... }` and `type Alias = T`. Consulted by
@@ -270,6 +287,10 @@ pub const Checker = struct {
     inferred_variance: std.AutoHashMapUnmanaged(TypeId, types.Variance),
     /// Strictness flags driving optional diagnostics.
     strict_flags: StrictFlags = .{},
+    /// Hard-coded `lib.d.ts` substitute — `String.prototype`,
+    /// `Array<T>.prototype`, `Object` global. Populated lazily on
+    /// first member-access against the corresponding receiver.
+    lib_cache: lib.LibCache = .{},
     diagnostics: std.ArrayListUnmanaged(Diagnostic),
     diag_arena: std.heap.ArenaAllocator,
     /// Source bytes used for directive scanning (`// @ts-ignore` /
@@ -309,6 +330,8 @@ pub const Checker = struct {
             .member_narrow_scopes = .empty,
             .class_instance_types = .empty,
             .class_constructor_sigs = .empty,
+            .class_name_by_instance = .empty,
+            .class_private_members = .empty,
             .type_names = .empty,
             .generic_aliases = .empty,
             .generic_fns = .empty,
@@ -352,6 +375,10 @@ pub const Checker = struct {
         self.member_narrow_scopes.deinit(self.gpa);
         self.class_instance_types.deinit(self.gpa);
         self.class_constructor_sigs.deinit(self.gpa);
+        self.class_name_by_instance.deinit(self.gpa);
+        var pm_it = self.class_private_members.valueIterator();
+        while (pm_it.next()) |set| set.deinit(self.gpa);
+        self.class_private_members.deinit(self.gpa);
         self.type_names.deinit(self.gpa);
         var ga_it = self.generic_aliases.valueIterator();
         while (ga_it.next()) |info| self.gpa.free(info.params);
@@ -365,6 +392,7 @@ pub const Checker = struct {
         while (ov_it.next()) |list| list.deinit(self.gpa);
         self.overloads.deinit(self.gpa);
         self.inferred_variance.deinit(self.gpa);
+        self.lib_cache.deinit(self.gpa);
         self.diagnostics.deinit(self.gpa);
         self.ts_ignore_lines.deinit(self.gpa);
         self.ts_expect_error_lines.deinit(self.gpa);
@@ -1767,6 +1795,12 @@ pub const Checker = struct {
         var instance_members: std.ArrayListUnmanaged(types.ObjectMember) = .empty;
         defer instance_members.deinit(self.gpa);
         var ctor_sig: TypeId = types.Primitive.none;
+        // Names of class members declared `private`. After the class
+        // name is known we move ownership into `class_private_members`
+        // and reset this local to `.empty` so the trailing `defer` is
+        // a no-op on the success path.
+        var private_names: std.AutoHashMapUnmanaged(hir_mod.StringId, void) = .empty;
+        defer private_names.deinit(self.gpa);
 
         for (members) |m| {
             switch (self.hir.kindOf(m)) {
@@ -1782,6 +1816,7 @@ pub const Checker = struct {
                     }
                     if (fn_p.name == hir_mod.none_node_id or self.hir.kindOf(fn_p.name) != .identifier) continue;
                     const id = hir_mod.identifierOf(self.hir, fn_p.name);
+                    if (fn_p.flags.is_private) try private_names.put(self.gpa, id.name, {});
                     try instance_members.append(self.gpa, .{
                         .name = id.name,
                         .type = sig,
@@ -1794,6 +1829,7 @@ pub const Checker = struct {
                     const op = hir_mod.objectPropertyOf(self.hir, m);
                     if (self.hir.kindOf(op.key) != .identifier) continue;
                     const id = hir_mod.identifierOf(self.hir, op.key);
+                    if (op.visibility == .private) try private_names.put(self.gpa, id.name, {});
                     const field_t: TypeId = blk: {
                         if (op.type_annotation != hir_mod.none_node_id) {
                             break :blk try self.lowererLowerWithTypeParams(op.type_annotation);
@@ -1828,9 +1864,22 @@ pub const Checker = struct {
             const cid = hir_mod.identifierOf(self.hir, c.name);
             try self.class_instance_types.put(self.gpa, cid.name, instance_t);
             try self.type_names.put(self.gpa, cid.name, instance_t);
+            try self.class_name_by_instance.put(self.gpa, instance_t, cid.name);
             if (ctor_sig != types.Primitive.none) {
                 try self.class_constructor_sigs.put(self.gpa, cid.name, ctor_sig);
             }
+            // Register the private-member set under the class name.
+            // A prior registration (rare — repeated checks of the
+            // same source) gets clobbered; release the old set's
+            // memory before overwriting.
+            if (self.class_private_members.fetchRemove(cid.name)) |old| {
+                var owned = old.value;
+                owned.deinit(self.gpa);
+            }
+            try self.class_private_members.put(self.gpa, cid.name, private_names);
+            // Ownership has moved into the map; reset the local so
+            // the trailing `defer` is a no-op on the success path.
+            private_names = .empty;
             // The class name as a value is the constructor — we don't
             // have a dedicated constructor signature TypeId yet, so
             // record the instance type on the name node. `new Foo()`
@@ -1863,6 +1912,57 @@ pub const Checker = struct {
             },
             else => {},
         };
+    }
+
+    /// TS2341: emit when `obj.name` reaches a member declared
+    /// `private` from outside the declaring class body. The check
+    /// is purely structural in v0:
+    ///
+    ///   1. Map `obj_t` back to a class name via
+    ///      `class_name_by_instance`. Non-class receivers
+    ///      (interfaces, plain object types) bail out.
+    ///   2. Look up the class's private-member set. Non-private
+    ///      props bail out.
+    ///   3. Walk parents of `node` — if no enclosing `class_decl`
+    ///      matches the declaring class's name, the access is
+    ///      outside the body and we emit TS2341.
+    ///
+    /// Inheritance is intentionally not chased — `private` in TS
+    /// is per-class, so a subclass accessing a parent-class
+    /// `private` member is also a TS2341.
+    fn checkPrivateMemberAccess(
+        self: *Checker,
+        node: NodeId,
+        obj_t: TypeId,
+        prop_name: hir_mod.StringId,
+    ) CheckError!void {
+        const class_name = self.class_name_by_instance.get(obj_t) orelse return;
+        const private_set = self.class_private_members.getPtr(class_name) orelse return;
+        if (!private_set.contains(prop_name)) return;
+        // Walk parents looking for an enclosing `class_decl` whose
+        // name matches `class_name`. Found → access is inside the
+        // declaring body; allow it.
+        var cur = self.hir.parentOf(node);
+        while (cur != hir_mod.none_node_id) : (cur = self.hir.parentOf(cur)) {
+            const k = self.hir.kindOf(cur);
+            if (k != .class_decl and k != .class_expr) continue;
+            const c = hir_mod.classOf(self.hir, cur);
+            if (c.name == hir_mod.none_node_id or self.hir.kindOf(c.name) != .identifier) continue;
+            const enclosing = hir_mod.identifierOf(self.hir, c.name).name;
+            if (enclosing == class_name) return;
+        }
+        const prop_str = self.string_interner.get(prop_name);
+        const class_str = self.string_interner.get(class_name);
+        const msg = try std.fmt.allocPrint(
+            self.diag_arena.allocator(),
+            "Property '{s}' is private and only accessible within class '{s}'.",
+            .{ prop_str, class_str },
+        );
+        try self.diagnostics.append(self.gpa, .{
+            .node = node,
+            .code = TsCodes.private_member_access,
+            .message = msg,
+        });
     }
 
     /// Merge a parent class's instance members into the current
@@ -3009,6 +3109,12 @@ pub const Checker = struct {
             .member_access => blk: {
                 const m = hir_mod.memberOf(self.hir, node);
                 const obj_t = try self.checkExpression(m.object);
+                // TS2341: legacy `private` member access from
+                // outside the declaring class body. Runs before
+                // narrowing/index lookups so the diagnostic fires
+                // even when the resolved type is identical inside
+                // and outside the class.
+                try self.checkPrivateMemberAccess(node, obj_t, m.name);
                 // Member-access narrowing: `if (obj.x !== null) { …
                 // obj.x … }` — when the object is a bare identifier
                 // and a guard recorded a narrow for `(obj, x)`, the
@@ -3025,6 +3131,34 @@ pub const Checker = struct {
                 // object's static type already does.
                 if (self.interner.objectMember(obj_t, m.name)) |t| {
                     break :blk if (m.optional) self.unionWithUndefined(t) catch t else t;
+                }
+                // Lib lookup: `string`-typed receivers consult the
+                // hard-coded `String.prototype` shape (`length`,
+                // `charAt`, `toUpperCase`, …). Catches both the
+                // primitive `string` and any string-literal type.
+                {
+                    const obj_flags = self.interner.pool.flagsOf(obj_t);
+                    if (obj_flags.is_string and !obj_flags.is_object_type) {
+                        if (lib.stringProto(&self.lib_cache, self.interner, self.string_interner)) |proto| {
+                            if (self.interner.objectMember(proto, m.name)) |t| {
+                                break :blk if (m.optional) self.unionWithUndefined(t) catch t else t;
+                            }
+                        } else |_| {}
+                    }
+                }
+                // Lib lookup: array shapes (object types with a
+                // number indexer) consult `Array<T>.prototype` for
+                // `push`, `map`, `filter`, … using the indexer's
+                // element type as `T`.
+                if (self.interner.pool.flagsOf(obj_t).is_object_type) {
+                    const num_idx = self.interner.objectNumberIndex(obj_t);
+                    if (num_idx != types.Primitive.none) {
+                        if (lib.arrayProto(&self.lib_cache, self.interner, self.string_interner, self.gpa, num_idx)) |proto| {
+                            if (self.interner.objectMember(proto, m.name)) |t| {
+                                break :blk if (m.optional) self.unionWithUndefined(t) catch t else t;
+                            }
+                        } else |_| {}
+                    }
                 }
                 // Index-signature fallback: `obj.foo` on a type
                 // with a `[k: string]: V` indexer resolves to V.
@@ -3886,6 +4020,15 @@ pub const Checker = struct {
             if (!self.isDeclNameSlot(node) and !self.isBuiltinName(id.name)) {
                 self.reportCannotFindName(node, id.name) catch {};
             }
+        }
+        // Lib globals — `Object` carries the keys/values/entries/
+        // assign namespace. Other globals fall through to `any` for
+        // now (full lib.d.ts wiring is a follow-up).
+        const name_str = self.string_interner.get(id.name);
+        if (std.mem.eql(u8, name_str, "Object")) {
+            if (lib.objectGlobal(&self.lib_cache, self.interner, self.string_interner)) |og| {
+                return og;
+            } else |_| {}
         }
         return types.Primitive.any;
     }
@@ -5217,6 +5360,52 @@ test "checker: instanceof narrows to the class instance type when class is decla
     // No diagnostics: `x.value` resolves on the narrowed instance
     // type rather than triggering TS2339.
     try T.expect(s.checker.diagnostics.items.len == 0);
+}
+
+test "checker: private member accessed outside class emits TS2341" {
+    const s = try newSetup(
+        \\class Foo { private x: number = 1; }
+        \\const f = new Foo();
+        \\f.x;
+    );
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+    var found = false;
+    for (s.checker.diagnostics.items) |d| {
+        if (d.code == TsCodes.private_member_access) {
+            found = true;
+            try T.expect(std.mem.indexOf(u8, d.message, "Foo") != null);
+            try T.expect(std.mem.indexOf(u8, d.message, "private") != null);
+        }
+    }
+    try T.expect(found);
+}
+
+test "checker: private member accessed inside class via this is allowed" {
+    const s = try newSetup(
+        \\class Foo {
+        \\  private x: number = 1;
+        \\  getX(): number { return this.x; }
+        \\}
+    );
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+    for (s.checker.diagnostics.items) |d| {
+        try T.expect(d.code != TsCodes.private_member_access);
+    }
+}
+
+test "checker: public member accessed outside class is allowed" {
+    const s = try newSetup(
+        \\class Foo { x: number = 1; }
+        \\const f = new Foo();
+        \\f.x;
+    );
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+    for (s.checker.diagnostics.items) |d| {
+        try T.expect(d.code != TsCodes.private_member_access);
+    }
 }
 
 test "checker: var-decl type mismatch emits TS2322" {
@@ -7530,4 +7719,53 @@ test "checker: resolveJsonModule off — `.json` import emits TS2307" {
         if (d.code == TsCodes.cannot_find_module) found = true;
     }
     try T.expect(found);
+}
+
+test "checker: lib — string.length resolves to number" {
+    const s = try newSetup("let s: string = \"hi\"; s.length;");
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+    // The trailing `s.length;` is the second top-level statement.
+    const stmts = hir_mod.blockStmts(&s.hir, s.root);
+    const len_expr = stmts[1];
+    try T.expectEqual(types.Primitive.number_t, s.hir.typeOf(len_expr));
+}
+
+test "checker: lib — string.toUpperCase() resolves to string and is callable" {
+    const s = try newSetup("let s: string = \"hi\"; s.toUpperCase();");
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+    const stmts = hir_mod.blockStmts(&s.hir, s.root);
+    // The call expression types as the signature's return.
+    const call_expr = stmts[1];
+    try T.expectEqual(types.Primitive.string_t, s.hir.typeOf(call_expr));
+    // No TS2339 should fire for a known prototype method.
+    for (s.checker.diagnostics.items) |d| {
+        try T.expect(d.code != TsCodes.property_does_not_exist);
+    }
+}
+
+test "checker: lib — array<number>.push and .length resolve" {
+    const s = try newSetup("let arr = [1, 2, 3]; arr.length; arr.push(4);");
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+    const stmts = hir_mod.blockStmts(&s.hir, s.root);
+    // arr.length -> number
+    try T.expectEqual(types.Primitive.number_t, s.hir.typeOf(stmts[1]));
+    // arr.push(4) -> number (the new length)
+    try T.expectEqual(types.Primitive.number_t, s.hir.typeOf(stmts[2]));
+    for (s.checker.diagnostics.items) |d| {
+        try T.expect(d.code != TsCodes.property_does_not_exist);
+    }
+}
+
+test "checker: lib — Object.keys is reachable as a member of `Object`" {
+    const b = try newBoundSetup("Object.keys({});");
+    defer destroyBoundSetup(b);
+    try b.base.checker.checkSourceFile(b.base.root);
+    // No TS2304 (cannot find name `Object`) and no TS2339 on `keys`.
+    for (b.base.checker.diagnostics.items) |d| {
+        try T.expect(d.code != TsCodes.cannot_find_name);
+        try T.expect(d.code != TsCodes.property_does_not_exist);
+    }
 }

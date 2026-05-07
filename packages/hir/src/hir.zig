@@ -509,7 +509,12 @@ pub const FnFlags = packed struct(u8) {
     is_constructor: bool = false,
     is_getter: bool = false,
     is_setter: bool = false,
-    _pad: u1 = 0,
+    /// TS legacy `private` modifier on a class method. Two bits
+    /// would let us model `protected` separately, but FnFlags is
+    /// locked at u8; we only need to distinguish `private` from
+    /// "everything else" for v0 compile-time access checks.
+    /// `protected` is parsed but currently treated as public.
+    is_private: bool = false,
 };
 
 pub const ParameterPayload = struct {
@@ -640,6 +645,17 @@ pub const ObjectLiteralPayload = struct {
     props_len: u32,
 };
 
+/// TS member visibility. Applies to class fields and methods.
+/// For object-literal properties this stays `.public`. The
+/// `private` keyword is the legacy TS modifier (compile-time
+/// only) — distinct from JS `#field` (runtime-private), which
+/// is modeled separately via the identifier's leading `#`.
+pub const Visibility = enum(u2) {
+    public,
+    protected,
+    private,
+};
+
 pub const ObjectPropertyPayload = struct {
     /// Property key — identifier, string, number, or computed expression.
     key: NodeId,
@@ -651,6 +667,10 @@ pub const ObjectPropertyPayload = struct {
     is_computed: bool,
     is_shorthand: bool,
     is_method: bool,
+    /// TS legacy member visibility. `.public` for object-literal
+    /// props. Class field/method parsing sets it from the modifier
+    /// keyword consumed before the name.
+    visibility: Visibility = .public,
 };
 
 // ============================================================================
@@ -2033,6 +2053,32 @@ pub const Builder = struct {
         is_shorthand: bool,
         is_method: bool,
     ) !NodeId {
+        return self.addObjectPropertyFull(
+            span,
+            key,
+            value,
+            type_annotation,
+            is_computed,
+            is_shorthand,
+            is_method,
+            .public,
+        );
+    }
+
+    /// Variant of `addObjectPropertyTyped` that also records TS
+    /// member visibility. Class members go through this path so
+    /// the checker can enforce `private` at the access site.
+    pub fn addObjectPropertyFull(
+        self: *Builder,
+        span: Span,
+        key: NodeId,
+        value: NodeId,
+        type_annotation: NodeId,
+        is_computed: bool,
+        is_shorthand: bool,
+        is_method: bool,
+        visibility: Visibility,
+    ) !NodeId {
         const payload_idx: u32 = @intCast(self.hir.object_property_payloads.items.len);
         try self.hir.object_property_payloads.append(self.hir.gpa, .{
             .key = key,
@@ -2041,6 +2087,7 @@ pub const Builder = struct {
             .is_computed = is_computed,
             .is_shorthand = is_shorthand,
             .is_method = is_method,
+            .visibility = visibility,
         });
         const id = try self.newNode(.object_property, span, payload_idx);
         self.hir.setParent(key, id);

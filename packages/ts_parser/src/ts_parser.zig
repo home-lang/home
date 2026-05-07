@@ -737,7 +737,7 @@ pub const Parser = struct {
                 }, dec_expr);
                 try members.append(self.gpa, dec_node);
             }
-            try self.skipClassModifiers();
+            const mods = try self.skipClassModifiers();
             const member_start = self.peek();
             // method?
             if (self.peek().kind == .identifier or self.peek().kind == .private_identifier or self.peek().kind == .kw_constructor or self.peek().kind.isContextualKeyword()) {
@@ -768,6 +768,7 @@ pub const Parser = struct {
                         .{
                             .is_method = true,
                             .is_constructor = name_tok.kind == .kw_constructor,
+                            .is_private = mods.visibility == .private,
                         },
                     );
                     try members.append(self.gpa, fn_node);
@@ -782,7 +783,7 @@ pub const Parser = struct {
                 try self.consumeStatementTerminator();
                 const name_id = try self.internToken(name_tok);
                 const name_node = try self.builder.addIdentifier(tokenSpan(name_tok), name_id);
-                const prop = try self.builder.addObjectPropertyTyped(
+                const prop = try self.builder.addObjectPropertyFull(
                     .{ .start = member_start.span.start, .end = self.tokens[self.cursor - 1].span.end },
                     name_node,
                     default_value,
@@ -790,6 +791,7 @@ pub const Parser = struct {
                     false,
                     default_value == hir_mod.none_node_id,
                     false,
+                    mods.visibility,
                 );
                 try members.append(self.gpa, prop);
                 continue;
@@ -808,14 +810,30 @@ pub const Parser = struct {
         );
     }
 
-    fn skipClassModifiers(self: *Parser) ParseError!void {
+    /// Tracks the TS access-modifier keywords the member-parsing
+    /// loop has consumed before the member name. Other modifiers
+    /// (`readonly`, `static`, `async`, `abstract`, `accessor`,
+    /// `override`, `declare`, `out`, `in`) are parsed but discarded
+    /// — only access modifiers need to flow into HIR for v0.
+    const ClassModifiers = struct {
+        visibility: hir_mod.Visibility = .public,
+    };
+
+    fn skipClassModifiers(self: *Parser) ParseError!ClassModifiers {
+        var mods: ClassModifiers = .{};
         while (true) {
             const k = self.peek().kind;
             if (k.isModifierKeyword()) {
+                switch (k) {
+                    .kw_private => mods.visibility = .private,
+                    .kw_protected => mods.visibility = .protected,
+                    .kw_public => mods.visibility = .public,
+                    else => {},
+                }
                 _ = self.advance();
                 continue;
             }
-            return;
+            return mods;
         }
     }
 
