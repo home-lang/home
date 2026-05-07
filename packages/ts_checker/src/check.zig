@@ -2706,6 +2706,41 @@ pub const Checker = struct {
         return self.interner.internNumberLiteral(v) catch null;
     }
 
+    /// Classify an enum referenced by `obj_name`. Returns `true`
+    /// when the symbol resolves to an enum decl whose members are
+    /// all (or partly) numeric — i.e. one with a TS-style reverse
+    /// mapping at runtime, so `E[n]` indexes back to a member name.
+    /// Returns `false` for string-valued enums (which have no
+    /// reverse mapping). Returns `null` when `obj_name` doesn't
+    /// resolve to any enum decl. Used by indexed-access typing.
+    fn enumIsNumeric(self: *Checker, obj_name: hir_mod.StringId) ?bool {
+        const module = self.module orelse return null;
+        const sym = module.root.lookup(obj_name) orelse return null;
+        if (sym.decls.items.len == 0) return null;
+        const decl = sym.decls.items[0];
+        if (self.hir.kindOf(decl) != .enum_decl) return null;
+
+        // Walk members directly: a string-valued initializer flags
+        // the enum as string (no reverse mapping). Otherwise, if any
+        // member has a tracked numeric value the enum is numeric.
+        const members = hir_mod.enumMembers(self.hir, decl);
+        var any_numeric: bool = false;
+        for (members) |m| {
+            if (self.hir.kindOf(m) != .object_property) continue;
+            const prop = hir_mod.objectPropertyOf(self.hir, m);
+            if (self.hir.kindOf(prop.key) != .identifier) continue;
+            if (prop.value != hir_mod.none_node_id and
+                self.hir.kindOf(prop.value) == .literal_string)
+            {
+                return false;
+            }
+            const member_name = hir_mod.identifierOf(self.hir, prop.key).name;
+            const key: MemberKey = .{ .obj_name = obj_name, .prop_name = member_name };
+            if (self.enum_member_values.get(key) != null) any_numeric = true;
+        }
+        return if (any_numeric) true else null;
+    }
+
     /// Lower a type alias `type Alias<T...> = U` into the
     /// underlying type's TypeId and record it under the alias name.
     /// For non-generic aliases the body lowers directly. For
@@ -3893,6 +3928,21 @@ pub const Checker = struct {
                 const e = hir_mod.elementOf(self.hir, node);
                 const obj_t = try self.checkExpression(e.object);
                 const idx_t = try self.checkExpression(e.index);
+                // Numeric enum reverse-mapped lookup: `E[n]` where
+                // `E` is a numeric enum yields `string` (the member
+                // name) at runtime. String enums don't have reverse
+                // mappings — fall through to the regular path. Only
+                // bare-identifier objects participate; computed
+                // forms (`(x as any)[i]`) take the default flow.
+                if (self.hir.kindOf(e.object) == .identifier) {
+                    const obj_id = hir_mod.identifierOf(self.hir, e.object);
+                    if (self.enumIsNumeric(obj_id.name)) |is_numeric| {
+                        if (is_numeric) {
+                            const idx_flags = self.interner.pool.flagsOf(idx_t);
+                            if (idx_flags.is_number) break :blk types.Primitive.string_t;
+                        }
+                    }
+                }
                 if (self.interner.pool.flagsOf(obj_t).is_object_type) {
                     // Tuple literal-index access: `tup[0]` should
                     // pick the per-index member typed under "0", not
@@ -5768,6 +5818,57 @@ pub const Checker = struct {
                 }
                 return self.interner.internObjectType(members.items) catch return error.OutOfMemory;
             },
+            .array_literal => {
+                // `[a, b, c] as const` -> readonly tuple
+                // `readonly [TYPE_OF(a), TYPE_OF(b), TYPE_OF(c)]`,
+                // where each element is recursively literalized.
+                // The lowered tuple shape mirrors `lower.zig`'s
+                // `lowerTuple`: positional members "0", "1", ...
+                // plus a literal-length member, all marked readonly.
+                const elements = hir_mod.arrayLiteralElements(self.hir, expr);
+                var elem_types: std.ArrayListUnmanaged(TypeId) = .empty;
+                defer elem_types.deinit(self.gpa);
+                for (elements) |el| {
+                    if (el == hir_mod.none_node_id) continue;
+                    // Spreads inside `as const` aren't expanded
+                    // structurally yet; bail to the array fallback
+                    // type if we encounter one.
+                    if (self.hir.kindOf(el) == .spread) return fallback;
+                    const inner = try self.checkExpression(el);
+                    const lit_t = try self.literalizeForAsConst(el, inner);
+                    try elem_types.append(self.gpa, lit_t);
+                }
+                var members: std.ArrayListUnmanaged(types.ObjectMember) = .empty;
+                defer members.deinit(self.gpa);
+                for (elem_types.items, 0..) |t, i| {
+                    var nbuf: [12]u8 = undefined;
+                    const name_str = std.fmt.bufPrint(&nbuf, "{d}", .{i}) catch continue;
+                    const name = self.string_interner.intern(name_str) catch continue;
+                    try members.append(self.gpa, .{
+                        .name = name,
+                        .type = t,
+                        .is_optional = false,
+                        .is_readonly = true,
+                        .is_method = false,
+                    });
+                }
+                const length_id = self.string_interner.intern("length") catch return error.OutOfMemory;
+                const length_t = self.interner.internNumberLiteral(@floatFromInt(elem_types.items.len)) catch types.Primitive.number_t;
+                try members.append(self.gpa, .{
+                    .name = length_id,
+                    .type = length_t,
+                    .is_optional = false,
+                    .is_readonly = true,
+                    .is_method = false,
+                });
+                const elem_union: TypeId = if (elem_types.items.len == 0)
+                    types.Primitive.never
+                else if (elem_types.items.len == 1)
+                    elem_types.items[0]
+                else
+                    self.interner.internUnion(elem_types.items) catch types.Primitive.any;
+                return self.interner.internObjectTypeWithIndex(members.items, types.Primitive.none, elem_union) catch return error.OutOfMemory;
+            },
             else => return fallback,
         }
     }
@@ -7541,6 +7642,78 @@ test "checker: `as const` on an object literal makes members literal + readonly"
     const kind_t = s.ti.objectMember(t, kind_id) orelse return error.TestExpectedEqual;
     // 'kind' is the literal "circle", not the broad string type.
     try T.expect(s.ti.pool.flagsOf(kind_t).is_literal);
+}
+
+test "checker: `as const` on a string literal narrows to the exact literal" {
+    // `"a" as const` types as the literal "a" — i.e. the result
+    // is a string-literal type whose value is exactly `"a"` (not
+    // the broad `string` primitive).
+    const s = try newSetup("const x = \"a\" as const;");
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+    const stmts = hir_mod.blockStmts(&s.hir, s.root);
+    const v = hir_mod.varDeclOf(&s.hir, stmts[0]);
+    const t = s.hir.typeOf(v.init);
+    const flags = s.ti.pool.flagsOf(t);
+    try T.expect(flags.is_literal and flags.is_string);
+    const lit = s.ti.literalOf(t);
+    switch (lit) {
+        .string_lit => |sid| try T.expectEqualStrings("a", s.sint.get(sid)),
+        else => return error.TestExpectedEqual,
+    }
+}
+
+test "checker: `as const` on an array literal builds a readonly tuple of literals" {
+    // `[1, 2] as const` -> readonly `[1, 2]`: the lowered tuple
+    // shape exposes positional members "0" / "1" typed as the
+    // number literals 1 and 2 respectively, plus a literal-2
+    // length, all marked readonly.
+    const s = try newSetup("const x = [1, 2] as const;");
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+    const stmts = hir_mod.blockStmts(&s.hir, s.root);
+    const v = hir_mod.varDeclOf(&s.hir, stmts[0]);
+    const t = s.hir.typeOf(v.init);
+    try T.expect(s.ti.pool.flagsOf(t).is_object_type);
+    const zero_id = try s.sint.intern("0");
+    const one_id = try s.sint.intern("1");
+    const length_id = try s.sint.intern("length");
+    const zero_info = s.ti.objectMemberInfo(t, zero_id) orelse return error.TestExpectedEqual;
+    const one_info = s.ti.objectMemberInfo(t, one_id) orelse return error.TestExpectedEqual;
+    const len_info = s.ti.objectMemberInfo(t, length_id) orelse return error.TestExpectedEqual;
+    try T.expect(zero_info.is_readonly);
+    try T.expect(one_info.is_readonly);
+    try T.expect(len_info.is_readonly);
+    // Element types are literal numbers, not the broad `number`.
+    try T.expect(s.ti.pool.flagsOf(zero_info.type).is_literal);
+    try T.expect(s.ti.pool.flagsOf(one_info.type).is_literal);
+    try T.expect(s.ti.pool.flagsOf(len_info.type).is_literal);
+}
+
+test "checker: `as const` on a nested object/array narrows recursively" {
+    // `as const` is recursive: members of an object literal that
+    // are themselves array/object literals get the same readonly
+    // + literal treatment, all the way down.
+    const s = try newSetup("const x = { tag: \"ok\", xs: [1, 2] } as const;");
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+    const stmts = hir_mod.blockStmts(&s.hir, s.root);
+    const v = hir_mod.varDeclOf(&s.hir, stmts[0]);
+    const t = s.hir.typeOf(v.init);
+    try T.expect(s.ti.pool.flagsOf(t).is_object_type);
+    const tag_id = try s.sint.intern("tag");
+    const xs_id = try s.sint.intern("xs");
+    const tag_info = s.ti.objectMemberInfo(t, tag_id) orelse return error.TestExpectedEqual;
+    const xs_info = s.ti.objectMemberInfo(t, xs_id) orelse return error.TestExpectedEqual;
+    try T.expect(tag_info.is_readonly);
+    try T.expect(xs_info.is_readonly);
+    // `tag` literalizes to "ok"; `xs` is a readonly tuple whose
+    // index "0" is a number literal (not the broad number).
+    try T.expect(s.ti.pool.flagsOf(tag_info.type).is_literal);
+    try T.expect(s.ti.pool.flagsOf(xs_info.type).is_object_type);
+    const zero_id = try s.sint.intern("0");
+    const inner_zero = s.ti.objectMember(xs_info.type, zero_id) orelse return error.TestExpectedEqual;
+    try T.expect(s.ti.pool.flagsOf(inner_zero).is_literal);
 }
 
 test "checker: `in` operator narrows a union to variants with the named prop" {
@@ -9411,6 +9584,33 @@ test "checker: const enum auto-incremented member types as its literal value" {
     const s = try newSetup(
         \\const enum E { A = 1, B = 2 }
         \\const x: 2 = E.B;
+    );
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+    for (s.checker.diagnostics.items) |d| {
+        try T.expect(d.code != TsCodes.type_not_assignable);
+    }
+}
+
+test "checker: numeric enum reverse-mapped lookup `E[0]` types as string" {
+    // TS numeric enums emit reverse mappings at runtime: `E[0]` is
+    // the member name ("A"). The static type is `string`, so
+    // assigning `E[0]` to a `string`-typed binding must pass.
+    const s = try newSetup(
+        \\enum E { A, B }
+        \\const r: string = E[0];
+    );
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+    for (s.checker.diagnostics.items) |d| {
+        try T.expect(d.code != TsCodes.type_not_assignable);
+    }
+}
+
+test "checker: numeric enum reverse-mapped lookup `E[1]` types as string" {
+    const s = try newSetup(
+        \\enum E { A, B }
+        \\const r: string = E[1];
     );
     defer destroySetup(s);
     try s.checker.checkSourceFile(s.root);
