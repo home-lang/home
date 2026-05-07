@@ -8614,6 +8614,88 @@ test "checker: unwrapPromise passes non-Promise types through unchanged" {
     try T.expectEqual(types.Primitive.number_t, s.checker.unwrapPromise(types.Primitive.number_t));
 }
 
+test "checker: `await p` on `Promise<number>` resolves to number" {
+    // A `Promise<number>` annotation builds a structural Promise
+    // type at the variable's binding site; `await p` should unwrap
+    // it to `number` so the assignment to `x: number` type-checks.
+    const s = try newSetup(
+        \\async function f() {
+        \\  let p: Promise<number>;
+        \\  let x: number = await p;
+        \\}
+    );
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+    // The assignment-compat check inside checkSourceFile would fire
+    // a TS2322 if `await p` didn't unwrap to `number`. Verify the
+    // await_expr's recorded type directly as well.
+    const stmts = hir_mod.blockStmts(&s.hir, s.root);
+    const fn_node = stmts[0];
+    const fp = hir_mod.fnDeclOf(&s.hir, fn_node);
+    const body_stmts = hir_mod.blockStmts(&s.hir, fp.body);
+    const x_decl = body_stmts[1];
+    try T.expectEqual(hir_mod.NodeKind.let_decl, s.hir.kindOf(x_decl));
+    const v = hir_mod.varDeclOf(&s.hir, x_decl);
+    try T.expectEqual(hir_mod.NodeKind.await_expr, s.hir.kindOf(v.init));
+    try T.expectEqual(types.Primitive.number_t, s.hir.typeOf(v.init));
+    // No TS2322 assignment-compat diagnostic should have fired.
+    for (s.checker.diagnostics.items) |d| {
+        try T.expect(d.code != TsCodes.type_not_assignable);
+    }
+}
+
+test "checker: `await p` on a non-Promise passes the operand type through" {
+    // `p` is a plain `number` here — `await` should be a no-op on
+    // its type, mirroring TS's behavior where awaiting a non-thenable
+    // resolves to the value itself.
+    const s = try newSetup(
+        \\async function f() {
+        \\  let p: number;
+        \\  let x = await p;
+        \\}
+    );
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+    const stmts = hir_mod.blockStmts(&s.hir, s.root);
+    const fn_node = stmts[0];
+    const fp = hir_mod.fnDeclOf(&s.hir, fn_node);
+    const body_stmts = hir_mod.blockStmts(&s.hir, fp.body);
+    const x_decl = body_stmts[1];
+    const v = hir_mod.varDeclOf(&s.hir, x_decl);
+    try T.expectEqual(hir_mod.NodeKind.await_expr, s.hir.kindOf(v.init));
+    try T.expectEqual(types.Primitive.number_t, s.hir.typeOf(v.init));
+}
+
+test "checker: `await await p` on `Promise<Promise<string>>` unwraps twice via two awaits" {
+    // Each `await` peels one layer of `Promise<...>`, so two
+    // awaits applied to a doubly-nested Promise should yield the
+    // innermost type. We stage the doubly-nested Promise through
+    // intermediate aliases to dodge the `>>` lex/parse limitation.
+    const s = try newSetup(
+        \\type Inner = Promise<string>;
+        \\type Outer = Promise<Inner>;
+        \\async function f() {
+        \\  let p: Outer;
+        \\  let x: string = await await p;
+        \\}
+    );
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+    const stmts = hir_mod.blockStmts(&s.hir, s.root);
+    const fn_node = stmts[2];
+    const fp = hir_mod.fnDeclOf(&s.hir, fn_node);
+    const body_stmts = hir_mod.blockStmts(&s.hir, fp.body);
+    const x_decl = body_stmts[1];
+    const v = hir_mod.varDeclOf(&s.hir, x_decl);
+    // Outer await — type should be `string` after both layers peel.
+    try T.expectEqual(hir_mod.NodeKind.await_expr, s.hir.kindOf(v.init));
+    try T.expectEqual(types.Primitive.string_t, s.hir.typeOf(v.init));
+    // No TS2322 should fire on the assignment to `x: string`.
+    for (s.checker.diagnostics.items) |d| {
+        try T.expect(d.code != TsCodes.type_not_assignable);
+    }
+}
+
 test "checker: `yield expr` types as the operand expression's type" {
     const s = try newSetup("function* gen() { yield 1; }");
     defer destroySetup(s);
