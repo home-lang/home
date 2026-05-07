@@ -1948,7 +1948,11 @@ pub const Service = struct {
     ///   - one `region` range per `object_literal` that spans more
     ///     than two source lines;
     ///   - one `region` range per `array_literal` with more than
-    ///     five elements.
+    ///     five elements;
+    ///   - one `region` range per matched `// #region` / `// #endregion`
+    ///     marker pair (TypeScript-style explicit folds);
+    ///   - one `comment` range per multi-line `/* ... */` block
+    ///     comment.
     pub fn foldingRanges(self: *Service, gpa: std.mem.Allocator, file_path: []const u8) ![]FoldingRange {
         var ranges: std.ArrayListUnmanaged(FoldingRange) = .empty;
         errdefer ranges.deinit(gpa);
@@ -2085,6 +2089,125 @@ pub const Service = struct {
                 else => {},
             }
         }
+
+        // 3. Scan the raw source for TS-style `// #region` /
+        //    `// #endregion` marker pairs and multi-line `/* ... */`
+        //    block comments. The HIR drops comments, so we have to
+        //    rescan the source text here. Both passes are line-based
+        //    and ignore markers/comments inside strings — the LSP
+        //    client treats minor over-folds as harmless, so we keep
+        //    the scan deliberately simple.
+        const src = f.source;
+        // 3a. Region markers — keep a stack of open `#region` start
+        //     lines and pop on each `#endregion`. Unmatched markers
+        //     are silently dropped.
+        {
+            var region_stack: std.ArrayListUnmanaged(u32) = .empty;
+            defer region_stack.deinit(gpa);
+            var line_no: u32 = 0;
+            var line_start: usize = 0;
+            var idx: usize = 0;
+            while (idx <= src.len) : (idx += 1) {
+                const at_eof = idx == src.len;
+                const ch = if (at_eof) '\n' else src[idx];
+                if (ch != '\n' and !at_eof) continue;
+                const line = src[line_start..idx];
+                // Trim leading whitespace.
+                var t: usize = 0;
+                while (t < line.len and (line[t] == ' ' or line[t] == '\t')) : (t += 1) {}
+                const trimmed = line[t..];
+                if (std.mem.startsWith(u8, trimmed, "//")) {
+                    // Skip the `//` and any trailing space.
+                    var rest = trimmed[2..];
+                    while (rest.len > 0 and (rest[0] == ' ' or rest[0] == '\t')) {
+                        rest = rest[1..];
+                    }
+                    if (std.mem.startsWith(u8, rest, "#region")) {
+                        try region_stack.append(gpa, line_no);
+                    } else if (std.mem.startsWith(u8, rest, "#endregion")) {
+                        if (region_stack.items.len > 0) {
+                            const start_line = region_stack.pop() orelse unreachable;
+                            if (line_no > start_line) {
+                                try ranges.append(gpa, .{
+                                    .start_line = start_line,
+                                    .end_line = line_no,
+                                    .kind = .region,
+                                });
+                            }
+                        }
+                    }
+                }
+                if (at_eof) break;
+                line_no += 1;
+                line_start = idx + 1;
+            }
+        }
+
+        // 3b. Multi-line `/* ... */` block comments. We pre-compute a
+        //     line index for each byte offset by counting newlines on
+        //     the fly. Comments inside string/char literals are
+        //     skipped; `//` comments (single-line) are ignored.
+        {
+            var i_idx: usize = 0;
+            var line_no: u32 = 0;
+            while (i_idx < src.len) {
+                const ch = src[i_idx];
+                if (ch == '\n') {
+                    line_no += 1;
+                    i_idx += 1;
+                    continue;
+                }
+                // Skip single-line `//` comments to end-of-line so we
+                // don't accidentally start a `/*` scan inside one.
+                if (ch == '/' and i_idx + 1 < src.len and src[i_idx + 1] == '/') {
+                    i_idx += 2;
+                    while (i_idx < src.len and src[i_idx] != '\n') : (i_idx += 1) {}
+                    continue;
+                }
+                // Skip string/template literals so `/*` inside a
+                // string isn't misread as a comment opener.
+                if (ch == '"' or ch == '\'' or ch == '`') {
+                    const quote = ch;
+                    i_idx += 1;
+                    while (i_idx < src.len and src[i_idx] != quote) {
+                        if (src[i_idx] == '\\' and i_idx + 1 < src.len) {
+                            if (src[i_idx + 1] == '\n') line_no += 1;
+                            i_idx += 2;
+                            continue;
+                        }
+                        if (src[i_idx] == '\n') line_no += 1;
+                        i_idx += 1;
+                    }
+                    if (i_idx < src.len) i_idx += 1; // consume closing quote
+                    continue;
+                }
+                if (ch == '/' and i_idx + 1 < src.len and src[i_idx + 1] == '*') {
+                    const start_line = line_no;
+                    i_idx += 2;
+                    var closed = false;
+                    while (i_idx + 1 < src.len) {
+                        if (src[i_idx] == '\n') line_no += 1;
+                        if (src[i_idx] == '*' and src[i_idx + 1] == '/') {
+                            i_idx += 2;
+                            closed = true;
+                            break;
+                        }
+                        i_idx += 1;
+                    }
+                    if (!closed) i_idx = src.len;
+                    if (line_no > start_line) {
+                        try ranges.append(gpa, .{
+                            .start_line = start_line,
+                            .end_line = line_no,
+                            .kind = .comment,
+                        });
+                    }
+                    continue;
+                }
+                i_idx += 1;
+            }
+        }
+
         return ranges.toOwnedSlice(gpa);
     }
 
@@ -5165,6 +5288,112 @@ test "Service: foldingRanges folds long array literals" {
         }
     }
     try T.expect(saw_array_region);
+}
+
+test "Service: foldingRanges groups 3 imports into one imports fold" {
+    var vfs = ts_resolver.VirtualFs.init(T.allocator);
+    defer vfs.deinit();
+    var resolver = ts_resolver.Resolver.init(T.allocator, vfs.fs(), .{});
+    defer resolver.deinit();
+    var program = ts_program.Program.init(T.allocator, &resolver);
+    defer program.deinit();
+
+    // Three top-level imports followed by two non-import statements.
+    // We expect exactly one `imports` fold, spanning lines 0..2.
+    const src =
+        \\import { a } from "x";
+        \\import { b } from "y";
+        \\import { c } from "z";
+        \\let q = 1;
+        \\let r = 2;
+    ;
+    _ = try program.add("/main.ts", src);
+    try program.compileAll(.{});
+
+    var svc = Service.init(T.allocator, &program);
+    const ranges = try svc.foldingRanges(T.allocator, "/main.ts");
+    defer T.allocator.free(ranges);
+
+    var imports_count: usize = 0;
+    var imports_start: u32 = 99;
+    var imports_end: u32 = 0;
+    for (ranges) |r| {
+        if (r.kind == .imports) {
+            imports_count += 1;
+            imports_start = r.start_line;
+            imports_end = r.end_line;
+        }
+    }
+    try T.expectEqual(@as(usize, 1), imports_count);
+    try T.expectEqual(@as(u32, 0), imports_start);
+    try T.expectEqual(@as(u32, 2), imports_end);
+}
+
+test "Service: foldingRanges emits region fold for // #region markers" {
+    var vfs = ts_resolver.VirtualFs.init(T.allocator);
+    defer vfs.deinit();
+    var resolver = ts_resolver.Resolver.init(T.allocator, vfs.fs(), .{});
+    defer resolver.deinit();
+    var program = ts_program.Program.init(T.allocator, &resolver);
+    defer program.deinit();
+
+    // A `// #region helpers` ... `// #endregion` pair around a couple
+    // of statements should yield a `region` fold from the open marker
+    // line to the close marker line.
+    const src =
+        \\let head = 1;
+        \\// #region helpers
+        \\let a = 2;
+        \\let b = 3;
+        \\// #endregion
+        \\let tail = 4;
+    ;
+    _ = try program.add("/main.ts", src);
+    try program.compileAll(.{});
+
+    var svc = Service.init(T.allocator, &program);
+    const ranges = try svc.foldingRanges(T.allocator, "/main.ts");
+    defer T.allocator.free(ranges);
+
+    var saw_region_marker = false;
+    for (ranges) |r| {
+        if (r.kind == .region and r.start_line == 1 and r.end_line == 4) {
+            saw_region_marker = true;
+        }
+    }
+    try T.expect(saw_region_marker);
+}
+
+test "Service: foldingRanges emits comment fold for multi-line block comment" {
+    var vfs = ts_resolver.VirtualFs.init(T.allocator);
+    defer vfs.deinit();
+    var resolver = ts_resolver.Resolver.init(T.allocator, vfs.fs(), .{});
+    defer resolver.deinit();
+    var program = ts_program.Program.init(T.allocator, &resolver);
+    defer program.deinit();
+
+    // A block comment that opens on line 0 and closes on line 2 must
+    // produce a `comment` fold from 0 to 2.
+    const src =
+        \\/* this is
+        \\ * a multi-line
+        \\ * block comment */
+        \\let x = 1;
+    ;
+    _ = try program.add("/main.ts", src);
+    try program.compileAll(.{});
+
+    var svc = Service.init(T.allocator, &program);
+    const ranges = try svc.foldingRanges(T.allocator, "/main.ts");
+    defer T.allocator.free(ranges);
+
+    var saw_comment = false;
+    for (ranges) |r| {
+        if (r.kind == .comment and r.start_line == 0 and r.end_line == 2) {
+            saw_comment = true;
+        }
+    }
+    try T.expect(saw_comment);
 }
 
 test "Service: semanticTokensWire returns empty array for empty/unknown file" {
