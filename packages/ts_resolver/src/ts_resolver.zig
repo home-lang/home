@@ -65,6 +65,27 @@ pub const Config = struct {
         pattern: []const u8,
         targets: []const []const u8,
     };
+
+    /// Build a `Config.paths` slice from the parallel-array shape that
+    /// `tsconfig.Paths` exposes (`patterns[i]` paired with
+    /// `substitutions[i]`). The returned slice is allocated with
+    /// `arena`; caller is responsible for the arena's lifetime.
+    ///
+    /// Pass-through helper so callers (driver / LSP / CLI) can wire
+    /// `tsconfig.json` `baseUrl` + `paths` straight into the resolver
+    /// without each one rolling its own glue.
+    pub fn pathEntriesFromParallel(
+        arena: std.mem.Allocator,
+        patterns: []const []const u8,
+        substitutions: []const []const []const u8,
+    ) ![]PathEntry {
+        std.debug.assert(patterns.len == substitutions.len);
+        const out = try arena.alloc(PathEntry, patterns.len);
+        for (patterns, 0..) |p, i| {
+            out[i] = .{ .pattern = p, .targets = substitutions[i] };
+        }
+        return out;
+    }
 };
 
 /// Result of resolving a specifier.
@@ -210,8 +231,12 @@ pub const Resolver = struct {
     /// Probe `base` then `base.ext` for each configured extension and
     /// `.d.ts`. Returns the first hit.
     fn tryFileWithExtensions(self: *Resolver, base: []const u8) ResolveError!?Resolution {
-        // Direct file with explicit extension first.
-        if (hasKnownExtension(base) or hasExtension(base, ".json")) {
+        // Direct file with explicit extension first. `.json` is gated on
+        // `resolveJsonModule` per tsc — otherwise even
+        // `import "./data.json"` is left unresolved.
+        const explicit_json = hasExtension(base, ".json");
+        const explicit_known = hasKnownExtension(base) or (explicit_json and self.config.resolve_json);
+        if (explicit_known) {
             if (self.fs.fileExists(base)) {
                 return .{
                     .path = try self.ar().dupe(u8, base),
@@ -680,6 +705,73 @@ test "Resolver: walks up to find node_modules" {
     defer r.deinit();
     const res = try r.resolve("lib", "/workspace/proj-a/src/main.ts");
     try T.expectEqualStrings("/workspace/node_modules/lib/index.js", res.path);
+}
+
+test "Resolver: tsconfig baseUrl + paths alias resolves @/foo to <baseUrl>/foo.ts" {
+    var vfs = VirtualFs.init(T.allocator);
+    defer vfs.deinit();
+    try vfs.addFile("/proj/src/foo.ts", "");
+    try vfs.addFile("/proj/main.ts", "");
+
+    // Mirrors tsconfig: { "baseUrl": "./src", "paths": { "@/*": ["./*"] } }
+    // where `./src` has been resolved to an absolute path by the loader.
+    const paths = [_]Config.PathEntry{
+        .{ .pattern = "@/*", .targets = &.{"./*"} },
+    };
+    var r = Resolver.init(T.allocator, vfs.fs(), .{
+        .base_url = "/proj/src",
+        .paths = &paths,
+    });
+    defer r.deinit();
+    const res = try r.resolve("@/foo", "/proj/main.ts");
+    try T.expectEqualStrings("/proj/src/foo.ts", res.path);
+    try T.expectEqual(Resolution.Source.paths_mapping, res.source);
+}
+
+test "Resolver: alias-shaped specifier is unresolved without paths config" {
+    var vfs = VirtualFs.init(T.allocator);
+    defer vfs.deinit();
+    try vfs.addFile("/proj/src/utils.ts", "");
+    try vfs.addFile("/proj/main.ts", "");
+
+    var r = Resolver.init(T.allocator, vfs.fs(), .{});
+    defer r.deinit();
+    try T.expectError(error.NotFound, r.resolve("@/utils", "/proj/main.ts"));
+}
+
+test "Resolver: tsconfig paths resolves @/utils to directory index" {
+    var vfs = VirtualFs.init(T.allocator);
+    defer vfs.deinit();
+    try vfs.addFile("/proj/src/utils/index.ts", "");
+    try vfs.addFile("/proj/main.ts", "");
+
+    const paths = [_]Config.PathEntry{
+        .{ .pattern = "@/*", .targets = &.{"./*"} },
+    };
+    var r = Resolver.init(T.allocator, vfs.fs(), .{
+        .base_url = "/proj/src",
+        .paths = &paths,
+    });
+    defer r.deinit();
+    const res = try r.resolve("@/utils", "/proj/main.ts");
+    try T.expectEqualStrings("/proj/src/utils/index.ts", res.path);
+    try T.expectEqual(Resolution.Source.paths_mapping, res.source);
+}
+
+test "Resolver: pathEntriesFromParallel converts tsconfig parallel arrays" {
+    var arena = std.heap.ArenaAllocator.init(T.allocator);
+    defer arena.deinit();
+    const patterns = [_][]const u8{ "@app/*", "@lib/*" };
+    const subs0 = [_][]const u8{"src/app/*"};
+    const subs1 = [_][]const u8{ "src/lib/*", "vendor/lib/*" };
+    const subs = [_][]const []const u8{ &subs0, &subs1 };
+    const entries = try Config.pathEntriesFromParallel(arena.allocator(), &patterns, &subs);
+    try T.expectEqual(@as(usize, 2), entries.len);
+    try T.expectEqualStrings("@app/*", entries[0].pattern);
+    try T.expectEqualStrings("src/app/*", entries[0].targets[0]);
+    try T.expectEqualStrings("@lib/*", entries[1].pattern);
+    try T.expectEqual(@as(usize, 2), entries[1].targets.len);
+    try T.expectEqualStrings("vendor/lib/*", entries[1].targets[1]);
 }
 
 test "Resolver: .d.ts marked as declaration" {
