@@ -1,0 +1,28 @@
+// Regression test for issue #54 — `if (cond) a else b` is accepted
+// as a struct-field initializer. Pattern from
+// `kernel/src/fs/extents.home:49`:
+//
+//     return ExtentHeader{
+//         .magic = EXTENT_MAGIC,
+//         .depth = if (is_leaf) 0 else 1,
+//         .generation = 0,
+//     };
+//
+// Previously failed at parse time with
+// `error[EP0001]: Expected '{' after if condition`.
+
+const EXTENT_MAGIC: u32 = 0xDEADBEEF
+
+pub const ExtentHeader = struct {
+    magic: u32,
+    depth: u32,
+    generation: u64,
+}
+
+fn make_header(is_leaf: bool) -> ExtentHeader {
+    return ExtentHeader{
+        .magic = EXTENT_MAGIC,
+        .depth = if (is_leaf) 0 else 1,
+        .generation = 0,
+    }
+}

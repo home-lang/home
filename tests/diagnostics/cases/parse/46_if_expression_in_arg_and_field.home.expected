@@ -1,0 +1,3 @@
+Checking: <repo>/tests/diagnostics/cases/parse/46_if_expression_in_arg_and_field.home
+
+Success: Type checking passed ✓

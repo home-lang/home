@@ -5658,17 +5658,27 @@ pub const Parser = struct {
 
     /// Parse an if expression: if condition { expr } else { expr }
     /// Parentheses around the condition are optional
+    ///
+    /// Three body forms are supported in expression position:
+    ///   1. Brace form:  `if cond { expr } else { expr }`
+    ///   2. Then form:   `if cond then expr else expr`     (soft keyword)
+    ///   3. Bare form:   `if (cond) expr else expr`        (issue #54 —
+    ///      lets if-as-expression nest cleanly inside argument lists,
+    ///      struct-field initializers, let initializers, etc.)
+    ///
+    /// In the bare form each arm is parsed at `.Or` precedence so the
+    /// `else` token (which sits at NullCoalesce) reliably terminates the
+    /// then-branch. `else` is mandatory; an if-without-else used as an
+    /// expression is a type error caught downstream.
     fn ifExpr(self: *Parser) !*ast.Expr {
         const if_token = self.previous();
         // Parse condition - let expression() handle all grouping naturally.
         const condition = try self.expression();
 
-        // Two body forms:
-        //   `if cond { expr } else { expr }` — brace form
-        //   `if cond then expr else expr`    — ternary/SML form (soft
-        //                                      keyword `then`)
         const uses_then =
             self.check(.Identifier) and std.mem.eql(u8, self.peek().lexeme, "then");
+        const uses_brace = !uses_then and self.check(.LeftBrace);
+
         var then_branch: *ast.Expr = undefined;
         if (uses_then) {
             _ = self.advance();
@@ -5676,10 +5686,14 @@ pub const Parser = struct {
             // NullCoalesce) stops the expression parser and is picked
             // up as the branch separator below.
             then_branch = try self.parsePrecedence(.Or);
-        } else {
-            _ = try self.expect(.LeftBrace, "Expected '{' after if condition");
+        } else if (uses_brace) {
+            _ = self.advance(); // consume `{`
             then_branch = try self.expression();
             _ = try self.expect(.RightBrace, "Expected '}' after if expression body");
+        } else {
+            // Bare expression form (issue #54): the arm is just an
+            // expression. Parse at Or-precedence so `else` terminates it.
+            then_branch = try self.parsePrecedence(.Or);
         }
 
         _ = try self.expect(.Else, "If expression requires 'else' branch");
@@ -5689,12 +5703,16 @@ pub const Parser = struct {
         if (self.match(&.{.If})) {
             // Recursively parse else if as another if expression
             else_branch = try self.ifExpr();
+        } else if (uses_brace and self.check(.LeftBrace)) {
+            _ = self.advance();
+            else_branch = try self.expression();
+            _ = try self.expect(.RightBrace, "Expected '}' after else expression body");
         } else if (uses_then) {
             else_branch = try self.parsePrecedence(.Or);
         } else {
-            _ = try self.expect(.LeftBrace, "Expected '{' after 'else'");
+            // Bare expression else-branch — full expression precedence
+            // since nothing follows that needs to be reserved.
             else_branch = try self.expression();
-            _ = try self.expect(.RightBrace, "Expected '}' after else expression body");
         }
 
         const if_expr = try ast.IfExpr.init(

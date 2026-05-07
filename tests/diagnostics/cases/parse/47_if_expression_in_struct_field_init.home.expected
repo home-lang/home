@@ -1,0 +1,3 @@
+Checking: <repo>/tests/diagnostics/cases/parse/47_if_expression_in_struct_field_init.home
+
+Success: Type checking passed ✓
