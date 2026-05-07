@@ -1,0 +1,3 @@
+Checking: <repo>/tests/diagnostics/cases/parse/43_switch_expression_in_struct_method.home
+
+Success: Type checking passed ✓

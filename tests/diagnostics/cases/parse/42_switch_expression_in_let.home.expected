@@ -1,0 +1,3 @@
+Checking: <repo>/tests/diagnostics/cases/parse/42_switch_expression_in_let.home
+
+Success: Type checking passed ✓

@@ -1,0 +1,25 @@
+// Regression test for issue #45 — `switch` is accepted as an expression
+// on the right-hand side of a `let`/`const` binding. The parser lowers
+// it onto the existing `MatchExpr` AST node so the rest of the
+// pipeline (typechecker, codegen) reuses match's machinery.
+
+fn label_for(severity: u8) []const u8 {
+    const sev_str = switch (severity) {
+        .INFO => "[INFO] ",
+        .WARNING => "[WARN] ",
+        .ERROR => "[ERROR] ",
+        .CRITICAL => "[CRIT] ",
+        else => "[??] ",
+    };
+    return sev_str
+}
+
+// Switch expression also accepted in `return` position, mirroring the
+// kernel pattern in `kernel/src/security/module_signing.home`.
+fn algo_name(algo: u8) []const u8 {
+    return switch (algo) {
+        1 => "rsa",
+        2 => "dsa",
+        else => "unknown",
+    }
+}

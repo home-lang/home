@@ -1,0 +1,34 @@
+// Regression test for issue #45 — switch-as-expression also works
+// inside a struct method body, which is the exact pattern used by
+// `kernel/src/fs/fsck.home::Problem.format`. Before the fix the
+// parser misread the arm body as a struct-field initializer and
+// bailed with "Expected '}' after struct fields" at the closing
+// brace of the switch.
+
+pub const Problem = struct {
+    severity: u8,
+    description: []const u8,
+
+    pub fn format(self: *const Problem, buffer: []u8) usize {
+        var pos: usize = 0
+        const sev_str = switch (self.severity) {
+            .INFO => "[INFO] ",
+            .WARNING => "[WARN] ",
+            .ERROR => "[ERROR] ",
+            .CRITICAL => "[CRIT] ",
+            .FATAL => "[FATAL] ",
+        };
+        return pos
+    }
+};
+
+// Typed annotation on the binding still works — the type sits between
+// the name and the `=`, the switch starts immediately after.
+fn hash_size(algo: u8) u32 {
+    const size: u32 = switch (algo) {
+        1 => 32,
+        2 => 64,
+        else => 0,
+    };
+    return size
+}

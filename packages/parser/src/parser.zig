@@ -5786,6 +5786,143 @@ pub const Parser = struct {
         return result;
     }
 
+    /// Parse a single switch-arm pattern. Adds support for the leading-dot
+    /// enum-literal shorthand (`.INFO`, `.WARNING` …) on top of the broader
+    /// expression-pattern grammar `parseMatchExprPattern` already covers.
+    /// The shorthand isn't a valid expression in primary position, so we
+    /// must intercept it here before falling back to `expression()`.
+    fn parseSwitchArmPattern(self: *Parser) ParseError!*ast.Expr {
+        if (self.match(&.{.Dot})) {
+            const dot_tok = self.previous();
+            const ident_tok = if (self.check(.Identifier) or self.check(.Type))
+                self.advance()
+            else {
+                try self.reportError("Expected identifier after '.' in switch pattern");
+                return error.UnexpectedToken;
+            };
+            // Build `.IDENT` as a member access on a synthesized empty
+            // base. The pattern engine doesn't actually use the base —
+            // only the trailing identifier — so any consistent
+            // placeholder works.
+            const base_expr = try self.allocator.create(ast.Expr);
+            base_expr.* = ast.Expr{
+                .Identifier = ast.Identifier.init("", ast.SourceLocation.fromToken(dot_tok)),
+            };
+            const member_expr = try ast.MemberExpr.init(
+                self.allocator,
+                base_expr,
+                ident_tok.lexeme,
+                ast.SourceLocation.fromToken(ident_tok),
+            );
+            const result = try self.allocator.create(ast.Expr);
+            result.* = ast.Expr{ .MemberExpr = member_expr };
+            return result;
+        }
+        return try self.parseMatchExprPattern();
+    }
+
+    /// Parse a switch expression: `switch (value) { Pattern => body, ... }`.
+    ///
+    /// Lowered onto the existing `MatchExpr` AST node so the type checker,
+    /// pattern engine and codegen don't need a parallel code path. Behaves
+    /// like a match expression with a few syntactic differences:
+    ///   * Subject is wrapped in parens (parens optional too).
+    ///   * Default arm is spelled `else =>` (or `_ =>`).
+    ///   * Body forms accepted: block (`{ ... }`), `return [expr]`, or a
+    ///     bare expression — same set the statement-form switch accepts.
+    fn switchExpr(self: *Parser) ParseError!*ast.Expr {
+        const switch_token = self.previous();
+        // Subject — accept parenthesized or bare. Use parseMatchValue so a
+        // trailing `{` is reserved for the arm list, not slurped as a
+        // struct literal.
+        var value: *ast.Expr = undefined;
+        if (self.match(&.{.LeftParen})) {
+            value = try self.expression();
+            _ = try self.expect(.RightParen, "Expected ')' after switch value");
+        } else {
+            value = try self.parseMatchValue();
+        }
+
+        _ = try self.expect(.LeftBrace, "Expected '{' after switch value");
+
+        var arms = std.ArrayList(ast.MatchExprArm).empty;
+        defer arms.deinit(self.allocator);
+
+        while (!self.check(.RightBrace) and !self.isAtEnd()) {
+            // Pattern: either `else` (default arm) or a regular expr pattern.
+            // Multi-pattern arms (`A, B => body`) aren't accepted here yet —
+            // kernel code doesn't use that form in switch-expr position, and
+            // skipping it keeps the AST shape one-arm-per-pattern. Authors
+            // who need it can spell two arms with the same body.
+            var pattern: *ast.Expr = undefined;
+            if (self.match(&.{.Else})) {
+                const else_tok = self.previous();
+                const wildcard = try self.allocator.create(ast.Expr);
+                wildcard.* = ast.Expr{
+                    .Identifier = ast.Identifier.init("_", ast.SourceLocation.fromToken(else_tok)),
+                };
+                pattern = wildcard;
+            } else {
+                pattern = try self.parseSwitchArmPattern();
+            }
+
+            // Optional guard: `if cond`.
+            var guard: ?*ast.Expr = null;
+            if (self.match(&.{.If})) {
+                guard = try self.expression();
+            }
+
+            _ = try self.expect(.FatArrow, "Expected '=>' after switch pattern");
+
+            // Body — block / return / bare expression. Mirrors matchStatement.
+            var body: *ast.Expr = undefined;
+            if (self.check(.LeftBrace)) {
+                _ = self.advance();
+                body = try self.blockExprParse();
+            } else if (self.check(.Return)) {
+                _ = self.advance();
+                const ret_value: ?*ast.Expr = if (!self.check(.Comma) and !self.check(.RightBrace) and !self.check(.Semicolon))
+                    try self.expression()
+                else
+                    null;
+                const ret_expr = try ast.ReturnExpr.init(
+                    self.allocator,
+                    ret_value,
+                    ast.SourceLocation.fromToken(self.previous()),
+                );
+                body = try self.allocator.create(ast.Expr);
+                body.* = ast.Expr{ .ReturnExpr = ret_expr };
+            } else {
+                body = try self.expression();
+            }
+
+            // Trailing comma (or newline) between arms.
+            _ = self.match(&.{.Comma});
+
+            try arms.append(self.allocator, .{
+                .pattern = pattern,
+                .guard = guard,
+                .body = body,
+            });
+        }
+
+        _ = try self.expect(.RightBrace, "Expected '}' after switch arms");
+
+        const arms_slice = try self.allocator.alloc(ast.MatchExprArm, arms.items.len);
+        @memcpy(arms_slice, arms.items);
+
+        const match_expr = try ast.MatchExpr.init(
+            self.allocator,
+            value,
+            arms_slice,
+            ast.SourceLocation.fromToken(switch_token),
+        );
+
+        const result = try self.allocator.create(ast.Expr);
+        result.* = ast.Expr{ .MatchExpr = match_expr };
+        return result;
+    }
+
     /// Parse a block expression: { stmt1; stmt2; ... }
     /// The opening brace should already be consumed
     fn blockExprParse(self: *Parser) !*ast.Expr {
@@ -6081,6 +6218,14 @@ pub const Parser = struct {
         // If expression: if (cond) { expr } else { expr }
         if (self.match(&.{.If})) {
             return try self.ifExpr();
+        }
+
+        // Switch expression: switch (value) { Pattern => expr, ... }.
+        // Statement-form switch is handled by `statement()` before we ever
+        // reach here, so encountering `Switch` in expression context means
+        // it's used as an initializer / argument / return value (issue #45).
+        if (self.match(&.{.Switch})) {
+            return try self.switchExpr();
         }
 
         // Match expression: match value { pattern => expr, ... }.
