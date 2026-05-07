@@ -3091,6 +3091,43 @@ pub const Checker = struct {
                 // substituted for that literal.
                 return self.evalMappedType(type_node);
             },
+            .array_type => {
+                // `T[]` — recurse on the element through the
+                // type-param-aware path so a bound parameter `T`
+                // resolves to its TypeParameter id (not the base
+                // lowerer's `unknown` placeholder for non-primitive
+                // names). Without this, generic call-site inference
+                // can't see the indexer pointing at `T` and `id<T>(x:
+                // T[]): T[]` would lose `T` after lowering.
+                const a = hir_mod.arrayTypeOf(self.hir, type_node);
+                const element = try self.lowererLowerWithTypeParams(a.element);
+                return self.interner.internArrayType(self.string_interner, element) catch error.OutOfMemory;
+            },
+            .fn_type, .constructor_type => {
+                // `(x: T) => U` — same reasoning as array_type: the
+                // base lowerer can't see in-scope type parameters,
+                // so each param annotation and the return type need
+                // to round-trip through `lowererLowerWithTypeParams`.
+                const ft = hir_mod.fnTypeOf(self.hir, type_node);
+                var fn_param_ts: std.ArrayListUnmanaged(TypeId) = .empty;
+                defer fn_param_ts.deinit(self.gpa);
+                const fn_params = self.hir.childSlice(ft.params_start, @intCast(ft.params_len));
+                for (fn_params) |p| {
+                    if (self.hir.kindOf(p) != .parameter) continue;
+                    const pp = hir_mod.parameterOf(self.hir, p);
+                    const t = if (pp.type_annotation != hir_mod.none_node_id)
+                        try self.lowererLowerWithTypeParams(pp.type_annotation)
+                    else
+                        types.Primitive.any;
+                    try fn_param_ts.append(self.gpa, t);
+                }
+                const ret_t = if (ft.return_type != hir_mod.none_node_id)
+                    try self.lowererLowerWithTypeParams(ft.return_type)
+                else
+                    types.Primitive.void_t;
+                const is_construct = self.hir.kindOf(type_node) == .constructor_type;
+                return self.interner.internSignature(fn_param_ts.items, ret_t, is_construct) catch error.OutOfMemory;
+            },
             else => {},
         }
         return self.lowerer.lower(type_node);
@@ -5285,19 +5322,7 @@ pub const Checker = struct {
 
         const n = @min(param_ts.len, arg_ts.len);
         for (0..n) |i| {
-            const p = param_ts[i];
-            if (self.interner.pool.flagsOf(p).is_type_parameter) {
-                // Record (or upgrade) the substitution.
-                if (subs.get(p)) |prev| {
-                    if (prev != arg_ts[i]) {
-                        // Mismatched inferences — Phase 6 follow-
-                        // up does common-supertype. For now leave
-                        // the first-seen mapping in place.
-                    }
-                } else {
-                    try subs.put(self.gpa, p, arg_ts[i]);
-                }
-            }
+            try self.inferFromPair(param_ts[i], arg_ts[i], &subs);
         }
         // Default-type fallback: walk every TypeId reachable from the
         // signature (params + return) and, for any type-parameter id
@@ -5310,6 +5335,120 @@ pub const Checker = struct {
         try self.collectFreeTypeParamDefaults(ret_type, &subs);
         if (subs.count() == 0) return ret_type;
         return self.substituteType(ret_type, &subs);
+    }
+
+    /// Widen a literal type (`42`, `"hi"`, `true`) to its base
+    /// primitive (`number`, `string`, `boolean`) when binding a fresh
+    /// type-parameter from an argument. Matches tsc's call-site
+    /// behavior: `id(42)` infers `T = number`, not `T = 42`. Anything
+    /// non-literal is returned unchanged.
+    fn widenForInference(self: *Checker, t: TypeId) TypeId {
+        const flags = self.interner.pool.flagsOf(t);
+        if (flags.is_literal) {
+            if (flags.is_string) return types.Primitive.string_t;
+            if (flags.is_number) return types.Primitive.number_t;
+            if (flags.is_boolean) return types.Primitive.boolean_t;
+            if (flags.is_bigint) return types.Primitive.bigint_t;
+            return t;
+        }
+        // Union of literals: array literals like `[1, 2, 3]` produce
+        // a numeric indexer typed as `1 | 2 | 3`. Widen each branch
+        // and, if all collapse to the same primitive, return that
+        // primitive directly. Otherwise leave the union shape alone
+        // (the user wrote a heterogeneous array).
+        if (flags.is_union) {
+            const members = self.interner.unionMembers(t);
+            if (members.len == 0) return t;
+            const first = self.widenForInference(members[0]);
+            for (members[1..]) |m| {
+                if (self.widenForInference(m) != first) return t;
+            }
+            return first;
+        }
+        return t;
+    }
+
+    /// Recursively infer type-parameter substitutions by walking the
+    /// parameter shape and the argument shape in parallel. Handles:
+    ///
+    ///   - Bare type parameter: `T` against `number` → `T = number`.
+    ///     Literals are widened to their base primitive (matches tsc).
+    ///   - Array element: `T[]` against `number[]` → `T = number`.
+    ///     Arrays are object types with a number indexer, so we read
+    ///     `objectNumberIndex` on both sides.
+    ///   - Function param: `(x: T) => U` against `(x: number) => string`
+    ///     → `T = number, U = string`.
+    ///   - Object property: `{ value: T }` against `{ value: number }`
+    ///     → `T = number`. Walks every member by name.
+    ///   - Union / intersection on the parameter side: recurse into
+    ///     each member against the same arg (any structural match
+    ///     contributes a mapping). Keeps `T | undefined` working.
+    ///
+    /// First-seen wins on conflict; common-supertype is a follow-up.
+    fn inferFromPair(
+        self: *Checker,
+        param_t: TypeId,
+        arg_t: TypeId,
+        subs: *std.AutoHashMapUnmanaged(TypeId, TypeId),
+    ) !void {
+        const pool = &self.interner.pool;
+        const p_flags = pool.flagsOf(param_t);
+        if (p_flags.is_type_parameter) {
+            if (!subs.contains(param_t)) {
+                try subs.put(self.gpa, param_t, self.widenForInference(arg_t));
+            }
+            return;
+        }
+        const a_flags = pool.flagsOf(arg_t);
+        // Both sides object-typed: match each named member, plus the
+        // number indexer (`T[]` parameter / array argument).
+        if (p_flags.is_object_type and a_flags.is_object_type) {
+            const p_members = self.interner.objectMembers(param_t);
+            for (p_members) |pm| {
+                if (self.interner.objectMember(arg_t, pm.name)) |am_t| {
+                    try self.inferFromPair(pm.type, am_t, subs);
+                }
+            }
+            const p_num = self.interner.objectNumberIndex(param_t);
+            const a_num = self.interner.objectNumberIndex(arg_t);
+            if (p_num != types.Primitive.none and a_num != types.Primitive.none) {
+                try self.inferFromPair(p_num, a_num, subs);
+            }
+            const p_str = self.interner.objectStringIndex(param_t);
+            const a_str = self.interner.objectStringIndex(arg_t);
+            if (p_str != types.Primitive.none and a_str != types.Primitive.none) {
+                try self.inferFromPair(p_str, a_str, subs);
+            }
+            return;
+        }
+        // Both signatures: match params slot-by-slot and return types.
+        if (p_flags.is_signature and a_flags.is_signature) {
+            const pp = self.interner.signatureParams(param_t);
+            const ap = self.interner.signatureParams(arg_t);
+            const m = @min(pp.len, ap.len);
+            for (0..m) |i| try self.inferFromPair(pp[i], ap[i], subs);
+            if (self.interner.signatureReturn(param_t)) |pr| {
+                if (self.interner.signatureReturn(arg_t)) |ar| {
+                    try self.inferFromPair(pr, ar, subs);
+                }
+            }
+            return;
+        }
+        // Param-side union / intersection: try matching each branch
+        // against the arg. Keeps `T | undefined` (lowered optional)
+        // and similar shapes contributing a mapping.
+        if (p_flags.is_union) {
+            for (self.interner.unionMembers(param_t)) |um| {
+                try self.inferFromPair(um, arg_t, subs);
+            }
+            return;
+        }
+        if (p_flags.is_intersection) {
+            for (self.interner.intersectionMembers(param_t)) |im| {
+                try self.inferFromPair(im, arg_t, subs);
+            }
+            return;
+        }
     }
 
     /// Walk `t` and, for any encountered type-parameter id with a
@@ -5391,7 +5530,26 @@ pub const Checker = struct {
                     .is_method = om.is_method,
                 });
             }
-            return self.interner.internObjectType(new_members.items) catch return t;
+            // Preserve and substitute index signatures so `T[]`
+            // (which lowers to an object with `length: number` plus a
+            // numeric indexer pointing to T) keeps its indexer after
+            // instantiation. Without this, the substituted return
+            // would still have `length: number` but no element type,
+            // which breaks downstream `objectNumberIndex` reads.
+            const orig_str = self.interner.objectStringIndex(t);
+            const orig_num = self.interner.objectNumberIndex(t);
+            const new_str = if (orig_str != types.Primitive.none)
+                try self.substituteType(orig_str, subs)
+            else
+                types.Primitive.none;
+            const new_num = if (orig_num != types.Primitive.none)
+                try self.substituteType(orig_num, subs)
+            else
+                types.Primitive.none;
+            if (new_str == types.Primitive.none and new_num == types.Primitive.none) {
+                return self.interner.internObjectType(new_members.items) catch return t;
+            }
+            return self.interner.internObjectTypeWithIndex(new_members.items, new_str, new_num) catch return t;
         }
         if (flags.is_conditional) {
             // Substitute into each leaf, then re-attempt eager
@@ -9615,4 +9773,58 @@ test "checker: mutually recursive type aliases — `A = { b: B }; B = { a: A }` 
     // not the `unknown` placeholder left over from pre-registration.
     const a_t = s.checker.type_names.get(a_name).?;
     try T.expect(s.checker.interner.pool.flagsOf(a_t).is_object_type);
+}
+
+test "checker: generic type-arg inference — array element `id<T>(x: T[]): T[]` infers T from `[1,2,3]`" {
+    // Call-site argument `[1,2,3]` is `number[]`; the parameter shape
+    // `T[]` should drive `T = number`, making the return type
+    // `number[]` — an object type whose number indexer is `number`.
+    const s = try newSetup(
+        \\function id<T>(x: T[]): T[] { return x; }
+        \\let r = id([1, 2, 3]);
+    );
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+    const stmts = hir_mod.blockStmts(&s.hir, s.root);
+    const decl = hir_mod.varDeclOf(&s.hir, stmts[1]);
+    const call_t = s.hir.typeOf(decl.init);
+    try T.expect(s.checker.interner.pool.flagsOf(call_t).is_object_type);
+    const elem = s.checker.interner.objectNumberIndex(call_t);
+    try T.expectEqual(types.Primitive.number_t, elem);
+}
+
+test "checker: generic type-arg inference — object property `key<T>(o: { value: T }): T` infers T from o.value" {
+    // The parameter shape `{ value: T }` against an argument
+    // `{ value: 42 }` (whose `value` is the number-literal 42) should
+    // yield `T = number` after literal widening, so the call's return
+    // type is the primitive `number`.
+    const s = try newSetup(
+        \\function key<T>(o: { value: T }): T { return o.value; }
+        \\let r = key({ value: 42 });
+    );
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+    const stmts = hir_mod.blockStmts(&s.hir, s.root);
+    const decl = hir_mod.varDeclOf(&s.hir, stmts[1]);
+    try T.expectEqual(types.Primitive.number_t, s.hir.typeOf(decl.init));
+}
+
+test "checker: generic type-arg inference — callback `map<T,U>(arr: T[], fn: (x: T) => U): U[]`" {
+    // With both an array element constraint and a callback signature
+    // pinning `U`, both type parameters should be inferred:
+    //   T = number  (from `[1, 2, 3]`)
+    //   U = string  (from the arrow's return annotation)
+    // so the call's return type is `string[]`.
+    const s = try newSetup(
+        \\function map<T, U>(arr: T[], fn: (x: T) => U): U[] { return [] as U[]; }
+        \\let r = map([1, 2, 3], (x: number): string => "y");
+    );
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+    const stmts = hir_mod.blockStmts(&s.hir, s.root);
+    const decl = hir_mod.varDeclOf(&s.hir, stmts[1]);
+    const call_t = s.hir.typeOf(decl.init);
+    try T.expect(s.checker.interner.pool.flagsOf(call_t).is_object_type);
+    const elem = s.checker.interner.objectNumberIndex(call_t);
+    try T.expectEqual(types.Primitive.string_t, elem);
 }
