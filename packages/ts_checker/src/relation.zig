@@ -298,6 +298,11 @@ pub const Engine = struct {
     /// are checked bivariantly: source `(p: T) => R` assigns to
     /// target `(p: U) => R` iff `T` and `U` are mutually assignable.
     strict_function_types: bool = false,
+    /// Optional string-interner reference. When set, structural
+    /// assignability uses property-name bytes for special-case
+    /// handling (e.g. resolving numeric "0", "1", … keys via the
+    /// source's number-key indexer for tuple-vs-array comparisons).
+    string_interner: ?*const string_interner.Interner = null,
 
     pub fn init(gpa: std.mem.Allocator, ti: *Interner) !Engine {
         return .{
@@ -308,6 +313,10 @@ pub const Engine = struct {
 
     pub fn setStrictFunctionTypes(self: *Engine, on: bool) void {
         self.strict_function_types = on;
+    }
+
+    pub fn setStringInterner(self: *Engine, si: *const string_interner.Interner) void {
+        self.string_interner = si;
     }
 
     pub fn deinit(self: *Engine) void {
@@ -582,17 +591,44 @@ pub const Engine = struct {
     ///   Method-vs-property mismatch is not yet enforced (Phase 6).
     fn computeObjectAssignable(self: *Engine, source: TypeId, target: TypeId) anyerror!bool {
         const target_members = self.interner.objectMembers(target);
+        const source_num_idx = self.interner.objectNumberIndex(source);
         for (target_members) |tm| {
-            const sm = self.interner.objectMemberInfo(source, tm.name) orelse {
-                if (tm.is_optional) continue;
-                return false;
-            };
-            // readonly on target is fine even if source is mutable
-            // (covariant). Mutable on target with readonly source is
-            // unsound and should fail — Phase 6 enforces this; we
-            // currently allow it to keep behavior matching tsgo's
-            // default flag set.
-            if (!try self.isAssignableTo(sm.type, tm.type)) return false;
+            if (self.interner.objectMemberInfo(source, tm.name)) |sm| {
+                // readonly on target is fine even if source is mutable
+                // (covariant). Mutable on target with readonly source
+                // is unsound and should fail — Phase 6 enforces this;
+                // we currently allow it to keep behavior matching
+                // tsgo's default flag set.
+                if (!try self.isAssignableTo(sm.type, tm.type)) return false;
+                continue;
+            }
+            // No same-named member on source. For purely numeric
+            // property names ("0", "1", …) fall back to source's
+            // number-key indexer when wired. This is what makes
+            // array-literal → tuple assignability work — the literal
+            // lowers to `Array<T>`-shape (only `length` + indexer)
+            // while the tuple target carries positional "0", "1", …
+            // members.
+            if (tm.is_optional) continue;
+            if (source_num_idx != Primitive.none and self.string_interner != null) {
+                const name_bytes = self.string_interner.?.get(tm.name);
+                if (isNumericName(name_bytes)) {
+                    if (!try self.isAssignableTo(source_num_idx, tm.type)) return false;
+                    continue;
+                }
+            }
+            return false;
+        }
+        return true;
+    }
+
+    /// True iff every byte of `s` is an ASCII digit (0-9). Mirrors
+    /// the TS rule that `"12"` is a numeric property name but
+    /// `"12abc"` is not.
+    fn isNumericName(s: []const u8) bool {
+        if (s.len == 0) return false;
+        for (s) |c| {
+            if (c < '0' or c > '9') return false;
         }
         return true;
     }

@@ -227,6 +227,10 @@ pub const Checker = struct {
         si: *string_interner.Interner,
         engine: *relation.Engine,
     ) Checker {
+        // Wire the relation engine's string-interner so structural
+        // assignability can use property-name bytes (numeric-key
+        // fallback for tuple-vs-array, etc.).
+        engine.setStringInterner(si);
         return .{
             .gpa = gpa,
             .hir = hir,
@@ -2259,6 +2263,47 @@ pub const Checker = struct {
         return false;
     }
 
+    /// True iff `target` is shaped like a lowered tuple type — an
+    /// object with at least a `length` member plus a numeric "0"
+    /// positional member (variadic tuples have only a leading "0"
+    /// when there's a middle/trailing rest, so we don't require
+    /// a full sequence).
+    fn isTupleShapedTarget(self: *Checker, target: TypeId) bool {
+        const flags = self.interner.pool.flagsOf(target);
+        if (!flags.is_object_type) return false;
+        const length_id = self.string_interner.intern("length") catch return false;
+        if (self.interner.objectMember(target, length_id) == null) return false;
+        const zero_id = self.string_interner.intern("0") catch return false;
+        return self.interner.objectMember(target, zero_id) != null;
+    }
+
+    /// Positional check of an `array_literal` init against a
+    /// tuple-shaped target. For each element index `i`, look up
+    /// the target's member named `"i"`; if missing, fall back to
+    /// the target's number-key indexer (rest slot). Returns true
+    /// when every element assigns.
+    fn checkArrayLiteralAgainstTuple(self: *Checker, init_node: NodeId, target: TypeId) !bool {
+        const elements = hir_mod.arrayLiteralElements(self.hir, init_node);
+        const num_idx = self.interner.objectNumberIndex(target);
+        for (elements, 0..) |el, i| {
+            if (el == hir_mod.none_node_id) continue;
+            const el_t = try self.checkExpression(el);
+            // Look up the matching positional member.
+            var nbuf: [12]u8 = undefined;
+            const name_str = std.fmt.bufPrint(&nbuf, "{d}", .{i}) catch return false;
+            const name = self.string_interner.intern(name_str) catch return error.OutOfMemory;
+            const tgt_t: TypeId = if (self.interner.objectMember(target, name)) |t|
+                t
+            else if (num_idx != types.Primitive.none)
+                num_idx
+            else
+                return false;
+            const ok = self.engine.isAssignableTo(el_t, tgt_t) catch return error.OutOfMemory;
+            if (!ok) return false;
+        }
+        return true;
+    }
+
     fn checkVarDecl(self: *Checker, node: NodeId) CheckError!void {
         const v = hir_mod.varDeclOf(self.hir, node);
 
@@ -2278,7 +2323,24 @@ pub const Checker = struct {
         // If both are present, check assignability.
         const final_type: TypeId = if (declared_type != types.Primitive.none) declared_type else init_type;
         if (declared_type != types.Primitive.none and v.init != hir_mod.none_node_id) {
-            const ok = self.engine.isAssignableTo(init_type, declared_type) catch return error.OutOfMemory;
+            // Special-case array-literal → tuple positional check.
+            // The init's structural Array<T>-shape loses positional
+            // info, so plain assignability would reject `[1, "a"]`
+            // against `[number, string]`. Instead, when init is a
+            // literal `[…]` and the target is a tuple-shaped object
+            // type (positional "0", "1", … members), check each
+            // element against the matching positional slot, then
+            // fall back to the target's number-key indexer for any
+            // extras (variadic tuple rest).
+            const ok = blk: {
+                if (v.type_annotation != hir_mod.none_node_id and
+                    self.hir.kindOf(v.init) == .array_literal and
+                    self.isTupleShapedTarget(declared_type))
+                {
+                    break :blk try self.checkArrayLiteralAgainstTuple(v.init, declared_type);
+                }
+                break :blk self.engine.isAssignableTo(init_type, declared_type) catch return error.OutOfMemory;
+            };
             if (!ok) {
                 try self.report(node, TsCodes.type_not_assignable, "Type is not assignable to declared type.");
             }
@@ -4063,6 +4125,7 @@ fn newSetup(source: []const u8) !*TestSetup {
     errdefer s.ti.deinit();
     s.engine = try relation.Engine.init(T.allocator, &s.ti);
     errdefer s.engine.deinit();
+    s.engine.setStringInterner(&s.sint);
     s.checker = Checker.init(T.allocator, &s.hir, &s.ti, &s.sint, &s.engine);
     return s;
 }
@@ -5283,6 +5346,57 @@ test "checker: tuple type exposes per-index members + length literal" {
     const one_id = try s.sint.intern("1");
     try T.expect(s.ti.objectMember(tuple_t, zero_id) != null);
     try T.expect(s.ti.objectMember(tuple_t, one_id) != null);
+}
+
+test "checker: variadic tuple [number, ...string[]] accepts a matching literal" {
+    // TS 4.0+ allows spreads inside tuple types. The leading
+    // `number` slot is positional; the trailing `...string[]`
+    // permits any number of trailing strings. The literal must
+    // type-check without TS2322.
+    const s = try newSetup(
+        \\type T = [number, ...string[]];
+        \\const t: T = [1, "a", "b"];
+    );
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+    var found_2322 = false;
+    for (s.checker.diagnostics.items) |d| {
+        if (d.code == TsCodes.type_not_assignable) found_2322 = true;
+    }
+    try T.expect(!found_2322);
+}
+
+test "checker: variadic tuple [number, ...string[], boolean] accepts a matching literal" {
+    // A rest may sit between two fixed slots — TS allows
+    // `[A, ...B[], C]` and the literal must structurally match.
+    const s = try newSetup(
+        \\type T = [number, ...string[], boolean];
+        \\const t: T = [1, "a", true];
+    );
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+    var found_2322 = false;
+    for (s.checker.diagnostics.items) |d| {
+        if (d.code == TsCodes.type_not_assignable) found_2322 = true;
+    }
+    try T.expect(!found_2322);
+}
+
+test "checker: variadic tuple [number, ...string[]] flags wrong leading type as TS2322" {
+    // The fixed leading slot is invariant: `["a"]` must NOT
+    // assign to `[number, ...string[]]` because position 0 is
+    // typed `number`, not `string`.
+    const s = try newSetup(
+        \\type T = [number, ...string[]];
+        \\const t: T = ["a"];
+    );
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+    var found = false;
+    for (s.checker.diagnostics.items) |d| {
+        if (d.code == TsCodes.type_not_assignable) found = true;
+    }
+    try T.expect(found);
 }
 
 test "checker: T[] annotation indexes to T" {

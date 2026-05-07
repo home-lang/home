@@ -189,6 +189,9 @@ pub const NodeKind = enum(u8) {
     array_type,
     fn_type,
     constructor_type,
+    /// `...T` rest element inside a tuple type (variadic tuple
+    /// support). Only meaningful as a child of `tuple_type`.
+    rest_type,
     object_type,
     /// `arg is T` or `asserts arg is T` in return-type position.
     type_predicate_type,
@@ -701,6 +704,14 @@ pub const TupleTypePayload = struct {
     elements_len: u32,
 };
 
+/// `...T` element inside a tuple type. Only valid as a tuple-type
+/// element. When `T` is an array type (`U[]`) the rest expands to
+/// any number of `U` elements; when `T` is itself a tuple it
+/// expands inline.
+pub const RestTypePayload = struct {
+    operand: NodeId,
+};
+
 /// `(a: T, b?: U) => R` and `new (a: T) => R`.
 pub const FnTypePayload = struct {
     params_start: u32,
@@ -1002,6 +1013,7 @@ pub const Hir = struct {
     intersection_type_payloads: std.ArrayListUnmanaged(IntersectionTypePayload),
     array_type_payloads: std.ArrayListUnmanaged(ArrayTypePayload),
     tuple_type_payloads: std.ArrayListUnmanaged(TupleTypePayload),
+    rest_type_payloads: std.ArrayListUnmanaged(RestTypePayload),
     fn_type_payloads: std.ArrayListUnmanaged(FnTypePayload),
     indexed_access_type_payloads: std.ArrayListUnmanaged(IndexedAccessTypePayload),
     keyof_type_payloads: std.ArrayListUnmanaged(KeyofTypePayload),
@@ -1084,6 +1096,7 @@ pub const Hir = struct {
             .intersection_type_payloads = .empty,
             .array_type_payloads = .empty,
             .tuple_type_payloads = .empty,
+            .rest_type_payloads = .empty,
             .fn_type_payloads = .empty,
             .indexed_access_type_payloads = .empty,
             .keyof_type_payloads = .empty,
@@ -1173,6 +1186,7 @@ pub const Hir = struct {
         self.intersection_type_payloads.deinit(self.gpa);
         self.array_type_payloads.deinit(self.gpa);
         self.tuple_type_payloads.deinit(self.gpa);
+        self.rest_type_payloads.deinit(self.gpa);
         self.fn_type_payloads.deinit(self.gpa);
         self.indexed_access_type_payloads.deinit(self.gpa);
         self.keyof_type_payloads.deinit(self.gpa);
@@ -2106,6 +2120,14 @@ pub const Builder = struct {
         return id;
     }
 
+    pub fn addRestType(self: *Builder, span: Span, operand: NodeId) !NodeId {
+        const payload_idx: u32 = @intCast(self.hir.rest_type_payloads.items.len);
+        try self.hir.rest_type_payloads.append(self.hir.gpa, .{ .operand = operand });
+        const id = try self.newNode(.rest_type, span, payload_idx);
+        self.hir.setParent(operand, id);
+        return id;
+    }
+
     pub fn addTupleType(self: *Builder, span: Span, elements: []const NodeId) !NodeId {
         const start: u32 = @intCast(self.hir.child_pool.items.len);
         try self.hir.child_pool.appendSlice(self.hir.gpa, elements);
@@ -2848,6 +2870,11 @@ pub fn arrayTypeOf(hir: *const Hir, id: NodeId) ArrayTypePayload {
 pub fn tupleTypeOf(hir: *const Hir, id: NodeId) TupleTypePayload {
     std.debug.assert(hir.kindOf(id) == .tuple_type);
     return hir.tuple_type_payloads.items[hir.payloads.items[id]];
+}
+
+pub fn restTypeOf(hir: *const Hir, id: NodeId) RestTypePayload {
+    std.debug.assert(hir.kindOf(id) == .rest_type);
+    return hir.rest_type_payloads.items[hir.payloads.items[id]];
 }
 
 pub fn tupleTypeElements(hir: *const Hir, id: NodeId) []const NodeId {

@@ -278,18 +278,100 @@ pub const Lowerer = struct {
         // as the matching element, and a number-key indexer typed
         // as the union of all element types so out-of-bound or
         // dynamic-index access still resolves to something useful.
-        // Proper structural tuple semantics (tuple-vs-array
-        // assignability subtleties) lands as a follow-up.
+        //
+        // Variadic tuples (TS 4.0+, e.g. `[T, ...U[], V]`): a
+        // `rest_type` element either expands inline (when its
+        // operand is a known fixed-length tuple) or relaxes the
+        // shape — the resulting object type uses a non-literal
+        // `length: number` and only emits fixed-index members for
+        // elements that precede the first rest. The number-key
+        // indexer captures the rest element's type so dynamic
+        // indexing still resolves.
         const elems = hir_mod.tupleTypeElements(self.hir, node);
-        var element_ids: std.ArrayListUnmanaged(TypeId) = .empty;
-        defer element_ids.deinit(self.gpa);
+
+        var fixed_types: std.ArrayListUnmanaged(TypeId) = .empty;
+        defer fixed_types.deinit(self.gpa);
+        var rest_elem_types: std.ArrayListUnmanaged(TypeId) = .empty;
+        defer rest_elem_types.deinit(self.gpa);
+        var saw_unknown_rest = false;
+
+        for (elems) |e| {
+            if (self.hir.kindOf(e) == .rest_type) {
+                const rt = hir_mod.restTypeOf(self.hir, e);
+                const opk = self.hir.kindOf(rt.operand);
+                if (opk == .tuple_type) {
+                    // Inline-expand a known fixed-length tuple
+                    // spread when the inner tuple has no rest.
+                    const inner_elems = hir_mod.tupleTypeElements(self.hir, rt.operand);
+                    var inner_has_rest = false;
+                    for (inner_elems) |ie| {
+                        if (self.hir.kindOf(ie) == .rest_type) {
+                            inner_has_rest = true;
+                            break;
+                        }
+                    }
+                    if (!inner_has_rest) {
+                        for (inner_elems) |ie| {
+                            const t = try self.lower(ie);
+                            try fixed_types.append(self.gpa, t);
+                        }
+                        continue;
+                    }
+                }
+                if (opk == .array_type) {
+                    const at = hir_mod.arrayTypeOf(self.hir, rt.operand);
+                    const elt = try self.lower(at.element);
+                    try rest_elem_types.append(self.gpa, elt);
+                    saw_unknown_rest = true;
+                    continue;
+                }
+                // Generic / unknown rest: lower the operand as a
+                // placeholder element type, marking the tuple
+                // variable-length.
+                const elt = try self.lower(rt.operand);
+                try rest_elem_types.append(self.gpa, elt);
+                saw_unknown_rest = true;
+                continue;
+            }
+            const t = try self.lower(e);
+            try fixed_types.append(self.gpa, t);
+        }
+
         var members: std.ArrayListUnmanaged(types.ObjectMember) = .empty;
         defer members.deinit(self.gpa);
 
-        for (elems, 0..) |e, i| {
-            const t = try self.lower(e);
-            try element_ids.append(self.gpa, t);
-            // Intern the index name as a string key.
+        // With a rest somewhere in the middle, only elements
+        // before the first rest are positionally unambiguous.
+        const fixed_prefix_len: usize = if (saw_unknown_rest) blk: {
+            var n: usize = 0;
+            for (elems) |e| {
+                if (self.hir.kindOf(e) == .rest_type) {
+                    const rt = hir_mod.restTypeOf(self.hir, e);
+                    const opk = self.hir.kindOf(rt.operand);
+                    if (opk == .tuple_type) {
+                        const inner_elems = hir_mod.tupleTypeElements(self.hir, rt.operand);
+                        var inner_has_rest = false;
+                        for (inner_elems) |ie| {
+                            if (self.hir.kindOf(ie) == .rest_type) {
+                                inner_has_rest = true;
+                                break;
+                            }
+                        }
+                        if (!inner_has_rest) {
+                            n += inner_elems.len;
+                            continue;
+                        }
+                    }
+                    break;
+                }
+                n += 1;
+            }
+            break :blk n;
+        } else fixed_types.items.len;
+
+        var i: usize = 0;
+        while (i < fixed_prefix_len) : (i += 1) {
+            const t = fixed_types.items[i];
             var nbuf: [12]u8 = undefined;
             const name_str = std.fmt.bufPrint(&nbuf, "{d}", .{i}) catch continue;
             const name = self.string_interner.intern(name_str) catch continue;
@@ -301,9 +383,12 @@ pub const Lowerer = struct {
                 .is_method = false,
             });
         }
-        // length: the literal `elems.len` number.
+
         const length_id = self.string_interner.intern("length") catch return error.OutOfMemory;
-        const length_t = self.interner.internNumberLiteral(@floatFromInt(elems.len)) catch types.Primitive.number_t;
+        const length_t: TypeId = if (saw_unknown_rest)
+            types.Primitive.number_t
+        else
+            self.interner.internNumberLiteral(@floatFromInt(fixed_types.items.len)) catch types.Primitive.number_t;
         try members.append(self.gpa, .{
             .name = length_id,
             .type = length_t,
@@ -311,12 +396,17 @@ pub const Lowerer = struct {
             .is_readonly = true,
             .is_method = false,
         });
-        const elem_union: TypeId = if (element_ids.items.len == 0)
+
+        var idx_union: std.ArrayListUnmanaged(TypeId) = .empty;
+        defer idx_union.deinit(self.gpa);
+        for (fixed_types.items) |t| try idx_union.append(self.gpa, t);
+        for (rest_elem_types.items) |t| try idx_union.append(self.gpa, t);
+        const elem_union: TypeId = if (idx_union.items.len == 0)
             types.Primitive.never
-        else if (element_ids.items.len == 1)
-            element_ids.items[0]
+        else if (idx_union.items.len == 1)
+            idx_union.items[0]
         else
-            self.interner.internUnion(element_ids.items) catch types.Primitive.any;
+            self.interner.internUnion(idx_union.items) catch types.Primitive.any;
         return self.interner.internObjectTypeWithIndex(members.items, types.Primitive.none, elem_union) catch error.OutOfMemory;
     }
 

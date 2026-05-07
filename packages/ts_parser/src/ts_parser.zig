@@ -1664,10 +1664,22 @@ pub const Parser = struct {
                 _ = self.advance();
                 _ = self.advance();
             }
-            // Rest element prefix `...T`.
-            _ = self.match(.dot_dot_dot);
-            const e = try self.parseTypeAnnotation();
+            // Rest element prefix `...T` (TS 4.0+ variadic tuples).
+            // The operand is wrapped in a `rest_type` HIR node so the
+            // lowerer / checker can model spread expansion.
+            const rest_tok = self.peek();
+            const has_rest = self.match(.dot_dot_dot);
+            // Tolerate a labeled rest: `[...rest: T[]]`.
+            if (has_rest and self.peek().kind == .identifier and self.peekAt(1).kind == .colon) {
+                _ = self.advance();
+                _ = self.advance();
+            }
+            var e = try self.parseTypeAnnotation();
             _ = self.match(.question); // optional element marker
+            if (has_rest) {
+                const end = if (self.cursor > 0) self.tokens[self.cursor - 1].span.end else rest_tok.span.end;
+                e = try self.builder.addRestType(.{ .start = rest_tok.span.start, .end = end }, e);
+            }
             try elems.append(self.gpa, e);
             if (!self.match(.comma)) break;
         }
