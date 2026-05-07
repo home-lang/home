@@ -5226,6 +5226,44 @@ test "checker: keyof on a literal type alias resolves to a literal union" {
     try T.expect(s.ti.pool.flagsOf(keys_t).is_union);
 }
 
+test "checker: labeled tuple element types parse equivalently to plain tuples" {
+    // TS 4.0+ allows labeling tuple elements: `[first: string, second: number]`.
+    // Labels are documentation-only and don't change type semantics, so the
+    // labelled form must produce the same diagnostic count as the un-labelled
+    // form for an otherwise-identical program.
+    const labeled = try newSetup(
+        \\type Pair = [first: string, second: number];
+        \\const p: Pair = ["a", 1];
+    );
+    defer destroySetup(labeled);
+    try labeled.checker.checkSourceFile(labeled.root);
+    const plain = try newSetup(
+        \\type Pair = [string, number];
+        \\const p: Pair = ["a", 1];
+    );
+    defer destroySetup(plain);
+    try plain.checker.checkSourceFile(plain.root);
+    try T.expectEqual(plain.checker.diagnostics.items.len, labeled.checker.diagnostics.items.len);
+}
+
+test "checker: labeled tuple still flags element-type mismatch as TS2322" {
+    // The labels don't relax structural checks: assigning `[number, string]`
+    // to a `[first: string, second: number]` annotation must still emit a
+    // type-not-assignable diagnostic — same behaviour as an un-labelled
+    // `[string, number]` annotation.
+    const s = try newSetup(
+        \\type Pair = [first: string, second: number];
+        \\const p: Pair = [1, "a"];
+    );
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+    var found = false;
+    for (s.checker.diagnostics.items) |d| {
+        if (d.code == TsCodes.type_not_assignable) found = true;
+    }
+    try T.expect(found);
+}
+
 test "checker: tuple type exposes per-index members + length literal" {
     const s = try newSetup(
         \\function fst(p: [number, string]): number { return p[0]; }
