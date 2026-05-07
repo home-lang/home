@@ -7985,6 +7985,48 @@ test "checker: asserts predicate narrows in fall-through" {
     try T.expectEqual(types.Primitive.string_t, s.hir.typeOf(s_init));
 }
 
+test "checker: predicate-less `asserts x` narrows to truthy in fall-through" {
+    // `assert(x)` with return type `asserts x` — no `is T` — should
+    // subtract `null | undefined` from `x`'s current type after the
+    // call so subsequent statements see the truthy approximation.
+    const s = try newSetup(
+        \\function assert(x: any): asserts x { }
+        \\function f(x: string | null | undefined) {
+        \\  assert(x);
+        \\  let s = x;
+        \\}
+    );
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+    const stmts = hir_mod.blockStmts(&s.hir, s.root);
+    const fn_node = stmts[1];
+    const f = hir_mod.fnDeclOf(&s.hir, fn_node);
+    const body_stmts = hir_mod.blockStmts(&s.hir, f.body);
+    // body_stmts[0] = assert(x); body_stmts[1] = let s = x;
+    const s_decl = body_stmts[1];
+    const s_init = hir_mod.varDeclOf(&s.hir, s_decl).init;
+    // `string | null | undefined` minus `null | undefined` = `string`.
+    try T.expectEqual(types.Primitive.string_t, s.hir.typeOf(s_init));
+}
+
+test "checker: `asserts x is T` permits assignment to T after call" {
+    // After `assertString(v)` the binding `v` should narrow to
+    // `string`, so `const s: string = v` should produce no
+    // assignability diagnostic.
+    const s = try newSetup(
+        \\function assertString(x: any): asserts x is string { }
+        \\function f(v: any) {
+        \\  assertString(v);
+        \\  const s: string = v;
+        \\}
+    );
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+    for (s.checker.diagnostics.items) |d| {
+        try T.expect(d.code != TsCodes.type_not_assignable);
+    }
+}
+
 test "checker: type predicate negative branch subtracts" {
     const s = try newSetup(
         \\function isString(x: string | number): x is string { return true; }
