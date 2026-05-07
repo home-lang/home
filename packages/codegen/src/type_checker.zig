@@ -691,6 +691,13 @@ pub const TypeChecker = struct {
         }
 
         try self.checkBlock(while_stmt.body);
+
+        // Walk the optional Zig-style continue-expression so names referenced
+        // inside it are validated. Discard the inferred type; the expression
+        // is evaluated for its side effects (typically `i += 1`).
+        if (while_stmt.continue_expr) |cexpr| {
+            _ = try self.checkExpression(&cexpr);
+        }
     }
 
     /// Type check a for statement

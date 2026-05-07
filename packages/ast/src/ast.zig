@@ -1649,6 +1649,10 @@ pub const WhileStmt = struct {
     body: *BlockStmt,
     /// Optional label for labeled break/continue (e.g., 'outer: while ...)
     label: ?[]const u8 = null,
+    /// Optional Zig-style continue-expression: `while (cond) : (cexpr) { ... }`.
+    /// When present, `cexpr` is evaluated after each body iteration AND on
+    /// `continue` jumps, immediately before the next condition test.
+    continue_expr: ?*Expr = null,
 
     pub fn init(allocator: std.mem.Allocator, condition: *Expr, body: *BlockStmt, loc: SourceLocation) !*WhileStmt {
         const stmt = try allocator.create(WhileStmt);
@@ -1657,6 +1661,7 @@ pub const WhileStmt = struct {
             .condition = condition,
             .body = body,
             .label = null,
+            .continue_expr = null,
         };
         return stmt;
     }
@@ -1668,6 +1673,27 @@ pub const WhileStmt = struct {
             .condition = condition,
             .body = body,
             .label = label,
+            .continue_expr = null,
+        };
+        return stmt;
+    }
+
+    /// Initialize with an explicit continue-expression and optional label.
+    pub fn initWithContinueExpr(
+        allocator: std.mem.Allocator,
+        condition: *Expr,
+        body: *BlockStmt,
+        continue_expr: ?*Expr,
+        label: ?[]const u8,
+        loc: SourceLocation,
+    ) !*WhileStmt {
+        const stmt = try allocator.create(WhileStmt);
+        stmt.* = .{
+            .node = .{ .type = .WhileStmt, .loc = loc },
+            .condition = condition,
+            .body = body,
+            .label = label,
+            .continue_expr = continue_expr,
         };
         return stmt;
     }
@@ -2446,6 +2472,7 @@ pub const Program = struct {
             },
             .WhileStmt => |while_stmt| {
                 deinitExpr(while_stmt.condition, allocator);
+                if (while_stmt.continue_expr) |cexpr| deinitExpr(cexpr, allocator);
                 deinitBlockStmt(while_stmt.body, allocator);
                 allocator.destroy(while_stmt);
             },

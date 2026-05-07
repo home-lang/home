@@ -3692,7 +3692,19 @@ pub const NativeCodegen = struct {
                 }
             },
             .WhileStmt => |while_stmt| {
-                // While loop: test condition, jump if false, body, jump back
+                // While loop layout:
+                //   loop_start:    eval cond → rax
+                //                  test rax, rax
+                //                  jz end                 (forward, patched)
+                //                  <body>
+                //   continue_tgt:  <continue-expr>        (only if present)
+                //                  jmp loop_start         (back-edge)
+                //   end:
+                //
+                // `continue` statements inside the body must run the
+                // continue-expression before re-testing the condition, so
+                // their fixups land at `continue_tgt` (= loop_start when
+                // there's no continue-expression).
                 const loop_start = self.assembler.getPosition();
 
                 // Evaluate condition
@@ -3722,11 +3734,18 @@ pub const NativeCodegen = struct {
                 defer loop_ctx.break_fixups.deinit(self.allocator);
                 defer loop_ctx.continue_fixups.deinit(self.allocator);
 
-                // Patch continue fixups to jump to condition re-test (loop_start),
-                // which is the correct target for while-loop continues.
+                // Patch continue fixups to land at the continue-target (the
+                // start of the continue-expression, or loop_start if none).
+                const continue_target = self.assembler.getPosition();
                 for (loop_ctx.continue_fixups.items) |cpos| {
-                    const coff = @as(i32, @intCast(loop_start)) - @as(i32, @intCast(cpos + 5));
+                    const coff = @as(i32, @intCast(continue_target)) - @as(i32, @intCast(cpos + 5));
                     try self.assembler.patchJmpRel32(cpos, coff);
+                }
+
+                // Emit the continue-expression (if present) before the
+                // back-edge to the condition test.
+                if (while_stmt.continue_expr) |cexpr| {
+                    try self.generateExpr(cexpr);
                 }
 
                 // Jump back to condition
@@ -6160,6 +6179,9 @@ pub const NativeCodegen = struct {
             },
             .WhileStmt => |w| {
                 try self.scanAsyncExpr(w.condition, ctx);
+                if (w.continue_expr) |cexpr| {
+                    try self.scanAsyncExpr(cexpr, ctx);
+                }
                 try self.scanAsyncStmts(w.body.statements, ctx);
             },
             else => {},

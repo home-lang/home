@@ -95,6 +95,10 @@ pub const TypeIntegration = struct {
                 const cond_expr = @as(*const ast.Expr, @ptrCast(&while_stmt.condition));
                 _ = try self.inferencer.inferExpression(cond_expr, env);
                 try self.inferBlock(while_stmt.body, env);
+                if (while_stmt.continue_expr) |cexpr| {
+                    const cexpr_ptr = @as(*const ast.Expr, @ptrCast(&cexpr));
+                    _ = try self.inferencer.inferExpression(cexpr_ptr, env);
+                }
             },
             .ForStmt => |for_stmt| {
                 const iter_expr = @as(*const ast.Expr, @ptrCast(&for_stmt.iterable));

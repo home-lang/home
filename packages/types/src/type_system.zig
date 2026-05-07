@@ -1647,6 +1647,16 @@ pub const TypeChecker = struct {
                         }
                     };
                 }
+
+                // Type-check the optional continue-expression so any name
+                // references and type errors inside it are surfaced.
+                if (while_stmt.continue_expr) |cexpr| {
+                    _ = self.inferExpression(cexpr) catch |err| {
+                        if (err != error.TypeMismatch and err != error.UndefinedVariable) {
+                            return err;
+                        }
+                    };
+                }
             },
             .ForStmt => |for_stmt| {
                 // Infer the type of the iterable

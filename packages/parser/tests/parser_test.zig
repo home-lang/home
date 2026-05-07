@@ -345,6 +345,80 @@ test "parser: while statement" {
     const while_stmt = stmt.WhileStmt;
     try testing.expect(while_stmt.condition.* == .BinaryExpr);
     try testing.expectEqual(@as(usize, 1), while_stmt.body.statements.len);
+    // No continue-expression on the plain form.
+    try testing.expect(while_stmt.continue_expr == null);
+}
+
+test "parser: while-with-continue-expression (Zig form)" {
+    // Wrap in a function so `var i: u32 = 0` is allowed.
+    const program = try parseSource(
+        testing.allocator,
+        "fn loop_body(): u32 { var i: u32 = 0; while (i < 10) : (i += 1) { foo(i) }; return 0 }",
+    );
+    defer program.deinit(testing.allocator);
+
+    try testing.expectEqual(@as(usize, 1), program.statements.len);
+    const fn_decl = program.statements[0].FnDecl;
+
+    // The `var i` decl, the `while`, and the `return` are siblings.
+    var found: ?*ast.WhileStmt = null;
+    for (fn_decl.body.statements) |s| {
+        if (s == .WhileStmt) found = s.WhileStmt;
+    }
+    try testing.expect(found != null);
+    const while_stmt = found.?;
+
+    try testing.expect(while_stmt.condition.* == .BinaryExpr);
+    try testing.expect(while_stmt.continue_expr != null);
+    // The continue-expression is `i += 1` — a compound assignment, which
+    // the parser models as an AssignmentExpr.
+    try testing.expect(while_stmt.continue_expr.?.* == .AssignmentExpr);
+    try testing.expectEqual(@as(usize, 1), while_stmt.body.statements.len);
+}
+
+test "parser: while-with-continue-expression nested" {
+    const program = try parseSource(
+        testing.allocator,
+        \\fn nested(): u32 {
+        \\    var i: u32 = 0
+        \\    var j: u32 = 0
+        \\    while (i < 4) : (i += 1) {
+        \\        while (j < 4) : (j += 1) {
+        \\            foo(i, j)
+        \\        }
+        \\    }
+        \\    return 0
+        \\}
+        ,
+    );
+    defer program.deinit(testing.allocator);
+
+    try testing.expectEqual(@as(usize, 1), program.statements.len);
+    const fn_decl = program.statements[0].FnDecl;
+
+    var outer: ?*ast.WhileStmt = null;
+    for (fn_decl.body.statements) |s| {
+        if (s == .WhileStmt) outer = s.WhileStmt;
+    }
+    try testing.expect(outer != null);
+    try testing.expect(outer.?.continue_expr != null);
+
+    // Inner while sits inside the outer body.
+    var inner: ?*ast.WhileStmt = null;
+    for (outer.?.body.statements) |s| {
+        if (s == .WhileStmt) inner = s.WhileStmt;
+    }
+    try testing.expect(inner != null);
+    try testing.expect(inner.?.continue_expr != null);
+}
+
+test "parser: while without continue-expression keeps continue_expr null" {
+    // Regression: the `:` peek must not fire on the plain form.
+    const program = try parseSource(testing.allocator, "while (x < 10) { increment(x) }");
+    defer program.deinit(testing.allocator);
+
+    const while_stmt = program.statements[0].WhileStmt;
+    try testing.expect(while_stmt.continue_expr == null);
 }
 
 test "parser: for statement" {

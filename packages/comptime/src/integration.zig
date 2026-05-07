@@ -253,6 +253,9 @@ pub const ComptimeIntegration = struct {
 
             .WhileStmt => |while_stmt| {
                 try self.processExpression(while_stmt.condition);
+                if (while_stmt.continue_expr) |cexpr| {
+                    try self.processExpression(cexpr);
+                }
                 for (while_stmt.body.statements) |s| {
                     try self.processStatement(&s);
                 }

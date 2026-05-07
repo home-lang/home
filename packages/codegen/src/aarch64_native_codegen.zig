@@ -258,11 +258,12 @@ pub const Aarch64NativeCodegen = struct {
 
     fn generateWhileStmt(self: *Aarch64NativeCodegen, while_stmt: *ast.WhileStmt) CodegenError!void {
         // Loop layout:
-        //   loop_top:  eval cond → x0
-        //              cmp x0, #0
-        //              b.eq exit              ; placeholder, patched
-        //              <body>
-        //              b loop_top             ; backward, computed inline
+        //   loop_top:    eval cond → x0
+        //                cmp x0, #0
+        //                b.eq exit              ; placeholder, patched
+        //                <body>
+        //                <continue-expr>        ; only if present
+        //                b loop_top             ; backward, computed inline
         //   exit:
         const loop_top = self.assembler.getPosition();
 
@@ -274,6 +275,12 @@ pub const Aarch64NativeCodegen = struct {
 
         for (while_stmt.body.statements) |stmt| {
             try self.generateStmt(stmt);
+        }
+
+        // Zig-style continue-expression: `while (cond) : (cexpr) { body }`
+        // runs `cexpr` after each iteration, immediately before the back-edge.
+        if (while_stmt.continue_expr) |cexpr| {
+            try self.generateExpr(cexpr);
         }
 
         // Unconditional backward branch to the top of the loop.

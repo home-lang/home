@@ -373,6 +373,9 @@ pub const LanguageServer = struct {
             },
             .WhileStmt => |while_stmt| {
                 try self.checkExpression(doc, while_stmt.condition, defined_symbols, local_vars);
+                if (while_stmt.continue_expr) |cexpr| {
+                    try self.checkExpression(doc, cexpr, defined_symbols, local_vars);
+                }
                 try self.checkFunctionBodyHelper(doc, &while_stmt.body, defined_symbols, local_vars);
             },
             .ForStmt => |for_stmt| {

@@ -425,6 +425,9 @@ pub const ClosureAnalyzer = struct {
             },
             .WhileStmt => |while_stmt| {
                 try self.walkExpression(refs, while_stmt.condition);
+                if (while_stmt.continue_expr) |cexpr| {
+                    try self.walkExpression(refs, cexpr);
+                }
                 try self.walkBlock(refs, while_stmt.body);
             },
             .ForStmt => |for_stmt| {

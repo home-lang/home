@@ -341,12 +341,24 @@ pub const Interpreter = struct {
                         }
                         if (err == error.Continue) {
                             if (try self.shouldContinueHere(while_stmt.label)) {
+                                // Run the continue-expression (if any) before
+                                // re-checking the condition — same shape as
+                                // a natural fall-through past the body.
+                                if (while_stmt.continue_expr) |cexpr| {
+                                    _ = try self.evaluateExpression(cexpr, env);
+                                }
                                 continue :outer;
                             } else {
                                 return err;
                             }
                         }
                         return err;
+                    }
+
+                    // Normal fall-through: evaluate the continue-expression
+                    // (e.g. `i += 1`) before re-testing the condition.
+                    if (while_stmt.continue_expr) |cexpr| {
+                        _ = try self.evaluateExpression(cexpr, env);
                     }
                 }
             },

@@ -3901,13 +3901,18 @@ pub const Parser = struct {
         self.suppress_struct_literal -= 1;
         errdefer ast.Program.deinitExpr(condition, self.allocator);
 
+        const continue_expr = try self.parseOptionalWhileContinueExpr();
+        errdefer if (continue_expr) |ce| ast.Program.deinitExpr(ce, self.allocator);
+
         const body = try self.blockStatement();
         errdefer ast.Program.deinitBlockStmt(body, self.allocator);
 
-        const stmt = try ast.WhileStmt.init(
+        const stmt = try ast.WhileStmt.initWithContinueExpr(
             self.allocator,
             condition,
             body,
+            continue_expr,
+            null,
             ast.SourceLocation.fromToken(while_token),
         );
 
@@ -3922,18 +3927,40 @@ pub const Parser = struct {
         self.suppress_struct_literal -= 1;
         errdefer ast.Program.deinitExpr(condition, self.allocator);
 
+        const continue_expr = try self.parseOptionalWhileContinueExpr();
+        errdefer if (continue_expr) |ce| ast.Program.deinitExpr(ce, self.allocator);
+
         const body = try self.blockStatement();
         errdefer ast.Program.deinitBlockStmt(body, self.allocator);
 
-        const stmt = try ast.WhileStmt.initWithLabel(
+        const stmt = try ast.WhileStmt.initWithContinueExpr(
             self.allocator,
             condition,
             body,
+            continue_expr,
             label,
             ast.SourceLocation.fromToken(while_token),
         );
 
         return ast.Stmt{ .WhileStmt = stmt };
+    }
+
+    /// Parse the optional Zig-style continue-expression that follows a
+    /// while-loop condition: `while (cond) : (cexpr) { body }`. Returns
+    /// `null` when the next token is not `:` (the existing form).
+    fn parseOptionalWhileContinueExpr(self: *Parser) !?*ast.Expr {
+        if (!self.match(&.{.Colon})) return null;
+        _ = try self.expect(.LeftParen, "Expected '(' after ':' in while-with-continue-expression");
+        // Allow the continue expression to be any expression — typically an
+        // assignment like `i += 1`. Suppress struct-literal parsing for the
+        // same reason as the condition (so a trailing identifier doesn't
+        // try to consume the body's `{`).
+        self.suppress_struct_literal += 1;
+        const cexpr = try self.expression();
+        self.suppress_struct_literal -= 1;
+        errdefer ast.Program.deinitExpr(cexpr, self.allocator);
+        _ = try self.expect(.RightParen, "Expected ')' after while continue-expression");
+        return cexpr;
     }
 
     /// Parse a loop statement (infinite loop, desugared to while(true))

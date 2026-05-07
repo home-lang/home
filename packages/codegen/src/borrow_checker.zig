@@ -173,6 +173,10 @@ pub const BorrowChecker = struct {
                 const loop_scope = self.tracker.enterScope();
                 try self.scope_stack.append(loop_scope);
                 try self.checkBlock(while_stmt.body);
+                if (while_stmt.continue_expr) |cexpr| {
+                    const cexpr_ptr = @as(*const ast.Expr, @ptrCast(&cexpr));
+                    try self.checkExpression(cexpr_ptr);
+                }
                 _ = self.scope_stack.pop();
                 try self.tracker.exitScope(loop_scope);
             },
