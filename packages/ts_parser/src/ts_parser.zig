@@ -329,6 +329,8 @@ pub const Parser = struct {
 
     fn parseForStatement(self: *Parser) ParseError!NodeId {
         const start = self.advance(); // for
+        // Optional `await` modifier — `for await (... of asyncIter)`.
+        const is_await = self.match(.kw_await);
         _ = try self.expect(.open_paren, "'(' after 'for'");
 
         // Parse the init slot. Three shapes:
@@ -360,6 +362,8 @@ pub const Parser = struct {
                 const end_pos = self.hir.spanOf(body).end;
                 if (kind_tok.kind == .kw_in) {
                     return try self.builder.addForIn(.{ .start = start.span.start, .end = end_pos }, ident, source_expr, body);
+                } else if (is_await) {
+                    return try self.builder.addForAwaitOf(.{ .start = start.span.start, .end = end_pos }, ident, source_expr, body);
                 } else {
                     return try self.builder.addForOf(.{ .start = start.span.start, .end = end_pos }, ident, source_expr, body);
                 }
@@ -389,6 +393,8 @@ pub const Parser = struct {
                 const end_pos = self.hir.spanOf(body).end;
                 if (kind_tok.kind == .kw_in) {
                     return try self.builder.addForIn(.{ .start = start.span.start, .end = end_pos }, head_expr, source_expr, body);
+                } else if (is_await) {
+                    return try self.builder.addForAwaitOf(.{ .start = start.span.start, .end = end_pos }, head_expr, source_expr, body);
                 } else {
                     return try self.builder.addForOf(.{ .start = start.span.start, .end = end_pos }, head_expr, source_expr, body);
                 }
@@ -3516,6 +3522,16 @@ test "parser: for-of loop" {
     const root = try s.parser.parseSourceFile();
     const top = hir_mod.blockStmts(&s.hir, root)[0];
     try T.expectEqual(hir_mod.NodeKind.for_of_stmt, s.hir.kindOf(top));
+}
+
+test "parser: for-await-of sets is_await flag" {
+    var s = try newTestSetup("for await (const v of items) { use(v); }");
+    defer destroyTestSetup(s);
+    const root = try s.parser.parseSourceFile();
+    const top = hir_mod.blockStmts(&s.hir, root)[0];
+    try T.expectEqual(hir_mod.NodeKind.for_of_stmt, s.hir.kindOf(top));
+    const p = hir_mod.forInOf(&s.hir, top);
+    try T.expect(p.is_await);
 }
 
 test "parser: break and continue" {

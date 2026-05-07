@@ -440,6 +440,9 @@ pub const ForInOfPayload = struct {
     /// Right-hand side expression.
     source: NodeId,
     body: NodeId,
+    /// `for await (... of ...)` async-iteration form. Only valid for
+    /// `for_of_stmt`.
+    is_await: bool = false,
 };
 
 pub const ThrowPayload = struct {
@@ -1550,19 +1553,24 @@ pub const Builder = struct {
     }
 
     pub fn addForIn(self: *Builder, span: Span, target: NodeId, source: NodeId, body: NodeId) !NodeId {
-        return self.addForInOf(.for_in_stmt, span, target, source, body);
+        return self.addForInOf(.for_in_stmt, span, target, source, body, false);
     }
 
     pub fn addForOf(self: *Builder, span: Span, target: NodeId, source: NodeId, body: NodeId) !NodeId {
-        return self.addForInOf(.for_of_stmt, span, target, source, body);
+        return self.addForInOf(.for_of_stmt, span, target, source, body, false);
     }
 
-    fn addForInOf(self: *Builder, kind: NodeKind, span: Span, target: NodeId, source: NodeId, body: NodeId) !NodeId {
+    pub fn addForAwaitOf(self: *Builder, span: Span, target: NodeId, source: NodeId, body: NodeId) !NodeId {
+        return self.addForInOf(.for_of_stmt, span, target, source, body, true);
+    }
+
+    fn addForInOf(self: *Builder, kind: NodeKind, span: Span, target: NodeId, source: NodeId, body: NodeId, is_await: bool) !NodeId {
         const payload_idx: u32 = @intCast(self.hir.for_in_of_payloads.items.len);
         try self.hir.for_in_of_payloads.append(self.hir.gpa, .{
             .target = target,
             .source = source,
             .body = body,
+            .is_await = is_await,
         });
         const id = try self.newNode(kind, span, payload_idx);
         self.hir.setParent(target, id);

@@ -553,7 +553,11 @@ pub const Printer = struct {
             return;
         }
         const kw = if (self.hir.kindOf(node) == .for_in_stmt) "in" else "of";
-        try self.write("for (");
+        if (self.hir.kindOf(node) == .for_of_stmt and p.is_await) {
+            try self.write("for await (");
+        } else {
+            try self.write("for (");
+        }
         try self.printExpression(p.target);
         try self.write(" ");
         try self.write(kw);
@@ -2359,6 +2363,13 @@ test "emit: for-of preserved at es2015+" {
     const out = try emitWithOpts("for (let n of arr) { console.log(n); }", .{ .es_target = .es2015 });
     defer T.allocator.free(out);
     try T.expect(std.mem.indexOf(u8, out, " of ") != null);
+}
+
+test "emit: for-await-of emits 'for await'" {
+    const out = try emitWithOpts("for await (const v of items) { use(v); }", .{ .es_target = .es2015 });
+    defer T.allocator.free(out);
+    try T.expect(std.mem.indexOf(u8, out, "for await (") != null);
+    try T.expect(std.mem.indexOf(u8, out, " of items") != null);
 }
 
 test "emit: for-in is unaffected by es_target" {
