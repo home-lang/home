@@ -358,6 +358,7 @@ pub fn compileSource(
             .strict_function_types = strict_fn_types,
             .no_unchecked_indexed_access = co.no_unchecked_indexed_access orelse false,
             .isolated_modules = co.isolated_modules orelse false,
+            .resolve_json_module = co.resolve_json_module orelse false,
         });
         c.type_engine.setStrictFunctionTypes(strict_fn_types);
     }
