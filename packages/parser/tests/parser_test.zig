@@ -1582,3 +1582,177 @@ test "parser: try expr else fallback expression form still works (regression)" {
             init_expr.TryExpr.operand.TryExpr.else_branch != null);
     try testing.expect(has_else);
 }
+
+// ---------------------------------------------------------------------------
+// if-let pattern matching (issue #62)
+//
+// Rust-style `if let PATTERN = EXPR { body }` is sugar for a one-arm match.
+// Beyond the basic form, the parser must also accept:
+//   - Rust-style binding modifiers: `Some(ref mut x)`, `Some(ref x)`, `Some(mut x)`
+//   - Dot-prefixed enum-variant shorthand: `.Some(x)` / `.Ok(v)`
+//   - Discard binding: `Some(_)`
+// These show up heavily in the home-os kernel (~85 sites in 8 files).
+// ---------------------------------------------------------------------------
+
+test "parser: if let Some(x) = expr { body } (issue #62)" {
+    const program = try parseSource(testing.allocator,
+        \\fn foo(): u32 {
+        \\    if let Some(x) = bar() {
+        \\        return x
+        \\    }
+        \\    return 0
+        \\}
+    );
+    defer program.deinit(testing.allocator);
+
+    const fn_stmt = program.statements[0].FnDecl;
+    const first = fn_stmt.body.statements[0];
+    try testing.expect(first == .IfLetStmt);
+    try testing.expectEqualStrings("Some", first.IfLetStmt.pattern);
+    const binding = first.IfLetStmt.binding orelse return error.MissingBinding;
+    try testing.expectEqualStrings("x", binding);
+    try testing.expect(first.IfLetStmt.else_block == null);
+}
+
+test "parser: if let Some(ref mut x) = expr { body } (issue #62)" {
+    // `ref mut` is accepted as a parser-only modifier; the binding is `x`.
+    // Borrow/mutability semantics are downstream future work.
+    const program = try parseSource(testing.allocator,
+        \\fn foo(): u32 {
+        \\    if let Some(ref mut sensor) = sensors[0] {
+        \\        update(sensor)
+        \\    }
+        \\    return 0
+        \\}
+    );
+    defer program.deinit(testing.allocator);
+
+    const fn_stmt = program.statements[0].FnDecl;
+    const first = fn_stmt.body.statements[0];
+    try testing.expect(first == .IfLetStmt);
+    try testing.expectEqualStrings("Some", first.IfLetStmt.pattern);
+    const binding = first.IfLetStmt.binding orelse return error.MissingBinding;
+    try testing.expectEqualStrings("sensor", binding);
+}
+
+test "parser: if let Some(mut x) and if let Some(ref x) (issue #62)" {
+    const program = try parseSource(testing.allocator,
+        \\fn foo(): u32 {
+        \\    if let Some(mut a) = bar() {
+        \\        use(a)
+        \\    }
+        \\    if let Some(ref b) = bar() {
+        \\        use(b)
+        \\    }
+        \\    return 0
+        \\}
+    );
+    defer program.deinit(testing.allocator);
+
+    const fn_stmt = program.statements[0].FnDecl;
+    const s0 = fn_stmt.body.statements[0];
+    const s1 = fn_stmt.body.statements[1];
+    try testing.expect(s0 == .IfLetStmt);
+    try testing.expect(s1 == .IfLetStmt);
+    try testing.expectEqualStrings("a", s0.IfLetStmt.binding orelse return error.MissingBinding);
+    try testing.expectEqualStrings("b", s1.IfLetStmt.binding orelse return error.MissingBinding);
+}
+
+test "parser: if let Some(x) = expr { body } else { fallback } (issue #62)" {
+    const program = try parseSource(testing.allocator,
+        \\fn foo(): u32 {
+        \\    if let Some(x) = bar() {
+        \\        use(x)
+        \\    } else {
+        \\        handle_none()
+        \\    }
+        \\    return 0
+        \\}
+    );
+    defer program.deinit(testing.allocator);
+
+    const fn_stmt = program.statements[0].FnDecl;
+    const first = fn_stmt.body.statements[0];
+    try testing.expect(first == .IfLetStmt);
+    try testing.expect(first.IfLetStmt.else_block != null);
+}
+
+test "parser: if let .Variant(x) dot-prefixed shorthand (issue #62)" {
+    const program = try parseSource(testing.allocator,
+        \\fn foo(): u32 {
+        \\    if let .Ok(v) = result() {
+        \\        use(v)
+        \\    }
+        \\    return 0
+        \\}
+    );
+    defer program.deinit(testing.allocator);
+
+    const fn_stmt = program.statements[0].FnDecl;
+    const first = fn_stmt.body.statements[0];
+    try testing.expect(first == .IfLetStmt);
+    // Dot-prefix lowers to the bare variant name — codegen looks up across
+    // all enum layouts by name.
+    try testing.expectEqualStrings("Ok", first.IfLetStmt.pattern);
+    try testing.expectEqualStrings("v", first.IfLetStmt.binding orelse return error.MissingBinding);
+}
+
+test "parser: nested if let Some(a) ... if let Some(b) ... (issue #62)" {
+    const program = try parseSource(testing.allocator,
+        \\fn foo(): u32 {
+        \\    if let Some(a) = x {
+        \\        if let Some(b) = y {
+        \\            use(a, b)
+        \\        }
+        \\    }
+        \\    return 0
+        \\}
+    );
+    defer program.deinit(testing.allocator);
+
+    const fn_stmt = program.statements[0].FnDecl;
+    const outer = fn_stmt.body.statements[0];
+    try testing.expect(outer == .IfLetStmt);
+    try testing.expect(outer.IfLetStmt.then_block.statements.len >= 1);
+    const inner = outer.IfLetStmt.then_block.statements[0];
+    try testing.expect(inner == .IfLetStmt);
+    try testing.expectEqualStrings("a", outer.IfLetStmt.binding orelse return error.MissingBinding);
+    try testing.expectEqualStrings("b", inner.IfLetStmt.binding orelse return error.MissingBinding);
+}
+
+test "parser: if let Some(_) discard binding (issue #62)" {
+    const program = try parseSource(testing.allocator,
+        \\fn foo(): u32 {
+        \\    if let Some(_) = bar() {
+        \\        do_thing()
+        \\    }
+        \\    return 0
+        \\}
+    );
+    defer program.deinit(testing.allocator);
+
+    const fn_stmt = program.statements[0].FnDecl;
+    const first = fn_stmt.body.statements[0];
+    try testing.expect(first == .IfLetStmt);
+    // `_` lowers to a null binding (discard).
+    try testing.expect(first.IfLetStmt.binding == null);
+}
+
+test "parser: regular if cond { body } still parses identically (issue #62 regression)" {
+    // `if let` must NOT regress the bare `if condition { ... }` form.
+    const program = try parseSource(testing.allocator,
+        \\fn foo(x: u32): u32 {
+        \\    if x > 0 {
+        \\        return x
+        \\    } else {
+        \\        return 0
+        \\    }
+        \\}
+    );
+    defer program.deinit(testing.allocator);
+
+    const fn_stmt = program.statements[0].FnDecl;
+    const first = fn_stmt.body.statements[0];
+    try testing.expect(first == .IfStmt);
+    try testing.expect(first.IfStmt.else_block != null);
+}

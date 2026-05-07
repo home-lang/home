@@ -3869,26 +3869,59 @@ pub const Parser = struct {
     }
 
     /// Parse an if-let statement: if let Some(x) = expr { ... }
-    /// Also supports qualified patterns: if let Option.Some(x) = expr { ... }
+    /// Also supports:
+    ///   - Qualified patterns: `if let Option.Some(x) = expr { ... }`
+    ///   - Rust `::` qualifier: `if let Option::Some(x) = expr { ... }`
+    ///   - Dot-prefixed variants: `if let .Some(x) = expr { ... }`
+    ///   - Rust-style binding modifiers: `if let Some(ref mut x) = expr { ... }`
+    ///     (`ref` and `mut` are accepted and treated as a plain binding name —
+    ///     borrow/mutability semantics are downstream future work, see #62.)
+    ///   - Wildcard / discard binding: `if let Some(_) = expr { ... }`
     fn ifLetStatement(self: *Parser, if_token: Token) !ast.Stmt {
-        // Parse pattern: Some(x), Ok(value), None, Option.Some(x), etc.
-        const first_token = try self.expect(.Identifier, "Expected pattern name after 'if let'");
-        var pattern = first_token.lexeme;
+        // Parse pattern. A leading `.` allows dot-prefixed variants like
+        // `.Some(x)` / `.Ok(v)` (Home's existing enum-variant-shorthand).
+        // In that case the pattern lexeme is just the bare variant name —
+        // codegen looks variants up by name across all enum layouts.
+        var pattern: []const u8 = undefined;
+        if (self.match(&.{.Dot})) {
+            const variant_token = try self.expect(.Identifier, "Expected variant name after '.' in 'if let' pattern");
+            pattern = variant_token.lexeme;
+        } else {
+            const first_token = try self.expect(.Identifier, "Expected pattern name after 'if let'");
+            pattern = first_token.lexeme;
 
-        // Handle qualified pattern like Option.Some or Result.Ok
-        // Also accepts Rust-style Option::Some (treated identically).
-        if (self.match(&.{ .Dot, .ColonColon })) {
-            const variant_token = try self.expect(.Identifier, "Expected variant name after '.'");
-            // Concatenate the pattern: "Option.Some"
-            const full_pattern = try std.fmt.allocPrint(self.allocator, "{s}.{s}", .{ pattern, variant_token.lexeme });
-            pattern = full_pattern;
+            // Handle qualified pattern like Option.Some or Result.Ok
+            // Also accepts Rust-style Option::Some (treated identically).
+            if (self.match(&.{ .Dot, .ColonColon })) {
+                const variant_token = try self.expect(.Identifier, "Expected variant name after '.'");
+                // Concatenate the pattern: "Option.Some"
+                const full_pattern = try std.fmt.allocPrint(self.allocator, "{s}.{s}", .{ pattern, variant_token.lexeme });
+                pattern = full_pattern;
+            }
         }
 
-        // Check for binding: Some(x) vs None
+        // Check for binding: Some(x) vs None.
+        //
+        // Inside the parens we accept Rust-style binding modifiers in any
+        // combination: `x`, `mut x`, `ref x`, `ref mut x`. These modifiers
+        // are parser-only for now — semantically the binding is the inner
+        // identifier. (See issue #62: full borrow/mutability semantics are
+        // downstream work; the kernel only needs the syntax to parse.)
+        //
+        // We also accept `_` as a discard binding (lowered to `null`).
         var binding: ?[]const u8 = null;
         if (self.match(&.{.LeftParen})) {
+            // Skip optional `ref` (contextual keyword — arrives as Identifier).
+            if (self.check(.Identifier) and std.mem.eql(u8, self.peek().lexeme, "ref")) {
+                _ = self.advance();
+            }
+            // Skip optional `mut` (real keyword token).
+            _ = self.match(&.{.Mut});
+
             const binding_token = try self.expect(.Identifier, "Expected binding name in pattern");
-            binding = binding_token.lexeme;
+            if (!std.mem.eql(u8, binding_token.lexeme, "_")) {
+                binding = binding_token.lexeme;
+            }
             _ = try self.expect(.RightParen, "Expected ')' after binding name");
         }
 
