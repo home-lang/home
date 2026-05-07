@@ -8103,3 +8103,34 @@ test "checker: `new ConcreteSubclass()` of an abstract class is allowed" {
         try T.expect(d.code != TsCodes.abstract_class_instantiation);
     }
 }
+
+test "checker: default type parameter — `function f<T = string>(x?: T): T` returns string when called bare" {
+    const s = try newSetup(
+        \\function f<T = string>(x?: T): T { return x as T; }
+        \\let r = f();
+    );
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+    const stmts = hir_mod.blockStmts(&s.hir, s.root);
+    // `let r = f();` — the call's inferred return type should fall
+    // back to the declaration-site default `string`.
+    const decl = hir_mod.varDeclOf(&s.hir, stmts[1]);
+    const call_expr = decl.init;
+    try T.expectEqual(types.Primitive.string_t, s.hir.typeOf(call_expr));
+}
+
+test "checker: default type parameter — `type Box<T = number>` resolves bare `Box` to `{ value: number }`" {
+    const s = try newSetup(
+        \\type Box<T = number> = { value: T };
+        \\const b: Box = { value: 1 };
+    );
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+    // No TS2314 (generic type requires type arguments) and no TS2322
+    // (assignment mismatch). The default `number` should fill `T` so
+    // `{ value: 1 }` matches `{ value: number }`.
+    for (s.checker.diagnostics.items) |d| {
+        try T.expect(d.code != TsCodes.generic_type_requires_args);
+        try T.expect(d.code != TsCodes.type_not_assignable);
+    }
+}
