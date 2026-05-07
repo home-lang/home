@@ -4077,12 +4077,13 @@ pub const Checker = struct {
 
     /// Post-statement narrowing for logical assignments. Recognizes
     /// the lowered shape `target = target <op> value` produced by
-    /// the parser for `??=` (and `||=`/`&&=`, which lower the same
-    /// way). After `x ??= "default"`, narrows `x` to its non-nullish
-    /// type unioned with the rhs's type — so a subsequent
-    /// `const r: string = x` where `x: string | null` typechecks.
-    /// v0 only narrows for `??=`; `||=`/`&&=` truthiness narrowing
-    /// is deferred.
+    /// the parser for `??=`, `||=`, and `&&=`. After `x ??= "default"`
+    /// narrows `x` to its non-nullish type unioned with the rhs's
+    /// type. For `||=` and `&&=` we use a v0 approximation: subtract
+    /// `null | undefined` from the lhs and union with rhs's type.
+    /// This handles the common `string | null | undefined` cases
+    /// that motivate the operators; richer truthy/falsy partitioning
+    /// is deferred until the relation engine models truthiness.
     fn applyLogicalAssignmentFlow(self: *Checker, stmt: NodeId) !void {
         if (self.hir.kindOf(stmt) != .assignment) return;
         const a = hir_mod.assignmentOf(self.hir, stmt);
@@ -4097,13 +4098,30 @@ pub const Checker = struct {
         if (self.hir.kindOf(l.lhs) != .identifier) return;
         const lhs_id = hir_mod.identifierOf(self.hir, l.lhs);
         if (lhs_id.name != target_id.name) return;
-        if (l.op != .nullish) return; // v0: only `??=` narrows
-        // Use the assignment value's already-computed type — for the
-        // `target ?? rhs` shape this is `(target minus null|undefined)
-        // | rhs_type`, exactly what we want to narrow `target` to.
-        const value_t = self.hir.typeOf(a.value);
-        if (value_t == types.Primitive.none) return;
-        try self.recordNarrow(target_id.name, value_t);
+        switch (l.op) {
+            .nullish => {
+                // For `??=` reuse the assignment value's type — it's
+                // already `(target minus null|undefined) | rhs_type`
+                // because checkLogical specially handles `??`.
+                const value_t = self.hir.typeOf(a.value);
+                if (value_t == types.Primitive.none) return;
+                try self.recordNarrow(target_id.name, value_t);
+            },
+            .@"or", .@"and" => {
+                // checkLogical produces `lhs | rhs` for `||`/`&&`,
+                // which doesn't actually narrow. Compute a v0
+                // approximation: drop null/undefined from the lhs
+                // and union with the rhs. That covers the common
+                // `string | null | undefined` shapes without modeling
+                // full truthiness.
+                const lhs_t = self.hir.typeOf(l.lhs);
+                const rhs_t = self.hir.typeOf(l.rhs);
+                if (lhs_t == types.Primitive.none or rhs_t == types.Primitive.none) return;
+                const lhs_non_null = self.subtractNullUndefined(lhs_t) catch lhs_t;
+                const narrowed = self.interner.internUnion(&.{ lhs_non_null, rhs_t }) catch return;
+                try self.recordNarrow(target_id.name, narrowed);
+            },
+        }
     }
 
     /// Assertion-function flow narrowing. If `stmt` is a call to a
@@ -6991,6 +7009,28 @@ test "checker: ??= narrows the assignment target to non-nullish" {
     try T.expectEqual(@as(usize, 0), s.checker.diagnostics.items.len);
 }
 
+test "checker: ||= narrows the assignment target by dropping nullish" {
+    // After `x ||= "default"`, `x: string | null` becomes `string`
+    // for subsequent statements (v0 approximation).
+    const s = try newSetup(
+        \\function f(x: string | null) { x ||= "default"; const r: string = x; }
+    );
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+    try T.expectEqual(@as(usize, 0), s.checker.diagnostics.items.len);
+}
+
+test "checker: &&= narrows the assignment target by dropping nullish" {
+    // After `x &&= ""`, `x: string | undefined` becomes `string`
+    // for subsequent statements (v0 approximation).
+    const s = try newSetup(
+        \\function f(x: string | undefined) { x &&= ""; const r: string = x; }
+    );
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+    try T.expectEqual(@as(usize, 0), s.checker.diagnostics.items.len);
+}
+
 test "checker: optional chaining widens the result with undefined" {
     const s = try newSetup(
         \\interface Box { value: number; }
@@ -9179,6 +9219,52 @@ test "checker: array destructuring with default strips undefined" {
     for (s.checker.diagnostics.items) |d| {
         try T.expect(d.code != TsCodes.type_not_assignable);
     }
+}
+
+test "checker: rest parameter — body sees `rest` as `number[]`" {
+    // `function f(...rest: number[])` — inside the body `rest`
+    // is bound as `number[]`, so `const a: number[] = rest`
+    // typechecks without TS2322.
+    const s = try newSetup(
+        \\function f(...rest: number[]) { const a: number[] = rest; }
+    );
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+    for (s.checker.diagnostics.items) |d| {
+        try T.expect(d.code != TsCodes.type_not_assignable);
+    }
+}
+
+test "checker: rest parameter — call site `f(1, 2, 3)` accepted" {
+    // Variadic call: a rest parameter consumes any number of
+    // positional arguments whose individual type is the rest's
+    // element type. No TS2554 (count) and no TS2345 (type).
+    const s = try newSetup(
+        \\function f(...rest: number[]) {}
+        \\f(1, 2, 3);
+    );
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+    for (s.checker.diagnostics.items) |d| {
+        try T.expect(d.code != TsCodes.expected_n_arguments);
+        try T.expect(d.code != TsCodes.argument_type_mismatch);
+    }
+}
+
+test "checker: rest parameter — wrong-typed arg emits TS2345" {
+    // `f("s")` against `function f(...rest: number[])` — the
+    // string is not assignable to the rest's element type.
+    const s = try newSetup(
+        \\function f(...rest: number[]) {}
+        \\f("s");
+    );
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+    var found = false;
+    for (s.checker.diagnostics.items) |d| {
+        if (d.code == TsCodes.argument_type_mismatch) found = true;
+    }
+    try T.expect(found);
 }
 
 
