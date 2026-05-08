@@ -68,6 +68,7 @@ pub fn run(gpa: std.mem.Allocator, c: Case) !Result {
     var compilation = ts_driver.compileSource(gpa, c.source, .{
         .is_tsx = c.is_tsx,
         .continue_on_error = true,
+        .no_emit = true,
     }) catch |err| {
         const detail = try std.fmt.allocPrint(gpa, "compile failed: {s}", .{@errorName(err)});
         return .{
@@ -235,6 +236,34 @@ pub const Stats = struct {
     }
 };
 
+pub const CategorySpec = struct {
+    /// Stable display label, e.g. `types/typeRelationships`.
+    label: []const u8,
+    /// Path relative to the local TS conformance root.
+    rel_path: []const u8,
+};
+
+pub const CategoryResult = struct {
+    label: []u8,
+    path: []u8,
+    stats: Stats,
+};
+
+pub fn freeResults(gpa: std.mem.Allocator, results: []const Result) void {
+    for (results) |r| {
+        gpa.free(r.name);
+        if (r.detail.len > 0) gpa.free(r.detail);
+    }
+}
+
+pub fn freeCategoryResults(gpa: std.mem.Allocator, cats: []const CategoryResult) void {
+    for (cats) |c| {
+        gpa.free(c.label);
+        gpa.free(c.path);
+    }
+    gpa.free(cats);
+}
+
 fn run_(gpa: std.mem.Allocator, c: Case) !Result {
     return try run(gpa, c);
 }
@@ -375,11 +404,64 @@ pub fn runDirectory(
     return runOwnedCorpus(gpa, corpus, results);
 }
 
+/// Run named conformance categories relative to `root_path`.
+/// Each category walks recursively through its directory and returns
+/// aggregate `Stats`; per-file results are intentionally discarded
+/// after each category so full-suite surveys don't retain thousands
+/// of diagnostic strings.
+pub fn runCategorySpecs(
+    gpa: std.mem.Allocator,
+    root_path: []const u8,
+    specs: []const CategorySpec,
+) ![]CategoryResult {
+    var cats: std.ArrayListUnmanaged(CategoryResult) = .empty;
+    errdefer {
+        for (cats.items) |c| {
+            gpa.free(c.label);
+            gpa.free(c.path);
+        }
+        cats.deinit(gpa);
+    }
+
+    for (specs) |spec| {
+        const path = try std.fmt.allocPrint(gpa, "{s}/{s}", .{ root_path, spec.rel_path });
+        errdefer gpa.free(path);
+
+        var results: std.ArrayListUnmanaged(Result) = .empty;
+        defer {
+            freeResults(gpa, results.items);
+            results.deinit(gpa);
+        }
+
+        const stats = try runDirectory(gpa, path, &results);
+        const label = try gpa.dupe(u8, spec.label);
+        errdefer gpa.free(label);
+        try cats.append(gpa, .{
+            .label = label,
+            .path = path,
+            .stats = stats,
+        });
+    }
+
+    return cats.toOwnedSlice(gpa);
+}
+
+pub fn combineCategoryStats(cats: []const CategoryResult) Stats {
+    var out: Stats = .{};
+    for (cats) |c| {
+        out.passed += c.stats.passed;
+        out.failed += c.stats.failed;
+        out.skipped += c.stats.skipped;
+    }
+    return out;
+}
+
 fn runOneEntry(gpa: std.mem.Allocator, entry: CorpusEntry) !Result {
     const name_owned = try gpa.dupe(u8, entry.name);
     var compilation = ts_driver.compileSource(gpa, entry.source, .{
         .is_tsx = entry.is_tsx,
         .continue_on_error = true,
+        .no_emit = true,
     }) catch |err| {
         const detail = try std.fmt.allocPrint(gpa, "compile crash: {s}", .{@errorName(err)});
         return .{
@@ -421,6 +503,7 @@ pub fn runCorpus(
         var compilation = ts_driver.compileSource(gpa, entry.source, .{
             .is_tsx = entry.is_tsx,
             .continue_on_error = true,
+            .no_emit = true,
         }) catch |err| {
             const detail = try std.fmt.allocPrint(gpa, "compile crash: {s}", .{@errorName(err)});
             try results.append(gpa, .{
@@ -704,10 +787,7 @@ fn runConformanceSubset(
 
     var results: std.ArrayListUnmanaged(Result) = .empty;
     defer {
-        for (results.items) |r| {
-            gpa.free(r.name);
-            if (r.detail.len > 0) gpa.free(r.detail);
-        }
+        freeResults(gpa, results.items);
         results.deinit(gpa);
     }
 
@@ -778,6 +858,42 @@ test "conformance: smoke-run local TS conformance subdirectories" {
     // Per-case pass/fail isn't asserted — the expectation is that
     // the runner doesn't crash on real-world dirs of TS files.
     try T.expect(combined.total() > 0);
+}
+
+test "conformance: category specs summarize local TS feature folders" {
+    const ts_conformance_root = "/Users/chrisbreuer/Code/typescript-go/_submodules/TypeScript/tests/cases/conformance";
+    {
+        var threaded = std.Io.Threaded.init(T.allocator, .{});
+        defer threaded.deinit();
+        const io = threaded.io();
+        std.Io.Dir.cwd().access(io, ts_conformance_root, .{}) catch return;
+    }
+
+    const specs = [_]CategorySpec{
+        .{ .label = "types/typeRelationships/assignmentCompatibility", .rel_path = "types/typeRelationships/assignmentCompatibility" },
+        .{ .label = "types/typeRelationships/comparable", .rel_path = "types/typeRelationships/comparable" },
+        .{ .label = "expressions/binaryOperators/inOperator", .rel_path = "expressions/binaryOperators/inOperator" },
+        .{ .label = "types/primitives/stringLiteral", .rel_path = "types/primitives/stringLiteral" },
+    };
+
+    const cats = try runCategorySpecs(T.allocator, ts_conformance_root, &specs);
+    defer freeCategoryResults(T.allocator, cats);
+    const combined = combineCategoryStats(cats);
+
+    for (cats) |cat| {
+        std.debug.print(
+            "[ts_conformance category] {s}: total={d} passed={d} failed={d} skipped={d} pass_rate={d:.2}\n",
+            .{ cat.label, cat.stats.total(), cat.stats.passed, cat.stats.failed, cat.stats.skipped, cat.stats.passRate() },
+        );
+    }
+    std.debug.print(
+        "[ts_conformance category] COMBINED: total={d} passed={d} failed={d} skipped={d} pass_rate={d:.2}\n",
+        .{ combined.total(), combined.passed, combined.failed, combined.skipped, combined.passRate() },
+    );
+
+    try T.expectEqual(@as(usize, specs.len), cats.len);
+    try T.expectEqual(@as(u32, 86), combined.total());
+    try T.expectEqual(combined.total(), combined.passed);
 }
 
 test "conformance: runOwnedCorpus matches runCorpus on equal inputs" {

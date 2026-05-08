@@ -97,6 +97,9 @@ pub const CompileOptions = struct {
     /// If true, errors during emit fall back to "best effort" — we
     /// emit what we have and record the diagnostic.
     continue_on_error: bool = true,
+    /// Type-check only. Used by `--noEmit` and conformance surveys
+    /// that are checking diagnostics rather than JS output.
+    no_emit: bool = false,
     /// Treat the source as `.tsx` — enables JSX parsing.
     is_tsx: bool = false,
     /// CLI `--strict` override. When null, defer to tsconfig or the
@@ -397,24 +400,28 @@ pub fn compileSource(
     }
 
     // ------ Emit ------
-    var printer = ts_emit.Printer.init(gpa, &c.hir, &c.interner, options.emit);
-    defer printer.deinit();
-    if (c.root != hir_mod.none_node_id) {
-        printer.printSourceFile(c.root) catch |err| switch (err) {
-            error.OutOfMemory => return error.OutOfMemory,
-            else => {
-                if (!options.continue_on_error) return error.EmitError;
-                try c.diagnostics.append(gpa, .{
-                    .phase = .emit,
-                    .pos = 0,
-                    .line = 0,
-                    .message = try gpa.dupe(u8, "emit error"),
-                });
-                c.has_errors = true;
-            },
-        };
+    if (options.no_emit) {
+        c.js = try gpa.dupe(u8, "");
+    } else {
+        var printer = ts_emit.Printer.init(gpa, &c.hir, &c.interner, options.emit);
+        defer printer.deinit();
+        if (c.root != hir_mod.none_node_id) {
+            printer.printSourceFile(c.root) catch |err| switch (err) {
+                error.OutOfMemory => return error.OutOfMemory,
+                else => {
+                    if (!options.continue_on_error) return error.EmitError;
+                    try c.diagnostics.append(gpa, .{
+                        .phase = .emit,
+                        .pos = 0,
+                        .line = 0,
+                        .message = try gpa.dupe(u8, "emit error"),
+                    });
+                    c.has_errors = true;
+                },
+            };
+        }
+        c.js = printer.toOwnedSlice() catch return error.OutOfMemory;
     }
-    c.js = printer.toOwnedSlice() catch return error.OutOfMemory;
 
     return c;
 }

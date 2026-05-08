@@ -225,6 +225,7 @@ pub fn main(init: std.process.Init) !void {
     else
         .{};
     compile_opts.strict = opts.strict;
+    compile_opts.no_emit = opts.no_emit;
 
     // §2.1 — `--listFiles` / `--listFilesOnly`. Print every input
     // path the program will compile. `--listFilesOnly` exits before
