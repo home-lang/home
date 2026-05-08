@@ -3579,13 +3579,46 @@ pub const Parser = struct {
         while (i < self.tokens.len and self.tokens[i].type == .Question) : (i += 1) {}
         if (i >= self.tokens.len) return false;
         if (self.tokens[i].type != .Fn) return false;
-        // Require the following `(` to disambiguate from any future
-        // expression-position use of `fn` (closures, etc.). `fn` in
-        // expression position today is always followed by an
-        // identifier (function declaration), never `(`.
         const after_fn = i + 1;
         if (after_fn >= self.tokens.len) return false;
-        return self.tokens[after_fn].type == .LeftParen;
+        if (self.tokens[after_fn].type != .LeftParen) return false;
+
+        // Disambiguate `const f = fn(...) Ret { body }` (lambda expression)
+        // from `const Alias = fn(...) Ret` (function-type alias) by scanning
+        // past the matching `)` and any return-type tokens. If we land on
+        // `{`, treat the RHS as a lambda — return false so the caller
+        // routes through expression() and `primary()` parses the lambda.
+        var depth: i32 = 1;
+        var j: usize = after_fn + 1;
+        while (j < self.tokens.len and depth > 0) : (j += 1) {
+            switch (self.tokens[j].type) {
+                .LeftParen => depth += 1,
+                .RightParen => depth -= 1,
+                else => {},
+            }
+        }
+        // Walk a small window past `)` to find a `{` that opens a
+        // lambda body. Stop on any token that clearly ends the current
+        // declaration: a statement terminator, a top-level keyword
+        // (which would begin the next decl), `=`, `:`, etc.
+        const limit = @min(self.tokens.len, j + 12);
+        var k: usize = j;
+        while (k < limit) : (k += 1) {
+            const tt = self.tokens[k].type;
+            if (tt == .LeftBrace) return false; // lambda body
+            if (tt == .Semicolon or tt == .Eof) break;
+            // Tokens that can begin a new declaration / statement —
+            // seeing them means we walked past the current `const X = fn(...)`
+            // line without finding a brace, so it's a type alias.
+            if (tt == .Pub or tt == .Const or tt == .Let or tt == .Var or
+                tt == .Fn or tt == .Struct or tt == .Enum or tt == .Trait or
+                tt == .Impl or tt == .Export or tt == .Extern or tt == .Type or
+                tt == .Import or tt == .Equal)
+            {
+                break;
+            }
+        }
+        return true;
     }
 
     /// Parse the right-hand side of `const Name = <kind> { ... }`.
@@ -5580,6 +5613,35 @@ pub const Parser = struct {
                 expr = try self.rangeExpr(expr);
             } else if (self.match(&.{.PipeGreater})) {
                 expr = try self.pipeExpr(expr);
+            } else if (self.match(&.{.Catch})) {
+                // Zig-style `expr catch fallback` and
+                // `expr catch |err| body` — the fallback expression
+                // (or block) provides the value when expr is an error.
+                // Optional `|err|` payload binds the error name; consumed
+                // and discarded here since codegen reads the catch shape
+                // off TryExpr.
+                if (self.match(&.{.Pipe})) {
+                    const tok = self.advance();
+                    if (tok.type != .Identifier) {
+                        try self.reportError("Expected error name in catch payload");
+                        return error.UnexpectedToken;
+                    }
+                    _ = try self.expect(.Pipe, "Expected '|' after catch payload");
+                }
+                const catch_token = self.previous();
+                const fallback = if (self.check(.LeftBrace)) blk: {
+                    _ = self.advance();
+                    break :blk try self.blockExprParse();
+                } else try self.parsePrecedence(.Assignment);
+                const try_expr = try ast.TryExpr.initWithElse(
+                    self.allocator,
+                    expr,
+                    fallback,
+                    ast.SourceLocation.fromToken(catch_token),
+                );
+                const result = try self.allocator.create(ast.Expr);
+                result.* = ast.Expr{ .TryExpr = try_expr };
+                expr = result;
             } else if (self.match(&.{.QuestionQuestion})) {
                 expr = try self.nullCoalesceExpr(expr);
             } else if (self.match(&.{.QuestionColon})) {
@@ -7341,6 +7403,61 @@ pub const Parser = struct {
         // Closure expression: |params| body or || body (zero params)
         if (self.check(.Pipe) or self.check(.PipePipe)) {
             return try self.parseClosureExpr();
+        }
+
+        // Lambda-as-expression: `fn(params) ReturnType { body }` — used
+        // in kernel code as `const f = fn(...) T { ... };`. Parsed as a
+        // synthetic closure so it shares downstream code paths.
+        if (self.check(.Fn) and self.peekNext().type == .LeftParen) {
+            const start_token = self.advance(); // consume 'fn'
+            _ = try self.expect(.LeftParen, "Expected '(' after 'fn' in lambda");
+
+            var params = std.ArrayList(ast.ClosureParam).empty;
+            defer params.deinit(self.allocator);
+            while (!self.check(.RightParen) and !self.isAtEnd()) {
+                const param_token = try self.expect(.Identifier, "Expected parameter name");
+                const param_name = try self.allocator.dupe(u8, param_token.lexeme);
+                if (self.match(&.{.Colon})) {
+                    // Consume the parameter type but don't bind it on the
+                    // closure node — lambda type-checking is best-effort
+                    // for now and the parsed type goes unused.
+                    const ty = try self.parseTypeAnnotation();
+                    self.allocator.free(ty);
+                }
+                try params.append(self.allocator, .{
+                    .name = param_name,
+                    .type_annotation = null,
+                    .is_mut = false,
+                });
+                if (!self.match(&.{.Comma})) break;
+            }
+            _ = try self.expect(.RightParen, "Expected ')' after lambda parameters");
+
+            // Optional return type. Accept `: T`, `-> T`, or Zig-style
+            // bare-type before the body brace.
+            if (self.match(&.{ .Colon, .Arrow })) {
+                const rt = try self.parseTypeAnnotation();
+                self.allocator.free(rt);
+            } else if (!self.check(.LeftBrace) and !self.isAtEnd()) {
+                const rt = try self.parseTypeAnnotation();
+                self.allocator.free(rt);
+            }
+
+            const block_stmt = try self.blockStatement();
+            const captures = try self.allocator.alloc(ast.Capture, 0);
+            const closure = try self.allocator.create(ast.ClosureExpr);
+            closure.* = ast.ClosureExpr.init(
+                try params.toOwnedSlice(self.allocator),
+                null,
+                .{ .Block = block_stmt },
+                captures,
+                false,
+                false,
+                ast.SourceLocation.fromToken(start_token),
+            );
+            const expr = try self.allocator.create(ast.Expr);
+            expr.* = .{ .ClosureExpr = closure };
+            return expr;
         }
 
         // `unsafe { ... }` as an expression is a no-op block prefix —
