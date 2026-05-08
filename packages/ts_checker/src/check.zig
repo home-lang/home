@@ -3230,6 +3230,7 @@ pub const Checker = struct {
                 for (members) |m| try ms.append(self.gpa, try self.lowererLowerWithTypeParams(m));
                 return self.interner.internIntersection(ms.items) catch return error.OutOfMemory;
             },
+            .tuple_type => return try self.lowerTupleWithTypeParams(type_node),
             .type_ref => {
                 const r = hir_mod.typeRefOf(self.hir, type_node);
                 if (r.qualifier_len == 0 and r.args_len == 0) {
@@ -3578,6 +3579,123 @@ pub const Checker = struct {
         return self.lowerer.lower(type_node);
     }
 
+    fn lowerTupleWithTypeParams(self: *Checker, type_node: NodeId) CheckError!TypeId {
+        const elems = hir_mod.tupleTypeElements(self.hir, type_node);
+
+        var fixed_types: std.ArrayListUnmanaged(TypeId) = .empty;
+        defer fixed_types.deinit(self.gpa);
+        var rest_elem_types: std.ArrayListUnmanaged(TypeId) = .empty;
+        defer rest_elem_types.deinit(self.gpa);
+        var saw_unknown_rest = false;
+
+        for (elems) |e| {
+            if (self.hir.kindOf(e) == .rest_type) {
+                const rt = hir_mod.restTypeOf(self.hir, e);
+                const opk = self.hir.kindOf(rt.operand);
+                if (opk == .tuple_type) {
+                    const inner_elems = hir_mod.tupleTypeElements(self.hir, rt.operand);
+                    var inner_has_rest = false;
+                    for (inner_elems) |ie| {
+                        if (self.hir.kindOf(ie) == .rest_type) {
+                            inner_has_rest = true;
+                            break;
+                        }
+                    }
+                    if (!inner_has_rest) {
+                        for (inner_elems) |ie| {
+                            const t = try self.lowererLowerWithTypeParams(ie);
+                            try fixed_types.append(self.gpa, t);
+                        }
+                        continue;
+                    }
+                }
+                if (opk == .array_type) {
+                    const at = hir_mod.arrayTypeOf(self.hir, rt.operand);
+                    const elt = try self.lowererLowerWithTypeParams(at.element);
+                    try rest_elem_types.append(self.gpa, elt);
+                    saw_unknown_rest = true;
+                    continue;
+                }
+                const elt = try self.lowererLowerWithTypeParams(rt.operand);
+                try rest_elem_types.append(self.gpa, elt);
+                saw_unknown_rest = true;
+                continue;
+            }
+            const t = try self.lowererLowerWithTypeParams(e);
+            try fixed_types.append(self.gpa, t);
+        }
+
+        var members: std.ArrayListUnmanaged(types.ObjectMember) = .empty;
+        defer members.deinit(self.gpa);
+
+        const fixed_prefix_len: usize = if (saw_unknown_rest) blk: {
+            var n: usize = 0;
+            for (elems) |e| {
+                if (self.hir.kindOf(e) == .rest_type) {
+                    const rt = hir_mod.restTypeOf(self.hir, e);
+                    const opk = self.hir.kindOf(rt.operand);
+                    if (opk == .tuple_type) {
+                        const inner_elems = hir_mod.tupleTypeElements(self.hir, rt.operand);
+                        var inner_has_rest = false;
+                        for (inner_elems) |ie| {
+                            if (self.hir.kindOf(ie) == .rest_type) {
+                                inner_has_rest = true;
+                                break;
+                            }
+                        }
+                        if (!inner_has_rest) {
+                            n += inner_elems.len;
+                            continue;
+                        }
+                    }
+                    break;
+                }
+                n += 1;
+            }
+            break :blk n;
+        } else fixed_types.items.len;
+
+        var i: usize = 0;
+        while (i < fixed_prefix_len) : (i += 1) {
+            const t = fixed_types.items[i];
+            var nbuf: [12]u8 = undefined;
+            const name_str = std.fmt.bufPrint(&nbuf, "{d}", .{i}) catch continue;
+            const name = self.string_interner.intern(name_str) catch continue;
+            try members.append(self.gpa, .{
+                .name = name,
+                .type = t,
+                .is_optional = false,
+                .is_readonly = false,
+                .is_method = false,
+            });
+        }
+
+        const length_id = self.string_interner.intern("length") catch return error.OutOfMemory;
+        const length_t: TypeId = if (saw_unknown_rest)
+            types.Primitive.number_t
+        else
+            self.interner.internNumberLiteral(@floatFromInt(fixed_types.items.len)) catch types.Primitive.number_t;
+        try members.append(self.gpa, .{
+            .name = length_id,
+            .type = length_t,
+            .is_optional = false,
+            .is_readonly = true,
+            .is_method = false,
+        });
+
+        var idx_union: std.ArrayListUnmanaged(TypeId) = .empty;
+        defer idx_union.deinit(self.gpa);
+        for (fixed_types.items) |t| try idx_union.append(self.gpa, t);
+        for (rest_elem_types.items) |t| try idx_union.append(self.gpa, t);
+        const elem_union: TypeId = if (idx_union.items.len == 0)
+            types.Primitive.never
+        else if (idx_union.items.len == 1)
+            idx_union.items[0]
+        else
+            self.interner.internUnion(idx_union.items) catch types.Primitive.any;
+        return self.interner.internObjectTypeWithIndex(members.items, types.Primitive.none, elem_union) catch error.OutOfMemory;
+    }
+
     /// Evaluate `check extends ext ? tt : ff`. If either side carries a
     /// free type parameter (or a downstream conditional/keyof that
     /// hasn't reduced), defer by interning the conditional. If `check`
@@ -3766,6 +3884,10 @@ pub const Checker = struct {
         if (flags.is_object_type) {
             const members = self.interner.objectMembers(t);
             for (members) |m| if (self.containsFreeTypeParameter(m.type)) return true;
+            const string_idx = self.interner.objectStringIndex(t);
+            if (string_idx != types.Primitive.none and self.containsFreeTypeParameter(string_idx)) return true;
+            const number_idx = self.interner.objectNumberIndex(t);
+            if (number_idx != types.Primitive.none and self.containsFreeTypeParameter(number_idx)) return true;
             return false;
         }
         if (flags.is_signature) {
@@ -3773,6 +3895,25 @@ pub const Checker = struct {
             for (params) |p| if (self.containsFreeTypeParameter(p)) return true;
             if (self.interner.signatureReturn(t)) |r| if (self.containsFreeTypeParameter(r)) return true;
             return false;
+        }
+        if (flags.is_keyof) {
+            const payload_idx = self.interner.pool.payloadOf(t);
+            if (payload_idx >= self.interner.pool.keyof_payloads.items.len) return false;
+            const k = self.interner.pool.keyof_payloads.items[payload_idx];
+            return self.containsFreeTypeParameter(k.operand);
+        }
+        if (flags.is_indexed_access) {
+            const payload_idx = self.interner.pool.payloadOf(t);
+            if (payload_idx >= self.interner.pool.indexed_access_payloads.items.len) return false;
+            const ia = self.interner.pool.indexed_access_payloads.items[payload_idx];
+            return self.containsFreeTypeParameter(ia.object) or self.containsFreeTypeParameter(ia.index);
+        }
+        if (flags.is_conditional) {
+            const c = self.interner.conditionalPayload(t);
+            return self.containsFreeTypeParameter(c.check_type) or
+                self.containsFreeTypeParameter(c.extends_type) or
+                self.containsFreeTypeParameter(c.true_branch) or
+                self.containsFreeTypeParameter(c.false_branch);
         }
         return false;
     }
@@ -4211,7 +4352,24 @@ pub const Checker = struct {
                     if (self.class_constructor_sigs.get(id.name)) |ctor_sig| {
                         try self.checkArgsAgainstSignature(node, args, arg_types.items, ctor_sig);
                     }
-                    if (self.class_instance_types.get(id.name)) |inst| break :blk inst;
+                    if (self.class_instance_types.get(id.name)) |inst| {
+                        const type_arg_nodes = hir_mod.callTypeArgs(self.hir, node);
+                        if (type_arg_nodes.len > 0) {
+                            if (self.generic_aliases.get(id.name)) |info| {
+                                var subs: std.AutoHashMapUnmanaged(TypeId, TypeId) = .empty;
+                                defer subs.deinit(self.gpa);
+                                const n = @min(type_arg_nodes.len, info.params.len);
+                                for (0..n) |i| {
+                                    const explicit_t = self.lowererLowerWithTypeParams(type_arg_nodes[i]) catch types.Primitive.unknown;
+                                    try subs.put(self.gpa, info.params[i], explicit_t);
+                                }
+                                if (subs.count() > 0) {
+                                    break :blk self.substituteType(info.body, &subs) catch inst;
+                                }
+                            }
+                        }
+                        break :blk inst;
+                    }
                 }
                 break :blk types.Primitive.any;
             },
@@ -6072,10 +6230,24 @@ pub const Checker = struct {
             const pp = self.interner.signatureParams(param_t);
             const ap = self.interner.signatureParams(arg_t);
             const m = @min(pp.len, ap.len);
-            for (0..m) |i| try self.inferFromPair(pp[i], ap[i], subs);
+            var source_subs: std.AutoHashMapUnmanaged(TypeId, TypeId) = .empty;
+            defer source_subs.deinit(self.gpa);
+            for (0..m) |i| {
+                const expected_param = self.substituteType(pp[i], subs) catch pp[i];
+                const actual_param = ap[i];
+                const af = pool.flagsOf(actual_param);
+                if (af.is_type_parameter) {
+                    if (!source_subs.contains(actual_param)) {
+                        try source_subs.put(self.gpa, actual_param, expected_param);
+                    }
+                    continue;
+                }
+                try self.inferFromPair(expected_param, actual_param, subs);
+            }
             if (self.interner.signatureReturn(param_t)) |pr| {
                 if (self.interner.signatureReturn(arg_t)) |ar| {
-                    try self.inferFromPair(pr, ar, subs);
+                    const actual_ret = self.substituteType(ar, &source_subs) catch ar;
+                    try self.inferFromPair(pr, actual_ret, subs);
                 }
             }
             return;
@@ -6440,7 +6612,80 @@ pub const Checker = struct {
         if (self.hir.kindOf(arg_node) == .object_literal) {
             if (try self.objectLiteralAssignableToTarget(arg_node, arg_t, param_t)) return true;
         }
+        if (self.hir.kindOf(arg_node) == .array_literal) {
+            if (self.containsFreeTypeParameter(param_t)) return true;
+            if (try self.arrayLiteralAssignableToTarget(arg_node, param_t)) return true;
+        }
+        if (try self.contextualCallReturnAssignableToParam(arg_node, param_t)) return true;
         return self.engine.isAssignableTo(arg_t, param_t);
+    }
+
+    fn contextualCallReturnAssignableToParam(self: *Checker, arg_node: NodeId, param_t: TypeId) !bool {
+        if (self.hir.kindOf(arg_node) != .call_expr) return false;
+        const c = hir_mod.callOf(self.hir, arg_node);
+        var callee_t = self.hir.typeOf(c.callee);
+        if (callee_t == types.Primitive.none) {
+            callee_t = try self.checkExpression(c.callee);
+        }
+        if (callee_t >= self.interner.pool.typeCount()) return false;
+        if (!self.interner.pool.flagsOf(callee_t).is_signature) return false;
+        const ret_t = self.interner.signatureReturn(callee_t) orelse return false;
+        if ((ret_t == types.Primitive.any or ret_t == types.Primitive.unknown) and
+            self.callHasFreeGenericArrayArgument(arg_node, callee_t))
+        {
+            return true;
+        }
+
+        var subs: std.AutoHashMapUnmanaged(TypeId, TypeId) = .empty;
+        defer subs.deinit(self.gpa);
+        try self.inferFromPair(ret_t, param_t, &subs);
+        if (subs.count() == 0) return false;
+
+        const instantiated_sig = self.substituteType(callee_t, &subs) catch return false;
+        if (instantiated_sig >= self.interner.pool.typeCount()) return false;
+        if (!self.interner.pool.flagsOf(instantiated_sig).is_signature) return false;
+        const instantiated_ret = self.interner.signatureReturn(instantiated_sig) orelse ret_t;
+        if (!(self.engine.isAssignableTo(instantiated_ret, param_t) catch false)) return false;
+
+        const inner_args = hir_mod.callArgs(self.hir, arg_node);
+        var inner_arg_types: std.ArrayListUnmanaged(TypeId) = .empty;
+        defer inner_arg_types.deinit(self.gpa);
+        for (inner_args) |inner_arg| {
+            var inner_t = self.hir.typeOf(inner_arg);
+            if (inner_t == types.Primitive.none) {
+                inner_t = try self.checkExpression(inner_arg);
+            }
+            try inner_arg_types.append(self.gpa, inner_t);
+        }
+        try self.checkArgsAgainstSignature(arg_node, inner_args, inner_arg_types.items, instantiated_sig);
+        return true;
+    }
+
+    fn callHasFreeGenericArrayArgument(self: *Checker, call_node: NodeId, sig: TypeId) bool {
+        const args = hir_mod.callArgs(self.hir, call_node);
+        const params = self.interner.signatureParams(sig);
+        const n = @min(args.len, params.len);
+        for (0..n) |i| {
+            if (self.hir.kindOf(args[i]) == .array_literal and self.containsFreeTypeParameter(params[i])) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    fn arrayLiteralAssignableToTarget(self: *Checker, arg_node: NodeId, target_t: TypeId) !bool {
+        if (target_t < types.Primitive.first_dynamic or target_t >= self.interner.pool.typeCount()) return false;
+        if (!self.interner.pool.flagsOf(target_t).is_object_type) return false;
+        const elem_target = self.interner.objectNumberIndex(target_t);
+        if (elem_target == types.Primitive.none) return false;
+        for (hir_mod.arrayLiteralElements(self.hir, arg_node)) |el| {
+            if (el == hir_mod.none_node_id) continue;
+            if (try self.literalExpressionAssignableToTarget(el, elem_target)) continue;
+            var elem_t = self.hir.typeOf(el);
+            if (elem_t == types.Primitive.none) elem_t = try self.checkExpression(el);
+            if (!(self.engine.isAssignableTo(elem_t, elem_target) catch false)) return false;
+        }
+        return true;
     }
 
     fn objectLiteralAssignableToTarget(self: *Checker, arg_node: NodeId, arg_t: TypeId, target_t: TypeId) !bool {
@@ -7893,6 +8138,16 @@ test "checker: interface property must match string index signature" {
         if (d.code == TsCodes.property_not_assignable_to_index_type) found = true;
     }
     try T.expect(found);
+}
+
+test "checker: new expression explicit class type args instantiate instance" {
+    const s = try newSetup(
+        \\class Box<T> { value: T; }
+        \\const b: Box<number> = new Box<number>();
+    );
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+    try T.expectEqual(@as(usize, 0), s.checker.diagnostics.items.len);
 }
 
 test "checker: generic class type annotation substitutes type parameters" {
@@ -9845,6 +10100,37 @@ test "checker: contextual generic callback instantiation rejects conflicting par
     try T.expect(s.checker.diagnostics.items.len > 0);
 }
 
+test "checker: higher-order generic compose instantiates callback returns" {
+    const s = try newSetup(
+        \\type Box<T> = { value: T };
+        \\declare function compose<A, B, C>(f: (a: A) => B, g: (b: B) => C): (a: A) => C;
+        \\declare function list<T>(a: T): T[];
+        \\declare function box<V>(x: V): Box<V>;
+        \\const f: <T>(x: T) => Box<T[]> = compose(list, box);
+    );
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+    try T.expectEqual(@as(usize, 0), s.checker.diagnostics.items.len);
+}
+
+test "checker: nested generic call uses expected return for keyof inference" {
+    const b = try newBoundSetup(
+        \\declare class Table<Req, Def> { protected dummy: [Table<Req, Def>, Req, Def]; }
+        \\declare class ConflictTarget<Cols> {
+        \\  static tableColumns<Cols>(cols: (keyof Cols)[]): ConflictTarget<Cols>;
+        \\  protected dummy: [ConflictTarget<Cols>, Cols];
+        \\}
+        \\interface BookReq { readonly title: string; readonly serial: number; }
+        \\interface BookDef { readonly author: string; }
+        \\declare const bookTable: Table<BookReq, BookDef>;
+        \\function insert<Req extends object, Def extends object>(table: Table<Req, Def>, target: ConflictTarget<Req & Def>): boolean { return true; }
+        \\insert(bookTable, ConflictTarget.tableColumns(["serial"]));
+    );
+    defer destroyBoundSetup(b);
+    try b.base.checker.checkSourceFile(b.base.root);
+    try T.expectEqual(@as(usize, 0), b.base.checker.diagnostics.items.len);
+}
+
 test "checker: object literal discriminant guides generic union inference" {
     const s = try newSetup(
         \\type Item<T> = { kind: 'a', data: T } | { kind: 'b', data: T[] };
@@ -9889,7 +10175,7 @@ test "checker: generic interface method type parameter shadows outer parameter" 
         \\  foo4<U>(t: T, u: U): T;
         \\  foo5<T, U>(t: T, u: U): T;
         \\}
-        \\var i: I<string, number>;
+        \\var i: I<string, number> = null as any;
         \\var r6 = i.foo3(true, 1);
         \\var r7 = i.foo4('', true);
         \\var r8 = i.foo5(true, 1);
