@@ -1862,7 +1862,9 @@ pub const Checker = struct {
     fn inferVariance(self: *Checker, body_t: TypeId, param_id: TypeId) types.Variance {
         var saw_co = false;
         var saw_ct = false;
-        self.scanVariance(body_t, param_id, .covariant, &saw_co, &saw_ct);
+        var visited: std.AutoHashMapUnmanaged(TypeId, void) = .empty;
+        defer visited.deinit(self.gpa);
+        self.scanVariance(body_t, param_id, .covariant, &saw_co, &saw_ct, &visited);
         if (saw_co and saw_ct) return .invariant;
         if (saw_co) return .covariant;
         if (saw_ct) return .contravariant;
@@ -1881,6 +1883,7 @@ pub const Checker = struct {
         position: types.Variance,
         saw_co: *bool,
         saw_ct: *bool,
+        visited: *std.AutoHashMapUnmanaged(TypeId, void),
     ) void {
         if (t == param_id) {
             switch (position) {
@@ -1895,45 +1898,54 @@ pub const Checker = struct {
             return;
         }
         if (t < types.Primitive.first_dynamic) return;
+        if (t >= self.interner.pool.typeCount()) return;
+        if (visited.contains(t)) return;
+        visited.put(self.gpa, t, {}) catch return;
         const flags = self.interner.pool.flagsOf(t);
+        const payload_idx = self.interner.pool.payloadOf(t);
 
         if (flags.is_signature) {
+            if (payload_idx >= self.interner.pool.signature_payloads.items.len) return;
             for (self.interner.signatureParams(t)) |p| {
-                self.scanVariance(p, param_id, flipVariance(position), saw_co, saw_ct);
+                self.scanVariance(p, param_id, flipVariance(position), saw_co, saw_ct, visited);
             }
             if (self.interner.signatureReturn(t)) |r| {
-                self.scanVariance(r, param_id, position, saw_co, saw_ct);
+                self.scanVariance(r, param_id, position, saw_co, saw_ct, visited);
             }
             return;
         }
         if (flags.is_object_type) {
+            if (payload_idx >= self.interner.pool.object_type_payloads.items.len) return;
             const members = self.interner.objectMembers(t);
             for (members) |m| {
-                self.scanVariance(m.type, param_id, position, saw_co, saw_ct);
+                self.scanVariance(m.type, param_id, position, saw_co, saw_ct, visited);
             }
             const si = self.interner.objectStringIndex(t);
-            if (si != types.Primitive.none) self.scanVariance(si, param_id, position, saw_co, saw_ct);
+            if (si != types.Primitive.none) self.scanVariance(si, param_id, position, saw_co, saw_ct, visited);
             const ni = self.interner.objectNumberIndex(t);
-            if (ni != types.Primitive.none) self.scanVariance(ni, param_id, position, saw_co, saw_ct);
+            if (ni != types.Primitive.none) self.scanVariance(ni, param_id, position, saw_co, saw_ct, visited);
             return;
         }
         if (flags.is_union) {
+            if (payload_idx >= self.interner.pool.union_payloads.items.len) return;
             for (self.interner.unionMembers(t)) |m| {
-                self.scanVariance(m, param_id, position, saw_co, saw_ct);
+                self.scanVariance(m, param_id, position, saw_co, saw_ct, visited);
             }
             return;
         }
         if (flags.is_intersection) {
+            if (payload_idx >= self.interner.pool.intersection_payloads.items.len) return;
             for (self.interner.intersectionMembers(t)) |m| {
-                self.scanVariance(m, param_id, position, saw_co, saw_ct);
+                self.scanVariance(m, param_id, position, saw_co, saw_ct, visited);
             }
             return;
         }
         if (flags.is_tuple) {
-            const payload = self.interner.pool.tuple_payloads.items[self.interner.pool.payloadOf(t)];
+            if (payload_idx >= self.interner.pool.tuple_payloads.items.len) return;
+            const payload = self.interner.pool.tuple_payloads.items[payload_idx];
             const elems = self.interner.pool.tuple_element_pool.items[payload.elements_start .. payload.elements_start + payload.elements_len];
             for (elems) |e| {
-                self.scanVariance(e.type, param_id, position, saw_co, saw_ct);
+                self.scanVariance(e.type, param_id, position, saw_co, saw_ct, visited);
             }
             return;
         }
@@ -1943,35 +1955,39 @@ pub const Checker = struct {
             return;
         }
         if (flags.is_indexed_access) {
-            const payload = self.interner.pool.indexed_access_payloads.items[self.interner.pool.payloadOf(t)];
+            if (payload_idx >= self.interner.pool.indexed_access_payloads.items.len) return;
+            const payload = self.interner.pool.indexed_access_payloads.items[payload_idx];
             // Object slot is read+write → invariant. Index slot
             // stays at the surrounding polarity.
-            self.scanVariance(payload.object, param_id, .invariant, saw_co, saw_ct);
-            self.scanVariance(payload.index, param_id, position, saw_co, saw_ct);
+            self.scanVariance(payload.object, param_id, .invariant, saw_co, saw_ct, visited);
+            self.scanVariance(payload.index, param_id, position, saw_co, saw_ct, visited);
             return;
         }
         if (flags.is_conditional) {
+            if (payload_idx >= self.interner.pool.conditional_payloads.items.len) return;
             const c = self.interner.conditionalPayload(t);
-            self.scanVariance(c.check_type, param_id, position, saw_co, saw_ct);
-            self.scanVariance(c.extends_type, param_id, position, saw_co, saw_ct);
-            self.scanVariance(c.true_branch, param_id, position, saw_co, saw_ct);
-            self.scanVariance(c.false_branch, param_id, position, saw_co, saw_ct);
+            self.scanVariance(c.check_type, param_id, position, saw_co, saw_ct, visited);
+            self.scanVariance(c.extends_type, param_id, position, saw_co, saw_ct, visited);
+            self.scanVariance(c.true_branch, param_id, position, saw_co, saw_ct, visited);
+            self.scanVariance(c.false_branch, param_id, position, saw_co, saw_ct, visited);
             return;
         }
         if (flags.is_mapped) {
+            if (payload_idx >= self.interner.pool.mapped_payloads.items.len) return;
             const m = self.interner.mappedPayload(t);
-            self.scanVariance(m.constraint, param_id, position, saw_co, saw_ct);
-            self.scanVariance(m.template, param_id, position, saw_co, saw_ct);
+            self.scanVariance(m.constraint, param_id, position, saw_co, saw_ct, visited);
+            self.scanVariance(m.template, param_id, position, saw_co, saw_ct, visited);
             return;
         }
         if (flags.is_instantiation) {
-            const payload = self.interner.pool.instantiation_payloads.items[self.interner.pool.payloadOf(t)];
+            if (payload_idx >= self.interner.pool.instantiation_payloads.items.len) return;
+            const payload = self.interner.pool.instantiation_payloads.items[payload_idx];
             const args = self.interner.pool.type_arg_pool.items[payload.args_start .. payload.args_start + payload.args_len];
             // Without per-origin variance metadata, treat each
             // type-argument slot at the surrounding polarity. A
             // future fixed-point pass can refine this.
             for (args) |a| {
-                self.scanVariance(a, param_id, position, saw_co, saw_ct);
+                self.scanVariance(a, param_id, position, saw_co, saw_ct, visited);
             }
             return;
         }
@@ -4091,6 +4107,7 @@ pub const Checker = struct {
                 // types) and the return type.
                 const type_arg_nodes = hir_mod.callTypeArgs(self.hir, node);
                 var effective_callee_t = callee_t;
+                var used_explicit_type_args = false;
                 if (type_arg_nodes.len > 0 and self.interner.pool.flagsOf(callee_t).is_signature and self.hir.kindOf(c.callee) == .identifier) {
                     const callee_name = hir_mod.identifierOf(self.hir, c.callee).name;
                     if (self.generic_fns.get(callee_name)) |type_params| {
@@ -4103,17 +4120,31 @@ pub const Checker = struct {
                         }
                         if (subs.count() > 0) {
                             effective_callee_t = self.substituteType(callee_t, &subs) catch callee_t;
+                            used_explicit_type_args = true;
                         }
                     }
                 }
                 if (self.interner.pool.flagsOf(effective_callee_t).is_signature) {
+                    if (effective_callee_t == callee_t) {
+                        const param_ts = self.interner.signatureParams(effective_callee_t);
+                        var call_subs: std.AutoHashMapUnmanaged(TypeId, TypeId) = .empty;
+                        defer call_subs.deinit(self.gpa);
+                        const n = @min(param_ts.len, arg_types.items.len);
+                        for (0..n) |i| {
+                            if (self.interner.pool.flagsOf(param_ts[i]).is_signature) continue;
+                            try self.inferFromPair(param_ts[i], arg_types.items[i], &call_subs);
+                        }
+                        if (call_subs.count() > 0) {
+                            effective_callee_t = self.substituteType(effective_callee_t, &call_subs) catch effective_callee_t;
+                        }
+                    }
                     try self.checkArgsAgainstSignature(node, args, arg_types.items, effective_callee_t);
                     if (self.interner.signatureReturn(effective_callee_t)) |ret| {
                         // If explicit type args already substituted,
                         // skip argument-driven inference (it's
                         // redundant and the substituted return is
                         // canonical).
-                        if (effective_callee_t != callee_t) break :blk ret;
+                        if (used_explicit_type_args) break :blk ret;
                         const param_ts = self.interner.signatureParams(effective_callee_t);
                         const instantiated = self.instantiateReturn(param_ts, arg_types.items, ret) catch ret;
                         break :blk instantiated;
@@ -5760,8 +5791,10 @@ pub const Checker = struct {
         // when no value pins it. The walker reaches into unions /
         // intersections so optional `x?: T` (lowered to `T |
         // undefined`) still surfaces the underlying T.
-        for (param_ts) |p| try self.collectFreeTypeParamDefaults(p, &subs);
-        try self.collectFreeTypeParamDefaults(ret_type, &subs);
+        var visited_defaults: std.AutoHashMapUnmanaged(TypeId, void) = .empty;
+        defer visited_defaults.deinit(self.gpa);
+        for (param_ts) |p| try self.collectFreeTypeParamDefaults(p, &subs, &visited_defaults);
+        try self.collectFreeTypeParamDefaults(ret_type, &subs, &visited_defaults);
         if (subs.count() == 0) return ret_type;
         return self.substituteType(ret_type, &subs);
     }
@@ -5889,11 +5922,18 @@ pub const Checker = struct {
         self: *Checker,
         t: TypeId,
         subs: *std.AutoHashMapUnmanaged(TypeId, TypeId),
+        visited: *std.AutoHashMapUnmanaged(TypeId, void),
     ) !void {
+        if (t < types.Primitive.first_dynamic) return;
+        if (t >= self.interner.pool.typeCount()) return;
+        if (visited.contains(t)) return;
+        try visited.put(self.gpa, t, {});
         const flags = self.interner.pool.flagsOf(t);
+        const payload_idx = self.interner.pool.payloadOf(t);
         if (flags.is_type_parameter) {
             if (!subs.contains(t)) {
-                const tp = self.interner.pool.type_parameter_payloads.items[self.interner.pool.payloadOf(t)];
+                if (payload_idx >= self.interner.pool.type_parameter_payloads.items.len) return;
+                const tp = self.interner.pool.type_parameter_payloads.items[payload_idx];
                 if (tp.default != types.Primitive.none) {
                     try subs.put(self.gpa, t, tp.default);
                 }
@@ -5901,11 +5941,13 @@ pub const Checker = struct {
             return;
         }
         if (flags.is_union) {
-            for (self.interner.unionMembers(t)) |m| try self.collectFreeTypeParamDefaults(m, subs);
+            if (payload_idx >= self.interner.pool.union_payloads.items.len) return;
+            for (self.interner.unionMembers(t)) |m| try self.collectFreeTypeParamDefaults(m, subs, visited);
             return;
         }
         if (flags.is_intersection) {
-            for (self.interner.intersectionMembers(t)) |m| try self.collectFreeTypeParamDefaults(m, subs);
+            if (payload_idx >= self.interner.pool.intersection_payloads.items.len) return;
+            for (self.interner.intersectionMembers(t)) |m| try self.collectFreeTypeParamDefaults(m, subs, visited);
             return;
         }
     }
@@ -9309,6 +9351,58 @@ test "checker: variance inference — T in parameter position is contravariant" 
     try T.expectEqual(@as(usize, 1), tps.len);
     const tp_id = s.hir.typeOf(tps[0]);
     try T.expectEqual(types.Variance.contravariant, s.checker.typeParameterVariance(tp_id));
+}
+
+test "checker: variance inference tolerates recursive array aliases" {
+    const s = try newSetup(
+        \\type Array<T> = { [n: number]: T };
+        \\type ValueOrArray<T> = T | Array<ValueOrArray<T>>;
+        \\function flat<T>(x: ValueOrArray<T>): T { return null as any; }
+    );
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+}
+
+test "checker: variance inference tolerates recursive generic methods" {
+    const s = try newSetup(
+        \\interface Foo<T> {
+        \\  then<U>(f: (x: T) => U | Foo<U>, g: U): Foo<U>;
+        \\}
+    );
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+}
+
+test "checker: generic return instantiation tolerates contextual keyword callees" {
+    const s = try newSetup(
+        \\function get<T>(x: T | void): T { return null as any; }
+        \\let foo: string | void;
+        \\let result = get(foo);
+    );
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+}
+
+test "checker: contextual generic callback instantiation accepts consistent params" {
+    const s = try newSetup(
+        \\declare function bar<T, U, V>(x: T, y: U, cb: (x: T, y: U) => V): V;
+        \\declare function g<T>(x: T, y: T): T;
+        \\let a = bar(1, 1, g);
+    );
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+    try T.expectEqual(@as(usize, 0), s.checker.diagnostics.items.len);
+}
+
+test "checker: contextual generic callback instantiation rejects conflicting params" {
+    const s = try newSetup(
+        \\declare function bar<T, U, V>(x: T, y: U, cb: (x: T, y: U) => V): V;
+        \\declare function g<T>(x: T, y: T): T;
+        \\let a = bar(1, "one", g);
+    );
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+    try T.expect(s.checker.diagnostics.items.len > 0);
 }
 
 test "checker: `await g()` types as the operand call's return type" {

@@ -487,6 +487,12 @@ pub const Engine = struct {
             return !self.strict_null_checks;
         }
 
+        // Target type parameters stand for inference slots in many
+        // contextual generic comparisons. The checker records the
+        // actual substitution elsewhere; relation only needs to avoid
+        // rejecting the candidate at the slot boundary.
+        if (tf.is_type_parameter) return true;
+
         // Unconstrained type parameters are assignable to object
         // shapes with no required members. This matches TS's
         // long-standing optional-property behavior:
@@ -533,6 +539,13 @@ pub const Engine = struct {
         return t;
     }
 
+    fn mappedTp(t: TypeId, map: []const TpPair) ?TypeId {
+        for (map) |pair| {
+            if (pair.from == t) return pair.to;
+        }
+        return null;
+    }
+
     /// Function-signature assignability:
     ///
     ///   source: (P1', P2') => R'
@@ -564,11 +577,26 @@ pub const Engine = struct {
         // allocation-free for typical signature arities.
         var tp_map_buf: [16]TpPair = undefined;
         var tp_map_len: usize = 0;
+        var source_context_buf: [16]TpPair = undefined;
+        var source_context_len: usize = 0;
 
         for (sp, 0..) |s_param, i| {
             const t_param = tp[i];
             const sf = self.pool().flagsOf(s_param);
             const tf = self.pool().flagsOf(t_param);
+            // Contextually instantiate a generic source callback
+            // against a concrete target callback. Repeated source type
+            // params must see the same target type; `g<T>(T, T)` fits
+            // `(number, number) => V` but not `(number, string) => V`.
+            if (sf.is_type_parameter and !tf.is_type_parameter) {
+                if (mappedTp(s_param, source_context_buf[0..source_context_len])) |existing| {
+                    if (existing != t_param) return false;
+                } else if (source_context_len < source_context_buf.len) {
+                    source_context_buf[source_context_len] = .{ .from = s_param, .to = t_param };
+                    source_context_len += 1;
+                }
+            }
+            const s_param_ctx = substituteTp(s_param, source_context_buf[0..source_context_len]);
             // Both sides are type-parameters at the same position —
             // unify them as the same tp for the rest of the
             // comparison and skip the assignability check (the
@@ -585,14 +613,15 @@ pub const Engine = struct {
             // source's (contravariant). Non-strict: bivariant —
             // accept either direction.
             if (self.strict_function_types) {
-                if (!try self.isAssignableTo(t_param, s_param)) return false;
+                if (!try self.isAssignableTo(t_param, s_param_ctx)) return false;
             } else {
-                const ct = try self.isAssignableTo(t_param, s_param);
-                const co = try self.isAssignableTo(s_param, t_param);
+                const ct = try self.isAssignableTo(t_param, s_param_ctx);
+                const co = try self.isAssignableTo(s_param_ctx, t_param);
                 if (!ct and !co) return false;
             }
         }
-        const s_ret = self.interner.signatureReturn(source) orelse return true;
+        const s_ret_raw = self.interner.signatureReturn(source) orelse return true;
+        const s_ret = substituteTp(s_ret_raw, source_context_buf[0..source_context_len]);
         const t_ret_raw = self.interner.signatureReturn(target) orelse return true;
         // Substitute target type-parameters with their source
         // counterparts so `<T>(x: T) => T` matches `<U>(x: U) => U`
