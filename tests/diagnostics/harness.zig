@@ -306,8 +306,15 @@ fn stripDebugAllocator(gpa: std.mem.Allocator, input: []const u8) ![]u8 {
             // fall through to normal append below
         }
 
-        if (std.mem.startsWith(u8, line, "error(DebugAllocator):")) {
+        if (std.mem.startsWith(u8, line, "error(DebugAllocator):") or
+            std.mem.startsWith(u8, line, "[DebugAllocator]") or
+            (std.mem.startsWith(u8, line, "error: '") and std.mem.indexOf(u8, line, "' leaked ") != null))
+        {
             skipping = true;
+            continue;
+        }
+
+        if (std.mem.eql(u8, line, "(additional stack frames may have been skipped...)")) {
             continue;
         }
 
@@ -330,6 +337,8 @@ fn stripDebugAllocator(gpa: std.mem.Allocator, input: []const u8) ![]u8 {
 fn isLeakDumpLine(line: []const u8) bool {
     // Path-like line containing ".zig:" — stack frame.
     if (std.mem.indexOf(u8, line, ".zig:") != null) return true;
+
+    if (std.mem.eql(u8, line, "(additional stack frames may have been skipped...)")) return true;
 
     // Continuation lines: just whitespace + code snippet, often ending
     // with `^` pointer. We treat any line that starts with whitespace

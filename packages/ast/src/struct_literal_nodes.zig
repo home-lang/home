@@ -11,7 +11,7 @@ pub const StructLiteralExpr = struct {
     node: Node,
     type_name: []const u8,
     fields: []const FieldInit,
-    is_anonymous: bool,  // true for anonymous structs
+    is_anonymous: bool, // true for anonymous structs
 
     pub fn init(
         type_name: []const u8,
@@ -40,7 +40,7 @@ pub const StructLiteralExpr = struct {
 pub const FieldInit = struct {
     name: []const u8,
     value: *Expr,
-    is_shorthand: bool,  // true if using shorthand syntax (field instead of field: field)
+    is_shorthand: bool, // true if using shorthand syntax (field instead of field: field)
     loc: SourceLocation,
 
     pub fn init(
@@ -57,11 +57,9 @@ pub const FieldInit = struct {
         };
     }
 
-    pub fn deinit(self: *FieldInit, allocator: std.mem.Allocator) void {
+    pub fn deinit(self: *const FieldInit, allocator: std.mem.Allocator) void {
         allocator.free(self.name);
-        if (!self.is_shorthand) {
-            allocator.destroy(self.value);
-        }
+        ast.Program.deinitExpr(self.value, allocator);
     }
 };
 
@@ -84,7 +82,7 @@ pub const StructUpdate = struct {
     }
 
     pub fn deinit(self: *StructUpdate, allocator: std.mem.Allocator) void {
-        allocator.destroy(self.base);
+        ast.Program.deinitExpr(self.base, allocator);
         for (self.fields) |*field| {
             field.deinit(allocator);
         }
@@ -113,7 +111,7 @@ pub const TupleStructLiteral = struct {
     pub fn deinit(self: *TupleStructLiteral, allocator: std.mem.Allocator) void {
         allocator.free(self.type_name);
         for (self.values) |val| {
-            allocator.destroy(val);
+            ast.Program.deinitExpr(val, allocator);
         }
         allocator.free(self.values);
     }
@@ -166,22 +164,22 @@ pub const FieldPunning = struct {
 pub const StructLiteralPattern = enum {
     /// User { name: name, age: age }
     Explicit,
-    
+
     /// User { name, age }
     Shorthand,
-    
+
     /// User { name, age: 25 }
     Mixed,
-    
+
     /// User { ..other }
     Update,
-    
+
     /// User { name, ..other }
     UpdateWithFields,
-    
+
     /// .{ x: 10, y: 20 }
     Anonymous,
-    
+
     /// Point(10, 20)
     Tuple,
 
@@ -236,15 +234,15 @@ pub const StructLiteralBuilder = struct {
         id_expr.* = .{ .Identifier = .{
             .node = .{ .type = .Identifier, .loc = loc },
             .name = name,
-        }};
-        
+        } };
+
         try self.addField(name, id_expr, true, loc);
     }
 
     pub fn build(self: *StructLiteralBuilder, loc: SourceLocation) !StructLiteralExpr {
         const type_name = self.type_name orelse "";
         const is_anonymous = self.type_name == null;
-        
+
         return StructLiteralExpr.init(
             type_name,
             try self.fields.toOwnedSlice(self.allocator),

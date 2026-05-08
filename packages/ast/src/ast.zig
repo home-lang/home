@@ -1731,7 +1731,7 @@ pub const ForStmt = struct {
         const stmt = try allocator.create(ForStmt);
         stmt.* = .{
             .node = .{ .type = .ForStmt, .loc = loc },
-            .iterator = "",  // Empty when using tuple bindings
+            .iterator = "", // Empty when using tuple bindings
             .iterable = iterable,
             .body = body,
             .index = null,
@@ -2067,7 +2067,7 @@ pub const Stmt = union(NodeType) {
     InlineAsm: void,
     ClosureExpr: void,
     BlockExpr: void,
-    StructLiteral: void,  // Handled via pointer deinit
+    StructLiteral: void, // Handled via pointer deinit
     TupleStructLiteral: void,
     AnonymousStruct: void,
     ArrayComprehension: *ArrayComprehension,
@@ -2451,7 +2451,17 @@ pub const Program = struct {
                 allocator.destroy(decl);
             },
             .EnumDecl => |decl| {
+                if (decl.tag_type) |tag_type| allocator.free(tag_type);
+                for (decl.variants) |variant| {
+                    if (variant.data_type) |data_type| allocator.free(data_type);
+                }
                 allocator.free(decl.variants);
+                for (decl.methods) |method| {
+                    deinitStmt(.{ .FnDecl = method }, allocator);
+                }
+                if (decl.methods.len > 0) {
+                    allocator.free(decl.methods);
+                }
                 allocator.destroy(decl);
             },
             .TypeAliasDecl => |decl| {
@@ -2521,7 +2531,9 @@ pub const Program = struct {
                 deinitExpr(sw.value, allocator);
                 for (sw.cases) |case| {
                     for (case.patterns) |pat| deinitExpr(pat, allocator);
+                    for (case.body) |body_stmt| deinitStmt(body_stmt, allocator);
                     allocator.free(case.patterns);
+                    allocator.free(case.body);
                     allocator.destroy(case);
                 }
                 allocator.free(sw.cases);
@@ -2583,6 +2595,7 @@ pub const Program = struct {
                 for (array.elements) |elem| {
                     deinitExpr(elem, allocator);
                 }
+                if (array.explicit_type) |explicit_type| allocator.free(explicit_type);
                 allocator.free(array.elements);
                 allocator.destroy(array);
             },
@@ -2691,10 +2704,62 @@ pub const Program = struct {
             },
             .MatchExpr => |me| {
                 deinitExpr(me.value, allocator);
+                for (me.arms, 0..) |arm, i| {
+                    deinitExpr(arm.pattern, allocator);
+                    if (arm.guard) |guard| {
+                        var seen = false;
+                        for (me.arms[0..i]) |prev| {
+                            if (prev.guard == guard) {
+                                seen = true;
+                                break;
+                            }
+                        }
+                        if (!seen) deinitExpr(guard, allocator);
+                    }
+                    var seen_body = false;
+                    for (me.arms[0..i]) |prev| {
+                        if (prev.body == arm.body) {
+                            seen_body = true;
+                            break;
+                        }
+                    }
+                    if (!seen_body) deinitExpr(arm.body, allocator);
+                }
+                allocator.free(me.arms);
                 allocator.destroy(me);
             },
             .BlockExpr => |be| {
+                for (be.statements) |stmt| deinitStmt(stmt, allocator);
+                allocator.free(be.statements);
                 allocator.destroy(be);
+            },
+            .ReflectExpr => |re| {
+                deinitExpr(re.target, allocator);
+                if (re.second_arg) |arg| deinitExpr(arg, allocator);
+                if (re.third_arg) |arg| deinitExpr(arg, allocator);
+                allocator.destroy(re);
+            },
+            .MacroExpr => |macro| {
+                for (macro.args) |arg| deinitExpr(arg, allocator);
+                allocator.free(macro.args);
+                allocator.destroy(macro);
+            },
+            .StructLiteral => |struct_lit| {
+                struct_lit.deinit(allocator);
+                allocator.destroy(struct_lit);
+            },
+            .TupleStructLiteral => |tuple_lit| {
+                tuple_lit.deinit(allocator);
+                allocator.destroy(tuple_lit);
+            },
+            .AnonymousStruct => |anon| {
+                anon.deinit(allocator);
+                allocator.destroy(anon);
+            },
+            .TupleExpr => |tuple| {
+                for (tuple.elements) |elem| deinitExpr(elem, allocator);
+                allocator.free(tuple.elements);
+                allocator.destroy(tuple);
             },
             else => {},
         }

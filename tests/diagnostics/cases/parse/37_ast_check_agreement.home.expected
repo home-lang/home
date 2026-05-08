@@ -1,6 +1,6 @@
-<repo>/tests/diagnostics/cases/parse/37_ast_check_agreement.home:18:1: error[EP0001]: Expected '{'
+<repo>/tests/diagnostics/cases/parse/37_ast_check_agreement.home:18:4: error[EP0001]: Expected '(' after 'fn' in function type
   fn next_thing() {}
-   ^
+      ^
 
 1 parse error(s) found
 Checking: <repo>/tests/diagnostics/cases/parse/37_ast_check_agreement.home

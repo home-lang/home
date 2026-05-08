@@ -290,11 +290,10 @@ pub const Parser = struct {
     /// `i<N>` (e.g. `u3`, `i7`) for use in `@truncate(x, u3)`.
     fn isPrimitiveTypeName(name: []const u8) bool {
         const primitives = [_][]const u8{
-            "i8",    "i16",    "i32",  "i64",    "i128",
-            "u8",    "u16",    "u32",  "u64",    "u128",
-            "f32",   "f64",
-            "int",   "float",  "bool", "string", "str",
-            "void",  "usize",  "isize",
+            "i8",     "i16", "i32",  "i64",   "i128",
+            "u8",     "u16", "u32",  "u64",   "u128",
+            "f32",    "f64", "int",  "float", "bool",
+            "string", "str", "void", "usize", "isize",
             "char",
         };
         for (primitives) |p| {
@@ -590,16 +589,33 @@ pub const Parser = struct {
     fn canStartExpression(_: *Parser, token_type: TokenType) bool {
         return switch (token_type) {
             // Literals
-            .Integer, .Float, .String, .Char,
-            .True, .False, .Null,
+            .Integer,
+            .Float,
+            .String,
+            .Char,
+            .True,
+            .False,
+            .Null,
             // Identifiers
             .Identifier,
             // Grouping and collection
-            .LeftParen, .LeftBracket, .LeftBrace,
+            .LeftParen,
+            .LeftBracket,
+            .LeftBrace,
             // Prefix operators
-            .Minus, .Bang, .Tilde, .Ampersand, .Star, .DotDot, .DotDotEqual,
+            .Minus,
+            .Bang,
+            .Tilde,
+            .Ampersand,
+            .Star,
+            .DotDot,
+            .DotDotEqual,
             // Keywords that can start expressions
-            .If, .Match, .Fn, .SelfValue, .Try,
+            .If,
+            .Match,
+            .Fn,
+            .SelfValue,
+            .Try,
             => true,
             else => false,
         };
@@ -664,8 +680,8 @@ pub const Parser = struct {
     ///   * `test` is a keyword only at top level (`test "name" { }`).
     /// In binding-name slots they parse as identifiers.
     pub const binding_name_soft_keywords = [_]TokenType{
-        .Default, .Type, .It,    .Match, .Union,
-        .In,      .Is,   .Test,  .As,    .Guard,
+        .Default, .Type, .It,   .Match, .Union,
+        .In,      .Is,   .Test, .As,    .Guard,
     };
 
     /// Returns true if `tok` can stand in for a plain `Identifier` in a
@@ -842,8 +858,21 @@ pub const Parser = struct {
 
             // Check if we're at the start of a new statement/declaration
             switch (self.peek().type) {
-                .Fn, .Struct, .Let, .Const, .If, .While, .For, .Return,
-                .Enum, .Trait, .Impl, .Import, .Match, .Defer, .Try,
+                .Fn,
+                .Struct,
+                .Let,
+                .Const,
+                .If,
+                .While,
+                .For,
+                .Return,
+                .Enum,
+                .Trait,
+                .Impl,
+                .Import,
+                .Match,
+                .Defer,
+                .Try,
                 => return,
                 .RightBrace => {
                     // Stop before the brace — let the caller's block
@@ -1376,12 +1405,13 @@ pub const Parser = struct {
 
                 // Accept Identifier and keywords as parameter names (to support C&C Generals codebase)
                 const param_name = if (self.match(&.{
-                    .Identifier, .SelfValue, .SelfType, .Type, .Fn, .Struct, .Enum, .Trait, .Impl,
-                    .Let, .Mut, .Const, .If, .Else, .Match, .For, .While, .Loop, .Do,
-                    .Break, .Continue, .Return, .Import, .Export, .Pub, .Async, .Await,
-                    .Try, .Catch, .Defer, .Comptime, .Static, .Unsafe, .Var,
-                    .Assert, .True, .False, .Null, .Test, .It, .Finally, .Guard,
-                    .Union, .Default, .In, .Is, .As, .Where, .Switch, .Case, .Not, .And, .Or, .Asm, .Dyn,
+                    .Identifier, .SelfValue, .SelfType, .Type,     .Fn,      .Struct, .Enum,  .Trait,   .Impl,
+                    .Let,        .Mut,       .Const,    .If,       .Else,    .Match,  .For,   .While,   .Loop,
+                    .Do,         .Break,     .Continue, .Return,   .Import,  .Export, .Pub,   .Async,   .Await,
+                    .Try,        .Catch,     .Defer,    .Comptime, .Static,  .Unsafe, .Var,   .Assert,  .True,
+                    .False,      .Null,      .Test,     .It,       .Finally, .Guard,  .Union, .Default, .In,
+                    .Is,         .As,        .Where,    .Switch,   .Case,    .Not,    .And,   .Or,      .Asm,
+                    .Dyn,
                 }))
                     self.previous()
                 else {
@@ -1912,12 +1942,13 @@ pub const Parser = struct {
             const field_token = blk: {
                 // Try to match a potential field name
                 if (self.match(&.{
-                    .Identifier, .SelfValue, .SelfType, .Type, .Fn, .Struct, .Enum, .Trait, .Impl,
-                    .Let, .Mut, .Const, .If, .Else, .Match, .For, .While, .Loop, .Do,
-                    .Break, .Continue, .Return, .Import, .Export, .Pub, .Async, .Await,
-                    .Try, .Catch, .Defer, .Comptime, .Static, .Unsafe, .Var,
-                    .Assert, .True, .False, .Null, .Test, .It, .Finally, .Guard,
-                    .Union, .Default, .In, .Is, .As, .Where, .Switch, .Case, .Not, .And, .Or, .Asm, .Dyn,
+                    .Identifier, .SelfValue, .SelfType, .Type,     .Fn,      .Struct, .Enum,  .Trait,   .Impl,
+                    .Let,        .Mut,       .Const,    .If,       .Else,    .Match,  .For,   .While,   .Loop,
+                    .Do,         .Break,     .Continue, .Return,   .Import,  .Export, .Pub,   .Async,   .Await,
+                    .Try,        .Catch,     .Defer,    .Comptime, .Static,  .Unsafe, .Var,   .Assert,  .True,
+                    .False,      .Null,      .Test,     .It,       .Finally, .Guard,  .Union, .Default, .In,
+                    .Is,         .As,        .Where,    .Switch,   .Case,    .Not,    .And,   .Or,      .Asm,
+                    .Dyn,
                 })) {
                     const token = self.previous();
                     // Check if next token is a colon (indicating a field)
@@ -2031,7 +2062,8 @@ pub const Parser = struct {
 
         // Optional type annotation
         if (self.match(&.{.Colon})) {
-            _ = try self.parseTypeAnnotation();
+            const type_annotation = try self.parseTypeAnnotation();
+            self.allocator.free(type_annotation);
             try self.consumeOptionalAlignSuffix();
         }
 
@@ -2049,7 +2081,8 @@ pub const Parser = struct {
                 // Skip-parse like the other type bindings.
                 try self.skipNestedTypeDecl();
             } else {
-                _ = try self.expression();
+                const value = try self.expression();
+                ast.Program.deinitExpr(value, self.allocator);
             }
         }
 
@@ -2729,6 +2762,7 @@ pub const Parser = struct {
         // Check for mut type modifier: mut T
         if (self.match(&.{.Mut})) {
             const inner_type = try self.parseTypeAnnotation();
+            defer self.allocator.free(inner_type);
             return try std.fmt.allocPrint(self.allocator, "mut {s}", .{inner_type});
         }
 
@@ -2737,12 +2771,14 @@ pub const Parser = struct {
         // checker via Readonly<T>-style transformations.
         if (self.match(&.{.Readonly})) {
             const inner_type = try self.parseTypeAnnotation();
+            defer self.allocator.free(inner_type);
             return try std.fmt.allocPrint(self.allocator, "readonly {s}", .{inner_type});
         }
 
         // `keyof T` — yields the union of property names of T.
         if (self.match(&.{.Keyof})) {
             const inner_type = try self.parseTypeAnnotation();
+            defer self.allocator.free(inner_type);
             return try std.fmt.allocPrint(self.allocator, "keyof {s}", .{inner_type});
         }
 
@@ -2790,7 +2826,10 @@ pub const Parser = struct {
 
             // Parse tuple types (T1, T2, ...)
             var types = std.ArrayList([]const u8).empty;
-            defer types.deinit(self.allocator);
+            defer {
+                for (types.items) |elem_type| self.allocator.free(elem_type);
+                types.deinit(self.allocator);
+            }
 
             while (!self.check(.RightParen) and !self.isAtEnd()) {
                 const elem_type = try self.parseTypeAnnotation();
@@ -2918,6 +2957,7 @@ pub const Parser = struct {
         if (self.match(&.{.Ampersand})) {
             const is_mut = self.match(&.{.Mut});
             const inner_type = try self.parseTypeAnnotation();
+            defer self.allocator.free(inner_type);
             if (is_mut) {
                 return try std.fmt.allocPrint(self.allocator, "&mut {s}", .{inner_type});
             } else {
@@ -2953,6 +2993,7 @@ pub const Parser = struct {
         // does not conflict with either.
         if (self.match(&.{.Bang})) {
             const inner_type = try self.parseTypeAnnotation();
+            defer self.allocator.free(inner_type);
             return try std.fmt.allocPrint(self.allocator, "Result<{s}, AnyError>", .{inner_type});
         }
 
@@ -2989,6 +3030,7 @@ pub const Parser = struct {
 
             // ?[T] - optional element type inside brackets
             const inner = try self.parseTypeAnnotation();
+            defer self.allocator.free(inner);
             _ = try self.expect(.RightBracket, "Expected ']'");
             return try std.fmt.allocPrint(self.allocator, "?[{s}]", .{inner});
         }
@@ -3013,7 +3055,7 @@ pub const Parser = struct {
         // two consecutive stars into a single StarStar token (for the
         // `a ** b` power operator), so in type position we treat
         // `StarStar` as two star prefixes before the inner type.
-        if (self.match(&.{.Star, .StarStar})) {
+        if (self.match(&.{ .Star, .StarStar })) {
             const star_tok = self.previous();
             const is_double = star_tok.type == .StarStar;
             const is_const = self.match(&.{.Const});
@@ -3030,6 +3072,7 @@ pub const Parser = struct {
                 return error.UnexpectedToken;
             }
             const inner_type = try self.parseTypeAnnotation();
+            defer self.allocator.free(inner_type);
             const base = if (is_const and is_volatile)
                 try std.fmt.allocPrint(self.allocator, "*const volatile {s}", .{inner_type})
             else if (is_const)
@@ -3039,6 +3082,7 @@ pub const Parser = struct {
             else
                 try std.fmt.allocPrint(self.allocator, "*{s}", .{inner_type});
             if (is_double) {
+                defer self.allocator.free(base);
                 return try std.fmt.allocPrint(self.allocator, "*{s}", .{base});
             }
             return base;
@@ -3085,6 +3129,7 @@ pub const Parser = struct {
                 const size_token = self.advance();
                 _ = try self.expect(.RightBracket, "Expected ']' after array size");
                 const elem_type = try self.parseTypeAnnotation();
+                defer self.allocator.free(elem_type);
                 const arr_type = try std.fmt.allocPrint(self.allocator, "[{s}]{s}", .{ size_token.lexeme, elem_type });
                 return arr_type;
             }
@@ -3126,6 +3171,7 @@ pub const Parser = struct {
                         nt == .LeftBracket or nt == .Question or nt == .Ampersand;
                     if (looks_like_type) {
                         const elem_type = try self.parseTypeAnnotation();
+                        defer self.allocator.free(elem_type);
                         return try std.fmt.allocPrint(self.allocator, "[{s}]{s}", .{ size_buf.items, elem_type });
                     }
                     // `[T]` form with T being the qualified identifier
@@ -3190,6 +3236,7 @@ pub const Parser = struct {
                         !self.isAtNewLine() and !next_is_align;
                     if (looks_like_type and size_buf.items.len > 0) {
                         const elem_type = try self.parseTypeAnnotation();
+                        defer self.allocator.free(elem_type);
                         return try std.fmt.allocPrint(self.allocator, "[{s}]{s}", .{ size_buf.items, elem_type });
                     }
                 }
@@ -3198,6 +3245,7 @@ pub const Parser = struct {
 
             // Has something inside brackets - either [T] or [T; N]
             const inner = try self.parseTypeAnnotation();
+            defer self.allocator.free(inner);
 
             // Check for semicolon (fixed-size array: [T; N])
             if (self.match(&.{.Semicolon})) {
@@ -3224,6 +3272,7 @@ pub const Parser = struct {
                 }
 
                 const size_lexeme = try size_tokens.toOwnedSlice(self.allocator);
+                defer self.allocator.free(size_lexeme);
                 // Return [T; N] as string
                 const arr_type = try std.fmt.allocPrint(self.allocator, "[{s}; {s}]", .{ inner, size_lexeme });
                 return arr_type;
@@ -3256,7 +3305,10 @@ pub const Parser = struct {
         // Check for generic type arguments: Type<Arg1, Arg2, ...>
         if (self.match(&.{.Less})) {
             var args = std.ArrayList([]const u8).empty;
-            defer args.deinit(self.allocator);
+            defer {
+                for (args.items) |arg| self.allocator.free(arg);
+                args.deinit(self.allocator);
+            }
 
             while (!self.check(.Greater) and !self.check(.RightShift) and self.pending_greater == 0 and !self.isAtEnd()) {
                 // Check if this is a const generic parameter (integer literal or identifier constant)
@@ -4943,7 +4995,7 @@ pub const Parser = struct {
             // Try to parse as range
             const start_expr = try self.expression();
 
-            if (self.match(&.{.DotDot, .DotDotEqual})) {
+            if (self.match(&.{ .DotDot, .DotDotEqual })) {
                 const is_inclusive = self.previous().type == .DotDotEqual;
                 const end_expr = try self.expression();
 
@@ -5248,7 +5300,8 @@ pub const Parser = struct {
                     const current = self.peek();
                     if (current.type == .Let or current.type == .Const or
                         current.type == .If or current.type == .While or
-                        current.type == .For or current.type == .Return) {
+                        current.type == .For or current.type == .Return)
+                    {
                         break; // Found start of next statement
                     }
                     _ = self.advance();
@@ -6500,7 +6553,8 @@ pub const Parser = struct {
         if (self.check(.Identifier)) {
             const start_pos = self.current;
             const name_token = self.advance();
-            const type_name = name_token.lexeme;
+            const type_name = try self.allocator.dupe(u8, name_token.lexeme);
+            errdefer self.allocator.free(type_name);
 
             // Check for struct pattern: Name { field1, field2 }
             if (self.match(&.{.LeftBrace})) {
@@ -6510,7 +6564,8 @@ pub const Parser = struct {
 
                 while (!self.check(.RightBrace) and !self.isAtEnd()) {
                     const field_token = try self.expect(.Identifier, "Expected field name");
-                    const field_name = field_token.lexeme;
+                    const field_name = try self.allocator.dupe(u8, field_token.lexeme);
+                    errdefer self.allocator.free(field_name);
                     const field_loc = ast.SourceLocation.fromToken(field_token);
 
                     // Check for explicit value: field: expr or shorthand: just field
@@ -6522,7 +6577,7 @@ pub const Parser = struct {
                         is_shorthand = true;
                         const id_expr = try self.allocator.create(ast.Expr);
                         id_expr.* = ast.Expr{
-                            .Identifier = ast.Identifier.init(field_name, field_loc),
+                            .Identifier = ast.Identifier.init(field_token.lexeme, field_loc),
                         };
                         break :blk id_expr;
                     };
@@ -6554,6 +6609,7 @@ pub const Parser = struct {
             }
 
             // Not a struct pattern, backtrack and use normal expression
+            self.allocator.free(type_name);
             self.current = start_pos;
         }
 
@@ -6908,8 +6964,11 @@ pub const Parser = struct {
                 break :blk id_expr;
             };
 
+            const field_name = try self.allocator.dupe(u8, field_name_token.lexeme);
+            errdefer self.allocator.free(field_name);
+
             try fields.append(self.allocator, ast.FieldInit{
-                .name = field_name_token.lexeme,
+                .name = field_name,
                 .value = field_value,
                 .is_shorthand = is_shorthand,
                 .loc = ast.SourceLocation.fromToken(field_name_token),
@@ -6927,7 +6986,7 @@ pub const Parser = struct {
         struct_lit.* = ast.StructLiteralExpr.init(
             type_name_owned,
             try fields.toOwnedSlice(self.allocator),
-            false,
+            type_name_owned.len == 0,
             loc,
         );
 
@@ -6945,7 +7004,9 @@ pub const Parser = struct {
         type_name: []const u8,
         loc: ast.SourceLocation,
     ) ParseError!*ast.Expr {
-        return self.finishStructLiteralOwned(type_name, loc);
+        const type_name_owned = try self.allocator.dupe(u8, type_name);
+        errdefer self.allocator.free(type_name_owned);
+        return self.finishStructLiteralOwned(type_name_owned, loc);
     }
 
     /// Parse a primary expression (literals, identifiers, grouping)
@@ -7161,16 +7222,11 @@ pub const Parser = struct {
                 const token = self.tokens[self.current];
 
                 // Track nested structures
-                if (token.type == .LeftParen) paren_depth += 1
-                else if (token.type == .RightParen) {
+                if (token.type == .LeftParen) paren_depth += 1 else if (token.type == .RightParen) {
                     if (paren_depth > 0) paren_depth -= 1;
-                }
-                else if (token.type == .LeftBracket) bracket_depth += 1
-                else if (token.type == .RightBracket) {
+                } else if (token.type == .LeftBracket) bracket_depth += 1 else if (token.type == .RightBracket) {
                     if (bracket_depth > 0) bracket_depth -= 1;
-                }
-                else if (token.type == .LeftBrace) brace_depth += 1
-                else if (token.type == .RightBrace) {
+                } else if (token.type == .LeftBrace) brace_depth += 1 else if (token.type == .RightBrace) {
                     if (brace_depth > 0) {
                         brace_depth -= 1;
                     } else {
@@ -7187,7 +7243,8 @@ pub const Parser = struct {
                 else if (paren_depth == 0 and bracket_depth == 0 and brace_depth == 0) {
                     if (token.type == .Semicolon or token.type == .Let or token.type == .Const or
                         token.type == .If or token.type == .While or token.type == .For or
-                        token.type == .Return or token.type == .Fn) {
+                        token.type == .Return or token.type == .Fn)
+                    {
                         // Definitely a block
                         break;
                     }
@@ -7927,7 +7984,10 @@ pub const Parser = struct {
 
                     // Parse generic type arguments
                     var type_args = std.ArrayList([]const u8).empty;
-                    defer type_args.deinit(self.allocator);
+                    defer {
+                        for (type_args.items) |arg| self.allocator.free(arg);
+                        type_args.deinit(self.allocator);
+                    }
 
                     while (!self.check(.Greater) and !self.check(.RightShift) and self.pending_greater == 0 and !self.isAtEnd()) {
                         const arg_type = try self.parseTypeAnnotation();
@@ -8065,6 +8125,37 @@ pub const Parser = struct {
             return expr;
         }
 
+        // Leading-dot enum literal shorthand in expression position (`.RED`).
+        if (self.match(&.{.Dot})) {
+            const dot_tok = self.previous();
+            if (self.match(&.{.LeftBrace})) {
+                const type_name = try self.allocator.dupe(u8, "");
+                errdefer self.allocator.free(type_name);
+                return try self.finishStructLiteralOwned(type_name, ast.SourceLocation.fromToken(dot_tok));
+            }
+
+            const ident_tok = if (self.check(.Identifier) or self.check(.Type))
+                self.advance()
+            else {
+                try self.reportError("Expected identifier after '.'");
+                return error.UnexpectedToken;
+            };
+
+            const base_expr = try self.allocator.create(ast.Expr);
+            base_expr.* = ast.Expr{
+                .Identifier = ast.Identifier.init("", ast.SourceLocation.fromToken(dot_tok)),
+            };
+            const member_expr = try ast.MemberExpr.init(
+                self.allocator,
+                base_expr,
+                ident_tok.lexeme,
+                ast.SourceLocation.fromToken(ident_tok),
+            );
+            const expr = try self.allocator.create(ast.Expr);
+            expr.* = ast.Expr{ .MemberExpr = member_expr };
+            return expr;
+        }
+
         // Unary expressions
         if (self.match(&.{ .Bang, .Not, .Minus, .Tilde, .Star, .Ampersand })) {
             const op_token = self.previous();
@@ -8166,6 +8257,7 @@ pub const Parser = struct {
                     {
                         // Commit: parse the element type, then `{ ... }`.
                         const elem_type = try self.parseTypeAnnotation();
+                        defer self.allocator.free(elem_type);
                         _ = try self.expect(.LeftBrace, "Expected '{' after typed array element type");
 
                         var elements = std.ArrayList(*ast.Expr).empty;
@@ -8716,4 +8808,3 @@ pub const Parser = struct {
     // Closure parsing methods
     pub const parseClosureExpr = closure_parser.parseClosureExpr;
 };
-
