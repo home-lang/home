@@ -1269,6 +1269,11 @@ pub const Checker = struct {
                     try self.scanForUsedBeforeAssign(s, pending);
                 }
             },
+            .namespace_decl => {
+                for (hir_mod.namespaceBody(self.hir, node)) |s| {
+                    try self.scanForUsedBeforeAssign(s, pending);
+                }
+            },
             .return_stmt => {
                 const r = hir_mod.returnOf(self.hir, node);
                 try self.scanExprForUsedBeforeAssign(r.value, pending);
@@ -1381,7 +1386,8 @@ pub const Checker = struct {
         const decl_node = pending.get(name) orelse return;
         if (self.hir.kindOf(decl_node) == .var_decl) {
             if (!self.nodeHasAncestorKind(ref_node, .conditional) and
-                !self.nodeHasAncestorKind(ref_node, .array_literal)) return;
+                !self.nodeHasAncestorKind(ref_node, .array_literal) and
+                !(self.nodeHasAncestorKind(ref_node, .call_expr) and self.varDeclHasConstructorType(decl_node))) return;
             if (self.sourceHasStrictFalseDirective()) return;
         }
         const name_str = self.string_interner.get(name);
@@ -1406,6 +1412,13 @@ pub const Checker = struct {
             if (self.hir.kindOf(cur) == kind) return true;
         }
         return false;
+    }
+
+    fn varDeclHasConstructorType(self: *Checker, node: NodeId) bool {
+        if (self.hir.kindOf(node) != .var_decl) return false;
+        const v = hir_mod.varDeclOf(self.hir, node);
+        if (v.type_annotation == hir_mod.none_node_id) return false;
+        return self.hir.kindOf(v.type_annotation) == .constructor_type;
     }
 
     fn sourceHasStrictFalseDirective(self: *Checker) bool {
@@ -2438,7 +2451,7 @@ pub const Checker = struct {
         // doesn't override. The child's declared members win on
         // name conflict (TS prototype-chain semantics).
         if (c.extends != hir_mod.none_node_id) {
-            try self.mergeExtendedMembers(c.extends, &instance_members);
+            try self.mergeExtendedMembers(c.extends, &instance_members, string_idx, number_idx);
         }
 
         const instance_t = self.interner.internObjectTypeWithIndex(instance_members.items, string_idx, number_idx) catch return error.OutOfMemory;
@@ -2721,8 +2734,22 @@ pub const Checker = struct {
         self: *Checker,
         extends_expr: NodeId,
         child_members: *std.ArrayListUnmanaged(types.ObjectMember),
+        child_string_idx: TypeId,
+        child_number_idx: TypeId,
     ) CheckError!void {
         const parent_t = (try self.classExtendsInstanceType(extends_expr)) orelse return;
+        const parent_string_idx = self.interner.objectStringIndex(parent_t);
+        if (parent_string_idx != types.Primitive.none and child_string_idx != types.Primitive.none) {
+            if (!(self.engine.isAssignableTo(child_string_idx, parent_string_idx) catch false)) {
+                try self.reportClassExtendsIndexMismatch(extends_expr);
+            }
+        }
+        const parent_number_idx = self.interner.objectNumberIndex(parent_t);
+        if (parent_number_idx != types.Primitive.none and child_number_idx != types.Primitive.none) {
+            if (!(self.engine.isAssignableTo(child_number_idx, parent_number_idx) catch false)) {
+                try self.reportClassExtendsIndexMismatch(extends_expr);
+            }
+        }
         const parent_members = self.interner.objectMembers(parent_t);
 
         // Collect the child declarations so overrides can be checked
@@ -2756,6 +2783,14 @@ pub const Checker = struct {
         }
         if (inherited.items.len == 0) return;
         try child_members.insertSlice(self.gpa, 0, inherited.items);
+    }
+
+    fn reportClassExtendsIndexMismatch(self: *Checker, node: NodeId) CheckError!void {
+        try self.diagnostics.append(self.gpa, .{
+            .node = node,
+            .code = TsCodes.property_not_assignable_to_base,
+            .message = "Class incorrectly extends base class; index signatures are incompatible.",
+        });
     }
 
     fn classExtendsName(self: *Checker, extends_expr: NodeId) ?hir_mod.StringId {
@@ -2889,7 +2924,7 @@ pub const Checker = struct {
         // members into the child. Child decls win on name conflict.
         const extends = hir_mod.interfaceExtends(self.hir, node);
         if (extends.len > 0) {
-            try self.checkInterfaceExtendsCompatibility(node, extends, iface_members.items);
+            try self.checkInterfaceExtendsCompatibility(node, extends, iface_members.items, string_idx, number_idx);
             try self.mergeInterfaceExtends(extends, &iface_members, &string_idx, &number_idx);
         }
         try self.checkIndexSignatureMemberCompatibility(node, iface_members.items, string_idx, number_idx);
@@ -2933,16 +2968,34 @@ pub const Checker = struct {
         node: NodeId,
         extends: []const NodeId,
         child_members: []const types.ObjectMember,
+        child_string_idx: TypeId,
+        child_number_idx: TypeId,
     ) CheckError!void {
         for (extends) |ext_node| {
             const parent_t = self.lowererLowerWithTypeParams(ext_node) catch continue;
             if (!self.interner.pool.flagsOf(parent_t).is_object_type) continue;
+            const parent_string_idx = self.interner.objectStringIndex(parent_t);
+            if (parent_string_idx != types.Primitive.none and child_string_idx != types.Primitive.none) {
+                const type_ok = self.engine.isAssignableTo(child_string_idx, parent_string_idx) catch true;
+                if (!type_ok) {
+                    try self.reportInterfaceExtendsIndexMismatch(node);
+                    continue;
+                }
+            }
+            const parent_number_idx = self.interner.objectNumberIndex(parent_t);
+            if (parent_number_idx != types.Primitive.none and child_number_idx != types.Primitive.none) {
+                const type_ok = self.engine.isAssignableTo(child_number_idx, parent_number_idx) catch true;
+                if (!type_ok) {
+                    try self.reportInterfaceExtendsIndexMismatch(node);
+                    continue;
+                }
+            }
             for (self.interner.objectMembers(parent_t)) |pm| {
                 for (child_members) |cm| {
                     if (cm.name != pm.name) continue;
                     const cm_flags = self.interner.pool.flagsOf(cm.type);
                     const pm_flags = self.interner.pool.flagsOf(pm.type);
-                    if (cm_flags.is_signature or pm_flags.is_signature) break;
+                    if ((cm_flags.is_signature or pm_flags.is_signature) and !self.strict_flags.strict_function_types) break;
                     const optional_ok = pm.is_optional or !cm.is_optional;
                     const type_ok = self.engine.isAssignableTo(cm.type, pm.type) catch true;
                     if (optional_ok and type_ok) break;
@@ -2961,6 +3014,14 @@ pub const Checker = struct {
                 }
             }
         }
+    }
+
+    fn reportInterfaceExtendsIndexMismatch(self: *Checker, node: NodeId) CheckError!void {
+        try self.diagnostics.append(self.gpa, .{
+            .node = node,
+            .code = TsCodes.interface_incorrectly_extends,
+            .message = "Interface incorrectly extends base interface; index signatures are incompatible.",
+        });
     }
 
     fn checkIndexSignatureMemberCompatibility(
@@ -8189,6 +8250,38 @@ test "checker: typed var used in array literal emits TS2454" {
     try T.expect(found);
 }
 
+test "checker: construct-signature typed var used as call arg emits TS2454" {
+    const s = try newSetup(
+        \\declare function use(cb: new (x: number) => void): void;
+        \\var C: new (x: number) => number;
+        \\use(C);
+    );
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+    var found = false;
+    for (s.checker.diagnostics.items) |d| {
+        if (d.code == TsCodes.used_before_assignment) found = true;
+    }
+    try T.expect(found);
+}
+
+test "checker: namespace body participates in TS2454 scan" {
+    const s = try newSetup(
+        \\namespace N {
+        \\  var C: new (x: number) => number;
+        \\  declare function use(cb: new (x: number) => void): void;
+        \\  use(C);
+        \\}
+    );
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+    var found = false;
+    for (s.checker.diagnostics.items) |d| {
+        if (d.code == TsCodes.used_before_assignment) found = true;
+    }
+    try T.expect(found);
+}
+
 test "checker: ambient let is not used-before-assignment" {
     const s = try newSetup(
         \\declare let x: number;
@@ -8410,6 +8503,22 @@ test "checker: generic extends instantiates parent field types for override chec
     try T.expect(found);
 }
 
+test "checker: class extends rejects incompatible number index signature" {
+    const s = try newSetup(
+        \\class Base { foo: string = ""; }
+        \\class Derived extends Base { bar: string = ""; }
+        \\class A { [x: number]: Derived; }
+        \\class B extends A { [x: number]: Base; }
+    );
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+    var found = false;
+    for (s.checker.diagnostics.items) |d| {
+        if (d.code == TsCodes.property_not_assignable_to_base) found = true;
+    }
+    try T.expect(found);
+}
+
 test "checker: class implements interface checks instance shape" {
     const s = try newSetup(
         \\class C implements String {
@@ -8430,6 +8539,37 @@ test "checker: interface extends rejects incompatible property override" {
     const s = try newSetup(
         \\interface Base { x: { a: string } }
         \\interface Derived extends Base { x: string }
+    );
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+    var found = false;
+    for (s.checker.diagnostics.items) |d| {
+        if (d.code == TsCodes.interface_incorrectly_extends) found = true;
+    }
+    try T.expect(found);
+}
+
+test "checker: strict interface extends rejects incompatible call signature override" {
+    const s = try newSetup(
+        \\interface Base { a: () => number }
+        \\interface Derived extends Base { a: (x: number) => number }
+    );
+    defer destroySetup(s);
+    s.checker.setStrictFlags(.{ .strict_function_types = true });
+    try s.checker.checkSourceFile(s.root);
+    var found = false;
+    for (s.checker.diagnostics.items) |d| {
+        if (d.code == TsCodes.interface_incorrectly_extends) found = true;
+    }
+    try T.expect(found);
+}
+
+test "checker: interface extends rejects incompatible number index signature" {
+    const s = try newSetup(
+        \\interface Base { foo: string }
+        \\interface Derived extends Base { bar: string }
+        \\interface A { [x: number]: Derived }
+        \\interface B extends A { [x: number]: Base }
     );
     defer destroySetup(s);
     try s.checker.checkSourceFile(s.root);

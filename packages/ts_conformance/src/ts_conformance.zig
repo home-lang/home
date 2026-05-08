@@ -309,6 +309,11 @@ pub const DirectoryLoadOptions = struct {
     /// handling. Kept off for the current ratchet because a handful
     /// of strict-positive cases still need contextual typing work.
     honor_directives: bool = false,
+    /// Use strict-family defaults for files that have an upstream
+    /// `.errors.txt` baseline unless the source explicitly carries a
+    /// strict directive. This mirrors the negative-case baselines
+    /// without enabling strict diagnostics for positive fixtures.
+    strict_default_for_expected_errors: bool = false,
 };
 
 /// Walk `dir_path` recursively and collect every `.ts` / `.tsx`
@@ -374,13 +379,21 @@ pub fn loadDirectoryWithOptions(
         const stem = entry.basename[0..ext_dot];
         const expects_error = std.mem.indexOf(u8, entry.basename, ".errors.") != null or
             hasErrorBaseline(gpa, options.baseline_root, stem);
+        const directive_flags = parseStrictDirectiveFlags(src);
+        const strict_flags =
+            if (options.honor_directives)
+                directive_flags
+            else if (options.strict_default_for_expected_errors and expects_error)
+                directive_flags orelse strictFlagsFromStrict(true)
+            else
+                null;
         const name = try gpa.dupe(u8, stem);
         try out.append(gpa, .{
             .name = name,
             .source = src,
             .expects_error = expects_error,
             .is_tsx = is_tsx,
-            .strict_flags = if (options.honor_directives) parseStrictDirectiveFlags(src) else null,
+            .strict_flags = strict_flags,
         });
     }
     return out.toOwnedSlice(gpa);
@@ -430,6 +443,14 @@ fn parseStrictDirectiveFlags(source: []const u8) ?ts_driver.StrictFlags {
     if (!seen) return null;
 
     const strict_on = state.strict orelse false;
+    return strictFlagsFromState(state, strict_on);
+}
+
+fn strictFlagsFromStrict(strict_on: bool) ts_driver.StrictFlags {
+    return strictFlagsFromState(.{}, strict_on);
+}
+
+fn strictFlagsFromState(state: StrictDirectiveState, strict_on: bool) ts_driver.StrictFlags {
     return .{
         .no_implicit_any = state.no_implicit_any orelse strict_on,
         .no_unused_parameters = state.no_unused_parameters orelse false,
@@ -803,6 +824,16 @@ test "conformance: strict false directive leaves strict family disabled" {
     try T.expect(!flags.strict_property_initialization);
 }
 
+test "conformance: strict helper mirrors strict-family defaults" {
+    const flags = strictFlagsFromStrict(true);
+    try T.expect(flags.no_implicit_any);
+    try T.expect(flags.strict_function_types);
+    try T.expect(flags.strict_null_checks);
+    try T.expect(flags.strict_property_initialization);
+    try T.expect(!flags.no_unused_locals);
+    try T.expect(!flags.no_unused_parameters);
+}
+
 test "conformance: empty file passes with no diagnostics" {
     const r = try run(T.allocator, .{
         .name = "empty",
@@ -1093,7 +1124,10 @@ test "conformance: baseline-aware type-relationship survey" {
         .{ .label = "types/typeRelationships/typeInference", .rel_path = "types/typeRelationships/typeInference" },
     };
 
-    const cats = try runCategorySpecsWithOptions(T.allocator, ts_root, .{ .baseline_root = baseline_root }, &specs);
+    const cats = try runCategorySpecsWithOptions(T.allocator, ts_root, .{
+        .baseline_root = baseline_root,
+        .strict_default_for_expected_errors = true,
+    }, &specs);
     defer freeCategoryResults(T.allocator, cats);
     const combined = combineCategoryStats(cats);
 
