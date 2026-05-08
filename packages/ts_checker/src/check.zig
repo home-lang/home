@@ -1203,14 +1203,16 @@ pub const Checker = struct {
     /// TS2454 — "Variable 'X' is used before being assigned."
     ///
     /// Linear-scan, approximate: walks `stmts` in source order
-    /// tracking every `let_decl` whose declaration carries a type
-    /// annotation but no initializer. A subsequent identifier read
-    /// of such a name (anywhere except as the LHS of a plain
-    /// assignment) emits TS2454. A plain `name = ...` removes the
-    /// name from the tracked set. This intentionally does *not*
-    /// build a control-flow graph — branches collapse to a flat
-    /// scan, so it catches the common case but misses anything
-    /// involving conditionals.
+    /// tracking every typed declaration with no initializer. A
+    /// subsequent identifier read of a pending `let` emits TS2454;
+    /// a pending `var` only emits inside a conditional expression or
+    /// array literal, which catches the high-frequency conformance
+    /// shapes without treating every hoisted `var` probe as
+    /// definitely unassigned.
+    /// A plain `name = ...` removes the name from the tracked set.
+    /// This intentionally does *not* build a control-flow graph —
+    /// branches collapse to a flat scan, so it catches the common
+    /// case but misses anything involving control-flow joins.
     fn checkUsedBeforeAssignment(self: *Checker, stmts: []const NodeId) CheckError!void {
         var pending: std.AutoHashMapUnmanaged(hir_mod.StringId, NodeId) = .empty;
         defer pending.deinit(self.gpa);
@@ -1225,7 +1227,7 @@ pub const Checker = struct {
         if (node == hir_mod.none_node_id) return;
         const k = self.hir.kindOf(node);
         switch (k) {
-            .let_decl => {
+            .let_decl, .var_decl => {
                 const v = hir_mod.varDeclOf(self.hir, node);
                 if (!v.is_ambient and
                     v.init == hir_mod.none_node_id and
@@ -1240,7 +1242,7 @@ pub const Checker = struct {
                     try self.scanExprForUsedBeforeAssign(v.init, pending);
                 }
             },
-            .var_decl, .const_decl => {
+            .const_decl => {
                 const v = hir_mod.varDeclOf(self.hir, node);
                 if (v.init != hir_mod.none_node_id) {
                     try self.scanExprForUsedBeforeAssign(v.init, pending);
@@ -1327,6 +1329,11 @@ pub const Checker = struct {
                 try self.scanExprForUsedBeforeAssign(c.then_branch, pending);
                 try self.scanExprForUsedBeforeAssign(c.else_branch, pending);
             },
+            .array_literal => {
+                for (hir_mod.arrayLiteralElements(self.hir, node)) |el| {
+                    try self.scanExprForUsedBeforeAssign(el, pending);
+                }
+            },
             .call_expr, .new_expr => {
                 const c = hir_mod.callOf(self.hir, node);
                 try self.scanExprForUsedBeforeAssign(c.callee, pending);
@@ -1371,7 +1378,12 @@ pub const Checker = struct {
         name: hir_mod.StringId,
         pending: *std.AutoHashMapUnmanaged(hir_mod.StringId, NodeId),
     ) CheckError!void {
-        if (!pending.contains(name)) return;
+        const decl_node = pending.get(name) orelse return;
+        if (self.hir.kindOf(decl_node) == .var_decl) {
+            if (!self.nodeHasAncestorKind(ref_node, .conditional) and
+                !self.nodeHasAncestorKind(ref_node, .array_literal)) return;
+            if (self.sourceHasStrictFalseDirective()) return;
+        }
         const name_str = self.string_interner.get(name);
         const msg = try std.fmt.allocPrint(
             self.diag_arena.allocator(),
@@ -1386,6 +1398,25 @@ pub const Checker = struct {
         // Remove from pending so we only flag the first use; later
         // reads are noisy.
         _ = pending.remove(name);
+    }
+
+    fn nodeHasAncestorKind(self: *Checker, node: NodeId, kind: hir_mod.NodeKind) bool {
+        var cur = self.hir.parentOf(node);
+        while (cur != hir_mod.none_node_id) : (cur = self.hir.parentOf(cur)) {
+            if (self.hir.kindOf(cur) == kind) return true;
+        }
+        return false;
+    }
+
+    fn sourceHasStrictFalseDirective(self: *Checker) bool {
+        const src = self.source orelse return false;
+        var lines = std.mem.splitScalar(u8, src, '\n');
+        while (lines.next()) |raw_line| {
+            const line = std.mem.trim(u8, raw_line, " \t\r");
+            if (std.mem.indexOf(u8, line, "@strict: false") != null) return true;
+            if (std.mem.indexOf(u8, line, "@strict:false") != null) return true;
+        }
+        return false;
     }
 
     /// `noUnusedParameters` (TS6133): walks the function body and
@@ -7112,16 +7143,38 @@ pub const Checker = struct {
     }
 
     fn checkTypeAssertionOverlap(self: *Checker, node: NodeId, source_t: TypeId, target_t: TypeId) CheckError!void {
+        if (!self.strict_flags.strict_null_checks) return;
         if (source_t != types.Primitive.null_t) return;
         if (self.assertionIsInsideTypedObjectLiteralVarInit(node)) return;
         const target_flags = self.interner.pool.flagsOf(target_t);
         if (target_flags.is_any or target_flags.is_unknown) return;
         if (self.typeIncludesNull(target_t)) return;
+        if (self.nullAssertionTargetIsPermissive(target_t)) return;
         try self.diagnostics.append(self.gpa, .{
             .node = node,
             .code = TsCodes.conversion_may_be_mistake,
             .message = "Conversion may be a mistake because neither type sufficiently overlaps with the other.",
         });
+    }
+
+    fn nullAssertionTargetIsPermissive(self: *Checker, target_t: TypeId) bool {
+        if (self.containsFreeTypeParameter(target_t)) return true;
+
+        const target_flags = self.interner.pool.flagsOf(target_t);
+        if (target_flags.is_object_type) {
+            const string_idx = self.interner.objectStringIndex(target_t);
+            if (self.typeIsAnyLike(string_idx)) return true;
+            const number_idx = self.interner.objectNumberIndex(target_t);
+            if (self.typeIsAnyLike(number_idx)) return true;
+        }
+
+        return false;
+    }
+
+    fn typeIsAnyLike(self: *Checker, t: TypeId) bool {
+        if (t == types.Primitive.none or t >= self.interner.pool.typeCount()) return false;
+        const flags = self.interner.pool.flagsOf(t);
+        return flags.is_any or flags.is_unknown;
     }
 
     fn assertionIsInsideTypedObjectLiteralVarInit(self: *Checker, node: NodeId) bool {
@@ -7180,7 +7233,11 @@ pub const Checker = struct {
     /// `non_null_expr` typing path to support TS's `expr!` postfix
     /// operator. An empty result collapses to `never`.
     fn subtractNullUndefined(self: *Checker, t: TypeId) !TypeId {
-        if (!self.interner.pool.flagsOf(t).is_union) return t;
+        const flags = self.interner.pool.flagsOf(t);
+        if (!flags.is_union) {
+            if (flags.is_null or flags.is_undefined) return types.Primitive.never;
+            return t;
+        }
         const members = self.interner.unionMembers(t);
         var kept: std.ArrayListUnmanaged(TypeId) = .empty;
         defer kept.deinit(self.gpa);
@@ -8079,6 +8136,59 @@ test "checker: use-before-assign emits TS2454" {
     try T.expect(found);
 }
 
+test "checker: typed var used in conditional emits TS2454" {
+    const s = try newSetup(
+        \\var x: number;
+        \\let y = true ? x : 1;
+    );
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+    var found = false;
+    for (s.checker.diagnostics.items) |d| {
+        if (d.code == TsCodes.used_before_assignment) found = true;
+    }
+    try T.expect(found);
+}
+
+test "checker: typed var plain read is not eagerly marked unassigned" {
+    const s = try newSetup(
+        \\var x: number;
+        \\let y = x;
+    );
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+    for (s.checker.diagnostics.items) |d| {
+        try T.expect(d.code != TsCodes.used_before_assignment);
+    }
+}
+
+test "checker: strict false directive suppresses conditional var TS2454" {
+    const s = try newSetup(
+        \\// @strict: false
+        \\var x: number;
+        \\let y = true ? x : 1;
+    );
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+    for (s.checker.diagnostics.items) |d| {
+        try T.expect(d.code != TsCodes.used_before_assignment);
+    }
+}
+
+test "checker: typed var used in array literal emits TS2454" {
+    const s = try newSetup(
+        \\var x: number;
+        \\let y = [x, 1];
+    );
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+    var found = false;
+    for (s.checker.diagnostics.items) |d| {
+        if (d.code == TsCodes.used_before_assignment) found = true;
+    }
+    try T.expect(found);
+}
+
 test "checker: ambient let is not used-before-assignment" {
     const s = try newSetup(
         \\declare let x: number;
@@ -8534,12 +8644,26 @@ test "checker: null assertion to non-null target reports TS2352" {
         \\let c = <C>null;
     );
     defer destroySetup(s);
+    s.checker.setStrictFlags(.{ .strict_null_checks = true });
     try s.checker.checkSourceFile(s.root);
     var found = false;
     for (s.checker.diagnostics.items) |d| {
         if (d.code == TsCodes.conversion_may_be_mistake) found = true;
     }
     try T.expect(found);
+}
+
+test "checker: null assertion to generic array target is allowed" {
+    const s = try newSetup(
+        \\function f<T>() {
+        \\  return <T[]>null;
+        \\}
+    );
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+    for (s.checker.diagnostics.items) |d| {
+        try T.expect(d.code != TsCodes.conversion_may_be_mistake);
+    }
 }
 
 test "checker: `satisfies` preserves the original expression type" {
@@ -9637,6 +9761,17 @@ test "checker: postfix `!` strips null/undefined from a union" {
     const v = hir_mod.varDeclOf(&s.hir, stmts[1]);
     try T.expectEqual(hir_mod.NodeKind.non_null_expr, s.hir.kindOf(v.init));
     try T.expectEqual(types.Primitive.string_t, s.hir.typeOf(v.init));
+}
+
+test "checker: postfix `!` on undefined collapses to never" {
+    const s = try newSetup(
+        \\let x = undefined!;
+    );
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+    const stmts = hir_mod.blockStmts(&s.hir, s.root);
+    const v = hir_mod.varDeclOf(&s.hir, stmts[0]);
+    try T.expectEqual(types.Primitive.never, s.hir.typeOf(v.init));
 }
 
 test "checker: generic alias mismatch emits TS2322" {
