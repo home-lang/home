@@ -67,6 +67,7 @@ pub const TsCodes = struct {
     pub const type_not_assignable: u32 = 2322;
     pub const property_does_not_exist: u32 = 2339;
     pub const argument_type_mismatch: u32 = 2345;
+    pub const property_not_assignable_to_base: u32 = 2416;
     pub const expected_n_arguments: u32 = 2554;
     pub const no_overload_matches: u32 = 2769;
     pub const duplicate_identifier: u32 = 2300;
@@ -80,6 +81,7 @@ pub const TsCodes = struct {
     pub const object_literal_excess_property: u32 = 2353;
     pub const satisfies_constraint: u32 = 1360;
     pub const used_before_assignment: u32 = 2454;
+    pub const property_not_initialized: u32 = 2564;
     pub const cannot_assign_const: u32 = 2588;
     pub const await_only_in_async: u32 = 1308;
     pub const no_overlap_comparison: u32 = 2367;
@@ -188,6 +190,10 @@ pub const StrictFlags = struct {
     /// `strictNullChecks` (also implied by `strict`). When false,
     /// `null` and `undefined` flow to every type except `never`.
     strict_null_checks: bool = false,
+    /// `strictPropertyInitialization` (also implied by `strict`).
+    /// Emits TS2564 for typed instance fields that have no initializer
+    /// and are not definitely assigned by a constructor analysis pass.
+    strict_property_initialization: bool = false,
     /// `noUncheckedIndexedAccess`. When true, indexed access through
     /// an array or index signature widens the result with `undefined`
     /// — `arr[i]` types as `T | undefined` rather than `T`. Tuple
@@ -2170,6 +2176,34 @@ pub const Checker = struct {
     fn checkClassDecl(self: *Checker, node: NodeId) CheckError!void {
         const c = hir_mod.classOf(self.hir, node);
         const members = hir_mod.classMembers(self.hir, node);
+        const type_params = self.hir.childSlice(c.type_params_start, c.type_params_len);
+        if (type_params.len > 0) try self.pushNarrowScope();
+        defer if (type_params.len > 0) self.popNarrowScope();
+
+        var class_param_ids: std.ArrayListUnmanaged(TypeId) = .empty;
+        var class_param_ids_moved = false;
+        defer if (!class_param_ids_moved) class_param_ids.deinit(self.gpa);
+        for (type_params) |tp| {
+            if (self.hir.kindOf(tp) != .type_parameter) continue;
+            const tpp = hir_mod.typeParameterOf(self.hir, tp);
+            const constraint: TypeId = if (tpp.constraint != hir_mod.none_node_id)
+                try self.lowererLowerWithTypeParams(tpp.constraint)
+            else
+                types.Primitive.unknown;
+            const def: TypeId = if (tpp.default != hir_mod.none_node_id)
+                try self.lowererLowerWithTypeParams(tpp.default)
+            else
+                types.Primitive.none;
+            const tp_id = self.interner.internFreshTypeParameterWithVariance(
+                tpp.name,
+                constraint,
+                def,
+                types.Variance.fromHirBits(tpp.variance),
+            ) catch return error.OutOfMemory;
+            self.hir.setType(tp, tp_id);
+            try self.recordNarrow(tpp.name, tp_id);
+            try class_param_ids.append(self.gpa, tp_id);
+        }
 
         // Pass 1: build the instance shape from signatures + field
         // annotations only (no method body walks). Methods need the
@@ -2315,6 +2349,24 @@ pub const Checker = struct {
                         }
                         break :blk types.Primitive.any;
                     };
+                    if (self.strict_flags.strict_property_initialization and
+                        !op.is_static and
+                        op.type_annotation != hir_mod.none_node_id and
+                        op.value == hir_mod.none_node_id and
+                        !self.typeExplicitlyIncludesUndefined(field_t))
+                    {
+                        const field_name = self.string_interner.get(id.name);
+                        const msg = try std.fmt.allocPrint(
+                            self.diag_arena.allocator(),
+                            "Property '{s}' has no initializer and is not definitely assigned in the constructor.",
+                            .{field_name},
+                        );
+                        try self.diagnostics.append(self.gpa, .{
+                            .node = m,
+                            .code = TsCodes.property_not_initialized,
+                            .message = msg,
+                        });
+                    }
                     try instance_members.append(self.gpa, .{
                         .name = id.name,
                         .type = field_t,
@@ -2340,6 +2392,18 @@ pub const Checker = struct {
             const cid = hir_mod.identifierOf(self.hir, c.name);
             try self.class_instance_types.put(self.gpa, cid.name, instance_t);
             try self.type_names.put(self.gpa, cid.name, instance_t);
+            if (class_param_ids.items.len > 0) {
+                if (self.generic_aliases.get(cid.name)) |old| {
+                    self.gpa.free(old.params);
+                }
+                const owned_params = class_param_ids.toOwnedSlice(self.gpa) catch return error.OutOfMemory;
+                class_param_ids_moved = true;
+                try self.generic_aliases.put(self.gpa, cid.name, .{
+                    .params = owned_params,
+                    .body = instance_t,
+                    .body_node = hir_mod.none_node_id,
+                });
+            }
             try self.class_name_by_instance.put(self.gpa, instance_t, cid.name);
             if (ctor_sig != types.Primitive.none) {
                 try self.class_constructor_sigs.put(self.gpa, cid.name, ctor_sig);
@@ -2592,18 +2656,33 @@ pub const Checker = struct {
         const parent_t = self.class_instance_types.get(id.name) orelse return;
         const parent_members = self.interner.objectMembers(parent_t);
 
-        // Collect names the child already declares so we know which
-        // parent entries to skip (override).
-        var child_names: std.AutoHashMapUnmanaged(hir_mod.StringId, void) = .empty;
-        defer child_names.deinit(self.gpa);
-        for (child_members.items) |m| try child_names.put(self.gpa, m.name, {});
+        // Collect the child declarations so overrides can be checked
+        // before inherited-only entries are prepended.
+        var child_by_name: std.AutoHashMapUnmanaged(hir_mod.StringId, types.ObjectMember) = .empty;
+        defer child_by_name.deinit(self.gpa);
+        for (child_members.items) |m| try child_by_name.put(self.gpa, m.name, m);
 
         // Prepend inherited-only members so child entries (declared
         // last) win after sort+dedup is performed by the caller.
         var inherited: std.ArrayListUnmanaged(types.ObjectMember) = .empty;
         defer inherited.deinit(self.gpa);
         for (parent_members) |pm| {
-            if (child_names.contains(pm.name)) continue;
+            if (child_by_name.get(pm.name)) |cm| {
+                if (!(self.engine.isAssignableTo(cm.type, pm.type) catch false)) {
+                    const prop_str = self.string_interner.get(pm.name);
+                    const msg = try std.fmt.allocPrint(
+                        self.diag_arena.allocator(),
+                        "Property '{s}' in type is not assignable to the same property in base type.",
+                        .{prop_str},
+                    );
+                    try self.diagnostics.append(self.gpa, .{
+                        .node = extends_expr,
+                        .code = TsCodes.property_not_assignable_to_base,
+                        .message = msg,
+                    });
+                }
+                continue;
+            }
             try inherited.append(self.gpa, pm);
         }
         if (inherited.items.len == 0) return;
@@ -5878,7 +5957,9 @@ pub const Checker = struct {
         }
         if (p_flags.is_type_parameter) {
             if (!subs.contains(param_t)) {
-                try subs.put(self.gpa, param_t, self.widenForInference(arg_t));
+                var inferred = self.widenForInference(arg_t);
+                inferred = self.substituteType(inferred, subs) catch inferred;
+                try subs.put(self.gpa, param_t, inferred);
             }
             return;
         }
@@ -6540,6 +6621,19 @@ pub const Checker = struct {
         if (t >= self.interner.pool.typeCount()) return false;
         const f = self.interner.pool.flagsOf(t);
         if (f.is_undefined or f.is_any or f.is_unknown) return true;
+        if (!f.is_union) return false;
+        if (self.interner.pool.payloadOf(t) >= self.interner.pool.union_payloads.items.len) return false;
+        for (self.interner.unionMembers(t)) |m| {
+            if (m >= self.interner.pool.typeCount()) continue;
+            if (self.interner.pool.flagsOf(m).is_undefined) return true;
+        }
+        return false;
+    }
+
+    fn typeExplicitlyIncludesUndefined(self: *Checker, t: TypeId) bool {
+        if (t >= self.interner.pool.typeCount()) return false;
+        const f = self.interner.pool.flagsOf(t);
+        if (f.is_undefined) return true;
         if (!f.is_union) return false;
         if (self.interner.pool.payloadOf(t) >= self.interner.pool.union_payloads.items.len) return false;
         for (self.interner.unionMembers(t)) |m| {
@@ -7656,19 +7750,72 @@ test "checker: class extends inherits parent fields" {
     try T.expectEqual(types.Primitive.string_t, s.hir.typeOf(ret_p.value));
 }
 
-test "checker: child class overrides parent field type" {
+test "checker: child class override keeps child field type and checks compatibility" {
     const s = try newSetup(
         \\class A { x: string = ""; }
         \\class B extends A { x: number = 0; }
     );
     defer destroySetup(s);
     try s.checker.checkSourceFile(s.root);
+    var found = false;
+    for (s.checker.diagnostics.items) |d| {
+        if (d.code == TsCodes.property_not_assignable_to_base) found = true;
+    }
+    try T.expect(found);
     const stmts = hir_mod.blockStmts(&s.hir, s.root);
     const b_t = s.hir.typeOf(stmts[1]);
     const x_id = try s.sint.intern("x");
     const x_t = s.ti.objectMember(b_t, x_id) orelse return error.TestExpectedEqual;
     // Child override wins — `x` is number_t, not string_t.
     try T.expectEqual(types.Primitive.number_t, x_t);
+}
+
+test "checker: generic class type annotation substitutes type parameters" {
+    const s = try newSetup(
+        \\class Box<T> { value: T; }
+        \\function read(b: Box<number>): number { return b.value; }
+    );
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+    for (s.checker.diagnostics.items) |d| {
+        try T.expect(d.code != TsCodes.type_not_assignable);
+        try T.expect(d.code != TsCodes.property_does_not_exist);
+    }
+    const stmts = hir_mod.blockStmts(&s.hir, s.root);
+    const f = hir_mod.fnDeclOf(&s.hir, stmts[1]);
+    const body = hir_mod.blockStmts(&s.hir, f.body);
+    const ret_p = hir_mod.returnOf(&s.hir, body[0]);
+    try T.expectEqual(types.Primitive.number_t, s.hir.typeOf(ret_p.value));
+}
+
+test "checker: strictPropertyInitialization reports uninitialized typed instance fields" {
+    const s = try newSetup(
+        \\class C { x: string; }
+    );
+    defer destroySetup(s);
+    s.checker.setStrictFlags(.{ .strict_property_initialization = true, .strict_null_checks = true });
+    try s.checker.checkSourceFile(s.root);
+    var found = false;
+    for (s.checker.diagnostics.items) |d| {
+        if (d.code == TsCodes.property_not_initialized) found = true;
+    }
+    try T.expect(found);
+}
+
+test "checker: strictPropertyInitialization accepts initialized and undefined-typed fields" {
+    const s = try newSetup(
+        \\class C {
+        \\  x: string = "";
+        \\  y: string | undefined;
+        \\  static z: string;
+        \\}
+    );
+    defer destroySetup(s);
+    s.checker.setStrictFlags(.{ .strict_property_initialization = true, .strict_null_checks = true });
+    try s.checker.checkSourceFile(s.root);
+    for (s.checker.diagnostics.items) |d| {
+        try T.expect(d.code != TsCodes.property_not_initialized);
+    }
 }
 
 test "checker: new with wrong arg count emits TS2554" {

@@ -841,10 +841,13 @@ pub const Parser = struct {
             name = try self.builder.addIdentifier(tokenSpan(name_tok), name_id);
         }
         // Generic type parameters: `class Foo<T extends U = D>`.
+        var class_type_params: []NodeId = &.{};
+        var owns_type_params = false;
         if (self.peek().kind == .less_than) {
-            const tps = try self.parseTypeParameterDeclaration();
-            self.gpa.free(tps);
+            class_type_params = try self.parseTypeParameterDeclaration();
+            owns_type_params = true;
         }
+        defer if (owns_type_params) self.gpa.free(class_type_params);
 
         var extends: NodeId = hir_mod.none_node_id;
         if (self.match(.kw_extends)) {
@@ -1007,7 +1010,7 @@ pub const Parser = struct {
         return try self.builder.addClass(
             .{ .start = span_start, .end = close.span.end },
             name,
-            &.{},
+            class_type_params,
             extends,
             implements_list.items,
             members.items,
@@ -4583,6 +4586,7 @@ test "parser: class extends generic instantiation" {
     const root = try s.parser.parseSourceFile();
     const top = hir_mod.blockStmts(&s.hir, root)[0];
     const cl = hir_mod.classOf(&s.hir, top);
+    try T.expectEqual(@as(u16, 1), cl.type_params_len);
     try T.expect(cl.extends != hir_mod.none_node_id);
     try T.expectEqual(hir_mod.NodeKind.identifier, s.hir.kindOf(cl.extends));
 }

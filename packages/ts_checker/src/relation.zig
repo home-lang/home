@@ -539,6 +539,70 @@ pub const Engine = struct {
         return t;
     }
 
+    fn substituteTpDeep(self: *Engine, t: TypeId, map: []const TpPair) anyerror!TypeId {
+        if (mappedTp(t, map)) |replacement| {
+            if (replacement == t) return replacement;
+            return self.substituteTpDeep(replacement, map);
+        }
+        if (t < Primitive.first_dynamic or t >= self.interner.pool.typeCount()) return t;
+        const flags = self.interner.pool.flagsOf(t);
+        const payload_idx = self.interner.pool.payloadOf(t);
+        if (flags.is_union) {
+            if (payload_idx >= self.interner.pool.union_payloads.items.len) return t;
+            var members: std.ArrayListUnmanaged(TypeId) = .empty;
+            defer members.deinit(self.interner.gpa);
+            for (self.interner.unionMembers(t)) |m| {
+                try members.append(self.interner.gpa, try self.substituteTpDeep(m, map));
+            }
+            return self.interner.internUnion(members.items) catch t;
+        }
+        if (flags.is_intersection) {
+            if (payload_idx >= self.interner.pool.intersection_payloads.items.len) return t;
+            var members: std.ArrayListUnmanaged(TypeId) = .empty;
+            defer members.deinit(self.interner.gpa);
+            for (self.interner.intersectionMembers(t)) |m| {
+                try members.append(self.interner.gpa, try self.substituteTpDeep(m, map));
+            }
+            return self.interner.internIntersection(members.items) catch t;
+        }
+        if (flags.is_object_type) {
+            if (payload_idx >= self.interner.pool.object_type_payloads.items.len) return t;
+            var members: std.ArrayListUnmanaged(types.ObjectMember) = .empty;
+            defer members.deinit(self.interner.gpa);
+            for (self.interner.objectMembers(t)) |m| {
+                try members.append(self.interner.gpa, .{
+                    .name = m.name,
+                    .type = try self.substituteTpDeep(m.type, map),
+                    .is_optional = m.is_optional,
+                    .is_readonly = m.is_readonly,
+                    .is_method = m.is_method,
+                });
+            }
+            const str_idx = self.interner.objectStringIndex(t);
+            const num_idx = self.interner.objectNumberIndex(t);
+            const new_str = if (str_idx != Primitive.none) try self.substituteTpDeep(str_idx, map) else Primitive.none;
+            const new_num = if (num_idx != Primitive.none) try self.substituteTpDeep(num_idx, map) else Primitive.none;
+            if (new_str == Primitive.none and new_num == Primitive.none) {
+                return self.interner.internObjectType(members.items) catch t;
+            }
+            return self.interner.internObjectTypeWithIndex(members.items, new_str, new_num) catch t;
+        }
+        if (flags.is_signature) {
+            if (payload_idx >= self.interner.pool.signature_payloads.items.len) return t;
+            var params: std.ArrayListUnmanaged(TypeId) = .empty;
+            defer params.deinit(self.interner.gpa);
+            for (self.interner.signatureParams(t)) |p| {
+                try params.append(self.interner.gpa, try self.substituteTpDeep(p, map));
+            }
+            const ret = if (self.interner.signatureReturn(t)) |r|
+                try self.substituteTpDeep(r, map)
+            else
+                Primitive.void_t;
+            return self.interner.internSignature(params.items, ret, false) catch t;
+        }
+        return t;
+    }
+
     fn mappedTp(t: TypeId, map: []const TpPair) ?TypeId {
         for (map) |pair| {
             if (pair.from == t) return pair.to;
@@ -596,7 +660,7 @@ pub const Engine = struct {
                     source_context_len += 1;
                 }
             }
-            const s_param_ctx = substituteTp(s_param, source_context_buf[0..source_context_len]);
+            const s_param_ctx = try self.substituteTpDeep(s_param, source_context_buf[0..source_context_len]);
             // Both sides are type-parameters at the same position —
             // unify them as the same tp for the rest of the
             // comparison and skip the assignability check (the
@@ -621,12 +685,12 @@ pub const Engine = struct {
             }
         }
         const s_ret_raw = self.interner.signatureReturn(source) orelse return true;
-        const s_ret = substituteTp(s_ret_raw, source_context_buf[0..source_context_len]);
+        const s_ret = try self.substituteTpDeep(s_ret_raw, source_context_buf[0..source_context_len]);
         const t_ret_raw = self.interner.signatureReturn(target) orelse return true;
         // Substitute target type-parameters with their source
         // counterparts so `<T>(x: T) => T` matches `<U>(x: U) => U`
         // even though `T` and `U` intern to distinct ids.
-        const t_ret = substituteTp(t_ret_raw, tp_map_buf[0..tp_map_len]);
+        const t_ret = try self.substituteTpDeep(t_ret_raw, tp_map_buf[0..tp_map_len]);
         return self.isAssignableTo(s_ret, t_ret);
     }
 

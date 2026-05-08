@@ -359,6 +359,7 @@ pub fn compileSource(
         const no_implicit_any = co.no_implicit_any orelse strict_on;
         const strict_fn_types = co.strict_function_types orelse strict_on;
         const strict_null_checks = co.strict_null_checks orelse strict_on;
+        const strict_property_initialization = co.strict_property_initialization orelse strict_on;
         // `strict` does NOT imply noUnusedLocals / noUnusedParameters
         // — those are independent in tsc.
         checker.setStrictFlags(.{
@@ -367,6 +368,7 @@ pub fn compileSource(
             .no_unused_locals = co.no_unused_locals orelse false,
             .strict_function_types = strict_fn_types,
             .strict_null_checks = strict_null_checks,
+            .strict_property_initialization = strict_property_initialization,
             .no_unchecked_indexed_access = co.no_unchecked_indexed_access orelse false,
             .isolated_modules = co.isolated_modules orelse false,
             .resolve_json_module = co.resolve_json_module orelse false,
@@ -377,6 +379,7 @@ pub fn compileSource(
             .no_implicit_any = strict_on,
             .strict_function_types = strict_on,
             .strict_null_checks = strict_on,
+            .strict_property_initialization = strict_on,
         });
     }
     if (c.root != hir_mod.none_node_id) {
@@ -631,6 +634,24 @@ test "driver: TS2345 argument type mismatch" {
         }
     }
     try T.expect(saw_2345);
+}
+
+test "driver: strict enables property initialization checking" {
+    var c = try compileSource(T.allocator,
+        \\class C { x: string; }
+    , .{ .strict = true });
+    defer {
+        c.deinit();
+        T.allocator.destroy(c);
+    }
+    var saw_2564 = false;
+    for (c.diagnostics.items) |d| {
+        if (std.mem.indexOf(u8, d.message, "has no initializer") != null) {
+            saw_2564 = true;
+            break;
+        }
+    }
+    try T.expect(saw_2564);
 }
 
 test "driver: TS2345 silent for assignable arg" {
