@@ -510,6 +510,12 @@ pub const Engine = struct {
         // Object types: structural subtyping. Source must have all
         // properties target requires, and each shared property type
         // must be assignable in the same direction (depth-checked).
+        if (sf.is_signature and tf.is_object_type) {
+            return self.computeSignatureAssignableToCallableObject(source, target);
+        }
+        if (sf.is_object_type and tf.is_signature) {
+            return self.computeCallableObjectAssignableToSignature(source, target);
+        }
         if (sf.is_object_type and tf.is_object_type) {
             return self.computeObjectAssignable(source, target);
         }
@@ -635,7 +641,12 @@ pub const Engine = struct {
     fn computeSignatureAssignable(self: *Engine, source: TypeId, target: TypeId) anyerror!bool {
         const sp = self.interner.signatureParams(source);
         const tp = self.interner.signatureParams(target);
-        if (sp.len > tp.len) return false;
+        var source_required: usize = sp.len;
+        while (source_required > 0) {
+            if (!self.typeIncludesUndefined(sp[source_required - 1])) break;
+            source_required -= 1;
+        }
+        if (source_required > tp.len) return false;
 
         // Positional type-parameter map: target tp -> source tp at the
         // same param position. Stack-bounded to keep the hot path
@@ -645,7 +656,8 @@ pub const Engine = struct {
         var source_context_buf: [16]TpPair = undefined;
         var source_context_len: usize = 0;
 
-        for (sp, 0..) |s_param, i| {
+        const compare_len = @min(sp.len, tp.len);
+        for (sp[0..compare_len], 0..) |s_param, i| {
             const t_param = tp[i];
             const sf = self.pool().flagsOf(s_param);
             const tf = self.pool().flagsOf(t_param);
@@ -722,13 +734,7 @@ pub const Engine = struct {
             }
         }
         for (target_members) |tm| {
-            if (self.interner.objectMemberInfo(source, tm.name)) |sm| {
-                // readonly on target is fine even if source is mutable
-                // (covariant). Mutable on target with readonly source
-                // is unsound and should fail — Phase 6 enforces this;
-                // we currently allow it to keep behavior matching
-                // tsgo's default flag set.
-                if (!try self.isAssignableTo(sm.type, tm.type)) return false;
+            if (try self.someSourceMemberAssignableToTarget(source, tm)) {
                 continue;
             }
             // No same-named member on source. For purely numeric
@@ -749,6 +755,56 @@ pub const Engine = struct {
             return false;
         }
         return true;
+    }
+
+    fn computeSignatureAssignableToCallableObject(self: *Engine, source: TypeId, target: TypeId) anyerror!bool {
+        var saw_signature_member = false;
+        for (self.interner.objectMembers(target)) |tm| {
+            const tf = self.pool().flagsOf(tm.type);
+            if (tf.is_signature) {
+                saw_signature_member = true;
+                if (!try self.isAssignableTo(source, tm.type)) return false;
+                continue;
+            }
+            if (!tm.is_optional) return false;
+        }
+        return saw_signature_member;
+    }
+
+    fn computeCallableObjectAssignableToSignature(self: *Engine, source: TypeId, target: TypeId) anyerror!bool {
+        for (self.interner.objectMembers(source)) |sm| {
+            const sf = self.pool().flagsOf(sm.type);
+            if (!sf.is_signature) continue;
+            if (try self.isAssignableTo(sm.type, target)) return true;
+        }
+        return false;
+    }
+
+    fn typeIncludesUndefined(self: *Engine, t: TypeId) bool {
+        if (t == Primitive.undefined_t) return true;
+        if (t < Primitive.first_dynamic or t >= self.pool().typeCount()) return false;
+        const flags = self.pool().flagsOf(t);
+        if (!flags.is_union) return false;
+        for (self.interner.unionMembers(t)) |m| {
+            if (m == Primitive.undefined_t) return true;
+        }
+        return false;
+    }
+
+    fn someSourceMemberAssignableToTarget(
+        self: *Engine,
+        source: TypeId,
+        target_member: types.ObjectMember,
+    ) anyerror!bool {
+        for (self.interner.objectMembers(source)) |sm| {
+            if (sm.name != target_member.name) continue;
+            // readonly on target is fine even if source is mutable
+            // (covariant). Mutable on target with readonly source is
+            // still allowed for now to match the current default flag
+            // surface.
+            if (try self.isAssignableTo(sm.type, target_member.type)) return true;
+        }
+        return false;
     }
 
     /// True iff every byte of `s` is an ASCII digit (0-9). Mirrors

@@ -826,11 +826,27 @@ pub const Checker = struct {
     fn checkNamespaceTypeStatements(self: *Checker, node: NodeId) CheckError!void {
         for (hir_mod.namespaceBody(self.hir, node)) |s| {
             switch (self.hir.kindOf(s)) {
+                .fn_decl => try self.checkFnSignatureOnlyNoBody(s),
+                .export_decl => {
+                    const ex = hir_mod.exportOf(self.hir, s);
+                    if (ex.decl != hir_mod.none_node_id and self.hir.kindOf(ex.decl) == .fn_decl) {
+                        try self.checkFnSignatureOnlyNoBody(ex.decl);
+                    }
+                },
+                else => {},
+            }
+        }
+        for (hir_mod.namespaceBody(self.hir, node)) |s| {
+            switch (self.hir.kindOf(s)) {
                 .class_decl,
                 .interface_decl,
                 .enum_decl,
                 .type_alias_decl,
                 => try self.checkStatement(s),
+                .var_decl,
+                .let_decl,
+                .const_decl,
+                => try self.checkNamespaceValueDecl(s),
                 .export_decl => {
                     const ex = hir_mod.exportOf(self.hir, s);
                     if (ex.decl == hir_mod.none_node_id) continue;
@@ -840,12 +856,49 @@ pub const Checker = struct {
                         .enum_decl,
                         .type_alias_decl,
                         => try self.checkStatement(ex.decl),
+                        .var_decl,
+                        .let_decl,
+                        .const_decl,
+                        => try self.checkNamespaceValueDecl(ex.decl),
                         else => {},
                     }
                 },
-                else => {},
+                else => if (self.hir.kindOf(s) == .call_expr) {
+                    _ = try self.checkExpression(s);
+                },
             }
         }
+    }
+
+    fn checkFnSignatureOnlyNoBody(self: *Checker, node: NodeId) CheckError!void {
+        _ = try self.checkFnSignatureOnly(node);
+        if (hir_mod.fnTypeParams(self.hir, node).len > 0) self.popNarrowScope();
+    }
+
+    fn checkNamespaceValueDecl(self: *Checker, node: NodeId) CheckError!void {
+        const v = hir_mod.varDeclOf(self.hir, node);
+        if (v.type_annotation != hir_mod.none_node_id and self.hir.typeOf(node) == types.Primitive.none) {
+            const declared_type = try self.lowererLowerWithTypeParams(v.type_annotation);
+            self.hir.setType(node, declared_type);
+            if (v.name != hir_mod.none_node_id) self.hir.setType(v.name, declared_type);
+        }
+        if (v.init == hir_mod.none_node_id) return;
+        if (self.hir.kindOf(v.init) != .call_expr) return;
+        if (self.callHasOptionalFunctionArgument(v.init)) return;
+        try self.checkVarDecl(node);
+    }
+
+    fn callHasOptionalFunctionArgument(self: *Checker, call_node: NodeId) bool {
+        const args = hir_mod.callArgs(self.hir, call_node);
+        for (args) |arg| {
+            const k = self.hir.kindOf(arg);
+            if (k != .fn_decl and k != .fn_expr and k != .arrow_fn) continue;
+            for (hir_mod.fnParams(self.hir, arg)) |p| {
+                if (self.hir.kindOf(p) != .parameter) continue;
+                if (hir_mod.parameterOf(self.hir, p).flags.is_optional) return true;
+            }
+        }
+        return false;
     }
 
     /// Type a `switch_stmt` body. Beyond walking each case's
@@ -4589,7 +4642,7 @@ pub const Checker = struct {
             .conditional => try self.checkConditional(node),
             .assignment => blk: {
                 const a = hir_mod.assignmentOf(self.hir, node);
-                _ = try self.checkExpression(a.target);
+                const target_t = try self.checkExpression(a.target);
                 // Reassignment clears any prior conditional alias for
                 // the variable: `let cond = isString(x); cond = false;
                 // if (cond) ...` — the second branch shouldn't
@@ -4621,7 +4674,19 @@ pub const Checker = struct {
                 if (self.hir.kindOf(a.target) == .member_access) {
                     try self.checkReadonlyAssignment(a.target);
                 }
-                break :blk try self.checkExpression(a.value);
+                const value_t = try self.checkExpression(a.value);
+                if (self.strict_flags.strict_null_checks and
+                    a.op == null and
+                    target_t != types.Primitive.none and
+                    target_t != types.Primitive.any and
+                    target_t != types.Primitive.unknown)
+                {
+                    const ok = self.engine.isAssignableTo(value_t, target_t) catch true;
+                    if (!ok) {
+                        try self.report(node, TsCodes.type_not_assignable, "Type is not assignable to target type.");
+                    }
+                }
+                break :blk value_t;
             },
             .new_expr => blk: {
                 const c = hir_mod.callOf(self.hir, node);
@@ -5846,6 +5911,7 @@ pub const Checker = struct {
         // Walk up the parent chain searching for parameters or
         // sibling let/const/var decls in scope.
         var cur: hir_mod.NodeId = self.hir.parentOf(node);
+        var saw_namespace_scope = false;
         while (cur != hir_mod.none_node_id) {
             const k = self.hir.kindOf(cur);
             if (k == .fn_decl or k == .fn_expr or k == .arrow_fn) {
@@ -5904,6 +5970,32 @@ pub const Checker = struct {
                     }
                 }
             }
+            if (k == .namespace_decl) {
+                saw_namespace_scope = true;
+                const stmts = hir_mod.namespaceBody(self.hir, cur);
+                for (stmts) |s| {
+                    const sk = self.hir.kindOf(s);
+                    if (sk == .var_decl or sk == .let_decl or sk == .const_decl) {
+                        const v = hir_mod.varDeclOf(self.hir, s);
+                        if (v.name != hir_mod.none_node_id and self.hir.kindOf(v.name) == .identifier) {
+                            const vid = hir_mod.identifierOf(self.hir, v.name);
+                            if (vid.name == id.name) {
+                                const t = self.hir.typeOf(s);
+                                if (t != types.Primitive.none) return t;
+                            }
+                        }
+                    } else if (sk == .fn_decl or sk == .fn_expr) {
+                        const fp = hir_mod.fnDeclOf(self.hir, s);
+                        if (fp.name != hir_mod.none_node_id and self.hir.kindOf(fp.name) == .identifier) {
+                            const fid = hir_mod.identifierOf(self.hir, fp.name);
+                            if (fid.name == id.name) {
+                                const t = self.hir.typeOf(s);
+                                if (t != types.Primitive.none) return t;
+                            }
+                        }
+                    }
+                }
+            }
             if (k == .for_in_stmt or k == .for_of_stmt) {
                 // The loop binding lives directly on the for node;
                 // it isn't a sibling in any block. Match against
@@ -5933,6 +6025,8 @@ pub const Checker = struct {
             }
             cur = self.hir.parentOf(cur);
         }
+
+        if (saw_namespace_scope) return types.Primitive.any;
 
         // Module-level fallback.
         if (self.module) |module| {
@@ -9297,6 +9391,23 @@ test "checker: strict unconstrained generic rejects all-optional object target" 
     try T.expect(found);
 }
 
+test "checker: strict assignment checks rhs against lhs type" {
+    const s = try newSetup(
+        \\interface Box<T> { value: T }
+        \\declare var strings: Box<string>;
+        \\declare var numbers: Box<number>;
+        \\strings = numbers;
+    );
+    defer destroySetup(s);
+    s.checker.setStrictFlags(.{ .strict_null_checks = true });
+    try s.checker.checkSourceFile(s.root);
+    var found = false;
+    for (s.checker.diagnostics.items) |d| {
+        if (d.code == TsCodes.type_not_assignable) found = true;
+    }
+    try T.expect(found);
+}
+
 test "checker: interface extends inherits parent members" {
     const s = try newSetup(
         \\interface Named { name: string; }
@@ -11258,6 +11369,39 @@ test "checker: explicit Date type arg rejects number argument" {
     const s = try newSetup(
         \\function f<T>(x: T): T { return x; }
         \\let v = f<Date>(1);
+    );
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+    var found = false;
+    for (s.checker.diagnostics.items) |d| {
+        if (d.code == TsCodes.argument_type_mismatch) found = true;
+    }
+    try T.expect(found);
+}
+
+test "checker: overloaded function-typed parameter checks all call signatures" {
+    const s = try newSetup(
+        \\function foo<T>(cb: { (x: T): string; (x: T, y?: T): string }) {
+        \\  return cb;
+        \\}
+        \\var r = foo(<T>(x: T, y: T) => '');
+    );
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+    var found = false;
+    for (s.checker.diagnostics.items) |d| {
+        if (d.code == TsCodes.argument_type_mismatch) found = true;
+    }
+    try T.expect(found);
+}
+
+test "checker: overloaded constructor-typed parameter checks all construct signatures" {
+    const s = try newSetup(
+        \\function foo<T>(cb: { new(x: T): string; new(x: T, y?: T): string }) {
+        \\  return cb;
+        \\}
+        \\declare var b: { new<T>(x: T, y: T): string };
+        \\var r = foo(b);
     );
     defer destroySetup(s);
     try s.checker.checkSourceFile(s.root);

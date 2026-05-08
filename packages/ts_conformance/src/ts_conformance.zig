@@ -603,6 +603,13 @@ pub fn runCategorySpecsWithOptions(
         }
 
         const stats = try runDirectoryWithOptions(gpa, path, options, &results);
+        for (results.items) |r| {
+            if (r.outcome != .failed) continue;
+            std.debug.print(
+                "[ts_conformance failure] {s}/{s}: {s}\n",
+                .{ spec.label, r.name, r.detail },
+            );
+        }
         const label = try gpa.dupe(u8, spec.label);
         errdefer gpa.free(label);
         try cats.append(gpa, .{
@@ -641,6 +648,16 @@ fn runOneEntry(gpa: std.mem.Allocator, entry: CorpusEntry) !Result {
         };
     };
     const had_errors = compilation.has_errors;
+    const first_actual_detail: ?[]u8 = if (compilation.diagnostics.items.len > 0) blk: {
+        const d = compilation.diagnostics.items[0];
+        const pos = ts_diagnostics.positionToLineCol(entry.source, d.pos);
+        break :blk try std.fmt.allocPrint(
+            gpa,
+            "first diagnostic {d}:{d} TS{d}: {s}",
+            .{ pos.line, pos.col, d.code, d.message },
+        );
+    } else null;
+    defer if (first_actual_detail) |detail| gpa.free(detail);
     compilation.deinit();
     gpa.destroy(compilation);
     const passed = if (entry.expects_error) had_errors else !had_errors;
@@ -649,6 +666,8 @@ fn runOneEntry(gpa: std.mem.Allocator, entry: CorpusEntry) !Result {
     }
     const detail = if (entry.expects_error)
         try gpa.dupe(u8, "expected at least one diagnostic; got none")
+    else if (first_actual_detail) |actual|
+        try std.fmt.allocPrint(gpa, "expected no diagnostics; got at least one ({s})", .{actual})
     else
         try gpa.dupe(u8, "expected no diagnostics; got at least one");
     return .{
