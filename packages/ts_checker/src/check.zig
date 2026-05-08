@@ -185,6 +185,9 @@ pub const StrictFlags = struct {
     /// flexibility — matches `tsc`'s pre-3.0 default and current
     /// behavior on method declarations).
     strict_function_types: bool = false,
+    /// `strictNullChecks` (also implied by `strict`). When false,
+    /// `null` and `undefined` flow to every type except `never`.
+    strict_null_checks: bool = false,
     /// `noUncheckedIndexedAccess`. When true, indexed access through
     /// an array or index signature widens the result with `undefined`
     /// — `arr[i]` types as `T | undefined` rather than `T`. Tuple
@@ -431,6 +434,8 @@ pub const Checker = struct {
 
     pub fn setStrictFlags(self: *Checker, flags: StrictFlags) void {
         self.strict_flags = flags;
+        self.engine.setStrictFunctionTypes(flags.strict_function_types);
+        self.engine.setStrictNullChecks(flags.strict_null_checks);
     }
 
     /// Attach the original source bytes so `checkSourceFile` can
@@ -1145,6 +1150,7 @@ pub const Checker = struct {
             const k = self.hir.kindOf(s);
             if (k != .var_decl and k != .let_decl and k != .const_decl) continue;
             const v = hir_mod.varDeclOf(self.hir, s);
+            if (v.is_ambient) continue;
             if (v.name == hir_mod.none_node_id or self.hir.kindOf(v.name) != .identifier) continue;
             const id = hir_mod.identifierOf(self.hir, v.name);
             const name_str = self.string_interner.get(id.name);
@@ -1190,7 +1196,8 @@ pub const Checker = struct {
         switch (k) {
             .let_decl => {
                 const v = hir_mod.varDeclOf(self.hir, node);
-                if (v.init == hir_mod.none_node_id and
+                if (!v.is_ambient and
+                    v.init == hir_mod.none_node_id and
                     v.type_annotation != hir_mod.none_node_id and
                     v.name != hir_mod.none_node_id and
                     self.hir.kindOf(v.name) == .identifier)
@@ -5174,6 +5181,9 @@ pub const Checker = struct {
         if (std.mem.eql(u8, name_str, "NaN") or std.mem.eql(u8, name_str, "Infinity")) {
             return types.Primitive.number_t;
         }
+        if (std.mem.eql(u8, name_str, "undefined")) {
+            return types.Primitive.undefined_t;
+        }
         if (std.mem.eql(u8, name_str, "isNaN") or std.mem.eql(u8, name_str, "isFinite")) {
             // `(n: number): boolean`
             if (self.interner.internSignature(
@@ -7052,6 +7062,28 @@ test "checker: var-decl type mismatch emits TS2322" {
     try T.expectEqual(TsCodes.type_not_assignable, s.checker.diagnostics.items[0].code);
 }
 
+test "checker: strictNullChecks controls null assignment" {
+    {
+        const s = try newSetup("let x: number = null;");
+        defer destroySetup(s);
+        try s.checker.checkSourceFile(s.root);
+        for (s.checker.diagnostics.items) |d| {
+            try T.expect(d.code != TsCodes.type_not_assignable);
+        }
+    }
+    {
+        const s = try newSetup("let x: number = null;");
+        defer destroySetup(s);
+        s.checker.setStrictFlags(.{ .strict_null_checks = true });
+        try s.checker.checkSourceFile(s.root);
+        var found = false;
+        for (s.checker.diagnostics.items) |d| {
+            if (d.code == TsCodes.type_not_assignable) found = true;
+        }
+        try T.expect(found);
+    }
+}
+
 test "checker: use-before-assign emits TS2454" {
     const s = try newSetup(
         \\let x: number;
@@ -7064,6 +7096,18 @@ test "checker: use-before-assign emits TS2454" {
         if (d.code == TsCodes.used_before_assignment) found = true;
     }
     try T.expect(found);
+}
+
+test "checker: ambient let is not used-before-assignment" {
+    const s = try newSetup(
+        \\declare let x: number;
+        \\let y = x;
+    );
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+    for (s.checker.diagnostics.items) |d| {
+        try T.expect(d.code != TsCodes.used_before_assignment);
+    }
 }
 
 test "checker: argument count mismatch emits TS2554" {
@@ -7343,6 +7387,14 @@ test "checker: typeof type query resolves an identifier's static type" {
     const alias_t = s.hir.typeOf(stmts[1]);
     // `typeof add` reuses the function's signature TypeId.
     try T.expectEqual(fn_t, alias_t);
+}
+
+test "checker: typeof undefined query resolves to undefined type" {
+    const s = try newSetup("let x: typeof undefined = null;");
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+    const stmts = hir_mod.blockStmts(&s.hir, s.root);
+    try T.expectEqual(types.Primitive.undefined_t, s.hir.typeOf(stmts[0]));
 }
 
 test "checker: `as` cast yields the asserted type" {
@@ -7848,7 +7900,7 @@ test "checker: noUncheckedIndexedAccess widens arr[i] with undefined" {
         \\let n: number = x;
     );
     defer destroySetup(s);
-    s.checker.setStrictFlags(.{ .no_unchecked_indexed_access = true });
+    s.checker.setStrictFlags(.{ .no_unchecked_indexed_access = true, .strict_null_checks = true });
     try s.checker.checkSourceFile(s.root);
     var found = false;
     for (s.checker.diagnostics.items) |d| {

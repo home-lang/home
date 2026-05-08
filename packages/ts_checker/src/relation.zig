@@ -298,6 +298,9 @@ pub const Engine = struct {
     /// are checked bivariantly: source `(p: T) => R` assigns to
     /// target `(p: U) => R` iff `T` and `U` are mutually assignable.
     strict_function_types: bool = false,
+    /// `strictNullChecks`. When false (tsc default), `null` and
+    /// `undefined` are assignable to every target except `never`.
+    strict_null_checks: bool = false,
     /// Optional string-interner reference. When set, structural
     /// assignability uses property-name bytes for special-case
     /// handling (e.g. resolving numeric "0", "1", … keys via the
@@ -313,6 +316,10 @@ pub const Engine = struct {
 
     pub fn setStrictFunctionTypes(self: *Engine, on: bool) void {
         self.strict_function_types = on;
+    }
+
+    pub fn setStrictNullChecks(self: *Engine, on: bool) void {
+        self.strict_null_checks = on;
     }
 
     pub fn setStringInterner(self: *Engine, si: *const string_interner.Interner) void {
@@ -407,6 +414,7 @@ pub const Engine = struct {
         // matches the strict-mode rule: only `undefined` and `void`
         // assign to `void`.
         if (target == Primitive.void_t) {
+            if (!self.strict_null_checks and (source == Primitive.null_t or source == Primitive.undefined_t)) return true;
             return source == Primitive.void_t or source == Primitive.undefined_t;
         }
 
@@ -472,11 +480,11 @@ pub const Engine = struct {
             if (sf.is_boolean and target == Primitive.boolean_t) return true;
         }
 
-        // `null` and `undefined` assign to themselves only (in strict
-        // mode). Without `--strictNullChecks`, they assign to all
-        // reference types — the checker config will toggle this.
+        // `null` and `undefined` assign to themselves only under
+        // `strictNullChecks`. Without it, tsc treats both as
+        // assignable to every target except `never` (handled above).
         if (source == Primitive.null_t or source == Primitive.undefined_t) {
-            return false;
+            return !self.strict_null_checks;
         }
 
         // Object types: structural subtyping. Source must have all
@@ -824,6 +832,22 @@ test "Engine: undefined assigns to void" {
     defer e.deinit();
     try T.expect(try e.isAssignableTo(Primitive.undefined_t, Primitive.void_t));
     try T.expect(!try e.isAssignableTo(Primitive.string_t, Primitive.void_t));
+}
+
+test "Engine: strictNullChecks toggles nullish assignability" {
+    var ti = try Interner.init(T.allocator);
+    defer ti.deinit();
+    var e = try Engine.init(T.allocator, &ti);
+    defer e.deinit();
+    try T.expect(try e.isAssignableTo(Primitive.null_t, Primitive.string_t));
+    try T.expect(try e.isAssignableTo(Primitive.undefined_t, Primitive.number_t));
+    try T.expect(try e.isAssignableTo(Primitive.null_t, Primitive.void_t));
+    var strict_e = try Engine.init(T.allocator, &ti);
+    defer strict_e.deinit();
+    strict_e.setStrictNullChecks(true);
+    try T.expect(!try strict_e.isAssignableTo(Primitive.null_t, Primitive.string_t));
+    try T.expect(!try strict_e.isAssignableTo(Primitive.undefined_t, Primitive.number_t));
+    try T.expect(try strict_e.isAssignableTo(Primitive.undefined_t, Primitive.void_t));
 }
 
 test "RelationCache: pack/unpack key" {

@@ -69,6 +69,7 @@ pub const Parser = struct {
     source: []const u8,
     diagnostics: std.ArrayListUnmanaged(Diagnostic),
     diag_arena: std.heap.ArenaAllocator,
+    ambient_depth: u32,
     /// True for `.tsx` files. Enables JSX parsing in expression
     /// position; the parser disambiguates `<T>x` (generic type
     /// assertion) vs. `<T>x</T>` (JSX) via the `<T,>` and
@@ -96,6 +97,7 @@ pub const Parser = struct {
             .source = source,
             .diagnostics = .empty,
             .diag_arena = std.heap.ArenaAllocator.init(gpa),
+            .ambient_depth = 0,
             .is_tsx = false,
         };
     }
@@ -355,15 +357,12 @@ pub const Parser = struct {
             .kw_enum => try self.parseEnumDeclaration(),
             .kw_namespace, .kw_module => try self.parseNamespaceDeclaration(),
             .kw_declare => blk: {
-                // `declare global { … }` — consume `declare` and let
-                // the `kw_global` arm below lower it to a namespace
-                // named "global". Other `declare …` forms (`declare
-                // const`, `declare function`, etc.) fall through to be
-                // parsed as their non-ambient counterparts; the ambient
-                // flag is recoverable from the modifier list once we
-                // wire it through. For Phase 4.5 we only need
-                // `declare global` for cross-file augmentation.
+                // `declare global { ... }` lowers through the
+                // `kw_global` arm below; `declare let x: T` and friends
+                // parse as ordinary declarations with an ambient bit.
                 _ = self.advance(); // declare
+                self.ambient_depth += 1;
+                defer self.ambient_depth -= 1;
                 break :blk try self.parseStatement();
             },
             .kw_global => blk: {
@@ -1468,7 +1467,16 @@ pub const Parser = struct {
         try self.consumeStatementTerminator();
 
         const stmt_span: Span = .{ .start = start.span.start, .end = self.tokens[self.cursor - 1].span.end };
-        return try self.builder.addVarDecl(decl_kind, stmt_span, name_node, type_annotation, init_node);
+        return try self.builder.addVarDeclEx(
+            decl_kind,
+            stmt_span,
+            name_node,
+            type_annotation,
+            init_node,
+            false,
+            false,
+            self.ambient_depth > 0,
+        );
     }
 
     /// Parse a Stage 3 explicit-resource-management declaration:
@@ -1508,6 +1516,7 @@ pub const Parser = struct {
             init_node,
             !await_using,
             await_using,
+            false,
         );
     }
 
@@ -1747,7 +1756,13 @@ pub const Parser = struct {
                 // expression. Phase 1: take an identifier (with
                 // qualified-name continuation) — full member access /
                 // import.x is a follow-up.
-                const ref_tok = try self.expect(.identifier, "identifier after typeof");
+                const ref_tok = switch (self.peek().kind) {
+                    .identifier, .kw_undefined => self.advance(),
+                    else => {
+                        try self.report("expected ", "identifier after typeof");
+                        return error.UnexpectedToken;
+                    },
+                };
                 const ref_id = try self.internToken(ref_tok);
                 const ref = try self.builder.addIdentifier(tokenSpan(ref_tok), ref_id);
                 const sp: Span = .{ .start = t.span.start, .end = ref_tok.span.end };
@@ -3851,6 +3866,19 @@ test "parser: var / const / let produce distinct kinds" {
     try T.expectEqual(hir_mod.NodeKind.const_decl, s.hir.kindOf(stmts[2]));
 }
 
+test "parser: declare let records ambient var-decl flag" {
+    var s = try newTestSetup("declare let x: number;");
+    defer destroyTestSetup(s);
+    const root = try s.parser.parseSourceFile();
+    const stmts = hir_mod.blockStmts(&s.hir, root);
+    try T.expectEqual(@as(usize, 1), stmts.len);
+    try T.expectEqual(hir_mod.NodeKind.let_decl, s.hir.kindOf(stmts[0]));
+    const vd = hir_mod.varDeclOf(&s.hir, stmts[0]);
+    try T.expect(vd.is_ambient);
+    try T.expect(!vd.is_using);
+    try T.expect(!vd.is_await_using);
+}
+
 test "parser: function call expression" {
     var s = try newTestSetup("f(1, 2, 3);");
     defer destroyTestSetup(s);
@@ -4611,6 +4639,17 @@ test "parser: type annotation — typeof in type position" {
     const top = hir_mod.blockStmts(&s.hir, root)[0];
     const v = hir_mod.varDeclOf(&s.hir, top);
     try T.expectEqual(hir_mod.NodeKind.typeof_type, s.hir.kindOf(v.type_annotation));
+}
+
+test "parser: type annotation — typeof undefined accepts keyword operand" {
+    var s = try newTestSetup("let x: typeof undefined = null;");
+    defer destroyTestSetup(s);
+    const root = try s.parser.parseSourceFile();
+    const top = hir_mod.blockStmts(&s.hir, root)[0];
+    const v = hir_mod.varDeclOf(&s.hir, top);
+    try T.expectEqual(hir_mod.NodeKind.typeof_type, s.hir.kindOf(v.type_annotation));
+    const tt = hir_mod.typeofTypeOf(&s.hir, v.type_annotation);
+    try T.expectEqual(hir_mod.NodeKind.identifier, s.hir.kindOf(tt.operand));
 }
 
 test "parser: type annotation — indexed access T[K]" {

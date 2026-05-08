@@ -99,6 +99,9 @@ pub const CompileOptions = struct {
     continue_on_error: bool = true,
     /// Treat the source as `.tsx` — enables JSX parsing.
     is_tsx: bool = false,
+    /// CLI `--strict` override. When null, defer to tsconfig or the
+    /// tsc default (`false`).
+    strict: ?bool = null,
     /// Optional parsed tsconfig. When present, the driver applies
     /// the relevant compilerOptions:
     ///   - `jsx` — enables tsx parsing for `react`/`react-jsx`/etc.
@@ -344,14 +347,15 @@ pub fn compileSource(
     defer checker.deinit();
     checker.setModule(c.module);
     checker.setSource(source);
-    // Translate tsconfig strictness flags. `strict: true` implies
-    // every individual flag in TS — for now we propagate just
-    // `noImplicitAny`, with the rest following as they're wired.
+    // Translate strictness flags. `strict: true` implies every
+    // individual strict-family flag in TS; options.strict is the CLI
+    // override, then tsconfig, then tsc's default (`false`).
     if (options.pub_tsconfig) |cfg| {
         const co = cfg.compiler_options;
-        const strict_on = co.strict orelse false;
+        const strict_on = options.strict orelse (co.strict orelse false);
         const no_implicit_any = co.no_implicit_any orelse strict_on;
         const strict_fn_types = co.strict_function_types orelse strict_on;
+        const strict_null_checks = co.strict_null_checks orelse strict_on;
         // `strict` does NOT imply noUnusedLocals / noUnusedParameters
         // — those are independent in tsc.
         checker.setStrictFlags(.{
@@ -359,11 +363,18 @@ pub fn compileSource(
             .no_unused_parameters = co.no_unused_parameters orelse false,
             .no_unused_locals = co.no_unused_locals orelse false,
             .strict_function_types = strict_fn_types,
+            .strict_null_checks = strict_null_checks,
             .no_unchecked_indexed_access = co.no_unchecked_indexed_access orelse false,
             .isolated_modules = co.isolated_modules orelse false,
             .resolve_json_module = co.resolve_json_module orelse false,
         });
-        c.type_engine.setStrictFunctionTypes(strict_fn_types);
+    } else {
+        const strict_on = options.strict orelse false;
+        checker.setStrictFlags(.{
+            .no_implicit_any = strict_on,
+            .strict_function_types = strict_on,
+            .strict_null_checks = strict_on,
+        });
     }
     if (c.root != hir_mod.none_node_id) {
         checker.checkSourceFile(c.root) catch |err| switch (err) {

@@ -87,9 +87,12 @@ pub fn main(init: std.process.Init) !void {
     var cfg_path_buf: ?[]u8 = null;
     defer if (cfg_path_buf) |b| gpa.free(b);
     var loaded_cfg: ?tsconfig_mod.TsConfig = null;
-    if (resolveTsConfigPath(gpa, opts.project) catch null) |path| {
-        opts.project = path;
-        cfg_path_buf = path;
+    const should_load_config = opts.project != null or opts.files.len == 0 or opts.show_config;
+    if (should_load_config) {
+        if (resolveTsConfigPath(gpa, opts.project) catch null) |path| {
+            opts.project = path;
+            cfg_path_buf = path;
+        }
     }
 
     const dec = ts_cli.dispatch(opts);
@@ -217,10 +220,11 @@ pub fn main(init: std.process.Init) !void {
         };
     }
 
-    const compile_opts: ts_driver.CompileOptions = if (loaded_cfg) |*c|
+    var compile_opts: ts_driver.CompileOptions = if (loaded_cfg) |*c|
         ts_driver.optionsFromConfig(c)
     else
         .{};
+    compile_opts.strict = opts.strict;
 
     // §2.1 — `--listFiles` / `--listFilesOnly`. Print every input
     // path the program will compile. `--listFilesOnly` exits before

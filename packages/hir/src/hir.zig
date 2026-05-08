@@ -887,11 +887,12 @@ pub const TypeParameterPayload = struct {
 };
 
 /// `let`/`const`/`var` declaration. The `kind` on the `Hir.kindOf(node)`
-/// distinguishes `var_decl` / `let_decl` / `const_decl`. The
-/// `is_using` / `is_await_using` flags carry the Stage 3 explicit
-/// resource management qualifier (`using x = …` / `await using x = …`)
-/// — for v0 the parser stores these on a `const_decl`-shaped node so
-/// downstream consumers continue to treat the binding as `const`.
+/// distinguishes `var_decl` / `let_decl` / `const_decl`. `is_ambient`
+/// records a leading `declare` modifier. The `is_using` /
+/// `is_await_using` flags carry the Stage 3 explicit resource
+/// management qualifier (`using x = …` / `await using x = …`) — for v0
+/// the parser stores these on a `const_decl`-shaped node so downstream
+/// consumers continue to treat the binding as `const`.
 pub const VarDeclPayload = struct {
     /// Identifier (or destructuring pattern).
     name: NodeId,
@@ -899,6 +900,8 @@ pub const VarDeclPayload = struct {
     type_annotation: NodeId,
     /// Initializer, or `none_node_id`.
     init: NodeId,
+    /// `declare let x: T;` ambient declaration.
+    is_ambient: bool = false,
     /// `using x = expr` — disposes via `[Symbol.dispose]()` at scope exit.
     is_using: bool = false,
     /// `await using x = expr` — disposes via `[Symbol.asyncDispose]()`.
@@ -2171,7 +2174,7 @@ pub const Builder = struct {
         type_annotation: NodeId,
         init_node: NodeId,
     ) !NodeId {
-        return self.addVarDeclEx(kind, span, name, type_annotation, init_node, false, false);
+        return self.addVarDeclEx(kind, span, name, type_annotation, init_node, false, false, false);
     }
 
     /// Variant of `addVarDecl` that records the Stage 3 resource
@@ -2187,6 +2190,7 @@ pub const Builder = struct {
         init_node: NodeId,
         is_using: bool,
         is_await_using: bool,
+        is_ambient: bool,
     ) !NodeId {
         std.debug.assert(kind == .var_decl or kind == .let_decl or kind == .const_decl);
         const payload_idx: u32 = @intCast(self.hir.var_decl_payloads.items.len);
@@ -2194,6 +2198,7 @@ pub const Builder = struct {
             .name = name,
             .type_annotation = type_annotation,
             .init = init_node,
+            .is_ambient = is_ambient,
             .is_using = is_using,
             .is_await_using = is_await_using,
         });
