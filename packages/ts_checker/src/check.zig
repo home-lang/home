@@ -4132,7 +4132,7 @@ pub const Checker = struct {
                         const n = @min(param_ts.len, arg_types.items.len);
                         for (0..n) |i| {
                             if (self.interner.pool.flagsOf(param_ts[i]).is_signature) continue;
-                            try self.inferFromPair(param_ts[i], arg_types.items[i], &call_subs);
+                            try self.inferFromArgument(param_ts[i], arg_types.items[i], args[i], &call_subs);
                         }
                         if (call_subs.count() > 0) {
                             effective_callee_t = self.substituteType(effective_callee_t, &call_subs) catch effective_callee_t;
@@ -5854,7 +5854,10 @@ pub const Checker = struct {
         subs: *std.AutoHashMapUnmanaged(TypeId, TypeId),
     ) !void {
         const pool = &self.interner.pool;
+        if (param_t >= pool.typeCount()) return;
+        if (arg_t >= pool.typeCount()) return;
         const p_flags = pool.flagsOf(param_t);
+        const p_payload = pool.payloadOf(param_t);
         if (p_flags.is_type_parameter) {
             if (!subs.contains(param_t)) {
                 try subs.put(self.gpa, param_t, self.widenForInference(arg_t));
@@ -5865,6 +5868,8 @@ pub const Checker = struct {
         // Both sides object-typed: match each named member, plus the
         // number indexer (`T[]` parameter / array argument).
         if (p_flags.is_object_type and a_flags.is_object_type) {
+            if (p_payload >= pool.object_type_payloads.items.len) return;
+            if (pool.payloadOf(arg_t) >= pool.object_type_payloads.items.len) return;
             const p_members = self.interner.objectMembers(param_t);
             for (p_members) |pm| {
                 if (self.interner.objectMember(arg_t, pm.name)) |am_t| {
@@ -5885,6 +5890,8 @@ pub const Checker = struct {
         }
         // Both signatures: match params slot-by-slot and return types.
         if (p_flags.is_signature and a_flags.is_signature) {
+            if (p_payload >= pool.signature_payloads.items.len) return;
+            if (pool.payloadOf(arg_t) >= pool.signature_payloads.items.len) return;
             const pp = self.interner.signatureParams(param_t);
             const ap = self.interner.signatureParams(arg_t);
             const m = @min(pp.len, ap.len);
@@ -5900,17 +5907,41 @@ pub const Checker = struct {
         // against the arg. Keeps `T | undefined` (lowered optional)
         // and similar shapes contributing a mapping.
         if (p_flags.is_union) {
+            if (p_payload >= pool.union_payloads.items.len) return;
             for (self.interner.unionMembers(param_t)) |um| {
                 try self.inferFromPair(um, arg_t, subs);
             }
             return;
         }
         if (p_flags.is_intersection) {
+            if (p_payload >= pool.intersection_payloads.items.len) return;
             for (self.interner.intersectionMembers(param_t)) |im| {
                 try self.inferFromPair(im, arg_t, subs);
             }
             return;
         }
+    }
+
+    fn inferFromArgument(
+        self: *Checker,
+        param_t: TypeId,
+        arg_t: TypeId,
+        arg_node: NodeId,
+        subs: *std.AutoHashMapUnmanaged(TypeId, TypeId),
+    ) !void {
+        if (self.hir.kindOf(arg_node) == .object_literal and
+            param_t >= types.Primitive.first_dynamic and
+            param_t < self.interner.pool.typeCount() and
+            self.interner.pool.flagsOf(param_t).is_union)
+        {
+            for (self.interner.unionMembers(param_t)) |member| {
+                if (try self.objectLiteralMayMatchTarget(arg_node, member)) {
+                    try self.inferFromPair(member, arg_t, subs);
+                    return;
+                }
+            }
+        }
+        try self.inferFromPair(param_t, arg_t, subs);
     }
 
     /// Walk `t` and, for any encountered type-parameter id with a
@@ -5962,8 +5993,11 @@ pub const Checker = struct {
         subs: *const std.AutoHashMapUnmanaged(TypeId, TypeId),
     ) !TypeId {
         if (subs.get(t)) |s| return s;
+        if (t >= self.interner.pool.typeCount()) return t;
         const flags = self.interner.pool.flagsOf(t);
+        const payload_idx = self.interner.pool.payloadOf(t);
         if (flags.is_union) {
+            if (payload_idx >= self.interner.pool.union_payloads.items.len) return t;
             const members = self.interner.unionMembers(t);
             var new: std.ArrayListUnmanaged(TypeId) = .empty;
             defer new.deinit(self.gpa);
@@ -5971,6 +6005,7 @@ pub const Checker = struct {
             return self.interner.internUnion(new.items) catch return t;
         }
         if (flags.is_intersection) {
+            if (payload_idx >= self.interner.pool.intersection_payloads.items.len) return t;
             const members = self.interner.intersectionMembers(t);
             var new: std.ArrayListUnmanaged(TypeId) = .empty;
             defer new.deinit(self.gpa);
@@ -5978,6 +6013,7 @@ pub const Checker = struct {
             return self.interner.internIntersection(new.items) catch return t;
         }
         if (flags.is_signature) {
+            if (payload_idx >= self.interner.pool.signature_payloads.items.len) return t;
             const params = self.interner.signatureParams(t);
             var new: std.ArrayListUnmanaged(TypeId) = .empty;
             defer new.deinit(self.gpa);
@@ -5986,9 +6022,14 @@ pub const Checker = struct {
                 try self.substituteType(r, subs)
             else
                 types.Primitive.void_t;
-            return self.interner.internSignature(new.items, ret, false) catch return t;
+            const new_sig = self.interner.internSignature(new.items, ret, false) catch return t;
+            if (self.rest_signatures.contains(t)) {
+                try self.rest_signatures.put(self.gpa, new_sig, {});
+            }
+            return new_sig;
         }
         if (flags.is_object_type) {
+            if (payload_idx >= self.interner.pool.object_type_payloads.items.len) return t;
             const orig = self.interner.objectMembers(t);
             var new_members: std.ArrayListUnmanaged(types.ObjectMember) = .empty;
             defer new_members.deinit(self.gpa);
@@ -6167,9 +6208,10 @@ pub const Checker = struct {
         var i: usize = 0;
         while (i < npairs_fixed) : (i += 1) {
             const param_t = param_ts[i];
+            if (param_t >= self.interner.pool.typeCount()) continue;
             if (self.interner.pool.flagsOf(param_t).is_type_parameter) continue;
             const arg_t = arg_types[i];
-            const ok = self.engine.isAssignableTo(arg_t, param_t) catch true;
+            const ok = self.isArgumentAssignableToParam(args[i], arg_t, param_t) catch true;
             if (!ok) {
                 const msg = try std.fmt.allocPrint(
                     self.diag_arena.allocator(),
@@ -6189,8 +6231,10 @@ pub const Checker = struct {
             // arg is checked against the array's element type, which
             // we read from the number-key index signature.
             const rest_arr_t = param_ts[param_ts.len - 1];
+            if (rest_arr_t >= self.interner.pool.typeCount()) return;
             const elem_t = self.interner.objectNumberIndex(rest_arr_t);
             const target_t = if (elem_t == types.Primitive.none) rest_arr_t else elem_t;
+            if (target_t >= self.interner.pool.typeCount()) return;
             if (!self.interner.pool.flagsOf(target_t).is_type_parameter) {
                 var j: usize = fixed_count;
                 while (j < args.len) : (j += 1) {
@@ -6211,6 +6255,91 @@ pub const Checker = struct {
                 }
             }
         }
+    }
+
+    fn isArgumentAssignableToParam(self: *Checker, arg_node: NodeId, arg_t: TypeId, param_t: TypeId) !bool {
+        if (self.hir.kindOf(arg_node) == .object_literal) {
+            if (try self.objectLiteralAssignableToTarget(arg_node, arg_t, param_t)) return true;
+        }
+        return self.engine.isAssignableTo(arg_t, param_t);
+    }
+
+    fn objectLiteralAssignableToTarget(self: *Checker, arg_node: NodeId, arg_t: TypeId, target_t: TypeId) !bool {
+        if (target_t < types.Primitive.first_dynamic or target_t >= self.interner.pool.typeCount()) return false;
+        const flags = self.interner.pool.flagsOf(target_t);
+        if (flags.is_union) {
+            for (self.interner.unionMembers(target_t)) |member| {
+                if (try self.objectLiteralAssignableToTarget(arg_node, arg_t, member)) return true;
+            }
+            return false;
+        }
+        if (!flags.is_object_type) return false;
+        if (!self.interner.pool.flagsOf(arg_t).is_object_type) return false;
+        for (self.interner.objectMembers(target_t)) |tm| {
+            const am_t = self.interner.objectMember(arg_t, tm.name) orelse {
+                if (tm.is_optional) continue;
+                return false;
+            };
+            if (self.findObjectLiteralPropValue(arg_node, tm.name)) |value_node| {
+                if (try self.literalExpressionAssignableToTarget(value_node, tm.type)) continue;
+            }
+            if (!try self.engine.isAssignableTo(am_t, tm.type)) return false;
+        }
+        return true;
+    }
+
+    fn objectLiteralMayMatchTarget(self: *Checker, arg_node: NodeId, target_t: TypeId) !bool {
+        if (target_t < types.Primitive.first_dynamic or target_t >= self.interner.pool.typeCount()) return false;
+        const flags = self.interner.pool.flagsOf(target_t);
+        if (flags.is_union) {
+            for (self.interner.unionMembers(target_t)) |member| {
+                if (try self.objectLiteralMayMatchTarget(arg_node, member)) return true;
+            }
+            return false;
+        }
+        if (!flags.is_object_type) return true;
+        var saw_discriminant = false;
+        for (self.interner.objectMembers(target_t)) |tm| {
+            if (!self.isLiteralType(tm.type)) continue;
+            saw_discriminant = true;
+            const value_node = self.findObjectLiteralPropValue(arg_node, tm.name) orelse continue;
+            if (!try self.literalExpressionAssignableToTarget(value_node, tm.type)) return false;
+        }
+        return saw_discriminant;
+    }
+
+    fn findObjectLiteralPropValue(self: *Checker, object_node: NodeId, name: hir_mod.StringId) ?NodeId {
+        if (self.hir.kindOf(object_node) != .object_literal) return null;
+        for (hir_mod.objectLiteralProps(self.hir, object_node)) |p| {
+            if (self.hir.kindOf(p) != .object_property) continue;
+            const op = hir_mod.objectPropertyOf(self.hir, p);
+            if (op.value == hir_mod.none_node_id) continue;
+            if (self.hir.kindOf(op.key) != .identifier) continue;
+            const key = hir_mod.identifierOf(self.hir, op.key);
+            if (key.name == name) return op.value;
+        }
+        return null;
+    }
+
+    fn isLiteralType(self: *Checker, t: TypeId) bool {
+        if (t == types.Primitive.true_lit or t == types.Primitive.false_lit) return true;
+        if (t < types.Primitive.first_dynamic or t >= self.interner.pool.typeCount()) return false;
+        return self.interner.pool.flagsOf(t).is_literal;
+    }
+
+    fn literalExpressionAssignableToTarget(self: *Checker, value_node: NodeId, target_t: TypeId) !bool {
+        if (target_t == types.Primitive.true_lit) return self.hir.kindOf(value_node) == .literal_bool and hir_mod.literalBoolOf(self.hir, value_node);
+        if (target_t == types.Primitive.false_lit) return self.hir.kindOf(value_node) == .literal_bool and !hir_mod.literalBoolOf(self.hir, value_node);
+        if (target_t < types.Primitive.first_dynamic or target_t >= self.interner.pool.typeCount()) return false;
+        const flags = self.interner.pool.flagsOf(target_t);
+        if (!flags.is_literal) return false;
+        const lit = self.interner.literalOf(target_t);
+        return switch (lit) {
+            .string_lit => |sid| self.hir.kindOf(value_node) == .literal_string and hir_mod.literalStringOf(self.hir, value_node).value == sid,
+            .number_lit => |n| self.hir.kindOf(value_node) == .literal_number and hir_mod.literalNumberOf(self.hir, value_node) == @as(f64, @floatFromInt(n)),
+            .bigint_lit => false,
+            .boolean_lit => |b| self.hir.kindOf(value_node) == .literal_bool and hir_mod.literalBoolOf(self.hir, value_node) == b,
+        };
     }
 
     fn report(self: *Checker, node: NodeId, code: u32, message: []const u8) !void {
@@ -6376,10 +6505,13 @@ pub const Checker = struct {
     /// member of a union. `any` and `unknown` count as well, since
     /// they accept any value.
     fn typeIncludesUndefined(self: *Checker, t: TypeId) bool {
+        if (t >= self.interner.pool.typeCount()) return false;
         const f = self.interner.pool.flagsOf(t);
         if (f.is_undefined or f.is_any or f.is_unknown) return true;
         if (!f.is_union) return false;
+        if (self.interner.pool.payloadOf(t) >= self.interner.pool.union_payloads.items.len) return false;
         for (self.interner.unionMembers(t)) |m| {
+            if (m >= self.interner.pool.typeCount()) continue;
             if (self.interner.pool.flagsOf(m).is_undefined) return true;
         }
         return false;
@@ -9403,6 +9535,18 @@ test "checker: contextual generic callback instantiation rejects conflicting par
     defer destroySetup(s);
     try s.checker.checkSourceFile(s.root);
     try T.expect(s.checker.diagnostics.items.len > 0);
+}
+
+test "checker: object literal discriminant guides generic union inference" {
+    const s = try newSetup(
+        \\type Item<T> = { kind: 'a', data: T } | { kind: 'b', data: T[] };
+        \\declare function foo<T>(item: Item<T>): T;
+        \\let x1 = foo({ kind: 'a', data: 42 });
+        \\let x2 = foo({ kind: 'b', data: [1, 2] });
+    );
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+    try T.expectEqual(@as(usize, 0), s.checker.diagnostics.items.len);
 }
 
 test "checker: `await g()` types as the operand call's return type" {
