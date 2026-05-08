@@ -5654,7 +5654,7 @@ pub const Parser = struct {
                 expr = try self.ternaryExpr(expr);
             } else if (self.match(&.{.Equal})) {
                 expr = try self.assignment(expr);
-            } else if (self.match(&.{ .PlusEqual, .MinusEqual, .StarEqual, .SlashEqual, .PercentEqual })) {
+            } else if (self.match(&.{ .PlusEqual, .MinusEqual, .StarEqual, .SlashEqual, .PercentEqual, .PipeEqual, .AmpersandEqual, .CaretEqual, .LeftShiftEqual, .RightShiftEqual })) {
                 expr = try self.compoundAssignment(expr);
             } else if (self.match(&.{.LeftParen})) {
                 expr = try self.call(expr);
@@ -6029,6 +6029,11 @@ pub const Parser = struct {
             .StarEqual => .Mul,
             .SlashEqual => .Div,
             .PercentEqual => .Mod,
+            .PipeEqual => .BitOr,
+            .AmpersandEqual => .BitAnd,
+            .CaretEqual => .BitXor,
+            .LeftShiftEqual => .LeftShift,
+            .RightShiftEqual => .RightShift,
             else => unreachable,
         };
 

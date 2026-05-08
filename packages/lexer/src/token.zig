@@ -69,13 +69,18 @@ pub const TokenType = enum {
     LessEqual, // <=
     Ampersand, // &
     AmpersandAmpersand, // &&
+    AmpersandEqual, // &=
     Pipe, // |
     PipePipe, // ||
     PipeGreater, // |>
+    PipeEqual, // |=
     Caret, // ^
+    CaretEqual, // ^=
     Tilde, // ~
     LeftShift, // <<
+    LeftShiftEqual, // <<=
     RightShift, // >>
+    RightShiftEqual, // >>=
     Arrow, // ->
     FatArrow, // =>
 

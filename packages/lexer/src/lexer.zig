@@ -1170,16 +1170,33 @@ pub const Lexer = struct {
             '%' => if (self.match('=')) self.makeToken(.PercentEqual) else self.makeToken(.Percent),
             '!' => if (self.match('=')) self.makeToken(.BangEqual) else self.makeToken(.Bang),
             '=' => if (self.match('=')) self.makeToken(.EqualEqual) else if (self.match('>')) self.makeToken(.FatArrow) else self.makeToken(.Equal),
-            '>' => if (self.match('>')) self.makeToken(.RightShift) else if (self.match('=')) self.makeToken(.GreaterEqual) else self.makeToken(.Greater),
-            '<' => if (self.match('<')) self.makeToken(.LeftShift) else if (self.match('=')) self.makeToken(.LessEqual) else self.makeToken(.Less),
-            '&' => if (self.match('&')) self.makeToken(.AmpersandAmpersand) else self.makeToken(.Ampersand),
+            '>' => if (self.match('>'))
+                (if (self.match('=')) self.makeToken(.RightShiftEqual) else self.makeToken(.RightShift))
+            else if (self.match('='))
+                self.makeToken(.GreaterEqual)
+            else
+                self.makeToken(.Greater),
+            '<' => if (self.match('<'))
+                (if (self.match('=')) self.makeToken(.LeftShiftEqual) else self.makeToken(.LeftShift))
+            else if (self.match('='))
+                self.makeToken(.LessEqual)
+            else
+                self.makeToken(.Less),
+            '&' => if (self.match('&'))
+                self.makeToken(.AmpersandAmpersand)
+            else if (self.match('='))
+                self.makeToken(.AmpersandEqual)
+            else
+                self.makeToken(.Ampersand),
             '|' => if (self.match('>'))
                 self.makeToken(.PipeGreater)
             else if (self.match('|'))
                 self.makeToken(.PipePipe)
+            else if (self.match('='))
+                self.makeToken(.PipeEqual)
             else
                 self.makeToken(.Pipe),
-            '^' => self.makeToken(.Caret),
+            '^' => if (self.match('=')) self.makeToken(.CaretEqual) else self.makeToken(.Caret),
             '~' => if (self.match('/')) self.makeToken(.TildeSlash) else self.makeToken(.Tilde),
             else => self.makeToken(.Invalid),
         };

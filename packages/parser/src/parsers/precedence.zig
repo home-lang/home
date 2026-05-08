@@ -42,7 +42,8 @@ pub const Precedence = enum(u8) {
     /// tokens return None precedence.
     pub fn fromToken(token_type: TokenType) Precedence {
         return switch (token_type) {
-            .Equal, .PlusEqual, .MinusEqual, .StarEqual, .SlashEqual, .PercentEqual => .Assignment,
+            .Equal, .PlusEqual, .MinusEqual, .StarEqual, .SlashEqual, .PercentEqual,
+            .PipeEqual, .AmpersandEqual, .CaretEqual, .LeftShiftEqual, .RightShiftEqual => .Assignment,
             .Question => .Ternary,
             .QuestionQuestion, .QuestionColon, .Else, .OrElse, .Catch => .NullCoalesce,
             .QuestionBracket => .Call,
