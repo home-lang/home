@@ -329,6 +329,11 @@ pub const Checker = struct {
     /// implementation signature lands last and is used to type the
     /// body; call sites resolve against the prior overload signatures.
     overloads: std.AutoHashMapUnmanaged(hir_mod.StringId, std.ArrayListUnmanaged(TypeId)),
+    /// Function names whose overload list includes a concrete
+    /// implementation declaration. Ambient overload sets have no
+    /// implementation, so every signature remains visible at call
+    /// sites.
+    overload_has_implementation: std.AutoHashMapUnmanaged(hir_mod.StringId, void),
     /// Auto-inferred variance for type-parameter TypeIds whose
     /// declaration site had no explicit `in` / `out` modifier.
     /// Populated by `checkFnSignatureOnly` and `checkTypeAliasDecl`
@@ -417,6 +422,7 @@ pub const Checker = struct {
             .fn_predicates = .empty,
             .cond_aliases = .empty,
             .overloads = .empty,
+            .overload_has_implementation = .empty,
             .inferred_variance = .empty,
             .rest_signatures = .empty,
             .enum_member_values = .empty,
@@ -482,6 +488,7 @@ pub const Checker = struct {
         var ov_it = self.overloads.valueIterator();
         while (ov_it.next()) |list| list.deinit(self.gpa);
         self.overloads.deinit(self.gpa);
+        self.overload_has_implementation.deinit(self.gpa);
         self.inferred_variance.deinit(self.gpa);
         self.rest_signatures.deinit(self.gpa);
         self.enum_member_values.deinit(self.gpa);
@@ -2012,7 +2019,8 @@ pub const Checker = struct {
         var has_rest_param = false;
         for (params) |p| {
             const pp = hir_mod.parameterOf(self.hir, p);
-            if (pp.flags.is_rest) has_rest_param = true;
+            const is_this_param = self.isThisParameter(p);
+            if (pp.flags.is_rest and !is_this_param) has_rest_param = true;
             const has_anno = pp.type_annotation != hir_mod.none_node_id;
             var t: TypeId = if (has_anno)
                 try self.lowererLowerWithTypeParams(pp.type_annotation)
@@ -2024,9 +2032,10 @@ pub const Checker = struct {
             if (pp.flags.is_optional or pp.default_value != hir_mod.none_node_id) {
                 t = self.unionWithUndefined(t) catch t;
             }
-            try param_types.append(self.gpa, t);
             self.hir.setType(p, t);
             if (pp.name != hir_mod.none_node_id) self.hir.setType(pp.name, t);
+            if (is_this_param) continue;
+            try param_types.append(self.gpa, t);
             if (!has_anno and self.strict_flags.no_implicit_any) {
                 const param_name: []const u8 = if (pp.name != hir_mod.none_node_id and self.hir.kindOf(pp.name) == .identifier)
                     self.string_interner.get(hir_mod.identifierOf(self.hir, pp.name).name)
@@ -2099,16 +2108,13 @@ pub const Checker = struct {
         // share a name, we treat the body-less ones as overload
         // signatures. The body-bearing one is the implementation
         // (used only for body typing — never picked by call-site
-        // resolution).
+        // resolution). Ambient overload lists have no body, so every
+        // signature stays visible.
         if (f.name != hir_mod.none_node_id and self.hir.kindOf(f.name) == .identifier) {
             const fn_name = hir_mod.identifierOf(self.hir, f.name).name;
             const has_body = f.body != hir_mod.none_node_id;
             const gop = try self.overloads.getOrPut(self.gpa, fn_name);
             if (!gop.found_existing) gop.value_ptr.* = .empty;
-            // The implementation signature is appended last but
-            // marked-by-position (not by flag). Caller picks the
-            // first compatible non-final entry; falls back to
-            // last (the impl) when none match.
             if (!has_body) {
                 try gop.value_ptr.*.append(self.gpa, sig);
             } else {
@@ -2117,6 +2123,7 @@ pub const Checker = struct {
                 // doesn't need overload resolution.
                 if (gop.value_ptr.*.items.len > 0) {
                     try gop.value_ptr.*.append(self.gpa, sig);
+                    try self.overload_has_implementation.put(self.gpa, fn_name, {});
                 }
             }
         }
@@ -2620,6 +2627,33 @@ pub const Checker = struct {
     fn checkInterfaceDecl(self: *Checker, node: NodeId) CheckError!void {
         const it = hir_mod.interfaceOf(self.hir, node);
         const members = hir_mod.interfaceMembers(self.hir, node);
+        const type_params = self.hir.childSlice(it.type_params_start, it.type_params_len);
+        if (type_params.len > 0) try self.pushNarrowScope();
+        defer if (type_params.len > 0) self.popNarrowScope();
+
+        var param_ids: std.ArrayListUnmanaged(TypeId) = .empty;
+        defer param_ids.deinit(self.gpa);
+        for (type_params) |tp| {
+            if (self.hir.kindOf(tp) != .type_parameter) continue;
+            const tpp = hir_mod.typeParameterOf(self.hir, tp);
+            const constraint: TypeId = if (tpp.constraint != hir_mod.none_node_id)
+                try self.lowerer.lower(tpp.constraint)
+            else
+                types.Primitive.unknown;
+            const def: TypeId = if (tpp.default != hir_mod.none_node_id)
+                try self.lowerer.lower(tpp.default)
+            else
+                types.Primitive.none;
+            const tp_id = self.interner.internTypeParameterWithVariance(
+                tpp.name,
+                constraint,
+                def,
+                types.Variance.fromHirBits(tpp.variance),
+            ) catch return error.OutOfMemory;
+            self.hir.setType(tp, tp_id);
+            try self.recordNarrow(tpp.name, tp_id);
+            try param_ids.append(self.gpa, tp_id);
+        }
 
         var iface_members: std.ArrayListUnmanaged(types.ObjectMember) = .empty;
         defer iface_members.deinit(self.gpa);
@@ -2673,6 +2707,17 @@ pub const Checker = struct {
         if (it.name != hir_mod.none_node_id and self.hir.kindOf(it.name) == .identifier) {
             const id = hir_mod.identifierOf(self.hir, it.name);
             try self.type_names.put(self.gpa, id.name, iface_t);
+            if (param_ids.items.len > 0) {
+                const owned_params = try self.gpa.dupe(TypeId, param_ids.items);
+                if (self.generic_aliases.get(id.name)) |old| {
+                    self.gpa.free(old.params);
+                }
+                try self.generic_aliases.put(self.gpa, id.name, .{
+                    .params = owned_params,
+                    .body = iface_t,
+                    .body_node = hir_mod.none_node_id,
+                });
+            }
             self.hir.setType(it.name, iface_t);
         }
     }
@@ -3060,6 +3105,11 @@ pub const Checker = struct {
                     // the literal is a Phase 6 follow-up.
                     if (r.args_len == 1) {
                         const name_str = self.string_interner.get(r.name);
+                        if (std.mem.eql(u8, name_str, "Array") or std.mem.eql(u8, name_str, "ReadonlyArray")) {
+                            const args = hir_mod.typeRefArgs(self.hir, type_node);
+                            const inner = try self.lowererLowerWithTypeParams(args[0]);
+                            return self.interner.internArrayType(self.string_interner, inner) catch error.OutOfMemory;
+                        }
                         if (std.mem.eql(u8, name_str, "ThisType")) {
                             const args = hir_mod.typeRefArgs(self.hir, type_node);
                             return try self.lowererLowerWithTypeParams(args[0]);
@@ -3307,6 +3357,29 @@ pub const Checker = struct {
                 // so each param annotation and the return type need
                 // to round-trip through `lowererLowerWithTypeParams`.
                 const ft = hir_mod.fnTypeOf(self.hir, type_node);
+                const ft_type_params = self.hir.childSlice(ft.type_params_start, ft.type_params_len);
+                if (ft_type_params.len > 0) try self.pushNarrowScope();
+                defer if (ft_type_params.len > 0) self.popNarrowScope();
+                for (ft_type_params) |tp| {
+                    if (self.hir.kindOf(tp) != .type_parameter) continue;
+                    const tpp = hir_mod.typeParameterOf(self.hir, tp);
+                    const constraint: TypeId = if (tpp.constraint != hir_mod.none_node_id)
+                        try self.lowerer.lower(tpp.constraint)
+                    else
+                        types.Primitive.unknown;
+                    const def: TypeId = if (tpp.default != hir_mod.none_node_id)
+                        try self.lowerer.lower(tpp.default)
+                    else
+                        types.Primitive.none;
+                    const tp_id = self.interner.internTypeParameterWithVariance(
+                        tpp.name,
+                        constraint,
+                        def,
+                        types.Variance.fromHirBits(tpp.variance),
+                    ) catch return error.OutOfMemory;
+                    self.hir.setType(tp, tp_id);
+                    try self.recordNarrow(tpp.name, tp_id);
+                }
                 var fn_param_ts: std.ArrayListUnmanaged(TypeId) = .empty;
                 defer fn_param_ts.deinit(self.gpa);
                 const fn_params = self.hir.childSlice(ft.params_start, @intCast(ft.params_len));
@@ -3317,6 +3390,7 @@ pub const Checker = struct {
                         try self.lowererLowerWithTypeParams(pp.type_annotation)
                     else
                         types.Primitive.any;
+                    if (self.isThisParameter(p)) continue;
                     try fn_param_ts.append(self.gpa, t);
                 }
                 const ret_t = if (ft.return_type != hir_mod.none_node_id)
@@ -3808,6 +3882,74 @@ pub const Checker = struct {
         }
     }
 
+    fn isThisParameter(self: *Checker, param_node: NodeId) bool {
+        if (self.hir.kindOf(param_node) != .parameter) return false;
+        const p = hir_mod.parameterOf(self.hir, param_node);
+        if (p.name == hir_mod.none_node_id or self.hir.kindOf(p.name) != .identifier) return false;
+        const id = hir_mod.identifierOf(self.hir, p.name);
+        return std.mem.eql(u8, self.string_interner.get(id.name), "this");
+    }
+
+    fn lookupObjectMember(self: *Checker, obj_t: TypeId, name: hir_mod.StringId) CheckError!?TypeId {
+        const flags = self.interner.pool.flagsOf(obj_t);
+        if (flags.is_union) {
+            const members = self.interner.unionMembers(obj_t);
+            var resolved: std.ArrayListUnmanaged(TypeId) = .empty;
+            defer resolved.deinit(self.gpa);
+            for (members) |member_t| {
+                if (self.interner.objectMember(member_t, name)) |t| {
+                    try resolved.append(self.gpa, t);
+                } else {
+                    return null;
+                }
+            }
+            if (resolved.items.len == 0) return null;
+            return self.interner.internUnion(resolved.items) catch return error.OutOfMemory;
+        }
+        return self.interner.objectMember(obj_t, name);
+    }
+
+    fn arrayElementType(self: *Checker, obj_t: TypeId) CheckError!TypeId {
+        const flags = self.interner.pool.flagsOf(obj_t);
+        if (flags.is_union) {
+            const members = self.interner.unionMembers(obj_t);
+            var elems: std.ArrayListUnmanaged(TypeId) = .empty;
+            defer elems.deinit(self.gpa);
+            for (members) |member_t| {
+                const elem_t = self.interner.objectNumberIndex(member_t);
+                if (elem_t == types.Primitive.none) return types.Primitive.none;
+                try elems.append(self.gpa, elem_t);
+            }
+            if (elems.items.len == 0) return types.Primitive.none;
+            return self.interner.internUnion(elems.items) catch return error.OutOfMemory;
+        }
+        return self.interner.objectNumberIndex(obj_t);
+    }
+
+    fn lookupDeclaredArrayMember(self: *Checker, elem_t: TypeId, name: hir_mod.StringId) CheckError!?TypeId {
+        const array_names = [_][]const u8{ "Array", "ReadonlyArray" };
+        for (array_names) |array_name| {
+            const array_id = self.string_interner.intern(array_name) catch return error.OutOfMemory;
+            const info = self.generic_aliases.get(array_id) orelse continue;
+            var inst_t = info.body;
+            if (info.params.len > 0) {
+                var subs: std.AutoHashMapUnmanaged(TypeId, TypeId) = .empty;
+                defer subs.deinit(self.gpa);
+                try subs.put(self.gpa, info.params[0], elem_t);
+                var i: usize = 1;
+                while (i < info.params.len) : (i += 1) {
+                    const p = info.params[i];
+                    if (!self.interner.pool.flagsOf(p).is_type_parameter) continue;
+                    const tp = self.interner.pool.type_parameter_payloads.items[self.interner.pool.payloadOf(p)];
+                    if (tp.default != types.Primitive.none) try subs.put(self.gpa, p, tp.default);
+                }
+                inst_t = try self.substituteType(info.body, &subs);
+            }
+            if (self.interner.objectMember(inst_t, name)) |member_t| return member_t;
+        }
+        return null;
+    }
+
     /// Type an expression. Returns its TypeId and also records it
     /// in the HIR's types column.
     pub fn checkExpression(self: *Checker, node: NodeId) CheckError!TypeId {
@@ -3918,9 +4060,9 @@ pub const Checker = struct {
                     const callee_name = hir_mod.identifierOf(self.hir, c.callee).name;
                     if (self.overloads.get(callee_name)) |overload_list| {
                         if (overload_list.items.len > 1) {
-                            // The last entry is the implementation;
-                            // walk only the leading overloads.
-                            const overloads = overload_list.items[0 .. overload_list.items.len - 1];
+                            const has_impl = self.overload_has_implementation.contains(callee_name);
+                            const visible_len = if (has_impl) overload_list.items.len - 1 else overload_list.items.len;
+                            const overloads = overload_list.items[0..visible_len];
                             for (overloads) |sig| {
                                 if (try self.signatureAccepts(sig, arg_types.items)) {
                                     try self.checkArgsAgainstSignature(node, args, arg_types.items, sig);
@@ -3931,8 +4073,7 @@ pub const Checker = struct {
                             }
                             // No overload accepted these args — emit
                             // TS2769 instead of falling through to the
-                            // implementation signature (which is not
-                            // visible at call sites in TS).
+                            // implementation signature when one exists.
                             try self.report(node, TsCodes.no_overload_matches, "No overload matches this call.");
                             if (self.interner.signatureReturn(overload_list.items[0])) |ret| {
                                 break :blk ret;
@@ -4016,7 +4157,7 @@ pub const Checker = struct {
                 // Optional chaining (`obj?.x`) widens the result to
                 // include `undefined` regardless of whether the
                 // object's static type already does.
-                if (self.interner.objectMember(obj_t, m.name)) |t| {
+                if (try self.lookupObjectMember(obj_t, m.name)) |t| {
                     break :blk if (m.optional) self.unionWithUndefined(t) catch t else t;
                 }
                 // Lib lookup: `string`-typed receivers consult the
@@ -4038,13 +4179,16 @@ pub const Checker = struct {
                 // `push`, `map`, `filter`, … using the indexer's
                 // element type as `T`.
                 if (self.interner.pool.flagsOf(obj_t).is_object_type) {
-                    const num_idx = self.interner.objectNumberIndex(obj_t);
+                    const num_idx = try self.arrayElementType(obj_t);
                     if (num_idx != types.Primitive.none) {
                         if (lib.arrayProto(&self.lib_cache, self.interner, self.string_interner, self.gpa, num_idx)) |proto| {
                             if (self.interner.objectMember(proto, m.name)) |t| {
                                 break :blk if (m.optional) self.unionWithUndefined(t) catch t else t;
                             }
                         } else |_| {}
+                        if (try self.lookupDeclaredArrayMember(num_idx, m.name)) |t| {
+                            break :blk if (m.optional) self.unionWithUndefined(t) catch t else t;
+                        }
                     }
                 }
                 // Index-signature fallback: `obj.foo` on a type
@@ -6281,12 +6425,16 @@ pub const Checker = struct {
         if (self.hir.kindOf(init_node) != .object_literal) return;
         if (!self.interner.pool.flagsOf(declared_t).is_object_type) return;
         if (self.interner.objectStringIndex(declared_t) != types.Primitive.none) return;
+        const number_index = self.interner.objectNumberIndex(declared_t);
         const props = hir_mod.objectLiteralProps(self.hir, init_node);
         for (props) |p| {
             if (self.hir.kindOf(p) != .object_property) continue;
             const op = hir_mod.objectPropertyOf(self.hir, p);
             if (self.hir.kindOf(op.key) != .identifier) continue;
             const id = hir_mod.identifierOf(self.hir, op.key);
+            if (number_index != types.Primitive.none and self.isNumericPropertyName(id.name)) {
+                continue;
+            }
             const declared_member = self.interner.objectMemberInfo(declared_t, id.name);
             if (declared_member == null) {
                 const name_str = self.string_interner.get(id.name);
@@ -6309,6 +6457,21 @@ pub const Checker = struct {
                 try self.checkExcessProperties(op.value, declared_member.?.type);
             }
         }
+    }
+
+    fn isNumericPropertyName(self: *Checker, name: hir_mod.StringId) bool {
+        const s = self.string_interner.get(name);
+        if (s.len == 0) return false;
+        var saw_digit = false;
+        for (s, 0..) |c, i| {
+            if (c >= '0' and c <= '9') {
+                saw_digit = true;
+                continue;
+            }
+            if (c == '.' and i + 1 == s.len and saw_digit) continue;
+            return false;
+        }
+        return saw_digit;
     }
 
     /// TS2375: when `exactOptionalPropertyTypes` is on, an object
@@ -7628,6 +7791,53 @@ test "checker: generic alias `Box<number>` substitutes the type parameter" {
     try T.expectEqual(types.Primitive.number_t, s.hir.typeOf(ret_p.value));
 }
 
+test "checker: generic interface instantiation substitutes the type parameter" {
+    const s = try newSetup(
+        \\interface Box<T> { value: T; }
+        \\function f(b: Box<number>): number { return b.value; }
+    );
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+    try T.expect(s.checker.diagnostics.items.len == 0);
+    const stmts = hir_mod.blockStmts(&s.hir, s.root);
+    const f = hir_mod.fnDeclOf(&s.hir, stmts[1]);
+    const body = hir_mod.blockStmts(&s.hir, f.body);
+    const ret_p = hir_mod.returnOf(&s.hir, body[0]);
+    try T.expectEqual(types.Primitive.number_t, s.hir.typeOf(ret_p.value));
+}
+
+test "checker: explicit this parameter is not a call argument" {
+    const s = try newSetup(
+        \\interface Chain<T> { same(this: Chain<T>, other: Chain<T>): boolean; }
+        \\declare const a: Chain<number>;
+        \\declare const b: Chain<number>;
+        \\const x = a.same(b);
+    );
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+    for (s.checker.diagnostics.items) |d| {
+        try T.expect(d.code != TsCodes.expected_n_arguments);
+    }
+}
+
+test "checker: declared Array interface augments array member access" {
+    const s = try newSetup(
+        \\interface Array<T> {
+        \\  equalsShallow<T>(this: ReadonlyArray<T>, other: ReadonlyArray<T>): boolean;
+        \\}
+        \\declare const a: (string | number)[] | null[] | undefined[] | {}[];
+        \\declare const b: (string | number)[] | null[] | undefined[] | {}[];
+        \\let x = a.equalsShallow(b);
+    );
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+    for (s.checker.diagnostics.items) |d| {
+        try T.expect(d.code != TsCodes.property_does_not_exist);
+        try T.expect(d.code != TsCodes.expected_n_arguments);
+        try T.expect(d.code != TsCodes.argument_type_mismatch);
+    }
+}
+
 test "checker: object-literal excess property emits TS2353" {
     const s = try newSetup("let p: { x: number } = { x: 1, y: 2 };");
     defer destroySetup(s);
@@ -7655,6 +7865,15 @@ test "checker: string index signature suppresses excess property diagnostics" {
     }
 }
 
+test "checker: number index signature suppresses numeric excess property diagnostics" {
+    const s = try newSetup("let p: { [key: number]: string } = { 0: 'a', 1.: 'b' };");
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+    for (s.checker.diagnostics.items) |d| {
+        try T.expect(d.code != TsCodes.object_literal_excess_property);
+    }
+}
+
 test "checker: exactOptionalPropertyTypes flags explicit undefined on optional property" {
     const s = try newSetup("const x: { a?: number } = { a: undefined };");
     defer destroySetup(s);
@@ -7673,6 +7892,20 @@ test "checker: exactOptionalPropertyTypes off — explicit undefined on optional
     try s.checker.checkSourceFile(s.root);
     for (s.checker.diagnostics.items) |d| {
         try T.expect(d.code != TsCodes.exact_optional_property);
+    }
+}
+
+test "checker: unconstrained generic assigns to all-optional object target" {
+    const s = try newSetup(
+        \\function f<T>(a: T) {
+        \\  var b: { s?: number } = a;
+        \\  return b;
+        \\}
+    );
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+    for (s.checker.diagnostics.items) |d| {
+        try T.expect(d.code != TsCodes.type_not_assignable);
     }
 }
 
@@ -8609,6 +8842,19 @@ test "checker: TS2769 when no overload matches the call" {
         if (d.code == TsCodes.no_overload_matches) found = true;
     }
     try T.expect(found);
+}
+
+test "checker: ambient overload fallback remains visible" {
+    const s = try newSetup(
+        \\declare function f(x: string): number;
+        \\declare function f(x: any): any;
+        \\let r = f(1);
+    );
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+    for (s.checker.diagnostics.items) |d| {
+        try T.expect(d.code != TsCodes.no_overload_matches);
+    }
 }
 
 test "checker: untyped single function (no overloads) — call works" {

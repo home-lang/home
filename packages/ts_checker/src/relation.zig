@@ -487,6 +487,19 @@ pub const Engine = struct {
             return !self.strict_null_checks;
         }
 
+        // Unconstrained type parameters are assignable to object
+        // shapes with no required members. This matches TS's
+        // long-standing optional-property behavior:
+        // `function f<T>(x: T) { let y: { s?: number } = x; }`.
+        if (sf.is_type_parameter and tf.is_object_type) {
+            if (self.interner.objectStringIndex(target) != Primitive.none) return false;
+            if (self.interner.objectNumberIndex(target) != Primitive.none) return false;
+            for (self.interner.objectMembers(target)) |tm| {
+                if (!tm.is_optional) return false;
+            }
+            return true;
+        }
+
         // Object types: structural subtyping. Source must have all
         // properties target requires, and each shared property type
         // must be assignable in the same direction (depth-checked).

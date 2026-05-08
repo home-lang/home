@@ -133,6 +133,10 @@ pub const Lowerer = struct {
                 try self.lower(pp.type_annotation)
             else
                 types.Primitive.any;
+            if (pp.name != hir_mod.none_node_id and self.hir.kindOf(pp.name) == .identifier) {
+                const id = hir_mod.identifierOf(self.hir, pp.name);
+                if (std.mem.eql(u8, self.string_interner.get(id.name), "this")) continue;
+            }
             try param_types.append(self.gpa, t);
         }
         const ret: TypeId = if (ft.return_type != hir_mod.none_node_id)
@@ -158,6 +162,13 @@ pub const Lowerer = struct {
         if (std.mem.eql(u8, name, "bigint")) return types.Primitive.bigint_t;
         if (std.mem.eql(u8, name, "symbol")) return types.Primitive.symbol_t;
         if (std.mem.eql(u8, name, "object")) return types.Primitive.object_t;
+        if (r.qualifier_len == 0 and r.args_len == 1 and
+            (std.mem.eql(u8, name, "Array") or std.mem.eql(u8, name, "ReadonlyArray")))
+        {
+            const args = hir_mod.typeRefArgs(self.hir, node);
+            const inner = try self.lower(args[0]);
+            return self.interner.internArrayType(self.string_interner, inner) catch error.OutOfMemory;
+        }
         // Non-primitive named refs require symbol resolution against
         // the binder. For now emit a placeholder that the checker
         // re-resolves once we feed it the bound module.
