@@ -67,5 +67,8 @@
       }
     },
     "commit-msg": "bunx gitlint --edit .git/COMMIT_EDITMSG"
+  },
+  "dependencies": {
+    "ziglang.org": "^0.17.0-dev.263+0add2dfc4"
   }
 }
