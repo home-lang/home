@@ -2412,15 +2412,60 @@ pub const Parser = struct {
             break :blk name_token.lexeme;
         };
 
+        // Zig-style tagged union annotation: `union(enum)` or
+        // `union(TagType)`. Currently consumed and discarded so the
+        // parser stays unblocked; full tag-type information is not yet
+        // threaded onto the AST.
+        if (self.match(&.{.LeftParen})) {
+            if (self.match(&.{.Enum})) {
+                // `union(enum)` form
+            } else {
+                const tt = try self.parseTypeAnnotation();
+                self.allocator.free(tt);
+            }
+            _ = try self.expect(.RightParen, "Expected ')' after union tag specifier");
+        }
+
         _ = try self.expect(.LeftBrace, "Expected '{' after union name");
 
         var variants = std.ArrayList(ast.UnionVariant).empty;
         defer variants.deinit(self.allocator);
 
         while (!self.check(.RightBrace) and !self.isAtEnd()) {
-            // Skip doc comments / pub modifier inside union body.
+            // Skip doc comments inside union body.
             while (self.match(&.{.DocComment})) {}
-            _ = self.match(&.{.Pub});
+            // Optional `pub` modifier — applies to the next variant or
+            // method declaration.
+            const had_pub = self.match(&.{.Pub});
+            _ = had_pub;
+
+            // Methods inside the union body — `fn name(...)` or
+            // `comptime fn ...`. Skip the entire declaration so the
+            // variant loop continues; methods are not yet threaded onto
+            // the UnionDecl AST node.
+            if (self.check(.Fn) or self.check(.Comptime)) {
+                _ = self.match(&.{.Comptime});
+                _ = try self.expect(.Fn, "Expected 'fn' for union method");
+                _ = try self.expect(.Identifier, "Expected method name");
+                // Walk paren-balanced signature.
+                _ = try self.expect(.LeftParen, "Expected '(' after method name");
+                var pdepth: i32 = 1;
+                while (pdepth > 0 and !self.isAtEnd()) {
+                    const tt = self.advance().type;
+                    if (tt == .LeftParen) pdepth += 1 else if (tt == .RightParen) pdepth -= 1;
+                }
+                // Walk to opening `{` of the body, then balance braces.
+                while (!self.check(.LeftBrace) and !self.isAtEnd()) _ = self.advance();
+                if (self.match(&.{.LeftBrace})) {
+                    var bdepth: i32 = 1;
+                    while (bdepth > 0 and !self.isAtEnd()) {
+                        const tt = self.advance().type;
+                        if (tt == .LeftBrace) bdepth += 1 else if (tt == .RightBrace) bdepth -= 1;
+                    }
+                }
+                _ = self.match(&.{.Comma});
+                continue;
+            }
 
             const variant_name = try self.expect(.Identifier, "Expected variant name");
 
