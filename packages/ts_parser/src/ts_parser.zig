@@ -642,7 +642,7 @@ pub const Parser = struct {
         // when at statement position; named-fn-expression handling lives
         // in parseUnaryExpression's primary path (deferred follow-up).
         var name: NodeId = hir_mod.none_node_id;
-        if (self.peek().kind == .identifier) {
+        if (self.peek().kind == .identifier or self.peek().kind.isContextualKeyword()) {
             const name_tok = self.advance();
             const name_id = try self.internToken(name_tok);
             name = try self.builder.addIdentifier(tokenSpan(name_tok), name_id);
@@ -1795,6 +1795,16 @@ pub const Parser = struct {
                 _ = self.advance();
                 return try self.parseArrayType();
             },
+            .kw_unique => {
+                const unique_tok = self.advance();
+                if (self.peek().kind == .kw_symbol) {
+                    const symbol_tok = self.advance();
+                    const id = self.interner.intern("symbol") catch return error.OutOfMemory;
+                    return try self.builder.addTypeRef(.{ .start = unique_tok.span.start, .end = symbol_tok.span.end }, id, &.{}, &.{});
+                }
+                const id = self.interner.intern("unknown") catch return error.OutOfMemory;
+                return try self.builder.addTypeRef(tokenSpan(unique_tok), id, &.{}, &.{});
+            },
             else => return try self.parseArrayType(),
         }
     }
@@ -2591,7 +2601,7 @@ pub const Parser = struct {
         const start_tok = if (is_async) self.tokens[checkpoint] else self.peek();
 
         // Single-ident arrow: `x => …`
-        if (self.peek().kind == .identifier and self.peekAt(1).kind == .arrow) {
+        if (isExpressionIdentifierToken(self.peek().kind) and self.peekAt(1).kind == .arrow) {
             const name_tok = self.advance();
             _ = self.advance(); // `=>`
             const name_id = try self.internToken(name_tok);
@@ -3114,6 +3124,11 @@ pub const Parser = struct {
                 const sp: Span = .{ .start = t.span.start, .end = self.hir.spanOf(operand).end };
                 return try self.builder.addYieldExpr(sp, operand, is_delegated);
             },
+            .plus_plus, .minus_minus => {
+                _ = self.advance();
+                const operand = try self.parseUnaryExpression();
+                return try self.buildUpdateAssignment(t, operand, t.kind == .plus_plus, true);
+            },
             else => return try self.parseCallOrMemberExpression(),
         }
     }
@@ -3225,6 +3240,10 @@ pub const Parser = struct {
                     _ = self.advance();
                     const sp: Span = .{ .start = self.hir.spanOf(node).start, .end = t.span.end };
                     node = try self.builder.addNonNullExpression(sp, node);
+                },
+                .plus_plus, .minus_minus => {
+                    _ = self.advance();
+                    node = try self.buildUpdateAssignment(t, node, t.kind == .plus_plus, false);
                 },
                 .no_substitution_template, .template_head => {
                     // Tagged template literal: `` tag`…` `` desugars to
@@ -3446,6 +3465,11 @@ pub const Parser = struct {
                 const id = try self.internToken(t);
                 return try self.builder.addIdentifier(tokenSpan(t), id);
             },
+            .kw_any, .kw_unknown, .kw_never, .kw_void, .kw_string, .kw_number, .kw_boolean, .kw_bigint, .kw_symbol, .kw_object, .kw_get, .kw_set => {
+                _ = self.advance();
+                const id = try self.internToken(t);
+                return try self.builder.addIdentifier(tokenSpan(t), id);
+            },
             .private_identifier => {
                 _ = self.advance();
                 const id = try self.internToken(t);
@@ -3568,6 +3592,16 @@ pub const Parser = struct {
                 return error.UnexpectedToken;
             },
         }
+    }
+
+    fn buildUpdateAssignment(self: *Parser, op_tok: Token, operand: NodeId, is_inc: bool, is_prefix: bool) ParseError!NodeId {
+        const one = try self.builder.addLiteralNumber(tokenSpan(op_tok), 1);
+        const operand_span = self.hir.spanOf(operand);
+        const sp: Span = if (is_prefix)
+            .{ .start = op_tok.span.start, .end = operand_span.end }
+        else
+            .{ .start = operand_span.start, .end = op_tok.span.end };
+        return try self.builder.addAssignment(sp, operand, one, if (is_inc) .add else .sub);
     }
 
     // ========================================================================
@@ -3878,6 +3912,27 @@ pub const Parser = struct {
         return error.UnexpectedToken;
     }
 };
+
+fn isExpressionIdentifierToken(kind: TokenKind) bool {
+    return switch (kind) {
+        .identifier,
+        .private_identifier,
+        .kw_any,
+        .kw_unknown,
+        .kw_never,
+        .kw_void,
+        .kw_string,
+        .kw_number,
+        .kw_boolean,
+        .kw_bigint,
+        .kw_symbol,
+        .kw_object,
+        .kw_get,
+        .kw_set,
+        => true,
+        else => false,
+    };
+}
 
 /// Parse a numeric literal as f64. Handles hex/oct/bin via `parseInt`
 /// + cast, decimal via `parseFloat`. Strips `_` digit separators.
@@ -5203,6 +5258,30 @@ test "parser: function with generic type parameters" {
     try T.expect(pp.type_annotation != hir_mod.none_node_id);
 }
 
+test "parser: contextual keyword function name with generic type parameters" {
+    var s = try newTestSetup("function get<T>(x: T): T { return x; }");
+    defer destroyTestSetup(s);
+    const root = try s.parser.parseSourceFile();
+    const top = hir_mod.blockStmts(&s.hir, root)[0];
+    try T.expectEqual(hir_mod.NodeKind.fn_decl, s.hir.kindOf(top));
+    const tps = hir_mod.fnTypeParams(&s.hir, top);
+    try T.expectEqual(@as(usize, 1), tps.len);
+}
+
+test "parser: contextual get/set keywords can be callee identifiers" {
+    var s = try newTestSetup(
+        \\function get<T>(x: T): T { return x; }
+        \\get(1);
+        \\set(2);
+    );
+    defer destroyTestSetup(s);
+    const root = try s.parser.parseSourceFile();
+    const stmts = hir_mod.blockStmts(&s.hir, root);
+    try T.expectEqual(@as(usize, 3), stmts.len);
+    try T.expectEqual(hir_mod.NodeKind.call_expr, s.hir.kindOf(stmts[1]));
+    try T.expectEqual(hir_mod.NodeKind.call_expr, s.hir.kindOf(stmts[2]));
+}
+
 test "parser: function with constrained generic" {
     var s = try newTestSetup("function f<T extends Foo>(x: T) {}");
     defer destroyTestSetup(s);
@@ -5629,4 +5708,33 @@ test "parser: `yield 1; yield* h();` parses both forms with correct flags" {
     try T.expect(delegated.type_node != hir_mod.none_node_id);
     try T.expect(plain.expr != hir_mod.none_node_id);
     try T.expect(delegated.expr != hir_mod.none_node_id);
+}
+
+test "parser: prefix and postfix update expressions lower to compound assignment" {
+    var s = try newTestSetup("let x = 0; ++x; x--;");
+    defer destroyTestSetup(s);
+    const root = try s.parser.parseSourceFile();
+    const stmts = hir_mod.blockStmts(&s.hir, root);
+    try T.expectEqual(hir_mod.NodeKind.assignment, s.hir.kindOf(stmts[1]));
+    try T.expectEqual(hir_mod.NodeKind.assignment, s.hir.kindOf(stmts[2]));
+    try T.expectEqual(@as(?hir_mod.BinOp, .add), hir_mod.assignmentOf(&s.hir, stmts[1]).op);
+    try T.expectEqual(@as(?hir_mod.BinOp, .sub), hir_mod.assignmentOf(&s.hir, stmts[2]).op);
+}
+
+test "parser: contextual primitive keyword can be parameter name and expression" {
+    var s = try newTestSetup("let f = (number) => String(number);");
+    defer destroyTestSetup(s);
+    const root = try s.parser.parseSourceFile();
+    const top = hir_mod.blockStmts(&s.hir, root)[0];
+    const v = hir_mod.varDeclOf(&s.hir, top);
+    try T.expectEqual(hir_mod.NodeKind.arrow_fn, s.hir.kindOf(v.init));
+}
+
+test "parser: unique symbol type annotation" {
+    var s = try newTestSetup("const tag: unique symbol = Symbol();");
+    defer destroyTestSetup(s);
+    const root = try s.parser.parseSourceFile();
+    const top = hir_mod.blockStmts(&s.hir, root)[0];
+    const v = hir_mod.varDeclOf(&s.hir, top);
+    try T.expectEqual(hir_mod.NodeKind.type_ref, s.hir.kindOf(v.type_annotation));
 }
