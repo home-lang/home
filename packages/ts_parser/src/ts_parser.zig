@@ -940,10 +940,13 @@ pub const Parser = struct {
             if (self.peek().kind == .identifier or self.peek().kind == .private_identifier or self.peek().kind == .kw_constructor or self.peek().kind.isContextualKeyword()) {
                 const name_tok = self.advance();
                 if (self.peek().kind == .open_paren or self.peek().kind == .less_than) {
+                    var type_params: []NodeId = &.{};
+                    var owns_tps = false;
                     if (self.peek().kind == .less_than) {
-                        const tps = try self.parseTypeParameterDeclaration();
-                        self.gpa.free(tps);
+                        type_params = try self.parseTypeParameterDeclaration();
+                        owns_tps = true;
                     }
+                    defer if (owns_tps) self.gpa.free(type_params);
                     const params = try self.parseParameterList();
                     defer self.gpa.free(params);
                     var return_type: NodeId = hir_mod.none_node_id;
@@ -956,9 +959,10 @@ pub const Parser = struct {
                     }
                     const name_id = try self.internToken(name_tok);
                     const name_node = try self.builder.addIdentifier(tokenSpan(name_tok), name_id);
-                    const fn_node = try self.builder.addFnDecl(
+                    const fn_node = try self.builder.addFnDeclGeneric(
                         .{ .start = member_start.span.start, .end = self.tokens[self.cursor - 1].span.end },
                         name_node,
+                        type_params,
                         params,
                         return_type,
                         body,
@@ -1044,10 +1048,13 @@ pub const Parser = struct {
     fn parseInterfaceDeclaration(self: *Parser) ParseError!NodeId {
         const start = self.advance(); // interface
         const name_tok = try self.expect(.identifier, "interface name");
+        var type_params: []NodeId = &.{};
+        var owns_tps = false;
         if (self.peek().kind == .less_than) {
-            const tps = try self.parseTypeParameterDeclaration();
-            self.gpa.free(tps);
+            type_params = try self.parseTypeParameterDeclaration();
+            owns_tps = true;
         }
+        defer if (owns_tps) self.gpa.free(type_params);
         var extends_list: std.ArrayListUnmanaged(NodeId) = .empty;
         defer extends_list.deinit(self.gpa);
         if (self.match(.kw_extends)) {
@@ -1067,7 +1074,7 @@ pub const Parser = struct {
         return try self.builder.addInterface(
             .{ .start = start.span.start, .end = close.span.end },
             name_node,
-            &.{},
+            type_params,
             extends_list.items,
             members.items,
         );
@@ -2183,10 +2190,16 @@ pub const Parser = struct {
                 try self.skipUntilTypeMemberSeparator();
                 continue;
             }
-            // Call / construct signatures still skip — they're
-            // a Phase 6 follow-up.
-            if (t.kind == .open_paren or t.kind == .kw_new) {
-                try self.skipUntilTypeMemberSeparator();
+            // Call signature: `{ <T>(x: T): T }` or `{ (x: T): T }`.
+            if (t.kind == .less_than or t.kind == .open_paren) {
+                const sig = try self.parseTypeSignatureMember(false);
+                try out.append(self.gpa, sig);
+                continue;
+            }
+            // Construct signature: `{ new<T>(x: T): T }`.
+            if (t.kind == .kw_new) {
+                const sig = try self.parseTypeSignatureMember(true);
+                try out.append(self.gpa, sig);
                 continue;
             }
             var is_readonly = false;
@@ -2202,15 +2215,22 @@ pub const Parser = struct {
                 try self.internToken(name_tok);
             const is_optional = self.match(.question);
 
-            // Method shorthand: `name(p: T): R`.
-            if (self.peek().kind == .open_paren) {
+            // Method shorthand: `name<T>(p: T): R` / `name(p: T): R`.
+            if (self.peek().kind == .less_than or self.peek().kind == .open_paren) {
+                var type_params: []NodeId = &.{};
+                var owns_tps = false;
+                if (self.peek().kind == .less_than) {
+                    type_params = try self.parseTypeParameterDeclaration();
+                    owns_tps = true;
+                }
+                defer if (owns_tps) self.gpa.free(type_params);
                 const params = try self.parseTypeParameterList();
                 defer self.gpa.free(params);
                 var ret: NodeId = hir_mod.none_node_id;
                 if (self.match(.colon)) ret = try self.parseTypeAnnotation();
                 const fn_t = try self.builder.addFnType(
                     .{ .start = name_tok.span.start, .end = self.tokens[self.cursor - 1].span.end },
-                    &.{},
+                    type_params,
                     params,
                     ret,
                     false,
@@ -2244,6 +2264,42 @@ pub const Parser = struct {
             );
             try out.append(self.gpa, member);
         }
+    }
+
+    fn parseTypeSignatureMember(self: *Parser, is_constructor: bool) ParseError!NodeId {
+        const start = self.peek();
+        if (is_constructor) _ = try self.expect(.kw_new, "'new' in construct signature");
+        var type_params: []NodeId = &.{};
+        var owns_tps = false;
+        if (self.peek().kind == .less_than) {
+            type_params = try self.parseTypeParameterDeclaration();
+            owns_tps = true;
+        }
+        defer if (owns_tps) self.gpa.free(type_params);
+        const params = try self.parseTypeParameterList();
+        defer self.gpa.free(params);
+        var ret: NodeId = hir_mod.none_node_id;
+        if (self.match(.colon)) ret = try self.parseTypeAnnotation();
+        const end_pos = if (self.cursor > 0) self.tokens[self.cursor - 1].span.end else start.span.end;
+        const fn_t = try self.builder.addFnType(
+            .{ .start = start.span.start, .end = end_pos },
+            type_params,
+            params,
+            ret,
+            is_constructor,
+        );
+        _ = self.match(.semicolon);
+        _ = self.match(.comma);
+        const synthetic_name = if (is_constructor) "__construct" else "__call";
+        const name_id = self.interner.intern(synthetic_name) catch return error.OutOfMemory;
+        return try self.builder.addInterfaceMember(
+            .{ .start = start.span.start, .end = end_pos },
+            name_id,
+            fn_t,
+            false,
+            false,
+            true,
+        );
     }
 
     /// Attempt to parse a `[k: K]: V` (or `readonly [k: K]: V`)
@@ -3765,16 +3821,24 @@ pub const Parser = struct {
             var is_method = false;
             if (self.match(.colon)) {
                 value = try self.parseAssignmentExpression();
-            } else if (self.peek().kind == .open_paren) {
-                // Method shorthand: `{ foo() {} }`.
+            } else if (self.peek().kind == .less_than or self.peek().kind == .open_paren) {
+                // Method shorthand: `{ foo<T>() {} }`.
+                var type_params: []NodeId = &.{};
+                var owns_tps = false;
+                if (self.peek().kind == .less_than) {
+                    type_params = try self.parseTypeParameterDeclaration();
+                    owns_tps = true;
+                }
+                defer if (owns_tps) self.gpa.free(type_params);
                 const params = try self.parseParameterList();
                 defer self.gpa.free(params);
                 if (self.match(.colon)) try self.skipTypeAnnotation();
                 var body: NodeId = hir_mod.none_node_id;
                 if (self.peek().kind == .open_brace) body = try self.parseBlockStatement();
-                value = try self.builder.addFnDecl(
+                value = try self.builder.addFnDeclGeneric(
                     .{ .start = prop_start.span.start, .end = self.tokens[self.cursor - 1].span.end },
                     hir_mod.none_node_id,
+                    type_params,
                     params,
                     hir_mod.none_node_id,
                     body,
@@ -4952,6 +5016,46 @@ test "parser: interface method shorthand" {
     const m = hir_mod.interfaceMemberOf(&s.hir, members[0]);
     try T.expect(m.is_method);
     try T.expectEqual(hir_mod.NodeKind.fn_type, s.hir.kindOf(m.type_node));
+}
+
+test "parser: interface generic method shorthand" {
+    var s = try newTestSetup("interface Box { map<T>(x: T): T; }");
+    defer destroyTestSetup(s);
+    const root = try s.parser.parseSourceFile();
+    const top = hir_mod.blockStmts(&s.hir, root)[0];
+    const members = hir_mod.interfaceMembers(&s.hir, top);
+    const m = hir_mod.interfaceMemberOf(&s.hir, members[0]);
+    try T.expect(m.is_method);
+    const ft = hir_mod.fnTypeOf(&s.hir, m.type_node);
+    try T.expectEqual(@as(u16, 1), ft.type_params_len);
+}
+
+test "parser: object type call and construct signatures" {
+    var s = try newTestSetup("let p: { <T>(x: T): T; new<T>(x: T): T } = null;");
+    defer destroyTestSetup(s);
+    const root = try s.parser.parseSourceFile();
+    const top = hir_mod.blockStmts(&s.hir, root)[0];
+    const v = hir_mod.varDeclOf(&s.hir, top);
+    const members = hir_mod.objectTypeMembers(&s.hir, v.type_annotation);
+    try T.expectEqual(@as(usize, 2), members.len);
+    const call = hir_mod.interfaceMemberOf(&s.hir, members[0]);
+    const construct = hir_mod.interfaceMemberOf(&s.hir, members[1]);
+    try T.expectEqual(hir_mod.NodeKind.fn_type, s.hir.kindOf(call.type_node));
+    try T.expectEqual(hir_mod.NodeKind.constructor_type, s.hir.kindOf(construct.type_node));
+    try T.expect(!hir_mod.fnTypeOf(&s.hir, call.type_node).is_constructor);
+    try T.expect(hir_mod.fnTypeOf(&s.hir, construct.type_node).is_constructor);
+}
+
+test "parser: object literal generic method" {
+    var s = try newTestSetup("var b = { foo<T>(x: T) { return x; } };");
+    defer destroyTestSetup(s);
+    const root = try s.parser.parseSourceFile();
+    const top = hir_mod.blockStmts(&s.hir, root)[0];
+    const v = hir_mod.varDeclOf(&s.hir, top);
+    const props = hir_mod.objectLiteralProps(&s.hir, v.init);
+    const op = hir_mod.objectPropertyOf(&s.hir, props[0]);
+    try T.expectEqual(hir_mod.NodeKind.fn_expr, s.hir.kindOf(op.value));
+    try T.expectEqual(@as(usize, 1), hir_mod.fnTypeParams(&s.hir, op.value).len);
 }
 
 test "parser: object type literal" {
