@@ -67,9 +67,13 @@ pub const TsCodes = struct {
     pub const type_not_assignable: u32 = 2322;
     pub const property_does_not_exist: u32 = 2339;
     pub const argument_type_mismatch: u32 = 2345;
+    pub const conversion_may_be_mistake: u32 = 2352;
+    pub const subsequent_var_type_mismatch: u32 = 2403;
+    pub const interface_incorrectly_extends: u32 = 2430;
     pub const property_not_assignable_to_base: u32 = 2416;
     pub const property_not_assignable_to_index_type: u32 = 2411;
     pub const class_incorrectly_implements_interface: u32 = 2420;
+    pub const tuple_index_out_of_bounds: u32 = 2493;
     pub const expected_n_arguments: u32 = 2554;
     pub const no_overload_matches: u32 = 2769;
     pub const duplicate_identifier: u32 = 2300;
@@ -79,6 +83,7 @@ pub const TsCodes = struct {
     pub const this_implicitly_any: u32 = 2683;
     pub const parameter_implicitly_any: u32 = 7006;
     pub const variable_implicitly_any: u32 = 7005;
+    pub const member_implicitly_any: u32 = 7008;
     pub const declared_but_not_read: u32 = 6133;
     pub const object_literal_excess_property: u32 = 2353;
     pub const satisfies_constraint: u32 = 1360;
@@ -167,6 +172,11 @@ pub const FnPredicate = struct {
 pub const MemberKey = struct {
     obj_name: hir_mod.StringId,
     prop_name: hir_mod.StringId,
+};
+
+pub const VarDeclKey = struct {
+    scope: hir_mod.NodeId,
+    name: hir_mod.StringId,
 };
 
 pub const StrictFlags = struct {
@@ -369,6 +379,10 @@ pub const Checker = struct {
     /// `checkEnumDecl`; consulted by member-access typing on enum
     /// receivers and (in a follow-up) by `const enum` inlining.
     enum_member_values: std.AutoHashMapUnmanaged(MemberKey, f64),
+    /// Per-HIR-block `var` declarations already seen. Used for the
+    /// TS2403 same-name/same-type rule without conflating unrelated
+    /// block/function scopes.
+    var_decl_types: std.AutoHashMapUnmanaged(VarDeclKey, TypeId),
     /// Strictness flags driving optional diagnostics.
     strict_flags: StrictFlags = .{},
     /// Hard-coded `lib.d.ts` substitute — `String.prototype`,
@@ -434,6 +448,7 @@ pub const Checker = struct {
             .inferred_variance = .empty,
             .rest_signatures = .empty,
             .enum_member_values = .empty,
+            .var_decl_types = .empty,
             .diagnostics = .empty,
             .diag_arena = std.heap.ArenaAllocator.init(gpa),
         };
@@ -500,6 +515,7 @@ pub const Checker = struct {
         self.inferred_variance.deinit(self.gpa);
         self.rest_signatures.deinit(self.gpa);
         self.enum_member_values.deinit(self.gpa);
+        self.var_decl_types.deinit(self.gpa);
         self.lib_cache.deinit(self.gpa);
         self.diagnostics.deinit(self.gpa);
         self.ts_ignore_lines.deinit(self.gpa);
@@ -2351,6 +2367,12 @@ pub const Checker = struct {
                         }
                         break :blk types.Primitive.any;
                     };
+                    if (self.strict_flags.no_implicit_any and
+                        op.type_annotation == hir_mod.none_node_id and
+                        op.value == hir_mod.none_node_id)
+                    {
+                        try self.reportMemberImplicitAny(m, id.name);
+                    }
                     if (self.strict_flags.strict_property_initialization and
                         !op.is_static and
                         op.type_annotation != hir_mod.none_node_id and
@@ -2820,6 +2842,9 @@ pub const Checker = struct {
                 }
                 break :blk types.Primitive.any;
             };
+            if (self.strict_flags.no_implicit_any and im.type_node == hir_mod.none_node_id and !im.is_method) {
+                try self.reportMemberImplicitAny(m, im.name);
+            }
             try iface_members.append(self.gpa, .{
                 .name = im.name,
                 .type = member_t,
@@ -2833,6 +2858,7 @@ pub const Checker = struct {
         // members into the child. Child decls win on name conflict.
         const extends = hir_mod.interfaceExtends(self.hir, node);
         if (extends.len > 0) {
+            try self.checkInterfaceExtendsCompatibility(node, extends, iface_members.items);
             try self.mergeInterfaceExtends(extends, &iface_members, &string_idx, &number_idx);
         }
         try self.checkIndexSignatureMemberCompatibility(node, iface_members.items, string_idx, number_idx);
@@ -2854,6 +2880,55 @@ pub const Checker = struct {
                 });
             }
             self.hir.setType(it.name, iface_t);
+        }
+    }
+
+    fn reportMemberImplicitAny(self: *Checker, node: NodeId, name: hir_mod.StringId) CheckError!void {
+        const member_name = self.string_interner.get(name);
+        const msg = try std.fmt.allocPrint(
+            self.diag_arena.allocator(),
+            "Member '{s}' implicitly has an 'any' type.",
+            .{member_name},
+        );
+        try self.diagnostics.append(self.gpa, .{
+            .node = node,
+            .code = TsCodes.member_implicitly_any,
+            .message = msg,
+        });
+    }
+
+    fn checkInterfaceExtendsCompatibility(
+        self: *Checker,
+        node: NodeId,
+        extends: []const NodeId,
+        child_members: []const types.ObjectMember,
+    ) CheckError!void {
+        for (extends) |ext_node| {
+            const parent_t = self.lowererLowerWithTypeParams(ext_node) catch continue;
+            if (!self.interner.pool.flagsOf(parent_t).is_object_type) continue;
+            for (self.interner.objectMembers(parent_t)) |pm| {
+                for (child_members) |cm| {
+                    if (cm.name != pm.name) continue;
+                    const cm_flags = self.interner.pool.flagsOf(cm.type);
+                    const pm_flags = self.interner.pool.flagsOf(pm.type);
+                    if (cm_flags.is_signature or pm_flags.is_signature) break;
+                    const optional_ok = pm.is_optional or !cm.is_optional;
+                    const type_ok = self.engine.isAssignableTo(cm.type, pm.type) catch true;
+                    if (optional_ok and type_ok) break;
+                    const prop_name = self.string_interner.get(cm.name);
+                    const msg = try std.fmt.allocPrint(
+                        self.diag_arena.allocator(),
+                        "Interface incorrectly extends base interface; property '{s}' is incompatible.",
+                        .{prop_name},
+                    );
+                    try self.diagnostics.append(self.gpa, .{
+                        .node = node,
+                        .code = TsCodes.interface_incorrectly_extends,
+                        .message = msg,
+                    });
+                    break;
+                }
+            }
         }
     }
 
@@ -4106,6 +4181,35 @@ pub const Checker = struct {
         return true;
     }
 
+    fn fixedTupleLength(self: *Checker, target: TypeId) ?u64 {
+        if (!self.isTupleShapedTarget(target)) return null;
+        const length_id = self.string_interner.intern("length") catch return null;
+        const length_t = self.interner.objectMember(target, length_id) orelse return null;
+        const flags = self.interner.pool.flagsOf(length_t);
+        if (!flags.is_literal or !flags.is_number) return null;
+        return switch (self.interner.literalOf(length_t)) {
+            .number_lit => |bits| blk: {
+                const v: f64 = @bitCast(bits);
+                if (v < 0 or v != @floor(v)) break :blk null;
+                break :blk @as(u64, @intFromFloat(v));
+            },
+            else => null,
+        };
+    }
+
+    fn reportTupleIndexOutOfBounds(self: *Checker, index_node: NodeId, index: u64, length: u64) CheckError!void {
+        const msg = try std.fmt.allocPrint(
+            self.diag_arena.allocator(),
+            "Tuple type of length '{d}' has no element at index '{d}'.",
+            .{ length, index },
+        );
+        try self.diagnostics.append(self.gpa, .{
+            .node = index_node,
+            .code = TsCodes.tuple_index_out_of_bounds,
+            .message = msg,
+        });
+    }
+
     fn checkVarDecl(self: *Checker, node: NodeId) CheckError!void {
         const v = hir_mod.varDeclOf(self.hir, node);
 
@@ -4161,6 +4265,7 @@ pub const Checker = struct {
         // Propagate the declaration's type to the name identifier
         // so hover-on-identifier returns the right type.
         if (v.name != hir_mod.none_node_id) self.hir.setType(v.name, final_type);
+        try self.checkRepeatedVarDeclaration(node, final_type);
 
         // Aliased conditional narrowing: `let cond = obj.kind === "x"`.
         // Record `cond -> guard_expr_node` so a subsequent `if (cond)`
@@ -4194,6 +4299,35 @@ pub const Checker = struct {
                 .message = msg,
             });
         }
+    }
+
+    fn checkRepeatedVarDeclaration(self: *Checker, node: NodeId, final_type: TypeId) CheckError!void {
+        if (self.hir.kindOf(node) != .var_decl) return;
+        const v = hir_mod.varDeclOf(self.hir, node);
+        if (v.type_annotation == hir_mod.none_node_id) return;
+        if (v.name == hir_mod.none_node_id or self.hir.kindOf(v.name) != .identifier) return;
+        if (final_type == types.Primitive.none or final_type == types.Primitive.any) return;
+        const id = hir_mod.identifierOf(self.hir, v.name);
+        const scope = self.hir.parentOf(node);
+        if (scope == hir_mod.none_node_id) return;
+        const key: VarDeclKey = .{ .scope = scope, .name = id.name };
+        if (self.var_decl_types.get(key)) |prior| {
+            if (!(self.engine.isIdenticalTo(prior, final_type) catch true)) {
+                const name = self.string_interner.get(id.name);
+                const msg = try std.fmt.allocPrint(
+                    self.diag_arena.allocator(),
+                    "Subsequent variable declarations must have the same type. Variable '{s}' has a conflicting type.",
+                    .{name},
+                );
+                try self.diagnostics.append(self.gpa, .{
+                    .node = v.name,
+                    .code = TsCodes.subsequent_var_type_mismatch,
+                    .message = msg,
+                });
+            }
+            return;
+        }
+        try self.var_decl_types.put(self.gpa, key, final_type);
     }
 
     fn isThisParameter(self: *Checker, param_node: NodeId) bool {
@@ -4608,12 +4742,21 @@ pub const Checker = struct {
                         // forms (e.g. `tup[0.5]`) and let the indexer
                         // path handle them.
                         if (v >= 0 and v == @floor(v)) {
+                            const index: u64 = @intFromFloat(v);
                             var nbuf: [12]u8 = undefined;
-                            const k = std.fmt.bufPrint(&nbuf, "{d}", .{@as(u64, @intFromFloat(v))}) catch null;
+                            const k = std.fmt.bufPrint(&nbuf, "{d}", .{index}) catch null;
                             if (k) |key_str| {
                                 const key_id = self.string_interner.intern(key_str) catch 0;
                                 if (key_id != 0) {
                                     if (self.interner.objectMember(obj_t, key_id)) |t| break :blk t;
+                                }
+                            }
+                            if (self.fixedTupleLength(obj_t)) |length| {
+                                if (index >= length) {
+                                    try self.reportTupleIndexOutOfBounds(e.index, index, length);
+                                    const v_idx = self.interner.objectNumberIndex(obj_t);
+                                    if (v_idx != types.Primitive.none) break :blk v_idx;
+                                    break :blk types.Primitive.any;
                                 }
                             }
                         }
@@ -4648,7 +4791,9 @@ pub const Checker = struct {
                 if (self.isAsConstMarker(a.type_node)) {
                     break :blk self.literalizeForAsConst(a.expr, inner_t) catch inner_t;
                 }
-                break :blk try self.lowererLowerWithTypeParams(a.type_node);
+                const target_t = try self.lowererLowerWithTypeParams(a.type_node);
+                try self.checkTypeAssertionOverlap(node, inner_t, target_t);
+                break :blk target_t;
             },
             .satisfies_expr => blk: {
                 // `expr satisfies T` — verify that `expr` is
@@ -6953,6 +7098,54 @@ pub const Checker = struct {
         return false;
     }
 
+    fn typeIncludesNull(self: *Checker, t: TypeId) bool {
+        if (t >= self.interner.pool.typeCount()) return false;
+        const f = self.interner.pool.flagsOf(t);
+        if (f.is_null or f.is_any or f.is_unknown) return true;
+        if (!f.is_union) return false;
+        if (self.interner.pool.payloadOf(t) >= self.interner.pool.union_payloads.items.len) return false;
+        for (self.interner.unionMembers(t)) |m| {
+            if (m >= self.interner.pool.typeCount()) continue;
+            if (self.interner.pool.flagsOf(m).is_null) return true;
+        }
+        return false;
+    }
+
+    fn checkTypeAssertionOverlap(self: *Checker, node: NodeId, source_t: TypeId, target_t: TypeId) CheckError!void {
+        if (source_t != types.Primitive.null_t) return;
+        if (self.assertionIsInsideTypedObjectLiteralVarInit(node)) return;
+        const target_flags = self.interner.pool.flagsOf(target_t);
+        if (target_flags.is_any or target_flags.is_unknown) return;
+        if (self.typeIncludesNull(target_t)) return;
+        try self.diagnostics.append(self.gpa, .{
+            .node = node,
+            .code = TsCodes.conversion_may_be_mistake,
+            .message = "Conversion may be a mistake because neither type sufficiently overlaps with the other.",
+        });
+    }
+
+    fn assertionIsInsideTypedObjectLiteralVarInit(self: *Checker, node: NodeId) bool {
+        var cur = self.hir.parentOf(node);
+        while (cur != hir_mod.none_node_id) : (cur = self.hir.parentOf(cur)) {
+            switch (self.hir.kindOf(cur)) {
+                .object_literal => {
+                    const parent = self.hir.parentOf(cur);
+                    if (parent == hir_mod.none_node_id) return false;
+                    switch (self.hir.kindOf(parent)) {
+                        .var_decl, .let_decl, .const_decl => {
+                            const v = hir_mod.varDeclOf(self.hir, parent);
+                            return v.init == cur and v.type_annotation != hir_mod.none_node_id;
+                        },
+                        else => return false,
+                    }
+                },
+                .fn_decl, .fn_expr, .arrow_fn => return false,
+                else => {},
+            }
+        }
+        return false;
+    }
+
     fn typeExplicitlyIncludesUndefined(self: *Checker, t: TypeId) bool {
         if (t >= self.interner.pool.typeCount()) return false;
         const f = self.interner.pool.flagsOf(t);
@@ -8123,6 +8316,20 @@ test "checker: class implements interface checks instance shape" {
     try T.expect(found);
 }
 
+test "checker: interface extends rejects incompatible property override" {
+    const s = try newSetup(
+        \\interface Base { x: { a: string } }
+        \\interface Derived extends Base { x: string }
+    );
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+    var found = false;
+    for (s.checker.diagnostics.items) |d| {
+        if (d.code == TsCodes.interface_incorrectly_extends) found = true;
+    }
+    try T.expect(found);
+}
+
 test "checker: interface property must match string index signature" {
     const s = try newSetup(
         \\enum E { A }
@@ -8321,6 +8528,20 @@ test "checker: `as` cast feeds the var-decl's declared type without TS2322" {
     try T.expect(s.checker.diagnostics.items.len == 0);
 }
 
+test "checker: null assertion to non-null target reports TS2352" {
+    const s = try newSetup(
+        \\class C { x: string = ""; }
+        \\let c = <C>null;
+    );
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+    var found = false;
+    for (s.checker.diagnostics.items) |d| {
+        if (d.code == TsCodes.conversion_may_be_mistake) found = true;
+    }
+    try T.expect(found);
+}
+
 test "checker: `satisfies` preserves the original expression type" {
     const s = try newSetup(
         \\let x = { kind: "circle", r: 1 } satisfies { kind: string };
@@ -8397,6 +8618,36 @@ test "checker: noImplicitAny emits TS7005 for bare `let x` declaration" {
     var found = false;
     for (s.checker.diagnostics.items) |d| {
         if (d.code == TsCodes.variable_implicitly_any) found = true;
+    }
+    try T.expect(found);
+}
+
+test "checker: noImplicitAny emits TS7008 for bare class and interface members" {
+    const s = try newSetup(
+        \\interface I { p }
+        \\class C { q }
+    );
+    defer destroySetup(s);
+    s.checker.setStrictFlags(.{ .no_implicit_any = true });
+    try s.checker.checkSourceFile(s.root);
+    var count: usize = 0;
+    for (s.checker.diagnostics.items) |d| {
+        if (d.code == TsCodes.member_implicitly_any) count += 1;
+    }
+    try T.expectEqual(@as(usize, 2), count);
+}
+
+test "checker: repeated var declarations require identical annotated types" {
+    const s = try newSetup(
+        \\var v: string | boolean;
+        \\var v: boolean | string;
+        \\var v: number;
+    );
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+    var found = false;
+    for (s.checker.diagnostics.items) |d| {
+        if (d.code == TsCodes.subsequent_var_type_mismatch) found = true;
     }
     try T.expect(found);
 }
@@ -8868,6 +9119,19 @@ test "checker: tuple literal-index resolves to the specific member type" {
     const body2 = hir_mod.blockStmts(&s.hir, f2.body);
     const ret2 = hir_mod.returnOf(&s.hir, body2[0]);
     try T.expectEqual(types.Primitive.string_t, s.hir.typeOf(ret2.value));
+}
+
+test "checker: fixed tuple literal-index past length reports TS2493" {
+    const s = try newSetup(
+        \\function f(p: [number, string]) { return p[2]; }
+    );
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+    var found = false;
+    for (s.checker.diagnostics.items) |d| {
+        if (d.code == TsCodes.tuple_index_out_of_bounds) found = true;
+    }
+    try T.expect(found);
 }
 
 test "checker: noUncheckedIndexedAccess widens arr[i] with undefined" {
