@@ -155,12 +155,18 @@ pub const Scanner = struct {
     /// trivia run included a line terminator.
     fn skipTrivia(self: *Scanner) void {
         self.saw_newline = false;
+        const skipped_bom = self.pos == 0 and self.source.len >= 3 and
+            std.mem.eql(u8, self.source[0..3], "\xEF\xBB\xBF");
+        if (skipped_bom) {
+            self.pos = 3;
+            self.line_start = self.pos;
+        }
         // Shebang `#!` on the very first line of source is treated as a
         // line comment (matches tsc's behaviour). Node CLI scripts often
         // start with `#!/usr/bin/env node`; the JS emitter preserves the
         // original line by re-emitting source[0..first_newline].
-        if (self.pos == 0 and self.source.len >= 2 and
-            self.source[0] == '#' and self.source[1] == '!')
+        if ((self.pos == 0 or skipped_bom) and self.source.len >= self.pos + 2 and
+            self.source[self.pos] == '#' and self.source[self.pos + 1] == '!')
         {
             self.pos += 2;
             while (!self.isAtEnd() and self.source[self.pos] != '\n' and self.source[self.pos] != '\r') {
@@ -783,6 +789,28 @@ test "Scanner: lex `let x = 42;`" {
     try t.expectEqual(TokenKind.eof, toks.items[5].kind);
 }
 
+test "Scanner: leading UTF-8 BOM is trivia" {
+    var s = Scanner.init(t.allocator, "\xEF\xBB\xBFlet x = 1;");
+    defer s.deinit(t.allocator);
+    var toks = try s.tokenize(t.allocator);
+    defer toks.deinit(t.allocator);
+
+    try t.expectEqual(TokenKind.kw_let, toks.items[0].kind);
+    try t.expectEqual(@as(u32, 3), toks.items[0].span.start);
+    try t.expectEqual(TokenKind.identifier, toks.items[1].kind);
+    try t.expectEqualStrings("x", toks.items[1].bytes(s.source));
+}
+
+test "Scanner: shebang after UTF-8 BOM is first-line trivia" {
+    var s = Scanner.init(t.allocator, "\xEF\xBB\xBF#!/usr/bin/env node\nlet x = 1;");
+    defer s.deinit(t.allocator);
+    var toks = try s.tokenize(t.allocator);
+    defer toks.deinit(t.allocator);
+
+    try t.expectEqual(TokenKind.kw_let, toks.items[0].kind);
+    try t.expect(toks.items[0].flags.preceded_by_newline);
+}
+
 test "Scanner: keywords" {
     var s = Scanner.init(t.allocator, "class function readonly satisfies async await");
     defer s.deinit(t.allocator);
@@ -990,10 +1018,10 @@ test "Scanner: punctuation — full ASCII set" {
     var toks = try s.tokenize(t.allocator);
     defer toks.deinit(t.allocator);
     const expected = [_]TokenKind{
-        .open_brace,    .close_brace, .open_paren, .close_paren,
-        .open_bracket,  .close_bracket, .semicolon, .comma,
-        .dot,           .at,           .tilde,      .question,
-        .colon,         .eof,
+        .open_brace,   .close_brace,   .open_paren, .close_paren,
+        .open_bracket, .close_bracket, .semicolon,  .comma,
+        .dot,          .at,            .tilde,      .question,
+        .colon,        .eof,
     };
     try t.expectEqual(expected.len, toks.items.len);
     for (expected, 0..) |e, i| try t.expectEqual(e, toks.items[i].kind);

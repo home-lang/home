@@ -2148,6 +2148,8 @@ pub const Checker = struct {
         var instance_members: std.ArrayListUnmanaged(types.ObjectMember) = .empty;
         defer instance_members.deinit(self.gpa);
         var ctor_sig: TypeId = types.Primitive.none;
+        var string_idx: TypeId = types.Primitive.none;
+        var number_idx: TypeId = types.Primitive.none;
         // Names of class members declared `private`. After the class
         // name is known we move ownership into `class_private_members`
         // and reset this local to `.empty` so the trailing `defer` is
@@ -2184,6 +2186,19 @@ pub const Checker = struct {
 
         for (members) |m| {
             switch (self.hir.kindOf(m)) {
+                .index_signature => {
+                    const ix = hir_mod.indexSignatureOf(self.hir, m);
+                    const value_t = if (ix.value_type != hir_mod.none_node_id)
+                        try self.lowererLowerWithTypeParams(ix.value_type)
+                    else
+                        types.Primitive.any;
+                    const key_t = if (ix.key_type != hir_mod.none_node_id)
+                        try self.lowererLowerWithTypeParams(ix.key_type)
+                    else
+                        types.Primitive.string_t;
+                    if (key_t == types.Primitive.string_t) string_idx = value_t;
+                    if (key_t == types.Primitive.number_t) number_idx = value_t;
+                },
                 .fn_decl, .fn_expr, .arrow_fn => {
                     const sig = try self.checkFnSignatureOnly(m);
                     // Pop the type-params scope `checkFnSignatureOnly`
@@ -2289,7 +2304,7 @@ pub const Checker = struct {
             try self.mergeExtendedMembers(c.extends, &instance_members);
         }
 
-        const instance_t = self.interner.internObjectType(instance_members.items) catch return error.OutOfMemory;
+        const instance_t = self.interner.internObjectTypeWithIndex(instance_members.items, string_idx, number_idx) catch return error.OutOfMemory;
         self.hir.setType(node, instance_t);
         if (c.name != hir_mod.none_node_id and self.hir.kindOf(c.name) == .identifier) {
             const cid = hir_mod.identifierOf(self.hir, c.name);
@@ -5201,39 +5216,40 @@ pub const Checker = struct {
         const s = self.string_interner.get(name);
         const builtins = [_][]const u8{
             // Core globals / values.
-            "console",     "undefined",          "NaN",
-            "Infinity",    "globalThis",         "this",
-            "window",      "document",
+            "console",        "undefined",          "NaN",
+            "Infinity",       "globalThis",         "this",
+            "window",         "document",
             // Constructors / namespaces.
-            "Math",        "JSON",               "Object",
-            "Array",       "String",             "Number",
-            "Boolean",     "Symbol",             "BigInt",
-            "Error",       "TypeError",          "RangeError",
-            "SyntaxError", "Promise",            "Map",
-            "Set",         "WeakMap",            "WeakSet",
-            "Date",        "RegExp",             "Function",
-            "Proxy",       "Reflect",
+                      "Math",
+            "JSON",           "Object",             "Array",
+            "String",         "Number",             "Boolean",
+            "Symbol",         "BigInt",             "Error",
+            "TypeError",      "RangeError",         "SyntaxError",
+            "Promise",        "Map",                "Set",
+            "WeakMap",        "WeakSet",            "Date",
+            "RegExp",         "Function",           "Proxy",
+            "Reflect",
             // Global functions.
-            "parseInt",    "parseFloat",         "isNaN",
-            "isFinite",    "encodeURI",          "decodeURI",
-            "encodeURIComponent",                "decodeURIComponent",
+                   "parseInt",           "parseFloat",
+            "isNaN",          "isFinite",           "encodeURI",
+            "decodeURI",      "encodeURIComponent", "decodeURIComponent",
             // Timers / scheduling.
-            "setTimeout",  "clearTimeout",       "setInterval",
-            "clearInterval",                     "setImmediate",
-            "clearImmediate",                    "queueMicrotask",
+            "setTimeout",     "clearTimeout",       "setInterval",
+            "clearInterval",  "setImmediate",       "clearImmediate",
+            "queueMicrotask",
             // Node.js / CommonJS.
-            "process",     "Buffer",             "require",
-            "module",      "exports",            "__dirname",
-            "__filename",
+            "process",            "Buffer",
+            "require",        "module",             "exports",
+            "__dirname",      "__filename",
             // Function-scoped magic.
-            "arguments",
+                    "arguments",
             // Dynamic `import("…")` parses the keyword as an
             // identifier callee — exempt it from TS2304.
             "import",
             // Common ambient names emitted by the parser for
             // module / class shapes that don't have full
             // resolution wired up yet.
-            "super",
+                    "super",
         };
         for (builtins) |b| {
             if (std.mem.eql(u8, s, b)) return true;
@@ -5425,14 +5441,23 @@ pub const Checker = struct {
 
     /// Conservative gate for TS2367: return true only when both
     /// sides look like concrete primitives (string / number / boolean
-    /// / bigint / null / undefined / symbol) or literals of those.
-    /// Skips unions, intersections, object types, type parameters,
-    /// any/unknown/never, and other compound shapes — TS allows
-    /// many of those comparisons even when they look unrelated, and
-    /// our `isComparableTo` is too coarse to reproduce TS's
-    /// `comparableRelation` exactly.
+    /// / bigint / symbol) or literals of those. Nullish equality
+    /// probes are intentionally exempt: TS's comparable relation
+    /// permits `x === null` / `x === undefined` style checks even
+    /// when `x` is currently a non-nullish primitive under
+    /// `strictNullChecks`. Skips unions, intersections, object
+    /// types, type parameters, any/unknown/never, and other compound
+    /// shapes — TS allows many of those comparisons even when they
+    /// look unrelated, and our `isComparableTo` is too coarse to
+    /// reproduce TS's `comparableRelation` exactly.
     fn shouldCheckNoOverlap(self: *Checker, a: TypeId, b: TypeId) bool {
+        if (self.isNullishType(a) or self.isNullishType(b)) return false;
         return self.isConcretePrimitiveLike(a) and self.isConcretePrimitiveLike(b);
+    }
+
+    fn isNullishType(self: *Checker, t: TypeId) bool {
+        const f = self.interner.pool.flagsOf(t);
+        return f.is_null or f.is_undefined;
     }
 
     fn isConcretePrimitiveLike(self: *Checker, t: TypeId) bool {
@@ -5456,8 +5481,7 @@ pub const Checker = struct {
             return false;
         }
         return f.is_string or f.is_number or f.is_boolean or
-            f.is_bigint or f.is_symbol or
-            f.is_null or f.is_undefined;
+            f.is_bigint or f.is_symbol;
     }
 
     fn checkBinop(self: *Checker, node: NodeId) CheckError!TypeId {
@@ -8257,6 +8281,16 @@ test "checker: number-index signature resolves element access" {
     try T.expectEqual(types.Primitive.string_t, s.hir.typeOf(ret_p.value));
 }
 
+test "checker: class number-index signature resolves element access" {
+    const s = try newSetup(
+        \\class NumIdx { [i: number]: string; }
+        \\function f(a: NumIdx): string { return a[0]; }
+    );
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+    try T.expect(s.checker.diagnostics.items.len == 0);
+}
+
 test "checker: object type literal with string index signature" {
     const s = try newSetup(
         \\function f(m: { [k: string]: boolean }): boolean { return m.flag; }
@@ -9617,6 +9651,21 @@ test "checker: number === string-literal emits TS2367 (no overlap)" {
         if (d.code == TsCodes.no_overlap_comparison) found = true;
     }
     try T.expect(found);
+}
+
+test "checker: strict nullish equality probes do not emit TS2367" {
+    const s = try newSetup(
+        \\function f(x: string) {
+        \\  if (x === null) {}
+        \\  if (undefined !== x) {}
+        \\  if (null === undefined) {}
+        \\}
+    );
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+    for (s.checker.diagnostics.items) |d| {
+        try T.expect(d.code != TsCodes.no_overlap_comparison);
+    }
 }
 
 test "checker: isolatedModules emits TS1205 for `export const enum`" {
