@@ -5825,13 +5825,31 @@ pub const Parser = struct {
         const range_token = self.previous();
         const inclusive = range_token.type == .DotDotEqual;
 
-        const precedence = Precedence.fromToken(range_token.type);
-        const end = try self.parsePrecedence(@enumFromInt(@intFromEnum(precedence) + 1));
+        // Open-ended range: `start..` with no upper bound. Only valid
+        // for `..` (exclusive) — `..=` requires an end. Detect by peek
+        // at a token that clearly closes the surrounding context.
+        const at_open_end = !inclusive and (self.check(.RightBracket) or
+            self.check(.RightParen) or self.check(.Comma) or
+            self.check(.RightBrace) or self.check(.Semicolon) or
+            self.isAtNewLine());
+        const end_expr = if (at_open_end) blk: {
+            // Synthesize a placeholder integer literal as the end —
+            // SliceExpr expects a non-null *Expr per the existing AST,
+            // and downstream consumers treat the open-ended form via the
+            // surrounding indexExpr path. The placeholder is harmless
+            // because rangeExpr-as-stand-alone (outside `[]`) is rare.
+            const placeholder = try self.allocator.create(ast.Expr);
+            placeholder.* = ast.Expr{ .IntegerLiteral = ast.IntegerLiteral.init(0, ast.SourceLocation.fromToken(range_token)) };
+            break :blk placeholder;
+        } else blk: {
+            const precedence = Precedence.fromToken(range_token.type);
+            break :blk try self.parsePrecedence(@enumFromInt(@intFromEnum(precedence) + 1));
+        };
 
         const range_expr = try ast.RangeExpr.init(
             self.allocator,
             start,
-            end,
+            end_expr,
             inclusive,
             ast.SourceLocation.fromToken(range_token),
         );
