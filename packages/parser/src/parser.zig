@@ -3902,8 +3902,12 @@ pub const Parser = struct {
         // A bare `return` ends at any obvious statement / arm boundary —
         // including `;`, `,`, `}`, and EOF — so we don't accidentally
         // pull the next match-arm or block tail in as the return value.
+        // It also stops at a newline (no value on this line), so that
+        //   if (cond) return
+        //   if (cond2) { ... }
+        // doesn't consume the second `if` as an if-as-expression value.
         if (!self.check(.RightBrace) and !self.check(.Semicolon) and
-            !self.check(.Comma) and !self.isAtEnd())
+            !self.check(.Comma) and !self.isAtEnd() and !self.isAtNewLine())
         {
             value = try self.expression();
         }
