@@ -72,6 +72,7 @@ pub const TsCodes = struct {
     pub const interface_incorrectly_extends: u32 = 2430;
     pub const property_not_assignable_to_base: u32 = 2416;
     pub const property_not_assignable_to_index_type: u32 = 2411;
+    pub const number_index_not_assignable_to_string_index: u32 = 2413;
     pub const class_incorrectly_implements_interface: u32 = 2420;
     pub const tuple_index_out_of_bounds: u32 = 2493;
     pub const expected_n_arguments: u32 = 2554;
@@ -811,6 +812,7 @@ pub const Checker = struct {
                 if (ts.finally_block != hir_mod.none_node_id) try self.checkStatement(ts.finally_block);
                 try self.checkUnusedCatchParam(node);
             },
+            .namespace_decl => try self.checkNamespaceTypeStatements(node),
             .switch_stmt => try self.checkSwitchStatement(node),
             // Expressions used as statements.
             else => {
@@ -818,6 +820,31 @@ pub const Checker = struct {
                     _ = try self.checkExpression(node);
                 }
             },
+        }
+    }
+
+    fn checkNamespaceTypeStatements(self: *Checker, node: NodeId) CheckError!void {
+        for (hir_mod.namespaceBody(self.hir, node)) |s| {
+            switch (self.hir.kindOf(s)) {
+                .class_decl,
+                .interface_decl,
+                .enum_decl,
+                .type_alias_decl,
+                => try self.checkStatement(s),
+                .export_decl => {
+                    const ex = hir_mod.exportOf(self.hir, s);
+                    if (ex.decl == hir_mod.none_node_id) continue;
+                    switch (self.hir.kindOf(ex.decl)) {
+                        .class_decl,
+                        .interface_decl,
+                        .enum_decl,
+                        .type_alias_decl,
+                        => try self.checkStatement(ex.decl),
+                        else => {},
+                    }
+                },
+                else => {},
+            }
         }
     }
 
@@ -1387,7 +1414,7 @@ pub const Checker = struct {
         if (self.hir.kindOf(decl_node) == .var_decl) {
             if (!self.nodeHasAncestorKind(ref_node, .conditional) and
                 !self.nodeHasAncestorKind(ref_node, .array_literal) and
-                !(self.nodeHasAncestorKind(ref_node, .call_expr) and self.varDeclHasConstructorType(decl_node))) return;
+                !(self.nodeHasAncestorKind(ref_node, .call_expr) and self.varDeclHasTypeAnnotation(decl_node))) return;
             if (self.sourceHasStrictFalseDirective()) return;
         }
         const name_str = self.string_interner.get(name);
@@ -1414,11 +1441,10 @@ pub const Checker = struct {
         return false;
     }
 
-    fn varDeclHasConstructorType(self: *Checker, node: NodeId) bool {
+    fn varDeclHasTypeAnnotation(self: *Checker, node: NodeId) bool {
         if (self.hir.kindOf(node) != .var_decl) return false;
         const v = hir_mod.varDeclOf(self.hir, node);
-        if (v.type_annotation == hir_mod.none_node_id) return false;
-        return self.hir.kindOf(v.type_annotation) == .constructor_type;
+        return v.type_annotation != hir_mod.none_node_id;
     }
 
     fn sourceHasStrictFalseDirective(self: *Checker) bool {
@@ -2479,7 +2505,9 @@ pub const Checker = struct {
             const implements = self.hir.childSlice(c.implements_start, c.implements_len);
             for (implements) |impl_node| {
                 const target_t = self.lowererLowerWithTypeParams(impl_node) catch types.Primitive.unknown;
-                if (!(self.engine.isAssignableTo(instance_t, target_t) catch true)) {
+                if (self.objectHasNoOverlapWithWeakTarget(instance_t, target_t) or
+                    !(self.heritageAssignable(instance_t, target_t) catch true))
+                {
                     const child_str = self.string_interner.get(cid.name);
                     const msg = try std.fmt.allocPrint(
                         self.diag_arena.allocator(),
@@ -2740,13 +2768,13 @@ pub const Checker = struct {
         const parent_t = (try self.classExtendsInstanceType(extends_expr)) orelse return;
         const parent_string_idx = self.interner.objectStringIndex(parent_t);
         if (parent_string_idx != types.Primitive.none and child_string_idx != types.Primitive.none) {
-            if (!(self.engine.isAssignableTo(child_string_idx, parent_string_idx) catch false)) {
+            if (!(self.heritageAssignable(child_string_idx, parent_string_idx) catch false)) {
                 try self.reportClassExtendsIndexMismatch(extends_expr);
             }
         }
         const parent_number_idx = self.interner.objectNumberIndex(parent_t);
         if (parent_number_idx != types.Primitive.none and child_number_idx != types.Primitive.none) {
-            if (!(self.engine.isAssignableTo(child_number_idx, parent_number_idx) catch false)) {
+            if (!(self.heritageAssignable(child_number_idx, parent_number_idx) catch false)) {
                 try self.reportClassExtendsIndexMismatch(extends_expr);
             }
         }
@@ -2764,7 +2792,7 @@ pub const Checker = struct {
         defer inherited.deinit(self.gpa);
         for (parent_members) |pm| {
             if (child_by_name.get(pm.name)) |cm| {
-                if (!(self.engine.isAssignableTo(cm.type, pm.type) catch false)) {
+                if (!(self.heritageAssignable(cm.type, pm.type) catch false)) {
                     const prop_str = self.string_interner.get(pm.name);
                     const msg = try std.fmt.allocPrint(
                         self.diag_arena.allocator(),
@@ -2791,6 +2819,28 @@ pub const Checker = struct {
             .code = TsCodes.property_not_assignable_to_base,
             .message = "Class incorrectly extends base class; index signatures are incompatible.",
         });
+    }
+
+    fn heritageAssignable(self: *Checker, source: TypeId, target: TypeId) !bool {
+        if (source == target) return true;
+        if (self.containsFreeTypeParameter(target) and !self.containsFreeTypeParameter(source)) return false;
+        return self.engine.isAssignableTo(source, target);
+    }
+
+    fn objectHasNoOverlapWithWeakTarget(self: *Checker, source: TypeId, target: TypeId) bool {
+        if (source >= self.interner.pool.typeCount() or target >= self.interner.pool.typeCount()) return false;
+        const sf = self.interner.pool.flagsOf(source);
+        const tf = self.interner.pool.flagsOf(target);
+        if (!sf.is_object_type or !tf.is_object_type) return false;
+        const target_members = self.interner.objectMembers(target);
+        if (target_members.len == 0) return false;
+        for (target_members) |tm| {
+            if (!tm.is_optional) return false;
+        }
+        for (self.interner.objectMembers(source)) |sm| {
+            if (self.interner.objectMember(target, sm.name) != null) return false;
+        }
+        return true;
     }
 
     fn classExtendsName(self: *Checker, extends_expr: NodeId) ?hir_mod.StringId {
@@ -2976,7 +3026,7 @@ pub const Checker = struct {
             if (!self.interner.pool.flagsOf(parent_t).is_object_type) continue;
             const parent_string_idx = self.interner.objectStringIndex(parent_t);
             if (parent_string_idx != types.Primitive.none and child_string_idx != types.Primitive.none) {
-                const type_ok = self.engine.isAssignableTo(child_string_idx, parent_string_idx) catch true;
+                const type_ok = self.heritageAssignable(child_string_idx, parent_string_idx) catch true;
                 if (!type_ok) {
                     try self.reportInterfaceExtendsIndexMismatch(node);
                     continue;
@@ -2984,7 +3034,7 @@ pub const Checker = struct {
             }
             const parent_number_idx = self.interner.objectNumberIndex(parent_t);
             if (parent_number_idx != types.Primitive.none and child_number_idx != types.Primitive.none) {
-                const type_ok = self.engine.isAssignableTo(child_number_idx, parent_number_idx) catch true;
+                const type_ok = self.heritageAssignable(child_number_idx, parent_number_idx) catch true;
                 if (!type_ok) {
                     try self.reportInterfaceExtendsIndexMismatch(node);
                     continue;
@@ -2997,7 +3047,7 @@ pub const Checker = struct {
                     const pm_flags = self.interner.pool.flagsOf(pm.type);
                     if ((cm_flags.is_signature or pm_flags.is_signature) and !self.strict_flags.strict_function_types) break;
                     const optional_ok = pm.is_optional or !cm.is_optional;
-                    const type_ok = self.engine.isAssignableTo(cm.type, pm.type) catch true;
+                    const type_ok = self.heritageAssignable(cm.type, pm.type) catch true;
                     if (optional_ok and type_ok) break;
                     const prop_name = self.string_interner.get(cm.name);
                     const msg = try std.fmt.allocPrint(
@@ -3381,6 +3431,11 @@ pub const Checker = struct {
                         .is_method = im.is_method,
                     });
                 }
+                if (self.strict_flags.strict_null_checks and string_idx != types.Primitive.none and number_idx != types.Primitive.none) {
+                    if (!(self.heritageAssignable(number_idx, string_idx) catch true)) {
+                        try self.report(type_node, TsCodes.number_index_not_assignable_to_string_index, "Number index type is not assignable to string index type.");
+                    }
+                }
                 return self.interner.internObjectTypeWithIndex(built.items, string_idx, number_idx) catch return error.OutOfMemory;
             },
             .union_type => {
@@ -3405,6 +3460,7 @@ pub const Checker = struct {
                     if (std.mem.eql(u8, name_str, "String")) {
                         return lib.stringProto(&self.lib_cache, self.interner, self.string_interner) catch types.Primitive.unknown;
                     }
+                    if (self.lowerBuiltinObjectType(name_str)) |t| return t;
                     if (self.lookupNarrow(r.name)) |t| return t;
                     if (self.generic_aliases.get(r.name)) |info| {
                         var all_defaulted: bool = info.params.len > 0;
@@ -4083,6 +4139,24 @@ pub const Checker = struct {
                 self.containsFreeTypeParameter(c.false_branch);
         }
         return false;
+    }
+
+    fn lowerBuiltinObjectType(self: *Checker, name: []const u8) ?TypeId {
+        const builtins = [_][]const u8{
+            "Object",
+            "Date",
+            "RegExp",
+            "Function",
+            "PromiseLike",
+            "Iterator",
+            "AsyncIterator",
+            "Iterable",
+        };
+        for (builtins) |b| {
+            if (!std.mem.eql(u8, name, b)) continue;
+            return self.interner.internObjectType(&.{}) catch types.Primitive.unknown;
+        }
+        return null;
     }
 
     fn evalMappedType(self: *Checker, node: NodeId) CheckError!TypeId {
@@ -8265,6 +8339,21 @@ test "checker: construct-signature typed var used as call arg emits TS2454" {
     try T.expect(found);
 }
 
+test "checker: typed object var used as call arg emits TS2454" {
+    const s = try newSetup(
+        \\function id<T>(x: T): T { return x; }
+        \\var value: { [x: number]: Date };
+        \\id(value);
+    );
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+    var found = false;
+    for (s.checker.diagnostics.items) |d| {
+        if (d.code == TsCodes.used_before_assignment) found = true;
+    }
+    try T.expect(found);
+}
+
 test "checker: namespace body participates in TS2454 scan" {
     const s = try newSetup(
         \\namespace N {
@@ -8519,6 +8608,22 @@ test "checker: class extends rejects incompatible number index signature" {
     try T.expect(found);
 }
 
+test "checker: generic class extends rejects concrete child indexer for parent T" {
+    const s = try newSetup(
+        \\interface Base { foo: string }
+        \\interface Derived extends Base { bar: string }
+        \\class A<T extends Base> { [x: string]: T; }
+        \\class B<T extends Base> extends A<T> { [x: string]: Derived; }
+    );
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+    var found = false;
+    for (s.checker.diagnostics.items) |d| {
+        if (d.code == TsCodes.property_not_assignable_to_base) found = true;
+    }
+    try T.expect(found);
+}
+
 test "checker: class implements interface checks instance shape" {
     const s = try newSetup(
         \\class C implements String {
@@ -8570,6 +8675,24 @@ test "checker: interface extends rejects incompatible number index signature" {
         \\interface Derived extends Base { bar: string }
         \\interface A { [x: number]: Derived }
         \\interface B extends A { [x: number]: Base }
+    );
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+    var found = false;
+    for (s.checker.diagnostics.items) |d| {
+        if (d.code == TsCodes.interface_incorrectly_extends) found = true;
+    }
+    try T.expect(found);
+}
+
+test "checker: namespace type declarations are checked for heritage errors" {
+    const s = try newSetup(
+        \\namespace N {
+        \\  interface Base { foo: string }
+        \\  interface Derived extends Base { bar: string }
+        \\  interface A { value: Derived }
+        \\  interface B extends A { value: Base }
+        \\}
     );
     defer destroySetup(s);
     try s.checker.checkSourceFile(s.root);
@@ -9155,6 +9278,23 @@ test "checker: unconstrained generic assigns to all-optional object target" {
     for (s.checker.diagnostics.items) |d| {
         try T.expect(d.code != TsCodes.type_not_assignable);
     }
+}
+
+test "checker: strict unconstrained generic rejects all-optional object target" {
+    const s = try newSetup(
+        \\function f<T>(a: T) {
+        \\  var b: { s?: number } = a;
+        \\  return b;
+        \\}
+    );
+    defer destroySetup(s);
+    s.checker.setStrictFlags(.{ .strict_null_checks = true });
+    try s.checker.checkSourceFile(s.root);
+    var found = false;
+    for (s.checker.diagnostics.items) |d| {
+        if (d.code == TsCodes.type_not_assignable) found = true;
+    }
+    try T.expect(found);
 }
 
 test "checker: interface extends inherits parent members" {
@@ -11110,6 +11250,36 @@ test "checker: NoInfer<T> with explicit type arg + bad arg emits TS2345" {
     var found = false;
     for (s.checker.diagnostics.items) |d| {
         if (d.code == TsCodes.argument_type_mismatch) found = true;
+    }
+    try T.expect(found);
+}
+
+test "checker: explicit Date type arg rejects number argument" {
+    const s = try newSetup(
+        \\function f<T>(x: T): T { return x; }
+        \\let v = f<Date>(1);
+    );
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+    var found = false;
+    for (s.checker.diagnostics.items) |d| {
+        if (d.code == TsCodes.argument_type_mismatch) found = true;
+    }
+    try T.expect(found);
+}
+
+test "checker: strict object type number index must satisfy string index" {
+    const s = try newSetup(
+        \\function f<T>() {
+        \\  let x: { [k: string]: Object; [n: number]: T };
+        \\}
+    );
+    defer destroySetup(s);
+    s.checker.setStrictFlags(.{ .strict_null_checks = true });
+    try s.checker.checkSourceFile(s.root);
+    var found = false;
+    for (s.checker.diagnostics.items) |d| {
+        if (d.code == TsCodes.number_index_not_assignable_to_string_index) found = true;
     }
     try T.expect(found);
 }

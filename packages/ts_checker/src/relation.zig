@@ -493,11 +493,12 @@ pub const Engine = struct {
         // rejecting the candidate at the slot boundary.
         if (tf.is_type_parameter) return true;
 
-        // Unconstrained type parameters are assignable to object
-        // shapes with no required members. This matches TS's
-        // long-standing optional-property behavior:
-        // `function f<T>(x: T) { let y: { s?: number } = x; }`.
-        if (sf.is_type_parameter and tf.is_object_type) {
+        // Non-strict mode keeps TS's historical permissiveness for
+        // unconstrained generics flowing into all-optional object
+        // shapes. Under strict/null-aware checking, upstream
+        // conformance expects `T` to be rejected without an explicit
+        // constraint.
+        if (!self.strict_null_checks and sf.is_type_parameter and tf.is_object_type) {
             if (self.interner.objectStringIndex(target) != Primitive.none) return false;
             if (self.interner.objectNumberIndex(target) != Primitive.none) return false;
             for (self.interner.objectMembers(target)) |tm| {
@@ -705,7 +706,21 @@ pub const Engine = struct {
     ///   Method-vs-property mismatch is not yet enforced (Phase 6).
     fn computeObjectAssignable(self: *Engine, source: TypeId, target: TypeId) anyerror!bool {
         const target_members = self.interner.objectMembers(target);
+        const target_str_idx = self.interner.objectStringIndex(target);
+        const target_num_idx = self.interner.objectNumberIndex(target);
+        const source_str_idx = self.interner.objectStringIndex(source);
         const source_num_idx = self.interner.objectNumberIndex(source);
+        if (self.strict_null_checks) {
+            if (target_str_idx != Primitive.none) {
+                if (source_str_idx == Primitive.none) return false;
+                if (!try self.isAssignableTo(source_str_idx, target_str_idx)) return false;
+            }
+            if (target_num_idx != Primitive.none) {
+                const source_idx = if (source_num_idx != Primitive.none) source_num_idx else source_str_idx;
+                if (source_idx == Primitive.none) return false;
+                if (!try self.isAssignableTo(source_idx, target_num_idx)) return false;
+            }
+        }
         for (target_members) |tm| {
             if (self.interner.objectMemberInfo(source, tm.name)) |sm| {
                 // readonly on target is fine even if source is mutable
