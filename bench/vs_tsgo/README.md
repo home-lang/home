@@ -59,6 +59,7 @@ Each run records, per workload, per compiler:
 - **Time-to-first-diagnostic** (Home only — others don't stream).
 - **Peak RSS** (`/usr/bin/time -l` on macOS, `time -v` on Linux).
 - **Watch incremental rebuild** (driven by `tests/watch/edit.sh` —
+
   appends a no-op line to a hot file, awaits new diagnostic).
 
 Results land in `results/<timestamp>/<workload>-<compiler>.json`.

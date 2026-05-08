@@ -37,7 +37,9 @@ refactor (numbers will drift as extractions happen):
 
 1. Extract one module at a time.
 2. Run the **codegen test suite** before and after each extraction;
+
    any regression blocks the merge.
+
 3. Update the table above.
 
 ## Why we're doing this gradually
@@ -47,6 +49,6 @@ its sections share a lot of state (locals, constants, fixup tables,
 register state). Splitting requires understanding that state graph;
 attempting it in one shot is high-risk and slows down concurrent
 work in `packages/codegen/`. Phase 0 unblocks Phase 7 (native
-codegen for TS) by establishing the *pattern*; the full split
+codegen for TS) by establishing the _pattern_; the full split
 proceeds as mechanical follow-up work that can run concurrently
 with Phase 1–4.

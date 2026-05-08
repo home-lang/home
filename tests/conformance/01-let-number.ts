@@ -1,2 +1,3 @@
 // expected: no diagnostics
-let x: number = 1;
+// eslint-disable-next-line pickier/no-unused-vars
+const x: number = 1;

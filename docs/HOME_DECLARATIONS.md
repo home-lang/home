@@ -9,11 +9,16 @@ the Home compiler, LSP, package manager, and future incremental checker.
 ## Goals
 
 - Let the LSP answer completions, hovers, and auto-imports from dependencies
+
   without reparsing every source file.
+
 - Let package installs cache compact public API metadata next to package
+
   sources.
+
 - Let `home check` validate downstream packages against stable public surfaces.
 - Keep the format Home-native so it can represent traits, comptime values,
+
   ownership, effects, async, errors, and platform availability without mapping
   through TypeScript concepts.
 

@@ -42,9 +42,13 @@ For each new extraction:
 1. Create the new module file under this directory.
 2. Move the function/type into it verbatim, adjusting only imports.
 3. Add a `pub usingnamespace` re-export to `parser.zig` if external
+
    callers reference the symbol; otherwise import directly.
+
 4. Run `zig build test`. Block the PR if any pre-existing parser test
+
    regresses.
+
 5. Update the table above.
 
 ## Why we're doing this gradually
@@ -55,5 +59,5 @@ reaches into the function-declaration section to handle anonymous
 function expressions). A clean split requires understanding each
 section's true dependency graph, which is high-risk to do all at
 once. Phase 0 unblocks Phase 1 (TS frontend) by establishing the
-*pattern*; the full split is mechanical follow-up work that can run
+_pattern_; the full split is mechanical follow-up work that can run
 concurrently with Phase 1.

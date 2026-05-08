@@ -1,2 +1,3 @@
 // expected: no diagnostics
-let s: string = "hi";
+// eslint-disable-next-line pickier/no-unused-vars
+const s: string = "hi";

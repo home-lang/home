@@ -16,14 +16,20 @@ once a stable release is cut.
 
 - `CHANGELOG.md` (this file).
 - `docs/CAPABILITY_MATRIX.md` and a condensed capability matrix in the README,
+
   giving an honest view of what is stable, in progress, or not yet started.
+
 - `docs/internal/` for milestone-style implementation reports that previously
+
   lived at the top level of `docs/` and inside individual packages.
 
 ### Changed
 
 - Dropped the "88% complete (43/49 tasks)" framing from `docs/ARCHITECTURE.md`
+
   and similar overclaiming language elsewhere.
+
 - Demoted `*-COMPLETE.md` / `*-IMPLEMENTED.md` milestone reports under
+
   `docs/internal/` so the work is preserved as internal notes without
   overstating project status to new users.

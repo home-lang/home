@@ -9,7 +9,9 @@ Legend:
 
 - ✅ **Stable** — implemented, exercised by examples and/or tests, expected to keep working.
 - 🚧 **In progress / Partial** — code exists but is incomplete, experimental, or not yet
+
   exercised end-to-end. Expect rough edges and breaking changes.
+
 - ❌ **Not yet** — planned, but not meaningfully implemented.
 
 ## Language

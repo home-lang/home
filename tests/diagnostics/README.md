@@ -34,15 +34,19 @@ tests/diagnostics/
 ## Adding a case
 
 1. Drop a small `.home` file under the appropriate subdirectory. Aim for
+
    one diagnostic per case unless you're explicitly testing recovery /
    multi-error reporting.
+
 2. Run `zig build test-diagnostics -- --update` to produce a snapshot.
 3. **Read the resulting `.expected` file**. If it doesn't actually
+
    demonstrate a useful diagnostic for that category (e.g. "Type
    checking passed ✓"), the compiler doesn't yet diagnose what you
    intended — delete the case (or leave a `// TODO:` note in the source
    and document it as a known gap rather than checking in misleading
    "expected" output).
+
 4. `git add` both the `.home` and the `.expected` file.
 
 ## Snapshot honesty
@@ -62,13 +66,20 @@ but the compiler currently doesn't emit useful errors for them, so they
 are intentionally absent from the corpus:
 
 - **Missing return** — the type checker doesn't currently flag
+
   functions that fall off the end without returning.
+
 - **Match exhaustiveness** — non-exhaustive `match` arms type-check.
 - **Borrow / move violations** — the borrow checker pass exists but
+
   doesn't currently surface diagnostics through `home check`.
+
 - **Generic monomorphization failures** — generics resolve too eagerly
+
   to produce a useful surface error.
+
 - **"Did you mean?" suggestions for typo'd identifiers** —
+
   `pritnln(...)` currently type-checks rather than triggering an
   undefined-function diagnostic with a Levenshtein hint.
 
@@ -79,12 +90,19 @@ fake output.
 ## Why a custom harness instead of shell + diff
 
 - Cross-platform normalization (Linux/macOS/Windows produce slightly
+
   different paths and ANSI behavior).
+
 - The debug build of `home` emits `error(DebugAllocator): ...` leak
+
   dumps at exit. These are unrelated to diagnostic UX, very noisy, and
   vary per run; the harness filters them out.
+
 - A 30 s per-case wall-clock budget catches genuine compiler infinite
+
   loops (we've seen at least one — `fn 123 invalid()` — where the
   parser doesn't terminate).
+
 - A shared `--update` mode reduces the friction of intentional snapshot
+
   refreshes.

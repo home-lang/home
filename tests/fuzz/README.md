@@ -20,23 +20,23 @@ Crash and timeout reproducers are written to
 ## Running locally
 
 ```sh
-# Default: both targets, 30 seconds budget each.
+# Default: both targets, 30 seconds budget each
 zig build fuzz
 
-# Single target.
+# Single target
 zig build fuzz-lexer
 zig build fuzz-parser
 
-# Tune the budget. Pass-through args go after `--`.
+# Tune the budget. Pass-through args go after `--`
 zig build fuzz -- --seconds 120
 
-# Reproduce a specific run.
+# Reproduce a specific run
 zig build fuzz-parser -- --seed 42 --seconds 10
 
-# Hard cap on iterations (useful for smoke tests).
+# Hard cap on iterations (useful for smoke tests)
 zig build fuzz -- --max-iters 50
 
-# Custom findings directory.
+# Custom findings directory
 zig build fuzz -- --findings /tmp/home-fuzz-out
 ```
 
@@ -105,7 +105,9 @@ Good seeds are:
 
 - short, focused programs that exercise one feature
 - known-tricky diagnostics inputs (we already mirror a few from
+
   `tests/diagnostics/cases/`)
+
 - minimised reproducers from real bugs
 
 When a fuzz finding turns out to be a real bug worth fixing forever,
@@ -117,7 +119,9 @@ copy the reproducer into `tests/diagnostics/cases/` (with a paired
 Per iteration:
 
 1. Pick a corpus seed at random (1-in-16 we generate pure random bytes
+
    instead — covers the "lexer chokes on raw garbage" surface).
+
 2. Apply 1–3 of these AFL-style edits:
    - bit flip
    - replace byte with random
@@ -127,6 +131,7 @@ Per iteration:
    - splice a Home keyword (`fn`, `match`, `comptime`, …)
    - truncate
    - splice an "interesting" int literal (`0xFFFFFFFF`,
+
      `9223372036854775808`, `1.7976931348623157e308`, …)
 
 This is intentionally simple. Coverage-guided fuzzing (libFuzzer
@@ -138,8 +143,11 @@ mismatched delimiters, oversized literals, keyword-as-identifier.
 ## CI
 
 - **Pull request runs (`.github/workflows/ci.yml`):** short fuzz
+
   session — 60s per target, fails the PR only on actual crashes.
+
 - **Nightly (`.github/workflows/fuzz-nightly.yml`):** longer session
+
   (15min per target) on a schedule. Findings are uploaded as build
   artifacts so we can inspect timeout/crash reproducers later.
 

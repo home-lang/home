@@ -1,2 +1,3 @@
 // expected: no diagnostics
-let inc = (n: number) => n + 1;
+// eslint-disable-next-line pickier/no-unused-vars
+const inc = (n: number) => n + 1;

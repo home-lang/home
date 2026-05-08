@@ -44,7 +44,7 @@ The lexer transforms source code into a stream of tokens. It handles:
 - **Literals**: Integers, floats, strings (with escape sequences), booleans, arrays
 - **Operators**: Arithmetic (`+`, `-`, `*`, `/`, `%`), comparison (`==`, `!=`, `<`, `>`, `<=`, `>=`), logical (`&&`, `||`, `!`), bitwise (`&`, `|`, `^`, `<<`, `>>`), assignment (`=`)
 - **Delimiters**: `()`, `{}`, `[]`, `,`, `;`, `.`, `:`, `..`, `..=`
-- **Comments**: Single-line (`//`) and multi-line (`/* */`)
+- **Comments**: Single-line (`//`) and multi-line (`/_ _/`)
 - **String Escapes**: `\n`, `\t`, `\r`, `\"`, `\\`, `\xNN` (hex), `\u{NNNN}` (unicode)
 
 **Features**:
