@@ -22,6 +22,7 @@ const ts_cache = @import("ts_cache");
 pub const NodeId = hir_mod.NodeId;
 pub const Hir = hir_mod.Hir;
 pub const Token = ts_lexer.Token;
+pub const StrictFlags = ts_checker.StrictFlags;
 
 /// One unified diagnostic across all phases.
 pub const Diagnostic = struct {
@@ -105,6 +106,10 @@ pub const CompileOptions = struct {
     /// CLI `--strict` override. When null, defer to tsconfig or the
     /// tsc default (`false`).
     strict: ?bool = null,
+    /// Direct checker strictness override for callers that already
+    /// resolved file-scoped options (for example TS conformance
+    /// `// @strict: true` directives).
+    strict_flags: ?StrictFlags = null,
     /// Optional parsed tsconfig. When present, the driver applies
     /// the relevant compilerOptions:
     ///   - `jsx` — enables tsx parsing for `react`/`react-jsx`/etc.
@@ -353,7 +358,9 @@ pub fn compileSource(
     // Translate strictness flags. `strict: true` implies every
     // individual strict-family flag in TS; options.strict is the CLI
     // override, then tsconfig, then tsc's default (`false`).
-    if (options.pub_tsconfig) |cfg| {
+    if (options.strict_flags) |flags| {
+        checker.setStrictFlags(flags);
+    } else if (options.pub_tsconfig) |cfg| {
         const co = cfg.compiler_options;
         const strict_on = options.strict orelse (co.strict orelse false);
         const no_implicit_any = co.no_implicit_any orelse strict_on;

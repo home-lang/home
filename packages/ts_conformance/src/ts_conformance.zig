@@ -60,6 +60,9 @@ pub const Case = struct {
     expected_errors: []const u8 = "",
     /// True for .tsx / .jsx sources.
     is_tsx: bool = false,
+    /// Optional file-scoped compiler strictness from upstream
+    /// conformance directives.
+    strict_flags: ?ts_driver.StrictFlags = null,
 };
 
 /// Run a single conformance case. Returns the outcome and writes
@@ -67,6 +70,7 @@ pub const Case = struct {
 pub fn run(gpa: std.mem.Allocator, c: Case) !Result {
     var compilation = ts_driver.compileSource(gpa, c.source, .{
         .is_tsx = c.is_tsx,
+        .strict_flags = c.strict_flags,
         .continue_on_error = true,
         .no_emit = true,
     }) catch |err| {
@@ -282,6 +286,7 @@ pub const CorpusEntry = struct {
     source: []const u8,
     expects_error: bool = false,
     is_tsx: bool = false,
+    strict_flags: ?ts_driver.StrictFlags = null,
 };
 
 /// Owned-source variant — like `CorpusEntry` but the source is
@@ -291,6 +296,7 @@ pub const OwnedCorpusEntry = struct {
     source: []u8,
     expects_error: bool = false,
     is_tsx: bool = false,
+    strict_flags: ?ts_driver.StrictFlags = null,
 };
 
 pub const DirectoryLoadOptions = struct {
@@ -299,6 +305,10 @@ pub const DirectoryLoadOptions = struct {
     /// expected-error case even when the source filename itself is
     /// not `.errors.ts`.
     baseline_root: ?[]const u8 = null,
+    /// Opt in to upstream per-file `// @strict: ...` directive
+    /// handling. Kept off for the current ratchet because a handful
+    /// of strict-positive cases still need contextual typing work.
+    honor_directives: bool = false,
 };
 
 /// Walk `dir_path` recursively and collect every `.ts` / `.tsx`
@@ -370,6 +380,7 @@ pub fn loadDirectoryWithOptions(
             .source = src,
             .expects_error = expects_error,
             .is_tsx = is_tsx,
+            .strict_flags = if (options.honor_directives) parseStrictDirectiveFlags(src) else null,
         });
     }
     return out.toOwnedSlice(gpa);
@@ -383,6 +394,96 @@ fn hasErrorBaseline(gpa: std.mem.Allocator, baseline_root: ?[]const u8, stem: []
     defer threaded.deinit();
     const io = threaded.io();
     std.Io.Dir.cwd().access(io, path, .{}) catch return false;
+    return true;
+}
+
+const StrictDirectiveState = struct {
+    strict: ?bool = null,
+    no_implicit_any: ?bool = null,
+    no_unused_parameters: ?bool = null,
+    no_unused_locals: ?bool = null,
+    strict_function_types: ?bool = null,
+    strict_null_checks: ?bool = null,
+    strict_property_initialization: ?bool = null,
+    no_unchecked_indexed_access: ?bool = null,
+    isolated_modules: ?bool = null,
+    resolve_json_module: ?bool = null,
+    exact_optional_property_types: ?bool = null,
+    no_property_access_from_index_signature: ?bool = null,
+};
+
+fn parseStrictDirectiveFlags(source: []const u8) ?ts_driver.StrictFlags {
+    var state: StrictDirectiveState = .{};
+    var seen = false;
+    var lines = std.mem.splitScalar(u8, source, '\n');
+    while (lines.next()) |raw_line| {
+        const line = std.mem.trim(u8, raw_line, " \t\r");
+        if (!std.mem.startsWith(u8, line, "//")) continue;
+        const comment = std.mem.trim(u8, line[2..], " \t");
+        if (!std.mem.startsWith(u8, comment, "@")) continue;
+        const body = comment[1..];
+        const colon = std.mem.indexOfScalar(u8, body, ':') orelse continue;
+        const name = std.mem.trim(u8, body[0..colon], " \t");
+        const value = parseDirectiveBool(body[colon + 1 ..]) orelse continue;
+        if (setStrictDirective(&state, name, value)) seen = true;
+    }
+    if (!seen) return null;
+
+    const strict_on = state.strict orelse false;
+    return .{
+        .no_implicit_any = state.no_implicit_any orelse strict_on,
+        .no_unused_parameters = state.no_unused_parameters orelse false,
+        .no_unused_locals = state.no_unused_locals orelse false,
+        .strict_function_types = state.strict_function_types orelse strict_on,
+        .strict_null_checks = state.strict_null_checks orelse strict_on,
+        .strict_property_initialization = state.strict_property_initialization orelse strict_on,
+        .no_unchecked_indexed_access = state.no_unchecked_indexed_access orelse false,
+        .isolated_modules = state.isolated_modules orelse false,
+        .resolve_json_module = state.resolve_json_module orelse false,
+        .exact_optional_property_types = state.exact_optional_property_types orelse false,
+        .no_property_access_from_index_signature = state.no_property_access_from_index_signature orelse false,
+    };
+}
+
+fn parseDirectiveBool(raw: []const u8) ?bool {
+    const trimmed = std.mem.trim(u8, raw, " \t\r");
+    if (trimmed.len == 0) return null;
+    var end: usize = 0;
+    while (end < trimmed.len and (std.ascii.isAlphabetic(trimmed[end]) or trimmed[end] == '_')) : (end += 1) {}
+    const word = trimmed[0..end];
+    if (std.ascii.eqlIgnoreCase(word, "true")) return true;
+    if (std.ascii.eqlIgnoreCase(word, "false")) return false;
+    return null;
+}
+
+fn setStrictDirective(state: *StrictDirectiveState, name: []const u8, value: bool) bool {
+    if (std.mem.eql(u8, name, "strict")) {
+        state.strict = value;
+    } else if (std.mem.eql(u8, name, "noImplicitAny")) {
+        state.no_implicit_any = value;
+    } else if (std.mem.eql(u8, name, "noUnusedParameters")) {
+        state.no_unused_parameters = value;
+    } else if (std.mem.eql(u8, name, "noUnusedLocals")) {
+        state.no_unused_locals = value;
+    } else if (std.mem.eql(u8, name, "strictFunctionTypes")) {
+        state.strict_function_types = value;
+    } else if (std.mem.eql(u8, name, "strictNullChecks")) {
+        state.strict_null_checks = value;
+    } else if (std.mem.eql(u8, name, "strictPropertyInitialization")) {
+        state.strict_property_initialization = value;
+    } else if (std.mem.eql(u8, name, "noUncheckedIndexedAccess")) {
+        state.no_unchecked_indexed_access = value;
+    } else if (std.mem.eql(u8, name, "isolatedModules")) {
+        state.isolated_modules = value;
+    } else if (std.mem.eql(u8, name, "resolveJsonModule")) {
+        state.resolve_json_module = value;
+    } else if (std.mem.eql(u8, name, "exactOptionalPropertyTypes")) {
+        state.exact_optional_property_types = value;
+    } else if (std.mem.eql(u8, name, "noPropertyAccessFromIndexSignature")) {
+        state.no_property_access_from_index_signature = value;
+    } else {
+        return false;
+    }
     return true;
 }
 
@@ -400,6 +501,7 @@ pub fn runOwnedCorpus(
             .source = entry.source,
             .expects_error = entry.expects_error,
             .is_tsx = entry.is_tsx,
+            .strict_flags = entry.strict_flags,
         };
         const r = try runOneEntry(gpa, view);
         switch (r.outcome) {
@@ -506,6 +608,7 @@ fn runOneEntry(gpa: std.mem.Allocator, entry: CorpusEntry) !Result {
     const name_owned = try gpa.dupe(u8, entry.name);
     var compilation = ts_driver.compileSource(gpa, entry.source, .{
         .is_tsx = entry.is_tsx,
+        .strict_flags = entry.strict_flags,
         .continue_on_error = true,
         .no_emit = true,
     }) catch |err| {
@@ -548,6 +651,7 @@ pub fn runCorpus(
 
         var compilation = ts_driver.compileSource(gpa, entry.source, .{
             .is_tsx = entry.is_tsx,
+            .strict_flags = entry.strict_flags,
             .continue_on_error = true,
             .no_emit = true,
         }) catch |err| {
@@ -671,6 +775,33 @@ pub const builtin_corpus = [_]CorpusEntry{
 // =============================================================================
 
 const T = std.testing;
+
+test "conformance: parses strict directives into checker flags" {
+    const flags = parseStrictDirectiveFlags(
+        \\// @strict: true
+        \\// @strictNullChecks: false
+        \\// @noUnusedLocals: true
+        \\let x: string | null = null;
+    ).?;
+    try T.expect(flags.no_implicit_any);
+    try T.expect(flags.strict_function_types);
+    try T.expect(!flags.strict_null_checks);
+    try T.expect(flags.strict_property_initialization);
+    try T.expect(flags.no_unused_locals);
+    try T.expect(!flags.no_unused_parameters);
+}
+
+test "conformance: strict false directive leaves strict family disabled" {
+    const flags = parseStrictDirectiveFlags(
+        \\// @strict: false
+        \\// @noImplicitAny: true
+        \\let x;
+    ).?;
+    try T.expect(flags.no_implicit_any);
+    try T.expect(!flags.strict_function_types);
+    try T.expect(!flags.strict_null_checks);
+    try T.expect(!flags.strict_property_initialization);
+}
 
 test "conformance: empty file passes with no diagnostics" {
     const r = try run(T.allocator, .{
