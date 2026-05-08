@@ -59,7 +59,7 @@ pub const DeviceProfile = struct {
             .connection_count = 0,
             .last_connection = 0,
             .keystroke_rate = 0.0,
-            .descriptor_hash = [_]u8{0} ** 32,
+            .descriptor_hash = @splat(0),
         };
     }
 

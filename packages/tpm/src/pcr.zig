@@ -33,7 +33,7 @@ pub const PcrValue = struct {
         return .{
             .index = index,
             .algorithm = algorithm,
-            .value = [_]u8{0} ** 64,
+            .value = @splat(0),
             .value_len = algorithm.hashSize(),
         };
     }
@@ -175,7 +175,7 @@ pub const PcrSelection = struct {
     mask: [3]u8, // 24 bits for 24 PCRs
 
     pub fn init() PcrSelection {
-        return .{ .mask = [_]u8{0} ** 3 };
+        return .{ .mask = @splat(0) };
     }
 
     pub fn select(self: *PcrSelection, index: PcrIndex) !void {
@@ -230,7 +230,7 @@ test "pcr bank" {
     var bank = PcrBank.init(testing.allocator, .sha256);
     defer bank.deinit();
 
-    const value = [_]u8{0x12} ** 32;
+    const value: [32]u8 = @splat(0x12);
     try bank.setPcr(0, &value);
 
     const pcr = bank.getPcr(0);

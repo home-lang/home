@@ -245,7 +245,7 @@ pub const UEFISecureBootVars = struct {
 test "certificate validity" {
     const testing = std.testing;
 
-    const cert_data = [_]u8{0x01} ** 64;
+    const cert_data: [64]u8 = @splat(0x01);
     var cert = Certificate.init(&cert_data, .rsa2048_sha256);
 
     cert.not_before = 1000;
@@ -263,19 +263,19 @@ test "secure boot database" {
     defer db.deinit();
 
     // Add certificate
-    const cert_data = [_]u8{0x01} ** 64;
+    const cert_data: [64]u8 = @splat(0x01);
     const cert = Certificate.init(&cert_data, .rsa2048_sha256);
     try db.addCertificate(cert);
 
     try testing.expect(db.isCertificateAllowed(&cert));
 
     // Add forbidden hash
-    const hash = [_]u8{0xFF} ** 32;
+    const hash: [32]u8 = @splat(0xFF);
     try db.addForbiddenHash(hash);
 
     try testing.expect(db.isHashForbidden(hash));
 
-    const other_hash = [_]u8{0x00} ** 32;
+    const other_hash: [32]u8 = @splat(0x00);
     try testing.expect(!db.isHashForbidden(other_hash));
 }
 
@@ -304,7 +304,7 @@ test "signature verification" {
     defer verifier.deinit();
 
     const binary = "test binary data";
-    const sig_data = [_]u8{0x01} ** 256;
+    const sig_data: [256]u8 = @splat(0x01);
     var signature = Signature.init(&sig_data, .rsa2048_sha256);
 
     // Should succeed when disabled

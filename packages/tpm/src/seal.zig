@@ -21,7 +21,7 @@ pub const SealedData = struct {
             .pcr_selection = pcr.PcrSelection.init(),
             .expected_pcrs = std.ArrayList(pcr.PcrValue).empty,
             .data = &[_]u8{},
-            .policy_digest = [_]u8{0} ** 32,
+            .policy_digest = @splat(0),
             .allocator = allocator,
         };
     }

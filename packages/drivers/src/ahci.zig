@@ -127,7 +127,7 @@ pub const FisRegH2D = extern struct {
             .count_high = @truncate(count >> 8),
             .icc = 0,
             .control = 0,
-            .reserved = [_]u8{0} ** 4,
+            .reserved = @splat(0),
         };
     }
 };
@@ -166,7 +166,7 @@ pub const CommandHeader = extern struct {
             .prdbc = 0,
             .ctba = 0,
             .ctba_upper = 0,
-            .reserved = [_]u32{0} ** 4,
+            .reserved = @splat(0),
         };
     }
 };
@@ -208,8 +208,8 @@ pub const AhciPort = struct {
     dma_buffer: dma.DmaBuffer,
     lock: sync.Spinlock,
     allocator: std.mem.Allocator,
-    error_count: u32 = 0,  // Track consecutive errors
-    last_error: ?anyerror = null,  // Last error encountered
+    error_count: u32 = 0, // Track consecutive errors
+    last_error: ?anyerror = null, // Last error encountered
 
     pub const DeviceType = enum {
         None,
@@ -571,7 +571,7 @@ pub const AhciPort = struct {
             .count_high = 0,
             .icc = 0,
             .control = 0,
-            .reserved = [_]u8{0} ** 4,
+            .reserved = @splat(0),
         };
 
         // Execute command with retry (flush can take time)
@@ -622,7 +622,7 @@ pub const AhciPort = struct {
             .count_high = 0,
             .icc = 0,
             .control = 0,
-            .reserved = [_]u8{0} ** 4,
+            .reserved = @splat(0),
         };
 
         // Execute command
@@ -660,7 +660,7 @@ pub const AhciController = struct {
         controller.* = .{
             .pci_device = pci_device,
             .abar = abar,
-            .ports = [_]?*AhciPort{null} ** 32,
+            .ports = @splat(null),
             .port_count = 0,
             .allocator = allocator,
         };

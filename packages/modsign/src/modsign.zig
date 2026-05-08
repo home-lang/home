@@ -53,9 +53,9 @@ pub const ModuleSignature = struct {
     pub fn init(allocator: std.mem.Allocator, algorithm: SignatureAlgorithm) !ModuleSignature {
         return .{
             .algorithm = algorithm,
-            .key_id = [_]u8{0} ** 32,
+            .key_id = @splat(0),
             .signature = try allocator.alloc(u8, algorithm.signatureSize()),
-            .module_hash = [_]u8{0} ** 64,
+            .module_hash = @splat(0),
             .hash_len = 32, // SHA-256
             .allocator = allocator,
         };

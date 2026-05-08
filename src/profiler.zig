@@ -53,9 +53,10 @@ pub const AllocationProfiler = struct {
     }
 
     pub fn report(self: *const AllocationProfiler) void {
-        std.debug.print("\n" ++ "=" ** 60 ++ "\n", .{});
+        const rule: [60]u8 = @splat('=');
+        std.debug.print("\n{s}\n", .{&rule});
         std.debug.print("Memory Allocation Profile\n", .{});
-        std.debug.print("=" ** 60 ++ "\n", .{});
+        std.debug.print("{s}\n", .{&rule});
         std.debug.print("Total Allocations:  {d}\n", .{self.allocations.items.len});
         std.debug.print("Total Allocated:    {d} bytes ({d:.2} MB)\n", .{
             self.total_allocated,
@@ -73,7 +74,7 @@ pub const AllocationProfiler = struct {
             self.current_memory,
             @as(f64, @floatFromInt(self.current_memory)) / 1024.0 / 1024.0,
         });
-        std.debug.print("=" ** 60 ++ "\n\n", .{});
+        std.debug.print("{s}\n\n", .{&rule});
     }
 
     pub fn getHotspots(self: *const AllocationProfiler, allocator: std.mem.Allocator) ![]Hotspot {

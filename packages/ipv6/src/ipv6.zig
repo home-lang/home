@@ -8,7 +8,7 @@ pub const Address = struct {
     octets: [16]u8,
 
     /// Special addresses
-    pub const unspecified = Address{ .octets = [_]u8{0} ** 16 };
+    pub const unspecified = Address{ .octets = @splat(0) };
     pub const loopback = Address{ .octets = [_]u8{ 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1 } };
     pub const all_nodes = Address{ .octets = [_]u8{ 0xff, 0x02, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1 } };
     pub const all_routers = Address{ .octets = [_]u8{ 0xff, 0x02, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 2 } };

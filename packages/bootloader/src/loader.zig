@@ -244,7 +244,7 @@ test "ELF header validation" {
         .version = 1,
         .os_abi = 0,
         .abi_version = 0,
-        .padding = [_]u8{0} ** 7,
+        .padding = @splat(0),
         .type = 2,
         .machine = 0x3E, // x86-64
         .version2 = 1,

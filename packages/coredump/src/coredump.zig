@@ -79,7 +79,7 @@ pub const DumpMetadata = struct {
 
         var metadata: DumpMetadata = undefined;
         metadata.pid = pid;
-        metadata.process_name = [_]u8{0} ** 256;
+        metadata.process_name = @splat(0);
         metadata.process_name_len = process_name.len;
         metadata.signal = signal;
         metadata.timestamp = getUnixTimestamp();

@@ -120,7 +120,7 @@ pub const LogChain = struct {
 
     pub fn init(allocator: std.mem.Allocator) LogChain {
         return .{
-            .previous_hash = [_]u8{0} ** 32,
+            .previous_hash = @splat(0),
             .sequence = 0,
             .allocator = allocator,
         };
@@ -150,7 +150,7 @@ pub const LogChain = struct {
         logs: []const AuthenticatedLog,
         key: *const AuthKey,
     ) !bool {
-        var expected_hash = [_]u8{0} ** 32;
+        var expected_hash: [32]u8 = @splat(0);
         var expected_seq: u64 = 0;
 
         for (logs) |*log| {

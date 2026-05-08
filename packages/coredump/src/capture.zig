@@ -78,7 +78,7 @@ pub const ProcessSnapshot = struct {
             .pid = pid,
             .tid = 0,
             .regions = std.ArrayList(MemoryRegion).empty,
-            .registers = [_]u64{0} ** 32,
+            .registers = @splat(0),
             .signal = 0,
             .allocator = allocator,
         };

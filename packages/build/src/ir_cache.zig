@@ -696,7 +696,7 @@ test "cache key generation" {
 }
 
 test "hash to hex conversion" {
-    const hash = [_]u8{ 0xDE, 0xAD, 0xBE, 0xEF } ++ [_]u8{0} ** 28;
+    const hash = [_]u8{ 0xDE, 0xAD, 0xBE, 0xEF } ++ @as([28]u8, @splat(0));
     var buf: [64]u8 = undefined;
     const hex = hashToHex(hash, &buf);
 

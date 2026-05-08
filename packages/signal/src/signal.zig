@@ -94,8 +94,8 @@ pub const Action = enum {
 };
 
 // Signal handler storage
-var handlers: [32]?Handler = [_]?Handler{null} ** 32;
-var original_handlers: [32]?*const anyopaque = [_]?*const anyopaque{null} ** 32;
+var handlers: [32]?Handler = @splat(null);
+var original_handlers: [32]?*const anyopaque = @splat(null);
 
 /// Send a signal to a process
 pub fn kill(pid: std.posix.pid_t, sig: Signal) !void {

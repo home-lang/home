@@ -29,7 +29,7 @@ pub const PrivateKey = struct {
         var key = PrivateKey{
             .algorithm = algorithm,
             .key_data = key_data,
-            .key_id = [_]u8{0} ** 32,
+            .key_id = @splat(0),
             .description = desc,
             .allocator = allocator,
         };
@@ -138,7 +138,7 @@ pub const PrivateKey = struct {
         var key = PrivateKey{
             .algorithm = .rsa_2048_sha256, // Default
             .key_data = key_data,
-            .key_id = [_]u8{0} ** 32,
+            .key_id = @splat(0),
             .description = desc,
             .allocator = allocator,
         };

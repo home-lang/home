@@ -172,9 +172,9 @@ test "constant-time byte comparison" {
 test "constant-time equality" {
     const testing = std.testing;
 
-    const a: [32]u8 = [_]u8{0x01} ++ [_]u8{0} ** 31;
-    const b: [32]u8 = [_]u8{0x01} ++ [_]u8{0} ** 31;
-    const c: [32]u8 = [_]u8{0x02} ++ [_]u8{0} ** 31;
+    const a: [32]u8 = [_]u8{0x01} ++ @as([31]u8, @splat(0));
+    const b: [32]u8 = [_]u8{0x01} ++ @as([31]u8, @splat(0));
+    const c: [32]u8 = [_]u8{0x02} ++ @as([31]u8, @splat(0));
 
     try testing.expect(equal([32]u8, a, b));
     try testing.expect(!equal([32]u8, a, c));

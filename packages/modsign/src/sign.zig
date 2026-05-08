@@ -42,8 +42,8 @@ fn generateSignature(hash: []const u8, key: []const u8, sig_out: []u8) !void {
     var hasher = std.crypto.hash.sha2.Sha256.init(.{});
 
     // Inner hash: hash(key XOR ipad || message)
-    var ipad: [64]u8 = [_]u8{0x36} ** 64;
-    var opad: [64]u8 = [_]u8{0x5c} ** 64;
+    var ipad: [64]u8 = @splat(0x36);
+    var opad: [64]u8 = @splat(0x5c);
 
     // XOR key into pads
     const key_len = @min(key.len, 64);

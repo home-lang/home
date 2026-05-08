@@ -31,7 +31,7 @@ pub const SchedParam = struct {
 };
 
 pub const CpuSet = struct {
-    bits: [32]usize = [_]usize{0} ** 32,
+    bits: [32]usize = @splat(0),
 
     pub fn init() CpuSet {
         return .{};

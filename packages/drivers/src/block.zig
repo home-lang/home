@@ -421,7 +421,7 @@ pub const Partition = struct {
 
 const MAX_BLOCK_DEVICES = 256;
 
-var block_devices: [MAX_BLOCK_DEVICES]?*BlockDevice = [_]?*BlockDevice{null} ** MAX_BLOCK_DEVICES;
+var block_devices: [MAX_BLOCK_DEVICES]?*BlockDevice = @splat(null);
 var device_count: atomic.AtomicUsize = atomic.AtomicUsize.init(0);
 var registry_lock = sync.Spinlock.init();
 

@@ -47,7 +47,7 @@ pub const CommandBlockWrapper = extern struct {
             .bm_cbw_flags = flags,
             .b_cbw_lun = lun,
             .b_cbw_cb_length = cb_length,
-            .cbwcb = [_]u8{0} ** 16,
+            .cbwcb = @splat(0),
         };
     }
 };

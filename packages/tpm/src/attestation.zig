@@ -20,7 +20,7 @@ pub const Quote = struct {
 
     pub fn init(allocator: std.mem.Allocator) Quote {
         return .{
-            .nonce = [_]u8{0} ** 32,
+            .nonce = @splat(0),
             .pcr_selection = pcr.PcrSelection.init(),
             .pcr_values = std.ArrayList(pcr.PcrValue).empty,
             .signature = &[_]u8{},

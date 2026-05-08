@@ -1901,7 +1901,8 @@ fn profileCommand(allocator: std.mem.Allocator, file_path: []const u8) !void {
     defer allocator.free(hotspots);
 
     std.debug.print("{s}Top Allocation Hotspots:{s}\n", .{ Color.Cyan.code(), Color.Reset.code() });
-    std.debug.print("-" ** 60 ++ "\n", .{});
+    const hotspot_rule: [60]u8 = @splat('-');
+    std.debug.print("{s}\n", .{&hotspot_rule});
     const max_hotspots = @min(10, hotspots.len);
     for (hotspots[0..max_hotspots], 0..) |hotspot, i| {
         std.debug.print("{d}. Size: {d} bytes × {d} allocations = {d} KB total\n", .{

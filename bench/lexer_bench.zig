@@ -31,9 +31,10 @@ pub fn main(init: std.process.Init) !void {
     const io = init.io;
     const allocator = init.gpa;
 
-    std.debug.print("\n{s}\n", .{"=" ** 80});
+    const rule: [80]u8 = @splat('=');
+    std.debug.print("\n{s}\n", .{&rule});
     std.debug.print("Home Lexer Benchmarks\n", .{});
-    std.debug.print("{s}\n\n", .{"=" ** 80});
+    std.debug.print("{s}\n\n", .{&rule});
 
     // Benchmark 1: Hello World
     const hello_world =
@@ -114,7 +115,7 @@ pub fn main(init: std.process.Init) !void {
     ;
     try benchmark(io, allocator, "Complex Expressions (4 LOC)", complex, 10000);
 
-    std.debug.print("\n{s}\n", .{"=" ** 80});
+    std.debug.print("\n{s}\n", .{&rule});
     std.debug.print("Benchmark complete!\n", .{});
-    std.debug.print("{s}\n\n", .{"=" ** 80});
+    std.debug.print("{s}\n\n", .{&rule});
 }

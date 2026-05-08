@@ -154,7 +154,7 @@ pub const KeyboardReport = packed struct {
         return .{
             .modifiers = @bitCast(@as(u8, 0)),
             .reserved = 0,
-            .keycodes = [_]u8{0} ** 6,
+            .keycodes = @splat(0),
         };
     }
 };
@@ -480,7 +480,7 @@ pub const KeyboardHandler = struct {
         return switch (hid_code) {
             0x28 => '\n', // Enter
             0x2B => '\t', // Tab
-            0x2C => ' ',  // Space
+            0x2C => ' ', // Space
             0x2D => if (shift) '_' else '-',
             0x2E => if (shift) '+' else '=',
             0x2F => if (shift) '{' else '[',

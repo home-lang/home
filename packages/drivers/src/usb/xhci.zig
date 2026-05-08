@@ -334,6 +334,12 @@ pub const EventRingSegmentTableEntry = extern struct {
 // ============================================================================
 
 pub const XhciController = struct {
+    // Error handling constants
+    pub const TRANSFER_TIMEOUT_MS: u64 = 5_000; // 5 seconds
+    pub const MAX_RETRIES: u8 = 3;
+    pub const ERROR_THRESHOLD: u32 = 10;
+    pub const MAX_STALL_COUNT: u8 = 5; // Re-enumerate after 5 stalls
+
     cap_regs: *volatile XhciCapRegs,
     op_regs: *volatile XhciOpRegs,
     port_regs: []volatile XhciPortRegs,
@@ -350,13 +356,7 @@ pub const XhciController = struct {
     // Error handling
     error_count: u32 = 0,
     last_error: ?anyerror = null,
-    device_stall_count: [256]u8 = [_]u8{0} ** 256, // Per-device stall counters
-
-    // Error handling constants
-    pub const TRANSFER_TIMEOUT_MS: u64 = 5_000; // 5 seconds
-    pub const MAX_RETRIES: u8 = 3;
-    pub const ERROR_THRESHOLD: u32 = 10;
-    pub const MAX_STALL_COUNT: u8 = 5; // Re-enumerate after 5 stalls
+    device_stall_count: [256]u8 = @splat(0), // Per-device stall counters
 
     max_slots: u8,
     max_ports: u8,

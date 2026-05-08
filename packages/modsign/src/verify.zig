@@ -68,8 +68,8 @@ fn verifySignatureData(hash: []const u8, key: []const u8, signature: []const u8)
 fn generateSignature(hash: []const u8, key: []const u8, sig_out: []u8) !void {
     var hasher = std.crypto.hash.sha2.Sha256.init(.{});
 
-    var ipad: [64]u8 = [_]u8{0x36} ** 64;
-    var opad: [64]u8 = [_]u8{0x5c} ** 64;
+    var ipad: [64]u8 = @splat(0x36);
+    var opad: [64]u8 = @splat(0x5c);
 
     const key_len = @min(key.len, 64);
     for (0..key_len) |i| {

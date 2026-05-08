@@ -178,7 +178,7 @@ pub const RegisterAllocator = struct {
 
 /// CPU feature flags for SIMD optimization
 pub const CpuFeatures = struct {
-    has_sse: bool = true,    // All x86-64 CPUs have SSE/SSE2
+    has_sse: bool = true, // All x86-64 CPUs have SSE/SSE2
     has_sse3: bool = false,
     has_ssse3: bool = false,
     has_sse41: bool = false,
@@ -201,23 +201,23 @@ pub const CpuFeatures = struct {
             .has_ssse3 = true,
             .has_sse41 = true,
             .has_sse42 = true,
-            .has_avx = true,    // Conservatively assume true
-            .has_avx2 = true,   // Conservatively assume true
-            .has_fma = true,    // Conservatively assume true
+            .has_avx = true, // Conservatively assume true
+            .has_avx2 = true, // Conservatively assume true
+            .has_fma = true, // Conservatively assume true
         };
     }
 
     /// Get best vector width for integer operations
     pub fn getBestIntWidth(self: CpuFeatures) usize {
-        if (self.has_avx2) return 8;  // 256-bit = 8x i32
-        if (self.has_sse) return 4;   // 128-bit = 4x i32
+        if (self.has_avx2) return 8; // 256-bit = 8x i32
+        if (self.has_sse) return 4; // 128-bit = 4x i32
         return 1; // Scalar fallback
     }
 
     /// Get best vector width for float operations
     pub fn getBestFloatWidth(self: CpuFeatures) usize {
-        if (self.has_avx) return 8;   // 256-bit = 8x f32
-        if (self.has_sse) return 4;   // 128-bit = 4x f32
+        if (self.has_avx) return 8; // 256-bit = 8x f32
+        if (self.has_sse) return 4; // 128-bit = 4x f32
         return 1; // Scalar fallback
     }
 };
@@ -1370,7 +1370,7 @@ pub const NativeCodegen = struct {
                     const bytes = std.mem.toBytes(@as(i64, if (bool_val) 1 else 0));
                     @memcpy(data[offset..][0..8], &bytes);
                 },
-                .@"null", .@"undefined" => {
+                .null, .undefined => {
                     @memset(data[offset..][0..8], 0);
                 },
                 else => {
@@ -1427,7 +1427,7 @@ pub const NativeCodegen = struct {
                     const bytes = std.mem.toBytes(@as(i64, if (bool_val) 1 else 0));
                     @memcpy(data[offset..][0..8], &bytes);
                 },
-                .@"null", .@"undefined" => {
+                .null, .undefined => {
                     @memset(data[offset..][0..8], 0);
                 },
                 else => {
@@ -2275,7 +2275,7 @@ pub const NativeCodegen = struct {
                         // Set rax based on comparison
                         try self.emitCmpResult();
                     } else {
-                        std.debug.print("Unknown enum variant in pattern: {s}::{s}\n", .{enum_name, variant_name});
+                        std.debug.print("Unknown enum variant in pattern: {s}::{s}\n", .{ enum_name, variant_name });
                         try self.assembler.movRegImm64(.rax, 0);
                     }
                 } else {
@@ -2910,7 +2910,7 @@ pub const NativeCodegen = struct {
         }
 
         // Primitive types
-        if (std.mem.eql(u8, resolved_name, "int")) return 8;  // Default int is i64 on x64
+        if (std.mem.eql(u8, resolved_name, "int")) return 8; // Default int is i64 on x64
         if (std.mem.eql(u8, type_name, "i32")) return 4;
         if (std.mem.eql(u8, type_name, "i64")) return 8;
         if (std.mem.eql(u8, type_name, "usize")) return 8; // usize is 8 bytes on x64
@@ -2922,7 +2922,7 @@ pub const NativeCodegen = struct {
         if (std.mem.eql(u8, type_name, "i8")) return 1;
         if (std.mem.eql(u8, type_name, "i16")) return 2;
         if (std.mem.eql(u8, type_name, "bool")) return 8;
-        if (std.mem.eql(u8, type_name, "float")) return 8;  // Default float is f64
+        if (std.mem.eql(u8, type_name, "float")) return 8; // Default float is f64
         if (std.mem.eql(u8, type_name, "f32")) return 4;
         if (std.mem.eql(u8, type_name, "f64")) return 8;
         if (std.mem.eql(u8, type_name, "str")) return 8; // String pointers are 8 bytes
@@ -3180,7 +3180,7 @@ pub const NativeCodegen = struct {
                 // Register globally
                 if (self.type_registry) |registry| {
                     registry.registerEnum(layout) catch |err| {
-                        std.debug.print("Warning: Failed to register enum '{s}' in global registry: {}\n", .{layout.name, err});
+                        std.debug.print("Warning: Failed to register enum '{s}' in global registry: {}\n", .{ layout.name, err });
                     };
                 }
             },
@@ -3239,7 +3239,7 @@ pub const NativeCodegen = struct {
                 // Register globally
                 if (self.type_registry) |registry| {
                     registry.registerStruct(layout) catch |err| {
-                        std.debug.print("Warning: Failed to register struct '{s}' in global registry: {}\n", .{layout.name, err});
+                        std.debug.print("Warning: Failed to register struct '{s}' in global registry: {}\n", .{ layout.name, err });
                     };
                 }
             },
@@ -3328,7 +3328,10 @@ pub const NativeCodegen = struct {
         };
 
         // Store source in module_sources list
-        self.module_sources.append(self.allocator, module_source) catch { self.allocator.free(module_source); return; };
+        self.module_sources.append(self.allocator, module_source) catch {
+            self.allocator.free(module_source);
+            return;
+        };
 
         // Parse the module
         const lexer_mod = @import("lexer");
@@ -3340,13 +3343,13 @@ pub const NativeCodegen = struct {
 
         var lexer = lexer_mod.Lexer.init(arena_alloc, module_source);
         const token_list = lexer.tokenize() catch |err| {
-            std.debug.print("Failed to tokenize module '{s}': {}\n", .{module_path, err});
+            std.debug.print("Failed to tokenize module '{s}': {}\n", .{ module_path, err });
             return;
         };
         const tokens = token_list.items;
 
         var parser = parser_mod.Parser.init(arena_alloc, tokens) catch |err| {
-            std.debug.print("Failed to create parser for module '{s}': {}\n", .{module_path, err});
+            std.debug.print("Failed to create parser for module '{s}': {}\n", .{ module_path, err });
             return;
         };
         defer parser.deinit();
@@ -3372,7 +3375,7 @@ pub const NativeCodegen = struct {
         }
 
         const module_ast = parser.parse() catch |err| {
-            std.debug.print("Failed to parse module '{s}': {}\n", .{module_path, err});
+            std.debug.print("Failed to parse module '{s}': {}\n", .{ module_path, err });
             return;
         };
 
@@ -3839,11 +3842,11 @@ pub const NativeCodegen = struct {
                         //   [rsp+16] len
                         //   [rsp+24] base pointer (Array header ptr)
                         try self.generateExpr(for_stmt.iterable);
-                        try self.assembler.pushReg(.rax);                // base
-                        try self.assembler.movRegMem(.rax, .rax, 0);    // len
-                        try self.assembler.pushReg(.rax);                // len slot
+                        try self.assembler.pushReg(.rax); // base
+                        try self.assembler.movRegMem(.rax, .rax, 0); // len
+                        try self.assembler.pushReg(.rax); // len slot
                         try self.assembler.movRegImm64(.rax, 0);
-                        try self.assembler.pushReg(.rax);                // i = 0
+                        try self.assembler.pushReg(.rax); // i = 0
                         self.next_local_offset += 3;
 
                         const iter_offset = self.next_local_offset;
@@ -3988,7 +3991,7 @@ pub const NativeCodegen = struct {
                 const iterator_name_copy = try self.allocator.dupe(u8, for_stmt.iterator);
                 try self.locals.put(iterator_name_copy, .{
                     .offset = iterator_offset,
-                    .type_name = "i32",  // For loop iterators are always i32
+                    .type_name = "i32", // For loop iterators are always i32
                     .size = 8,
                 });
                 // Note: HashMap now owns iterator_name_copy, will be freed in cleanup
@@ -4313,7 +4316,7 @@ pub const NativeCodegen = struct {
                 };
 
                 const layout = StructLayout{
-                    .name = name_copy,  // Reuse the same copied name
+                    .name = name_copy, // Reuse the same copied name
                     .fields = fields_slice,
                     .total_size = offset,
                 };
@@ -4334,7 +4337,7 @@ pub const NativeCodegen = struct {
                 // Also register in global type registry for cross-module resolution
                 if (self.type_registry) |registry| {
                     registry.registerStruct(layout) catch |err| {
-                        std.debug.print("Warning: Failed to register struct '{s}' in global registry: {}\n", .{layout.name, err});
+                        std.debug.print("Warning: Failed to register struct '{s}' in global registry: {}\n", .{ layout.name, err });
                     };
                 }
 
@@ -4418,7 +4421,7 @@ pub const NativeCodegen = struct {
                 };
 
                 const layout = EnumLayout{
-                    .name = name_copy,  // Reuse the same copied name
+                    .name = name_copy, // Reuse the same copied name
                     .variants = variant_infos,
                 };
 
@@ -4436,7 +4439,7 @@ pub const NativeCodegen = struct {
                 // Also register in global type registry for cross-module resolution
                 if (self.type_registry) |registry| {
                     registry.registerEnum(layout) catch |err| {
-                        std.debug.print("Warning: Failed to register enum '{s}' in global registry: {}\n", .{layout.name, err});
+                        std.debug.print("Warning: Failed to register enum '{s}' in global registry: {}\n", .{ layout.name, err });
                     };
                 }
             },
@@ -4963,13 +4966,13 @@ pub const NativeCodegen = struct {
 
         var lexer = lexer_mod.Lexer.init(arena_alloc, module_source);
         const token_list = lexer.tokenize() catch |err| {
-            std.debug.print("Failed to tokenize module '{s}': {}\n", .{module_path, err});
+            std.debug.print("Failed to tokenize module '{s}': {}\n", .{ module_path, err });
             return;
         };
         const tokens = token_list.items;
 
         var parser = parser_mod.Parser.init(arena_alloc, tokens) catch |err| {
-            std.debug.print("Failed to create parser for module '{s}': {}\n", .{module_path, err});
+            std.debug.print("Failed to create parser for module '{s}': {}\n", .{ module_path, err });
             return;
         };
         defer parser.deinit();
@@ -4983,7 +4986,7 @@ pub const NativeCodegen = struct {
         }
 
         const module_ast = parser.parse() catch |err| {
-            std.debug.print("Failed to parse module '{s}': {}\n", .{module_path, err});
+            std.debug.print("Failed to parse module '{s}': {}\n", .{ module_path, err });
             return;
         };
         // Arena allocator will free all AST memory when it's deinitialized
@@ -5078,10 +5081,10 @@ pub const NativeCodegen = struct {
                 // fmod via x - trunc(x/y)*y using SSE4.1 roundsd.
                 // xmm2 = x (saved), xmm0/xmm1 hold left/right already.
                 try self.assembler.movqXmmReg(.xmm2, .rax); // xmm2 = x saved
-                try self.assembler.divsdXmmXmm(.xmm0, .xmm1);     // xmm0 = x/y
+                try self.assembler.divsdXmmXmm(.xmm0, .xmm1); // xmm0 = x/y
                 try self.assembler.roundsdXmmXmm(.xmm0, .xmm0, 3); // trunc
-                try self.assembler.mulsdXmmXmm(.xmm0, .xmm1);      // * y
-                try self.assembler.subsdXmmXmm(.xmm2, .xmm0);      // x - ...
+                try self.assembler.mulsdXmmXmm(.xmm0, .xmm1); // * y
+                try self.assembler.subsdXmmXmm(.xmm2, .xmm0); // x - ...
                 try self.assembler.movqRegXmm(.rax, .xmm2);
                 return;
             },
@@ -5187,8 +5190,8 @@ pub const NativeCodegen = struct {
         try self.assembler.movRegReg(.r8, .rax); // r8 = len
 
         // Pop src (was [rsp]) and count (was [rsp+8] which is now [rsp]).
-        try self.assembler.popReg(.rax);   // rax = src
-        try self.assembler.popReg(.rcx);   // rcx = count
+        try self.assembler.popReg(.rax); // rax = src
+        try self.assembler.popReg(.rcx); // rcx = count
 
         // If count < 0, treat as 0.
         try self.assembler.testRegReg(.rcx, .rcx);
@@ -5218,8 +5221,8 @@ pub const NativeCodegen = struct {
         // Allocate total_len + 1 bytes.
         try self.assembler.pushReg(.rax); // src
         try self.assembler.pushReg(.rcx); // count
-        try self.assembler.pushReg(.r8);  // len
-        try self.assembler.pushReg(.r9);  // total
+        try self.assembler.pushReg(.r8); // len
+        try self.assembler.pushReg(.r9); // total
         try self.assembler.movRegReg(.rdi, .r9);
         try self.assembler.addRegImm(.rdi, 1);
         try self.heapAlloc();
@@ -5598,11 +5601,11 @@ pub const NativeCodegen = struct {
         try self.assembler.andRegReg(.rsi, .rcx);
 
         // mmap(NULL, len, PROT_READ|PROT_WRITE, MAP_ANON|MAP_PRIVATE, -1, 0)
-        try self.assembler.movRegImm64(.rdi, 0);             // addr = NULL
-        try self.assembler.movRegImm64(.rdx, 3);             // PROT_READ|PROT_WRITE
-        try self.assembler.movRegImm64(.r10, 0x1002);        // MAP_ANON|MAP_PRIVATE
-        try self.assembler.movRegImm64(.r8, @bitCast(@as(i64, -1)));  // fd = -1
-        try self.assembler.movRegImm64(.r9, 0);              // offset = 0
+        try self.assembler.movRegImm64(.rdi, 0); // addr = NULL
+        try self.assembler.movRegImm64(.rdx, 3); // PROT_READ|PROT_WRITE
+        try self.assembler.movRegImm64(.r10, 0x1002); // MAP_ANON|MAP_PRIVATE
+        try self.assembler.movRegImm64(.r8, @bitCast(@as(i64, -1))); // fd = -1
+        try self.assembler.movRegImm64(.r9, 0); // offset = 0
         // syscall number: macOS uses 0x20000C5 for mmap (BSD syscall class).
         const mmap_syscall: u64 = switch (builtin.os.tag) {
             .macos => 0x20000C5,
@@ -7268,7 +7271,7 @@ pub const NativeCodegen = struct {
                 // Store variable name pointing to where the tag is on stack
                 const name = try self.allocator.dupe(u8, decl.name);
                 self.locals.put(name, .{
-                    .offset = tag_offset,  // Tag is at higher offset (pushed second)
+                    .offset = tag_offset, // Tag is at higher offset (pushed second)
                     .type_name = type_name,
                     .size = 16, // All enums are 16 bytes (tag + data)
                 }) catch |err| {
@@ -7457,20 +7460,20 @@ pub const NativeCodegen = struct {
     /// Uses fldl2e, fyl2x-free path (just fmulp), frndint, f2xm1, fscale.
     fn emitFpuExp(self: *NativeCodegen) CodegenError!void {
         try self.assembler.pushReg(.rax);
-        try self.assembler.fldl2e();        // st(0) = log2(e)
-        try self.assembler.fldQwordRsp();   // st(0) = x, st(1) = log2(e)
+        try self.assembler.fldl2e(); // st(0) = log2(e)
+        try self.assembler.fldQwordRsp(); // st(0) = x, st(1) = log2(e)
         try self.emitRawBytes(&[_]u8{ 0xDE, 0xC9 }); // fmulp st(1), st(0): st(1)*=st(0), pop
         // Stack: st(0) = x*log2(e) = y.
         try self.emitRawBytes(&[_]u8{ 0xD9, 0xC0 }); // fld st(0): duplicate y
-        try self.assembler.frndint();       // st(0) = round(y) = i
+        try self.assembler.frndint(); // st(0) = round(y) = i
         try self.emitRawBytes(&[_]u8{ 0xDC, 0xE9 }); // fsub st(1), st(0): st(1) -= st(0) → st(1) = f
         // Stack: st(0) = i, st(1) = f.
-        try self.assembler.fxch();          // st(0) = f, st(1) = i
-        try self.assembler.f2xm1();         // st(0) = 2^f - 1
-        try self.assembler.fld1();          // st(0) = 1, st(1) = 2^f - 1, st(2) = i
+        try self.assembler.fxch(); // st(0) = f, st(1) = i
+        try self.assembler.f2xm1(); // st(0) = 2^f - 1
+        try self.assembler.fld1(); // st(0) = 1, st(1) = 2^f - 1, st(2) = i
         try self.emitRawBytes(&[_]u8{ 0xDE, 0xC1 }); // faddp st(1), st(0): st(1) += st(0), pop
         // Stack: st(0) = 2^f, st(1) = i.
-        try self.assembler.fscale();        // st(0) = 2^f * 2^i = 2^y = e^x
+        try self.assembler.fscale(); // st(0) = 2^f * 2^i = 2^y = e^x
         // Drop i from stack: fstp st(1) stores st(0) to st(1) and pops, leaving st(0) = 2^y.
         try self.assembler.fstpSt1();
         try self.assembler.fstpQwordRsp();
@@ -8482,7 +8485,7 @@ pub const NativeCodegen = struct {
                         // Evaluate receiver → rax = base.
                         try self.generateExpr(member.object);
                         try self.assembler.movRegReg(.r11, .rax); // r11 = base
-                        try self.assembler.popReg(.r9);  // r9 = index
+                        try self.assembler.popReg(.r9); // r9 = index
                         try self.assembler.popReg(.r10); // r10 = value
 
                         // Load header.
@@ -8676,7 +8679,7 @@ pub const NativeCodegen = struct {
 
                         // Resolve arguments: build an array of expressions for each parameter position
                         // Start with null for each position
-                        var resolved_args: [16]?*ast.Expr = .{null} ** 16;
+                        var resolved_args: [16]?*ast.Expr = @splat(null);
 
                         // Fill in positional arguments
                         for (call.args, 0..) |arg, idx| {
@@ -8968,17 +8971,17 @@ pub const NativeCodegen = struct {
                                 // After: st(0)=atan2(x, t). Store from st(0).
                                 try self.assembler.movqRegXmm(.rax, .xmm2);
                                 try self.assembler.pushReg(.rax);
-                                try self.assembler.fldQwordRsp();     // st(0) = t
+                                try self.assembler.fldQwordRsp(); // st(0) = t
                                 try self.assembler.movqRegXmm(.rax, .xmm0);
                                 try self.assembler.movRegMem(.rsp, .rsp, 0); // dead; recompute below
                                 // Instead: write x over scratch slot.
                                 try self.assembler.movMemReg(.rsp, 0, .rax);
-                                try self.assembler.fldQwordRsp();     // st(0) = x, st(1) = t
+                                try self.assembler.fldQwordRsp(); // st(0) = x, st(1) = t
                                 // fpatan: st(1) = atan2(st(1), st(0)); pop st(0).
                                 // That gives st(0) = atan2(t, x), which is NOT what we want.
                                 // We want atan2(x, t). Swap first.
-                                try self.assembler.fxch();            // st(0) = t, st(1) = x
-                                try self.assembler.fpatan();          // st(0) = atan2(x, t)
+                                try self.assembler.fxch(); // st(0) = t, st(1) = x
+                                try self.assembler.fpatan(); // st(0) = atan2(x, t)
                                 try self.assembler.fstpQwordRsp();
                                 try self.assembler.popReg(.rax);
                                 return;
@@ -8995,13 +8998,13 @@ pub const NativeCodegen = struct {
                                 // So load x first (st(0)=x), then sqrt (st(0)=sqrt, st(1)=x).
                                 // After fpatan: st(0) = atan2(st(1), st(0)) = atan2(x, sqrt) — wrong.
                                 // Swap to get st(0)=x, st(1)=sqrt; fpatan → atan2(sqrt, x).
-                                try self.assembler.pushReg(.rax);     // x
-                                try self.assembler.fldQwordRsp();     // st(0) = x
+                                try self.assembler.pushReg(.rax); // x
+                                try self.assembler.fldQwordRsp(); // st(0) = x
                                 try self.assembler.movqRegXmm(.rax, .xmm2);
                                 try self.assembler.movMemReg(.rsp, 0, .rax);
-                                try self.assembler.fldQwordRsp();     // st(0) = sqrt, st(1) = x
-                                try self.assembler.fxch();            // st(0) = x, st(1) = sqrt
-                                try self.assembler.fpatan();          // st(0) = atan2(sqrt, x)
+                                try self.assembler.fldQwordRsp(); // st(0) = sqrt, st(1) = x
+                                try self.assembler.fxch(); // st(0) = x, st(1) = sqrt
+                                try self.assembler.fpatan(); // st(0) = atan2(sqrt, x)
                                 try self.assembler.fstpQwordRsp();
                                 try self.assembler.popReg(.rax);
                                 return;
@@ -9009,22 +9012,22 @@ pub const NativeCodegen = struct {
                                 // atan2(y, x): first arg y already loaded in rax; load x separately.
                                 // The first arg was evaluated above (into rax); we need to also evaluate args[1].
                                 // Save y; evaluate x; stack layout [rsp]=y, [rsp+8] unused → use 16 bytes.
-                                try self.assembler.pushReg(.rax);     // [rsp]=y
+                                try self.assembler.pushReg(.rax); // [rsp]=y
                                 if (call.args.len >= 2) {
                                     try self.generateExpr(call.args[1]);
                                 } else {
                                     try self.assembler.movRegImm64(.rax, 0x3FF0000000000000); // default x=1
                                 }
-                                try self.assembler.pushReg(.rax);     // [rsp]=x, [rsp+8]=y
-                                try self.assembler.fldQwordRsp();     // st(0) = x
+                                try self.assembler.pushReg(.rax); // [rsp]=x, [rsp+8]=y
+                                try self.assembler.fldQwordRsp(); // st(0) = x
                                 // Load y from [rsp+8]: need fld qword ptr [rsp+8] — use temporary reg.
                                 try self.assembler.movRegMem(.rax, .rsp, 8);
                                 try self.assembler.movMemReg(.rsp, 0, .rax); // overwrite x slot with y
-                                try self.assembler.fldQwordRsp();     // st(0)=y, st(1)=x
-                                try self.assembler.fpatan();          // st(0) = atan2(y, x)
-                                try self.assembler.fstpQwordRsp();    // result → [rsp]
-                                try self.assembler.popReg(.rax);      // rax = result
-                                try self.assembler.popReg(.rcx);      // drop extra slot
+                                try self.assembler.fldQwordRsp(); // st(0)=y, st(1)=x
+                                try self.assembler.fpatan(); // st(0) = atan2(y, x)
+                                try self.assembler.fstpQwordRsp(); // result → [rsp]
+                                try self.assembler.popReg(.rax); // rax = result
+                                try self.assembler.popReg(.rcx); // drop extra slot
                                 return;
                             } else if (std.mem.eql(u8, func_name, "sinh")) {
                                 // sinh(x) = (e^x - e^-x) / 2.
@@ -9033,13 +9036,13 @@ pub const NativeCodegen = struct {
                                 // Simpler: use (exp(2x) - 1) / (2*exp(x)).
                                 // We'll emit: e = exp(x); 1/e = 1.0 / e; (e - 1/e) * 0.5.
                                 try self.emitFpuExp(); // rax = exp(x)
-                                try self.assembler.pushReg(.rax);     // save exp(x)
+                                try self.assembler.pushReg(.rax); // save exp(x)
                                 // Compute 1/exp(x) = exp(-x). We already have exp(x); just divide 1 by it.
                                 try self.assembler.movqXmmReg(.xmm0, .rax);
                                 try self.assembler.movRegImm64(.rcx, 0x3FF0000000000000);
                                 try self.assembler.movqXmmReg(.xmm1, .rcx);
                                 try self.assembler.divsdXmmXmm(.xmm1, .xmm0); // xmm1 = 1/exp(x)
-                                try self.assembler.popReg(.rax);      // exp(x)
+                                try self.assembler.popReg(.rax); // exp(x)
                                 try self.assembler.movqXmmReg(.xmm0, .rax);
                                 try self.assembler.subsdXmmXmm(.xmm0, .xmm1); // exp(x) - exp(-x)
                                 try self.assembler.movRegImm64(.rcx, 0x3FE0000000000000); // 0.5
@@ -9090,72 +9093,72 @@ pub const NativeCodegen = struct {
                                 // ln(x) = ln(2) * log2(x). fyl2x computes st(1) * log2(st(0)).
                                 // Load ln(2) as y, then x, then fyl2x.
                                 try self.assembler.pushReg(.rax);
-                                try self.assembler.fldln2();           // st(0) = ln(2)
-                                try self.assembler.fldQwordRsp();      // st(0) = x, st(1) = ln(2)
-                                try self.assembler.fyl2x();            // st(0) = ln(2)*log2(x) = ln(x)
+                                try self.assembler.fldln2(); // st(0) = ln(2)
+                                try self.assembler.fldQwordRsp(); // st(0) = x, st(1) = ln(2)
+                                try self.assembler.fyl2x(); // st(0) = ln(2)*log2(x) = ln(x)
                                 try self.assembler.fstpQwordRsp();
                                 try self.assembler.popReg(.rax);
                                 return;
                             } else if (std.mem.eql(u8, func_name, "log10")) {
                                 // log10(x) = log10(2) * log2(x).
                                 try self.assembler.pushReg(.rax);
-                                try self.assembler.fldlg2();           // st(0) = log10(2)
-                                try self.assembler.fldQwordRsp();      // st(0) = x, st(1) = log10(2)
-                                try self.assembler.fyl2x();            // st(0) = log10(x)
+                                try self.assembler.fldlg2(); // st(0) = log10(2)
+                                try self.assembler.fldQwordRsp(); // st(0) = x, st(1) = log10(2)
+                                try self.assembler.fyl2x(); // st(0) = log10(x)
                                 try self.assembler.fstpQwordRsp();
                                 try self.assembler.popReg(.rax);
                                 return;
                             } else if (std.mem.eql(u8, func_name, "log2")) {
                                 // log2(x) = 1 * log2(x).
                                 try self.assembler.pushReg(.rax);
-                                try self.assembler.fld1();             // st(0) = 1
-                                try self.assembler.fldQwordRsp();      // st(0) = x, st(1) = 1
-                                try self.assembler.fyl2x();            // st(0) = log2(x)
+                                try self.assembler.fld1(); // st(0) = 1
+                                try self.assembler.fldQwordRsp(); // st(0) = x, st(1) = 1
+                                try self.assembler.fyl2x(); // st(0) = log2(x)
                                 try self.assembler.fstpQwordRsp();
                                 try self.assembler.popReg(.rax);
                                 return;
                             } else if (std.mem.eql(u8, func_name, "pow")) {
                                 // pow(x, y) = 2^(y * log2(x)).
                                 // First arg x already in rax; evaluate y, then compute.
-                                try self.assembler.pushReg(.rax);      // [rsp] = x
+                                try self.assembler.pushReg(.rax); // [rsp] = x
                                 if (call.args.len >= 2) {
                                     try self.generateExpr(call.args[1]);
                                 } else {
                                     try self.assembler.movRegImm64(.rax, 0x3FF0000000000000); // y=1
                                 }
-                                try self.assembler.pushReg(.rax);      // [rsp]=y, [rsp+8]=x
+                                try self.assembler.pushReg(.rax); // [rsp]=y, [rsp+8]=x
                                 // Load y as fyl2x's "y" factor, then x.
-                                try self.assembler.fldQwordRsp();      // st(0) = y
+                                try self.assembler.fldQwordRsp(); // st(0) = y
                                 try self.assembler.movRegMem(.rax, .rsp, 8);
                                 try self.assembler.movMemReg(.rsp, 0, .rax);
-                                try self.assembler.fldQwordRsp();      // st(0) = x, st(1) = y
-                                try self.assembler.fyl2x();            // st(0) = y*log2(x)
+                                try self.assembler.fldQwordRsp(); // st(0) = x, st(1) = y
+                                try self.assembler.fyl2x(); // st(0) = y*log2(x)
                                 // Now compute 2^st(0). Use frndint + f2xm1 + fscale trick.
                                 // st(0) is z = y*log2(x). We want 2^z.
                                 //   Split z = i + f where i = round(z), |f| ≤ 0.5.
                                 //   2^z = 2^i * 2^f = 2^i * (1 + (2^f - 1)).
-                                try self.assembler.fld1();             // st(0)=1, st(1)=z
-                                try self.assembler.fstpSt0();          // pop 1 — we used it to duplicate stack
+                                try self.assembler.fld1(); // st(0)=1, st(1)=z
+                                try self.assembler.fstpSt0(); // pop 1 — we used it to duplicate stack
                                 // Duplicate approach: fld st(0). But our assembler doesn't have fld st(i).
                                 // Alternative: use fscale with a copy of integer part.
                                 // Emit: fld st(0) via DD C0 (fld st(0) = D9 C0). Add it now inline.
                                 try self.emitRawBytes(&[_]u8{ 0xD9, 0xC0 }); // fld st(0) — duplicates z
-                                try self.assembler.frndint();          // st(0) = round(z), st(1) = z
+                                try self.assembler.frndint(); // st(0) = round(z), st(1) = z
                                 // Compute f = z - round(z): fsub st(1), st(0)? Simpler: fxch; fsub st(0), st(1)
                                 try self.emitRawBytes(&[_]u8{ 0xDC, 0xE9 }); // fsub st(1), st(0): st(1)-=st(0)
                                 // Now st(0)=i, st(1)=f.
-                                try self.assembler.fxch();             // st(0)=f, st(1)=i
-                                try self.assembler.f2xm1();            // st(0) = 2^f - 1
-                                try self.assembler.fld1();             // st(0)=1, st(1)=2^f-1, st(2)=i
+                                try self.assembler.fxch(); // st(0)=f, st(1)=i
+                                try self.assembler.f2xm1(); // st(0) = 2^f - 1
+                                try self.assembler.fld1(); // st(0)=1, st(1)=2^f-1, st(2)=i
                                 // Add: st(1) += st(0) → 2^f. Then pop top.
                                 try self.emitRawBytes(&[_]u8{ 0xDE, 0xC1 }); // faddp st(1), st(0)
                                 // Stack: st(0)=2^f, st(1)=i.
-                                try self.assembler.fscale();           // st(0) = 2^f * 2^i = 2^z
+                                try self.assembler.fscale(); // st(0) = 2^f * 2^i = 2^z
                                 // Drop i from stack.
-                                try self.assembler.fstpSt1();          // stores st(0) to st(1) and pops → st(0)=result
-                                try self.assembler.fstpQwordRsp();     // result → [rsp]
-                                try self.assembler.popReg(.rax);       // rax = result
-                                try self.assembler.popReg(.rcx);       // drop extra slot
+                                try self.assembler.fstpSt1(); // stores st(0) to st(1) and pops → st(0)=result
+                                try self.assembler.fstpQwordRsp(); // result → [rsp]
+                                try self.assembler.popReg(.rax); // rax = result
+                                try self.assembler.popReg(.rcx); // drop extra slot
                                 return;
                             } else if (std.mem.eql(u8, func_name, "floor")) {
                                 // SSE4.1 roundsd with mode 1 (toward -inf).
@@ -9181,7 +9184,7 @@ pub const NativeCodegen = struct {
                             } else if (std.mem.eql(u8, func_name, "fmod")) {
                                 // fmod(x, y) = x - trunc(x/y)*y.
                                 // Both args needed; first already in rax (x); evaluate y next.
-                                try self.assembler.pushReg(.rax);      // save x
+                                try self.assembler.pushReg(.rax); // save x
                                 if (call.args.len >= 2) {
                                     try self.generateExpr(call.args[1]);
                                 }
@@ -9199,14 +9202,14 @@ pub const NativeCodegen = struct {
                                 // copysign(x, y): magnitude of x, sign of y.
                                 // Use bit manipulation on rax.
                                 // First arg x in rax; evaluate y; combine.
-                                try self.assembler.pushReg(.rax);      // save x
+                                try self.assembler.pushReg(.rax); // save x
                                 if (call.args.len >= 2) {
                                     try self.generateExpr(call.args[1]);
                                 }
                                 // rax = y. Extract sign bit: y & 0x8000000000000000.
                                 try self.assembler.movRegImm64(.rcx, @bitCast(@as(u64, 0x8000000000000000)));
                                 try self.assembler.andRegReg(.rax, .rcx); // rax = sign(y) bit
-                                try self.assembler.popReg(.rdx);       // rdx = x
+                                try self.assembler.popReg(.rdx); // rdx = x
                                 // Clear sign of x: rdx & 0x7FFFFFFFFFFFFFFF.
                                 try self.assembler.movRegImm64(.rcx, 0x7FFFFFFFFFFFFFFF);
                                 try self.assembler.andRegReg(.rdx, .rcx);
@@ -9600,11 +9603,11 @@ pub const NativeCodegen = struct {
                                 // This is likely an error, but we'll generate 0 as a placeholder
                                 try self.assembler.movRegImm64(.rax, 0);
                             },
-                            .@"null" => {
+                            .null => {
                                 // Null value
                                 try self.assembler.movRegImm64(.rax, 0);
                             },
-                            .@"undefined" => {
+                            .undefined => {
                                 // Undefined value - generate 0 as placeholder
                                 try self.assembler.movRegImm64(.rax, 0);
                             },
@@ -10788,7 +10791,7 @@ pub const NativeCodegen = struct {
                     try self.generateExpr(end_expr);
                 } else {
                     try self.assembler.movRegMem(.rdi, .rsp, 0); // src ptr
-                    try self.stringLength(.rdi);                 // rax = len
+                    try self.stringLength(.rdi); // rax = len
                 }
                 if (slice.inclusive) {
                     try self.assembler.addRegImm(.rax, 1);
