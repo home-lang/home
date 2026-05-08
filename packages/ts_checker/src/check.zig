@@ -560,7 +560,7 @@ pub const Checker = struct {
             const tpp = hir_mod.typeParameterOf(self.hir, tp);
             // Use minimal constraint/default during pre-registration —
             // the real entry from `checkTypeAliasDecl` overwrites this.
-            const tp_id = self.interner.internTypeParameterWithVariance(
+            const tp_id = self.interner.internFreshTypeParameterWithVariance(
                 tpp.name,
                 types.Primitive.unknown,
                 types.Primitive.none,
@@ -2018,7 +2018,7 @@ pub const Checker = struct {
                 try self.lowerer.lower(tpp.default)
             else
                 types.Primitive.none;
-            const tp_id = self.interner.internTypeParameterWithVariance(
+            const tp_id = self.interner.internFreshTypeParameterWithVariance(
                 tpp.name,
                 constraint,
                 def,
@@ -2660,7 +2660,7 @@ pub const Checker = struct {
                 try self.lowerer.lower(tpp.default)
             else
                 types.Primitive.none;
-            const tp_id = self.interner.internTypeParameterWithVariance(
+            const tp_id = self.interner.internFreshTypeParameterWithVariance(
                 tpp.name,
                 constraint,
                 def,
@@ -2967,7 +2967,7 @@ pub const Checker = struct {
                 try self.lowerer.lower(tpp.default)
             else
                 types.Primitive.none;
-            const tp_id = self.interner.internTypeParameterWithVariance(
+            const tp_id = self.interner.internFreshTypeParameterWithVariance(
                 tpp.name,
                 constraint,
                 def,
@@ -3387,7 +3387,7 @@ pub const Checker = struct {
                         try self.lowerer.lower(tpp.default)
                     else
                         types.Primitive.none;
-                    const tp_id = self.interner.internTypeParameterWithVariance(
+                    const tp_id = self.interner.internFreshTypeParameterWithVariance(
                         tpp.name,
                         constraint,
                         def,
@@ -5858,6 +5858,24 @@ pub const Checker = struct {
         if (arg_t >= pool.typeCount()) return;
         const p_flags = pool.flagsOf(param_t);
         const p_payload = pool.payloadOf(param_t);
+        // Union/intersection flags are aggregate ORs of their members,
+        // so a union containing `T` also has `is_type_parameter`.
+        // Dispatch compound containers before the bare type-parameter
+        // case or `(T | undefined)[]` will bind the whole union as T.
+        if (p_flags.is_union) {
+            if (p_payload >= pool.union_payloads.items.len) return;
+            for (self.interner.unionMembers(param_t)) |um| {
+                try self.inferFromPair(um, arg_t, subs);
+            }
+            return;
+        }
+        if (p_flags.is_intersection) {
+            if (p_payload >= pool.intersection_payloads.items.len) return;
+            for (self.interner.intersectionMembers(param_t)) |im| {
+                try self.inferFromPair(im, arg_t, subs);
+            }
+            return;
+        }
         if (p_flags.is_type_parameter) {
             if (!subs.contains(param_t)) {
                 try subs.put(self.gpa, param_t, self.widenForInference(arg_t));
@@ -5903,23 +5921,6 @@ pub const Checker = struct {
             }
             return;
         }
-        // Param-side union / intersection: try matching each branch
-        // against the arg. Keeps `T | undefined` (lowered optional)
-        // and similar shapes contributing a mapping.
-        if (p_flags.is_union) {
-            if (p_payload >= pool.union_payloads.items.len) return;
-            for (self.interner.unionMembers(param_t)) |um| {
-                try self.inferFromPair(um, arg_t, subs);
-            }
-            return;
-        }
-        if (p_flags.is_intersection) {
-            if (p_payload >= pool.intersection_payloads.items.len) return;
-            for (self.interner.intersectionMembers(param_t)) |im| {
-                try self.inferFromPair(im, arg_t, subs);
-            }
-            return;
-        }
     }
 
     fn inferFromArgument(
@@ -5929,6 +5930,24 @@ pub const Checker = struct {
         arg_node: NodeId,
         subs: *std.AutoHashMapUnmanaged(TypeId, TypeId),
     ) !void {
+        if (param_t >= types.Primitive.first_dynamic and
+            param_t < self.interner.pool.typeCount() and
+            arg_t >= types.Primitive.first_dynamic and
+            arg_t < self.interner.pool.typeCount() and
+            self.interner.pool.flagsOf(param_t).is_union and
+            self.interner.pool.flagsOf(arg_t).is_object_type)
+        {
+            for (self.interner.unionMembers(param_t)) |member| {
+                if (member >= types.Primitive.first_dynamic and
+                    member < self.interner.pool.typeCount() and
+                    self.interner.pool.flagsOf(member).is_object_type and
+                    (self.engine.isAssignableTo(arg_t, member) catch false))
+                {
+                    try self.inferFromPair(member, arg_t, subs);
+                    return;
+                }
+            }
+        }
         if (self.hir.kindOf(arg_node) == .object_literal and
             param_t >= types.Primitive.first_dynamic and
             param_t < self.interner.pool.typeCount() and
@@ -6258,6 +6277,7 @@ pub const Checker = struct {
     }
 
     fn isArgumentAssignableToParam(self: *Checker, arg_node: NodeId, arg_t: TypeId, param_t: TypeId) !bool {
+        if (try self.literalExpressionAssignableToTarget(arg_node, param_t)) return true;
         if (self.hir.kindOf(arg_node) == .object_literal) {
             if (try self.objectLiteralAssignableToTarget(arg_node, arg_t, param_t)) return true;
         }
@@ -6332,6 +6352,18 @@ pub const Checker = struct {
         if (target_t == types.Primitive.false_lit) return self.hir.kindOf(value_node) == .literal_bool and !hir_mod.literalBoolOf(self.hir, value_node);
         if (target_t < types.Primitive.first_dynamic or target_t >= self.interner.pool.typeCount()) return false;
         const flags = self.interner.pool.flagsOf(target_t);
+        if (flags.is_union) {
+            if (self.interner.pool.payloadOf(target_t) >= self.interner.pool.union_payloads.items.len) return false;
+            for (self.interner.unionMembers(target_t)) |member| {
+                if (try self.literalExpressionAssignableToTarget(value_node, member)) return true;
+            }
+            return false;
+        }
+        if (flags.is_keyof) {
+            return self.hir.kindOf(value_node) == .literal_string or
+                self.hir.kindOf(value_node) == .literal_number or
+                self.hir.kindOf(value_node) == .literal_bigint;
+        }
         if (!flags.is_literal) return false;
         const lit = self.interner.literalOf(target_t);
         return switch (lit) {
@@ -9543,6 +9575,48 @@ test "checker: object literal discriminant guides generic union inference" {
         \\declare function foo<T>(item: Item<T>): T;
         \\let x1 = foo({ kind: 'a', data: 42 });
         \\let x2 = foo({ kind: 'b', data: [1, 2] });
+    );
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+    try T.expectEqual(@as(usize, 0), s.checker.diagnostics.items.len);
+}
+
+test "checker: literal arguments satisfy keyof parameters" {
+    const s = try newSetup(
+        \\interface X { a: string; b: string; }
+        \\declare function foo<T = X>(x: keyof T, y: keyof T): T;
+        \\declare function bar<T>(x: keyof T, y: keyof T): T;
+        \\const a = foo<X>('a', 'b');
+        \\const b = foo('a', 'b');
+        \\const c = bar('a', 'b');
+    );
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+    try T.expectEqual(@as(usize, 0), s.checker.diagnostics.items.len);
+}
+
+test "checker: generic rest inference prefers array union branch" {
+    const s = try newSetup(
+        \\type Maybe<T> = T | undefined;
+        \\declare function concatMaybe<T>(...args: (Maybe<T> | Maybe<T>[])[]): T[];
+        \\const r = concatMaybe([1, 2, 3], 4);
+    );
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+    try T.expectEqual(@as(usize, 0), s.checker.diagnostics.items.len);
+}
+
+test "checker: generic interface method type parameter shadows outer parameter" {
+    const s = try newSetup(
+        \\interface I<T, U> {
+        \\  foo3<T>(t: T, u: U): T;
+        \\  foo4<U>(t: T, u: U): T;
+        \\  foo5<T, U>(t: T, u: U): T;
+        \\}
+        \\var i: I<string, number>;
+        \\var r6 = i.foo3(true, 1);
+        \\var r7 = i.foo4('', true);
+        \\var r8 = i.foo5(true, 1);
     );
     defer destroySetup(s);
     try s.checker.checkSourceFile(s.root);

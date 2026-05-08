@@ -351,6 +351,34 @@ pub const Interner = struct {
         return try self.internKey(key, .{ .is_type_parameter = true });
     }
 
+    /// Create a declaration-scoped type parameter without structural
+    /// deduplication. Type parameters are alpha-equivalent in some
+    /// relation checks, but distinct declarations that share a name
+    /// must not collapse: `interface I<T> { m<T>(x: T): T }` has two
+    /// different `T` slots.
+    pub fn internFreshTypeParameterWithVariance(
+        self: *Interner,
+        name: StringId,
+        constraint: TypeId,
+        default: TypeId,
+        variance: types.Variance,
+    ) !TypeId {
+        const payload_idx: u32 = @intCast(self.pool.type_parameter_payloads.items.len);
+        try self.pool.type_parameter_payloads.append(self.gpa, .{
+            .name = name,
+            .constraint = constraint,
+            .default = default,
+            .variance = variance,
+        });
+        const id: TypeId = @intCast(self.pool.headers.items.len);
+        try self.pool.headers.append(self.gpa, .{
+            .flags = .{ .is_type_parameter = true },
+            .symbol = 0,
+            .payload = payload_idx,
+        });
+        return id;
+    }
+
     /// Look up the declaration-site variance of a type-parameter type.
     /// Returns `.bivariant` for non-type-parameter ids (caller filters).
     pub fn typeParameterVariance(self: *const Interner, id: TypeId) types.Variance {
@@ -817,6 +845,21 @@ test "Interner: type parameter variance — same variance dedups" {
     const a = try i.internTypeParameterWithVariance(id_t, types.Primitive.unknown, types.Primitive.none, .covariant);
     const b = try i.internTypeParameterWithVariance(id_t, types.Primitive.unknown, types.Primitive.none, .covariant);
     try T.expectEqual(a, b);
+}
+
+test "Interner: fresh type parameters preserve declaration identity" {
+    var i = try Interner.init(T.allocator);
+    defer i.deinit();
+    var sint = try string_interner.Interner.init(T.allocator);
+    defer sint.deinit();
+    const id_t = try sint.intern("T");
+
+    const outer = try i.internFreshTypeParameterWithVariance(id_t, types.Primitive.unknown, types.Primitive.none, .bivariant);
+    const inner = try i.internFreshTypeParameterWithVariance(id_t, types.Primitive.unknown, types.Primitive.none, .bivariant);
+
+    try T.expect(outer != inner);
+    try T.expectEqual(@as(?StringId, id_t), i.typeParameterName(outer));
+    try T.expectEqual(@as(?StringId, id_t), i.typeParameterName(inner));
 }
 
 test "Variance: HIR bit encoding round-trip" {
