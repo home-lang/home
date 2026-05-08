@@ -2418,14 +2418,23 @@ pub const Parser = struct {
         defer variants.deinit(self.allocator);
 
         while (!self.check(.RightBrace) and !self.isAtEnd()) {
+            // Skip doc comments / pub modifier inside union body.
+            while (self.match(&.{.DocComment})) {}
+            _ = self.match(&.{.Pub});
+
             const variant_name = try self.expect(.Identifier, "Expected variant name");
 
-            // Check for associated data type
+            // Check for associated data type. Two forms accepted:
+            //   `Variant(Type)`        — Rust-style tuple variant
+            //   `field_name: Type`     — Zig-style named field
             var type_name: ?[]const u8 = null;
             if (self.match(&.{.LeftParen})) {
-                const type_token = try self.expect(.Identifier, "Expected type in variant data");
-                type_name = type_token.lexeme;
+                const inner = try self.parseTypeAnnotation();
+                type_name = inner;
                 _ = try self.expect(.RightParen, "Expected ')' after variant data type");
+            } else if (self.match(&.{.Colon})) {
+                const inner = try self.parseTypeAnnotation();
+                type_name = inner;
             }
 
             try variants.append(self.allocator, .{
@@ -6280,6 +6289,35 @@ pub const Parser = struct {
             );
             const result = try self.allocator.create(ast.Expr);
             result.* = ast.Expr{ .TryExpr = try_expr };
+            return result;
+        }
+
+        // Lexer-fused `?[` after a dot (`.?[idx]`) — treat as optional
+        // unwrap then index. Re-emits a synthetic LeftBracket so the
+        // outer expression loop continues into indexExpr naturally.
+        if (self.check(.QuestionBracket)) {
+            _ = self.advance();
+            const try_expr = try ast.TryExpr.init(
+                self.allocator,
+                object,
+                ast.SourceLocation.fromToken(dot_token),
+            );
+            const unwrapped = try self.allocator.create(ast.Expr);
+            unwrapped.* = ast.Expr{ .TryExpr = try_expr };
+            // Inline an index expression here using the contents of the
+            // brackets we just opened.
+            const index = try self.expression();
+            // Support range / open-ended ranges in index — already
+            // covered by `expression`.
+            _ = try self.expect(.RightBracket, "Expected ']' after index");
+            const idx_expr = try ast.IndexExpr.init(
+                self.allocator,
+                unwrapped,
+                index,
+                unwrapped.getLocation(),
+            );
+            const result = try self.allocator.create(ast.Expr);
+            result.* = ast.Expr{ .IndexExpr = idx_expr };
             return result;
         }
 
