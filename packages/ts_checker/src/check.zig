@@ -838,6 +838,7 @@ pub const Checker = struct {
         }
         for (hir_mod.namespaceBody(self.hir, node)) |s| {
             switch (self.hir.kindOf(s)) {
+                .fn_decl => try self.checkNamespaceFnBodyAfterSignature(s),
                 .class_decl,
                 .interface_decl,
                 .enum_decl,
@@ -856,6 +857,7 @@ pub const Checker = struct {
                         .enum_decl,
                         .type_alias_decl,
                         => try self.checkStatement(ex.decl),
+                        .fn_decl => try self.checkNamespaceFnBodyAfterSignature(ex.decl),
                         .var_decl,
                         .let_decl,
                         .const_decl,
@@ -868,6 +870,23 @@ pub const Checker = struct {
                 },
             }
         }
+    }
+
+    fn checkNamespaceFnBodyAfterSignature(self: *Checker, node: NodeId) CheckError!void {
+        const type_params = hir_mod.fnTypeParams(self.hir, node);
+        if (type_params.len > 0) {
+            try self.pushNarrowScope();
+            errdefer self.popNarrowScope();
+            for (type_params) |tp| {
+                if (self.hir.kindOf(tp) != .type_parameter) continue;
+                const t = self.hir.typeOf(tp);
+                if (t == types.Primitive.none) continue;
+                const tpp = hir_mod.typeParameterOf(self.hir, tp);
+                try self.recordNarrow(tpp.name, t);
+            }
+        }
+        defer if (type_params.len > 0) self.popNarrowScope();
+        try self.walkFnBody(node);
     }
 
     fn checkFnSignatureOnlyNoBody(self: *Checker, node: NodeId) CheckError!void {
@@ -4437,6 +4456,9 @@ pub const Checker = struct {
         if (v.type_annotation != hir_mod.none_node_id) {
             declared_type = try self.lowererLowerWithTypeParams(v.type_annotation);
             self.hir.setType(node, declared_type);
+        } else if (try self.jsDocTypeForVarDecl(node)) |jsdoc_t| {
+            declared_type = jsdoc_t;
+            self.hir.setType(node, declared_type);
         }
 
         // Type the initializer.
@@ -4518,6 +4540,133 @@ pub const Checker = struct {
                 .message = msg,
             });
         }
+    }
+
+    fn jsDocTypeForVarDecl(self: *Checker, node: NodeId) CheckError!?TypeId {
+        const src = self.source orelse return null;
+        if (std.mem.indexOf(u8, src, "@checkjs: true") == null) return null;
+        const span = self.hir.spanOf(node);
+        const body = self.leadingJsDocBody(src, span.start) orelse return null;
+        const tags = ts_parser.jsdoc.parse(self.gpa, body) catch return null;
+        defer self.gpa.free(tags);
+
+        for (tags) |tag| {
+            if (tag.kind != .type_tag) continue;
+            const base = jsDocTypeBaseName(tag.type_text);
+            if (base.len == 0) continue;
+            if (try self.jsDocTypedefObjectSkeleton(src, base)) |t| return t;
+        }
+        return null;
+    }
+
+    fn leadingJsDocBody(self: *Checker, src: []const u8, decl_start: u32) ?[]const u8 {
+        _ = self;
+        const limit = @min(@as(usize, decl_start), src.len);
+        const before = src[0..limit];
+        const end = std.mem.lastIndexOf(u8, before, "*/") orelse return null;
+        const between = std.mem.trim(u8, before[end + 2 ..], " \t\r\n");
+        if (between.len != 0) return null;
+        const start = std.mem.lastIndexOf(u8, before[0..end], "/**") orelse return null;
+        return before[start + 3 .. end];
+    }
+
+    fn jsDocTypeBaseName(type_text: []const u8) []const u8 {
+        const trimmed = std.mem.trim(u8, type_text, " \t\r\n");
+        var i: usize = 0;
+        while (i < trimmed.len and isJsDocIdentChar(trimmed[i])) : (i += 1) {}
+        return trimmed[0..i];
+    }
+
+    fn jsDocTypedefObjectSkeleton(
+        self: *Checker,
+        src: []const u8,
+        wanted_name: []const u8,
+    ) CheckError!?TypeId {
+        var search_start: usize = 0;
+        while (std.mem.indexOfPos(u8, src, search_start, "/**")) |start| {
+            const body_start = start + 3;
+            const end = std.mem.indexOfPos(u8, src, body_start, "*/") orelse return null;
+            defer search_start = end + 2;
+            const body = src[body_start..end];
+            if (jsDocTypedefTypeText(body, wanted_name)) |type_text| {
+                if (try self.jsDocObjectSkeletonFromTypeText(type_text)) |t| return t;
+            }
+            const tags = ts_parser.jsdoc.parse(self.gpa, body) catch continue;
+            defer self.gpa.free(tags);
+            for (tags) |tag| {
+                if (tag.kind != .typedef_tag) continue;
+                if (!std.mem.eql(u8, tag.name, wanted_name)) continue;
+                if (try self.jsDocObjectSkeletonFromTypeText(tag.type_text)) |t| return t;
+            }
+        }
+        return null;
+    }
+
+    fn jsDocTypedefTypeText(body: []const u8, wanted_name: []const u8) ?[]const u8 {
+        const tag_pos = std.mem.indexOf(u8, body, "@typedef") orelse return null;
+        const rest = body[tag_pos + "@typedef".len ..];
+        const brace_pos = std.mem.indexOfScalar(u8, rest, '{') orelse return null;
+        const type_len = jsDocBalancedBraceLen(rest[brace_pos..]);
+        if (type_len == 0) return null;
+        const trailing = std.mem.trim(u8, rest[brace_pos + type_len ..], " \t\r\n*");
+        var name_end: usize = 0;
+        while (name_end < trailing.len and isJsDocIdentChar(trailing[name_end])) : (name_end += 1) {}
+        if (!std.mem.eql(u8, trailing[0..name_end], wanted_name)) return null;
+        return rest[brace_pos + 1 .. brace_pos + type_len - 1];
+    }
+
+    fn jsDocBalancedBraceLen(s: []const u8) usize {
+        if (s.len == 0 or s[0] != '{') return 0;
+        var depth: i32 = 1;
+        var i: usize = 1;
+        while (i < s.len) : (i += 1) {
+            if (s[i] == '{') depth += 1;
+            if (s[i] == '}') {
+                depth -= 1;
+                if (depth == 0) return i + 1;
+            }
+        }
+        return 0;
+    }
+
+    fn jsDocObjectSkeletonFromTypeText(self: *Checker, type_text: []const u8) CheckError!?TypeId {
+        var members: std.ArrayListUnmanaged(types.ObjectMember) = .empty;
+        defer members.deinit(self.gpa);
+
+        var lines = std.mem.splitScalar(u8, type_text, '\n');
+        while (lines.next()) |raw_line| {
+            var line = std.mem.trim(u8, raw_line, " \t\r");
+            if (line.len > 0 and line[0] == '*') {
+                line = std.mem.trim(u8, line[1..], " \t\r");
+            }
+            if (line.len == 0 or line[0] == '[' or line[0] == '}') continue;
+            if (!isJsDocIdentStart(line[0])) continue;
+            var name_end: usize = 1;
+            while (name_end < line.len and isJsDocIdentChar(line[name_end])) : (name_end += 1) {}
+            const after_name = std.mem.trim(u8, line[name_end..], " \t");
+            if (after_name.len == 0) continue;
+            if (std.mem.startsWith(u8, after_name, "?:")) continue;
+            if (after_name[0] != ':') continue;
+            const name = self.string_interner.intern(line[0..name_end]) catch return error.OutOfMemory;
+            try members.append(self.gpa, .{
+                .name = name,
+                .type = types.Primitive.unknown,
+                .is_optional = false,
+                .is_readonly = false,
+                .is_method = false,
+            });
+        }
+
+        if (members.items.len == 0) return null;
+        return self.interner.internObjectType(members.items) catch return error.OutOfMemory;
+    }
+
+    fn isJsDocIdentStart(c: u8) bool {
+        return (c >= 'a' and c <= 'z') or (c >= 'A' and c <= 'Z') or c == '_' or c == '$';
+    }
+
+    fn isJsDocIdentChar(c: u8) bool {
+        return isJsDocIdentStart(c) or (c >= '0' and c <= '9');
     }
 
     fn checkRepeatedVarDeclaration(self: *Checker, node: NodeId, final_type: TypeId) CheckError!void {
@@ -7013,6 +7162,7 @@ pub const Checker = struct {
     }
 
     fn isArgumentAssignableToParam(self: *Checker, arg_node: NodeId, arg_t: TypeId, param_t: TypeId) !bool {
+        if (try self.overloadedIdentifierAssignableToParam(arg_node, param_t)) |ok| return ok;
         if (try self.literalExpressionAssignableToTarget(arg_node, param_t)) return true;
         if (self.hir.kindOf(arg_node) == .object_literal) {
             if (try self.objectLiteralAssignableToTarget(arg_node, arg_t, param_t)) return true;
@@ -7023,6 +7173,77 @@ pub const Checker = struct {
         }
         if (try self.contextualCallReturnAssignableToParam(arg_node, param_t)) return true;
         return self.engine.isAssignableTo(arg_t, param_t);
+    }
+
+    fn overloadedIdentifierAssignableToParam(
+        self: *Checker,
+        arg_node: NodeId,
+        param_t: TypeId,
+    ) CheckError!?bool {
+        if (self.hir.kindOf(arg_node) != .identifier) return null;
+        if (param_t >= self.interner.pool.typeCount()) return null;
+        if (!self.interner.pool.flagsOf(param_t).is_signature) return null;
+
+        var overload_sigs: std.ArrayListUnmanaged(TypeId) = .empty;
+        defer overload_sigs.deinit(self.gpa);
+        try self.collectSiblingFunctionSignatures(arg_node, &overload_sigs);
+        if (overload_sigs.items.len <= 1) return null;
+
+        var target_t = param_t;
+        var subs: std.AutoHashMapUnmanaged(TypeId, TypeId) = .empty;
+        defer subs.deinit(self.gpa);
+        try self.inferFromPair(param_t, overload_sigs.items[overload_sigs.items.len - 1], &subs);
+        if (subs.count() > 0) {
+            target_t = self.substituteType(param_t, &subs) catch param_t;
+        }
+        for (overload_sigs.items) |sig| {
+            if (!(self.engine.isAssignableTo(sig, target_t) catch false)) return false;
+        }
+        return true;
+    }
+
+    fn collectSiblingFunctionSignatures(
+        self: *Checker,
+        arg_node: NodeId,
+        out: *std.ArrayListUnmanaged(TypeId),
+    ) CheckError!void {
+        const id = hir_mod.identifierOf(self.hir, arg_node);
+        var cur = self.hir.parentOf(arg_node);
+        while (cur != hir_mod.none_node_id) : (cur = self.hir.parentOf(cur)) {
+            const k = self.hir.kindOf(cur);
+            if (k == .namespace_decl) {
+                try self.collectFunctionSignaturesFromStatements(hir_mod.namespaceBody(self.hir, cur), id.name, out);
+                return;
+            }
+            if (k == .block_stmt) {
+                try self.collectFunctionSignaturesFromStatements(hir_mod.blockStmts(self.hir, cur), id.name, out);
+                if (out.items.len > 0) return;
+            }
+        }
+    }
+
+    fn collectFunctionSignaturesFromStatements(
+        self: *Checker,
+        stmts: []const NodeId,
+        name: hir_mod.StringId,
+        out: *std.ArrayListUnmanaged(TypeId),
+    ) CheckError!void {
+        for (stmts) |stmt| {
+            var fn_node = stmt;
+            if (self.hir.kindOf(stmt) == .export_decl) {
+                const ex = hir_mod.exportOf(self.hir, stmt);
+                if (ex.decl == hir_mod.none_node_id) continue;
+                fn_node = ex.decl;
+            }
+            if (self.hir.kindOf(fn_node) != .fn_decl) continue;
+            const f = hir_mod.fnDeclOf(self.hir, fn_node);
+            if (f.name == hir_mod.none_node_id or self.hir.kindOf(f.name) != .identifier) continue;
+            if (hir_mod.identifierOf(self.hir, f.name).name != name) continue;
+            const sig = self.hir.typeOf(fn_node);
+            if (sig < self.interner.pool.typeCount() and self.interner.pool.flagsOf(sig).is_signature) {
+                try out.append(self.gpa, sig);
+            }
+        }
     }
 
     fn contextualCallReturnAssignableToParam(self: *Checker, arg_node: NodeId, param_t: TypeId) !bool {
@@ -7526,19 +7747,19 @@ pub const Checker = struct {
         if (init_node == hir_mod.none_node_id) return;
         if (self.hir.kindOf(init_node) != .object_literal) return;
         if (!self.interner.pool.flagsOf(declared_t).is_object_type) return;
-        if (self.interner.objectStringIndex(declared_t) != types.Primitive.none) return;
-        const number_index = self.interner.objectNumberIndex(declared_t);
+        if (try self.objectTargetHasStringIndex(declared_t)) return;
+        const has_number_index = try self.objectTargetHasNumberIndex(declared_t);
         const props = hir_mod.objectLiteralProps(self.hir, init_node);
         for (props) |p| {
             if (self.hir.kindOf(p) != .object_property) continue;
             const op = hir_mod.objectPropertyOf(self.hir, p);
             if (self.hir.kindOf(op.key) != .identifier) continue;
             const id = hir_mod.identifierOf(self.hir, op.key);
-            if (number_index != types.Primitive.none and self.isNumericPropertyName(id.name)) {
+            if (has_number_index and self.isNumericPropertyName(id.name)) {
                 continue;
             }
-            const declared_member = self.interner.objectMemberInfo(declared_t, id.name);
-            if (declared_member == null) {
+            const declared_member_t = try self.excessPropertyTargetMemberType(declared_t, id.name);
+            if (declared_member_t == null) {
                 const name_str = self.string_interner.get(id.name);
                 const msg = try std.fmt.allocPrint(
                     self.diag_arena.allocator(),
@@ -7556,9 +7777,56 @@ pub const Checker = struct {
             // declared property is itself an object type, the
             // nested literal also gets the freshness check.
             if (self.hir.kindOf(op.value) == .object_literal) {
-                try self.checkExcessProperties(op.value, declared_member.?.type);
+                try self.checkExcessProperties(op.value, declared_member_t.?);
             }
         }
+    }
+
+    fn objectTargetHasStringIndex(self: *Checker, t: TypeId) CheckError!bool {
+        const flags = self.interner.pool.flagsOf(t);
+        if (flags.is_union) {
+            for (self.interner.unionMembers(t)) |member| {
+                if (try self.objectTargetHasStringIndex(member)) return true;
+            }
+            return false;
+        }
+        if (!flags.is_object_type) return false;
+        return self.interner.objectStringIndex(t) != types.Primitive.none;
+    }
+
+    fn objectTargetHasNumberIndex(self: *Checker, t: TypeId) CheckError!bool {
+        const flags = self.interner.pool.flagsOf(t);
+        if (flags.is_union) {
+            for (self.interner.unionMembers(t)) |member| {
+                if (try self.objectTargetHasNumberIndex(member)) return true;
+            }
+            return false;
+        }
+        if (!flags.is_object_type) return false;
+        return self.interner.objectNumberIndex(t) != types.Primitive.none;
+    }
+
+    fn excessPropertyTargetMemberType(
+        self: *Checker,
+        t: TypeId,
+        name: hir_mod.StringId,
+    ) CheckError!?TypeId {
+        const flags = self.interner.pool.flagsOf(t);
+        if (flags.is_union) {
+            var found: std.ArrayListUnmanaged(TypeId) = .empty;
+            defer found.deinit(self.gpa);
+            for (self.interner.unionMembers(t)) |member| {
+                if (try self.excessPropertyTargetMemberType(member, name)) |member_t| {
+                    try found.append(self.gpa, member_t);
+                }
+            }
+            if (found.items.len == 0) return null;
+            if (found.items.len == 1) return found.items[0];
+            return self.interner.internUnion(found.items) catch return error.OutOfMemory;
+        }
+        if (!flags.is_object_type) return null;
+        if (self.interner.objectMemberInfo(t, name)) |member| return member.type;
+        return null;
     }
 
     fn isNumericPropertyName(self: *Checker, name: hir_mod.StringId) bool {
@@ -12551,6 +12819,65 @@ test "checker: generic type-arg inference — callback `map<T,U>(arr: T[], fn: (
     try T.expect(s.checker.interner.pool.flagsOf(call_t).is_object_type);
     const elem = s.checker.interner.objectNumberIndex(call_t);
     try T.expectEqual(types.Primitive.string_t, elem);
+}
+
+test "checker: namespace function bodies are checked after signature registration" {
+    const s = try newSetup(
+        \\namespace N {
+        \\  function f() {
+        \\    const x: number = "nope";
+        \\  }
+        \\}
+    );
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+    var found: bool = false;
+    for (s.checker.diagnostics.items) |d| {
+        if (d.code == TsCodes.type_not_assignable) found = true;
+    }
+    try T.expect(found);
+}
+
+test "checker: overloaded callback identifiers contextually instantiate generic callback slots" {
+    const s = try newSetup(
+        \\namespace N {
+        \\  interface Promise<T> {
+        \\    then<U>(cb: (x: T) => Promise<U>): Promise<U>;
+        \\  }
+        \\  declare function testFunction(n: number): Promise<number>;
+        \\  declare function testFunction(s: string): Promise<string>;
+        \\  declare var numPromise: Promise<number>;
+        \\  const next = numPromise.then(testFunction);
+        \\}
+    );
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+    var found: bool = false;
+    for (s.checker.diagnostics.items) |d| {
+        if (d.code == TsCodes.argument_type_mismatch) found = true;
+    }
+    try T.expect(found);
+}
+
+test "checker: checkjs JSDoc @type resolves multiline object typedef skeletons" {
+    const s = try newSetup(
+        \\// @checkjs: true
+        \\/**
+        \\ * @typedef {{
+        \\ *   required: string,
+        \\ *   optional?: number
+        \\ * }} Shape
+        \\ */
+        \\/** @type {Shape} */
+        \\const p = {};
+    );
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+    var found: bool = false;
+    for (s.checker.diagnostics.items) |d| {
+        if (d.code == TsCodes.type_not_assignable) found = true;
+    }
+    try T.expect(found);
 }
 
 test "checker: keyof T resolves to the literal union of property names" {
