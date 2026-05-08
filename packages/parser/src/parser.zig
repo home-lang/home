@@ -6613,6 +6613,21 @@ pub const Parser = struct {
     /// Parse value expression for match - handles identifier, literals, member access
     /// but NOT struct literals (to avoid confusion with match body braces)
     fn parseMatchValue(self: *Parser) !*ast.Expr {
+        // Use expression() with struct-literal suppression so the body's
+        // `{` doesn't get folded into the value as `X { fields }`. This
+        // keeps support for prefix `&`, `&mut`, `*`, binary ops in the
+        // value (e.g. `match pin / 16 {`, `match &mut x {`) which the
+        // previous restricted parser dropped.
+        self.suppress_struct_literal += 1;
+        const expr_full = self.expression() catch |err| {
+            self.suppress_struct_literal -= 1;
+            return err;
+        };
+        self.suppress_struct_literal -= 1;
+        return expr_full;
+    }
+
+    fn parseMatchValueLegacy(self: *Parser) !*ast.Expr {
         // Parse the base expression (identifier, literal, parenthesized)
         var expr = try self.parseMatchValuePrimary();
 
@@ -6831,8 +6846,28 @@ pub const Parser = struct {
 
             _ = try self.expect(.FatArrow, "Expected '=>' after match pattern");
 
-            // Parse body expression
-            const body = try self.expression();
+            // Parse body expression. Mirror match-statement behavior:
+            // bare `return [expr]` is allowed (kernel uses arms like
+            // `None => return -1` for early exits) — wrap into a
+            // ReturnExpr so the AST stays a single Expr.
+            const body = blk: {
+                if (self.check(.Return)) {
+                    _ = self.advance();
+                    const ret_value = if (!self.check(.Comma) and !self.check(.RightBrace) and !self.check(.Semicolon))
+                        try self.expression()
+                    else
+                        null;
+                    const return_expr = try ast.ReturnExpr.init(
+                        self.allocator,
+                        ret_value,
+                        ast.SourceLocation.fromToken(self.previous()),
+                    );
+                    const wrap = try self.allocator.create(ast.Expr);
+                    wrap.* = ast.Expr{ .ReturnExpr = return_expr };
+                    break :blk wrap;
+                }
+                break :blk try self.expression();
+            };
 
             try arms.append(self.allocator, .{
                 .pattern = pattern,
