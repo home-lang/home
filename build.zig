@@ -27,6 +27,24 @@ fn createPackage(
     return module;
 }
 
+fn testMatches(filter: ?[]const u8, name: []const u8) bool {
+    if (filter) |needle| {
+        return needle.len == 0 or std.mem.indexOf(u8, name, needle) != null;
+    }
+    return true;
+}
+
+fn dependOnTest(
+    test_step: *std.Build.Step,
+    run_step: *std.Build.Step,
+    filter: ?[]const u8,
+    name: []const u8,
+) void {
+    if (testMatches(filter, name)) {
+        test_step.dependOn(run_step);
+    }
+}
+
 pub fn build(b: *std.Build) void {
     const target = b.standardTargetOptions(.{});
     const optimize = b.standardOptimizeOption(.{});
@@ -41,6 +59,11 @@ pub fn build(b: *std.Build) void {
         []const u8,
         "test-framework-path",
         "Path to zig-test-framework (optional)",
+    );
+    const test_filter = b.option(
+        []const u8,
+        "filter",
+        "Only run umbrella test artifacts whose package name contains this substring",
     );
 
     const zig_test_framework: ?*std.Build.Module = if (test_framework_path) |path|
@@ -810,223 +833,223 @@ pub fn build(b: *std.Build) void {
     const run_tpm_tests = b.addRunArtifact(tpm_tests);
 
     const test_step = b.step("test", "Run all tests");
-    test_step.dependOn(&run_lexer_tests.step);
-    test_step.dependOn(&run_parser_tests.step);
-    test_step.dependOn(&run_http_router_tests.step);
-    test_step.dependOn(&run_craft_tests.step);
-    test_step.dependOn(&run_package_manager_tests.step);
-    test_step.dependOn(&run_queue_tests.step);
-    test_step.dependOn(&run_ast_tests.step);
-    test_step.dependOn(&run_diagnostics_tests.step);
-    test_step.dependOn(&run_interpreter_tests.step);
-    test_step.dependOn(&run_formatter_tests.step);
-    test_step.dependOn(&run_codegen_tests.step);
-    test_step.dependOn(&run_arm64_tests.step);
-    if (run_database_tests) |db_tests| test_step.dependOn(&db_tests.step);
-    test_step.dependOn(&run_threading_tests.step);
-    test_step.dependOn(&run_memory_tests.step);
-    test_step.dependOn(&run_intrinsics_tests.step);
-    test_step.dependOn(&run_ffi_tests.step);
-    test_step.dependOn(&run_math_tests.step);
-    test_step.dependOn(&run_env_tests.step);
-    test_step.dependOn(&run_syscall_tests.step);
-    test_step.dependOn(&run_signal_tests.step);
-    test_step.dependOn(&run_cloud_tests.step);
-    test_step.dependOn(&run_mac_tests.step);
-    test_step.dependOn(&run_tpm_tests.step);
+    dependOnTest(test_step, &run_lexer_tests.step, test_filter, "lexer");
+    dependOnTest(test_step, &run_parser_tests.step, test_filter, "parser");
+    dependOnTest(test_step, &run_http_router_tests.step, test_filter, "http_router");
+    dependOnTest(test_step, &run_craft_tests.step, test_filter, "craft");
+    dependOnTest(test_step, &run_package_manager_tests.step, test_filter, "package_manager");
+    dependOnTest(test_step, &run_queue_tests.step, test_filter, "queue");
+    dependOnTest(test_step, &run_ast_tests.step, test_filter, "ast");
+    dependOnTest(test_step, &run_diagnostics_tests.step, test_filter, "diagnostics");
+    dependOnTest(test_step, &run_interpreter_tests.step, test_filter, "interpreter");
+    dependOnTest(test_step, &run_formatter_tests.step, test_filter, "formatter");
+    dependOnTest(test_step, &run_codegen_tests.step, test_filter, "codegen");
+    dependOnTest(test_step, &run_arm64_tests.step, test_filter, "arm64");
+    if (run_database_tests) |db_tests| dependOnTest(test_step, &db_tests.step, test_filter, "database");
+    dependOnTest(test_step, &run_threading_tests.step, test_filter, "threading");
+    dependOnTest(test_step, &run_memory_tests.step, test_filter, "memory");
+    dependOnTest(test_step, &run_intrinsics_tests.step, test_filter, "intrinsics");
+    dependOnTest(test_step, &run_ffi_tests.step, test_filter, "ffi");
+    dependOnTest(test_step, &run_math_tests.step, test_filter, "math");
+    dependOnTest(test_step, &run_env_tests.step, test_filter, "env");
+    dependOnTest(test_step, &run_syscall_tests.step, test_filter, "syscall");
+    dependOnTest(test_step, &run_signal_tests.step, test_filter, "signal");
+    dependOnTest(test_step, &run_cloud_tests.step, test_filter, "cloud");
+    dependOnTest(test_step, &run_mac_tests.step, test_filter, "mac");
+    dependOnTest(test_step, &run_tpm_tests.step, test_filter, "tpm");
 
     // Modsign tests
     const modsign_tests = b.addTest(.{ .root_module = modsign_pkg });
     const run_modsign_tests = b.addRunArtifact(modsign_tests);
-    test_step.dependOn(&run_modsign_tests.step);
+    dependOnTest(test_step, &run_modsign_tests.step, test_filter, "modsign");
 
     // Coredump tests
     const coredump_tests = b.addTest(.{ .root_module = coredump_pkg });
     const run_coredump_tests = b.addRunArtifact(coredump_tests);
-    test_step.dependOn(&run_coredump_tests.step);
+    dependOnTest(test_step, &run_coredump_tests.step, test_filter, "coredump");
 
     // Syslog tests
     const syslog_tests = b.addTest(.{ .root_module = syslog_pkg });
     const run_syslog_tests = b.addRunArtifact(syslog_tests);
-    test_step.dependOn(&run_syslog_tests.step);
+    dependOnTest(test_step, &run_syslog_tests.step, test_filter, "syslog");
 
     // USB security tests
     const usb_tests = b.addTest(.{ .root_module = usb_pkg });
     const run_usb_tests = b.addRunArtifact(usb_tests);
-    test_step.dependOn(&run_usb_tests.step);
+    dependOnTest(test_step, &run_usb_tests.step, test_filter, "usb");
 
     // IOMMU tests
     const iommu_tests = b.addTest(.{ .root_module = iommu_pkg });
     const run_iommu_tests = b.addRunArtifact(iommu_tests);
-    test_step.dependOn(&run_iommu_tests.step);
+    dependOnTest(test_step, &run_iommu_tests.step, test_filter, "iommu");
 
     // Timing attack mitigation tests
     const timing_tests = b.addTest(.{ .root_module = timing_pkg });
     const run_timing_tests = b.addRunArtifact(timing_tests);
-    test_step.dependOn(&run_timing_tests.step);
+    dependOnTest(test_step, &run_timing_tests.step, test_filter, "timing");
 
     // Bootloader tests
     const bootloader_tests = b.addTest(.{ .root_module = bootloader_pkg });
     const run_bootloader_tests = b.addRunArtifact(bootloader_tests);
-    test_step.dependOn(&run_bootloader_tests.step);
+    dependOnTest(test_step, &run_bootloader_tests.step, test_filter, "bootloader");
 
     // IPv6 networking tests
     const ipv6_tests = b.addTest(.{ .root_module = ipv6_pkg });
     const run_ipv6_tests = b.addRunArtifact(ipv6_tests);
-    test_step.dependOn(&run_ipv6_tests.step);
+    dependOnTest(test_step, &run_ipv6_tests.step, test_filter, "ipv6");
 
     // Device Tree Binary tests
     const dtb_tests = b.addTest(.{ .root_module = dtb_pkg });
     const run_dtb_tests = b.addRunArtifact(dtb_tests);
-    test_step.dependOn(&run_dtb_tests.step);
+    dependOnTest(test_step, &run_dtb_tests.step, test_filter, "dtb");
 
     // Hardware drivers tests
     const drivers_tests = b.addTest(.{ .root_module = drivers_pkg });
     const run_drivers_tests = b.addRunArtifact(drivers_tests);
-    test_step.dependOn(&run_drivers_tests.step);
+    dependOnTest(test_step, &run_drivers_tests.step, test_filter, "drivers");
 
     // Variadic functions tests
     const variadic_tests = b.addTest(.{ .root_module = variadic_pkg });
     const run_variadic_tests = b.addRunArtifact(variadic_tests);
-    test_step.dependOn(&run_variadic_tests.step);
+    dependOnTest(test_step, &run_variadic_tests.step, test_filter, "variadic");
 
     // Inline functions tests
     const inline_tests = b.addTest(.{ .root_module = inline_pkg });
     const run_inline_tests = b.addRunArtifact(inline_tests);
-    test_step.dependOn(&run_inline_tests.step);
+    dependOnTest(test_step, &run_inline_tests.step, test_filter, "inline");
 
     // Register allocation tests
     const regalloc_tests = b.addTest(.{ .root_module = regalloc_pkg });
     const run_regalloc_tests = b.addRunArtifact(regalloc_tests);
-    test_step.dependOn(&run_regalloc_tests.step);
+    dependOnTest(test_step, &run_regalloc_tests.step, test_filter, "regalloc");
 
     // Platform-specific code blocks tests
     const platform_tests = b.addTest(.{ .root_module = platform_pkg });
     const run_platform_tests = b.addRunArtifact(platform_tests);
-    test_step.dependOn(&run_platform_tests.step);
+    dependOnTest(test_step, &run_platform_tests.step, test_filter, "platform");
 
     // TS-parity Phase 0 infrastructure tests
     const arena_tests = b.addTest(.{ .root_module = arena_pkg });
     const run_arena_tests = b.addRunArtifact(arena_tests);
-    test_step.dependOn(&run_arena_tests.step);
+    dependOnTest(test_step, &run_arena_tests.step, test_filter, "arena");
 
     const string_interner_tests = b.addTest(.{ .root_module = string_interner_pkg });
     const run_string_interner_tests = b.addRunArtifact(string_interner_tests);
-    test_step.dependOn(&run_string_interner_tests.step);
+    dependOnTest(test_step, &run_string_interner_tests.step, test_filter, "string_interner");
 
     const hir_tests = b.addTest(.{ .root_module = hir_pkg });
     const run_hir_tests = b.addRunArtifact(hir_tests);
-    test_step.dependOn(&run_hir_tests.step);
+    dependOnTest(test_step, &run_hir_tests.step, test_filter, "hir");
 
     const query_tests = b.addTest(.{ .root_module = query_pkg });
     const run_query_tests = b.addRunArtifact(query_tests);
-    test_step.dependOn(&run_query_tests.step);
+    dependOnTest(test_step, &run_query_tests.step, test_filter, "query");
 
     const parsers_precedence_tests = b.addTest(.{ .root_module = parsers_precedence_pkg });
     const run_parsers_precedence_tests = b.addRunArtifact(parsers_precedence_tests);
-    test_step.dependOn(&run_parsers_precedence_tests.step);
+    dependOnTest(test_step, &run_parsers_precedence_tests.step, test_filter, "parsers_precedence");
 
     const native_layouts_tests = b.addTest(.{ .root_module = native_layouts_pkg });
     const run_native_layouts_tests = b.addRunArtifact(native_layouts_tests);
-    test_step.dependOn(&run_native_layouts_tests.step);
+    dependOnTest(test_step, &run_native_layouts_tests.step, test_filter, "native_layouts");
 
     const ts_lexer_tests = b.addTest(.{ .root_module = ts_lexer_pkg });
     const run_ts_lexer_tests = b.addRunArtifact(ts_lexer_tests);
-    test_step.dependOn(&run_ts_lexer_tests.step);
+    dependOnTest(test_step, &run_ts_lexer_tests.step, test_filter, "ts_lexer");
 
     const ts_parser_tests = b.addTest(.{ .root_module = ts_parser_pkg });
     const run_ts_parser_tests = b.addRunArtifact(ts_parser_tests);
-    test_step.dependOn(&run_ts_parser_tests.step);
+    dependOnTest(test_step, &run_ts_parser_tests.step, test_filter, "ts_parser");
 
     const ts_parser_prec_tests = b.addTest(.{ .root_module = ts_parser_prec_pkg });
     const run_ts_parser_prec_tests = b.addRunArtifact(ts_parser_prec_tests);
-    test_step.dependOn(&run_ts_parser_prec_tests.step);
+    dependOnTest(test_step, &run_ts_parser_prec_tests.step, test_filter, "ts_parser_precedence");
 
     const d_ts_tests = b.addTest(.{ .root_module = d_ts_pkg });
     const run_d_ts_tests = b.addRunArtifact(d_ts_tests);
-    test_step.dependOn(&run_d_ts_tests.step);
+    dependOnTest(test_step, &run_d_ts_tests.step, test_filter, "d_ts");
 
     const tsconfig_jsonc_tests = b.addTest(.{ .root_module = tsconfig_jsonc_pkg });
     const run_tsconfig_jsonc_tests = b.addRunArtifact(tsconfig_jsonc_tests);
-    test_step.dependOn(&run_tsconfig_jsonc_tests.step);
+    dependOnTest(test_step, &run_tsconfig_jsonc_tests.step, test_filter, "tsconfig_jsonc");
 
     const tsconfig_tests = b.addTest(.{ .root_module = tsconfig_pkg });
     const run_tsconfig_tests = b.addRunArtifact(tsconfig_tests);
-    test_step.dependOn(&run_tsconfig_tests.step);
+    dependOnTest(test_step, &run_tsconfig_tests.step, test_filter, "tsconfig");
 
     const binder_tests = b.addTest(.{ .root_module = binder_pkg });
     const run_binder_tests = b.addRunArtifact(binder_tests);
-    test_step.dependOn(&run_binder_tests.step);
+    dependOnTest(test_step, &run_binder_tests.step, test_filter, "binder");
 
     const ts_checker_tests = b.addTest(.{ .root_module = ts_checker_pkg });
     const run_ts_checker_tests = b.addRunArtifact(ts_checker_tests);
-    test_step.dependOn(&run_ts_checker_tests.step);
+    dependOnTest(test_step, &run_ts_checker_tests.step, test_filter, "ts_checker");
 
     const ts_emit_tests = b.addTest(.{ .root_module = ts_emit_pkg });
     const run_ts_emit_tests = b.addRunArtifact(ts_emit_tests);
-    test_step.dependOn(&run_ts_emit_tests.step);
+    dependOnTest(test_step, &run_ts_emit_tests.step, test_filter, "ts_emit");
 
     const d_hm_tests = b.addTest(.{ .root_module = d_hm_pkg });
     const run_d_hm_tests = b.addRunArtifact(d_hm_tests);
-    test_step.dependOn(&run_d_hm_tests.step);
+    dependOnTest(test_step, &run_d_hm_tests.step, test_filter, "d_hm");
 
     const ts_driver_tests = b.addTest(.{ .root_module = ts_driver_pkg });
     const run_ts_driver_tests = b.addRunArtifact(ts_driver_tests);
-    test_step.dependOn(&run_ts_driver_tests.step);
+    dependOnTest(test_step, &run_ts_driver_tests.step, test_filter, "ts_driver");
 
     const ts_resolver_tests = b.addTest(.{ .root_module = ts_resolver_pkg });
     const run_ts_resolver_tests = b.addRunArtifact(ts_resolver_tests);
-    test_step.dependOn(&run_ts_resolver_tests.step);
+    dependOnTest(test_step, &run_ts_resolver_tests.step, test_filter, "ts_resolver");
 
     const ts_diagnostics_tests = b.addTest(.{ .root_module = ts_diagnostics_pkg });
     const run_ts_diagnostics_tests = b.addRunArtifact(ts_diagnostics_tests);
-    test_step.dependOn(&run_ts_diagnostics_tests.step);
+    dependOnTest(test_step, &run_ts_diagnostics_tests.step, test_filter, "ts_diagnostics");
 
     const ts_program_tests = b.addTest(.{ .root_module = ts_program_pkg });
     const run_ts_program_tests = b.addRunArtifact(ts_program_tests);
-    test_step.dependOn(&run_ts_program_tests.step);
+    dependOnTest(test_step, &run_ts_program_tests.step, test_filter, "ts_program");
 
     const ts_query_tests = b.addTest(.{ .root_module = ts_query_pkg });
     const run_ts_query_tests = b.addRunArtifact(ts_query_tests);
-    test_step.dependOn(&run_ts_query_tests.step);
+    dependOnTest(test_step, &run_ts_query_tests.step, test_filter, "ts_query");
 
     const ts_cli_tests = b.addTest(.{ .root_module = ts_cli_pkg });
     const run_ts_cli_tests = b.addRunArtifact(ts_cli_tests);
-    test_step.dependOn(&run_ts_cli_tests.step);
+    dependOnTest(test_step, &run_ts_cli_tests.step, test_filter, "ts_cli");
 
     const ts_conformance_tests = b.addTest(.{ .root_module = ts_conformance_pkg });
     const run_ts_conformance_tests = b.addRunArtifact(ts_conformance_tests);
-    test_step.dependOn(&run_ts_conformance_tests.step);
+    dependOnTest(test_step, &run_ts_conformance_tests.step, test_filter, "ts_conformance");
 
     const ts_watch_tests = b.addTest(.{ .root_module = ts_watch_pkg });
     const run_ts_watch_tests = b.addRunArtifact(ts_watch_tests);
-    test_step.dependOn(&run_ts_watch_tests.step);
+    dependOnTest(test_step, &run_ts_watch_tests.step, test_filter, "ts_watch");
 
     const ts_lsp_tests = b.addTest(.{ .root_module = ts_lsp_pkg });
     const run_ts_lsp_tests = b.addRunArtifact(ts_lsp_tests);
-    test_step.dependOn(&run_ts_lsp_tests.step);
+    dependOnTest(test_step, &run_ts_lsp_tests.step, test_filter, "ts_lsp");
 
     const ts_cache_tests = b.addTest(.{ .root_module = ts_cache_pkg });
     const run_ts_cache_tests = b.addRunArtifact(ts_cache_tests);
-    test_step.dependOn(&run_ts_cache_tests.step);
+    dependOnTest(test_step, &run_ts_cache_tests.step, test_filter, "ts_cache");
 
     const ts_lsp_server_tests = b.addTest(.{ .root_module = ts_lsp_server_pkg });
     const run_ts_lsp_server_tests = b.addRunArtifact(ts_lsp_server_tests);
-    test_step.dependOn(&run_ts_lsp_server_tests.step);
+    dependOnTest(test_step, &run_ts_lsp_server_tests.step, test_filter, "ts_lsp_server");
 
     const ts_bundler_tests = b.addTest(.{ .root_module = ts_bundler_pkg });
     const run_ts_bundler_tests = b.addRunArtifact(ts_bundler_tests);
-    test_step.dependOn(&run_ts_bundler_tests.step);
+    dependOnTest(test_step, &run_ts_bundler_tests.step, test_filter, "ts_bundler");
 
     // Volatile operations tests
     const volatile_tests = b.addTest(.{ .root_module = volatile_pkg });
     const run_volatile_tests = b.addRunArtifact(volatile_tests);
-    test_step.dependOn(&run_volatile_tests.step);
+    dependOnTest(test_step, &run_volatile_tests.step, test_filter, "volatile");
 
     // Pantry tests
     const pantry_tests = b.addTest(.{ .root_module = pantry_pkg });
     const run_pantry_tests = b.addRunArtifact(pantry_tests);
-    test_step.dependOn(&run_pantry_tests.step);
+    dependOnTest(test_step, &run_pantry_tests.step, test_filter, "pantry");
 
     // ════════════════════════════════════════════════════════════════
     // Diagnostic snapshot tests
@@ -1064,7 +1087,7 @@ pub fn build(b: *std.Build) void {
 
     // Fold into the umbrella `test` step so `zig build test` covers
     // diagnostic regressions too.
-    test_step.dependOn(&run_diag_harness.step);
+    dependOnTest(test_step, &run_diag_harness.step, test_filter, "diagnostics");
 
     // ════════════════════════════════════════════════════════════════
     // Fuzzing (issue #10)
