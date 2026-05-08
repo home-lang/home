@@ -515,7 +515,9 @@ pub const FnFlags = packed struct(u16) {
     /// Accessible from within the declaring class and any
     /// subclass (transitive `extends` chain).
     is_protected: bool = false,
-    _pad: u7 = 0,
+    /// TS/JS `static` class method modifier.
+    is_static: bool = false,
+    _pad: u6 = 0,
 };
 
 pub const ParameterPayload = struct {
@@ -672,6 +674,8 @@ pub const ObjectPropertyPayload = struct {
     is_computed: bool,
     is_shorthand: bool,
     is_method: bool,
+    /// TS/JS `static` class field modifier.
+    is_static: bool = false,
     /// TS legacy member visibility. `.public` for object-literal
     /// props. Class field/method parsing sets it from the modifier
     /// keyword consumed before the name.
@@ -2119,6 +2123,7 @@ pub const Builder = struct {
             is_computed,
             is_shorthand,
             is_method,
+            false,
             .public,
         );
     }
@@ -2135,6 +2140,7 @@ pub const Builder = struct {
         is_computed: bool,
         is_shorthand: bool,
         is_method: bool,
+        is_static: bool,
         visibility: Visibility,
     ) !NodeId {
         const payload_idx: u32 = @intCast(self.hir.object_property_payloads.items.len);
@@ -2145,6 +2151,7 @@ pub const Builder = struct {
             .is_computed = is_computed,
             .is_shorthand = is_shorthand,
             .is_method = is_method,
+            .is_static = is_static,
             .visibility = visibility,
         });
         const id = try self.newNode(.object_property, span, payload_idx);

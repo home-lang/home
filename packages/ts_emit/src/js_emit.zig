@@ -164,8 +164,9 @@ pub const Options = struct {
     /// legacy `__decorate(...)` shape that matches tsc with
     /// `experimentalDecorators: true`. When false, emit the Stage 3
     /// (TC39) `__esDecorate` shape that tsc uses by default in
-    /// TS 5.0+. v1 only handles class-level decorators in Stage 3
-    /// mode; per-member Stage 3 emit still uses the legacy form.
+    /// TS 5.0+. v1 emits a simplified helper shape for class- and
+    /// member-level decorators; full initializer-array semantics are
+    /// tracked as a follow-up.
     experimental_decorators: bool = true,
     /// `emitDecoratorMetadata` — when true (and `experimentalDecorators`
     /// is also true), emit `__metadata("design:type", T)`,
@@ -174,8 +175,8 @@ pub const Options = struct {
     /// `__decorate([...])` array for decorated members.
     emit_decorator_metadata: bool = false,
     /// `importHelpers` — when true, prepend an
-    /// `import { __awaiter, __decorate, __extends, __param,
-    /// __importDefault, __importStar } from "tslib";` line at the top
+    /// `import { __awaiter, __decorate, __esDecorate, __extends,
+    /// __param, __importDefault, __importStar } from "tslib";` line at the top
     /// of the file so the runtime helpers come from the `tslib`
     /// package rather than being expected as ambient globals. v0
     /// emits the full helper set unconditionally and lets the bundler
@@ -346,7 +347,7 @@ pub const Printer = struct {
         // before any user-level statement so the helpers are in
         // scope for the lowered code below.
         if (self.options.import_helpers) {
-            try self.write("import { __awaiter, __decorate, __extends, __metadata, __param, __importDefault, __importStar } from \"tslib\";");
+            try self.write("import { __awaiter, __decorate, __esDecorate, __extends, __metadata, __param, __importDefault, __importStar } from \"tslib\";");
             try self.write(self.options.newline);
         }
         // §4.A.10 — auto-import the runtime helpers when the file
@@ -428,8 +429,7 @@ pub const Printer = struct {
     ///     `__esDecorate(null, null, [dec1, dec2], { kind: "class", name: "Foo" }, null, []);`
     ///     A full Stage 3 lowering wraps the class in an IIFE with a
     ///     static initializer block; we emit the helper call alone
-    ///     to keep the v1 transform local. Per-member decorators
-    ///     still go through the legacy `__decorate` walk.
+    ///     to keep the v1 transform local.
     fn emitClassDecorateCall(self: *Printer, decorators: []const NodeId, class_node: NodeId) anyerror!void {
         const c = hir_mod.classOf(self.hir, class_node);
         if (c.name == hir_mod.none_node_id) return;
@@ -974,6 +974,7 @@ pub const Printer = struct {
         } else if (f.flags.is_constructor) {
             try self.write("constructor");
         } else if (f.flags.is_method) {
+            if (f.flags.is_static) try self.write("static ");
             if (f.name != hir_mod.none_node_id) {
                 try self.printExpression(f.name);
             }
@@ -1244,6 +1245,7 @@ pub const Printer = struct {
                 },
                 .object_property => {
                     const op = hir_mod.objectPropertyOf(self.hir, m);
+                    if (op.is_static) try self.write("static ");
                     try self.printExpression(op.key);
                     if (op.value != hir_mod.none_node_id) {
                         try self.write(" = ");
@@ -1269,6 +1271,7 @@ pub const Printer = struct {
         for (members) |m| {
             if (self.hir.kindOf(m) != .object_property) continue;
             const op = hir_mod.objectPropertyOf(self.hir, m);
+            if (op.is_static) continue;
             if (op.value == hir_mod.none_node_id) continue;
             if (self.privateFieldName(op.key) != null) continue;
             return true;
@@ -1284,6 +1287,7 @@ pub const Printer = struct {
         for (members) |m| {
             if (self.hir.kindOf(m) != .object_property) continue;
             const op = hir_mod.objectPropertyOf(self.hir, m);
+            if (op.is_static) continue;
             if (op.value == hir_mod.none_node_id) continue;
             if (self.privateFieldName(op.key) != null) continue;
             try self.write("this.");
@@ -1369,9 +1373,9 @@ pub const Printer = struct {
     }
 
     /// Walk class members; for each run of decorator siblings preceding
-    /// a method or property, emit a post-class `__decorate(...)` call.
-    /// Class-level decorators are handled by the existing
-    /// `emitClassDecorateCall` from the source-file walker.
+    /// a method or property, emit a post-class decorator helper call.
+    /// Class-level decorators are handled by `emitClassDecorateCall`
+    /// from the source-file walker.
     fn emitMethodDecorateCalls(self: *Printer, class_node: NodeId) anyerror!void {
         const c = hir_mod.classOf(self.hir, class_node);
         if (c.name == hir_mod.none_node_id) return;
@@ -1393,6 +1397,7 @@ pub const Printer = struct {
             const tk = self.hir.kindOf(target);
             // Method or property: emit
             //   __decorate([decs], ClassName.prototype, "name", null);
+            // Static members target the constructor itself.
             const target_name: ?NodeId = blk: {
                 if (tk == .fn_decl or tk == .fn_expr) {
                     const fd = hir_mod.fnDeclOf(self.hir, target);
@@ -1409,6 +1414,11 @@ pub const Printer = struct {
                 i = j;
                 continue;
             };
+            if (!self.options.experimental_decorators) {
+                try self.emitStage3MemberDecorateCall(decorators, target, name_node);
+                i = j;
+                continue;
+            }
             try self.write(self.options.newline);
             try self.write("__decorate([");
             for (decorators, 0..) |d, k| {
@@ -1423,7 +1433,8 @@ pub const Printer = struct {
             }
             try self.write("], ");
             try self.printExpression(c.name);
-            try self.write(".prototype, \"");
+            if (!self.isStaticMember(target)) try self.write(".prototype");
+            try self.write(", \"");
             if (self.hir.kindOf(name_node) == .identifier) {
                 const id = hir_mod.identifierOf(self.hir, name_node);
                 try self.write(self.interner.get(id.name));
@@ -1451,7 +1462,8 @@ pub const Printer = struct {
                     }
                     try self.write("], ");
                     try self.printExpression(c.name);
-                    try self.write(".prototype, \"");
+                    if (!self.isStaticMember(target)) try self.write(".prototype");
+                    try self.write(", \"");
                     if (self.hir.kindOf(name_node) == .identifier) {
                         const fid = hir_mod.identifierOf(self.hir, name_node);
                         try self.write(self.interner.get(fid.name));
@@ -1460,6 +1472,73 @@ pub const Printer = struct {
                 }
             }
             i = j;
+        }
+    }
+
+    /// Simplified Stage 3 member decorator lowering. A spec-complete
+    /// transform needs per-member initializer arrays and class-static
+    /// blocks; this v1 helper shape pins the observable decorator list
+    /// + context so we no longer mix Stage 3 class decorators with
+    /// legacy member `__decorate` calls.
+    fn emitStage3MemberDecorateCall(
+        self: *Printer,
+        decorators: []const NodeId,
+        target: NodeId,
+        name_node: NodeId,
+    ) anyerror!void {
+        try self.write(self.options.newline);
+        try self.write("__esDecorate(null, null, [");
+        for (decorators, 0..) |d, k| {
+            if (k > 0) try self.write(", ");
+            const dp = hir_mod.decoratorOf(self.hir, d);
+            try self.printExpression(dp.expression);
+        }
+        try self.write("], { kind: \"");
+        try self.writeStage3MemberKind(target);
+        try self.write("\", name: \"");
+        try self.writeStage3MemberName(name_node);
+        try self.write("\", static: ");
+        try self.write(if (self.isStaticMember(target)) "true" else "false");
+        try self.write(", private: ");
+        try self.write(if (self.privateFieldName(name_node) != null) "true" else "false");
+        try self.write(" }, null, []);");
+    }
+
+    fn isStaticMember(self: *Printer, target: NodeId) bool {
+        const tk = self.hir.kindOf(target);
+        if (tk == .fn_decl or tk == .fn_expr) {
+            return hir_mod.fnDeclOf(self.hir, target).flags.is_static;
+        }
+        if (tk == .object_property) {
+            return hir_mod.objectPropertyOf(self.hir, target).is_static;
+        }
+        return false;
+    }
+
+    fn writeStage3MemberKind(self: *Printer, target: NodeId) !void {
+        const tk = self.hir.kindOf(target);
+        if (tk == .fn_decl or tk == .fn_expr) {
+            const fd = hir_mod.fnDeclOf(self.hir, target);
+            if (fd.flags.is_getter) {
+                try self.write("getter");
+            } else if (fd.flags.is_setter) {
+                try self.write("setter");
+            } else {
+                try self.write("method");
+            }
+            return;
+        }
+        try self.write("field");
+    }
+
+    fn writeStage3MemberName(self: *Printer, name_node: NodeId) !void {
+        if (self.privateFieldName(name_node)) |private_name| {
+            try self.write(private_name);
+            return;
+        }
+        if (self.hir.kindOf(name_node) == .identifier) {
+            const id = hir_mod.identifierOf(self.hir, name_node);
+            try self.write(self.interner.get(id.name));
         }
     }
 
@@ -1528,11 +1607,26 @@ pub const Printer = struct {
                 try self.write("Object");
                 return;
             }
-            if (std.mem.eql(u8, name, "string")) { try self.write("String"); return; }
-            if (std.mem.eql(u8, name, "number")) { try self.write("Number"); return; }
-            if (std.mem.eql(u8, name, "boolean")) { try self.write("Boolean"); return; }
-            if (std.mem.eql(u8, name, "bigint")) { try self.write("BigInt"); return; }
-            if (std.mem.eql(u8, name, "symbol")) { try self.write("Symbol"); return; }
+            if (std.mem.eql(u8, name, "string")) {
+                try self.write("String");
+                return;
+            }
+            if (std.mem.eql(u8, name, "number")) {
+                try self.write("Number");
+                return;
+            }
+            if (std.mem.eql(u8, name, "boolean")) {
+                try self.write("Boolean");
+                return;
+            }
+            if (std.mem.eql(u8, name, "bigint")) {
+                try self.write("BigInt");
+                return;
+            }
+            if (std.mem.eql(u8, name, "symbol")) {
+                try self.write("Symbol");
+                return;
+            }
             if (std.mem.eql(u8, name, "void") or
                 std.mem.eql(u8, name, "undefined") or
                 std.mem.eql(u8, name, "null") or
@@ -1541,8 +1635,14 @@ pub const Printer = struct {
                 try self.write("void 0");
                 return;
             }
-            if (std.mem.eql(u8, name, "Function")) { try self.write("Function"); return; }
-            if (std.mem.eql(u8, name, "Array")) { try self.write("Array"); return; }
+            if (std.mem.eql(u8, name, "Function")) {
+                try self.write("Function");
+                return;
+            }
+            if (std.mem.eql(u8, name, "Array")) {
+                try self.write("Array");
+                return;
+            }
             if (std.mem.eql(u8, name, "Object") or
                 std.mem.eql(u8, name, "any") or
                 std.mem.eql(u8, name, "unknown"))
@@ -1553,8 +1653,14 @@ pub const Printer = struct {
             try self.write(name);
             return;
         }
-        if (k == .array_type or k == .tuple_type) { try self.write("Array"); return; }
-        if (k == .fn_type or k == .constructor_type) { try self.write("Function"); return; }
+        if (k == .array_type or k == .tuple_type) {
+            try self.write("Array");
+            return;
+        }
+        if (k == .fn_type or k == .constructor_type) {
+            try self.write("Function");
+            return;
+        }
         try self.write("Object");
     }
 
@@ -1628,6 +1734,7 @@ pub const Printer = struct {
         for (members) |m| {
             if (self.hir.kindOf(m) != .object_property) continue;
             const op = hir_mod.objectPropertyOf(self.hir, m);
+            if (op.is_static) continue;
             if (op.value == hir_mod.none_node_id) continue;
             try self.write("this.");
             try self.printExpression(op.key);
@@ -1655,7 +1762,11 @@ pub const Printer = struct {
             if (fd.flags.is_constructor) continue;
             if (fd.name == hir_mod.none_node_id) continue;
             try self.printExpression(c.name);
-            try self.write(".prototype.");
+            if (fd.flags.is_static) {
+                try self.write(".");
+            } else {
+                try self.write(".prototype.");
+            }
             try self.printExpression(fd.name);
             try self.write(" = function (");
             const params = hir_mod.fnParams(self.hir, m);
@@ -1671,6 +1782,19 @@ pub const Printer = struct {
             } else {
                 try self.write("{}");
             }
+            try self.write("; ");
+        }
+        // Static fields are assigned on the constructor after method
+        // definitions. Instance fields stay in the constructor body.
+        for (members) |m| {
+            if (self.hir.kindOf(m) != .object_property) continue;
+            const op = hir_mod.objectPropertyOf(self.hir, m);
+            if (!op.is_static or op.value == hir_mod.none_node_id) continue;
+            try self.printExpression(c.name);
+            try self.write(".");
+            try self.printExpression(op.key);
+            try self.write(" = ");
+            try self.printExpression(op.value);
             try self.write("; ");
         }
         try self.write("return ");
@@ -3467,7 +3591,7 @@ test "emit: importHelpers prepends tslib import when async lowers at es2015" {
         .{ .es_target = .es2015, .import_helpers = true },
     );
     defer T.allocator.free(out);
-    try T.expect(std.mem.indexOf(u8, out, "import { __awaiter, __decorate, __extends, __metadata, __param, __importDefault, __importStar } from \"tslib\";") != null);
+    try T.expect(std.mem.indexOf(u8, out, "import { __awaiter, __decorate, __esDecorate, __extends, __metadata, __param, __importDefault, __importStar } from \"tslib\";") != null);
     // Helper still gets referenced from user code.
     try T.expect(std.mem.indexOf(u8, out, "__awaiter(this, void 0, void 0, function* ()") != null);
 }
@@ -3563,6 +3687,23 @@ test "emit: property decorators emit __decorate against prototype" {
     );
     defer T.allocator.free(out);
     try T.expect(std.mem.indexOf(u8, out, "__decorate([observe], Foo.prototype, \"count\", null);") != null);
+}
+
+test "emit: static member decorators target constructor" {
+    const out = try emit(
+        \\class Foo {
+        \\  @logged
+        \\  static greet() { return 1; }
+        \\  @observe
+        \\  static count = 0;
+        \\}
+    );
+    defer T.allocator.free(out);
+    try T.expect(std.mem.indexOf(u8, out, "static greet()") != null);
+    try T.expect(std.mem.indexOf(u8, out, "static count = 0;") != null);
+    try T.expect(std.mem.indexOf(u8, out, "__decorate([logged], Foo, \"greet\", null);") != null);
+    try T.expect(std.mem.indexOf(u8, out, "__decorate([observe], Foo, \"count\", null);") != null);
+    try T.expect(std.mem.indexOf(u8, out, "__decorate([logged], Foo.prototype, \"greet\", null);") == null);
 }
 
 test "emit: parameter decorators emit __param wrappers" {
@@ -3969,9 +4110,40 @@ test "emit: stage 3 method decorator on class method emits per-member decorate" 
     defer T.allocator.free(out);
     // Class-level decorator uses the Stage 3 helper.
     try T.expect(std.mem.indexOf(u8, out, "__esDecorate(null, null, [logged], { kind: \"class\", name: \"Foo\" }, null, []);") != null);
-    // Per-member decorators still flow through the legacy `__decorate`
-    // walk in v1 (see emitClassDecorateCall doc comment).
-    try T.expect(std.mem.indexOf(u8, out, "__decorate([traced], Foo.prototype, \"greet\", null);") != null);
+    // Per-member decorators also use the Stage 3 helper in v1.
+    try T.expect(std.mem.indexOf(u8, out, "__esDecorate(null, null, [traced], { kind: \"method\", name: \"greet\", static: false, private: false }, null, []);") != null);
+    try T.expect(std.mem.indexOf(u8, out, "__decorate([traced]") == null);
+}
+
+test "emit: stage 3 field/accessor decorators emit member contexts" {
+    const out = try emitWithOpts(
+        \\class Foo {
+        \\  @observe
+        \\  count: number = 0;
+        \\  @memo
+        \\  get value(): number { return this.count; }
+        \\}
+    , .{ .experimental_decorators = false });
+    defer T.allocator.free(out);
+    try T.expect(std.mem.indexOf(u8, out, "__esDecorate(null, null, [observe], { kind: \"field\", name: \"count\", static: false, private: false }, null, []);") != null);
+    try T.expect(std.mem.indexOf(u8, out, "__esDecorate(null, null, [memo], { kind: \"getter\", name: \"value\", static: false, private: false }, null, []);") != null);
+    try T.expect(std.mem.indexOf(u8, out, "__decorate([observe]") == null);
+}
+
+test "emit: stage 3 static member decorators mark static context" {
+    const out = try emitWithOpts(
+        \\class Foo {
+        \\  @logged
+        \\  static greet() { return 1; }
+        \\  @observe
+        \\  static count = 0;
+        \\}
+    , .{ .experimental_decorators = false });
+    defer T.allocator.free(out);
+
+    try T.expect(std.mem.indexOf(u8, out, "__esDecorate(null, null, [logged], { kind: \"method\", name: \"greet\", static: true, private: false }, null, []);") != null);
+    try T.expect(std.mem.indexOf(u8, out, "__esDecorate(null, null, [observe], { kind: \"field\", name: \"count\", static: true, private: false }, null, []);") != null);
+    try T.expect(std.mem.indexOf(u8, out, "static: false") == null);
 }
 
 test "emit: stage 3 class-only decorator does not produce legacy class assignment" {
