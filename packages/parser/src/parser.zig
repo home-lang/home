@@ -7831,7 +7831,12 @@ pub const Parser = struct {
                 std.mem.eql(u8, name, "tagName") or std.mem.eql(u8, name, "fieldParentPtr") or
                 std.mem.eql(u8, name, "errorName") or std.mem.eql(u8, name, "errorReturnTrace") or
                 std.mem.eql(u8, name, "panic") or std.mem.eql(u8, name, "compileLog") or
-                std.mem.eql(u8, name, "compileError") or std.mem.eql(u8, name, "atomicRmwOp"))
+                std.mem.eql(u8, name, "compileError") or std.mem.eql(u8, name, "atomicRmwOp") or
+                std.mem.eql(u8, name, "floatFromInt") or std.mem.eql(u8, name, "intFromFloat") or
+                std.mem.eql(u8, name, "ptrFromAddress") or std.mem.eql(u8, name, "addressOf") or
+                std.mem.eql(u8, name, "shrWithOverflow") or std.mem.eql(u8, name, "splat") or
+                std.mem.eql(u8, name, "reduce") or std.mem.eql(u8, name, "shuffle") or
+                std.mem.eql(u8, name, "select") or std.mem.eql(u8, name, "Vector"))
             {
                 _ = try self.expect(.LeftParen, "Expected '(' after builtin");
                 var depth: i32 = 1;
