@@ -852,13 +852,24 @@ pub const Parser = struct {
         var extends: NodeId = hir_mod.none_node_id;
         if (self.match(.kw_extends)) {
             extends = try self.parseLeftHandSideExpression();
-            // Optional `<T>` after `extends Foo<T>` — skip generic args.
+            // Optional `<T>` after `extends Foo<T>` — preserve it as
+            // a type-ref for the checker while emit erases it back to
+            // the runtime `extends Foo` expression.
             if (self.peek().kind == .less_than) {
                 const args = try self.parseTypeArgumentList();
-                self.gpa.free(args);
-                // Note: this swallows the `<T>` after extends but
-                // leaves the parsed nodes in HIR; that's fine since
-                // they're real type-arg refs anchored under the class.
+                defer self.gpa.free(args);
+                if (self.hir.kindOf(extends) == .identifier) {
+                    const id = hir_mod.identifierOf(self.hir, extends);
+                    extends = try self.builder.addTypeRef(
+                        .{
+                            .start = self.hir.spanOf(extends).start,
+                            .end = self.tokens[self.cursor - 1].span.end,
+                        },
+                        id.name,
+                        &.{},
+                        args,
+                    );
+                }
             }
         }
         var implements_list: std.ArrayListUnmanaged(NodeId) = .empty;
@@ -4588,7 +4599,9 @@ test "parser: class extends generic instantiation" {
     const cl = hir_mod.classOf(&s.hir, top);
     try T.expectEqual(@as(u16, 1), cl.type_params_len);
     try T.expect(cl.extends != hir_mod.none_node_id);
-    try T.expectEqual(hir_mod.NodeKind.identifier, s.hir.kindOf(cl.extends));
+    try T.expectEqual(hir_mod.NodeKind.type_ref, s.hir.kindOf(cl.extends));
+    const ext = hir_mod.typeRefOf(&s.hir, cl.extends);
+    try T.expectEqual(@as(u16, 1), ext.args_len);
 }
 
 test "parser: new expression accepts explicit type arguments" {

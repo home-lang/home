@@ -68,6 +68,8 @@ pub const TsCodes = struct {
     pub const property_does_not_exist: u32 = 2339;
     pub const argument_type_mismatch: u32 = 2345;
     pub const property_not_assignable_to_base: u32 = 2416;
+    pub const property_not_assignable_to_index_type: u32 = 2411;
+    pub const class_incorrectly_implements_interface: u32 = 2420;
     pub const expected_n_arguments: u32 = 2554;
     pub const no_overload_matches: u32 = 2769;
     pub const duplicate_identifier: u32 = 2300;
@@ -2408,6 +2410,23 @@ pub const Checker = struct {
             if (ctor_sig != types.Primitive.none) {
                 try self.class_constructor_sigs.put(self.gpa, cid.name, ctor_sig);
             }
+            const implements = self.hir.childSlice(c.implements_start, c.implements_len);
+            for (implements) |impl_node| {
+                const target_t = self.lowererLowerWithTypeParams(impl_node) catch types.Primitive.unknown;
+                if (!(self.engine.isAssignableTo(instance_t, target_t) catch true)) {
+                    const child_str = self.string_interner.get(cid.name);
+                    const msg = try std.fmt.allocPrint(
+                        self.diag_arena.allocator(),
+                        "Class '{s}' incorrectly implements interface.",
+                        .{child_str},
+                    );
+                    try self.diagnostics.append(self.gpa, .{
+                        .node = node,
+                        .code = TsCodes.class_incorrectly_implements_interface,
+                        .message = msg,
+                    });
+                }
+            }
             // Track abstract classes so `new X()` can emit TS2511.
             if (c.is_abstract) {
                 try self.abstract_classes.put(self.gpa, cid.name, {});
@@ -2440,34 +2459,35 @@ pub const Checker = struct {
             }
             try self.class_abstract_members.put(self.gpa, cid.name, abstract_names);
             abstract_names = .empty;
-            if (c.extends != hir_mod.none_node_id and self.hir.kindOf(c.extends) == .identifier) {
-                const ext_id = hir_mod.identifierOf(self.hir, c.extends);
-                if (self.class_instance_types.contains(ext_id.name)) {
-                    try self.class_parent.put(self.gpa, cid.name, ext_id.name);
-                }
-                // TS2515: a non-abstract class extending an abstract
-                // parent must implement each inherited abstract
-                // member. v0 walks one level only and emits one
-                // diagnostic per missing member.
-                if (!c.is_abstract) {
-                    if (self.class_abstract_members.getPtr(ext_id.name)) |parent_abs| {
-                        var it = parent_abs.keyIterator();
-                        while (it.next()) |name_ptr| {
-                            const member_name = name_ptr.*;
-                            if (concrete_names.contains(member_name)) continue;
-                            const member_str = self.string_interner.get(member_name);
-                            const child_str = self.string_interner.get(cid.name);
-                            const parent_str = self.string_interner.get(ext_id.name);
-                            const msg = try std.fmt.allocPrint(
-                                self.diag_arena.allocator(),
-                                "Non-abstract class '{s}' does not implement inherited abstract member '{s}' from class '{s}'.",
-                                .{ child_str, member_str, parent_str },
-                            );
-                            try self.diagnostics.append(self.gpa, .{
-                                .node = node,
-                                .code = TsCodes.abstract_member_not_implemented,
-                                .message = msg,
-                            });
+            if (c.extends != hir_mod.none_node_id) {
+                if (self.classExtendsName(c.extends)) |ext_name| {
+                    if (self.class_instance_types.contains(ext_name)) {
+                        try self.class_parent.put(self.gpa, cid.name, ext_name);
+                    }
+                    // TS2515: a non-abstract class extending an abstract
+                    // parent must implement each inherited abstract
+                    // member. v0 walks one level only and emits one
+                    // diagnostic per missing member.
+                    if (!c.is_abstract) {
+                        if (self.class_abstract_members.getPtr(ext_name)) |parent_abs| {
+                            var it = parent_abs.keyIterator();
+                            while (it.next()) |name_ptr| {
+                                const member_name = name_ptr.*;
+                                if (concrete_names.contains(member_name)) continue;
+                                const member_str = self.string_interner.get(member_name);
+                                const child_str = self.string_interner.get(cid.name);
+                                const parent_str = self.string_interner.get(ext_name);
+                                const msg = try std.fmt.allocPrint(
+                                    self.diag_arena.allocator(),
+                                    "Non-abstract class '{s}' does not implement inherited abstract member '{s}' from class '{s}'.",
+                                    .{ child_str, member_str, parent_str },
+                                );
+                                try self.diagnostics.append(self.gpa, .{
+                                    .node = node,
+                                    .code = TsCodes.abstract_member_not_implemented,
+                                    .message = msg,
+                                });
+                            }
                         }
                     }
                 }
@@ -2488,12 +2508,10 @@ pub const Checker = struct {
         // matching object type's member table.
         const this_id = self.string_interner.intern("this") catch return error.OutOfMemory;
         const super_id = self.string_interner.intern("super") catch return error.OutOfMemory;
-        const super_t: ?TypeId = blk: {
-            if (c.extends == hir_mod.none_node_id) break :blk null;
-            if (self.hir.kindOf(c.extends) != .identifier) break :blk null;
-            const ext_id = hir_mod.identifierOf(self.hir, c.extends);
-            break :blk self.class_instance_types.get(ext_id.name);
-        };
+        const super_t = if (c.extends != hir_mod.none_node_id)
+            self.classExtendsInstanceType(c.extends) catch null
+        else
+            null;
         for (members) |m| switch (self.hir.kindOf(m)) {
             .fn_decl, .fn_expr, .arrow_fn => {
                 try self.pushNarrowScope();
@@ -2651,9 +2669,7 @@ pub const Checker = struct {
         extends_expr: NodeId,
         child_members: *std.ArrayListUnmanaged(types.ObjectMember),
     ) CheckError!void {
-        if (self.hir.kindOf(extends_expr) != .identifier) return;
-        const id = hir_mod.identifierOf(self.hir, extends_expr);
-        const parent_t = self.class_instance_types.get(id.name) orelse return;
+        const parent_t = (try self.classExtendsInstanceType(extends_expr)) orelse return;
         const parent_members = self.interner.objectMembers(parent_t);
 
         // Collect the child declarations so overrides can be checked
@@ -2687,6 +2703,29 @@ pub const Checker = struct {
         }
         if (inherited.items.len == 0) return;
         try child_members.insertSlice(self.gpa, 0, inherited.items);
+    }
+
+    fn classExtendsName(self: *Checker, extends_expr: NodeId) ?hir_mod.StringId {
+        return switch (self.hir.kindOf(extends_expr)) {
+            .identifier => hir_mod.identifierOf(self.hir, extends_expr).name,
+            .type_ref => blk: {
+                const r = hir_mod.typeRefOf(self.hir, extends_expr);
+                if (r.qualifier_len != 0) break :blk null;
+                break :blk r.name;
+            },
+            else => null,
+        };
+    }
+
+    fn classExtendsInstanceType(self: *Checker, extends_expr: NodeId) CheckError!?TypeId {
+        return switch (self.hir.kindOf(extends_expr)) {
+            .identifier => blk: {
+                const id = hir_mod.identifierOf(self.hir, extends_expr);
+                break :blk self.class_instance_types.get(id.name);
+            },
+            .type_ref => try self.lowererLowerWithTypeParams(extends_expr),
+            else => null,
+        };
     }
 
     /// Per-statement check for `import … from "spec"`. The binder
@@ -2796,6 +2835,7 @@ pub const Checker = struct {
         if (extends.len > 0) {
             try self.mergeInterfaceExtends(extends, &iface_members, &string_idx, &number_idx);
         }
+        try self.checkIndexSignatureMemberCompatibility(node, iface_members.items, string_idx, number_idx);
 
         const iface_t = self.interner.internObjectTypeWithIndex(iface_members.items, string_idx, number_idx) catch return error.OutOfMemory;
         self.hir.setType(node, iface_t);
@@ -2814,6 +2854,37 @@ pub const Checker = struct {
                 });
             }
             self.hir.setType(it.name, iface_t);
+        }
+    }
+
+    fn checkIndexSignatureMemberCompatibility(
+        self: *Checker,
+        node: NodeId,
+        members: []const types.ObjectMember,
+        string_idx: TypeId,
+        number_idx: TypeId,
+    ) CheckError!void {
+        if (string_idx != types.Primitive.none) {
+            for (members) |m| {
+                if (m.type == types.Primitive.any or string_idx == types.Primitive.any) continue;
+                if (self.engine.isAssignableTo(m.type, string_idx) catch true) continue;
+                const prop_str = self.string_interner.get(m.name);
+                const msg = try std.fmt.allocPrint(
+                    self.diag_arena.allocator(),
+                    "Property '{s}' is not assignable to string index type.",
+                    .{prop_str},
+                );
+                try self.diagnostics.append(self.gpa, .{
+                    .node = node,
+                    .code = TsCodes.property_not_assignable_to_index_type,
+                    .message = msg,
+                });
+            }
+        }
+        if (number_idx != types.Primitive.none and string_idx != types.Primitive.none and
+            !(self.engine.isAssignableTo(number_idx, string_idx) catch true))
+        {
+            try self.report(node, TsCodes.property_not_assignable_to_index_type, "Number index type is not assignable to string index type.");
         }
     }
 
@@ -2946,6 +3017,9 @@ pub const Checker = struct {
                 },
             }
         }
+        try self.type_names.put(self.gpa, enum_name, types.Primitive.number_t);
+        self.hir.setType(node, types.Primitive.number_t);
+        self.hir.setType(e.name, types.Primitive.number_t);
     }
 
     /// If `obj_name` resolves to a `const enum` declaration and
@@ -3159,6 +3233,10 @@ pub const Checker = struct {
             .type_ref => {
                 const r = hir_mod.typeRefOf(self.hir, type_node);
                 if (r.qualifier_len == 0 and r.args_len == 0) {
+                    const name_str = self.string_interner.get(r.name);
+                    if (std.mem.eql(u8, name_str, "String")) {
+                        return lib.stringProto(&self.lib_cache, self.interner, self.string_interner) catch types.Primitive.unknown;
+                    }
                     if (self.lookupNarrow(r.name)) |t| return t;
                     if (self.generic_aliases.get(r.name)) |info| {
                         var all_defaulted: bool = info.params.len > 0;
@@ -7770,6 +7848,53 @@ test "checker: child class override keeps child field type and checks compatibil
     try T.expectEqual(types.Primitive.number_t, x_t);
 }
 
+test "checker: generic extends instantiates parent field types for override checks" {
+    const s = try newSetup(
+        \\class Base<T> { x: T = "" as any; }
+        \\class Derived extends Base<string> { x: String = "" as any; }
+    );
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+    var found = false;
+    for (s.checker.diagnostics.items) |d| {
+        if (d.code == TsCodes.property_not_assignable_to_base) found = true;
+    }
+    try T.expect(found);
+}
+
+test "checker: class implements interface checks instance shape" {
+    const s = try newSetup(
+        \\class C implements String {
+        \\  length: number = 0;
+        \\  charAt(pos: number): string { return ""; }
+        \\}
+    );
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+    var found = false;
+    for (s.checker.diagnostics.items) |d| {
+        if (d.code == TsCodes.class_incorrectly_implements_interface) found = true;
+    }
+    try T.expect(found);
+}
+
+test "checker: interface property must match string index signature" {
+    const s = try newSetup(
+        \\enum E { A }
+        \\interface I {
+        \\  [x: string]: string;
+        \\  foo: E;
+        \\}
+    );
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+    var found = false;
+    for (s.checker.diagnostics.items) |d| {
+        if (d.code == TsCodes.property_not_assignable_to_index_type) found = true;
+    }
+    try T.expect(found);
+}
+
 test "checker: generic class type annotation substitutes type parameters" {
     const s = try newSetup(
         \\class Box<T> { value: T; }
@@ -8836,7 +8961,7 @@ test "checker: `readonly T[]` annotation parses + types like `T[]`" {
     try T.expectEqual(types.Primitive.number_t, s.hir.typeOf(v.init));
 }
 
-test "checker: interface extends with index signature inherits indexer" {
+test "checker: interface extends with index signature checks own members" {
     const s = try newSetup(
         \\interface MapLike { [k: string]: number; }
         \\interface NamedMap extends MapLike { name: string; }
@@ -8844,7 +8969,11 @@ test "checker: interface extends with index signature inherits indexer" {
     );
     defer destroySetup(s);
     try s.checker.checkSourceFile(s.root);
-    try T.expect(s.checker.diagnostics.items.len == 0);
+    var found = false;
+    for (s.checker.diagnostics.items) |d| {
+        if (d.code == TsCodes.property_not_assignable_to_index_type) found = true;
+    }
+    try T.expect(found);
 }
 
 test "checker: optional parameter widens to T | undefined" {

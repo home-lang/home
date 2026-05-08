@@ -1171,7 +1171,7 @@ pub const Printer = struct {
         }
         if (c.extends != hir_mod.none_node_id) {
             try self.write(" extends ");
-            try self.printExpression(c.extends);
+            try self.printHeritageExpression(c.extends);
         }
         try self.write(" {");
         if (members.len == 0) {
@@ -1800,8 +1800,22 @@ pub const Printer = struct {
         try self.write("return ");
         try self.printExpression(c.name);
         try self.write("; })(");
-        if (c.extends != hir_mod.none_node_id) try self.printExpression(c.extends);
+        if (c.extends != hir_mod.none_node_id) try self.printHeritageExpression(c.extends);
         try self.write(");");
+    }
+
+    fn printHeritageExpression(self: *Printer, node: NodeId) anyerror!void {
+        if (self.hir.kindOf(node) == .type_ref) {
+            const r = hir_mod.typeRefOf(self.hir, node);
+            const qual = hir_mod.typeRefQualifier(self.hir, node);
+            for (qual) |q| {
+                try self.printExpression(q);
+                try self.write(".");
+            }
+            try self.write(self.interner.get(r.name));
+            return;
+        }
+        try self.printExpression(node);
     }
 
     fn printEnum(self: *Printer, node: NodeId) !void {
@@ -3987,6 +4001,13 @@ test "emit: class extends" {
     const out = try emit("class B extends A {}");
     defer T.allocator.free(out);
     try T.expect(std.mem.indexOf(u8, out, "class B extends A") != null);
+}
+
+test "emit: class extends generic instantiation erases type args" {
+    const out = try emit("class B extends A<string> {}");
+    defer T.allocator.free(out);
+    try T.expect(std.mem.indexOf(u8, out, "class B extends A") != null);
+    try T.expect(std.mem.indexOf(u8, out, "A<string>") == null);
 }
 
 test "emit: switch with cases" {
