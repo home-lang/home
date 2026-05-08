@@ -3899,7 +3899,12 @@ pub const Parser = struct {
         const return_token = self.previous();
         var value: ?*ast.Expr = null;
 
-        if (!self.check(.RightBrace) and !self.isAtEnd()) {
+        // A bare `return` ends at any obvious statement / arm boundary —
+        // including `;`, `,`, `}`, and EOF — so we don't accidentally
+        // pull the next match-arm or block tail in as the return value.
+        if (!self.check(.RightBrace) and !self.check(.Semicolon) and
+            !self.check(.Comma) and !self.isAtEnd())
+        {
             value = try self.expression();
         }
 
