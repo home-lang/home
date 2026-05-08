@@ -4613,7 +4613,7 @@ pub const Parser = struct {
                 defer body_stmts.deinit(self.allocator);
 
                 while (!self.check(.Case) and !self.check(.Default) and !self.check(.RightBrace) and !self.isAtEnd()) {
-                    const stmt = try self.statement();
+                    const stmt = try self.declaration();
                     try body_stmts.append(self.allocator, stmt);
                 }
 
@@ -4635,7 +4635,7 @@ pub const Parser = struct {
                 defer body_stmts.deinit(self.allocator);
 
                 while (!self.check(.RightBrace) and !self.isAtEnd()) {
-                    const stmt = try self.statement();
+                    const stmt = try self.declaration();
                     try body_stmts.append(self.allocator, stmt);
                 }
 
@@ -4717,8 +4717,11 @@ pub const Parser = struct {
             // Block body — inline its statements directly into the clause so
             // codegen/interpreter (which iterate `case_clause.body`) see them
             // as a flat statement list, matching the C-style `case ...:` form.
+            // Use declaration() so `let` / `const` / `var` inside the arm
+            // are recognized; statement() alone falls through to expression
+            // parsing for those keywords.
             while (!self.check(.RightBrace) and !self.isAtEnd()) {
-                const stmt = try self.statement();
+                const stmt = try self.declaration();
                 try body_stmts.append(self.allocator, stmt);
             }
             _ = try self.expect(.RightBrace, "Expected '}' after switch arm block");
@@ -4987,6 +4990,13 @@ pub const Parser = struct {
             return pattern;
         }
 
+        // `else` as a default arm in match (mirrors switch-stmt semantics).
+        // Treated as a wildcard so the AST stays unified.
+        if (self.match(&.{.Else})) {
+            pattern.* = ast.Pattern.Wildcard;
+            return pattern;
+        }
+
         // Tuple pattern: (pattern1, pattern2, ...)
         if (self.match(&.{.LeftParen})) {
             var elements = std.ArrayList(*ast.Pattern).empty;
@@ -5040,6 +5050,66 @@ pub const Parser = struct {
                     .rest = rest,
                 },
             };
+            return pattern;
+        }
+
+        // Zig-style leading-dot enum-tag pattern: `.Variant`, `.Variant(p)`,
+        // or `.Variant{ .field = p }`. Treated as an enum-variant
+        // pattern with a dotted qualifier — codegen lowers it the same
+        // way as the namespaced form.
+        if (self.check(.Dot) and self.peekNext().type == .Identifier) {
+            _ = self.advance(); // consume '.'
+            const variant_token = self.advance();
+            const name = try std.fmt.allocPrint(self.allocator, ".{s}", .{variant_token.lexeme});
+            // Optional payload: `.Variant(payload)`
+            if (self.match(&.{.LeftParen})) {
+                const payload = if (!self.check(.RightParen))
+                    try self.parsePattern()
+                else
+                    null;
+                _ = try self.expect(.RightParen, "Expected ')' after enum variant payload");
+                pattern.* = ast.Pattern{
+                    .EnumVariant = .{
+                        .variant = name,
+                        .payload = payload,
+                    },
+                };
+                return pattern;
+            }
+            // Optional struct-shape payload: `.Variant{ .field = p }`
+            if (self.match(&.{.LeftBrace})) {
+                var fields = std.ArrayList(ast.Pattern.FieldPattern).empty;
+                defer fields.deinit(self.allocator);
+                while (!self.check(.RightBrace) and !self.isAtEnd()) {
+                    _ = self.match(&.{.Dot});
+                    const field_name_token = try self.expect(.Identifier, "Expected field name");
+                    const field_name = field_name_token.lexeme;
+                    var is_shorthand = false;
+                    const field_pattern = if (self.match(&.{ .Colon, .Equal }))
+                        try self.parsePattern()
+                    else blk: {
+                        is_shorthand = true;
+                        const id_pattern = try self.allocator.create(ast.Pattern);
+                        id_pattern.* = ast.Pattern{ .Identifier = field_name };
+                        break :blk id_pattern;
+                    };
+                    try fields.append(self.allocator, .{
+                        .name = field_name,
+                        .pattern = field_pattern,
+                        .shorthand = is_shorthand,
+                    });
+                    if (!self.match(&.{.Comma})) break;
+                }
+                _ = try self.expect(.RightBrace, "Expected '}' after struct fields");
+                pattern.* = ast.Pattern{
+                    .Struct = .{
+                        .name = name,
+                        .fields = try fields.toOwnedSlice(self.allocator),
+                    },
+                };
+                return pattern;
+            }
+            pattern.* = ast.Pattern{ .EnumVariant = .{ .variant = name, .payload = null } };
             return pattern;
         }
 
