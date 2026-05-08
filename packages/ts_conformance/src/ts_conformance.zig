@@ -293,6 +293,14 @@ pub const OwnedCorpusEntry = struct {
     is_tsx: bool = false,
 };
 
+pub const DirectoryLoadOptions = struct {
+    /// Optional path to upstream TS `tests/baselines/reference`.
+    /// When present, `<case>.errors.txt` marks the source as an
+    /// expected-error case even when the source filename itself is
+    /// not `.errors.ts`.
+    baseline_root: ?[]const u8 = null,
+};
+
 /// Walk `dir_path` recursively and collect every `.ts` / `.tsx`
 /// file as an `OwnedCorpusEntry`. Convention for `.errors.ts` is
 /// "expects an error" — same as on tsgo's tests/cases/conformance/
@@ -302,6 +310,14 @@ pub const OwnedCorpusEntry = struct {
 /// an `Io` instance through every call. We construct a short-lived
 /// `Threaded` `Io` so the public API stays plain `std.mem.Allocator`.
 pub fn loadDirectory(gpa: std.mem.Allocator, dir_path: []const u8) ![]OwnedCorpusEntry {
+    return loadDirectoryWithOptions(gpa, dir_path, .{});
+}
+
+pub fn loadDirectoryWithOptions(
+    gpa: std.mem.Allocator,
+    dir_path: []const u8,
+    options: DirectoryLoadOptions,
+) ![]OwnedCorpusEntry {
     var out: std.ArrayListUnmanaged(OwnedCorpusEntry) = .empty;
     errdefer {
         for (out.items) |entry| {
@@ -344,9 +360,10 @@ pub fn loadDirectory(gpa: std.mem.Allocator, dir_path: []const u8) ![]OwnedCorpu
             gpa.free(src);
             continue;
         }
-        const expects_error = std.mem.indexOf(u8, entry.basename, ".errors.") != null;
         const ext_dot = std.mem.lastIndexOfScalar(u8, entry.basename, '.') orelse ext_end;
         const stem = entry.basename[0..ext_dot];
+        const expects_error = std.mem.indexOf(u8, entry.basename, ".errors.") != null or
+            hasErrorBaseline(gpa, options.baseline_root, stem);
         const name = try gpa.dupe(u8, stem);
         try out.append(gpa, .{
             .name = name,
@@ -356,6 +373,17 @@ pub fn loadDirectory(gpa: std.mem.Allocator, dir_path: []const u8) ![]OwnedCorpu
         });
     }
     return out.toOwnedSlice(gpa);
+}
+
+fn hasErrorBaseline(gpa: std.mem.Allocator, baseline_root: ?[]const u8, stem: []const u8) bool {
+    const root = baseline_root orelse return false;
+    const path = std.fmt.allocPrint(gpa, "{s}/{s}.errors.txt", .{ root, stem }) catch return false;
+    defer gpa.free(path);
+    var threaded = std.Io.Threaded.init(gpa, .{});
+    defer threaded.deinit();
+    const io = threaded.io();
+    std.Io.Dir.cwd().access(io, path, .{}) catch return false;
+    return true;
 }
 
 /// Run an owned-source corpus (typically loaded via `loadDirectory`).
@@ -393,7 +421,16 @@ pub fn runDirectory(
     dir_path: []const u8,
     results: *std.ArrayListUnmanaged(Result),
 ) !Stats {
-    const corpus = try loadDirectory(gpa, dir_path);
+    return runDirectoryWithOptions(gpa, dir_path, .{}, results);
+}
+
+pub fn runDirectoryWithOptions(
+    gpa: std.mem.Allocator,
+    dir_path: []const u8,
+    options: DirectoryLoadOptions,
+    results: *std.ArrayListUnmanaged(Result),
+) !Stats {
+    const corpus = try loadDirectoryWithOptions(gpa, dir_path, options);
     defer {
         for (corpus) |entry| {
             gpa.free(entry.name);
@@ -412,6 +449,15 @@ pub fn runDirectory(
 pub fn runCategorySpecs(
     gpa: std.mem.Allocator,
     root_path: []const u8,
+    specs: []const CategorySpec,
+) ![]CategoryResult {
+    return runCategorySpecsWithOptions(gpa, root_path, .{}, specs);
+}
+
+pub fn runCategorySpecsWithOptions(
+    gpa: std.mem.Allocator,
+    root_path: []const u8,
+    options: DirectoryLoadOptions,
     specs: []const CategorySpec,
 ) ![]CategoryResult {
     var cats: std.ArrayListUnmanaged(CategoryResult) = .empty;
@@ -433,7 +479,7 @@ pub fn runCategorySpecs(
             results.deinit(gpa);
         }
 
-        const stats = try runDirectory(gpa, path, &results);
+        const stats = try runDirectoryWithOptions(gpa, path, options, &results);
         const label = try gpa.dupe(u8, spec.label);
         errdefer gpa.free(label);
         try cats.append(gpa, .{
@@ -894,6 +940,46 @@ test "conformance: category specs summarize local TS feature folders" {
     try T.expectEqual(@as(usize, specs.len), cats.len);
     try T.expectEqual(@as(u32, 86), combined.total());
     try T.expectEqual(combined.total(), combined.passed);
+}
+
+test "conformance: baseline-aware type-relationship survey" {
+    const ts_root = "/Users/chrisbreuer/Code/typescript-go/_submodules/TypeScript/tests/cases/conformance";
+    const baseline_root = "/Users/chrisbreuer/Code/typescript-go/_submodules/TypeScript/tests/baselines/reference";
+    {
+        var threaded = std.Io.Threaded.init(T.allocator, .{});
+        defer threaded.deinit();
+        const io = threaded.io();
+        std.Io.Dir.cwd().access(io, ts_root, .{}) catch return;
+        std.Io.Dir.cwd().access(io, baseline_root, .{}) catch return;
+    }
+
+    const specs = [_]CategorySpec{
+        .{ .label = "types/typeRelationships/apparentType", .rel_path = "types/typeRelationships/apparentType" },
+        .{ .label = "types/typeRelationships/bestCommonType", .rel_path = "types/typeRelationships/bestCommonType" },
+        .{ .label = "types/typeRelationships/recursiveTypes", .rel_path = "types/typeRelationships/recursiveTypes" },
+        .{ .label = "types/typeRelationships/subtypesAndSuperTypes", .rel_path = "types/typeRelationships/subtypesAndSuperTypes" },
+        .{ .label = "types/typeRelationships/typeAndMemberIdentity", .rel_path = "types/typeRelationships/typeAndMemberIdentity" },
+        .{ .label = "types/typeRelationships/typeInference", .rel_path = "types/typeRelationships/typeInference" },
+    };
+
+    const cats = try runCategorySpecsWithOptions(T.allocator, ts_root, .{ .baseline_root = baseline_root }, &specs);
+    defer freeCategoryResults(T.allocator, cats);
+    const combined = combineCategoryStats(cats);
+
+    for (cats) |cat| {
+        std.debug.print(
+            "[ts_conformance baseline-aware] {s}: total={d} passed={d} failed={d} skipped={d} pass_rate={d:.2}\n",
+            .{ cat.label, cat.stats.total(), cat.stats.passed, cat.stats.failed, cat.stats.skipped, cat.stats.passRate() },
+        );
+    }
+    std.debug.print(
+        "[ts_conformance baseline-aware] COMBINED: total={d} passed={d} failed={d} skipped={d} pass_rate={d:.2}\n",
+        .{ combined.total(), combined.passed, combined.failed, combined.skipped, combined.passRate() },
+    );
+
+    try T.expectEqual(@as(usize, specs.len), cats.len);
+    try T.expectEqual(@as(u32, 175), combined.total());
+    try T.expect(combined.passed >= 90);
 }
 
 test "conformance: runOwnedCorpus matches runCorpus on equal inputs" {
