@@ -1438,6 +1438,10 @@ pub const Builder = struct {
         return self.newNode(.literal_undefined, span, 0);
     }
 
+    pub fn addLiteralRegex(self: *Builder, span: Span) !NodeId {
+        return self.newNode(.literal_regex, span, 0);
+    }
+
     // ---- Compound expressions --------------------------------------------
 
     pub fn addBinaryOp(self: *Builder, span: Span, op: BinOp, lhs: NodeId, rhs: NodeId) !NodeId {
@@ -1525,20 +1529,28 @@ pub const Builder = struct {
     /// call, but emitted as `.new_expr` so the checker can produce
     /// the class instance type rather than the constructor's return.
     pub fn addNew(self: *Builder, span: Span, callee: NodeId, args: []const NodeId) !NodeId {
+        return self.addNewWithTypeArgs(span, callee, args, &.{});
+    }
+
+    pub fn addNewWithTypeArgs(self: *Builder, span: Span, callee: NodeId, args: []const NodeId, type_args: []const NodeId) !NodeId {
         const args_start: u32 = @intCast(self.hir.child_pool.items.len);
         try self.hir.child_pool.appendSlice(self.hir.gpa, args);
         const args_len: u16 = @intCast(args.len);
+        const type_args_start: u32 = @intCast(self.hir.child_pool.items.len);
+        try self.hir.child_pool.appendSlice(self.hir.gpa, type_args);
+        const type_args_len: u16 = @intCast(type_args.len);
         const payload_idx: u32 = @intCast(self.hir.call_payloads.items.len);
         try self.hir.call_payloads.append(self.hir.gpa, .{
             .callee = callee,
             .args_start = args_start,
             .args_len = args_len,
-            .type_args_start = 0,
-            .type_args_len = 0,
+            .type_args_start = type_args_start,
+            .type_args_len = type_args_len,
         });
         const id = try self.newNode(.new_expr, span, payload_idx);
         self.hir.setParent(callee, id);
         for (args) |arg| self.hir.setParent(arg, id);
+        for (type_args) |t| self.hir.setParent(t, id);
         return id;
     }
 
@@ -3364,6 +3376,7 @@ test "Hir: literal kinds round-trip" {
     const ff = try b.addLiteralBool(.{ .start = 42, .end = 47 }, false);
     const nullv = try b.addLiteralNull(.{ .start = 48, .end = 52 });
     const undef = try b.addLiteralUndefined(.{ .start = 53, .end = 62 });
+    const regex = try b.addLiteralRegex(.{ .start = 63, .end = 66 });
 
     try t.expectEqualStrings("hello", interner.get(literalStringOf(&hir, s).value));
     try t.expectApproxEqRel(@as(f64, 3.14159), literalNumberOf(&hir, n), 1e-12);
@@ -3372,6 +3385,7 @@ test "Hir: literal kinds round-trip" {
     try t.expectEqual(false, literalBoolOf(&hir, ff));
     try t.expectEqual(NodeKind.literal_null, hir.kindOf(nullv));
     try t.expectEqual(NodeKind.literal_undefined, hir.kindOf(undef));
+    try t.expectEqual(NodeKind.literal_regex, hir.kindOf(regex));
 }
 
 test "Hir: call expression with multiple args" {

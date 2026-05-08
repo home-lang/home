@@ -3825,6 +3825,7 @@ pub const Checker = struct {
             .literal_bool => types.Primitive.boolean_t,
             .literal_null => types.Primitive.null_t,
             .literal_undefined => types.Primitive.undefined_t,
+            .literal_regex => types.Primitive.object_t,
             .identifier => self.typeOfIdentifier(node),
             .binary_op => try self.checkBinop(node),
             .unary_op => try self.checkUnary(node),
@@ -6279,6 +6280,7 @@ pub const Checker = struct {
         if (init_node == hir_mod.none_node_id) return;
         if (self.hir.kindOf(init_node) != .object_literal) return;
         if (!self.interner.pool.flagsOf(declared_t).is_object_type) return;
+        if (self.interner.objectStringIndex(declared_t) != types.Primitive.none) return;
         const props = hir_mod.objectLiteralProps(self.hir, init_node);
         for (props) |p| {
             if (self.hir.kindOf(p) != .object_property) continue;
@@ -7642,6 +7644,15 @@ test "checker: matching object literal compiles without TS2353" {
     defer destroySetup(s);
     try s.checker.checkSourceFile(s.root);
     try T.expect(s.checker.diagnostics.items.len == 0);
+}
+
+test "checker: string index signature suppresses excess property diagnostics" {
+    const s = try newSetup("let p: { [key: string]: number } = { x: 1, y: 2 };");
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+    for (s.checker.diagnostics.items) |d| {
+        try T.expect(d.code != TsCodes.object_literal_excess_property);
+    }
 }
 
 test "checker: exactOptionalPropertyTypes flags explicit undefined on optional property" {

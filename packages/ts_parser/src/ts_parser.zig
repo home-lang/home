@@ -745,7 +745,7 @@ pub const Parser = struct {
                 const name_node: NodeId = if (self.peek().kind == .open_brace or self.peek().kind == .open_bracket) blk: {
                     break :blk try self.parseBindingPattern();
                 } else id_blk: {
-                    const name_tok = try self.expect(.identifier, "parameter name");
+                    const name_tok = try self.expectIdentifierLike();
                     const name_id = try self.internToken(name_tok);
                     break :id_blk try self.builder.addIdentifier(tokenSpan(name_tok), name_id);
                 };
@@ -851,8 +851,8 @@ pub const Parser = struct {
             extends = try self.parseLeftHandSideExpression();
             // Optional `<T>` after `extends Foo<T>` — skip generic args.
             if (self.peek().kind == .less_than) {
-                const tps = try self.parseTypeParameterDeclaration();
-                self.gpa.free(tps);
+                const args = try self.parseTypeArgumentList();
+                self.gpa.free(args);
                 // Note: this swallows the `<T>` after extends but
                 // leaves the parsed nodes in HIR; that's fine since
                 // they're real type-arg refs anchored under the class.
@@ -1445,7 +1445,7 @@ pub const Parser = struct {
         const name_node: NodeId = if (self.peek().kind == .open_brace or self.peek().kind == .open_bracket) blk: {
             break :blk try self.parseBindingPattern();
         } else id_blk: {
-            const name_tok = try self.expect(.identifier, "identifier in variable declaration");
+            const name_tok = try self.expectIdentifierLike();
             const name_id = try self.internToken(name_tok);
             break :id_blk try self.builder.addIdentifier(tokenSpan(name_tok), name_id);
         };
@@ -2413,6 +2413,21 @@ pub const Parser = struct {
         return try tps.toOwnedSlice(self.gpa);
     }
 
+    /// Parse `<A, B<C>>` in type-argument position. Returns owned
+    /// slice of parsed type nodes.
+    fn parseTypeArgumentList(self: *Parser) ParseError![]NodeId {
+        _ = try self.expect(.less_than, "'<' to open type arguments");
+        var args: std.ArrayListUnmanaged(NodeId) = .empty;
+        errdefer args.deinit(self.gpa);
+        while (self.peek().kind != .greater_than and self.peek().kind != .eof) {
+            const arg = try self.parseTypeAnnotation();
+            try args.append(self.gpa, arg);
+            if (!self.match(.comma)) break;
+        }
+        _ = try self.consumeTypeGreater("'>' to close type arguments");
+        return try args.toOwnedSlice(self.gpa);
+    }
+
     /// `Foo`, `Foo.Bar`, `Foo<T, U>`. The lexer hands us the `<` only
     /// when it can tell from context — in type position it's always
     /// generic args, never a comparison.
@@ -2582,13 +2597,22 @@ pub const Parser = struct {
         var i: u32 = start + 1;
         while (i < self.tokens.len) : (i += 1) {
             const tk = self.tokens[i].kind;
-            if (tk == .less_than) {
-                depth += 1;
-            } else if (tk == .greater_than) {
-                depth -= 1;
-                if (depth == 0) return i + 1;
-            } else if (tk == .eof) {
-                return null;
+            switch (tk) {
+                .less_than => depth += 1,
+                .greater_than => {
+                    depth -= 1;
+                    if (depth == 0) return i + 1;
+                },
+                .greater_greater, .greater_greater_greater => {
+                    const count: u8 = if (tk == .greater_greater) 2 else 3;
+                    var n: u8 = 0;
+                    while (n < count) : (n += 1) {
+                        depth -= 1;
+                        if (depth == 0) return i + 1;
+                    }
+                },
+                .eof => return null,
+                else => {},
             }
         }
         return null;
@@ -2659,16 +2683,25 @@ pub const Parser = struct {
             const tk = self.tokens[i].kind;
             switch (tk) {
                 .less_than => depth += 1,
-                .greater_than => {
-                    depth -= 1;
-                    if (depth == 0) {
-                        // Next token must be `(` for this to be a
-                        // generic call.
-                        const next = i + 1;
-                        if (next < self.tokens.len and self.tokens[next].kind == .open_paren) {
-                            return next;
+                .greater_than, .greater_greater, .greater_greater_greater => {
+                    const count: u8 = switch (tk) {
+                        .greater_than => 1,
+                        .greater_greater => 2,
+                        .greater_greater_greater => 3,
+                        else => unreachable,
+                    };
+                    var n: u8 = 0;
+                    while (n < count) : (n += 1) {
+                        depth -= 1;
+                        if (depth == 0) {
+                            // Next token must be `(` for this to be a
+                            // generic call.
+                            const next = i + 1;
+                            if (next < self.tokens.len and self.tokens[next].kind == .open_paren) {
+                                return next;
+                            }
+                            return null;
                         }
-                        return null;
                     }
                 },
                 // Balanced delimiters that may appear inside type args.
@@ -2714,6 +2747,66 @@ pub const Parser = struct {
         // caller already verified `after_gt` lands on `(`.
         self.cursor = after_gt;
         return args.toOwnedSlice(self.gpa);
+    }
+
+    fn isRegexFlagByte(c: u8) bool {
+        return (c >= 'a' and c <= 'z') or
+            (c >= 'A' and c <= 'Z') or
+            (c >= '0' and c <= '9') or
+            c == '_' or
+            c == '$';
+    }
+
+    fn findRegexLiteralEnd(self: *Parser, start: u32) ?u32 {
+        const start_i: usize = @intCast(start);
+        if (start_i >= self.source.len or self.source[start_i] != '/') return null;
+        var i: usize = start_i + 1;
+        var escaped = false;
+        var in_class = false;
+        while (i < self.source.len) : (i += 1) {
+            const c = self.source[i];
+            if (c == '\n' or c == '\r') return null;
+            if (escaped) {
+                escaped = false;
+                continue;
+            }
+            if (c == '\\') {
+                escaped = true;
+                continue;
+            }
+            if (c == '[') {
+                in_class = true;
+                continue;
+            }
+            if (c == ']' and in_class) {
+                in_class = false;
+                continue;
+            }
+            if (c == '/' and !in_class) {
+                i += 1;
+                while (i < self.source.len and isRegexFlagByte(self.source[i])) : (i += 1) {}
+                return @intCast(i);
+            }
+        }
+        return null;
+    }
+
+    fn parseRegexLiteralExpression(self: *Parser) ParseError!NodeId {
+        const start_tok = self.peek();
+        const end = self.findRegexLiteralEnd(start_tok.span.start) orelse {
+            try self.report("unterminated regular expression literal", "");
+            return error.UnexpectedToken;
+        };
+        var next = self.cursor;
+        while (next < self.tokens.len and
+            self.tokens[next].kind != .eof and
+            self.tokens[next].span.end <= end)
+        {
+            next += 1;
+        }
+        if (next == self.cursor) next += 1;
+        self.cursor = next;
+        return try self.builder.addLiteralRegex(.{ .start = start_tok.span.start, .end = end });
     }
 
     /// Skip a balanced (), [], or {} starting at `start`. Returns
@@ -3252,6 +3345,9 @@ pub const Parser = struct {
                 const id = try self.internStringLiteral(t);
                 return try self.builder.addLiteralString(tokenSpan(t), id);
             },
+            .regex_literal, .slash => {
+                return try self.parseRegexLiteralExpression();
+            },
             .no_substitution_template => {
                 _ = self.advance();
                 // Build a template_literal HIR node so the emitter can
@@ -3307,12 +3403,18 @@ pub const Parser = struct {
             },
             .less_than => {
                 if (self.is_tsx) return try self.parseJsx();
-                // In .ts files `<T>expr` is a type assertion. We
-                // currently treat it as a no-op pass-through.
+                // In .ts files `<T>expr` is a type assertion. Parse
+                // the full type node so forms like `<T[]>null` and
+                // `<Array<T>>null` consume nested `>` tokens through
+                // the same rescan path used by type references.
                 _ = self.advance();
-                try self.skipTypeAnnotation();
-                _ = try self.expect(.greater_than, "'>' to close type assertion");
-                return try self.parseUnaryExpression();
+                const type_node = try self.parseTypeAnnotation();
+                _ = try self.consumeTypeGreater("'>' to close type assertion");
+                const expr = try self.parseUnaryExpression();
+                return try self.builder.addAsExpression(.type_assertion, .{
+                    .start = t.span.start,
+                    .end = self.hir.spanOf(expr).end,
+                }, expr, type_node);
             },
             .open_bracket => return try self.parseArrayLiteral(),
             .open_brace => return try self.parseObjectLiteral(),
@@ -3334,13 +3436,41 @@ pub const Parser = struct {
                 // member-only parser so `new Foo(args)` doesn't get
                 // pre-consumed as a call.
                 const callee = try self.parseMemberExpressionOnly();
+                var type_args: []NodeId = &.{};
+                if (self.peek().kind == .less_than) {
+                    const saved_cursor = self.cursor;
+                    const saved_pending_type_gt = self.pending_type_gt;
+                    const saved_pending_type_gt_pos = self.pending_type_gt_pos;
+                    const saved_pending_type_gt_line = self.pending_type_gt_line;
+                    const saved_pending_type_gt_flags = self.pending_type_gt_flags;
+                    if (self.parseTypeArgumentList()) |parsed| {
+                        if (self.peek().kind == .open_paren) {
+                            type_args = parsed;
+                        } else {
+                            self.gpa.free(parsed);
+                            self.cursor = saved_cursor;
+                            self.pending_type_gt = saved_pending_type_gt;
+                            self.pending_type_gt_pos = saved_pending_type_gt_pos;
+                            self.pending_type_gt_line = saved_pending_type_gt_line;
+                            self.pending_type_gt_flags = saved_pending_type_gt_flags;
+                        }
+                    } else |_| {
+                        self.cursor = saved_cursor;
+                        self.pending_type_gt = saved_pending_type_gt;
+                        self.pending_type_gt_pos = saved_pending_type_gt_pos;
+                        self.pending_type_gt_line = saved_pending_type_gt_line;
+                        self.pending_type_gt_flags = saved_pending_type_gt_flags;
+                    }
+                }
+                defer if (type_args.len > 0) self.gpa.free(type_args);
                 if (self.peek().kind == .open_paren) {
                     const args = try self.parseArgumentList();
                     defer self.gpa.free(args);
                     const close_pos = self.tokens[self.cursor - 1].span.end;
-                    return try self.builder.addNew(.{ .start = t.span.start, .end = close_pos }, callee, args);
+                    return try self.builder.addNewWithTypeArgs(.{ .start = t.span.start, .end = close_pos }, callee, args, type_args);
                 }
-                return try self.builder.addNew(.{ .start = t.span.start, .end = self.hir.spanOf(callee).end }, callee, &.{});
+                const end_pos = if (type_args.len > 0 and self.cursor > 0) self.tokens[self.cursor - 1].span.end else self.hir.spanOf(callee).end;
+                return try self.builder.addNewWithTypeArgs(.{ .start = t.span.start, .end = end_pos }, callee, &.{}, type_args);
             },
             .kw_import => {
                 // Dynamic `import("module")` — parses as a call
@@ -3866,6 +3996,38 @@ test "parser: var / const / let produce distinct kinds" {
     try T.expectEqual(hir_mod.NodeKind.const_decl, s.hir.kindOf(stmts[2]));
 }
 
+test "parser: contextual keyword may be variable name" {
+    var s = try newTestSetup("var as = 1;");
+    defer destroyTestSetup(s);
+    const root = try s.parser.parseSourceFile();
+    const top = hir_mod.blockStmts(&s.hir, root)[0];
+    const vd = hir_mod.varDeclOf(&s.hir, top);
+    try T.expectEqual(hir_mod.NodeKind.identifier, s.hir.kindOf(vd.name));
+    const id = hir_mod.identifierOf(&s.hir, vd.name);
+    try T.expectEqualStrings("as", s.interner.get(id.name));
+}
+
+test "parser: regular expression literal in expression position" {
+    var s = try newTestSetup("var r = true ? /1/g : null;");
+    defer destroyTestSetup(s);
+    const root = try s.parser.parseSourceFile();
+    const top = hir_mod.blockStmts(&s.hir, root)[0];
+    const vd = hir_mod.varDeclOf(&s.hir, top);
+    try T.expectEqual(hir_mod.NodeKind.conditional, s.hir.kindOf(vd.init));
+    const c = hir_mod.conditionalOf(&s.hir, vd.init);
+    try T.expectEqual(hir_mod.NodeKind.literal_regex, s.hir.kindOf(c.then_branch));
+}
+
+test "parser: contextual keyword may be parameter name" {
+    var s = try newTestSetup("function f(from: number, length?: number): void {}");
+    defer destroyTestSetup(s);
+    const root = try s.parser.parseSourceFile();
+    const top = hir_mod.blockStmts(&s.hir, root)[0];
+    const params = hir_mod.fnParams(&s.hir, top);
+    try T.expectEqual(@as(usize, 2), params.len);
+    try T.expectEqualStrings("from", s.interner.get(hir_mod.identifierOf(&s.hir, hir_mod.parameterOf(&s.hir, params[0]).name).name));
+}
+
 test "parser: declare let records ambient var-decl flag" {
     var s = try newTestSetup("declare let x: number;");
     defer destroyTestSetup(s);
@@ -4296,6 +4458,46 @@ test "parser: class extends" {
     try T.expect(cl.extends != hir_mod.none_node_id);
 }
 
+test "parser: class extends generic instantiation" {
+    var s = try newTestSetup("class Bar<T> extends Foo<string> {}");
+    defer destroyTestSetup(s);
+    const root = try s.parser.parseSourceFile();
+    const top = hir_mod.blockStmts(&s.hir, root)[0];
+    const cl = hir_mod.classOf(&s.hir, top);
+    try T.expect(cl.extends != hir_mod.none_node_id);
+    try T.expectEqual(hir_mod.NodeKind.identifier, s.hir.kindOf(cl.extends));
+}
+
+test "parser: new expression accepts explicit type arguments" {
+    var s = try newTestSetup("var x = new List<List<number>>();");
+    defer destroyTestSetup(s);
+    const root = try s.parser.parseSourceFile();
+    const top = hir_mod.blockStmts(&s.hir, root)[0];
+    const vd = hir_mod.varDeclOf(&s.hir, top);
+    try T.expectEqual(hir_mod.NodeKind.new_expr, s.hir.kindOf(vd.init));
+    try T.expectEqual(@as(usize, 1), hir_mod.callTypeArgs(&s.hir, vd.init).len);
+}
+
+test "parser: angle-bracket type assertion accepts array type" {
+    var s = try newTestSetup("var x = <T[]>null;");
+    defer destroyTestSetup(s);
+    const root = try s.parser.parseSourceFile();
+    const top = hir_mod.blockStmts(&s.hir, root)[0];
+    const vd = hir_mod.varDeclOf(&s.hir, top);
+    try T.expectEqual(hir_mod.NodeKind.type_assertion, s.hir.kindOf(vd.init));
+    const assertion = hir_mod.asExpressionOf(&s.hir, vd.init);
+    try T.expectEqual(hir_mod.NodeKind.array_type, s.hir.kindOf(assertion.type_node));
+}
+
+test "parser: generic arrow accepts nested type parameter constraint" {
+    var s = try newTestSetup("var f = <T extends Array<Base>>(x: Array<Base>, y: T) => <Array<Base>>null;");
+    defer destroyTestSetup(s);
+    const root = try s.parser.parseSourceFile();
+    const top = hir_mod.blockStmts(&s.hir, root)[0];
+    const vd = hir_mod.varDeclOf(&s.hir, top);
+    try T.expectEqual(hir_mod.NodeKind.arrow_fn, s.hir.kindOf(vd.init));
+}
+
 test "parser: interface declaration" {
     var s = try newTestSetup("interface Point { x: number; y: number; }");
     defer destroyTestSetup(s);
@@ -4526,7 +4728,7 @@ test "parser: new expression" {
     try T.expectEqual(@as(usize, 2), args.len);
 }
 
-test "parser: type assertion skips union and intersection assertion types" {
+test "parser: type assertion records union and intersection assertion types" {
     var s = try newTestSetup("let x = <A & B>value; let y = <A | B>value;");
     defer destroyTestSetup(s);
     const root = try s.parser.parseSourceFile();
@@ -4534,8 +4736,14 @@ test "parser: type assertion skips union and intersection assertion types" {
     try T.expectEqual(@as(usize, 2), stmts.len);
     const x = hir_mod.varDeclOf(&s.hir, stmts[0]);
     const y = hir_mod.varDeclOf(&s.hir, stmts[1]);
-    try T.expectEqual(hir_mod.NodeKind.identifier, s.hir.kindOf(x.init));
-    try T.expectEqual(hir_mod.NodeKind.identifier, s.hir.kindOf(y.init));
+    try T.expectEqual(hir_mod.NodeKind.type_assertion, s.hir.kindOf(x.init));
+    try T.expectEqual(hir_mod.NodeKind.type_assertion, s.hir.kindOf(y.init));
+    const x_assertion = hir_mod.asExpressionOf(&s.hir, x.init);
+    const y_assertion = hir_mod.asExpressionOf(&s.hir, y.init);
+    try T.expectEqual(hir_mod.NodeKind.identifier, s.hir.kindOf(x_assertion.expr));
+    try T.expectEqual(hir_mod.NodeKind.identifier, s.hir.kindOf(y_assertion.expr));
+    try T.expectEqual(hir_mod.NodeKind.intersection_type, s.hir.kindOf(x_assertion.type_node));
+    try T.expectEqual(hir_mod.NodeKind.union_type, s.hir.kindOf(y_assertion.type_node));
 }
 
 // ====================================================================

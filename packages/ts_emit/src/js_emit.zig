@@ -2220,6 +2220,7 @@ pub const Printer = struct {
             },
             .literal_null => try self.write("null"),
             .literal_undefined => try self.write("undefined"),
+            .literal_regex => try self.printLiteralRegex(node),
             .binary_op => try self.printBinop(node),
             .unary_op => try self.printUnary(node),
             .logical_op => try self.printLogical(node),
@@ -2599,6 +2600,19 @@ pub const Printer = struct {
         var buf: [32]u8 = undefined;
         const fmt = std.fmt.bufPrint(&buf, "{d}", .{v}) catch "NaN";
         try self.write(fmt);
+    }
+
+    fn printLiteralRegex(self: *Printer, node: NodeId) !void {
+        if (self.source) |src| {
+            const span = self.hir.spanOf(node);
+            const start: usize = @intCast(span.start);
+            const end: usize = @intCast(span.end);
+            if (end > start and end <= src.len) {
+                try self.write(src[start..end]);
+                return;
+            }
+        }
+        try self.write("/./");
     }
 
     fn printBinop(self: *Printer, node: NodeId) !void {
