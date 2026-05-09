@@ -295,6 +295,13 @@ pub const Parser = struct {
             return dec;
         }
         const t = self.peek();
+        if ((t.kind == .identifier or t.kind.isContextualKeyword()) and
+            self.peekAt(1).kind == .colon)
+        {
+            _ = self.advance();
+            _ = self.advance();
+            return try self.parseStatement();
+        }
         return switch (t.kind) {
             .kw_let, .kw_const, .kw_var => blk: {
                 // `const enum E { ... }` — TS const-enum declaration.
@@ -540,7 +547,7 @@ pub const Parser = struct {
             const head_expr = if (self.peek().kind == .open_brace or self.peek().kind == .open_bracket)
                 try self.parseBindingPattern()
             else
-                try self.parseExpression();
+                try self.parseExpressionNoIn();
 
             if (self.peek().kind == .kw_in or self.peek().kind == .kw_of) {
                 const kind_tok = self.advance();
@@ -574,7 +581,7 @@ pub const Parser = struct {
     fn parseBreakStatement(self: *Parser) ParseError!NodeId {
         const start = self.advance(); // break
         var label: NodeId = hir_mod.none_node_id;
-        if (self.peek().kind == .identifier and !self.peek().flags.preceded_by_newline) {
+        if ((self.peek().kind == .identifier or self.peek().kind.isContextualKeyword()) and !self.peek().flags.preceded_by_newline) {
             const lab_tok = self.advance();
             const lab_id = try self.internToken(lab_tok);
             label = try self.builder.addIdentifier(tokenSpan(lab_tok), lab_id);
@@ -587,7 +594,7 @@ pub const Parser = struct {
     fn parseContinueStatement(self: *Parser) ParseError!NodeId {
         const start = self.advance(); // continue
         var label: NodeId = hir_mod.none_node_id;
-        if (self.peek().kind == .identifier and !self.peek().flags.preceded_by_newline) {
+        if ((self.peek().kind == .identifier or self.peek().kind.isContextualKeyword()) and !self.peek().flags.preceded_by_newline) {
             const lab_tok = self.advance();
             const lab_id = try self.internToken(lab_tok);
             label = try self.builder.addIdentifier(tokenSpan(lab_tok), lab_id);
@@ -954,7 +961,7 @@ pub const Parser = struct {
         const start = self.advance(); // class
         if (!is_abstract) span_start = start.span.start;
         var name: NodeId = hir_mod.none_node_id;
-        if (self.peek().kind == .identifier or self.peek().kind == .kw_abstract) {
+        if (self.peek().kind == .identifier or self.peek().kind.isContextualKeyword()) {
             const name_tok = self.advance();
             const name_id = try self.internToken(name_tok);
             name = try self.builder.addIdentifier(tokenSpan(name_tok), name_id);
@@ -1731,7 +1738,7 @@ pub const Parser = struct {
         if (self.match(.asterisk)) {
             var ns_alias: hir_mod.StringId = empty_string;
             if (self.match(.kw_as)) {
-                const ns_tok = try self.expect(.identifier, "namespace name");
+                const ns_tok = try self.expectIdentifierLike();
                 ns_alias = try self.internToken(ns_tok);
             }
             _ = try self.expect(.kw_from, "'from' after 'export *'");
@@ -2126,19 +2133,27 @@ pub const Parser = struct {
             .kw_typeof => {
                 _ = self.advance();
                 // `typeof` in a type position consumes a value
-                // expression. Phase 1: take an identifier (with
-                // qualified-name continuation) — full member access /
-                // import.x is a follow-up.
-                const ref_tok = switch (self.peek().kind) {
-                    .identifier, .kw_undefined => self.advance(),
+                // expression. Keep the HIR compact by interning the
+                // qualified token span as an identifier-like ref.
+                const ref_start = switch (self.peek().kind) {
+                    .identifier, .kw_undefined, .kw_super, .kw_this => self.advance(),
                     else => {
                         try self.report("expected ", "identifier after typeof");
                         return error.UnexpectedToken;
                     },
                 };
-                const ref_id = try self.internToken(ref_tok);
-                const ref = try self.builder.addIdentifier(tokenSpan(ref_tok), ref_id);
-                const sp: Span = .{ .start = t.span.start, .end = ref_tok.span.end };
+                var ref_end = ref_start.span.end;
+                while (self.peek().kind == .dot and
+                    (self.peekAt(1).kind == .identifier or
+                        self.peekAt(1).kind == .private_identifier or
+                        self.peekAt(1).kind.isContextualKeyword()))
+                {
+                    _ = self.advance();
+                    ref_end = self.advance().span.end;
+                }
+                const ref_id = self.interner.intern(self.source[ref_start.span.start..ref_end]) catch return error.OutOfMemory;
+                const ref = try self.builder.addIdentifier(.{ .start = ref_start.span.start, .end = ref_end }, ref_id);
+                const sp: Span = .{ .start = t.span.start, .end = ref_end };
                 return try self.builder.addTypeofType(sp, ref);
             },
             .kw_infer => {
@@ -2273,9 +2288,16 @@ pub const Parser = struct {
             },
             .identifier => try self.parseTypeReference(),
             .kw_this => blk: {
-                _ = self.advance();
-                const id = self.interner.intern("this") catch return error.OutOfMemory;
-                break :blk try self.builder.addTypeRef(tokenSpan(t), id, &.{}, &.{});
+                const start_tok = self.advance();
+                var end_pos = start_tok.span.end;
+                while (self.peek().kind == .dot and
+                    (self.peekAt(1).kind == .identifier or self.peekAt(1).kind.isContextualKeyword()))
+                {
+                    _ = self.advance();
+                    end_pos = self.advance().span.end;
+                }
+                const id = self.interner.intern(self.source[start_tok.span.start..end_pos]) catch return error.OutOfMemory;
+                break :blk try self.builder.addTypeRef(.{ .start = start_tok.span.start, .end = end_pos }, id, &.{}, &.{});
             },
             else => {
                 // Unknown — emit a synthetic `unknown` type ref so the
@@ -2335,7 +2357,7 @@ pub const Parser = struct {
         const params = try self.parseTypeParameterList();
         defer self.gpa.free(params);
         _ = try self.expect(.arrow, "'=>' in function type");
-        const ret = try self.parseTypeAnnotation();
+        const ret = try self.parseReturnTypeAnnotation(params);
         const sp: Span = .{ .start = start.span.start, .end = self.hir.spanOf(ret).end };
         return try self.builder.addFnType(sp, &.{}, params, ret, is_constructor);
     }
@@ -2788,7 +2810,7 @@ pub const Parser = struct {
         const params = try self.parseTypeParameterList();
         defer self.gpa.free(params);
         _ = try self.expect(.arrow, "'=>' in generic fn type");
-        const ret = try self.parseTypeAnnotation();
+        const ret = try self.parseReturnTypeAnnotation(params);
         const sp: Span = .{ .start = start.span.start, .end = self.hir.spanOf(ret).end };
         return try self.builder.addFnType(sp, tps, params, ret, false);
     }
@@ -2805,7 +2827,7 @@ pub const Parser = struct {
         const params = try self.parseTypeParameterList();
         defer self.gpa.free(params);
         _ = try self.expect(.arrow, "'=>' in constructor type");
-        const ret = try self.parseTypeAnnotation();
+        const ret = try self.parseReturnTypeAnnotation(params);
         const sp: Span = .{ .start = start.span.start, .end = self.hir.spanOf(ret).end };
         return try self.builder.addFnType(sp, tps, params, ret, true);
     }
@@ -2927,14 +2949,33 @@ pub const Parser = struct {
     // ========================================================================
 
     /// Parse a comma-separated expression at expression-statement
-    /// position. Phase 1.D treats the comma operator as
-    /// not-yet-implemented and parses a single AssignmentExpression
-    /// (covers ≥99% of real-world TS).
     pub fn parseExpression(self: *Parser) ParseError!NodeId {
-        return try self.parseAssignmentExpression();
+        return try self.parseExpressionWithIn(true);
+    }
+
+    fn parseExpressionNoIn(self: *Parser) ParseError!NodeId {
+        return try self.parseExpressionWithIn(false);
+    }
+
+    fn parseExpressionWithIn(self: *Parser, allow_in: bool) ParseError!NodeId {
+        var left = try self.parseAssignmentExpressionWithIn(allow_in);
+        while (self.match(.comma)) {
+            const right = try self.parseAssignmentExpressionWithIn(allow_in);
+            left = try self.builder.addBinaryOp(
+                .{ .start = self.hir.spanOf(left).start, .end = self.hir.spanOf(right).end },
+                .comma,
+                left,
+                right,
+            );
+        }
+        return left;
     }
 
     fn parseAssignmentExpression(self: *Parser) ParseError!NodeId {
+        return try self.parseAssignmentExpressionWithIn(true);
+    }
+
+    fn parseAssignmentExpressionWithIn(self: *Parser, allow_in: bool) ParseError!NodeId {
         // Arrow function fast paths:
         //   `x => …`   — single-ident arrow
         //   `() => …`  — zero-arg
@@ -2943,28 +2984,35 @@ pub const Parser = struct {
         //   `<T>(…) => …` — generic arrow
         if (try self.maybeParseArrowFunction()) |arrow| return arrow;
 
-        const left = try self.parseConditionalExpression();
+        const left = try self.parseConditionalExpressionWithIn(allow_in);
         const t = self.peek();
         switch (t.kind) {
             .equal => {
                 _ = self.advance();
-                const right = try self.parseAssignmentExpression();
+                const right = try self.parseAssignmentExpressionWithIn(allow_in);
                 const sp: Span = .{ .start = self.hir.spanOf(left).start, .end = self.hir.spanOf(right).end };
                 return try self.builder.addAssignment(sp, left, right, null);
             },
-            .plus_equal => return self.parseCompoundAssign(left, .add),
-            .minus_equal => return self.parseCompoundAssign(left, .sub),
-            .asterisk_equal => return self.parseCompoundAssign(left, .mul),
-            .slash_equal => return self.parseCompoundAssign(left, .div),
-            .percent_equal => return self.parseCompoundAssign(left, .mod),
+            .plus_equal => return self.parseCompoundAssign(left, .add, allow_in),
+            .minus_equal => return self.parseCompoundAssign(left, .sub, allow_in),
+            .asterisk_equal => return self.parseCompoundAssign(left, .mul, allow_in),
+            .slash_equal => return self.parseCompoundAssign(left, .div, allow_in),
+            .percent_equal => return self.parseCompoundAssign(left, .mod, allow_in),
+            .asterisk_asterisk_equal => return self.parseCompoundAssign(left, .pow, allow_in),
+            .less_less_equal => return self.parseCompoundAssign(left, .shl, allow_in),
+            .greater_greater_equal => return self.parseCompoundAssign(left, .shr, allow_in),
+            .greater_greater_greater_equal => return self.parseCompoundAssign(left, .shr_unsigned, allow_in),
+            .ampersand_equal => return self.parseCompoundAssign(left, .bit_and, allow_in),
+            .pipe_equal => return self.parseCompoundAssign(left, .bit_or, allow_in),
+            .caret_equal => return self.parseCompoundAssign(left, .bit_xor, allow_in),
             // Logical assignments `??=`, `||=`, `&&=` (ES2021).
             // Lowered to `a = a <op> b` so existing checker logic
             // (nullish-coalescing strips null|undefined from lhs)
             // produces the right result type. Post-statement
             // narrowing for `??=` is applied by the checker.
-            .question_question_equal => return self.parseLogicalAssign(left, .nullish),
-            .pipe_pipe_equal => return self.parseLogicalAssign(left, .@"or"),
-            .ampersand_ampersand_equal => return self.parseLogicalAssign(left, .@"and"),
+            .question_question_equal => return self.parseLogicalAssign(left, .nullish, allow_in),
+            .pipe_pipe_equal => return self.parseLogicalAssign(left, .@"or", allow_in),
+            .ampersand_ampersand_equal => return self.parseLogicalAssign(left, .@"and", allow_in),
             else => return left,
         }
     }
@@ -3338,9 +3386,9 @@ pub const Parser = struct {
         return try self.parseAssignmentExpression();
     }
 
-    fn parseCompoundAssign(self: *Parser, left: NodeId, op: hir_mod.BinOp) ParseError!NodeId {
+    fn parseCompoundAssign(self: *Parser, left: NodeId, op: hir_mod.BinOp, allow_in: bool) ParseError!NodeId {
         _ = self.advance();
-        const right = try self.parseAssignmentExpression();
+        const right = try self.parseAssignmentExpressionWithIn(allow_in);
         const sp: Span = .{ .start = self.hir.spanOf(left).start, .end = self.hir.spanOf(right).end };
         return try self.builder.addAssignment(sp, left, right, op);
     }
@@ -3351,9 +3399,9 @@ pub const Parser = struct {
     /// HIR nodes. v0 only handles identifier targets — the common
     /// `x ??= "default"` pattern. Non-identifier targets fall through
     /// as `InvalidLeftHandSide`.
-    fn parseLogicalAssign(self: *Parser, left: NodeId, op: hir_mod.LogicalOp) ParseError!NodeId {
+    fn parseLogicalAssign(self: *Parser, left: NodeId, op: hir_mod.LogicalOp, allow_in: bool) ParseError!NodeId {
         _ = self.advance();
-        const right = try self.parseAssignmentExpression();
+        const right = try self.parseAssignmentExpressionWithIn(allow_in);
         if (self.hir.kindOf(left) != .identifier) {
             return error.InvalidLeftHandSide;
         }
@@ -3366,12 +3414,16 @@ pub const Parser = struct {
     }
 
     fn parseConditionalExpression(self: *Parser) ParseError!NodeId {
-        const cond = try self.parseBinaryExpression(.nullish);
+        return try self.parseConditionalExpressionWithIn(true);
+    }
+
+    fn parseConditionalExpressionWithIn(self: *Parser, allow_in: bool) ParseError!NodeId {
+        const cond = try self.parseBinaryExpressionWithIn(.nullish, allow_in);
         if (self.peek().kind == .question) {
             _ = self.advance();
-            const then_branch = try self.parseAssignmentExpression();
+            const then_branch = try self.parseAssignmentExpressionWithIn(allow_in);
             _ = try self.expect(.colon, "':' in ternary");
-            const else_branch = try self.parseAssignmentExpression();
+            const else_branch = try self.parseAssignmentExpressionWithIn(allow_in);
             const sp: Span = .{ .start = self.hir.spanOf(cond).start, .end = self.hir.spanOf(else_branch).end };
             return try self.builder.addConditional(sp, cond, then_branch, else_branch);
         }
@@ -3379,9 +3431,14 @@ pub const Parser = struct {
     }
 
     fn parseBinaryExpression(self: *Parser, min_prec: prec_mod.Prec) ParseError!NodeId {
+        return try self.parseBinaryExpressionWithIn(min_prec, true);
+    }
+
+    fn parseBinaryExpressionWithIn(self: *Parser, min_prec: prec_mod.Prec, allow_in: bool) ParseError!NodeId {
         var left = try self.parseUnaryExpression();
         while (true) {
             const t = self.peek();
+            if (!allow_in and t.kind == .kw_in) break;
             const prec = prec_mod.binaryPrec(t.kind) orelse break;
             if (@intFromEnum(prec) < @intFromEnum(min_prec)) break;
             _ = self.advance();
@@ -3421,7 +3478,7 @@ pub const Parser = struct {
                 prec
             else
                 @enumFromInt(@intFromEnum(prec) + 1);
-            const right = try self.parseBinaryExpression(next_min);
+            const right = try self.parseBinaryExpressionWithIn(next_min, allow_in);
             const sp: Span = .{ .start = self.hir.spanOf(left).start, .end = self.hir.spanOf(right).end };
             if (prec_mod.binOpOf(t.kind)) |bop| {
                 left = try self.builder.addBinaryOp(sp, bop, left, right);
@@ -3484,6 +3541,18 @@ pub const Parser = struct {
                 // Per spec, `await` is only valid inside async fns or
                 // module top-level; we don't enforce that here (the
                 // checker will). The HIR lands as `await_expr`.
+                if (self.peekAt(1).kind == .semicolon or
+                    self.peekAt(1).kind == .close_paren or
+                    self.peekAt(1).kind == .close_bracket or
+                    self.peekAt(1).kind == .close_brace or
+                    self.peekAt(1).kind == .comma or
+                    self.peekAt(1).kind == .colon or
+                    self.peekAt(1).kind == .eof)
+                {
+                    _ = self.advance();
+                    const id = try self.internToken(t);
+                    return try self.builder.addIdentifier(tokenSpan(t), id);
+                }
                 _ = self.advance();
                 const operand = try self.parseUnaryExpression();
                 const sp: Span = .{ .start = t.span.start, .end = self.hir.spanOf(operand).end };
