@@ -73,6 +73,8 @@ pub const Parser = struct {
     diagnostics: std.ArrayListUnmanaged(Diagnostic),
     diag_arena: std.heap.ArenaAllocator,
     ambient_depth: u32,
+    block_depth: u32,
+    namespace_depth: u32,
     /// True for `.tsx` files. Enables JSX parsing in expression
     /// position; the parser disambiguates `<T>x` (generic type
     /// assertion) vs. `<T>x</T>` (JSX) via the `<T,>` and
@@ -101,6 +103,8 @@ pub const Parser = struct {
             .diagnostics = .empty,
             .diag_arena = std.heap.ArenaAllocator.init(gpa),
             .ambient_depth = 0,
+            .block_depth = 0,
+            .namespace_depth = 0,
             .is_tsx = false,
         };
     }
@@ -422,7 +426,11 @@ pub const Parser = struct {
                 // `declare global { ... }` lowers through the
                 // `kw_global` arm below; `declare let x: T` and friends
                 // parse as ordinary declarations with an ambient bit.
-                _ = self.advance(); // declare
+                const declare_tok = self.advance(); // declare
+                try self.reportModifierInBlock(declare_tok);
+                if (self.ambient_depth > 0) {
+                    try self.reportCodeAt(declare_tok.span.start, declare_tok.line, 1038, "A 'declare' modifier cannot be used in an already ambient context.");
+                }
                 self.ambient_depth += 1;
                 defer self.ambient_depth -= 1;
                 break :blk try self.parseStatement();
@@ -458,7 +466,10 @@ pub const Parser = struct {
                 if (next == .dot or next == .open_paren) break :blk try self.parseExpressionStatement();
                 break :blk try self.parseImportDeclaration();
             },
-            .kw_export => try self.parseExportDeclaration(),
+            .kw_export => blk: {
+                try self.reportModifierInBlock(t);
+                break :blk try self.parseExportDeclaration();
+            },
             .kw_type => blk: {
                 // `type X = T;` is a TS type alias. `type` is contextual,
                 // so only treat as a keyword when followed by an identifier.
@@ -473,6 +484,11 @@ pub const Parser = struct {
             },
             else => try self.parseExpressionStatement(),
         };
+    }
+
+    fn reportModifierInBlock(self: *Parser, tok: Token) ParseError!void {
+        if (self.block_depth == 0) return;
+        try self.reportCodeAt(tok.span.start, tok.line, 1184, "Modifiers cannot appear here.");
     }
 
     fn parseIfStatement(self: *Parser) ParseError!NodeId {
@@ -655,7 +671,11 @@ pub const Parser = struct {
                     const id = try self.internToken(name_tok);
                     break :blk try self.builder.addIdentifier(tokenSpan(name_tok), id);
                 };
-                if (self.match(.colon)) try self.skipTypeAnnotation();
+                if (self.peek().kind == .colon) {
+                    const colon = self.advance();
+                    try self.reportCodeAt(colon.span.start, colon.line, 1196, "Catch clause variable type annotation must be 'any' or 'unknown' if specified.");
+                    try self.skipTypeAnnotation();
+                }
                 _ = try self.expect(.close_paren, "')' to close catch param");
             }
             catch_block = try self.parseBlockStatement();
@@ -986,8 +1006,11 @@ pub const Parser = struct {
         const start = self.advance(); // class
         if (!is_abstract) span_start = start.span.start;
         var name: NodeId = hir_mod.none_node_id;
-        if (self.peek().kind == .identifier or self.peek().kind.isContextualKeyword()) {
+        if (self.peek().kind == .identifier or self.peek().kind.isContextualKeyword() or self.peek().kind.isPrimitiveTypeKeyword()) {
             const name_tok = self.advance();
+            if (name_tok.kind.isPrimitiveTypeKeyword() or self.isReservedTypeNameToken(name_tok)) {
+                try self.reportCodeAt(name_tok.span.start, name_tok.line, 2427, "Class name cannot be a reserved type name.");
+            }
             const name_id = try self.internToken(name_tok);
             name = try self.builder.addIdentifier(tokenSpan(name_tok), name_id);
         }
@@ -1105,8 +1128,10 @@ pub const Parser = struct {
                 var body: NodeId = hir_mod.none_node_id;
                 if (self.peek().kind == .open_brace) {
                     body = try self.parseBlockStatement();
+                    try self.reportAmbientClassImplementation(member_start);
                 } else {
                     try self.consumeStatementTerminator();
+                    try self.reportMissingClassMemberImplementation(member_start, mods);
                 }
                 const fn_node = try self.builder.addFnDecl(
                     .{ .start = member_start.span.start, .end = self.tokens[self.cursor - 1].span.end },
@@ -1134,6 +1159,7 @@ pub const Parser = struct {
                 self.peek().kind == .string_literal or
                 self.peek().kind == .number_literal or
                 self.peek().kind == .kw_constructor or
+                isAccessibilityModifier(self.peek().kind) or
                 self.peek().kind.isContextualKeyword())
             {
                 const name_tok = self.advance();
@@ -1159,8 +1185,12 @@ pub const Parser = struct {
                     var body: NodeId = hir_mod.none_node_id;
                     if (self.peek().kind == .open_brace) {
                         body = try self.parseBlockStatement();
+                        try self.reportAmbientClassImplementation(member_start);
                     } else {
                         try self.consumeStatementTerminator();
+                        if (!self.nextClassMemberNameMatches(name_tok)) {
+                            try self.reportMissingClassMemberImplementation(member_start, mods);
+                        }
                     }
                     const name_id = if (name_tok.kind == .string_literal)
                         try self.internStringLiteral(name_tok)
@@ -1245,6 +1275,7 @@ pub const Parser = struct {
         is_static: bool = false,
         is_async: bool = false,
         is_override: bool = false,
+        is_abstract: bool = false,
     };
 
     fn skipClassModifiers(self: *Parser) ParseError!ClassModifiers {
@@ -1252,6 +1283,17 @@ pub const Parser = struct {
         while (true) {
             const k = self.peek().kind;
             if (k.isModifierKeyword()) {
+                if (mods.is_static and isAccessibilityModifier(k) and isClassMemberNameStart(self.peekAt(1).kind)) {
+                    const mod = self.advance();
+                    try self.reportCodeAt(mod.span.start, mod.line, 1029, "Accessibility modifier must precede 'static' modifier.");
+                    mods.visibility = switch (k) {
+                        .kw_private => .private,
+                        .kw_protected => .protected,
+                        else => .public,
+                    };
+                    continue;
+                }
+                if (mods.is_static and isAccessibilityModifier(k)) return mods;
                 switch (k) {
                     .kw_private => mods.visibility = .private,
                     .kw_protected => mods.visibility = .protected,
@@ -1259,6 +1301,7 @@ pub const Parser = struct {
                     .kw_static => mods.is_static = true,
                     .kw_async => mods.is_async = true,
                     .kw_override => mods.is_override = true,
+                    .kw_abstract => mods.is_abstract = true,
                     else => {},
                 }
                 _ = self.advance();
@@ -1266,6 +1309,64 @@ pub const Parser = struct {
             }
             return mods;
         }
+    }
+
+    fn isAccessibilityModifier(kind: TokenKind) bool {
+        return kind == .kw_public or kind == .kw_private or kind == .kw_protected;
+    }
+
+    fn isClassMemberNameStart(kind: TokenKind) bool {
+        return kind == .identifier or
+            kind == .private_identifier or
+            kind == .string_literal or
+            kind == .number_literal or
+            kind == .kw_constructor or
+            kind.isContextualKeyword();
+    }
+
+    fn reportAmbientClassImplementation(self: *Parser, member_start: Token) ParseError!void {
+        if (self.ambient_depth == 0) return;
+        try self.reportCodeAt(member_start.span.start, member_start.line, 1183, "An implementation cannot be declared in ambient contexts.");
+    }
+
+    fn reportMissingClassMemberImplementation(self: *Parser, member_start: Token, mods: ClassModifiers) ParseError!void {
+        if (self.ambient_depth > 0 or mods.is_abstract) return;
+        try self.reportCodeAt(member_start.span.start, member_start.line, 2391, "Function implementation is missing or not immediately following the declaration.");
+    }
+
+    fn nextClassMemberNameMatches(self: *const Parser, current: Token) bool {
+        var idx = self.cursor;
+        while (idx < self.tokens.len and self.tokens[idx].kind.isModifierKeyword()) : (idx += 1) {}
+        if (idx >= self.tokens.len) return false;
+        const next = self.tokens[idx];
+        return self.classMemberNameTextMatches(current, next);
+    }
+
+    fn classMemberNameTextMatches(self: *const Parser, a: Token, b: Token) bool {
+        const a_text = self.classMemberNameText(a);
+        const b_text = self.classMemberNameText(b);
+        return std.mem.eql(u8, a_text, b_text);
+    }
+
+    fn classMemberNameText(self: *const Parser, tok: Token) []const u8 {
+        const raw = self.source[tok.span.start..tok.span.end];
+        if (tok.kind == .string_literal and raw.len >= 2) return raw[1 .. raw.len - 1];
+        return raw;
+    }
+
+    fn isReservedTypeNameToken(self: *const Parser, tok: Token) bool {
+        const raw = self.source[tok.span.start..tok.span.end];
+        return std.mem.eql(u8, raw, "any") or
+            std.mem.eql(u8, raw, "unknown") or
+            std.mem.eql(u8, raw, "never") or
+            std.mem.eql(u8, raw, "void") or
+            std.mem.eql(u8, raw, "undefined") or
+            std.mem.eql(u8, raw, "string") or
+            std.mem.eql(u8, raw, "number") or
+            std.mem.eql(u8, raw, "boolean") or
+            std.mem.eql(u8, raw, "bigint") or
+            std.mem.eql(u8, raw, "symbol") or
+            std.mem.eql(u8, raw, "object");
     }
 
     fn parseComputedClassMember(
@@ -1296,8 +1397,10 @@ pub const Parser = struct {
             var body: NodeId = hir_mod.none_node_id;
             if (self.peek().kind == .open_brace) {
                 body = try self.parseBlockStatement();
+                try self.reportAmbientClassImplementation(member_start);
             } else {
                 try self.consumeStatementTerminator();
+                try self.reportMissingClassMemberImplementation(member_start, mods);
             }
             value = try self.builder.addFnDeclGeneric(
                 .{ .start = member_start.span.start, .end = self.tokens[self.cursor - 1].span.end },
@@ -1483,6 +1586,8 @@ pub const Parser = struct {
             name_end = part.span.end;
         }
         _ = try self.expect(.open_brace, "'{' to open namespace body");
+        self.namespace_depth += 1;
+        defer self.namespace_depth -= 1;
         var body: std.ArrayListUnmanaged(NodeId) = .empty;
         defer body.deinit(self.gpa);
         while (self.peek().kind != .close_brace and self.peek().kind != .eof) {
@@ -1667,6 +1772,9 @@ pub const Parser = struct {
         // assigned expression as an export payload so multi-file fixtures
         // keep their module shape without producing a parser diagnostic.
         if (self.match(.equal)) {
+            if (self.namespace_depth > 0) {
+                try self.reportCodeAt(start.span.start, start.line, 1203, "Export assignment cannot be used inside a namespace.");
+            }
             const expr = try self.parseAssignmentExpression();
             try self.consumeStatementTerminator();
             const end_pos = self.tokens[self.cursor - 1].span.end;
@@ -1696,6 +1804,9 @@ pub const Parser = struct {
 
         // export default <expr>;
         if (self.match(.kw_default)) {
+            if (self.namespace_depth > 0) {
+                try self.reportCodeAt(start.span.start, start.line, 1319, "A default export can only be used in an external module.");
+            }
             // `export default` may be followed by a class/function
             // *declaration* (no statement-terminator) — those have
             // their own statement parser; otherwise it's an
@@ -1948,6 +2059,8 @@ pub const Parser = struct {
 
     fn parseBlockStatement(self: *Parser) ParseError!NodeId {
         const open = try self.expect(.open_brace, "'{' to start block");
+        self.block_depth += 1;
+        defer self.block_depth -= 1;
         var stmts: std.ArrayListUnmanaged(NodeId) = .empty;
         defer stmts.deinit(self.gpa);
         while (self.peek().kind != .close_brace and self.peek().kind != .eof) {
@@ -4126,6 +4239,16 @@ pub const Parser = struct {
     }
 
     fn buildUpdateAssignment(self: *Parser, op_tok: Token, operand: NodeId, is_inc: bool, is_prefix: bool) ParseError!NodeId {
+        switch (self.hir.kindOf(operand)) {
+            .identifier => {
+                const id = hir_mod.identifierOf(self.hir, operand);
+                if (std.mem.eql(u8, self.interner.get(id.name), "this")) {
+                    try self.reportCodeAt(op_tok.span.start, op_tok.line, 2364, "The operand of an increment or decrement operator must be a variable or property access.");
+                }
+            },
+            .member_access, .element_access => {},
+            else => try self.reportCodeAt(op_tok.span.start, op_tok.line, 2364, "The operand of an increment or decrement operator must be a variable or property access."),
+        }
         const one = try self.builder.addLiteralNumber(tokenSpan(op_tok), 1);
         const operand_span = self.hir.spanOf(operand);
         const sp: Span = if (is_prefix)
@@ -5120,6 +5243,15 @@ test "parser: catch accepts object binding pattern target" {
     try T.expectEqual(hir_mod.NodeKind.object_pattern, s.hir.kindOf(tp.catch_param));
 }
 
+test "parser: catch type annotation reports TS1196" {
+    var s = try newTestSetup("try {} catch (e: Error) {}");
+    defer destroyTestSetup(s);
+
+    _ = try s.parser.parseSourceFile();
+    try T.expectEqual(@as(usize, 1), s.parser.diagnostics.items.len);
+    try T.expectEqual(@as(u32, 1196), s.parser.diagnostics.items[0].code);
+}
+
 test "parser: try without catch" {
     var s = try newTestSetup("try { f(); } finally { cleanup(); }");
     defer destroyTestSetup(s);
@@ -5129,6 +5261,28 @@ test "parser: try without catch" {
     const tp = hir_mod.tryOf(&s.hir, top);
     try T.expectEqual(hir_mod.none_node_id, tp.catch_block);
     try T.expect(tp.finally_block != hir_mod.none_node_id);
+}
+
+test "parser: export and declare modifiers in blocks report TS1184" {
+    var s = try newTestSetup(
+        \\function f() { export var x = 1; }
+        \\{ declare var y: number; }
+    );
+    defer destroyTestSetup(s);
+
+    _ = try s.parser.parseSourceFile();
+    try T.expectEqual(@as(usize, 2), s.parser.diagnostics.items.len);
+    try T.expectEqual(@as(u32, 1184), s.parser.diagnostics.items[0].code);
+    try T.expectEqual(@as(u32, 1184), s.parser.diagnostics.items[1].code);
+}
+
+test "parser: nested declare in ambient context reports TS1038" {
+    var s = try newTestSetup("declare namespace M { declare class C {} }");
+    defer destroyTestSetup(s);
+
+    _ = try s.parser.parseSourceFile();
+    try T.expectEqual(@as(usize, 1), s.parser.diagnostics.items.len);
+    try T.expectEqual(@as(u32, 1038), s.parser.diagnostics.items[0].code);
 }
 
 test "parser: switch with cases and default" {
@@ -5525,6 +5679,19 @@ test "parser: export named" {
     const ex = hir_mod.exportOf(&s.hir, top);
     try T.expectEqual(@as(usize, 2), hir_mod.exportNamed(&s.hir, top).len);
     try T.expect(!ex.is_default);
+}
+
+test "parser: namespace export assignment forms report diagnostics" {
+    var s = try newTestSetup(
+        \\namespace M { export = A; }
+        \\namespace N { export default value; }
+    );
+    defer destroyTestSetup(s);
+
+    _ = try s.parser.parseSourceFile();
+    try T.expectEqual(@as(usize, 2), s.parser.diagnostics.items.len);
+    try T.expectEqual(@as(u32, 1203), s.parser.diagnostics.items[0].code);
+    try T.expectEqual(@as(u32, 1319), s.parser.diagnostics.items[1].code);
 }
 
 test "parser: export decl" {
@@ -6069,6 +6236,25 @@ test "parser: class with generics" {
     try T.expectEqual(hir_mod.NodeKind.class_decl, s.hir.kindOf(top));
 }
 
+test "parser: primitive type keyword class name reports diagnostic" {
+    var s = try newTestSetup("class any {}");
+    defer destroyTestSetup(s);
+
+    _ = try s.parser.parseSourceFile();
+    try T.expectEqual(@as(usize, 1), s.parser.diagnostics.items.len);
+    try T.expectEqual(@as(u32, 2427), s.parser.diagnostics.items[0].code);
+}
+
+test "parser: ambient class member implementations report diagnostic" {
+    var s = try newTestSetup("declare class Foo { constructor() {} method() {} }");
+    defer destroyTestSetup(s);
+
+    _ = try s.parser.parseSourceFile();
+    try T.expectEqual(@as(usize, 2), s.parser.diagnostics.items.len);
+    try T.expectEqual(@as(u32, 1183), s.parser.diagnostics.items[0].code);
+    try T.expectEqual(@as(u32, 1183), s.parser.diagnostics.items[1].code);
+}
+
 test "parser: interface with generics" {
     var s = try newTestSetup("interface List<T extends Item> { head: T; }");
     defer destroyTestSetup(s);
@@ -6126,6 +6312,20 @@ test "parser: parameter properties skip modifiers" {
     const root = try s.parser.parseSourceFile();
     const top = hir_mod.blockStmts(&s.hir, root)[0];
     try T.expectEqual(hir_mod.NodeKind.class_decl, s.hir.kindOf(top));
+}
+
+test "parser: accessibility after static is an order diagnostic only before another member name" {
+    var bad = try newTestSetup("class Foo { static public value: number; static public method() {} }");
+    defer destroyTestSetup(bad);
+    _ = try bad.parser.parseSourceFile();
+    try T.expectEqual(@as(usize, 2), bad.parser.diagnostics.items.len);
+    try T.expectEqual(@as(u32, 1029), bad.parser.diagnostics.items[0].code);
+    try T.expectEqual(@as(u32, 1029), bad.parser.diagnostics.items[1].code);
+
+    var good = try newTestSetup("class Foo { static public() {} static public<T>() {} static public = 1; }");
+    defer destroyTestSetup(good);
+    _ = try good.parser.parseSourceFile();
+    try T.expectEqual(@as(usize, 0), good.parser.diagnostics.items.len);
 }
 
 test "parser: accessor class member modifier (TS 4.9)" {
@@ -6482,6 +6682,16 @@ test "parser: prefix and postfix update expressions lower to compound assignment
     try T.expectEqual(hir_mod.NodeKind.assignment, s.hir.kindOf(stmts[2]));
     try T.expectEqual(@as(?hir_mod.BinOp, .add), hir_mod.assignmentOf(&s.hir, stmts[1]).op);
     try T.expectEqual(@as(?hir_mod.BinOp, .sub), hir_mod.assignmentOf(&s.hir, stmts[2]).op);
+}
+
+test "parser: update expression reports invalid operand diagnostic" {
+    var s = try newTestSetup("++[0]; ++this;");
+    defer destroyTestSetup(s);
+
+    _ = try s.parser.parseSourceFile();
+    try T.expectEqual(@as(usize, 2), s.parser.diagnostics.items.len);
+    try T.expectEqual(@as(u32, 2364), s.parser.diagnostics.items[0].code);
+    try T.expectEqual(@as(u32, 2364), s.parser.diagnostics.items[1].code);
 }
 
 test "parser: contextual primitive keyword can be parameter name and expression" {

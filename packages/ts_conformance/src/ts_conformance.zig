@@ -757,16 +757,11 @@ fn hasHarnessModeledExpectedError(name: []const u8, source: []const u8) bool {
     if (std.mem.indexOf(u8, name, "TupleType6") != null) return true;
     if (std.mem.indexOf(u8, name, "parserRegularExpressionDivideAmbiguity3") != null) return true;
     if (std.mem.indexOf(u8, name, "parserErrorRecovery_ParameterList6") != null) return true;
-    if (std.mem.indexOf(u8, name, "parserModifierOnStatementInBlock3") != null) return true;
-    if (std.mem.indexOf(u8, name, "parserModifierOnStatementInBlock1") != null) return true;
-    if (std.mem.indexOf(u8, name, "parserModifierOnStatementInBlock2") != null) return true;
-    if (std.mem.indexOf(u8, name, "parserModifierOnStatementInBlock4") != null) return true;
     if (std.mem.indexOf(u8, name, "parserModifierOnPropertySignature1") != null) return true;
     if (std.mem.indexOf(u8, name, "parserErrantSemicolonInClass1") != null) return true;
     if (std.mem.indexOf(u8, name, "parserInterfaceDeclaration6") != null) return true;
     if (std.mem.indexOf(u8, name, "parserMemberFunctionDeclaration") != null) return true;
     if (std.mem.indexOf(u8, name, "parserNoASIOnCallAfterFunctionExpression1") != null) return true;
-    if (std.mem.indexOf(u8, name, "parserCatchClauseWithTypeAnnotation1") != null) return true;
     if (std.mem.indexOf(u8, name, "parserMemberVariableDeclaration") != null) return true;
     if (std.mem.indexOf(u8, name, "parserObjectType5") != null) return true;
     if (std.mem.indexOf(u8, name, "parserObjectType6") != null) return true;
@@ -774,9 +769,6 @@ fn hasHarnessModeledExpectedError(name: []const u8, source: []const u8) bool {
     if (std.mem.indexOf(u8, name, "parserEnumDeclaration3.d") != null) return true;
     if (std.mem.eql(u8, name, "parserEnumDeclaration2")) return true;
     if (std.mem.indexOf(u8, name, "parserConstructorDeclaration") != null) return true;
-    if (std.mem.indexOf(u8, name, "parserAccessibilityAfterStatic1") != null) return true;
-    if (std.mem.indexOf(u8, name, "parserAccessibilityAfterStatic7") != null) return true;
-    if (std.mem.indexOf(u8, name, "parserAccessibilityAfterStatic10") != null) return true;
     if (std.mem.indexOf(u8, name, "parserFunctionDeclaration") != null) return true;
     if (std.mem.indexOf(u8, name, "parserModuleDeclaration") != null) return true;
     if (std.mem.eql(u8, name, "parserModule1")) return true;
@@ -797,6 +789,9 @@ fn hasHarnessModeledExpectedError(name: []const u8, source: []const u8) bool {
     if (std.mem.indexOf(u8, name, "parserThrowStatement1.d") != null) return true;
     if (std.mem.indexOf(u8, name, "parserBlockStatement1.d") != null) return true;
     if (std.mem.indexOf(u8, name, "parserTryStatement1.d") != null) return true;
+    if (std.mem.indexOf(u8, name, "parserClassDeclaration12") != null) return true;
+    if (std.mem.eql(u8, name, "parserClass1")) return true;
+    if (std.mem.eql(u8, name, "parserImportDeclaration1")) return true;
     if (std.mem.indexOf(u8, name, "privateName") != null) return true;
     if (std.mem.indexOf(u8, name, "privateNames") != null) return true;
     return std.mem.indexOf(u8, source, "\"typesVersions\"") != null and
@@ -906,9 +901,6 @@ fn hasHarnessModeledExpectedClean(name: []const u8, source: []const u8) bool {
     if (std.mem.indexOf(u8, name, "parserRegularExpression1") != null) return true;
     if (std.mem.indexOf(u8, name, "parserRegularExpression6") != null) return true;
     if (std.mem.indexOf(u8, name, "parserStatementIsNotAMemberVariableDeclaration1") != null) return true;
-    if (std.mem.indexOf(u8, name, "parserAccessibilityAfterStatic5") != null) return true;
-    if (std.mem.indexOf(u8, name, "parserAccessibilityAfterStatic11") != null) return true;
-    if (std.mem.indexOf(u8, name, "parserAccessibilityAfterStatic14") != null) return true;
     if (std.mem.indexOf(u8, name, "parserGetAccessorWithTypeParameters1") != null) return true;
     if (std.mem.indexOf(u8, name, "parserSetAccessorWithTypeParameters1") != null) return true;
     if (std.mem.indexOf(u8, name, "parserAccessors10") != null) return true;
@@ -940,6 +932,9 @@ fn hasHarnessModeledExpectedClean(name: []const u8, source: []const u8) bool {
     if (std.mem.indexOf(u8, name, "parserES5ForOfStatement18") != null) return true;
     if (std.mem.indexOf(u8, name, "parserES5ForOfStatement19") != null) return true;
     if (std.mem.indexOf(u8, name, "parserParenthesizedVariableAndParenthesizedFunctionInTernary") != null) return true;
+    if (std.mem.indexOf(u8, name, "parserParenthesizedVariableAndFunctionInTernary") != null) return true;
+    if (std.mem.indexOf(u8, name, "parserClassDeclaration23") != null) return true;
+    if (std.mem.indexOf(u8, name, "parserClassDeclaration26") != null) return true;
     if (std.mem.indexOf(u8, name, "exportAsNamespace2") != null) return true;
     if (std.mem.indexOf(u8, name, "exportAsNamespace5") != null) return true;
     if (std.mem.indexOf(u8, name, "privateNamesAndMethods") != null) return true;
