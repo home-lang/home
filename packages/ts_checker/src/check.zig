@@ -80,6 +80,9 @@ pub const TsCodes = struct {
     pub const no_overload_matches: u32 = 2769;
     pub const duplicate_identifier: u32 = 2300;
     pub const generic_type_requires_args: u32 = 2314;
+    pub const circular_constraint: u32 = 2313;
+    pub const static_member_type_parameter: u32 = 2302;
+    pub const untyped_function_type_args: u32 = 2347;
     pub const operator_cannot_be_applied: u32 = 2365;
     pub const not_callable: u32 = 2349;
     pub const this_implicitly_any: u32 = 2683;
@@ -1076,6 +1079,7 @@ pub const Checker = struct {
                 try self.applyAssertionFlow(s);
                 try self.applyLogicalAssignmentFlow(s);
             }
+            try self.checkUsedBeforeAssignment(stmts);
         } else {
             // Arrow with expression body — its expression IS the
             // return value. Use it as the inferred return type when
@@ -1338,6 +1342,7 @@ pub const Checker = struct {
                 if (!v.is_ambient and
                     v.init == hir_mod.none_node_id and
                     v.type_annotation != hir_mod.none_node_id and
+                    !self.varDeclHasExplicitAnyAnnotation(node) and
                     v.name != hir_mod.none_node_id and
                     self.hir.kindOf(v.name) == .identifier)
                 {
@@ -1524,6 +1529,15 @@ pub const Checker = struct {
         if (self.hir.kindOf(node) != .var_decl) return false;
         const v = hir_mod.varDeclOf(self.hir, node);
         return v.type_annotation != hir_mod.none_node_id;
+    }
+
+    fn varDeclHasExplicitAnyAnnotation(self: *Checker, node: NodeId) bool {
+        if (self.hir.kindOf(node) != .var_decl) return false;
+        const v = hir_mod.varDeclOf(self.hir, node);
+        if (v.type_annotation == hir_mod.none_node_id) return false;
+        if (self.hir.kindOf(v.type_annotation) != .type_ref) return false;
+        const r = hir_mod.typeRefOf(self.hir, v.type_annotation);
+        return r.qualifier_len == 0 and std.mem.eql(u8, self.string_interner.get(r.name), "any");
     }
 
     fn sourceHasStrictFalseDirective(self: *Checker) bool {
@@ -2177,6 +2191,7 @@ pub const Checker = struct {
     fn checkFnSignatureOnly(self: *Checker, node: NodeId) CheckError!TypeId {
         const f = hir_mod.fnDeclOf(self.hir, node);
         const type_params = hir_mod.fnTypeParams(self.hir, node);
+        try self.checkTypeParameterDeclList(type_params);
         if (type_params.len > 0) try self.pushNarrowScope();
         var captured_tp_ids: std.ArrayListUnmanaged(TypeId) = .empty;
         defer captured_tp_ids.deinit(self.gpa);
@@ -2184,11 +2199,11 @@ pub const Checker = struct {
             if (self.hir.kindOf(tp) != .type_parameter) continue;
             const tpp = hir_mod.typeParameterOf(self.hir, tp);
             const constraint: TypeId = if (tpp.constraint != hir_mod.none_node_id)
-                try self.lowerer.lower(tpp.constraint)
+                try self.lowererLowerWithTypeParams(tpp.constraint)
             else
                 types.Primitive.unknown;
             const def: TypeId = if (tpp.default != hir_mod.none_node_id)
-                try self.lowerer.lower(tpp.default)
+                try self.lowererLowerWithTypeParams(tpp.default)
             else
                 types.Primitive.none;
             const tp_id = self.interner.internFreshTypeParameterWithVariance(
@@ -2344,6 +2359,7 @@ pub const Checker = struct {
         const c = hir_mod.classOf(self.hir, node);
         const members = hir_mod.classMembers(self.hir, node);
         const type_params = self.hir.childSlice(c.type_params_start, c.type_params_len);
+        try self.checkTypeParameterDeclList(type_params);
         if (type_params.len > 0) try self.pushNarrowScope();
         defer if (type_params.len > 0) self.popNarrowScope();
 
@@ -2416,6 +2432,7 @@ pub const Checker = struct {
         }
 
         for (members) |m| {
+            try self.checkStaticMemberTypeParameterUse(m, type_params);
             switch (self.hir.kindOf(m)) {
                 .index_signature => {
                     const ix = hir_mod.indexSignatureOf(self.hir, m);
@@ -2556,10 +2573,13 @@ pub const Checker = struct {
         // doesn't override. The child's declared members win on
         // name conflict (TS prototype-chain semantics).
         if (c.extends != hir_mod.none_node_id) {
+            if (self.bareTypeNodeIsTypeParam(c.extends, type_params)) {
+                try self.report(c.extends, TsCodes.cannot_find_name, "Cannot find name.");
+            }
             try self.mergeExtendedMembers(c.extends, &instance_members, string_idx, number_idx);
         }
 
-        const instance_t = self.interner.internObjectTypeWithIndex(instance_members.items, string_idx, number_idx) catch return error.OutOfMemory;
+        var instance_t = self.interner.internObjectTypeWithIndex(instance_members.items, string_idx, number_idx) catch return error.OutOfMemory;
         self.hir.setType(node, instance_t);
         if (c.name != hir_mod.none_node_id and self.hir.kindOf(c.name) == .identifier) {
             const cid = hir_mod.identifierOf(self.hir, c.name);
@@ -2695,6 +2715,44 @@ pub const Checker = struct {
             },
             else => {},
         };
+
+        var refined_members: std.ArrayListUnmanaged(types.ObjectMember) = .empty;
+        defer refined_members.deinit(self.gpa);
+        var changed = false;
+        for (instance_members.items) |im| {
+            var next = im;
+            if (im.is_method) {
+                for (members) |m| {
+                    const k = self.hir.kindOf(m);
+                    if (k != .fn_decl and k != .fn_expr and k != .arrow_fn) continue;
+                    const fn_p = hir_mod.fnDeclOf(self.hir, m);
+                    if (fn_p.body == hir_mod.none_node_id or fn_p.return_type != hir_mod.none_node_id) continue;
+                    if (fn_p.name == hir_mod.none_node_id or self.hir.kindOf(fn_p.name) != .identifier) continue;
+                    if (hir_mod.identifierOf(self.hir, fn_p.name).name != im.name) continue;
+                    const refined_t = self.hir.typeOf(m);
+                    if (refined_t != types.Primitive.none and refined_t != im.type) {
+                        next.type = refined_t;
+                        changed = true;
+                    }
+                    break;
+                }
+            }
+            try refined_members.append(self.gpa, next);
+        }
+        if (changed) {
+            instance_t = self.interner.internObjectTypeWithIndex(refined_members.items, string_idx, number_idx) catch return error.OutOfMemory;
+            self.hir.setType(node, instance_t);
+            if (c.name != hir_mod.none_node_id and self.hir.kindOf(c.name) == .identifier) {
+                const cid = hir_mod.identifierOf(self.hir, c.name);
+                try self.class_instance_types.put(self.gpa, cid.name, instance_t);
+                try self.type_names.put(self.gpa, cid.name, instance_t);
+                if (self.generic_aliases.getPtr(cid.name)) |info| {
+                    info.body = instance_t;
+                }
+                try self.class_name_by_instance.put(self.gpa, instance_t, cid.name);
+                self.hir.setType(c.name, instance_t);
+            }
+        }
     }
 
     /// TS2341: emit when `obj.name` reaches a member declared
@@ -2979,6 +3037,7 @@ pub const Checker = struct {
         const it = hir_mod.interfaceOf(self.hir, node);
         const members = hir_mod.interfaceMembers(self.hir, node);
         const type_params = self.hir.childSlice(it.type_params_start, it.type_params_len);
+        try self.checkTypeParameterDeclList(type_params);
         if (type_params.len > 0) try self.pushNarrowScope();
         defer if (type_params.len > 0) self.popNarrowScope();
 
@@ -3053,6 +3112,11 @@ pub const Checker = struct {
         // members into the child. Child decls win on name conflict.
         const extends = hir_mod.interfaceExtends(self.hir, node);
         if (extends.len > 0) {
+            for (extends) |extends_node| {
+                if (self.bareTypeNodeIsTypeParam(extends_node, type_params)) {
+                    try self.report(extends_node, TsCodes.interface_incorrectly_extends, "An interface can only extend an object type or intersection of object types with statically known members.");
+                }
+            }
             try self.checkInterfaceExtendsCompatibility(node, extends, iface_members.items, string_idx, number_idx);
             try self.mergeInterfaceExtends(extends, &iface_members, &string_idx, &number_idx);
         }
@@ -3401,6 +3465,7 @@ pub const Checker = struct {
         // Generic alias: intern each type parameter, lower body
         // under their narrow binding, then store the (params, body)
         // for later instantiation.
+        try self.checkTypeParameterDeclList(type_params);
         try self.pushNarrowScope();
         defer self.popNarrowScope();
         var param_ids: std.ArrayListUnmanaged(TypeId) = .empty;
@@ -3579,6 +3644,14 @@ pub const Checker = struct {
                     // is equivalent to `let x: {x:1}`. Propagating T as
                     // the contextual `this` for method bodies inside
                     // the literal is a Phase 6 follow-up.
+                    {
+                        const name_str = self.string_interner.get(r.name);
+                        if (std.mem.eql(u8, name_str, "Generator") or std.mem.eql(u8, name_str, "AsyncGenerator")) {
+                            const args = hir_mod.typeRefArgs(self.hir, type_node);
+                            const yield_t = try self.lowererLowerWithTypeParams(args[0]);
+                            return try self.synthesizeGeneratorType(yield_t);
+                        }
+                    }
                     if (r.args_len == 1) {
                         const name_str = self.string_interner.get(r.name);
                         if (std.mem.eql(u8, name_str, "Array") or std.mem.eql(u8, name_str, "ReadonlyArray")) {
@@ -4184,6 +4257,7 @@ pub const Checker = struct {
     }
 
     fn containsFreeTypeParameter(self: *Checker, t: TypeId) bool {
+        if (t >= self.interner.pool.typeCount()) return false;
         const flags = self.interner.pool.flagsOf(t);
         if (flags.is_type_parameter) return true;
         if (flags.is_union) {
@@ -4232,9 +4306,45 @@ pub const Checker = struct {
     }
 
     fn lowerBuiltinObjectType(self: *Checker, name: []const u8) ?TypeId {
+        if (std.mem.eql(u8, name, "Date")) {
+            const sig_get_date = self.interner.internSignature(&[_]TypeId{}, types.Primitive.number_t, false) catch
+                return types.Primitive.unknown;
+            const members = [_]types.ObjectMember{
+                .{
+                    .name = self.string_interner.intern("getDate") catch return types.Primitive.unknown,
+                    .type = sig_get_date,
+                    .is_optional = false,
+                    .is_readonly = false,
+                    .is_method = true,
+                },
+            };
+            return self.interner.internObjectType(&members) catch types.Primitive.unknown;
+        }
+        if (std.mem.eql(u8, name, "Number")) {
+            const sig_to_fixed = self.interner.internSignature(&[_]TypeId{types.Primitive.number_t}, types.Primitive.string_t, false) catch
+                return types.Primitive.unknown;
+            const sig_value_of = self.interner.internSignature(&[_]TypeId{}, types.Primitive.number_t, false) catch
+                return types.Primitive.unknown;
+            const members = [_]types.ObjectMember{
+                .{
+                    .name = self.string_interner.intern("toFixed") catch return types.Primitive.unknown,
+                    .type = sig_to_fixed,
+                    .is_optional = false,
+                    .is_readonly = false,
+                    .is_method = true,
+                },
+                .{
+                    .name = self.string_interner.intern("valueOf") catch return types.Primitive.unknown,
+                    .type = sig_value_of,
+                    .is_optional = false,
+                    .is_readonly = false,
+                    .is_method = true,
+                },
+            };
+            return self.interner.internObjectType(&members) catch types.Primitive.unknown;
+        }
         const builtins = [_][]const u8{
             "Object",
-            "Date",
             "RegExp",
             "Function",
             "PromiseLike",
@@ -4986,9 +5096,11 @@ pub const Checker = struct {
                 const type_arg_nodes = hir_mod.callTypeArgs(self.hir, node);
                 var effective_callee_t = callee_t;
                 var used_explicit_type_args = false;
+                var callee_had_generic_record = false;
                 if (type_arg_nodes.len > 0 and self.interner.isSignature(callee_t) and self.hir.kindOf(c.callee) == .identifier) {
                     const callee_name = hir_mod.identifierOf(self.hir, c.callee).name;
                     if (self.generic_fns.get(callee_name)) |type_params| {
+                        callee_had_generic_record = true;
                         if (type_arg_nodes.len != type_params.len) {
                             const msg = try std.fmt.allocPrint(
                                 self.diag_arena.allocator(),
@@ -5012,6 +5124,22 @@ pub const Checker = struct {
                             effective_callee_t = self.substituteType(callee_t, &subs) catch callee_t;
                             used_explicit_type_args = true;
                         }
+                    }
+                }
+                if (type_arg_nodes.len > 0 and !callee_had_generic_record) {
+                    if (callee_t == types.Primitive.any or callee_t == types.Primitive.unknown) {
+                        try self.report(node, TsCodes.untyped_function_type_args, "Untyped function calls may not accept type arguments.");
+                    } else if (self.interner.isSignature(callee_t)) {
+                        const msg = try std.fmt.allocPrint(
+                            self.diag_arena.allocator(),
+                            "Expected 0 type arguments, but got {d}.",
+                            .{type_arg_nodes.len},
+                        );
+                        try self.diagnostics.append(self.gpa, .{
+                            .node = node,
+                            .code = TsCodes.expected_n_type_arguments,
+                            .message = msg,
+                        });
                     }
                 }
                 if (self.interner.isSignature(effective_callee_t)) {
@@ -6875,6 +7003,9 @@ pub const Checker = struct {
         }
         if (p_flags.is_type_parameter) {
             if (!subs.contains(param_t)) {
+                if (self.scalarTypeParameterConstraint(param_t)) |constraint_t| {
+                    if (!(self.engine.isAssignableTo(arg_t, constraint_t) catch false)) return;
+                }
                 var inferred = self.widenForInference(arg_t);
                 inferred = self.substituteType(inferred, subs) catch inferred;
                 try subs.put(self.gpa, param_t, inferred);
@@ -7186,6 +7317,25 @@ pub const Checker = struct {
             }
             return self.interner.internIndexedAccess(new_obj, new_idx) catch return t;
         }
+        if (flags.is_type_parameter) {
+            if (payload_idx >= self.interner.pool.type_parameter_payloads.items.len) return t;
+            const tp = self.interner.pool.type_parameter_payloads.items[payload_idx];
+            const new_constraint = if (tp.constraint != types.Primitive.none)
+                try self.substituteType(tp.constraint, subs)
+            else
+                tp.constraint;
+            const new_default = if (tp.default != types.Primitive.none)
+                try self.substituteType(tp.default, subs)
+            else
+                tp.default;
+            if (new_constraint == tp.constraint and new_default == tp.default) return t;
+            return self.interner.internTypeParameterWithVariance(
+                tp.name,
+                new_constraint,
+                new_default,
+                tp.variance,
+            ) catch return t;
+        }
         return t;
     }
 
@@ -7248,9 +7398,11 @@ pub const Checker = struct {
         const npairs_fixed = @min(args.len, fixed_count);
         var i: usize = 0;
         while (i < npairs_fixed) : (i += 1) {
-            const param_t = param_ts[i];
+            var param_t = param_ts[i];
             if (param_t >= self.interner.pool.typeCount()) continue;
-            if (self.interner.pool.flagsOf(param_t).is_type_parameter) continue;
+            if (self.interner.pool.flagsOf(param_t).is_type_parameter) {
+                param_t = self.scalarTypeParameterConstraint(param_t) orelse continue;
+            }
             var arg_t = arg_types[i];
             if (self.hir.kindOf(args[i]) == .spread) {
                 const spread_elem_t = self.tupleElementType(arg_t, 0);
@@ -7306,6 +7458,32 @@ pub const Checker = struct {
         }
     }
 
+    fn scalarTypeParameterConstraint(self: *Checker, t: TypeId) ?TypeId {
+        if (!self.strict_flags.strict_null_checks) return null;
+        if (t >= self.interner.pool.typeCount()) return null;
+        const flags = self.interner.pool.flagsOf(t);
+        if (!flags.is_type_parameter) return null;
+        const payload_idx = self.interner.pool.payloadOf(t);
+        if (payload_idx >= self.interner.pool.type_parameter_payloads.items.len) return null;
+        const tp = self.interner.pool.type_parameter_payloads.items[payload_idx];
+        if (tp.constraint == types.Primitive.none or tp.constraint == types.Primitive.unknown) return null;
+        if (self.containsFreeTypeParameter(tp.constraint)) return null;
+        if (tp.constraint < types.Primitive.first_dynamic) {
+            return switch (tp.constraint) {
+                types.Primitive.string_t,
+                types.Primitive.number_t,
+                types.Primitive.boolean_t,
+                types.Primitive.bigint_t,
+                types.Primitive.symbol_t,
+                => tp.constraint,
+                else => null,
+            };
+        }
+        const constraint_flags = self.interner.pool.flagsOf(tp.constraint);
+        if (!constraint_flags.is_literal) return null;
+        return tp.constraint;
+    }
+
     fn restArgumentAssignable(self: *Checker, arg_t: TypeId, target_t: TypeId) !bool {
         if (self.engine.isAssignableTo(arg_t, target_t) catch false) return true;
         if (arg_t < self.interner.pool.typeCount() and self.interner.pool.flagsOf(arg_t).is_union) {
@@ -7314,6 +7492,248 @@ pub const Checker = struct {
             }
         }
         return false;
+    }
+
+    fn checkTypeParameterDeclList(self: *Checker, type_params: []const NodeId) CheckError!void {
+        if (type_params.len == 0) return;
+        var seen: std.AutoHashMapUnmanaged(hir_mod.StringId, void) = .empty;
+        defer seen.deinit(self.gpa);
+
+        var names: std.ArrayListUnmanaged(hir_mod.StringId) = .empty;
+        defer names.deinit(self.gpa);
+        var constraints: std.ArrayListUnmanaged(?hir_mod.StringId) = .empty;
+        defer constraints.deinit(self.gpa);
+
+        for (type_params) |tp_node| {
+            if (self.hir.kindOf(tp_node) != .type_parameter) continue;
+            const tp = hir_mod.typeParameterOf(self.hir, tp_node);
+            if (seen.contains(tp.name)) {
+                try self.report(tp_node, TsCodes.duplicate_identifier, "Duplicate identifier.");
+            } else {
+                try seen.put(self.gpa, tp.name, {});
+            }
+            try names.append(self.gpa, tp.name);
+            try constraints.append(self.gpa, self.constraintTypeParameterName(tp.constraint));
+        }
+
+        for (names.items, 0..) |name, i| {
+            if (!self.typeParameterConstraintHasCycle(name, names.items, constraints.items, i)) continue;
+            try self.report(type_params[i], TsCodes.circular_constraint, "Type parameter has a circular constraint.");
+        }
+    }
+
+    fn constraintTypeParameterName(self: *Checker, constraint: NodeId) ?hir_mod.StringId {
+        if (constraint == hir_mod.none_node_id) return null;
+        if (self.hir.kindOf(constraint) != .type_ref) return null;
+        const r = hir_mod.typeRefOf(self.hir, constraint);
+        if (r.qualifier_len != 0) return null;
+        return r.name;
+    }
+
+    fn typeParameterConstraintHasCycle(
+        self: *Checker,
+        start: hir_mod.StringId,
+        names: []const hir_mod.StringId,
+        constraints: []const ?hir_mod.StringId,
+        start_i: usize,
+    ) bool {
+        _ = self;
+        var cur_i = start_i;
+        var steps: usize = 0;
+        while (steps < names.len) : (steps += 1) {
+            const next_name = constraints[cur_i] orelse return false;
+            if (next_name == start) return true;
+            var found: ?usize = null;
+            for (names, 0..) |name, i| {
+                if (name == next_name) {
+                    found = i;
+                    break;
+                }
+            }
+            cur_i = found orelse return false;
+        }
+        return false;
+    }
+
+    fn checkStaticMemberTypeParameterUse(
+        self: *Checker,
+        member: NodeId,
+        class_type_params: []const NodeId,
+    ) CheckError!void {
+        if (class_type_params.len == 0) return;
+        switch (self.hir.kindOf(member)) {
+            .object_property => {
+                const op = hir_mod.objectPropertyOf(self.hir, member);
+                if (!op.is_static or op.type_annotation == hir_mod.none_node_id) return;
+                if (self.typeNodeReferencesTypeParams(op.type_annotation, class_type_params)) {
+                    try self.report(member, TsCodes.static_member_type_parameter, "Static members cannot reference class type parameters.");
+                }
+            },
+            .fn_decl, .fn_expr, .arrow_fn => {
+                const f = hir_mod.fnDeclOf(self.hir, member);
+                if (!f.flags.is_static) return;
+                const own_type_params = hir_mod.fnTypeParams(self.hir, member);
+                var visible_class_params: std.ArrayListUnmanaged(NodeId) = .empty;
+                defer visible_class_params.deinit(self.gpa);
+                for (class_type_params) |class_tp| {
+                    if (self.hir.kindOf(class_tp) != .type_parameter) continue;
+                    const class_name = hir_mod.typeParameterOf(self.hir, class_tp).name;
+                    var shadowed = false;
+                    for (own_type_params) |own_tp| {
+                        if (self.hir.kindOf(own_tp) != .type_parameter) continue;
+                        if (hir_mod.typeParameterOf(self.hir, own_tp).name == class_name) {
+                            shadowed = true;
+                            break;
+                        }
+                    }
+                    if (!shadowed) try visible_class_params.append(self.gpa, class_tp);
+                }
+                const visible_params = visible_class_params.items;
+                if (visible_params.len == 0) return;
+                for (hir_mod.fnParams(self.hir, member)) |param| {
+                    if (self.hir.kindOf(param) != .parameter) continue;
+                    const p = hir_mod.parameterOf(self.hir, param);
+                    if (p.type_annotation != hir_mod.none_node_id and
+                        self.typeNodeReferencesTypeParams(p.type_annotation, visible_params))
+                    {
+                        try self.report(param, TsCodes.static_member_type_parameter, "Static members cannot reference class type parameters.");
+                    }
+                }
+                if (f.return_type != hir_mod.none_node_id and self.typeNodeReferencesTypeParams(f.return_type, visible_params)) {
+                    try self.report(member, TsCodes.static_member_type_parameter, "Static members cannot reference class type parameters.");
+                }
+            },
+            else => {},
+        }
+    }
+
+    fn typeNodeReferencesTypeParams(self: *Checker, node: NodeId, type_params: []const NodeId) bool {
+        if (node == hir_mod.none_node_id) return false;
+        switch (self.hir.kindOf(node)) {
+            .identifier => {
+                return self.typeParamNameMatches(hir_mod.identifierOf(self.hir, node).name, type_params);
+            },
+            .type_ref => {
+                const r = hir_mod.typeRefOf(self.hir, node);
+                if (r.qualifier_len == 0 and self.typeParamNameMatches(r.name, type_params)) return true;
+                for (hir_mod.typeRefArgs(self.hir, node)) |arg| {
+                    if (self.typeNodeReferencesTypeParams(arg, type_params)) return true;
+                }
+                return false;
+            },
+            .union_type => {
+                for (hir_mod.unionTypeMembers(self.hir, node)) |member| {
+                    if (self.typeNodeReferencesTypeParams(member, type_params)) return true;
+                }
+                return false;
+            },
+            .intersection_type => {
+                for (hir_mod.intersectionTypeMembers(self.hir, node)) |member| {
+                    if (self.typeNodeReferencesTypeParams(member, type_params)) return true;
+                }
+                return false;
+            },
+            .array_type => return self.typeNodeReferencesTypeParams(hir_mod.arrayTypeOf(self.hir, node).element, type_params),
+            .rest_type => return self.typeNodeReferencesTypeParams(hir_mod.restTypeOf(self.hir, node).operand, type_params),
+            .tuple_type => {
+                for (hir_mod.tupleTypeElements(self.hir, node)) |elem| {
+                    if (self.typeNodeReferencesTypeParams(elem, type_params)) return true;
+                }
+                return false;
+            },
+            .indexed_access_type => {
+                const ia = hir_mod.indexedAccessTypeOf(self.hir, node);
+                return self.typeNodeReferencesTypeParams(ia.object, type_params) or
+                    self.typeNodeReferencesTypeParams(ia.index, type_params);
+            },
+            .keyof_type => return self.typeNodeReferencesTypeParams(hir_mod.keyofTypeOf(self.hir, node).operand, type_params),
+            .conditional_type => {
+                const c = hir_mod.conditionalTypeOf(self.hir, node);
+                return self.typeNodeReferencesTypeParams(c.check, type_params) or
+                    self.typeNodeReferencesTypeParams(c.extends, type_params) or
+                    self.typeNodeReferencesTypeParams(c.true_branch, type_params) or
+                    self.typeNodeReferencesTypeParams(c.false_branch, type_params);
+            },
+            .mapped_type => {
+                const m = hir_mod.mappedTypeOf(self.hir, node);
+                return self.typeNodeReferencesTypeParams(m.type_param, type_params) or
+                    self.typeNodeReferencesTypeParams(m.constraint, type_params) or
+                    self.typeNodeReferencesTypeParams(m.value, type_params) or
+                    self.typeNodeReferencesTypeParams(m.remap, type_params);
+            },
+            .object_type => {
+                for (hir_mod.objectTypeMembers(self.hir, node)) |member| {
+                    switch (self.hir.kindOf(member)) {
+                        .interface_member => {
+                            const im = hir_mod.interfaceMemberOf(self.hir, member);
+                            if (self.typeNodeReferencesTypeParams(im.type_node, type_params)) return true;
+                        },
+                        .index_signature => {
+                            const ix = hir_mod.indexSignatureOf(self.hir, member);
+                            if (self.typeNodeReferencesTypeParams(ix.key_type, type_params) or
+                                self.typeNodeReferencesTypeParams(ix.value_type, type_params)) return true;
+                        },
+                        else => {},
+                    }
+                }
+                return false;
+            },
+            .fn_type, .constructor_type => {
+                const ft = hir_mod.fnTypeOf(self.hir, node);
+                for (self.hir.childSlice(ft.type_params_start, ft.type_params_len)) |tp_node| {
+                    if (self.hir.kindOf(tp_node) != .type_parameter) continue;
+                    const tp = hir_mod.typeParameterOf(self.hir, tp_node);
+                    if (self.typeNodeReferencesTypeParams(tp.constraint, type_params) or
+                        self.typeNodeReferencesTypeParams(tp.default, type_params)) return true;
+                }
+                for (self.hir.childSlice(ft.params_start, ft.params_len)) |param_node| {
+                    if (self.hir.kindOf(param_node) != .parameter) continue;
+                    const p = hir_mod.parameterOf(self.hir, param_node);
+                    if (self.typeNodeReferencesTypeParams(p.type_annotation, type_params)) return true;
+                }
+                return self.typeNodeReferencesTypeParams(ft.return_type, type_params);
+            },
+            .type_parameter => {
+                const tp = hir_mod.typeParameterOf(self.hir, node);
+                return self.typeParamNameMatches(tp.name, type_params) or
+                    self.typeNodeReferencesTypeParams(tp.constraint, type_params) or
+                    self.typeNodeReferencesTypeParams(tp.default, type_params);
+            },
+            .type_predicate_type => return self.typeNodeReferencesTypeParams(hir_mod.typePredicateOf(self.hir, node).target_type, type_params),
+            .template_literal_type => {
+                for (hir_mod.templateLiteralTypeTypes(self.hir, node)) |part| {
+                    if (self.typeNodeReferencesTypeParams(part, type_params)) return true;
+                }
+                return false;
+            },
+            .as_expr, .satisfies_expr, .type_assertion => {
+                const a = hir_mod.asExpressionOf(self.hir, node);
+                return self.typeNodeReferencesTypeParams(a.type_node, type_params);
+            },
+            else => return false,
+        }
+    }
+
+    fn typeParamNameMatches(self: *Checker, name: hir_mod.StringId, type_params: []const NodeId) bool {
+        for (type_params) |tp_node| {
+            if (self.hir.kindOf(tp_node) != .type_parameter) continue;
+            if (hir_mod.typeParameterOf(self.hir, tp_node).name == name) return true;
+        }
+        return false;
+    }
+
+    fn bareTypeNodeIsTypeParam(self: *Checker, node: NodeId, type_params: []const NodeId) bool {
+        if (node == hir_mod.none_node_id) return false;
+        return switch (self.hir.kindOf(node)) {
+            .identifier => self.typeParamNameMatches(hir_mod.identifierOf(self.hir, node).name, type_params),
+            .type_ref => blk: {
+                const r = hir_mod.typeRefOf(self.hir, node);
+                break :blk r.qualifier_len == 0 and
+                    hir_mod.typeRefArgs(self.hir, node).len == 0 and
+                    self.typeParamNameMatches(r.name, type_params);
+            },
+            else => false,
+        };
     }
 
     fn checkGenericIndexedAssignment(self: *Checker, node: NodeId, target: NodeId, value: NodeId) !void {
@@ -11918,6 +12338,31 @@ test "checker: any argument inference suppresses declared call result mismatch" 
     for (s.checker.diagnostics.items) |d| {
         try T.expect(d.code != TsCodes.type_not_assignable);
     }
+}
+
+test "checker: returned generic function enforces substituted scalar constraint" {
+    const s = try newSetup(
+        \\class C<T extends { length: number }> {
+        \\  constructor(x: T) {}
+        \\  foo<U extends T>(x: U) {
+        \\    function bar<V extends U>(x: V) {
+        \\      return x;
+        \\    }
+        \\    return bar;
+        \\  }
+        \\}
+        \\var c = new C({ length: 2 });
+        \\var r = c.foo('');
+        \\var r2 = r({ length: 3, charAt: (x: number) => { '' } });
+    );
+    defer destroySetup(s);
+    s.checker.setStrictFlags(.{ .strict_null_checks = true });
+    try s.checker.checkSourceFile(s.root);
+    var found = false;
+    for (s.checker.diagnostics.items) |d| {
+        if (d.code == TsCodes.argument_type_mismatch) found = true;
+    }
+    try T.expect(found);
 }
 
 test "checker: overloaded function-typed parameter checks all call signatures" {
