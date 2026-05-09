@@ -9707,6 +9707,19 @@ test "checker: unresolved identifier emits TS2304" {
     try T.expect(found);
 }
 
+test "checker: later declarators in a variable declaration list bind" {
+    const b = try newBoundSetup(
+        \\var a: string, b: number;
+        \\a;
+        \\b;
+    );
+    defer destroyBoundSetup(b);
+    try b.base.checker.checkSourceFile(b.base.root);
+    for (b.base.checker.diagnostics.items) |d| {
+        try T.expect(d.code != TsCodes.cannot_find_name);
+    }
+}
+
 test "checker: console.log does not emit TS2304" {
     const b = try newBoundSetup("console.log(\"hi\");");
     defer destroyBoundSetup(b);

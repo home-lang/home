@@ -71,13 +71,17 @@ pub const Parser = struct {
     interner: *string_interner.Interner,
     source: []const u8,
     diagnostics: std.ArrayListUnmanaged(Diagnostic),
+    pending_statements: std.ArrayListUnmanaged(NodeId),
     diag_arena: std.heap.ArenaAllocator,
     ambient_depth: u32,
     block_depth: u32,
     nested_statement_depth: u32,
+    unbraced_statement_block_depth: ?u32,
     function_depth: u32,
     async_function_depth: u32,
     static_block_depth: u32,
+    loop_depth: u32,
+    loop_switch_depth: u32,
     namespace_depth: u32,
     strict_mode: bool,
     suppress_strict_param_names: bool,
@@ -109,13 +113,17 @@ pub const Parser = struct {
             .interner = interner,
             .source = source,
             .diagnostics = .empty,
+            .pending_statements = .empty,
             .diag_arena = std.heap.ArenaAllocator.init(gpa),
             .ambient_depth = 0,
             .block_depth = 0,
             .nested_statement_depth = 0,
+            .unbraced_statement_block_depth = null,
             .function_depth = 0,
             .async_function_depth = 0,
             .static_block_depth = 0,
+            .loop_depth = 0,
+            .loop_switch_depth = 0,
             .namespace_depth = 0,
             .strict_mode = false,
             .suppress_strict_param_names = false,
@@ -134,6 +142,7 @@ pub const Parser = struct {
     pub fn deinit(self: *Parser) void {
         self.builder.deinit();
         self.diagnostics.deinit(self.gpa);
+        self.pending_statements.deinit(self.gpa);
         self.diag_arena.deinit();
     }
 
@@ -296,7 +305,7 @@ pub const Parser = struct {
         defer stmts.deinit(self.gpa);
 
         const start = self.peek();
-        while (self.peek().kind != .eof) {
+        while (self.hasPendingStatement() or self.peek().kind != .eof) {
             const stmt = try self.parseStatement();
             try stmts.append(self.gpa, stmt);
         }
@@ -331,6 +340,10 @@ pub const Parser = struct {
     // ========================================================================
 
     fn parseStatement(self: *Parser) ParseError!NodeId {
+        if (self.hasPendingStatement()) {
+            return self.pending_statements.orderedRemove(0);
+        }
+
         // Decorators that precede class declarations (and `export`+
         // `class` chains) attach to the next decorated statement.
         // We collect them here and store them as leading siblings —
@@ -353,8 +366,11 @@ pub const Parser = struct {
         if ((t.kind == .identifier or t.kind.isContextualKeyword()) and
             self.peekAt(1).kind == .colon)
         {
+            const label_tok = self.advance();
             _ = self.advance();
-            _ = self.advance();
+            if (self.block_depth == 0 and self.isInvalidLabeledDeclarationStart()) {
+                try self.reportCodeAt(label_tok.span.start, label_tok.line, 1344, "A label is not allowed here.");
+            }
             return try self.parseStatement();
         }
         return switch (t.kind) {
@@ -507,7 +523,7 @@ pub const Parser = struct {
                     _ = try self.expect(.open_brace, "'{' to open global body");
                     var body: std.ArrayListUnmanaged(NodeId) = .empty;
                     defer body.deinit(self.gpa);
-                    while (self.peek().kind != .close_brace and self.peek().kind != .eof) {
+                    while (self.hasPendingStatement() or (self.peek().kind != .close_brace and self.peek().kind != .eof)) {
                         try body.append(self.gpa, try self.parseStatement());
                     }
                     const close = try self.expect(.close_brace, "'}' to close global body");
@@ -561,9 +577,43 @@ pub const Parser = struct {
         try self.reportCodeAt(tok.span.start, tok.line, 1184, "Modifiers cannot appear here.");
     }
 
+    fn hasPendingStatement(self: *const Parser) bool {
+        return self.pending_statements.items.len > 0;
+    }
+
+    fn tokenTextEquals(self: *const Parser, tok: Token, expected: []const u8) bool {
+        return std.mem.eql(u8, self.source[tok.span.start..tok.span.end], expected);
+    }
+
+    fn isInvalidLabeledDeclarationStart(self: *const Parser) bool {
+        return switch (self.peek().kind) {
+            .kw_function,
+            .kw_async,
+            .kw_class,
+            .kw_enum,
+            .kw_interface,
+            .kw_namespace,
+            .kw_module,
+            .kw_type,
+            .kw_var,
+            .kw_let,
+            .kw_const,
+            .kw_export,
+            .kw_import,
+            => true,
+            .kw_abstract => self.peekAt(1).kind == .kw_class,
+            else => false,
+        };
+    }
+
     fn parseNestedStatement(self: *Parser) ParseError!NodeId {
         self.nested_statement_depth += 1;
         defer self.nested_statement_depth -= 1;
+        const old_unbraced_statement_block_depth = self.unbraced_statement_block_depth;
+        if (self.peek().kind != .open_brace) {
+            self.unbraced_statement_block_depth = self.block_depth;
+        }
+        defer self.unbraced_statement_block_depth = old_unbraced_statement_block_depth;
         return try self.parseStatement();
     }
 
@@ -633,6 +683,10 @@ pub const Parser = struct {
         _ = try self.expect(.open_paren, "'(' after 'while'");
         const cond = try self.parseExpression();
         _ = try self.expect(.close_paren, "')' after while condition");
+        self.loop_depth += 1;
+        defer self.loop_depth -= 1;
+        self.loop_switch_depth += 1;
+        defer self.loop_switch_depth -= 1;
         const body = try self.parseNestedStatement();
         const end_pos = self.hir.spanOf(body).end;
         return try self.builder.addWhile(.{ .start = start.span.start, .end = end_pos }, cond, body);
@@ -640,6 +694,10 @@ pub const Parser = struct {
 
     fn parseDoWhileStatement(self: *Parser) ParseError!NodeId {
         const start = self.advance(); // do
+        self.loop_depth += 1;
+        defer self.loop_depth -= 1;
+        self.loop_switch_depth += 1;
+        defer self.loop_switch_depth -= 1;
         const body = try self.parseNestedStatement();
         _ = try self.expect(.kw_while, "'while' after do-block");
         _ = try self.expect(.open_paren, "'(' after 'while'");
@@ -661,11 +719,21 @@ pub const Parser = struct {
         //   for (expr ...) ...             — expression init
         // The first two can be followed by `in` / `of` for for-in/for-of.
         var init_node: NodeId = hir_mod.none_node_id;
-        const has_decl_kw = (self.peek().kind == .kw_let or
+        var has_decl_kw = (self.peek().kind == .kw_let or
             self.peek().kind == .kw_const or
             self.peek().kind == .kw_var or
             self.peek().kind == .kw_using or
             (self.peek().kind == .kw_await and self.peekAt(1).kind == .kw_using));
+        if (self.peek().kind == .kw_await and self.peekAt(1).kind == .kw_using and self.peekAt(2).kind == .kw_of) {
+            const after_of = self.peekAt(3).kind;
+            has_decl_kw = after_of == .kw_of or
+                after_of == .kw_in or
+                after_of == .equal or
+                after_of == .colon or
+                after_of == .comma or
+                after_of == .semicolon or
+                after_of == .close_paren;
+        }
 
         if (self.peek().kind == .semicolon) {
             // empty init — leave as none
@@ -698,6 +766,11 @@ pub const Parser = struct {
             // Detect for-in / for-of immediately.
             if (self.peek().kind == .kw_in or self.peek().kind == .kw_of) {
                 const kind_tok = self.advance(); // in/of
+                if (kind_tok.kind == .kw_in and
+                    (self.hir.kindOf(binding_node) == .object_pattern or self.hir.kindOf(binding_node) == .array_pattern))
+                {
+                    try self.reportCodeAt(binding_start.span.start, binding_start.line, 2491, "The left-hand side of a 'for...in' statement cannot be a destructuring pattern.");
+                }
                 if (kind_tok.kind == .kw_in and is_using_decl) {
                     const message = if (is_await_using_decl)
                         "The left-hand side of a 'for...in' statement cannot be an 'await using' declaration."
@@ -707,6 +780,10 @@ pub const Parser = struct {
                 }
                 const source_expr = try self.parseExpression();
                 _ = try self.expect(.close_paren, "')' to close for-in/of header");
+                self.loop_depth += 1;
+                defer self.loop_depth -= 1;
+                self.loop_switch_depth += 1;
+                defer self.loop_switch_depth -= 1;
                 const body = try self.parseNestedStatement();
                 const end_pos = self.hir.spanOf(body).end;
                 if (kind_tok.kind == .kw_in) {
@@ -742,15 +819,20 @@ pub const Parser = struct {
                 if (self.match(.equal)) _ = try self.parseAssignmentExpression();
             }
         } else {
-            const head_expr = if (self.peek().kind == .open_brace or self.peek().kind == .open_bracket)
-                try self.parseBindingPattern()
-            else
-                try self.parseExpressionNoIn();
+            const head_start = self.peek();
+            const head_expr = try self.parseExpressionNoIn();
 
             if (self.peek().kind == .kw_in or self.peek().kind == .kw_of) {
                 const kind_tok = self.advance();
+                if (kind_tok.kind == .kw_in and (head_start.kind == .open_brace or head_start.kind == .open_bracket)) {
+                    try self.reportCodeAt(head_start.span.start, head_start.line, 2491, "The left-hand side of a 'for...in' statement cannot be a destructuring pattern.");
+                }
                 const source_expr = try self.parseExpression();
                 _ = try self.expect(.close_paren, "')' to close for-in/of header");
+                self.loop_depth += 1;
+                defer self.loop_depth -= 1;
+                self.loop_switch_depth += 1;
+                defer self.loop_switch_depth -= 1;
                 const body = try self.parseNestedStatement();
                 const end_pos = self.hir.spanOf(body).end;
                 if (kind_tok.kind == .kw_in) {
@@ -771,6 +853,10 @@ pub const Parser = struct {
         var update: NodeId = hir_mod.none_node_id;
         if (self.peek().kind != .close_paren) update = try self.parseExpression();
         _ = try self.expect(.close_paren, "')' to close for header");
+        self.loop_depth += 1;
+        defer self.loop_depth -= 1;
+        self.loop_switch_depth += 1;
+        defer self.loop_switch_depth -= 1;
         const body = try self.parseNestedStatement();
         const end_pos = self.hir.spanOf(body).end;
         return try self.builder.addFor(.{ .start = start.span.start, .end = end_pos }, init_node, cond, update, body);
@@ -795,6 +881,8 @@ pub const Parser = struct {
             const lab_tok = self.advance();
             const lab_id = try self.internToken(lab_tok);
             label = try self.builder.addIdentifier(tokenSpan(lab_tok), lab_id);
+        } else if (self.loop_switch_depth == 0) {
+            try self.reportCodeAt(start.span.start, start.line, 1105, "A 'break' statement can only be used within an enclosing iteration or switch statement.");
         }
         try self.consumeStatementTerminator();
         const end_pos: u32 = if (self.cursor > 0) self.tokens[self.cursor - 1].span.end else start.span.end;
@@ -808,6 +896,8 @@ pub const Parser = struct {
             const lab_tok = self.advance();
             const lab_id = try self.internToken(lab_tok);
             label = try self.builder.addIdentifier(tokenSpan(lab_tok), lab_id);
+        } else if (self.loop_depth == 0) {
+            try self.reportCodeAt(start.span.start, start.line, 1104, "A 'continue' statement can only be used within an enclosing iteration statement.");
         }
         try self.consumeStatementTerminator();
         const end_pos: u32 = if (self.cursor > 0) self.tokens[self.cursor - 1].span.end else start.span.end;
@@ -867,6 +957,8 @@ pub const Parser = struct {
         const discriminant = try self.parseExpression();
         _ = try self.expect(.close_paren, "')' after switch discriminant");
         _ = try self.expect(.open_brace, "'{' to open switch body");
+        self.loop_switch_depth += 1;
+        defer self.loop_switch_depth -= 1;
 
         var cases: std.ArrayListUnmanaged(NodeId) = .empty;
         defer cases.deinit(self.gpa);
@@ -885,7 +977,7 @@ pub const Parser = struct {
             defer stmts.deinit(self.gpa);
             while (true) {
                 const k = self.peek().kind;
-                if (k == .kw_case or k == .kw_default or k == .close_brace or k == .eof) break;
+                if (!self.hasPendingStatement() and (k == .kw_case or k == .kw_default or k == .close_brace or k == .eof)) break;
                 try stmts.append(self.gpa, try self.parseStatement());
             }
             const last_end: u32 = if (stmts.items.len > 0)
@@ -1831,7 +1923,7 @@ pub const Parser = struct {
         defer self.namespace_depth -= 1;
         var body: std.ArrayListUnmanaged(NodeId) = .empty;
         defer body.deinit(self.gpa);
-        while (self.peek().kind != .close_brace and self.peek().kind != .eof) {
+        while (self.hasPendingStatement() or (self.peek().kind != .close_brace and self.peek().kind != .eof)) {
             try body.append(self.gpa, try self.parseStatement());
         }
         const close = try self.expect(.close_brace, "'}' to close namespace body");
@@ -1863,6 +1955,13 @@ pub const Parser = struct {
         var namespace_binding: NodeId = hir_mod.none_node_id;
         var named: std.ArrayListUnmanaged(NodeId) = .empty;
         defer named.deinit(self.gpa);
+
+        if ((self.peek().kind == .identifier or self.peek().kind.isContextualKeyword()) and
+            self.tokenTextEquals(self.peek(), "defer") and
+            self.peekAt(1).kind == .open_brace)
+        {
+            try self.reportCodeAt(self.peek().span.start, self.peek().line, 18059, "Named imports are not allowed in a deferred import.");
+        }
 
         if ((self.peek().kind == .identifier or self.peek().kind.isContextualKeyword()) and
             self.peekAt(1).kind == .equal)
@@ -2289,8 +2388,6 @@ pub const Parser = struct {
             .kw_var => .var_decl,
             else => unreachable,
         };
-        // Phase 1.D scope: single binding per declaration. Multiple
-        // bindings (`let x = 1, y = 2`) are a follow-up.
         // Destructuring binding (`const { a } = obj`, `const [b] = arr`)
         // stores the pattern in the var-decl's `name` slot in the same
         // way parameters stash an `object_pattern` / `array_pattern`.
@@ -2318,15 +2415,32 @@ pub const Parser = struct {
             init_node = try self.parseAssignmentExpression();
         }
         while (self.match(.comma)) {
-            if (self.peek().kind == .open_brace or self.peek().kind == .open_bracket) {
-                _ = try self.parseBindingPattern();
-            } else {
+            const extra_name: NodeId = if (self.peek().kind == .open_brace or self.peek().kind == .open_bracket) blk: {
+                break :blk try self.parseBindingPattern();
+            } else id_blk: {
                 const name_tok = try self.expectIdentifierLike();
                 try self.reportAwaitBindingIfReserved(name_tok);
-            }
+                const name_id = try self.internToken(name_tok);
+                break :id_blk try self.builder.addIdentifier(tokenSpan(name_tok), name_id);
+            };
             _ = self.match(.bang);
-            if (self.match(.colon)) _ = try self.parseTypeAnnotation();
-            if (self.match(.equal)) _ = try self.parseAssignmentExpression();
+            var extra_type: NodeId = hir_mod.none_node_id;
+            if (self.match(.colon)) extra_type = try self.parseTypeAnnotation();
+            var extra_init: NodeId = hir_mod.none_node_id;
+            if (self.match(.equal)) extra_init = try self.parseAssignmentExpression();
+            const extra_start = self.hir.spanOf(extra_name).start;
+            const extra_end = if (self.cursor > 0) self.tokens[self.cursor - 1].span.end else self.hir.spanOf(extra_name).end;
+            const extra_decl = try self.builder.addVarDeclEx(
+                decl_kind,
+                .{ .start = extra_start, .end = extra_end },
+                extra_name,
+                extra_type,
+                extra_init,
+                false,
+                false,
+                self.ambient_depth > 0,
+            );
+            try self.pending_statements.append(self.gpa, extra_decl);
         }
         try self.consumeStatementTerminator();
 
@@ -2366,13 +2480,13 @@ pub const Parser = struct {
                 try self.reportCodeAt(start.span.start, start.line, 2852, "'await using' statements are only allowed within async functions and at the top levels of modules.");
             }
         }
-        if (self.nested_statement_depth > 0) {
+        if (self.unbraced_statement_block_depth) |depth| if (self.block_depth == depth) {
             const message = if (await_using)
                 "'await using' declarations can only be declared inside a block."
             else
                 "'using' declarations can only be declared inside a block.";
             try self.reportCodeAt(start.span.start, start.line, 1156, message);
-        }
+        };
         const name_tok = try self.expect(.identifier, "identifier in using declaration");
         const name_id = try self.internToken(name_tok);
         const name_node = try self.builder.addIdentifier(tokenSpan(name_tok), name_id);
@@ -2436,7 +2550,7 @@ pub const Parser = struct {
         defer self.block_depth -= 1;
         var stmts: std.ArrayListUnmanaged(NodeId) = .empty;
         defer stmts.deinit(self.gpa);
-        while (self.peek().kind != .close_brace and self.peek().kind != .eof) {
+        while (self.hasPendingStatement() or (self.peek().kind != .close_brace and self.peek().kind != .eof)) {
             try stmts.append(self.gpa, try self.parseStatement());
         }
         const close = try self.expect(.close_brace, "'}' to close block");
@@ -4584,7 +4698,7 @@ pub const Parser = struct {
                 const id = try self.internToken(t);
                 return try self.builder.addIdentifier(tokenSpan(t), id);
             },
-            .kw_any, .kw_unknown, .kw_never, .kw_void, .kw_string, .kw_number, .kw_boolean, .kw_bigint, .kw_symbol, .kw_object, .kw_get, .kw_set, .kw_global, .kw_require, .kw_module, .kw_namespace, .kw_of, .kw_type, .kw_await => {
+            .kw_any, .kw_unknown, .kw_never, .kw_void, .kw_string, .kw_number, .kw_boolean, .kw_bigint, .kw_symbol, .kw_object, .kw_get, .kw_set, .kw_global, .kw_require, .kw_module, .kw_namespace, .kw_of, .kw_type, .kw_using, .kw_await => {
                 _ = self.advance();
                 const id = try self.internToken(t);
                 return try self.builder.addIdentifier(tokenSpan(t), id);
@@ -4708,6 +4822,16 @@ pub const Parser = struct {
                 const import_id = self.interner.intern("import") catch return error.OutOfMemory;
                 const callee = try self.builder.addIdentifier(tokenSpan(t), import_id);
                 if (self.peek().kind != .open_paren) {
+                    if (self.peek().kind == .dot and (self.peekAt(1).kind == .identifier or self.peekAt(1).kind.isContextualKeyword())) {
+                        const prop = self.peekAt(1);
+                        const is_meta = self.tokenTextEquals(prop, "meta");
+                        const is_defer = self.tokenTextEquals(prop, "defer");
+                        if (is_defer and self.peekAt(2).kind != .open_paren) {
+                            try self.reportCodeAt(prop.span.end, prop.line, 1005, "'(' expected.");
+                        } else if (!is_meta and !is_defer) {
+                            try self.reportCodeAt(prop.span.start, prop.line, 17012, "This is not a valid meta-property for keyword 'import'. Did you mean 'meta'?");
+                        }
+                    }
                     // Not a dynamic import — return the synthesized
                     // identifier so postfix `.meta`/`.meta.url` can
                     // attach as member accesses upstream.
@@ -5353,7 +5477,11 @@ test "parser: let declaration with initializer" {
 test "parser: variable declaration list tolerates additional declarators" {
     var s = try newTestSetup("let a = 1, b = 2;");
     defer destroyTestSetup(s);
-    _ = try s.parser.parseSourceFile();
+    const root = try s.parser.parseSourceFile();
+    const stmts = hir_mod.blockStmts(&s.hir, root);
+    try T.expectEqual(@as(usize, 2), stmts.len);
+    try T.expectEqual(hir_mod.NodeKind.let_decl, s.hir.kindOf(stmts[0]));
+    try T.expectEqual(hir_mod.NodeKind.let_decl, s.hir.kindOf(stmts[1]));
     try T.expectEqual(@as(usize, 0), s.parser.diagnostics.items.len);
 }
 
@@ -5682,6 +5810,16 @@ test "parser: for-in loop" {
     try T.expectEqual(hir_mod.NodeKind.for_in_stmt, s.hir.kindOf(top));
 }
 
+test "parser: for-in rejects destructuring targets" {
+    var s = try newTestSetup("for (var {a, b} in obj) {} for ([a, b] in obj) {}");
+    defer destroyTestSetup(s);
+
+    _ = try s.parser.parseSourceFile();
+    try T.expectEqual(@as(usize, 2), s.parser.diagnostics.items.len);
+    try T.expectEqual(@as(u32, 2491), s.parser.diagnostics.items[0].code);
+    try T.expectEqual(@as(u32, 2491), s.parser.diagnostics.items[1].code);
+}
+
 test "parser: for-of loop" {
     var s = try newTestSetup("for (let v of items) { sum = sum + v; }");
     defer destroyTestSetup(s);
@@ -5765,6 +5903,41 @@ test "parser: using for header edge diagnostics" {
     try T.expectEqual(@as(u32, 1155), s.parser.diagnostics.items[1].code);
 }
 
+test "parser: await using of expression in for header is not a declaration" {
+    var s = try newTestSetup(
+        \\declare const x: any[];
+        \\for (await using of x);
+        \\export async function test() { for await (await using of x); }
+    );
+    defer destroyTestSetup(s);
+
+    _ = try s.parser.parseSourceFile();
+    try T.expectEqual(@as(usize, 0), s.parser.diagnostics.items.len);
+}
+
+test "parser: non-declaration for-of array target parses as expression" {
+    var s = try newTestSetup("for ([\"\"] of [[\"\"]]) { }");
+    defer destroyTestSetup(s);
+
+    _ = try s.parser.parseSourceFile();
+    try T.expectEqual(@as(usize, 0), s.parser.diagnostics.items.len);
+}
+
+test "parser: using in blocks under nested statements is allowed" {
+    var s = try newTestSetup(
+        \\if (true)
+        \\  switch (0) {
+        \\    case 0: { using d = null; break; }
+        \\    default: { await using a = null; }
+        \\  }
+        \\export {};
+    );
+    defer destroyTestSetup(s);
+
+    _ = try s.parser.parseSourceFile();
+    try T.expectEqual(@as(usize, 0), s.parser.diagnostics.items.len);
+}
+
 test "parser: break and continue" {
     var s = try newTestSetup("while (x) { break; continue; break label; continue label; }");
     defer destroyTestSetup(s);
@@ -5777,6 +5950,35 @@ test "parser: break and continue" {
     try T.expectEqual(hir_mod.NodeKind.continue_stmt, s.hir.kindOf(stmts[1]));
     try T.expect(hir_mod.labelOf(&s.hir, stmts[0]).label == hir_mod.none_node_id);
     try T.expect(hir_mod.labelOf(&s.hir, stmts[2]).label != hir_mod.none_node_id);
+}
+
+test "parser: break outside loop or switch reports TS1105" {
+    var s = try newTestSetup("break; while (x) { break; } switch (x) { case 1: break; }");
+    defer destroyTestSetup(s);
+
+    _ = try s.parser.parseSourceFile();
+    try T.expectEqual(@as(usize, 1), s.parser.diagnostics.items.len);
+    try T.expectEqual(@as(u32, 1105), s.parser.diagnostics.items[0].code);
+}
+
+test "parser: continue outside loop reports TS1104" {
+    var s = try newTestSetup("switch (x) { case 1: continue; } while (x) { continue; }");
+    defer destroyTestSetup(s);
+
+    _ = try s.parser.parseSourceFile();
+    try T.expectEqual(@as(usize, 1), s.parser.diagnostics.items.len);
+    try T.expectEqual(@as(u32, 1104), s.parser.diagnostics.items[0].code);
+}
+
+test "parser: label before declaration reports TS1344" {
+    var s = try newTestSetup("label: const c = 1; other: function f() {} third: export const x: string");
+    defer destroyTestSetup(s);
+
+    _ = try s.parser.parseSourceFile();
+    try T.expect(s.parser.diagnostics.items.len >= 3);
+    try T.expectEqual(@as(u32, 1344), s.parser.diagnostics.items[0].code);
+    try T.expectEqual(@as(u32, 1344), s.parser.diagnostics.items[1].code);
+    try T.expectEqual(@as(u32, 1344), s.parser.diagnostics.items[2].code);
 }
 
 test "parser: throw statement" {
@@ -6141,6 +6343,15 @@ test "parser: import named" {
     try T.expectEqual(@as(usize, 2), named.len);
 }
 
+test "parser: deferred import cannot use named bindings" {
+    var s = try newTestSetup("import defer { foo } from \"./a\";");
+    defer destroyTestSetup(s);
+
+    _ = try s.parser.parseSourceFile();
+    try T.expectEqual(@as(usize, 1), s.parser.diagnostics.items.len);
+    try T.expectEqual(@as(u32, 18059), s.parser.diagnostics.items[0].code);
+}
+
 test "parser: import namespace" {
     var s = try newTestSetup("import * as fs from \"fs\";");
     defer destroyTestSetup(s);
@@ -6237,6 +6448,16 @@ test "parser: import.meta.url chained access" {
     try T.expectEqual(hir_mod.NodeKind.member_access, s.hir.kindOf(outer.object));
     const inner = hir_mod.memberOf(&s.hir, outer.object);
     try T.expectEqualStrings("meta", s.interner.get(inner.name));
+}
+
+test "parser: invalid import meta properties report diagnostics" {
+    var s = try newTestSetup("import.foo(); import.defer;");
+    defer destroyTestSetup(s);
+
+    _ = try s.parser.parseSourceFile();
+    try T.expectEqual(@as(usize, 2), s.parser.diagnostics.items.len);
+    try T.expectEqual(@as(u32, 17012), s.parser.diagnostics.items[0].code);
+    try T.expectEqual(@as(u32, 1005), s.parser.diagnostics.items[1].code);
 }
 
 test "parser: export default" {
