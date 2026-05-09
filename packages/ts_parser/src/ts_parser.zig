@@ -74,6 +74,10 @@ pub const Parser = struct {
     diag_arena: std.heap.ArenaAllocator,
     ambient_depth: u32,
     block_depth: u32,
+    nested_statement_depth: u32,
+    function_depth: u32,
+    async_function_depth: u32,
+    static_block_depth: u32,
     namespace_depth: u32,
     strict_mode: bool,
     suppress_strict_param_names: bool,
@@ -108,6 +112,10 @@ pub const Parser = struct {
             .diag_arena = std.heap.ArenaAllocator.init(gpa),
             .ambient_depth = 0,
             .block_depth = 0,
+            .nested_statement_depth = 0,
+            .function_depth = 0,
+            .async_function_depth = 0,
+            .static_block_depth = 0,
             .namespace_depth = 0,
             .strict_mode = false,
             .suppress_strict_param_names = false,
@@ -241,7 +249,10 @@ pub const Parser = struct {
     }
 
     fn reportAwaitBindingIfReserved(self: *Parser, tok: Token) ParseError!void {
-        if (!self.in_top_level_module_binding_decl or tok.kind != .kw_await) return;
+        if (tok.kind != .kw_await) return;
+        const is_top_level_module_binding = self.top_level_external_module_indicator and
+            self.block_depth == 0 and self.namespace_depth == 0 and self.ambient_depth == 0;
+        if (!self.in_top_level_module_binding_decl and !is_top_level_module_binding) return;
         try self.reportCodeAt(
             tok.span.start,
             tok.line,
@@ -280,6 +291,7 @@ pub const Parser = struct {
     /// Parse a TS source file into HIR. Returns the source-file root
     /// `NodeId` (currently a synthesized block).
     pub fn parseSourceFile(self: *Parser) ParseError!NodeId {
+        self.top_level_external_module_indicator = self.sourceHasTopLevelExternalModuleIndicator();
         var stmts: std.ArrayListUnmanaged(NodeId) = .empty;
         defer stmts.deinit(self.gpa);
 
@@ -291,6 +303,27 @@ pub const Parser = struct {
         const end = self.peek(); // eof; span end is its start
         const file_span: Span = .{ .start = start.span.start, .end = end.span.start };
         return try self.builder.addBlock(file_span, stmts.items);
+    }
+
+    fn sourceHasTopLevelExternalModuleIndicator(self: *const Parser) bool {
+        var depth: u32 = 0;
+        var i: usize = 0;
+        while (i < self.tokens.len) : (i += 1) {
+            const tok = self.tokens[i];
+            switch (tok.kind) {
+                .open_brace, .open_paren, .open_bracket => depth += 1,
+                .close_brace, .close_paren, .close_bracket => if (depth > 0) {
+                    depth -= 1;
+                },
+                .kw_import => {
+                    if (depth == 0 and self.tokens[@min(i + 1, self.tokens.len - 1)].kind != .open_paren) return true;
+                },
+                .kw_export => if (depth == 0) return true,
+                .eof => return false,
+                else => {},
+            }
+        }
+        return false;
     }
 
     // ========================================================================
@@ -389,6 +422,8 @@ pub const Parser = struct {
                 // is handled in expression position.
                 if (self.peekAt(1).kind == .kw_function) {
                     _ = self.advance(); // async
+                    self.async_function_depth += 1;
+                    defer self.async_function_depth -= 1;
                     const fd = try self.parseFunctionDeclaration();
                     self.hir.markFnAsync(fd);
                     break :blk fd;
@@ -522,8 +557,14 @@ pub const Parser = struct {
     }
 
     fn reportModifierInBlock(self: *Parser, tok: Token) ParseError!void {
-        if (self.block_depth == 0) return;
+        if (self.block_depth == 0 and self.nested_statement_depth == 0) return;
         try self.reportCodeAt(tok.span.start, tok.line, 1184, "Modifiers cannot appear here.");
+    }
+
+    fn parseNestedStatement(self: *Parser) ParseError!NodeId {
+        self.nested_statement_depth += 1;
+        defer self.nested_statement_depth -= 1;
+        return try self.parseStatement();
     }
 
     fn isUseStrictDirective(self: *const Parser, tok: Token) bool {
@@ -577,9 +618,9 @@ pub const Parser = struct {
         _ = try self.expect(.open_paren, "'(' after 'if'");
         const cond = try self.parseExpression();
         _ = try self.expect(.close_paren, "')' after if condition");
-        const then_branch = try self.parseStatement();
+        const then_branch = try self.parseNestedStatement();
         var else_branch: NodeId = hir_mod.none_node_id;
-        if (self.match(.kw_else)) else_branch = try self.parseStatement();
+        if (self.match(.kw_else)) else_branch = try self.parseNestedStatement();
         const end_pos: u32 = if (else_branch != hir_mod.none_node_id)
             self.hir.spanOf(else_branch).end
         else
@@ -592,14 +633,14 @@ pub const Parser = struct {
         _ = try self.expect(.open_paren, "'(' after 'while'");
         const cond = try self.parseExpression();
         _ = try self.expect(.close_paren, "')' after while condition");
-        const body = try self.parseStatement();
+        const body = try self.parseNestedStatement();
         const end_pos = self.hir.spanOf(body).end;
         return try self.builder.addWhile(.{ .start = start.span.start, .end = end_pos }, cond, body);
     }
 
     fn parseDoWhileStatement(self: *Parser) ParseError!NodeId {
         const start = self.advance(); // do
-        const body = try self.parseStatement();
+        const body = try self.parseNestedStatement();
         _ = try self.expect(.kw_while, "'while' after do-block");
         _ = try self.expect(.open_paren, "'(' after 'while'");
         const cond = try self.parseExpression();
@@ -622,12 +663,18 @@ pub const Parser = struct {
         var init_node: NodeId = hir_mod.none_node_id;
         const has_decl_kw = (self.peek().kind == .kw_let or
             self.peek().kind == .kw_const or
-            self.peek().kind == .kw_var);
+            self.peek().kind == .kw_var or
+            self.peek().kind == .kw_using or
+            (self.peek().kind == .kw_await and self.peekAt(1).kind == .kw_using));
 
         if (self.peek().kind == .semicolon) {
             // empty init — leave as none
         } else if (has_decl_kw) {
-            const kw = self.advance(); // let/const/var
+            const kw = self.advance(); // let/const/var/using or await
+            const is_await_using_decl = kw.kind == .kw_await;
+            const is_using_decl = kw.kind == .kw_using or is_await_using_decl;
+            if (is_await_using_decl) _ = try self.expect(.kw_using, "'using' after 'await' in for initializer");
+            const binding_start = self.peek();
             const binding_node: NodeId = if (self.peek().kind == .open_brace or self.peek().kind == .open_bracket) blk: {
                 break :blk try self.parseBindingPattern();
             } else blk: {
@@ -635,15 +682,32 @@ pub const Parser = struct {
                 const name_id = try self.internToken(name_tok);
                 break :blk try self.builder.addIdentifier(tokenSpan(name_tok), name_id);
             };
+            if (is_using_decl and (binding_start.kind == .open_brace or binding_start.kind == .open_bracket)) {
+                const message = if (is_await_using_decl)
+                    "'await using' declarations may not have binding patterns."
+                else
+                    "'using' declarations may not have binding patterns.";
+                try self.reportCodeAt(binding_start.span.start, binding_start.line, 1492, message);
+            }
+            if (kw.kind == .kw_using and binding_start.kind == .kw_of and self.peek().kind == .kw_of) {
+                try self.reportCodeAt(kw.span.start, kw.line, 2304, "Cannot find name 'using'.");
+            }
             // optional type annotation
             if (self.match(.colon)) try self.skipTypeAnnotation();
 
             // Detect for-in / for-of immediately.
             if (self.peek().kind == .kw_in or self.peek().kind == .kw_of) {
                 const kind_tok = self.advance(); // in/of
+                if (kind_tok.kind == .kw_in and is_using_decl) {
+                    const message = if (is_await_using_decl)
+                        "The left-hand side of a 'for...in' statement cannot be an 'await using' declaration."
+                    else
+                        "The left-hand side of a 'for...in' statement cannot be a 'using' declaration.";
+                    try self.reportCodeAt(kw.span.start, kw.line, if (is_await_using_decl) 1494 else 1493, message);
+                }
                 const source_expr = try self.parseExpression();
                 _ = try self.expect(.close_paren, "')' to close for-in/of header");
-                const body = try self.parseStatement();
+                const body = try self.parseNestedStatement();
                 const end_pos = self.hir.spanOf(body).end;
                 if (kind_tok.kind == .kw_in) {
                     return try self.builder.addForIn(.{ .start = start.span.start, .end = end_pos }, binding_node, source_expr, body);
@@ -657,6 +721,9 @@ pub const Parser = struct {
             // Classic for: `for (let x = init;` …)
             var init_expr: NodeId = hir_mod.none_node_id;
             if (self.match(.equal)) init_expr = try self.parseAssignmentExpression();
+            if (is_using_decl and init_expr == hir_mod.none_node_id) {
+                try self.reportCodeAt(binding_start.span.start, binding_start.line, 1155, "'using' declarations must be initialized.");
+            }
             if (init_expr == hir_mod.none_node_id) {
                 init_node = binding_node;
             } else {
@@ -664,6 +731,15 @@ pub const Parser = struct {
                     .start = kw.span.start,
                     .end = self.hir.spanOf(init_expr).end,
                 }, binding_node, init_expr, null);
+            }
+            while (self.match(.comma)) {
+                if (self.peek().kind == .open_brace or self.peek().kind == .open_bracket) {
+                    _ = try self.parseBindingPattern();
+                } else {
+                    _ = try self.expectIdentifierLike();
+                }
+                if (self.match(.colon)) _ = try self.parseTypeAnnotation();
+                if (self.match(.equal)) _ = try self.parseAssignmentExpression();
             }
         } else {
             const head_expr = if (self.peek().kind == .open_brace or self.peek().kind == .open_bracket)
@@ -675,7 +751,7 @@ pub const Parser = struct {
                 const kind_tok = self.advance();
                 const source_expr = try self.parseExpression();
                 _ = try self.expect(.close_paren, "')' to close for-in/of header");
-                const body = try self.parseStatement();
+                const body = try self.parseNestedStatement();
                 const end_pos = self.hir.spanOf(body).end;
                 if (kind_tok.kind == .kw_in) {
                     return try self.builder.addForIn(.{ .start = start.span.start, .end = end_pos }, head_expr, source_expr, body);
@@ -695,7 +771,7 @@ pub const Parser = struct {
         var update: NodeId = hir_mod.none_node_id;
         if (self.peek().kind != .close_paren) update = try self.parseExpression();
         _ = try self.expect(.close_paren, "')' to close for header");
-        const body = try self.parseStatement();
+        const body = try self.parseNestedStatement();
         const end_pos = self.hir.spanOf(body).end;
         return try self.builder.addFor(.{ .start = start.span.start, .end = end_pos }, init_node, cond, update, body);
     }
@@ -708,7 +784,7 @@ pub const Parser = struct {
         _ = try self.expect(.open_paren, "'(' after 'with'");
         _ = try self.parseExpression();
         _ = try self.expect(.close_paren, "')' after with expression");
-        const body = try self.parseStatement();
+        const body = try self.parseNestedStatement();
         return try self.builder.addBlock(.{ .start = start.span.start, .end = self.hir.spanOf(body).end }, &.{body});
     }
 
@@ -856,6 +932,8 @@ pub const Parser = struct {
 
         var body: NodeId = hir_mod.none_node_id;
         if (self.peek().kind == .open_brace) {
+            self.function_depth += 1;
+            defer self.function_depth -= 1;
             body = try self.parseBlockStatement();
         } else {
             // Ambient declaration `function foo(...);`.
@@ -1116,6 +1194,7 @@ pub const Parser = struct {
         var name: NodeId = hir_mod.none_node_id;
         if (self.peek().kind == .identifier or self.peek().kind.isContextualKeyword() or self.peek().kind.isPrimitiveTypeKeyword()) {
             const name_tok = self.advance();
+            try self.reportAwaitBindingIfReserved(name_tok);
             if (name_tok.kind.isPrimitiveTypeKeyword() or self.isReservedTypeNameToken(name_tok)) {
                 try self.reportCodeAt(name_tok.span.start, name_tok.line, 2427, "Class name cannot be a reserved type name.");
             }
@@ -1183,6 +1262,8 @@ pub const Parser = struct {
             }
             if (self.peek().kind == .kw_static and self.peekAt(1).kind == .open_brace) {
                 _ = self.advance();
+                self.static_block_depth += 1;
+                defer self.static_block_depth -= 1;
                 _ = try self.parseBlockStatement();
                 continue;
             }
@@ -1771,7 +1852,13 @@ pub const Parser = struct {
         if (self.block_depth == 0 and self.namespace_depth == 0 and self.ambient_depth == 0) {
             self.top_level_external_module_indicator = true;
         }
-        const is_type_only = self.match(.kw_type);
+        var is_type_only = false;
+        if (self.peek().kind == .kw_type) {
+            if (!(self.peekAt(1).kind == .kw_from and self.peekAt(2).kind == .string_literal)) {
+                _ = self.advance();
+                is_type_only = true;
+            }
+        }
         var default_binding: NodeId = hir_mod.none_node_id;
         var namespace_binding: NodeId = hir_mod.none_node_id;
         var named: std.ArrayListUnmanaged(NodeId) = .empty;
@@ -1780,6 +1867,23 @@ pub const Parser = struct {
         if ((self.peek().kind == .identifier or self.peek().kind.isContextualKeyword()) and
             self.peekAt(1).kind == .equal)
         {
+            const alias_tok = self.peek();
+            if (is_type_only and self.peekAt(2).kind != .kw_require) {
+                try self.reportCodeAt(
+                    start.span.start,
+                    start.line,
+                    1392,
+                    "An import alias cannot use 'import type'.",
+                );
+            }
+            if (alias_tok.kind == .kw_await and self.peekAt(2).kind == .kw_require) {
+                try self.reportCodeAt(
+                    alias_tok.span.start,
+                    alias_tok.line,
+                    1262,
+                    "Identifier expected. 'await' is a reserved word at the top-level of a module.",
+                );
+            }
             _ = self.advance(); // local alias
             _ = self.advance(); // =
             try self.consumeImportEqualsTail();
@@ -1806,7 +1910,7 @@ pub const Parser = struct {
         }
 
         // Default binding?
-        if (self.peek().kind == .identifier) {
+        if (self.peek().kind == .identifier or self.peek().kind.isContextualKeyword()) {
             const name_tok = self.advance();
             const id = try self.internToken(name_tok);
             default_binding = try self.builder.addIdentifier(tokenSpan(name_tok), id);
@@ -1857,6 +1961,17 @@ pub const Parser = struct {
                 if (!self.match(.comma)) break;
             }
             _ = try self.expect(.close_brace, "'}' to close named imports");
+        }
+
+        if (is_type_only and default_binding != hir_mod.none_node_id and
+            (namespace_binding != hir_mod.none_node_id or named.items.len != 0))
+        {
+            try self.reportCodeAt(
+                start.span.start,
+                start.line,
+                1363,
+                "A type-only import can specify a default import or named bindings, but not both.",
+            );
         }
 
         _ = try self.expect(.kw_from, "'from' in import declaration");
@@ -2037,6 +2152,8 @@ pub const Parser = struct {
                 .kw_async => blk: {
                     if (self.peekAt(1).kind == .kw_function) {
                         _ = self.advance();
+                        self.async_function_depth += 1;
+                        defer self.async_function_depth -= 1;
                         const fd = try self.parseFunctionDeclaration();
                         self.hir.markFnAsync(fd);
                         break :blk fd;
@@ -2239,6 +2356,23 @@ pub const Parser = struct {
         if (await_using) {
             _ = self.advance(); // `using` token following `await`
         }
+        if (await_using) {
+            const at_top_level = self.block_depth == 0 and self.namespace_depth == 0 and self.ambient_depth == 0;
+            if (self.static_block_depth > 0) {
+                try self.reportCodeAt(start.span.start, start.line, 18054, "'await using' statements cannot be used inside a class static block.");
+            } else if (at_top_level and !self.top_level_external_module_indicator) {
+                try self.reportCodeAt(start.span.start, start.line, 2853, "'await using' statements are only allowed at the top level of a file when that file is a module, but this file has no imports or exports. Consider adding an empty 'export {}' to make this file a module.");
+            } else if (self.function_depth > 0 and self.async_function_depth == 0) {
+                try self.reportCodeAt(start.span.start, start.line, 2852, "'await using' statements are only allowed within async functions and at the top levels of modules.");
+            }
+        }
+        if (self.nested_statement_depth > 0) {
+            const message = if (await_using)
+                "'await using' declarations can only be declared inside a block."
+            else
+                "'using' declarations can only be declared inside a block.";
+            try self.reportCodeAt(start.span.start, start.line, 1156, message);
+        }
         const name_tok = try self.expect(.identifier, "identifier in using declaration");
         const name_id = try self.internToken(name_tok);
         const name_node = try self.builder.addIdentifier(tokenSpan(name_tok), name_id);
@@ -2251,6 +2385,19 @@ pub const Parser = struct {
         var init_node: NodeId = hir_mod.none_node_id;
         if (self.match(.equal)) {
             init_node = try self.parseAssignmentExpression();
+        } else {
+            try self.reportCodeAt(name_tok.span.start, name_tok.line, 1155, "'using' declarations must be initialized.");
+        }
+        while (self.match(.comma)) {
+            const extra_name_tok = try self.expect(.identifier, "identifier in using declaration");
+            if (self.match(.colon)) {
+                _ = try self.parseTypeAnnotation();
+            }
+            if (self.match(.equal)) {
+                _ = try self.parseAssignmentExpression();
+            } else {
+                try self.reportCodeAt(extra_name_tok.span.start, extra_name_tok.line, 1155, "'using' declarations must be initialized.");
+            }
         }
         try self.consumeStatementTerminator();
 
@@ -4836,6 +4983,7 @@ pub const Parser = struct {
                 const next = self.peekAt(1).kind;
                 const after_next = self.peekAt(2).kind;
                 if (next == .asterisk or
+                    next == .open_bracket or
                     ((next == .identifier or next.isContextualKeyword()) and
                         (after_next == .open_paren or after_next == .less_than)))
                 {
@@ -5562,6 +5710,61 @@ test "parser: for-await-of sets is_await flag" {
     try T.expect(p.is_await);
 }
 
+test "parser: using declarations parse in for initializers" {
+    var s = try newTestSetup(
+        \\for (using d1 = { [Symbol.dispose]() {} }, d2 = null;;) {}
+        \\async function main() { for (await using of of []) {} }
+    );
+    defer destroyTestSetup(s);
+
+    _ = try s.parser.parseSourceFile();
+    try T.expectEqual(@as(usize, 0), s.parser.diagnostics.items.len);
+}
+
+test "parser: comma-separated using declarations parse" {
+    var s = try newTestSetup(
+        \\{
+        \\  using d1 = { [Symbol.dispose]() {} }, d2 = null;
+        \\  await using a1 = { async [Symbol.asyncDispose]() {} }, a2 = null;
+        \\}
+        \\export {};
+    );
+    defer destroyTestSetup(s);
+
+    _ = try s.parser.parseSourceFile();
+    try T.expectEqual(@as(usize, 0), s.parser.diagnostics.items.len);
+}
+
+test "parser: using declaration in for-in reports TS1493" {
+    var s = try newTestSetup("for (using x in {}) {} async function main() { for (await using y in {}) {} }");
+    defer destroyTestSetup(s);
+
+    _ = try s.parser.parseSourceFile();
+    try T.expectEqual(@as(usize, 2), s.parser.diagnostics.items.len);
+    try T.expectEqual(@as(u32, 1493), s.parser.diagnostics.items[0].code);
+    try T.expectEqual(@as(u32, 1494), s.parser.diagnostics.items[1].code);
+}
+
+test "parser: using for-of binding pattern reports TS1492" {
+    var s = try newTestSetup("for (using {} of []) {} async function main() { for (await using [] of []) {} }");
+    defer destroyTestSetup(s);
+
+    _ = try s.parser.parseSourceFile();
+    try T.expectEqual(@as(usize, 2), s.parser.diagnostics.items.len);
+    try T.expectEqual(@as(u32, 1492), s.parser.diagnostics.items[0].code);
+    try T.expectEqual(@as(u32, 1492), s.parser.diagnostics.items[1].code);
+}
+
+test "parser: using for header edge diagnostics" {
+    var s = try newTestSetup("for (using of of []) {} for (using of;;) break;");
+    defer destroyTestSetup(s);
+
+    _ = try s.parser.parseSourceFile();
+    try T.expectEqual(@as(usize, 2), s.parser.diagnostics.items.len);
+    try T.expectEqual(@as(u32, 2304), s.parser.diagnostics.items[0].code);
+    try T.expectEqual(@as(u32, 1155), s.parser.diagnostics.items[1].code);
+}
+
 test "parser: break and continue" {
     var s = try newTestSetup("while (x) { break; continue; break label; continue label; }");
     defer destroyTestSetup(s);
@@ -5636,6 +5839,18 @@ test "parser: export and declare modifiers in blocks report TS1184" {
     try T.expectEqual(@as(usize, 2), s.parser.diagnostics.items.len);
     try T.expectEqual(@as(u32, 1184), s.parser.diagnostics.items[0].code);
     try T.expectEqual(@as(u32, 1184), s.parser.diagnostics.items[1].code);
+}
+
+test "parser: export modifier in control-flow body reports TS1184" {
+    var s = try newTestSetup(
+        \\if (true)
+        \\export const cssExports: CssExports;
+    );
+    defer destroyTestSetup(s);
+
+    _ = try s.parser.parseSourceFile();
+    try T.expect(s.parser.diagnostics.items.len >= 1);
+    try T.expectEqual(@as(u32, 1184), s.parser.diagnostics.items[0].code);
 }
 
 test "parser: nested declare in ambient context reports TS1038" {
@@ -6113,6 +6328,49 @@ test "parser: import equals require expects string literal" {
     try T.expectEqual(@as(u32, 1141), s.parser.diagnostics.items[0].code);
 }
 
+test "parser: import type alias reports diagnostic" {
+    var s = try newTestSetup(
+        \\namespace ns { export class Foo {} }
+        \\import type Foo = ns.Foo;
+    );
+    defer destroyTestSetup(s);
+
+    _ = try s.parser.parseSourceFile();
+    try T.expectEqual(@as(usize, 1), s.parser.diagnostics.items.len);
+    try T.expectEqual(@as(u32, 1392), s.parser.diagnostics.items[0].code);
+}
+
+test "parser: type-only default import accepts contextual from binding" {
+    var s = try newTestSetup(
+        \\import type from from "./a";
+    );
+    defer destroyTestSetup(s);
+
+    _ = try s.parser.parseSourceFile();
+    try T.expectEqual(@as(usize, 0), s.parser.diagnostics.items.len);
+}
+
+test "parser: import type before from can be a default binding" {
+    var s = try newTestSetup(
+        \\import type from "./a";
+    );
+    defer destroyTestSetup(s);
+
+    _ = try s.parser.parseSourceFile();
+    try T.expectEqual(@as(usize, 0), s.parser.diagnostics.items.len);
+}
+
+test "parser: type-only import cannot mix default with named bindings" {
+    var s = try newTestSetup(
+        \\import type A, { B, C } from "./a";
+    );
+    defer destroyTestSetup(s);
+
+    _ = try s.parser.parseSourceFile();
+    try T.expectEqual(@as(usize, 1), s.parser.diagnostics.items.len);
+    try T.expectEqual(@as(u32, 1363), s.parser.diagnostics.items[0].code);
+}
+
 test "parser: top-level module await binding reports reserved word" {
     var s = try newTestSetup(
         \\export {};
@@ -6130,6 +6388,29 @@ test "parser: top-level module await binding reports reserved word" {
 test "parser: top-level module await named import reports reserved word" {
     var s = try newTestSetup(
         \\import { await } from "./other";
+    );
+    defer destroyTestSetup(s);
+
+    _ = try s.parser.parseSourceFile();
+    try T.expectEqual(@as(usize, 1), s.parser.diagnostics.items.len);
+    try T.expectEqual(@as(u32, 1262), s.parser.diagnostics.items[0].code);
+}
+
+test "parser: top-level module await import-equals require reports reserved word" {
+    var s = try newTestSetup(
+        \\declare var require: any;
+        \\import await = require("./other");
+    );
+    defer destroyTestSetup(s);
+
+    _ = try s.parser.parseSourceFile();
+    try T.expectEqual(@as(usize, 1), s.parser.diagnostics.items.len);
+    try T.expectEqual(@as(u32, 1262), s.parser.diagnostics.items[0].code);
+}
+
+test "parser: exported class await name reports reserved word" {
+    var s = try newTestSetup(
+        \\export class await {}
     );
     defer destroyTestSetup(s);
 
@@ -6485,6 +6766,21 @@ test "parser: object literal generic method" {
     const op = hir_mod.objectPropertyOf(&s.hir, props[0]);
     try T.expectEqual(hir_mod.NodeKind.fn_expr, s.hir.kindOf(op.value));
     try T.expectEqual(@as(usize, 1), hir_mod.fnTypeParams(&s.hir, op.value).len);
+}
+
+test "parser: object literal async computed method" {
+    var s = try newTestSetup("let o = { async [Symbol.asyncDispose]() {}, value: null };");
+    defer destroyTestSetup(s);
+
+    const root = try s.parser.parseSourceFile();
+    const top = hir_mod.blockStmts(&s.hir, root)[0];
+    const v = hir_mod.varDeclOf(&s.hir, top);
+    const props = hir_mod.objectLiteralProps(&s.hir, v.init);
+    const op = hir_mod.objectPropertyOf(&s.hir, props[0]);
+    try T.expect(op.is_computed);
+    try T.expect(op.is_method);
+    try T.expectEqual(hir_mod.NodeKind.fn_expr, s.hir.kindOf(op.value));
+    try T.expectEqual(@as(usize, 0), s.parser.diagnostics.items.len);
 }
 
 test "parser: object type literal" {
@@ -6892,6 +7188,41 @@ test "parser: `await using x = getR();` parses with is_await_using=true" {
     try T.expectEqual(false, vd.is_using);
     try T.expectEqual(true, vd.is_await_using);
     try T.expect(vd.init != hir_mod.none_node_id);
+}
+
+test "parser: using declaration requires initializer" {
+    var s = try newTestSetup("{ using a; await using b; }");
+    defer destroyTestSetup(s);
+
+    _ = try s.parser.parseSourceFile();
+    try T.expectEqual(@as(usize, 2), s.parser.diagnostics.items.len);
+    try T.expectEqual(@as(u32, 1155), s.parser.diagnostics.items[0].code);
+    try T.expectEqual(@as(u32, 1155), s.parser.diagnostics.items[1].code);
+}
+
+test "parser: using declaration under if requires block" {
+    var s = try newTestSetup("if (x) using a = null; async function f() { if (y) await using b = null; }");
+    defer destroyTestSetup(s);
+
+    _ = try s.parser.parseSourceFile();
+    try T.expectEqual(@as(usize, 2), s.parser.diagnostics.items.len);
+    try T.expectEqual(@as(u32, 1156), s.parser.diagnostics.items[0].code);
+    try T.expectEqual(@as(u32, 1156), s.parser.diagnostics.items[1].code);
+}
+
+test "parser: await using context diagnostics" {
+    var s = try newTestSetup(
+        \\await using top = null;
+        \\function f() { await using inner = null; }
+        \\class C { static { await using stat = null; } }
+    );
+    defer destroyTestSetup(s);
+
+    _ = try s.parser.parseSourceFile();
+    try T.expectEqual(@as(usize, 3), s.parser.diagnostics.items.len);
+    try T.expectEqual(@as(u32, 2853), s.parser.diagnostics.items[0].code);
+    try T.expectEqual(@as(u32, 2852), s.parser.diagnostics.items[1].code);
+    try T.expectEqual(@as(u32, 18054), s.parser.diagnostics.items[2].code);
 }
 
 test "parser: arrow — async" {
