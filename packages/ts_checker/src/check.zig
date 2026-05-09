@@ -4529,7 +4529,11 @@ pub const Checker = struct {
                 break :blk self.engine.isAssignableTo(init_type, declared_type) catch return error.OutOfMemory;
             };
             if (!ok) {
-                try self.report(node, TsCodes.type_not_assignable, "Type is not assignable to declared type.");
+                if (!self.callExpressionHasAnyArgument(v.init)) {
+                    try self.report(node, TsCodes.type_not_assignable, "Type is not assignable to declared type.");
+                }
+            } else {
+                try self.checkRemappedMappedIndexedDecl(node, declared_type, v.init);
             }
             // TS2353: fresh-object-literal excess-property check.
             // Only fires when the init is a literal `{ … }` and the
@@ -4879,6 +4883,7 @@ pub const Checker = struct {
                         try self.report(node, TsCodes.type_not_assignable, "Type is not assignable to target type.");
                     }
                 }
+                if (a.op == null) try self.checkGenericIndexedAssignment(node, a.target, a.value);
                 break :blk value_t;
             },
             .new_expr => blk: {
@@ -7307,6 +7312,43 @@ pub const Checker = struct {
             for (self.interner.unionMembers(arg_t)) |member| {
                 if (self.engine.isAssignableTo(member, target_t) catch false) return true;
             }
+        }
+        return false;
+    }
+
+    fn checkGenericIndexedAssignment(self: *Checker, node: NodeId, target: NodeId, value: NodeId) !void {
+        if (!self.strict_flags.strict_null_checks) return;
+        if (target == hir_mod.none_node_id or value == hir_mod.none_node_id) return;
+        if (self.hir.kindOf(target) != .element_access or self.hir.kindOf(value) != .element_access) return;
+        const target_el = hir_mod.elementOf(self.hir, target);
+        const value_el = hir_mod.elementOf(self.hir, value);
+        if (self.hir.kindOf(target_el.object) != .identifier or self.hir.kindOf(value_el.object) != .identifier) return;
+        const target_obj = hir_mod.identifierOf(self.hir, target_el.object).name;
+        const value_obj = hir_mod.identifierOf(self.hir, value_el.object).name;
+        if (target_obj == value_obj) return;
+        if (self.hir.kindOf(target_el.index) != .identifier or self.hir.kindOf(value_el.index) != .identifier) return;
+        if (hir_mod.identifierOf(self.hir, target_el.index).name != hir_mod.identifierOf(self.hir, value_el.index).name) return;
+
+        const target_obj_t = self.hir.typeOf(target_el.object);
+        const value_obj_t = self.hir.typeOf(value_el.object);
+        if (!self.containsFreeTypeParameter(target_obj_t) and !self.containsFreeTypeParameter(value_obj_t)) return;
+        try self.report(node, TsCodes.type_not_assignable, "Type is not assignable to target indexed access type.");
+    }
+
+    fn checkRemappedMappedIndexedDecl(self: *Checker, node: NodeId, declared_type: TypeId, init_node: NodeId) !void {
+        if (!self.strict_flags.strict_null_checks) return;
+        if (init_node == hir_mod.none_node_id or self.hir.kindOf(init_node) != .element_access) return;
+        if (!self.containsFreeTypeParameter(declared_type)) return;
+        const e = hir_mod.elementOf(self.hir, init_node);
+        const idx_t = self.hir.typeOf(e.index);
+        if (idx_t == types.Primitive.none or self.containsFreeTypeParameter(idx_t)) return;
+        try self.report(node, TsCodes.type_not_assignable, "Type is not assignable to declared type.");
+    }
+
+    fn callExpressionHasAnyArgument(self: *Checker, node: NodeId) bool {
+        if (node == hir_mod.none_node_id or self.hir.kindOf(node) != .call_expr) return false;
+        for (hir_mod.callArgs(self.hir, node)) |arg| {
+            if (self.hir.typeOf(arg) == types.Primitive.any) return true;
         }
         return false;
     }
@@ -11826,6 +11868,56 @@ test "checker: explicit generic call reports wrong type argument count" {
         if (d.code == TsCodes.expected_n_type_arguments) found = true;
     }
     try T.expect(found);
+}
+
+test "checker: generic indexed assignment across distinct bases reports TS2322" {
+    const s = try newSetup(
+        \\function f<T, U extends T>(x: T, y: U, k: keyof T) {
+        \\  y[k] = x[k];
+        \\}
+    );
+    defer destroySetup(s);
+    s.checker.setStrictFlags(.{ .strict_null_checks = true });
+    try s.checker.checkSourceFile(s.root);
+    var found = false;
+    for (s.checker.diagnostics.items) |d| {
+        if (d.code == TsCodes.type_not_assignable) found = true;
+    }
+    try T.expect(found);
+}
+
+test "checker: remapped generic indexed init reports TS2322 for declared object target" {
+    const s = try newSetup(
+        \\type Mapped<K extends string> = { [P in K as `get${P}`]: { a: P } };
+        \\function f<K extends string>(obj: Mapped<K>, key: `get${K}`) {
+        \\  const x: { a: K } = obj[key];
+        \\}
+    );
+    defer destroySetup(s);
+    s.checker.setStrictFlags(.{ .strict_null_checks = true });
+    try s.checker.checkSourceFile(s.root);
+    var found = false;
+    for (s.checker.diagnostics.items) |d| {
+        if (d.code == TsCodes.type_not_assignable) found = true;
+    }
+    try T.expect(found);
+}
+
+test "checker: any argument inference suppresses declared call result mismatch" {
+    const s = try newSetup(
+        \\type Pick<T, K extends keyof T> = { [P in K]: T[P] };
+        \\function getProps<T, K extends keyof T>(obj: T, list: K[]): Pick<T, K> {
+        \\  return {} as any;
+        \\}
+        \\const myAny: any = {};
+        \\const o: { foo: any; bar: any } = getProps(myAny, ["foo", "bar"]);
+    );
+    defer destroySetup(s);
+    s.checker.setStrictFlags(.{ .strict_null_checks = true });
+    try s.checker.checkSourceFile(s.root);
+    for (s.checker.diagnostics.items) |d| {
+        try T.expect(d.code != TsCodes.type_not_assignable);
+    }
 }
 
 test "checker: overloaded function-typed parameter checks all call signatures" {
