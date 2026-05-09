@@ -77,6 +77,8 @@ pub const Parser = struct {
     namespace_depth: u32,
     strict_mode: bool,
     suppress_strict_param_names: bool,
+    top_level_external_module_indicator: bool,
+    in_top_level_module_binding_decl: bool,
     /// True for `.tsx` files. Enables JSX parsing in expression
     /// position; the parser disambiguates `<T>x` (generic type
     /// assertion) vs. `<T>x</T>` (JSX) via the `<T,>` and
@@ -109,6 +111,8 @@ pub const Parser = struct {
             .namespace_depth = 0,
             .strict_mode = false,
             .suppress_strict_param_names = false,
+            .top_level_external_module_indicator = false,
+            .in_top_level_module_binding_decl = false,
             .is_tsx = false,
         };
     }
@@ -234,6 +238,16 @@ pub const Parser = struct {
             .code = code,
             .message = msg,
         });
+    }
+
+    fn reportAwaitBindingIfReserved(self: *Parser, tok: Token) ParseError!void {
+        if (!self.in_top_level_module_binding_decl or tok.kind != .kw_await) return;
+        try self.reportCodeAt(
+            tok.span.start,
+            tok.line,
+            1262,
+            "Identifier expected. 'await' is a reserved word at the top-level of a module.",
+        );
     }
 
     fn span(start_tok: Token, end_tok: Token) Span {
@@ -1035,6 +1049,7 @@ pub const Parser = struct {
                         .string_literal, .number_literal => self.advance(),
                         else => try self.expectIdentifierLike(),
                     };
+                    try self.reportAwaitBindingIfReserved(key_tok);
                     if (self.match(.colon)) {
                         break :blk try self.parseBindingTarget();
                     }
@@ -1081,6 +1096,7 @@ pub const Parser = struct {
             return try self.parseBindingPattern();
         }
         const name_tok = try self.expectIdentifierLike();
+        try self.reportAwaitBindingIfReserved(name_tok);
         const name_id = try self.internToken(name_tok);
         return try self.builder.addIdentifier(tokenSpan(name_tok), name_id);
     }
@@ -1752,19 +1768,21 @@ pub const Parser = struct {
 
     fn parseImportDeclaration(self: *Parser) ParseError!NodeId {
         const start = self.advance(); // import
+        if (self.block_depth == 0 and self.namespace_depth == 0 and self.ambient_depth == 0) {
+            self.top_level_external_module_indicator = true;
+        }
         const is_type_only = self.match(.kw_type);
         var default_binding: NodeId = hir_mod.none_node_id;
         var namespace_binding: NodeId = hir_mod.none_node_id;
         var named: std.ArrayListUnmanaged(NodeId) = .empty;
         defer named.deinit(self.gpa);
 
-        if (!is_type_only and self.peek().kind == .identifier and self.peekAt(1).kind == .equal) {
+        if ((self.peek().kind == .identifier or self.peek().kind.isContextualKeyword()) and
+            self.peekAt(1).kind == .equal)
+        {
             _ = self.advance(); // local alias
             _ = self.advance(); // =
-            while (self.peek().kind != .semicolon and self.peek().kind != .close_brace and self.peek().kind != .eof) {
-                _ = self.advance();
-            }
-            _ = self.match(.semicolon);
+            try self.consumeImportEqualsTail();
             const end_pos = self.tokens[self.cursor - 1].span.end;
             return try self.builder.addBlock(.{ .start = start.span.start, .end = end_pos }, &.{});
         }
@@ -1815,9 +1833,19 @@ pub const Parser = struct {
                     return error.UnexpectedToken;
                 var local_id = try self.internToken(imported_tok);
                 const imported_id = local_id;
+                var has_alias = false;
                 if (self.match(.kw_as)) {
                     const local_tok = try self.expect(.identifier, "local name in 'as' clause");
                     local_id = try self.internToken(local_tok);
+                    has_alias = true;
+                }
+                if (!has_alias and imported_tok.kind == .kw_await and self.top_level_external_module_indicator) {
+                    try self.reportCodeAt(
+                        imported_tok.span.start,
+                        imported_tok.line,
+                        1262,
+                        "Identifier expected. 'await' is a reserved word at the top-level of a module.",
+                    );
                 }
                 const spec = try self.builder.addImportSpecifier(
                     .{ .start = spec_start.span.start, .end = self.tokens[self.cursor - 1].span.end },
@@ -1847,6 +1875,36 @@ pub const Parser = struct {
             named.items,
             is_type_only,
         );
+    }
+
+    fn consumeImportEqualsTail(self: *Parser) ParseError!void {
+        if (self.peek().kind == .kw_require and self.peekAt(1).kind == .open_paren) {
+            const arg = self.peekAt(2);
+            if (arg.kind != .string_literal) {
+                try self.reportCodeAt(arg.span.start, arg.line, 1141, "String literal expected.");
+            }
+        }
+        var depth: i32 = 0;
+        var saw_token = false;
+        while (true) {
+            const t = self.peek();
+            if (t.kind == .eof or t.kind == .semicolon) break;
+            if (depth == 0 and (t.kind == .close_brace or (saw_token and t.flags.preceded_by_newline))) break;
+            switch (t.kind) {
+                .open_paren, .open_brace, .open_bracket => depth += 1,
+                .close_paren, .close_brace, .close_bracket => {
+                    if (depth > 0) {
+                        depth -= 1;
+                    } else {
+                        break;
+                    }
+                },
+                else => {},
+            }
+            _ = self.advance();
+            saw_token = true;
+        }
+        _ = self.match(.semicolon);
     }
 
     /// Optional import-attributes clause appearing after a module
@@ -1896,6 +1954,9 @@ pub const Parser = struct {
 
     fn parseExportDeclaration(self: *Parser) ParseError!NodeId {
         const start = self.advance(); // export
+        if (self.block_depth == 0 and self.namespace_depth == 0 and self.ambient_depth == 0) {
+            self.top_level_external_module_indicator = true;
+        }
         if (self.peek().kind == .kw_export) {
             const dup = self.advance();
             try self.reportCodeAt(dup.span.start, dup.line, 1030, "'export' modifier already seen.");
@@ -1920,7 +1981,7 @@ pub const Parser = struct {
         // assigned expression as an export payload so multi-file fixtures
         // keep their module shape without producing a parser diagnostic.
         if (self.match(.equal)) {
-            if (self.namespace_depth > 0) {
+            if (self.namespace_depth > 0 and self.ambient_depth == 0) {
                 try self.reportCodeAt(start.span.start, start.line, 1203, "Export assignment cannot be used inside a namespace.");
             }
             const expr = try self.parseAssignmentExpression();
@@ -1963,7 +2024,7 @@ pub const Parser = struct {
 
         // export default <expr>;
         if (self.match(.kw_default)) {
-            if (self.namespace_depth > 0) {
+            if (self.namespace_depth > 0 and self.ambient_depth == 0) {
                 try self.reportCodeAt(start.span.start, start.line, 1319, "A default export can only be used in an external module.");
             }
             // `export default` may be followed by a class/function
@@ -2101,6 +2162,10 @@ pub const Parser = struct {
 
     fn parseVarDecl(self: *Parser) ParseError!NodeId {
         const start = self.advance(); // let/const/var
+        const old_in_top_level_module_binding_decl = self.in_top_level_module_binding_decl;
+        self.in_top_level_module_binding_decl = self.top_level_external_module_indicator and
+            self.block_depth == 0 and self.namespace_depth == 0 and self.ambient_depth == 0;
+        defer self.in_top_level_module_binding_decl = old_in_top_level_module_binding_decl;
         const decl_kind: hir_mod.NodeKind = switch (start.kind) {
             .kw_let => .let_decl,
             .kw_const => .const_decl,
@@ -2116,6 +2181,7 @@ pub const Parser = struct {
             break :blk try self.parseBindingPattern();
         } else id_blk: {
             const name_tok = try self.expectIdentifierLike();
+            try self.reportAwaitBindingIfReserved(name_tok);
             const name_id = try self.internToken(name_tok);
             break :id_blk try self.builder.addIdentifier(tokenSpan(name_tok), name_id);
         };
@@ -2138,7 +2204,8 @@ pub const Parser = struct {
             if (self.peek().kind == .open_brace or self.peek().kind == .open_bracket) {
                 _ = try self.parseBindingPattern();
             } else {
-                _ = try self.expectIdentifierLike();
+                const name_tok = try self.expectIdentifierLike();
+                try self.reportAwaitBindingIfReserved(name_tok);
             }
             _ = self.match(.bang);
             if (self.match(.colon)) _ = try self.parseTypeAnnotation();
@@ -5987,6 +6054,88 @@ test "parser: namespace export assignment forms report diagnostics" {
     try T.expectEqual(@as(usize, 2), s.parser.diagnostics.items.len);
     try T.expectEqual(@as(u32, 1203), s.parser.diagnostics.items[0].code);
     try T.expectEqual(@as(u32, 1319), s.parser.diagnostics.items[1].code);
+}
+
+test "parser: ambient external module permits export assignment" {
+    var s = try newTestSetup(
+        \\declare module "ambient" {
+        \\  const x: number;
+        \\  export = x;
+        \\}
+    );
+    defer destroyTestSetup(s);
+
+    _ = try s.parser.parseSourceFile();
+    try T.expectEqual(@as(usize, 0), s.parser.diagnostics.items.len);
+}
+
+test "parser: ambient external module permits default export" {
+    var s = try newTestSetup(
+        \\declare module "ambient" {
+        \\  const x: number;
+        \\  export default x;
+        \\}
+    );
+    defer destroyTestSetup(s);
+
+    _ = try s.parser.parseSourceFile();
+    try T.expectEqual(@as(usize, 0), s.parser.diagnostics.items.len);
+}
+
+test "parser: import equals accepts type/contextual aliases and ASI" {
+    var s = try newTestSetup(
+        \\import type _foo = require("./foo.ts");
+        \\import await = foo.await;
+        \\import foo2 = require("./foo2")
+        \\class C extends foo2.x {}
+    );
+    defer destroyTestSetup(s);
+
+    const root = try s.parser.parseSourceFile();
+    const stmts = hir_mod.blockStmts(&s.hir, root);
+    try T.expectEqual(@as(usize, 4), stmts.len);
+    try T.expectEqual(hir_mod.NodeKind.block_stmt, s.hir.kindOf(stmts[0]));
+    try T.expectEqual(hir_mod.NodeKind.block_stmt, s.hir.kindOf(stmts[1]));
+    try T.expectEqual(hir_mod.NodeKind.block_stmt, s.hir.kindOf(stmts[2]));
+    try T.expectEqual(hir_mod.NodeKind.class_decl, s.hir.kindOf(stmts[3]));
+    try T.expectEqual(@as(usize, 0), s.parser.diagnostics.items.len);
+}
+
+test "parser: import equals require expects string literal" {
+    var s = try newTestSetup(
+        \\var x = "filename";
+        \\import foo = require(x);
+    );
+    defer destroyTestSetup(s);
+
+    _ = try s.parser.parseSourceFile();
+    try T.expectEqual(@as(usize, 1), s.parser.diagnostics.items.len);
+    try T.expectEqual(@as(u32, 1141), s.parser.diagnostics.items[0].code);
+}
+
+test "parser: top-level module await binding reports reserved word" {
+    var s = try newTestSetup(
+        \\export {};
+        \\var await = 1;
+        \\var {await} = {await: 1};
+    );
+    defer destroyTestSetup(s);
+
+    _ = try s.parser.parseSourceFile();
+    try T.expectEqual(@as(usize, 2), s.parser.diagnostics.items.len);
+    try T.expectEqual(@as(u32, 1262), s.parser.diagnostics.items[0].code);
+    try T.expectEqual(@as(u32, 1262), s.parser.diagnostics.items[1].code);
+}
+
+test "parser: top-level module await named import reports reserved word" {
+    var s = try newTestSetup(
+        \\import { await } from "./other";
+    );
+    defer destroyTestSetup(s);
+
+    _ = try s.parser.parseSourceFile();
+    try T.expectEqual(@as(usize, 1), s.parser.diagnostics.items.len);
+    try T.expectEqual(@as(u32, 1262), s.parser.diagnostics.items[0].code);
 }
 
 test "parser: export decl" {

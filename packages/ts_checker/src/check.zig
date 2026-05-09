@@ -77,8 +77,11 @@ pub const TsCodes = struct {
     pub const tuple_index_out_of_bounds: u32 = 2493;
     pub const expected_n_arguments: u32 = 2554;
     pub const expected_n_type_arguments: u32 = 2558;
+    pub const multiple_default_exports: u32 = 2528;
+    pub const export_non_local_declaration: u32 = 2661;
     pub const no_overload_matches: u32 = 2769;
     pub const duplicate_identifier: u32 = 2300;
+    pub const export_assignment_with_other_exports: u32 = 2309;
     pub const namespace_as_value: u32 = 2708;
     pub const namespace_before_merged_function: u32 = 2434;
     pub const generic_type_requires_args: u32 = 2314;
@@ -565,6 +568,8 @@ pub const Checker = struct {
         if (self.source) |src| try self.scanDirectives(src);
         const stmts = hir_mod.blockStmts(self.hir, root);
         try self.checkNamespaceFunctionMergeOrder(stmts);
+        try self.checkMultipleDefaultExports(stmts);
+        try self.checkExportAssignmentExclusivity(stmts);
         // Pre-register top-level type aliases so recursive and mutually
         // recursive references (`type Tree<T> = { children: Tree<T>[] }`,
         // `type A = { b: B }; type B = { a: A }`) resolve to a stub body
@@ -746,6 +751,7 @@ pub const Checker = struct {
                 // "m"`) have no inner decl and are handled later by
                 // cross-file resolution.
                 const ex = hir_mod.exportOf(self.hir, node);
+                try self.checkNamedExportLocals(node, ex);
                 if (ex.decl != hir_mod.none_node_id) {
                     // isolatedModules: `export const enum E { ... }`
                     // can't be transpiled in isolation because
@@ -924,6 +930,88 @@ pub const Checker = struct {
                     }
                 }
                 try self.checkNamespaceFunctionMergeOrder(hir_mod.namespaceBody(self.hir, node));
+            }
+        }
+    }
+
+    fn checkMultipleDefaultExports(self: *Checker, stmts: []const NodeId) CheckError!void {
+        var first_default: NodeId = hir_mod.none_node_id;
+        for (stmts) |stmt| {
+            if (self.hir.kindOf(stmt) != .export_decl) continue;
+            const ex = hir_mod.exportOf(self.hir, stmt);
+            if (!ex.is_default) continue;
+            if (first_default == hir_mod.none_node_id) {
+                first_default = stmt;
+            } else {
+                try self.report(first_default, TsCodes.multiple_default_exports, "A module cannot have multiple default exports.");
+                try self.report(stmt, TsCodes.multiple_default_exports, "A module cannot have multiple default exports.");
+                return;
+            }
+        }
+    }
+
+    fn checkExportAssignmentExclusivity(self: *Checker, stmts: []const NodeId) CheckError!void {
+        var export_assignment: NodeId = hir_mod.none_node_id;
+        var has_other_export = false;
+        for (stmts) |stmt| {
+            if (self.hir.kindOf(stmt) != .export_decl) continue;
+            if (self.isExportAssignmentDecl(stmt)) {
+                export_assignment = stmt;
+            } else {
+                has_other_export = true;
+            }
+        }
+        if (export_assignment != hir_mod.none_node_id and has_other_export) {
+            try self.report(export_assignment, TsCodes.export_assignment_with_other_exports, "An export assignment cannot be used in a module with other exported elements.");
+        }
+    }
+
+    fn isExportAssignmentDecl(self: *Checker, node: NodeId) bool {
+        if (node == hir_mod.none_node_id or self.hir.kindOf(node) != .export_decl) return false;
+        const ex = hir_mod.exportOf(self.hir, node);
+        if (ex.is_default or ex.is_type_only or ex.is_namespace or ex.named_len != 0) return false;
+        if (ex.decl == hir_mod.none_node_id) return false;
+        if (self.string_interner.get(ex.module).len != 0) return false;
+        return switch (self.hir.kindOf(ex.decl)) {
+            .fn_decl,
+            .var_decl,
+            .let_decl,
+            .const_decl,
+            .type_alias_decl,
+            .interface_decl,
+            .class_decl,
+            .enum_decl,
+            .namespace_decl,
+            .module_decl,
+            .import_decl,
+            .export_decl,
+            => false,
+            else => true,
+        };
+    }
+
+    fn checkNamedExportLocals(self: *Checker, node: NodeId, ex: hir_mod.ExportPayload) CheckError!void {
+        if (ex.named_len == 0 or ex.is_namespace) return;
+        if (self.string_interner.get(ex.module).len != 0) return;
+        const module = self.module orelse return;
+        for (hir_mod.exportNamed(self.hir, node)) |spec_node| {
+            const spec = hir_mod.importSpecifierOf(self.hir, spec_node);
+            const local_name = spec.imported;
+            const has_type = module.root.types.get(local_name) != null or module.root.namespaces.get(local_name) != null;
+            const has_value = module.root.values.get(local_name) != null or module.root.namespaces.get(local_name) != null;
+            const is_local = if (spec.is_type_only) has_type else (has_value or has_type);
+            if (!is_local) {
+                const name = self.string_interner.get(local_name);
+                const msg = try std.fmt.allocPrint(
+                    self.diag_arena.allocator(),
+                    "Cannot export '{s}'. Only local declarations can be exported from a module.",
+                    .{name},
+                );
+                try self.diagnostics.append(self.gpa, .{
+                    .node = spec_node,
+                    .code = TsCodes.export_non_local_declaration,
+                    .message = msg,
+                });
             }
         }
     }
@@ -5548,7 +5636,7 @@ pub const Checker = struct {
                 self.typeContainsUnknown(final_type) or
                 (self.engine.isIdenticalTo(prior, final_type) catch true) or
                 ((self.engine.isAssignableTo(prior, final_type) catch true) and
-                (self.engine.isAssignableTo(final_type, prior) catch true));
+                    (self.engine.isAssignableTo(final_type, prior) catch true));
             if (!compatible) {
                 const name = self.string_interner.get(id.name);
                 const msg = try std.fmt.allocPrint(
@@ -7399,45 +7487,44 @@ pub const Checker = struct {
         const s = self.string_interner.get(name);
         const builtins = [_][]const u8{
             // Core globals / values.
-            "console",        "undefined",          "NaN",
-            "Infinity",       "globalThis",         "this",
-            "window",         "document",           "Element",
+            "console",            "undefined",          "NaN",
+            "Infinity",           "globalThis",         "this",
+            "window",             "document",           "Element",
             "Node",
             // Constructors / namespaces.
-                      "Math",
-            "JSON",           "Object",             "Array",
-            "String",         "Number",             "Boolean",
-            "Symbol",         "BigInt",             "Error",
-            "TypeError",      "RangeError",         "SyntaxError",
-            "Promise",        "Map",                "Set",
-            "WeakMap",        "WeakSet",            "Date",
-            "RegExp",         "Function",           "Proxy",
-            "Reflect",
-            "ArrayBuffer",    "Uint8Array",         "Uint8ClampedArray",
-            "Int8Array",      "Uint16Array",        "Int16Array",
-            "Uint32Array",    "Int32Array",         "Float32Array",
-            "Float64Array",   "BigUint64Array",     "BigInt64Array",
+                          "Math",               "JSON",
+            "Object",             "Array",              "String",
+            "Number",             "Boolean",            "Symbol",
+            "BigInt",             "Error",              "TypeError",
+            "RangeError",         "SyntaxError",        "Promise",
+            "Map",                "Set",                "WeakMap",
+            "WeakSet",            "Date",               "RegExp",
+            "Function",           "Proxy",              "Reflect",
+            "ArrayBuffer",        "Uint8Array",         "Uint8ClampedArray",
+            "Int8Array",          "Uint16Array",        "Int16Array",
+            "Uint32Array",        "Int32Array",         "Float32Array",
+            "Float64Array",       "BigUint64Array",     "BigInt64Array",
             // Global functions.
-                   "parseInt",           "parseFloat",
-            "isNaN",          "isFinite",           "encodeURI",
-            "decodeURI",      "encodeURIComponent", "decodeURIComponent",
+            "parseInt",           "parseFloat",         "isNaN",
+            "isFinite",           "encodeURI",          "decodeURI",
+            "encodeURIComponent", "decodeURIComponent",
             // Timers / scheduling.
-            "setTimeout",     "clearTimeout",       "setInterval",
-            "clearInterval",  "setImmediate",       "clearImmediate",
-            "queueMicrotask",
+            "setTimeout",
+            "clearTimeout",       "setInterval",        "clearInterval",
+            "setImmediate",       "clearImmediate",     "queueMicrotask",
             // Node.js / CommonJS.
-            "process",            "Buffer",
-            "require",        "module",             "exports",
-            "__dirname",      "__filename",
+            "process",            "Buffer",             "require",
+            "module",             "exports",            "__dirname",
+            "__filename",
             // Function-scoped magic.
                     "arguments",
             // Dynamic `import("…")` parses the keyword as an
             // identifier callee — exempt it from TS2304.
-            "import",
+                     "import",
             // Common ambient names emitted by the parser for
             // module / class shapes that don't have full
             // resolution wired up yet.
-                    "super",
+            "super",
         };
         for (builtins) |b| {
             if (std.mem.eql(u8, s, b)) return true;
@@ -9626,6 +9713,61 @@ test "checker: console.log does not emit TS2304" {
     try b.base.checker.checkSourceFile(b.base.root);
     for (b.base.checker.diagnostics.items) |d| {
         try T.expect(d.code != TsCodes.cannot_find_name);
+    }
+}
+
+test "checker: export assignment cannot coexist with exported declarations" {
+    const b = try newBoundSetup(
+        \\export enum E { A }
+        \\class C {}
+        \\export = C;
+    );
+    defer destroyBoundSetup(b);
+    try b.base.checker.checkSourceFile(b.base.root);
+    var found = false;
+    for (b.base.checker.diagnostics.items) |d| {
+        if (d.code == TsCodes.export_assignment_with_other_exports) found = true;
+    }
+    try T.expect(found);
+}
+
+test "checker: duplicate default exports report TS2528" {
+    const b = try newBoundSetup(
+        \\export default function f() {}
+        \\export default class C {}
+    );
+    defer destroyBoundSetup(b);
+    try b.base.checker.checkSourceFile(b.base.root);
+    var found = false;
+    for (b.base.checker.diagnostics.items) |d| {
+        if (d.code == TsCodes.multiple_default_exports) found = true;
+    }
+    try T.expect(found);
+}
+
+test "checker: named export requires local declaration" {
+    const b = try newBoundSetup(
+        \\export { string };
+        \\export type { number };
+    );
+    defer destroyBoundSetup(b);
+    try b.base.checker.checkSourceFile(b.base.root);
+    var count: usize = 0;
+    for (b.base.checker.diagnostics.items) |d| {
+        if (d.code == TsCodes.export_non_local_declaration) count += 1;
+    }
+    try T.expectEqual(@as(usize, 2), count);
+}
+
+test "checker: named export alias checks source local name" {
+    const b = try newBoundSetup(
+        \\class C {}
+        \\export { C as C2 };
+    );
+    defer destroyBoundSetup(b);
+    try b.base.checker.checkSourceFile(b.base.root);
+    for (b.base.checker.diagnostics.items) |d| {
+        try T.expect(d.code != TsCodes.export_non_local_declaration);
     }
 }
 
