@@ -4987,6 +4987,28 @@ pub const Checker = struct {
             };
             return self.interner.internObjectType(&members) catch types.Primitive.unknown;
         }
+        if (std.mem.eql(u8, name, "Node")) {
+            const node_t = self.interner.internObjectType(&.{}) catch return types.Primitive.unknown;
+            const sig_remove_child = self.interner.internSignature(&[_]TypeId{node_t}, node_t, false) catch
+                return types.Primitive.unknown;
+            const members = [_]types.ObjectMember{
+                .{
+                    .name = self.string_interner.intern("parentNode") catch return types.Primitive.unknown,
+                    .type = node_t,
+                    .is_optional = true,
+                    .is_readonly = false,
+                    .is_method = false,
+                },
+                .{
+                    .name = self.string_interner.intern("removeChild") catch return types.Primitive.unknown,
+                    .type = sig_remove_child,
+                    .is_optional = false,
+                    .is_readonly = false,
+                    .is_method = true,
+                },
+            };
+            return self.interner.internObjectType(&members) catch types.Primitive.unknown;
+        }
         const builtins = [_][]const u8{
             "Object",
             "RegExp",
@@ -4995,6 +5017,18 @@ pub const Checker = struct {
             "Iterator",
             "AsyncIterator",
             "Iterable",
+            "ArrayBuffer",
+            "Uint8Array",
+            "Uint8ClampedArray",
+            "Int8Array",
+            "Uint16Array",
+            "Int16Array",
+            "Uint32Array",
+            "Int32Array",
+            "Float32Array",
+            "Float64Array",
+            "BigUint64Array",
+            "BigInt64Array",
         };
         for (builtins) |b| {
             if (!std.mem.eql(u8, name, b)) continue;
@@ -6009,7 +6043,7 @@ pub const Checker = struct {
                         break :blk string_idx;
                     }
                     // No matching member and no indexer → TS2339.
-                    if (self.sourceHasCheckJsDirective() and self.isAssignmentTarget(node)) {
+                    if (self.sourceHasCheckJsDirective() and self.isInAssignmentTargetChain(node)) {
                         break :blk types.Primitive.any;
                     }
                     const name_str = self.string_interner.get(m.name);
@@ -7368,6 +7402,7 @@ pub const Checker = struct {
             "console",        "undefined",          "NaN",
             "Infinity",       "globalThis",         "this",
             "window",         "document",           "Element",
+            "Node",
             // Constructors / namespaces.
                       "Math",
             "JSON",           "Object",             "Array",
@@ -7378,6 +7413,10 @@ pub const Checker = struct {
             "WeakMap",        "WeakSet",            "Date",
             "RegExp",         "Function",           "Proxy",
             "Reflect",
+            "ArrayBuffer",    "Uint8Array",         "Uint8ClampedArray",
+            "Int8Array",      "Uint16Array",        "Int16Array",
+            "Uint32Array",    "Int32Array",         "Float32Array",
+            "Float64Array",   "BigUint64Array",     "BigInt64Array",
             // Global functions.
                    "parseInt",           "parseFloat",
             "isNaN",          "isFinite",           "encodeURI",
@@ -8911,6 +8950,26 @@ pub const Checker = struct {
         const parent = self.hir.parentOf(node);
         if (parent == hir_mod.none_node_id or self.hir.kindOf(parent) != .assignment) return false;
         return hir_mod.assignmentOf(self.hir, parent).target == node;
+    }
+
+    fn isInAssignmentTargetChain(self: *Checker, node: NodeId) bool {
+        var current = node;
+        while (true) {
+            if (self.isAssignmentTarget(current)) return true;
+            const parent = self.hir.parentOf(current);
+            if (parent == hir_mod.none_node_id) return false;
+            switch (self.hir.kindOf(parent)) {
+                .member_access => {
+                    if (hir_mod.memberOf(self.hir, parent).object != current) return false;
+                    current = parent;
+                },
+                .element_access => {
+                    if (hir_mod.elementOf(self.hir, parent).object != current) return false;
+                    current = parent;
+                },
+                else => return false,
+            }
+        }
     }
 
     /// True when `type_node` is the synthetic `type_ref` to `const`
@@ -14769,6 +14828,20 @@ test "checker: checkjs expando property assignment target does not report TS2339
         \\// @checkjs: true
         \\var middlewarify = module.exports = {};
         \\middlewarify.Type = { BEFORE: "before" };
+    );
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+    for (s.checker.diagnostics.items) |d| {
+        try T.expect(d.code != TsCodes.property_does_not_exist);
+    }
+}
+
+test "checker: checkjs expando namespace prototype assignment target does not report TS2339" {
+    const s = try newSetup(
+        \\// @checkjs: true
+        \\var Ns = {};
+        \\Ns.Multimap3 = function() {};
+        \\Ns.Multimap3.prototype = { get() {} };
     );
     defer destroySetup(s);
     try s.checker.checkSourceFile(s.root);

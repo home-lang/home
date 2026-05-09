@@ -3797,23 +3797,57 @@ pub const Parser = struct {
     }
 
     /// Lower `a <op>= b` (where <op> is `??`, `||`, or `&&`) into
-    /// `a = a <op> b`. We duplicate the lhs identifier so the
-    /// assignment target and the operator's lhs are independent
-    /// HIR nodes. v0 only handles identifier targets — the common
-    /// `x ??= "default"` pattern. Non-identifier targets fall through
-    /// as `InvalidLeftHandSide`.
+    /// `a = a <op> b`. The target and the operator's lhs need
+    /// independent HIR nodes because parent pointers are single-owner.
     fn parseLogicalAssign(self: *Parser, left: NodeId, op: hir_mod.LogicalOp, allow_in: bool) ParseError!NodeId {
         _ = self.advance();
         const right = try self.parseAssignmentExpressionWithIn(allow_in);
-        if (self.hir.kindOf(left) != .identifier) {
-            return error.InvalidLeftHandSide;
-        }
-        const id_payload = hir_mod.identifierOf(self.hir, left);
+        const left_dup = try self.cloneLogicalAssignmentTarget(left);
         const left_span = self.hir.spanOf(left);
-        const left_dup = try self.builder.addIdentifier(left_span, id_payload.name);
         const op_span: Span = .{ .start = left_span.start, .end = self.hir.spanOf(right).end };
         const logical = try self.builder.addLogicalOp(op_span, op, left_dup, right);
         return try self.builder.addAssignment(op_span, left, logical, null);
+    }
+
+    fn cloneLogicalAssignmentTarget(self: *Parser, node: NodeId) ParseError!NodeId {
+        const sp = self.hir.spanOf(node);
+        return switch (self.hir.kindOf(node)) {
+            .identifier => blk: {
+                const id_payload = hir_mod.identifierOf(self.hir, node);
+                break :blk try self.builder.addIdentifier(sp, id_payload.name);
+            },
+            .member_access => blk: {
+                const m = hir_mod.memberOf(self.hir, node);
+                const obj = try self.cloneLogicalAssignmentTarget(m.object);
+                break :blk try self.builder.addMemberAccess(sp, obj, m.name, m.optional);
+            },
+            .element_access => blk: {
+                const e = hir_mod.elementOf(self.hir, node);
+                const obj = try self.cloneLogicalAssignmentTarget(e.object);
+                const idx = try self.cloneLogicalAssignmentIndex(e.index);
+                break :blk try self.builder.addElementAccess(sp, obj, idx, e.optional);
+            },
+            else => error.InvalidLeftHandSide,
+        };
+    }
+
+    fn cloneLogicalAssignmentIndex(self: *Parser, node: NodeId) ParseError!NodeId {
+        const sp = self.hir.spanOf(node);
+        return switch (self.hir.kindOf(node)) {
+            .identifier => blk: {
+                const id_payload = hir_mod.identifierOf(self.hir, node);
+                break :blk try self.builder.addIdentifier(sp, id_payload.name);
+            },
+            .literal_string => blk: {
+                const id = hir_mod.literalStringOf(self.hir, node).value;
+                break :blk try self.builder.addLiteralString(sp, id);
+            },
+            .literal_number => blk: {
+                const n = hir_mod.literalNumberOf(self.hir, node);
+                break :blk try self.builder.addLiteralNumber(sp, n);
+            },
+            else => error.InvalidLeftHandSide,
+        };
     }
 
     fn parseConditionalExpression(self: *Parser) ParseError!NodeId {
@@ -3947,6 +3981,11 @@ pub const Parser = struct {
                 // Per spec, `await` is only valid inside async fns or
                 // module top-level; we don't enforce that here (the
                 // checker will). The HIR lands as `await_expr`.
+                if (self.ambient_depth > 0) {
+                    _ = self.advance();
+                    const id = try self.internToken(t);
+                    return try self.builder.addIdentifier(tokenSpan(t), id);
+                }
                 if (self.peekAt(1).kind == .semicolon or
                     self.peekAt(1).kind == .close_paren or
                     self.peekAt(1).kind == .close_bracket or
@@ -4331,7 +4370,7 @@ pub const Parser = struct {
                 const id = try self.internToken(t);
                 return try self.builder.addIdentifier(tokenSpan(t), id);
             },
-            .kw_any, .kw_unknown, .kw_never, .kw_void, .kw_string, .kw_number, .kw_boolean, .kw_bigint, .kw_symbol, .kw_object, .kw_get, .kw_set, .kw_global, .kw_require, .kw_module, .kw_namespace, .kw_of => {
+            .kw_any, .kw_unknown, .kw_never, .kw_void, .kw_string, .kw_number, .kw_boolean, .kw_bigint, .kw_symbol, .kw_object, .kw_get, .kw_set, .kw_global, .kw_require, .kw_module, .kw_namespace, .kw_of, .kw_type, .kw_await => {
                 _ = self.advance();
                 const id = try self.internToken(t);
                 return try self.builder.addIdentifier(tokenSpan(t), id);
@@ -4920,6 +4959,7 @@ fn isExpressionIdentifierToken(kind: TokenKind) bool {
         .kw_module,
         .kw_namespace,
         .kw_of,
+        .kw_type,
         => true,
         else => false,
     };
@@ -6965,6 +7005,37 @@ test "parser: contextual primitive keyword can be parameter name and expression"
     const top = hir_mod.blockStmts(&s.hir, root)[0];
     const v = hir_mod.varDeclOf(&s.hir, top);
     try T.expectEqual(hir_mod.NodeKind.arrow_fn, s.hir.kindOf(v.init));
+}
+
+test "parser: contextual type keyword can be an expression identifier" {
+    var s = try newTestSetup(
+        \\function f(type, ctor, exports) {
+        \\    exports["AST_" + type] = ctor;
+        \\}
+    );
+    defer destroyTestSetup(s);
+    const root = try s.parser.parseSourceFile();
+    const stmts = hir_mod.blockStmts(&s.hir, root);
+    try T.expectEqual(@as(usize, 1), stmts.len);
+    try T.expectEqual(@as(usize, 0), s.parser.diagnostics.items.len);
+}
+
+test "parser: nullish prototype method compound assignment parses" {
+    var s = try newTestSetup(
+        \\Element.prototype.remove ??= function () {
+        \\  this.parentNode?.removeChild(this);
+        \\};
+        \\
+        \\/** @this Node */
+        \\Element.prototype.remove ??= function () {
+        \\  this.parentNode?.removeChild(this);
+        \\};
+    );
+    defer destroyTestSetup(s);
+    const root = try s.parser.parseSourceFile();
+    const stmts = hir_mod.blockStmts(&s.hir, root);
+    try T.expectEqual(@as(usize, 2), stmts.len);
+    try T.expectEqual(@as(usize, 0), s.parser.diagnostics.items.len);
 }
 
 test "parser: unique symbol type annotation" {
