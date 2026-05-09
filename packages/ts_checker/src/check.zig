@@ -4797,6 +4797,10 @@ pub const Checker = struct {
             .literal_undefined => types.Primitive.undefined_t,
             .literal_regex => types.Primitive.object_t,
             .identifier => self.typeOfIdentifier(node),
+            .spread => blk: {
+                const sp = hir_mod.spreadOf(self.hir, node);
+                break :blk try self.checkExpression(sp.expression);
+            },
             .binary_op => try self.checkBinop(node),
             .unary_op => try self.checkUnary(node),
             .logical_op => try self.checkLogical(node),
@@ -5995,25 +5999,36 @@ pub const Checker = struct {
                 if (self.hir.kindOf(e) != .parameter) continue;
                 const ep = hir_mod.parameterOf(self.hir, e);
                 if (ep.name == hir_mod.none_node_id) continue;
-                if (self.hir.kindOf(ep.name) != .identifier) continue;
-                const eid = hir_mod.identifierOf(self.hir, ep.name);
-                if (eid.name != target_name) continue;
-                // Found the binding. Look up the property in
-                // `container_t`. The lowered type for `{ a?: T }`
-                // marks the member optional but stores T directly;
-                // union with `undefined` to reflect callers passing
-                // `{}`.
-                var member_t: TypeId = types.Primitive.any;
-                if (self.interner.objectMemberInfo(container_t, eid.name)) |info| {
-                    member_t = info.type;
-                    if (info.is_optional) {
-                        member_t = self.unionWithUndefined(member_t) catch member_t;
+                const name_kind = self.hir.kindOf(ep.name);
+                if (name_kind == .identifier) {
+                    const eid = hir_mod.identifierOf(self.hir, ep.name);
+                    if (eid.name != target_name) continue;
+                    // Found the binding. Look up the property in
+                    // `container_t`. The lowered type for `{ a?: T }`
+                    // marks the member optional but stores T directly;
+                    // union with `undefined` to reflect callers passing
+                    // `{}`.
+                    var member_t: TypeId = types.Primitive.any;
+                    if (self.interner.objectMemberInfo(container_t, eid.name)) |info| {
+                        member_t = info.type;
+                        if (info.is_optional) {
+                            member_t = self.unionWithUndefined(member_t) catch member_t;
+                        }
+                    }
+                    if (ep.default_value != hir_mod.none_node_id) {
+                        member_t = self.subtractType(member_t, types.Primitive.undefined_t) catch member_t;
+                    }
+                    return member_t;
+                }
+                if (name_kind == .object_pattern or name_kind == .array_pattern) {
+                    // Renamed/nested object bindings (`{ x: { ...n } }`)
+                    // currently store only the nested target pattern in HIR.
+                    // Without the original key, use `any` for the nested
+                    // container so introduced names are still in scope.
+                    if (self.typeOfPatternBinding(ep.name, types.Primitive.any, target_name)) |bt| {
+                        return bt;
                     }
                 }
-                if (ep.default_value != hir_mod.none_node_id) {
-                    member_t = self.subtractType(member_t, types.Primitive.undefined_t) catch member_t;
-                }
-                return member_t;
             }
             return null;
         }
@@ -6026,7 +6041,24 @@ pub const Checker = struct {
                 if (self.hir.kindOf(e) != .parameter) continue;
                 const ep = hir_mod.parameterOf(self.hir, e);
                 if (ep.name == hir_mod.none_node_id) continue;
-                if (self.hir.kindOf(ep.name) != .identifier) continue;
+                const name_kind = self.hir.kindOf(ep.name);
+                if (name_kind == .object_pattern or name_kind == .array_pattern) {
+                    var elem_container_t: TypeId = types.Primitive.any;
+                    if (!ep.flags.is_rest and flags.is_tuple) {
+                        const payload = self.interner.pool.tuple_payloads.items[self.interner.pool.payloadOf(container_t)];
+                        const elems = self.interner.pool.tuple_element_pool.items[payload.elements_start .. payload.elements_start + payload.elements_len];
+                        if (idx < elems.len) elem_container_t = elems[idx].type;
+                    }
+                    if (self.typeOfPatternBinding(ep.name, elem_container_t, target_name)) |bt| {
+                        return bt;
+                    }
+                    if (!ep.flags.is_rest) idx += 1;
+                    continue;
+                }
+                if (name_kind != .identifier) {
+                    if (!ep.flags.is_rest) idx += 1;
+                    continue;
+                }
                 const eid = hir_mod.identifierOf(self.hir, ep.name);
                 if (eid.name != target_name) {
                     if (!ep.flags.is_rest) idx += 1;
@@ -6117,6 +6149,17 @@ pub const Checker = struct {
                             if (vid.name == id.name) {
                                 const t = self.hir.typeOf(s);
                                 if (t != types.Primitive.none) return t;
+                            }
+                        } else if (v.name != hir_mod.none_node_id) {
+                            const vk = self.hir.kindOf(v.name);
+                            if (vk == .object_pattern or vk == .array_pattern) {
+                                const container_t = if (self.hir.typeOf(s) != types.Primitive.none)
+                                    self.hir.typeOf(s)
+                                else
+                                    types.Primitive.any;
+                                if (self.typeOfPatternBinding(v.name, container_t, id.name)) |bt| {
+                                    return bt;
+                                }
                             }
                         }
                     } else if (sk == .fn_decl or sk == .fn_expr) {
@@ -12659,6 +12702,36 @@ test "checker: array destructuring with default strips undefined" {
     try s.checker.checkSourceFile(s.root);
     for (s.checker.diagnostics.items) |d| {
         try T.expect(d.code != TsCodes.type_not_assignable);
+    }
+}
+
+test "checker: nested object binding parameter names resolve" {
+    const s = try newSetup(
+        \\function f({ x: { z = 12, ...nested }, ...rest }: any) {
+        \\  nested;
+        \\  rest;
+        \\  z;
+        \\}
+    );
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+    for (s.checker.diagnostics.items) |d| {
+        try T.expect(d.code != TsCodes.cannot_find_name);
+    }
+}
+
+test "checker: nested object binding variable names resolve" {
+    const s = try newSetup(
+        \\declare let value: any;
+        \\const { x: { z = 1, ...nested }, ...rest } = value;
+        \\nested;
+        \\rest;
+        \\z;
+    );
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+    for (s.checker.diagnostics.items) |d| {
+        try T.expect(d.code != TsCodes.cannot_find_name);
     }
 }
 

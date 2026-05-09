@@ -314,6 +314,7 @@ pub fn compileSource(
             .phase = .parse,
             .pos = d.pos,
             .line = d.line,
+            .code = d.code,
             .message = try gpa.dupe(u8, d.message),
         });
         c.has_errors = true;

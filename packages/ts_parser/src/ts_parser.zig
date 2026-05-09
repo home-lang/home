@@ -52,6 +52,9 @@ pub const ParseError = error{
 pub const Diagnostic = struct {
     pos: u32,
     line: u32,
+    /// TypeScript-compatible diagnostic code. 0 means callers should
+    /// fall back to their phase-level parse code.
+    code: u32 = 0,
     message: []const u8,
 };
 
@@ -211,6 +214,16 @@ pub const Parser = struct {
         try self.diagnostics.append(self.gpa, .{
             .pos = self.peek().span.start,
             .line = self.peek().line,
+            .message = msg,
+        });
+    }
+
+    fn reportCodeAt(self: *Parser, pos: u32, line: u32, code: u32, message: []const u8) ParseError!void {
+        const msg = try self.diag_arena.allocator().dupe(u8, message);
+        try self.diagnostics.append(self.gpa, .{
+            .pos = pos,
+            .line = line,
+            .code = code,
             .message = msg,
         });
     }
@@ -764,6 +777,14 @@ pub const Parser = struct {
                 );
                 try params.append(self.gpa, param);
                 if (!self.match(.comma)) break;
+                if (flags.is_rest and self.peek().kind != .close_paren) {
+                    try self.reportCodeAt(
+                        self.hir.spanOf(name_node).start,
+                        param_start.line,
+                        1014,
+                        "A rest parameter must be last in a parameter list.",
+                    );
+                }
                 if (self.peek().kind == .close_paren) break; // trailing comma
             }
         }
@@ -796,20 +817,33 @@ pub const Parser = struct {
                 const elem_start = self.peek();
                 var flags: hir_mod.ParamFlags = .{};
                 if (self.match(.dot_dot_dot)) flags.is_rest = true;
-                const name_tok = try self.expect(.identifier, "binding name");
-                const name_id = try self.internToken(name_tok);
-                const ident = try self.builder.addIdentifier(tokenSpan(name_tok), name_id);
+                const name_node = if (is_object and !flags.is_rest) blk: {
+                    const key_tok = try self.expectIdentifierLike();
+                    if (self.match(.colon)) {
+                        break :blk try self.parseBindingTarget();
+                    }
+                    const name_id = try self.internToken(key_tok);
+                    break :blk try self.builder.addIdentifier(tokenSpan(key_tok), name_id);
+                } else try self.parseBindingTarget();
                 var default_value: NodeId = hir_mod.none_node_id;
                 if (self.match(.equal)) default_value = try self.parseAssignmentExpression();
                 const elem = try self.builder.addParameter(
                     .{ .start = elem_start.span.start, .end = self.tokens[self.cursor - 1].span.end },
-                    ident,
+                    name_node,
                     hir_mod.none_node_id,
                     default_value,
                     flags,
                 );
                 try elements.append(self.gpa, elem);
                 if (!self.match(.comma)) break;
+                if (flags.is_rest and self.peek().kind != close_kind) {
+                    try self.reportCodeAt(
+                        self.hir.spanOf(name_node).start,
+                        elem_start.line,
+                        2462,
+                        "A rest element must be last in a destructuring pattern.",
+                    );
+                }
                 if (self.peek().kind == close_kind) break; // trailing comma
             }
         }
@@ -820,6 +854,15 @@ pub const Parser = struct {
             sp,
             elements.items,
         );
+    }
+
+    fn parseBindingTarget(self: *Parser) ParseError!NodeId {
+        if (self.peek().kind == .open_brace or self.peek().kind == .open_bracket) {
+            return try self.parseBindingPattern();
+        }
+        const name_tok = try self.expectIdentifierLike();
+        const name_id = try self.internToken(name_tok);
+        return try self.builder.addIdentifier(tokenSpan(name_tok), name_id);
     }
 
     fn parseClassDeclaration(self: *Parser) ParseError!NodeId {
@@ -3402,7 +3445,12 @@ pub const Parser = struct {
         errdefer args.deinit(self.gpa);
         if (self.peek().kind != .close_paren) {
             while (true) {
-                const arg = try self.parseAssignmentExpression();
+                const arg = if (self.peek().kind == .dot_dot_dot) blk: {
+                    const dot_tok = self.advance();
+                    const inner = try self.parseAssignmentExpression();
+                    const end = self.tokens[self.cursor - 1].span.end;
+                    break :blk try self.builder.addSpread(.{ .start = dot_tok.span.start, .end = end }, inner);
+                } else try self.parseAssignmentExpression();
                 try args.append(self.gpa, arg);
                 if (!self.match(.comma)) break;
                 if (self.peek().kind == .close_paren) break; // trailing comma
@@ -4555,6 +4603,53 @@ test "parser: function with optional and rest parameters" {
     try T.expect(hir_mod.parameterOf(&s.hir, params[2]).flags.is_rest);
 }
 
+test "parser: object binding pattern supports renames nested patterns and rest" {
+    var s = try newTestSetup("function f({ x: a, y: { z = 1, ...nested }, ...rest }) { return a; }");
+    defer destroyTestSetup(s);
+    const root = try s.parser.parseSourceFile();
+    const top = hir_mod.blockStmts(&s.hir, root)[0];
+    const params = hir_mod.fnParams(&s.hir, top);
+    try T.expectEqual(@as(usize, 1), params.len);
+    const param = hir_mod.parameterOf(&s.hir, params[0]);
+    try T.expectEqual(hir_mod.NodeKind.object_pattern, s.hir.kindOf(param.name));
+    const elems = hir_mod.patternElements(&s.hir, param.name);
+    try T.expectEqual(@as(usize, 3), elems.len);
+    const renamed = hir_mod.parameterOf(&s.hir, elems[0]);
+    try T.expectEqual(hir_mod.NodeKind.identifier, s.hir.kindOf(renamed.name));
+    const nested = hir_mod.parameterOf(&s.hir, elems[1]);
+    try T.expectEqual(hir_mod.NodeKind.object_pattern, s.hir.kindOf(nested.name));
+    const rest = hir_mod.parameterOf(&s.hir, elems[2]);
+    try T.expect(rest.flags.is_rest);
+}
+
+test "parser: array binding pattern supports nested rest target" {
+    var s = try newTestSetup("const [head, ...tail] = items;");
+    defer destroyTestSetup(s);
+    const root = try s.parser.parseSourceFile();
+    const top = hir_mod.blockStmts(&s.hir, root)[0];
+    const decl = hir_mod.varDeclOf(&s.hir, top);
+    try T.expectEqual(hir_mod.NodeKind.array_pattern, s.hir.kindOf(decl.name));
+    const elems = hir_mod.patternElements(&s.hir, decl.name);
+    try T.expectEqual(@as(usize, 2), elems.len);
+    try T.expect(hir_mod.parameterOf(&s.hir, elems[1]).flags.is_rest);
+}
+
+test "parser: rest binding element before another element reports TS2462" {
+    var s = try newTestSetup("const [...rest, tail] = items;");
+    defer destroyTestSetup(s);
+    _ = try s.parser.parseSourceFile();
+    try T.expectEqual(@as(usize, 1), s.parser.diagnostics.items.len);
+    try T.expectEqual(@as(u32, 2462), s.parser.diagnostics.items[0].code);
+}
+
+test "parser: rest parameter before another parameter reports TS1014" {
+    var s = try newTestSetup("function f(...rest, tail) {}");
+    defer destroyTestSetup(s);
+    _ = try s.parser.parseSourceFile();
+    try T.expectEqual(@as(usize, 1), s.parser.diagnostics.items.len);
+    try T.expectEqual(@as(u32, 1014), s.parser.diagnostics.items[0].code);
+}
+
 test "parser: class declaration with method and property" {
     var s = try newTestSetup(
         \\class Foo {
@@ -4811,6 +4906,17 @@ test "parser: array literal" {
     const init_node = hir_mod.varDeclOf(&s.hir, top).init;
     try T.expectEqual(hir_mod.NodeKind.array_literal, s.hir.kindOf(init_node));
     try T.expectEqual(@as(usize, 3), hir_mod.arrayLiteralElements(&s.hir, init_node).len);
+}
+
+test "parser: call expression with spread arguments" {
+    var s = try newTestSetup("f(1, ...xs, 2);");
+    defer destroyTestSetup(s);
+    const root = try s.parser.parseSourceFile();
+    const top = hir_mod.blockStmts(&s.hir, root)[0];
+    try T.expectEqual(hir_mod.NodeKind.call_expr, s.hir.kindOf(top));
+    const args = hir_mod.callArgs(&s.hir, top);
+    try T.expectEqual(@as(usize, 3), args.len);
+    try T.expectEqual(hir_mod.NodeKind.spread, s.hir.kindOf(args[1]));
 }
 
 test "parser: object literal" {
