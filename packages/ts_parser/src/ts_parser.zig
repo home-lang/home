@@ -954,7 +954,7 @@ pub const Parser = struct {
         const start = self.advance(); // class
         if (!is_abstract) span_start = start.span.start;
         var name: NodeId = hir_mod.none_node_id;
-        if (self.peek().kind == .identifier) {
+        if (self.peek().kind == .identifier or self.peek().kind == .kw_abstract) {
             const name_tok = self.advance();
             const name_id = try self.internToken(name_tok);
             name = try self.builder.addIdentifier(tokenSpan(name_tok), name_id);
@@ -3891,8 +3891,9 @@ pub const Parser = struct {
             .kw_class => return try self.parseClassDeclaration(),
             .kw_abstract => {
                 if (self.peekAt(1).kind == .kw_class) return try self.parseClassDeclaration();
-                try self.report("unexpected token in expression: ", @tagName(t.kind));
-                return error.UnexpectedToken;
+                _ = self.advance();
+                const id = try self.internToken(t);
+                return try self.builder.addIdentifier(tokenSpan(t), id);
             },
             .kw_this => {
                 _ = self.advance();
@@ -4252,13 +4253,34 @@ pub const Parser = struct {
             }
 
             if ((self.peek().kind == .kw_get or self.peek().kind == .kw_set) and
-                (self.peekAt(1).kind == .identifier or self.peekAt(1).kind == .private_identifier or self.peekAt(1).kind.isContextualKeyword()) and
-                self.peekAt(2).kind == .open_paren)
+                (((self.peekAt(1).kind == .identifier or
+                    self.peekAt(1).kind == .private_identifier or
+                    self.peekAt(1).kind == .string_literal or
+                    self.peekAt(1).kind == .number_literal or
+                    self.peekAt(1).kind.isContextualKeyword()) and
+                    self.peekAt(2).kind == .open_paren) or
+                    self.peekAt(1).kind == .open_bracket))
             {
                 const accessor_kw = self.advance();
-                const key_tok = self.advance();
-                const key_id = self.interner.intern(self.source[key_tok.span.start..key_tok.span.end]) catch return error.OutOfMemory;
-                const key = try self.builder.addIdentifier(tokenSpan(key_tok), key_id);
+                var is_computed_key = false;
+                const key = if (self.match(.open_bracket)) blk: {
+                    const expr = try self.parseAssignmentExpression();
+                    _ = try self.expect(.close_bracket, "']' to close computed accessor key");
+                    is_computed_key = true;
+                    break :blk expr;
+                } else blk: {
+                    const key_tok = self.advance();
+                    var key_span = tokenSpan(key_tok);
+                    if (key_tok.kind == .number_literal and self.peek().kind == .dot and self.peekAt(1).kind == .open_paren) {
+                        const dot_tok = self.advance();
+                        key_span.end = dot_tok.span.end;
+                    }
+                    const key_id = if (key_tok.kind == .string_literal)
+                        try self.internStringLiteral(key_tok)
+                    else
+                        self.interner.intern(self.source[key_span.start..key_span.end]) catch return error.OutOfMemory;
+                    break :blk try self.builder.addIdentifier(key_span, key_id);
+                };
                 const params = try self.parseParameterList();
                 defer self.gpa.free(params);
                 var body: NodeId = hir_mod.none_node_id;
@@ -4280,7 +4302,7 @@ pub const Parser = struct {
                     .{ .start = prop_start.span.start, .end = self.tokens[self.cursor - 1].span.end },
                     key,
                     value,
-                    false,
+                    is_computed_key,
                     false,
                     true,
                 );
