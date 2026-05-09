@@ -365,6 +365,15 @@ pub const Parser = struct {
                     self.hir.markFnAsync(fd);
                     break :blk fd;
                 }
+                if (self.peekAt(1).kind == .kw_class or
+                    self.peekAt(1).kind == .kw_interface or
+                    self.peekAt(1).kind == .kw_namespace or
+                    self.peekAt(1).kind == .kw_module or
+                    self.peekAt(1).kind == .kw_enum)
+                {
+                    _ = self.advance();
+                    break :blk try self.parseStatement();
+                }
                 break :blk try self.parseExpressionStatement();
             },
             .kw_class => try self.parseClassDeclaration(),
@@ -1721,6 +1730,7 @@ pub const Parser = struct {
             if (self.match(.kw_from)) {
                 const mod_tok = try self.expect(.string_literal, "module specifier");
                 module_id = try self.internStringLiteral(mod_tok);
+                try self.skipImportAttributesClause();
             }
             try self.consumeStatementTerminator();
             const end_pos = self.tokens[self.cursor - 1].span.end;
@@ -1743,6 +1753,7 @@ pub const Parser = struct {
             }
             _ = try self.expect(.kw_from, "'from' after 'export *'");
             const mod_tok = try self.expect(.string_literal, "module specifier");
+            try self.skipImportAttributesClause();
             try self.consumeStatementTerminator();
             const mod_id = try self.internStringLiteral(mod_tok);
             const end_pos = self.tokens[self.cursor - 1].span.end;
@@ -4060,8 +4071,9 @@ pub const Parser = struct {
                     self.hir.markFnAsync(fd);
                     return fd;
                 }
-                try self.report("unexpected token in expression: ", @tagName(t.kind));
-                return error.UnexpectedToken;
+                _ = self.advance();
+                const id = try self.internToken(t);
+                return try self.builder.addIdentifier(tokenSpan(t), id);
             },
             else => {
                 try self.report("unexpected token in expression: ", @tagName(t.kind));
@@ -4469,6 +4481,8 @@ fn isExpressionIdentifierToken(kind: TokenKind) bool {
     return switch (kind) {
         .identifier,
         .private_identifier,
+        .kw_await,
+        .kw_async,
         .kw_any,
         .kw_unknown,
         .kw_never,
@@ -5395,6 +5409,19 @@ test "parser: import attributes assert-clause (legacy)" {
     try T.expectEqual(hir_mod.NodeKind.import_decl, s.hir.kindOf(top));
     const imp = hir_mod.importOf(&s.hir, top);
     try T.expectEqualStrings("./a.json", s.interner.get(imp.module));
+}
+
+test "parser: re-export import attributes" {
+    var s = try newTestSetup(
+        \\export { a as b } from "./m" with { type: "json" };
+        \\export * as default from "./n" with {};
+    );
+    defer destroyTestSetup(s);
+    const root = try s.parser.parseSourceFile();
+    const stmts = hir_mod.blockStmts(&s.hir, root);
+    try T.expectEqual(@as(usize, 2), stmts.len);
+    try T.expectEqual(hir_mod.NodeKind.export_decl, s.hir.kindOf(stmts[0]));
+    try T.expectEqual(hir_mod.NodeKind.export_decl, s.hir.kindOf(stmts[1]));
 }
 
 test "parser: dynamic import with attributes argument" {
