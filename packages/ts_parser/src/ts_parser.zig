@@ -285,7 +285,7 @@ pub const Parser = struct {
             const start = self.peek();
             const dec_expr = try self.parseDecoratorExpression();
             const next = self.peek().kind;
-            if (next != .kw_class and next != .kw_export and next != .kw_abstract and next != .eof) {
+            if (next != .at and next != .kw_class and next != .kw_export and next != .kw_abstract and next != .eof) {
                 try self.report("decorators are not valid here", "");
             }
             const dec = try self.builder.addDecorator(
@@ -408,7 +408,11 @@ pub const Parser = struct {
             },
             .kw_interface => try self.parseInterfaceDeclaration(),
             .kw_enum => try self.parseEnumDeclaration(),
-            .kw_namespace, .kw_module => try self.parseNamespaceDeclaration(),
+            .kw_namespace => try self.parseNamespaceDeclaration(),
+            .kw_module => blk: {
+                if (self.peekAt(1).kind == .dot) break :blk try self.parseExpressionStatement();
+                break :blk try self.parseNamespaceDeclaration();
+            },
             .kw_declare => blk: {
                 // `declare global { ... }` lowers through the
                 // `kw_global` arm below; `declare let x: T` and friends
@@ -441,7 +445,14 @@ pub const Parser = struct {
                 }
                 break :blk try self.parseExpressionStatement();
             },
-            .kw_import => try self.parseImportDeclaration(),
+            .kw_import => blk: {
+                // `import.meta` and dynamic `import(...)` can appear in
+                // expression-statement position; only bare/import-clause
+                // forms are declarations.
+                const next = self.peekAt(1).kind;
+                if (next == .dot or next == .open_paren) break :blk try self.parseExpressionStatement();
+                break :blk try self.parseImportDeclaration();
+            },
             .kw_export => try self.parseExportDeclaration(),
             .kw_type => blk: {
                 // `type X = T;` is a TS type alias. `type` is contextual,
@@ -1065,13 +1076,23 @@ pub const Parser = struct {
             // parsed as a regular method/property named `get`.
             const accessor_kw = self.peek().kind;
             if ((accessor_kw == .kw_get or accessor_kw == .kw_set) and
-                (self.peekAt(1).kind == .identifier or
+                ((self.peekAt(1).kind == .identifier or
                     self.peekAt(1).kind == .private_identifier or
                     self.peekAt(1).kind.isContextualKeyword()) and
-                self.peekAt(2).kind == .open_paren)
+                    self.peekAt(2).kind == .open_paren or
+                    self.peekAt(1).kind == .open_bracket))
             {
                 _ = self.advance(); // consume `get` / `set`
-                const name_tok = self.advance();
+                const name_node = if (self.peek().kind == .open_bracket) blk: {
+                    _ = self.advance();
+                    const key = try self.parseExpression();
+                    _ = try self.expect(.close_bracket, "']' to close computed accessor name");
+                    break :blk key;
+                } else blk: {
+                    const name_tok = self.advance();
+                    const name_id = try self.internToken(name_tok);
+                    break :blk try self.builder.addIdentifier(tokenSpan(name_tok), name_id);
+                };
                 const params = try self.parseParameterList();
                 defer self.gpa.free(params);
                 var return_type: NodeId = hir_mod.none_node_id;
@@ -1082,8 +1103,6 @@ pub const Parser = struct {
                 } else {
                     try self.consumeStatementTerminator();
                 }
-                const name_id = try self.internToken(name_tok);
-                const name_node = try self.builder.addIdentifier(tokenSpan(name_tok), name_id);
                 const fn_node = try self.builder.addFnDecl(
                     .{ .start = member_start.span.start, .end = self.tokens[self.cursor - 1].span.end },
                     name_node,
@@ -1451,7 +1470,13 @@ pub const Parser = struct {
         const name_tok = if (self.peek().kind == .string_literal)
             self.advance()
         else
-            try self.expect(.identifier, "namespace name");
+            try self.expectIdentifierLike();
+        var name_end = name_tok.span.end;
+        while (self.peek().kind == .dot) {
+            _ = self.advance();
+            const part = try self.expectIdentifierLike();
+            name_end = part.span.end;
+        }
         _ = try self.expect(.open_brace, "'{' to open namespace body");
         var body: std.ArrayListUnmanaged(NodeId) = .empty;
         defer body.deinit(self.gpa);
@@ -1459,8 +1484,11 @@ pub const Parser = struct {
             try body.append(self.gpa, try self.parseStatement());
         }
         const close = try self.expect(.close_brace, "'}' to close namespace body");
-        const name_id = try self.internToken(name_tok);
-        const name_node = try self.builder.addIdentifier(tokenSpan(name_tok), name_id);
+        const name_id = if (name_tok.kind == .string_literal)
+            try self.internStringLiteral(name_tok)
+        else
+            self.interner.intern(self.source[name_tok.span.start..name_end]) catch return error.OutOfMemory;
+        const name_node = try self.builder.addIdentifier(.{ .start = name_tok.span.start, .end = name_end }, name_id);
         return try self.builder.addNamespace(
             .{ .start = start.span.start, .end = close.span.end },
             name_node,
@@ -3935,7 +3963,7 @@ pub const Parser = struct {
                 const id = try self.internToken(t);
                 return try self.builder.addIdentifier(tokenSpan(t), id);
             },
-            .kw_any, .kw_unknown, .kw_never, .kw_void, .kw_string, .kw_number, .kw_boolean, .kw_bigint, .kw_symbol, .kw_object, .kw_get, .kw_set => {
+            .kw_any, .kw_unknown, .kw_never, .kw_void, .kw_string, .kw_number, .kw_boolean, .kw_bigint, .kw_symbol, .kw_object, .kw_get, .kw_set, .kw_global, .kw_require, .kw_module => {
                 _ = self.advance();
                 const id = try self.internToken(t);
                 return try self.builder.addIdentifier(tokenSpan(t), id);
@@ -3968,6 +3996,16 @@ pub const Parser = struct {
             },
             .open_bracket => return try self.parseArrayLiteral(),
             .open_brace => return try self.parseObjectLiteral(),
+            .at => {
+                _ = try self.parseDecoratorExpression();
+                if (self.peek().kind == .kw_class or
+                    (self.peek().kind == .kw_abstract and self.peekAt(1).kind == .kw_class))
+                {
+                    return try self.parseClassDeclaration();
+                }
+                try self.report("decorators are not valid here", "");
+                return error.UnexpectedToken;
+            },
             .kw_class => return try self.parseClassDeclaration(),
             .kw_abstract => {
                 if (self.peekAt(1).kind == .kw_class) return try self.parseClassDeclaration();
@@ -4495,6 +4533,9 @@ fn isExpressionIdentifierToken(kind: TokenKind) bool {
         .kw_object,
         .kw_get,
         .kw_set,
+        .kw_global,
+        .kw_require,
+        .kw_module,
         => true,
         else => false,
     };

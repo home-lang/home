@@ -537,7 +537,9 @@ pub const Interner = struct {
     /// no string indexer.
     pub fn objectStringIndex(self: *const Interner, id: TypeId) TypeId {
         if (!self.pool.flagsOf(id).is_object_type) return types.Primitive.none;
-        const payload = self.pool.object_type_payloads.items[self.pool.payloadOf(id)];
+        const payload_idx = self.pool.payloadOf(id);
+        if (payload_idx >= self.pool.object_type_payloads.items.len) return types.Primitive.none;
+        const payload = self.pool.object_type_payloads.items[payload_idx];
         return payload.string_index_type;
     }
 
@@ -545,7 +547,9 @@ pub const Interner = struct {
     /// present.
     pub fn objectNumberIndex(self: *const Interner, id: TypeId) TypeId {
         if (!self.pool.flagsOf(id).is_object_type) return types.Primitive.none;
-        const payload = self.pool.object_type_payloads.items[self.pool.payloadOf(id)];
+        const payload_idx = self.pool.payloadOf(id);
+        if (payload_idx >= self.pool.object_type_payloads.items.len) return types.Primitive.none;
+        const payload = self.pool.object_type_payloads.items[payload_idx];
         return payload.number_index_type;
     }
 
@@ -554,7 +558,9 @@ pub const Interner = struct {
     /// property doesn't exist.
     pub fn objectMember(self: *const Interner, id: TypeId, name: StringId) ?TypeId {
         if (!self.pool.flagsOf(id).is_object_type) return null;
-        const payload = self.pool.object_type_payloads.items[self.pool.payloadOf(id)];
+        const payload_idx = self.pool.payloadOf(id);
+        if (payload_idx >= self.pool.object_type_payloads.items.len) return null;
+        const payload = self.pool.object_type_payloads.items[payload_idx];
         const members = self.pool.object_member_pool.items[payload.members_start .. payload.members_start + payload.members_len];
         for (members) |m| {
             if (m.name == name) return m.type;
@@ -567,7 +573,9 @@ pub const Interner = struct {
     /// property doesn't exist.
     pub fn objectMemberInfo(self: *const Interner, id: TypeId, name: StringId) ?types.ObjectMember {
         if (!self.pool.flagsOf(id).is_object_type) return null;
-        const payload = self.pool.object_type_payloads.items[self.pool.payloadOf(id)];
+        const payload_idx = self.pool.payloadOf(id);
+        if (payload_idx >= self.pool.object_type_payloads.items.len) return null;
+        const payload = self.pool.object_type_payloads.items[payload_idx];
         const members = self.pool.object_member_pool.items[payload.members_start .. payload.members_start + payload.members_len];
         for (members) |m| {
             if (m.name == name) return m;
@@ -579,7 +587,9 @@ pub const Interner = struct {
     /// slice if `id` isn't an object type.
     pub fn objectMembers(self: *const Interner, id: TypeId) []const types.ObjectMember {
         if (!self.pool.flagsOf(id).is_object_type) return &.{};
-        const payload = self.pool.object_type_payloads.items[self.pool.payloadOf(id)];
+        const payload_idx = self.pool.payloadOf(id);
+        if (payload_idx >= self.pool.object_type_payloads.items.len) return &.{};
+        const payload = self.pool.object_type_payloads.items[payload_idx];
         return self.pool.object_member_pool.items[payload.members_start .. payload.members_start + payload.members_len];
     }
 

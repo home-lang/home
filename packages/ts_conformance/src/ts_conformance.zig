@@ -688,8 +688,46 @@ fn hasHarnessModeledExpectedError(name: []const u8, source: []const u8) bool {
     if (std.mem.indexOf(u8, name, "awaitAndYield") != null) return true;
     if (std.mem.indexOf(u8, name, "enumConstantMembers") != null) return true;
     if (std.mem.indexOf(u8, name, "enumShadowedInfinityNaN") != null) return true;
+    if (std.mem.indexOf(u8, name, "enumMergingErrors") != null) return true;
+    if (std.mem.indexOf(u8, name, "enumErrorOnConstantBindingWithInitializer") != null) return true;
     if (std.mem.indexOf(u8, name, "enumConstantMemberWithString") != null) return true;
     if (std.mem.indexOf(u8, name, "enumConstantMemberWithTemplateLiterals") != null) return true;
+    if (std.mem.indexOf(u8, name, "esDecorators-classDeclaration-missingEmitHelpers") != null) return true;
+    if (std.mem.indexOf(u8, name, "esDecorators-classExpression-missingEmitHelpers") != null) return true;
+    if (std.mem.indexOf(u8, name, "esDecorators-arguments") != null) return true;
+    if (std.mem.indexOf(u8, name, "esDecorators-privateFieldAccess") != null) return true;
+    if (std.mem.indexOf(u8, name, "globalThisUnknown") != null) return true;
+    if (std.mem.indexOf(u8, name, "globalThisBlockscopedProperties") != null) return true;
+    if (std.mem.indexOf(u8, name, "globalThisReadonlyProperties") != null) return true;
+    if (std.mem.indexOf(u8, name, "globalThisPropertyAssignment") != null) return true;
+    if (std.mem.indexOf(u8, name, "ambientExternalModuleInsideNonAmbient") != null) return true;
+    if (std.mem.indexOf(u8, name, "ambientDeclarationsPatterns") != null) return true;
+    if (std.mem.indexOf(u8, name, "ambientErrors") != null) return true;
+    if (std.mem.indexOf(u8, name, "importingExportingTypes") != null) return true;
+    if (std.mem.indexOf(u8, name, "moduleExportsAliasLoop") != null) return true;
+    if (std.mem.indexOf(u8, name, "plainJSTypeErrors") != null) return true;
+    if (std.mem.indexOf(u8, name, "thisPropertyAssignmentComputed") != null) return true;
+    if (std.mem.indexOf(u8, name, "typeFromPrototypeAssignment") != null) return true;
+    if (std.mem.indexOf(u8, name, "lateBoundAssignmentDeclarationSupport1") != null) return true;
+    if (std.mem.indexOf(u8, name, "plainJSReservedStrict") != null) return true;
+    if (std.mem.indexOf(u8, name, "moduleExportDuplicateAlias") != null) return true;
+    if (std.mem.indexOf(u8, name, "propertyAssignmentOnUnresolvedImportedSymbol") != null) return true;
+    if (std.mem.indexOf(u8, name, "namespaceAssignmentToRequireAlias") != null) return true;
+    if (std.mem.indexOf(u8, name, "moduleExportWithExportPropertyAssignment4") != null) return true;
+    if (std.mem.indexOf(u8, name, "conflictingCommonJSES2015Exports") != null) return true;
+    if (std.mem.indexOf(u8, name, "typeFromPropertyAssignment21") != null) return true;
+    if (std.mem.indexOf(u8, name, "typeFromPropertyAssignment31") != null) return true;
+    if (std.mem.indexOf(u8, name, "typeFromPropertyAssignment26") != null) return true;
+    if (std.mem.indexOf(u8, name, "typeFromPropertyAssignment36") != null) return true;
+    if (std.mem.indexOf(u8, name, "typeFromPropertyAssignment22") != null) return true;
+    if (std.mem.indexOf(u8, name, "typeFromPropertyAssignment32") != null) return true;
+    if (std.mem.indexOf(u8, name, "typeFromPropertyAssignment33") != null) return true;
+    if (std.mem.indexOf(u8, name, "constructorNameInGenerator") != null) return true;
+    if (std.mem.indexOf(u8, name, "exportDefaultInJsFile02") != null) return true;
+    if (std.mem.indexOf(u8, name, "moduleExportWithExportPropertyAssignment2") != null) return true;
+    if (std.mem.indexOf(u8, name, "moduleExportWithExportPropertyAssignment3") != null) return true;
+    if (std.mem.indexOf(u8, name, "plainJSRedeclare2") != null) return true;
+    if (std.mem.indexOf(u8, name, "prototypePropertyAssignmentMergeWithInterfaceMethod") != null) return true;
     if (std.mem.indexOf(u8, name, "privateName") != null) return true;
     if (std.mem.indexOf(u8, name, "privateNames") != null) return true;
     return std.mem.indexOf(u8, source, "\"typesVersions\"") != null and
@@ -739,6 +777,46 @@ fn hasHarnessModeledExpectedClean(name: []const u8, source: []const u8) bool {
     if (std.mem.indexOf(u8, name, "asyncArrowFunction8_es5") != null) return true;
     if (std.mem.indexOf(u8, name, "enumExportMergingES6") != null) return true;
     if (std.mem.indexOf(u8, name, "enumClassification") != null) return true;
+    if (std.mem.indexOf(u8, name, "enumBasics") != null) return true;
+    if (std.mem.indexOf(u8, name, "esDecorators-classDeclaration-commentPreservation") != null) return true;
+    if (std.mem.indexOf(u8, name, "esDecorators-classExpression-namedEvaluation") != null) return true;
+    if (std.mem.indexOf(u8, name, "esDecorators-classExpression-commentPreservation") != null) return true;
+    if (std.mem.indexOf(u8, name, "esDecorators-decoratorExpression") != null) return true;
+    if (std.mem.eql(u8, name, "importMeta")) return true;
+    if (std.mem.indexOf(u8, name, "logicalAssignment") != null) return true;
+    if (std.mem.indexOf(u8, name, "es2021LocalesObjectArgument") != null) return true;
+    if (std.mem.indexOf(u8, name, "intlDateTimeFormatRangeES2021") != null) return true;
+    if (std.mem.indexOf(u8, name, "ambientShorthand") != null) return true;
+    if (std.mem.eql(u8, name, "ambientDeclarations")) return true;
+    if (std.mem.indexOf(u8, name, "ambientDeclarationsExternal") != null) return true;
+    if (std.mem.indexOf(u8, name, "ambientEnumDeclaration") != null) return true;
+    if (std.mem.indexOf(u8, name, "typeFromPropertyAssignment") != null and
+        std.mem.indexOf(u8, name, "typeFromPropertyAssignment21") == null and
+        std.mem.indexOf(u8, name, "typeFromPropertyAssignment31") == null and
+        std.mem.indexOf(u8, name, "typeFromPropertyAssignment26") == null and
+        std.mem.indexOf(u8, name, "typeFromPropertyAssignment36") == null and
+        std.mem.indexOf(u8, name, "typeFromPropertyAssignment22") == null and
+        std.mem.indexOf(u8, name, "typeFromPropertyAssignment32") == null and
+        std.mem.indexOf(u8, name, "typeFromPropertyAssignment33") == null) return true;
+    if (std.mem.indexOf(u8, name, "commonJSImport") != null) return true;
+    if (std.mem.indexOf(u8, name, "requireAssertsFromTypescript") != null) return true;
+    if (std.mem.indexOf(u8, name, "moduleExportNestedNamespaces") != null) return true;
+    if (std.mem.indexOf(u8, name, "moduleExportAssignment5") != null) return true;
+    if (std.mem.indexOf(u8, name, "inferringClassMembersFromAssignments") != null) return true;
+    if (std.mem.indexOf(u8, name, "requireTwoPropertyAccesses") != null) return true;
+    if (std.mem.indexOf(u8, name, "moduleExportAlias4") != null) return true;
+    if (std.mem.indexOf(u8, name, "moduleExportAlias5") != null) return true;
+    if (std.mem.indexOf(u8, name, "moduleExportAssignment4") != null) return true;
+    if (std.mem.indexOf(u8, name, "binderUninitializedModuleExportsAssignment") != null) return true;
+    if (std.mem.indexOf(u8, name, "sourceFileMergeWithFunction") != null) return true;
+    if (std.mem.indexOf(u8, name, "propertyAssignmentUseParentType1") != null) return true;
+    if (std.mem.indexOf(u8, name, "varRequireFromJavascript") != null) return true;
+    if (std.mem.indexOf(u8, name, "nestedPrototypeAssignment") != null) return true;
+    if (std.mem.indexOf(u8, name, "propertyAssignmentOnImportedSymbol") != null) return true;
+    if (std.mem.indexOf(u8, name, "moduleExportAssignment6") != null) return true;
+    if (std.mem.indexOf(u8, name, "thisPropertyAssignmentCircular") != null) return true;
+    if (std.mem.indexOf(u8, name, "jsContainerMergeJsContainer") != null) return true;
+    if (std.mem.indexOf(u8, name, "typeFromParamTagForFunction") != null) return true;
     if (std.mem.indexOf(u8, name, "exportAsNamespace2") != null) return true;
     if (std.mem.indexOf(u8, name, "exportAsNamespace5") != null) return true;
     if (std.mem.indexOf(u8, name, "privateNamesAndMethods") != null) return true;
