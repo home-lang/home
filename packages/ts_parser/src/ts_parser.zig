@@ -966,6 +966,7 @@ pub const Parser = struct {
             }
             const mods = try self.skipClassModifiers();
             const member_start = self.peek();
+            const is_generator = self.match(.asterisk);
             if (member_start.kind == .open_bracket) {
                 if (try self.tryParseIndexSignature(&members)) continue;
                 try self.skipUntilTypeMemberSeparator();
@@ -1010,6 +1011,7 @@ pub const Parser = struct {
                         .is_private = mods.visibility == .private,
                         .is_protected = mods.visibility == .protected,
                         .is_static = mods.is_static,
+                        .is_async = mods.is_async,
                     },
                 );
                 try members.append(self.gpa, fn_node);
@@ -1018,7 +1020,7 @@ pub const Parser = struct {
             // method?
             if (self.peek().kind == .identifier or self.peek().kind == .private_identifier or self.peek().kind == .kw_constructor or self.peek().kind.isContextualKeyword()) {
                 const name_tok = self.advance();
-                if (self.peek().kind == .open_paren or self.peek().kind == .less_than) {
+                if (is_generator or self.peek().kind == .open_paren or self.peek().kind == .less_than) {
                     var type_params: []NodeId = &.{};
                     var owns_tps = false;
                     if (self.peek().kind == .less_than) {
@@ -1051,6 +1053,8 @@ pub const Parser = struct {
                             .is_private = mods.visibility == .private,
                             .is_protected = mods.visibility == .protected,
                             .is_static = mods.is_static,
+                            .is_async = mods.is_async,
+                            .is_generator = is_generator,
                         },
                     );
                     try members.append(self.gpa, fn_node);
@@ -1103,6 +1107,7 @@ pub const Parser = struct {
     const ClassModifiers = struct {
         visibility: hir_mod.Visibility = .public,
         is_static: bool = false,
+        is_async: bool = false,
     };
 
     fn skipClassModifiers(self: *Parser) ParseError!ClassModifiers {
@@ -1115,6 +1120,7 @@ pub const Parser = struct {
                     .kw_protected => mods.visibility = .protected,
                     .kw_public => mods.visibility = .public,
                     .kw_static => mods.is_static = true,
+                    .kw_async => mods.is_async = true,
                     else => {},
                 }
                 _ = self.advance();
@@ -1402,6 +1408,17 @@ pub const Parser = struct {
             const decl = switch (self.peek().kind) {
                 .kw_class => try self.parseClassDeclaration(),
                 .kw_function => try self.parseFunctionDeclaration(),
+                .kw_async => blk: {
+                    if (self.peekAt(1).kind == .kw_function) {
+                        _ = self.advance();
+                        const fd = try self.parseFunctionDeclaration();
+                        self.hir.markFnAsync(fd);
+                        break :blk fd;
+                    }
+                    const expr = try self.parseAssignmentExpression();
+                    try self.consumeStatementTerminator();
+                    break :blk expr;
+                },
                 .kw_interface => try self.parseInterfaceDeclaration(),
                 else => blk: {
                     const expr = try self.parseAssignmentExpression();
@@ -3681,6 +3698,16 @@ pub const Parser = struct {
                 // will emit `fn_decl` even when used as expression.
                 return try self.parseFunctionDeclaration();
             },
+            .kw_async => {
+                if (self.peekAt(1).kind == .kw_function) {
+                    _ = self.advance();
+                    const fd = try self.parseFunctionDeclaration();
+                    self.hir.markFnAsync(fd);
+                    return fd;
+                }
+                try self.report("unexpected token in expression: ", @tagName(t.kind));
+                return error.UnexpectedToken;
+            },
             else => {
                 try self.report("unexpected token in expression: ", @tagName(t.kind));
                 return error.UnexpectedToken;
@@ -3914,6 +3941,19 @@ pub const Parser = struct {
         defer props.deinit(self.gpa);
         while (self.peek().kind != .close_brace and self.peek().kind != .eof) {
             const prop_start = self.peek();
+            var method_is_async = false;
+            if (self.peek().kind == .kw_async) {
+                const next = self.peekAt(1).kind;
+                const after_next = self.peekAt(2).kind;
+                if (next == .asterisk or
+                    ((next == .identifier or next.isContextualKeyword()) and
+                        (after_next == .open_paren or after_next == .less_than)))
+                {
+                    _ = self.advance();
+                    method_is_async = true;
+                }
+            }
+            const method_is_generator = self.match(.asterisk);
             // Spread element: `...expr`.
             if (self.match(.dot_dot_dot)) {
                 const value = try self.parseAssignmentExpression();
@@ -3949,7 +3989,7 @@ pub const Parser = struct {
             var is_method = false;
             if (self.match(.colon)) {
                 value = try self.parseAssignmentExpression();
-            } else if (self.peek().kind == .less_than or self.peek().kind == .open_paren) {
+            } else if (method_is_generator or self.peek().kind == .less_than or self.peek().kind == .open_paren) {
                 // Method shorthand: `{ foo<T>() {} }`.
                 var type_params: []NodeId = &.{};
                 var owns_tps = false;
@@ -3970,7 +4010,11 @@ pub const Parser = struct {
                     params,
                     hir_mod.none_node_id,
                     body,
-                    .{ .is_method = true },
+                    .{
+                        .is_method = true,
+                        .is_async = method_is_async,
+                        .is_generator = method_is_generator,
+                    },
                 );
                 is_method = true;
             } else {
