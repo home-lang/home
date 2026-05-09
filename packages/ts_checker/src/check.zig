@@ -101,6 +101,9 @@ pub const TsCodes = struct {
     pub const property_not_initialized: u32 = 2564;
     pub const cannot_assign_const: u32 = 2588;
     pub const await_only_in_async: u32 = 1308;
+    pub const generator_void_return: u32 = 2505;
+    pub const yield_star_not_iterable: u32 = 2488;
+    pub const yield_implicit_any: u32 = 7057;
     pub const no_overlap_comparison: u32 = 2367;
     /// Emitted when `// @ts-expect-error` was placed above a line
     /// that produced no diagnostics — the directive is unused.
@@ -1227,10 +1230,14 @@ pub const Checker = struct {
         };
         if (self.hir.kindOf(f.body) == .block_stmt) {
             const stmts = hir_mod.blockStmts(self.hir, f.body);
+            try self.hoistVarBindings(f.body);
             for (stmts) |s| {
                 try self.checkStatement(s);
                 try self.applyAssertionFlow(s);
                 try self.applyLogicalAssignmentFlow(s);
+            }
+            if (f.flags.is_generator and f.return_type == hir_mod.none_node_id) {
+                try self.reportImplicitAnyYieldOperands(f.body);
             }
             try self.checkUsedBeforeAssignment(stmts);
         } else {
@@ -1304,6 +1311,47 @@ pub const Checker = struct {
         }
         try self.checkUnusedParameters(node, f.body);
         try self.checkUnusedLocals(f.body);
+    }
+
+    fn hoistVarBindings(self: *Checker, node: NodeId) CheckError!void {
+        if (node == hir_mod.none_node_id) return;
+        switch (self.hir.kindOf(node)) {
+            .var_decl => {
+                const v = hir_mod.varDeclOf(self.hir, node);
+                if (v.name != hir_mod.none_node_id and self.hir.kindOf(v.name) == .identifier) {
+                    const id = hir_mod.identifierOf(self.hir, v.name);
+                    try self.recordNarrow(id.name, types.Primitive.any);
+                }
+            },
+            .fn_decl, .fn_expr, .arrow_fn, .class_decl, .class_expr => return,
+            .block_stmt => for (hir_mod.blockStmts(self.hir, node)) |s| try self.hoistVarBindings(s),
+            .if_stmt => {
+                const i = hir_mod.ifOf(self.hir, node);
+                try self.hoistVarBindings(i.then_branch);
+                try self.hoistVarBindings(i.else_branch);
+            },
+            .while_stmt => try self.hoistVarBindings(hir_mod.whileOf(self.hir, node).body),
+            .do_while_stmt => try self.hoistVarBindings(hir_mod.doWhileOf(self.hir, node).body),
+            .for_stmt => {
+                const fr = hir_mod.forStmtOf(self.hir, node);
+                try self.hoistVarBindings(fr.init);
+                try self.hoistVarBindings(fr.body);
+            },
+            .for_in_stmt, .for_of_stmt => {
+                const fr = hir_mod.forInOf(self.hir, node);
+                try self.hoistVarBindings(fr.target);
+                try self.hoistVarBindings(fr.body);
+            },
+            .try_stmt => {
+                const ts = hir_mod.tryOf(self.hir, node);
+                try self.hoistVarBindings(ts.block);
+                try self.hoistVarBindings(ts.catch_block);
+                try self.hoistVarBindings(ts.finally_block);
+            },
+            .switch_stmt => for (hir_mod.switchCases(self.hir, node)) |case| try self.hoistVarBindings(case),
+            .switch_case => for (hir_mod.switchCaseStmts(self.hir, node)) |s| try self.hoistVarBindings(s),
+            else => {},
+        }
     }
 
     fn fnBodyHasValueReturn(self: *Checker, node: NodeId) bool {
@@ -2224,6 +2272,112 @@ pub const Checker = struct {
         }
     }
 
+    fn reportImplicitAnyYieldOperands(self: *Checker, node: NodeId) CheckError!void {
+        if (node == hir_mod.none_node_id) return;
+        switch (self.hir.kindOf(node)) {
+            .yield_expr => {
+                const y = hir_mod.yieldExprOf(self.hir, node);
+                if (y.expr != hir_mod.none_node_id) {
+                    if (self.hir.kindOf(y.expr) == .yield_expr) {
+                        const inner = hir_mod.yieldExprOf(self.hir, y.expr);
+                        if (inner.expr == hir_mod.none_node_id) {
+                            try self.report(y.expr, TsCodes.yield_implicit_any, "'yield' expression implicitly results in an 'any' type because its containing generator lacks a return-type annotation.");
+                        }
+                    }
+                    try self.reportImplicitAnyYieldOperands(y.expr);
+                }
+            },
+            .fn_decl, .fn_expr, .arrow_fn => return,
+            .block_stmt => for (hir_mod.blockStmts(self.hir, node)) |s| try self.reportImplicitAnyYieldOperands(s),
+            .if_stmt => {
+                const i = hir_mod.ifOf(self.hir, node);
+                try self.reportImplicitAnyYieldOperands(i.cond);
+                try self.reportImplicitAnyYieldOperands(i.then_branch);
+                try self.reportImplicitAnyYieldOperands(i.else_branch);
+            },
+            .while_stmt => {
+                const w = hir_mod.whileOf(self.hir, node);
+                try self.reportImplicitAnyYieldOperands(w.cond);
+                try self.reportImplicitAnyYieldOperands(w.body);
+            },
+            .do_while_stmt => {
+                const w = hir_mod.doWhileOf(self.hir, node);
+                try self.reportImplicitAnyYieldOperands(w.cond);
+                try self.reportImplicitAnyYieldOperands(w.body);
+            },
+            .for_stmt => {
+                const fr = hir_mod.forStmtOf(self.hir, node);
+                try self.reportImplicitAnyYieldOperands(fr.init);
+                try self.reportImplicitAnyYieldOperands(fr.cond);
+                try self.reportImplicitAnyYieldOperands(fr.update);
+                try self.reportImplicitAnyYieldOperands(fr.body);
+            },
+            .for_in_stmt, .for_of_stmt => {
+                const fr = hir_mod.forInOf(self.hir, node);
+                try self.reportImplicitAnyYieldOperands(fr.target);
+                try self.reportImplicitAnyYieldOperands(fr.source);
+                try self.reportImplicitAnyYieldOperands(fr.body);
+            },
+            .return_stmt => try self.reportImplicitAnyYieldOperands(hir_mod.returnOf(self.hir, node).value),
+            .var_decl, .let_decl, .const_decl => try self.reportImplicitAnyYieldOperands(hir_mod.varDeclOf(self.hir, node).init),
+            .binary_op => {
+                const b = hir_mod.binopOf(self.hir, node);
+                try self.reportImplicitAnyYieldOperands(b.lhs);
+                try self.reportImplicitAnyYieldOperands(b.rhs);
+            },
+            .unary_op => try self.reportImplicitAnyYieldOperands(hir_mod.unaryOf(self.hir, node).operand),
+            .logical_op => {
+                const l = hir_mod.logicalOf(self.hir, node);
+                try self.reportImplicitAnyYieldOperands(l.lhs);
+                try self.reportImplicitAnyYieldOperands(l.rhs);
+            },
+            .conditional => {
+                const c = hir_mod.conditionalOf(self.hir, node);
+                try self.reportImplicitAnyYieldOperands(c.cond);
+                try self.reportImplicitAnyYieldOperands(c.then_branch);
+                try self.reportImplicitAnyYieldOperands(c.else_branch);
+            },
+            .assignment => {
+                const a = hir_mod.assignmentOf(self.hir, node);
+                try self.reportImplicitAnyYieldOperands(a.target);
+                try self.reportImplicitAnyYieldOperands(a.value);
+            },
+            .call_expr, .new_expr => {
+                const c = hir_mod.callOf(self.hir, node);
+                try self.reportImplicitAnyYieldOperands(c.callee);
+                for (hir_mod.callArgs(self.hir, node)) |arg| try self.reportImplicitAnyYieldOperands(arg);
+            },
+            .member_access => try self.reportImplicitAnyYieldOperands(hir_mod.memberOf(self.hir, node).object),
+            .element_access => {
+                const e = hir_mod.elementOf(self.hir, node);
+                try self.reportImplicitAnyYieldOperands(e.object);
+                try self.reportImplicitAnyYieldOperands(e.index);
+            },
+            .as_expr, .satisfies_expr, .type_assertion => try self.reportImplicitAnyYieldOperands(hir_mod.asExpressionOf(self.hir, node).expr),
+            .throw_stmt => try self.reportImplicitAnyYieldOperands(hir_mod.throwOf(self.hir, node).value),
+            .try_stmt => {
+                const ts = hir_mod.tryOf(self.hir, node);
+                try self.reportImplicitAnyYieldOperands(ts.block);
+                try self.reportImplicitAnyYieldOperands(ts.catch_block);
+                try self.reportImplicitAnyYieldOperands(ts.finally_block);
+            },
+            .switch_stmt => {
+                const sw = hir_mod.switchOf(self.hir, node);
+                try self.reportImplicitAnyYieldOperands(sw.discriminant);
+                for (hir_mod.switchCases(self.hir, node)) |case| try self.reportImplicitAnyYieldOperands(case);
+            },
+            .switch_case => for (hir_mod.switchCaseStmts(self.hir, node)) |s| try self.reportImplicitAnyYieldOperands(s),
+            .array_literal => for (hir_mod.arrayLiteralElements(self.hir, node)) |el| try self.reportImplicitAnyYieldOperands(el),
+            .object_literal => for (hir_mod.objectLiteralProps(self.hir, node)) |p| try self.reportImplicitAnyYieldOperands(p),
+            .object_property => {
+                const op = hir_mod.objectPropertyOf(self.hir, node);
+                try self.reportImplicitAnyYieldOperands(op.value);
+                if (op.is_computed) try self.reportImplicitAnyYieldOperands(op.key);
+            },
+            else => {},
+        }
+    }
+
     /// Build a v0 `Generator<T, void, unknown>` shape for generator
     /// return-type inference. The synthesized object exposes:
     ///   - `next(): { value: T | undefined, done: boolean }`
@@ -2265,6 +2419,59 @@ pub const Checker = struct {
             types.Primitive.none,
             yield_t,
         ) catch return error.OutOfMemory;
+    }
+
+    fn generatorReturnAnnotationDefinitelyInvalid(self: *Checker, ret_t: TypeId) bool {
+        _ = self;
+        return ret_t == types.Primitive.number_t or
+            ret_t == types.Primitive.string_t or
+            ret_t == types.Primitive.boolean_t or
+            ret_t == types.Primitive.bigint_t or
+            ret_t == types.Primitive.symbol_t or
+            ret_t == types.Primitive.null_t or
+            ret_t == types.Primitive.undefined_t or
+            ret_t == types.Primitive.never;
+    }
+
+    fn generatorReturnAnnotationRequiresMissingGeneratorMembers(self: *Checker, ret_t: TypeId) bool {
+        if (ret_t >= self.interner.pool.typeCount()) return false;
+        if (!self.interner.pool.flagsOf(ret_t).is_object_type) return false;
+        for (self.interner.objectMembers(ret_t)) |member| {
+            if (member.is_optional) continue;
+            const name = self.string_interner.get(member.name);
+            if (std.mem.eql(u8, name, "next") or
+                std.mem.eql(u8, name, "return") or
+                std.mem.eql(u8, name, "throw"))
+            {
+                continue;
+            }
+            return true;
+        }
+        return false;
+    }
+
+    fn isIterableLikeType(self: *Checker, t: TypeId) bool {
+        if (t == types.Primitive.any or t == types.Primitive.unknown) return true;
+        if (t >= self.interner.pool.typeCount()) return false;
+        if (!self.interner.pool.flagsOf(t).is_object_type) return false;
+        return self.interner.objectNumberIndex(t) != types.Primitive.none;
+    }
+
+    fn objectLiteralHasSymbolIteratorMethod(self: *Checker, node: NodeId) bool {
+        if (node == hir_mod.none_node_id or self.hir.kindOf(node) != .object_literal) return false;
+        for (hir_mod.objectLiteralProps(self.hir, node)) |prop| {
+            if (self.hir.kindOf(prop) != .object_property) continue;
+            const op = hir_mod.objectPropertyOf(self.hir, prop);
+            if (!op.is_method or !op.is_computed) continue;
+            if (self.hir.kindOf(op.key) != .member_access) continue;
+            const m = hir_mod.memberOf(self.hir, op.key);
+            if (self.hir.kindOf(m.object) != .identifier) continue;
+            const obj = hir_mod.identifierOf(self.hir, m.object);
+            if (!std.mem.eql(u8, self.string_interner.get(obj.name), "Symbol")) continue;
+            if (!std.mem.eql(u8, self.string_interner.get(m.name), "iterator")) continue;
+            return true;
+        }
+        return false;
     }
 
     /// Walk a type's structural body in search of the given type
@@ -2500,6 +2707,15 @@ pub const Checker = struct {
             (if (is_predicate) types.Primitive.boolean_t else try self.lowererLowerWithTypeParams(f.return_type))
         else
             types.Primitive.any;
+        if (f.flags.is_generator and f.return_type != hir_mod.none_node_id) {
+            if (ret_t == types.Primitive.void_t) {
+                try self.report(f.return_type, TsCodes.generator_void_return, "A generator cannot have a 'void' type annotation.");
+            } else if (self.generatorReturnAnnotationDefinitelyInvalid(ret_t) or
+                self.generatorReturnAnnotationRequiresMissingGeneratorMembers(ret_t))
+            {
+                try self.report(f.return_type, TsCodes.type_not_assignable, "Generator return type is not assignable to the declared return type.");
+            }
+        }
 
         const sig = self.interner.internSignature(param_types.items, ret_t, false) catch return error.OutOfMemory;
         self.hir.setType(node, sig);
@@ -6407,6 +6623,12 @@ pub const Checker = struct {
                 const y = hir_mod.yieldExprOf(self.hir, node);
                 if (y.expr == hir_mod.none_node_id) break :blk types.Primitive.undefined_t;
                 const inner_t = try self.checkExpression(y.expr);
+                if (y.type_node != hir_mod.none_node_id and
+                    !self.isIterableLikeType(inner_t) and
+                    !self.objectLiteralHasSymbolIteratorMethod(y.expr))
+                {
+                    try self.report(y.expr, TsCodes.yield_star_not_iterable, "Type must have a '[Symbol.iterator]()' method that returns an iterator.");
+                }
                 break :blk inner_t;
             },
             else => types.Primitive.any,
@@ -13283,6 +13505,88 @@ test "checker: for-of over a generator call binds element to yield type" {
     defer destroySetup(s);
     try s.checker.checkSourceFile(s.root);
     try T.expect(s.checker.diagnostics.items.len == 0);
+}
+
+test "checker: invalid generator return annotations report diagnostics" {
+    const s = try newSetup(
+        \\function* g1(): number { }
+        \\function* g2(): void { }
+        \\interface Weird { hello: string; }
+        \\function* g3(): Weird { }
+    );
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+    var found_2322: u32 = 0;
+    var found_2505 = false;
+    for (s.checker.diagnostics.items) |d| {
+        if (d.code == TsCodes.type_not_assignable) found_2322 += 1;
+        if (d.code == TsCodes.generator_void_return) found_2505 = true;
+    }
+    try T.expect(found_2322 >= 2);
+    try T.expect(found_2505);
+}
+
+test "checker: delegated yield requires an iterable operand" {
+    const s = try newSetup("function* foo() { yield* foo; }");
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+    var found = false;
+    for (s.checker.diagnostics.items) |d| {
+        if (d.code == TsCodes.yield_star_not_iterable) found = true;
+    }
+    try T.expect(found);
+}
+
+test "checker: delegated yield accepts object literal Symbol iterator" {
+    const s = try newSetup(
+        \\function* g() {
+        \\  yield * {
+        \\    *[Symbol.iterator]() {
+        \\      yield 1;
+        \\    }
+        \\  };
+        \\}
+    );
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+    for (s.checker.diagnostics.items) |d| {
+        try T.expect(d.code != TsCodes.yield_star_not_iterable);
+    }
+}
+
+test "checker: nested yield without generator return annotation reports implicit any" {
+    const s = try newSetup("function* g() { yield yield; }");
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+    var found = false;
+    for (s.checker.diagnostics.items) |d| {
+        if (d.code == TsCodes.yield_implicit_any) found = true;
+    }
+    try T.expect(found);
+}
+
+test "checker: nested yield with typed operand avoids implicit any diagnostic" {
+    const s = try newSetup("function* g() { yield yield 0; }");
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+    for (s.checker.diagnostics.items) |d| {
+        try T.expect(d.code != TsCodes.yield_implicit_any);
+    }
+}
+
+test "checker: var bindings are hoisted within function bodies" {
+    const s = try newSetup(
+        \\declare function use(x: any): void;
+        \\function f() {
+        \\  use(i);
+        \\  var i = 1;
+        \\}
+    );
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+    for (s.checker.diagnostics.items) |d| {
+        try T.expect(d.code != TsCodes.cannot_find_name);
+    }
 }
 
 test "checker: x === string-literal narrows to literal type" {

@@ -79,6 +79,7 @@ pub const Parser = struct {
     unbraced_statement_block_depth: ?u32,
     function_depth: u32,
     async_function_depth: u32,
+    generator_depth: u32,
     static_block_depth: u32,
     loop_depth: u32,
     loop_switch_depth: u32,
@@ -121,6 +122,7 @@ pub const Parser = struct {
             .unbraced_statement_block_depth = null,
             .function_depth = 0,
             .async_function_depth = 0,
+            .generator_depth = 0,
             .static_block_depth = 0,
             .loop_depth = 0,
             .loop_switch_depth = 0,
@@ -1026,10 +1028,20 @@ pub const Parser = struct {
         if (self.peek().kind == .open_brace) {
             self.function_depth += 1;
             defer self.function_depth -= 1;
+            const prev_generator_depth = self.generator_depth;
+            self.generator_depth = if (is_generator) prev_generator_depth + 1 else 0;
+            defer self.generator_depth = prev_generator_depth;
             body = try self.parseBlockStatement();
         } else {
             // Ambient declaration `function foo(...);`.
             try self.consumeStatementTerminator();
+            if (is_generator) {
+                if (self.ambient_depth > 0) {
+                    try self.reportCodeAt(start.span.start, start.line, 1221, "Generators are not allowed in an ambient context.");
+                } else {
+                    try self.reportCodeAt(start.span.start, start.line, 1222, "An overload signature cannot be declared as a generator.");
+                }
+            }
         }
         const end_pos: u32 = if (body != hir_mod.none_node_id)
             self.hir.spanOf(body).end
@@ -1336,6 +1348,9 @@ pub const Parser = struct {
         }
 
         _ = try self.expect(.open_brace, "'{' to open class body");
+        const class_body_generator_depth = self.generator_depth;
+        self.generator_depth = 0;
+        defer self.generator_depth = class_body_generator_depth;
         var members: std.ArrayListUnmanaged(NodeId) = .empty;
         defer members.deinit(self.gpa);
         while (self.peek().kind != .close_brace and self.peek().kind != .eof) {
@@ -1345,7 +1360,11 @@ pub const Parser = struct {
             // decorator nodes.
             while (self.peek().kind == .at) {
                 const dec_tok = self.advance();
-                const dec_expr = try self.parseClassMemberDecoratorExpression();
+                const dec_expr = blk: {
+                    self.generator_depth = class_body_generator_depth;
+                    defer self.generator_depth = 0;
+                    break :blk try self.parseClassMemberDecoratorExpression();
+                };
                 const dec_node = try self.builder.addDecorator(.{
                     .start = dec_tok.span.start,
                     .end = self.hir.spanOf(dec_expr).end,
@@ -1368,7 +1387,11 @@ pub const Parser = struct {
             }
             while (self.peek().kind == .at) {
                 const dec_tok = self.advance();
-                const dec_expr = try self.parseClassMemberDecoratorExpression();
+                const dec_expr = blk: {
+                    self.generator_depth = class_body_generator_depth;
+                    defer self.generator_depth = 0;
+                    break :blk try self.parseClassMemberDecoratorExpression();
+                };
                 const dec_node = try self.builder.addDecorator(.{
                     .start = dec_tok.span.start,
                     .end = self.hir.spanOf(dec_expr).end,
@@ -1392,7 +1415,7 @@ pub const Parser = struct {
                     }
                     continue;
                 }
-                const member = try self.parseComputedClassMember(member_start, mods, is_generator);
+                const member = try self.parseComputedClassMember(member_start, mods, is_generator, class_body_generator_depth);
                 try members.append(self.gpa, member);
                 continue;
             }
@@ -1458,6 +1481,7 @@ pub const Parser = struct {
                 self.peek().kind == .string_literal or
                 self.peek().kind == .number_literal or
                 self.peek().kind == .kw_constructor or
+                self.peek().kind == .kw_interface or
                 isAccessibilityModifier(self.peek().kind) or
                 self.peek().kind.isContextualKeyword())
             {
@@ -1483,10 +1507,18 @@ pub const Parser = struct {
                     if (self.match(.colon)) return_type = try self.parseReturnTypeAnnotation(params);
                     var body: NodeId = hir_mod.none_node_id;
                     if (self.peek().kind == .open_brace) {
+                        const prev_generator_depth = self.generator_depth;
+                        self.generator_depth = if (is_generator) prev_generator_depth + 1 else 0;
+                        defer self.generator_depth = prev_generator_depth;
                         body = try self.parseBlockStatement();
                         try self.reportAmbientClassImplementation(member_start);
                     } else {
                         try self.consumeStatementTerminator();
+                        if (is_generator and self.ambient_depth > 0) {
+                            try self.reportCodeAt(member_start.span.start, member_start.line, 1221, "Generators are not allowed in an ambient context.");
+                        } else if (is_generator) {
+                            try self.reportCodeAt(member_start.span.start, member_start.line, 1222, "An overload signature cannot be declared as a generator.");
+                        }
                         if (!self.nextClassMemberNameMatches(name_tok)) {
                             try self.reportMissingClassMemberImplementation(member_start, mods);
                         }
@@ -1645,6 +1677,7 @@ pub const Parser = struct {
             kind == .string_literal or
             kind == .number_literal or
             kind == .kw_constructor or
+            kind == .kw_interface or
             kind == .open_bracket or
             kind.isContextualKeyword();
     }
@@ -1662,6 +1695,7 @@ pub const Parser = struct {
     fn nextClassMemberNameMatches(self: *const Parser, current: Token) bool {
         var idx = self.cursor;
         while (idx < self.tokens.len and self.tokens[idx].kind.isModifierKeyword()) : (idx += 1) {}
+        if (idx < self.tokens.len and self.tokens[idx].kind == .asterisk) idx += 1;
         if (idx >= self.tokens.len) return false;
         const next = self.tokens[idx];
         return self.classMemberNameTextMatches(current, next);
@@ -1699,9 +1733,15 @@ pub const Parser = struct {
         member_start: Token,
         mods: ClassModifiers,
         is_generator: bool,
+        key_generator_depth: u32,
     ) ParseError!NodeId {
         _ = try self.expect(.open_bracket, "'[' to start computed class member");
-        const key = try self.parseExpression();
+        const key = blk: {
+            const prev_generator_depth = self.generator_depth;
+            self.generator_depth = key_generator_depth;
+            defer self.generator_depth = prev_generator_depth;
+            break :blk try self.parseExpression();
+        };
         _ = try self.expect(.close_bracket, "']' to close computed class member name");
 
         var value: NodeId = hir_mod.none_node_id;
@@ -1721,6 +1761,9 @@ pub const Parser = struct {
             if (self.match(.colon)) return_type = try self.parseReturnTypeAnnotation(params);
             var body: NodeId = hir_mod.none_node_id;
             if (self.peek().kind == .open_brace) {
+                const prev_generator_depth = self.generator_depth;
+                self.generator_depth = if (is_generator) prev_generator_depth + 1 else 0;
+                defer self.generator_depth = prev_generator_depth;
                 body = try self.parseBlockStatement();
                 try self.reportAmbientClassImplementation(member_start);
             } else {
@@ -3737,6 +3780,13 @@ pub const Parser = struct {
                 hir_mod.none_node_id,
                 .{},
             );
+            self.function_depth += 1;
+            const prev_generator_depth = self.generator_depth;
+            self.generator_depth = 0;
+            defer {
+                self.generator_depth = prev_generator_depth;
+                self.function_depth -= 1;
+            }
             const body = try self.parseArrowBody();
             const sp: Span = .{ .start = start_tok.span.start, .end = self.hir.spanOf(body).end };
             return try self.builder.addFnDecl(
@@ -3842,6 +3892,13 @@ pub const Parser = struct {
             return_type = try self.parseReturnTypeAnnotation(params);
         }
         _ = try self.expect(.arrow, "'=>' in arrow function");
+        self.function_depth += 1;
+        const prev_generator_depth = self.generator_depth;
+        self.generator_depth = 0;
+        defer {
+            self.generator_depth = prev_generator_depth;
+            self.function_depth -= 1;
+        }
         const body = try self.parseArrowBody();
         const sp: Span = .{ .start = start_tok.span.start, .end = self.hir.spanOf(body).end };
         const flags: hir_mod.FnFlags = .{
@@ -4332,6 +4389,33 @@ pub const Parser = struct {
                 return try self.builder.addAwaitExpr(sp, operand);
             },
             .kw_yield => {
+                if (self.generator_depth == 0) {
+                    _ = self.advance();
+                    if (self.function_depth > 0) {
+                        try self.reportCodeAt(t.span.start, t.line, 1163, "A 'yield' expression is only allowed in a generator body.");
+                        const is_delegated = self.match(.asterisk);
+                        if (self.peek().kind == .semicolon or
+                            self.peek().flags.preceded_by_newline or
+                            self.peek().kind == .close_paren or
+                            self.peek().kind == .close_bracket or
+                            self.peek().kind == .close_brace or
+                            self.peek().kind == .comma or
+                            self.peek().kind == .eof)
+                        {
+                            return try self.builder.addYieldExpr(tokenSpan(t), hir_mod.none_node_id, is_delegated);
+                        }
+                        const operand = try self.parseAssignmentExpression();
+                        const sp: Span = .{ .start = t.span.start, .end = self.hir.spanOf(operand).end };
+                        return try self.builder.addYieldExpr(sp, operand, is_delegated);
+                    }
+                    const id = try self.internToken(t);
+                    const ident = try self.builder.addIdentifier(tokenSpan(t), id);
+                    if (self.match(.asterisk)) {
+                        const err_pos = if (self.cursor > 0) self.tokens[self.cursor - 1].span.end else t.span.end;
+                        try self.reportCodeAt(err_pos, t.line, 1109, "Expression expected.");
+                    }
+                    return ident;
+                }
                 // `yield` / `yield expr` / `yield* expr`.
                 _ = self.advance();
                 const is_delegated = self.match(.asterisk);
@@ -4339,15 +4423,20 @@ pub const Parser = struct {
                 // statement position; we accept any expression that
                 // a unary parser would.
                 if (self.peek().kind == .semicolon or
+                    self.peek().flags.preceded_by_newline or
                     self.peek().kind == .close_paren or
                     self.peek().kind == .close_bracket or
                     self.peek().kind == .close_brace or
                     self.peek().kind == .comma or
                     self.peek().kind == .eof)
                 {
+                    if (is_delegated) {
+                        const err_pos = if (self.cursor > 0) self.tokens[self.cursor - 1].span.end else t.span.end;
+                        try self.reportCodeAt(err_pos, t.line, 1109, "Expression expected.");
+                    }
                     return try self.builder.addYieldExpr(tokenSpan(t), hir_mod.none_node_id, is_delegated);
                 }
-                const operand = try self.parseUnaryExpression();
+                const operand = try self.parseAssignmentExpression();
                 const sp: Span = .{ .start = t.span.start, .end = self.hir.spanOf(operand).end };
                 return try self.builder.addYieldExpr(sp, operand, is_delegated);
             },
@@ -5226,7 +5315,12 @@ pub const Parser = struct {
                 defer self.gpa.free(params);
                 if (self.match(.colon)) try self.skipTypeAnnotation();
                 var body: NodeId = hir_mod.none_node_id;
-                if (self.peek().kind == .open_brace) body = try self.parseBlockStatement();
+                if (self.peek().kind == .open_brace) {
+                    const prev_generator_depth = self.generator_depth;
+                    self.generator_depth = if (method_is_generator) prev_generator_depth + 1 else 0;
+                    defer self.generator_depth = prev_generator_depth;
+                    body = try self.parseBlockStatement();
+                }
                 value = try self.builder.addFnDeclGeneric(
                     .{ .start = prop_start.span.start, .end = self.tokens[self.cursor - 1].span.end },
                     hir_mod.none_node_id,
@@ -7882,6 +7976,110 @@ test "parser: yield can be a generator function expression name" {
 
     _ = try s.parser.parseSourceFile();
     try T.expectEqual(@as(usize, 0), s.parser.diagnostics.items.len);
+}
+
+test "parser: yield operand can be an arrow expression" {
+    var s = try newTestSetup("function* g() { yield x => x.length; }");
+    defer destroyTestSetup(s);
+
+    _ = try s.parser.parseSourceFile();
+    try T.expectEqual(@as(usize, 0), s.parser.diagnostics.items.len);
+}
+
+test "parser: generator overload diagnostics match declaration context" {
+    var s = try newTestSetup(
+        \\namespace M {
+        \\  function* f(s: string): Iterable<any>;
+        \\  function* f(s: any): Iterable<any> { }
+        \\}
+        \\class C {
+        \\  f(s: string): Iterable<any>;
+        \\  *f(s: any): Iterable<any> { }
+        \\}
+        \\declare class D {
+        \\  *g(): any;
+        \\}
+        \\class E {
+        \\  *h(): Iterable<any>;
+        \\  *h(): Iterable<any> { }
+        \\}
+    );
+    defer destroyTestSetup(s);
+
+    _ = try s.parser.parseSourceFile();
+    try T.expectEqual(@as(usize, 3), s.parser.diagnostics.items.len);
+    try T.expectEqual(@as(u32, 1222), s.parser.diagnostics.items[0].code);
+    try T.expectEqual(@as(u32, 1221), s.parser.diagnostics.items[1].code);
+    try T.expectEqual(@as(u32, 1222), s.parser.diagnostics.items[2].code);
+}
+
+test "parser: top-level yield star reports missing expression" {
+    var s = try newTestSetup("yield *;");
+    defer destroyTestSetup(s);
+
+    _ = try s.parser.parseSourceFile();
+    try T.expectEqual(@as(usize, 1), s.parser.diagnostics.items.len);
+    try T.expectEqual(@as(u32, 1109), s.parser.diagnostics.items[0].code);
+}
+
+test "parser: delegated yield requires an operand" {
+    var s = try newTestSetup("function* g() { yield *; }");
+    defer destroyTestSetup(s);
+
+    _ = try s.parser.parseSourceFile();
+    try T.expectEqual(@as(usize, 1), s.parser.diagnostics.items.len);
+    try T.expectEqual(@as(u32, 1109), s.parser.diagnostics.items[0].code);
+}
+
+test "parser: interface can be a class method name" {
+    var s = try newTestSetup(
+        \\class B {
+        \\  interface() { }
+        \\  static "hi" = 1;
+        \\}
+    );
+    defer destroyTestSetup(s);
+
+    _ = try s.parser.parseSourceFile();
+    try T.expectEqual(@as(usize, 0), s.parser.diagnostics.items.len);
+}
+
+test "parser: yield is rejected in nested non-generator bodies" {
+    var s = try newTestSetup(
+        \\function* g() {
+        \\  function nested() { yield 1; }
+        \\  return () => ({ x: yield 2 });
+        \\  class C { x = yield 3; static y = yield 4; }
+        \\  class D { @(yield 5) m() {} }
+        \\}
+    );
+    defer destroyTestSetup(s);
+
+    _ = try s.parser.parseSourceFile();
+    try T.expectEqual(@as(usize, 4), s.parser.diagnostics.items.len);
+    for (s.parser.diagnostics.items) |d| {
+        try T.expectEqual(@as(u32, 1163), d.code);
+    }
+}
+
+test "parser: newline after bare yield terminates the operand" {
+    var s = try newTestSetup(
+        \\function* g() {
+        \\  yield
+        \\  yield
+        \\}
+    );
+    defer destroyTestSetup(s);
+
+    const root = try s.parser.parseSourceFile();
+    try T.expectEqual(@as(usize, 0), s.parser.diagnostics.items.len);
+    const stmts = hir_mod.blockStmts(&s.hir, root);
+    const fn_body = hir_mod.fnDeclOf(&s.hir, stmts[0]).body;
+    const body_stmts = hir_mod.blockStmts(&s.hir, fn_body);
+    try T.expectEqual(@as(usize, 2), body_stmts.len);
+    try T.expectEqual(hir_mod.NodeKind.yield_expr, s.hir.kindOf(body_stmts[0]));
+    try T.expectEqual(hir_mod.NodeKind.yield_expr, s.hir.kindOf(body_stmts[1]));
+    try T.expectEqual(hir_mod.none_node_id, hir_mod.yieldExprOf(&s.hir, body_stmts[0]).expr);
 }
 
 test "parser: newline after namespace forces expression statement" {
