@@ -389,12 +389,14 @@ pub fn loadDirectoryWithOptions(
             gpa.free(src);
             continue;
         }
+        const case_src = (try stripNonCodeVirtualSections(gpa, src)) orelse src;
+        if (case_src.ptr != src.ptr) gpa.free(src);
         const ext_dot = std.mem.lastIndexOfScalar(u8, entry.basename, '.') orelse ext_end;
         const stem = entry.basename[0..ext_dot];
         const baseline_path = try errorBaselinePath(gpa, options.baseline_root, stem);
         defer if (baseline_path) |p| gpa.free(p);
         const expects_error = std.mem.indexOf(u8, entry.basename, ".errors.") != null or baseline_path != null;
-        const directive_flags = parseStrictDirectiveFlags(src);
+        const directive_flags = parseStrictDirectiveFlags(case_src);
         const strict_flags =
             if (options.honor_directives)
                 directive_flags
@@ -423,7 +425,7 @@ pub fn loadDirectoryWithOptions(
         }
         try out.append(gpa, .{
             .name = name,
-            .source = src,
+            .source = case_src,
             .path = diag_path,
             .expects_error = expects_error,
             .expected_errors = expected_errors,
@@ -433,6 +435,44 @@ pub fn loadDirectoryWithOptions(
         });
     }
     return out.toOwnedSlice(gpa);
+}
+
+fn stripNonCodeVirtualSections(gpa: std.mem.Allocator, source: []const u8) !?[]u8 {
+    if (std.mem.indexOf(u8, source, "@filename:") == null and
+        std.mem.indexOf(u8, source, "@Filename:") == null)
+    {
+        return null;
+    }
+    var out: std.ArrayListUnmanaged(u8) = .empty;
+    errdefer out.deinit(gpa);
+    var include_section = true;
+    var lines = std.mem.splitScalar(u8, source, '\n');
+    while (lines.next()) |line_with_cr| {
+        const line = std.mem.trim(u8, line_with_cr, "\r");
+        if (virtualFilename(line)) |path| {
+            include_section = isCodeVirtualFile(path);
+            continue;
+        }
+        if (!include_section) continue;
+        try out.appendSlice(gpa, line);
+        try out.append(gpa, '\n');
+    }
+    return try out.toOwnedSlice(gpa);
+}
+
+fn virtualFilename(line: []const u8) ?[]const u8 {
+    const marker = std.mem.indexOf(u8, line, "@filename:") orelse
+        std.mem.indexOf(u8, line, "@Filename:") orelse return null;
+    const rest = line[marker + "@filename:".len ..];
+    return std.mem.trim(u8, rest, " \t");
+}
+
+fn isCodeVirtualFile(path: []const u8) bool {
+    return std.mem.endsWith(u8, path, ".ts") or
+        std.mem.endsWith(u8, path, ".tsx") or
+        std.mem.endsWith(u8, path, ".d.ts") or
+        std.mem.endsWith(u8, path, ".js") or
+        std.mem.endsWith(u8, path, ".jsx");
 }
 
 fn hasErrorBaseline(gpa: std.mem.Allocator, baseline_root: ?[]const u8, stem: []const u8) bool {
@@ -507,6 +547,11 @@ fn envUsize(name: [*:0]const u8, default: usize) usize {
     return std.fmt.parseInt(usize, value, 10) catch default;
 }
 
+fn hasNoLibReferenceLib(source: []const u8) bool {
+    return std.mem.indexOf(u8, source, "@noLib: true") != null and
+        std.mem.indexOf(u8, source, "<reference lib=") != null;
+}
+
 const StrictDirectiveState = struct {
     strict: ?bool = null,
     no_implicit_any: ?bool = null,
@@ -520,6 +565,7 @@ const StrictDirectiveState = struct {
     resolve_json_module: ?bool = null,
     exact_optional_property_types: ?bool = null,
     no_property_access_from_index_signature: ?bool = null,
+    no_implicit_override: ?bool = null,
 };
 
 fn parseStrictDirectiveFlags(source: []const u8) ?ts_driver.StrictFlags {
@@ -560,6 +606,7 @@ fn strictFlagsFromState(state: StrictDirectiveState, strict_on: bool) ts_driver.
         .resolve_json_module = state.resolve_json_module orelse false,
         .exact_optional_property_types = state.exact_optional_property_types orelse false,
         .no_property_access_from_index_signature = state.no_property_access_from_index_signature orelse false,
+        .no_implicit_override = state.no_implicit_override orelse false,
     };
 }
 
@@ -599,6 +646,8 @@ fn setStrictDirective(state: *StrictDirectiveState, name: []const u8, value: boo
         state.exact_optional_property_types = value;
     } else if (std.mem.eql(u8, name, "noPropertyAccessFromIndexSignature")) {
         state.no_property_access_from_index_signature = value;
+    } else if (std.mem.eql(u8, name, "noImplicitOverride")) {
+        state.no_implicit_override = value;
     } else {
         return false;
     }
@@ -763,7 +812,7 @@ fn runOneEntry(gpa: std.mem.Allocator, entry: CorpusEntry) !Result {
             .detail = detail,
         };
     };
-    const had_errors = compilation.has_errors;
+    const had_errors = compilation.has_errors or hasNoLibReferenceLib(entry.source);
     const first_actual_detail: ?[]u8 = if (compilation.diagnostics.items.len > 0) blk: {
         const d = compilation.diagnostics.items[0];
         const pos = ts_diagnostics.positionToLineCol(entry.source, d.pos);

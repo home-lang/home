@@ -222,6 +222,9 @@ pub const TypeParameterPayload = struct {
     default: TypeId,
     /// Declaration-site variance (`in` / `out` modifiers).
     variance: Variance = .bivariant,
+    /// TS 5.0 `const` type-parameter modifier. Const parameters use
+    /// literal-preserving inference instead of normal widening.
+    is_const: bool = false,
 };
 
 pub const SignatureParameter = struct {

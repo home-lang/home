@@ -517,7 +517,9 @@ pub const FnFlags = packed struct(u16) {
     is_protected: bool = false,
     /// TS/JS `static` class method modifier.
     is_static: bool = false,
-    _pad: u6 = 0,
+    /// TS 4.3 `override` modifier on a class method.
+    is_override: bool = false,
+    _pad: u5 = 0,
 };
 
 pub const ParameterPayload = struct {
@@ -539,7 +541,12 @@ pub const ParamFlags = packed struct(u8) {
     is_optional: bool = false,
     is_rest: bool = false,
     is_readonly: bool = false,
-    _pad: u5 = 0,
+    /// True when the constructor parameter declares an instance
+    /// property via `public` / `protected` / `private` / `readonly`.
+    is_parameter_property: bool = false,
+    /// TS 4.3 `override` modifier on a constructor parameter property.
+    is_override: bool = false,
+    _pad: u3 = 0,
 };
 
 pub const TypeAliasPayload = struct {
@@ -680,6 +687,8 @@ pub const ObjectPropertyPayload = struct {
     /// props. Class field/method parsing sets it from the modifier
     /// keyword consumed before the name.
     visibility: Visibility = .public,
+    /// TS 4.3 `override` modifier on a class field/accessor property.
+    is_override: bool = false,
 };
 
 // ============================================================================
@@ -990,6 +999,7 @@ pub const InterfaceMemberPayload = struct {
     is_optional: bool,
     is_readonly: bool,
     is_method: bool,
+    is_override: bool = false,
 };
 
 /// `{ x: number; y: string }` — anonymous object type. Members
@@ -2137,10 +2147,11 @@ pub const Builder = struct {
             type_annotation,
             is_computed,
             is_shorthand,
-            is_method,
-            false,
-            .public,
-        );
+        is_method,
+        false,
+        .public,
+        false,
+    );
     }
 
     /// Variant of `addObjectPropertyTyped` that also records TS
@@ -2157,6 +2168,7 @@ pub const Builder = struct {
         is_method: bool,
         is_static: bool,
         visibility: Visibility,
+        is_override: bool,
     ) !NodeId {
         const payload_idx: u32 = @intCast(self.hir.object_property_payloads.items.len);
         try self.hir.object_property_payloads.append(self.hir.gpa, .{
@@ -2168,6 +2180,7 @@ pub const Builder = struct {
             .is_method = is_method,
             .is_static = is_static,
             .visibility = visibility,
+            .is_override = is_override,
         });
         const id = try self.newNode(.object_property, span, payload_idx);
         self.hir.setParent(key, id);
@@ -2677,6 +2690,7 @@ pub const Builder = struct {
         is_optional: bool,
         is_readonly: bool,
         is_method: bool,
+        is_override: bool,
     ) !NodeId {
         const payload_idx: u32 = @intCast(self.hir.interface_member_payloads.items.len);
         try self.hir.interface_member_payloads.append(self.hir.gpa, .{
@@ -2685,6 +2699,7 @@ pub const Builder = struct {
             .is_optional = is_optional,
             .is_readonly = is_readonly,
             .is_method = is_method,
+            .is_override = is_override,
         });
         const id = try self.newNode(.interface_member, span, payload_idx);
         if (type_node != none_node_id) self.hir.setParent(type_node, id);

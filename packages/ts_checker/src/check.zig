@@ -116,6 +116,14 @@ pub const TsCodes = struct {
     /// property `foo`). Use `obj["foo"]` to make the unsafe access
     /// explicit.
     pub const index_signature_property_access: u32 = 4111;
+    /// `override` was used but the base class has no matching member.
+    pub const override_not_in_base: u32 = 4113;
+    /// `noImplicitOverride`: a class member overrides a base member
+    /// but lacks the `override` modifier.
+    pub const missing_override: u32 = 4114;
+    /// `noImplicitOverride`: a constructor parameter property
+    /// overrides a base member but lacks the `override` modifier.
+    pub const missing_parameter_property_override: u32 = 4115;
     /// TS legacy `private` modifier violation. Emitted when a
     /// member declared `private` is accessed from outside the
     /// declaring class body.
@@ -241,6 +249,9 @@ pub const StrictFlags = struct {
     /// form `obj["foo"]` must be used instead — surfacing that the
     /// key may or may not exist on the type. Emits TS4111.
     no_property_access_from_index_signature: bool = false,
+    /// `noImplicitOverride`. When true, class members that override
+    /// base-class members must carry the `override` modifier.
+    no_implicit_override: bool = false,
 };
 
 pub const Checker = struct {
@@ -595,11 +606,12 @@ pub const Checker = struct {
             const tpp = hir_mod.typeParameterOf(self.hir, tp);
             // Use minimal constraint/default during pre-registration —
             // the real entry from `checkTypeAliasDecl` overwrites this.
-            const tp_id = self.interner.internFreshTypeParameterWithVariance(
+            const tp_id = self.interner.internFreshTypeParameterWithFlags(
                 tpp.name,
                 types.Primitive.unknown,
                 types.Primitive.none,
                 types.Variance.fromHirBits(tpp.variance),
+                tpp.is_const,
             ) catch return error.OutOfMemory;
             try param_ids.append(self.gpa, tp_id);
         }
@@ -1086,7 +1098,11 @@ pub const Checker = struct {
             // no annotation was provided.
             const expr_t = try self.checkExpression(f.body);
             if (f.return_type == hir_mod.none_node_id) {
-                try self.refineSignatureReturn(node, expr_t);
+                const inferred_t = if (f.flags.is_async)
+                    try self.buildStructuralPromise(expr_t)
+                else
+                    expr_t;
+                try self.refineSignatureReturn(node, inferred_t);
                 // TS 5.5 inferred type predicate.
                 try self.tryInferTypePredicate(node, f.body);
             }
@@ -1126,7 +1142,11 @@ pub const Checker = struct {
                     ret_types.items[0]
                 else
                     self.interner.internUnion(ret_types.items) catch return error.OutOfMemory;
-                try self.refineSignatureReturn(node, inferred);
+                const inferred_t = if (f.flags.is_async)
+                    try self.buildStructuralPromise(inferred)
+                else
+                    inferred;
+                try self.refineSignatureReturn(node, inferred_t);
                 // TS 5.5 inferred type predicate: only when the body is
                 // exactly one `return <narrowing>;` statement.
                 const body_stmts = hir_mod.blockStmts(self.hir, f.body);
@@ -2206,11 +2226,12 @@ pub const Checker = struct {
                 try self.lowererLowerWithTypeParams(tpp.default)
             else
                 types.Primitive.none;
-            const tp_id = self.interner.internFreshTypeParameterWithVariance(
+            const tp_id = self.interner.internFreshTypeParameterWithFlags(
                 tpp.name,
                 constraint,
                 def,
                 types.Variance.fromHirBits(tpp.variance),
+                tpp.is_const,
             ) catch return error.OutOfMemory;
             self.hir.setType(tp, tp_id);
             try self.recordNarrow(tpp.name, tp_id);
@@ -2377,11 +2398,12 @@ pub const Checker = struct {
                 try self.lowererLowerWithTypeParams(tpp.default)
             else
                 types.Primitive.none;
-            const tp_id = self.interner.internFreshTypeParameterWithVariance(
+            const tp_id = self.interner.internFreshTypeParameterWithFlags(
                 tpp.name,
                 constraint,
                 def,
                 types.Variance.fromHirBits(tpp.variance),
+                tpp.is_const,
             ) catch return error.OutOfMemory;
             self.hir.setType(tp, tp_id);
             try self.recordNarrow(tpp.name, tp_id);
@@ -2392,6 +2414,10 @@ pub const Checker = struct {
         // annotations only (no method body walks). Methods need the
         // instance type registered in `class_instance_types` BEFORE
         // their bodies are typed so `this` resolves.
+        const parent_instance_t: ?TypeId = if (c.extends != hir_mod.none_node_id)
+            try self.classExtendsInstanceType(c.extends)
+        else
+            null;
         var instance_members: std.ArrayListUnmanaged(types.ObjectMember) = .empty;
         defer instance_members.deinit(self.gpa);
         var ctor_sig: TypeId = types.Primitive.none;
@@ -2455,10 +2481,19 @@ pub const Checker = struct {
                     const fn_p = hir_mod.fnDeclOf(self.hir, m);
                     if (fn_p.flags.is_constructor) {
                         ctor_sig = sig;
+                        const ctor_params = hir_mod.fnParams(self.hir, m);
+                        for (ctor_params) |param_node| {
+                            const pp = hir_mod.parameterOf(self.hir, param_node);
+                            if (!pp.flags.is_parameter_property and !pp.flags.is_override) continue;
+                            if (pp.name == hir_mod.none_node_id or self.hir.kindOf(pp.name) != .identifier) continue;
+                            const pid = hir_mod.identifierOf(self.hir, pp.name);
+                            try self.checkOverrideModifier(param_node, parent_instance_t, pid.name, pp.flags.is_override, true);
+                        }
                         continue;
                     }
                     if (fn_p.name == hir_mod.none_node_id or self.hir.kindOf(fn_p.name) != .identifier) continue;
                     const id = hir_mod.identifierOf(self.hir, fn_p.name);
+                    try self.checkOverrideModifier(m, parent_instance_t, id.name, fn_p.flags.is_override, false);
                     if (fn_p.flags.is_private) try private_names.put(self.gpa, id.name, {});
                     if (fn_p.flags.is_protected) try protected_names.put(self.gpa, id.name, {});
 
@@ -2518,6 +2553,7 @@ pub const Checker = struct {
                     const op = hir_mod.objectPropertyOf(self.hir, m);
                     if (self.hir.kindOf(op.key) != .identifier) continue;
                     const id = hir_mod.identifierOf(self.hir, op.key);
+                    try self.checkOverrideModifier(m, parent_instance_t, id.name, op.is_override, false);
                     if (op.visibility == .private) try private_names.put(self.gpa, id.name, {});
                     if (op.visibility == .protected) try protected_names.put(self.gpa, id.name, {});
                     // Class fields count as concrete implementations
@@ -2890,6 +2926,32 @@ pub const Checker = struct {
         });
     }
 
+    fn baseClassHasMember(self: *Checker, parent_t: ?TypeId, name: hir_mod.StringId) bool {
+        const pt = parent_t orelse return false;
+        if (pt >= self.interner.pool.typeCount()) return false;
+        if (!self.interner.pool.flagsOf(pt).is_object_type) return false;
+        return self.interner.objectMember(pt, name) != null;
+    }
+
+    fn checkOverrideModifier(
+        self: *Checker,
+        node: NodeId,
+        parent_t: ?TypeId,
+        name: hir_mod.StringId,
+        has_override: bool,
+        is_parameter_property: bool,
+    ) CheckError!void {
+        const has_base = self.baseClassHasMember(parent_t, name);
+        if (has_override and !has_base) {
+            try self.report(node, TsCodes.override_not_in_base, "This member cannot have an 'override' modifier because it is not declared in the base class.");
+            return;
+        }
+        if (!has_override and has_base and self.strict_flags.no_implicit_override) {
+            const code = if (is_parameter_property) TsCodes.missing_parameter_property_override else TsCodes.missing_override;
+            try self.report(node, code, "This member must have an 'override' modifier because it overrides a member in the base class.");
+        }
+    }
+
     /// Merge a parent class's instance members into the current
     /// child's member list, inheriting anything the child doesn't
     /// already declare. The child wins on name conflict — that's
@@ -3054,11 +3116,12 @@ pub const Checker = struct {
                 try self.lowerer.lower(tpp.default)
             else
                 types.Primitive.none;
-            const tp_id = self.interner.internFreshTypeParameterWithVariance(
+            const tp_id = self.interner.internFreshTypeParameterWithFlags(
                 tpp.name,
                 constraint,
                 def,
                 types.Variance.fromHirBits(tpp.variance),
+                tpp.is_const,
             ) catch return error.OutOfMemory;
             self.hir.setType(tp, tp_id);
             try self.recordNarrow(tpp.name, tp_id);
@@ -3070,6 +3133,7 @@ pub const Checker = struct {
 
         var string_idx: TypeId = types.Primitive.none;
         var number_idx: TypeId = types.Primitive.none;
+        const extends = hir_mod.interfaceExtends(self.hir, node);
         for (members) |m| {
             if (self.hir.kindOf(m) == .index_signature) {
                 const ix = hir_mod.indexSignatureOf(self.hir, m);
@@ -3099,6 +3163,19 @@ pub const Checker = struct {
             if (self.strict_flags.no_implicit_any and im.type_node == hir_mod.none_node_id and !im.is_method) {
                 try self.reportMemberImplicitAny(m, im.name);
             }
+            var has_base_member = false;
+            for (extends) |extends_node| {
+                const parent_t = self.lowererLowerWithTypeParams(extends_node) catch continue;
+                if (self.baseClassHasMember(parent_t, im.name)) {
+                    has_base_member = true;
+                    break;
+                }
+            }
+            if (im.is_override and !has_base_member) {
+                try self.report(m, TsCodes.override_not_in_base, "This member cannot have an 'override' modifier because it is not declared in the base interface.");
+            } else if (!im.is_override and has_base_member and self.strict_flags.no_implicit_override) {
+                try self.report(m, TsCodes.missing_override, "This member must have an 'override' modifier because it overrides a member in the base interface.");
+            }
             try iface_members.append(self.gpa, .{
                 .name = im.name,
                 .type = member_t,
@@ -3110,7 +3187,6 @@ pub const Checker = struct {
 
         // `interface B extends A { ... }` — merge each parent's
         // members into the child. Child decls win on name conflict.
-        const extends = hir_mod.interfaceExtends(self.hir, node);
         if (extends.len > 0) {
             for (extends) |extends_node| {
                 if (self.bareTypeNodeIsTypeParam(extends_node, type_params)) {
@@ -3481,11 +3557,12 @@ pub const Checker = struct {
                 try self.lowerer.lower(tpp.default)
             else
                 types.Primitive.none;
-            const tp_id = self.interner.internFreshTypeParameterWithVariance(
+            const tp_id = self.interner.internFreshTypeParameterWithFlags(
                 tpp.name,
                 constraint,
                 def,
                 types.Variance.fromHirBits(tpp.variance),
+                tpp.is_const,
             ) catch return error.OutOfMemory;
             self.hir.setType(tp, tp_id);
             try self.recordNarrow(tpp.name, tp_id);
@@ -3926,11 +4003,12 @@ pub const Checker = struct {
                         try self.lowerer.lower(tpp.default)
                     else
                         types.Primitive.none;
-                    const tp_id = self.interner.internFreshTypeParameterWithVariance(
+                    const tp_id = self.interner.internFreshTypeParameterWithFlags(
                         tpp.name,
                         constraint,
                         def,
                         types.Variance.fromHirBits(tpp.variance),
+                        tpp.is_const,
                     ) catch return error.OutOfMemory;
                     self.hir.setType(tp, tp_id);
                     try self.recordNarrow(tpp.name, tp_id);
@@ -7003,11 +7081,14 @@ pub const Checker = struct {
         }
         if (p_flags.is_type_parameter) {
             if (!subs.contains(param_t)) {
-                if (self.scalarTypeParameterConstraint(param_t)) |constraint_t| {
-                    if (!(self.engine.isAssignableTo(arg_t, constraint_t) catch false)) return;
-                }
-                var inferred = self.widenForInference(arg_t);
+                const tp = pool.type_parameter_payloads.items[p_payload];
+                var inferred = if (tp.is_const) arg_t else self.widenForInference(arg_t);
                 inferred = self.substituteType(inferred, subs) catch inferred;
+                if (self.scalarTypeParameterConstraint(param_t)) |raw_constraint_t| {
+                    const constraint_t = self.substituteType(raw_constraint_t, subs) catch raw_constraint_t;
+                    const candidate_t = if (tp.is_const) inferred else arg_t;
+                    if (!(self.engine.isAssignableTo(candidate_t, constraint_t) catch false)) return;
+                }
                 try subs.put(self.gpa, param_t, inferred);
             }
             return;
@@ -7074,6 +7155,30 @@ pub const Checker = struct {
         arg_node: NodeId,
         subs: *std.AutoHashMapUnmanaged(TypeId, TypeId),
     ) !void {
+        if (param_t >= types.Primitive.first_dynamic and
+            param_t < self.interner.pool.typeCount() and
+            self.interner.pool.flagsOf(param_t).is_intersection)
+        {
+            for (self.interner.intersectionMembers(param_t)) |member| {
+                try self.inferFromArgument(member, arg_t, arg_node, subs);
+            }
+            return;
+        }
+        if (param_t >= types.Primitive.first_dynamic and
+            param_t < self.interner.pool.typeCount() and
+            self.interner.pool.flagsOf(param_t).is_type_parameter and
+            self.interner.typeParameterIsConst(param_t) and
+            !subs.contains(param_t))
+        {
+            var inferred = self.literalizeForAsConst(arg_node, arg_t) catch arg_t;
+            inferred = self.substituteType(inferred, subs) catch inferred;
+            if (self.scalarTypeParameterConstraint(param_t)) |raw_constraint_t| {
+                const constraint_t = self.substituteType(raw_constraint_t, subs) catch raw_constraint_t;
+                if (!(self.engine.isAssignableTo(inferred, constraint_t) catch false)) return;
+            }
+            try subs.put(self.gpa, param_t, inferred);
+            return;
+        }
         if (param_t >= types.Primitive.first_dynamic and
             param_t < self.interner.pool.typeCount() and
             arg_t >= types.Primitive.first_dynamic and
@@ -7329,11 +7434,12 @@ pub const Checker = struct {
             else
                 tp.default;
             if (new_constraint == tp.constraint and new_default == tp.default) return t;
-            return self.interner.internTypeParameterWithVariance(
+            return self.interner.internTypeParameterWithFlags(
                 tp.name,
                 new_constraint,
                 new_default,
                 tp.variance,
+                tp.is_const,
             ) catch return t;
         }
         return t;
@@ -7935,6 +8041,12 @@ pub const Checker = struct {
             }
             return false;
         }
+        if (flags.is_intersection) {
+            for (self.interner.intersectionMembers(target_t)) |member| {
+                if (!try self.objectLiteralAssignableToTarget(arg_node, arg_t, member)) return false;
+            }
+            return true;
+        }
         if (!flags.is_object_type) return false;
         if (!self.interner.pool.flagsOf(arg_t).is_object_type) return false;
         for (self.interner.objectMembers(target_t)) |tm| {
@@ -7943,6 +8055,16 @@ pub const Checker = struct {
                 return false;
             };
             if (self.findObjectLiteralPropValue(arg_node, tm.name)) |value_node| {
+                if (self.hir.kindOf(value_node) == .object_literal and
+                    try self.objectLiteralAssignableToTarget(value_node, am_t, tm.type))
+                {
+                    continue;
+                }
+                if (self.hir.kindOf(value_node) == .array_literal and
+                    try self.arrayLiteralAssignableToTarget(value_node, tm.type))
+                {
+                    continue;
+                }
                 if (try self.literalExpressionAssignableToTarget(value_node, tm.type)) continue;
             }
             if (!try self.engine.isAssignableTo(am_t, tm.type)) return false;
@@ -8010,7 +8132,7 @@ pub const Checker = struct {
         const lit = self.interner.literalOf(target_t);
         return switch (lit) {
             .string_lit => |sid| self.hir.kindOf(value_node) == .literal_string and hir_mod.literalStringOf(self.hir, value_node).value == sid,
-            .number_lit => |n| self.hir.kindOf(value_node) == .literal_number and hir_mod.literalNumberOf(self.hir, value_node) == @as(f64, @floatFromInt(n)),
+            .number_lit => |bits| self.hir.kindOf(value_node) == .literal_number and hir_mod.literalNumberOf(self.hir, value_node) == @as(f64, @bitCast(bits)),
             .bigint_lit => false,
             .boolean_lit => |b| self.hir.kindOf(value_node) == .literal_bool and hir_mod.literalBoolOf(self.hir, value_node) == b,
         };
@@ -9566,6 +9688,53 @@ test "checker: child class override keeps child field type and checks compatibil
     const x_t = s.ti.objectMember(b_t, x_id) orelse return error.TestExpectedEqual;
     // Child override wins — `x` is number_t, not string_t.
     try T.expectEqual(types.Primitive.number_t, x_t);
+}
+
+test "checker: noImplicitOverride requires override on inherited class members" {
+    const s = try newSetup(
+        \\class A { x: number = 0; m(): void {} }
+        \\class B extends A { x: number = 1; m(): void {} }
+    );
+    defer destroySetup(s);
+    s.checker.setStrictFlags(.{ .no_implicit_override = true });
+    try s.checker.checkSourceFile(s.root);
+    var found = false;
+    for (s.checker.diagnostics.items) |d| {
+        if (d.code == TsCodes.missing_override) found = true;
+    }
+    try T.expect(found);
+}
+
+test "checker: override modifier rejects members absent from base class" {
+    const s = try newSetup(
+        \\class A { x: number = 0; }
+        \\class B extends A { override y: number = 1; }
+    );
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+    var found = false;
+    for (s.checker.diagnostics.items) |d| {
+        if (d.code == TsCodes.override_not_in_base) found = true;
+    }
+    try T.expect(found);
+}
+
+test "checker: interface override modifiers participate in extends diagnostics" {
+    const s = try newSetup(
+        \\interface A { x(): void; }
+        \\interface B extends A { x(): void; override y(): void; }
+    );
+    defer destroySetup(s);
+    s.checker.setStrictFlags(.{ .no_implicit_override = true });
+    try s.checker.checkSourceFile(s.root);
+    var saw_missing = false;
+    var saw_not_base = false;
+    for (s.checker.diagnostics.items) |d| {
+        if (d.code == TsCodes.missing_override) saw_missing = true;
+        if (d.code == TsCodes.override_not_in_base) saw_not_base = true;
+    }
+    try T.expect(saw_missing);
+    try T.expect(saw_not_base);
 }
 
 test "checker: generic extends instantiates parent field types for override checks" {
@@ -13664,6 +13833,40 @@ test "checker: generic type-arg inference — callback `map<T,U>(arr: T[], fn: (
     try T.expect(s.checker.interner.pool.flagsOf(call_t).is_object_type);
     const elem = s.checker.interner.objectNumberIndex(call_t);
     try T.expectEqual(types.Primitive.string_t, elem);
+}
+
+test "checker: const type-parameter inference preserves object-literal numerics through intersections" {
+    const s = try newSetup(
+        \\interface Config<T1 extends { type: string }> {
+        \\  useIt: T1;
+        \\}
+        \\declare function test<
+        \\  T1 extends { type: string },
+        \\  const TConfig extends Config<T1>,
+        \\>(config: { produceThing: T1 } & TConfig): TConfig;
+        \\const result = test({
+        \\  produceThing: {} as { type: "foo" },
+        \\  useIt: { type: "foo" },
+        \\  extra: 10,
+        \\});
+    );
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+    for (s.checker.diagnostics.items) |d| {
+        try T.expect(d.code != TsCodes.argument_type_mismatch);
+    }
+}
+
+test "checker: async expression-bodied arrows infer structural Promise returns" {
+    const s = try newSetup(
+        \\declare function test2<const T>(create: () => Promise<T>): T;
+        \\const result = test2(async () => "foo");
+    );
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+    for (s.checker.diagnostics.items) |d| {
+        try T.expect(d.code != TsCodes.argument_type_mismatch);
+    }
 }
 
 test "checker: namespace function bodies are checked after signature registration" {

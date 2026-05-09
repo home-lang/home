@@ -380,6 +380,7 @@ pub fn compileSource(
             .no_unchecked_indexed_access = co.no_unchecked_indexed_access orelse false,
             .isolated_modules = co.isolated_modules orelse false,
             .resolve_json_module = co.resolve_json_module orelse false,
+            .no_implicit_override = co.no_implicit_override orelse false,
         });
     } else {
         const strict_on = options.strict orelse false;

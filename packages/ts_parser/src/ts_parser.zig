@@ -731,8 +731,29 @@ pub const Parser = struct {
                     try param_decorators.append(self.gpa, dec_node);
                 }
                 // Modifiers on parameter properties: `readonly`, `public`, etc.
+                var saw_override_modifier = false;
                 while (self.peek().kind.isModifierKeyword()) {
-                    _ = self.advance();
+                    const mod = self.advance();
+                    switch (mod.kind) {
+                        .kw_readonly => {
+                            if (saw_override_modifier) {
+                                try self.reportCodeAt(mod.span.start, mod.line, 1029, "'readonly' modifier must precede 'override' modifier.");
+                            }
+                            flags.is_readonly = true;
+                            flags.is_parameter_property = true;
+                        },
+                        .kw_public, .kw_protected, .kw_private => {
+                            if (saw_override_modifier) {
+                                try self.reportCodeAt(mod.span.start, mod.line, 1029, "Accessibility modifier must precede 'override' modifier.");
+                            }
+                            flags.is_parameter_property = true;
+                        },
+                        .kw_override => {
+                            flags.is_override = true;
+                            saw_override_modifier = true;
+                        },
+                        else => {},
+                    }
                 }
                 if (self.match(.dot_dot_dot)) flags.is_rest = true;
                 // §3.A.11 — explicit `this: T` first parameter. TS
@@ -1012,6 +1033,7 @@ pub const Parser = struct {
                         .is_protected = mods.visibility == .protected,
                         .is_static = mods.is_static,
                         .is_async = mods.is_async,
+                        .is_override = mods.is_override,
                     },
                 );
                 try members.append(self.gpa, fn_node);
@@ -1055,6 +1077,7 @@ pub const Parser = struct {
                             .is_static = mods.is_static,
                             .is_async = mods.is_async,
                             .is_generator = is_generator,
+                            .is_override = mods.is_override,
                         },
                     );
                     try members.append(self.gpa, fn_node);
@@ -1079,6 +1102,7 @@ pub const Parser = struct {
                     false,
                     mods.is_static,
                     mods.visibility,
+                    mods.is_override,
                 );
                 try members.append(self.gpa, prop);
                 continue;
@@ -1108,6 +1132,7 @@ pub const Parser = struct {
         visibility: hir_mod.Visibility = .public,
         is_static: bool = false,
         is_async: bool = false,
+        is_override: bool = false,
     };
 
     fn skipClassModifiers(self: *Parser) ParseError!ClassModifiers {
@@ -1121,6 +1146,7 @@ pub const Parser = struct {
                     .kw_public => mods.visibility = .public,
                     .kw_static => mods.is_static = true,
                     .kw_async => mods.is_async = true,
+                    .kw_override => mods.is_override = true,
                     else => {},
                 }
                 _ = self.advance();
@@ -2319,9 +2345,14 @@ pub const Parser = struct {
                 continue;
             }
             var is_readonly = false;
+            var is_override = false;
             if (t.kind == .kw_readonly and self.peekAt(1).kind != .colon) {
                 _ = self.advance();
                 is_readonly = true;
+            }
+            if (self.peek().kind == .kw_override and self.peekAt(1).kind != .colon) {
+                _ = self.advance();
+                is_override = true;
             }
             const name_tok = self.advance();
             // Allow string-literal property names: `"foo": T`.
@@ -2360,6 +2391,7 @@ pub const Parser = struct {
                     is_optional,
                     is_readonly,
                     true,
+                    is_override,
                 );
                 try out.append(self.gpa, member);
                 continue;
@@ -2377,6 +2409,7 @@ pub const Parser = struct {
                 is_optional,
                 is_readonly,
                 false,
+                is_override,
             );
             try out.append(self.gpa, member);
         }
@@ -2415,6 +2448,7 @@ pub const Parser = struct {
             false,
             false,
             true,
+            false,
         );
     }
 
@@ -2539,9 +2573,6 @@ pub const Parser = struct {
             // TS 5.0 `const` type-parameter modifier (`<const T>`). When
             // present, argument inference for T should be performed
             // `as const` (readonly + literal types preserved).
-            // TODO(checker): currently parsed-only; the `is_const` flag is
-            // recorded on the type-parameter payload but inference still
-            // widens like a normal type parameter.
             var is_const: bool = false;
             if (self.peek().kind == .kw_const and self.peekAt(1).kind == .identifier) {
                 _ = self.advance();
@@ -4779,6 +4810,26 @@ test "parser: class declaration with method and property" {
     try T.expect(cl.name != hir_mod.none_node_id);
     const members = hir_mod.classMembers(&s.hir, top);
     try T.expectEqual(@as(usize, 2), members.len);
+}
+
+test "parser: class override modifier is preserved on methods, fields, and parameter properties" {
+    var s = try newTestSetup(
+        \\class Foo {
+        \\  override m() {}
+        \\  override x = 1;
+        \\  constructor(public override y: number) {}
+        \\}
+    );
+    defer destroyTestSetup(s);
+    const root = try s.parser.parseSourceFile();
+    const top = hir_mod.blockStmts(&s.hir, root)[0];
+    const members = hir_mod.classMembers(&s.hir, top);
+    try T.expect(hir_mod.fnDeclOf(&s.hir, members[0]).flags.is_override);
+    try T.expect(hir_mod.objectPropertyOf(&s.hir, members[1]).is_override);
+    const ctor_params = hir_mod.fnParams(&s.hir, members[2]);
+    const pp = hir_mod.parameterOf(&s.hir, ctor_params[0]);
+    try T.expect(pp.flags.is_parameter_property);
+    try T.expect(pp.flags.is_override);
 }
 
 test "parser: class declaration with index signature" {

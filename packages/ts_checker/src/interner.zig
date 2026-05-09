@@ -114,6 +114,7 @@ pub const TypeKey = union(Kind) {
                 hasher.update(std.mem.asBytes(&tp.constraint));
                 hasher.update(std.mem.asBytes(&tp.default));
                 hasher.update(&[_]u8{@intFromEnum(tp.variance)});
+                hasher.update(&[_]u8{@intFromBool(tp.is_const)});
             },
             .instantiation => |inst| {
                 hasher.update(std.mem.asBytes(&inst.origin));
@@ -171,7 +172,8 @@ pub const TypeKey = union(Kind) {
                 return a.name == b.name and
                     a.constraint == b.constraint and
                     a.default == b.default and
-                    a.variance == b.variance;
+                    a.variance == b.variance and
+                    a.is_const == b.is_const;
             },
             .instantiation => |a| {
                 const b = other.instantiation;
@@ -341,11 +343,25 @@ pub const Interner = struct {
         default: TypeId,
         variance: types.Variance,
     ) !TypeId {
+        return self.internTypeParameterWithFlags(name, constraint, default, variance, false);
+    }
+
+    /// Full type-parameter interning entry point. `is_const` is part
+    /// of the structural key because it changes call-site inference.
+    pub fn internTypeParameterWithFlags(
+        self: *Interner,
+        name: StringId,
+        constraint: TypeId,
+        default: TypeId,
+        variance: types.Variance,
+        is_const: bool,
+    ) !TypeId {
         const payload: types.TypeParameterPayload = .{
             .name = name,
             .constraint = constraint,
             .default = default,
             .variance = variance,
+            .is_const = is_const,
         };
         const key: TypeKey = .{ .type_parameter = payload };
         return try self.internKey(key, .{ .is_type_parameter = true });
@@ -363,12 +379,24 @@ pub const Interner = struct {
         default: TypeId,
         variance: types.Variance,
     ) !TypeId {
+        return self.internFreshTypeParameterWithFlags(name, constraint, default, variance, false);
+    }
+
+    pub fn internFreshTypeParameterWithFlags(
+        self: *Interner,
+        name: StringId,
+        constraint: TypeId,
+        default: TypeId,
+        variance: types.Variance,
+        is_const: bool,
+    ) !TypeId {
         const payload_idx: u32 = @intCast(self.pool.type_parameter_payloads.items.len);
         try self.pool.type_parameter_payloads.append(self.gpa, .{
             .name = name,
             .constraint = constraint,
             .default = default,
             .variance = variance,
+            .is_const = is_const,
         });
         const id: TypeId = @intCast(self.pool.headers.items.len);
         try self.pool.headers.append(self.gpa, .{
@@ -385,6 +413,15 @@ pub const Interner = struct {
         if (!self.pool.flagsOf(id).is_type_parameter) return .bivariant;
         const payload = self.pool.type_parameter_payloads.items[self.pool.payloadOf(id)];
         return payload.variance;
+    }
+
+    /// Look up whether a type parameter was declared with `const`.
+    pub fn typeParameterIsConst(self: *const Interner, id: TypeId) bool {
+        if (!self.pool.flagsOf(id).is_type_parameter) return false;
+        const payload_idx = self.pool.payloadOf(id);
+        if (payload_idx >= self.pool.type_parameter_payloads.items.len) return false;
+        const payload = self.pool.type_parameter_payloads.items[payload_idx];
+        return payload.is_const;
     }
 
     /// Look up the name (StringId) of a type-parameter type.
@@ -869,6 +906,23 @@ test "Interner: type parameter variance — same variance dedups" {
     const a = try i.internTypeParameterWithVariance(id_t, types.Primitive.unknown, types.Primitive.none, .covariant);
     const b = try i.internTypeParameterWithVariance(id_t, types.Primitive.unknown, types.Primitive.none, .covariant);
     try T.expectEqual(a, b);
+}
+
+test "Interner: const type parameter flag participates in identity" {
+    var i = try Interner.init(T.allocator);
+    defer i.deinit();
+    var sint = try string_interner.Interner.init(T.allocator);
+    defer sint.deinit();
+    const id_t = try sint.intern("T");
+
+    const normal = try i.internTypeParameterWithFlags(id_t, types.Primitive.unknown, types.Primitive.none, .bivariant, false);
+    const konst = try i.internTypeParameterWithFlags(id_t, types.Primitive.unknown, types.Primitive.none, .bivariant, true);
+    const konst_again = try i.internTypeParameterWithFlags(id_t, types.Primitive.unknown, types.Primitive.none, .bivariant, true);
+
+    try T.expect(normal != konst);
+    try T.expectEqual(konst, konst_again);
+    try T.expect(!i.typeParameterIsConst(normal));
+    try T.expect(i.typeParameterIsConst(konst));
 }
 
 test "Interner: fresh type parameters preserve declaration identity" {
