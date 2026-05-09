@@ -351,6 +351,11 @@ pub const Parser = struct {
             .kw_break => try self.parseBreakStatement(),
             .kw_continue => try self.parseContinueStatement(),
             .kw_throw => try self.parseThrowStatement(),
+            .kw_debugger => blk: {
+                const dbg = self.advance();
+                try self.consumeStatementTerminator();
+                break :blk try self.builder.addBlock(.{ .start = dbg.span.start, .end = self.tokens[self.cursor - 1].span.end }, &.{});
+            },
             .kw_try => try self.parseTryStatement(),
             .kw_switch => try self.parseSwitchStatement(),
             .kw_function => try self.parseFunctionDeclaration(),
@@ -502,7 +507,7 @@ pub const Parser = struct {
         _ = try self.expect(.open_paren, "'(' after 'while'");
         const cond = try self.parseExpression();
         const close = try self.expect(.close_paren, "')' after do-while condition");
-        try self.consumeStatementTerminator();
+        _ = self.match(.semicolon);
         return try self.builder.addDoWhile(.{ .start = start.span.start, .end = close.span.end }, body, cond);
     }
 
