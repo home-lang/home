@@ -529,6 +529,9 @@ fn variantErrorBaselinePath(gpa: std.mem.Allocator, root: []const u8, stem: []co
         "(alwaysstrict=true).errors.txt",
         "(module=es2022).errors.txt",
         "(module=esnext).errors.txt",
+        "(target=es5).errors.txt",
+        "(target=es2015).errors.txt",
+        "(target=es6).errors.txt",
     };
     var threaded = std.Io.Threaded.init(gpa, .{});
     defer threaded.deinit();
