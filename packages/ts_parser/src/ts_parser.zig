@@ -529,7 +529,7 @@ pub const Parser = struct {
             const binding_node: NodeId = if (self.peek().kind == .open_brace or self.peek().kind == .open_bracket) blk: {
                 break :blk try self.parseBindingPattern();
             } else blk: {
-                const name_tok = try self.expect(.identifier, "identifier in for-init binding");
+                const name_tok = try self.expectIdentifierLike();
                 const name_id = try self.internToken(name_tok);
                 break :blk try self.builder.addIdentifier(tokenSpan(name_tok), name_id);
             };
@@ -3963,7 +3963,7 @@ pub const Parser = struct {
                 const id = try self.internToken(t);
                 return try self.builder.addIdentifier(tokenSpan(t), id);
             },
-            .kw_any, .kw_unknown, .kw_never, .kw_void, .kw_string, .kw_number, .kw_boolean, .kw_bigint, .kw_symbol, .kw_object, .kw_get, .kw_set, .kw_global, .kw_require, .kw_module => {
+            .kw_any, .kw_unknown, .kw_never, .kw_void, .kw_string, .kw_number, .kw_boolean, .kw_bigint, .kw_symbol, .kw_object, .kw_get, .kw_set, .kw_global, .kw_require, .kw_module, .kw_of => {
                 _ = self.advance();
                 const id = try self.internToken(t);
                 return try self.builder.addIdentifier(tokenSpan(t), id);
@@ -4536,6 +4536,7 @@ fn isExpressionIdentifierToken(kind: TokenKind) bool {
         .kw_global,
         .kw_require,
         .kw_module,
+        .kw_of,
         => true,
         else => false,
     };
