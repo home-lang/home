@@ -275,8 +275,34 @@ pub fn compileSource(
     c.tokens = scanner.tokenize(gpa) catch |err| switch (err) {
         error.OutOfMemory => return error.OutOfMemory,
         else => {
-            // Lex error — record, continue with empty tokens.
+            // Lex error — record diagnostics and return a fully
+            // deinitializable partial compilation. Some scanner
+            // errors are the expected outcome for conformance parser
+            // fixtures, so callers still need a diagnostic-bearing
+            // result rather than an ownership-poisoned half object.
             c.has_errors = true;
+            c.tokens = .empty;
+            errdefer c.tokens.deinit(gpa);
+            for (scanner.diagnostics.items) |d| {
+                try c.diagnostics.append(gpa, .{
+                    .phase = .lex,
+                    .pos = d.pos,
+                    .line = d.line,
+                    .message = try gpa.dupe(u8, d.message),
+                });
+            }
+            var bind = binder.Binder.init(gpa, &c.hir, &c.interner, options.file_id) catch return error.OutOfMemory;
+            c.module = bind.module;
+            bind.deinit();
+            errdefer {
+                c.module.deinit();
+                gpa.destroy(c.module);
+            }
+            c.type_interner = ts_checker.Interner.init(gpa) catch return error.OutOfMemory;
+            errdefer c.type_interner.deinit();
+            c.type_engine = ts_checker.Engine.init(gpa, &c.type_interner) catch return error.OutOfMemory;
+            errdefer c.type_engine.deinit();
+            c.js = try gpa.dupe(u8, "");
             return c;
         },
     };
@@ -1198,6 +1224,16 @@ test "driver: optionsFromConfig with no jsx leaves is_tsx false" {
     );
     const opts = optionsFromConfig(&cfg);
     try T.expect(!opts.is_tsx);
+}
+
+test "driver: scanner-error compilation deinitializes cleanly" {
+    var c = try compileSource(T.allocator, "1\\u005F01234", .{ .no_emit = true });
+    defer {
+        c.deinit();
+        T.allocator.destroy(c);
+    }
+    try T.expect(c.has_errors);
+    try T.expect(c.diagnostics.items.len > 0);
 }
 
 test "driver: classes with constructors and methods" {

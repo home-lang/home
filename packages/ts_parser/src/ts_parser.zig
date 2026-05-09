@@ -356,6 +356,7 @@ pub const Parser = struct {
             .kw_while => try self.parseWhileStatement(),
             .kw_do => try self.parseDoWhileStatement(),
             .kw_for => try self.parseForStatement(),
+            .kw_with => try self.parseWithStatement(),
             .kw_break => try self.parseBreakStatement(),
             .kw_continue => try self.parseContinueStatement(),
             .kw_throw => try self.parseThrowStatement(),
@@ -678,6 +679,18 @@ pub const Parser = struct {
         return try self.builder.addFor(.{ .start = start.span.start, .end = end_pos }, init_node, cond, update, body);
     }
 
+    fn parseWithStatement(self: *Parser) ParseError!NodeId {
+        const start = self.advance(); // with
+        if (self.strict_mode) {
+            try self.reportCodeAt(start.span.start, start.line, 1101, "'with' statements are not allowed in strict mode.");
+        }
+        _ = try self.expect(.open_paren, "'(' after 'with'");
+        _ = try self.parseExpression();
+        _ = try self.expect(.close_paren, "')' after with expression");
+        const body = try self.parseStatement();
+        return try self.builder.addBlock(.{ .start = start.span.start, .end = self.hir.spanOf(body).end }, &.{body});
+    }
+
     fn parseBreakStatement(self: *Parser) ParseError!NodeId {
         const start = self.advance(); // break
         var label: NodeId = hir_mod.none_node_id;
@@ -727,6 +740,7 @@ pub const Parser = struct {
                     break :blk try self.parseBindingPattern();
                 } else blk: {
                     const name_tok = try self.expect(.identifier, "identifier in catch binding");
+                    try self.reportInvalidStrictName(name_tok);
                     const id = try self.internToken(name_tok);
                     break :blk try self.builder.addIdentifier(tokenSpan(name_tok), id);
                 };
@@ -1151,6 +1165,11 @@ pub const Parser = struct {
             }
             const mods = try self.skipClassModifiers();
             var member_start = self.peek();
+            var invalid_index_modifier: ?Token = null;
+            if (self.peek().kind == .kw_export and self.peekAt(1).kind == .open_bracket) {
+                invalid_index_modifier = self.advance();
+                member_start = self.peek();
+            }
             while (self.peek().kind == .at) {
                 const dec_tok = self.advance();
                 const dec_expr = try self.parseClassMemberDecoratorExpression();
@@ -1169,7 +1188,14 @@ pub const Parser = struct {
                 continue;
             }
             if (self.peek().kind == .open_bracket) {
-                if (try self.tryParseIndexSignature(&members)) continue;
+                if (try self.tryParseIndexSignature(&members)) {
+                    if (invalid_index_modifier) |bad| {
+                        try self.reportCodeAt(bad.span.start, bad.line, 1071, "'export' modifier cannot appear on an index signature.");
+                    } else if (mods.has_accessibility) {
+                        try self.reportCodeAt(member_start.span.start, member_start.line, 1071, "Accessibility modifier cannot appear on an index signature.");
+                    }
+                    continue;
+                }
                 const member = try self.parseComputedClassMember(member_start, mods, is_generator);
                 try members.append(self.gpa, member);
                 continue;
@@ -1349,6 +1375,7 @@ pub const Parser = struct {
     /// decorator and class-member emit.
     const ClassModifiers = struct {
         visibility: hir_mod.Visibility = .public,
+        has_accessibility: bool = false,
         is_static: bool = false,
         is_async: bool = false,
         is_override: bool = false,
@@ -1374,14 +1401,32 @@ pub const Parser = struct {
                         .kw_protected => .protected,
                         else => .public,
                     };
+                    mods.has_accessibility = true;
                     continue;
                 }
                 if (mods.is_static and isAccessibilityModifier(k)) return mods;
                 switch (k) {
-                    .kw_private => mods.visibility = .private,
-                    .kw_protected => mods.visibility = .protected,
-                    .kw_public => mods.visibility = .public,
-                    .kw_static => mods.is_static = true,
+                    .kw_private, .kw_protected, .kw_public => {
+                        const mod = self.advance();
+                        if (mods.has_accessibility) {
+                            try self.reportCodeAt(mod.span.start, mod.line, 1028, "Accessibility modifier already seen.");
+                        }
+                        mods.has_accessibility = true;
+                        mods.visibility = switch (k) {
+                            .kw_private => .private,
+                            .kw_protected => .protected,
+                            else => .public,
+                        };
+                        continue;
+                    },
+                    .kw_static => {
+                        const mod = self.advance();
+                        if (mods.is_static) {
+                            try self.reportCodeAt(mod.span.start, mod.line, 1434, "Unexpected keyword or identifier.");
+                        }
+                        mods.is_static = true;
+                        continue;
+                    },
                     .kw_async => mods.is_async = true,
                     .kw_override => mods.is_override = true,
                     .kw_abstract => mods.is_abstract = true,
@@ -1484,7 +1529,6 @@ pub const Parser = struct {
                 try self.reportAmbientClassImplementation(member_start);
             } else {
                 try self.consumeStatementTerminator();
-                try self.reportMissingClassMemberImplementation(member_start, mods);
             }
             value = try self.builder.addFnDeclGeneric(
                 .{ .start = member_start.span.start, .end = self.tokens[self.cursor - 1].span.end },
@@ -1627,19 +1671,28 @@ pub const Parser = struct {
         defer members.deinit(self.gpa);
         while (self.peek().kind != .close_brace and self.peek().kind != .eof) {
             const member_start = self.peek();
-            const member_tok = if (self.peek().kind == .string_literal)
-                self.advance()
-            else
-                try self.expect(.identifier, "enum member name");
+            var is_computed = false;
+            const name_node = if (self.peek().kind == .open_bracket) blk: {
+                _ = self.advance();
+                const key = try self.parseExpression();
+                _ = try self.expect(.close_bracket, "']' to close computed enum member name");
+                is_computed = true;
+                break :blk key;
+            } else blk: {
+                const member_tok = if (self.peek().kind == .string_literal)
+                    self.advance()
+                else
+                    try self.expect(.identifier, "enum member name");
+                const name_id = try self.internToken(member_tok);
+                break :blk try self.builder.addIdentifier(tokenSpan(member_tok), name_id);
+            };
             var value: NodeId = hir_mod.none_node_id;
             if (self.match(.equal)) value = try self.parseAssignmentExpression();
-            const name_id = try self.internToken(member_tok);
-            const name_node = try self.builder.addIdentifier(tokenSpan(member_tok), name_id);
             const member = try self.builder.addObjectProperty(
                 .{ .start = member_start.span.start, .end = self.tokens[self.cursor - 1].span.end },
                 name_node,
                 value,
-                false,
+                is_computed,
                 value == hir_mod.none_node_id,
                 false,
             );
@@ -2984,6 +3037,8 @@ pub const Parser = struct {
         var saw_rest = false;
         var saw_accessibility = false;
         var saw_question = false;
+        var saw_comma = false;
+        var saw_equal = false;
         while (idx < self.tokens.len and
             self.tokens[idx].kind != .close_bracket and
             self.tokens[idx].kind != .close_brace and
@@ -2993,6 +3048,8 @@ pub const Parser = struct {
             if (k == .dot_dot_dot) saw_rest = true;
             if (isAccessibilityModifier(k)) saw_accessibility = true;
             if (k == .question) saw_question = true;
+            if (k == .comma) saw_comma = true;
+            if (k == .equal) saw_equal = true;
             if (k == .identifier or k.isContextualKeyword()) count += 1;
             idx += 1;
         }
@@ -3002,9 +3059,9 @@ pub const Parser = struct {
             try self.reportCodeAt(start.span.start, start.line, 1018, "An index signature parameter cannot have an accessibility modifier.");
         } else if (saw_question) {
             try self.reportCodeAt(start.span.start, start.line, 1019, "An index signature parameter cannot have a question mark.");
-        } else if (count != 1) {
+        } else if (count == 0 or saw_comma) {
             try self.reportCodeAt(start.span.start, start.line, 1096, "An index signature must have exactly one parameter.");
-        } else {
+        } else if (saw_equal) {
             try self.reportCodeAt(start.span.start, start.line, 1169, "A computed property name in an interface must refer to an expression whose type is a literal type or a 'unique symbol' type.");
         }
     }
@@ -6990,4 +7047,47 @@ test "parser: strict mode legacy octal literal reports TS1121" {
     _ = try s.parser.parseSourceFile();
     try T.expectEqual(@as(usize, 1), s.parser.diagnostics.items.len);
     try T.expectEqual(@as(u32, 1121), s.parser.diagnostics.items[0].code);
+}
+
+test "parser: strict mode catch binding reports restricted name" {
+    var s = try newTestSetup("\"use strict\"; try {} catch(eval) {}");
+    defer destroyTestSetup(s);
+
+    _ = try s.parser.parseSourceFile();
+    try T.expectEqual(@as(usize, 1), s.parser.diagnostics.items.len);
+    try T.expectEqual(@as(u32, 1100), s.parser.diagnostics.items[0].code);
+}
+
+test "parser: duplicate accessibility modifier reports TS1028" {
+    var s = try newTestSetup("class C { protected public m() {} }");
+    defer destroyTestSetup(s);
+
+    _ = try s.parser.parseSourceFile();
+    try T.expectEqual(@as(usize, 1), s.parser.diagnostics.items.len);
+    try T.expectEqual(@as(u32, 1028), s.parser.diagnostics.items[0].code);
+}
+
+test "parser: class index signature accessibility modifier reports TS1071" {
+    var s = try newTestSetup("class C { private [x: string]: string; }");
+    defer destroyTestSetup(s);
+
+    _ = try s.parser.parseSourceFile();
+    try T.expectEqual(@as(usize, 1), s.parser.diagnostics.items.len);
+    try T.expectEqual(@as(u32, 1071), s.parser.diagnostics.items[0].code);
+}
+
+test "parser: computed enum member parses cleanly" {
+    var s = try newTestSetup("enum E { [e] = 1 }");
+    defer destroyTestSetup(s);
+
+    _ = try s.parser.parseSourceFile();
+    try T.expectEqual(@as(usize, 0), s.parser.diagnostics.items.len);
+}
+
+test "parser: yield can be a generator function expression name" {
+    var s = try newTestSetup("const f = async function * yield() {};");
+    defer destroyTestSetup(s);
+
+    _ = try s.parser.parseSourceFile();
+    try T.expectEqual(@as(usize, 0), s.parser.diagnostics.items.len);
 }

@@ -310,6 +310,7 @@ pub const TokenKind = enum(u16) {
             .kw_as,
             .kw_async,
             .kw_await,
+            .kw_yield,
             .kw_from,
             .kw_get,
             .kw_set,

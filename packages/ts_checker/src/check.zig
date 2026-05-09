@@ -136,6 +136,8 @@ pub const TsCodes = struct {
     /// outside of the class constructor (for class fields) or any
     /// re-assignment (for object/interface readonly properties).
     pub const readonly_property: u32 = 2540;
+    /// TS2378 — a `get` accessor body must return a value.
+    pub const getter_must_return_value: u32 = 2378;
     /// `new X()` where `X` is an abstract class. Abstract classes
     /// cannot be instantiated directly — only concrete subclasses can.
     pub const abstract_class_instantiation: u32 = 2511;
@@ -767,6 +769,12 @@ pub const Checker = struct {
                     _ = try self.checkExpression(r.value);
                 }
             },
+            .throw_stmt => {
+                const t = hir_mod.throwOf(self.hir, node);
+                if (t.value != hir_mod.none_node_id) {
+                    _ = try self.checkExpression(t.value);
+                }
+            },
             .if_stmt => {
                 const i = hir_mod.ifOf(self.hir, node);
                 _ = try self.checkExpression(i.cond);
@@ -1158,8 +1166,63 @@ pub const Checker = struct {
                 }
             }
         }
+        if (f.flags.is_getter and !self.fnBodyHasValueReturn(f.body)) {
+            try self.report(node, TsCodes.getter_must_return_value, "A 'get' accessor must return a value.");
+        }
         try self.checkUnusedParameters(node, f.body);
         try self.checkUnusedLocals(f.body);
+    }
+
+    fn fnBodyHasValueReturn(self: *Checker, node: NodeId) bool {
+        if (node == hir_mod.none_node_id) return false;
+        switch (self.hir.kindOf(node)) {
+            .return_stmt => {
+                const r = hir_mod.returnOf(self.hir, node);
+                return r.value != hir_mod.none_node_id;
+            },
+            .fn_decl, .fn_expr, .arrow_fn => return false,
+            .block_stmt => {
+                for (hir_mod.blockStmts(self.hir, node)) |s| {
+                    if (self.fnBodyHasValueReturn(s)) return true;
+                }
+                return false;
+            },
+            .if_stmt => {
+                const i = hir_mod.ifOf(self.hir, node);
+                return self.fnBodyHasValueReturn(i.then_branch) or self.fnBodyHasValueReturn(i.else_branch);
+            },
+            .while_stmt => {
+                const w = hir_mod.whileOf(self.hir, node);
+                return self.fnBodyHasValueReturn(w.body);
+            },
+            .do_while_stmt => {
+                const w = hir_mod.doWhileOf(self.hir, node);
+                return self.fnBodyHasValueReturn(w.body);
+            },
+            .for_stmt => {
+                const fr = hir_mod.forStmtOf(self.hir, node);
+                return self.fnBodyHasValueReturn(fr.body);
+            },
+            .try_stmt => {
+                const ts = hir_mod.tryOf(self.hir, node);
+                return self.fnBodyHasValueReturn(ts.block) or
+                    self.fnBodyHasValueReturn(ts.catch_block) or
+                    self.fnBodyHasValueReturn(ts.finally_block);
+            },
+            .switch_stmt => {
+                for (hir_mod.switchCases(self.hir, node)) |case| {
+                    if (self.fnBodyHasValueReturn(case)) return true;
+                }
+                return false;
+            },
+            .switch_case => {
+                for (hir_mod.switchCaseStmts(self.hir, node)) |s| {
+                    if (self.fnBodyHasValueReturn(s)) return true;
+                }
+                return false;
+            },
+            else => return false,
+        }
     }
 
     /// TS 5.5 — inferred type predicates.
@@ -2487,6 +2550,22 @@ pub const Checker = struct {
                             if (!pp.flags.is_parameter_property and !pp.flags.is_override) continue;
                             if (pp.name == hir_mod.none_node_id or self.hir.kindOf(pp.name) != .identifier) continue;
                             const pid = hir_mod.identifierOf(self.hir, pp.name);
+                            if (pp.flags.is_parameter_property) {
+                                const param_t = if (self.hir.typeOf(param_node) != types.Primitive.none)
+                                    self.hir.typeOf(param_node)
+                                else if (pp.type_annotation != hir_mod.none_node_id)
+                                    try self.lowererLowerWithTypeParams(pp.type_annotation)
+                                else
+                                    types.Primitive.any;
+                                try instance_members.append(self.gpa, .{
+                                    .name = pid.name,
+                                    .type = param_t,
+                                    .is_optional = pp.flags.is_optional,
+                                    .is_readonly = pp.flags.is_readonly,
+                                    .is_method = false,
+                                });
+                                try concrete_names.put(self.gpa, pid.name, {});
+                            }
                             try self.checkOverrideModifier(param_node, parent_instance_t, pid.name, pp.flags.is_override, true);
                         }
                         continue;
@@ -5710,7 +5789,7 @@ pub const Checker = struct {
             // surrounding `let f = (x: T) => U` learns f's signature
             // type. checkFnDecl walks the body too, so all interior
             // typing happens here.
-            .arrow_fn, .fn_expr => blk: {
+            .fn_decl, .arrow_fn, .fn_expr => blk: {
                 try self.checkFnDecl(node);
                 break :blk self.hir.typeOf(node);
             },
@@ -6736,6 +6815,9 @@ pub const Checker = struct {
             )) |sig| {
                 return sig;
             } else |_| {}
+        }
+        if (self.module == null and !self.isDeclNameSlot(node) and !self.isBuiltinName(id.name)) {
+            self.reportCannotFindName(node, id.name) catch {};
         }
         return types.Primitive.any;
     }
@@ -9265,6 +9347,7 @@ test "checker: call expression returns signature's return type" {
 
 test "checker: instanceof narrows to object_t in then-branch" {
     const s = try newSetup(
+        \\declare const Foo: any;
         \\function f(x: any): any {
         \\  if (x instanceof Foo) {
         \\    return x;
@@ -9275,7 +9358,7 @@ test "checker: instanceof narrows to object_t in then-branch" {
     defer destroySetup(s);
     try s.checker.checkSourceFile(s.root);
     // Walk into the if-then branch and find the return.
-    const top = firstStatement(s);
+    const top = hir_mod.blockStmts(&s.hir, s.root)[1];
     const f = hir_mod.fnDeclOf(&s.hir, top);
     const body_stmts = hir_mod.blockStmts(&s.hir, f.body);
     const if_stmt = body_stmts[0];
@@ -9980,6 +10063,20 @@ test "checker: class implements interface checks instance shape" {
         if (d.code == TsCodes.class_incorrectly_implements_interface) found = true;
     }
     try T.expect(found);
+}
+
+test "checker: constructor parameter properties contribute to instance shape" {
+    const s = try newSetup(
+        \\interface Point { x: number; y: number; }
+        \\class Point2d implements Point {
+        \\  constructor(public x: number, public y: number) {}
+        \\}
+    );
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+    for (s.checker.diagnostics.items) |d| {
+        try T.expect(d.code != TsCodes.class_incorrectly_implements_interface);
+    }
 }
 
 test "checker: interface extends rejects incompatible property override" {
@@ -14213,6 +14310,17 @@ test "checker: class getter — `c.x` reads at the getter's declared return type
     const stmts = hir_mod.blockStmts(&s.hir, s.root);
     const decl = hir_mod.varDeclOf(&s.hir, stmts[2]);
     try T.expectEqual(types.Primitive.number_t, s.hir.typeOf(decl.init));
+}
+
+test "checker: getter body without value return reports TS2378" {
+    const s = try newSetup("class C { get x() {} }");
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+    var found = false;
+    for (s.checker.diagnostics.items) |d| {
+        if (d.code == TsCodes.getter_must_return_value) found = true;
+    }
+    try T.expect(found);
 }
 
 test "checker: class setter — `c.x = 1` is allowed and types as the setter param" {
