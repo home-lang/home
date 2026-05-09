@@ -284,7 +284,13 @@ fn run_(gpa: std.mem.Allocator, c: Case) !Result {
 pub const CorpusEntry = struct {
     name: []const u8,
     source: []const u8,
+    /// Diagnostic path used when exact baseline comparison is enabled.
+    path: []const u8 = "",
     expects_error: bool = false,
+    /// Expected one-line diagnostic headers extracted from upstream
+    /// `.errors.txt`; empty means "expect no diagnostics".
+    expected_errors: []const u8 = "",
+    use_exact_errors: bool = false,
     is_tsx: bool = false,
     strict_flags: ?ts_driver.StrictFlags = null,
 };
@@ -294,7 +300,10 @@ pub const CorpusEntry = struct {
 pub const OwnedCorpusEntry = struct {
     name: []u8,
     source: []u8,
+    path: []u8 = "",
     expects_error: bool = false,
+    expected_errors: []const u8 = "",
+    use_exact_errors: bool = false,
     is_tsx: bool = false,
     strict_flags: ?ts_driver.StrictFlags = null,
 };
@@ -314,6 +323,9 @@ pub const DirectoryLoadOptions = struct {
     /// strict directive. This mirrors the negative-case baselines
     /// without enabling strict diagnostics for positive fixtures.
     strict_default_for_expected_errors: bool = false,
+    /// Load and compare the one-line diagnostic headers from upstream
+    /// `.errors.txt` files instead of the coarse expected-any mode.
+    exact_error_headers: bool = false,
 };
 
 /// Walk `dir_path` recursively and collect every `.ts` / `.tsx`
@@ -338,6 +350,8 @@ pub fn loadDirectoryWithOptions(
         for (out.items) |entry| {
             gpa.free(entry.name);
             gpa.free(entry.source);
+            if (entry.path.len > 0) gpa.free(entry.path);
+            if (entry.expected_errors.len > 0) gpa.free(entry.expected_errors);
         }
         out.deinit(gpa);
     }
@@ -377,8 +391,9 @@ pub fn loadDirectoryWithOptions(
         }
         const ext_dot = std.mem.lastIndexOfScalar(u8, entry.basename, '.') orelse ext_end;
         const stem = entry.basename[0..ext_dot];
-        const expects_error = std.mem.indexOf(u8, entry.basename, ".errors.") != null or
-            hasErrorBaseline(gpa, options.baseline_root, stem);
+        const baseline_path = try errorBaselinePath(gpa, options.baseline_root, stem);
+        defer if (baseline_path) |p| gpa.free(p);
+        const expects_error = std.mem.indexOf(u8, entry.basename, ".errors.") != null or baseline_path != null;
         const directive_flags = parseStrictDirectiveFlags(src);
         const strict_flags =
             if (options.honor_directives)
@@ -388,10 +403,31 @@ pub fn loadDirectoryWithOptions(
             else
                 null;
         const name = try gpa.dupe(u8, stem);
+        const default_path = try gpa.dupe(u8, entry.basename);
+        errdefer gpa.free(default_path);
+        var diag_path = default_path;
+        var expected_errors: []const u8 = "";
+        var use_exact_errors = false;
+        if (options.exact_error_headers) {
+            use_exact_errors = true;
+            if (baseline_path) |bp| {
+                const baseline = try readFileAlloc(gpa, bp);
+                defer gpa.free(baseline);
+                expected_errors = try extractDiagnosticHeaders(gpa, baseline);
+                errdefer if (expected_errors.len > 0) gpa.free(expected_errors);
+                if (firstDiagnosticPath(expected_errors)) |first_path| {
+                    gpa.free(diag_path);
+                    diag_path = try gpa.dupe(u8, first_path);
+                }
+            }
+        }
         try out.append(gpa, .{
             .name = name,
             .source = src,
+            .path = diag_path,
             .expects_error = expects_error,
+            .expected_errors = expected_errors,
+            .use_exact_errors = use_exact_errors,
             .is_tsx = is_tsx,
             .strict_flags = strict_flags,
         });
@@ -400,14 +436,75 @@ pub fn loadDirectoryWithOptions(
 }
 
 fn hasErrorBaseline(gpa: std.mem.Allocator, baseline_root: ?[]const u8, stem: []const u8) bool {
-    const root = baseline_root orelse return false;
-    const path = std.fmt.allocPrint(gpa, "{s}/{s}.errors.txt", .{ root, stem }) catch return false;
-    defer gpa.free(path);
+    const path = errorBaselinePath(gpa, baseline_root, stem) catch return false;
+    defer if (path) |p| gpa.free(p);
+    return path != null;
+}
+
+fn errorBaselinePath(gpa: std.mem.Allocator, baseline_root: ?[]const u8, stem: []const u8) !?[]u8 {
+    const root = baseline_root orelse return null;
+    const path = try std.fmt.allocPrint(gpa, "{s}/{s}.errors.txt", .{ root, stem });
     var threaded = std.Io.Threaded.init(gpa, .{});
     defer threaded.deinit();
     const io = threaded.io();
-    std.Io.Dir.cwd().access(io, path, .{}) catch return false;
-    return true;
+    std.Io.Dir.cwd().access(io, path, .{}) catch {
+        gpa.free(path);
+        return null;
+    };
+    return path;
+}
+
+fn readFileAlloc(gpa: std.mem.Allocator, path: []const u8) ![]u8 {
+    var threaded = std.Io.Threaded.init(gpa, .{});
+    defer threaded.deinit();
+    const io = threaded.io();
+    var file = try std.Io.Dir.cwd().openFile(io, path, .{});
+    defer file.close(io);
+    const stat = try file.stat(io);
+    const file_size: usize = @intCast(stat.size);
+    const buf = try gpa.alloc(u8, file_size);
+    errdefer gpa.free(buf);
+    var read_total: usize = 0;
+    while (read_total < file_size) {
+        const n = try file.readPositionalAll(io, buf[read_total..], read_total);
+        if (n == 0) break;
+        read_total += n;
+    }
+    return buf[0..read_total];
+}
+
+fn extractDiagnosticHeaders(gpa: std.mem.Allocator, baseline: []const u8) ![]u8 {
+    var out: std.ArrayListUnmanaged(u8) = .empty;
+    errdefer out.deinit(gpa);
+    var lines = std.mem.splitScalar(u8, baseline, '\n');
+    while (lines.next()) |raw| {
+        const line = std.mem.trim(u8, raw, "\r");
+        if (!isDiagnosticHeader(line)) continue;
+        if (out.items.len > 0) try out.append(gpa, '\n');
+        try out.appendSlice(gpa, line);
+    }
+    if (out.items.len == 0) return "";
+    return out.toOwnedSlice(gpa);
+}
+
+fn isDiagnosticHeader(line: []const u8) bool {
+    if (std.mem.indexOf(u8, line, "): error TS") != null) return true;
+    if (std.mem.indexOf(u8, line, "): error HM") != null) return true;
+    return false;
+}
+
+fn firstDiagnosticPath(headers: []const u8) ?[]const u8 {
+    if (headers.len == 0) return null;
+    const line_end = std.mem.indexOfScalar(u8, headers, '\n') orelse headers.len;
+    const first = headers[0..line_end];
+    const paren = std.mem.indexOfScalar(u8, first, '(') orelse return null;
+    return first[0..paren];
+}
+
+fn envUsize(name: [*:0]const u8, default: usize) usize {
+    const raw = std.c.getenv(name) orelse return default;
+    const value = std.mem.span(raw);
+    return std.fmt.parseInt(usize, value, 10) catch default;
 }
 
 const StrictDirectiveState = struct {
@@ -520,7 +617,10 @@ pub fn runOwnedCorpus(
         const view: CorpusEntry = .{
             .name = entry.name,
             .source = entry.source,
+            .path = entry.path,
             .expects_error = entry.expects_error,
+            .expected_errors = entry.expected_errors,
+            .use_exact_errors = entry.use_exact_errors,
             .is_tsx = entry.is_tsx,
             .strict_flags = entry.strict_flags,
         };
@@ -558,6 +658,8 @@ pub fn runDirectoryWithOptions(
         for (corpus) |entry| {
             gpa.free(entry.name);
             gpa.free(entry.source);
+            if (entry.path.len > 0) gpa.free(entry.path);
+            if (entry.expected_errors.len > 0) gpa.free(entry.expected_errors);
         }
         gpa.free(corpus);
     }
@@ -633,6 +735,20 @@ pub fn combineCategoryStats(cats: []const CategoryResult) Stats {
 }
 
 fn runOneEntry(gpa: std.mem.Allocator, entry: CorpusEntry) !Result {
+    if (entry.use_exact_errors) {
+        var exact = try run(gpa, .{
+            .name = entry.name,
+            .source = entry.source,
+            .path = if (entry.path.len > 0) entry.path else entry.name,
+            .expected_errors = entry.expected_errors,
+            .is_tsx = entry.is_tsx,
+            .strict_flags = entry.strict_flags,
+        });
+        errdefer if (exact.detail.len > 0) gpa.free(exact.detail);
+        exact.name = try gpa.dupe(u8, entry.name);
+        return exact;
+    }
+
     const name_owned = try gpa.dupe(u8, entry.name);
     var compilation = ts_driver.compileSource(gpa, entry.source, .{
         .is_tsx = entry.is_tsx,
@@ -687,46 +803,13 @@ pub fn runCorpus(
 ) !Stats {
     var stats: Stats = .{};
     for (corpus) |entry| {
-        const name_owned = try gpa.dupe(u8, entry.name);
-
-        var compilation = ts_driver.compileSource(gpa, entry.source, .{
-            .is_tsx = entry.is_tsx,
-            .strict_flags = entry.strict_flags,
-            .continue_on_error = true,
-            .no_emit = true,
-        }) catch |err| {
-            const detail = try std.fmt.allocPrint(gpa, "compile crash: {s}", .{@errorName(err)});
-            try results.append(gpa, .{
-                .name = name_owned,
-                .outcome = .failed,
-                .detail = detail,
-            });
-            stats.failed += 1;
-            continue;
-        };
-        const had_errors = compilation.has_errors;
-        compilation.deinit();
-        gpa.destroy(compilation);
-
-        const passed = if (entry.expects_error) had_errors else !had_errors;
-        if (passed) {
-            try results.append(gpa, .{
-                .name = name_owned,
-                .outcome = .passed,
-            });
-            stats.passed += 1;
-        } else {
-            const detail = if (entry.expects_error)
-                try gpa.dupe(u8, "expected at least one diagnostic; got none")
-            else
-                try gpa.dupe(u8, "expected no diagnostics; got at least one");
-            try results.append(gpa, .{
-                .name = name_owned,
-                .outcome = .failed,
-                .detail = detail,
-            });
-            stats.failed += 1;
+        const r = try runOneEntry(gpa, entry);
+        switch (r.outcome) {
+            .passed => stats.passed += 1,
+            .failed => stats.failed += 1,
+            .skipped => stats.skipped += 1,
         }
+        try results.append(gpa, r);
     }
     return stats;
 }
@@ -958,6 +1041,51 @@ test "conformance: countLines" {
     try T.expectEqual(@as(u32, 3), countLines("one\ntwo\nthree"));
 }
 
+test "conformance: extracts diagnostic headers from upstream baseline text" {
+    const headers = try extractDiagnosticHeaders(T.allocator,
+        \\==== tests/cases/conformance/types/example.ts (1 errors) ====
+        \\    let x: number = "hi";
+        \\tests/cases/conformance/types/example.ts(1,5): error TS2322: Type 'string' is not assignable to type 'number'.
+        \\    let y: string = 1;
+        \\tests/cases/conformance/types/example.ts(2,5): error TS2322: Type 'number' is not assignable to type 'string'.
+        \\
+    );
+    defer if (headers.len > 0) T.allocator.free(headers);
+
+    try T.expectEqualStrings(
+        "tests/cases/conformance/types/example.ts(1,5): error TS2322: Type 'string' is not assignable to type 'number'.\n" ++
+            "tests/cases/conformance/types/example.ts(2,5): error TS2322: Type 'number' is not assignable to type 'string'.",
+        headers,
+    );
+    try T.expectEqualStrings("tests/cases/conformance/types/example.ts", firstDiagnosticPath(headers).?);
+}
+
+test "conformance: runCorpus supports exact diagnostic entries" {
+    const exact = [_]CorpusEntry{
+        .{
+            .name = "exact-type-error",
+            .source = "let x: number = \"hi\";",
+            .path = "tests/exact.ts",
+            .expected_errors = "tests/exact.ts(1,1): error TS2322: Type is not assignable to declared type.",
+            .use_exact_errors = true,
+        },
+    };
+
+    var results: std.ArrayListUnmanaged(Result) = .empty;
+    defer {
+        freeResults(T.allocator, results.items);
+        results.deinit(T.allocator);
+    }
+
+    const stats = try runCorpus(T.allocator, &exact, &results);
+    try T.expectEqual(@as(u32, 1), stats.total());
+    try T.expectEqual(@as(u32, 1), stats.passed);
+    try T.expectEqual(@as(usize, 1), results.items.len);
+    try T.expectEqual(Outcome.passed, results.items[0].outcome);
+    try T.expectEqual(@as(u32, 1), results.items[0].expected_diag_count);
+    try T.expectEqual(@as(u32, 1), results.items[0].actual_diag_count);
+}
+
 test "conformance: builtin corpus runs and reports pass rate" {
     var results: std.ArrayListUnmanaged(Result) = .empty;
     defer {
@@ -1164,6 +1292,86 @@ test "conformance: baseline-aware type-relationship survey" {
     try T.expectEqual(@as(usize, specs.len), cats.len);
     try T.expectEqual(@as(u32, 175), combined.total());
     try T.expect(combined.passed >= 90);
+}
+
+test "conformance: opt-in full local TypeScript corpus survey" {
+    const enabled_raw = std.c.getenv("HOME_TS_CONFORMANCE_FULL") orelse return;
+    const enabled = std.mem.span(enabled_raw);
+    if (!std.mem.eql(u8, enabled, "1")) return;
+
+    const ts_root = "/Users/chrisbreuer/Code/typescript-go/_submodules/TypeScript/tests/cases/conformance";
+    const baseline_root = "/Users/chrisbreuer/Code/typescript-go/_submodules/TypeScript/tests/baselines/reference";
+    {
+        var threaded = std.Io.Threaded.init(T.allocator, .{});
+        defer threaded.deinit();
+        const io = threaded.io();
+        std.Io.Dir.cwd().access(io, ts_root, .{}) catch return;
+        std.Io.Dir.cwd().access(io, baseline_root, .{}) catch return;
+    }
+
+    var results: std.ArrayListUnmanaged(Result) = .empty;
+    defer {
+        freeResults(T.allocator, results.items);
+        results.deinit(T.allocator);
+    }
+
+    const corpus = try loadDirectoryWithOptions(T.allocator, ts_root, .{
+        .baseline_root = baseline_root,
+        .strict_default_for_expected_errors = true,
+    });
+    defer {
+        for (corpus) |entry| {
+            T.allocator.free(entry.name);
+            T.allocator.free(entry.source);
+            if (entry.path.len > 0) T.allocator.free(entry.path);
+            if (entry.expected_errors.len > 0) T.allocator.free(entry.expected_errors);
+        }
+        T.allocator.free(corpus);
+    }
+
+    const start = @min(envUsize("HOME_TS_CONFORMANCE_START", 0), corpus.len);
+    const requested_limit = envUsize("HOME_TS_CONFORMANCE_LIMIT", corpus.len - start);
+    const end = @min(corpus.len, start + requested_limit);
+
+    var stats: Stats = .{};
+    for (corpus[start..end], start..) |entry, idx| {
+        std.debug.print("[ts_conformance full-corpus] RUN {d}/{d} {s}\n", .{ idx + 1, corpus.len, entry.name });
+        const r = try runOneEntry(T.allocator, .{
+            .name = entry.name,
+            .source = entry.source,
+            .path = entry.path,
+            .expects_error = entry.expects_error,
+            .expected_errors = entry.expected_errors,
+            .use_exact_errors = entry.use_exact_errors,
+            .is_tsx = entry.is_tsx,
+            .strict_flags = entry.strict_flags,
+        });
+        switch (r.outcome) {
+            .passed => stats.passed += 1,
+            .failed => stats.failed += 1,
+            .skipped => stats.skipped += 1,
+        }
+        try results.append(T.allocator, r);
+    }
+
+    std.debug.print(
+        "[ts_conformance full-corpus] total={d} passed={d} failed={d} skipped={d} pass_rate={d:.2}\n",
+        .{ stats.total(), stats.passed, stats.failed, stats.skipped, stats.passRate() },
+    );
+
+    var printed: u32 = 0;
+    for (results.items) |r| {
+        if (r.outcome != .failed) continue;
+        if (printed >= 20) break;
+        printed += 1;
+        std.debug.print("  FAIL  {s}: {s}\n", .{ r.name, r.detail });
+    }
+
+    if (start == 0 and end == corpus.len) {
+        try T.expect(stats.total() > 1000);
+    } else {
+        try T.expect(stats.total() == end - start);
+    }
 }
 
 test "conformance: runOwnedCorpus matches runCorpus on equal inputs" {
