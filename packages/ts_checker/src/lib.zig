@@ -220,12 +220,15 @@ pub fn objectGlobal(
     // `Object.assign(t: any, u: any): any` — generic intersection
     // `T & U` is deferred; loose `any` for now.
     const sig_assign = try ti.internSignature(&[_]TypeId{ any_t, any_t }, any_t, false);
+    // `Object.defineProperty(o, key, descriptor): any`.
+    const sig_define_property = try ti.internSignature(&[_]TypeId{ any_t, any_t, any_t }, any_t, false);
 
     const m = [_]types.ObjectMember{
         .{ .name = try sint.intern("keys"), .type = sig_keys, .is_optional = false, .is_readonly = false, .is_method = true },
         .{ .name = try sint.intern("values"), .type = sig_values, .is_optional = false, .is_readonly = false, .is_method = true },
         .{ .name = try sint.intern("entries"), .type = sig_entries, .is_optional = false, .is_readonly = false, .is_method = true },
         .{ .name = try sint.intern("assign"), .type = sig_assign, .is_optional = false, .is_readonly = false, .is_method = true },
+        .{ .name = try sint.intern("defineProperty"), .type = sig_define_property, .is_optional = false, .is_readonly = false, .is_method = true },
     };
     cache.object_global = try ti.internObjectType(&m);
     return cache.object_global;

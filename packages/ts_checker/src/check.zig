@@ -2629,6 +2629,7 @@ pub const Checker = struct {
                             }
                             try self.checkOverrideModifier(param_node, parent_instance_t, pid.name, pp.flags.is_override, true);
                         }
+                        try self.collectConstructorThisAssignments(m, &instance_members);
                         continue;
                     }
                     if (fn_p.name == hir_mod.none_node_id or self.hir.kindOf(fn_p.name) != .identifier) continue;
@@ -2952,6 +2953,71 @@ pub const Checker = struct {
                 self.hir.setType(c.name, instance_t);
             }
         }
+    }
+
+    fn collectConstructorThisAssignments(
+        self: *Checker,
+        ctor_node: NodeId,
+        members: *std.ArrayListUnmanaged(types.ObjectMember),
+    ) CheckError!void {
+        const f = hir_mod.fnDeclOf(self.hir, ctor_node);
+        if (f.body == hir_mod.none_node_id) return;
+        try self.collectThisAssignmentsFromNode(f.body, members);
+    }
+
+    fn collectThisAssignmentsFromNode(
+        self: *Checker,
+        node: NodeId,
+        members: *std.ArrayListUnmanaged(types.ObjectMember),
+    ) CheckError!void {
+        if (node == hir_mod.none_node_id) return;
+        switch (self.hir.kindOf(node)) {
+            .block_stmt => {
+                for (hir_mod.blockStmts(self.hir, node)) |stmt| {
+                    try self.collectThisAssignmentsFromNode(stmt, members);
+                }
+            },
+            .assignment => {
+                const a = hir_mod.assignmentOf(self.hir, node);
+                try self.collectThisAssignmentTarget(a.target, a.value, members);
+                try self.collectThisAssignmentsFromNode(a.value, members);
+            },
+            .if_stmt => {
+                const i = hir_mod.ifOf(self.hir, node);
+                try self.collectThisAssignmentsFromNode(i.then_branch, members);
+                try self.collectThisAssignmentsFromNode(i.else_branch, members);
+            },
+            .while_stmt => try self.collectThisAssignmentsFromNode(hir_mod.whileOf(self.hir, node).body, members),
+            .do_while_stmt => try self.collectThisAssignmentsFromNode(hir_mod.doWhileOf(self.hir, node).body, members),
+            else => {},
+        }
+    }
+
+    fn collectThisAssignmentTarget(
+        self: *Checker,
+        target: NodeId,
+        value: NodeId,
+        members: *std.ArrayListUnmanaged(types.ObjectMember),
+    ) CheckError!void {
+        if (target == hir_mod.none_node_id or self.hir.kindOf(target) != .member_access) return;
+        const m = hir_mod.memberOf(self.hir, target);
+        if (self.hir.kindOf(m.object) != .identifier) return;
+        const obj = hir_mod.identifierOf(self.hir, m.object);
+        if (!std.mem.eql(u8, self.string_interner.get(obj.name), "this")) return;
+        for (members.items) |existing| {
+            if (existing.name == m.name) return;
+        }
+        const value_t = if (value != hir_mod.none_node_id)
+            (self.checkExpression(value) catch types.Primitive.any)
+        else
+            types.Primitive.any;
+        try members.append(self.gpa, .{
+            .name = m.name,
+            .type = value_t,
+            .is_optional = false,
+            .is_readonly = false,
+            .is_method = false,
+        });
     }
 
     fn checkMergedNamespaceStaticConflicts(
@@ -3291,8 +3357,33 @@ pub const Checker = struct {
 
     fn sourceHasCheckJsDirective(self: *Checker) bool {
         const src = self.source orelse return false;
-        return std.mem.indexOf(u8, src, "@checkJs: true") != null or
-            std.mem.indexOf(u8, src, "@checkJS: true") != null;
+        if (std.mem.indexOf(u8, src, "@ts-check") != null) return true;
+        var search_start: usize = 0;
+        while (std.mem.indexOfPos(u8, src, search_start, "@check")) |pos| {
+            search_start = pos + "@check".len;
+            if (src.len < pos + "@checkJs".len) continue;
+            const js = src[pos + "@check".len .. pos + "@checkJs".len];
+            if (!std.ascii.eqlIgnoreCase(js, "js")) continue;
+            var rest = std.mem.trim(u8, src[pos + "@checkJs".len ..], " \t");
+            if (rest.len > 0 and rest[0] == ':') rest = std.mem.trim(u8, rest[1..], " \t");
+            return std.mem.startsWith(u8, rest, "true");
+        }
+        return false;
+    }
+
+    fn sourceHasAllowJsDirective(self: *Checker) bool {
+        const src = self.source orelse return false;
+        var search_start: usize = 0;
+        while (std.mem.indexOfPos(u8, src, search_start, "@allow")) |pos| {
+            search_start = pos + "@allow".len;
+            if (src.len < pos + "@allowJs".len) continue;
+            const js = src[pos + "@allow".len .. pos + "@allowJs".len];
+            if (!std.ascii.eqlIgnoreCase(js, "js")) continue;
+            var rest = std.mem.trim(u8, src[pos + "@allowJs".len ..], " \t");
+            if (rest.len > 0 and rest[0] == ':') rest = std.mem.trim(u8, rest[1..], " \t");
+            return std.mem.startsWith(u8, rest, "true");
+        }
+        return false;
     }
 
     fn sourceHasDirectConstSymbolInit(self: *Checker, name: []const u8) bool {
@@ -3770,11 +3861,13 @@ pub const Checker = struct {
 
             if (prop.value == hir_mod.none_node_id) {
                 if (saw_string or next_numeric == null) {
-                    try self.report(
-                        m,
-                        TsCodes.enum_computed_after_string,
-                        "Enum member must have initializer.",
-                    );
+                    if (!self.sourceHasAllowJsDirective()) {
+                        try self.report(
+                            m,
+                            TsCodes.enum_computed_after_string,
+                            "Enum member must have initializer.",
+                        );
+                    }
                     next_numeric = null;
                     continue;
                 }
@@ -5338,6 +5431,10 @@ pub const Checker = struct {
         var members: std.ArrayListUnmanaged(types.ObjectMember) = .empty;
         defer members.deinit(self.gpa);
 
+        if (self.jsDocStringIndexerFromTypeText(type_text)) |value_t| {
+            return self.interner.internObjectTypeWithIndex(&.{}, value_t, types.Primitive.none) catch return error.OutOfMemory;
+        }
+
         var lines = std.mem.splitScalar(u8, type_text, '\n');
         while (lines.next()) |raw_line| {
             var line = std.mem.trim(u8, raw_line, " \t\r");
@@ -5364,6 +5461,34 @@ pub const Checker = struct {
 
         if (members.items.len == 0) return null;
         return self.interner.internObjectType(members.items) catch return error.OutOfMemory;
+    }
+
+    fn jsDocStringIndexerFromTypeText(self: *Checker, type_text: []const u8) ?TypeId {
+        _ = self;
+        const compact = struct {
+            fn containsNeedle(haystack: []const u8, needle: []const u8) bool {
+                return std.mem.indexOf(u8, haystack, needle) != null;
+            }
+        }.containsNeedle;
+        if (compact(type_text, "Object.<string,string>") or
+            compact(type_text, "Object.<string, string>") or
+            compact(type_text, "Object<string,string>") or
+            compact(type_text, "Object<string, string>") or
+            compact(type_text, "Record<string,string>") or
+            compact(type_text, "Record<string, string>"))
+        {
+            return types.Primitive.string_t;
+        }
+        if (compact(type_text, "Object.<string,number>") or
+            compact(type_text, "Object.<string, number>") or
+            compact(type_text, "Object<string,number>") or
+            compact(type_text, "Object<string, number>") or
+            compact(type_text, "Record<string,number>") or
+            compact(type_text, "Record<string, number>"))
+        {
+            return types.Primitive.number_t;
+        }
+        return null;
     }
 
     fn isJsDocIdentStart(c: u8) bool {
@@ -5511,6 +5636,20 @@ pub const Checker = struct {
             if (self.interner.objectMember(inst_t, name)) |member_t| return member_t;
         }
         return null;
+    }
+
+    fn constructorPrototypeAccess(self: *Checker, obj_name: hir_mod.StringId, prop_name: hir_mod.StringId) CheckError!?TypeId {
+        if (!std.mem.eql(u8, self.string_interner.get(prop_name), "prototype")) return null;
+        var has_runtime_prototype = self.class_instance_types.contains(obj_name);
+        if (!has_runtime_prototype) {
+            if (self.module) |module| {
+                if (module.root.lookup(obj_name)) |sym| {
+                    has_runtime_prototype = sym.flags.is_function or sym.flags.is_class;
+                }
+            }
+        }
+        if (!has_runtime_prototype) return null;
+        return self.interner.internObjectTypeWithIndex(&.{}, types.Primitive.any, types.Primitive.none) catch return error.OutOfMemory;
     }
 
     /// Type an expression. Returns its TypeId and also records it
@@ -5802,6 +5941,9 @@ pub const Checker = struct {
                     if (self.constEnumLiteralAccess(obj_id.name, m.name)) |lit_t| {
                         break :blk if (m.optional) self.unionWithUndefined(lit_t) catch lit_t else lit_t;
                     }
+                    if (try self.constructorPrototypeAccess(obj_id.name, m.name)) |proto_t| {
+                        break :blk proto_t;
+                    }
                 }
                 // Optional chaining (`obj?.x`) widens the result to
                 // include `undefined` regardless of whether the
@@ -5867,6 +6009,9 @@ pub const Checker = struct {
                         break :blk string_idx;
                     }
                     // No matching member and no indexer → TS2339.
+                    if (self.sourceHasCheckJsDirective() and self.isAssignmentTarget(node)) {
+                        break :blk types.Primitive.any;
+                    }
                     const name_str = self.string_interner.get(m.name);
                     const msg = try std.fmt.allocPrint(
                         self.diag_arena.allocator(),
@@ -8760,6 +8905,12 @@ pub const Checker = struct {
             .code = code,
             .message = msg,
         });
+    }
+
+    fn isAssignmentTarget(self: *Checker, node: NodeId) bool {
+        const parent = self.hir.parentOf(node);
+        if (parent == hir_mod.none_node_id or self.hir.kindOf(parent) != .assignment) return false;
+        return hir_mod.assignmentOf(self.hir, parent).target == node;
     }
 
     /// True when `type_node` is the synthetic `type_ref` to `const`
@@ -14596,6 +14747,34 @@ test "checker: checkjs JSDoc @type resolves multiline object typedef skeletons" 
         if (d.code == TsCodes.type_not_assignable) found = true;
     }
     try T.expect(found);
+}
+
+test "checker: checkjs JSDoc Object string map exposes string indexer" {
+    const s = try newSetup(
+        \\// @checkjs: true
+        \\/** @typedef {Object.<string,string>} Mmap */
+        \\/** @type {Mmap} */
+        \\var y = { bye: "no" };
+        \\y.ignoreMe = "ok";
+    );
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+    for (s.checker.diagnostics.items) |d| {
+        try T.expect(d.code != TsCodes.property_does_not_exist);
+    }
+}
+
+test "checker: checkjs expando property assignment target does not report TS2339" {
+    const s = try newSetup(
+        \\// @checkjs: true
+        \\var middlewarify = module.exports = {};
+        \\middlewarify.Type = { BEFORE: "before" };
+    );
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+    for (s.checker.diagnostics.items) |d| {
+        try T.expect(d.code != TsCodes.property_does_not_exist);
+    }
 }
 
 test "checker: keyof T resolves to the literal union of property names" {

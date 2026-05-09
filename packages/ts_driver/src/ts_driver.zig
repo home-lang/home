@@ -110,6 +110,11 @@ pub const CompileOptions = struct {
     /// resolved file-scoped options (for example TS conformance
     /// `// @strict: true` directives).
     strict_flags: ?StrictFlags = null,
+    /// JavaScript files under `allowJs` are parsed/bound/emitted, but
+    /// TypeScript only reports JS semantic checker diagnostics when
+    /// `checkJs` is enabled. Callers that know the virtual file kind
+    /// can set this directly.
+    suppress_js_check_diagnostics: bool = false,
     /// Optional parsed tsconfig. When present, the driver applies
     /// the relevant compilerOptions:
     ///   - `jsx` — enables tsx parsing for `react`/`react-jsx`/etc.
@@ -422,19 +427,22 @@ pub fn compileSource(
             error.OutOfMemory => return error.OutOfMemory,
         };
     }
-    for (checker.diagnostics.items) |d| {
-        try c.diagnostics.append(gpa, .{
-            .phase = .bind,
-            .pos = c.hir.spanOf(d.node).start,
-            .line = 0,
-            .code = d.code,
-            .code_prefix = switch (d.code_prefix) {
-                .TS => .TS,
-                .HM => .HM,
-            },
-            .message = try gpa.dupe(u8, d.message),
-        });
-        c.has_errors = true;
+    const suppress_js_check_diagnostics = options.suppress_js_check_diagnostics or sourceIsUncheckedJs(source);
+    if (!suppress_js_check_diagnostics) {
+        for (checker.diagnostics.items) |d| {
+            try c.diagnostics.append(gpa, .{
+                .phase = .bind,
+                .pos = c.hir.spanOf(d.node).start,
+                .line = 0,
+                .code = d.code,
+                .code_prefix = switch (d.code_prefix) {
+                    .TS => .TS,
+                    .HM => .HM,
+                },
+                .message = try gpa.dupe(u8, d.message),
+            });
+            c.has_errors = true;
+        }
     }
 
     // ------ Emit ------
@@ -462,6 +470,67 @@ pub fn compileSource(
     }
 
     return c;
+}
+
+fn sourceIsUncheckedJs(source: []const u8) bool {
+    const allow_js = directiveBool(source, "allowJs") orelse false;
+    if (!allow_js) return false;
+    if (directiveBool(source, "checkJs") orelse false) return false;
+    if (sourceHasTsCheck(source)) return false;
+    return virtualFilenameIsJs(source);
+}
+
+fn sourceHasTsCheck(source: []const u8) bool {
+    return std.mem.indexOf(u8, source, "@ts-check") != null;
+}
+
+fn virtualFilenameIsJs(source: []const u8) bool {
+    var lines = std.mem.splitScalar(u8, source, '\n');
+    while (lines.next()) |raw_line| {
+        const line = std.mem.trim(u8, raw_line, " \t\r");
+        const marker = directiveValueStart(line, "filename") orelse continue;
+        const value = std.mem.trim(u8, marker, " \t");
+        return std.mem.endsWith(u8, value, ".js") or std.mem.endsWith(u8, value, ".jsx");
+    }
+    return false;
+}
+
+fn directiveBool(source: []const u8, name: []const u8) ?bool {
+    var lines = std.mem.splitScalar(u8, source, '\n');
+    while (lines.next()) |raw_line| {
+        const line = std.mem.trim(u8, raw_line, " \t\r");
+        const marker = directiveValueStart(line, name) orelse continue;
+        const value = std.mem.trim(u8, marker, " \t");
+        if (std.mem.startsWith(u8, value, ":")) {
+            const rest = std.mem.trim(u8, value[1..], " \t");
+            if (parseBoolWord(rest)) |b| return b;
+        } else if (parseBoolWord(value)) |b| {
+            return b;
+        }
+    }
+    return null;
+}
+
+fn directiveValueStart(line: []const u8, name: []const u8) ?[]const u8 {
+    const at = std.mem.indexOfScalar(u8, line, '@') orelse return null;
+    const after_at = line[at + 1 ..];
+    if (after_at.len < name.len) return null;
+    if (!std.ascii.eqlIgnoreCase(after_at[0..name.len], name)) return null;
+    if (after_at.len > name.len and isDirectiveNameChar(after_at[name.len])) return null;
+    return after_at[name.len..];
+}
+
+fn parseBoolWord(value: []const u8) ?bool {
+    var end: usize = 0;
+    while (end < value.len and std.ascii.isAlphabetic(value[end])) : (end += 1) {}
+    const word = value[0..end];
+    if (std.ascii.eqlIgnoreCase(word, "true")) return true;
+    if (std.ascii.eqlIgnoreCase(word, "false")) return false;
+    return null;
+}
+
+fn isDirectiveNameChar(c: u8) bool {
+    return std.ascii.isAlphanumeric(c) or c == '_' or c == '-';
 }
 
 // =============================================================================
@@ -500,6 +569,37 @@ test "driver: type annotations erase in JS output" {
         T.allocator.destroy(c);
     }
     try T.expectEqualStrings("let x = 1;", c.js);
+}
+
+test "driver: allowJs virtual js without checkJs suppresses checker diagnostics" {
+    var c = try compileSource(T.allocator,
+        \\// @allowJs: true
+        \\// @filename: unchecked.js
+        \\var value = {};
+        \\value.missing = 1;
+    , .{ .no_emit = true });
+    defer {
+        c.deinit();
+        T.allocator.destroy(c);
+    }
+
+    try T.expect(!c.has_errors);
+}
+
+test "driver: checkJs virtual js surfaces checker diagnostics" {
+    var c = try compileSource(T.allocator,
+        \\// @allowJs: true
+        \\// @checkJs: true
+        \\// @filename: checked.js
+        \\var value = {};
+        \\value.missing;
+    , .{ .no_emit = true });
+    defer {
+        c.deinit();
+        T.allocator.destroy(c);
+    }
+
+    try T.expect(c.has_errors);
 }
 
 test "driver: function with generics" {
