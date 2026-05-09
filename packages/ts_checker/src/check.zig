@@ -79,6 +79,8 @@ pub const TsCodes = struct {
     pub const expected_n_type_arguments: u32 = 2558;
     pub const no_overload_matches: u32 = 2769;
     pub const duplicate_identifier: u32 = 2300;
+    pub const namespace_as_value: u32 = 2708;
+    pub const namespace_before_merged_function: u32 = 2434;
     pub const generic_type_requires_args: u32 = 2314;
     pub const circular_constraint: u32 = 2313;
     pub const static_member_type_parameter: u32 = 2302;
@@ -562,6 +564,7 @@ pub const Checker = struct {
     pub fn checkSourceFile(self: *Checker, root: NodeId) CheckError!void {
         if (self.source) |src| try self.scanDirectives(src);
         const stmts = hir_mod.blockStmts(self.hir, root);
+        try self.checkNamespaceFunctionMergeOrder(stmts);
         // Pre-register top-level type aliases so recursive and mutually
         // recursive references (`type Tree<T> = { children: Tree<T>[] }`,
         // `type A = { b: B }; type B = { a: A }`) resolve to a stub body
@@ -900,6 +903,48 @@ pub const Checker = struct {
                 },
             }
         }
+    }
+
+    fn checkNamespaceFunctionMergeOrder(self: *Checker, stmts: []const NodeId) CheckError!void {
+        for (stmts, 0..) |raw, i| {
+            const node = self.unwrapExportDecl(raw);
+            if (node == hir_mod.none_node_id) continue;
+            if (self.hir.kindOf(node) == .namespace_decl) {
+                if (self.namespaceIsAmbient(node)) continue;
+                const ns_name = self.declarationName(node) orelse continue;
+                for (stmts[i + 1 ..]) |later_raw| {
+                    const later = self.unwrapExportDecl(later_raw);
+                    const later_name = self.declarationName(later) orelse continue;
+                    const later_kind = self.hir.kindOf(later);
+                    if ((later_kind == .fn_decl or later_kind == .fn_expr or later_kind == .class_decl or later_kind == .class_expr) and
+                        later_name == ns_name)
+                    {
+                        try self.report(node, TsCodes.namespace_before_merged_function, "A namespace declaration cannot be located prior to a class or function with which it is merged.");
+                        break;
+                    }
+                }
+                try self.checkNamespaceFunctionMergeOrder(hir_mod.namespaceBody(self.hir, node));
+            }
+        }
+    }
+
+    fn namespaceIsAmbient(self: *Checker, node: NodeId) bool {
+        if (node == hir_mod.none_node_id or self.hir.kindOf(node) != .namespace_decl) return false;
+        for (hir_mod.namespaceBody(self.hir, node)) |raw| {
+            const s = self.unwrapExportDecl(raw);
+            switch (self.hir.kindOf(s)) {
+                .var_decl, .let_decl, .const_decl => {
+                    if (!hir_mod.varDeclOf(self.hir, s).is_ambient) return false;
+                },
+                .fn_decl, .fn_expr, .arrow_fn => {
+                    if (hir_mod.fnDeclOf(self.hir, s).body != hir_mod.none_node_id) return false;
+                },
+                .class_decl, .class_expr, .enum_decl => return false,
+                .namespace_decl => if (!self.namespaceIsAmbient(s)) return false,
+                else => {},
+            }
+        }
+        return true;
     }
 
     fn checkNamespaceFnBodyAfterSignature(self: *Checker, node: NodeId) CheckError!void {
@@ -1434,6 +1479,10 @@ pub const Checker = struct {
                 }
                 if (v.init != hir_mod.none_node_id) {
                     try self.scanExprForUsedBeforeAssign(v.init, pending);
+                    if (v.name != hir_mod.none_node_id and self.hir.kindOf(v.name) == .identifier) {
+                        const id = hir_mod.identifierOf(self.hir, v.name);
+                        _ = pending.remove(id.name);
+                    }
                 }
             },
             .const_decl => {
@@ -1582,7 +1631,8 @@ pub const Checker = struct {
         if (self.hir.kindOf(decl_node) == .var_decl) {
             if (!self.nodeHasAncestorKind(ref_node, .conditional) and
                 !self.nodeHasAncestorKind(ref_node, .array_literal) and
-                !(self.nodeHasAncestorKind(ref_node, .call_expr) and self.varDeclHasTypeAnnotation(decl_node))) return;
+                !(self.nodeHasAncestorKind(ref_node, .call_expr) and self.varDeclHasTypeAnnotation(decl_node)) and
+                !self.isDirectExpressionStatement(ref_node)) return;
         }
         const name_str = self.string_interner.get(name);
         const msg = try std.fmt.allocPrint(
@@ -1598,6 +1648,15 @@ pub const Checker = struct {
         // Remove from pending so we only flag the first use; later
         // reads are noisy.
         _ = pending.remove(name);
+    }
+
+    fn isDirectExpressionStatement(self: *Checker, node: NodeId) bool {
+        const parent = self.hir.parentOf(node);
+        if (parent == hir_mod.none_node_id) return false;
+        return switch (self.hir.kindOf(parent)) {
+            .block_stmt => true,
+            else => false,
+        };
     }
 
     fn nodeHasAncestorKind(self: *Checker, node: NodeId, kind: hir_mod.NodeKind) bool {
@@ -2503,6 +2562,8 @@ pub const Checker = struct {
         // or any field). Used to satisfy inherited abstract members.
         var concrete_names: std.AutoHashMapUnmanaged(hir_mod.StringId, void) = .empty;
         defer concrete_names.deinit(self.gpa);
+        var static_names: std.AutoHashMapUnmanaged(hir_mod.StringId, NodeId) = .empty;
+        defer static_names.deinit(self.gpa);
 
         // Pre-scan for accessor pairs: a member name with both a
         // `get` and a `set` accessor is a regular read+write property.
@@ -2572,6 +2633,9 @@ pub const Checker = struct {
                     }
                     if (fn_p.name == hir_mod.none_node_id or self.hir.kindOf(fn_p.name) != .identifier) continue;
                     const id = hir_mod.identifierOf(self.hir, fn_p.name);
+                    if (fn_p.flags.is_static) {
+                        try static_names.put(self.gpa, id.name, m);
+                    }
                     try self.checkOverrideModifier(m, parent_instance_t, id.name, fn_p.flags.is_override, false);
                     if (fn_p.flags.is_private) try private_names.put(self.gpa, id.name, {});
                     if (fn_p.flags.is_protected) try protected_names.put(self.gpa, id.name, {});
@@ -2631,6 +2695,9 @@ pub const Checker = struct {
                 .object_property => {
                     const op = hir_mod.objectPropertyOf(self.hir, m);
                     const member_name = (try self.classMemberNameFromPropertyKey(op.key, op.is_computed)) orelse continue;
+                    if (op.is_static) {
+                        try static_names.put(self.gpa, member_name, m);
+                    }
                     try self.checkOverrideModifier(m, parent_instance_t, member_name, op.is_override, false);
                     if (op.visibility == .private) try private_names.put(self.gpa, member_name, {});
                     if (op.visibility == .protected) try protected_names.put(self.gpa, member_name, {});
@@ -2714,6 +2781,7 @@ pub const Checker = struct {
         self.hir.setType(node, instance_t);
         if (c.name != hir_mod.none_node_id and self.hir.kindOf(c.name) == .identifier) {
             const cid = hir_mod.identifierOf(self.hir, c.name);
+            try self.checkMergedNamespaceStaticConflicts(node, cid.name, &static_names);
             try self.class_instance_types.put(self.gpa, cid.name, instance_t);
             try self.type_names.put(self.gpa, cid.name, instance_t);
             if (class_param_ids.items.len > 0) {
@@ -2884,6 +2952,93 @@ pub const Checker = struct {
                 self.hir.setType(c.name, instance_t);
             }
         }
+    }
+
+    fn checkMergedNamespaceStaticConflicts(
+        self: *Checker,
+        class_node: NodeId,
+        class_name: hir_mod.StringId,
+        static_names: *const std.AutoHashMapUnmanaged(hir_mod.StringId, NodeId),
+    ) CheckError!void {
+        if (static_names.count() == 0) return;
+        const container = self.declarationContainer(class_node);
+        const siblings = self.containerStatements(container) orelse return;
+        for (siblings) |sibling| {
+            const ns_node = self.unwrapExportDecl(sibling);
+            if (ns_node == class_node or self.hir.kindOf(ns_node) != .namespace_decl) continue;
+            const ns = hir_mod.namespaceOf(self.hir, ns_node);
+            if (ns.name == hir_mod.none_node_id or self.hir.kindOf(ns.name) != .identifier) continue;
+            if (hir_mod.identifierOf(self.hir, ns.name).name != class_name) continue;
+            for (hir_mod.namespaceBody(self.hir, ns_node)) |member| {
+                if (self.hir.kindOf(member) != .export_decl) continue;
+                const member_node = self.unwrapExportDecl(member);
+                const member_name = self.declarationName(member_node) orelse continue;
+                const static_node = static_names.get(member_name) orelse continue;
+                try self.reportDuplicateIdentifier(static_node, member_name);
+                try self.reportDuplicateIdentifier(member_node, member_name);
+            }
+        }
+    }
+
+    fn declarationContainer(self: *Checker, node: NodeId) NodeId {
+        var cur = node;
+        var parent = self.hir.parentOf(cur);
+        while (parent != hir_mod.none_node_id and self.hir.kindOf(parent) == .export_decl) {
+            cur = parent;
+            parent = self.hir.parentOf(cur);
+        }
+        return parent;
+    }
+
+    fn containerStatements(self: *Checker, container: NodeId) ?[]const NodeId {
+        if (container == hir_mod.none_node_id) return null;
+        return switch (self.hir.kindOf(container)) {
+            .block_stmt => hir_mod.blockStmts(self.hir, container),
+            .namespace_decl => hir_mod.namespaceBody(self.hir, container),
+            else => null,
+        };
+    }
+
+    fn unwrapExportDecl(self: *Checker, node: NodeId) NodeId {
+        if (node != hir_mod.none_node_id and self.hir.kindOf(node) == .export_decl) {
+            const ex = hir_mod.exportOf(self.hir, node);
+            if (ex.decl != hir_mod.none_node_id) return ex.decl;
+        }
+        return node;
+    }
+
+    fn declarationName(self: *Checker, node: NodeId) ?hir_mod.StringId {
+        if (node == hir_mod.none_node_id) return null;
+        const name_node: NodeId = switch (self.hir.kindOf(node)) {
+            .var_decl, .let_decl, .const_decl => hir_mod.varDeclOf(self.hir, node).name,
+            .fn_decl, .fn_expr, .arrow_fn => hir_mod.fnDeclOf(self.hir, node).name,
+            .class_decl, .class_expr => hir_mod.classOf(self.hir, node).name,
+            .interface_decl => hir_mod.interfaceOf(self.hir, node).name,
+            .enum_decl => hir_mod.enumOf(self.hir, node).name,
+            .type_alias_decl => hir_mod.typeAliasOf(self.hir, node).name,
+            .namespace_decl => hir_mod.namespaceOf(self.hir, node).name,
+            else => return null,
+        };
+        if (name_node == hir_mod.none_node_id or self.hir.kindOf(name_node) != .identifier) return null;
+        return hir_mod.identifierOf(self.hir, name_node).name;
+    }
+
+    fn reportDuplicateIdentifier(
+        self: *Checker,
+        node: NodeId,
+        name: hir_mod.StringId,
+    ) CheckError!void {
+        const name_str = self.string_interner.get(name);
+        const msg = try std.fmt.allocPrint(
+            self.diag_arena.allocator(),
+            "Duplicate identifier '{s}'.",
+            .{name_str},
+        );
+        try self.diagnostics.append(self.gpa, .{
+            .node = node,
+            .code = TsCodes.duplicate_identifier,
+            .message = msg,
+        });
     }
 
     /// TS2341: emit when `obj.name` reaches a member declared
@@ -3880,6 +4035,9 @@ pub const Checker = struct {
             .tuple_type => return try self.lowerTupleWithTypeParams(type_node),
             .type_ref => {
                 const r = hir_mod.typeRefOf(self.hir, type_node);
+                if (r.qualifier_len > 0 and r.args_len == 0) {
+                    if (try self.resolveQualifiedTypeRef(type_node)) |t| return t;
+                }
                 if (r.qualifier_len == 0 and r.args_len == 0) {
                     const name_str = self.string_interner.get(r.name);
                     if (std.mem.eql(u8, name_str, "String")) {
@@ -4245,6 +4403,117 @@ pub const Checker = struct {
             else => {},
         }
         return self.lowerer.lower(type_node);
+    }
+
+    fn resolveQualifiedTypeRef(self: *Checker, type_node: NodeId) CheckError!?TypeId {
+        const r = hir_mod.typeRefOf(self.hir, type_node);
+        const qualifiers = hir_mod.typeRefQualifier(self.hir, type_node);
+        if (qualifiers.len == 0) return null;
+        var path: std.ArrayListUnmanaged(hir_mod.StringId) = .empty;
+        defer path.deinit(self.gpa);
+        for (qualifiers) |q| {
+            if (self.hir.kindOf(q) != .identifier) return null;
+            try path.append(self.gpa, hir_mod.identifierOf(self.hir, q).name);
+        }
+        const root = self.rootBlockFor(type_node);
+        const root_stmts = if (root != hir_mod.none_node_id and self.hir.kindOf(root) == .block_stmt)
+            hir_mod.blockStmts(self.hir, root)
+        else
+            return null;
+        const ns_node = self.findNamespaceByPath(root_stmts, path.items) orelse return null;
+        const decl = self.findNamedTypeDeclInNamespace(ns_node, r.name) orelse return null;
+        const t = self.hir.typeOf(decl);
+        if (t != types.Primitive.none and t != types.Primitive.unknown) return t;
+        return switch (self.hir.kindOf(decl)) {
+            .interface_decl => blk: {
+                try self.checkInterfaceDecl(decl);
+                const lowered = self.hir.typeOf(decl);
+                break :blk if (lowered != types.Primitive.none) lowered else null;
+            },
+            .type_alias_decl => blk: {
+                try self.checkTypeAliasDecl(decl);
+                const lowered = self.hir.typeOf(decl);
+                break :blk if (lowered != types.Primitive.none) lowered else null;
+            },
+            .class_decl, .class_expr => blk: {
+                const c = hir_mod.classOf(self.hir, decl);
+                if (c.name != hir_mod.none_node_id and self.hir.kindOf(c.name) == .identifier) {
+                    const cid = hir_mod.identifierOf(self.hir, c.name);
+                    if (self.class_instance_types.get(cid.name)) |ct| break :blk ct;
+                }
+                break :blk null;
+            },
+            .enum_decl => self.hir.typeOf(decl),
+            else => null,
+        };
+    }
+
+    fn rootBlockFor(self: *Checker, node: NodeId) NodeId {
+        var cur = node;
+        var parent = self.hir.parentOf(cur);
+        while (parent != hir_mod.none_node_id) : (parent = self.hir.parentOf(cur)) {
+            cur = parent;
+        }
+        return cur;
+    }
+
+    fn findNamespaceByPath(
+        self: *Checker,
+        stmts: []const NodeId,
+        path: []const hir_mod.StringId,
+    ) ?NodeId {
+        if (path.len == 0) return null;
+        for (stmts) |raw| {
+            const node = self.unwrapExportDecl(raw);
+            if (node == hir_mod.none_node_id or self.hir.kindOf(node) != .namespace_decl) continue;
+            const ns = hir_mod.namespaceOf(self.hir, node);
+            if (ns.name == hir_mod.none_node_id or self.hir.kindOf(ns.name) != .identifier) continue;
+            const ns_name = self.string_interner.get(hir_mod.identifierOf(self.hir, ns.name).name);
+            const consumed = self.namespaceNameConsumesPath(ns_name, path) orelse continue;
+            if (consumed == path.len) return node;
+            if (self.findNamespaceByPath(hir_mod.namespaceBody(self.hir, node), path[consumed..])) |nested| {
+                return nested;
+            }
+        }
+        return null;
+    }
+
+    fn namespaceNameConsumesPath(
+        self: *Checker,
+        ns_name: []const u8,
+        path: []const hir_mod.StringId,
+    ) ?usize {
+        var consumed: usize = 0;
+        var it = std.mem.splitScalar(u8, ns_name, '.');
+        while (it.next()) |segment| {
+            if (consumed >= path.len) return null;
+            if (!std.mem.eql(u8, segment, self.string_interner.get(path[consumed]))) return null;
+            consumed += 1;
+        }
+        return consumed;
+    }
+
+    fn findNamedTypeDeclInNamespace(
+        self: *Checker,
+        ns_node: NodeId,
+        name: hir_mod.StringId,
+    ) ?NodeId {
+        for (hir_mod.namespaceBody(self.hir, ns_node)) |raw| {
+            const node = self.unwrapExportDecl(raw);
+            switch (self.hir.kindOf(node)) {
+                .interface_decl,
+                .type_alias_decl,
+                .class_decl,
+                .class_expr,
+                .enum_decl,
+                => {
+                    const decl_name = self.declarationName(node) orelse continue;
+                    if (decl_name == name) return node;
+                },
+                else => {},
+            }
+        }
+        return null;
     }
 
     fn lowerTupleWithTypeParams(self: *Checker, type_node: NodeId) CheckError!TypeId {
@@ -5116,7 +5385,12 @@ pub const Checker = struct {
         if (scope == hir_mod.none_node_id) return;
         const key: VarDeclKey = .{ .scope = scope, .name = id.name };
         if (self.var_decl_types.get(key)) |prior| {
-            if (!(self.engine.isIdenticalTo(prior, final_type) catch true)) {
+            const compatible = self.typeContainsUnknown(prior) or
+                self.typeContainsUnknown(final_type) or
+                (self.engine.isIdenticalTo(prior, final_type) catch true) or
+                ((self.engine.isAssignableTo(prior, final_type) catch true) and
+                (self.engine.isAssignableTo(final_type, prior) catch true));
+            if (!compatible) {
                 const name = self.string_interner.get(id.name);
                 const msg = try std.fmt.allocPrint(
                     self.diag_arena.allocator(),
@@ -5132,6 +5406,43 @@ pub const Checker = struct {
             return;
         }
         try self.var_decl_types.put(self.gpa, key, final_type);
+    }
+
+    fn typeContainsUnknown(self: *Checker, t: TypeId) bool {
+        if (t == types.Primitive.unknown) return true;
+        if (t < types.Primitive.first_dynamic) return false;
+        if (t >= self.interner.pool.typeCount()) return false;
+        const flags = self.interner.pool.flagsOf(t);
+        if (flags.is_union) {
+            for (self.interner.unionMembers(t)) |m| if (self.typeContainsUnknown(m)) return true;
+            return false;
+        }
+        if (flags.is_intersection) {
+            for (self.interner.intersectionMembers(t)) |m| if (self.typeContainsUnknown(m)) return true;
+            return false;
+        }
+        if (flags.is_object_type) {
+            for (self.interner.objectMembers(t)) |m| if (self.typeContainsUnknown(m.type)) return true;
+            const string_idx = self.interner.objectStringIndex(t);
+            if (string_idx != types.Primitive.none and self.typeContainsUnknown(string_idx)) return true;
+            const number_idx = self.interner.objectNumberIndex(t);
+            if (number_idx != types.Primitive.none and self.typeContainsUnknown(number_idx)) return true;
+            return false;
+        }
+        if (flags.is_signature) {
+            for (self.interner.signatureParams(t)) |p| if (self.typeContainsUnknown(p)) return true;
+            if (self.interner.signatureReturn(t)) |r| if (self.typeContainsUnknown(r)) return true;
+            return false;
+        }
+        if (flags.is_tuple) {
+            const payload_idx = self.interner.pool.payloadOf(t);
+            if (payload_idx >= self.interner.pool.tuple_payloads.items.len) return false;
+            const payload = self.interner.pool.tuple_payloads.items[payload_idx];
+            const elems = self.interner.pool.tuple_element_pool.items[payload.elements_start .. payload.elements_start + payload.elements_len];
+            for (elems) |elem| if (self.typeContainsUnknown(elem.type)) return true;
+            return false;
+        }
+        return false;
     }
 
     fn isThisParameter(self: *Checker, param_node: NodeId) bool {
@@ -6735,6 +7046,10 @@ pub const Checker = struct {
 
         // Module-level fallback.
         if (self.module) |module| {
+            if (!self.isDeclNameSlot(node) and self.moduleNameIsNamespaceOnlyValue(module, id.name)) {
+                self.reportNamespaceAsValue(node, id.name) catch {};
+                return types.Primitive.any;
+            }
             if (module.root.lookup(id.name)) |sym| {
                 if (sym.decls.items.len > 0) {
                     const decl = sym.decls.items[0];
@@ -6749,6 +7064,7 @@ pub const Checker = struct {
             // declaration name slots to avoid flagging the very
             // identifier that introduces the name.
             if (!self.isDeclNameSlot(node) and !self.isBuiltinName(id.name)) {
+                if (self.moduleHasRuntimeNamespacePrefix(module, id.name)) return types.Primitive.any;
                 self.reportCannotFindName(node, id.name) catch {};
             }
         }
@@ -6822,6 +7138,80 @@ pub const Checker = struct {
         return types.Primitive.any;
     }
 
+    fn moduleNameIsNamespaceOnlyValue(
+        self: *Checker,
+        module: *const binder_mod.Module,
+        name: hir_mod.StringId,
+    ) bool {
+        _ = module.root.namespaces.get(name) orelse return false;
+        const value_sym = module.root.values.get(name) orelse return true;
+        for (value_sym.decls.items) |decl| {
+            if (self.hir.kindOf(decl) != .namespace_decl) return false;
+            if (self.namespaceHasRuntimeValue(decl)) return false;
+        }
+        return true;
+    }
+
+    fn moduleHasRuntimeNamespacePrefix(
+        self: *Checker,
+        module: *const binder_mod.Module,
+        name: hir_mod.StringId,
+    ) bool {
+        const prefix = self.string_interner.get(name);
+        var it = module.root.namespaces.iterator();
+        while (it.next()) |entry| {
+            const ns_name = self.string_interner.get(entry.key_ptr.*);
+            if (ns_name.len <= prefix.len) continue;
+            if (!std.mem.startsWith(u8, ns_name, prefix)) continue;
+            if (ns_name[prefix.len] != '.') continue;
+            const sym = entry.value_ptr.*;
+            for (sym.decls.items) |decl| {
+                if (self.namespaceHasRuntimeValue(decl)) return true;
+            }
+        }
+        return false;
+    }
+
+    fn namespaceHasRuntimeValue(self: *Checker, node: NodeId) bool {
+        if (node == hir_mod.none_node_id or self.hir.kindOf(node) != .namespace_decl) return false;
+        for (hir_mod.namespaceBody(self.hir, node)) |raw| {
+            const s = self.unwrapExportDecl(raw);
+            switch (self.hir.kindOf(s)) {
+                .var_decl,
+                .let_decl,
+                .const_decl,
+                .fn_decl,
+                .fn_expr,
+                .class_decl,
+                .class_expr,
+                .enum_decl,
+                => return true,
+                .block_stmt => return true,
+                .namespace_decl => if (self.namespaceHasRuntimeValue(s)) return true,
+                else => {},
+            }
+        }
+        return false;
+    }
+
+    fn reportNamespaceAsValue(
+        self: *Checker,
+        node: NodeId,
+        name: hir_mod.StringId,
+    ) !void {
+        const name_str = self.string_interner.get(name);
+        const msg = try std.fmt.allocPrint(
+            self.diag_arena.allocator(),
+            "Cannot use namespace '{s}' as a value.",
+            .{name_str},
+        );
+        try self.diagnostics.append(self.gpa, .{
+            .node = node,
+            .code = TsCodes.namespace_as_value,
+            .message = msg,
+        });
+    }
+
     /// Recognize a small set of common globals that should not
     /// trigger TS2304 even though we don't have a real lib.d.ts
     /// loaded yet. The list intentionally errs on the conservative
@@ -6832,7 +7222,7 @@ pub const Checker = struct {
             // Core globals / values.
             "console",        "undefined",          "NaN",
             "Infinity",       "globalThis",         "this",
-            "window",         "document",
+            "window",         "document",           "Element",
             // Constructors / namespaces.
                       "Math",
             "JSON",           "Object",             "Array",
@@ -14321,6 +14711,57 @@ test "checker: getter body without value return reports TS2378" {
         if (d.code == TsCodes.getter_must_return_value) found = true;
     }
     try T.expect(found);
+}
+
+test "checker: namespace-only declarations cannot be used as values" {
+    const b = try newBoundSetup(
+        \\namespace M { export interface Point { x: number; } }
+        \\var m = M;
+    );
+    defer destroyBoundSetup(b);
+    try b.base.checker.checkSourceFile(b.base.root);
+    var found = false;
+    for (b.base.checker.diagnostics.items) |d| {
+        if (d.code == TsCodes.namespace_as_value) found = true;
+    }
+    try T.expect(found);
+}
+
+test "checker: class static member conflicts with exported namespace member" {
+    const s = try newSetup(
+        \\class Point { static Origin = 1; }
+        \\namespace Point { export var Origin = 2; }
+    );
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+    var found = false;
+    for (s.checker.diagnostics.items) |d| {
+        if (d.code == TsCodes.duplicate_identifier) found = true;
+    }
+    try T.expect(found);
+
+    const non_exported = try newSetup(
+        \\class Point { static Origin = 1; }
+        \\namespace Point { var Origin = 2; }
+    );
+    defer destroySetup(non_exported);
+    try non_exported.checker.checkSourceFile(non_exported.root);
+    for (non_exported.checker.diagnostics.items) |d| {
+        try T.expect(d.code != TsCodes.duplicate_identifier);
+    }
+}
+
+test "checker: qualified namespace interface refs satisfy repeated var declarations" {
+    const s = try newSetup(
+        \\namespace A { export interface Point { x: number; y: number; } }
+        \\var p: { x: number; y: number; };
+        \\var p: A.Point;
+    );
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+    for (s.checker.diagnostics.items) |d| {
+        try T.expect(d.code != TsCodes.subsequent_var_type_mismatch);
+    }
 }
 
 test "checker: class setter — `c.x = 1` is allowed and types as the setter param" {

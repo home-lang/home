@@ -422,9 +422,16 @@ pub const Parser = struct {
             },
             .kw_interface => try self.parseInterfaceDeclaration(),
             .kw_enum => try self.parseEnumDeclaration(),
-            .kw_namespace => try self.parseNamespaceDeclaration(),
+            .kw_namespace => blk: {
+                if (self.peekAt(1).flags.preceded_by_newline) break :blk try self.parseExpressionStatement();
+                break :blk try self.parseNamespaceDeclaration();
+            },
             .kw_module => blk: {
+                if (self.peekAt(1).flags.preceded_by_newline) break :blk try self.parseExpressionStatement();
                 if (self.peekAt(1).kind == .dot) break :blk try self.parseExpressionStatement();
+                if (self.peekAt(1).kind != .identifier and self.peekAt(1).kind != .string_literal) {
+                    break :blk try self.parseExpressionStatement();
+                }
                 break :blk try self.parseNamespaceDeclaration();
             },
             .kw_declare => blk: {
@@ -4313,7 +4320,7 @@ pub const Parser = struct {
                 const id = try self.internToken(t);
                 return try self.builder.addIdentifier(tokenSpan(t), id);
             },
-            .kw_any, .kw_unknown, .kw_never, .kw_void, .kw_string, .kw_number, .kw_boolean, .kw_bigint, .kw_symbol, .kw_object, .kw_get, .kw_set, .kw_global, .kw_require, .kw_module, .kw_of => {
+            .kw_any, .kw_unknown, .kw_never, .kw_void, .kw_string, .kw_number, .kw_boolean, .kw_bigint, .kw_symbol, .kw_object, .kw_get, .kw_set, .kw_global, .kw_require, .kw_module, .kw_namespace, .kw_of => {
                 _ = self.advance();
                 const id = try self.internToken(t);
                 return try self.builder.addIdentifier(tokenSpan(t), id);
@@ -4899,6 +4906,7 @@ fn isExpressionIdentifierToken(kind: TokenKind) bool {
         .kw_global,
         .kw_require,
         .kw_module,
+        .kw_namespace,
         .kw_of,
         => true,
         else => false,
@@ -7086,6 +7094,32 @@ test "parser: computed enum member parses cleanly" {
 
 test "parser: yield can be a generator function expression name" {
     var s = try newTestSetup("const f = async function * yield() {};");
+    defer destroyTestSetup(s);
+
+    _ = try s.parser.parseSourceFile();
+    try T.expectEqual(@as(usize, 0), s.parser.diagnostics.items.len);
+}
+
+test "parser: newline after namespace forces expression statement" {
+    var s = try newTestSetup(
+        \\var namespace: number;
+        \\var n: string;
+        \\namespace
+        \\n
+        \\{ }
+    );
+    defer destroyTestSetup(s);
+
+    const root = try s.parser.parseSourceFile();
+    const stmts = hir_mod.blockStmts(&s.hir, root);
+    try T.expect(stmts.len >= 5);
+    try T.expectEqual(hir_mod.NodeKind.identifier, s.hir.kindOf(stmts[2]));
+    try T.expectEqual(hir_mod.NodeKind.identifier, s.hir.kindOf(stmts[3]));
+    try T.expectEqual(hir_mod.NodeKind.block_stmt, s.hir.kindOf(stmts[4]));
+}
+
+test "parser: module keyword can be a CommonJS expression root" {
+    var s = try newTestSetup("module[\"exports\"][\"d\"].e = 0;");
     defer destroyTestSetup(s);
 
     _ = try s.parser.parseSourceFile();
