@@ -64,11 +64,15 @@ pub const TsCodes = struct {
     /// 2304 plus a `Did you mean 'X'?` suggestion.
     pub const cannot_find_name_did_you_mean: u32 = 2552;
     pub const cannot_find_module: u32 = 2307;
+    pub const destructuring_decl_must_have_initializer: u32 = 1182;
+    pub const rest_element_cannot_have_initializer: u32 = 1186;
     pub const type_not_assignable: u32 = 2322;
     pub const super_not_derived: u32 = 2335;
     pub const property_does_not_exist: u32 = 2339;
     pub const argument_type_mismatch: u32 = 2345;
     pub const conversion_may_be_mistake: u32 = 2352;
+    pub const parameter_cannot_reference_self: u32 = 2372;
+    pub const parameter_cannot_reference_later: u32 = 2373;
     pub const subsequent_var_type_mismatch: u32 = 2403;
     pub const interface_incorrectly_extends: u32 = 2430;
     pub const property_not_assignable_to_base: u32 = 2416;
@@ -77,6 +81,7 @@ pub const TsCodes = struct {
     pub const class_incorrectly_implements_interface: u32 = 2420;
     pub const class_used_before_declaration: u32 = 2449;
     pub const tuple_index_out_of_bounds: u32 = 2493;
+    pub const object_possibly_undefined: u32 = 2532;
     pub const expected_n_arguments: u32 = 2554;
     pub const expected_n_type_arguments: u32 = 2558;
     pub const multiple_default_exports: u32 = 2528;
@@ -100,6 +105,7 @@ pub const TsCodes = struct {
     pub const object_literal_excess_property: u32 = 2353;
     pub const satisfies_constraint: u32 = 1360;
     pub const used_before_assignment: u32 = 2454;
+    pub const block_scoped_used_before_decl: u32 = 2448;
     pub const property_not_initialized: u32 = 2564;
     pub const cannot_assign_const: u32 = 2588;
     pub const await_only_in_async: u32 = 1308;
@@ -853,6 +859,12 @@ pub const Checker = struct {
             .try_stmt => {
                 const ts = hir_mod.tryOf(self.hir, node);
                 if (ts.block != hir_mod.none_node_id) try self.checkStatement(ts.block);
+                if (ts.catch_param != hir_mod.none_node_id) {
+                    const ck = self.hir.kindOf(ts.catch_param);
+                    if (ck == .object_pattern or ck == .array_pattern) {
+                        self.hir.setType(ts.catch_param, types.Primitive.any);
+                    }
+                }
                 if (ts.catch_block != hir_mod.none_node_id) try self.checkStatement(ts.catch_block);
                 if (ts.finally_block != hir_mod.none_node_id) try self.checkStatement(ts.finally_block);
                 try self.checkUnusedCatchParam(node);
@@ -1196,6 +1208,7 @@ pub const Checker = struct {
         const had_type_params = hir_mod.fnTypeParams(self.hir, node).len > 0;
         _ = try self.checkFnSignatureOnly(node);
         defer if (had_type_params) self.popNarrowScope();
+        try self.checkFnParameterDefaultReferences(node);
         try self.walkFnBody(node);
     }
 
@@ -1644,7 +1657,11 @@ pub const Checker = struct {
                         _ = pending.remove(id.name);
                     }
                 } else if (a.target != hir_mod.none_node_id) {
-                    try self.scanExprForUsedBeforeAssign(a.target, pending);
+                    if (a.op == null) {
+                        try self.removeAssignedTargetFromPending(a.target, pending);
+                    } else {
+                        try self.scanExprForUsedBeforeAssign(a.target, pending);
+                    }
                 }
             },
             .block_stmt => {
@@ -1754,8 +1771,34 @@ pub const Checker = struct {
                     } else {
                         _ = pending.remove(id.name);
                     }
+                } else if (a.target != hir_mod.none_node_id) {
+                    if (a.op == null) {
+                        try self.removeAssignedTargetFromPending(a.target, pending);
+                    } else {
+                        try self.scanExprForUsedBeforeAssign(a.target, pending);
+                    }
                 }
             },
+            else => {},
+        }
+    }
+
+    fn removeAssignedTargetFromPending(
+        self: *Checker,
+        node: NodeId,
+        pending: *std.AutoHashMapUnmanaged(hir_mod.StringId, NodeId),
+    ) CheckError!void {
+        if (node == hir_mod.none_node_id) return;
+        switch (self.hir.kindOf(node)) {
+            .identifier => {
+                const id = hir_mod.identifierOf(self.hir, node);
+                _ = pending.remove(id.name);
+            },
+            .array_literal => for (hir_mod.arrayLiteralElements(self.hir, node)) |el| try self.removeAssignedTargetFromPending(el, pending),
+            .spread => try self.removeAssignedTargetFromPending(hir_mod.spreadOf(self.hir, node).expression, pending),
+            .object_literal => for (hir_mod.objectLiteralProps(self.hir, node)) |p| try self.removeAssignedTargetFromPending(p, pending),
+            .object_property => try self.removeAssignedTargetFromPending(hir_mod.objectPropertyOf(self.hir, node).value, pending),
+            .member_access, .element_access => {},
             else => {},
         }
     }
@@ -2083,6 +2126,266 @@ pub const Checker = struct {
             },
             else => {},
         }
+    }
+
+    const BindingDefaultMode = enum { variable, parameter };
+    const BindingSlot = struct {
+        name: hir_mod.StringId,
+        node: NodeId,
+        default_value: NodeId,
+    };
+    const NameRef = struct {
+        name: hir_mod.StringId,
+        node: NodeId,
+    };
+
+    fn checkFnParameterDefaultReferences(self: *Checker, fn_node: NodeId) CheckError!void {
+        for (hir_mod.fnParams(self.hir, fn_node)) |p| {
+            if (self.hir.kindOf(p) != .parameter) continue;
+            const pp = hir_mod.parameterOf(self.hir, p);
+            if (pp.name == hir_mod.none_node_id) continue;
+            const nk = self.hir.kindOf(pp.name);
+            if (nk == .object_pattern or nk == .array_pattern) {
+                try self.checkBindingPatternDefaultReferences(pp.name, .parameter);
+            }
+            if (nk == .array_pattern and pp.default_value != hir_mod.none_node_id) {
+                const default_t = try self.checkExpression(pp.default_value);
+                if (!self.isIterableLikeType(default_t) and !self.objectLiteralHasSymbolIteratorMethod(pp.default_value)) {
+                    try self.report(pp.default_value, TsCodes.yield_star_not_iterable, "Type must have a '[Symbol.iterator]()' method that returns an iterator.");
+                }
+            }
+            if (nk == .object_pattern and pp.type_annotation != hir_mod.none_node_id) {
+                const param_t = self.hir.typeOf(p);
+                if (param_t != types.Primitive.none) try self.checkObjectBindingPatternAgainstType(pp.name, param_t);
+            }
+        }
+    }
+
+    fn checkBindingPatternDefaultReferences(
+        self: *Checker,
+        pattern_node: NodeId,
+        mode: BindingDefaultMode,
+    ) CheckError!void {
+        var slots: std.ArrayListUnmanaged(BindingSlot) = .empty;
+        defer slots.deinit(self.gpa);
+        try self.collectBindingSlots(pattern_node, &slots);
+        for (slots.items, 0..) |slot, i| {
+            if (slot.default_value == hir_mod.none_node_id) continue;
+            var refs: std.ArrayListUnmanaged(NameRef) = .empty;
+            defer refs.deinit(self.gpa);
+            try self.collectIdentifierRefsWithNodes(slot.default_value, &refs);
+            for (refs.items) |ref| {
+                var j: usize = i;
+                while (j < slots.items.len) : (j += 1) {
+                    const later = slots.items[j];
+                    if (later.name != ref.name) continue;
+                    try self.reportBindingDefaultReference(ref.node, mode, j == i);
+                    break;
+                }
+            }
+        }
+    }
+
+    fn collectBindingSlots(
+        self: *Checker,
+        pattern_node: NodeId,
+        out: *std.ArrayListUnmanaged(BindingSlot),
+    ) CheckError!void {
+        const pk = self.hir.kindOf(pattern_node);
+        if (pk != .object_pattern and pk != .array_pattern) return;
+        for (hir_mod.patternElements(self.hir, pattern_node)) |e| {
+            if (self.hir.kindOf(e) != .parameter) continue;
+            const ep = hir_mod.parameterOf(self.hir, e);
+            if (ep.name == hir_mod.none_node_id) continue;
+            const nk = self.hir.kindOf(ep.name);
+            if (nk == .identifier) {
+                const id = hir_mod.identifierOf(self.hir, ep.name);
+                try out.append(self.gpa, .{
+                    .name = id.name,
+                    .node = ep.name,
+                    .default_value = ep.default_value,
+                });
+            } else if (nk == .object_pattern or nk == .array_pattern) {
+                try self.collectBindingSlots(ep.name, out);
+            }
+        }
+    }
+
+    fn collectIdentifierRefsWithNodes(
+        self: *Checker,
+        node: NodeId,
+        out: *std.ArrayListUnmanaged(NameRef),
+    ) CheckError!void {
+        if (node == hir_mod.none_node_id) return;
+        switch (self.hir.kindOf(node)) {
+            .identifier => {
+                const id = hir_mod.identifierOf(self.hir, node);
+                try out.append(self.gpa, .{ .name = id.name, .node = node });
+            },
+            .fn_decl, .fn_expr, .arrow_fn => return,
+            .block_stmt => for (hir_mod.blockStmts(self.hir, node)) |s| try self.collectIdentifierRefsWithNodes(s, out),
+            .return_stmt => try self.collectIdentifierRefsWithNodes(hir_mod.returnOf(self.hir, node).value, out),
+            .throw_stmt => try self.collectIdentifierRefsWithNodes(hir_mod.throwOf(self.hir, node).value, out),
+            .var_decl, .let_decl, .const_decl => {
+                const v = hir_mod.varDeclOf(self.hir, node);
+                try self.collectIdentifierRefsWithNodes(v.init, out);
+            },
+            .binary_op => {
+                const b = hir_mod.binopOf(self.hir, node);
+                try self.collectIdentifierRefsWithNodes(b.lhs, out);
+                try self.collectIdentifierRefsWithNodes(b.rhs, out);
+            },
+            .unary_op => try self.collectIdentifierRefsWithNodes(hir_mod.unaryOf(self.hir, node).operand, out),
+            .logical_op => {
+                const l = hir_mod.logicalOf(self.hir, node);
+                try self.collectIdentifierRefsWithNodes(l.lhs, out);
+                try self.collectIdentifierRefsWithNodes(l.rhs, out);
+            },
+            .conditional => {
+                const c = hir_mod.conditionalOf(self.hir, node);
+                try self.collectIdentifierRefsWithNodes(c.cond, out);
+                try self.collectIdentifierRefsWithNodes(c.then_branch, out);
+                try self.collectIdentifierRefsWithNodes(c.else_branch, out);
+            },
+            .assignment => {
+                const a = hir_mod.assignmentOf(self.hir, node);
+                try self.collectIdentifierRefsWithNodes(a.target, out);
+                try self.collectIdentifierRefsWithNodes(a.value, out);
+            },
+            .call_expr, .new_expr => {
+                const c = hir_mod.callOf(self.hir, node);
+                try self.collectIdentifierRefsWithNodes(c.callee, out);
+                for (hir_mod.callArgs(self.hir, node)) |arg| try self.collectIdentifierRefsWithNodes(arg, out);
+            },
+            .member_access => try self.collectIdentifierRefsWithNodes(hir_mod.memberOf(self.hir, node).object, out),
+            .element_access => {
+                const e = hir_mod.elementOf(self.hir, node);
+                try self.collectIdentifierRefsWithNodes(e.object, out);
+                try self.collectIdentifierRefsWithNodes(e.index, out);
+            },
+            .as_expr, .satisfies_expr, .type_assertion, .non_null_expr => {
+                const a = hir_mod.asExpressionOf(self.hir, node);
+                try self.collectIdentifierRefsWithNodes(a.expr, out);
+            },
+            .array_literal => for (hir_mod.arrayLiteralElements(self.hir, node)) |el| try self.collectIdentifierRefsWithNodes(el, out),
+            .spread => try self.collectIdentifierRefsWithNodes(hir_mod.spreadOf(self.hir, node).expression, out),
+            .object_literal => for (hir_mod.objectLiteralProps(self.hir, node)) |p| try self.collectIdentifierRefsWithNodes(p, out),
+            .object_property => {
+                const op = hir_mod.objectPropertyOf(self.hir, node);
+                try self.collectIdentifierRefsWithNodes(op.value, out);
+                if (op.is_computed) try self.collectIdentifierRefsWithNodes(op.key, out);
+            },
+            else => {},
+        }
+    }
+
+    fn reportBindingDefaultReference(
+        self: *Checker,
+        node: NodeId,
+        mode: BindingDefaultMode,
+        is_self: bool,
+    ) CheckError!void {
+        const code: u32 = switch (mode) {
+            .variable => TsCodes.block_scoped_used_before_decl,
+            .parameter => if (is_self) TsCodes.parameter_cannot_reference_self else TsCodes.parameter_cannot_reference_later,
+        };
+        const msg: []const u8 = switch (mode) {
+            .variable => "Block-scoped variable used before its declaration.",
+            .parameter => if (is_self)
+                "Parameter cannot reference itself in its initializer."
+            else
+                "Parameter cannot reference identifier declared after it.",
+        };
+        try self.report(node, code, msg);
+    }
+
+    fn checkObjectBindingPatternAgainstType(self: *Checker, pattern_node: NodeId, container_t: TypeId) CheckError!void {
+        if (container_t == types.Primitive.any or container_t == types.Primitive.unknown) return;
+        if (container_t >= self.interner.pool.typeCount()) return;
+        const flags = self.interner.pool.flagsOf(container_t);
+        if (flags.is_union) {
+            for (self.interner.unionMembers(container_t)) |member| {
+                try self.checkObjectBindingPatternAgainstType(pattern_node, member);
+            }
+            return;
+        }
+        if (!flags.is_object_type) return;
+        if (self.interner.objectMembers(container_t).len == 0 and
+            self.interner.objectStringIndex(container_t) == types.Primitive.none and
+            self.interner.objectNumberIndex(container_t) == types.Primitive.none) return;
+        for (hir_mod.patternElements(self.hir, pattern_node)) |e| {
+            if (self.hir.kindOf(e) != .parameter) continue;
+            const ep = hir_mod.parameterOf(self.hir, e);
+            if (ep.name == hir_mod.none_node_id or ep.flags.is_rest) continue;
+            if (self.hir.kindOf(ep.name) != .identifier) continue;
+            if (!self.objectBindingElementUsesImplicitKey(e, ep.name)) continue;
+            const id = hir_mod.identifierOf(self.hir, ep.name);
+            if (self.interner.objectMemberInfo(container_t, id.name)) |member| {
+                if (ep.default_value != hir_mod.none_node_id) {
+                    const dk = self.hir.kindOf(ep.default_value);
+                    if (dk == .literal_string or dk == .literal_number or dk == .literal_bool) {
+                        const default_t = try self.checkExpression(ep.default_value);
+                        const target_t = if (member.is_optional)
+                            self.unionWithUndefined(member.type) catch member.type
+                        else
+                            member.type;
+                        const stripped = self.subtractType(target_t, types.Primitive.undefined_t) catch target_t;
+                        if (!(self.engine.isAssignableTo(default_t, stripped) catch false)) {
+                            try self.report(ep.default_value, TsCodes.type_not_assignable, "Type is not assignable to binding element type.");
+                        }
+                    }
+                }
+                continue;
+            }
+            if (self.interner.objectStringIndex(container_t) != types.Primitive.none) continue;
+            if (self.interner.objectNumberIndex(container_t) != types.Primitive.none and self.isNumericStringId(id.name)) continue;
+            if (ep.default_value != hir_mod.none_node_id) continue;
+            const name_str = self.string_interner.get(id.name);
+            const msg = try std.fmt.allocPrint(
+                self.diag_arena.allocator(),
+                "Property '{s}' does not exist on type.",
+                .{name_str},
+            );
+            try self.diagnostics.append(self.gpa, .{
+                .node = ep.name,
+                .code = TsCodes.property_does_not_exist,
+                .message = msg,
+            });
+        }
+    }
+
+    fn checkArrayBindingPatternAgainstType(self: *Checker, pattern_node: NodeId, container_t: TypeId) CheckError!void {
+        if (container_t == types.Primitive.any or container_t == types.Primitive.unknown) return;
+        if (container_t >= self.interner.pool.typeCount()) return;
+        const elem_t = try self.iterableElementType(container_t);
+        const rest_array_t = self.interner.internArrayType(self.string_interner, elem_t) catch return error.OutOfMemory;
+        for (hir_mod.patternElements(self.hir, pattern_node)) |e| {
+            if (self.hir.kindOf(e) != .parameter) continue;
+            const ep = hir_mod.parameterOf(self.hir, e);
+            if (!ep.flags.is_rest or ep.name == hir_mod.none_node_id) continue;
+            if (self.hir.kindOf(ep.name) == .object_pattern) {
+                try self.checkObjectBindingPatternAgainstType(ep.name, rest_array_t);
+            }
+        }
+    }
+
+    fn isNumericStringId(self: *Checker, name: hir_mod.StringId) bool {
+        const s = self.string_interner.get(name);
+        if (s.len == 0) return false;
+        for (s) |c| {
+            if (c < '0' or c > '9') return false;
+        }
+        return true;
+    }
+
+    fn objectBindingElementUsesImplicitKey(self: *Checker, elem_node: NodeId, name_node: NodeId) bool {
+        const src = self.source orelse return true;
+        const elem_span = self.hir.spanOf(elem_node);
+        const name_span = self.hir.spanOf(name_node);
+        if (name_span.start <= elem_span.start or name_span.start > src.len) return true;
+        const prefix = src[elem_span.start..@min(@as(usize, name_span.start), src.len)];
+        return std.mem.indexOfScalar(u8, prefix, ':') == null and
+            std.mem.indexOfScalar(u8, prefix, '[') == null;
     }
 
     /// True when `node` is the name slot of its enclosing
@@ -2522,6 +2825,72 @@ pub const Checker = struct {
         return self.interner.objectNumberIndex(t) != types.Primitive.none;
     }
 
+    fn iterableElementType(self: *Checker, t: TypeId) CheckError!TypeId {
+        if (t == types.Primitive.any or t == types.Primitive.unknown) return types.Primitive.any;
+        if (t >= self.interner.pool.typeCount()) return types.Primitive.any;
+        const flags = self.interner.pool.flagsOf(t);
+        if (flags.is_union) {
+            var elems: std.ArrayListUnmanaged(TypeId) = .empty;
+            defer elems.deinit(self.gpa);
+            for (self.interner.unionMembers(t)) |member| {
+                try elems.append(self.gpa, try self.iterableElementType(member));
+            }
+            return self.unionOrAny(elems.items);
+        }
+        if (!flags.is_object_type) return types.Primitive.any;
+        const number_idx = self.interner.objectNumberIndex(t);
+        if (number_idx != types.Primitive.none) return number_idx;
+        const next_id = self.string_interner.intern("next") catch return error.OutOfMemory;
+        if (self.interner.objectMember(t, next_id)) |next_t| {
+            if (self.interner.signatureReturn(next_t)) |ret_t| {
+                const value_id = self.string_interner.intern("value") catch return error.OutOfMemory;
+                if (self.interner.objectMember(ret_t, value_id)) |value_t| return value_t;
+            }
+        }
+        return types.Primitive.any;
+    }
+
+    fn arrayBindingPatternParameterType(self: *Checker, pattern_node: NodeId) CheckError!TypeId {
+        var members: std.ArrayListUnmanaged(types.ObjectMember) = .empty;
+        defer members.deinit(self.gpa);
+        const length_id = self.string_interner.intern("length") catch return error.OutOfMemory;
+        try members.append(self.gpa, .{
+            .name = length_id,
+            .type = types.Primitive.number_t,
+            .is_optional = false,
+            .is_readonly = false,
+            .is_method = false,
+        });
+        var idx: usize = 0;
+        for (hir_mod.patternElements(self.hir, pattern_node)) |e| {
+            if (self.hir.kindOf(e) != .parameter) continue;
+            const ep = hir_mod.parameterOf(self.hir, e);
+            if (ep.flags.is_rest) break;
+            var nbuf: [12]u8 = undefined;
+            const name_str = std.fmt.bufPrint(&nbuf, "{d}", .{idx}) catch return error.OutOfMemory;
+            const name = self.string_interner.intern(name_str) catch return error.OutOfMemory;
+            try members.append(self.gpa, .{
+                .name = name,
+                .type = types.Primitive.any,
+                .is_optional = false,
+                .is_readonly = false,
+                .is_method = false,
+            });
+            idx += 1;
+        }
+        return self.interner.internObjectTypeWithIndex(members.items, types.Primitive.none, types.Primitive.any) catch return error.OutOfMemory;
+    }
+
+    fn arrayBindingPatternHasRest(self: *Checker, pattern_node: NodeId) bool {
+        if (pattern_node == hir_mod.none_node_id or self.hir.kindOf(pattern_node) != .array_pattern) return false;
+        for (hir_mod.patternElements(self.hir, pattern_node)) |e| {
+            if (self.hir.kindOf(e) != .parameter) continue;
+            const ep = hir_mod.parameterOf(self.hir, e);
+            if (ep.flags.is_rest) return true;
+        }
+        return false;
+    }
+
     fn objectLiteralHasSymbolIteratorMethod(self: *Checker, node: NodeId) bool {
         if (node == hir_mod.none_node_id or self.hir.kindOf(node) != .object_literal) return false;
         for (hir_mod.objectLiteralProps(self.hir, node)) |prop| {
@@ -2731,6 +3100,10 @@ pub const Checker = struct {
             const has_anno = pp.type_annotation != hir_mod.none_node_id;
             var t: TypeId = if (has_anno)
                 try self.lowererLowerWithTypeParams(pp.type_annotation)
+            else if (pp.name != hir_mod.none_node_id and
+                self.hir.kindOf(pp.name) == .array_pattern and
+                (pp.flags.is_rest or self.arrayBindingPatternHasRest(pp.name) or pp.default_value == hir_mod.none_node_id))
+                try self.arrayBindingPatternParameterType(pp.name)
             else
                 types.Primitive.any;
             // `f(x?: T)` and `f(x: T = default)` both widen the
@@ -5604,6 +5977,52 @@ pub const Checker = struct {
         return true;
     }
 
+    fn checkArrayDestructuringAssignment(self: *Checker, target_node: NodeId, source_t: TypeId) CheckError!void {
+        const elem_t = try self.iterableElementType(source_t);
+        if (elem_t == types.Primitive.any or elem_t == types.Primitive.unknown) return;
+        for (hir_mod.arrayLiteralElements(self.hir, target_node)) |el| {
+            if (el == hir_mod.none_node_id) continue;
+            const k = self.hir.kindOf(el);
+            if (k == .spread) {
+                const sp = hir_mod.spreadOf(self.hir, el);
+                if (self.hir.kindOf(sp.expression) == .assignment) {
+                    try self.report(sp.expression, TsCodes.rest_element_cannot_have_initializer, "A rest element cannot have an initializer.");
+                    continue;
+                }
+                const rest_t = try self.checkExpression(sp.expression);
+                if (rest_t == types.Primitive.any or rest_t == types.Primitive.unknown) continue;
+                const rest_elem_target = self.interner.objectNumberIndex(rest_t);
+                const ok = if (rest_elem_target != types.Primitive.none)
+                    (self.engine.isAssignableTo(elem_t, rest_elem_target) catch return error.OutOfMemory)
+                else blk: {
+                    const rest_source_t = self.interner.internArrayType(self.string_interner, elem_t) catch return error.OutOfMemory;
+                    break :blk self.engine.isAssignableTo(rest_source_t, rest_t) catch return error.OutOfMemory;
+                };
+                if (!ok) {
+                    try self.report(sp.expression, TsCodes.type_not_assignable, "Type is not assignable to target type.");
+                }
+                continue;
+            }
+            if (k == .identifier) {
+                const target_t = self.typeOfIdentifier(el);
+                if (target_t == types.Primitive.none or
+                    target_t == types.Primitive.any or
+                    target_t == types.Primitive.unknown)
+                {
+                    continue;
+                }
+                const ok = self.engine.isAssignableTo(elem_t, target_t) catch return error.OutOfMemory;
+                if (!ok) {
+                    try self.report(el, TsCodes.type_not_assignable, "Type is not assignable to target type.");
+                }
+                continue;
+            }
+            if (k == .array_literal) {
+                try self.checkArrayDestructuringAssignment(el, elem_t);
+            }
+        }
+    }
+
     fn fixedTupleLength(self: *Checker, target: TypeId) ?u64 {
         if (!self.isTupleShapedTarget(target)) return null;
         const length_id = self.string_interner.intern("length") catch return null;
@@ -5674,12 +6093,29 @@ pub const Checker = struct {
             init_type = try self.checkExpression(v.init);
         }
         if (v.name != hir_mod.none_node_id and
+            v.init == hir_mod.none_node_id and
+            !v.is_ambient)
+        {
+            const nk = self.hir.kindOf(v.name);
+            if (nk == .object_pattern or nk == .array_pattern) {
+                try self.report(v.name, TsCodes.destructuring_decl_must_have_initializer, "A destructuring declaration must have an initializer.");
+            }
+        }
+        if (v.name != hir_mod.none_node_id and
             self.hir.kindOf(v.name) == .array_pattern and
             v.init != hir_mod.none_node_id and
             !self.isIterableLikeType(init_type) and
             !self.objectLiteralHasSymbolIteratorMethod(v.init))
         {
             try self.report(v.init, TsCodes.yield_star_not_iterable, "Type must have a '[Symbol.iterator]()' method that returns an iterator.");
+        }
+        if (self.strict_flags.strict_null_checks and v.name != hir_mod.none_node_id and v.init != hir_mod.none_node_id) {
+            const nk = self.hir.kindOf(v.name);
+            if (nk == .array_pattern and (self.typeIncludesNull(init_type) or self.typeIncludesUndefined(init_type))) {
+                try self.report(v.init, TsCodes.yield_star_not_iterable, "Type must have a '[Symbol.iterator]()' method that returns an iterator.");
+            } else if (nk == .object_pattern and (init_type == types.Primitive.void_t or self.typeIncludesUndefined(init_type))) {
+                try self.report(v.init, TsCodes.object_possibly_undefined, "Object is possibly 'undefined'.");
+            }
         }
 
         // If both are present, check assignability.
@@ -5725,6 +6161,17 @@ pub const Checker = struct {
         // Propagate the declaration's type to the name identifier
         // so hover-on-identifier returns the right type.
         if (v.name != hir_mod.none_node_id) self.hir.setType(v.name, final_type);
+        if (v.name != hir_mod.none_node_id) {
+            const nk = self.hir.kindOf(v.name);
+            if (nk == .object_pattern or nk == .array_pattern) {
+                try self.checkBindingPatternDefaultReferences(v.name, .variable);
+            }
+            if (nk == .object_pattern and v.init != hir_mod.none_node_id) {
+                try self.checkObjectBindingPatternAgainstType(v.name, final_type);
+            } else if (nk == .array_pattern and v.init != hir_mod.none_node_id) {
+                try self.checkArrayBindingPatternAgainstType(v.name, final_type);
+            }
+        }
         try self.checkRepeatedVarDeclaration(node, final_type);
 
         // Aliased conditional narrowing: `let cond = obj.kind === "x"`.
@@ -6135,6 +6582,9 @@ pub const Checker = struct {
                     try self.checkReadonlyAssignment(a.target);
                 }
                 const value_t = try self.checkExpression(a.value);
+                if (a.op == null and self.hir.kindOf(a.target) == .array_literal) {
+                    try self.checkArrayDestructuringAssignment(a.target, value_t);
+                }
                 if (self.strict_flags.strict_null_checks and
                     a.op == null and
                     target_t != types.Primitive.none and
@@ -7624,6 +8074,20 @@ pub const Checker = struct {
                     }
                 }
             }
+            if (k == .try_stmt) {
+                const ts = hir_mod.tryOf(self.hir, cur);
+                if (ts.catch_param != hir_mod.none_node_id) {
+                    const ck = self.hir.kindOf(ts.catch_param);
+                    if (ck == .identifier) {
+                        const cid = hir_mod.identifierOf(self.hir, ts.catch_param);
+                        if (cid.name == id.name) return types.Primitive.any;
+                    } else if (ck == .object_pattern or ck == .array_pattern) {
+                        if (self.typeOfPatternBinding(ts.catch_param, types.Primitive.any, id.name)) |bt| {
+                            return bt;
+                        }
+                    }
+                }
+            }
             cur = self.hir.parentOf(cur);
         }
 
@@ -8734,8 +9198,10 @@ pub const Checker = struct {
         // trailing optional/defaulted params (typed as `T | undefined`
         // by the signature pass, matching tsc's call-site behavior).
         const fixed_count: usize = if (is_variadic) param_ts.len - 1 else param_ts.len;
-        var min_required: usize = fixed_count;
+        const rest_min_required: usize = if (is_variadic) self.tupleFixedPrefixCount(param_ts[param_ts.len - 1]) else 0;
+        var min_required: usize = fixed_count + rest_min_required;
         while (min_required > 0) {
+            if (min_required > fixed_count) break;
             if (!self.typeIncludesUndefined(param_ts[min_required - 1])) break;
             min_required -= 1;
         }
@@ -8781,7 +9247,11 @@ pub const Checker = struct {
             var arg_t = arg_types[i];
             if (self.hir.kindOf(args[i]) == .spread) {
                 const spread_elem_t = self.tupleElementType(arg_t, 0);
-                if (spread_elem_t != types.Primitive.none) arg_t = spread_elem_t;
+                if (spread_elem_t != types.Primitive.none) {
+                    arg_t = spread_elem_t;
+                } else {
+                    arg_t = try self.iterableElementType(arg_t);
+                }
             }
             const ok = self.isArgumentAssignableToParam(args[i], arg_t, param_t) catch true;
             if (!ok) {
@@ -8813,7 +9283,11 @@ pub const Checker = struct {
                     var arg_t = arg_types[j];
                     if (self.hir.kindOf(args[j]) == .spread) {
                         const spread_elem_t = self.interner.objectNumberIndex(arg_t);
-                        if (spread_elem_t != types.Primitive.none) arg_t = spread_elem_t;
+                        if (spread_elem_t != types.Primitive.none) {
+                            arg_t = spread_elem_t;
+                        } else {
+                            arg_t = try self.iterableElementType(arg_t);
+                        }
                     }
                     const ok = self.restArgumentAssignable(arg_t, target_t) catch true;
                     if (!ok) {
@@ -15279,6 +15753,67 @@ test "checker: class Symbol.iterator member makes instance iterable" {
     for (s.checker.diagnostics.items) |d| {
         try T.expect(d.code != TsCodes.yield_star_not_iterable);
     }
+}
+
+test "checker: array destructuring assignment checks iterator element assignability" {
+    const s = try newSetup(
+        \\class Bar { x }
+        \\class Foo extends Bar { y }
+        \\class FooIterator {
+        \\  next() { return { value: new Foo(), done: false }; }
+        \\  [Symbol.iterator]() { return this; }
+        \\}
+        \\var a: Bar, b: string;
+        \\[a, b] = new FooIterator();
+    );
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+    var found = false;
+    for (s.checker.diagnostics.items) |d| {
+        if (d.code == TsCodes.type_not_assignable) found = true;
+    }
+    try T.expect(found);
+}
+
+test "checker: array binding parameter rejects non-array iterator object" {
+    const s = try newSetup(
+        \\class Foo {}
+        \\class FooIterator {
+        \\  next() { return { value: new Foo(), done: false }; }
+        \\  [Symbol.iterator]() { return this; }
+        \\}
+        \\function f([a, ...b]) {}
+        \\f(new FooIterator());
+    );
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+    var found = false;
+    for (s.checker.diagnostics.items) |d| {
+        if (d.code == TsCodes.argument_type_mismatch) found = true;
+    }
+    try T.expect(found);
+}
+
+test "checker: binding pattern defaults reject self and later references" {
+    const s = try newSetup(
+        \\const [c, d = c, e = e] = [1];
+        \\const [f, g = f, h = i, i = f] = [1];
+        \\function a([c, d = c, e = e]) {}
+        \\function b([f, g = f, h = i, i = f]) {}
+    );
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+    var saw_var = false;
+    var saw_param_self = false;
+    var saw_param_later = false;
+    for (s.checker.diagnostics.items) |d| {
+        if (d.code == TsCodes.block_scoped_used_before_decl) saw_var = true;
+        if (d.code == TsCodes.parameter_cannot_reference_self) saw_param_self = true;
+        if (d.code == TsCodes.parameter_cannot_reference_later) saw_param_later = true;
+    }
+    try T.expect(saw_var);
+    try T.expect(saw_param_self);
+    try T.expect(saw_param_later);
 }
 
 test "checker: spread Map entries satisfy tuple rest parameter" {
