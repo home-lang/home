@@ -410,16 +410,28 @@ pub const Interner = struct {
     /// Look up the return type of a signature TypeId. Returns null
     /// if the id isn't a signature.
     pub fn signatureReturn(self: *const Interner, id: TypeId) ?TypeId {
-        if (!self.pool.flagsOf(id).is_signature) return null;
+        if (!self.isSignature(id)) return null;
         const payload = self.pool.signature_payloads.items[self.pool.payloadOf(id)];
         return payload.return_type;
     }
 
     /// Look up the parameter type ids of a signature.
     pub fn signatureParams(self: *const Interner, id: TypeId) []const TypeId {
-        std.debug.assert(self.pool.flagsOf(id).is_signature);
+        if (!self.isSignature(id)) return &.{};
         const payload = self.pool.signature_payloads.items[self.pool.payloadOf(id)];
         return self.pool.type_arg_pool.items[payload.params_start .. payload.params_start + payload.params_len];
+    }
+
+    /// True only for a standalone signature payload. Union/intersection
+    /// types fold member flags for fast broad-category checks, so their
+    /// headers may carry `is_signature` even though their payload column is
+    /// not `signature_payloads`.
+    pub fn isSignature(self: *const Interner, id: TypeId) bool {
+        if (id >= self.pool.headers.items.len) return false;
+        const flags = self.pool.flagsOf(id);
+        if (!flags.is_signature) return false;
+        if (flags.is_union or flags.is_intersection) return false;
+        return self.pool.payloadOf(id) < self.pool.signature_payloads.items.len;
     }
 
     /// Intern an object type with the given members. Members must
@@ -755,6 +767,18 @@ test "Interner: union flags fold constituent flags" {
     try T.expect(f.is_union);
     try T.expect(f.is_string);
     try T.expect(f.is_number);
+}
+
+test "Interner: signature accessors ignore folded union signature flags" {
+    var i = try Interner.init(T.allocator);
+    defer i.deinit();
+    const sig = try i.internSignature(&.{Primitive.number_t}, Primitive.string_t, false);
+    const u = try i.internUnion(&.{ sig, Primitive.number_t });
+
+    try T.expect(i.pool.flagsOf(u).is_signature);
+    try T.expect(!i.isSignature(u));
+    try T.expectEqual(@as(?TypeId, null), i.signatureReturn(u));
+    try T.expectEqual(@as(usize, 0), i.signatureParams(u).len);
 }
 
 test "Interner: intersection collapses single member" {

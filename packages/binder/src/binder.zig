@@ -500,7 +500,7 @@ pub const Binder = struct {
             const pp = hir_mod.parameterOf(self.hir, p);
             try self.bindParamName(pp.name, p);
         }
-        if (f.body != hir_mod.none_node_id) {
+        if (f.body != hir_mod.none_node_id and self.hir.kindOf(f.body) == .block_stmt) {
             const body_stmts = hir_mod.blockStmts(self.hir, f.body);
             for (body_stmts) |s| try self.bindStatement(s);
         }
@@ -572,7 +572,7 @@ pub const Binder = struct {
                         const pp = hir_mod.parameterOf(self.hir, p);
                         try self.bindParamName(pp.name, p);
                     }
-                    if (fn_p.body != hir_mod.none_node_id) {
+                    if (fn_p.body != hir_mod.none_node_id and self.hir.kindOf(fn_p.body) == .block_stmt) {
                         const body_stmts = hir_mod.blockStmts(self.hir, fn_p.body);
                         for (body_stmts) |s| try self.bindStatement(s);
                     }

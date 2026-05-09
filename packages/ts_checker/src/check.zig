@@ -325,6 +325,10 @@ pub const Checker = struct {
     /// Consulted by `lowererLowerWithTypeParams` to instantiate
     /// `Box<number>`-style references against the aliased body.
     generic_aliases: std.AutoHashMapUnmanaged(hir_mod.StringId, GenericAliasInfo),
+    /// Generic aliases currently being instantiated. Recursive mapped
+    /// aliases such as `type Circular<T> = { [K in keyof T]: Circular<T> }`
+    /// must defer instead of recursively materializing forever.
+    active_generic_aliases: std.AutoHashMapUnmanaged(hir_mod.StringId, void),
     /// Generic function name → owned `[]TypeId` of TypeParameter ids
     /// (in declaration order). Populated by `checkFnSignatureOnly`.
     /// Consulted by call-expression typing when explicit type args
@@ -441,6 +445,7 @@ pub const Checker = struct {
             .class_abstract_members = .empty,
             .type_names = .empty,
             .generic_aliases = .empty,
+            .active_generic_aliases = .empty,
             .generic_fns = .empty,
             .fn_predicates = .empty,
             .cond_aliases = .empty,
@@ -504,6 +509,7 @@ pub const Checker = struct {
         var ga_it = self.generic_aliases.valueIterator();
         while (ga_it.next()) |info| self.gpa.free(info.params);
         self.generic_aliases.deinit(self.gpa);
+        self.active_generic_aliases.deinit(self.gpa);
         var gf_it = self.generic_fns.valueIterator();
         while (gf_it.next()) |params| self.gpa.free(params.*);
         self.generic_fns.deinit(self.gpa);
@@ -3616,6 +3622,12 @@ pub const Checker = struct {
                         }
                     }
                     if (self.generic_aliases.get(r.name)) |info| {
+                        if (self.active_generic_aliases.contains(r.name)) {
+                            return info.body;
+                        }
+                        try self.active_generic_aliases.put(self.gpa, r.name, {});
+                        defer _ = self.active_generic_aliases.remove(r.name);
+
                         const args = hir_mod.typeRefArgs(self.hir, type_node);
                         var subs: std.AutoHashMapUnmanaged(TypeId, TypeId) = .empty;
                         defer subs.deinit(self.gpa);
@@ -4937,7 +4949,7 @@ pub const Checker = struct {
                 const type_arg_nodes = hir_mod.callTypeArgs(self.hir, node);
                 var effective_callee_t = callee_t;
                 var used_explicit_type_args = false;
-                if (type_arg_nodes.len > 0 and self.interner.pool.flagsOf(callee_t).is_signature and self.hir.kindOf(c.callee) == .identifier) {
+                if (type_arg_nodes.len > 0 and self.interner.isSignature(callee_t) and self.hir.kindOf(c.callee) == .identifier) {
                     const callee_name = hir_mod.identifierOf(self.hir, c.callee).name;
                     if (self.generic_fns.get(callee_name)) |type_params| {
                         var subs: std.AutoHashMapUnmanaged(TypeId, TypeId) = .empty;
@@ -4953,7 +4965,7 @@ pub const Checker = struct {
                         }
                     }
                 }
-                if (self.interner.pool.flagsOf(effective_callee_t).is_signature) {
+                if (self.interner.isSignature(effective_callee_t)) {
                     if (effective_callee_t == callee_t) {
                         const param_ts = self.interner.signatureParams(effective_callee_t);
                         var call_subs: std.AutoHashMapUnmanaged(TypeId, TypeId) = .empty;
@@ -12719,6 +12731,20 @@ test "checker: recursive type alias — `LinkedList<T>` self-referential body pa
     try T.expect(s.checker.interner.pool.flagsOf(info.body).is_object_type);
     const members = s.checker.interner.objectMembers(info.body);
     try T.expectEqual(@as(usize, 2), members.len);
+}
+
+test "checker: recursive mapped generic alias defers instead of diverging" {
+    const s = try newSetup(
+        \\export type Circular<T> = { [P in keyof T]: Circular<T> };
+        \\type Tup = [number, number, number];
+        \\function foo(arg: Circular<Tup>): Tup {
+        \\  return arg;
+        \\}
+    );
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+    const alias_name = try s.sint.intern("Circular");
+    try T.expect(s.checker.generic_aliases.contains(alias_name));
 }
 
 test "checker: recursive type alias — `Tree<number>` with self-referential children typechecks" {
