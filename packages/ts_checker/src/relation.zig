@@ -700,6 +700,7 @@ pub const Engine = struct {
         const s_ret_raw = self.interner.signatureReturn(source) orelse return true;
         const s_ret = try self.substituteTpDeep(s_ret_raw, source_context_buf[0..source_context_len]);
         const t_ret_raw = self.interner.signatureReturn(target) orelse return true;
+        if (t_ret_raw == Primitive.void_t) return true;
         // Substitute target type-parameters with their source
         // counterparts so `<T>(x: T) => T` matches `<U>(x: U) => U`
         // even though `T` and `U` intern to distinct ids.

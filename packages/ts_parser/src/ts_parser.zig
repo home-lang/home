@@ -475,43 +475,48 @@ pub const Parser = struct {
             // empty init — leave as none
         } else if (has_decl_kw) {
             const kw = self.advance(); // let/const/var
-            const name_tok = try self.expect(.identifier, "identifier in for-init binding");
+            const binding_node: NodeId = if (self.peek().kind == .open_brace or self.peek().kind == .open_bracket) blk: {
+                break :blk try self.parseBindingPattern();
+            } else blk: {
+                const name_tok = try self.expect(.identifier, "identifier in for-init binding");
+                const name_id = try self.internToken(name_tok);
+                break :blk try self.builder.addIdentifier(tokenSpan(name_tok), name_id);
+            };
             // optional type annotation
             if (self.match(.colon)) try self.skipTypeAnnotation();
 
             // Detect for-in / for-of immediately.
             if (self.peek().kind == .kw_in or self.peek().kind == .kw_of) {
                 const kind_tok = self.advance(); // in/of
-                const name_id = try self.internToken(name_tok);
-                const ident = try self.builder.addIdentifier(tokenSpan(name_tok), name_id);
                 const source_expr = try self.parseExpression();
                 _ = try self.expect(.close_paren, "')' to close for-in/of header");
                 const body = try self.parseStatement();
                 const end_pos = self.hir.spanOf(body).end;
                 if (kind_tok.kind == .kw_in) {
-                    return try self.builder.addForIn(.{ .start = start.span.start, .end = end_pos }, ident, source_expr, body);
+                    return try self.builder.addForIn(.{ .start = start.span.start, .end = end_pos }, binding_node, source_expr, body);
                 } else if (is_await) {
-                    return try self.builder.addForAwaitOf(.{ .start = start.span.start, .end = end_pos }, ident, source_expr, body);
+                    return try self.builder.addForAwaitOf(.{ .start = start.span.start, .end = end_pos }, binding_node, source_expr, body);
                 } else {
-                    return try self.builder.addForOf(.{ .start = start.span.start, .end = end_pos }, ident, source_expr, body);
+                    return try self.builder.addForOf(.{ .start = start.span.start, .end = end_pos }, binding_node, source_expr, body);
                 }
             }
 
             // Classic for: `for (let x = init;` …)
             var init_expr: NodeId = hir_mod.none_node_id;
             if (self.match(.equal)) init_expr = try self.parseAssignmentExpression();
-            const name_id = try self.internToken(name_tok);
-            const ident = try self.builder.addIdentifier(tokenSpan(name_tok), name_id);
             if (init_expr == hir_mod.none_node_id) {
-                init_node = ident;
+                init_node = binding_node;
             } else {
                 init_node = try self.builder.addAssignment(.{
                     .start = kw.span.start,
                     .end = self.hir.spanOf(init_expr).end,
-                }, ident, init_expr, null);
+                }, binding_node, init_expr, null);
             }
         } else {
-            const head_expr = try self.parseExpression();
+            const head_expr = if (self.peek().kind == .open_brace or self.peek().kind == .open_bracket)
+                try self.parseBindingPattern()
+            else
+                try self.parseExpression();
 
             if (self.peek().kind == .kw_in or self.peek().kind == .kw_of) {
                 const kind_tok = self.advance();
@@ -587,11 +592,15 @@ pub const Parser = struct {
         var catch_block: NodeId = hir_mod.none_node_id;
         if (self.match(.kw_catch)) {
             if (self.match(.open_paren)) {
-                const name_tok = try self.expect(.identifier, "identifier in catch binding");
+                catch_param = if (self.peek().kind == .open_brace or self.peek().kind == .open_bracket) blk: {
+                    break :blk try self.parseBindingPattern();
+                } else blk: {
+                    const name_tok = try self.expect(.identifier, "identifier in catch binding");
+                    const id = try self.internToken(name_tok);
+                    break :blk try self.builder.addIdentifier(tokenSpan(name_tok), id);
+                };
                 if (self.match(.colon)) try self.skipTypeAnnotation();
                 _ = try self.expect(.close_paren, "')' to close catch param");
-                const id = try self.internToken(name_tok);
-                catch_param = try self.builder.addIdentifier(tokenSpan(name_tok), id);
             }
             catch_block = try self.parseBlockStatement();
         }
@@ -818,9 +827,22 @@ pub const Parser = struct {
                 var flags: hir_mod.ParamFlags = .{};
                 if (self.match(.dot_dot_dot)) flags.is_rest = true;
                 const name_node = if (is_object and !flags.is_rest) blk: {
-                    const key_tok = try self.expectIdentifierLike();
+                    if (self.match(.open_bracket)) {
+                        _ = try self.parseExpression();
+                        _ = try self.expect(.close_bracket, "']' to close computed binding key");
+                        _ = try self.expect(.colon, "':' after computed binding key");
+                        break :blk try self.parseBindingTarget();
+                    }
+                    const key_tok = switch (self.peek().kind) {
+                        .string_literal, .number_literal => self.advance(),
+                        else => try self.expectIdentifierLike(),
+                    };
                     if (self.match(.colon)) {
                         break :blk try self.parseBindingTarget();
+                    }
+                    if (key_tok.kind == .string_literal or key_tok.kind == .number_literal) {
+                        try self.report("expected ", "':' after literal binding key");
+                        return error.UnexpectedToken;
                     }
                     const name_id = try self.internToken(key_tok);
                     break :blk try self.builder.addIdentifier(tokenSpan(key_tok), name_id);
@@ -1527,6 +1549,16 @@ pub const Parser = struct {
         var init_node: NodeId = hir_mod.none_node_id;
         if (self.match(.equal)) {
             init_node = try self.parseAssignmentExpression();
+        }
+        while (self.match(.comma)) {
+            if (self.peek().kind == .open_brace or self.peek().kind == .open_bracket) {
+                _ = try self.parseBindingPattern();
+            } else {
+                _ = try self.expectIdentifierLike();
+            }
+            _ = self.match(.bang);
+            if (self.match(.colon)) _ = try self.parseTypeAnnotation();
+            if (self.match(.equal)) _ = try self.parseAssignmentExpression();
         }
         try self.consumeStatementTerminator();
 
@@ -4166,6 +4198,13 @@ test "parser: let declaration with initializer" {
     try T.expectEqual(hir_mod.NodeKind.binary_op, s.hir.kindOf(vd.init));
 }
 
+test "parser: variable declaration list tolerates additional declarators" {
+    var s = try newTestSetup("let a = 1, b = 2;");
+    defer destroyTestSetup(s);
+    _ = try s.parser.parseSourceFile();
+    try T.expectEqual(@as(usize, 0), s.parser.diagnostics.items.len);
+}
+
 test "parser: var / const / let produce distinct kinds" {
     var s = try newTestSetup("var a = 1; let b = 2; const c = 3;");
     defer destroyTestSetup(s);
@@ -4499,6 +4538,16 @@ test "parser: for-of loop" {
     try T.expectEqual(hir_mod.NodeKind.for_of_stmt, s.hir.kindOf(top));
 }
 
+test "parser: for-of loop accepts object binding pattern target" {
+    var s = try newTestSetup("for (let { x, ...rest } of items) { x; rest; }");
+    defer destroyTestSetup(s);
+    const root = try s.parser.parseSourceFile();
+    const top = hir_mod.blockStmts(&s.hir, root)[0];
+    try T.expectEqual(hir_mod.NodeKind.for_of_stmt, s.hir.kindOf(top));
+    const fr = hir_mod.forInOf(&s.hir, top);
+    try T.expectEqual(hir_mod.NodeKind.object_pattern, s.hir.kindOf(fr.target));
+}
+
 test "parser: for-await-of sets is_await flag" {
     var s = try newTestSetup("for await (const v of items) { use(v); }");
     defer destroyTestSetup(s);
@@ -4541,6 +4590,15 @@ test "parser: try-catch-finally" {
     try T.expect(tp.catch_block != hir_mod.none_node_id);
     try T.expect(tp.catch_param != hir_mod.none_node_id);
     try T.expect(tp.finally_block != hir_mod.none_node_id);
+}
+
+test "parser: catch accepts object binding pattern target" {
+    var s = try newTestSetup("try {} catch ({ a, ...b }) {}");
+    defer destroyTestSetup(s);
+    const root = try s.parser.parseSourceFile();
+    const top = hir_mod.blockStmts(&s.hir, root)[0];
+    const tp = hir_mod.tryOf(&s.hir, top);
+    try T.expectEqual(hir_mod.NodeKind.object_pattern, s.hir.kindOf(tp.catch_param));
 }
 
 test "parser: try without catch" {
@@ -4648,6 +4706,18 @@ test "parser: rest parameter before another parameter reports TS1014" {
     _ = try s.parser.parseSourceFile();
     try T.expectEqual(@as(usize, 1), s.parser.diagnostics.items.len);
     try T.expectEqual(@as(u32, 1014), s.parser.diagnostics.items[0].code);
+}
+
+test "parser: object binding pattern supports literal and computed keys" {
+    var s = try newTestSetup("const { 'a': a1, [k]: a2, ...rest } = obj;");
+    defer destroyTestSetup(s);
+    const root = try s.parser.parseSourceFile();
+    const top = hir_mod.blockStmts(&s.hir, root)[0];
+    const decl = hir_mod.varDeclOf(&s.hir, top);
+    try T.expectEqual(hir_mod.NodeKind.object_pattern, s.hir.kindOf(decl.name));
+    const elems = hir_mod.patternElements(&s.hir, decl.name);
+    try T.expectEqual(@as(usize, 3), elems.len);
+    try T.expect(hir_mod.parameterOf(&s.hir, elems[2]).flags.is_rest);
 }
 
 test "parser: class declaration with method and property" {

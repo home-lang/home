@@ -76,6 +76,7 @@ pub const TsCodes = struct {
     pub const class_incorrectly_implements_interface: u32 = 2420;
     pub const tuple_index_out_of_bounds: u32 = 2493;
     pub const expected_n_arguments: u32 = 2554;
+    pub const expected_n_type_arguments: u32 = 2558;
     pub const no_overload_matches: u32 = 2769;
     pub const duplicate_identifier: u32 = 2300;
     pub const generic_type_requires_args: u32 = 2314;
@@ -1489,11 +1490,11 @@ pub const Checker = struct {
         pending: *std.AutoHashMapUnmanaged(hir_mod.StringId, NodeId),
     ) CheckError!void {
         const decl_node = pending.get(name) orelse return;
+        if (self.sourceHasStrictFalseDirective()) return;
         if (self.hir.kindOf(decl_node) == .var_decl) {
             if (!self.nodeHasAncestorKind(ref_node, .conditional) and
                 !self.nodeHasAncestorKind(ref_node, .array_literal) and
                 !(self.nodeHasAncestorKind(ref_node, .call_expr) and self.varDeclHasTypeAnnotation(decl_node))) return;
-            if (self.sourceHasStrictFalseDirective()) return;
         }
         const name_str = self.string_interner.get(name);
         const msg = try std.fmt.allocPrint(
@@ -3864,14 +3865,17 @@ pub const Checker = struct {
                 var fn_param_ts: std.ArrayListUnmanaged(TypeId) = .empty;
                 defer fn_param_ts.deinit(self.gpa);
                 const fn_params = self.hir.childSlice(ft.params_start, @intCast(ft.params_len));
+                var has_rest_param = false;
                 for (fn_params) |p| {
                     if (self.hir.kindOf(p) != .parameter) continue;
                     const pp = hir_mod.parameterOf(self.hir, p);
+                    const is_this_param = self.isThisParameter(p);
+                    if (pp.flags.is_rest and !is_this_param) has_rest_param = true;
                     const t = if (pp.type_annotation != hir_mod.none_node_id)
                         try self.lowererLowerWithTypeParams(pp.type_annotation)
                     else
                         types.Primitive.any;
-                    if (self.isThisParameter(p)) continue;
+                    if (is_this_param) continue;
                     try fn_param_ts.append(self.gpa, t);
                 }
                 const ret_t = if (ft.return_type != hir_mod.none_node_id)
@@ -3879,7 +3883,9 @@ pub const Checker = struct {
                 else
                     types.Primitive.void_t;
                 const is_construct = self.hir.kindOf(type_node) == .constructor_type;
-                return self.interner.internSignature(fn_param_ts.items, ret_t, is_construct) catch error.OutOfMemory;
+                const sig = self.interner.internSignature(fn_param_ts.items, ret_t, is_construct) catch return error.OutOfMemory;
+                if (has_rest_param) try self.rest_signatures.put(self.gpa, sig, {});
+                return sig;
             },
             else => {},
         }
@@ -4447,6 +4453,28 @@ pub const Checker = struct {
         };
     }
 
+    fn tupleElementType(self: *Checker, target: TypeId, index: usize) TypeId {
+        if (target >= self.interner.pool.typeCount()) return types.Primitive.none;
+        if (!self.interner.pool.flagsOf(target).is_object_type) return types.Primitive.none;
+        var nbuf: [12]u8 = undefined;
+        const name_str = std.fmt.bufPrint(&nbuf, "{d}", .{index}) catch return types.Primitive.none;
+        const name = self.string_interner.intern(name_str) catch return types.Primitive.none;
+        if (self.interner.objectMember(target, name)) |t| return t;
+        return self.interner.objectNumberIndex(target);
+    }
+
+    fn tupleFixedPrefixCount(self: *Checker, target: TypeId) usize {
+        if (target >= self.interner.pool.typeCount()) return 0;
+        if (!self.interner.pool.flagsOf(target).is_object_type) return 0;
+        var count: usize = 0;
+        while (true) : (count += 1) {
+            var nbuf: [12]u8 = undefined;
+            const name_str = std.fmt.bufPrint(&nbuf, "{d}", .{count}) catch return count;
+            const name = self.string_interner.intern(name_str) catch return count;
+            if (self.interner.objectMember(target, name) == null) return count;
+        }
+    }
+
     fn reportTupleIndexOutOfBounds(self: *Checker, index_node: NodeId, index: u64, length: u64) CheckError!void {
         const msg = try std.fmt.allocPrint(
             self.diag_arena.allocator(),
@@ -4956,6 +4984,18 @@ pub const Checker = struct {
                 if (type_arg_nodes.len > 0 and self.interner.isSignature(callee_t) and self.hir.kindOf(c.callee) == .identifier) {
                     const callee_name = hir_mod.identifierOf(self.hir, c.callee).name;
                     if (self.generic_fns.get(callee_name)) |type_params| {
+                        if (type_arg_nodes.len != type_params.len) {
+                            const msg = try std.fmt.allocPrint(
+                                self.diag_arena.allocator(),
+                                "Expected {d} type arguments, but got {d}.",
+                                .{ type_params.len, type_arg_nodes.len },
+                            );
+                            try self.diagnostics.append(self.gpa, .{
+                                .node = node,
+                                .code = TsCodes.expected_n_type_arguments,
+                                .message = msg,
+                            });
+                        }
                         var subs: std.AutoHashMapUnmanaged(TypeId, TypeId) = .empty;
                         defer subs.deinit(self.gpa);
                         const n = @min(type_params.len, type_arg_nodes.len);
@@ -4974,10 +5014,17 @@ pub const Checker = struct {
                         const param_ts = self.interner.signatureParams(effective_callee_t);
                         var call_subs: std.AutoHashMapUnmanaged(TypeId, TypeId) = .empty;
                         defer call_subs.deinit(self.gpa);
-                        const n = @min(param_ts.len, arg_types.items.len);
-                        for (0..n) |i| {
-                            if (self.interner.pool.flagsOf(param_ts[i]).is_signature) continue;
-                            try self.inferFromArgument(param_ts[i], arg_types.items[i], args[i], &call_subs);
+                        const skip_bare_generic_rest_inference =
+                            self.rest_signatures.contains(effective_callee_t) and
+                            param_ts.len == 1 and
+                            param_ts[0] < self.interner.pool.typeCount() and
+                            self.interner.pool.flagsOf(param_ts[0]).is_type_parameter;
+                        if (!skip_bare_generic_rest_inference) {
+                            const n = @min(param_ts.len, arg_types.items.len);
+                            for (0..n) |i| {
+                                if (self.interner.pool.flagsOf(param_ts[i]).is_signature) continue;
+                                try self.inferFromArgument(param_ts[i], arg_types.items[i], args[i], &call_subs);
+                            }
                         }
                         if (call_subs.count() > 0) {
                             effective_callee_t = self.substituteType(effective_callee_t, &call_subs) catch effective_callee_t;
@@ -5436,20 +5483,33 @@ pub const Checker = struct {
     /// resolution to pick the first applicable signature.
     fn signatureAccepts(self: *Checker, sig: TypeId, arg_types: []const TypeId) !bool {
         const params = self.interner.signatureParams(sig);
+        const is_variadic = self.rest_signatures.contains(sig) and params.len > 0;
+        const fixed_count: usize = if (is_variadic) params.len - 1 else params.len;
         // Required-arg count = params not including a trailing run
         // that includes `undefined`.
-        var min_required: usize = params.len;
+        var min_required: usize = fixed_count;
         while (min_required > 0) {
             if (!self.typeIncludesUndefined(params[min_required - 1])) break;
             min_required -= 1;
         }
         if (arg_types.len < min_required) return false;
-        if (arg_types.len > params.len) return false;
-        const n = @min(arg_types.len, params.len);
+        if (!is_variadic and arg_types.len > params.len) return false;
+        const n = @min(arg_types.len, fixed_count);
         for (0..n) |i| {
             if (self.interner.pool.flagsOf(params[i]).is_type_parameter) continue;
             const ok = self.engine.isAssignableTo(arg_types[i], params[i]) catch false;
             if (!ok) return false;
+        }
+        if (is_variadic) {
+            const rest_arr_t = params[params.len - 1];
+            if (rest_arr_t >= self.interner.pool.typeCount()) return true;
+            const elem_t = self.interner.objectNumberIndex(rest_arr_t);
+            const target_t = if (elem_t == types.Primitive.none) rest_arr_t else elem_t;
+            if (target_t >= self.interner.pool.typeCount()) return true;
+            if (self.interner.pool.flagsOf(target_t).is_type_parameter) return true;
+            for (arg_types[fixed_count..]) |arg_t| {
+                if (!(try self.restArgumentAssignable(arg_t, target_t))) return false;
+            }
         }
         return true;
     }
@@ -6223,6 +6283,14 @@ pub const Checker = struct {
                         if (vid.name == id.name) {
                             const t = self.hir.typeOf(fr.target);
                             if (t != types.Primitive.none) return t;
+                        }
+                    } else if (tk == .object_pattern or tk == .array_pattern) {
+                        const container_t = if (self.hir.typeOf(fr.target) != types.Primitive.none)
+                            self.hir.typeOf(fr.target)
+                        else
+                            types.Primitive.any;
+                        if (self.typeOfPatternBinding(fr.target, container_t, id.name)) |bt| {
+                            return bt;
                         }
                     }
                 }
@@ -7141,7 +7209,16 @@ pub const Checker = struct {
             if (!self.typeIncludesUndefined(param_ts[min_required - 1])) break;
             min_required -= 1;
         }
-        const too_few = args.len < min_required;
+        var effective_min_count: usize = 0;
+        for (args, 0..) |arg, arg_i| {
+            if (self.hir.kindOf(arg) == .spread) {
+                const fixed_prefix = self.tupleFixedPrefixCount(arg_types[arg_i]);
+                effective_min_count += @max(fixed_prefix, 1);
+            } else {
+                effective_min_count += 1;
+            }
+        }
+        const too_few = effective_min_count < min_required;
         const too_many = !is_variadic and args.len > param_ts.len;
         if (too_few or too_many) {
             const expected_label: []const u8 = if (is_variadic)
@@ -7169,7 +7246,11 @@ pub const Checker = struct {
             const param_t = param_ts[i];
             if (param_t >= self.interner.pool.typeCount()) continue;
             if (self.interner.pool.flagsOf(param_t).is_type_parameter) continue;
-            const arg_t = arg_types[i];
+            var arg_t = arg_types[i];
+            if (self.hir.kindOf(args[i]) == .spread) {
+                const spread_elem_t = self.tupleElementType(arg_t, 0);
+                if (spread_elem_t != types.Primitive.none) arg_t = spread_elem_t;
+            }
             const ok = self.isArgumentAssignableToParam(args[i], arg_t, param_t) catch true;
             if (!ok) {
                 const msg = try std.fmt.allocPrint(
@@ -7197,8 +7278,12 @@ pub const Checker = struct {
             if (!self.interner.pool.flagsOf(target_t).is_type_parameter) {
                 var j: usize = fixed_count;
                 while (j < args.len) : (j += 1) {
-                    const arg_t = arg_types[j];
-                    const ok = self.engine.isAssignableTo(arg_t, target_t) catch true;
+                    var arg_t = arg_types[j];
+                    if (self.hir.kindOf(args[j]) == .spread) {
+                        const spread_elem_t = self.interner.objectNumberIndex(arg_t);
+                        if (spread_elem_t != types.Primitive.none) arg_t = spread_elem_t;
+                    }
+                    const ok = self.restArgumentAssignable(arg_t, target_t) catch true;
                     if (!ok) {
                         const msg = try std.fmt.allocPrint(
                             self.diag_arena.allocator(),
@@ -7214,6 +7299,16 @@ pub const Checker = struct {
                 }
             }
         }
+    }
+
+    fn restArgumentAssignable(self: *Checker, arg_t: TypeId, target_t: TypeId) !bool {
+        if (self.engine.isAssignableTo(arg_t, target_t) catch false) return true;
+        if (arg_t < self.interner.pool.typeCount() and self.interner.pool.flagsOf(arg_t).is_union) {
+            for (self.interner.unionMembers(arg_t)) |member| {
+                if (self.engine.isAssignableTo(member, target_t) catch false) return true;
+            }
+        }
+        return false;
     }
 
     fn isArgumentAssignableToParam(self: *Checker, arg_node: NodeId, arg_t: TypeId, param_t: TypeId) !bool {
@@ -7612,6 +7707,9 @@ pub const Checker = struct {
                 if (v.name != hir_mod.none_node_id) self.hir.setType(v.name, elem_t);
             },
             .identifier => {
+                self.hir.setType(target, elem_t);
+            },
+            .object_pattern, .array_pattern => {
                 self.hir.setType(target, elem_t);
             },
             else => {},
@@ -8719,6 +8817,19 @@ test "checker: strict false directive suppresses conditional var TS2454" {
         \\// @strict: false
         \\var x: number;
         \\let y = true ? x : 1;
+    );
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+    for (s.checker.diagnostics.items) |d| {
+        try T.expect(d.code != TsCodes.used_before_assignment);
+    }
+}
+
+test "checker: strict false directive suppresses typed let TS2454" {
+    const s = try newSetup(
+        \\// @strict: false
+        \\let complex: { x: { ka: any, ki: any }, y: number };
+        \\let y = complex;
     );
     defer destroySetup(s);
     try s.checker.checkSourceFile(s.root);
@@ -11702,6 +11813,21 @@ test "checker: explicit Date type arg rejects number argument" {
     try T.expect(found);
 }
 
+test "checker: explicit generic call reports wrong type argument count" {
+    const s = try newSetup(
+        \\function f<T, U>(x: T, y: U): T { return x; }
+        \\f<number>(1, "");
+        \\f<number, string, boolean>(1, "");
+    );
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+    var found = false;
+    for (s.checker.diagnostics.items) |d| {
+        if (d.code == TsCodes.expected_n_type_arguments) found = true;
+    }
+    try T.expect(found);
+}
+
 test "checker: overloaded function-typed parameter checks all call signatures" {
     const s = try newSetup(
         \\function foo<T>(cb: { (x: T): string; (x: T, y?: T): string }) {
@@ -12762,6 +12888,89 @@ test "checker: rest parameter — call site `f(1, 2, 3)` accepted" {
     for (s.checker.diagnostics.items) |d| {
         try T.expect(d.code != TsCodes.expected_n_arguments);
         try T.expect(d.code != TsCodes.argument_type_mismatch);
+    }
+}
+
+test "checker: function type rest parameter accepts multiple call args" {
+    const s = try newSetup(
+        \\declare let f: (...x: [number, string, ...boolean[]]) => void;
+        \\f(42, "hello");
+        \\f(42, "hello", true, false);
+    );
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+    for (s.checker.diagnostics.items) |d| {
+        try T.expect(d.code != TsCodes.expected_n_arguments);
+        try T.expect(d.code != TsCodes.argument_type_mismatch);
+    }
+}
+
+test "checker: spread tuple argument expands into fixed rest signature slots" {
+    const s = try newSetup(
+        \\declare let f: (a: number, ...x: [string, ...boolean[]]) => void;
+        \\let t: [number, string, ...boolean[]];
+        \\f(...t);
+    );
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+    for (s.checker.diagnostics.items) |d| {
+        try T.expect(d.code != TsCodes.argument_type_mismatch);
+    }
+}
+
+test "checker: spread tuple fixed prefix satisfies required parameter count" {
+    const s = try newSetup(
+        \\declare let f: (a: number, b: string, ...x: [...boolean[]]) => void;
+        \\let t: [number, string, ...boolean[]];
+        \\f(...t);
+        \\let tail: [string, ...boolean[]];
+        \\f(42, ...tail);
+    );
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+    for (s.checker.diagnostics.items) |d| {
+        try T.expect(d.code != TsCodes.expected_n_arguments);
+        try T.expect(d.code != TsCodes.argument_type_mismatch);
+    }
+}
+
+test "checker: bare generic rest tuple does not bind from first argument only" {
+    const s = try newSetup(
+        \\declare const f: <T extends unknown[]>(...args: T) => T;
+        \\let tail: [string, ...boolean[]];
+        \\f(42, ...tail);
+    );
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+    for (s.checker.diagnostics.items) |d| {
+        try T.expect(d.code != TsCodes.argument_type_mismatch);
+    }
+}
+
+test "checker: value-returning callback is assignable to void callback target" {
+    const s = try newSetup(
+        \\declare function use(f: (a: { y: string }) => void): void;
+        \\use(({ y }) => y);
+    );
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+    for (s.checker.diagnostics.items) |d| {
+        try T.expect(d.code != TsCodes.argument_type_mismatch);
+    }
+}
+
+test "checker: for-of object binding pattern names resolve" {
+    const s = try newSetup(
+        \\let array: { x: number, y: string }[];
+        \\for (let { x, ...restOf } of array) {
+        \\  x;
+        \\  restOf;
+        \\}
+    );
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+    for (s.checker.diagnostics.items) |d| {
+        try T.expect(d.code != TsCodes.cannot_find_name);
     }
 }
 
