@@ -1165,7 +1165,14 @@ pub const Parser = struct {
                     const name_id = try self.internToken(name_tok);
                     break :id_blk try self.builder.addIdentifier(tokenSpan(name_tok), name_id);
                 };
-                if (self.match(.question)) flags.is_optional = true;
+                if (self.match(.question)) {
+                    flags.is_optional = true;
+                    const nk = self.hir.kindOf(name_node);
+                    if (nk == .object_pattern or nk == .array_pattern) {
+                        const q_tok = self.tokens[self.cursor - 1];
+                        try self.reportCodeAt(q_tok.span.start, q_tok.line, 2463, "A binding pattern parameter cannot be optional in an implementation signature.");
+                    }
+                }
                 var type_ann: NodeId = hir_mod.none_node_id;
                 if (self.match(.colon)) type_ann = try self.parseTypeAnnotation();
                 var default_value: NodeId = hir_mod.none_node_id;
@@ -1208,6 +1215,8 @@ pub const Parser = struct {
         const close_kind: TokenKind = if (is_object) .close_brace else .close_bracket;
         var elements: std.ArrayListUnmanaged(NodeId) = .empty;
         defer elements.deinit(self.gpa);
+        var seen_names: std.AutoHashMapUnmanaged(hir_mod.StringId, void) = .empty;
+        defer seen_names.deinit(self.gpa);
         if (self.peek().kind != close_kind) {
             while (true) {
                 // Array elision: `[ , b ]` — for v0 we just skip the
@@ -1239,11 +1248,26 @@ pub const Parser = struct {
                         try self.report("expected ", "':' after literal binding key");
                         return error.UnexpectedToken;
                     }
+                    try self.reportReservedBindingNameIfNeeded(key_tok);
                     const name_id = try self.internToken(key_tok);
                     break :blk try self.builder.addIdentifier(tokenSpan(key_tok), name_id);
                 } else try self.parseBindingTarget();
                 var default_value: NodeId = hir_mod.none_node_id;
-                if (self.match(.equal)) default_value = try self.parseAssignmentExpression();
+                if (self.match(.equal)) {
+                    const eq_tok = self.tokens[self.cursor - 1];
+                    if (flags.is_rest) {
+                        try self.reportCodeAt(eq_tok.span.start, eq_tok.line, 1186, "A rest element cannot have an initializer.");
+                    }
+                    default_value = try self.parseAssignmentExpression();
+                }
+                if (self.hir.kindOf(name_node) == .identifier) {
+                    const id = hir_mod.identifierOf(self.hir, name_node);
+                    if (seen_names.contains(id.name)) {
+                        try self.reportCodeAt(self.hir.spanOf(name_node).start, elem_start.line, 2300, "Duplicate identifier.");
+                    } else {
+                        try seen_names.put(self.gpa, id.name, {});
+                    }
+                }
                 const elem = try self.builder.addParameter(
                     .{ .start = elem_start.span.start, .end = self.tokens[self.cursor - 1].span.end },
                     name_node,
@@ -1279,8 +1303,26 @@ pub const Parser = struct {
         }
         const name_tok = try self.expectIdentifierLike();
         try self.reportAwaitBindingIfReserved(name_tok);
+        try self.reportReservedBindingNameIfNeeded(name_tok);
         const name_id = try self.internToken(name_tok);
         return try self.builder.addIdentifier(tokenSpan(name_tok), name_id);
+    }
+
+    fn reportReservedBindingNameIfNeeded(self: *Parser, name_tok: Token) ParseError!void {
+        if (isReservedBindingNameToken(name_tok.kind)) {
+            const name = self.source[name_tok.span.start..name_tok.span.end];
+            const msg = try std.fmt.allocPrint(
+                self.diag_arena.allocator(),
+                "Identifier expected. '{s}' is a reserved word that cannot be used here.",
+                .{name},
+            );
+            try self.diagnostics.append(self.gpa, .{
+                .pos = name_tok.span.start,
+                .line = name_tok.line,
+                .code = 1359,
+                .message = msg,
+            });
+        }
     }
 
     fn parseClassDeclaration(self: *Parser) ParseError!NodeId {
@@ -1615,13 +1657,14 @@ pub const Parser = struct {
         while (true) {
             const k = self.peek().kind;
             if (k.isModifierKeyword()) {
+                const next_can_start_member = canStartClassMemberAfterModifier(self.peekAt(1).kind);
                 if (isAccessibilityModifier(k) and
-                    !isClassMemberNameStart(self.peekAt(1).kind) and
+                    !next_can_start_member and
                     !self.peekAt(1).kind.isModifierKeyword())
                 {
                     return mods;
                 }
-                if (mods.is_static and isAccessibilityModifier(k) and isClassMemberNameStart(self.peekAt(1).kind)) {
+                if (mods.is_static and isAccessibilityModifier(k) and next_can_start_member) {
                     const mod = self.advance();
                     try self.reportCodeAt(mod.span.start, mod.line, 1029, "Accessibility modifier must precede 'static' modifier.");
                     mods.visibility = switch (k) {
@@ -1680,6 +1723,14 @@ pub const Parser = struct {
             kind == .kw_interface or
             kind == .open_bracket or
             kind.isContextualKeyword();
+    }
+
+    fn canStartClassMemberAfterModifier(kind: TokenKind) bool {
+        return isClassMemberNameStart(kind) or kind == .asterisk;
+    }
+
+    fn isReservedBindingNameToken(kind: TokenKind) bool {
+        return kind.isKeyword() and !kind.isContextualKeyword();
     }
 
     fn reportAmbientClassImplementation(self: *Parser, member_start: Token) ParseError!void {
@@ -6246,6 +6297,14 @@ test "parser: rest binding element before another element reports TS2462" {
     try T.expectEqual(@as(u32, 2462), s.parser.diagnostics.items[0].code);
 }
 
+test "parser: rest binding element initializer reports TS1186" {
+    var s = try newTestSetup("const [...rest = items] = items;");
+    defer destroyTestSetup(s);
+    _ = try s.parser.parseSourceFile();
+    try T.expectEqual(@as(usize, 1), s.parser.diagnostics.items.len);
+    try T.expectEqual(@as(u32, 1186), s.parser.diagnostics.items[0].code);
+}
+
 test "parser: rest parameter before another parameter reports TS1014" {
     var s = try newTestSetup("function f(...rest, tail) {}");
     defer destroyTestSetup(s);
@@ -6266,6 +6325,50 @@ test "parser: object binding pattern supports literal and computed keys" {
     try T.expect(hir_mod.parameterOf(&s.hir, elems[2]).flags.is_rest);
 }
 
+test "parser: reserved object binding target reports TS1359" {
+    var s = try newTestSetup("var { \"while\": while } = { while: 1 };");
+    defer destroyTestSetup(s);
+    _ = try s.parser.parseSourceFile();
+    var found = false;
+    for (s.parser.diagnostics.items) |d| {
+        if (d.code == 1359) found = true;
+    }
+    try T.expect(found);
+}
+
+test "parser: reserved shorthand object binding target reports TS1359" {
+    var s = try newTestSetup("var { while } = { while: 1 };");
+    defer destroyTestSetup(s);
+    _ = try s.parser.parseSourceFile();
+    var found = false;
+    for (s.parser.diagnostics.items) |d| {
+        if (d.code == 1359) found = true;
+    }
+    try T.expect(found);
+}
+
+test "parser: duplicate names in binding pattern report TS2300" {
+    var s = try newTestSetup("let { foo, bar: foo } = value; const [a, a] = pair;");
+    defer destroyTestSetup(s);
+    _ = try s.parser.parseSourceFile();
+    var count: usize = 0;
+    for (s.parser.diagnostics.items) |d| {
+        if (d.code == 2300) count += 1;
+    }
+    try T.expectEqual(@as(usize, 2), count);
+}
+
+test "parser: optional binding pattern parameter reports TS2463" {
+    var s = try newTestSetup("function f([x]?: [number]) {}");
+    defer destroyTestSetup(s);
+    _ = try s.parser.parseSourceFile();
+    var found = false;
+    for (s.parser.diagnostics.items) |d| {
+        if (d.code == 2463) found = true;
+    }
+    try T.expect(found);
+}
+
 test "parser: class declaration with method and property" {
     var s = try newTestSetup(
         \\class Foo {
@@ -6281,6 +6384,21 @@ test "parser: class declaration with method and property" {
     try T.expect(cl.name != hir_mod.none_node_id);
     const members = hir_mod.classMembers(&s.hir, top);
     try T.expectEqual(@as(usize, 2), members.len);
+}
+
+test "parser: accessibility modifier before generator class method" {
+    var s = try newTestSetup(
+        \\class C {
+        \\  public * foo() { }
+        \\}
+    );
+    defer destroyTestSetup(s);
+    const root = try s.parser.parseSourceFile();
+    try T.expectEqual(@as(usize, 0), s.parser.diagnostics.items.len);
+    const top = hir_mod.blockStmts(&s.hir, root)[0];
+    const members = hir_mod.classMembers(&s.hir, top);
+    try T.expectEqual(@as(usize, 1), members.len);
+    try T.expectEqual(hir_mod.NodeKind.fn_expr, s.hir.kindOf(members[0]));
 }
 
 test "parser: class override modifier is preserved on methods, fields, and parameter properties" {

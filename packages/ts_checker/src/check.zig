@@ -65,6 +65,7 @@ pub const TsCodes = struct {
     pub const cannot_find_name_did_you_mean: u32 = 2552;
     pub const cannot_find_module: u32 = 2307;
     pub const type_not_assignable: u32 = 2322;
+    pub const super_not_derived: u32 = 2335;
     pub const property_does_not_exist: u32 = 2339;
     pub const argument_type_mismatch: u32 = 2345;
     pub const conversion_may_be_mistake: u32 = 2352;
@@ -74,6 +75,7 @@ pub const TsCodes = struct {
     pub const property_not_assignable_to_index_type: u32 = 2411;
     pub const number_index_not_assignable_to_string_index: u32 = 2413;
     pub const class_incorrectly_implements_interface: u32 = 2420;
+    pub const class_used_before_declaration: u32 = 2449;
     pub const tuple_index_out_of_bounds: u32 = 2493;
     pub const expected_n_arguments: u32 = 2554;
     pub const expected_n_type_arguments: u32 = 2558;
@@ -590,6 +592,7 @@ pub const Checker = struct {
         }
         for (stmts) |s| try self.checkStatement(s);
         try self.checkUsedBeforeAssignment(stmts);
+        try self.checkClassUsedBeforeDeclaration(stmts);
         if (self.source != null) try self.applyDirectives(root);
     }
 
@@ -1240,6 +1243,7 @@ pub const Checker = struct {
                 try self.reportImplicitAnyYieldOperands(f.body);
             }
             try self.checkUsedBeforeAssignment(stmts);
+            try self.checkClassUsedBeforeDeclaration(stmts);
         } else {
             // Arrow with expression body — its expression IS the
             // return value. Use it as the inferred return type when
@@ -1891,6 +1895,61 @@ pub const Checker = struct {
         });
     }
 
+    fn checkClassUsedBeforeDeclaration(self: *Checker, stmts: []const NodeId) CheckError!void {
+        var class_names: std.AutoHashMapUnmanaged(hir_mod.StringId, NodeId) = .empty;
+        defer class_names.deinit(self.gpa);
+        for (stmts) |raw| {
+            const s = self.unwrapExportDecl(raw);
+            if (s == hir_mod.none_node_id) continue;
+            const k = self.hir.kindOf(s);
+            if (k != .class_decl and k != .class_expr) continue;
+            const c = hir_mod.classOf(self.hir, s);
+            if (c.name == hir_mod.none_node_id or self.hir.kindOf(c.name) != .identifier) continue;
+            const id = hir_mod.identifierOf(self.hir, c.name);
+            try class_names.put(self.gpa, id.name, s);
+        }
+        if (class_names.count() == 0) return;
+
+        var declared: std.AutoHashMapUnmanaged(hir_mod.StringId, void) = .empty;
+        defer declared.deinit(self.gpa);
+        var reported: std.AutoHashMapUnmanaged(hir_mod.StringId, void) = .empty;
+        defer reported.deinit(self.gpa);
+        for (stmts) |raw| {
+            const s = self.unwrapExportDecl(raw);
+            if (s == hir_mod.none_node_id) continue;
+
+            var refs: std.AutoHashMapUnmanaged(hir_mod.StringId, void) = .empty;
+            defer refs.deinit(self.gpa);
+            try self.collectIdentifierRefs(s, &refs);
+            var it = refs.keyIterator();
+            while (it.next()) |name_ptr| {
+                const name = name_ptr.*;
+                if (!class_names.contains(name) or declared.contains(name) or reported.contains(name)) continue;
+                const name_str = self.string_interner.get(name);
+                const msg = try std.fmt.allocPrint(
+                    self.diag_arena.allocator(),
+                    "Class '{s}' used before its declaration.",
+                    .{name_str},
+                );
+                try self.diagnostics.append(self.gpa, .{
+                    .node = s,
+                    .code = TsCodes.class_used_before_declaration,
+                    .message = msg,
+                });
+                try reported.put(self.gpa, name, {});
+            }
+
+            const k = self.hir.kindOf(s);
+            if (k == .class_decl or k == .class_expr) {
+                const c = hir_mod.classOf(self.hir, s);
+                if (c.name != hir_mod.none_node_id and self.hir.kindOf(c.name) == .identifier) {
+                    const id = hir_mod.identifierOf(self.hir, c.name);
+                    try declared.put(self.gpa, id.name, {});
+                }
+            }
+        }
+    }
+
     /// Recursively collect every identifier StringId reachable from
     /// `node` that is *not* the name slot of a declaration. Stops
     /// at nested function boundaries so inner-fn references don't
@@ -2008,6 +2067,10 @@ pub const Checker = struct {
             },
             .array_literal => {
                 for (hir_mod.arrayLiteralElements(self.hir, node)) |el| try self.collectIdentifierRefs(el, out);
+            },
+            .spread => {
+                const sp = hir_mod.spreadOf(self.hir, node);
+                try self.collectIdentifierRefs(sp.expression, out);
             },
             .object_literal => {
                 for (hir_mod.objectLiteralProps(self.hir, node)) |p| try self.collectIdentifierRefs(p, out);
@@ -2454,6 +2517,8 @@ pub const Checker = struct {
         if (t == types.Primitive.any or t == types.Primitive.unknown) return true;
         if (t >= self.interner.pool.typeCount()) return false;
         if (!self.interner.pool.flagsOf(t).is_object_type) return false;
+        const symbol_iterator = self.string_interner.intern("Symbol.iterator") catch return false;
+        if (self.interner.objectMember(t, symbol_iterator) != null) return true;
         return self.interner.objectNumberIndex(t) != types.Primitive.none;
     }
 
@@ -2999,6 +3064,7 @@ pub const Checker = struct {
                 },
                 .object_property => {
                     const op = hir_mod.objectPropertyOf(self.hir, m);
+                    if (op.is_computed) _ = try self.checkExpression(op.key);
                     const member_name = (try self.classMemberNameFromPropertyKey(op.key, op.is_computed)) orelse continue;
                     if (op.is_static) {
                         try static_names.put(self.gpa, member_name, m);
@@ -3648,6 +3714,15 @@ pub const Checker = struct {
                 break :blk self.string_interner.intern(synthetic) catch return error.OutOfMemory;
             },
             .literal_string => hir_mod.literalStringOf(self.hir, key).value,
+            .member_access => blk: {
+                if (!is_computed) break :blk null;
+                const m = hir_mod.memberOf(self.hir, key);
+                if (self.hir.kindOf(m.object) != .identifier) break :blk null;
+                const obj = hir_mod.identifierOf(self.hir, m.object);
+                if (!std.mem.eql(u8, self.string_interner.get(obj.name), "Symbol")) break :blk null;
+                if (!std.mem.eql(u8, self.string_interner.get(m.name), "iterator")) break :blk null;
+                break :blk self.string_interner.intern("Symbol.iterator") catch return error.OutOfMemory;
+            },
             else => null,
         };
     }
@@ -5598,6 +5673,14 @@ pub const Checker = struct {
         if (v.init != hir_mod.none_node_id) {
             init_type = try self.checkExpression(v.init);
         }
+        if (v.name != hir_mod.none_node_id and
+            self.hir.kindOf(v.name) == .array_pattern and
+            v.init != hir_mod.none_node_id and
+            !self.isIterableLikeType(init_type) and
+            !self.objectLiteralHasSymbolIteratorMethod(v.init))
+        {
+            try self.report(v.init, TsCodes.yield_star_not_iterable, "Type must have a '[Symbol.iterator]()' method that returns an iterator.");
+        }
 
         // If both are present, check assignability.
         const final_type: TypeId = if (declared_type != types.Primitive.none) declared_type else init_type;
@@ -6113,12 +6196,25 @@ pub const Checker = struct {
                         }
                         break :blk inst;
                     }
+                    if (std.mem.eql(u8, self.string_interner.get(id.name), "Map")) {
+                        const entry = try self.inferMapEntryTypes(args);
+                        break :blk try self.builtinMapInstanceType(entry.key, entry.value);
+                    }
+                    if (self.isBuiltinObjectConstructor(id.name)) {
+                        break :blk self.interner.internObjectType(&.{}) catch return error.OutOfMemory;
+                    }
                 }
                 break :blk types.Primitive.any;
             },
             .call_expr => blk: {
                 const c = hir_mod.callOf(self.hir, node);
                 const callee_t = try self.checkExpression(c.callee);
+                if (self.hir.kindOf(c.callee) == .identifier) {
+                    const id = hir_mod.identifierOf(self.hir, c.callee);
+                    if (std.mem.eql(u8, self.string_interner.get(id.name), "super") and self.lookupNarrow(id.name) == null) {
+                        try self.report(c.callee, TsCodes.super_not_derived, "'super' can only be referenced in a derived class.");
+                    }
+                }
                 const args = hir_mod.callArgs(self.hir, node);
                 var arg_types: std.ArrayListUnmanaged(TypeId) = .empty;
                 defer arg_types.deinit(self.gpa);
@@ -7747,6 +7843,71 @@ pub const Checker = struct {
             // module / class shapes that don't have full
             // resolution wired up yet.
             "super",
+        };
+        for (builtins) |b| {
+            if (std.mem.eql(u8, s, b)) return true;
+        }
+        return false;
+    }
+
+    const MapEntryTypes = struct {
+        key: TypeId,
+        value: TypeId,
+    };
+
+    fn inferMapEntryTypes(self: *Checker, args: []const NodeId) CheckError!MapEntryTypes {
+        if (args.len == 0 or self.hir.kindOf(args[0]) != .array_literal) {
+            return .{ .key = types.Primitive.any, .value = types.Primitive.any };
+        }
+        var key_types: std.ArrayListUnmanaged(TypeId) = .empty;
+        defer key_types.deinit(self.gpa);
+        var value_types: std.ArrayListUnmanaged(TypeId) = .empty;
+        defer value_types.deinit(self.gpa);
+        for (hir_mod.arrayLiteralElements(self.hir, args[0])) |entry_node| {
+            if (entry_node == hir_mod.none_node_id or self.hir.kindOf(entry_node) != .array_literal) continue;
+            const entry_elems = hir_mod.arrayLiteralElements(self.hir, entry_node);
+            if (entry_elems.len < 2) continue;
+            try key_types.append(self.gpa, try self.checkExpression(entry_elems[0]));
+            try value_types.append(self.gpa, try self.checkExpression(entry_elems[1]));
+        }
+        return .{
+            .key = try self.unionOrAny(key_types.items),
+            .value = try self.unionOrAny(value_types.items),
+        };
+    }
+
+    fn unionOrAny(self: *Checker, items: []const TypeId) CheckError!TypeId {
+        if (items.len == 0) return types.Primitive.any;
+        if (items.len == 1) return items[0];
+        return self.interner.internUnion(items) catch return error.OutOfMemory;
+    }
+
+    fn builtinMapInstanceType(self: *Checker, key_t: TypeId, value_t: TypeId) CheckError!TypeId {
+        var entry_members: std.ArrayListUnmanaged(types.ObjectMember) = .empty;
+        defer entry_members.deinit(self.gpa);
+        const zero_id = self.string_interner.intern("0") catch return error.OutOfMemory;
+        const one_id = self.string_interner.intern("1") catch return error.OutOfMemory;
+        const length_id = self.string_interner.intern("length") catch return error.OutOfMemory;
+        try entry_members.append(self.gpa, .{ .name = zero_id, .type = key_t, .is_optional = false, .is_readonly = false, .is_method = false });
+        try entry_members.append(self.gpa, .{ .name = one_id, .type = value_t, .is_optional = false, .is_readonly = false, .is_method = false });
+        const length_t = self.interner.internNumberLiteral(2) catch types.Primitive.number_t;
+        try entry_members.append(self.gpa, .{ .name = length_id, .type = length_t, .is_optional = false, .is_readonly = true, .is_method = false });
+        const entry_union = self.interner.internUnion(&.{ key_t, value_t }) catch types.Primitive.any;
+        const entry_t = self.interner.internObjectTypeWithIndex(entry_members.items, types.Primitive.none, entry_union) catch return error.OutOfMemory;
+
+        var map_members: std.ArrayListUnmanaged(types.ObjectMember) = .empty;
+        defer map_members.deinit(self.gpa);
+        const iterator_id = self.string_interner.intern("Symbol.iterator") catch return error.OutOfMemory;
+        try map_members.append(self.gpa, .{ .name = iterator_id, .type = types.Primitive.any, .is_optional = false, .is_readonly = false, .is_method = true });
+        return self.interner.internObjectTypeWithIndex(map_members.items, types.Primitive.none, entry_t) catch return error.OutOfMemory;
+    }
+
+    fn isBuiltinObjectConstructor(self: *const Checker, name: hir_mod.StringId) bool {
+        const s = self.string_interner.get(name);
+        const builtins = [_][]const u8{
+            "Map",        "Set",         "WeakMap", "WeakSet",
+            "Date",       "RegExp",      "Error",   "TypeError",
+            "RangeError", "SyntaxError",
         };
         for (builtins) |b| {
             if (std.mem.eql(u8, s, b)) return true;
@@ -10573,6 +10734,21 @@ test "checker: use-before-assign emits TS2454" {
     try T.expect(found);
 }
 
+test "checker: class used before declaration emits TS2449" {
+    const s = try newSetup(
+        \\function f(...items: any[]) {}
+        \\f(...new Later());
+        \\class Later {}
+    );
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+    var found = false;
+    for (s.checker.diagnostics.items) |d| {
+        if (d.code == TsCodes.class_used_before_declaration) found = true;
+    }
+    try T.expect(found);
+}
+
 test "checker: typed var used in conditional emits TS2454" {
     const s = try newSetup(
         \\var x: number;
@@ -10962,6 +11138,21 @@ test "checker: computed class override checks base computed members" {
     try T.expect(saw_not_base);
 }
 
+test "checker: computed class member key expressions are checked" {
+    const s = try newSetup(
+        \\class C {
+        \\  *[missingKey]() { }
+        \\}
+    );
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+    var found = false;
+    for (s.checker.diagnostics.items) |d| {
+        if (d.code == TsCodes.cannot_find_name) found = true;
+    }
+    try T.expect(found);
+}
+
 test "checker: interface override modifiers participate in extends diagnostics" {
     const s = try newSetup(
         \\interface A { x(): void; }
@@ -11263,6 +11454,21 @@ test "checker: super property miss emits TS2339" {
     var found = false;
     for (s.checker.diagnostics.items) |d| {
         if (d.code == TsCodes.property_does_not_exist) found = true;
+    }
+    try T.expect(found);
+}
+
+test "checker: super call in non-derived class emits TS2335" {
+    const s = try newSetup(
+        \\class Box {
+        \\  constructor() { super(); }
+        \\}
+    );
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+    var found = false;
+    for (s.checker.diagnostics.items) |d| {
+        if (d.code == TsCodes.super_not_derived) found = true;
     }
     try T.expect(found);
 }
@@ -15025,6 +15231,72 @@ test "checker: rest parameter — wrong-typed arg emits TS2345" {
     const s = try newSetup(
         \\function f(...rest: number[]) {}
         \\f("s");
+    );
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+    var found = false;
+    for (s.checker.diagnostics.items) |d| {
+        if (d.code == TsCodes.argument_type_mismatch) found = true;
+    }
+    try T.expect(found);
+}
+
+test "checker: rest tuple parameter rejects object constructor argument" {
+    const s = try newSetup(
+        \\function f(...[a, b]: [string, number][]) {}
+        \\f(new Map());
+    );
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+    var found = false;
+    for (s.checker.diagnostics.items) |d| {
+        if (d.code == TsCodes.argument_type_mismatch) found = true;
+    }
+    try T.expect(found);
+}
+
+test "checker: array binding pattern requires iterable initializer" {
+    const s = try newSetup("var [...a] = { 0: \"\", 1: true };");
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+    var found = false;
+    for (s.checker.diagnostics.items) |d| {
+        if (d.code == TsCodes.yield_star_not_iterable) found = true;
+    }
+    try T.expect(found);
+}
+
+test "checker: class Symbol.iterator member makes instance iterable" {
+    const s = try newSetup(
+        \\class SymbolIterator {
+        \\  next() { return { value: Symbol(), done: false }; }
+        \\  [Symbol.iterator]() { return this; }
+        \\}
+        \\var [a, b] = new SymbolIterator();
+    );
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+    for (s.checker.diagnostics.items) |d| {
+        try T.expect(d.code != TsCodes.yield_star_not_iterable);
+    }
+}
+
+test "checker: spread Map entries satisfy tuple rest parameter" {
+    const s = try newSetup(
+        \\function f(...[[k, v]]: [string, number][]) {}
+        \\f(...new Map([["", 0]]));
+    );
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+    for (s.checker.diagnostics.items) |d| {
+        try T.expect(d.code != TsCodes.argument_type_mismatch);
+    }
+}
+
+test "checker: spread Map entries preserve inferred value type" {
+    const s = try newSetup(
+        \\function f(...[[k, v]]: [string, number][]) {}
+        \\f(...new Map([["", true]]));
     );
     defer destroySetup(s);
     try s.checker.checkSourceFile(s.root);
