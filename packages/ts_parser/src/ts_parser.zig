@@ -75,6 +75,8 @@ pub const Parser = struct {
     ambient_depth: u32,
     block_depth: u32,
     namespace_depth: u32,
+    strict_mode: bool,
+    suppress_strict_param_names: bool,
     /// True for `.tsx` files. Enables JSX parsing in expression
     /// position; the parser disambiguates `<T>x` (generic type
     /// assertion) vs. `<T>x</T>` (JSX) via the `<T,>` and
@@ -105,6 +107,8 @@ pub const Parser = struct {
             .ambient_depth = 0,
             .block_depth = 0,
             .namespace_depth = 0,
+            .strict_mode = false,
+            .suppress_strict_param_names = false,
             .is_tsx = false,
         };
     }
@@ -476,11 +480,20 @@ pub const Parser = struct {
                 if (self.peekAt(1).kind == .identifier) break :blk try self.parseTypeAlias();
                 break :blk try self.parseExpressionStatement();
             },
+            .string_literal => blk: {
+                const is_strict = self.isUseStrictDirective(t);
+                const stmt = try self.parseExpressionStatement();
+                if (is_strict) self.strict_mode = true;
+                break :blk stmt;
+            },
             .semicolon => blk: {
-                _ = self.advance();
+                const semi = self.advance();
+                if (self.ambient_depth > 0) {
+                    try self.reportCodeAt(semi.span.start, semi.line, 1036, "Statements are not allowed in ambient contexts.");
+                }
                 // Empty statement is a no-op; lower as a synthesized
                 // block with zero statements at its location.
-                break :blk try self.builder.addBlock(tokenSpan(t), &.{});
+                break :blk try self.builder.addBlock(tokenSpan(semi), &.{});
             },
             else => try self.parseExpressionStatement(),
         };
@@ -489,6 +502,52 @@ pub const Parser = struct {
     fn reportModifierInBlock(self: *Parser, tok: Token) ParseError!void {
         if (self.block_depth == 0) return;
         try self.reportCodeAt(tok.span.start, tok.line, 1184, "Modifiers cannot appear here.");
+    }
+
+    fn isUseStrictDirective(self: *const Parser, tok: Token) bool {
+        if (tok.kind != .string_literal) return false;
+        const raw = self.source[tok.span.start..tok.span.end];
+        return std.mem.eql(u8, raw, "\"use strict\"") or std.mem.eql(u8, raw, "'use strict'");
+    }
+
+    fn isRestrictedStrictName(self: *const Parser, tok: Token) bool {
+        const raw = self.source[tok.span.start..tok.span.end];
+        return std.mem.eql(u8, raw, "eval") or std.mem.eql(u8, raw, "arguments");
+    }
+
+    fn reportInvalidStrictName(self: *Parser, tok: Token) ParseError!void {
+        if (!self.strict_mode or !self.isRestrictedStrictName(tok)) return;
+        const raw = self.source[tok.span.start..tok.span.end];
+        const msg = try std.fmt.allocPrint(self.diag_arena.allocator(), "Invalid use of '{s}' in strict mode.", .{raw});
+        try self.diagnostics.append(self.gpa, .{
+            .pos = tok.span.start,
+            .line = tok.line,
+            .code = 1100,
+            .message = msg,
+        });
+    }
+
+    fn reportInvalidStrictIdentifierNode(self: *Parser, node: NodeId) ParseError!void {
+        if (!self.strict_mode or self.hir.kindOf(node) != .identifier) return;
+        const id = hir_mod.identifierOf(self.hir, node);
+        const raw = self.interner.get(id.name);
+        if (!std.mem.eql(u8, raw, "eval") and !std.mem.eql(u8, raw, "arguments")) return;
+        const sp = self.hir.spanOf(node);
+        const msg = try std.fmt.allocPrint(self.diag_arena.allocator(), "Invalid use of '{s}' in strict mode.", .{raw});
+        try self.diagnostics.append(self.gpa, .{
+            .pos = sp.start,
+            .line = self.peek().line,
+            .code = 1100,
+            .message = msg,
+        });
+    }
+
+    fn reportStrictLegacyOctal(self: *Parser, tok: Token, raw: []const u8) ParseError!void {
+        if (!self.strict_mode or raw.len < 2 or raw[0] != '0') return;
+        const c = raw[1];
+        if (c == 'x' or c == 'X' or c == 'o' or c == 'O' or c == 'b' or c == 'B' or c == '.') return;
+        if (c < '0' or c > '9') return;
+        try self.reportCodeAt(tok.span.start, tok.line, 1121, "Octal literals are not allowed. Use the syntax '0o...'.");
     }
 
     fn parseIfStatement(self: *Parser) ParseError!NodeId {
@@ -742,6 +801,7 @@ pub const Parser = struct {
         var name: NodeId = hir_mod.none_node_id;
         if (self.peek().kind == .identifier or self.peek().kind.isContextualKeyword()) {
             const name_tok = self.advance();
+            try self.reportInvalidStrictName(name_tok);
             const name_id = try self.internToken(name_tok);
             name = try self.builder.addIdentifier(tokenSpan(name_tok), name_id);
         }
@@ -840,7 +900,17 @@ pub const Parser = struct {
                     }, dec_expr);
                     try param_decorators.append(self.gpa, dec_node);
                 }
-                if (self.match(.dot_dot_dot)) flags.is_rest = true;
+                if (self.match(.dot_dot_dot)) {
+                    flags.is_rest = true;
+                    if (flags.is_parameter_property) {
+                        try self.reportCodeAt(
+                            param_start.span.start,
+                            param_start.line,
+                            1317,
+                            "A parameter property cannot be declared using a rest parameter.",
+                        );
+                    }
+                }
                 // §3.A.11 — explicit `this: T` first parameter. TS
                 // doesn't surface it at runtime; we capture it as a
                 // parameter named "this" so the checker's existing
@@ -874,6 +944,7 @@ pub const Parser = struct {
                     break :blk try self.parseBindingPattern();
                 } else id_blk: {
                     const name_tok = try self.expectIdentifierLike();
+                    if (!self.suppress_strict_param_names) try self.reportInvalidStrictName(name_tok);
                     const name_id = try self.internToken(name_tok);
                     break :id_blk try self.builder.addIdentifier(tokenSpan(name_tok), name_id);
                 };
@@ -1091,6 +1162,12 @@ pub const Parser = struct {
                 member_start = self.peek();
             }
             const is_generator = self.match(.asterisk);
+            if (self.peek().kind == .kw_var) {
+                const bad = self.advance();
+                try self.reportCodeAt(bad.span.start, bad.line, 1068, "Unexpected token. A constructor, method, accessor, or property was expected.");
+                try self.skipUntilTypeMemberSeparator();
+                continue;
+            }
             if (self.peek().kind == .open_bracket) {
                 if (try self.tryParseIndexSignature(&members)) continue;
                 const member = try self.parseComputedClassMember(member_start, mods, is_generator);
@@ -1283,6 +1360,12 @@ pub const Parser = struct {
         while (true) {
             const k = self.peek().kind;
             if (k.isModifierKeyword()) {
+                if (isAccessibilityModifier(k) and
+                    !isClassMemberNameStart(self.peekAt(1).kind) and
+                    !self.peekAt(1).kind.isModifierKeyword())
+                {
+                    return mods;
+                }
                 if (mods.is_static and isAccessibilityModifier(k) and isClassMemberNameStart(self.peekAt(1).kind)) {
                     const mod = self.advance();
                     try self.reportCodeAt(mod.span.start, mod.line, 1029, "Accessibility modifier must precede 'static' modifier.");
@@ -1321,6 +1404,7 @@ pub const Parser = struct {
             kind == .string_literal or
             kind == .number_literal or
             kind == .kw_constructor or
+            kind == .open_bracket or
             kind.isContextualKeyword();
     }
 
@@ -1752,6 +1836,10 @@ pub const Parser = struct {
 
     fn parseExportDeclaration(self: *Parser) ParseError!NodeId {
         const start = self.advance(); // export
+        if (self.peek().kind == .kw_export) {
+            const dup = self.advance();
+            try self.reportCodeAt(dup.span.start, dup.line, 1030, "'export' modifier already seen.");
+        }
         // `type` after `export` is the type-only marker only when
         // the next token is `{` (named re-export) or `*` (namespace
         // re-export). `export type Foo = T;` and `export type Foo {}`
@@ -2444,6 +2532,12 @@ pub const Parser = struct {
                 break :blk try self.builder.addTypeRef(tokenSpan(t), id, &.{}, &.{});
             },
             .identifier => try self.parseTypeReference(),
+            .kw_public, .kw_private, .kw_protected => blk: {
+                const bad = self.advance();
+                try self.reportCodeAt(bad.span.start, bad.line, 1213, "Identifier expected. Reserved words cannot be used as identifiers here.");
+                const id = self.interner.intern("unknown") catch return error.OutOfMemory;
+                break :blk try self.builder.addTypeRef(tokenSpan(bad), id, &.{}, &.{});
+            },
             .kw_this => blk: {
                 const start_tok = self.advance();
                 var end_pos = start_tok.span.end;
@@ -2751,6 +2845,7 @@ pub const Parser = struct {
                 // Not an index signature — fall through to skip
                 // (could be a computed key or other form we don't
                 // model yet).
+                try self.reportMalformedTypeMemberBracket(t);
                 try self.skipUntilTypeMemberSeparator();
                 continue;
             }
@@ -2761,7 +2856,7 @@ pub const Parser = struct {
                 continue;
             }
             // Construct signature: `{ new<T>(x: T): T }`.
-            if (t.kind == .kw_new) {
+            if (t.kind == .kw_new and self.isConstructSignatureStart()) {
                 const sig = try self.parseTypeSignatureMember(true);
                 try out.append(self.gpa, sig);
                 continue;
@@ -2877,6 +2972,41 @@ pub const Parser = struct {
             true,
             false,
         );
+    }
+
+    fn isConstructSignatureStart(self: *const Parser) bool {
+        return self.peekAt(1).kind == .open_paren or self.peekAt(1).kind == .less_than;
+    }
+
+    fn reportMalformedTypeMemberBracket(self: *Parser, start: Token) ParseError!void {
+        var idx = self.cursor + 1;
+        var count: u32 = 0;
+        var saw_rest = false;
+        var saw_accessibility = false;
+        var saw_question = false;
+        while (idx < self.tokens.len and
+            self.tokens[idx].kind != .close_bracket and
+            self.tokens[idx].kind != .close_brace and
+            self.tokens[idx].kind != .eof)
+        {
+            const k = self.tokens[idx].kind;
+            if (k == .dot_dot_dot) saw_rest = true;
+            if (isAccessibilityModifier(k)) saw_accessibility = true;
+            if (k == .question) saw_question = true;
+            if (k == .identifier or k.isContextualKeyword()) count += 1;
+            idx += 1;
+        }
+        if (saw_rest) {
+            try self.reportCodeAt(start.span.start, start.line, 1017, "An index signature cannot have a rest parameter.");
+        } else if (saw_accessibility) {
+            try self.reportCodeAt(start.span.start, start.line, 1018, "An index signature parameter cannot have an accessibility modifier.");
+        } else if (saw_question) {
+            try self.reportCodeAt(start.span.start, start.line, 1019, "An index signature parameter cannot have a question mark.");
+        } else if (count != 1) {
+            try self.reportCodeAt(start.span.start, start.line, 1096, "An index signature must have exactly one parameter.");
+        } else {
+            try self.reportCodeAt(start.span.start, start.line, 1169, "A computed property name in an interface must refer to an expression whose type is a literal type or a 'unique symbol' type.");
+        }
     }
 
     /// Attempt to parse a `[k: K]: V` (or `readonly [k: K]: V`)
@@ -3146,6 +3276,7 @@ pub const Parser = struct {
         switch (t.kind) {
             .equal => {
                 _ = self.advance();
+                try self.reportInvalidStrictIdentifierNode(left);
                 const right = try self.parseAssignmentExpressionWithIn(allow_in);
                 const sp: Span = .{ .start = self.hir.spanOf(left).start, .end = self.hir.spanOf(right).end };
                 return try self.builder.addAssignment(sp, left, right, null);
@@ -3453,6 +3584,7 @@ pub const Parser = struct {
             try self.report("unterminated regular expression literal", "");
             return error.UnexpectedToken;
         };
+        try self.reportUnbalancedRegexGroup(start_tok, end);
         var next = self.cursor;
         while (next < self.tokens.len and
             self.tokens[next].kind != .eof and
@@ -3463,6 +3595,45 @@ pub const Parser = struct {
         if (next == self.cursor) next += 1;
         self.cursor = next;
         return try self.builder.addLiteralRegex(.{ .start = start_tok.span.start, .end = end });
+    }
+
+    fn reportUnbalancedRegexGroup(self: *Parser, start_tok: Token, end: u32) ParseError!void {
+        const start_i: usize = @intCast(start_tok.span.start);
+        const end_i: usize = @intCast(end);
+        if (start_i >= self.source.len or self.source[start_i] != '/') return;
+        var i = start_i + 1;
+        var escaped = false;
+        var in_class = false;
+        var group_depth: u32 = 0;
+        while (i < end_i and i < self.source.len) : (i += 1) {
+            const c = self.source[i];
+            if (escaped) {
+                escaped = false;
+                continue;
+            }
+            if (c == '\\') {
+                escaped = true;
+                continue;
+            }
+            if (c == '[') {
+                in_class = true;
+                continue;
+            }
+            if (c == ']' and in_class) {
+                in_class = false;
+                continue;
+            }
+            if (c == '/' and !in_class) break;
+            if (in_class) continue;
+            if (c == '(') {
+                group_depth += 1;
+            } else if (c == ')' and group_depth > 0) {
+                group_depth -= 1;
+            }
+        }
+        if (group_depth > 0) {
+            try self.reportCodeAt(@intCast(i), start_tok.line, 1005, "')' expected.");
+        }
     }
 
     /// Skip a balanced (), [], or {} starting at `start`. Returns
@@ -3690,6 +3861,9 @@ pub const Parser = struct {
             .kw_delete => {
                 _ = self.advance();
                 const operand = try self.parseUnaryExpression();
+                if (self.strict_mode and self.hir.kindOf(operand) != .member_access and self.hir.kindOf(operand) != .element_access) {
+                    try self.reportCodeAt(t.span.start, t.line, 2703, "The operand of a 'delete' operator must be a property reference.");
+                }
                 const sp: Span = .{ .start = t.span.start, .end = self.hir.spanOf(operand).end };
                 return try self.builder.addUnaryOp(sp, .delete, operand);
             },
@@ -4020,6 +4194,7 @@ pub const Parser = struct {
             .number_literal => {
                 _ = self.advance();
                 const slice = self.source[t.span.start..t.span.end];
+                try self.reportStrictLegacyOctal(t, slice);
                 const value = parseNumericLiteral(slice);
                 return try self.builder.addLiteralNumber(tokenSpan(t), value);
             },
@@ -4528,6 +4703,9 @@ pub const Parser = struct {
                         self.interner.intern(self.source[key_span.start..key_span.end]) catch return error.OutOfMemory;
                     break :blk try self.builder.addIdentifier(key_span, key_id);
                 };
+                const saved_suppress_strict_param_names = self.suppress_strict_param_names;
+                self.suppress_strict_param_names = accessor_kw.kind == .kw_set;
+                defer self.suppress_strict_param_names = saved_suppress_strict_param_names;
                 const params = try self.parseParameterList();
                 defer self.gpa.free(params);
                 var body: NodeId = hir_mod.none_node_id;
@@ -6694,6 +6872,15 @@ test "parser: update expression reports invalid operand diagnostic" {
     try T.expectEqual(@as(u32, 2364), s.parser.diagnostics.items[1].code);
 }
 
+test "parser: regex literal reports unbalanced group" {
+    var s = try newTestSetup("let x = /fo(o/;");
+    defer destroyTestSetup(s);
+
+    _ = try s.parser.parseSourceFile();
+    try T.expectEqual(@as(usize, 1), s.parser.diagnostics.items.len);
+    try T.expectEqual(@as(u32, 1005), s.parser.diagnostics.items[0].code);
+}
+
 test "parser: contextual primitive keyword can be parameter name and expression" {
     var s = try newTestSetup("let f = (number) => String(number);");
     defer destroyTestSetup(s);
@@ -6710,4 +6897,97 @@ test "parser: unique symbol type annotation" {
     const top = hir_mod.blockStmts(&s.hir, root)[0];
     const v = hir_mod.varDeclOf(&s.hir, top);
     try T.expectEqual(hir_mod.NodeKind.type_ref, s.hir.kindOf(v.type_annotation));
+}
+
+test "parser: lone accessibility keyword in class body can be field name" {
+    var s = try newTestSetup("class Logger { public }");
+    defer destroyTestSetup(s);
+
+    _ = try s.parser.parseSourceFile();
+    try T.expectEqual(@as(usize, 0), s.parser.diagnostics.items.len);
+}
+
+test "parser: type member `new` can be a property or optional method name" {
+    var s = try newTestSetup("interface C { foo; new; }\nlet c: { new?(): any; };");
+    defer destroyTestSetup(s);
+
+    _ = try s.parser.parseSourceFile();
+    try T.expectEqual(@as(usize, 0), s.parser.diagnostics.items.len);
+}
+
+test "parser: duplicate export modifier reports TS1030" {
+    var s = try newTestSetup("export export class Foo { public Bar() {} }");
+    defer destroyTestSetup(s);
+
+    _ = try s.parser.parseSourceFile();
+    try T.expectEqual(@as(usize, 1), s.parser.diagnostics.items.len);
+    try T.expectEqual(@as(u32, 1030), s.parser.diagnostics.items[0].code);
+}
+
+test "parser: parameter property cannot be rest parameter" {
+    var s = try newTestSetup("class Foo { constructor(public ...args: string[]) {} }");
+    defer destroyTestSetup(s);
+
+    _ = try s.parser.parseSourceFile();
+    try T.expectEqual(@as(usize, 1), s.parser.diagnostics.items.len);
+    try T.expectEqual(@as(u32, 1317), s.parser.diagnostics.items[0].code);
+}
+
+test "parser: ambient semicolon statement reports TS1036" {
+    var s = try newTestSetup("declare namespace ambiModule { interface I { }; }");
+    defer destroyTestSetup(s);
+
+    _ = try s.parser.parseSourceFile();
+    try T.expectEqual(@as(usize, 1), s.parser.diagnostics.items.len);
+    try T.expectEqual(@as(u32, 1036), s.parser.diagnostics.items[0].code);
+}
+
+test "parser: invalid class-body var reports TS1068" {
+    var s = try newTestSetup("class Foo { var icecream = \"chocolate\"; }");
+    defer destroyTestSetup(s);
+
+    _ = try s.parser.parseSourceFile();
+    try T.expectEqual(@as(usize, 1), s.parser.diagnostics.items.len);
+    try T.expectEqual(@as(u32, 1068), s.parser.diagnostics.items[0].code);
+}
+
+test "parser: reserved accessibility keyword in class type annotation reports TS1213" {
+    var s = try newTestSetup("class Foo { public banana(x: public) {} }");
+    defer destroyTestSetup(s);
+
+    _ = try s.parser.parseSourceFile();
+    try T.expectEqual(@as(usize, 1), s.parser.diagnostics.items.len);
+    try T.expectEqual(@as(u32, 1213), s.parser.diagnostics.items[0].code);
+}
+
+test "parser: malformed index signature forms report diagnostics" {
+    var s = try newTestSetup("interface A { [...a] } interface B { [a?] } interface C { [a, b]: number }");
+    defer destroyTestSetup(s);
+
+    _ = try s.parser.parseSourceFile();
+    try T.expectEqual(@as(usize, 3), s.parser.diagnostics.items.len);
+    try T.expectEqual(@as(u32, 1017), s.parser.diagnostics.items[0].code);
+    try T.expectEqual(@as(u32, 1019), s.parser.diagnostics.items[1].code);
+    try T.expectEqual(@as(u32, 1096), s.parser.diagnostics.items[2].code);
+}
+
+test "parser: strict mode restricted names and delete operands report diagnostics" {
+    var s = try newTestSetup("\"use strict\"; function eval() {} function f(arguments) {} arguments = 1; delete 1;");
+    defer destroyTestSetup(s);
+
+    _ = try s.parser.parseSourceFile();
+    try T.expectEqual(@as(usize, 4), s.parser.diagnostics.items.len);
+    try T.expectEqual(@as(u32, 1100), s.parser.diagnostics.items[0].code);
+    try T.expectEqual(@as(u32, 1100), s.parser.diagnostics.items[1].code);
+    try T.expectEqual(@as(u32, 1100), s.parser.diagnostics.items[2].code);
+    try T.expectEqual(@as(u32, 2703), s.parser.diagnostics.items[3].code);
+}
+
+test "parser: strict mode legacy octal literal reports TS1121" {
+    var s = try newTestSetup("\"use strict\"; 03;");
+    defer destroyTestSetup(s);
+
+    _ = try s.parser.parseSourceFile();
+    try T.expectEqual(@as(usize, 1), s.parser.diagnostics.items.len);
+    try T.expectEqual(@as(u32, 1121), s.parser.diagnostics.items[0].code);
 }
