@@ -2551,15 +2551,30 @@ pub const Checker = struct {
                 },
                 .object_property => {
                     const op = hir_mod.objectPropertyOf(self.hir, m);
-                    if (self.hir.kindOf(op.key) != .identifier) continue;
-                    const id = hir_mod.identifierOf(self.hir, op.key);
-                    try self.checkOverrideModifier(m, parent_instance_t, id.name, op.is_override, false);
-                    if (op.visibility == .private) try private_names.put(self.gpa, id.name, {});
-                    if (op.visibility == .protected) try protected_names.put(self.gpa, id.name, {});
+                    const member_name = (try self.classMemberNameFromPropertyKey(op.key, op.is_computed)) orelse continue;
+                    try self.checkOverrideModifier(m, parent_instance_t, member_name, op.is_override, false);
+                    if (op.visibility == .private) try private_names.put(self.gpa, member_name, {});
+                    if (op.visibility == .protected) try protected_names.put(self.gpa, member_name, {});
+                    if (op.is_method and op.value != hir_mod.none_node_id) {
+                        const method_t = if (self.hir.kindOf(op.value) == .fn_decl or self.hir.kindOf(op.value) == .fn_expr or self.hir.kindOf(op.value) == .arrow_fn) blk: {
+                            const sig = try self.checkFnSignatureOnly(op.value);
+                            if (hir_mod.fnTypeParams(self.hir, op.value).len > 0) self.popNarrowScope();
+                            break :blk sig;
+                        } else try self.checkExpression(op.value);
+                        try concrete_names.put(self.gpa, member_name, {});
+                        try instance_members.append(self.gpa, .{
+                            .name = member_name,
+                            .type = method_t,
+                            .is_optional = false,
+                            .is_readonly = false,
+                            .is_method = true,
+                        });
+                        continue;
+                    }
                     // Class fields count as concrete implementations
                     // for the purpose of satisfying inherited abstract
                     // members (v0 has no syntax for abstract fields).
-                    try concrete_names.put(self.gpa, id.name, {});
+                    try concrete_names.put(self.gpa, member_name, {});
                     const field_t: TypeId = blk: {
                         if (op.type_annotation != hir_mod.none_node_id) {
                             break :blk try self.lowererLowerWithTypeParams(op.type_annotation);
@@ -2573,7 +2588,7 @@ pub const Checker = struct {
                         op.type_annotation == hir_mod.none_node_id and
                         op.value == hir_mod.none_node_id)
                     {
-                        try self.reportMemberImplicitAny(m, id.name);
+                        try self.reportMemberImplicitAny(m, member_name);
                     }
                     if (self.strict_flags.strict_property_initialization and
                         !op.is_static and
@@ -2581,7 +2596,7 @@ pub const Checker = struct {
                         op.value == hir_mod.none_node_id and
                         !self.typeExplicitlyIncludesUndefined(field_t))
                     {
-                        const field_name = self.string_interner.get(id.name);
+                        const field_name = self.string_interner.get(member_name);
                         const msg = try std.fmt.allocPrint(
                             self.diag_arena.allocator(),
                             "Property '{s}' has no initializer and is not definitely assigned in the constructor.",
@@ -2594,7 +2609,7 @@ pub const Checker = struct {
                         });
                     }
                     try instance_members.append(self.gpa, .{
-                        .name = id.name,
+                        .name = member_name,
                         .type = field_t,
                         .is_optional = false,
                         .is_readonly = false,
@@ -2604,6 +2619,7 @@ pub const Checker = struct {
                 else => {},
             }
         }
+        try self.reportMissingOverrideForUnknownLocalBase(node, members, parent_instance_t);
 
         // `extends Parent`: prepend any inherited members the child
         // doesn't override. The child's declared members win on
@@ -2942,7 +2958,9 @@ pub const Checker = struct {
         is_parameter_property: bool,
     ) CheckError!void {
         const has_base = self.baseClassHasMember(parent_t, name);
-        if (has_override and !has_base) {
+        const has_jsdoc_override = !has_override and !is_parameter_property and
+            self.sourceHasCheckJsDirective() and self.leadingJsDocHasOverride(node);
+        if ((has_override or has_jsdoc_override) and !has_base) {
             try self.report(node, TsCodes.override_not_in_base, "This member cannot have an 'override' modifier because it is not declared in the base class.");
             return;
         }
@@ -2950,6 +2968,113 @@ pub const Checker = struct {
             const code = if (is_parameter_property) TsCodes.missing_parameter_property_override else TsCodes.missing_override;
             try self.report(node, code, "This member must have an 'override' modifier because it overrides a member in the base class.");
         }
+    }
+
+    fn reportMissingOverrideForUnknownLocalBase(
+        self: *Checker,
+        class_node: NodeId,
+        members: []const NodeId,
+        parent_t: ?TypeId,
+    ) CheckError!void {
+        if (parent_t != null or !self.strict_flags.no_implicit_override) return;
+        const c = hir_mod.classOf(self.hir, class_node);
+        if (c.extends == hir_mod.none_node_id or self.hir.kindOf(c.extends) != .identifier) return;
+        const base_name = hir_mod.identifierOf(self.hir, c.extends).name;
+        if (!self.localValueDeclExistsBefore(class_node, base_name)) return;
+        for (members) |m| switch (self.hir.kindOf(m)) {
+            .fn_decl, .fn_expr, .arrow_fn => {
+                const fp = hir_mod.fnDeclOf(self.hir, m);
+                if (fp.flags.is_constructor or fp.flags.is_override) continue;
+                try self.report(m, TsCodes.missing_override, "This member must have an 'override' modifier because it overrides a member in the base class.");
+                return;
+            },
+            .object_property => {
+                const op = hir_mod.objectPropertyOf(self.hir, m);
+                if (op.is_override) continue;
+                try self.report(m, TsCodes.missing_override, "This member must have an 'override' modifier because it overrides a member in the base class.");
+                return;
+            },
+            else => {},
+        };
+    }
+
+    fn localValueDeclExistsBefore(self: *Checker, node: NodeId, name: hir_mod.StringId) bool {
+        var scope = self.hir.parentOf(node);
+        if (scope != hir_mod.none_node_id and self.hir.kindOf(scope) == .export_decl) {
+            scope = self.hir.parentOf(scope);
+        }
+        if (scope == hir_mod.none_node_id) return false;
+        const stmts: []const NodeId = switch (self.hir.kindOf(scope)) {
+            .block_stmt => hir_mod.blockStmts(self.hir, scope),
+            .namespace_decl => hir_mod.namespaceBody(self.hir, scope),
+            else => return false,
+        };
+        for (stmts) |s| {
+            if (s == node or (self.hir.kindOf(s) == .export_decl and hir_mod.exportOf(self.hir, s).decl == node)) return false;
+            const decl = if (self.hir.kindOf(s) == .export_decl) hir_mod.exportOf(self.hir, s).decl else s;
+            if (decl == hir_mod.none_node_id) continue;
+            switch (self.hir.kindOf(decl)) {
+                .var_decl, .let_decl, .const_decl => {
+                    const v = hir_mod.varDeclOf(self.hir, decl);
+                    if (v.name != hir_mod.none_node_id and self.hir.kindOf(v.name) == .identifier and hir_mod.identifierOf(self.hir, v.name).name == name) return true;
+                },
+                .fn_decl, .fn_expr => {
+                    const f = hir_mod.fnDeclOf(self.hir, decl);
+                    if (f.name != hir_mod.none_node_id and self.hir.kindOf(f.name) == .identifier and hir_mod.identifierOf(self.hir, f.name).name == name) return true;
+                },
+                .class_decl, .class_expr => {
+                    const c = hir_mod.classOf(self.hir, decl);
+                    if (c.name != hir_mod.none_node_id and self.hir.kindOf(c.name) == .identifier and hir_mod.identifierOf(self.hir, c.name).name == name) return true;
+                },
+                else => {},
+            }
+        }
+        return false;
+    }
+
+    fn classMemberNameFromPropertyKey(self: *Checker, key: NodeId, is_computed: bool) CheckError!?hir_mod.StringId {
+        return switch (self.hir.kindOf(key)) {
+            .identifier => blk: {
+                const name = hir_mod.identifierOf(self.hir, key).name;
+                if (!is_computed) break :blk name;
+                const raw = self.string_interner.get(name);
+                if (!self.sourceHasDirectConstSymbolInit(raw)) break :blk null;
+                const synthetic = try std.fmt.allocPrint(self.gpa, "[computed:{s}]", .{raw});
+                defer self.gpa.free(synthetic);
+                break :blk self.string_interner.intern(synthetic) catch return error.OutOfMemory;
+            },
+            .literal_string => hir_mod.literalStringOf(self.hir, key).value,
+            else => null,
+        };
+    }
+
+    fn leadingJsDocHasOverride(self: *Checker, node: NodeId) bool {
+        const src = self.source orelse return false;
+        const span = self.hir.spanOf(node);
+        const body = self.leadingJsDocBody(src, span.start) orelse return false;
+        return std.mem.indexOf(u8, body, "@override") != null;
+    }
+
+    fn sourceHasCheckJsDirective(self: *Checker) bool {
+        const src = self.source orelse return false;
+        return std.mem.indexOf(u8, src, "@checkJs: true") != null or
+            std.mem.indexOf(u8, src, "@checkJS: true") != null;
+    }
+
+    fn sourceHasDirectConstSymbolInit(self: *Checker, name: []const u8) bool {
+        const src = self.source orelse return false;
+        var search_start: usize = 0;
+        while (std.mem.indexOfPos(u8, src, search_start, "const")) |const_pos| {
+            search_start = const_pos + "const".len;
+            if (const_pos > 0 and isJsDocIdentChar(src[const_pos - 1])) continue;
+            if (search_start < src.len and isJsDocIdentChar(src[search_start])) continue;
+            const after_const = std.mem.trim(u8, src[search_start..], " \t\r\n");
+            if (!std.mem.startsWith(u8, after_const, name)) continue;
+            if (after_const.len > name.len and isJsDocIdentChar(after_const[name.len])) continue;
+            const after_name = std.mem.trim(u8, after_const[name.len..], " \t\r\n");
+            if (std.mem.startsWith(u8, after_name, "= Symbol(")) return true;
+        }
+        return false;
     }
 
     /// Merge a parent class's instance members into the current
@@ -6442,6 +6567,15 @@ pub const Checker = struct {
                                 if (t != types.Primitive.none) return t;
                             }
                         }
+                    } else if (sk == .class_decl or sk == .class_expr) {
+                        const cp = hir_mod.classOf(self.hir, s);
+                        if (cp.name != hir_mod.none_node_id and self.hir.kindOf(cp.name) == .identifier) {
+                            const cid = hir_mod.identifierOf(self.hir, cp.name);
+                            if (cid.name == id.name) {
+                                const t = self.hir.typeOf(s);
+                                if (t != types.Primitive.none) return t;
+                            }
+                        }
                     }
                 }
             }
@@ -6464,6 +6598,15 @@ pub const Checker = struct {
                         if (fp.name != hir_mod.none_node_id and self.hir.kindOf(fp.name) == .identifier) {
                             const fid = hir_mod.identifierOf(self.hir, fp.name);
                             if (fid.name == id.name) {
+                                const t = self.hir.typeOf(s);
+                                if (t != types.Primitive.none) return t;
+                            }
+                        }
+                    } else if (sk == .class_decl or sk == .class_expr) {
+                        const cp = hir_mod.classOf(self.hir, s);
+                        if (cp.name != hir_mod.none_node_id and self.hir.kindOf(cp.name) == .identifier) {
+                            const cid = hir_mod.identifierOf(self.hir, cp.name);
+                            if (cid.name == id.name) {
                                 const t = self.hir.typeOf(s);
                                 if (t != types.Primitive.none) return t;
                             }
@@ -9717,6 +9860,46 @@ test "checker: override modifier rejects members absent from base class" {
         if (d.code == TsCodes.override_not_in_base) found = true;
     }
     try T.expect(found);
+}
+
+test "checker: JSDoc override tag rejects members absent from base class" {
+    const s = try newSetup(
+        \\// @checkJs: true
+        \\class A { m(): void {} }
+        \\class B extends A {
+        \\  /** @override */
+        \\  n(): void {}
+        \\}
+    );
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+    var found = false;
+    for (s.checker.diagnostics.items) |d| {
+        if (d.code == TsCodes.override_not_in_base) found = true;
+    }
+    try T.expect(found);
+}
+
+test "checker: computed class override checks base computed members" {
+    const s = try newSetup(
+        \\const key = Symbol();
+        \\const other = Symbol();
+        \\class A { [key](): void {} }
+        \\class B extends A { override [key](): void {} }
+        \\class C extends A { [key](): void {} }
+        \\class D extends A { override [other](): void {} }
+    );
+    defer destroySetup(s);
+    s.checker.setStrictFlags(.{ .no_implicit_override = true });
+    try s.checker.checkSourceFile(s.root);
+    var saw_missing = false;
+    var saw_not_base = false;
+    for (s.checker.diagnostics.items) |d| {
+        if (d.code == TsCodes.missing_override) saw_missing = true;
+        if (d.code == TsCodes.override_not_in_base) saw_not_base = true;
+    }
+    try T.expect(saw_missing);
+    try T.expect(saw_not_base);
 }
 
 test "checker: interface override modifiers participate in extends diagnostics" {

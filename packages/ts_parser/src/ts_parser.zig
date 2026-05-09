@@ -284,6 +284,10 @@ pub const Parser = struct {
         if (self.peek().kind == .at) {
             const start = self.peek();
             const dec_expr = try self.parseDecoratorExpression();
+            const next = self.peek().kind;
+            if (next != .kw_class and next != .kw_export and next != .kw_abstract and next != .eof) {
+                try self.report("decorators are not valid here", "");
+            }
             const dec = try self.builder.addDecorator(
                 .{ .start = start.span.start, .end = self.tokens[self.cursor - 1].span.end },
                 dec_expr,
@@ -763,6 +767,9 @@ pub const Parser = struct {
                 // `this` inside the body. The JS emitter strips
                 // any parameter named "this" before lowering.
                 if (self.peek().kind == .kw_this) {
+                    if (param_decorators.items.len > 0) {
+                        try self.report("decorators are not valid on this parameters", "");
+                    }
                     const this_tok = self.advance();
                     var this_ann: NodeId = hir_mod.none_node_id;
                     if (self.match(.colon)) this_ann = try self.parseTypeAnnotation();
@@ -988,9 +995,10 @@ pub const Parser = struct {
             const mods = try self.skipClassModifiers();
             const member_start = self.peek();
             const is_generator = self.match(.asterisk);
-            if (member_start.kind == .open_bracket) {
+            if (self.peek().kind == .open_bracket) {
                 if (try self.tryParseIndexSignature(&members)) continue;
-                try self.skipUntilTypeMemberSeparator();
+                const member = try self.parseComputedClassMember(member_start, mods, is_generator);
+                try members.append(self.gpa, member);
                 continue;
             }
             // Getter/setter: `get x(): T { ... }` / `set x(v: T) { ... }`.
@@ -1086,7 +1094,11 @@ pub const Parser = struct {
                 // property
                 if (self.match(.question)) {} // optional property
                 var type_anno: NodeId = hir_mod.none_node_id;
-                if (self.match(.colon)) type_anno = try self.parseTypeAnnotation();
+                if (self.match(.colon)) {
+                    type_anno = try self.parseTypeAnnotation();
+                    _ = self.match(.question);
+                    _ = self.match(.bang);
+                }
                 var default_value: NodeId = hir_mod.none_node_id;
                 if (self.match(.equal)) default_value = try self.parseAssignmentExpression();
                 try self.consumeStatementTerminator();
@@ -1154,6 +1166,81 @@ pub const Parser = struct {
             }
             return mods;
         }
+    }
+
+    fn parseComputedClassMember(
+        self: *Parser,
+        member_start: Token,
+        mods: ClassModifiers,
+        is_generator: bool,
+    ) ParseError!NodeId {
+        _ = try self.expect(.open_bracket, "'[' to start computed class member");
+        const key = try self.parseExpression();
+        _ = try self.expect(.close_bracket, "']' to close computed class member name");
+
+        var value: NodeId = hir_mod.none_node_id;
+        var type_anno: NodeId = hir_mod.none_node_id;
+        var is_method = false;
+        if (is_generator or self.peek().kind == .open_paren or self.peek().kind == .less_than) {
+            var type_params: []NodeId = &.{};
+            var owns_tps = false;
+            if (self.peek().kind == .less_than) {
+                type_params = try self.parseTypeParameterDeclaration();
+                owns_tps = true;
+            }
+            defer if (owns_tps) self.gpa.free(type_params);
+            const params = try self.parseParameterList();
+            defer self.gpa.free(params);
+            var return_type: NodeId = hir_mod.none_node_id;
+            if (self.match(.colon)) return_type = try self.parseReturnTypeAnnotation(params);
+            var body: NodeId = hir_mod.none_node_id;
+            if (self.peek().kind == .open_brace) {
+                body = try self.parseBlockStatement();
+            } else {
+                try self.consumeStatementTerminator();
+            }
+            value = try self.builder.addFnDeclGeneric(
+                .{ .start = member_start.span.start, .end = self.tokens[self.cursor - 1].span.end },
+                hir_mod.none_node_id,
+                type_params,
+                params,
+                return_type,
+                body,
+                .{
+                    .is_method = true,
+                    .is_private = mods.visibility == .private,
+                    .is_protected = mods.visibility == .protected,
+                    .is_static = mods.is_static,
+                    .is_async = mods.is_async,
+                    .is_generator = is_generator,
+                    .is_override = mods.is_override,
+                },
+            );
+            is_method = true;
+        } else {
+            _ = self.match(.question);
+            _ = self.match(.bang);
+            if (self.match(.colon)) {
+                type_anno = try self.parseTypeAnnotation();
+                _ = self.match(.question);
+                _ = self.match(.bang);
+            }
+            if (self.match(.equal)) value = try self.parseAssignmentExpression();
+            try self.consumeStatementTerminator();
+        }
+
+        return try self.builder.addObjectPropertyFull(
+            .{ .start = member_start.span.start, .end = self.tokens[self.cursor - 1].span.end },
+            key,
+            value,
+            type_anno,
+            true,
+            value == hir_mod.none_node_id,
+            is_method,
+            mods.is_static,
+            mods.visibility,
+            mods.is_override,
+        );
     }
 
     fn parseInterfaceDeclaration(self: *Parser) ParseError!NodeId {
@@ -1424,6 +1511,20 @@ pub const Parser = struct {
             }
         }
         const empty_string = self.interner.intern("") catch return error.OutOfMemory;
+
+        // `export import Foo = ns.Foo;` inside namespaces/global
+        // augmentations is an import-alias declaration, not an ES
+        // module import. The current HIR has no dedicated node yet;
+        // consume it as a harmless empty statement so declaration-emit
+        // conformance fixtures keep parsing.
+        if (self.peek().kind == .kw_import) {
+            while (self.peek().kind != .semicolon and self.peek().kind != .close_brace and self.peek().kind != .eof) {
+                _ = self.advance();
+            }
+            _ = self.match(.semicolon);
+            const end_pos = self.tokens[self.cursor - 1].span.end;
+            return try self.builder.addBlock(.{ .start = start.span.start, .end = end_pos }, &.{});
+        }
 
         // export default <expr>;
         if (self.match(.kw_default)) {
@@ -1799,6 +1900,20 @@ pub const Parser = struct {
                 .{ .start = start_span_start, .end = self.hir.spanOf(target).end },
                 @intCast(idx),
                 arg_id,
+                target,
+                false,
+            );
+        }
+        // `this is T`
+        if (self.peek().kind == .kw_this and self.peekAt(1).kind == .kw_is) {
+            _ = self.advance(); // this
+            const this_id = self.interner.intern("this") catch return error.OutOfMemory;
+            _ = self.advance(); // is
+            const target = try self.parseTypeAnnotation();
+            return try self.builder.addTypePredicate(
+                .{ .start = start_span_start, .end = self.hir.spanOf(target).end },
+                0xFFFF,
+                this_id,
                 target,
                 false,
             );
@@ -3640,6 +3755,12 @@ pub const Parser = struct {
             },
             .open_bracket => return try self.parseArrayLiteral(),
             .open_brace => return try self.parseObjectLiteral(),
+            .kw_class => return try self.parseClassDeclaration(),
+            .kw_abstract => {
+                if (self.peekAt(1).kind == .kw_class) return try self.parseClassDeclaration();
+                try self.report("unexpected token in expression: ", @tagName(t.kind));
+                return error.UnexpectedToken;
+            },
             .kw_this => {
                 _ = self.advance();
                 const this_id = self.interner.intern("this") catch return error.OutOfMemory;
@@ -4830,6 +4951,24 @@ test "parser: class override modifier is preserved on methods, fields, and param
     const pp = hir_mod.parameterOf(&s.hir, ctor_params[0]);
     try T.expect(pp.flags.is_parameter_property);
     try T.expect(pp.flags.is_override);
+}
+
+test "parser: computed class methods preserve override metadata" {
+    var s = try newTestSetup(
+        \\const key = "m";
+        \\class Foo {
+        \\  override [key]() {}
+        \\}
+    );
+    defer destroyTestSetup(s);
+    const root = try s.parser.parseSourceFile();
+    const top = hir_mod.blockStmts(&s.hir, root)[1];
+    const members = hir_mod.classMembers(&s.hir, top);
+    try T.expectEqual(@as(usize, 1), members.len);
+    const prop = hir_mod.objectPropertyOf(&s.hir, members[0]);
+    try T.expect(prop.is_computed);
+    try T.expect(prop.is_method);
+    try T.expect(prop.is_override);
 }
 
 test "parser: class declaration with index signature" {
