@@ -357,6 +357,10 @@ pub const Checker = struct {
     /// without an explicit constructor produce no entry — `new Foo()`
     /// then accepts any args (matches TS's implicit no-arg default).
     class_constructor_sigs: std.AutoHashMapUnmanaged(hir_mod.StringId, TypeId),
+    /// Class-name → static-side object type. Populated from `static`
+    /// methods/properties; consulted for `super.x` inside static
+    /// methods of derived classes.
+    class_static_types: std.AutoHashMapUnmanaged(hir_mod.StringId, TypeId),
     /// Instance TypeId → declaring class name (StringId). Inverse
     /// of `class_instance_types`. The member-access path uses it
     /// to map the receiver type back to a class for privacy checks.
@@ -538,6 +542,7 @@ pub const Checker = struct {
             .member_narrow_scopes = .empty,
             .class_instance_types = .empty,
             .class_constructor_sigs = .empty,
+            .class_static_types = .empty,
             .class_name_by_instance = .empty,
             .class_private_members = .empty,
             .class_protected_members = .empty,
@@ -597,6 +602,7 @@ pub const Checker = struct {
         self.member_narrow_scopes.deinit(self.gpa);
         self.class_instance_types.deinit(self.gpa);
         self.class_constructor_sigs.deinit(self.gpa);
+        self.class_static_types.deinit(self.gpa);
         self.class_name_by_instance.deinit(self.gpa);
         var pm_it = self.class_private_members.valueIterator();
         while (pm_it.next()) |set| set.deinit(self.gpa);
@@ -3966,6 +3972,8 @@ pub const Checker = struct {
         } else null;
         var instance_members: std.ArrayListUnmanaged(types.ObjectMember) = .empty;
         defer instance_members.deinit(self.gpa);
+        var static_members: std.ArrayListUnmanaged(types.ObjectMember) = .empty;
+        defer static_members.deinit(self.gpa);
         var ctor_sig: TypeId = types.Primitive.none;
         var string_idx: TypeId = types.Primitive.none;
         var number_idx: TypeId = types.Primitive.none;
@@ -3991,6 +3999,8 @@ pub const Checker = struct {
         defer static_names.deinit(self.gpa);
         var method_seen: std.AutoHashMapUnmanaged(hir_mod.StringId, ClassMethodSeen) = .empty;
         defer method_seen.deinit(self.gpa);
+        var static_method_seen: std.AutoHashMapUnmanaged(hir_mod.StringId, ClassMethodSeen) = .empty;
+        defer static_method_seen.deinit(self.gpa);
 
         // Pre-scan for accessor pairs: a member name with both a
         // `get` and a `set` accessor is a regular read+write property.
@@ -4114,9 +4124,10 @@ pub const Checker = struct {
                     // for a name appends the member; later sibling
                     // accessors of either kind are folded by skipping.
                     if (fn_p.flags.is_getter or fn_p.flags.is_setter) {
-                        try concrete_names.put(self.gpa, member_name, {});
+                        if (!fn_p.flags.is_static) try concrete_names.put(self.gpa, member_name, {});
                         var already: bool = false;
-                        for (instance_members.items) |im| {
+                        const accessor_members = if (fn_p.flags.is_static) static_members.items else instance_members.items;
+                        for (accessor_members) |im| {
                             if (im.name == member_name) {
                                 already = true;
                                 break;
@@ -4144,13 +4155,18 @@ pub const Checker = struct {
                             break :blk if (params.len > 0) params[0] else types.Primitive.any;
                         };
                         const has_setter = setter_names.contains(member_name);
-                        try instance_members.append(self.gpa, .{
+                        const member: types.ObjectMember = .{
                             .name = member_name,
                             .type = accessor_t,
                             .is_optional = false,
                             .is_readonly = !has_setter,
                             .is_method = false,
-                        });
+                        };
+                        if (fn_p.flags.is_static) {
+                            try static_members.append(self.gpa, member);
+                        } else {
+                            try instance_members.append(self.gpa, member);
+                        }
                         continue;
                     }
 
@@ -4159,19 +4175,27 @@ pub const Checker = struct {
                     // abstract. Methods with a body count as concrete
                     // implementations and satisfy any inherited
                     // abstract member of the same name.
-                    try self.checkClassMethodOverloadState(m, member_name, fn_p.flags.is_static, fn_p.body != hir_mod.none_node_id, &method_seen);
-                    if (c.is_abstract and fn_p.body == hir_mod.none_node_id) {
-                        try abstract_names.put(self.gpa, member_name, {});
-                    } else {
-                        try concrete_names.put(self.gpa, member_name, {});
+                    const seen = if (fn_p.flags.is_static) &static_method_seen else &method_seen;
+                    try self.checkClassMethodOverloadState(m, member_name, fn_p.flags.is_static, fn_p.body != hir_mod.none_node_id, seen);
+                    if (!fn_p.flags.is_static) {
+                        if (c.is_abstract and fn_p.body == hir_mod.none_node_id) {
+                            try abstract_names.put(self.gpa, member_name, {});
+                        } else {
+                            try concrete_names.put(self.gpa, member_name, {});
+                        }
                     }
-                    try instance_members.append(self.gpa, .{
+                    const method_member: types.ObjectMember = .{
                         .name = member_name,
                         .type = sig,
                         .is_optional = false,
                         .is_readonly = false,
                         .is_method = true,
-                    });
+                    };
+                    if (fn_p.flags.is_static) {
+                        try static_members.append(self.gpa, method_member);
+                    } else {
+                        try instance_members.append(self.gpa, method_member);
+                    }
                 },
                 .object_property => {
                     const op = hir_mod.objectPropertyOf(self.hir, m);
@@ -4204,29 +4228,34 @@ pub const Checker = struct {
                     try self.checkOverrideModifier(m, parent_instance_t, member_name, op.is_override, false);
                     if (op.visibility == .private) try private_names.put(self.gpa, member_name, {});
                     if (op.visibility == .protected) try protected_names.put(self.gpa, member_name, {});
-                    if (op.is_static) continue;
                     if (op_is_method and op.value != hir_mod.none_node_id) {
                         const method_t = if (self.hir.kindOf(op.value) == .fn_decl or self.hir.kindOf(op.value) == .fn_expr or self.hir.kindOf(op.value) == .arrow_fn) blk: {
                             const sig = try self.checkFnSignatureOnly(op.value);
                             if (hir_mod.fnTypeParams(self.hir, op.value).len > 0) self.popNarrowScope();
                             const fn_v = hir_mod.fnDeclOf(self.hir, op.value);
-                            try self.checkClassMethodOverloadState(m, member_name, op.is_static, fn_v.body != hir_mod.none_node_id, &method_seen);
+                            const seen = if (op.is_static) &static_method_seen else &method_seen;
+                            try self.checkClassMethodOverloadState(m, member_name, op.is_static, fn_v.body != hir_mod.none_node_id, seen);
                             break :blk sig;
                         } else try self.checkExpression(op.value);
-                        try concrete_names.put(self.gpa, member_name, {});
-                        try instance_members.append(self.gpa, .{
+                        if (!op.is_static) try concrete_names.put(self.gpa, member_name, {});
+                        const method_member: types.ObjectMember = .{
                             .name = member_name,
                             .type = method_t,
                             .is_optional = false,
                             .is_readonly = false,
                             .is_method = true,
-                        });
+                        };
+                        if (op.is_static) {
+                            try static_members.append(self.gpa, method_member);
+                        } else {
+                            try instance_members.append(self.gpa, method_member);
+                        }
                         continue;
                     }
                     // Class fields count as concrete implementations
                     // for the purpose of satisfying inherited abstract
                     // members (v0 has no syntax for abstract fields).
-                    try concrete_names.put(self.gpa, member_name, {});
+                    if (!op.is_static) try concrete_names.put(self.gpa, member_name, {});
                     const field_t: TypeId = blk: {
                         if (op.type_annotation != hir_mod.none_node_id) {
                             break :blk try self.lowererLowerWithTypeParams(op.type_annotation);
@@ -4260,18 +4289,24 @@ pub const Checker = struct {
                             .message = msg,
                         });
                     }
-                    try instance_members.append(self.gpa, .{
+                    const field_member: types.ObjectMember = .{
                         .name = member_name,
                         .type = field_t,
                         .is_optional = false,
                         .is_readonly = false,
                         .is_method = false,
-                    });
+                    };
+                    if (op.is_static) {
+                        try static_members.append(self.gpa, field_member);
+                    } else {
+                        try instance_members.append(self.gpa, field_member);
+                    }
                 },
                 else => {},
             }
         }
         try self.checkClassMethodMissingImplementations(node, &method_seen);
+        try self.checkClassMethodMissingImplementations(node, &static_method_seen);
         try self.reportMissingOverrideForUnknownLocalBase(node, members, parent_instance_t);
 
         // `extends Parent`: prepend any inherited members the child
@@ -4294,11 +4329,13 @@ pub const Checker = struct {
         try self.checkIndexSignatureMemberCompatibility(node, instance_members.items, string_idx, number_idx, symbol_idx);
 
         var instance_t = self.interner.internObjectTypeWithIndexAndSymbol(instance_members.items, string_idx, number_idx, symbol_idx) catch return error.OutOfMemory;
+        const static_t = self.interner.internObjectType(static_members.items) catch return error.OutOfMemory;
         self.hir.setType(node, instance_t);
         if (c.name != hir_mod.none_node_id and self.hir.kindOf(c.name) == .identifier) {
             const cid = hir_mod.identifierOf(self.hir, c.name);
             try self.checkMergedNamespaceStaticConflicts(node, cid.name, &static_names);
             try self.class_instance_types.put(self.gpa, cid.name, instance_t);
+            try self.class_static_types.put(self.gpa, cid.name, static_t);
             try self.type_names.put(self.gpa, cid.name, instance_t);
             if (class_param_ids.items.len > 0) {
                 if (self.generic_aliases.get(cid.name)) |old| {
@@ -4420,13 +4457,18 @@ pub const Checker = struct {
             self.classExtendsInstanceType(c.extends) catch null
         else
             null;
+        const static_super_t = if (c.extends != hir_mod.none_node_id)
+            self.classExtendsStaticType(c.extends) catch null
+        else
+            null;
         const instance_this_t = try self.classThisType(instance_t);
         for (members) |m| switch (self.hir.kindOf(m)) {
             .fn_decl, .fn_expr, .arrow_fn => {
                 const fn_p = hir_mod.fnDeclOf(self.hir, m);
                 try self.pushNarrowScope();
-                try self.recordNarrow(this_id, if (fn_p.flags.is_static) instance_t else instance_this_t);
-                if (super_t) |st| try self.recordNarrow(super_id, st);
+                try self.recordNarrow(this_id, if (fn_p.flags.is_static) static_t else instance_this_t);
+                const method_super_t = if (fn_p.flags.is_static) static_super_t else super_t;
+                if (method_super_t) |st| try self.recordNarrow(super_id, st);
                 try self.checkFnDecl(m);
                 self.popNarrowScope();
             },
@@ -4436,8 +4478,9 @@ pub const Checker = struct {
                 const value_kind = self.hir.kindOf(op.value);
                 if (value_kind != .fn_decl and value_kind != .fn_expr and value_kind != .arrow_fn) continue;
                 try self.pushNarrowScope();
-                try self.recordNarrow(this_id, if (op.is_static) instance_t else instance_this_t);
-                if (super_t) |st| try self.recordNarrow(super_id, st);
+                try self.recordNarrow(this_id, if (op.is_static) static_t else instance_this_t);
+                const method_super_t = if (op.is_static) static_super_t else super_t;
+                if (method_super_t) |st| try self.recordNarrow(super_id, st);
                 try self.checkFnDecl(op.value);
                 self.popNarrowScope();
             },
@@ -5167,8 +5210,22 @@ pub const Checker = struct {
 
     fn heritageAssignable(self: *Checker, source: TypeId, target: TypeId) !bool {
         if (source == target) return true;
-        if (self.containsFreeTypeParameter(target) and !self.containsFreeTypeParameter(source)) return false;
+        if (self.containsFreeTypeParameter(target) and
+            !self.containsFreeTypeParameter(source) and
+            !self.sourceMayAssignToFreeTargetDuringHeritage(source))
+        {
+            return false;
+        }
         return self.engine.isAssignableTo(source, target);
+    }
+
+    fn sourceMayAssignToFreeTargetDuringHeritage(self: *Checker, source: TypeId) bool {
+        if (source == types.Primitive.any) return true;
+        if (source >= self.interner.pool.typeCount()) return false;
+        const flags = self.interner.pool.flagsOf(source);
+        if (!flags.is_signature) return false;
+        const ret = self.interner.signatureReturn(source) orelse return true;
+        return ret == types.Primitive.any;
     }
 
     fn objectHasNoOverlapWithWeakTarget(self: *Checker, source: TypeId, target: TypeId) bool {
@@ -5206,6 +5263,21 @@ pub const Checker = struct {
                 break :blk self.class_instance_types.get(id.name);
             },
             .type_ref => try self.lowererLowerWithTypeParams(extends_expr),
+            else => null,
+        };
+    }
+
+    fn classExtendsStaticType(self: *Checker, extends_expr: NodeId) CheckError!?TypeId {
+        return switch (self.hir.kindOf(extends_expr)) {
+            .identifier => blk: {
+                const id = hir_mod.identifierOf(self.hir, extends_expr);
+                break :blk self.class_static_types.get(id.name);
+            },
+            .type_ref => blk: {
+                const r = hir_mod.typeRefOf(self.hir, extends_expr);
+                if (r.qualifier_len != 0) break :blk null;
+                break :blk self.class_static_types.get(r.name);
+            },
             else => null,
         };
     }
@@ -6112,6 +6184,36 @@ pub const Checker = struct {
                             const args = hir_mod.typeRefArgs(self.hir, type_node);
                             const yield_t = try self.lowererLowerWithTypeParams(args[0]);
                             return try self.synthesizeGeneratorType(yield_t);
+                        }
+                        if (std.mem.eql(u8, name_str, "Record") and r.args_len == 2) {
+                            const args = hir_mod.typeRefArgs(self.hir, type_node);
+                            const key_t = try self.lowererLowerWithTypeParams(args[0]);
+                            const value_t = try self.lowererLowerWithTypeParams(args[1]);
+                            if (key_t == types.Primitive.string_t) {
+                                return self.interner.internObjectTypeWithIndexAndSymbol(&.{}, value_t, types.Primitive.none, types.Primitive.none) catch return error.OutOfMemory;
+                            }
+                            if (key_t == types.Primitive.number_t) {
+                                return self.interner.internObjectTypeWithIndexAndSymbol(&.{}, types.Primitive.none, value_t, types.Primitive.none) catch return error.OutOfMemory;
+                            }
+                            if (key_t == types.Primitive.symbol_t) {
+                                return self.interner.internObjectTypeWithIndexAndSymbol(&.{}, types.Primitive.none, types.Primitive.none, value_t) catch return error.OutOfMemory;
+                            }
+                            var literal_keys: std.ArrayListUnmanaged(hir_mod.StringId) = .empty;
+                            defer literal_keys.deinit(self.gpa);
+                            if (self.collectStringLiteralKeys(key_t, &literal_keys) and literal_keys.items.len > 0) {
+                                var record_members: std.ArrayListUnmanaged(types.ObjectMember) = .empty;
+                                defer record_members.deinit(self.gpa);
+                                for (literal_keys.items) |key_name| {
+                                    try record_members.append(self.gpa, .{
+                                        .name = key_name,
+                                        .type = value_t,
+                                        .is_optional = false,
+                                        .is_readonly = false,
+                                        .is_method = false,
+                                    });
+                                }
+                                return self.interner.internObjectType(record_members.items) catch return error.OutOfMemory;
+                            }
                         }
                     }
                     if (r.args_len == 1) {
@@ -8395,7 +8497,18 @@ pub const Checker = struct {
             },
             .member_access => blk: {
                 const m = hir_mod.memberOf(self.hir, node);
-                var obj_t = try self.checkExpression(m.object);
+                var obj_t: TypeId = undefined;
+                if (self.nodeIsSuperReference(m.object)) {
+                    const super_id = self.string_interner.intern("super") catch return error.OutOfMemory;
+                    if (self.lookupNarrow(super_id)) |st| {
+                        obj_t = st;
+                    } else {
+                        try self.report(m.object, TsCodes.super_not_derived, "'super' can only be referenced in a derived class.");
+                        obj_t = types.Primitive.any;
+                    }
+                } else {
+                    obj_t = try self.checkExpression(m.object);
+                }
                 const member_is_optional_chain = m.optional or self.expressionIsOptionalChain(m.object);
                 if (!member_is_optional_chain and self.strict_flags.strict_null_checks and self.typeIsPossiblyNullish(obj_t)) {
                     try self.report(m.object, TsCodes.object_possibly_nullish, "Object is possibly 'null' or 'undefined'.");
@@ -8528,7 +8641,15 @@ pub const Checker = struct {
             .element_access => blk: {
                 const e = hir_mod.elementOf(self.hir, node);
                 const element_is_optional_chain = e.optional or self.expressionIsOptionalChain(e.object);
-                const raw_obj_t = try self.checkExpression(e.object);
+                const raw_obj_t: TypeId = blk_obj: {
+                    if (self.nodeIsSuperReference(e.object)) {
+                        const super_id = self.string_interner.intern("super") catch return error.OutOfMemory;
+                        if (self.lookupNarrow(super_id)) |st| break :blk_obj st;
+                        try self.report(e.object, TsCodes.super_not_derived, "'super' can only be referenced in a derived class.");
+                        break :blk_obj types.Primitive.any;
+                    }
+                    break :blk_obj try self.checkExpression(e.object);
+                };
                 const obj_t = if (element_is_optional_chain)
                     self.subtractNullUndefined(raw_obj_t) catch raw_obj_t
                 else
@@ -8898,6 +9019,16 @@ pub const Checker = struct {
         };
         self.hir.setType(node, t);
         return t;
+    }
+
+    fn nodeIsSuperReference(self: *Checker, node: NodeId) bool {
+        const kind = self.hir.kindOf(node);
+        if (kind == .super_expr) return true;
+        if (kind == .identifier) {
+            const id = hir_mod.identifierOf(self.hir, node);
+            return std.mem.eql(u8, self.string_interner.get(id.name), "super");
+        }
+        return false;
     }
 
     fn pushNarrowScope(self: *Checker) !void {
@@ -9882,6 +10013,7 @@ pub const Checker = struct {
                         if (cp.name != hir_mod.none_node_id and self.hir.kindOf(cp.name) == .identifier) {
                             const cid = hir_mod.identifierOf(self.hir, cp.name);
                             if (cid.name == id.name) {
+                                if (self.class_static_types.get(id.name)) |static_t| return static_t;
                                 const t = self.hir.typeOf(s);
                                 if (t != types.Primitive.none) return t;
                             }
@@ -9917,6 +10049,7 @@ pub const Checker = struct {
                         if (cp.name != hir_mod.none_node_id and self.hir.kindOf(cp.name) == .identifier) {
                             const cid = hir_mod.identifierOf(self.hir, cp.name);
                             if (cid.name == id.name) {
+                                if (self.class_static_types.get(id.name)) |static_t| return static_t;
                                 const t = self.hir.typeOf(s);
                                 if (t != types.Primitive.none) return t;
                             }
@@ -9987,6 +10120,9 @@ pub const Checker = struct {
             if (module.root.lookup(id.name)) |sym| {
                 if (sym.decls.items.len > 0) {
                     const decl = sym.decls.items[0];
+                    if (self.hir.kindOf(decl) == .class_decl or self.hir.kindOf(decl) == .class_expr) {
+                        if (self.class_static_types.get(id.name)) |static_t| return static_t;
+                    }
                     const t = self.hir.typeOf(decl);
                     if (t != types.Primitive.none) return t;
                     const dk = self.hir.kindOf(decl);
@@ -14745,6 +14881,24 @@ test "checker: class extends inherits parent fields" {
     try T.expectEqual(types.Primitive.string_t, s.hir.typeOf(ret_p.value));
 }
 
+test "checker: unannotated override may refine before comparing this-return base method" {
+    const s = try newSetup(
+        \\class Base {
+        \\  returnThis() { return this; }
+        \\}
+        \\class Derived extends Base {
+        \\  returnThis() { return super.returnThis(); }
+        \\}
+        \\let instance = new Derived();
+        \\instance.returnThis();
+    );
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+    for (s.checker.diagnostics.items) |d| {
+        try T.expect(d.code != TsCodes.property_not_assignable_to_base);
+    }
+}
+
 test "checker: child class override keeps child field type and checks compatibility" {
     const s = try newSetup(
         \\class A { x: string = ""; }
@@ -15169,6 +15323,56 @@ test "checker: super call in non-derived class emits TS2335" {
     try T.expect(found);
 }
 
+test "checker: super property access in non-derived class emits TS2335" {
+    const s = try newSetup(
+        \\class Box {
+        \\  bad() { return super.missing; }
+        \\}
+    );
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+    var found = false;
+    for (s.checker.diagnostics.items) |d| {
+        if (d.code == TsCodes.super_not_derived) found = true;
+    }
+    try T.expect(found);
+}
+
+test "checker: super element access in non-derived class emits TS2335" {
+    const s = try newSetup(
+        \\class Box {
+        \\  bad() { return super["missing"]; }
+        \\}
+    );
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+    var found = false;
+    for (s.checker.diagnostics.items) |d| {
+        if (d.code == TsCodes.super_not_derived) found = true;
+    }
+    try T.expect(found);
+}
+
+test "checker: static and instance super resolve separate class sides" {
+    const s = try newSetup(
+        \\class Base {
+        \\  func(): string { return ""; }
+        \\  static func(): number { return 1; }
+        \\}
+        \\class Derived extends Base {
+        \\  static sf(): number { return super.func(); }
+        \\  im(): string { return super.func(); }
+        \\}
+    );
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+    for (s.checker.diagnostics.items) |d| {
+        try T.expect(d.code != TsCodes.overload_must_be_static);
+        try T.expect(d.code != TsCodes.overload_must_not_be_static);
+        try T.expect(d.code != TsCodes.type_not_assignable);
+    }
+}
+
 test "checker: typeof type query resolves an identifier's static type" {
     const s = try newSetup(
         \\function add(a: number, b: number): number { return a + b; }
@@ -15268,6 +15472,22 @@ test "checker: `satisfies` preserves the original expression type" {
 test "checker: `satisfies` emits TS1360 when expr is not assignable to constraint" {
     const s = try newSetup(
         \\let y = ({ kind: 42 }) satisfies { kind: string };
+    );
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+    var found = false;
+    for (s.checker.diagnostics.items) |d| {
+        if (d.code == TsCodes.satisfies_constraint) found = true;
+    }
+    try T.expect(found);
+}
+
+test "checker: `satisfies Record<string, T>` validates property values" {
+    const s = try newSetup(
+        \\type Color = { r: number, g: number, b: number };
+        \\const palette = {
+        \\  black: { r: 0, g: 0, d: 0 },
+        \\} satisfies Record<string, Color>;
     );
     defer destroySetup(s);
     try s.checker.checkSourceFile(s.root);
@@ -16751,6 +16971,91 @@ test "checker: type predicate negative branch subtracts" {
     const n_init = hir_mod.varDeclOf(&s.hir, else_stmts[0]).init;
     // (string | number) minus string = number.
     try T.expectEqual(types.Primitive.number_t, s.hir.typeOf(n_init));
+}
+
+test "checker: predicate keeps subtype members when narrowing to base" {
+    const s = try newSetup(
+        \\class A { propA: number; }
+        \\class C extends A { propC: number; }
+        \\declare function isA(x: any): x is A;
+        \\let c: C;
+        \\if (isA(c)) {
+        \\  c.propC;
+        \\}
+    );
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+    for (s.checker.diagnostics.items) |d| {
+        try T.expect(d.code != TsCodes.property_does_not_exist);
+    }
+}
+
+test "checker: predicate intersection exposes original and target members" {
+    const s = try newSetup(
+        \\interface Beast { legs: number; }
+        \\interface Mammal { fur: string; }
+        \\declare function isMammal(x: Beast): x is Mammal;
+        \\let beast: Beast;
+        \\if (isMammal(beast)) {
+        \\  beast.legs;
+        \\  beast.fur;
+        \\}
+    );
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+    for (s.checker.diagnostics.items) |d| {
+        try T.expect(d.code != TsCodes.property_does_not_exist);
+    }
+}
+
+test "checker: class method `this is` predicate narrows receiver" {
+    const s = try newSetup(
+        \\class RoyalGuard {
+        \\  isLeader(): this is LeadGuard { return this instanceof LeadGuard; }
+        \\}
+        \\class LeadGuard extends RoyalGuard {
+        \\  lead(): void {}
+        \\}
+        \\class FollowerGuard extends RoyalGuard {
+        \\  follow(): void {}
+        \\}
+        \\let guard: RoyalGuard = new FollowerGuard();
+        \\if (guard.isLeader()) {
+        \\  guard.lead();
+        \\}
+    );
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+    for (s.checker.diagnostics.items) |d| {
+        try T.expect(d.code != TsCodes.property_does_not_exist);
+    }
+}
+
+test "checker: logical-or RHS uses negative predicate narrowing" {
+    const s = try newSetup(
+        \\class A { propA: number; }
+        \\class B { propB: number; }
+        \\declare function isA(x: any): x is A;
+        \\let union2: A | B;
+        \\let union3: boolean | B = isA(union2) || union2;
+    );
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+    for (s.checker.diagnostics.items) |d| {
+        try T.expect(d.code != TsCodes.type_not_assignable);
+    }
+}
+
+test "checker: Object parameter accepts primitive predicate argument" {
+    const s = try newSetup(
+        \\declare function isString2(a: Object): a is string;
+        \\isString2("");
+    );
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+    for (s.checker.diagnostics.items) |d| {
+        try T.expect(d.code != TsCodes.argument_type_mismatch);
+    }
 }
 
 test "checker: TS 5.5 inferred type predicate from typeof === narrowing" {
@@ -19017,6 +19322,18 @@ test "checker: value-returning callback is assignable to void callback target" {
     try s.checker.checkSourceFile(s.root);
     for (s.checker.diagnostics.items) |d| {
         try T.expect(d.code != TsCodes.argument_type_mismatch);
+    }
+}
+
+test "checker: void parameter function is assignable to zero-arg callback" {
+    const s = try newSetup(
+        \\declare function g(a: void): void;
+        \\let gg: () => void = g;
+    );
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+    for (s.checker.diagnostics.items) |d| {
+        try T.expect(d.code != TsCodes.type_not_assignable);
     }
 }
 
