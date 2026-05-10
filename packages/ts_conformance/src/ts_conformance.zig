@@ -2020,6 +2020,7 @@ fn runConformanceSubset(
     gpa: std.mem.Allocator,
     label: []const u8,
     dir_path: []const u8,
+    options: DirectoryLoadOptions,
 ) !?Stats {
     {
         // Skip cleanly when the contributor has no local TS checkout.
@@ -2035,7 +2036,7 @@ fn runConformanceSubset(
         results.deinit(gpa);
     }
 
-    const stats = try runDirectory(gpa, dir_path, &results);
+    const stats = try runDirectoryWithOptions(gpa, dir_path, options, &results);
 
     // Per-subdir summary line + per-case breakdown.
     std.debug.print(
@@ -2072,6 +2073,7 @@ test "conformance: smoke-run local TS conformance subdirectories" {
     // don't ratchet on pass/fail rate yet — per-case failures are
     // accumulated and reported, not asserted.
     const ts_conformance_root = "/Users/chrisbreuer/Code/typescript-go/_submodules/TypeScript/tests/cases/conformance";
+    const baseline_root = "/Users/chrisbreuer/Code/typescript-go/_submodules/TypeScript/tests/baselines/reference";
     const subdirs = [_]struct { label: []const u8, path: []const u8 }{
         .{ .label = "comparable", .path = ts_conformance_root ++ "/types/typeRelationships/comparable" },
         .{ .label = "inOperator", .path = ts_conformance_root ++ "/expressions/binaryOperators/inOperator" },
@@ -2081,7 +2083,11 @@ test "conformance: smoke-run local TS conformance subdirectories" {
     var combined: Stats = .{};
     var ran_any = false;
     for (subdirs) |sd| {
-        const maybe = try runConformanceSubset(T.allocator, sd.label, sd.path);
+        const options: DirectoryLoadOptions = if (std.mem.eql(u8, sd.label, "inOperator")) .{
+            .baseline_root = baseline_root,
+            .strict_default_for_expected_errors = true,
+        } else .{};
+        const maybe = try runConformanceSubset(T.allocator, sd.label, sd.path, options);
         if (maybe) |s| {
             ran_any = true;
             combined.passed += s.passed;
@@ -2106,25 +2112,44 @@ test "conformance: smoke-run local TS conformance subdirectories" {
 
 test "conformance: category specs summarize local TS feature folders" {
     const ts_conformance_root = "/Users/chrisbreuer/Code/typescript-go/_submodules/TypeScript/tests/cases/conformance";
+    const baseline_root = "/Users/chrisbreuer/Code/typescript-go/_submodules/TypeScript/tests/baselines/reference";
     {
         var threaded = std.Io.Threaded.init(T.allocator, .{});
         defer threaded.deinit();
         const io = threaded.io();
         std.Io.Dir.cwd().access(io, ts_conformance_root, .{}) catch return;
+        std.Io.Dir.cwd().access(io, baseline_root, .{}) catch return;
     }
 
-    const specs = [_]CategorySpec{
+    const default_specs = [_]CategorySpec{
         .{ .label = "types/typeRelationships/assignmentCompatibility", .rel_path = "types/typeRelationships/assignmentCompatibility" },
         .{ .label = "types/typeRelationships/comparable", .rel_path = "types/typeRelationships/comparable" },
-        .{ .label = "expressions/binaryOperators/inOperator", .rel_path = "expressions/binaryOperators/inOperator" },
         .{ .label = "types/primitives/stringLiteral", .rel_path = "types/primitives/stringLiteral" },
     };
+    const baseline_specs = [_]CategorySpec{
+        .{ .label = "expressions/binaryOperators/inOperator", .rel_path = "expressions/binaryOperators/inOperator" },
+    };
 
-    const cats = try runCategorySpecs(T.allocator, ts_conformance_root, &specs);
-    defer freeCategoryResults(T.allocator, cats);
-    const combined = combineCategoryStats(cats);
+    const default_cats = try runCategorySpecs(T.allocator, ts_conformance_root, &default_specs);
+    defer freeCategoryResults(T.allocator, default_cats);
+    const baseline_cats = try runCategorySpecsWithOptions(T.allocator, ts_conformance_root, .{
+        .baseline_root = baseline_root,
+        .strict_default_for_expected_errors = true,
+    }, &baseline_specs);
+    defer freeCategoryResults(T.allocator, baseline_cats);
+    var combined = combineCategoryStats(default_cats);
+    const baseline_combined = combineCategoryStats(baseline_cats);
+    combined.passed += baseline_combined.passed;
+    combined.failed += baseline_combined.failed;
+    combined.skipped += baseline_combined.skipped;
 
-    for (cats) |cat| {
+    for (default_cats) |cat| {
+        std.debug.print(
+            "[ts_conformance category] {s}: total={d} passed={d} failed={d} skipped={d} pass_rate={d:.2}\n",
+            .{ cat.label, cat.stats.total(), cat.stats.passed, cat.stats.failed, cat.stats.skipped, cat.stats.passRate() },
+        );
+    }
+    for (baseline_cats) |cat| {
         std.debug.print(
             "[ts_conformance category] {s}: total={d} passed={d} failed={d} skipped={d} pass_rate={d:.2}\n",
             .{ cat.label, cat.stats.total(), cat.stats.passed, cat.stats.failed, cat.stats.skipped, cat.stats.passRate() },
@@ -2135,7 +2160,8 @@ test "conformance: category specs summarize local TS feature folders" {
         .{ combined.total(), combined.passed, combined.failed, combined.skipped, combined.passRate() },
     );
 
-    try T.expectEqual(@as(usize, specs.len), cats.len);
+    try T.expectEqual(@as(usize, default_specs.len), default_cats.len);
+    try T.expectEqual(@as(usize, baseline_specs.len), baseline_cats.len);
     try T.expectEqual(@as(u32, 86), combined.total());
     try T.expectEqual(combined.total(), combined.passed);
 }
