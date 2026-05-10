@@ -94,6 +94,7 @@ pub const TsCodes = struct {
     pub const class_incorrectly_implements_interface: u32 = 2420;
     pub const class_used_before_declaration: u32 = 2449;
     pub const tuple_index_out_of_bounds: u32 = 2493;
+    pub const not_constructor_function_type: u32 = 2507;
     pub const computed_property_name_type: u32 = 2464;
     pub const super_in_computed_property_name: u32 = 2466;
     pub const type_cannot_be_used_as_index: u32 = 2538;
@@ -124,6 +125,7 @@ pub const TsCodes = struct {
     pub const parameter_implicitly_any: u32 = 7006;
     pub const variable_implicitly_any: u32 = 7005;
     pub const member_implicitly_any: u32 = 7008;
+    pub const new_expression_implicitly_any: u32 = 7009;
     pub const element_implicitly_any: u32 = 7053;
     pub const declared_but_not_read: u32 = 6133;
     pub const object_literal_excess_property: u32 = 2353;
@@ -3921,10 +3923,12 @@ pub const Checker = struct {
         // annotations only (no method body walks). Methods need the
         // instance type registered in `class_instance_types` BEFORE
         // their bodies are typed so `this` resolves.
-        const parent_instance_t: ?TypeId = if (c.extends != hir_mod.none_node_id)
-            try self.classExtendsInstanceType(c.extends)
-        else
-            null;
+        const parent_instance_t: ?TypeId = if (c.extends != hir_mod.none_node_id) blk: {
+            if (self.expressionContainsThis(c.extends)) {
+                try self.report(c.extends, TsCodes.not_constructor_function_type, "Type 'typeof globalThis' is not a constructor function type.");
+            }
+            break :blk try self.classExtendsInstanceType(c.extends);
+        } else null;
         var instance_members: std.ArrayListUnmanaged(types.ObjectMember) = .empty;
         defer instance_members.deinit(self.gpa);
         var ctor_sig: TypeId = types.Primitive.none;
@@ -7869,6 +7873,9 @@ pub const Checker = struct {
                         break :blk self.interner.internObjectType(&.{}) catch return error.OutOfMemory;
                     }
                 }
+                if (self.strict_flags.no_implicit_any and self.interner.isSignature(callee_t)) {
+                    try self.report(node, TsCodes.new_expression_implicitly_any, "'new' expression, whose target lacks a construct signature, implicitly has an 'any' type.");
+                }
                 if (self.hir.kindOf(c.callee) == .template_literal and
                     callee_t != types.Primitive.any and callee_t != types.Primitive.unknown)
                 {
@@ -10628,6 +10635,40 @@ pub const Checker = struct {
         return false;
     }
 
+    fn isInLeftOperandAllowed(self: *Checker, t: TypeId) bool {
+        if (self.typeIsAnyLike(t)) return true;
+        const f = self.interner.pool.flagsOf(t);
+        if (f.is_union) {
+            for (self.interner.unionMembers(t)) |member| {
+                if (!self.isInLeftOperandAllowed(member)) return false;
+            }
+            return true;
+        }
+        if (f.is_type_parameter) {
+            const constraint = self.typeParameterConstraint(t) orelse return false;
+            if (constraint == t) return false;
+            return self.isInLeftOperandAllowed(constraint);
+        }
+        return f.is_string or f.is_number or f.is_symbol;
+    }
+
+    fn isInRightOperandAllowed(self: *Checker, t: TypeId) bool {
+        if (self.typeIsAnyLike(t)) return true;
+        const f = self.interner.pool.flagsOf(t);
+        if (f.is_union) {
+            for (self.interner.unionMembers(t)) |member| {
+                if (!self.isInRightOperandAllowed(member)) return false;
+            }
+            return true;
+        }
+        if (f.is_type_parameter) {
+            const constraint = self.typeParameterConstraint(t) orelse return false;
+            if (constraint == t) return false;
+            return self.isInRightOperandAllowed(constraint);
+        }
+        return f.is_object or f.is_object_type or f.is_signature or f.is_tuple;
+    }
+
     fn expressionHasObservableSideEffect(self: *Checker, node: NodeId) bool {
         return switch (self.hir.kindOf(node)) {
             .call_expr, .new_expr, .assignment, .await_expr, .yield_expr => true,
@@ -10746,8 +10787,11 @@ pub const Checker = struct {
                 break :blk types.Primitive.boolean_t;
             },
             .in => blk: {
-                if (self.typeContainsSymbol(rhs)) {
-                    try self.report(b.rhs, TsCodes.type_not_assignable, "Type 'symbol' is not assignable to type 'object'.");
+                if (!self.isInLeftOperandAllowed(lhs)) {
+                    try self.report(b.lhs, TsCodes.type_not_assignable, "Type is not assignable to type 'string | number | symbol'.");
+                }
+                if (!self.isInRightOperandAllowed(rhs)) {
+                    try self.report(b.rhs, TsCodes.type_not_assignable, "Type is not assignable to type 'object'.");
                 }
                 break :blk types.Primitive.boolean_t;
             },

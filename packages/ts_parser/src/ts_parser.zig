@@ -695,6 +695,42 @@ pub const Parser = struct {
         try self.reportCodeAt(tok.span.start, tok.line, 1121, "Octal literals are not allowed. Use the syntax '0o...'.");
     }
 
+    fn reportNumericLiteralDiagnostics(self: *Parser, tok: Token, raw: []const u8) ParseError!void {
+        if (raw.len >= 2 and raw[0] == '0') {
+            const c = raw[1];
+            if (c == '_') {
+                try self.reportCodeAt(tok.span.start + 1, tok.line, 6188, "Numeric separators are not allowed here.");
+                return;
+            }
+            if (c >= '0' and c <= '9') {
+                var decimal_like = false;
+                for (raw[1..]) |ch| {
+                    if (ch == '.' or ch == 'e' or ch == 'E' or ch == '8' or ch == '9') {
+                        decimal_like = true;
+                        break;
+                    }
+                }
+                if (decimal_like) {
+                    try self.reportCodeAt(tok.span.start, tok.line, 1489, "Decimals with leading zeros are not allowed.");
+                } else if (!self.strict_mode) {
+                    try self.reportCodeAt(tok.span.start, tok.line, 1121, "Octal literals are not allowed. Use the syntax '0o...'.");
+                }
+                return;
+            }
+        }
+
+        var i: usize = 0;
+        while (i < raw.len) : (i += 1) {
+            if (raw[i] != '_') continue;
+            const bad_before = i == 0 or !std.ascii.isDigit(raw[i - 1]);
+            const bad_after = i + 1 >= raw.len or !std.ascii.isDigit(raw[i + 1]);
+            if (bad_before or bad_after) {
+                try self.reportCodeAt(tok.span.start + @as(u32, @intCast(i)), tok.line, 6188, "Numeric separators are not allowed here.");
+                return;
+            }
+        }
+    }
+
     fn parseIfStatement(self: *Parser) ParseError!NodeId {
         const start = self.advance(); // if
         _ = try self.expect(.open_paren, "'(' after 'if'");
@@ -5156,6 +5192,7 @@ pub const Parser = struct {
                 _ = self.advance();
                 const slice = self.source[t.span.start..t.span.end];
                 try self.reportStrictLegacyOctal(t, slice);
+                try self.reportNumericLiteralDiagnostics(t, slice);
                 const value = parseNumericLiteral(slice);
                 return try self.builder.addLiteralNumber(tokenSpan(t), value);
             },
@@ -5699,6 +5736,7 @@ pub const Parser = struct {
                 defer self.suppress_strict_param_names = saved_suppress_strict_param_names;
                 const params = try self.parseParameterList();
                 defer self.gpa.free(params);
+                if (self.match(.colon)) try self.skipTypeAnnotation();
                 var body: NodeId = hir_mod.none_node_id;
                 if (self.peek().kind == .open_brace) body = try self.parseBlockStatement();
                 const value = try self.builder.addFnDeclGeneric(
