@@ -95,6 +95,7 @@ pub const TsCodes = struct {
     pub const class_used_before_declaration: u32 = 2449;
     pub const tuple_index_out_of_bounds: u32 = 2493;
     pub const computed_property_name_type: u32 = 2464;
+    pub const super_in_computed_property_name: u32 = 2466;
     pub const type_cannot_be_used_as_index: u32 = 2538;
     pub const object_possibly_undefined: u32 = 2532;
     pub const expected_n_arguments: u32 = 2554;
@@ -115,6 +116,7 @@ pub const TsCodes = struct {
     pub const generic_type_requires_args: u32 = 2314;
     pub const circular_constraint: u32 = 2313;
     pub const static_member_type_parameter: u32 = 2302;
+    pub const this_in_namespace_body: u32 = 2331;
     pub const untyped_function_type_args: u32 = 2347;
     pub const operator_cannot_be_applied: u32 = 2365;
     pub const not_callable: u32 = 2349;
@@ -141,6 +143,7 @@ pub const TsCodes = struct {
     pub const for_of_var_conflict: u32 = 2481;
     pub const iterator_value_missing: u32 = 2490;
     pub const expression_always_truthy: u32 = 2872;
+    pub const expression_always_falsy: u32 = 2873;
     /// Emitted when `// @ts-expect-error` was placed above a line
     /// that produced no diagnostics — the directive is unused.
     pub const unused_ts_expect_error: u32 = 2578;
@@ -1303,9 +1306,12 @@ pub const Checker = struct {
             if (v.name != hir_mod.none_node_id) self.hir.setType(v.name, declared_type);
         }
         if (v.init == hir_mod.none_node_id) return;
-        if (self.hir.kindOf(v.init) != .call_expr) return;
-        if (self.callHasOptionalFunctionArgument(v.init)) return;
-        try self.checkVarDecl(node);
+        if (self.hir.kindOf(v.init) == .call_expr and self.callHasOptionalFunctionArgument(v.init)) return;
+        if (self.hir.kindOf(v.init) == .call_expr) {
+            try self.checkVarDecl(node);
+            return;
+        }
+        _ = try self.checkExpression(v.init);
     }
 
     fn callHasOptionalFunctionArgument(self: *Checker, call_node: NodeId) bool {
@@ -1582,7 +1588,14 @@ pub const Checker = struct {
                 const v = hir_mod.varDeclOf(self.hir, node);
                 if (v.name != hir_mod.none_node_id and self.hir.kindOf(v.name) == .identifier) {
                     const id = hir_mod.identifierOf(self.hir, v.name);
-                    try self.recordNarrow(id.name, types.Primitive.any);
+                    const t = if (v.type_annotation != hir_mod.none_node_id) blk: {
+                        const lowered = self.lowererLowerWithTypeParams(v.type_annotation) catch break :blk types.Primitive.any;
+                        if (lowered < self.interner.pool.typeCount() and self.interner.pool.flagsOf(lowered).is_type_parameter) {
+                            break :blk lowered;
+                        }
+                        break :blk types.Primitive.any;
+                    } else types.Primitive.any;
+                    try self.recordNarrow(id.name, t);
                 }
             },
             .fn_decl, .fn_expr, .arrow_fn, .class_decl, .class_expr => return,
@@ -2122,6 +2135,86 @@ pub const Checker = struct {
             if (self.hir.kindOf(cur) == kind) return true;
         }
         return false;
+    }
+
+    fn nodeIsBracketedComputedName(self: *Checker, node: NodeId) bool {
+        if (node == hir_mod.none_node_id) return false;
+        const src = self.source orelse return false;
+        const span = self.hir.spanOf(node);
+        if (span.start < src.len and src[span.start] == '[') return true;
+        var i: usize = @min(span.start, src.len);
+        while (i > 0) {
+            i -= 1;
+            switch (src[i]) {
+                ' ', '\t', '\r', '\n' => continue,
+                '[' => return true,
+                else => return false,
+            }
+        }
+        return false;
+    }
+
+    fn memberSourceLooksComputed(self: *Checker, node: NodeId) bool {
+        const src = self.source orelse return false;
+        const span = self.hir.spanOf(node);
+        if (span.start >= src.len) return false;
+        const end = @min(src.len, @as(usize, span.start) + 48);
+        var i: usize = span.start;
+        while (i < end) : (i += 1) {
+            switch (src[i]) {
+                '[' => return true,
+                '(', '{', ';', ',', ':', '=' => return false,
+                ' ', '\t', '\r', '\n' => continue,
+                else => continue,
+            }
+        }
+        return false;
+    }
+
+    fn memberSourceLooksMethod(self: *Checker, node: NodeId) bool {
+        const src = self.source orelse return false;
+        const span = self.hir.spanOf(node);
+        if (span.start >= src.len) return false;
+        const end = @min(src.len, @as(usize, span.start) + 96);
+        var saw_close_bracket = false;
+        var i: usize = span.start;
+        while (i < end) : (i += 1) {
+            const ch = src[i];
+            if (ch == ']') {
+                saw_close_bracket = true;
+                continue;
+            }
+            if (!saw_close_bracket) continue;
+            switch (ch) {
+                ' ', '\t', '\r', '\n' => continue,
+                '(' => return true,
+                '=' => return false,
+                else => return false,
+            }
+        }
+        return false;
+    }
+
+    fn enclosingStaticClassTypeParams(self: *Checker, node: NodeId) ?[]const NodeId {
+        var cur = self.hir.parentOf(node);
+        while (cur != hir_mod.none_node_id) : (cur = self.hir.parentOf(cur)) {
+            const k = self.hir.kindOf(cur);
+            if (k != .fn_decl and k != .fn_expr and k != .arrow_fn) continue;
+            const f = hir_mod.fnDeclOf(self.hir, cur);
+            if (!f.flags.is_static) return null;
+            var parent = self.hir.parentOf(cur);
+            while (parent != hir_mod.none_node_id) : (parent = self.hir.parentOf(parent)) {
+                const pk = self.hir.kindOf(parent);
+                if (pk == .class_decl or pk == .class_expr) {
+                    const c = hir_mod.classOf(self.hir, parent);
+                    const tps = self.hir.childSlice(c.type_params_start, c.type_params_len);
+                    return if (tps.len == 0) null else tps;
+                }
+                if (pk == .fn_decl or pk == .fn_expr or pk == .arrow_fn) return null;
+            }
+            return null;
+        }
+        return null;
     }
 
     fn varDeclHasTypeAnnotation(self: *Checker, node: NodeId) bool {
@@ -3821,10 +3914,41 @@ pub const Checker = struct {
                         try self.collectConstructorThisAssignments(m, &instance_members);
                         continue;
                     }
-                    if (self.computedNameReferencesTypeParams(fn_p.name, type_params)) {
-                        try self.report(fn_p.name, 2467, "A computed property name cannot reference a type parameter from its containing type.");
+                    const fn_name_is_computed = self.nodeIsBracketedComputedName(fn_p.name) or self.nodeIsBracketedComputedName(m) or self.memberSourceLooksComputed(m);
+                    var computed_fn_key_t: TypeId = types.Primitive.none;
+                    if (fn_name_is_computed and fn_p.name != hir_mod.none_node_id) {
+                        if (self.computedNameReferencesTypeParams(fn_p.name, type_params)) {
+                            try self.report(fn_p.name, 2467, "A computed property name cannot reference a type parameter from its containing type.");
+                        }
+                        if (self.expressionContainsSuper(fn_p.name)) {
+                            try self.report(fn_p.name, TsCodes.super_in_computed_property_name, "'super' cannot be referenced in a computed property name.");
+                        }
+                        computed_fn_key_t = try self.checkExpression(fn_p.name);
+                        if (!try self.computedPropertyKeyTypeIsValid(computed_fn_key_t)) {
+                            try self.report(fn_p.name, TsCodes.computed_property_name_type, "A computed property name must be of type 'string', 'number', 'symbol', or 'any'.");
+                        }
                     }
-                    const member_name = (try self.classMemberNameFromFunctionName(fn_p.name)) orelse continue;
+                    const member_name_opt = if (fn_name_is_computed)
+                        try self.classMemberNameFromPropertyKey(fn_p.name, true)
+                    else
+                        try self.classMemberNameFromFunctionName(fn_p.name);
+                    if (member_name_opt == null) {
+                        if (fn_name_is_computed and (fn_p.flags.is_getter or fn_p.flags.is_setter)) {
+                            const accessor_t: TypeId = if (fn_p.flags.is_getter) blk: {
+                                var getter_t = self.interner.signatureReturn(sig) orelse types.Primitive.any;
+                                if (getter_t == types.Primitive.any and fn_p.return_type == hir_mod.none_node_id) {
+                                    getter_t = (try self.firstReturnExpressionType(fn_p.body)) orelse getter_t;
+                                }
+                                break :blk getter_t;
+                            } else blk: {
+                                const params = self.interner.signatureParams(sig);
+                                break :blk if (params.len > 0) params[0] else types.Primitive.any;
+                            };
+                            try self.checkComputedIndexSignatureCompatibility(fn_p.name, computed_fn_key_t, accessor_t, string_idx, number_idx, symbol_idx);
+                        }
+                        continue;
+                    }
+                    const member_name = member_name_opt.?;
                     if (fn_p.flags.is_static) {
                         try static_names.put(self.gpa, member_name, m);
                     }
@@ -3900,9 +4024,17 @@ pub const Checker = struct {
                 },
                 .object_property => {
                     const op = hir_mod.objectPropertyOf(self.hir, m);
-                    if (op.is_computed) {
+                    const op_is_computed = op.is_computed or self.nodeIsBracketedComputedName(op.key) or self.memberSourceLooksComputed(m);
+                    const op_is_method = op.is_method or
+                        (op.value != hir_mod.none_node_id and
+                            (self.hir.kindOf(op.value) == .fn_decl or self.hir.kindOf(op.value) == .fn_expr or self.hir.kindOf(op.value) == .arrow_fn) and
+                            self.memberSourceLooksMethod(m));
+                    if (op_is_computed) {
                         if (self.computedNameReferencesTypeParams(op.key, type_params)) {
                             try self.report(op.key, 2467, "A computed property name cannot reference a type parameter from its containing type.");
+                        }
+                        if (self.expressionContainsSuper(op.key)) {
+                            try self.report(op.key, TsCodes.super_in_computed_property_name, "'super' cannot be referenced in a computed property name.");
                         }
                         if (!self.sourceHasStrictFalseDirective() and self.expressionContainsThis(op.key) and self.currentThisType() == null) {
                             try self.report(op.key, TsCodes.this_implicitly_any, "'this' implicitly has type 'any' because it does not have a type annotation.");
@@ -3910,11 +4042,11 @@ pub const Checker = struct {
                         const key_t = try self.checkExpression(op.key);
                         if (!try self.computedPropertyKeyTypeIsValid(key_t)) {
                             try self.report(m, TsCodes.computed_property_name_type, "A computed property name must be of type 'string', 'number', 'symbol', or 'any'.");
-                        } else if (!op.is_method and self.hir.kindOf(op.key) == .call_expr) {
+                        } else if (!op_is_method and !self.computedClassPropertyKeyIsSimpleLiteral(key_t)) {
                             try self.report(m, 1166, "A computed property name in a class property declaration must have a simple literal type or a 'unique symbol' type.");
                         }
                     }
-                    const member_name = (try self.classMemberNameFromPropertyKey(op.key, op.is_computed)) orelse continue;
+                    const member_name = (try self.classMemberNameFromPropertyKey(op.key, op_is_computed)) orelse continue;
                     if (op.is_static) {
                         try static_names.put(self.gpa, member_name, m);
                     }
@@ -3922,7 +4054,7 @@ pub const Checker = struct {
                     if (op.visibility == .private) try private_names.put(self.gpa, member_name, {});
                     if (op.visibility == .protected) try protected_names.put(self.gpa, member_name, {});
                     if (op.is_static) continue;
-                    if (op.is_method and op.value != hir_mod.none_node_id) {
+                    if (op_is_method and op.value != hir_mod.none_node_id) {
                         const method_t = if (self.hir.kindOf(op.value) == .fn_decl or self.hir.kindOf(op.value) == .fn_expr or self.hir.kindOf(op.value) == .arrow_fn) blk: {
                             const sig = try self.checkFnSignatureOnly(op.value);
                             if (hir_mod.fnTypeParams(self.hir, op.value).len > 0) self.popNarrowScope();
@@ -8165,15 +8297,28 @@ pub const Checker = struct {
                         continue;
                     }
                     const op = hir_mod.objectPropertyOf(self.hir, p);
-                    if (op.value == hir_mod.none_node_id) continue;
                     if (op.is_computed) {
-                        if (!self.sourceHasStrictFalseDirective() and self.expressionContainsThis(op.key) and self.currentThisType() == null) {
-                            try self.report(op.key, TsCodes.this_implicitly_any, "'this' implicitly has type 'any' because it does not have a type annotation.");
+                        if (self.enclosingStaticClassTypeParams(op.key)) |static_class_tps| {
+                            if (self.computedNameReferencesTypeParams(op.key, static_class_tps)) {
+                                try self.report(op.key, TsCodes.static_member_type_parameter, "Static members cannot reference class type parameters.");
+                            }
+                        }
+                        if (self.expressionContainsSuperCall(op.key) and self.superCallIsInNestedFunctionInsideConstructor(op.key)) {
+                            try self.report(op.key, TsCodes.super_in_computed_property_name, "'super' cannot be referenced in a computed property name.");
+                        }
+                        if (self.expressionContainsThis(op.key) and self.currentThisType() == null) {
+                            if (self.nodeHasAncestorKind(op.key, .namespace_decl)) {
+                                try self.report(op.key, TsCodes.this_in_namespace_body, "'this' cannot be referenced in a module or namespace body.");
+                            }
+                            if (!self.sourceHasStrictFalseDirective()) {
+                                try self.report(op.key, TsCodes.this_implicitly_any, "'this' implicitly has type 'any' because it does not have a type annotation.");
+                            }
                         }
                         const key_t = try self.checkExpression(op.key);
                         if (self.hir.kindOf(op.key) != .yield_expr and !try self.computedPropertyKeyTypeIsValid(key_t)) {
                             try self.report(p, TsCodes.computed_property_name_type, "A computed property name must be of type 'string', 'number', 'symbol', or 'any'.");
                         }
+                        if (op.value == hir_mod.none_node_id) continue;
                         const vt = try self.checkExpression(op.value);
                         if (try self.classMemberNameFromPropertyKey(op.key, true)) |member_name| {
                             if (!op.is_method and objectMemberListContains(members.items, member_name)) {
@@ -8193,6 +8338,7 @@ pub const Checker = struct {
                         }
                         continue;
                     }
+                    if (op.value == hir_mod.none_node_id) continue;
                     if (self.hir.kindOf(op.key) != .identifier) continue;
                     const k = hir_mod.identifierOf(self.hir, op.key);
                     const vt = try self.checkExpression(op.value);
@@ -9071,6 +9217,12 @@ pub const Checker = struct {
                             if (vid.name == id.name) {
                                 const t = self.hir.typeOf(s);
                                 if (t != types.Primitive.none) return t;
+                                if (v.type_annotation != hir_mod.none_node_id) {
+                                    const declared_t = self.lowererLowerWithTypeParams(v.type_annotation) catch types.Primitive.any;
+                                    self.hir.setType(s, declared_t);
+                                    self.hir.setType(v.name, declared_t);
+                                    return declared_t;
+                                }
                             }
                         } else if (v.name != hir_mod.none_node_id) {
                             const vk = self.hir.kindOf(v.name);
@@ -9205,6 +9357,16 @@ pub const Checker = struct {
                     const decl = sym.decls.items[0];
                     const t = self.hir.typeOf(decl);
                     if (t != types.Primitive.none) return t;
+                    const dk = self.hir.kindOf(decl);
+                    if (dk == .var_decl or dk == .let_decl or dk == .const_decl) {
+                        const v = hir_mod.varDeclOf(self.hir, decl);
+                        if (v.type_annotation != hir_mod.none_node_id) {
+                            const declared_t = self.lowererLowerWithTypeParams(v.type_annotation) catch types.Primitive.any;
+                            self.hir.setType(decl, declared_t);
+                            if (v.name != hir_mod.none_node_id) self.hir.setType(v.name, declared_t);
+                            return declared_t;
+                        }
+                    }
                 }
                 return types.Primitive.any;
             }
@@ -9825,16 +9987,39 @@ pub const Checker = struct {
         if (t == types.Primitive.any or t == types.Primitive.unknown) return true;
         if (t >= self.interner.pool.typeCount()) return false;
         const f = self.interner.pool.flagsOf(t);
-        if (f.is_void) return true;
-        if (f.is_string or f.is_number or f.is_symbol) return true;
-        if (f.is_type_parameter or f.is_keyof) return true;
         if (f.is_union) {
             for (self.interner.unionMembers(t)) |member| {
                 if (!try self.computedPropertyKeyTypeIsValid(member)) return false;
             }
             return true;
         }
+        if (f.is_void) return true;
+        if (f.is_string or f.is_number or f.is_symbol) return true;
+        if (f.is_keyof) return true;
+        if (f.is_type_parameter) {
+            const constraint = self.typeParameterConstraint(t) orelse return false;
+            if (constraint == t) return false;
+            return try self.computedPropertyKeyTypeIsValid(constraint);
+        }
         return false;
+    }
+
+    fn typeParameterConstraint(self: *Checker, t: TypeId) ?TypeId {
+        if (t >= self.interner.pool.typeCount()) return null;
+        const flags = self.interner.pool.flagsOf(t);
+        if (!flags.is_type_parameter) return null;
+        const payload_idx = self.interner.pool.payloadOf(t);
+        if (payload_idx >= self.interner.pool.type_parameter_payloads.items.len) return null;
+        const tp = self.interner.pool.type_parameter_payloads.items[payload_idx];
+        if (tp.constraint == types.Primitive.none or tp.constraint == types.Primitive.unknown) return null;
+        return tp.constraint;
+    }
+
+    fn computedClassPropertyKeyIsSimpleLiteral(self: *Checker, t: TypeId) bool {
+        if (t >= self.interner.pool.typeCount()) return false;
+        const f = self.interner.pool.flagsOf(t);
+        if (f.is_symbol) return true;
+        return f.is_literal and (f.is_string or f.is_number);
     }
 
     fn computedPropertyKeyTypeIsSymbolLike(self: *Checker, t: TypeId) CheckError!bool {
@@ -9852,9 +10037,50 @@ pub const Checker = struct {
         return false;
     }
 
+    fn computedPropertyKeyTypeIsNumberLike(self: *Checker, t: TypeId) bool {
+        if (t >= self.interner.pool.typeCount()) return false;
+        const f = self.interner.pool.flagsOf(t);
+        if (f.is_number) return true;
+        if (f.is_union) {
+            for (self.interner.unionMembers(t)) |member| {
+                if (!self.computedPropertyKeyTypeIsNumberLike(member)) return false;
+            }
+            return true;
+        }
+        return false;
+    }
+
+    fn checkComputedIndexSignatureCompatibility(
+        self: *Checker,
+        node: NodeId,
+        key_t: TypeId,
+        member_t: TypeId,
+        string_idx: TypeId,
+        number_idx: TypeId,
+        symbol_idx: TypeId,
+    ) CheckError!void {
+        _ = symbol_idx;
+        if (member_t == types.Primitive.any or key_t == types.Primitive.any or key_t == types.Primitive.unknown) return;
+        const key_is_symbol = try self.computedPropertyKeyTypeIsSymbolLike(key_t);
+        if (!key_is_symbol and string_idx != types.Primitive.none and string_idx != types.Primitive.any) {
+            if (!(self.engine.isAssignableTo(member_t, string_idx) catch true)) {
+                try self.report(node, TsCodes.property_not_assignable_to_index_type, "Property is not assignable to string index type.");
+            }
+        }
+        if (self.computedPropertyKeyTypeIsNumberLike(key_t) and
+            number_idx != types.Primitive.none and
+            number_idx != types.Primitive.any)
+        {
+            if (!(self.engine.isAssignableTo(member_t, number_idx) catch true)) {
+                try self.report(node, TsCodes.property_not_assignable_to_index_type, "Property is not assignable to number index type.");
+            }
+        }
+    }
+
     fn expressionContainsThis(self: *Checker, node: NodeId) bool {
         if (node == hir_mod.none_node_id) return false;
         switch (self.hir.kindOf(node)) {
+            .this_expr => return true,
             .identifier => {
                 const id = hir_mod.identifierOf(self.hir, node);
                 return std.mem.eql(u8, self.string_interner.get(id.name), "this");
@@ -9894,8 +10120,162 @@ pub const Checker = struct {
                 const a = hir_mod.assignmentOf(self.hir, node);
                 return self.expressionContainsThis(a.target) or self.expressionContainsThis(a.value);
             },
+            .array_literal => {
+                for (hir_mod.arrayLiteralElements(self.hir, node)) |el| {
+                    if (self.expressionContainsThis(el)) return true;
+                }
+                return false;
+            },
+            .object_literal => {
+                for (hir_mod.objectLiteralProps(self.hir, node)) |p| {
+                    if (self.hir.kindOf(p) == .object_property) {
+                        const op = hir_mod.objectPropertyOf(self.hir, p);
+                        if (self.expressionContainsThis(op.key) or self.expressionContainsThis(op.value)) return true;
+                    } else if (self.expressionContainsThis(p)) return true;
+                }
+                return false;
+            },
             else => return false,
         }
+    }
+
+    fn expressionContainsSuper(self: *Checker, node: NodeId) bool {
+        if (node == hir_mod.none_node_id) return false;
+        switch (self.hir.kindOf(node)) {
+            .super_expr => return true,
+            .identifier => {
+                const id = hir_mod.identifierOf(self.hir, node);
+                return std.mem.eql(u8, self.string_interner.get(id.name), "super");
+            },
+            .member_access => return self.expressionContainsSuper(hir_mod.memberOf(self.hir, node).object),
+            .element_access => {
+                const e = hir_mod.elementOf(self.hir, node);
+                return self.expressionContainsSuper(e.object) or self.expressionContainsSuper(e.index);
+            },
+            .call_expr, .new_expr => {
+                const c = hir_mod.callOf(self.hir, node);
+                if (self.expressionContainsSuper(c.callee)) return true;
+                for (hir_mod.callArgs(self.hir, node)) |arg| {
+                    if (self.expressionContainsSuper(arg)) return true;
+                }
+                return false;
+            },
+            .binary_op => {
+                const b = hir_mod.binopOf(self.hir, node);
+                return self.expressionContainsSuper(b.lhs) or self.expressionContainsSuper(b.rhs);
+            },
+            .logical_op => {
+                const l = hir_mod.logicalOf(self.hir, node);
+                return self.expressionContainsSuper(l.lhs) or self.expressionContainsSuper(l.rhs);
+            },
+            .conditional => {
+                const c = hir_mod.conditionalOf(self.hir, node);
+                return self.expressionContainsSuper(c.cond) or
+                    self.expressionContainsSuper(c.then_branch) or
+                    self.expressionContainsSuper(c.else_branch);
+            },
+            .unary_op => return self.expressionContainsSuper(hir_mod.unaryOf(self.hir, node).operand),
+            .assignment => {
+                const a = hir_mod.assignmentOf(self.hir, node);
+                return self.expressionContainsSuper(a.target) or self.expressionContainsSuper(a.value);
+            },
+            .array_literal => {
+                for (hir_mod.arrayLiteralElements(self.hir, node)) |el| {
+                    if (self.expressionContainsSuper(el)) return true;
+                }
+                return false;
+            },
+            .object_literal => {
+                for (hir_mod.objectLiteralProps(self.hir, node)) |p| {
+                    if (self.hir.kindOf(p) == .object_property) {
+                        const op = hir_mod.objectPropertyOf(self.hir, p);
+                        if (self.expressionContainsSuper(op.key) or self.expressionContainsSuper(op.value)) return true;
+                    } else if (self.expressionContainsSuper(p)) return true;
+                }
+                return false;
+            },
+            else => return false,
+        }
+    }
+
+    fn expressionContainsSuperCall(self: *Checker, node: NodeId) bool {
+        if (node == hir_mod.none_node_id) return false;
+        switch (self.hir.kindOf(node)) {
+            .call_expr => {
+                const c = hir_mod.callOf(self.hir, node);
+                if (self.hir.kindOf(c.callee) == .super_expr) return true;
+                if (self.hir.kindOf(c.callee) == .identifier) {
+                    const id = hir_mod.identifierOf(self.hir, c.callee);
+                    if (std.mem.eql(u8, self.string_interner.get(id.name), "super")) return true;
+                }
+                if (self.expressionContainsSuperCall(c.callee)) return true;
+                for (hir_mod.callArgs(self.hir, node)) |arg| {
+                    if (self.expressionContainsSuperCall(arg)) return true;
+                }
+                return false;
+            },
+            .new_expr => {
+                const c = hir_mod.callOf(self.hir, node);
+                if (self.expressionContainsSuperCall(c.callee)) return true;
+                for (hir_mod.callArgs(self.hir, node)) |arg| {
+                    if (self.expressionContainsSuperCall(arg)) return true;
+                }
+                return false;
+            },
+            .member_access => return self.expressionContainsSuperCall(hir_mod.memberOf(self.hir, node).object),
+            .element_access => {
+                const e = hir_mod.elementOf(self.hir, node);
+                return self.expressionContainsSuperCall(e.object) or self.expressionContainsSuperCall(e.index);
+            },
+            .binary_op => {
+                const b = hir_mod.binopOf(self.hir, node);
+                return self.expressionContainsSuperCall(b.lhs) or self.expressionContainsSuperCall(b.rhs);
+            },
+            .logical_op => {
+                const l = hir_mod.logicalOf(self.hir, node);
+                return self.expressionContainsSuperCall(l.lhs) or self.expressionContainsSuperCall(l.rhs);
+            },
+            .conditional => {
+                const c = hir_mod.conditionalOf(self.hir, node);
+                return self.expressionContainsSuperCall(c.cond) or
+                    self.expressionContainsSuperCall(c.then_branch) or
+                    self.expressionContainsSuperCall(c.else_branch);
+            },
+            .unary_op => return self.expressionContainsSuperCall(hir_mod.unaryOf(self.hir, node).operand),
+            .assignment => {
+                const a = hir_mod.assignmentOf(self.hir, node);
+                return self.expressionContainsSuperCall(a.target) or self.expressionContainsSuperCall(a.value);
+            },
+            .array_literal => {
+                for (hir_mod.arrayLiteralElements(self.hir, node)) |el| {
+                    if (self.expressionContainsSuperCall(el)) return true;
+                }
+                return false;
+            },
+            .object_literal => {
+                for (hir_mod.objectLiteralProps(self.hir, node)) |p| {
+                    if (self.hir.kindOf(p) == .object_property) {
+                        const op = hir_mod.objectPropertyOf(self.hir, p);
+                        if (self.expressionContainsSuperCall(op.key) or self.expressionContainsSuperCall(op.value)) return true;
+                    } else if (self.expressionContainsSuperCall(p)) return true;
+                }
+                return false;
+            },
+            else => return false,
+        }
+    }
+
+    fn superCallIsInNestedFunctionInsideConstructor(self: *Checker, node: NodeId) bool {
+        var cur = self.hir.parentOf(node);
+        var saw_nested_function = false;
+        while (cur != hir_mod.none_node_id) : (cur = self.hir.parentOf(cur)) {
+            const k = self.hir.kindOf(cur);
+            if (k != .fn_decl and k != .fn_expr and k != .arrow_fn) continue;
+            const f = hir_mod.fnDeclOf(self.hir, cur);
+            if (f.flags.is_constructor) return saw_nested_function;
+            saw_nested_function = true;
+        }
+        return false;
     }
 
     fn computedNameReferencesTypeParams(self: *Checker, node: NodeId, type_params: []const NodeId) bool {
@@ -10215,6 +10595,12 @@ pub const Checker = struct {
         }
         if (l.op == .@"or" and self.hir.kindOf(l.lhs) == .object_literal) {
             try self.report(l.lhs, TsCodes.expression_always_truthy, "This kind of expression is always truthy.");
+        }
+        if (l.op == .@"or" and self.hir.kindOf(l.lhs) == .literal_string) {
+            const lit = hir_mod.literalStringOf(self.hir, l.lhs);
+            if (self.string_interner.get(lit.value).len == 0) {
+                try self.report(l.lhs, TsCodes.expression_always_falsy, "This kind of expression is always falsy.");
+            }
         }
         return self.interner.internUnion(&.{ lhs, rhs }) catch error.OutOfMemory;
     }
@@ -17223,6 +17609,54 @@ test "checker: computed property name with identifier key parses and types" {
     try T.expect(s.ti.pool.flagsOf(obj_t).is_object_type);
     const idx_t = s.ti.objectStringIndex(obj_t);
     try T.expectEqual(types.Primitive.number_t, idx_t);
+}
+
+test "checker: generic computed object key rejects unconstrained type parameter" {
+    const s = try newSetup(
+        \\function f<T, U extends string>() {
+        \\  var t!: T;
+        \\  var u!: U;
+        \\  var v = { [t]: 0, [u]: 1 };
+        \\}
+    );
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+    var found = false;
+    for (s.checker.diagnostics.items) |d| {
+        if (d.code == TsCodes.computed_property_name_type) found = true;
+    }
+    try T.expect(found);
+}
+
+test "checker: class computed method key rejects non-property-key union" {
+    const s = try newSetup(
+        \\declare var p2: number | number[];
+        \\class C {
+        \\  [p2]() {}
+        \\}
+    );
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+    var found = false;
+    for (s.checker.diagnostics.items) |d| {
+        if (d.code == TsCodes.computed_property_name_type) found = true;
+    }
+    try T.expect(found);
+}
+
+test "checker: namespace computed object key rejects this" {
+    const s = try newSetup(
+        \\namespace M {
+        \\  export var x = { [this.bar]: 0 };
+        \\}
+    );
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+    var found = false;
+    for (s.checker.diagnostics.items) |d| {
+        if (d.code == TsCodes.this_in_namespace_body) found = true;
+    }
+    try T.expect(found);
 }
 
 test "checker: computed property mixed with regular keys parses and types" {
