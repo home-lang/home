@@ -357,6 +357,11 @@ pub const Checker = struct {
     /// pushes a scope; identifier resolution consults the top of
     /// the stack first before falling back to the static type.
     narrow_scopes: std.ArrayListUnmanaged(std.AutoHashMapUnmanaged(hir_mod.StringId, TypeId)),
+    /// Lowest narrow-scope index visible to lookup. Used for closure
+    /// boundaries such as class method bodies, where `this`/local
+    /// flow scopes should be visible but outer flow narrows must not
+    /// leak in.
+    narrow_lookup_floor: usize,
     /// Parallel stack of member-access narrows keyed by
     /// `(obj_name, prop_name)`. Populated by `applyTypeGuard` when
     /// a guard's LHS is a member-access on an identifier root (e.g.
@@ -573,6 +578,7 @@ pub const Checker = struct {
             .lowerer = lower.Lowerer.init(gpa, hir, ti, si),
             .module = null,
             .narrow_scopes = .empty,
+            .narrow_lookup_floor = 0,
             .member_narrow_scopes = .empty,
             .class_instance_types = .empty,
             .class_constructor_sigs = .empty,
@@ -875,7 +881,7 @@ pub const Checker = struct {
     fn checkStatement(self: *Checker, node: NodeId) CheckError!void {
         switch (self.hir.kindOf(node)) {
             .var_decl, .let_decl, .const_decl => try self.checkVarDecl(node),
-            .fn_decl, .fn_expr, .arrow_fn => try self.checkFnDecl(node),
+            .fn_decl, .fn_expr, .arrow_fn => try self.checkFnDeclWithFlowBoundary(node),
             .class_decl => try self.checkClassDecl(node),
             .interface_decl => try self.checkInterfaceDecl(node),
             .enum_decl => try self.checkEnumDecl(node),
@@ -939,6 +945,11 @@ pub const Checker = struct {
                 const w = hir_mod.whileOf(self.hir, node);
                 _ = try self.checkExpression(w.cond);
                 try self.checkStatement(w.body);
+            },
+            .do_while_stmt => {
+                const d = hir_mod.doWhileOf(self.hir, node);
+                try self.checkStatement(d.body);
+                _ = try self.checkExpression(d.cond);
             },
             .for_stmt => {
                 const fr = hir_mod.forStmtOf(self.hir, node);
@@ -1538,6 +1549,13 @@ pub const Checker = struct {
         defer if (had_type_params) self.popNarrowScope();
         try self.checkFnParameterDefaultReferences(node);
         try self.walkFnBody(node);
+    }
+
+    fn checkFnDeclWithFlowBoundary(self: *Checker, node: NodeId) CheckError!void {
+        const old_floor = self.narrow_lookup_floor;
+        self.narrow_lookup_floor = self.narrow_scopes.items.len;
+        defer self.narrow_lookup_floor = old_floor;
+        try self.checkFnDecl(node);
     }
 
     /// Type the body of a function/method/arrow. Split from
@@ -4604,24 +4622,34 @@ pub const Checker = struct {
         for (members) |m| switch (self.hir.kindOf(m)) {
             .fn_decl, .fn_expr, .arrow_fn => {
                 const fn_p = hir_mod.fnDeclOf(self.hir, m);
+                const old_floor = self.narrow_lookup_floor;
+                self.narrow_lookup_floor = self.narrow_scopes.items.len;
+                errdefer self.narrow_lookup_floor = old_floor;
                 try self.pushNarrowScope();
+                errdefer self.popNarrowScope();
                 try self.recordNarrow(this_id, if (fn_p.flags.is_static) static_t else instance_this_t);
                 const method_super_t = if (fn_p.flags.is_static) static_super_t else super_t;
                 if (method_super_t) |st| try self.recordNarrow(super_id, st);
                 try self.checkFnDecl(m);
                 self.popNarrowScope();
+                self.narrow_lookup_floor = old_floor;
             },
             .object_property => {
                 const op = hir_mod.objectPropertyOf(self.hir, m);
                 if (!op.is_method or op.value == hir_mod.none_node_id) continue;
                 const value_kind = self.hir.kindOf(op.value);
                 if (value_kind != .fn_decl and value_kind != .fn_expr and value_kind != .arrow_fn) continue;
+                const old_floor = self.narrow_lookup_floor;
+                self.narrow_lookup_floor = self.narrow_scopes.items.len;
+                errdefer self.narrow_lookup_floor = old_floor;
                 try self.pushNarrowScope();
+                errdefer self.popNarrowScope();
                 try self.recordNarrow(this_id, if (op.is_static) static_t else instance_this_t);
                 const method_super_t = if (op.is_static) static_super_t else super_t;
                 if (method_super_t) |st| try self.recordNarrow(super_id, st);
                 try self.checkFnDecl(op.value);
                 self.popNarrowScope();
+                self.narrow_lookup_floor = old_floor;
             },
             else => {},
         };
@@ -6855,7 +6883,10 @@ pub const Checker = struct {
                     }
                     if (!inner_has_rest) {
                         for (inner_elems) |ie| {
-                            const t = try self.lowererLowerWithTypeParams(ie);
+                            var t = try self.lowererLowerWithTypeParams(ie);
+                            if (self.tupleElementHasOptionalMarker(ie)) {
+                                t = self.unionWithUndefined(t) catch t;
+                            }
                             try fixed_types.append(self.gpa, t);
                         }
                         continue;
@@ -6873,7 +6904,10 @@ pub const Checker = struct {
                 saw_unknown_rest = true;
                 continue;
             }
-            const t = try self.lowererLowerWithTypeParams(e);
+            var t = try self.lowererLowerWithTypeParams(e);
+            if (self.tupleElementHasOptionalMarker(e)) {
+                t = self.unionWithUndefined(t) catch t;
+            }
             try fixed_types.append(self.gpa, t);
         }
 
@@ -6946,6 +6980,20 @@ pub const Checker = struct {
         else
             self.interner.internUnion(idx_union.items) catch types.Primitive.any;
         return self.interner.internObjectTypeWithIndex(members.items, types.Primitive.none, elem_union) catch error.OutOfMemory;
+    }
+
+    fn tupleElementHasOptionalMarker(self: *Checker, elem: NodeId) bool {
+        const src = self.source orelse return false;
+        const span = self.hir.spanOf(elem);
+        var i = span.end;
+        while (i < src.len) : (i += 1) {
+            switch (src[i]) {
+                ' ', '\t', '\r', '\n' => continue,
+                '?' => return true,
+                else => return false,
+            }
+        }
+        return false;
     }
 
     /// Evaluate `check extends ext ? tt : ff`. If either side carries a
@@ -9151,7 +9199,11 @@ pub const Checker = struct {
             // type. checkFnDecl walks the body too, so all interior
             // typing happens here.
             .fn_decl, .arrow_fn, .fn_expr => blk: {
-                try self.checkFnDecl(node);
+                try self.checkFnDeclWithFlowBoundary(node);
+                break :blk self.hir.typeOf(node);
+            },
+            .class_decl, .class_expr => blk: {
+                try self.checkClassDecl(node);
                 break :blk self.hir.typeOf(node);
             },
             .await_expr => blk: {
@@ -9237,7 +9289,8 @@ pub const Checker = struct {
     /// outer.
     fn lookupMemberNarrow(self: *Checker, key: MemberKey) ?TypeId {
         var i = self.member_narrow_scopes.items.len;
-        while (i > 0) {
+        const floor = @min(self.narrow_lookup_floor, i);
+        while (i > floor) {
             i -= 1;
             if (self.member_narrow_scopes.items[i].get(key)) |t| return t;
         }
@@ -9344,9 +9397,18 @@ pub const Checker = struct {
     /// scope stack from inner-most to outer-most.
     fn lookupNarrow(self: *Checker, name: hir_mod.StringId) ?TypeId {
         var i = self.narrow_scopes.items.len;
-        while (i > 0) {
+        const floor = @min(self.narrow_lookup_floor, i);
+        while (i > floor) {
             i -= 1;
             if (self.narrow_scopes.items[i].get(name)) |t| return t;
+        }
+        while (i > 0) {
+            i -= 1;
+            if (self.narrow_scopes.items[i].get(name)) |t| {
+                const name_str = self.string_interner.get(name);
+                if (std.mem.eql(u8, name_str, "this") or std.mem.eql(u8, name_str, "super")) return t;
+                if (t < self.interner.pool.typeCount() and self.interner.pool.flagsOf(t).is_type_parameter) return t;
+            }
         }
         return null;
     }
@@ -12719,8 +12781,32 @@ pub const Checker = struct {
             var arg_t = arg_types[i];
             if (self.hir.kindOf(args[i]) == .spread) {
                 if (!is_variadic or i < fixed_count) {
-                    if (self.fixedTupleLength(arg_t) == null) {
+                    const is_union_arg = arg_t < self.interner.pool.typeCount() and self.interner.pool.flagsOf(arg_t).is_union;
+                    if (is_union_arg or self.fixedTupleLength(arg_t) == null) {
                         try self.report(args[i], TsCodes.spread_argument_requires_tuple_or_rest, "A spread argument must either have a tuple type or be passed to a rest parameter.");
+                    }
+                }
+                var tuple_i: usize = 0;
+                while (i + tuple_i < fixed_count) : (tuple_i += 1) {
+                    const elem_t = self.tupleElementType(arg_t, tuple_i);
+                    if (elem_t == types.Primitive.none) break;
+                    var tuple_param_t = param_ts[i + tuple_i];
+                    if (tuple_param_t >= self.interner.pool.typeCount()) continue;
+                    if (self.interner.pool.flagsOf(tuple_param_t).is_type_parameter) {
+                        tuple_param_t = self.scalarTypeParameterConstraint(tuple_param_t) orelse continue;
+                    }
+                    const tuple_ok = self.isArgumentAssignableToParam(args[i], elem_t, tuple_param_t) catch true;
+                    if (!tuple_ok) {
+                        const msg = try std.fmt.allocPrint(
+                            self.diag_arena.allocator(),
+                            "Argument is not assignable to parameter at position {d}.",
+                            .{i + tuple_i},
+                        );
+                        try self.diagnostics.append(self.gpa, .{
+                            .node = args[i],
+                            .code = TsCodes.argument_type_mismatch,
+                            .message = msg,
+                        });
                     }
                 }
                 const spread_elem_t = self.tupleElementType(arg_t, 0);
@@ -14796,6 +14882,67 @@ test "checker: instanceof narrows to the class instance type when class is decla
     // No diagnostics: `x.value` resolves on the narrowed instance
     // type rather than triggering TS2339.
     try T.expect(s.checker.diagnostics.items.len == 0);
+}
+
+test "checker: outer type guard does not narrow inside class constructor" {
+    const s = try newSetup(
+        \\let x: string | number = "a";
+        \\if (typeof x === "string") {
+        \\  let C = class { constructor() { let y: string = x; } };
+        \\}
+    );
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+
+    var found = false;
+    for (s.checker.diagnostics.items) |d| {
+        if (d.code == TsCodes.type_not_assignable) found = true;
+    }
+    try T.expect(found);
+}
+
+test "checker: outer type guard does not narrow inside closure bodies" {
+    const s = try newSetup(
+        \\function f(x: number | string) {
+        \\  if (typeof x === "string") {
+        \\    return x.length;
+        \\  } else {
+        \\    let g = function () { return x * x; };
+        \\    let h = () => x * x;
+        \\  }
+        \\}
+    );
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+
+    var left_count: usize = 0;
+    var right_count: usize = 0;
+    for (s.checker.diagnostics.items) |d| {
+        if (d.code == TsCodes.arithmetic_left_operand_type) left_count += 1;
+        if (d.code == TsCodes.arithmetic_right_operand_type) right_count += 1;
+    }
+    try T.expectEqual(@as(usize, 2), left_count);
+    try T.expectEqual(@as(usize, 2), right_count);
+}
+
+test "checker: do-while bodies are checked for assignment diagnostics" {
+    const s = try newSetup(
+        \\let cond: boolean;
+        \\function f(x: string | number | boolean) {
+        \\  do {
+        \\    x = undefined;
+        \\  } while (cond);
+        \\}
+    );
+    defer destroySetup(s);
+    s.checker.setStrictFlags(.{ .strict_null_checks = true });
+    try s.checker.checkSourceFile(s.root);
+
+    var found = false;
+    for (s.checker.diagnostics.items) |d| {
+        if (d.code == TsCodes.type_not_assignable) found = true;
+    }
+    try T.expect(found);
 }
 
 test "checker: private member accessed outside class emits TS2341" {
@@ -19843,6 +19990,59 @@ test "checker: spread tuple fixed prefix satisfies required parameter count" {
         try T.expect(d.code != TsCodes.expected_n_arguments);
         try T.expect(d.code != TsCodes.argument_type_mismatch);
     }
+}
+
+test "checker: spread optional tuple element is checked against fixed parameter" {
+    const s = try newSetup(
+        \\declare const t: [number, number, number?];
+        \\declare let f: (a: number, b: number, c: number, ...rest: number[]) => void;
+        \\f(...t, 1);
+    );
+    defer destroySetup(s);
+    s.checker.setStrictFlags(.{ .strict_null_checks = true });
+    try s.checker.checkSourceFile(s.root);
+    var found = false;
+    for (s.checker.diagnostics.items) |d| {
+        if (d.code == TsCodes.argument_type_mismatch) found = true;
+    }
+    try T.expect(found);
+}
+
+test "checker: union tuple spread into fixed parameters reports TS2556" {
+    const s = try newSetup(
+        \\declare const t: [number, number] | [number, number, number];
+        \\declare let f: (a: number, b: number, c: number, ...rest: number[]) => void;
+        \\f(...t, 1);
+    );
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+    var found = false;
+    for (s.checker.diagnostics.items) |d| {
+        if (d.code == TsCodes.spread_argument_requires_tuple_or_rest) found = true;
+    }
+    try T.expect(found);
+}
+
+test "checker: declare function tuple spread validates fixed parameters" {
+    const s = try newSetup(
+        \\declare const x: number
+        \\declare const nnnu: [number, number, number?]
+        \\declare const nntnnnt: [number, number] | [number, number, number]
+        \\declare function fn(a: number, b: number, bb: number, ...c: number[]): number
+        \\fn(...nnnu, x)
+        \\fn(...nntnnnt, x)
+    );
+    defer destroySetup(s);
+    s.checker.setStrictFlags(.{ .strict_null_checks = true });
+    try s.checker.checkSourceFile(s.root);
+    var found_2345 = false;
+    var found_2556 = false;
+    for (s.checker.diagnostics.items) |d| {
+        if (d.code == TsCodes.argument_type_mismatch) found_2345 = true;
+        if (d.code == TsCodes.spread_argument_requires_tuple_or_rest) found_2556 = true;
+    }
+    try T.expect(found_2345);
+    try T.expect(found_2556);
 }
 
 test "checker: bare generic rest tuple does not bind from first argument only" {
