@@ -4950,7 +4950,7 @@ pub const Parser = struct {
                         defer self.gpa.free(args);
                         const close_pos = self.tokens[self.cursor - 1].span.end;
                         const sp: Span = .{ .start = self.hir.spanOf(node).start, .end = close_pos };
-                        node = try self.builder.addCall(sp, node, args);
+                        node = try self.builder.addOptionalCall(sp, node, args);
                     } else if (self.peek().kind == .open_bracket) {
                         _ = self.advance();
                         const idx = try self.parseExpression();

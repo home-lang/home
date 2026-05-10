@@ -344,6 +344,8 @@ pub const CallPayload = struct {
     /// Children-pool slice: type arguments (for `f<T>(x)`).
     type_args_start: u32,
     type_args_len: u16,
+    /// True for `?.(...)` optional call chains.
+    optional: bool,
 };
 
 pub const MemberPayload = struct {
@@ -1511,9 +1513,17 @@ pub const Builder = struct {
         return self.addCallWithTypeArgs(span, callee, args, &.{});
     }
 
+    pub fn addOptionalCall(self: *Builder, span: Span, callee: NodeId, args: []const NodeId) !NodeId {
+        return self.addCallWithTypeArgsAndOptional(span, callee, args, &.{}, true);
+    }
+
     /// `callee<T1, T2>(args)` — explicit type arguments threaded through
     /// to the checker so they override call-site inference.
     pub fn addCallWithTypeArgs(self: *Builder, span: Span, callee: NodeId, args: []const NodeId, type_args: []const NodeId) !NodeId {
+        return self.addCallWithTypeArgsAndOptional(span, callee, args, type_args, false);
+    }
+
+    fn addCallWithTypeArgsAndOptional(self: *Builder, span: Span, callee: NodeId, args: []const NodeId, type_args: []const NodeId, optional: bool) !NodeId {
         const args_start: u32 = @intCast(self.hir.child_pool.items.len);
         try self.hir.child_pool.appendSlice(self.hir.gpa, args);
         const args_len: u16 = @intCast(args.len);
@@ -1527,6 +1537,7 @@ pub const Builder = struct {
             .args_len = args_len,
             .type_args_start = type_args_start,
             .type_args_len = type_args_len,
+            .optional = optional,
         });
         const id = try self.newNode(.call_expr, span, payload_idx);
         self.hir.setParent(callee, id);
@@ -1556,6 +1567,7 @@ pub const Builder = struct {
             .args_len = args_len,
             .type_args_start = type_args_start,
             .type_args_len = type_args_len,
+            .optional = false,
         });
         const id = try self.newNode(.new_expr, span, payload_idx);
         self.hir.setParent(callee, id);
@@ -2147,11 +2159,11 @@ pub const Builder = struct {
             type_annotation,
             is_computed,
             is_shorthand,
-        is_method,
-        false,
-        .public,
-        false,
-    );
+            is_method,
+            false,
+            .public,
+            false,
+        );
     }
 
     /// Variant of `addObjectPropertyTyped` that also records TS

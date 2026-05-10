@@ -108,6 +108,8 @@ pub const TsCodes = struct {
     pub const no_exported_member_suggestion: u32 = 2724;
     pub const export_non_local_declaration: u32 = 2661;
     pub const delete_operand_property_reference: u32 = 2703;
+    pub const optional_chain_assignment_target: u32 = 2779;
+    pub const delete_operand_must_be_optional: u32 = 2790;
     pub const no_overload_matches: u32 = 2769;
     pub const duplicate_identifier: u32 = 2300;
     pub const export_star_conflict: u32 = 2308;
@@ -413,6 +415,12 @@ pub const Checker = struct {
     /// are present so they substitute the parameter types directly
     /// rather than going through argument-driven inference.
     generic_fns: std.AutoHashMapUnmanaged(hir_mod.StringId, []TypeId),
+    /// Signature TypeId → owned `[]TypeId` for generic function-type
+    /// annotations such as `<T>(x: T) => T` stored in variables or
+    /// object members. Function declarations use `generic_fns`; this
+    /// side table gives explicit type-argument calls on function
+    /// values the same substitution path.
+    generic_signature_params: std.AutoHashMapUnmanaged(TypeId, []TypeId),
     /// Function name → type-predicate info. Populated when the
     /// function's return type is `arg is T` or `asserts arg is T`.
     /// Consulted by `applyTypeGuard` at call sites so the caller's
@@ -530,6 +538,7 @@ pub const Checker = struct {
             .generic_aliases = .empty,
             .active_generic_aliases = .empty,
             .generic_fns = .empty,
+            .generic_signature_params = .empty,
             .fn_predicates = .empty,
             .cond_aliases = .empty,
             .overloads = .empty,
@@ -597,6 +606,9 @@ pub const Checker = struct {
         var gf_it = self.generic_fns.valueIterator();
         while (gf_it.next()) |params| self.gpa.free(params.*);
         self.generic_fns.deinit(self.gpa);
+        var gsig_it = self.generic_signature_params.valueIterator();
+        while (gsig_it.next()) |params| self.gpa.free(params.*);
+        self.generic_signature_params.deinit(self.gpa);
         self.fn_predicates.deinit(self.gpa);
         self.cond_aliases.deinit(self.gpa);
         var ov_it = self.overloads.valueIterator();
@@ -5775,6 +5787,66 @@ pub const Checker = struct {
         return self.interner.internNumberLiteral(v) catch null;
     }
 
+    fn enumDeclForName(self: *Checker, name: hir_mod.StringId) ?NodeId {
+        const module = self.module orelse return null;
+        const sym = module.root.lookup(name) orelse return null;
+        if (sym.decls.items.len == 0) return null;
+        const decl = sym.decls.items[0];
+        if (self.hir.kindOf(decl) != .enum_decl) return null;
+        return decl;
+    }
+
+    fn enumHasMember(self: *Checker, enum_name: hir_mod.StringId, member_name: hir_mod.StringId) bool {
+        const decl = self.enumDeclForName(enum_name) orelse return false;
+        for (hir_mod.enumMembers(self.hir, decl)) |member| {
+            if (self.hir.kindOf(member) != .object_property) continue;
+            const prop = hir_mod.objectPropertyOf(self.hir, member);
+            const key_name: ?hir_mod.StringId = switch (self.hir.kindOf(prop.key)) {
+                .identifier => hir_mod.identifierOf(self.hir, prop.key).name,
+                .literal_string => hir_mod.literalStringOf(self.hir, prop.key).value,
+                else => null,
+            };
+            if (key_name != null and key_name.? == member_name) return true;
+        }
+        return false;
+    }
+
+    fn checkEnumMemberAssignment(self: *Checker, target: NodeId) CheckError!void {
+        var enum_name: ?hir_mod.StringId = null;
+        var member_name: ?hir_mod.StringId = null;
+        switch (self.hir.kindOf(target)) {
+            .member_access => {
+                const m = hir_mod.memberOf(self.hir, target);
+                if (self.hir.kindOf(m.object) == .identifier) {
+                    enum_name = hir_mod.identifierOf(self.hir, m.object).name;
+                    member_name = m.name;
+                }
+            },
+            .element_access => {
+                const e = hir_mod.elementOf(self.hir, target);
+                if (self.hir.kindOf(e.object) == .identifier and self.hir.kindOf(e.index) == .literal_string) {
+                    enum_name = hir_mod.identifierOf(self.hir, e.object).name;
+                    member_name = hir_mod.literalStringOf(self.hir, e.index).value;
+                }
+            },
+            else => {},
+        }
+        const enum_id = enum_name orelse return;
+        const member_id = member_name orelse return;
+        if (!self.enumHasMember(enum_id, member_id)) return;
+        const member_str = self.string_interner.get(member_id);
+        const msg = try std.fmt.allocPrint(
+            self.diag_arena.allocator(),
+            "Cannot assign to '{s}' because it is an enum member.",
+            .{member_str},
+        );
+        try self.diagnostics.append(self.gpa, .{
+            .node = target,
+            .code = TsCodes.readonly_property,
+            .message = msg,
+        });
+    }
+
     /// Classify an enum referenced by `obj_name`. Returns `true`
     /// when the symbol resolves to an enum decl whose members are
     /// all (or partly) numeric — i.e. one with a TS-style reverse
@@ -6295,6 +6367,8 @@ pub const Checker = struct {
                 const ft_type_params = self.hir.childSlice(ft.type_params_start, ft.type_params_len);
                 if (ft_type_params.len > 0) try self.pushNarrowScope();
                 defer if (ft_type_params.len > 0) self.popNarrowScope();
+                var captured_tp_ids: std.ArrayListUnmanaged(TypeId) = .empty;
+                defer captured_tp_ids.deinit(self.gpa);
                 for (ft_type_params) |tp| {
                     if (self.hir.kindOf(tp) != .type_parameter) continue;
                     const tpp = hir_mod.typeParameterOf(self.hir, tp);
@@ -6315,6 +6389,7 @@ pub const Checker = struct {
                     ) catch return error.OutOfMemory;
                     self.hir.setType(tp, tp_id);
                     try self.recordNarrow(tpp.name, tp_id);
+                    try captured_tp_ids.append(self.gpa, tp_id);
                 }
                 var fn_param_ts: std.ArrayListUnmanaged(TypeId) = .empty;
                 defer fn_param_ts.deinit(self.gpa);
@@ -6339,6 +6414,14 @@ pub const Checker = struct {
                 const is_construct = self.hir.kindOf(type_node) == .constructor_type;
                 const sig = self.interner.internSignature(fn_param_ts.items, ret_t, is_construct) catch return error.OutOfMemory;
                 if (has_rest_param) try self.rest_signatures.put(self.gpa, sig, {});
+                if (captured_tp_ids.items.len > 0) {
+                    const owned = captured_tp_ids.toOwnedSlice(self.gpa) catch return error.OutOfMemory;
+                    errdefer self.gpa.free(owned);
+                    if (self.generic_signature_params.fetchRemove(sig)) |old| {
+                        self.gpa.free(old.value);
+                    }
+                    try self.generic_signature_params.put(self.gpa, sig, owned);
+                }
                 return sig;
             },
             else => {},
@@ -7352,6 +7435,7 @@ pub const Checker = struct {
             // declared type is a known object — otherwise extra
             // properties may legitimately come from elsewhere.
             try self.checkExcessProperties(v.init, declared_type);
+            try self.checkArrayLiteralContextualElements(v.init, declared_type);
             // TS2375: `exactOptionalPropertyTypes` rejects literal
             // `undefined` flowing into an optional-but-not-undefined
             // property.
@@ -7686,6 +7770,41 @@ pub const Checker = struct {
         return self.interner.objectMember(obj_t, name);
     }
 
+    fn propertyAllowsDelete(self: *Checker, obj_t: TypeId, name: hir_mod.StringId) bool {
+        if (self.typeIsAnyLike(obj_t)) return true;
+        const non_null_obj = self.subtractNullUndefined(obj_t) catch obj_t;
+        const flags = self.interner.pool.flagsOf(non_null_obj);
+        if (flags.is_union) {
+            for (self.interner.unionMembers(non_null_obj)) |member_t| {
+                if (!self.propertyAllowsDelete(member_t, name)) return false;
+            }
+            return true;
+        }
+        if (!flags.is_object_type) return true;
+        const info = self.interner.objectMemberInfo(non_null_obj, name) orelse return true;
+        return info.is_optional or self.typeIncludesUndefined(info.type);
+    }
+
+    fn deleteOperandAllowed(self: *Checker, operand: NodeId) bool {
+        return switch (self.hir.kindOf(operand)) {
+            .member_access => blk: {
+                const m = hir_mod.memberOf(self.hir, operand);
+                const obj_t = self.hir.typeOf(m.object);
+                if (obj_t == types.Primitive.none) break :blk true;
+                break :blk self.propertyAllowsDelete(obj_t, m.name);
+            },
+            .element_access => blk: {
+                const e = hir_mod.elementOf(self.hir, operand);
+                if (self.hir.kindOf(e.index) != .literal_string) break :blk true;
+                const obj_t = self.hir.typeOf(e.object);
+                if (obj_t == types.Primitive.none) break :blk true;
+                const key = hir_mod.literalStringOf(self.hir, e.index).value;
+                break :blk self.propertyAllowsDelete(obj_t, key);
+            },
+            else => true,
+        };
+    }
+
     fn arrayElementType(self: *Checker, obj_t: TypeId) CheckError!TypeId {
         const flags = self.interner.pool.flagsOf(obj_t);
         if (flags.is_union) {
@@ -7790,6 +7909,10 @@ pub const Checker = struct {
                         });
                     }
                 }
+                if (self.expressionIsOptionalChain(a.target)) {
+                    try self.report(a.target, TsCodes.optional_chain_assignment_target, "The left-hand side of an assignment expression may not be an optional property access.");
+                }
+                try self.checkEnumMemberAssignment(a.target);
                 // TS2540: assigning to a property declared `readonly`.
                 // Object/interface readonly fields are immutable;
                 // class-field readonly is approximated by the
@@ -7916,7 +8039,12 @@ pub const Checker = struct {
             },
             .call_expr => blk: {
                 const c = hir_mod.callOf(self.hir, node);
-                const callee_t = try self.checkExpression(c.callee);
+                const raw_callee_t = try self.checkExpression(c.callee);
+                const call_is_optional_chain = c.optional or self.expressionIsOptionalChain(c.callee);
+                const callee_t = if (call_is_optional_chain)
+                    self.subtractNullUndefined(raw_callee_t) catch raw_callee_t
+                else
+                    raw_callee_t;
                 if (self.hir.kindOf(c.callee) == .identifier) {
                     const id = hir_mod.identifierOf(self.hir, c.callee);
                     if (std.mem.eql(u8, self.string_interner.get(id.name), "super")) {
@@ -7953,19 +8081,15 @@ pub const Checker = struct {
                             for (overloads) |sig| {
                                 if (try self.signatureAccepts(sig, arg_types.items)) {
                                     try self.checkArgsAgainstSignature(node, args, arg_types.items, sig);
-                                    if (self.interner.signatureReturn(sig)) |ret| {
-                                        break :blk ret;
-                                    }
+                                    if (self.interner.signatureReturn(sig)) |ret| break :blk try self.optionalChainResult(ret, call_is_optional_chain);
                                 }
                             }
                             // No overload accepted these args — emit
                             // TS2769 instead of falling through to the
                             // implementation signature when one exists.
                             try self.report(node, TsCodes.no_overload_matches, "No overload matches this call.");
-                            if (self.interner.signatureReturn(overload_list.items[0])) |ret| {
-                                break :blk ret;
-                            }
-                            break :blk types.Primitive.any;
+                            if (self.interner.signatureReturn(overload_list.items[0])) |ret| break :blk try self.optionalChainResult(ret, call_is_optional_chain);
+                            break :blk try self.optionalChainResult(types.Primitive.any, call_is_optional_chain);
                         }
                     }
                 }
@@ -7989,6 +8113,34 @@ pub const Checker = struct {
                 if (type_arg_nodes.len > 0 and self.interner.isSignature(callee_t) and self.hir.kindOf(c.callee) == .identifier) {
                     const callee_name = hir_mod.identifierOf(self.hir, c.callee).name;
                     if (self.generic_fns.get(callee_name)) |type_params| {
+                        callee_had_generic_record = true;
+                        if (type_arg_nodes.len != type_params.len) {
+                            const msg = try std.fmt.allocPrint(
+                                self.diag_arena.allocator(),
+                                "Expected {d} type arguments, but got {d}.",
+                                .{ type_params.len, type_arg_nodes.len },
+                            );
+                            try self.diagnostics.append(self.gpa, .{
+                                .node = node,
+                                .code = TsCodes.expected_n_type_arguments,
+                                .message = msg,
+                            });
+                        }
+                        var subs: std.AutoHashMapUnmanaged(TypeId, TypeId) = .empty;
+                        defer subs.deinit(self.gpa);
+                        const n = @min(type_params.len, type_arg_nodes.len);
+                        for (0..n) |i| {
+                            const explicit_t = self.lowererLowerWithTypeParams(type_arg_nodes[i]) catch types.Primitive.unknown;
+                            try subs.put(self.gpa, type_params[i], explicit_t);
+                        }
+                        if (subs.count() > 0) {
+                            effective_callee_t = self.substituteType(callee_t, &subs) catch callee_t;
+                            used_explicit_type_args = true;
+                        }
+                    }
+                }
+                if (type_arg_nodes.len > 0 and !callee_had_generic_record and self.interner.isSignature(callee_t)) {
+                    if (self.generic_signature_params.get(callee_t)) |type_params| {
                         callee_had_generic_record = true;
                         if (type_arg_nodes.len != type_params.len) {
                             const msg = try std.fmt.allocPrint(
@@ -8085,23 +8237,26 @@ pub const Checker = struct {
                         // skip argument-driven inference (it's
                         // redundant and the substituted return is
                         // canonical).
-                        if (used_explicit_type_args) break :blk ret;
+                        if (used_explicit_type_args) break :blk try self.optionalChainResult(ret, call_is_optional_chain);
                         const param_ts = self.interner.signatureParams(effective_callee_t);
                         const instantiated = self.instantiateReturn(param_ts, arg_types.items, ret) catch ret;
-                        break :blk instantiated;
+                        break :blk try self.optionalChainResult(instantiated, call_is_optional_chain);
                     }
                 }
-                if (self.interner.signatureReturn(effective_callee_t)) |ret| break :blk ret;
+                if (self.interner.signatureReturn(effective_callee_t)) |ret| break :blk try self.optionalChainResult(ret, call_is_optional_chain);
                 if (callee_t != types.Primitive.any and callee_t != types.Primitive.unknown) {
                     try self.report(c.callee, TsCodes.not_callable, "This expression is not callable.");
                 }
-                break :blk types.Primitive.any;
+                break :blk try self.optionalChainResult(types.Primitive.any, call_is_optional_chain);
             },
             .member_access => blk: {
                 const m = hir_mod.memberOf(self.hir, node);
                 var obj_t = try self.checkExpression(m.object);
-                if (!m.optional and self.strict_flags.strict_null_checks and self.typeIsPossiblyNullish(obj_t)) {
+                const member_is_optional_chain = m.optional or self.expressionIsOptionalChain(m.object);
+                if (!member_is_optional_chain and self.strict_flags.strict_null_checks and self.typeIsPossiblyNullish(obj_t)) {
                     try self.report(m.object, TsCodes.object_possibly_nullish, "Object is possibly 'null' or 'undefined'.");
+                    obj_t = self.subtractNullUndefined(obj_t) catch obj_t;
+                } else if (member_is_optional_chain) {
                     obj_t = self.subtractNullUndefined(obj_t) catch obj_t;
                 }
                 // TS2341: legacy `private` member access from
@@ -8120,7 +8275,7 @@ pub const Checker = struct {
                     const obj_id = hir_mod.identifierOf(self.hir, m.object);
                     const key: MemberKey = .{ .obj_name = obj_id.name, .prop_name = m.name };
                     if (self.lookupMemberNarrow(key)) |nt| {
-                        break :blk if (m.optional) self.unionWithUndefined(nt) catch nt else nt;
+                        break :blk try self.optionalChainResult(nt, member_is_optional_chain);
                     }
                     // `const enum E { A = 1 }` — `E.A` should type as
                     // the literal `1`. The checker has already
@@ -8131,7 +8286,7 @@ pub const Checker = struct {
                     // js_emit so `E.A` is rewritten to its literal
                     // value at member access (TS const-enum inlining).
                     if (self.constEnumLiteralAccess(obj_id.name, m.name)) |lit_t| {
-                        break :blk if (m.optional) self.unionWithUndefined(lit_t) catch lit_t else lit_t;
+                        break :blk try self.optionalChainResult(lit_t, member_is_optional_chain);
                     }
                     if (try self.constructorPrototypeAccess(obj_id.name, m.name)) |proto_t| {
                         break :blk proto_t;
@@ -8146,7 +8301,7 @@ pub const Checker = struct {
                 // include `undefined` regardless of whether the
                 // object's static type already does.
                 if (try self.lookupObjectMember(obj_t, m.name)) |t| {
-                    break :blk if (m.optional) self.unionWithUndefined(t) catch t else t;
+                    break :blk try self.optionalChainResult(t, member_is_optional_chain);
                 }
                 // Lib lookup: `string`-typed receivers consult the
                 // hard-coded `String.prototype` shape (`length`,
@@ -8157,7 +8312,7 @@ pub const Checker = struct {
                     if (obj_flags.is_string and !obj_flags.is_object_type) {
                         if (lib.stringProto(&self.lib_cache, self.interner, self.string_interner)) |proto| {
                             if (self.interner.objectMember(proto, m.name)) |t| {
-                                break :blk if (m.optional) self.unionWithUndefined(t) catch t else t;
+                                break :blk try self.optionalChainResult(t, member_is_optional_chain);
                             }
                         } else |_| {}
                     }
@@ -8171,11 +8326,11 @@ pub const Checker = struct {
                     if (num_idx != types.Primitive.none) {
                         if (lib.arrayProto(&self.lib_cache, self.interner, self.string_interner, self.gpa, num_idx)) |proto| {
                             if (self.interner.objectMember(proto, m.name)) |t| {
-                                break :blk if (m.optional) self.unionWithUndefined(t) catch t else t;
+                                break :blk try self.optionalChainResult(t, member_is_optional_chain);
                             }
                         } else |_| {}
                         if (try self.lookupDeclaredArrayMember(num_idx, m.name)) |t| {
-                            break :blk if (m.optional) self.unionWithUndefined(t) catch t else t;
+                            break :blk try self.optionalChainResult(t, member_is_optional_chain);
                         }
                     }
                 }
@@ -8203,7 +8358,7 @@ pub const Checker = struct {
                                 .message = msg,
                             });
                         }
-                        break :blk string_idx;
+                        break :blk try self.optionalChainResult(string_idx, member_is_optional_chain);
                     }
                     // No matching member and no indexer → TS2339.
                     if (self.sourceHasCheckJsDirective() and self.isInAssignmentTargetChain(node)) {
@@ -8228,7 +8383,12 @@ pub const Checker = struct {
             },
             .element_access => blk: {
                 const e = hir_mod.elementOf(self.hir, node);
-                const obj_t = try self.checkExpression(e.object);
+                const element_is_optional_chain = e.optional or self.expressionIsOptionalChain(e.object);
+                const raw_obj_t = try self.checkExpression(e.object);
+                const obj_t = if (element_is_optional_chain)
+                    self.subtractNullUndefined(raw_obj_t) catch raw_obj_t
+                else
+                    raw_obj_t;
                 const idx_t = try self.checkExpression(e.index);
                 // Numeric enum reverse-mapped lookup: `E[n]` where
                 // `E` is a numeric enum yields `string` (the member
@@ -8263,7 +8423,7 @@ pub const Checker = struct {
                             if (k) |key_str| {
                                 const key_id = self.string_interner.intern(key_str) catch 0;
                                 if (key_id != 0) {
-                                    if (self.interner.objectMember(obj_t, key_id)) |t| break :blk t;
+                                    if (self.interner.objectMember(obj_t, key_id)) |t| break :blk try self.optionalChainResult(t, element_is_optional_chain);
                                 }
                             }
                             if (self.fixedTupleLength(obj_t)) |length| {
@@ -8280,7 +8440,7 @@ pub const Checker = struct {
                     if (self.hir.kindOf(e.index) == .literal_string) {
                         const lit = hir_mod.literalStringOf(self.hir, e.index);
                         literal_string_key = lit.value;
-                        if (self.interner.objectMember(obj_t, lit.value)) |t| break :blk t;
+                        if (self.interner.objectMember(obj_t, lit.value)) |t| break :blk try self.optionalChainResult(t, element_is_optional_chain);
                     }
                     if (try self.classMemberNameFromPropertyKey(e.index, true)) |computed_key| {
                         var found_count: usize = 0;
@@ -8290,8 +8450,8 @@ pub const Checker = struct {
                             found_count += 1;
                             found_t = member.type;
                         }
-                        if (found_count > 1) break :blk types.Primitive.any;
-                        if (found_count == 1) break :blk found_t;
+                        if (found_count > 1) break :blk try self.optionalChainResult(types.Primitive.any, element_is_optional_chain);
+                        if (found_count == 1) break :blk try self.optionalChainResult(found_t, element_is_optional_chain);
                     }
                     // Index-signature fallback. With
                     // `noUncheckedIndexedAccess`, widen the result
@@ -8301,15 +8461,15 @@ pub const Checker = struct {
                     const idx_flags = self.interner.pool.flagsOf(idx_t);
                     if (idx_flags.is_string) {
                         const v = self.interner.objectStringIndex(obj_t);
-                        if (v != types.Primitive.none) break :blk self.maybeWidenWithUndefined(v);
+                        if (v != types.Primitive.none) break :blk try self.optionalChainResult(self.maybeWidenWithUndefined(v), element_is_optional_chain);
                     }
                     if (idx_flags.is_number) {
                         const v = self.interner.objectNumberIndex(obj_t);
-                        if (v != types.Primitive.none) break :blk self.maybeWidenWithUndefined(v);
+                        if (v != types.Primitive.none) break :blk try self.optionalChainResult(self.maybeWidenWithUndefined(v), element_is_optional_chain);
                     }
                     if (idx_flags.is_symbol) {
                         const v = self.interner.objectSymbolIndex(obj_t);
-                        if (v != types.Primitive.none) break :blk self.maybeWidenWithUndefined(v);
+                        if (v != types.Primitive.none) break :blk try self.optionalChainResult(self.maybeWidenWithUndefined(v), element_is_optional_chain);
                     }
                     if (literal_string_key) |key_id| {
                         if (self.strict_flags.no_implicit_any and
@@ -8333,7 +8493,7 @@ pub const Checker = struct {
                 if (!try self.computedPropertyKeyTypeIsValid(idx_t)) {
                     try self.report(e.index, TsCodes.type_cannot_be_used_as_index, "Type cannot be used as an index type.");
                 }
-                break :blk types.Primitive.any;
+                break :blk try self.optionalChainResult(types.Primitive.any, element_is_optional_chain);
             },
             .as_expr, .type_assertion => blk: {
                 // `expr as T` / `<T>expr` — type the inner
@@ -8361,7 +8521,13 @@ pub const Checker = struct {
                 const inner_t = try self.checkExpression(a.expr);
                 if (a.type_node == hir_mod.none_node_id) break :blk inner_t;
                 const target_t = try self.lowererLowerWithTypeParams(a.type_node);
-                const ok = self.engine.isAssignableTo(inner_t, target_t) catch false;
+                var ok = self.engine.isAssignableTo(inner_t, target_t) catch false;
+                if (ok and
+                    self.hir.kindOf(a.expr) == .object_literal and
+                    self.objectLiteralNeedsIndexerValidation(target_t))
+                {
+                    ok = self.objectLiteralAssignableToTarget(a.expr, inner_t, target_t) catch false;
+                }
                 if (!ok) {
                     try self.report(node, TsCodes.satisfies_constraint, "Type does not satisfy the expected constraint.");
                 }
@@ -10504,6 +10670,30 @@ pub const Checker = struct {
         return self.lookupNarrow(this_id);
     }
 
+    fn optionalChainResult(self: *Checker, t: TypeId, is_optional_chain: bool) CheckError!TypeId {
+        if (!is_optional_chain) return t;
+        return self.unionWithUndefined(t) catch return error.OutOfMemory;
+    }
+
+    fn expressionIsOptionalChain(self: *Checker, node: NodeId) bool {
+        if (node == hir_mod.none_node_id) return false;
+        return switch (self.hir.kindOf(node)) {
+            .member_access => blk: {
+                const m = hir_mod.memberOf(self.hir, node);
+                break :blk m.optional or self.expressionIsOptionalChain(m.object);
+            },
+            .element_access => blk: {
+                const e = hir_mod.elementOf(self.hir, node);
+                break :blk e.optional or self.expressionIsOptionalChain(e.object);
+            },
+            .call_expr => blk: {
+                const c = hir_mod.callOf(self.hir, node);
+                break :blk c.optional or self.expressionIsOptionalChain(c.callee);
+            },
+            else => false,
+        };
+    }
+
     fn classThisType(self: *Checker, instance_t: TypeId) CheckError!TypeId {
         const this_id = self.string_interner.intern("this") catch return error.OutOfMemory;
         return self.interner.internFreshTypeParameterWithFlags(
@@ -10666,6 +10856,7 @@ pub const Checker = struct {
             }
             return true;
         }
+        if (!self.strict_flags.strict_null_checks and (f.is_null or f.is_undefined)) return true;
         return f.is_number or f.is_bigint;
     }
 
@@ -10851,7 +11042,7 @@ pub const Checker = struct {
             .call_expr, .new_expr, .assignment, .await_expr, .yield_expr => true,
             .unary_op => blk: {
                 const u = hir_mod.unaryOf(self.hir, node);
-                break :blk u.op == .delete;
+                break :blk u.op == .delete or u.op == .void_;
             },
             .binary_op => blk: {
                 const b = hir_mod.binopOf(self.hir, node);
@@ -11012,6 +11203,8 @@ pub const Checker = struct {
                 const operand_kind = self.hir.kindOf(u.operand);
                 if (operand_kind != .member_access and operand_kind != .element_access) {
                     try self.report(u.operand, TsCodes.delete_operand_property_reference, "The operand of a 'delete' operator must be a property reference.");
+                } else if (self.strict_flags.strict_null_checks and !self.deleteOperandAllowed(u.operand)) {
+                    try self.report(u.operand, TsCodes.delete_operand_must_be_optional, "The operand of a 'delete' operator must be optional.");
                 }
                 break :blk types.Primitive.boolean_t;
             },
@@ -12280,6 +12473,19 @@ pub const Checker = struct {
         }
         if (!flags.is_object_type) return false;
         if (!self.interner.pool.flagsOf(arg_t).is_object_type) return false;
+        const string_idx = self.interner.objectStringIndex(target_t);
+        if (string_idx != types.Primitive.none) {
+            for (self.interner.objectMembers(arg_t)) |am| {
+                if (!(self.engine.isAssignableTo(am.type, string_idx) catch false)) return false;
+            }
+        }
+        const number_idx = self.interner.objectNumberIndex(target_t);
+        if (number_idx != types.Primitive.none) {
+            for (self.interner.objectMembers(arg_t)) |am| {
+                if (!self.isNumericPropertyName(am.name)) continue;
+                if (!(self.engine.isAssignableTo(am.type, number_idx) catch false)) return false;
+            }
+        }
         for (self.interner.objectMembers(target_t)) |tm| {
             const am_t = self.interner.objectMember(arg_t, tm.name) orelse {
                 if (tm.is_optional) continue;
@@ -12300,6 +12506,36 @@ pub const Checker = struct {
             }
             if (!try self.engine.isAssignableTo(am_t, tm.type)) return false;
         }
+        return true;
+    }
+
+    fn objectLiteralNeedsIndexerValidation(self: *Checker, target_t: TypeId) bool {
+        if (target_t < types.Primitive.first_dynamic or target_t >= self.interner.pool.typeCount()) return false;
+        const flags = self.interner.pool.flagsOf(target_t);
+        if (flags.is_union) {
+            for (self.interner.unionMembers(target_t)) |member| {
+                if (self.objectLiteralNeedsIndexerValidation(member)) return true;
+            }
+            return false;
+        }
+        if (flags.is_intersection) {
+            for (self.interner.intersectionMembers(target_t)) |member| {
+                if (self.objectLiteralNeedsIndexerValidation(member)) return true;
+            }
+            return false;
+        }
+        if (!flags.is_object_type) return false;
+        const string_idx = self.interner.objectStringIndex(target_t);
+        if (string_idx != types.Primitive.none and self.indexerTypeNeedsLiteralValidation(string_idx)) return true;
+        const number_idx = self.interner.objectNumberIndex(target_t);
+        return number_idx != types.Primitive.none and self.indexerTypeNeedsLiteralValidation(number_idx);
+    }
+
+    fn indexerTypeNeedsLiteralValidation(self: *Checker, t: TypeId) bool {
+        if (self.typeIsAnyLike(t)) return false;
+        const flags = self.interner.pool.flagsOf(t);
+        if (flags.is_signature) return false;
+        if (flags.is_object_type and self.interner.objectMembers(t).len == 0) return false;
         return true;
     }
 
@@ -12928,6 +13164,35 @@ pub const Checker = struct {
                 try self.checkExcessProperties(op.value, declared_member_t.?);
             }
         }
+    }
+
+    fn checkArrayLiteralContextualElements(self: *Checker, init_node: NodeId, declared_t: TypeId) CheckError!void {
+        if (init_node == hir_mod.none_node_id) return;
+        if (self.hir.kindOf(init_node) != .array_literal) return;
+        const elem_t = try self.contextualArrayElementType(declared_t);
+        if (elem_t == types.Primitive.none) return;
+        for (hir_mod.arrayLiteralElements(self.hir, init_node)) |el| {
+            if (el == hir_mod.none_node_id) continue;
+            try self.checkExcessProperties(el, elem_t);
+            try self.checkArrayLiteralContextualElements(el, elem_t);
+        }
+    }
+
+    fn contextualArrayElementType(self: *Checker, t: TypeId) CheckError!TypeId {
+        const flags = self.interner.pool.flagsOf(t);
+        if (flags.is_union) {
+            var elems: std.ArrayListUnmanaged(TypeId) = .empty;
+            defer elems.deinit(self.gpa);
+            for (self.interner.unionMembers(t)) |member| {
+                const elem = try self.contextualArrayElementType(member);
+                if (elem != types.Primitive.none) try elems.append(self.gpa, elem);
+            }
+            if (elems.items.len == 0) return types.Primitive.none;
+            if (elems.items.len == 1) return elems.items[0];
+            return self.interner.internUnion(elems.items) catch return error.OutOfMemory;
+        }
+        if (!flags.is_object_type) return types.Primitive.none;
+        return self.interner.objectNumberIndex(t);
     }
 
     fn objectTargetHasStringIndex(self: *Checker, t: TypeId) CheckError!bool {
