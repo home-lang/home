@@ -80,11 +80,13 @@ pub const Parser = struct {
     function_depth: u32,
     async_function_depth: u32,
     generator_depth: u32,
+    new_target_depth: u32,
     static_block_depth: u32,
     loop_depth: u32,
     loop_switch_depth: u32,
     namespace_depth: u32,
     strict_mode: bool,
+    target_es2015_or_later: bool,
     suppress_strict_param_names: bool,
     top_level_external_module_indicator: bool,
     in_top_level_module_binding_decl: bool,
@@ -123,11 +125,13 @@ pub const Parser = struct {
             .function_depth = 0,
             .async_function_depth = 0,
             .generator_depth = 0,
+            .new_target_depth = 0,
             .static_block_depth = 0,
             .loop_depth = 0,
             .loop_switch_depth = 0,
             .namespace_depth = 0,
             .strict_mode = false,
+            .target_es2015_or_later = false,
             .suppress_strict_param_names = false,
             .top_level_external_module_indicator = false,
             .in_top_level_module_binding_decl = false,
@@ -139,6 +143,14 @@ pub const Parser = struct {
     /// for `.tsx` source files).
     pub fn setTsx(self: *Parser, enabled: bool) void {
         self.is_tsx = enabled;
+    }
+
+    pub fn setStrictMode(self: *Parser, enabled: bool) void {
+        self.strict_mode = enabled;
+    }
+
+    pub fn setTargetEs2015OrLater(self: *Parser, enabled: bool) void {
+        self.target_es2015_or_later = enabled;
     }
 
     pub fn deinit(self: *Parser) void {
@@ -257,6 +269,15 @@ pub const Parser = struct {
             .code = code,
             .message = msg,
         });
+    }
+
+    fn lineAt(self: *const Parser, pos: u32) u32 {
+        const end = @min(@as(usize, @intCast(pos)), self.source.len);
+        var line: u32 = 1;
+        for (self.source[0..end]) |ch| {
+            if (ch == '\n') line += 1;
+        }
+        return line;
     }
 
     fn reportAwaitBindingIfReserved(self: *Parser, tok: Token) ParseError!void {
@@ -642,6 +663,15 @@ pub const Parser = struct {
         });
     }
 
+    fn isYieldReservedName(self: *const Parser, tok: Token) bool {
+        return (self.strict_mode or self.target_es2015_or_later) and self.tokenTextEquals(tok, "yield");
+    }
+
+    fn reportInvalidYieldName(self: *Parser, tok: Token) ParseError!void {
+        if (!self.isYieldReservedName(tok)) return;
+        try self.reportCodeAt(tok.span.start, tok.line, 1212, "Identifier expected. 'yield' is a reserved word in strict mode.");
+    }
+
     fn reportInvalidStrictIdentifierNode(self: *Parser, node: NodeId) ParseError!void {
         if (!self.strict_mode or self.hir.kindOf(node) != .identifier) return;
         const id = hir_mod.identifierOf(self.hir, node);
@@ -749,6 +779,7 @@ pub const Parser = struct {
                 break :blk try self.parseBindingPattern();
             } else blk: {
                 const name_tok = try self.expectIdentifierLike();
+                try self.reportInvalidStrictName(name_tok);
                 const name_id = try self.internToken(name_tok);
                 break :blk try self.builder.addIdentifier(tokenSpan(name_tok), name_id);
             };
@@ -1007,6 +1038,7 @@ pub const Parser = struct {
         if (self.peek().kind == .identifier or self.peek().kind.isContextualKeyword()) {
             const name_tok = self.advance();
             try self.reportInvalidStrictName(name_tok);
+            try self.reportInvalidYieldName(name_tok);
             const name_id = try self.internToken(name_tok);
             name = try self.builder.addIdentifier(tokenSpan(name_tok), name_id);
         }
@@ -1027,7 +1059,9 @@ pub const Parser = struct {
         var body: NodeId = hir_mod.none_node_id;
         if (self.peek().kind == .open_brace) {
             self.function_depth += 1;
+            self.new_target_depth += 1;
             defer self.function_depth -= 1;
+            defer self.new_target_depth -= 1;
             const prev_generator_depth = self.generator_depth;
             self.generator_depth = if (is_generator) prev_generator_depth + 1 else 0;
             defer self.generator_depth = prev_generator_depth;
@@ -1162,6 +1196,7 @@ pub const Parser = struct {
                 } else id_blk: {
                     const name_tok = try self.expectIdentifierLike();
                     if (!self.suppress_strict_param_names) try self.reportInvalidStrictName(name_tok);
+                    try self.reportInvalidYieldName(name_tok);
                     const name_id = try self.internToken(name_tok);
                     break :id_blk try self.builder.addIdentifier(tokenSpan(name_tok), name_id);
                 };
@@ -1248,6 +1283,7 @@ pub const Parser = struct {
                         try self.report("expected ", "':' after literal binding key");
                         return error.UnexpectedToken;
                     }
+                    try self.reportInvalidStrictName(key_tok);
                     try self.reportReservedBindingNameIfNeeded(key_tok);
                     const name_id = try self.internToken(key_tok);
                     break :blk try self.builder.addIdentifier(tokenSpan(key_tok), name_id);
@@ -1302,6 +1338,7 @@ pub const Parser = struct {
             return try self.parseBindingPattern();
         }
         const name_tok = try self.expectIdentifierLike();
+        try self.reportInvalidStrictName(name_tok);
         try self.reportAwaitBindingIfReserved(name_tok);
         try self.reportReservedBindingNameIfNeeded(name_tok);
         const name_id = try self.internToken(name_tok);
@@ -1552,6 +1589,11 @@ pub const Parser = struct {
                         const prev_generator_depth = self.generator_depth;
                         self.generator_depth = if (is_generator) prev_generator_depth + 1 else 0;
                         defer self.generator_depth = prev_generator_depth;
+                        const is_constructor_body = name_tok.kind == .kw_constructor;
+                        if (is_constructor_body) self.new_target_depth += 1;
+                        defer {
+                            if (is_constructor_body) self.new_target_depth -= 1;
+                        }
                         body = try self.parseBlockStatement();
                         try self.reportAmbientClassImplementation(member_start);
                     } else {
@@ -2489,6 +2531,7 @@ pub const Parser = struct {
             break :blk try self.parseBindingPattern();
         } else id_blk: {
             const name_tok = try self.expectIdentifierLike();
+            try self.reportInvalidStrictName(name_tok);
             try self.reportAwaitBindingIfReserved(name_tok);
             const name_id = try self.internToken(name_tok);
             break :id_blk try self.builder.addIdentifier(tokenSpan(name_tok), name_id);
@@ -2513,6 +2556,7 @@ pub const Parser = struct {
                 break :blk try self.parseBindingPattern();
             } else id_blk: {
                 const name_tok = try self.expectIdentifierLike();
+                try self.reportInvalidStrictName(name_tok);
                 try self.reportAwaitBindingIfReserved(name_tok);
                 const name_id = try self.internToken(name_tok);
                 break :id_blk try self.builder.addIdentifier(tokenSpan(name_tok), name_id);
@@ -3024,6 +3068,12 @@ pub const Parser = struct {
                 const id = self.interner.intern("unknown") catch return error.OutOfMemory;
                 break :blk try self.builder.addTypeRef(tokenSpan(t), id, &.{}, &.{});
             },
+            .kw_yield => blk: {
+                const yield_tok = self.advance();
+                try self.reportInvalidYieldName(yield_tok);
+                const id = try self.internToken(yield_tok);
+                break :blk try self.builder.addTypeRef(tokenSpan(yield_tok), id, &.{}, &.{});
+            },
             .identifier => try self.parseTypeReference(),
             .kw_public, .kw_private, .kw_protected => blk: {
                 const bad = self.advance();
@@ -3071,14 +3121,25 @@ pub const Parser = struct {
         while (i < self.tokens.len) : (i += 1) {
             const tk = self.tokens[i].kind;
             if (tk == .open_paren or tk == .open_bracket or tk == .open_brace or tk == .less_than) depth += 1;
-            if (tk == .close_paren or tk == .close_bracket or tk == .close_brace or tk == .greater_than) {
-                depth -= 1;
-                if (depth == 0) {
-                    if (i + 1 < self.tokens.len and self.tokens[i + 1].kind == .arrow) {
-                        is_fn = true;
+            if (tk == .close_paren or tk == .close_bracket or tk == .close_brace or
+                tk == .greater_than or tk == .greater_greater or tk == .greater_greater_greater)
+            {
+                const count: u8 = switch (tk) {
+                    .greater_greater => 2,
+                    .greater_greater_greater => 3,
+                    else => 1,
+                };
+                var n: u8 = 0;
+                while (n < count) : (n += 1) {
+                    depth -= 1;
+                    if (depth == 0) {
+                        if (i + 1 < self.tokens.len and self.tokens[i + 1].kind == .arrow) {
+                            is_fn = true;
+                        }
+                        break;
                     }
-                    break;
                 }
+                if (depth == 0) break;
             }
             if (tk == .eof) break;
         }
@@ -3127,6 +3188,7 @@ pub const Parser = struct {
                     name_id = try self.internToken(name_tok);
                 } else {
                     type_ann = try self.parseTypeAnnotation();
+                    try self.reportUnusedRenamesInFnTypeParam(type_ann);
                     var buf: [32]u8 = undefined;
                     const synthetic = std.fmt.bufPrint(&buf, "__arg{d}", .{params.items.len}) catch
                         return error.OutOfMemory;
@@ -3147,6 +3209,41 @@ pub const Parser = struct {
         }
         _ = try self.expect(.close_paren, "')' to close fn-type params");
         return try params.toOwnedSlice(self.gpa);
+    }
+
+    fn reportUnusedRenamesInFnTypeParam(self: *Parser, node: NodeId) ParseError!void {
+        if (node == hir_mod.none_node_id) return;
+        switch (self.hir.kindOf(node)) {
+            .tuple_type => for (hir_mod.tupleTypeElements(self.hir, node)) |elem| {
+                try self.reportUnusedRenamesInFnTypeParam(elem);
+            },
+            .array_type => try self.reportUnusedRenamesInFnTypeParam(hir_mod.arrayTypeOf(self.hir, node).element),
+            .rest_type => try self.reportUnusedRenamesInFnTypeParam(hir_mod.restTypeOf(self.hir, node).operand),
+            .object_type => for (hir_mod.objectTypeMembers(self.hir, node)) |member| {
+                if (self.hir.kindOf(member) != .interface_member) continue;
+                const im = hir_mod.interfaceMemberOf(self.hir, member);
+                if (im.type_node == hir_mod.none_node_id or self.hir.kindOf(im.type_node) != .type_ref) continue;
+                const tr = hir_mod.typeRefOf(self.hir, im.type_node);
+                if (tr.name == im.name) continue;
+                if (hir_mod.typeRefArgs(self.hir, im.type_node).len != 0 or
+                    hir_mod.typeRefQualifier(self.hir, im.type_node).len != 0) continue;
+                const from = self.interner.get(im.name);
+                const to = self.interner.get(tr.name);
+                if (to.len == 0 or !std.ascii.isLower(to[0])) continue;
+                const msg = try std.fmt.allocPrint(
+                    self.diag_arena.allocator(),
+                    "'{s}' is an unused renaming of '{s}'. Did you intend to use it as a type annotation?",
+                    .{ to, from },
+                );
+                try self.diagnostics.append(self.gpa, .{
+                    .pos = self.hir.spanOf(im.type_node).start,
+                    .line = self.lineAt(self.hir.spanOf(im.type_node).start),
+                    .code = 2842,
+                    .message = msg,
+                });
+            },
+            else => {},
+        }
     }
 
     /// Parse a template-literal type: `\`a${T}b${U}c\``. Cursor at
@@ -3821,6 +3918,10 @@ pub const Parser = struct {
         // Single-ident arrow: `x => …`
         if (isExpressionIdentifierToken(self.peek().kind) and self.peekAt(1).kind == .arrow) {
             const name_tok = self.advance();
+            const arrow_tok = self.peek();
+            if (arrow_tok.flags.preceded_by_newline) {
+                try self.reportCodeAt(arrow_tok.span.start, arrow_tok.line, 1200, "Line terminator not permitted before arrow.");
+            }
             _ = self.advance(); // `=>`
             const name_id = try self.internToken(name_tok);
             const ident = try self.builder.addIdentifier(tokenSpan(name_tok), name_id);
@@ -3941,6 +4042,10 @@ pub const Parser = struct {
         var return_type: NodeId = hir_mod.none_node_id;
         if (self.match(.colon)) {
             return_type = try self.parseReturnTypeAnnotation(params);
+        }
+        if (self.peek().kind == .arrow and self.peek().flags.preceded_by_newline) {
+            const arrow_tok = self.peek();
+            try self.reportCodeAt(arrow_tok.span.start, arrow_tok.line, 1200, "Line terminator not permitted before arrow.");
         }
         _ = try self.expect(.arrow, "'=>' in arrow function");
         self.function_depth += 1;
@@ -4511,6 +4616,12 @@ pub const Parser = struct {
             switch (t.kind) {
                 .dot => {
                     _ = self.advance();
+                    if (self.hir.kindOf(node) == .literal_number and
+                        self.peek().kind == .dot and
+                        (self.peekAt(1).kind == .identifier or self.peekAt(1).kind.isContextualKeyword()))
+                    {
+                        _ = self.advance();
+                    }
                     const name_tok = try self.expectIdentifierLike();
                     const name_id = try self.internToken(name_tok);
                     const sp: Span = .{ .start = self.hir.spanOf(node).start, .end = name_tok.span.end };
@@ -4536,6 +4647,12 @@ pub const Parser = struct {
             switch (t.kind) {
                 .dot => {
                     _ = self.advance();
+                    if (self.hir.kindOf(node) == .literal_number and
+                        self.peek().kind == .dot and
+                        (self.peekAt(1).kind == .identifier or self.peekAt(1).kind.isContextualKeyword()))
+                    {
+                        _ = self.advance();
+                    }
                     const name_tok = try self.expectIdentifierLike();
                     const name_id = try self.internToken(name_tok);
                     const sp: Span = .{ .start = self.hir.spanOf(node).start, .end = name_tok.span.end };
@@ -4899,6 +5016,19 @@ pub const Parser = struct {
                 return try self.builder.addIdentifier(tokenSpan(t), super_id);
             },
             .kw_new => {
+                if (self.peekAt(1).kind == .dot and
+                    (self.peekAt(2).kind == .identifier or self.peekAt(2).kind.isContextualKeyword()) and
+                    self.tokenTextEquals(self.peekAt(2), "target"))
+                {
+                    const new_tok = self.advance();
+                    _ = self.advance(); // dot
+                    const target_tok = self.advance();
+                    if (self.new_target_depth == 0) {
+                        try self.reportCodeAt(new_tok.span.start, new_tok.line, 17013, "Meta-property 'new.target' is only allowed in the body of a function declaration, function expression, or constructor.");
+                    }
+                    const id = self.interner.intern("new.target") catch return error.OutOfMemory;
+                    return try self.builder.addIdentifier(.{ .start = new_tok.span.start, .end = target_tok.span.end }, id);
+                }
                 _ = self.advance();
                 // Lowered as a dedicated `new_expr` so the checker can
                 // produce the class instance type rather than the
@@ -6935,6 +7065,20 @@ test "parser: new expression" {
     try T.expectEqual(@as(usize, 2), args.len);
 }
 
+test "parser: new.target is accepted in functions and rejected at top level" {
+    var s = try newTestSetup(
+        \\function f() { return new.target; }
+        \\const x = new.target;
+    );
+    defer destroyTestSetup(s);
+    _ = try s.parser.parseSourceFile();
+    var found = false;
+    for (s.parser.diagnostics.items) |d| {
+        if (d.code == 17013) found = true;
+    }
+    try T.expect(found);
+}
+
 test "parser: type assertion records union and intersection assertion types" {
     var s = try newTestSetup("let x = <A & B>value; let y = <A | B>value;");
     defer destroyTestSetup(s);
@@ -8094,6 +8238,23 @@ test "parser: yield can be a generator function expression name" {
 
     _ = try s.parser.parseSourceFile();
     try T.expectEqual(@as(usize, 0), s.parser.diagnostics.items.len);
+}
+
+test "parser: ES2015 target reserves yield in function names, params, and types" {
+    var s = try newTestSetup(
+        \\function yield() {}
+        \\function f(yield) {}
+        \\function * g() { var v: yield; }
+    );
+    defer destroyTestSetup(s);
+
+    s.parser.setTargetEs2015OrLater(true);
+    _ = try s.parser.parseSourceFile();
+    var count_1212: usize = 0;
+    for (s.parser.diagnostics.items) |d| {
+        if (d.code == 1212) count_1212 += 1;
+    }
+    try T.expect(count_1212 >= 3);
 }
 
 test "parser: yield operand can be an arrow expression" {

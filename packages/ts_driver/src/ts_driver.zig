@@ -103,6 +103,12 @@ pub const CompileOptions = struct {
     no_emit: bool = false,
     /// Treat the source as `.tsx` — enables JSX parsing.
     is_tsx: bool = false,
+    /// Compiler option `alwaysStrict`: parse the file under strict-mode
+    /// early-error rules even when it has no `"use strict"` prologue.
+    always_strict: bool = false,
+    /// True when the parser should apply ES2015+ contextual-reserved
+    /// word rules such as rejecting `yield` as a binding/function name.
+    syntax_target_es2015: bool = false,
     /// CLI `--strict` override. When null, defer to tsconfig or the
     /// tsc default (`false`).
     strict: ?bool = null,
@@ -159,6 +165,10 @@ pub fn optionsFromConfig(cfg: *const tsconfig_mod.TsConfig) CompileOptions {
             .es2022 => .es2022,
             .es2023 => .es2023,
             .es2024, .esnext => .esnext,
+        };
+        opts.syntax_target_es2015 = switch (t) {
+            .es3, .es5 => false,
+            else => true,
         };
     }
     if (cfg.compiler_options.module) |m| {
@@ -327,6 +337,8 @@ pub fn compileSource(
     // ------ Parse ------
     var parser = ts_parser.Parser.init(gpa, &c.hir, &c.interner, source, c.tokens.items);
     parser.setTsx(options.is_tsx);
+    parser.setStrictMode(options.always_strict);
+    parser.setTargetEs2015OrLater(options.syntax_target_es2015);
     defer parser.deinit();
 
     c.root = parser.parseSourceFile() catch |err| switch (err) {
@@ -560,6 +572,19 @@ test "driver: simple let binding round-trips" {
     // Symbol table is populated.
     const sym = c.lookupTopLevel("x") orelse return error.NoSymbol;
     try T.expect(sym.flags.is_let);
+}
+
+test "driver: alwaysStrict enables strict parser early errors" {
+    var c = try compileSource(T.allocator, "function f(arguments) {}", .{ .always_strict = true, .no_emit = true });
+    defer {
+        c.deinit();
+        T.allocator.destroy(c);
+    }
+    var found = false;
+    for (c.diagnostics.items) |d| {
+        if (d.code == 1100) found = true;
+    }
+    try T.expect(found);
 }
 
 test "driver: type annotations erase in JS output" {

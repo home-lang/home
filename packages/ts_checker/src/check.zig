@@ -66,13 +66,23 @@ pub const TsCodes = struct {
     pub const cannot_find_module: u32 = 2307;
     pub const destructuring_decl_must_have_initializer: u32 = 1182;
     pub const rest_element_cannot_have_initializer: u32 = 1186;
+    pub const object_literal_duplicate_property: u32 = 1117;
     pub const type_not_assignable: u32 = 2322;
     pub const super_not_derived: u32 = 2335;
     pub const property_does_not_exist: u32 = 2339;
     pub const argument_type_mismatch: u32 = 2345;
     pub const conversion_may_be_mistake: u32 = 2352;
+    pub const new_expression_not_void: u32 = 2350;
+    pub const instanceof_left_type: u32 = 2358;
+    pub const instanceof_right_type: u32 = 2359;
+    pub const arithmetic_operand_type: u32 = 2356;
+    pub const arithmetic_left_operand_type: u32 = 2362;
+    pub const arithmetic_right_operand_type: u32 = 2363;
     pub const parameter_cannot_reference_self: u32 = 2372;
     pub const parameter_cannot_reference_later: u32 = 2373;
+    pub const duplicate_function_implementation: u32 = 2393;
+    pub const for_in_left_type: u32 = 2405;
+    pub const for_in_right_type: u32 = 2407;
     pub const subsequent_var_type_mismatch: u32 = 2403;
     pub const interface_incorrectly_extends: u32 = 2430;
     pub const property_not_assignable_to_base: u32 = 2416;
@@ -83,6 +93,7 @@ pub const TsCodes = struct {
     pub const tuple_index_out_of_bounds: u32 = 2493;
     pub const object_possibly_undefined: u32 = 2532;
     pub const expected_n_arguments: u32 = 2554;
+    pub const spread_argument_requires_tuple_or_rest: u32 = 2556;
     pub const expected_n_type_arguments: u32 = 2558;
     pub const multiple_default_exports: u32 = 2528;
     pub const export_non_local_declaration: u32 = 2661;
@@ -101,6 +112,7 @@ pub const TsCodes = struct {
     pub const parameter_implicitly_any: u32 = 7006;
     pub const variable_implicitly_any: u32 = 7005;
     pub const member_implicitly_any: u32 = 7008;
+    pub const element_implicitly_any: u32 = 7053;
     pub const declared_but_not_read: u32 = 6133;
     pub const object_literal_excess_property: u32 = 2353;
     pub const satisfies_constraint: u32 = 1360;
@@ -111,8 +123,10 @@ pub const TsCodes = struct {
     pub const await_only_in_async: u32 = 1308;
     pub const generator_void_return: u32 = 2505;
     pub const yield_star_not_iterable: u32 = 2488;
+    pub const symbol_operator_not_allowed: u32 = 2469;
     pub const yield_implicit_any: u32 = 7057;
     pub const no_overlap_comparison: u32 = 2367;
+    pub const expression_always_truthy: u32 = 2872;
     /// Emitted when `// @ts-expect-error` was placed above a line
     /// that produced no diagnostics — the directive is unused.
     pub const unused_ts_expect_error: u32 = 2578;
@@ -421,6 +435,11 @@ pub const Checker = struct {
     /// TS2403 same-name/same-type rule without conflating unrelated
     /// block/function scopes.
     var_decl_types: std.AutoHashMapUnmanaged(VarDeclKey, TypeId),
+    /// Reentrancy guard while synthesizing the global `Symbol` value.
+    /// `interface SymbolConstructor` augmentations may mention `Symbol`
+    /// in their member types; those nested lookups should see the base
+    /// lib shape instead of recursively expanding the same augmentation.
+    symbol_global_building: bool = false,
     /// Strictness flags driving optional diagnostics.
     strict_flags: StrictFlags = .{},
     /// Hard-coded `lib.d.ts` substitute — `String.prototype`,
@@ -488,6 +507,7 @@ pub const Checker = struct {
             .rest_signatures = .empty,
             .enum_member_values = .empty,
             .var_decl_types = .empty,
+            .symbol_global_building = false,
             .diagnostics = .empty,
             .diag_arena = std.heap.ArenaAllocator.init(gpa),
         };
@@ -819,7 +839,23 @@ pub const Checker = struct {
                 // `for (let k in obj)` — `k` types to `string`
                 // regardless of `obj`'s shape (matches tsc).
                 const fr = hir_mod.forInOf(self.hir, node);
-                _ = try self.checkExpression(fr.source);
+                const src_t = try self.checkExpression(fr.source);
+                if (self.typeContainsSymbol(src_t)) {
+                    try self.report(fr.source, TsCodes.for_in_right_type, "The right-hand side of a 'for...in' statement must be of type 'any', an object type or a type parameter, but here has type 'symbol'.");
+                }
+                if (fr.target != hir_mod.none_node_id and self.hir.kindOf(fr.target) == .identifier) {
+                    const target_id = hir_mod.identifierOf(self.hir, fr.target);
+                    var has_prior_binding = self.localValueDeclExistsBefore(node, target_id.name);
+                    if (!has_prior_binding) {
+                        if (self.module) |module| has_prior_binding = module.root.lookup(target_id.name) != null;
+                    }
+                    if (has_prior_binding) {
+                        const target_t = try self.checkExpression(fr.target);
+                        if (self.typeContainsSymbol(target_t)) {
+                            try self.report(fr.target, TsCodes.for_in_left_type, "The left-hand side of a 'for...in' statement must be of type 'string' or 'any'.");
+                        }
+                    }
+                }
                 try self.bindForLoopTarget(fr.target, types.Primitive.string_t);
                 try self.checkStatement(fr.body);
             },
@@ -1247,6 +1283,7 @@ pub const Checker = struct {
         if (self.hir.kindOf(f.body) == .block_stmt) {
             const stmts = hir_mod.blockStmts(self.hir, f.body);
             try self.hoistVarBindings(f.body);
+            try self.precheckFunctionSignatures(stmts);
             for (stmts) |s| {
                 try self.checkStatement(s);
                 try self.applyAssertionFlow(s);
@@ -1328,6 +1365,17 @@ pub const Checker = struct {
         }
         try self.checkUnusedParameters(node, f.body);
         try self.checkUnusedLocals(f.body);
+    }
+
+    fn precheckFunctionSignatures(self: *Checker, stmts: []const NodeId) CheckError!void {
+        for (stmts) |raw| {
+            const s = self.unwrapExportDecl(raw);
+            if (s == hir_mod.none_node_id) continue;
+            const k = self.hir.kindOf(s);
+            if (k != .fn_decl and k != .fn_expr) continue;
+            if (self.hir.typeOf(s) != types.Primitive.none) continue;
+            try self.checkFnSignatureOnlyNoBody(s);
+        }
     }
 
     fn hoistVarBindings(self: *Checker, node: NodeId) CheckError!void {
@@ -1738,6 +1786,10 @@ pub const Checker = struct {
                 for (hir_mod.arrayLiteralElements(self.hir, node)) |el| {
                     try self.scanExprForUsedBeforeAssign(el, pending);
                 }
+            },
+            .spread => {
+                const sp = hir_mod.spreadOf(self.hir, node);
+                try self.scanExprForUsedBeforeAssign(sp.expression, pending);
             },
             .call_expr, .new_expr => {
                 const c = hir_mod.callOf(self.hir, node);
@@ -2821,8 +2873,12 @@ pub const Checker = struct {
         if (t >= self.interner.pool.typeCount()) return false;
         if (!self.interner.pool.flagsOf(t).is_object_type) return false;
         const symbol_iterator = self.string_interner.intern("Symbol.iterator") catch return false;
-        if (self.interner.objectMember(t, symbol_iterator) != null) return true;
-        return self.interner.objectNumberIndex(t) != types.Primitive.none;
+        if (self.interner.objectNumberIndex(t) != types.Primitive.none) return true;
+        if (self.interner.objectMember(t, symbol_iterator) != null) {
+            const next_id = self.string_interner.intern("next") catch return false;
+            return self.interner.objectMember(t, next_id) != null;
+        }
+        return false;
     }
 
     fn iterableElementType(self: *Checker, t: TypeId) CheckError!TypeId {
@@ -4093,8 +4149,10 @@ pub const Checker = struct {
                 if (self.hir.kindOf(m.object) != .identifier) break :blk null;
                 const obj = hir_mod.identifierOf(self.hir, m.object);
                 if (!std.mem.eql(u8, self.string_interner.get(obj.name), "Symbol")) break :blk null;
-                if (!std.mem.eql(u8, self.string_interner.get(m.name), "iterator")) break :blk null;
-                break :blk self.string_interner.intern("Symbol.iterator") catch return error.OutOfMemory;
+                const prop = self.string_interner.get(m.name);
+                const synthetic = try std.fmt.allocPrint(self.gpa, "Symbol.{s}", .{prop});
+                defer self.gpa.free(synthetic);
+                break :blk self.string_interner.intern(synthetic) catch return error.OutOfMemory;
             },
             else => null,
         };
@@ -6582,6 +6640,24 @@ pub const Checker = struct {
                     try self.checkReadonlyAssignment(a.target);
                 }
                 const value_t = try self.checkExpression(a.value);
+                if (a.op) |op| {
+                    switch (op) {
+                        .add => {
+                            if (self.typeContainsSymbol(target_t) or self.typeContainsSymbol(value_t)) {
+                                try self.reportSymbolOperator(node, "+");
+                            }
+                        },
+                        .sub, .mul, .div, .mod, .pow, .bit_and, .bit_or, .bit_xor, .shl, .shr, .shr_unsigned => {
+                            if (self.typeContainsSymbol(target_t)) {
+                                try self.reportArithmeticOperand(a.target, TsCodes.arithmetic_left_operand_type, "The left-hand side of an arithmetic operation must be of type 'any', 'number', 'bigint' or an enum type.");
+                            }
+                            if (self.typeContainsSymbol(value_t)) {
+                                try self.reportArithmeticOperand(a.value, TsCodes.arithmetic_right_operand_type, "The right-hand side of an arithmetic operation must be of type 'any', 'number', 'bigint' or an enum type.");
+                            }
+                        },
+                        else => {},
+                    }
+                }
                 if (a.op == null and self.hir.kindOf(a.target) == .array_literal) {
                     try self.checkArrayDestructuringAssignment(a.target, value_t);
                 }
@@ -6618,6 +6694,9 @@ pub const Checker = struct {
                 // `any`.
                 if (self.hir.kindOf(c.callee) == .identifier) {
                     const id = hir_mod.identifierOf(self.hir, c.callee);
+                    if (std.mem.eql(u8, self.string_interner.get(id.name), "Symbol")) {
+                        try self.report(node, TsCodes.new_expression_not_void, "Only a void function can be called with the 'new' keyword.");
+                    }
                     if (self.abstract_classes.contains(id.name)) {
                         try self.report(
                             node,
@@ -6626,7 +6705,14 @@ pub const Checker = struct {
                         );
                     }
                     if (self.class_constructor_sigs.get(id.name)) |ctor_sig| {
-                        try self.checkArgsAgainstSignature(node, args, arg_types.items, ctor_sig);
+                        var effective_ctor_sig = ctor_sig;
+                        var ctor_subs: std.AutoHashMapUnmanaged(TypeId, TypeId) = .empty;
+                        defer ctor_subs.deinit(self.gpa);
+                        try self.inferCallSubstitutions(ctor_sig, args, arg_types.items, &ctor_subs);
+                        if (ctor_subs.count() > 0) {
+                            effective_ctor_sig = self.substituteType(ctor_sig, &ctor_subs) catch ctor_sig;
+                        }
+                        try self.checkArgsAgainstSignature(node, args, arg_types.items, effective_ctor_sig);
                     }
                     if (self.class_instance_types.get(id.name)) |inst| {
                         const type_arg_nodes = hir_mod.callTypeArgs(self.hir, node);
@@ -6663,6 +6749,9 @@ pub const Checker = struct {
                     const id = hir_mod.identifierOf(self.hir, c.callee);
                     if (std.mem.eql(u8, self.string_interner.get(id.name), "super") and self.lookupNarrow(id.name) == null) {
                         try self.report(c.callee, TsCodes.super_not_derived, "'super' can only be referenced in a derived class.");
+                    }
+                    if (std.mem.eql(u8, self.string_interner.get(id.name), "Symbol")) {
+                        break :blk types.Primitive.symbol_t;
                     }
                 }
                 const args = hir_mod.callArgs(self.hir, node);
@@ -6763,12 +6852,37 @@ pub const Checker = struct {
                         const param_ts = self.interner.signatureParams(effective_callee_t);
                         var call_subs: std.AutoHashMapUnmanaged(TypeId, TypeId) = .empty;
                         defer call_subs.deinit(self.gpa);
-                        const skip_bare_generic_rest_inference =
-                            self.rest_signatures.contains(effective_callee_t) and
-                            param_ts.len == 1 and
-                            param_ts[0] < self.interner.pool.typeCount() and
-                            self.interner.pool.flagsOf(param_ts[0]).is_type_parameter;
-                        if (!skip_bare_generic_rest_inference) {
+                        if (self.rest_signatures.contains(effective_callee_t) and param_ts.len > 0) {
+                            const fixed_count: usize = param_ts.len - 1;
+                            const n = @min(fixed_count, arg_types.items.len);
+                            for (0..n) |i| {
+                                if (self.interner.pool.flagsOf(param_ts[i]).is_signature) continue;
+                                try self.inferFromArgument(param_ts[i], arg_types.items[i], args[i], &call_subs);
+                            }
+                            const rest_arr_t = param_ts[param_ts.len - 1];
+                            if (rest_arr_t < self.interner.pool.typeCount() and self.interner.pool.flagsOf(rest_arr_t).is_type_parameter) {
+                                // A bare generic rest tuple (`...args: T`)
+                                // must infer from the whole argument list.
+                                // Until variadic tuple concatenation is
+                                // modeled, avoid binding T from just the
+                                // first rest argument, which would make
+                                // `f(1, ...tail)` check every later rest
+                                // element against `number`.
+                            } else {
+                            const rest_elem_t = self.interner.objectNumberIndex(rest_arr_t);
+                            const rest_target_t = if (rest_elem_t != types.Primitive.none) rest_elem_t else rest_arr_t;
+                            if (rest_target_t < self.interner.pool.typeCount()) {
+                                var j: usize = fixed_count;
+                                while (j < arg_types.items.len) : (j += 1) {
+                                    var candidate_t = arg_types.items[j];
+                                    if (self.hir.kindOf(args[j]) == .spread) {
+                                        candidate_t = try self.iterableElementType(candidate_t);
+                                    }
+                                    try self.inferFromArgument(rest_target_t, candidate_t, args[j], &call_subs);
+                                }
+                            }
+                            }
+                        } else {
                             const n = @min(param_ts.len, arg_types.items.len);
                             for (0..n) |i| {
                                 if (self.interner.pool.flagsOf(param_ts[i]).is_signature) continue;
@@ -6939,7 +7053,8 @@ pub const Checker = struct {
                         // Convert to integer; ignore non-integral
                         // forms (e.g. `tup[0.5]`) and let the indexer
                         // path handle them.
-                        if (v >= 0 and v == @floor(v)) {
+                        const max_u64_float: f64 = @floatFromInt(std.math.maxInt(u64));
+                        if (v >= 0 and v == @floor(v) and v <= max_u64_float) {
                             const index: u64 = @intFromFloat(v);
                             var nbuf: [12]u8 = undefined;
                             const k = std.fmt.bufPrint(&nbuf, "{d}", .{index}) catch null;
@@ -6959,6 +7074,12 @@ pub const Checker = struct {
                             }
                         }
                     }
+                    var literal_string_key: ?hir_mod.StringId = null;
+                    if (self.hir.kindOf(e.index) == .literal_string) {
+                        const lit = hir_mod.literalStringOf(self.hir, e.index);
+                        literal_string_key = lit.value;
+                        if (self.interner.objectMember(obj_t, lit.value)) |t| break :blk t;
+                    }
                     // Index-signature fallback. With
                     // `noUncheckedIndexedAccess`, widen the result
                     // with `undefined` since dynamic indexing may
@@ -6972,6 +7093,24 @@ pub const Checker = struct {
                     if (idx_flags.is_number) {
                         const v = self.interner.objectNumberIndex(obj_t);
                         if (v != types.Primitive.none) break :blk self.maybeWidenWithUndefined(v);
+                    }
+                    if (literal_string_key) |key_id| {
+                        if (self.strict_flags.no_implicit_any and
+                            self.interner.objectMembers(obj_t).len != 0 and
+                            self.interner.objectStringIndex(obj_t) == types.Primitive.none)
+                        {
+                            const key = self.string_interner.get(key_id);
+                            const msg = try std.fmt.allocPrint(
+                                self.diag_arena.allocator(),
+                                "Element implicitly has an 'any' type because property '{s}' does not exist on type.",
+                                .{key},
+                            );
+                            try self.diagnostics.append(self.gpa, .{
+                                .node = node,
+                                .code = TsCodes.element_implicitly_any,
+                                .message = msg,
+                            });
+                        }
                     }
                 }
                 break :blk types.Primitive.any;
@@ -7031,8 +7170,11 @@ pub const Checker = struct {
                         // the spread expression's own type otherwise.
                         const sp = hir_mod.spreadOf(self.hir, el);
                         const inner_t = try self.checkExpression(sp.expression);
+                        if (!self.isIterableLikeType(inner_t)) {
+                            try self.report(sp.expression, TsCodes.yield_star_not_iterable, "Type must have a '[Symbol.iterator]()' method that returns an iterator.");
+                        }
                         const elem_inner = self.interner.objectNumberIndex(inner_t);
-                        const contrib = if (elem_inner != types.Primitive.none) elem_inner else inner_t;
+                        const contrib = if (elem_inner != types.Primitive.none) elem_inner else try self.iterableElementType(inner_t);
                         try elem_types.append(self.gpa, contrib);
                         continue;
                     }
@@ -7922,6 +8064,14 @@ pub const Checker = struct {
         // precedence over the static type.
         if (self.lookupNarrow(id.name)) |t| return t;
 
+        const name_str = self.string_interner.get(id.name);
+        if (std.mem.eql(u8, name_str, "new.target")) {
+            return types.Primitive.any;
+        }
+        if (std.mem.eql(u8, name_str, "arguments") and self.hasNonArrowFunctionAncestor(node)) {
+            return types.Primitive.any;
+        }
+
         // Walk up the parent chain searching for parameters or
         // sibling let/const/var decls in scope.
         var cur: hir_mod.NodeId = self.hir.parentOf(node);
@@ -8123,7 +8273,6 @@ pub const Checker = struct {
         // signatures so call sites typecheck (e.g. `const b: boolean =
         // isNaN(1);`). Other globals fall through to `any` for now
         // (full lib.d.ts wiring is a follow-up).
-        const name_str = self.string_interner.get(id.name);
         if (std.mem.eql(u8, name_str, "Object")) {
             if (lib.objectGlobal(&self.lib_cache, self.interner, self.string_interner)) |og| {
                 return og;
@@ -8143,6 +8292,9 @@ pub const Checker = struct {
             if (lib.numberGlobal(&self.lib_cache, self.interner, self.string_interner)) |ng| {
                 return ng;
             } else |_| {}
+        }
+        if (std.mem.eql(u8, name_str, "Symbol")) {
+            return self.symbolGlobalType() catch types.Primitive.any;
         }
         if (std.mem.eql(u8, name_str, "NaN") or std.mem.eql(u8, name_str, "Infinity")) {
             return types.Primitive.number_t;
@@ -8271,6 +8423,7 @@ pub const Checker = struct {
             // Core globals / values.
             "console",            "undefined",          "NaN",
             "Infinity",           "globalThis",         "this",
+            "new.target",
             "window",             "document",           "Element",
             "Node",
             // Constructors / namespaces.
@@ -8298,18 +8451,27 @@ pub const Checker = struct {
             "process",            "Buffer",             "require",
             "module",             "exports",            "__dirname",
             "__filename",
-            // Function-scoped magic.
-                    "arguments",
             // Dynamic `import("…")` parses the keyword as an
             // identifier callee — exempt it from TS2304.
-                     "import",
+                    "import",
             // Common ambient names emitted by the parser for
             // module / class shapes that don't have full
             // resolution wired up yet.
-            "super",
+                        "super",
         };
         for (builtins) |b| {
             if (std.mem.eql(u8, s, b)) return true;
+        }
+        return false;
+    }
+
+    fn hasNonArrowFunctionAncestor(self: *Checker, node: NodeId) bool {
+        var cur = self.hir.parentOf(node);
+        while (cur != hir_mod.none_node_id) : (cur = self.hir.parentOf(cur)) {
+            const k = self.hir.kindOf(cur);
+            if (k != .fn_decl and k != .fn_expr and k != .arrow_fn) continue;
+            const f = hir_mod.fnDeclOf(self.hir, cur);
+            if (!f.flags.is_arrow) return true;
         }
         return false;
     }
@@ -8344,6 +8506,86 @@ pub const Checker = struct {
         if (items.len == 0) return types.Primitive.any;
         if (items.len == 1) return items[0];
         return self.interner.internUnion(items) catch return error.OutOfMemory;
+    }
+
+    fn symbolGlobalType(self: *Checker) CheckError!TypeId {
+        var members: std.ArrayListUnmanaged(types.ObjectMember) = .empty;
+        defer members.deinit(self.gpa);
+        const include_declared_augmentations = !self.symbol_global_building;
+        if (include_declared_augmentations) self.symbol_global_building = true;
+        defer if (include_declared_augmentations) {
+            self.symbol_global_building = false;
+        };
+
+        const empty_params = [_]types.TypeId{};
+        const symbol_ctor = self.interner.internSignature(&empty_params, types.Primitive.symbol_t, false) catch return error.OutOfMemory;
+        const string_params = [_]types.TypeId{types.Primitive.string_t};
+        const symbol_for = self.interner.internSignature(&string_params, types.Primitive.symbol_t, false) catch return error.OutOfMemory;
+
+        const call_id = self.string_interner.intern("__call") catch return error.OutOfMemory;
+        try members.append(self.gpa, .{ .name = call_id, .type = symbol_ctor, .is_optional = false, .is_readonly = true, .is_method = true });
+        const for_id = self.string_interner.intern("for") catch return error.OutOfMemory;
+        try members.append(self.gpa, .{ .name = for_id, .type = symbol_for, .is_optional = false, .is_readonly = true, .is_method = true });
+        const key_for_params = [_]types.TypeId{types.Primitive.symbol_t};
+        const symbol_key_for = self.interner.internSignature(&key_for_params, types.Primitive.string_t, false) catch return error.OutOfMemory;
+        const key_for_id = self.string_interner.intern("keyFor") catch return error.OutOfMemory;
+        try members.append(self.gpa, .{ .name = key_for_id, .type = symbol_key_for, .is_optional = false, .is_readonly = true, .is_method = true });
+
+        const well_known = [_][]const u8{
+            "asyncIterator",
+            "hasInstance",
+            "isConcatSpreadable",
+            "iterator",
+            "match",
+            "matchAll",
+            "replace",
+            "search",
+            "species",
+            "split",
+            "toPrimitive",
+            "toStringTag",
+            "unscopables",
+        };
+        for (well_known) |name| {
+            const id = self.string_interner.intern(name) catch return error.OutOfMemory;
+            try members.append(self.gpa, .{ .name = id, .type = types.Primitive.symbol_t, .is_optional = false, .is_readonly = true, .is_method = false });
+        }
+
+        if (include_declared_augmentations) {
+            try self.appendDeclaredInterfaceMembers(&members, "SymbolConstructor");
+        }
+
+        return self.interner.internObjectType(members.items) catch return error.OutOfMemory;
+    }
+
+    fn appendDeclaredInterfaceMembers(
+        self: *Checker,
+        members: *std.ArrayListUnmanaged(types.ObjectMember),
+        name: []const u8,
+    ) CheckError!void {
+        const module = self.module orelse return;
+        const name_id = self.string_interner.intern(name) catch return error.OutOfMemory;
+        const sym = module.root.types.get(name_id) orelse return;
+        for (sym.decls.items) |decl| {
+            if (self.hir.kindOf(decl) != .interface_decl) continue;
+            var iface_t = self.hir.typeOf(decl);
+            if (iface_t == types.Primitive.none or iface_t == types.Primitive.unknown) {
+                try self.checkInterfaceDecl(decl);
+                iface_t = self.hir.typeOf(decl);
+            }
+            if (iface_t == types.Primitive.none or iface_t == types.Primitive.unknown) continue;
+            for (self.interner.objectMembers(iface_t)) |member| {
+                if (objectMemberListContains(members.items, member.name)) continue;
+                try members.append(self.gpa, member);
+            }
+        }
+    }
+
+    fn objectMemberListContains(members: []const types.ObjectMember, name: hir_mod.StringId) bool {
+        for (members) |member| {
+            if (member.name == name) return true;
+        }
+        return false;
     }
 
     fn builtinMapInstanceType(self: *Checker, key_t: TypeId, value_t: TypeId) CheckError!TypeId {
@@ -8606,6 +8848,44 @@ pub const Checker = struct {
             f.is_bigint or f.is_symbol;
     }
 
+    fn typeContainsSymbol(self: *Checker, t: TypeId) bool {
+        if (t >= self.interner.pool.typeCount()) return false;
+        const f = self.interner.pool.flagsOf(t);
+        if (f.is_object_type or f.is_signature or f.is_tuple or f.is_type_parameter) return false;
+        if (f.is_symbol) return true;
+        if (!f.is_union) return false;
+        for (self.interner.unionMembers(t)) |member| {
+            if (self.typeContainsSymbol(member)) return true;
+        }
+        return false;
+    }
+
+    fn reportSymbolOperator(self: *Checker, node: NodeId, op: []const u8) CheckError!void {
+        const msg = try std.fmt.allocPrint(
+            self.diag_arena.allocator(),
+            "The '{s}' operator cannot be applied to type 'symbol'.",
+            .{op},
+        );
+        try self.diagnostics.append(self.gpa, .{
+            .node = node,
+            .code = TsCodes.symbol_operator_not_allowed,
+            .message = msg,
+        });
+    }
+
+    fn reportArithmeticOperand(
+        self: *Checker,
+        node: NodeId,
+        code: u32,
+        msg: []const u8,
+    ) CheckError!void {
+        try self.diagnostics.append(self.gpa, .{
+            .node = node,
+            .code = code,
+            .message = msg,
+        });
+    }
+
     fn checkBinop(self: *Checker, node: NodeId) CheckError!TypeId {
         const b = hir_mod.binopOf(self.hir, node);
         const lhs = try self.checkExpression(b.lhs);
@@ -8613,6 +8893,9 @@ pub const Checker = struct {
         return switch (b.op) {
             // Arithmetic — number unless either side is string (matches JS).
             .add => blk: {
+                if (self.typeContainsSymbol(lhs) or self.typeContainsSymbol(rhs)) {
+                    try self.reportSymbolOperator(node, "+");
+                }
                 if (lhs == types.Primitive.string_t or rhs == types.Primitive.string_t) {
                     break :blk types.Primitive.string_t;
                 }
@@ -8626,36 +8909,85 @@ pub const Checker = struct {
                 }
                 break :blk types.Primitive.number_t;
             },
-            .sub, .mul, .div, .mod, .pow => types.Primitive.number_t,
-            .bit_and, .bit_or, .bit_xor, .shl, .shr, .shr_unsigned => types.Primitive.number_t,
+            .sub, .mul, .div, .mod, .pow => blk: {
+                if (self.typeContainsSymbol(lhs)) {
+                    try self.reportArithmeticOperand(b.lhs, TsCodes.arithmetic_left_operand_type, "The left-hand side of an arithmetic operation must be of type 'any', 'number', 'bigint' or an enum type.");
+                }
+                if (self.typeContainsSymbol(rhs)) {
+                    try self.reportArithmeticOperand(b.rhs, TsCodes.arithmetic_right_operand_type, "The right-hand side of an arithmetic operation must be of type 'any', 'number', 'bigint' or an enum type.");
+                }
+                break :blk types.Primitive.number_t;
+            },
+            .bit_and, .bit_or, .bit_xor, .shl, .shr, .shr_unsigned => blk: {
+                if (self.typeContainsSymbol(lhs)) {
+                    try self.reportArithmeticOperand(b.lhs, TsCodes.arithmetic_left_operand_type, "The left-hand side of an arithmetic operation must be of type 'any', 'number', 'bigint' or an enum type.");
+                }
+                if (self.typeContainsSymbol(rhs)) {
+                    try self.reportArithmeticOperand(b.rhs, TsCodes.arithmetic_right_operand_type, "The right-hand side of an arithmetic operation must be of type 'any', 'number', 'bigint' or an enum type.");
+                }
+                break :blk types.Primitive.number_t;
+            },
             .eq, .neq, .eq_strict, .neq_strict => blk: {
-                // TS2367: warn when `===` / `!==` compares two known
+                // TS2367: warn when equality compares two known
                 // types that have no overlap. We're conservative here
                 // and only fire when both sides are concrete
                 // primitives (or literals of those primitives) so we
                 // don't flag legitimate union / object / generic
                 // comparisons that TS itself allows.
-                if (b.op == .eq_strict or b.op == .neq_strict) {
-                    if (self.shouldCheckNoOverlap(lhs, rhs)) {
-                        const ok = self.engine.isComparableTo(lhs, rhs) catch true;
-                        if (!ok) {
-                            try self.report(node, TsCodes.no_overlap_comparison, "This comparison appears to be unintentional because the types have no overlap.");
-                        }
+                if (self.shouldCheckNoOverlap(lhs, rhs)) {
+                    const ok = self.engine.isComparableTo(lhs, rhs) catch true;
+                    if (!ok) {
+                        try self.report(node, TsCodes.no_overlap_comparison, "This comparison appears to be unintentional because the types have no overlap.");
                     }
                 }
                 break :blk types.Primitive.boolean_t;
             },
-            .lt, .le, .gt, .ge => types.Primitive.boolean_t,
-            .instanceof, .in => types.Primitive.boolean_t,
+            .lt, .le, .gt, .ge => blk: {
+                if (self.typeContainsSymbol(lhs) or self.typeContainsSymbol(rhs)) {
+                    try self.reportSymbolOperator(node, switch (b.op) {
+                        .lt => "<",
+                        .le => "<=",
+                        .gt => ">",
+                        .ge => ">=",
+                        else => unreachable,
+                    });
+                }
+                break :blk types.Primitive.boolean_t;
+            },
+            .instanceof => blk: {
+                if (self.typeContainsSymbol(lhs)) {
+                    try self.report(b.lhs, TsCodes.instanceof_left_type, "The left-hand side of an 'instanceof' expression must be of type 'any', an object type or a type parameter.");
+                }
+                if (self.typeContainsSymbol(rhs)) {
+                    try self.report(b.rhs, TsCodes.instanceof_right_type, "The right-hand side of an 'instanceof' expression must be either of type 'any', a class, function, or other type assignable to the 'Function' interface type, or an object type with a 'Symbol.hasInstance' method.");
+                }
+                break :blk types.Primitive.boolean_t;
+            },
+            .in => blk: {
+                if (self.typeContainsSymbol(rhs)) {
+                    try self.report(b.rhs, TsCodes.type_not_assignable, "Type 'symbol' is not assignable to type 'object'.");
+                }
+                break :blk types.Primitive.boolean_t;
+            },
             .comma => rhs,
         };
     }
 
     fn checkUnary(self: *Checker, node: NodeId) CheckError!TypeId {
         const u = hir_mod.unaryOf(self.hir, node);
-        _ = try self.checkExpression(u.operand);
+        const operand_t = try self.checkExpression(u.operand);
         return switch (u.op) {
-            .neg, .plus, .bit_not => types.Primitive.number_t,
+            .neg, .plus, .bit_not => blk: {
+                if (self.typeContainsSymbol(operand_t)) {
+                    try self.reportSymbolOperator(node, switch (u.op) {
+                        .neg => "-",
+                        .plus => "+",
+                        .bit_not => "~",
+                        else => unreachable,
+                    });
+                }
+                break :blk types.Primitive.number_t;
+            },
             .not => types.Primitive.boolean_t,
             .typeof => types.Primitive.string_t,
             .void_ => types.Primitive.undefined_t,
@@ -8676,6 +9008,9 @@ pub const Checker = struct {
         if (l.op == .nullish) {
             const lhs_non_null = self.subtractNullUndefined(lhs) catch lhs;
             return self.interner.internUnion(&.{ lhs_non_null, rhs }) catch error.OutOfMemory;
+        }
+        if (l.op == .@"or" and self.hir.kindOf(l.lhs) == .object_literal) {
+            try self.report(l.lhs, TsCodes.expression_always_truthy, "This kind of expression is always truthy.");
         }
         return self.interner.internUnion(&.{ lhs, rhs }) catch error.OutOfMemory;
     }
@@ -8943,6 +9278,47 @@ pub const Checker = struct {
             }
         }
         try self.inferFromPair(param_t, arg_t, subs);
+    }
+
+    fn inferCallSubstitutions(
+        self: *Checker,
+        sig: TypeId,
+        args: []const NodeId,
+        arg_types: []const TypeId,
+        subs: *std.AutoHashMapUnmanaged(TypeId, TypeId),
+    ) !void {
+        if (!self.interner.isSignature(sig)) return;
+        const param_ts = self.interner.signatureParams(sig);
+        if (self.rest_signatures.contains(sig) and param_ts.len > 0) {
+            const fixed_count: usize = param_ts.len - 1;
+            const n = @min(fixed_count, arg_types.len);
+            for (0..n) |i| {
+                if (self.interner.pool.flagsOf(param_ts[i]).is_signature) continue;
+                try self.inferFromArgument(param_ts[i], arg_types[i], args[i], subs);
+            }
+            const rest_arr_t = param_ts[param_ts.len - 1];
+            if (rest_arr_t < self.interner.pool.typeCount() and self.interner.pool.flagsOf(rest_arr_t).is_type_parameter) {
+                return;
+            }
+            const rest_elem_t = self.interner.objectNumberIndex(rest_arr_t);
+            const rest_target_t = if (rest_elem_t != types.Primitive.none) rest_elem_t else rest_arr_t;
+            if (rest_target_t < self.interner.pool.typeCount()) {
+                var j: usize = fixed_count;
+                while (j < arg_types.len) : (j += 1) {
+                    var candidate_t = arg_types[j];
+                    if (self.hir.kindOf(args[j]) == .spread) {
+                        candidate_t = try self.iterableElementType(candidate_t);
+                    }
+                    try self.inferFromArgument(rest_target_t, candidate_t, args[j], subs);
+                }
+            }
+        } else {
+            const n = @min(param_ts.len, arg_types.len);
+            for (0..n) |i| {
+                if (self.interner.pool.flagsOf(param_ts[i]).is_signature) continue;
+                try self.inferFromArgument(param_ts[i], arg_types[i], args[i], subs);
+            }
+        }
     }
 
     /// Walk `t` and, for any encountered type-parameter id with a
@@ -9246,6 +9622,11 @@ pub const Checker = struct {
             }
             var arg_t = arg_types[i];
             if (self.hir.kindOf(args[i]) == .spread) {
+                if (!is_variadic or i < fixed_count) {
+                    if (self.fixedTupleLength(arg_t) == null) {
+                        try self.report(args[i], TsCodes.spread_argument_requires_tuple_or_rest, "A spread argument must either have a tuple type or be passed to a rest parameter.");
+                    }
+                }
                 const spread_elem_t = self.tupleElementType(arg_t, 0);
                 if (spread_elem_t != types.Primitive.none) {
                     arg_t = spread_elem_t;
@@ -13114,6 +13495,22 @@ test "checker: object type literal with string index signature" {
     try T.expect(s.checker.diagnostics.items.len == 0);
 }
 
+test "checker: missing string literal element access reports TS7053 under noImplicitAny" {
+    const s = try newSetup(
+        \\const obj = { 26: "ok", a: 1 };
+        \\const good = obj["26"];
+        \\const bad = obj["0b11010"];
+    );
+    defer destroySetup(s);
+    s.checker.setStrictFlags(.{ .no_implicit_any = true });
+    try s.checker.checkSourceFile(s.root);
+    var found = false;
+    for (s.checker.diagnostics.items) |d| {
+        if (d.code == TsCodes.element_implicitly_any) found = true;
+    }
+    try T.expect(found);
+}
+
 test "checker: noPropertyAccessFromIndexSignature emits TS4111" {
     const s = try newSetup(
         \\interface I { [k: string]: number }
@@ -13958,6 +14355,28 @@ test "checker: generic rest inference prefers array union branch" {
     defer destroySetup(s);
     try s.checker.checkSourceFile(s.root);
     try T.expectEqual(@as(usize, 0), s.checker.diagnostics.items.len);
+}
+
+test "checker: generic rest inference checks later spread element types" {
+    const s = try newSetup(
+        \\function foo<T>(...s: T[]) { return s[0]; }
+        \\class SymbolIterator {
+        \\  next() { return { value: Symbol(), done: false }; }
+        \\  [Symbol.iterator]() { return this; }
+        \\}
+        \\class StringIterator {
+        \\  next() { return { value: "", done: false }; }
+        \\  [Symbol.iterator]() { return this; }
+        \\}
+        \\foo(...new SymbolIterator(), ...new StringIterator());
+    );
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+    var found = false;
+    for (s.checker.diagnostics.items) |d| {
+        if (d.code == TsCodes.argument_type_mismatch) found = true;
+    }
+    try T.expect(found);
 }
 
 test "checker: generic interface method type parameter shadows outer parameter" {
@@ -15529,6 +15948,20 @@ test "checker: array spread of T[] yields T[]" {
     }
 }
 
+test "checker: array spread rejects non-iterable object" {
+    const s = try newSetup(
+        \\const x = { next() { return { value: 1, done: false }; } };
+        \\const a = [...x];
+    );
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+    var found = false;
+    for (s.checker.diagnostics.items) |d| {
+        if (d.code == TsCodes.yield_star_not_iterable) found = true;
+    }
+    try T.expect(found);
+}
+
 test "checker: object destructuring with default strips undefined" {
     // `{ a = 1 }: { a?: number }` — the default ensures `a` is not
     // undefined inside the body, so `const x: number = a` typechecks.
@@ -15643,6 +16076,21 @@ test "checker: spread tuple argument expands into fixed rest signature slots" {
     }
 }
 
+test "checker: non-tuple spread into fixed parameter reports TS2556" {
+    const s = try newSetup(
+        \\function f(x: number) {}
+        \\const xs: number[] = [1];
+        \\f(...xs);
+    );
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+    var found = false;
+    for (s.checker.diagnostics.items) |d| {
+        if (d.code == TsCodes.spread_argument_requires_tuple_or_rest) found = true;
+    }
+    try T.expect(found);
+}
+
 test "checker: spread tuple fixed prefix satisfies required parameter count" {
     const s = try newSetup(
         \\declare let f: (a: number, b: string, ...x: [...boolean[]]) => void;
@@ -15753,6 +16201,22 @@ test "checker: class Symbol.iterator member makes instance iterable" {
     for (s.checker.diagnostics.items) |d| {
         try T.expect(d.code != TsCodes.yield_star_not_iterable);
     }
+}
+
+test "checker: SymbolConstructor interface augments Symbol global" {
+    const b = try newBoundSetup(
+        \\interface SymbolConstructor { foo: string; }
+        \\let s: string = Symbol.foo;
+        \\let n: number = Symbol.foo;
+    );
+    defer destroyBoundSetup(b);
+    try b.base.checker.checkSourceFile(b.base.root);
+    var assign_mismatch = false;
+    for (b.base.checker.diagnostics.items) |d| {
+        try T.expect(d.code != TsCodes.property_does_not_exist);
+        if (d.code == TsCodes.type_not_assignable) assign_mismatch = true;
+    }
+    try T.expect(assign_mismatch);
 }
 
 test "checker: array destructuring assignment checks iterator element assignability" {
