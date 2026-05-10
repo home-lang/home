@@ -150,6 +150,7 @@ pub const TsCodes = struct {
     pub const expression_always_falsy: u32 = 2873;
     pub const nullish_rhs_unreachable: u32 = 2869;
     pub const object_possibly_nullish: u32 = 18049;
+    pub const nullish_relational_operand: u32 = 18050;
     /// Emitted when `// @ts-expect-error` was placed above a line
     /// that produced no diagnostics — the directive is unused.
     pub const unused_ts_expect_error: u32 = 2578;
@@ -7569,8 +7570,7 @@ pub const Checker = struct {
         if (scope == hir_mod.none_node_id) return;
         const key: VarDeclKey = .{ .scope = scope, .name = id.name };
         if (self.var_decl_types.get(key)) |prior| {
-            const compatible = self.typeContainsUnknown(prior) or
-                self.typeContainsUnknown(final_type) or
+            const compatible = self.typeContainsUnknown(final_type) or
                 (self.engine.isIdenticalTo(prior, final_type) catch true) or
                 ((self.engine.isAssignableTo(prior, final_type) catch true) and
                     (self.engine.isAssignableTo(final_type, prior) catch true));
@@ -10587,7 +10587,93 @@ pub const Checker = struct {
             }
             return true;
         }
-        return f.is_string or f.is_number or f.is_bigint;
+        if (f.is_type_parameter) return true;
+        if (f.is_null or f.is_undefined) return true;
+        if (f.is_object or f.is_object_type or f.is_signature or f.is_tuple or f.is_intersection) return true;
+        return f.is_string or f.is_number or f.is_bigint or f.is_boolean or f.is_void;
+    }
+
+    fn typeIsExactNullish(self: *Checker, t: TypeId) bool {
+        const f = self.interner.pool.flagsOf(t);
+        return f.is_null or f.is_undefined;
+    }
+
+    fn relationalNullishName(self: *Checker, t: TypeId) []const u8 {
+        const f = self.interner.pool.flagsOf(t);
+        return if (f.is_null) "null" else "undefined";
+    }
+
+    fn reportNullishRelationalOperand(self: *Checker, node: NodeId, t: TypeId) CheckError!void {
+        const msg = try std.fmt.allocPrint(
+            self.diag_arena.allocator(),
+            "The value '{s}' cannot be used here.",
+            .{self.relationalNullishName(t)},
+        );
+        try self.diagnostics.append(self.gpa, .{
+            .node = node,
+            .code = TsCodes.nullish_relational_operand,
+            .message = msg,
+        });
+    }
+
+    fn relationalTypeHasNumberLike(self: *Checker, t: TypeId) bool {
+        if (self.typeIsAnyLike(t)) return false;
+        const f = self.interner.pool.flagsOf(t);
+        if (f.is_object or f.is_object_type or f.is_signature or f.is_tuple or f.is_intersection) return false;
+        if (f.is_union) {
+            for (self.interner.unionMembers(t)) |member| {
+                if (self.relationalTypeHasNumberLike(member)) return true;
+            }
+        }
+        return f.is_number;
+    }
+
+    fn relationalTypeHasObjectLike(self: *Checker, t: TypeId) bool {
+        if (self.typeIsAnyLike(t)) return false;
+        const f = self.interner.pool.flagsOf(t);
+        if (f.is_object or f.is_object_type or f.is_signature or f.is_tuple or f.is_intersection) return true;
+        if (f.is_union) {
+            for (self.interner.unionMembers(t)) |member| {
+                if (self.relationalTypeHasObjectLike(member)) return true;
+            }
+        }
+        return false;
+    }
+
+    fn isUnconstrainedTypeParameter(self: *Checker, t: TypeId) bool {
+        if (t >= self.interner.pool.typeCount()) return false;
+        const f = self.interner.pool.flagsOf(t);
+        return f.is_type_parameter and self.typeParameterConstraint(t) == null;
+    }
+
+    fn relationalComparisonInvalid(self: *Checker, lhs: TypeId, rhs: TypeId) bool {
+        const lhs_tp = self.isUnconstrainedTypeParameter(lhs);
+        const rhs_tp = self.isUnconstrainedTypeParameter(rhs);
+        if (lhs_tp and rhs_tp and lhs != rhs) return true;
+        if ((lhs_tp and self.relationalTypeHasNumberLike(rhs)) or
+            (rhs_tp and self.relationalTypeHasNumberLike(lhs)))
+        {
+            return true;
+        }
+        if ((self.relationalTypeHasObjectLike(lhs) and self.relationalTypeHasNumberLike(rhs)) or
+            (self.relationalTypeHasObjectLike(rhs) and self.relationalTypeHasNumberLike(lhs)))
+        {
+            return true;
+        }
+        return false;
+    }
+
+    fn reportRelationalOperatorCannotBeApplied(self: *Checker, node: NodeId, op: []const u8) CheckError!void {
+        const msg = try std.fmt.allocPrint(
+            self.diag_arena.allocator(),
+            "Operator '{s}' cannot be applied to these operand types.",
+            .{op},
+        );
+        try self.diagnostics.append(self.gpa, .{
+            .node = node,
+            .code = TsCodes.operator_cannot_be_applied,
+            .message = msg,
+        });
     }
 
     fn typeMaybeStringLike(self: *Checker, t: TypeId) bool {
@@ -10766,14 +10852,23 @@ pub const Checker = struct {
                 break :blk types.Primitive.boolean_t;
             },
             .lt, .le, .gt, .ge => blk: {
+                const op_text = switch (b.op) {
+                    .lt => "<",
+                    .le => "<=",
+                    .gt => ">",
+                    .ge => ">=",
+                    else => unreachable,
+                };
                 if (self.typeContainsSymbol(lhs) or self.typeContainsSymbol(rhs)) {
-                    try self.reportSymbolOperator(node, switch (b.op) {
-                        .lt => "<",
-                        .le => "<=",
-                        .gt => ">",
-                        .ge => ">=",
-                        else => unreachable,
-                    });
+                    try self.reportSymbolOperator(node, op_text);
+                } else if (self.strict_flags.strict_null_checks and self.typeIsExactNullish(lhs)) {
+                    try self.reportNullishRelationalOperand(b.lhs, lhs);
+                } else if (self.strict_flags.strict_null_checks and self.typeIsExactNullish(rhs)) {
+                    try self.reportNullishRelationalOperand(b.rhs, rhs);
+                } else if (!self.isRelationalOperandAllowed(lhs) or !self.isRelationalOperandAllowed(rhs) or
+                    self.relationalComparisonInvalid(lhs, rhs))
+                {
+                    try self.reportRelationalOperatorCannotBeApplied(node, op_text);
                 }
                 break :blk types.Primitive.boolean_t;
             },
@@ -10941,6 +11036,11 @@ pub const Checker = struct {
         defer visited_defaults.deinit(self.gpa);
         for (param_ts) |p| try self.collectFreeTypeParamDefaults(p, &subs, &visited_defaults);
         try self.collectFreeTypeParamDefaults(ret_type, &subs, &visited_defaults);
+        if (ret_type < self.interner.pool.typeCount() and self.interner.pool.flagsOf(ret_type).is_type_parameter) {
+            var visited_fallbacks: std.AutoHashMapUnmanaged(TypeId, void) = .empty;
+            defer visited_fallbacks.deinit(self.gpa);
+            try self.collectFreeTypeParamFallbacks(ret_type, &subs, &visited_fallbacks);
+        }
         if (subs.count() == 0) return ret_type;
         return self.substituteType(ret_type, &subs);
     }
@@ -11232,6 +11332,46 @@ pub const Checker = struct {
             if (payload_idx >= self.interner.pool.intersection_payloads.items.len) return;
             for (self.interner.intersectionMembers(t)) |m| try self.collectFreeTypeParamDefaults(m, subs, visited);
             return;
+        }
+    }
+
+    fn collectFreeTypeParamFallbacks(
+        self: *Checker,
+        t: TypeId,
+        subs: *std.AutoHashMapUnmanaged(TypeId, TypeId),
+        visited: *std.AutoHashMapUnmanaged(TypeId, void),
+    ) !void {
+        if (t < types.Primitive.first_dynamic) return;
+        if (t >= self.interner.pool.typeCount()) return;
+        if (visited.contains(t)) return;
+        try visited.put(self.gpa, t, {});
+        const flags = self.interner.pool.flagsOf(t);
+        const payload_idx = self.interner.pool.payloadOf(t);
+        if (flags.is_type_parameter) {
+            if (!subs.contains(t)) try subs.put(self.gpa, t, types.Primitive.unknown);
+            return;
+        }
+        if (flags.is_union) {
+            if (payload_idx >= self.interner.pool.union_payloads.items.len) return;
+            for (self.interner.unionMembers(t)) |m| try self.collectFreeTypeParamFallbacks(m, subs, visited);
+            return;
+        }
+        if (flags.is_intersection) {
+            if (payload_idx >= self.interner.pool.intersection_payloads.items.len) return;
+            for (self.interner.intersectionMembers(t)) |m| try self.collectFreeTypeParamFallbacks(m, subs, visited);
+            return;
+        }
+        if (flags.is_object_type) {
+            for (self.interner.objectMembers(t)) |m| try self.collectFreeTypeParamFallbacks(m.type, subs, visited);
+            const str_idx = self.interner.objectStringIndex(t);
+            if (str_idx != types.Primitive.none) try self.collectFreeTypeParamFallbacks(str_idx, subs, visited);
+            const num_idx = self.interner.objectNumberIndex(t);
+            if (num_idx != types.Primitive.none) try self.collectFreeTypeParamFallbacks(num_idx, subs, visited);
+            return;
+        }
+        if (flags.is_signature) {
+            for (self.interner.signatureParams(t)) |p| try self.collectFreeTypeParamFallbacks(p, subs, visited);
+            if (self.interner.signatureReturn(t)) |r| try self.collectFreeTypeParamFallbacks(r, subs, visited);
         }
     }
 
