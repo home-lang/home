@@ -780,6 +780,9 @@ pub const Parser = struct {
             } else blk: {
                 const name_tok = try self.expectIdentifierLike();
                 try self.reportInvalidStrictName(name_tok);
+                if ((kw.kind == .kw_let or kw.kind == .kw_const) and self.tokenTextEquals(name_tok, "let")) {
+                    try self.reportCodeAt(name_tok.span.start, name_tok.line, 2480, "'let' is not allowed to be used as a name in 'let' or 'const' declarations.");
+                }
                 const name_id = try self.internToken(name_tok);
                 break :blk try self.builder.addIdentifier(tokenSpan(name_tok), name_id);
             };
@@ -793,8 +796,12 @@ pub const Parser = struct {
             if (kw.kind == .kw_using and binding_start.kind == .kw_of and self.peek().kind == .kw_of) {
                 try self.reportCodeAt(kw.span.start, kw.line, 2304, "Cannot find name 'using'.");
             }
-            // optional type annotation
-            if (self.match(.colon)) try self.skipTypeAnnotation();
+            // Optional type annotation. In for-in/of declarations we
+            // preserve it by wrapping the binding in a var/let/const
+            // declaration node below; assignment-form loops keep the
+            // bare expression target.
+            var type_annotation: NodeId = hir_mod.none_node_id;
+            if (self.match(.colon)) type_annotation = try self.parseTypeAnnotation();
 
             // Detect for-in / for-of immediately.
             if (self.peek().kind == .kw_in or self.peek().kind == .kw_of) {
@@ -811,6 +818,28 @@ pub const Parser = struct {
                         "The left-hand side of a 'for...in' statement cannot be a 'using' declaration.";
                     try self.reportCodeAt(kw.span.start, kw.line, if (is_await_using_decl) 1494 else 1493, message);
                 }
+                const loop_target: NodeId = blk: {
+                    const decl_kind: hir_mod.NodeKind = switch (kw.kind) {
+                        .kw_var => .var_decl,
+                        .kw_let => .let_decl,
+                        .kw_const, .kw_using, .kw_await => .const_decl,
+                        else => break :blk binding_node,
+                    };
+                    const target_end = if (type_annotation != hir_mod.none_node_id)
+                        self.hir.spanOf(type_annotation).end
+                    else
+                        self.hir.spanOf(binding_node).end;
+                    break :blk try self.builder.addVarDeclEx(
+                        decl_kind,
+                        .{ .start = kw.span.start, .end = target_end },
+                        binding_node,
+                        type_annotation,
+                        hir_mod.none_node_id,
+                        is_using_decl,
+                        is_await_using_decl,
+                        self.ambient_depth > 0,
+                    );
+                };
                 const source_expr = try self.parseExpression();
                 _ = try self.expect(.close_paren, "')' to close for-in/of header");
                 self.loop_depth += 1;
@@ -820,11 +849,11 @@ pub const Parser = struct {
                 const body = try self.parseNestedStatement();
                 const end_pos = self.hir.spanOf(body).end;
                 if (kind_tok.kind == .kw_in) {
-                    return try self.builder.addForIn(.{ .start = start.span.start, .end = end_pos }, binding_node, source_expr, body);
+                    return try self.builder.addForIn(.{ .start = start.span.start, .end = end_pos }, loop_target, source_expr, body);
                 } else if (is_await) {
-                    return try self.builder.addForAwaitOf(.{ .start = start.span.start, .end = end_pos }, binding_node, source_expr, body);
+                    return try self.builder.addForAwaitOf(.{ .start = start.span.start, .end = end_pos }, loop_target, source_expr, body);
                 } else {
-                    return try self.builder.addForOf(.{ .start = start.span.start, .end = end_pos }, binding_node, source_expr, body);
+                    return try self.builder.addForOf(.{ .start = start.span.start, .end = end_pos }, loop_target, source_expr, body);
                 }
             }
 
@@ -834,14 +863,28 @@ pub const Parser = struct {
             if (is_using_decl and init_expr == hir_mod.none_node_id) {
                 try self.reportCodeAt(binding_start.span.start, binding_start.line, 1155, "'using' declarations must be initialized.");
             }
-            if (init_expr == hir_mod.none_node_id) {
-                init_node = binding_node;
-            } else {
-                init_node = try self.builder.addAssignment(.{
-                    .start = kw.span.start,
-                    .end = self.hir.spanOf(init_expr).end,
-                }, binding_node, init_expr, null);
-            }
+            const decl_kind: hir_mod.NodeKind = switch (kw.kind) {
+                .kw_var => .var_decl,
+                .kw_let => .let_decl,
+                .kw_const, .kw_using, .kw_await => .const_decl,
+                else => .let_decl,
+            };
+            const init_end = if (init_expr != hir_mod.none_node_id)
+                self.hir.spanOf(init_expr).end
+            else if (type_annotation != hir_mod.none_node_id)
+                self.hir.spanOf(type_annotation).end
+            else
+                self.hir.spanOf(binding_node).end;
+            init_node = try self.builder.addVarDeclEx(
+                decl_kind,
+                .{ .start = kw.span.start, .end = init_end },
+                binding_node,
+                type_annotation,
+                init_expr,
+                is_using_decl,
+                is_await_using_decl,
+                self.ambient_depth > 0,
+            );
             while (self.match(.comma)) {
                 if (self.peek().kind == .open_brace or self.peek().kind == .open_bracket) {
                     _ = try self.parseBindingPattern();
@@ -3283,7 +3326,10 @@ pub const Parser = struct {
                 try text_parts.append(self.gpa, lit);
                 break;
             }
-            // Malformed — bail.
+            try self.reportCodeAt(next.span.start, next.line, 1005, "'}' expected.");
+            const empty_id = self.interner.intern("") catch return error.OutOfMemory;
+            const empty_lit = try self.builder.addLiteralString(.{ .start = next.span.start, .end = next.span.start }, empty_id);
+            try text_parts.append(self.gpa, empty_lit);
             break;
         }
 
@@ -4034,6 +4080,16 @@ pub const Parser = struct {
             // `(`. If so, this is a generic arrow.
             if (self.findMatchingTypeArgsEnd(self.cursor)) |after_args| {
                 if (after_args < self.tokens.len and self.tokens[after_args].kind == .open_paren) {
+                    const after_paren = self.findMatchingParenEnd(after_args) orelse {
+                        self.cursor = checkpoint;
+                        return null;
+                    };
+                    if (after_paren >= self.tokens.len or
+                        (self.tokens[after_paren].kind != .arrow and self.tokens[after_paren].kind != .colon))
+                    {
+                        self.cursor = checkpoint;
+                        return null;
+                    }
                     const tps = try self.parseTypeParameterDeclaration();
                     defer self.gpa.free(tps);
                     if (try self.tryParseArrowAfterParen(start_tok, is_async, tps)) |arrow| return arrow;
@@ -4174,10 +4230,15 @@ pub const Parser = struct {
                     while (n < count) : (n += 1) {
                         depth -= 1;
                         if (depth == 0) {
-                            // Next token must be `(` for this to be a
-                            // generic call.
+                            // Next token must be `(` or a template
+                            // literal for this to be a generic call /
+                            // tagged-template call.
                             const next = i + 1;
-                            if (next < self.tokens.len and self.tokens[next].kind == .open_paren) {
+                            if (next < self.tokens.len and
+                                (self.tokens[next].kind == .open_paren or
+                                    self.tokens[next].kind == .no_substitution_template or
+                                    self.tokens[next].kind == .template_head))
+                            {
                                 return next;
                             }
                             return null;
@@ -4205,8 +4266,9 @@ pub const Parser = struct {
 
     /// Parse the comma-separated type arguments of an explicit
     /// generic call. Cursor enters at `<`; returns with the cursor
-    /// positioned at `(` (the index `after_gt` returned by
-    /// `findCallTypeArgsEnd`). The caller owns the returned slice.
+    /// positioned at the token after `>` (the index `after_gt`
+    /// returned by `findCallTypeArgsEnd`). The caller owns the
+    /// returned slice.
     fn parseExplicitCallTypeArgs(self: *Parser, after_gt: u32) ParseError![]NodeId {
         var args: std.ArrayListUnmanaged(NodeId) = .empty;
         errdefer args.deinit(self.gpa);
@@ -4223,8 +4285,8 @@ pub const Parser = struct {
             // No comma + no `>` → bail to checkpoint.
             if (self.peek().kind != .greater_than) break;
         }
-        // Force-advance to `(` even if structural recovery failed; the
-        // caller already verified `after_gt` lands on `(`.
+        // Force-advance to the verified continuation token even if
+        // structural recovery failed.
         self.cursor = after_gt;
         return args.toOwnedSlice(self.gpa);
     }
@@ -4767,19 +4829,23 @@ pub const Parser = struct {
                 .less_than => {
                     // Speculative: `id<T, U>(...)` — explicit type args
                     // for a generic call. We accept the form only when
-                    // a matching `>` is followed immediately by `(`.
-                    // Otherwise we bail out and leave `<` to the binop
-                    // path.
+                    // a matching `>` is followed immediately by `(` or
+                    // a tagged-template literal. Otherwise we bail out
+                    // and leave `<` to the binop path.
                     if (self.findCallTypeArgsEnd(self.cursor)) |after_gt| {
                         // Parse the type args so the checker can use
                         // them to override call-site inference.
                         const type_args = try self.parseExplicitCallTypeArgs(after_gt);
                         defer self.gpa.free(type_args);
-                        const args = try self.parseArgumentList();
-                        defer self.gpa.free(args);
-                        const close_pos = self.tokens[self.cursor - 1].span.end;
-                        const sp: Span = .{ .start = self.hir.spanOf(node).start, .end = close_pos };
-                        node = try self.builder.addCallWithTypeArgs(sp, node, args, type_args);
+                        if (self.peek().kind == .no_substitution_template or self.peek().kind == .template_head) {
+                            node = try self.parseTaggedTemplateWithTypeArgs(node, type_args);
+                        } else {
+                            const args = try self.parseArgumentList();
+                            defer self.gpa.free(args);
+                            const close_pos = self.tokens[self.cursor - 1].span.end;
+                            const sp: Span = .{ .start = self.hir.spanOf(node).start, .end = close_pos };
+                            node = try self.builder.addCallWithTypeArgs(sp, node, args, type_args);
+                        }
                     } else break;
                 },
                 .open_bracket => {
@@ -4811,7 +4877,7 @@ pub const Parser = struct {
                     // a call `tag(stringsArr, …values)`. v0 just types
                     // `stringsArr` as `string[]` (no
                     // TemplateStringsArray shape yet).
-                    node = try self.parseTaggedTemplate(node);
+                    node = try self.parseTaggedTemplateWithTypeArgs(node, &.{});
                 },
                 else => break,
             }
@@ -4861,6 +4927,10 @@ pub const Parser = struct {
                 try texts.append(self.gpa, lit);
                 break;
             }
+            try self.reportCodeAt(next.span.start, next.line, 1005, "'}' expected.");
+            const empty_id = self.interner.intern("") catch return error.OutOfMemory;
+            const empty_lit = try self.builder.addLiteralString(.{ .start = next.span.start, .end = next.span.start }, empty_id);
+            try texts.append(self.gpa, empty_lit);
             break;
         }
 
@@ -4873,7 +4943,7 @@ pub const Parser = struct {
     /// `no_substitution_template` or `template_head`. We collect the
     /// string segments into an array literal and the interpolated
     /// expressions as call arguments.
-    fn parseTaggedTemplate(self: *Parser, tag: NodeId) ParseError!NodeId {
+    fn parseTaggedTemplateWithTypeArgs(self: *Parser, tag: NodeId, type_args: []const NodeId) ParseError!NodeId {
         var strings: std.ArrayListUnmanaged(NodeId) = .empty;
         defer strings.deinit(self.gpa);
         var values: std.ArrayListUnmanaged(NodeId) = .empty;
@@ -4923,7 +4993,10 @@ pub const Parser = struct {
                     try strings.append(self.gpa, lit);
                     break;
                 }
-                // Malformed — bail out to avoid an infinite loop.
+                try self.reportCodeAt(next.span.start, next.line, 1005, "'}' expected.");
+                const empty_id = self.interner.intern("") catch return error.OutOfMemory;
+                const empty_lit = try self.builder.addLiteralString(.{ .start = next.span.start, .end = next.span.start }, empty_id);
+                try strings.append(self.gpa, empty_lit);
                 break;
             }
         }
@@ -4939,6 +5012,9 @@ pub const Parser = struct {
         try args.append(self.gpa, strings_arr);
         try args.appendSlice(self.gpa, values.items);
 
+        if (type_args.len > 0) {
+            return try self.builder.addCallWithTypeArgs(call_sp, tag, args.items, type_args);
+        }
         return try self.builder.addCall(call_sp, tag, args.items);
     }
 
@@ -5547,6 +5623,9 @@ pub const Parser = struct {
             } else {
                 const key_tok = self.advance();
                 var key_span = tokenSpan(key_tok);
+                if (key_tok.kind == .no_substitution_template or key_tok.kind == .template_head) {
+                    try self.reportCodeAt(key_tok.span.start, key_tok.line, 1136, "Property assignment expected.");
+                }
                 if (key_tok.kind == .number_literal and self.peek().kind == .dot and self.peekAt(1).kind == .colon) {
                     const dot_tok = self.advance();
                     key_span.end = dot_tok.span.end;
@@ -6188,7 +6267,9 @@ test "parser: for-of loop accepts object binding pattern target" {
     const top = hir_mod.blockStmts(&s.hir, root)[0];
     try T.expectEqual(hir_mod.NodeKind.for_of_stmt, s.hir.kindOf(top));
     const fr = hir_mod.forInOf(&s.hir, top);
-    try T.expectEqual(hir_mod.NodeKind.object_pattern, s.hir.kindOf(fr.target));
+    try T.expectEqual(hir_mod.NodeKind.let_decl, s.hir.kindOf(fr.target));
+    const target = hir_mod.varDeclOf(&s.hir, fr.target);
+    try T.expectEqual(hir_mod.NodeKind.object_pattern, s.hir.kindOf(target.name));
 }
 
 test "parser: for-await-of sets is_await flag" {

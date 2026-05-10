@@ -132,6 +132,9 @@ pub const TsCodes = struct {
     pub const symbol_operator_not_allowed: u32 = 2469;
     pub const yield_implicit_any: u32 = 7057;
     pub const no_overlap_comparison: u32 = 2367;
+    pub const switch_case_not_comparable: u32 = 2678;
+    pub const for_of_var_conflict: u32 = 2481;
+    pub const iterator_value_missing: u32 = 2490;
     pub const expression_always_truthy: u32 = 2872;
     /// Emitted when `// @ts-expect-error` was placed above a line
     /// that produced no diagnostics — the directive is unused.
@@ -880,14 +883,45 @@ pub const Checker = struct {
                 // sources we fall through to `any`.
                 const fr = hir_mod.forInOf(self.hir, node);
                 const src_t = try self.checkExpression(fr.source);
-                const elem_t: TypeId = blk: {
-                    if (self.interner.pool.flagsOf(src_t).is_object_type) {
-                        const idx = self.interner.objectNumberIndex(src_t);
-                        if (idx != types.Primitive.none) break :blk idx;
-                    }
-                    break :blk types.Primitive.any;
-                };
+                if (!self.isIterableLikeType(src_t)) {
+                    try self.report(fr.source, TsCodes.yield_star_not_iterable, "Type must have a '[Symbol.iterator]()' method that returns an iterator.");
+                } else {
+                    try self.checkForOfIteratorShape(fr.source, src_t);
+                }
+                const elem_t = try self.iterableElementType(src_t);
+                switch (self.hir.kindOf(fr.target)) {
+                    .var_decl, .let_decl, .const_decl => {
+                        const v = hir_mod.varDeclOf(self.hir, fr.target);
+                        if (v.type_annotation != hir_mod.none_node_id) {
+                            const declared_t = self.lowererLowerWithTypeParams(v.type_annotation) catch types.Primitive.any;
+                            if (!(self.engine.isAssignableTo(elem_t, declared_t) catch true)) {
+                                try self.report(fr.target, TsCodes.type_not_assignable, "Type is not assignable to declared type.");
+                            }
+                        }
+                        if ((self.hir.kindOf(fr.target) == .let_decl or self.hir.kindOf(fr.target) == .const_decl) and
+                            v.name != hir_mod.none_node_id and self.hir.kindOf(v.name) == .identifier)
+                        {
+                            const name = hir_mod.identifierOf(self.hir, v.name).name;
+                            if (self.nodeContainsIdentifier(fr.source, name)) {
+                                try self.report(fr.source, TsCodes.block_scoped_used_before_decl, "Block-scoped variable used before its declaration.");
+                            }
+                            if (self.bodyHasVarDeclarationNamed(fr.body, name)) {
+                                try self.report(fr.body, TsCodes.for_of_var_conflict, "Cannot initialize outer scoped variable in the same scope as block scoped declaration.");
+                            }
+                        }
+                    },
+                    .identifier => {
+                        const target_t = try self.checkExpression(fr.target);
+                        if (!(self.engine.isAssignableTo(elem_t, target_t) catch true)) {
+                            try self.report(fr.target, TsCodes.type_not_assignable, "Type is not assignable to target type.");
+                        }
+                    },
+                    else => {},
+                }
                 try self.bindForLoopTarget(fr.target, elem_t);
+                try self.pushNarrowScope();
+                defer self.popNarrowScope();
+                try self.recordLoopTargetBindings(fr.target, elem_t);
                 try self.checkStatement(fr.body);
             },
             .block_stmt => {
@@ -1066,7 +1100,8 @@ pub const Checker = struct {
             const local_name = spec.imported;
             const has_type = module.root.types.get(local_name) != null or module.root.namespaces.get(local_name) != null;
             const has_value = module.root.values.get(local_name) != null or module.root.namespaces.get(local_name) != null;
-            const is_local = if (spec.is_type_only) has_type else (has_value or has_type);
+            const has_hoisted_var = !spec.is_type_only and self.rootHasVarDeclarationNamed(node, local_name);
+            const is_local = if (spec.is_type_only) has_type else (has_value or has_type or has_hoisted_var);
             if (!is_local) {
                 const name = self.string_interner.get(local_name);
                 const msg = try std.fmt.allocPrint(
@@ -1081,6 +1116,15 @@ pub const Checker = struct {
                 });
             }
         }
+    }
+
+    fn rootHasVarDeclarationNamed(self: *Checker, node: NodeId, name: hir_mod.StringId) bool {
+        const root = self.rootBlockFor(node);
+        if (root == hir_mod.none_node_id or self.hir.kindOf(root) != .block_stmt) return false;
+        for (hir_mod.blockStmts(self.hir, root)) |stmt| {
+            if (self.bodyHasVarDeclarationNamed(stmt, name)) return true;
+        }
+        return false;
     }
 
     fn namespaceIsAmbient(self: *Checker, node: NodeId) bool {
@@ -1157,7 +1201,7 @@ pub const Checker = struct {
     /// case sees `x` narrowed to the union minus every listed case.
     fn checkSwitchStatement(self: *Checker, node: NodeId) CheckError!void {
         const sw = hir_mod.switchOf(self.hir, node);
-        _ = try self.checkExpression(sw.discriminant);
+        const discriminant_t = try self.checkExpression(sw.discriminant);
         const cases = hir_mod.switchCases(self.hir, node);
 
         // Two narrowing shapes are supported here:
@@ -1184,7 +1228,13 @@ pub const Checker = struct {
             if (case_p.value != hir_mod.none_node_id) {
                 // `case <literal>:` — type the literal, then narrow
                 // the discriminant's object to the matching variant.
-                _ = try self.checkExpression(case_p.value);
+                const case_t = try self.checkExpression(case_p.value);
+                if (self.shouldCheckNoOverlap(discriminant_t, case_t)) {
+                    const ok = self.engine.isComparableTo(case_t, discriminant_t) catch true;
+                    if (!ok) {
+                        try self.report(case_p.value, TsCodes.switch_case_not_comparable, "Type is not comparable to switch expression type.");
+                    }
+                }
                 if (is_disc_narrowable) {
                     try self.applyDiscriminatedNarrow(sw.discriminant, case_p.value, true);
                 } else if (is_ident_narrowable) {
@@ -1273,6 +1323,13 @@ pub const Checker = struct {
         // narrowed types. Popped on return.
         try self.pushNarrowScope();
         defer self.popNarrowScope();
+        if (f.name != hir_mod.none_node_id and self.hir.kindOf(f.name) == .identifier) {
+            const fn_id = hir_mod.identifierOf(self.hir, f.name);
+            const fn_t = self.hir.typeOf(node);
+            if (fn_t != types.Primitive.none) {
+                try self.recordNarrow(fn_id.name, fn_t);
+            }
+        }
         // §3.A.11 — bind `this` from an explicit `this: T` parameter.
         // The parser captures these as a regular parameter whose name
         // identifier interned as "this". When found, lower its
@@ -2906,10 +2963,7 @@ pub const Checker = struct {
         if (!self.interner.pool.flagsOf(t).is_object_type) return false;
         const symbol_iterator = self.string_interner.intern("Symbol.iterator") catch return false;
         if (self.interner.objectNumberIndex(t) != types.Primitive.none) return true;
-        if (self.interner.objectMember(t, symbol_iterator) != null) {
-            const next_id = self.string_interner.intern("next") catch return false;
-            return self.interner.objectMember(t, next_id) != null;
-        }
+        if (self.interner.objectMember(t, symbol_iterator) != null) return true;
         return false;
     }
 
@@ -2936,6 +2990,26 @@ pub const Checker = struct {
             }
         }
         return types.Primitive.any;
+    }
+
+    fn checkForOfIteratorShape(self: *Checker, node: NodeId, t: TypeId) CheckError!void {
+        if (t == types.Primitive.any or t == types.Primitive.unknown) return;
+        if (t >= self.interner.pool.typeCount()) return;
+        const flags = self.interner.pool.flagsOf(t);
+        if (flags.is_union) {
+            for (self.interner.unionMembers(t)) |member| try self.checkForOfIteratorShape(node, member);
+            return;
+        }
+        if (!flags.is_object_type) return;
+        const symbol_iterator = self.string_interner.intern("Symbol.iterator") catch return error.OutOfMemory;
+        if (self.interner.objectMember(t, symbol_iterator) == null) return;
+        const next_id = self.string_interner.intern("next") catch return error.OutOfMemory;
+        const next_t = self.interner.objectMember(t, next_id) orelse return;
+        const ret_t = self.interner.signatureReturn(next_t) orelse return;
+        const value_id = self.string_interner.intern("value") catch return error.OutOfMemory;
+        if (self.interner.objectMember(ret_t, value_id) == null) {
+            try self.report(node, TsCodes.iterator_value_missing, "The type returned by the 'next()' method of an iterator must have a 'value' property.");
+        }
     }
 
     fn arrayBindingPatternParameterType(self: *Checker, pattern_node: NodeId) CheckError!TypeId {
@@ -6881,13 +6955,7 @@ pub const Checker = struct {
     pub fn checkExpression(self: *Checker, node: NodeId) CheckError!TypeId {
         const t: TypeId = switch (self.hir.kindOf(node)) {
             .literal_string => types.Primitive.string_t,
-            .template_literal => blk: {
-                // Type-check substitutions but the whole expression's
-                // type is plain `string`.
-                const tpl_exprs = hir_mod.templateLiteralExprs(self.hir, node);
-                for (tpl_exprs) |e| _ = try self.checkExpression(e);
-                break :blk types.Primitive.string_t;
-            },
+            .template_literal => try self.checkTemplateLiteralExpression(node),
             .literal_number => types.Primitive.number_t,
             .literal_bigint => types.Primitive.bigint_t,
             .literal_bool => types.Primitive.boolean_t,
@@ -6946,10 +7014,10 @@ pub const Checker = struct {
                             }
                         },
                         .sub, .mul, .div, .mod, .pow, .bit_and, .bit_or, .bit_xor, .shl, .shr, .shr_unsigned => {
-                            if (self.typeContainsSymbol(target_t)) {
+                            if (!self.isArithmeticOperandAllowed(target_t)) {
                                 try self.reportArithmeticOperand(a.target, TsCodes.arithmetic_left_operand_type, "The left-hand side of an arithmetic operation must be of type 'any', 'number', 'bigint' or an enum type.");
                             }
-                            if (self.typeContainsSymbol(value_t)) {
+                            if (!self.isArithmeticOperandAllowed(value_t)) {
                                 try self.reportArithmeticOperand(a.value, TsCodes.arithmetic_right_operand_type, "The right-hand side of an arithmetic operation must be of type 'any', 'number', 'bigint' or an enum type.");
                             }
                         },
@@ -7106,6 +7174,12 @@ pub const Checker = struct {
                 // types) and the return type.
                 const type_arg_nodes = hir_mod.callTypeArgs(self.hir, node);
                 var effective_callee_t = callee_t;
+                const call_member_id = self.string_interner.intern("__call") catch return error.OutOfMemory;
+                if (!self.interner.isSignature(effective_callee_t)) {
+                    if (self.interner.objectMember(effective_callee_t, call_member_id)) |call_member_t| {
+                        effective_callee_t = call_member_t;
+                    }
+                }
                 var used_explicit_type_args = false;
                 var callee_had_generic_record = false;
                 if (type_arg_nodes.len > 0 and self.interner.isSignature(callee_t) and self.hir.kindOf(c.callee) == .identifier) {
@@ -7141,16 +7215,18 @@ pub const Checker = struct {
                     if (callee_t == types.Primitive.any or callee_t == types.Primitive.unknown) {
                         try self.report(node, TsCodes.untyped_function_type_args, "Untyped function calls may not accept type arguments.");
                     } else if (self.interner.isSignature(callee_t)) {
-                        const msg = try std.fmt.allocPrint(
-                            self.diag_arena.allocator(),
-                            "Expected 0 type arguments, but got {d}.",
-                            .{type_arg_nodes.len},
-                        );
-                        try self.diagnostics.append(self.gpa, .{
-                            .node = node,
-                            .code = TsCodes.expected_n_type_arguments,
-                            .message = msg,
-                        });
+                        if (!self.containsFreeTypeParameter(callee_t)) {
+                            const msg = try std.fmt.allocPrint(
+                                self.diag_arena.allocator(),
+                                "Expected 0 type arguments, but got {d}.",
+                                .{type_arg_nodes.len},
+                            );
+                            try self.diagnostics.append(self.gpa, .{
+                                .node = node,
+                                .code = TsCodes.expected_n_type_arguments,
+                                .message = msg,
+                            });
+                        }
                     }
                 }
                 if (self.interner.isSignature(effective_callee_t)) {
@@ -7212,6 +7288,9 @@ pub const Checker = struct {
                     }
                 }
                 if (self.interner.signatureReturn(effective_callee_t)) |ret| break :blk ret;
+                if (callee_t != types.Primitive.any and callee_t != types.Primitive.unknown) {
+                    try self.report(c.callee, TsCodes.not_callable, "This expression is not callable.");
+                }
                 break :blk types.Primitive.any;
             },
             .member_access => blk: {
@@ -9265,6 +9344,114 @@ pub const Checker = struct {
         });
     }
 
+    fn checkTemplateLiteralExpression(self: *Checker, node: NodeId) CheckError!TypeId {
+        const exprs = hir_mod.templateLiteralExprs(self.hir, node);
+        for (exprs) |e| _ = try self.checkExpression(e);
+        if (try self.templateLiteralConcreteString(node)) |sid| {
+            return self.interner.internStringLiteral(sid) catch types.Primitive.string_t;
+        }
+        return types.Primitive.string_t;
+    }
+
+    fn templateLiteralConcreteString(self: *Checker, node: NodeId) CheckError!?hir_mod.StringId {
+        const texts = hir_mod.templateLiteralTexts(self.hir, node);
+        const exprs = hir_mod.templateLiteralExprs(self.hir, node);
+        if (texts.len != exprs.len + 1) return null;
+        var buf: std.ArrayListUnmanaged(u8) = .empty;
+        defer buf.deinit(self.gpa);
+        for (texts, 0..) |text_node, i| {
+            if (self.hir.kindOf(text_node) != .literal_string) return null;
+            const text = hir_mod.literalStringOf(self.hir, text_node);
+            try buf.appendSlice(self.gpa, self.string_interner.get(text.value));
+            if (i < exprs.len) {
+                if (!try self.appendTemplateSubstitutionString(exprs[i], &buf)) return null;
+            }
+        }
+        return self.string_interner.intern(buf.items) catch return error.OutOfMemory;
+    }
+
+    fn appendTemplateSubstitutionString(
+        self: *Checker,
+        node: NodeId,
+        out: *std.ArrayListUnmanaged(u8),
+    ) CheckError!bool {
+        switch (self.hir.kindOf(node)) {
+            .literal_string => {
+                const lit = hir_mod.literalStringOf(self.hir, node);
+                try out.appendSlice(self.gpa, self.string_interner.get(lit.value));
+                return true;
+            },
+            .literal_number => {
+                const v = hir_mod.literalNumberOf(self.hir, node);
+                if (@trunc(v) == v and v >= @as(f64, @floatFromInt(std.math.minInt(i64))) and v <= @as(f64, @floatFromInt(std.math.maxInt(i64)))) {
+                    const as_int: i64 = @intFromFloat(v);
+                    const text = try std.fmt.allocPrint(self.gpa, "{d}", .{as_int});
+                    defer self.gpa.free(text);
+                    try out.appendSlice(self.gpa, text);
+                } else {
+                    const text = try std.fmt.allocPrint(self.gpa, "{d}", .{v});
+                    defer self.gpa.free(text);
+                    try out.appendSlice(self.gpa, text);
+                }
+                return true;
+            },
+            .literal_bigint => {
+                const lit = hir_mod.literalBigIntOf(self.hir, node);
+                try out.appendSlice(self.gpa, self.string_interner.get(lit.digits));
+                return true;
+            },
+            .literal_bool => {
+                try out.appendSlice(self.gpa, if (hir_mod.literalBoolOf(self.hir, node)) "true" else "false");
+                return true;
+            },
+            .literal_null => {
+                try out.appendSlice(self.gpa, "null");
+                return true;
+            },
+            .literal_undefined => {
+                try out.appendSlice(self.gpa, "undefined");
+                return true;
+            },
+            .unary_op => {
+                const u = hir_mod.unaryOf(self.hir, node);
+                if (u.op == .neg and self.hir.kindOf(u.operand) == .literal_number) {
+                    try out.append(self.gpa, '-');
+                    return try self.appendTemplateSubstitutionString(u.operand, out);
+                }
+                return false;
+            },
+            .as_expr, .satisfies_expr, .type_assertion, .non_null_expr => {
+                const a = hir_mod.asExpressionOf(self.hir, node);
+                return try self.appendTemplateSubstitutionString(a.expr, out);
+            },
+            else => return false,
+        }
+    }
+
+    fn isArithmeticOperandAllowed(self: *Checker, t: TypeId) bool {
+        if (t == types.Primitive.any or t == types.Primitive.unknown) return true;
+        const f = self.interner.pool.flagsOf(t);
+        if (f.is_union) {
+            for (self.interner.unionMembers(t)) |member| {
+                if (!self.isArithmeticOperandAllowed(member)) return false;
+            }
+            return true;
+        }
+        return f.is_number or f.is_bigint;
+    }
+
+    fn isInstanceofLeftAllowed(self: *Checker, t: TypeId) bool {
+        if (t == types.Primitive.any or t == types.Primitive.unknown) return true;
+        const f = self.interner.pool.flagsOf(t);
+        if (f.is_union) {
+            for (self.interner.unionMembers(t)) |member| {
+                if (!self.isInstanceofLeftAllowed(member)) return false;
+            }
+            return true;
+        }
+        return f.is_object or f.is_object_type or f.is_signature or f.is_tuple or f.is_type_parameter;
+    }
+
     fn checkBinop(self: *Checker, node: NodeId) CheckError!TypeId {
         const b = hir_mod.binopOf(self.hir, node);
         const lhs = try self.checkExpression(b.lhs);
@@ -9289,19 +9476,19 @@ pub const Checker = struct {
                 break :blk types.Primitive.number_t;
             },
             .sub, .mul, .div, .mod, .pow => blk: {
-                if (self.typeContainsSymbol(lhs)) {
+                if (!self.isArithmeticOperandAllowed(lhs)) {
                     try self.reportArithmeticOperand(b.lhs, TsCodes.arithmetic_left_operand_type, "The left-hand side of an arithmetic operation must be of type 'any', 'number', 'bigint' or an enum type.");
                 }
-                if (self.typeContainsSymbol(rhs)) {
+                if (!self.isArithmeticOperandAllowed(rhs)) {
                     try self.reportArithmeticOperand(b.rhs, TsCodes.arithmetic_right_operand_type, "The right-hand side of an arithmetic operation must be of type 'any', 'number', 'bigint' or an enum type.");
                 }
                 break :blk types.Primitive.number_t;
             },
             .bit_and, .bit_or, .bit_xor, .shl, .shr, .shr_unsigned => blk: {
-                if (self.typeContainsSymbol(lhs)) {
+                if (!self.isArithmeticOperandAllowed(lhs)) {
                     try self.reportArithmeticOperand(b.lhs, TsCodes.arithmetic_left_operand_type, "The left-hand side of an arithmetic operation must be of type 'any', 'number', 'bigint' or an enum type.");
                 }
-                if (self.typeContainsSymbol(rhs)) {
+                if (!self.isArithmeticOperandAllowed(rhs)) {
                     try self.reportArithmeticOperand(b.rhs, TsCodes.arithmetic_right_operand_type, "The right-hand side of an arithmetic operation must be of type 'any', 'number', 'bigint' or an enum type.");
                 }
                 break :blk types.Primitive.number_t;
@@ -9334,7 +9521,7 @@ pub const Checker = struct {
                 break :blk types.Primitive.boolean_t;
             },
             .instanceof => blk: {
-                if (self.typeContainsSymbol(lhs)) {
+                if (!self.isInstanceofLeftAllowed(lhs)) {
                     try self.report(b.lhs, TsCodes.instanceof_left_type, "The left-hand side of an 'instanceof' expression must be of type 'any', an object type or a type parameter.");
                 }
                 if (self.typeContainsSymbol(rhs)) {
@@ -10833,6 +11020,123 @@ pub const Checker = struct {
                 self.hir.setType(target, elem_t);
             },
             else => {},
+        }
+    }
+
+    fn recordLoopTargetBindings(self: *Checker, target: NodeId, elem_t: TypeId) CheckError!void {
+        if (target == hir_mod.none_node_id) return;
+        switch (self.hir.kindOf(target)) {
+            .var_decl, .let_decl, .const_decl => {
+                const v = hir_mod.varDeclOf(self.hir, target);
+                try self.recordLoopTargetBindings(v.name, elem_t);
+            },
+            .identifier => {
+                const id = hir_mod.identifierOf(self.hir, target);
+                try self.recordNarrow(id.name, elem_t);
+            },
+            .object_pattern, .array_pattern => {
+                const elements = hir_mod.patternElements(self.hir, target);
+                for (elements) |element| {
+                    if (self.hir.kindOf(element) != .parameter) continue;
+                    const p = hir_mod.parameterOf(self.hir, element);
+                    if (p.name == hir_mod.none_node_id) continue;
+                    if (self.hir.kindOf(p.name) == .identifier) {
+                        const id = hir_mod.identifierOf(self.hir, p.name);
+                        const binding_t = self.typeOfPatternBinding(target, elem_t, id.name) orelse types.Primitive.any;
+                        try self.recordNarrow(id.name, binding_t);
+                    } else if (self.hir.kindOf(p.name) == .object_pattern or self.hir.kindOf(p.name) == .array_pattern) {
+                        try self.recordLoopTargetBindings(p.name, types.Primitive.any);
+                    }
+                }
+            },
+            else => {},
+        }
+    }
+
+    fn nodeContainsIdentifier(self: *Checker, node: NodeId, name: hir_mod.StringId) bool {
+        if (node == hir_mod.none_node_id) return false;
+        switch (self.hir.kindOf(node)) {
+            .identifier => return hir_mod.identifierOf(self.hir, node).name == name,
+            .member_access => {
+                const m = hir_mod.memberOf(self.hir, node);
+                return self.nodeContainsIdentifier(m.object, name);
+            },
+            .element_access => {
+                const e = hir_mod.elementOf(self.hir, node);
+                return self.nodeContainsIdentifier(e.object, name) or self.nodeContainsIdentifier(e.index, name);
+            },
+            .call_expr => {
+                const c = hir_mod.callOf(self.hir, node);
+                if (self.nodeContainsIdentifier(c.callee, name)) return true;
+                for (hir_mod.callArgs(self.hir, node)) |arg| if (self.nodeContainsIdentifier(arg, name)) return true;
+                return false;
+            },
+            .array_literal => {
+                for (hir_mod.arrayLiteralElements(self.hir, node)) |el| if (self.nodeContainsIdentifier(el, name)) return true;
+                return false;
+            },
+            .object_literal => {
+                for (hir_mod.objectLiteralProps(self.hir, node)) |prop| if (self.nodeContainsIdentifier(prop, name)) return true;
+                return false;
+            },
+            .object_property => {
+                const p = hir_mod.objectPropertyOf(self.hir, node);
+                return self.nodeContainsIdentifier(p.key, name) or self.nodeContainsIdentifier(p.value, name);
+            },
+            .binary_op => {
+                const b = hir_mod.binopOf(self.hir, node);
+                return self.nodeContainsIdentifier(b.lhs, name) or self.nodeContainsIdentifier(b.rhs, name);
+            },
+            .unary_op => return self.nodeContainsIdentifier(hir_mod.unaryOf(self.hir, node).operand, name),
+            .as_expr, .satisfies_expr, .type_assertion, .non_null_expr => return self.nodeContainsIdentifier(hir_mod.asExpressionOf(self.hir, node).expr, name),
+            .template_literal => {
+                for (hir_mod.templateLiteralExprs(self.hir, node)) |expr| if (self.nodeContainsIdentifier(expr, name)) return true;
+                return false;
+            },
+            else => return false,
+        }
+    }
+
+    fn bodyHasVarDeclarationNamed(self: *Checker, node: NodeId, name: hir_mod.StringId) bool {
+        if (node == hir_mod.none_node_id) return false;
+        switch (self.hir.kindOf(node)) {
+            .var_decl => {
+                const v = hir_mod.varDeclOf(self.hir, node);
+                return v.name != hir_mod.none_node_id and self.hir.kindOf(v.name) == .identifier and hir_mod.identifierOf(self.hir, v.name).name == name;
+            },
+            .block_stmt => {
+                for (hir_mod.blockStmts(self.hir, node)) |stmt| if (self.bodyHasVarDeclarationNamed(stmt, name)) return true;
+                return false;
+            },
+            .if_stmt => {
+                const i = hir_mod.ifOf(self.hir, node);
+                return self.bodyHasVarDeclarationNamed(i.then_branch, name) or self.bodyHasVarDeclarationNamed(i.else_branch, name);
+            },
+            .for_in_stmt, .for_of_stmt => {
+                const f = hir_mod.forInOf(self.hir, node);
+                return self.bodyHasVarDeclarationNamed(f.target, name) or self.bodyHasVarDeclarationNamed(f.body, name);
+            },
+            .for_stmt => {
+                const f = hir_mod.forStmtOf(self.hir, node);
+                return self.bodyHasVarDeclarationNamed(f.init, name) or self.bodyHasVarDeclarationNamed(f.body, name);
+            },
+            .try_stmt => {
+                const t = hir_mod.tryOf(self.hir, node);
+                return self.bodyHasVarDeclarationNamed(t.block, name) or
+                    self.bodyHasVarDeclarationNamed(t.catch_block, name) or
+                    self.bodyHasVarDeclarationNamed(t.finally_block, name);
+            },
+            .while_stmt => return self.bodyHasVarDeclarationNamed(hir_mod.whileOf(self.hir, node).body, name),
+            .do_while_stmt => return self.bodyHasVarDeclarationNamed(hir_mod.doWhileOf(self.hir, node).body, name),
+            .switch_stmt => {
+                for (hir_mod.switchCases(self.hir, node)) |case| if (self.bodyHasVarDeclarationNamed(case, name)) return true;
+                return false;
+            },
+            .switch_case => {
+                for (hir_mod.switchCaseStmts(self.hir, node)) |stmt| if (self.bodyHasVarDeclarationNamed(stmt, name)) return true;
+                return false;
+            },
+            else => return false,
         }
     }
 

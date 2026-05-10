@@ -560,15 +560,7 @@ pub const Printer = struct {
 
     fn printVarDecl(self: *Printer, node: NodeId) anyerror!void {
         const kind = self.hir.kindOf(node);
-        // ES5 has no block-scoped declarations — collapse `let`/`const`
-        // to `var`. Block-scoping rewrites for shadowed names are
-        // deferred; v0 trusts user code not to rely on TDZ.
-        const kw: []const u8 = switch (kind) {
-            .var_decl => "var",
-            .let_decl => if (self.options.es_target == .es5) "var" else "let",
-            .const_decl => if (self.options.es_target == .es5) "var" else "const",
-            else => unreachable,
-        };
+        const kw = self.varDeclKeyword(kind);
         const v = hir_mod.varDeclOf(self.hir, node);
         // Destructuring binding: `const { a } = obj` / `const [x] = arr`.
         // The native pattern syntax isn't yet wired through the
@@ -589,13 +581,79 @@ pub const Printer = struct {
         }
         try self.write(kw);
         try self.write(" ");
-        if (v.name != hir_mod.none_node_id) try self.printExpression(v.name);
+        if (v.name != hir_mod.none_node_id) try self.printBindingName(v.name);
         // Type annotation erases at runtime.
         if (v.init != hir_mod.none_node_id) {
             try self.write(" = ");
             try self.printExpression(v.init);
         }
         try self.writeSemi();
+    }
+
+    fn varDeclKeyword(self: *const Printer, kind: hir_mod.NodeKind) []const u8 {
+        // ES5 has no block-scoped declarations — collapse `let`/`const`
+        // to `var`. Block-scoping rewrites for shadowed names are
+        // deferred; v0 trusts user code not to rely on TDZ.
+        return switch (kind) {
+            .var_decl => "var",
+            .let_decl => if (self.options.es_target == .es5) "var" else "let",
+            .const_decl => if (self.options.es_target == .es5) "var" else "const",
+            else => unreachable,
+        };
+    }
+
+    fn printVarDeclHeader(self: *Printer, node: NodeId, include_init: bool) anyerror!void {
+        const kind = self.hir.kindOf(node);
+        const v = hir_mod.varDeclOf(self.hir, node);
+        try self.write(self.varDeclKeyword(kind));
+        try self.write(" ");
+        if (v.name != hir_mod.none_node_id) try self.printBindingName(v.name);
+        if (include_init and v.init != hir_mod.none_node_id) {
+            try self.write(" = ");
+            try self.printExpression(v.init);
+        }
+    }
+
+    fn printBindingName(self: *Printer, node: NodeId) anyerror!void {
+        switch (self.hir.kindOf(node)) {
+            .object_pattern => try self.printObjectBindingPattern(node),
+            .array_pattern => try self.printArrayBindingPattern(node),
+            else => try self.printExpression(node),
+        }
+    }
+
+    fn printObjectBindingPattern(self: *Printer, node: NodeId) anyerror!void {
+        try self.write("{ ");
+        const elements = hir_mod.patternElements(self.hir, node);
+        for (elements, 0..) |elem, i| {
+            if (i > 0) try self.write(", ");
+            if (self.hir.kindOf(elem) != .parameter) continue;
+            const param = hir_mod.parameterOf(self.hir, elem);
+            if (param.flags.is_rest) try self.write("...");
+            if (param.name != hir_mod.none_node_id) try self.printBindingName(param.name);
+            if (param.default_value != hir_mod.none_node_id) {
+                try self.write(" = ");
+                try self.printExpression(param.default_value);
+            }
+        }
+        try self.write(" }");
+    }
+
+    fn printArrayBindingPattern(self: *Printer, node: NodeId) anyerror!void {
+        try self.write("[");
+        const elements = hir_mod.patternElements(self.hir, node);
+        for (elements, 0..) |elem, i| {
+            if (i > 0) try self.write(", ");
+            if (self.hir.kindOf(elem) != .parameter) continue;
+            const param = hir_mod.parameterOf(self.hir, elem);
+            if (param.flags.is_rest) try self.write("...");
+            if (param.name != hir_mod.none_node_id) try self.printBindingName(param.name);
+            if (param.default_value != hir_mod.none_node_id) {
+                try self.write(" = ");
+                try self.printExpression(param.default_value);
+            }
+        }
+        try self.write("]");
     }
 
     /// Lower `const { a, b } = obj` / `const [x, y] = arr` to a
@@ -725,7 +783,12 @@ pub const Printer = struct {
     fn printFor(self: *Printer, node: NodeId) !void {
         const p = hir_mod.forStmtOf(self.hir, node);
         try self.write("for (");
-        if (p.init != hir_mod.none_node_id) try self.printExpression(p.init);
+        if (p.init != hir_mod.none_node_id) {
+            switch (self.hir.kindOf(p.init)) {
+                .var_decl, .let_decl, .const_decl => try self.printVarDeclHeader(p.init, true),
+                else => try self.printExpression(p.init),
+            }
+        }
         try self.write(";");
         if (p.cond != hir_mod.none_node_id) {
             try self.write(" ");
@@ -762,7 +825,10 @@ pub const Printer = struct {
         } else {
             try self.write("for (");
         }
-        try self.printExpression(p.target);
+        switch (self.hir.kindOf(p.target)) {
+            .var_decl, .let_decl, .const_decl => try self.printVarDeclHeader(p.target, false),
+            else => try self.printBindingName(p.target),
+        }
         try self.write(" ");
         try self.write(kw);
         try self.write(" ");
@@ -772,33 +838,20 @@ pub const Printer = struct {
     }
 
     /// Emit the binding decl line for a downleveled `for-of`. The
-    /// target is a `let_decl`/`const_decl`/`var_decl`/identifier;
-    /// strip the initializer (we'll assign per-iteration) and emit
-    /// just the keyword + name.
-    ///
-    /// When the parser sees `for (let|const|var x of …)` it collapses
-    /// the binding to a bare identifier (the decl keyword is consumed
-    /// but not preserved on the HIR target). To keep the lowered ES5
-    /// output well-formed we conservatively prefix `var ` for the
-    /// identifier case as well — `var` redeclaration is a hoisted
-    /// no-op so this is safe even for the rare bare `for (x of …)`.
+    /// parser preserves declaration targets, so strip any initializer
+    /// here; the ES5 loop assigns the current array element after this
+    /// fragment.
     fn printForOfBindingDecl(self: *Printer, target: NodeId) anyerror!void {
         const k = self.hir.kindOf(target);
         if (k == .let_decl or k == .const_decl or k == .var_decl) {
             const v = hir_mod.varDeclOf(self.hir, target);
-            const kw_str: []const u8 = switch (k) {
-                .let_decl => "var ", // var binds for ES5 compatibility
-                .const_decl => "var ",
-                .var_decl => "var ",
-                else => "var ",
-            };
-            try self.write(kw_str);
-            if (v.name != hir_mod.none_node_id) try self.printExpression(v.name);
+            try self.write("var ");
+            if (v.name != hir_mod.none_node_id) try self.printBindingName(v.name);
         } else if (k == .identifier) {
             try self.write("var ");
             try self.printExpression(target);
         } else {
-            try self.printExpression(target);
+            try self.printBindingName(target);
         }
     }
 
