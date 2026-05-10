@@ -2888,12 +2888,15 @@ pub const Parser = struct {
         const start_cursor = self.cursor;
         const start_span_start = self.peek().span.start;
         // `asserts <ident>` ...
-        if (self.peek().kind == .kw_asserts and self.peekAt(1).kind == .identifier) {
+        if (self.peek().kind == .kw_asserts and
+            self.peekAt(1).kind == .identifier and
+            !self.peekAt(1).flags.preceded_by_newline)
+        {
             _ = self.advance(); // asserts
             const arg_tok = self.advance();
             const arg_id = try self.internToken(arg_tok);
             // `asserts <ident>` (predicate-less) — narrows to truthy.
-            if (self.peek().kind != .kw_is) {
+            if (self.peek().kind != .kw_is or self.peek().flags.preceded_by_newline) {
                 const idx = self.findParamIndex(params, arg_id) orelse 0xFFFF;
                 return try self.builder.addTypePredicate(
                     .{ .start = start_span_start, .end = arg_tok.span.end },
@@ -2915,7 +2918,10 @@ pub const Parser = struct {
             );
         }
         // `<ident> is T`
-        if (self.peek().kind == .identifier and self.peekAt(1).kind == .kw_is) {
+        if (self.peek().kind == .identifier and
+            self.peekAt(1).kind == .kw_is and
+            !self.peekAt(1).flags.preceded_by_newline)
+        {
             const arg_tok = self.advance();
             const arg_id = try self.internToken(arg_tok);
             _ = self.advance(); // is
@@ -2930,7 +2936,10 @@ pub const Parser = struct {
             );
         }
         // `this is T`
-        if (self.peek().kind == .kw_this and self.peekAt(1).kind == .kw_is) {
+        if (self.peek().kind == .kw_this and
+            self.peekAt(1).kind == .kw_is and
+            !self.peekAt(1).flags.preceded_by_newline)
+        {
             _ = self.advance(); // this
             const this_id = self.interner.intern("this") catch return error.OutOfMemory;
             _ = self.advance(); // is
@@ -3607,7 +3616,7 @@ pub const Parser = struct {
                 const params = try self.parseTypeParameterList();
                 defer self.gpa.free(params);
                 var ret: NodeId = hir_mod.none_node_id;
-                if (self.match(.colon)) ret = try self.parseTypeAnnotation();
+                if (self.match(.colon)) ret = try self.parseReturnTypeAnnotation(params);
                 const fn_t = try self.builder.addFnType(
                     .{ .start = name_span.start, .end = self.tokens[self.cursor - 1].span.end },
                     type_params,
@@ -3667,7 +3676,7 @@ pub const Parser = struct {
         const params = try self.parseTypeParameterList();
         defer self.gpa.free(params);
         var ret: NodeId = hir_mod.none_node_id;
-        if (self.match(.colon)) ret = try self.parseTypeAnnotation();
+        if (self.match(.colon)) ret = try self.parseReturnTypeAnnotation(params);
         const end_pos = if (self.cursor > 0) self.tokens[self.cursor - 1].span.end else start.span.end;
         const fn_t = try self.builder.addFnType(
             .{ .start = start.span.start, .end = end_pos },
@@ -3768,7 +3777,7 @@ pub const Parser = struct {
             const params = try self.parseTypeParameterList();
             defer self.gpa.free(params);
             var ret: NodeId = hir_mod.none_node_id;
-            if (self.match(.colon)) ret = try self.parseTypeAnnotation();
+            if (self.match(.colon)) ret = try self.parseReturnTypeAnnotation(params);
             const fn_t = try self.builder.addFnType(
                 .{ .start = member_span.start, .end = if (self.cursor > 0) self.tokens[self.cursor - 1].span.end else member_span.end },
                 type_params,

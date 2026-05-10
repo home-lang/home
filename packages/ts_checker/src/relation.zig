@@ -507,6 +507,23 @@ pub const Engine = struct {
             return true;
         }
 
+        // The empty object type (`{}` / uppercase `Object` in our
+        // current lib approximation) accepts every non-nullish value,
+        // including primitives. Lowercase `object` remains the
+        // primitive `object_t` sentinel and is intentionally stricter.
+        if (tf.is_object_type and
+            self.interner.objectMembers(target).len == 0 and
+            self.interner.objectStringIndex(target) == Primitive.none and
+            self.interner.objectNumberIndex(target) == Primitive.none and
+            self.interner.objectSymbolIndex(target) == Primitive.none)
+        {
+            if (sf.is_type_parameter) return false;
+            return source != Primitive.null_t and
+                source != Primitive.undefined_t and
+                source != Primitive.void_t and
+                source != Primitive.unknown;
+        }
+
         // Object types: structural subtyping. Source must have all
         // properties target requires, and each shared property type
         // must be assignable in the same direction (depth-checked).
@@ -645,7 +662,8 @@ pub const Engine = struct {
         const tp = self.interner.signatureParams(target);
         var source_required: usize = sp.len;
         while (source_required > 0) {
-            if (!self.typeIncludesUndefined(sp[source_required - 1])) break;
+            if (!self.typeIncludesUndefined(sp[source_required - 1]) and
+                sp[source_required - 1] != Primitive.void_t) break;
             source_required -= 1;
         }
         if (source_required > tp.len) return false;

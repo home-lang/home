@@ -231,6 +231,11 @@ pub const FnPredicate = struct {
     param_index: u16,
     /// The asserted type (TypeId).
     target_type: TypeId,
+    /// Original target type node for explicit predicates. Kept so
+    /// forward references such as `this is LaterClass` can be
+    /// resolved when the guard is used, after later declarations have
+    /// populated the checker type tables.
+    target_node: NodeId = hir_mod.none_node_id,
     /// True for `asserts arg is T` — narrows in fall-through, not
     /// just then-branch.
     is_asserts: bool,
@@ -427,6 +432,11 @@ pub const Checker = struct {
     /// `arg` identifier narrows in the then-branch (or fall-through
     /// for assertion functions).
     fn_predicates: std.AutoHashMapUnmanaged(hir_mod.StringId, FnPredicate),
+    /// Signature TypeId → type-predicate info. This carries
+    /// predicate metadata for methods and function-type members where
+    /// the call site sees a signature value rather than a bare
+    /// function declaration name, e.g. `obj.isFoo(): this is Foo`.
+    signature_predicates: std.AutoHashMapUnmanaged(TypeId, FnPredicate),
     /// Variable name → guard expression alias. Records `let cond =
     /// <guard-expr>` so that `if (cond)` narrows the same way as
     /// `if (<guard-expr>)`. Aliased-conditional narrowing per TS
@@ -540,6 +550,7 @@ pub const Checker = struct {
             .generic_fns = .empty,
             .generic_signature_params = .empty,
             .fn_predicates = .empty,
+            .signature_predicates = .empty,
             .cond_aliases = .empty,
             .overloads = .empty,
             .overload_has_implementation = .empty,
@@ -610,6 +621,7 @@ pub const Checker = struct {
         while (gsig_it.next()) |params| self.gpa.free(params.*);
         self.generic_signature_params.deinit(self.gpa);
         self.fn_predicates.deinit(self.gpa);
+        self.signature_predicates.deinit(self.gpa);
         self.cond_aliases.deinit(self.gpa);
         var ov_it = self.overloads.valueIterator();
         while (ov_it.next()) |list| list.deinit(self.gpa);
@@ -3889,11 +3901,14 @@ pub const Checker = struct {
             else
                 types.Primitive.unknown;
             const fn_name = hir_mod.identifierOf(self.hir, f.name).name;
-            try self.fn_predicates.put(self.gpa, fn_name, .{
+            const fn_pred: FnPredicate = .{
                 .param_index = pred.param_index,
                 .target_type = target_t,
+                .target_node = pred.target_type,
                 .is_asserts = pred.is_asserts,
-            });
+            };
+            try self.fn_predicates.put(self.gpa, fn_name, fn_pred);
+            try self.signature_predicates.put(self.gpa, sig, fn_pred);
         }
         return sig;
     }
@@ -6407,12 +6422,27 @@ pub const Checker = struct {
                     if (is_this_param) continue;
                     try fn_param_ts.append(self.gpa, t);
                 }
+                const is_predicate = ft.return_type != hir_mod.none_node_id and
+                    self.hir.kindOf(ft.return_type) == .type_predicate_type;
                 const ret_t = if (ft.return_type != hir_mod.none_node_id)
-                    try self.lowererLowerWithTypeParams(ft.return_type)
+                    (if (is_predicate) types.Primitive.boolean_t else try self.lowererLowerWithTypeParams(ft.return_type))
                 else
                     types.Primitive.void_t;
                 const is_construct = self.hir.kindOf(type_node) == .constructor_type;
                 const sig = self.interner.internSignature(fn_param_ts.items, ret_t, is_construct) catch return error.OutOfMemory;
+                if (is_predicate) {
+                    const pred = hir_mod.typePredicateOf(self.hir, ft.return_type);
+                    const target_t: TypeId = if (pred.target_type != hir_mod.none_node_id)
+                        (self.lowererLowerWithTypeParams(pred.target_type) catch types.Primitive.unknown)
+                    else
+                        types.Primitive.unknown;
+                    try self.signature_predicates.put(self.gpa, sig, .{
+                        .param_index = pred.param_index,
+                        .target_type = target_t,
+                        .target_node = pred.target_type,
+                        .is_asserts = pred.is_asserts,
+                    });
+                }
                 if (has_rest_param) try self.rest_signatures.put(self.gpa, sig, {});
                 if (captured_tp_ids.items.len > 0) {
                     const owned = captured_tp_ids.toOwnedSlice(self.gpa) catch return error.OutOfMemory;
@@ -6878,6 +6908,48 @@ pub const Checker = struct {
                 self.containsFreeTypeParameter(c.false_branch);
         }
         return false;
+    }
+
+    fn firstFreeTypeParameter(self: *Checker, t: TypeId) ?TypeId {
+        if (t >= self.interner.pool.typeCount()) return null;
+        const flags = self.interner.pool.flagsOf(t);
+        if (flags.is_type_parameter) return t;
+        if (flags.is_union) {
+            for (self.interner.unionMembers(t)) |m| {
+                if (self.firstFreeTypeParameter(m)) |tp| return tp;
+            }
+            return null;
+        }
+        if (flags.is_intersection) {
+            for (self.interner.intersectionMembers(t)) |m| {
+                if (self.firstFreeTypeParameter(m)) |tp| return tp;
+            }
+            return null;
+        }
+        if (flags.is_object_type) {
+            for (self.interner.objectMembers(t)) |m| {
+                if (self.firstFreeTypeParameter(m.type)) |tp| return tp;
+            }
+            const string_idx = self.interner.objectStringIndex(t);
+            if (string_idx != types.Primitive.none) {
+                if (self.firstFreeTypeParameter(string_idx)) |tp| return tp;
+            }
+            const number_idx = self.interner.objectNumberIndex(t);
+            if (number_idx != types.Primitive.none) {
+                if (self.firstFreeTypeParameter(number_idx)) |tp| return tp;
+            }
+            return null;
+        }
+        if (flags.is_signature) {
+            for (self.interner.signatureParams(t)) |p| {
+                if (self.firstFreeTypeParameter(p)) |tp| return tp;
+            }
+            if (self.interner.signatureReturn(t)) |r| {
+                if (self.firstFreeTypeParameter(r)) |tp| return tp;
+            }
+            return null;
+        }
+        return null;
     }
 
     fn lowerBuiltinObjectType(self: *Checker, name: []const u8) ?TypeId {
@@ -7767,7 +7839,73 @@ pub const Checker = struct {
             if (resolved.items.len == 0) return null;
             return self.interner.internUnion(resolved.items) catch return error.OutOfMemory;
         }
+        if (flags.is_intersection) {
+            const members = self.interner.intersectionMembers(obj_t);
+            var resolved: std.ArrayListUnmanaged(TypeId) = .empty;
+            defer resolved.deinit(self.gpa);
+            for (members) |member_t| {
+                if (try self.lookupObjectMember(member_t, name)) |t| {
+                    try resolved.append(self.gpa, t);
+                }
+            }
+            if (resolved.items.len == 0) return null;
+            if (resolved.items.len == 1) return resolved.items[0];
+            return self.interner.internIntersection(resolved.items) catch return error.OutOfMemory;
+        }
         return self.interner.objectMember(obj_t, name);
+    }
+
+    fn narrowTypeByPredicate(self: *Checker, current: TypeId, target: TypeId) CheckError!TypeId {
+        if (current == target or self.typeIsAnyLike(current)) return target;
+        if (self.typeIsAnyLike(target)) return current;
+        const current_flags = self.interner.pool.flagsOf(current);
+        if (current_flags.is_union) {
+            var kept: std.ArrayListUnmanaged(TypeId) = .empty;
+            defer kept.deinit(self.gpa);
+            for (self.interner.unionMembers(current)) |member| {
+                const member_flags = self.interner.pool.flagsOf(member);
+                if ((member_flags.is_null and !self.typeIncludesNull(target)) or
+                    (member_flags.is_undefined and !self.typeIncludesUndefined(target)))
+                {
+                    continue;
+                }
+                const member_to_target = member == target or (self.engine.isAssignableTo(member, target) catch false);
+                const target_to_member = target == member or (self.engine.isAssignableTo(target, member) catch false);
+                if (member_to_target) {
+                    try kept.append(self.gpa, member);
+                } else if (target_to_member) {
+                    try kept.append(self.gpa, target);
+                }
+            }
+            if (kept.items.len == 0) {
+                return self.interner.internIntersection(&.{ current, target }) catch return error.OutOfMemory;
+            }
+            if (kept.items.len == 1) return kept.items[0];
+            return self.interner.internUnion(kept.items) catch return error.OutOfMemory;
+        }
+        const current_to_target = self.engine.isAssignableTo(current, target) catch false;
+        const target_to_current = self.engine.isAssignableTo(target, current) catch false;
+        if (current_to_target and !target_to_current) return current;
+        if (target_to_current) return target;
+        return self.interner.internIntersection(&.{ current, target }) catch return error.OutOfMemory;
+    }
+
+    fn subtractTypeByPredicate(self: *Checker, current: TypeId, target: TypeId) CheckError!TypeId {
+        if (current == target) return types.Primitive.never;
+        const current_flags = self.interner.pool.flagsOf(current);
+        if (current_flags.is_union) {
+            var kept: std.ArrayListUnmanaged(TypeId) = .empty;
+            defer kept.deinit(self.gpa);
+            for (self.interner.unionMembers(current)) |member| {
+                const remove = member == target or (self.engine.isAssignableTo(member, target) catch false);
+                if (!remove) try kept.append(self.gpa, member);
+            }
+            if (kept.items.len == 0) return types.Primitive.never;
+            if (kept.items.len == 1) return kept.items[0];
+            return self.interner.internUnion(kept.items) catch return error.OutOfMemory;
+        }
+        if (self.engine.isAssignableTo(current, target) catch false) return types.Primitive.never;
+        return current;
     }
 
     fn propertyAllowsDelete(self: *Checker, obj_t: TypeId, name: hir_mod.StringId) bool {
@@ -8194,7 +8332,10 @@ pub const Checker = struct {
                             const fixed_count: usize = param_ts.len - 1;
                             const n = @min(fixed_count, arg_types.items.len);
                             for (0..n) |i| {
-                                if (self.interner.pool.flagsOf(param_ts[i]).is_signature) continue;
+                                if (self.interner.pool.flagsOf(param_ts[i]).is_signature) {
+                                    _ = try self.inferFromPredicateSignatureArgument(param_ts[i], args[i], arg_types.items[i], &call_subs);
+                                    continue;
+                                }
                                 try self.inferFromArgument(param_ts[i], arg_types.items[i], args[i], &call_subs);
                             }
                             const rest_arr_t = param_ts[param_ts.len - 1];
@@ -8223,7 +8364,10 @@ pub const Checker = struct {
                         } else {
                             const n = @min(param_ts.len, arg_types.items.len);
                             for (0..n) |i| {
-                                if (self.interner.pool.flagsOf(param_ts[i]).is_signature) continue;
+                                if (self.interner.pool.flagsOf(param_ts[i]).is_signature) {
+                                    _ = try self.inferFromPredicateSignatureArgument(param_ts[i], args[i], arg_types.items[i], &call_subs);
+                                    continue;
+                                }
                                 try self.inferFromArgument(param_ts[i], arg_types.items[i], args[i], &call_subs);
                             }
                         }
@@ -8923,7 +9067,137 @@ pub const Checker = struct {
             try self.recordNarrow(arg_id.name, narrowed);
             return;
         }
-        try self.recordNarrow(arg_id.name, pred.target_type);
+        const current = self.lookupNarrow(arg_id.name) orelse self.typeOfIdentifier(arg);
+        const target = try self.instantiatePredicateTarget(stmt, pred);
+        try self.recordNarrow(arg_id.name, try self.narrowTypeByPredicate(current, target));
+    }
+
+    fn resolvePredicateTarget(self: *Checker, pred: FnPredicate) CheckError!TypeId {
+        if (pred.target_type != types.Primitive.unknown or pred.target_node == hir_mod.none_node_id) return pred.target_type;
+        return self.lowererLowerWithTypeParams(pred.target_node) catch pred.target_type;
+    }
+
+    fn instantiatePredicateTarget(self: *Checker, call_node: NodeId, pred: FnPredicate) CheckError!TypeId {
+        const base_target = try self.resolvePredicateTarget(pred);
+        if (!self.containsFreeTypeParameter(base_target)) return base_target;
+        if (self.hir.kindOf(call_node) != .call_expr) return base_target;
+        const c = hir_mod.callOf(self.hir, call_node);
+        var callee_t = self.hir.typeOf(c.callee);
+        if (callee_t == types.Primitive.none) callee_t = try self.checkExpression(c.callee);
+        const call_member_id = self.string_interner.intern("__call") catch return error.OutOfMemory;
+        if (!self.interner.isSignature(callee_t)) {
+            if (self.interner.objectMember(callee_t, call_member_id)) |call_member_t| {
+                callee_t = call_member_t;
+            }
+        }
+        if (!self.interner.isSignature(callee_t)) return base_target;
+        const args = hir_mod.callArgs(self.hir, call_node);
+        var arg_types: std.ArrayListUnmanaged(TypeId) = .empty;
+        defer arg_types.deinit(self.gpa);
+        for (args) |arg| {
+            var arg_t = self.hir.typeOf(arg);
+            if (arg_t == types.Primitive.none) arg_t = try self.checkExpression(arg);
+            try arg_types.append(self.gpa, arg_t);
+        }
+        var subs: std.AutoHashMapUnmanaged(TypeId, TypeId) = .empty;
+        defer subs.deinit(self.gpa);
+        try self.inferPredicateCallSubstitutions(callee_t, args, arg_types.items, base_target, &subs);
+        if (subs.count() == 0) return base_target;
+        return self.substituteType(base_target, &subs) catch base_target;
+    }
+
+    fn inferPredicateCallSubstitutions(
+        self: *Checker,
+        sig: TypeId,
+        args: []const NodeId,
+        arg_types: []const TypeId,
+        predicate_target: TypeId,
+        subs: *std.AutoHashMapUnmanaged(TypeId, TypeId),
+    ) !void {
+        if (!self.interner.isSignature(sig)) return;
+        const param_ts = self.interner.signatureParams(sig);
+        const n = @min(param_ts.len, arg_types.len);
+        for (0..n) |i| {
+            const param_t = param_ts[i];
+            if (param_t >= self.interner.pool.typeCount()) continue;
+            const param_flags = self.interner.pool.flagsOf(param_t);
+            if (param_flags.is_signature and self.containsFreeTypeParameter(param_t)) {
+                if (try self.inferFromPredicateSignatureArgument(param_t, args[i], arg_types[i], subs)) continue;
+                if (self.interner.signatureReturn(param_t)) |param_ret| {
+                    if (param_ret != types.Primitive.boolean_t) {
+                        if (self.interner.signatureReturn(arg_types[i])) |arg_ret| {
+                            try self.inferFromPair(param_ret, arg_ret, subs);
+                        }
+                    }
+                }
+            } else if (!param_flags.is_signature) {
+                try self.inferFromArgument(param_t, arg_types[i], args[i], subs);
+            }
+        }
+        if (subs.count() != 0) return;
+        const target_tp = self.firstFreeTypeParameter(predicate_target) orelse return;
+        for (args) |arg| {
+            if (self.hir.kindOf(arg) != .identifier) continue;
+            const id = hir_mod.identifierOf(self.hir, arg);
+            const arg_pred = self.fn_predicates.get(id.name) orelse continue;
+            if (self.containsFreeTypeParameter(arg_pred.target_type)) continue;
+            try subs.put(self.gpa, target_tp, arg_pred.target_type);
+            return;
+        }
+    }
+
+    fn inferFromPredicateSignatureArgument(
+        self: *Checker,
+        param_sig: TypeId,
+        arg_node: NodeId,
+        arg_t: TypeId,
+        subs: *std.AutoHashMapUnmanaged(TypeId, TypeId),
+    ) !bool {
+        const param_pred = self.signature_predicates.get(param_sig) orelse return false;
+        if (!self.containsFreeTypeParameter(param_pred.target_type)) return false;
+        var arg_target: ?TypeId = null;
+        if (self.signature_predicates.get(arg_t)) |arg_pred| {
+            arg_target = arg_pred.target_type;
+        } else if (self.hir.kindOf(arg_node) == .identifier) {
+            const arg_id = hir_mod.identifierOf(self.hir, arg_node);
+            if (self.fn_predicates.get(arg_id.name)) |arg_pred| {
+                arg_target = arg_pred.target_type;
+            }
+        }
+        const target = arg_target orelse return false;
+        if (self.containsFreeTypeParameter(target)) return false;
+        try self.inferFromPair(param_pred.target_type, target, subs);
+        return true;
+    }
+
+    fn recordPredicateNarrowForExpression(self: *Checker, expr: NodeId, target: TypeId, when_true: bool) !bool {
+        if (self.hir.kindOf(expr) == .identifier) {
+            const id = hir_mod.identifierOf(self.hir, expr);
+            const current = self.lookupNarrow(id.name) orelse self.typeOfIdentifier(expr);
+            const narrowed = if (when_true)
+                try self.narrowTypeByPredicate(current, target)
+            else
+                (self.subtractTypeByPredicate(current, target) catch current);
+            try self.recordNarrow(id.name, narrowed);
+            return true;
+        }
+        if (self.hir.kindOf(expr) == .member_access) {
+            const m = hir_mod.memberOf(self.hir, expr);
+            if (self.hir.kindOf(m.object) != .identifier) return false;
+            const obj_id = hir_mod.identifierOf(self.hir, m.object);
+            const key: MemberKey = .{ .obj_name = obj_id.name, .prop_name = m.name };
+            const obj_t = self.lookupNarrow(obj_id.name) orelse self.typeOfIdentifier(m.object);
+            const current = self.lookupMemberNarrow(key) orelse
+                ((try self.lookupObjectMember(obj_t, m.name)) orelse self.hir.typeOf(expr));
+            if (current == types.Primitive.none) return false;
+            const narrowed = if (when_true)
+                try self.narrowTypeByPredicate(current, target)
+            else
+                (self.subtractTypeByPredicate(current, target) catch current);
+            try self.recordMemberNarrow(key, narrowed);
+            return true;
+        }
+        return false;
     }
 
     fn applyTypeGuard(self: *Checker, cond: NodeId, when_true: bool) !void {
@@ -8971,6 +9245,29 @@ pub const Checker = struct {
                 }
             }
         }
+        // `if (obj.isFoo())` where the method return type is
+        // `this is Foo`. Predicate metadata is attached to the
+        // method's signature, so narrow the receiver expression.
+        if (self.hir.kindOf(cond) == .call_expr) {
+            const c = hir_mod.callOf(self.hir, cond);
+            if (self.hir.kindOf(c.callee) == .member_access) {
+                const m = hir_mod.memberOf(self.hir, c.callee);
+                var callee_t = self.hir.typeOf(c.callee);
+                if (callee_t == types.Primitive.none) callee_t = try self.checkExpression(c.callee);
+                if (self.signature_predicates.get(callee_t)) |pred| {
+                    if (pred.param_index == 0xFFFF) {
+                        const target = try self.resolvePredicateTarget(pred);
+                        if (try self.recordPredicateNarrowForExpression(m.object, target, when_true)) return;
+                    }
+                }
+                if (self.fn_predicates.get(m.name)) |pred| {
+                    if (pred.param_index == 0xFFFF) {
+                        const target = try self.resolvePredicateTarget(pred);
+                        if (try self.recordPredicateNarrowForExpression(m.object, target, when_true)) return;
+                    }
+                }
+            }
+        }
         // `if (isFoo(x))` — type-predicate call narrowing. When the
         // condition is a call to a predicate function and the argument
         // at the predicate's parameter index is an identifier, narrow
@@ -8986,11 +9283,13 @@ pub const Checker = struct {
                         const arg = args[pred.param_index];
                         if (self.hir.kindOf(arg) == .identifier) {
                             const arg_id = hir_mod.identifierOf(self.hir, arg);
+                            const target = try self.instantiatePredicateTarget(cond, pred);
                             if (when_true) {
-                                try self.recordNarrow(arg_id.name, pred.target_type);
+                                const current = self.lookupNarrow(arg_id.name) orelse self.typeOfIdentifier(arg);
+                                try self.recordNarrow(arg_id.name, try self.narrowTypeByPredicate(current, target));
                             } else {
                                 const current = self.lookupNarrow(arg_id.name) orelse self.typeOfIdentifier(arg);
-                                const narrowed = self.subtractType(current, pred.target_type) catch current;
+                                const narrowed = self.subtractTypeByPredicate(current, target) catch current;
                                 try self.recordNarrow(arg_id.name, narrowed);
                             }
                             return;
@@ -11214,7 +11513,23 @@ pub const Checker = struct {
     fn checkLogical(self: *Checker, node: NodeId) CheckError!TypeId {
         const l = hir_mod.logicalOf(self.hir, node);
         const lhs = try self.checkExpression(l.lhs);
-        const rhs = try self.checkExpression(l.rhs);
+        const rhs = switch (l.op) {
+            .@"and" => blk: {
+                try self.pushNarrowScope();
+                try self.applyTypeGuard(l.lhs, true);
+                const t = try self.checkExpression(l.rhs);
+                self.popNarrowScope();
+                break :blk t;
+            },
+            .@"or" => blk: {
+                try self.pushNarrowScope();
+                try self.applyTypeGuard(l.lhs, false);
+                const t = try self.checkExpression(l.rhs);
+                self.popNarrowScope();
+                break :blk t;
+            },
+            .nullish => try self.checkExpression(l.rhs),
+        };
         // `a ?? b` — when `a` is non-null/undefined the result is
         // `a`'s type minus null/undefined; otherwise it's `b`'s
         // type. The runtime forks on nullish, so the result type
