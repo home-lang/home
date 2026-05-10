@@ -173,6 +173,9 @@ pub fn arrayProto(
     const sig_concat = try ti.internSignature(&[_]TypeId{arr_t}, arr_t, false);
     const sig_reverse = try ti.internSignature(&[_]TypeId{}, arr_t, false);
     const sig_sort = try ti.internSignature(&[_]TypeId{cb_tt_num}, arr_t, false);
+    // `values(): IterableIterator<T>` — modeled as `T[]` because the
+    // checker's iterable path already understands array element types.
+    const sig_values = try ti.internSignature(&[_]TypeId{}, arr_t, false);
 
     const m = [_]types.ObjectMember{
         .{ .name = try sint.intern("length"), .type = number_t, .is_optional = false, .is_readonly = false, .is_method = false },
@@ -189,6 +192,7 @@ pub fn arrayProto(
         .{ .name = try sint.intern("concat"), .type = sig_concat, .is_optional = false, .is_readonly = false, .is_method = true },
         .{ .name = try sint.intern("reverse"), .type = sig_reverse, .is_optional = false, .is_readonly = false, .is_method = true },
         .{ .name = try sint.intern("sort"), .type = sig_sort, .is_optional = false, .is_readonly = false, .is_method = true },
+        .{ .name = try sint.intern("values"), .type = sig_values, .is_optional = false, .is_readonly = false, .is_method = true },
     };
     const proto = try ti.internObjectType(&m);
     try cache.array_proto_by_elem.put(gpa, elem, proto);

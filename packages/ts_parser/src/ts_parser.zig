@@ -780,6 +780,9 @@ pub const Parser = struct {
             } else blk: {
                 const name_tok = try self.expectIdentifierLike();
                 try self.reportInvalidStrictName(name_tok);
+                if (kw.kind == .kw_var and self.strict_mode and self.tokenTextEquals(name_tok, "let")) {
+                    try self.reportCodeAt(name_tok.span.start, name_tok.line, 1212, "Identifier expected. 'let' is a reserved word in strict mode.");
+                }
                 if ((kw.kind == .kw_let or kw.kind == .kw_const) and self.tokenTextEquals(name_tok, "let")) {
                     try self.reportCodeAt(name_tok.span.start, name_tok.line, 2480, "'let' is not allowed to be used as a name in 'let' or 'const' declarations.");
                 }
@@ -2162,11 +2165,30 @@ pub const Parser = struct {
                     "Identifier expected. 'await' is a reserved word at the top-level of a module.",
                 );
             }
+            const alias_id = try self.internToken(alias_tok);
+            const alias_node = try self.builder.addIdentifier(tokenSpan(alias_tok), alias_id);
             _ = self.advance(); // local alias
             _ = self.advance(); // =
-            try self.consumeImportEqualsTail();
+            var module_id = self.interner.intern("") catch return error.OutOfMemory;
+            if (self.peek().kind == .kw_require and self.peekAt(1).kind == .open_paren and self.peekAt(2).kind == .string_literal) {
+                _ = self.advance(); // require
+                _ = self.advance(); // (
+                const mod_tok = self.advance();
+                module_id = try self.internStringLiteral(mod_tok);
+                _ = try self.expect(.close_paren, "')' after require module specifier");
+                try self.consumeStatementTerminator();
+            } else {
+                try self.consumeImportEqualsTail();
+            }
             const end_pos = self.tokens[self.cursor - 1].span.end;
-            return try self.builder.addBlock(.{ .start = start.span.start, .end = end_pos }, &.{});
+            return try self.builder.addImport(
+                .{ .start = start.span.start, .end = end_pos },
+                module_id,
+                alias_node,
+                hir_mod.none_node_id,
+                &.{},
+                is_type_only,
+            );
         }
 
         if (self.peek().kind == .string_literal) {
@@ -2200,7 +2222,7 @@ pub const Parser = struct {
         // Namespace import: `* as ns`?
         if (self.match(.asterisk)) {
             _ = try self.expect(.kw_as, "'as' in namespace import");
-            const name_tok = try self.expect(.identifier, "namespace import name");
+            const name_tok = try self.expectIdentifierLike();
             const id = try self.internToken(name_tok);
             namespace_binding = try self.builder.addIdentifier(tokenSpan(name_tok), id);
         }
@@ -2215,10 +2237,12 @@ pub const Parser = struct {
                     return error.UnexpectedToken;
                 var local_id = try self.internToken(imported_tok);
                 const imported_id = local_id;
+                var local_tok_for_diag = imported_tok;
                 var has_alias = false;
                 if (self.match(.kw_as)) {
-                    const local_tok = try self.expect(.identifier, "local name in 'as' clause");
+                    const local_tok = try self.expectIdentifierLike();
                     local_id = try self.internToken(local_tok);
+                    local_tok_for_diag = local_tok;
                     has_alias = true;
                 }
                 if (!has_alias and imported_tok.kind == .kw_await and self.top_level_external_module_indicator) {
@@ -2227,6 +2251,14 @@ pub const Parser = struct {
                         imported_tok.line,
                         1262,
                         "Identifier expected. 'await' is a reserved word at the top-level of a module.",
+                    );
+                }
+                if (self.tokenTextEquals(local_tok_for_diag, "yield") and self.top_level_external_module_indicator) {
+                    try self.reportCodeAt(
+                        local_tok_for_diag.span.start,
+                        local_tok_for_diag.line,
+                        1214,
+                        "Identifier expected. 'yield' is a reserved word in strict mode. Modules are automatically in strict mode.",
                     );
                 }
                 const spec = try self.builder.addImportSpecifier(
@@ -3644,6 +3676,8 @@ pub const Parser = struct {
         } else if (count == 0 or saw_comma) {
             try self.reportCodeAt(start.span.start, start.line, 1096, "An index signature must have exactly one parameter.");
         } else if (saw_equal) {
+            try self.reportCodeAt(start.span.start, start.line, 1169, "A computed property name in an interface must refer to an expression whose type is a literal type or a 'unique symbol' type.");
+        } else {
             try self.reportCodeAt(start.span.start, start.line, 1169, "A computed property name in an interface must refer to an expression whose type is a literal type or a 'unique symbol' type.");
         }
     }
@@ -5282,6 +5316,11 @@ pub const Parser = struct {
                 return try self.builder.addIdentifier(tokenSpan(t), id);
             },
             else => {
+                if (t.kind.isContextualKeyword()) {
+                    _ = self.advance();
+                    const id = try self.internToken(t);
+                    return try self.builder.addIdentifier(tokenSpan(t), id);
+                }
                 try self.report("unexpected token in expression: ", @tagName(t.kind));
                 return error.UnexpectedToken;
             },
@@ -7031,9 +7070,9 @@ test "parser: import equals accepts type/contextual aliases and ASI" {
     const root = try s.parser.parseSourceFile();
     const stmts = hir_mod.blockStmts(&s.hir, root);
     try T.expectEqual(@as(usize, 4), stmts.len);
-    try T.expectEqual(hir_mod.NodeKind.block_stmt, s.hir.kindOf(stmts[0]));
-    try T.expectEqual(hir_mod.NodeKind.block_stmt, s.hir.kindOf(stmts[1]));
-    try T.expectEqual(hir_mod.NodeKind.block_stmt, s.hir.kindOf(stmts[2]));
+    try T.expectEqual(hir_mod.NodeKind.import_decl, s.hir.kindOf(stmts[0]));
+    try T.expectEqual(hir_mod.NodeKind.import_decl, s.hir.kindOf(stmts[1]));
+    try T.expectEqual(hir_mod.NodeKind.import_decl, s.hir.kindOf(stmts[2]));
     try T.expectEqual(hir_mod.NodeKind.class_decl, s.hir.kindOf(stmts[3]));
     try T.expectEqual(@as(usize, 0), s.parser.diagnostics.items.len);
 }

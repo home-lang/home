@@ -417,7 +417,12 @@ pub fn loadDirectoryWithOptions(
         const stem = entry.basename[0..ext_dot];
         const baseline_path = try errorBaselinePath(gpa, options.baseline_root, stem);
         defer if (baseline_path) |p| gpa.free(p);
-        const expects_error = std.mem.indexOf(u8, entry.basename, ".errors.") != null or baseline_path != null;
+        const baseline_only_option_deprecation = if (baseline_path) |bp|
+            try baselineHasOnlyOptionDeprecation(gpa, bp)
+        else
+            false;
+        const expects_error = std.mem.indexOf(u8, entry.basename, ".errors.") != null or
+            (baseline_path != null and !baseline_only_option_deprecation);
         const directive_flags = parseStrictDirectiveFlags(case_src);
         const strict_flags =
             if (options.honor_directives)
@@ -576,6 +581,20 @@ fn readFileAlloc(gpa: std.mem.Allocator, path: []const u8) ![]u8 {
     return buf[0..read_total];
 }
 
+fn baselineHasOnlyOptionDeprecation(gpa: std.mem.Allocator, path: []const u8) !bool {
+    const baseline = try readFileAlloc(gpa, path);
+    defer gpa.free(baseline);
+    var saw_diagnostic = false;
+    var lines = std.mem.splitScalar(u8, baseline, '\n');
+    while (lines.next()) |raw| {
+        const line = std.mem.trim(u8, raw, "\r");
+        if (!isDiagnosticHeader(line)) continue;
+        saw_diagnostic = true;
+        if (std.mem.indexOf(u8, line, "error TS5107:") == null) return false;
+    }
+    return saw_diagnostic;
+}
+
 fn extractDiagnosticHeaders(gpa: std.mem.Allocator, baseline: []const u8) ![]u8 {
     var out: std.ArrayListUnmanaged(u8) = .empty;
     errdefer out.deinit(gpa);
@@ -591,6 +610,8 @@ fn extractDiagnosticHeaders(gpa: std.mem.Allocator, baseline: []const u8) ![]u8 
 }
 
 fn isDiagnosticHeader(line: []const u8) bool {
+    if (std.mem.startsWith(u8, line, "error TS")) return true;
+    if (std.mem.startsWith(u8, line, "error HM")) return true;
     if (std.mem.indexOf(u8, line, "): error TS") != null) return true;
     if (std.mem.indexOf(u8, line, "): error HM") != null) return true;
     return false;
