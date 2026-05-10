@@ -505,6 +505,11 @@ pub const Checker = struct {
     /// `flags.is_rest = true`; carried forward by
     /// `refineSignatureReturn` when the return type is later inferred.
     rest_signatures: std.AutoHashMapUnmanaged(TypeId, void),
+    /// Signature TypeId → minimum required runtime arguments. The
+    /// flat signature key only stores parameter types, so this side
+    /// table preserves declaration-site optional/default metadata and
+    /// the TS rule that a trailing `void` parameter may be omitted.
+    signature_min_args: std.AutoHashMapUnmanaged(TypeId, usize),
     /// `(enum_name, member_name) → numeric value` for enum members
     /// whose value the checker resolved (either from an explicit
     /// numeric initializer or auto-incremented from the prior
@@ -592,6 +597,7 @@ pub const Checker = struct {
             .overload_has_implementation = .empty,
             .inferred_variance = .empty,
             .rest_signatures = .empty,
+            .signature_min_args = .empty,
             .enum_member_values = .empty,
             .var_decl_types = .empty,
             .symbol_global_building = false,
@@ -668,6 +674,7 @@ pub const Checker = struct {
         self.overload_has_implementation.deinit(self.gpa);
         self.inferred_variance.deinit(self.gpa);
         self.rest_signatures.deinit(self.gpa);
+        self.signature_min_args.deinit(self.gpa);
         self.enum_member_values.deinit(self.gpa);
         self.var_decl_types.deinit(self.gpa);
         self.lib_cache.deinit(self.gpa);
@@ -2040,10 +2047,30 @@ pub const Checker = struct {
                 const fr = hir_mod.forInOf(self.hir, node);
                 try self.scanExprForUsedBeforeAssign(fr.source, pending);
             },
-            .if_stmt,
-            .while_stmt,
-            .do_while_stmt,
-            .for_stmt,
+            .if_stmt => {
+                const i = hir_mod.ifOf(self.hir, node);
+                try self.scanExprForUsedBeforeAssign(i.cond, pending);
+            },
+            .while_stmt => {
+                const w = hir_mod.whileOf(self.hir, node);
+                try self.scanExprForUsedBeforeAssign(w.cond, pending);
+            },
+            .do_while_stmt => {
+                const w = hir_mod.doWhileOf(self.hir, node);
+                try self.scanExprForUsedBeforeAssign(w.cond, pending);
+            },
+            .for_stmt => {
+                const fr = hir_mod.forStmtOf(self.hir, node);
+                if (fr.init != hir_mod.none_node_id) {
+                    try self.scanForUsedBeforeAssign(fr.init, pending);
+                }
+                if (fr.cond != hir_mod.none_node_id) {
+                    try self.scanExprForUsedBeforeAssign(fr.cond, pending);
+                }
+                if (fr.update != hir_mod.none_node_id) {
+                    try self.scanExprForUsedBeforeAssign(fr.update, pending);
+                }
+            },
             .try_stmt,
             .switch_stmt,
             .fn_decl,
@@ -2183,6 +2210,7 @@ pub const Checker = struct {
         const decl_node = pending.get(name) orelse return;
         if (self.sourceHasStrictFalseDirective()) return;
         if (self.hir.kindOf(decl_node) == .var_decl) {
+            if (self.nodeHasAncestorKind(decl_node, .namespace_decl) and self.nodeIsInsideControlFlowCondition(ref_node)) return;
             if (!self.nodeHasAncestorKind(ref_node, .conditional) and
                 !self.nodeHasAncestorKind(ref_node, .array_literal) and
                 !self.nodeHasAncestorKind(ref_node, .object_literal) and
@@ -2218,6 +2246,32 @@ pub const Checker = struct {
             .block_stmt => true,
             else => false,
         };
+    }
+
+    fn nodeIsInsideControlFlowCondition(self: *Checker, node: NodeId) bool {
+        var child = node;
+        var cur = self.hir.parentOf(node);
+        while (cur != hir_mod.none_node_id) : ({
+            child = cur;
+            cur = self.hir.parentOf(cur);
+        }) {
+            switch (self.hir.kindOf(cur)) {
+                .if_stmt => {
+                    if (hir_mod.ifOf(self.hir, cur).cond == child) return true;
+                },
+                .while_stmt => {
+                    if (hir_mod.whileOf(self.hir, cur).cond == child) return true;
+                },
+                .do_while_stmt => {
+                    if (hir_mod.doWhileOf(self.hir, cur).cond == child) return true;
+                },
+                .for_stmt => {
+                    if (hir_mod.forStmtOf(self.hir, cur).cond == child) return true;
+                },
+                else => {},
+            }
+        }
+        return false;
     }
 
     fn nodeHasAncestorKind(self: *Checker, node: NodeId, kind: hir_mod.NodeKind) bool {
@@ -3074,6 +3128,9 @@ pub const Checker = struct {
         if (self.rest_signatures.contains(sig)) {
             try self.rest_signatures.put(self.gpa, new_sig, {});
         }
+        if (self.signature_min_args.get(sig)) |min_required| {
+            try self.signature_min_args.put(self.gpa, new_sig, min_required);
+        }
         self.hir.setType(fn_node, new_sig);
         const f = hir_mod.fnDeclOf(self.hir, fn_node);
         if (f.name != hir_mod.none_node_id) self.hir.setType(f.name, new_sig);
@@ -3826,6 +3883,8 @@ pub const Checker = struct {
 
         var param_types: std.ArrayListUnmanaged(TypeId) = .empty;
         defer param_types.deinit(self.gpa);
+        var param_omittable: std.ArrayListUnmanaged(bool) = .empty;
+        defer param_omittable.deinit(self.gpa);
         var param_predicates: std.ArrayListUnmanaged(ParamPredicateEntry) = .empty;
         defer param_predicates.deinit(self.gpa);
         const params = hir_mod.fnParams(self.hir, node);
@@ -3854,6 +3913,7 @@ pub const Checker = struct {
             if (pp.name != hir_mod.none_node_id) self.hir.setType(pp.name, t);
             if (is_this_param) continue;
             try param_types.append(self.gpa, t);
+            try param_omittable.append(self.gpa, !has_anno or pp.flags.is_optional or pp.default_value != hir_mod.none_node_id or t == types.Primitive.void_t);
             if (self.signature_predicates.get(t)) |param_pred| {
                 try param_predicates.append(self.gpa, .{ .param_index = value_param_index, .pred = param_pred });
             }
@@ -3898,6 +3958,7 @@ pub const Checker = struct {
         }
 
         const sig = self.interner.internSignature(param_types.items, ret_t, false) catch return error.OutOfMemory;
+        try self.recordSignatureMinArgs(sig, param_omittable.items);
         self.hir.setType(node, sig);
         if (f.name != hir_mod.none_node_id) self.hir.setType(f.name, sig);
         // Record rest-parameter signatures so call-site argument
@@ -6604,6 +6665,8 @@ pub const Checker = struct {
                 }
                 var fn_param_ts: std.ArrayListUnmanaged(TypeId) = .empty;
                 defer fn_param_ts.deinit(self.gpa);
+                var fn_param_omittable: std.ArrayListUnmanaged(bool) = .empty;
+                defer fn_param_omittable.deinit(self.gpa);
                 const fn_params = self.hir.childSlice(ft.params_start, @intCast(ft.params_len));
                 var has_rest_param = false;
                 for (fn_params) |p| {
@@ -6617,6 +6680,7 @@ pub const Checker = struct {
                         types.Primitive.any;
                     if (is_this_param) continue;
                     try fn_param_ts.append(self.gpa, t);
+                    try fn_param_omittable.append(self.gpa, pp.type_annotation == hir_mod.none_node_id or pp.flags.is_optional or pp.default_value != hir_mod.none_node_id or t == types.Primitive.void_t);
                 }
                 const is_predicate = ft.return_type != hir_mod.none_node_id and
                     self.hir.kindOf(ft.return_type) == .type_predicate_type;
@@ -6626,6 +6690,7 @@ pub const Checker = struct {
                     types.Primitive.void_t;
                 const is_construct = self.hir.kindOf(type_node) == .constructor_type;
                 const sig = self.interner.internSignature(fn_param_ts.items, ret_t, is_construct) catch return error.OutOfMemory;
+                try self.recordSignatureMinArgs(sig, fn_param_omittable.items);
                 if (is_predicate) {
                     const pred = hir_mod.typePredicateOf(self.hir, ft.return_type);
                     const target_t: TypeId = if (pred.target_type != hir_mod.none_node_id)
@@ -8223,7 +8288,7 @@ pub const Checker = struct {
             .literal_undefined => types.Primitive.undefined_t,
             .literal_regex => types.Primitive.object_t,
             .identifier => self.typeOfIdentifier(node),
-            .this_expr => self.currentThisType() orelse types.Primitive.any,
+            .this_expr => try self.checkThisExpression(node),
             .spread => blk: {
                 const sp = hir_mod.spreadOf(self.hir, node);
                 break :blk try self.checkExpression(sp.expression);
@@ -9304,11 +9369,8 @@ pub const Checker = struct {
         const fixed_count: usize = if (is_variadic) params.len - 1 else params.len;
         // Required-arg count = params not including a trailing run
         // that includes `undefined`.
-        var min_required: usize = fixed_count;
-        while (min_required > 0) {
-            if (!self.typeIncludesUndefined(params[min_required - 1])) break;
-            min_required -= 1;
-        }
+        var min_required: usize = self.signatureMinRequiredArgs(sig, params);
+        min_required = @min(min_required, fixed_count);
         if (arg_types.len < min_required) return false;
         if (!is_variadic and arg_types.len > params.len) return false;
         const n = @min(arg_types.len, fixed_count);
@@ -10146,6 +10208,12 @@ pub const Checker = struct {
         if (self.lookupNarrow(id.name)) |t| return t;
 
         const name_str = self.string_interner.get(id.name);
+        if (std.mem.eql(u8, name_str, "this")) {
+            if (!self.sourceHasStrictFalseDirective() and !self.identifierThisIsArrowCaptured(node)) {
+                self.report(node, TsCodes.this_implicitly_any, "'this' implicitly has type 'any' because it does not have a type annotation.") catch {};
+            }
+            return types.Primitive.any;
+        }
         if (std.mem.eql(u8, name_str, "new.target")) {
             return types.Primitive.any;
         }
@@ -11325,6 +11393,24 @@ pub const Checker = struct {
         return self.lookupNarrow(this_id);
     }
 
+    fn checkThisExpression(self: *Checker, node: NodeId) CheckError!TypeId {
+        if (self.currentThisType()) |this_t| return this_t;
+        if (!self.sourceHasStrictFalseDirective()) {
+            try self.report(node, TsCodes.this_implicitly_any, "'this' implicitly has type 'any' because it does not have a type annotation.");
+        }
+        return types.Primitive.any;
+    }
+
+    fn identifierThisIsArrowCaptured(self: *Checker, node: NodeId) bool {
+        var cur = self.hir.parentOf(node);
+        while (cur != hir_mod.none_node_id) : (cur = self.hir.parentOf(cur)) {
+            const k = self.hir.kindOf(cur);
+            if (k == .arrow_fn) return true;
+            if (k == .fn_decl or k == .fn_expr) return false;
+        }
+        return false;
+    }
+
     fn optionalChainResult(self: *Checker, t: TypeId, is_optional_chain: bool) CheckError!TypeId {
         if (!is_optional_chain) return t;
         return self.unionWithUndefined(t) catch return error.OutOfMemory;
@@ -12373,6 +12459,15 @@ pub const Checker = struct {
             if (self.rest_signatures.contains(t)) {
                 try self.rest_signatures.put(self.gpa, new_sig, {});
             }
+            {
+                const old_min_required = self.signature_min_args.get(t) orelse params.len;
+                var omittable: std.ArrayListUnmanaged(bool) = .empty;
+                defer omittable.deinit(self.gpa);
+                for (new.items, 0..) |param_t, param_i| {
+                    try omittable.append(self.gpa, param_i >= old_min_required or param_t == types.Primitive.void_t);
+                }
+                try self.recordSignatureMinArgs(new_sig, omittable.items);
+            }
             if (self.signature_predicates.get(t)) |pred| {
                 var next_pred = pred;
                 next_pred.target_type = self.substituteType(pred.target_type, subs) catch pred.target_type;
@@ -12580,12 +12675,8 @@ pub const Checker = struct {
         // by the signature pass, matching tsc's call-site behavior).
         const fixed_count: usize = if (is_variadic) param_ts.len - 1 else param_ts.len;
         const rest_min_required: usize = if (is_variadic) self.tupleFixedPrefixCount(param_ts[param_ts.len - 1]) else 0;
-        var min_required: usize = fixed_count + rest_min_required;
-        while (min_required > 0) {
-            if (min_required > fixed_count) break;
-            if (!self.typeIncludesUndefined(param_ts[min_required - 1])) break;
-            min_required -= 1;
-        }
+        const fixed_min_required = @min(self.signatureMinRequiredArgs(sig, param_ts), fixed_count);
+        const min_required: usize = fixed_min_required + rest_min_required;
         var effective_min_count: usize = 0;
         for (args, 0..) |arg, arg_i| {
             if (self.hir.kindOf(arg) == .spread) {
@@ -13645,6 +13736,29 @@ pub const Checker = struct {
             if (m >= self.interner.pool.typeCount()) continue;
             if (self.interner.pool.flagsOf(m).is_undefined) return true;
         }
+        return false;
+    }
+
+    fn recordSignatureMinArgs(self: *Checker, sig: TypeId, omittable: []const bool) CheckError!void {
+        var min_required = omittable.len;
+        while (min_required > 0 and omittable[min_required - 1]) {
+            min_required -= 1;
+        }
+        try self.signature_min_args.put(self.gpa, sig, min_required);
+    }
+
+    fn signatureMinRequiredArgs(self: *Checker, sig: TypeId, params: []const TypeId) usize {
+        if (self.signature_min_args.get(sig)) |min_required| return @min(min_required, params.len);
+        var min_required = params.len;
+        while (min_required > 0 and self.parameterTypeCanBeOmitted(params[min_required - 1])) {
+            min_required -= 1;
+        }
+        return min_required;
+    }
+
+    fn parameterTypeCanBeOmitted(self: *Checker, t: TypeId) bool {
+        _ = self;
+        if (t == types.Primitive.void_t) return true;
         return false;
     }
 
@@ -14850,6 +14964,34 @@ test "checker: typed var used in conditional emits TS2454" {
     try T.expect(found);
 }
 
+test "checker: typed var used in control-flow condition emits TS2454" {
+    const s = try newSetup(
+        \\var x: string | number;
+        \\if (typeof x === "string") {}
+    );
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+    var found = false;
+    for (s.checker.diagnostics.items) |d| {
+        if (d.code == TsCodes.used_before_assignment) found = true;
+    }
+    try T.expect(found);
+}
+
+test "checker: namespace var in control-flow condition does not emit TS2454" {
+    const s = try newSetup(
+        \\namespace N {
+        \\  var x: string | number;
+        \\  if (typeof x === "string") {}
+        \\}
+    );
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+    for (s.checker.diagnostics.items) |d| {
+        try T.expect(d.code != TsCodes.used_before_assignment);
+    }
+}
+
 test "checker: typed var plain read is not eagerly marked unassigned" {
     const s = try newSetup(
         \\var x: number;
@@ -15094,6 +15236,21 @@ test "checker: this.x inside a class method resolves to the field type" {
     const body = hir_mod.blockStmts(&s.hir, fp.body);
     const ret_p = hir_mod.returnOf(&s.hir, body[0]);
     try T.expectEqual(types.Primitive.number_t, s.hir.typeOf(ret_p.value));
+}
+
+test "checker: unbound this expression emits TS2683" {
+    const s = try newSetup(
+        \\function f() {
+        \\  var p = this;
+        \\}
+    );
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+    var found = false;
+    for (s.checker.diagnostics.items) |d| {
+        if (d.code == TsCodes.this_implicitly_any) found = true;
+    }
+    try T.expect(found);
 }
 
 test "checker: missing this property in method emits TS2339" {
@@ -16754,6 +16911,56 @@ test "checker: omitting an optional argument compiles cleanly" {
     defer destroySetup(s);
     try s.checker.checkSourceFile(s.root);
     try T.expect(s.checker.diagnostics.items.len == 0);
+}
+
+test "checker: trailing void parameter can be omitted" {
+    const s = try newSetup(
+        \\declare function f(p: void): void;
+        \\f();
+    );
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+    for (s.checker.diagnostics.items) |d| {
+        try T.expect(d.code != TsCodes.expected_n_arguments);
+    }
+}
+
+test "checker: trailing undefined parameter is still required" {
+    const s = try newSetup(
+        \\declare function f(p: undefined): void;
+        \\f();
+    );
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+    var found = false;
+    for (s.checker.diagnostics.items) |d| {
+        if (d.code == TsCodes.expected_n_arguments) found = true;
+    }
+    try T.expect(found);
+}
+
+test "checker: inferred return preserves default parameter optionality" {
+    const s = try newSetup(
+        \\function f(value = 1) { return value; }
+        \\f();
+    );
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+    for (s.checker.diagnostics.items) |d| {
+        try T.expect(d.code != TsCodes.expected_n_arguments);
+    }
+}
+
+test "checker: unannotated parameters can be omitted" {
+    const s = try newSetup(
+        \\const f = (x, y) => x;
+        \\f();
+    );
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+    for (s.checker.diagnostics.items) |d| {
+        try T.expect(d.code != TsCodes.expected_n_arguments);
+    }
 }
 
 test "checker: too many args still emits TS2554 even with optional params" {
