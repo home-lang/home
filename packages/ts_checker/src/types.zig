@@ -264,6 +264,7 @@ pub const ObjectTypePayload = struct {
     /// Index-signature: `[k: string]: V` lowered as a single signature.
     string_index_type: TypeId,
     number_index_type: TypeId,
+    symbol_index_type: TypeId,
 };
 
 pub const InstantiationPayload = struct {

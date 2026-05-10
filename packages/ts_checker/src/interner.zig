@@ -489,6 +489,16 @@ pub const Interner = struct {
         string_index_type: TypeId,
         number_index_type: TypeId,
     ) !TypeId {
+        return self.internObjectTypeWithIndexAndSymbol(members, string_index_type, number_index_type, types.Primitive.none);
+    }
+
+    pub fn internObjectTypeWithIndexAndSymbol(
+        self: *Interner,
+        members: []const types.ObjectMember,
+        string_index_type: TypeId,
+        number_index_type: TypeId,
+        symbol_index_type: TypeId,
+    ) !TypeId {
         const dup = try self.key_arena.allocator().dupe(types.ObjectMember, members);
         std.mem.sort(types.ObjectMember, dup, {}, objectMemberLessThan);
         const member_start: u32 = @intCast(self.pool.object_member_pool.items.len);
@@ -501,6 +511,7 @@ pub const Interner = struct {
             .construct_sig = 0,
             .string_index_type = string_index_type,
             .number_index_type = number_index_type,
+            .symbol_index_type = symbol_index_type,
         });
         const id: TypeId = @intCast(self.pool.headers.items.len);
         try self.pool.headers.append(self.gpa, .{
@@ -551,6 +562,14 @@ pub const Interner = struct {
         if (payload_idx >= self.pool.object_type_payloads.items.len) return types.Primitive.none;
         const payload = self.pool.object_type_payloads.items[payload_idx];
         return payload.number_index_type;
+    }
+
+    pub fn objectSymbolIndex(self: *const Interner, id: TypeId) TypeId {
+        if (!self.pool.flagsOf(id).is_object_type) return types.Primitive.none;
+        const payload_idx = self.pool.payloadOf(id);
+        if (payload_idx >= self.pool.object_type_payloads.items.len) return types.Primitive.none;
+        const payload = self.pool.object_type_payloads.items[payload_idx];
+        return payload.symbol_index_type;
     }
 
     /// Lookup a property by name on an object type. Returns its

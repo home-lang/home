@@ -3432,9 +3432,8 @@ pub const Parser = struct {
                 (t.kind == .kw_readonly and self.peekAt(1).kind == .open_bracket))
             {
                 if (try self.tryParseIndexSignature(out)) continue;
-                // Not an index signature — fall through to skip
-                // (could be a computed key or other form we don't
-                // model yet).
+                if (try self.tryParseComputedTypeMember(out, false)) continue;
+                // Not an index signature or supported computed key.
                 try self.reportMalformedTypeMemberBracket(t);
                 try self.skipUntilTypeMemberSeparator();
                 continue;
@@ -3601,6 +3600,84 @@ pub const Parser = struct {
         } else if (saw_equal) {
             try self.reportCodeAt(start.span.start, start.line, 1169, "A computed property name in an interface must refer to an expression whose type is a literal type or a 'unique symbol' type.");
         }
+    }
+
+    fn tryParseComputedTypeMember(self: *Parser, out: *std.ArrayListUnmanaged(NodeId), is_readonly: bool) ParseError!bool {
+        const checkpoint = self.cursor;
+        const start_tok = self.peek();
+        if (self.peek().kind != .open_bracket) return false;
+        if (self.peekAt(1).kind != .identifier or self.peekAt(2).kind != .dot) return false;
+        if (!std.mem.eql(u8, self.source[self.peekAt(1).span.start..self.peekAt(1).span.end], "Symbol")) return false;
+        _ = self.advance();
+        const key_expr = self.parseExpression() catch {
+            self.cursor = checkpoint;
+            return false;
+        };
+        if (self.peek().kind != .close_bracket) {
+            self.cursor = checkpoint;
+            return false;
+        }
+        const close_tok = self.advance();
+        const name_id = (try self.symbolMemberNameFromComputedKey(key_expr)) orelse {
+            self.cursor = checkpoint;
+            return false;
+        };
+        if (self.computedSymbolMemberIsNonPropertySymbol(key_expr)) {
+            try self.reportCodeAt(start_tok.span.start, start_tok.line, 2464, "A computed property name must be of type 'string', 'number', 'symbol', or 'any'.");
+        }
+        const is_optional = self.match(.question);
+        const member_span: Span = .{ .start = start_tok.span.start, .end = close_tok.span.end };
+        if (self.peek().kind == .less_than or self.peek().kind == .open_paren) {
+            var type_params: []NodeId = &.{};
+            var owns_tps = false;
+            if (self.peek().kind == .less_than) {
+                type_params = try self.parseTypeParameterDeclaration();
+                owns_tps = true;
+            }
+            defer if (owns_tps) self.gpa.free(type_params);
+            const params = try self.parseTypeParameterList();
+            defer self.gpa.free(params);
+            var ret: NodeId = hir_mod.none_node_id;
+            if (self.match(.colon)) ret = try self.parseTypeAnnotation();
+            const fn_t = try self.builder.addFnType(
+                .{ .start = member_span.start, .end = if (self.cursor > 0) self.tokens[self.cursor - 1].span.end else member_span.end },
+                type_params,
+                params,
+                ret,
+                false,
+            );
+            _ = self.match(.semicolon);
+            _ = self.match(.comma);
+            const member = try self.builder.addInterfaceMember(member_span, name_id, fn_t, is_optional, is_readonly, true, false);
+            try out.append(self.gpa, member);
+            return true;
+        }
+        var type_node: NodeId = hir_mod.none_node_id;
+        if (self.match(.colon)) type_node = try self.parseTypeAnnotation();
+        _ = self.match(.semicolon);
+        _ = self.match(.comma);
+        const member = try self.builder.addInterfaceMember(member_span, name_id, type_node, is_optional, is_readonly, false, false);
+        try out.append(self.gpa, member);
+        return true;
+    }
+
+    fn symbolMemberNameFromComputedKey(self: *Parser, key_expr: NodeId) ParseError!?hir_mod.StringId {
+        if (self.hir.kindOf(key_expr) != .member_access) return null;
+        const m = hir_mod.memberOf(self.hir, key_expr);
+        if (self.hir.kindOf(m.object) != .identifier) return null;
+        const obj = hir_mod.identifierOf(self.hir, m.object);
+        if (!std.mem.eql(u8, self.interner.get(obj.name), "Symbol")) return null;
+        const prop = self.interner.get(m.name);
+        const synthetic = try std.fmt.allocPrint(self.gpa, "Symbol.{s}", .{prop});
+        defer self.gpa.free(synthetic);
+        return self.interner.intern(synthetic) catch return error.OutOfMemory;
+    }
+
+    fn computedSymbolMemberIsNonPropertySymbol(self: *Parser, key_expr: NodeId) bool {
+        if (self.hir.kindOf(key_expr) != .member_access) return false;
+        const m = hir_mod.memberOf(self.hir, key_expr);
+        const prop = self.interner.get(m.name);
+        return std.mem.eql(u8, prop, "for") or std.mem.eql(u8, prop, "keyFor");
     }
 
     /// Attempt to parse a `[k: K]: V` (or `readonly [k: K]: V`)
@@ -4955,7 +5032,7 @@ pub const Parser = struct {
                 const id = try self.internToken(t);
                 return try self.builder.addIdentifier(tokenSpan(t), id);
             },
-            .kw_any, .kw_unknown, .kw_never, .kw_void, .kw_string, .kw_number, .kw_boolean, .kw_bigint, .kw_symbol, .kw_object, .kw_get, .kw_set, .kw_global, .kw_require, .kw_module, .kw_namespace, .kw_of, .kw_type, .kw_using, .kw_await => {
+            .kw_any, .kw_unknown, .kw_never, .kw_void, .kw_string, .kw_number, .kw_boolean, .kw_bigint, .kw_symbol, .kw_object, .kw_get, .kw_set, .kw_global, .kw_from, .kw_require, .kw_module, .kw_namespace, .kw_of, .kw_type, .kw_using, .kw_await => {
                 _ = self.advance();
                 const id = try self.internToken(t);
                 return try self.builder.addIdentifier(tokenSpan(t), id);
@@ -5569,6 +5646,7 @@ fn isExpressionIdentifierToken(kind: TokenKind) bool {
         .kw_get,
         .kw_set,
         .kw_global,
+        .kw_from,
         .kw_require,
         .kw_module,
         .kw_namespace,

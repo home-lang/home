@@ -587,12 +587,14 @@ pub const Engine = struct {
             }
             const str_idx = self.interner.objectStringIndex(t);
             const num_idx = self.interner.objectNumberIndex(t);
+            const sym_idx = self.interner.objectSymbolIndex(t);
             const new_str = if (str_idx != Primitive.none) try self.substituteTpDeep(str_idx, map) else Primitive.none;
             const new_num = if (num_idx != Primitive.none) try self.substituteTpDeep(num_idx, map) else Primitive.none;
-            if (new_str == Primitive.none and new_num == Primitive.none) {
+            const new_sym = if (sym_idx != Primitive.none) try self.substituteTpDeep(sym_idx, map) else Primitive.none;
+            if (new_str == Primitive.none and new_num == Primitive.none and new_sym == Primitive.none) {
                 return self.interner.internObjectType(members.items) catch t;
             }
-            return self.interner.internObjectTypeWithIndex(members.items, new_str, new_num) catch t;
+            return self.interner.internObjectTypeWithIndexAndSymbol(members.items, new_str, new_num, new_sym) catch t;
         }
         if (flags.is_signature) {
             if (payload_idx >= self.interner.pool.signature_payloads.items.len) return t;
@@ -721,8 +723,10 @@ pub const Engine = struct {
         const target_members = self.interner.objectMembers(target);
         const target_str_idx = self.interner.objectStringIndex(target);
         const target_num_idx = self.interner.objectNumberIndex(target);
+        const target_sym_idx = self.interner.objectSymbolIndex(target);
         const source_str_idx = self.interner.objectStringIndex(source);
         const source_num_idx = self.interner.objectNumberIndex(source);
+        const source_sym_idx = self.interner.objectSymbolIndex(source);
         if (self.strict_null_checks) {
             if (target_str_idx != Primitive.none) {
                 if (source_str_idx == Primitive.none) return false;
@@ -732,6 +736,10 @@ pub const Engine = struct {
                 const source_idx = if (source_num_idx != Primitive.none) source_num_idx else source_str_idx;
                 if (source_idx == Primitive.none) return false;
                 if (!try self.isAssignableTo(source_idx, target_num_idx)) return false;
+            }
+            if (target_sym_idx != Primitive.none) {
+                if (source_sym_idx == Primitive.none) return false;
+                if (!try self.isAssignableTo(source_sym_idx, target_sym_idx)) return false;
             }
         }
         for (target_members) |tm| {
