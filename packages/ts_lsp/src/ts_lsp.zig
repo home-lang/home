@@ -5542,7 +5542,9 @@ test "Service: codeActions sorts top-level imports" {
     var program = ts_program.Program.init(T.allocator, &resolver);
     defer program.deinit();
 
-    const src = "import { a } from \"z\";\nimport { b } from \"a\";\n";
+    _ = try program.add("/a.ts", "export const b = 1;\n");
+    _ = try program.add("/z.ts", "export const a = 1;\n");
+    const src = "import { a } from \"./z\";\nimport { b } from \"./a\";\n";
     _ = try program.add("/main.ts", src);
     try program.compileAll(.{});
 
@@ -5559,8 +5561,8 @@ test "Service: codeActions sorts top-level imports" {
     try T.expectEqualStrings("Organize Imports", actions[0].title);
     // The new text should mention `"a"` before `"z"`.
     const nt = actions[0].edits[0].new_text;
-    const a_pos = std.mem.indexOf(u8, nt, "\"a\"") orelse return error.NotFound;
-    const z_pos = std.mem.indexOf(u8, nt, "\"z\"") orelse return error.NotFound;
+    const a_pos = std.mem.indexOf(u8, nt, "\"./a\"") orelse return error.NotFound;
+    const z_pos = std.mem.indexOf(u8, nt, "\"./z\"") orelse return error.NotFound;
     try T.expect(a_pos < z_pos);
 }
 
