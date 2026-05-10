@@ -576,7 +576,8 @@ pub const Engine = struct {
             var members: std.ArrayListUnmanaged(TypeId) = .empty;
             defer members.deinit(self.interner.gpa);
             for (self.interner.unionMembers(t)) |m| {
-                try members.append(self.interner.gpa, try self.substituteTpDeep(m, map));
+                const subbed = try self.substituteTpDeep(m, map);
+                try members.append(self.interner.gpa, if (subbed < self.interner.pool.typeCount()) subbed else Primitive.unknown);
             }
             return self.interner.internUnion(members.items) catch t;
         }
@@ -585,7 +586,8 @@ pub const Engine = struct {
             var members: std.ArrayListUnmanaged(TypeId) = .empty;
             defer members.deinit(self.interner.gpa);
             for (self.interner.intersectionMembers(t)) |m| {
-                try members.append(self.interner.gpa, try self.substituteTpDeep(m, map));
+                const subbed = try self.substituteTpDeep(m, map);
+                try members.append(self.interner.gpa, if (subbed < self.interner.pool.typeCount()) subbed else Primitive.unknown);
             }
             return self.interner.internIntersection(members.items) catch t;
         }
@@ -773,11 +775,10 @@ pub const Engine = struct {
             // members.
             if (tm.is_optional) continue;
             if (source_num_idx != Primitive.none and self.string_interner != null) {
-                const name_bytes = self.string_interner.?.get(tm.name);
-                if (isNumericName(name_bytes)) {
+                if (self.string_interner.?.getOptional(tm.name)) |name_bytes| if (isNumericName(name_bytes)) {
                     if (!try self.isAssignableTo(source_num_idx, tm.type)) return false;
                     continue;
-                }
+                };
             }
             return false;
         }

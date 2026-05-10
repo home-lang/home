@@ -272,6 +272,21 @@ pub const Interner = struct {
         return shard.strings.items[local];
     }
 
+    /// Resolve a `StringId` if it is present in this interner.
+    /// Returns null for stale ids or ids from another interner.
+    pub fn getOptional(self: *const Interner, id: StringId) ?[]const u8 {
+        const shard_idx = shardOfId(id);
+        const local = localOfId(id);
+        if (shard_idx >= N_SHARDS) return null;
+        const shard = &self.shards[shard_idx];
+
+        var mut_shard: *Shard = @constCast(shard);
+        mut_shard.mu.lockShared();
+        defer mut_shard.mu.unlockShared();
+        if (local >= shard.strings.items.len) return null;
+        return shard.strings.items[local];
+    }
+
     /// Look up a string without interning. Returns `null` if not present.
     /// Thread-safe.
     pub fn lookup(self: *const Interner, bytes: []const u8) ?StringId {
@@ -514,6 +529,18 @@ test "Interner: get is stable after many subsequent inserts" {
     }
 
     try t.expectEqualStrings("anchor", i.get(id));
+}
+
+test "Interner: getOptional returns null for missing local id" {
+    const t = std.testing;
+    var i = try Interner.init(t.allocator);
+    defer i.deinit();
+
+    const id = try i.intern("anchor");
+    try t.expectEqualStrings("anchor", i.getOptional(id).?);
+
+    const missing = id + (1 << LOCAL_BITS);
+    try t.expectEqual(@as(?[]const u8, null), i.getOptional(missing));
 }
 
 test "RwLock: single-thread shared/exclusive cycle" {
