@@ -2626,6 +2626,9 @@ pub const Parser = struct {
         if (self.match(.equal)) {
             init_node = try self.parseAssignmentExpression();
         }
+        if (decl_kind == .const_decl and init_node == hir_mod.none_node_id and self.ambient_depth == 0) {
+            try self.reportCodeAt(self.hir.spanOf(name_node).start, start.line, 1155, "'const' declarations must be initialized.");
+        }
         while (self.match(.comma)) {
             const extra_name: NodeId = if (self.peek().kind == .open_brace or self.peek().kind == .open_bracket) blk: {
                 break :blk try self.parseBindingPattern();
@@ -2641,6 +2644,9 @@ pub const Parser = struct {
             if (self.match(.colon)) extra_type = try self.parseTypeAnnotation();
             var extra_init: NodeId = hir_mod.none_node_id;
             if (self.match(.equal)) extra_init = try self.parseAssignmentExpression();
+            if (decl_kind == .const_decl and extra_init == hir_mod.none_node_id and self.ambient_depth == 0) {
+                try self.reportCodeAt(self.hir.spanOf(extra_name).start, start.line, 1155, "'const' declarations must be initialized.");
+            }
             const extra_start = self.hir.spanOf(extra_name).start;
             const extra_end = if (self.cursor > 0) self.tokens[self.cursor - 1].span.end else self.hir.spanOf(extra_name).end;
             const extra_decl = try self.builder.addVarDeclEx(
@@ -3502,6 +3508,8 @@ pub const Parser = struct {
     /// tracked as Phase 6 follow-ups so the harness can keep
     /// progressing.
     fn parseTypeMemberList(self: *Parser, out: *std.ArrayListUnmanaged(NodeId)) ParseError!void {
+        var seen = std.AutoHashMapUnmanaged(hir_mod.StringId, Span){};
+        defer seen.deinit(self.gpa);
         while (self.peek().kind != .close_brace and self.peek().kind != .eof) {
             const t = self.peek();
             // Index signature: `[k: K]: V` or `readonly [k: K]: V`.
@@ -3600,6 +3608,12 @@ pub const Parser = struct {
                 false,
                 is_override,
             );
+            if (seen.get(name_id)) |prev| {
+                try self.reportCodeAt(prev.start, self.lineAt(prev.start), 2300, "Duplicate identifier.");
+                try self.reportCodeAt(name_span.start, self.lineAt(name_span.start), 2300, "Duplicate identifier.");
+            } else {
+                try seen.put(self.gpa, name_id, name_span);
+            }
             try out.append(self.gpa, member);
         }
     }
@@ -4592,6 +4606,7 @@ pub const Parser = struct {
             if (!allow_in and t.kind == .kw_in) break;
             const prec = prec_mod.binaryPrec(t.kind) orelse break;
             if (@intFromEnum(prec) < @intFromEnum(min_prec)) break;
+            if ((t.kind == .kw_as or t.kind == .kw_satisfies) and t.flags.preceded_by_newline) break;
             _ = self.advance();
             // `as` / `satisfies` take a TYPE on the right, not an
             // expression — handle them before the generic
@@ -4634,12 +4649,72 @@ pub const Parser = struct {
             if (prec_mod.binOpOf(t.kind)) |bop| {
                 left = try self.builder.addBinaryOp(sp, bop, left, right);
             } else if (prec_mod.logicalOpOf(t.kind)) |lop| {
+                try self.reportMixedNullishLogical(t, lop, left, right);
                 left = try self.builder.addLogicalOp(sp, lop, left, right);
             } else {
                 left = right;
             }
         }
         return left;
+    }
+
+    fn reportMixedNullishLogical(
+        self: *Parser,
+        op_tok: Token,
+        op: hir_mod.LogicalOp,
+        left: NodeId,
+        right: NodeId,
+    ) ParseError!void {
+        const left_mixed = self.unparenthesizedLogicalOp(left);
+        const right_mixed = self.unparenthesizedLogicalOp(right);
+        if (op == .nullish) {
+            if (left_mixed) |lop| {
+                if (lop != .nullish) {
+                    try self.reportCodeAt(self.hir.spanOf(left).start, op_tok.line, 5076, "'??' and '&&' or '||' operations cannot be mixed without parentheses.");
+                    return;
+                }
+            }
+            if (right_mixed) |rop| {
+                if (rop != .nullish) {
+                    try self.reportCodeAt(self.hir.spanOf(right).start, op_tok.line, 5076, "'??' and '&&' or '||' operations cannot be mixed without parentheses.");
+                    return;
+                }
+            }
+        } else {
+            if (left_mixed) |lop| {
+                if (lop == .nullish) {
+                    try self.reportCodeAt(self.hir.spanOf(left).start, op_tok.line, 5076, "'&&' or '||' and '??' operations cannot be mixed without parentheses.");
+                    return;
+                }
+            }
+            if (right_mixed) |rop| {
+                if (rop == .nullish) {
+                    try self.reportCodeAt(self.hir.spanOf(right).start, op_tok.line, 5076, "'&&' or '||' and '??' operations cannot be mixed without parentheses.");
+                    return;
+                }
+            }
+        }
+    }
+
+    fn unparenthesizedLogicalOp(self: *Parser, node: NodeId) ?hir_mod.LogicalOp {
+        if (self.hir.kindOf(node) != .logical_op) return null;
+        if (self.nodeLooksParenthesized(node)) return null;
+        return hir_mod.logicalOf(self.hir, node).op;
+    }
+
+    fn nodeLooksParenthesized(self: *Parser, node: NodeId) bool {
+        const sp = self.hir.spanOf(node);
+        var before = sp.start;
+        while (before > 0) {
+            const c = self.source[before - 1];
+            if (!std.ascii.isWhitespace(c)) break;
+            before -= 1;
+        }
+        var after = sp.end;
+        while (after < self.source.len) : (after += 1) {
+            if (!std.ascii.isWhitespace(self.source[after])) break;
+        }
+        return before > 0 and after < self.source.len and self.source[before - 1] == '(' and self.source[after] == ')';
     }
 
     fn parseUnaryExpression(self: *Parser) ParseError!NodeId {
