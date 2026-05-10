@@ -559,7 +559,39 @@ fn variantErrorBaselinePath(gpa: std.mem.Allocator, root: []const u8, stem: []co
         };
         return path;
     }
-    return null;
+    return try discoverVariantErrorBaselinePath(gpa, root, stem);
+}
+
+fn discoverVariantErrorBaselinePath(gpa: std.mem.Allocator, root: []const u8, stem: []const u8) !?[]u8 {
+    var threaded = std.Io.Threaded.init(gpa, .{});
+    defer threaded.deinit();
+    const io = threaded.io();
+    var dir = std.Io.Dir.cwd().openDir(io, root, .{ .iterate = true }) catch return null;
+    defer dir.close(io);
+
+    var best: ?[]u8 = null;
+    errdefer if (best) |p| gpa.free(p);
+    var it = dir.iterate();
+    while (try it.next(io)) |entry| {
+        if (entry.kind != .file) continue;
+        if (!std.mem.startsWith(u8, entry.name, stem)) continue;
+        const rest = entry.name[stem.len..];
+        if (!std.mem.startsWith(u8, rest, "(")) continue;
+        if (!std.mem.endsWith(u8, rest, ").errors.txt")) continue;
+
+        const candidate = try std.fmt.allocPrint(gpa, "{s}/{s}", .{ root, entry.name });
+        if (best) |current| {
+            if (std.mem.lessThan(u8, candidate, current)) {
+                gpa.free(current);
+                best = candidate;
+            } else {
+                gpa.free(candidate);
+            }
+        } else {
+            best = candidate;
+        }
+    }
+    return best;
 }
 
 fn readFileAlloc(gpa: std.mem.Allocator, path: []const u8) ![]u8 {
@@ -1947,6 +1979,28 @@ test "conformance: extracts diagnostic headers from upstream baseline text" {
         headers,
     );
     try T.expectEqualStrings("tests/cases/conformance/types/example.ts", firstDiagnosticPath(headers).?);
+}
+
+test "conformance: discovers option-suffixed upstream error baselines" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const io = std.testing.io;
+    {
+        var f = try tmp.dir.createFile(io, "sample(nouncheckedindexedaccess=false).errors.txt", .{ .truncate = true });
+        defer f.close(io);
+        try f.writeStreamingAll(io, "sample.ts(1,1): error TS2322: Type error.");
+    }
+
+    const file_path = try tmp.dir.realPathFileAlloc(io, "sample(nouncheckedindexedaccess=false).errors.txt", T.allocator);
+    defer T.allocator.free(file_path);
+    const root = std.fs.path.dirname(file_path).?;
+
+    const found = try variantErrorBaselinePath(T.allocator, root, "sample");
+    defer if (found) |p| T.allocator.free(p);
+
+    try T.expect(found != null);
+    try T.expect(std.mem.endsWith(u8, found.?, "sample(nouncheckedindexedaccess=false).errors.txt"));
 }
 
 test "conformance: runCorpus supports exact diagnostic entries" {
