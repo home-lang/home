@@ -523,6 +523,10 @@ pub const Checker = struct {
     /// `checkEnumDecl`; consulted by member-access typing on enum
     /// receivers and (in a follow-up) by `const enum` inlining.
     enum_member_values: std.AutoHashMapUnmanaged(MemberKey, f64),
+    /// Enum declarations marked `const`, keyed by enum name. This
+    /// lets member-access typing prefer literal values even in
+    /// checker-only tests that do not attach a binder module.
+    const_enums: std.AutoHashMapUnmanaged(hir_mod.StringId, void),
     /// Per-HIR-block `var` declarations already seen. Used for the
     /// TS2403 same-name/same-type rule without conflating unrelated
     /// block/function scopes.
@@ -605,6 +609,7 @@ pub const Checker = struct {
             .rest_signatures = .empty,
             .signature_min_args = .empty,
             .enum_member_values = .empty,
+            .const_enums = .empty,
             .var_decl_types = .empty,
             .symbol_global_building = false,
             .diagnostics = .empty,
@@ -682,6 +687,7 @@ pub const Checker = struct {
         self.rest_signatures.deinit(self.gpa);
         self.signature_min_args.deinit(self.gpa);
         self.enum_member_values.deinit(self.gpa);
+        self.const_enums.deinit(self.gpa);
         self.var_decl_types.deinit(self.gpa);
         self.lib_cache.deinit(self.gpa);
         self.diagnostics.deinit(self.gpa);
@@ -5962,6 +5968,7 @@ pub const Checker = struct {
             if (self.hir.kindOf(e.name) != .identifier) return;
             break :blk hir_mod.identifierOf(self.hir, e.name).name;
         };
+        if (e.is_const) try self.const_enums.put(self.gpa, enum_name, {});
         const members = hir_mod.enumMembers(self.hir, node);
 
         // Running numeric value for the *next* un-initialized
@@ -6041,16 +6048,45 @@ pub const Checker = struct {
         obj_name: hir_mod.StringId,
         prop_name: hir_mod.StringId,
     ) ?TypeId {
-        const module = self.module orelse return null;
-        const sym = module.root.lookup(obj_name) orelse return null;
-        if (sym.decls.items.len == 0) return null;
-        const decl = sym.decls.items[0];
-        if (self.hir.kindOf(decl) != .enum_decl) return null;
-        const ep = hir_mod.enumOf(self.hir, decl);
-        if (!ep.is_const) return null;
+        const is_const_enum = if (self.const_enums.contains(obj_name))
+            true
+        else blk: {
+            const module = self.module orelse break :blk false;
+            const sym = module.root.lookup(obj_name) orelse break :blk false;
+            if (sym.decls.items.len == 0) break :blk false;
+            const decl = sym.decls.items[0];
+            if (self.hir.kindOf(decl) != .enum_decl) break :blk false;
+            break :blk hir_mod.enumOf(self.hir, decl).is_const;
+        };
+        if (!is_const_enum) return null;
         const key: MemberKey = .{ .obj_name = obj_name, .prop_name = prop_name };
         const v = self.enum_member_values.get(key) orelse return null;
         return self.interner.internNumberLiteral(v) catch null;
+    }
+
+    fn enumMemberAccessType(
+        self: *Checker,
+        obj_name: hir_mod.StringId,
+        prop_name: hir_mod.StringId,
+    ) CheckError!?TypeId {
+        if (self.const_enums.contains(obj_name)) return null;
+        if (!self.enumHasMember(obj_name, prop_name)) return null;
+        return try self.enumNominalType(obj_name);
+    }
+
+    fn enumNominalType(self: *Checker, enum_name: hir_mod.StringId) CheckError!TypeId {
+        const enum_name_str = self.string_interner.get(enum_name);
+        const brand = try std.fmt.allocPrint(self.gpa, "__enum:{s}", .{enum_name_str});
+        defer self.gpa.free(brand);
+        const brand_name = self.string_interner.intern(brand) catch return error.OutOfMemory;
+        const brand_obj = self.interner.internObjectType(&.{.{
+            .name = brand_name,
+            .type = types.Primitive.never,
+            .is_optional = false,
+            .is_readonly = true,
+            .is_method = false,
+        }}) catch return error.OutOfMemory;
+        return self.interner.internIntersection(&.{ types.Primitive.number_t, brand_obj }) catch return error.OutOfMemory;
     }
 
     fn enumDeclForName(self: *Checker, name: hir_mod.StringId) ?NodeId {
@@ -6063,6 +6099,7 @@ pub const Checker = struct {
     }
 
     fn enumHasMember(self: *Checker, enum_name: hir_mod.StringId, member_name: hir_mod.StringId) bool {
+        if (self.enum_member_values.get(.{ .obj_name = enum_name, .prop_name = member_name }) != null) return true;
         const decl = self.enumDeclForName(enum_name) orelse return false;
         for (hir_mod.enumMembers(self.hir, decl)) |member| {
             if (self.hir.kindOf(member) != .object_property) continue;
@@ -8490,6 +8527,55 @@ pub const Checker = struct {
                         break :blk self.interner.internObjectType(&.{}) catch return error.OutOfMemory;
                     }
                 }
+                var construct_sigs: std.ArrayListUnmanaged(TypeId) = .empty;
+                defer construct_sigs.deinit(self.gpa);
+                try self.collectConstructSignatures(callee_t, &construct_sigs);
+                if (construct_sigs.items.len > 0) {
+                    const type_arg_nodes = hir_mod.callTypeArgs(self.hir, node);
+                    var selected_sig: TypeId = construct_sigs.items[0];
+                    var found_applicable = false;
+                    var saw_generic_record = false;
+
+                    for (construct_sigs.items) |sig| {
+                        var effective_sig = sig;
+                        if (type_arg_nodes.len > 0) {
+                            var used_explicit_type_args = false;
+                            effective_sig = try self.instantiateSignatureWithExplicitTypeArgs(node, sig, type_arg_nodes, &used_explicit_type_args);
+                            if (self.generic_signature_params.get(sig) != null) saw_generic_record = true;
+                        } else {
+                            effective_sig = try self.instantiateSignatureFromArgs(sig, args, arg_types.items);
+                        }
+
+                        if (try self.signatureAccepts(effective_sig, arg_types.items)) {
+                            selected_sig = effective_sig;
+                            found_applicable = true;
+                            break;
+                        }
+                        if (selected_sig == construct_sigs.items[0]) selected_sig = effective_sig;
+                    }
+
+                    if (type_arg_nodes.len > 0 and !saw_generic_record) {
+                        const msg = try std.fmt.allocPrint(
+                            self.diag_arena.allocator(),
+                            "Expected 0 type arguments, but got {d}.",
+                            .{type_arg_nodes.len},
+                        );
+                        try self.diagnostics.append(self.gpa, .{
+                            .node = node,
+                            .code = TsCodes.expected_n_type_arguments,
+                            .message = msg,
+                        });
+                    }
+
+                    if (!found_applicable and construct_sigs.items.len > 1) {
+                        try self.report(node, TsCodes.no_overload_matches, "No overload matches this call.");
+                    } else {
+                        try self.checkArgsAgainstSignature(node, args, arg_types.items, selected_sig);
+                    }
+
+                    if (self.interner.signatureReturn(selected_sig)) |ret| break :blk ret;
+                    break :blk types.Primitive.any;
+                }
                 if (self.strict_flags.no_implicit_any and self.interner.isSignature(callee_t)) {
                     try self.report(node, TsCodes.new_expression_implicitly_any, "'new' expression, whose target lacks a construct signature, implicitly has an 'any' type.");
                 }
@@ -8775,6 +8861,9 @@ pub const Checker = struct {
                     // value at member access (TS const-enum inlining).
                     if (self.constEnumLiteralAccess(obj_id.name, m.name)) |lit_t| {
                         break :blk try self.optionalChainResult(lit_t, member_is_optional_chain);
+                    }
+                    if (try self.enumMemberAccessType(obj_id.name, m.name)) |enum_t| {
+                        break :blk try self.optionalChainResult(enum_t, member_is_optional_chain);
                     }
                     if (try self.constructorPrototypeAccess(obj_id.name, m.name)) |proto_t| {
                         break :blk proto_t;
@@ -9453,6 +9542,87 @@ pub const Checker = struct {
             }
         }
         return true;
+    }
+
+    fn signatureIsConstruct(self: *Checker, sig: TypeId) bool {
+        if (!self.interner.isSignature(sig)) return false;
+        const payload_idx = self.interner.pool.payloadOf(sig);
+        if (payload_idx >= self.interner.pool.signature_payloads.items.len) return false;
+        return self.interner.pool.signature_payloads.items[payload_idx].is_construct;
+    }
+
+    fn collectConstructSignatures(
+        self: *Checker,
+        t: TypeId,
+        out: *std.ArrayListUnmanaged(TypeId),
+    ) CheckError!void {
+        if (t < types.Primitive.first_dynamic or t >= self.interner.pool.typeCount()) return;
+        const flags = self.interner.pool.flagsOf(t);
+        if (flags.is_signature) {
+            if (self.signatureIsConstruct(t)) try out.append(self.gpa, t);
+            return;
+        }
+        if (flags.is_intersection) {
+            for (self.interner.intersectionMembers(t)) |member| {
+                try self.collectConstructSignatures(member, out);
+            }
+            return;
+        }
+        if (!flags.is_object_type) return;
+
+        const construct_member_id = self.string_interner.intern("__construct") catch return error.OutOfMemory;
+        for (self.interner.objectMembers(t)) |member| {
+            if (member.name == construct_member_id and self.interner.isSignature(member.type)) {
+                try out.append(self.gpa, member.type);
+            }
+        }
+    }
+
+    fn instantiateSignatureWithExplicitTypeArgs(
+        self: *Checker,
+        call_node: NodeId,
+        sig: TypeId,
+        type_arg_nodes: []const NodeId,
+        used_explicit_type_args: *bool,
+    ) CheckError!TypeId {
+        used_explicit_type_args.* = false;
+        if (type_arg_nodes.len == 0) return sig;
+        const type_params = self.generic_signature_params.get(sig) orelse return sig;
+        if (type_arg_nodes.len != type_params.len) {
+            const msg = try std.fmt.allocPrint(
+                self.diag_arena.allocator(),
+                "Expected {d} type arguments, but got {d}.",
+                .{ type_params.len, type_arg_nodes.len },
+            );
+            try self.diagnostics.append(self.gpa, .{
+                .node = call_node,
+                .code = TsCodes.expected_n_type_arguments,
+                .message = msg,
+            });
+        }
+        var subs: std.AutoHashMapUnmanaged(TypeId, TypeId) = .empty;
+        defer subs.deinit(self.gpa);
+        const n = @min(type_params.len, type_arg_nodes.len);
+        for (0..n) |i| {
+            const explicit_t = self.lowererLowerWithTypeParams(type_arg_nodes[i]) catch types.Primitive.unknown;
+            try subs.put(self.gpa, type_params[i], explicit_t);
+        }
+        if (subs.count() == 0) return sig;
+        used_explicit_type_args.* = true;
+        return self.substituteType(sig, &subs) catch sig;
+    }
+
+    fn instantiateSignatureFromArgs(
+        self: *Checker,
+        sig: TypeId,
+        args: []const NodeId,
+        arg_types: []const TypeId,
+    ) CheckError!TypeId {
+        var subs: std.AutoHashMapUnmanaged(TypeId, TypeId) = .empty;
+        defer subs.deinit(self.gpa);
+        try self.inferCallSubstitutions(sig, args, arg_types, &subs);
+        if (subs.count() == 0) return sig;
+        return self.substituteType(sig, &subs) catch sig;
     }
 
     /// Post-statement narrowing for logical assignments. Recognizes
@@ -11659,6 +11829,12 @@ pub const Checker = struct {
             }
             return true;
         }
+        if (f.is_intersection) {
+            for (self.interner.intersectionMembers(t)) |member| {
+                if (self.isArithmeticOperandAllowed(member)) return true;
+            }
+            return false;
+        }
         if (!self.strict_flags.strict_null_checks and (f.is_null or f.is_undefined)) return true;
         return f.is_number or f.is_bigint;
     }
@@ -12275,6 +12451,11 @@ pub const Checker = struct {
             for (0..m) |i| {
                 const expected_param = self.substituteType(pp[i], subs) catch pp[i];
                 const actual_param = ap[i];
+                if ((actual_param == types.Primitive.any or actual_param == types.Primitive.unknown) and
+                    self.containsFreeTypeParameter(expected_param))
+                {
+                    continue;
+                }
                 const af = pool.flagsOf(actual_param);
                 if (af.is_type_parameter) {
                     if (!source_subs.contains(actual_param)) {
@@ -12496,7 +12677,10 @@ pub const Checker = struct {
             const members = self.interner.unionMembers(t);
             var new: std.ArrayListUnmanaged(TypeId) = .empty;
             defer new.deinit(self.gpa);
-            for (members) |m| try new.append(self.gpa, try self.substituteType(m, subs));
+            for (members) |m| {
+                const subbed = try self.substituteType(m, subs);
+                try new.append(self.gpa, if (subbed < self.interner.pool.typeCount()) subbed else types.Primitive.unknown);
+            }
             return self.interner.internUnion(new.items) catch return t;
         }
         if (flags.is_intersection) {
@@ -12504,7 +12688,10 @@ pub const Checker = struct {
             const members = self.interner.intersectionMembers(t);
             var new: std.ArrayListUnmanaged(TypeId) = .empty;
             defer new.deinit(self.gpa);
-            for (members) |m| try new.append(self.gpa, try self.substituteType(m, subs));
+            for (members) |m| {
+                const subbed = try self.substituteType(m, subs);
+                try new.append(self.gpa, if (subbed < self.interner.pool.typeCount()) subbed else types.Primitive.unknown);
+            }
             return self.interner.internIntersection(new.items) catch return t;
         }
         if (flags.is_signature) {
@@ -12517,7 +12704,8 @@ pub const Checker = struct {
                 try self.substituteType(r, subs)
             else
                 types.Primitive.void_t;
-            const new_sig = self.interner.internSignature(new.items, ret, false) catch return t;
+            const is_construct = self.interner.pool.signature_payloads.items[payload_idx].is_construct;
+            const new_sig = self.interner.internSignature(new.items, ret, is_construct) catch return t;
             if (self.rest_signatures.contains(t)) {
                 try self.rest_signatures.put(self.gpa, new_sig, {});
             }
@@ -18821,6 +19009,64 @@ test "checker: overloaded constructor-typed parameter checks all construct signa
         \\}
         \\declare var b: { new<T>(x: T, y: T): string };
         \\var r = foo(b);
+    );
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+    var found = false;
+    for (s.checker.diagnostics.items) |d| {
+        if (d.code == TsCodes.argument_type_mismatch) found = true;
+    }
+    try T.expect(found);
+}
+
+test "checker: new expression applies explicit generic construct signature args" {
+    const s = try newSetup(
+        \\declare var C: { new<T, U>(x: T, y: U): U };
+        \\new C<string, number>(3, 4);
+    );
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+    var found = false;
+    for (s.checker.diagnostics.items) |d| {
+        if (d.code == TsCodes.argument_type_mismatch) found = true;
+    }
+    try T.expect(found);
+}
+
+test "checker: new expression resolves construct signature overloads" {
+    const s = try newSetup(
+        \\interface Fn {
+        \\  new(x: string): string;
+        \\  new(x: number): number;
+        \\}
+        \\declare var Fn: Fn;
+        \\new Fn({});
+    );
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+    var found = false;
+    for (s.checker.diagnostics.items) |d| {
+        if (d.code == TsCodes.no_overload_matches) found = true;
+    }
+    try T.expect(found);
+}
+
+test "checker: new expression infers generic construct signature return" {
+    const s = try newSetup(
+        \\declare var C: { new<T>(x: T): T };
+        \\let n: number = new C(1);
+    );
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+    try T.expectEqual(@as(usize, 0), s.checker.diagnostics.items.len);
+}
+
+test "checker: object literal inference delays implicit-any callback params" {
+    const s = try newSetup(
+        \\enum E1 { X }
+        \\enum E2 { X }
+        \\declare function f1<T, U>(a: { w: (x: T) => U; r: () => T; }, b: T): U;
+        \\var v = f1({ w: x => x, r: () => E1.X }, E2.X);
     );
     defer destroySetup(s);
     try s.checker.checkSourceFile(s.root);
