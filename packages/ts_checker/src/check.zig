@@ -2193,7 +2193,14 @@ pub const Checker = struct {
                 saw_close_bracket = true;
                 continue;
             }
-            if (!saw_close_bracket) continue;
+            if (!saw_close_bracket) {
+                switch (ch) {
+                    ' ', '\t', '\r', '\n' => continue,
+                    '(' => return true,
+                    ':', '=', ',', '{', ';' => return false,
+                    else => continue,
+                }
+            }
             switch (ch) {
                 ' ', '\t', '\r', '\n' => continue,
                 '(' => return true,
@@ -4386,10 +4393,12 @@ pub const Checker = struct {
             self.classExtendsInstanceType(c.extends) catch null
         else
             null;
+        const instance_this_t = try self.classThisType(instance_t);
         for (members) |m| switch (self.hir.kindOf(m)) {
             .fn_decl, .fn_expr, .arrow_fn => {
+                const fn_p = hir_mod.fnDeclOf(self.hir, m);
                 try self.pushNarrowScope();
-                try self.recordNarrow(this_id, instance_t);
+                try self.recordNarrow(this_id, if (fn_p.flags.is_static) instance_t else instance_this_t);
                 if (super_t) |st| try self.recordNarrow(super_id, st);
                 try self.checkFnDecl(m);
                 self.popNarrowScope();
@@ -4400,7 +4409,7 @@ pub const Checker = struct {
                 const value_kind = self.hir.kindOf(op.value);
                 if (value_kind != .fn_decl and value_kind != .fn_expr and value_kind != .arrow_fn) continue;
                 try self.pushNarrowScope();
-                try self.recordNarrow(this_id, instance_t);
+                try self.recordNarrow(this_id, if (op.is_static) instance_t else instance_this_t);
                 if (super_t) |st| try self.recordNarrow(super_id, st);
                 try self.checkFnDecl(op.value);
                 self.popNarrowScope();
@@ -7562,18 +7571,23 @@ pub const Checker = struct {
     fn checkRepeatedVarDeclaration(self: *Checker, node: NodeId, final_type: TypeId) CheckError!void {
         if (self.hir.kindOf(node) != .var_decl) return;
         const v = hir_mod.varDeclOf(self.hir, node);
-        if (v.type_annotation == hir_mod.none_node_id) return;
         if (v.name == hir_mod.none_node_id or self.hir.kindOf(v.name) != .identifier) return;
         if (final_type == types.Primitive.none or final_type == types.Primitive.any) return;
+        if (v.type_annotation == hir_mod.none_node_id and
+            final_type != types.Primitive.unknown and
+            !self.isThisTypeParameter(final_type)) return;
         const id = hir_mod.identifierOf(self.hir, v.name);
         const scope = self.hir.parentOf(node);
         if (scope == hir_mod.none_node_id) return;
         const key: VarDeclKey = .{ .scope = scope, .name = id.name };
         if (self.var_decl_types.get(key)) |prior| {
-            const compatible = self.typeContainsUnknown(final_type) or
-                (self.engine.isIdenticalTo(prior, final_type) catch true) or
-                ((self.engine.isAssignableTo(prior, final_type) catch true) and
-                    (self.engine.isAssignableTo(final_type, prior) catch true));
+            if (v.type_annotation == hir_mod.none_node_id) return;
+            const compatible = !self.isThisTypeParameter(prior) and
+                !self.isThisTypeParameter(final_type) and
+                (self.typeContainsUnknown(final_type) or
+                    (self.engine.isIdenticalTo(prior, final_type) catch true) or
+                    ((self.engine.isAssignableTo(prior, final_type) catch true) and
+                        (self.engine.isAssignableTo(final_type, prior) catch true)));
             if (!compatible) {
                 const name = self.string_interner.get(id.name);
                 const msg = try std.fmt.allocPrint(
@@ -7590,6 +7604,17 @@ pub const Checker = struct {
             return;
         }
         try self.var_decl_types.put(self.gpa, key, final_type);
+    }
+
+    fn isThisTypeParameter(self: *Checker, t: TypeId) bool {
+        if (t >= self.interner.pool.typeCount()) return false;
+        const flags = self.interner.pool.flagsOf(t);
+        if (!flags.is_type_parameter) return false;
+        const payload_idx = self.interner.pool.payloadOf(t);
+        if (payload_idx >= self.interner.pool.type_parameter_payloads.items.len) return false;
+        const tp = self.interner.pool.type_parameter_payloads.items[payload_idx];
+        const name = tp.name;
+        return std.mem.eql(u8, self.string_interner.get(name), "this");
     }
 
     fn typeContainsUnknown(self: *Checker, t: TypeId) bool {
@@ -7639,6 +7664,11 @@ pub const Checker = struct {
 
     fn lookupObjectMember(self: *Checker, obj_t: TypeId, name: hir_mod.StringId) CheckError!?TypeId {
         const flags = self.interner.pool.flagsOf(obj_t);
+        if (flags.is_type_parameter) {
+            const constraint = self.typeParameterConstraint(obj_t) orelse return null;
+            if (constraint == obj_t) return null;
+            return try self.lookupObjectMember(constraint, name);
+        }
         if (flags.is_union) {
             const members = self.interner.unionMembers(obj_t);
             var resolved: std.ArrayListUnmanaged(TypeId) = .empty;
@@ -7724,6 +7754,7 @@ pub const Checker = struct {
             .literal_undefined => types.Primitive.undefined_t,
             .literal_regex => types.Primitive.object_t,
             .identifier => self.typeOfIdentifier(node),
+            .this_expr => self.currentThisType() orelse types.Primitive.any,
             .spread => blk: {
                 const sp = hir_mod.spreadOf(self.hir, node);
                 break :blk try self.checkExpression(sp.expression);
@@ -8078,8 +8109,9 @@ pub const Checker = struct {
                 // narrowing/index lookups so the diagnostic fires
                 // even when the resolved type is identical inside
                 // and outside the class.
-                try self.checkPrivateMemberAccess(node, obj_t, m.name);
-                try self.checkProtectedMemberAccess(node, obj_t, m.name);
+                const access_obj_t = self.typeParameterConstraint(obj_t) orelse obj_t;
+                try self.checkPrivateMemberAccess(node, access_obj_t, m.name);
+                try self.checkProtectedMemberAccess(node, access_obj_t, m.name);
                 // Member-access narrowing: `if (obj.x !== null) { …
                 // obj.x … }` — when the object is a bare identifier
                 // and a guard recorded a narrow for `(obj, x)`, the
@@ -8121,7 +8153,7 @@ pub const Checker = struct {
                 // `charAt`, `toUpperCase`, …). Catches both the
                 // primitive `string` and any string-literal type.
                 {
-                    const obj_flags = self.interner.pool.flagsOf(obj_t);
+                    const obj_flags = self.interner.pool.flagsOf(access_obj_t);
                     if (obj_flags.is_string and !obj_flags.is_object_type) {
                         if (lib.stringProto(&self.lib_cache, self.interner, self.string_interner)) |proto| {
                             if (self.interner.objectMember(proto, m.name)) |t| {
@@ -8134,8 +8166,8 @@ pub const Checker = struct {
                 // number indexer) consult `Array<T>.prototype` for
                 // `push`, `map`, `filter`, … using the indexer's
                 // element type as `T`.
-                if (self.interner.pool.flagsOf(obj_t).is_object_type) {
-                    const num_idx = try self.arrayElementType(obj_t);
+                if (self.interner.pool.flagsOf(access_obj_t).is_object_type) {
+                    const num_idx = try self.arrayElementType(access_obj_t);
                     if (num_idx != types.Primitive.none) {
                         if (lib.arrayProto(&self.lib_cache, self.interner, self.string_interner, self.gpa, num_idx)) |proto| {
                             if (self.interner.objectMember(proto, m.name)) |t| {
@@ -8149,8 +8181,8 @@ pub const Checker = struct {
                 }
                 // Index-signature fallback: `obj.foo` on a type
                 // with a `[k: string]: V` indexer resolves to V.
-                if (self.interner.pool.flagsOf(obj_t).is_object_type) {
-                    const string_idx = self.interner.objectStringIndex(obj_t);
+                if (self.interner.pool.flagsOf(access_obj_t).is_object_type) {
+                    const string_idx = self.interner.objectStringIndex(access_obj_t);
                     if (string_idx != types.Primitive.none) {
                         // `noPropertyAccessFromIndexSignature`:
                         // dot-access against a type whose only
@@ -8177,7 +8209,7 @@ pub const Checker = struct {
                     if (self.sourceHasCheckJsDirective() and self.isInAssignmentTargetChain(node)) {
                         break :blk types.Primitive.any;
                     }
-                    if (!self.sourceHasCheckJsDirective() and self.interner.objectMembers(obj_t).len == 0) {
+                    if (!self.sourceHasCheckJsDirective() and self.interner.objectMembers(access_obj_t).len == 0) {
                         break :blk types.Primitive.any;
                     }
                     const name_str = self.string_interner.get(m.name);
@@ -8445,9 +8477,13 @@ pub const Checker = struct {
                             try self.report(p, TsCodes.computed_property_name_type, "A computed property name must be of type 'string', 'number', 'symbol', or 'any'.");
                         }
                         if (op.value == hir_mod.none_node_id) continue;
+                        const value_kind = self.hir.kindOf(op.value);
+                        const op_is_method = op.is_method or
+                            ((value_kind == .fn_decl or value_kind == .fn_expr or value_kind == .arrow_fn) and
+                                self.memberSourceLooksMethod(p));
                         const vt = try self.checkExpression(op.value);
                         if (try self.classMemberNameFromPropertyKey(op.key, true)) |member_name| {
-                            if (!op.is_method and objectMemberListContains(members.items, member_name)) {
+                            if (!op_is_method and objectMemberListContains(members.items, member_name)) {
                                 try self.report(p, TsCodes.object_literal_duplicate_property, "An object literal cannot have multiple properties with the same name.");
                             }
                             try upsert(self.gpa, &members, .{
@@ -8455,7 +8491,7 @@ pub const Checker = struct {
                                 .type = vt,
                                 .is_optional = false,
                                 .is_readonly = false,
-                                .is_method = op.is_method,
+                                .is_method = op_is_method,
                             });
                         } else if (try self.computedPropertyKeyTypeIsSymbolLike(key_t)) {
                             try computed_symbol_value_types.append(self.gpa, vt);
@@ -8467,13 +8503,17 @@ pub const Checker = struct {
                     if (op.value == hir_mod.none_node_id) continue;
                     if (self.hir.kindOf(op.key) != .identifier) continue;
                     const k = hir_mod.identifierOf(self.hir, op.key);
+                    const value_kind = self.hir.kindOf(op.value);
+                    const op_is_method = op.is_method or
+                        ((value_kind == .fn_decl or value_kind == .fn_expr or value_kind == .arrow_fn) and
+                            self.memberSourceLooksMethod(p));
                     const vt = try self.checkExpression(op.value);
                     try upsert(self.gpa, &members, .{
                         .name = k.name,
                         .type = vt,
                         .is_optional = false,
                         .is_readonly = false,
-                        .is_method = op.is_method,
+                        .is_method = op_is_method,
                     });
                 }
                 var string_index: TypeId = types.Primitive.none;
@@ -8489,6 +8529,7 @@ pub const Checker = struct {
                     symbol_index = self.interner.internUnion(computed_symbol_value_types.items) catch return error.OutOfMemory;
                 }
                 const obj_t = self.interner.internObjectTypeWithIndexAndSymbol(members.items, string_index, types.Primitive.none, symbol_index) catch return error.OutOfMemory;
+                try self.checkObjectLiteralMethodBodiesWithThis(node, obj_t);
                 break :blk obj_t;
             },
             // Arrow / function expression: lower the signature so the
@@ -10246,6 +10287,13 @@ pub const Checker = struct {
                 const a = hir_mod.assignmentOf(self.hir, node);
                 return self.expressionContainsThis(a.target) or self.expressionContainsThis(a.value);
             },
+            .block_stmt => {
+                for (hir_mod.blockStmts(self.hir, node)) |s| {
+                    if (self.expressionContainsThis(s)) return true;
+                }
+                return false;
+            },
+            .return_stmt => return self.expressionContainsThis(hir_mod.returnOf(self.hir, node).value),
             .array_literal => {
                 for (hir_mod.arrayLiteralElements(self.hir, node)) |el| {
                     if (self.expressionContainsThis(el)) return true;
@@ -10454,6 +10502,49 @@ pub const Checker = struct {
     fn currentThisType(self: *Checker) ?TypeId {
         const this_id = self.string_interner.intern("this") catch return null;
         return self.lookupNarrow(this_id);
+    }
+
+    fn classThisType(self: *Checker, instance_t: TypeId) CheckError!TypeId {
+        const this_id = self.string_interner.intern("this") catch return error.OutOfMemory;
+        return self.interner.internFreshTypeParameterWithFlags(
+            this_id,
+            instance_t,
+            types.Primitive.none,
+            .bivariant,
+            false,
+        ) catch return error.OutOfMemory;
+    }
+
+    fn checkObjectLiteralMethodBodiesWithThis(self: *Checker, node: NodeId, obj_t: TypeId) CheckError!void {
+        const props = hir_mod.objectLiteralProps(self.hir, node);
+        const this_id = self.string_interner.intern("this") catch return error.OutOfMemory;
+        for (props) |p| {
+            if (self.hir.kindOf(p) != .object_property) continue;
+            const op = hir_mod.objectPropertyOf(self.hir, p);
+            if (op.value == hir_mod.none_node_id) continue;
+            const value_kind = self.hir.kindOf(op.value);
+            if (value_kind != .fn_decl and value_kind != .fn_expr and value_kind != .arrow_fn) continue;
+            const op_is_method = op.is_method or self.memberSourceLooksMethod(p);
+            if (!op_is_method) continue;
+            if (!self.functionContainsThis(op.value)) continue;
+            try self.pushNarrowScope();
+            try self.recordNarrow(this_id, obj_t);
+            try self.checkFnDecl(op.value);
+            self.popNarrowScope();
+        }
+    }
+
+    fn functionContainsThis(self: *Checker, node: NodeId) bool {
+        if (node == hir_mod.none_node_id) return false;
+        const kind = self.hir.kindOf(node);
+        if (kind != .fn_decl and kind != .fn_expr and kind != .arrow_fn) return self.expressionContainsThis(node);
+        const f = hir_mod.fnDeclOf(self.hir, node);
+        for (hir_mod.fnParams(self.hir, node)) |p| {
+            if (self.hir.kindOf(p) != .parameter) continue;
+            const pp = hir_mod.parameterOf(self.hir, p);
+            if (self.expressionContainsThis(pp.default_value)) return true;
+        }
+        return self.expressionContainsThis(f.body);
     }
 
     fn reportSymbolOperator(self: *Checker, node: NodeId, op: []const u8) CheckError!void {
