@@ -30972,3 +30972,24 @@ test "checker: dot-form narrow visible from element-access in same branch" {
         try T.expect(d.code != TsCodes.type_not_assignable);
     }
 }
+
+test "checker: post-return narrow persists for member access" {
+    // `if (!obj.x) return; obj.x` — checkStatement's if_stmt path
+    // applies the negated guard in the current scope (without
+    // pushing) when the then-branch definitely exits. The unary `!`
+    // re-flips polarity, so this routes through my new truthy
+    // member-narrow path and records the narrow on the function-body
+    // scope, persisting to subsequent statements.
+    const s = try newSetup(
+        \\function f(obj: { x?: string }): string {
+        \\  if (!obj.x) return "default";
+        \\  return obj.x;
+        \\}
+    );
+    defer destroySetup(s);
+    s.checker.setStrictFlags(.{ .strict_null_checks = true });
+    try s.checker.checkSourceFile(s.root);
+    for (s.checker.diagnostics.items) |d| {
+        try T.expect(d.code != TsCodes.type_not_assignable);
+    }
+}
