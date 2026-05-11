@@ -8204,6 +8204,30 @@ pub const Checker = struct {
         return try self.lowererLowerWithTypeParams(type_annotation);
     }
 
+    fn genericAliasHasMissingRequiredArgs(self: *Checker, info: GenericAliasInfo, supplied: usize) bool {
+        if (supplied >= info.params.len) return false;
+        for (info.params[supplied..]) |p| {
+            if (!self.interner.pool.flagsOf(p).is_type_parameter) return true;
+            const tp = self.interner.pool.type_parameter_payloads.items[self.interner.pool.payloadOf(p)];
+            if (tp.default == types.Primitive.none) return true;
+        }
+        return false;
+    }
+
+    fn reportGenericTypeRequiresArgs(self: *Checker, node: NodeId, name: hir_mod.StringId, info: GenericAliasInfo) CheckError!void {
+        const raw = self.string_interner.get(name);
+        const msg = try std.fmt.allocPrint(
+            self.diag_arena.allocator(),
+            "Generic type '{s}' requires {d} type argument(s).",
+            .{ raw, info.params.len },
+        );
+        try self.diagnostics.append(self.gpa, .{
+            .node = node,
+            .code = TsCodes.generic_type_requires_args,
+            .message = msg,
+        });
+    }
+
     /// Lower a type annotation while consulting the current
     /// narrow scope (for in-scope type parameters) and the
     /// named-type table (for class / interface / type-alias names).
@@ -8286,24 +8310,15 @@ pub const Checker = struct {
                     if (self.lowerBuiltinObjectType(name_str)) |t| return t;
                     if (self.lookupNarrow(r.name)) |t| return t;
                     if (self.generic_aliases.get(r.name)) |info| {
-                        var all_defaulted: bool = info.params.len > 0;
-                        for (info.params) |p| {
-                            if (!self.interner.pool.flagsOf(p).is_type_parameter) {
-                                all_defaulted = false;
-                                break;
-                            }
-                            const tp = self.interner.pool.type_parameter_payloads.items[self.interner.pool.payloadOf(p)];
-                            if (tp.default == types.Primitive.none) {
-                                all_defaulted = false;
-                                break;
-                            }
-                        }
-                        if (all_defaulted) {
+                        if (self.genericAliasHasMissingRequiredArgs(info, 0)) {
+                            try self.reportGenericTypeRequiresArgs(type_node, r.name, info);
+                            return info.body;
+                        } else if (info.params.len > 0) {
                             var subs: std.AutoHashMapUnmanaged(TypeId, TypeId) = .empty;
                             defer subs.deinit(self.gpa);
                             for (info.params) |p| {
                                 const tp = self.interner.pool.type_parameter_payloads.items[self.interner.pool.payloadOf(p)];
-                                try subs.put(self.gpa, p, tp.default);
+                                if (tp.default != types.Primitive.none) try subs.put(self.gpa, p, tp.default);
                             }
                             const instantiated = self.substituteType(info.body, &subs) catch info.body;
                             try self.copyMemberPredicatesFromReceiver(instantiated, info.body);
@@ -8420,6 +8435,9 @@ pub const Checker = struct {
                     if (self.generic_aliases.get(r.name)) |info| {
                         if (self.active_generic_aliases.contains(r.name)) {
                             return info.body;
+                        }
+                        if (self.genericAliasHasMissingRequiredArgs(info, r.args_len)) {
+                            try self.reportGenericTypeRequiresArgs(type_node, r.name, info);
                         }
                         try self.active_generic_aliases.put(self.gpa, r.name, {});
                         defer _ = self.active_generic_aliases.remove(r.name);
@@ -8764,6 +8782,18 @@ pub const Checker = struct {
             return null;
         const ns_node = self.findNamespaceByPath(root_stmts, path.items) orelse return null;
         const decl = self.findNamedTypeDeclInNamespace(ns_node, r.name) orelse return null;
+        if (self.qualifiedDeclHasMissingRequiredTypeArgs(decl, r.args_len)) {
+            const msg = try std.fmt.allocPrint(
+                self.diag_arena.allocator(),
+                "Generic type '{s}' requires type argument(s).",
+                .{self.string_interner.get(r.name)},
+            );
+            try self.diagnostics.append(self.gpa, .{
+                .node = type_node,
+                .code = TsCodes.generic_type_requires_args,
+                .message = msg,
+            });
+        }
         const t = self.hir.typeOf(decl);
         if (t != types.Primitive.none and t != types.Primitive.unknown) return t;
         return switch (self.hir.kindOf(decl)) {
@@ -8788,6 +8818,31 @@ pub const Checker = struct {
             .enum_decl => self.hir.typeOf(decl),
             else => null,
         };
+    }
+
+    fn qualifiedDeclHasMissingRequiredTypeArgs(self: *Checker, decl: NodeId, supplied: usize) bool {
+        const params = switch (self.hir.kindOf(decl)) {
+            .class_decl, .class_expr => blk: {
+                const c = hir_mod.classOf(self.hir, decl);
+                break :blk self.hir.childSlice(c.type_params_start, c.type_params_len);
+            },
+            .interface_decl => blk: {
+                const i = hir_mod.interfaceOf(self.hir, decl);
+                break :blk self.hir.childSlice(i.type_params_start, i.type_params_len);
+            },
+            .type_alias_decl => blk: {
+                const t = hir_mod.typeAliasOf(self.hir, decl);
+                break :blk self.hir.childSlice(t.type_params_start, t.type_params_len);
+            },
+            else => return false,
+        };
+        if (supplied >= params.len) return false;
+        for (params[supplied..]) |param| {
+            if (self.hir.kindOf(param) != .type_parameter) return true;
+            const tp = hir_mod.typeParameterOf(self.hir, param);
+            if (tp.default == hir_mod.none_node_id) return true;
+        }
+        return false;
     }
 
     fn rootBlockFor(self: *Checker, node: NodeId) NodeId {
@@ -25365,6 +25420,36 @@ test "checker: default type parameter — `type Box<T = number>` resolves bare `
         try T.expect(d.code != TsCodes.generic_type_requires_args);
         try T.expect(d.code != TsCodes.type_not_assignable);
     }
+}
+
+test "checker: bare generic type reference without defaults emits TS2314" {
+    const s = try newSetup(
+        \\class C<T> { foo: T; }
+        \\var c: C;
+        \\var a: { x: C };
+        \\function f(x: C): C { return x; }
+    );
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+    var found: usize = 0;
+    for (s.checker.diagnostics.items) |d| {
+        if (d.code == TsCodes.generic_type_requires_args) found += 1;
+    }
+    try T.expect(found >= 3);
+}
+
+test "checker: qualified bare generic type reference without defaults emits TS2314" {
+    const s = try newSetup(
+        \\namespace M { export class E<T> { foo: T; } }
+        \\class D<T extends M.E> {}
+    );
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+    var found = false;
+    for (s.checker.diagnostics.items) |d| {
+        if (d.code == TsCodes.generic_type_requires_args) found = true;
+    }
+    try T.expect(found);
 }
 
 test "checker: enum auto-increment — `enum E { A, B, C }` assigns A=0, B=1, C=2" {
