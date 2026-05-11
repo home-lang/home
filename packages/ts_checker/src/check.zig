@@ -3620,13 +3620,15 @@ pub const Checker = struct {
     }
 
     /// Build a minimal structural `Promise<T>` object type — `{ then:
-    /// (cb: (value: T) => any) => any }` — used when intercepting
-    /// `Promise<T>` type-refs so downstream Awaited / await unwrap
-    /// machinery can recognize and peel them.
+    /// (onfulfilled: (value: T) => any, onrejected?: any) => any }` —
+    /// used when intercepting `Promise<T>` type-refs so downstream
+    /// Awaited / await unwrap machinery can recognize and peel them.
     fn buildStructuralPromise(self: *Checker, value_t: TypeId) CheckError!TypeId {
         const cb_params = [_]TypeId{value_t};
         const cb_sig = self.interner.internSignature(&cb_params, types.Primitive.any, false) catch return error.OutOfMemory;
-        const then_params = [_]TypeId{cb_sig};
+        var any_or_undefined_members = [_]TypeId{ types.Primitive.any, types.Primitive.undefined_t };
+        const optional_any = self.interner.internUnion(&any_or_undefined_members) catch return error.OutOfMemory;
+        const then_params = [_]TypeId{ cb_sig, optional_any };
         const then_sig = self.interner.internSignature(&then_params, types.Primitive.any, false) catch return error.OutOfMemory;
         const then_id = self.string_interner.intern("then") catch return error.OutOfMemory;
         const members = [_]types.ObjectMember{.{
@@ -9836,6 +9838,30 @@ pub const Checker = struct {
                     const t = try self.checkExpression(arg);
                     try arg_types.append(self.gpa, t);
                 }
+                if (self.isDynamicImportCallee(c.callee)) {
+                    if (args.len == 0) {
+                        const msg = try std.fmt.allocPrint(
+                            self.diag_arena.allocator(),
+                            "Expected 1 or more arguments, but got {d}.",
+                            .{args.len},
+                        );
+                        try self.diagnostics.append(self.gpa, .{
+                            .node = node,
+                            .code = TsCodes.expected_n_arguments,
+                            .message = msg,
+                        });
+                    } else {
+                        const spec_t = arg_types.items[0];
+                        const string_like = self.engine.isAssignableTo(spec_t, types.Primitive.string_t) catch false;
+                        if (!string_like or
+                            (self.strict_flags.strict_null_checks and
+                                (self.typeIncludesNull(spec_t) or self.typeIncludesUndefined(spec_t))))
+                        {
+                            try self.report(args[0], TsCodes.argument_type_mismatch, "Argument is not assignable to dynamic import specifier type.");
+                        }
+                    }
+                    break :blk try self.buildStructuralPromise(types.Primitive.any);
+                }
                 // Overload resolution: when the callee is a known
                 // overloaded fn, pick the first applicable signature.
                 // "Applicable" = arg_count fits and each arg type is
@@ -10618,6 +10644,12 @@ pub const Checker = struct {
         };
         self.hir.setType(node, t);
         return t;
+    }
+
+    fn isDynamicImportCallee(self: *Checker, callee: NodeId) bool {
+        if (callee == hir_mod.none_node_id or self.hir.kindOf(callee) != .identifier) return false;
+        const id = hir_mod.identifierOf(self.hir, callee);
+        return std.mem.eql(u8, self.string_interner.get(id.name), "import");
     }
 
     fn checkJsxElement(self: *Checker, node: NodeId) CheckError!TypeId {
@@ -24450,5 +24482,35 @@ test "checker: optional class method declaration does not require implementation
     try s.checker.checkSourceFile(s.root);
     for (s.checker.diagnostics.items) |d| {
         try T.expect(d.code != TsCodes.implementation_missing);
+    }
+}
+
+test "checker: dynamic import returns Promise<any> and validates specifier" {
+    const s = try newSetup(
+        \\declare function getSpecifier(): string;
+        \\declare function badSpecifier(): boolean;
+        \\var p1 = import(getSpecifier());
+        \\var p1: Promise<any> = import(getSpecifier());
+        \\var bad = import(badSpecifier());
+    );
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+    var found_bad_specifier = false;
+    for (s.checker.diagnostics.items) |d| {
+        if (d.code == TsCodes.argument_type_mismatch) found_bad_specifier = true;
+        try T.expect(d.code != TsCodes.subsequent_var_type_mismatch);
+    }
+    try T.expect(found_bad_specifier);
+}
+
+test "checker: structural Promise.then accepts rejection callback" {
+    const s = try newSetup(
+        \\let p: Promise<number>;
+        \\p.then(value => value.toFixed(), err => err);
+    );
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+    for (s.checker.diagnostics.items) |d| {
+        try T.expect(d.code != TsCodes.expected_n_arguments);
     }
 }
