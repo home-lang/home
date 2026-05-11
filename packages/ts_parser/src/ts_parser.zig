@@ -1728,7 +1728,7 @@ pub const Parser = struct {
                         try self.reportAmbientClassImplementation(member_start);
                     } else {
                         try self.consumeStatementTerminator();
-                        if (is_generator and self.isAmbientContext()) {
+                        if (is_generator and self.isAmbientContextAt(member_start.span.start)) {
                             try self.reportCodeAt(member_start.span.start, member_start.line, 1221, "Generators are not allowed in an ambient context.");
                         } else if (is_generator) {
                             try self.reportCodeAt(member_start.span.start, member_start.line, 1222, "An overload signature cannot be declared as a generator.");
@@ -1937,17 +1937,57 @@ pub const Parser = struct {
     }
 
     fn reportAmbientClassImplementation(self: *Parser, member_start: Token) ParseError!void {
-        if (!self.isAmbientContext()) return;
+        if (!self.isAmbientContextAt(member_start.span.start)) return;
         try self.reportCodeAt(member_start.span.start, member_start.line, 1183, "An implementation cannot be declared in ambient contexts.");
     }
 
     fn reportMissingClassMemberImplementation(self: *Parser, member_start: Token, mods: ClassModifiers) ParseError!void {
-        if (self.isAmbientContext() or mods.is_abstract) return;
+        if (self.isAmbientContextAt(member_start.span.start) or mods.is_abstract) return;
         try self.reportCodeAt(member_start.span.start, member_start.line, 2391, "Function implementation is missing or not immediately following the declaration.");
     }
 
     fn isAmbientContext(self: *const Parser) bool {
         return self.ambient_depth > 0 or self.is_declaration_file;
+    }
+
+    fn isAmbientContextAt(self: *const Parser, pos: u32) bool {
+        return self.isAmbientContext() or self.isVirtualDeclarationSectionAt(pos);
+    }
+
+    fn isVirtualDeclarationSectionAt(self: *const Parser, pos: u32) bool {
+        const filename = self.virtualSectionFilenameAt(pos) orelse return false;
+        if (std.mem.endsWith(u8, filename, ".d.ts")) return true;
+        if (std.mem.endsWith(u8, filename, ".d.mts")) return true;
+        if (std.mem.endsWith(u8, filename, ".d.cts")) return true;
+        return std.mem.endsWith(u8, filename, ".ts") and std.mem.indexOf(u8, filename, ".d.") != null;
+    }
+
+    fn virtualSectionFilenameAt(self: *const Parser, pos: u32) ?[]const u8 {
+        if (std.mem.indexOf(u8, self.source, "@filename:") == null and
+            std.mem.indexOf(u8, self.source, "@Filename:") == null)
+        {
+            return null;
+        }
+        const limit: usize = @min(@as(usize, pos), self.source.len);
+        var last: ?usize = null;
+        var line_start: usize = 0;
+        while (line_start <= limit and line_start < self.source.len) {
+            const line_end = std.mem.indexOfScalarPos(u8, self.source, line_start, '\n') orelse self.source.len;
+            const line = self.source[line_start..line_end];
+            if (std.mem.indexOf(u8, line, "@filename:") != null or
+                std.mem.indexOf(u8, line, "@Filename:") != null)
+            {
+                last = line_start;
+            }
+            if (line_end >= limit or line_end == self.source.len) break;
+            line_start = line_end + 1;
+        }
+        const section = last orelse return null;
+        const line_end = std.mem.indexOfScalarPos(u8, self.source, section, '\n') orelse self.source.len;
+        const line = self.source[section..line_end];
+        const marker = std.mem.indexOf(u8, line, "@filename:") orelse
+            (std.mem.indexOf(u8, line, "@Filename:") orelse return null);
+        return std.mem.trim(u8, line[marker + "@filename:".len ..], " \t\r");
     }
 
     fn nextClassMemberNameMatches(self: *const Parser, current: Token) bool {
@@ -2783,7 +2823,7 @@ pub const Parser = struct {
         if (self.match(.equal)) {
             init_node = try self.parseAssignmentExpression();
         }
-        const is_ambient_decl = self.ambient_depth > 0 or self.is_declaration_file;
+        const is_ambient_decl = self.isAmbientContextAt(start.span.start);
         if (decl_kind == .const_decl and init_node == hir_mod.none_node_id and !is_ambient_decl) {
             try self.reportCodeAt(self.hir.spanOf(name_node).start, start.line, 1155, "'const' declarations must be initialized.");
         }
@@ -6416,6 +6456,22 @@ test "parser: var / const / let produce distinct kinds" {
     try T.expectEqual(hir_mod.NodeKind.var_decl, s.hir.kindOf(stmts[0]));
     try T.expectEqual(hir_mod.NodeKind.let_decl, s.hir.kindOf(stmts[1]));
     try T.expectEqual(hir_mod.NodeKind.const_decl, s.hir.kindOf(stmts[2]));
+}
+
+test "parser: virtual declaration sections allow ambient exported const" {
+    var s = try newTestSetup(
+        \\// @filename: /node_modules/@types/pkg/index.d.ts
+        \\export const x: number;
+        \\// @filename: /main.ts
+        \\import { x } from "pkg";
+    );
+    defer destroyTestSetup(s);
+    const root = try s.parser.parseSourceFile();
+    const stmts = hir_mod.blockStmts(&s.hir, root);
+    try T.expectEqual(@as(usize, 0), s.parser.diagnostics.items.len);
+    const ex = hir_mod.exportOf(&s.hir, stmts[0]);
+    const vd = hir_mod.varDeclOf(&s.hir, ex.decl);
+    try T.expect(vd.is_ambient);
 }
 
 test "parser: contextual keyword may be variable name" {

@@ -346,6 +346,11 @@ pub const DirectoryLoadOptions = struct {
     /// Load and compare the one-line diagnostic headers from upstream
     /// `.errors.txt` files instead of the coarse expected-any mode.
     exact_error_headers: bool = false,
+    /// Optional corpus window. Used by the opt-in full-corpus survey so
+    /// bounded START/LIMIT runs do not baseline-scan thousands of files
+    /// outside the requested slice.
+    load_start: usize = 0,
+    load_limit: ?usize = null,
 };
 
 /// Walk `dir_path` recursively and collect every `.ts` / `.tsx`
@@ -383,12 +388,17 @@ pub fn loadDirectoryWithOptions(
     defer dir.close(io);
     var walker = try dir.walk(gpa);
     defer walker.deinit();
+    var code_index: usize = 0;
+    const load_end = if (options.load_limit) |limit| options.load_start + limit else std.math.maxInt(usize);
     while (try walker.next(io)) |entry| {
         if (entry.kind != .file) continue;
         const ext_end = entry.basename.len;
         const is_ts = std.mem.endsWith(u8, entry.basename, ".ts");
         const basename_is_tsx = std.mem.endsWith(u8, entry.basename, ".tsx");
         if (!is_ts and !basename_is_tsx) continue;
+        const include_entry = code_index >= options.load_start and code_index < load_end;
+        code_index += 1;
+        if (!include_entry) continue;
         // Open through the iterating root so paths are dir-relative.
         var file = entry.dir.openFile(io, entry.basename, .{}) catch continue;
         defer file.close(io);
@@ -517,25 +527,43 @@ fn virtualFilename(line: []const u8) ?[]const u8 {
 }
 
 fn firstCodeVirtualFilename(source: []const u8) ?[]const u8 {
+    var fallback: ?[]const u8 = null;
     var lines = std.mem.splitScalar(u8, source, '\n');
     while (lines.next()) |line_with_cr| {
         const line = std.mem.trim(u8, line_with_cr, "\r");
         const path = virtualFilename(line) orelse continue;
-        if (isCodeVirtualFile(path)) return path;
+        if (!isCodeVirtualFile(path)) continue;
+        if (fallback == null) fallback = path;
+        if (!isNodeModulesVirtualPath(path)) return path;
     }
-    return null;
+    return fallback;
 }
 
 fn isCodeVirtualFile(path: []const u8) bool {
     return std.mem.endsWith(u8, path, ".ts") or
         std.mem.endsWith(u8, path, ".tsx") or
         std.mem.endsWith(u8, path, ".d.ts") or
+        std.mem.endsWith(u8, path, ".mts") or
+        std.mem.endsWith(u8, path, ".cts") or
+        std.mem.endsWith(u8, path, ".d.mts") or
+        std.mem.endsWith(u8, path, ".d.cts") or
         std.mem.endsWith(u8, path, ".js") or
-        std.mem.endsWith(u8, path, ".jsx");
+        std.mem.endsWith(u8, path, ".jsx") or
+        std.mem.endsWith(u8, path, ".mjs") or
+        std.mem.endsWith(u8, path, ".cjs");
+}
+
+fn isNodeModulesVirtualPath(path: []const u8) bool {
+    var p = path;
+    while (std.mem.startsWith(u8, p, "/")) p = p[1..];
+    while (std.mem.startsWith(u8, p, "./")) p = p[2..];
+    return std.mem.startsWith(u8, p, "node_modules/");
 }
 
 fn isDeclarationFilePath(path: []const u8) bool {
     if (std.mem.endsWith(u8, path, ".d.ts")) return true;
+    if (std.mem.endsWith(u8, path, ".d.mts")) return true;
+    if (std.mem.endsWith(u8, path, ".d.cts")) return true;
     return std.mem.endsWith(u8, path, ".ts") and std.mem.indexOf(u8, path, ".d.") != null;
 }
 
@@ -691,6 +719,12 @@ fn envUsize(name: [*:0]const u8, default: usize) usize {
     const raw = std.c.getenv(name) orelse return default;
     const value = std.mem.span(raw);
     return std.fmt.parseInt(usize, value, 10) catch default;
+}
+
+fn envUsizeOpt(name: [*:0]const u8) ?usize {
+    const raw = std.c.getenv(name) orelse return null;
+    const value = std.mem.span(raw);
+    return std.fmt.parseInt(usize, value, 10) catch null;
 }
 
 fn hasNoLibReferenceLib(source: []const u8) bool {
@@ -2025,6 +2059,26 @@ test "conformance: virtual code markers survive non-code stripping" {
     try T.expect(std.mem.indexOf(u8, stripped.?, "export const x") != null);
 }
 
+test "conformance: first virtual code filename prefers project source over node_modules" {
+    const source =
+        \\// @filename: /node_modules/foo/index.d.ts
+        \\export const x: number;
+        \\// @filename: /src/main.ts
+        \\import { x } from "foo";
+    ;
+    try T.expectEqualStrings("/src/main.ts", firstCodeVirtualFilename(source).?);
+}
+
+test "conformance: virtual mts files count as project code sections" {
+    const source =
+        \\// @filename: /node_modules/dep/dist/index.d.ts
+        \\export {};
+        \\// @filename: /index.mts
+        \\import {} from "dep";
+    ;
+    try T.expectEqualStrings("/index.mts", firstCodeVirtualFilename(source).?);
+}
+
 test "conformance: empty file passes with no diagnostics" {
     const r = try run(T.allocator, .{
         .name = "empty",
@@ -2452,9 +2506,13 @@ test "conformance: opt-in full local TypeScript corpus survey" {
         results.deinit(T.allocator);
     }
 
+    const requested_start = envUsize("HOME_TS_CONFORMANCE_START", 0);
+    const requested_limit = envUsizeOpt("HOME_TS_CONFORMANCE_LIMIT");
     const corpus = try loadDirectoryWithOptions(T.allocator, ts_root, .{
         .baseline_root = baseline_root,
         .strict_default_for_expected_errors = true,
+        .load_start = requested_start,
+        .load_limit = requested_limit,
     });
     defer {
         for (corpus) |entry| {
@@ -2466,13 +2524,13 @@ test "conformance: opt-in full local TypeScript corpus survey" {
         T.allocator.free(corpus);
     }
 
-    const start = @min(envUsize("HOME_TS_CONFORMANCE_START", 0), corpus.len);
-    const requested_limit = envUsize("HOME_TS_CONFORMANCE_LIMIT", corpus.len - start);
-    const end = @min(corpus.len, start + requested_limit);
+    const start: usize = 0;
+    const end = corpus.len;
+    const display_total = requested_start + corpus.len;
 
     var stats: Stats = .{};
-    for (corpus[start..end], start..) |entry, idx| {
-        std.debug.print("[ts_conformance full-corpus] RUN {d}/{d} {s}\n", .{ idx + 1, corpus.len, entry.name });
+    for (corpus[start..end], requested_start..) |entry, idx| {
+        std.debug.print("[ts_conformance full-corpus] RUN {d}/{d} {s}\n", .{ idx + 1, display_total, entry.name });
         const r = try runOneEntry(T.allocator, .{
             .name = entry.name,
             .source = entry.source,
@@ -2508,7 +2566,7 @@ test "conformance: opt-in full local TypeScript corpus survey" {
         std.debug.print("  FAIL  {s}: {s}\n", .{ r.name, r.detail });
     }
 
-    if (start == 0 and end == corpus.len) {
+    if (requested_start == 0 and requested_limit == null) {
         try T.expect(stats.total() > 1000);
     } else {
         try T.expect(stats.total() == end - start);

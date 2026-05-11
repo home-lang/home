@@ -64,6 +64,7 @@ pub const TsCodes = struct {
     /// 2304 plus a `Did you mean 'X'?` suggestion.
     pub const cannot_find_name_did_you_mean: u32 = 2552;
     pub const cannot_find_module: u32 = 2307;
+    pub const untyped_module: u32 = 7016;
     pub const cannot_find_namespace: u32 = 2503;
     pub const destructuring_decl_must_have_initializer: u32 = 1182;
     pub const rest_element_cannot_have_initializer: u32 = 1186;
@@ -1508,10 +1509,16 @@ pub const Checker = struct {
     fn virtualSectionIsDeclarationFile(self: *Checker, node: NodeId) bool {
         const filename = self.virtualSectionFilenameForNode(node) orelse return false;
         if (std.mem.endsWith(u8, filename, ".d.ts")) return true;
+        if (std.mem.endsWith(u8, filename, ".d.mts")) return true;
+        if (std.mem.endsWith(u8, filename, ".d.cts")) return true;
         return std.mem.endsWith(u8, filename, ".ts") and std.mem.indexOf(u8, filename, ".d.") != null;
     }
 
     fn checkMultipleDefaultExports(self: *Checker, stmts: []const NodeId) CheckError!void {
+        if (self.sourceHasVirtualFilenameSections()) {
+            try self.checkMultipleDefaultExportsByVirtualSection(stmts);
+            return;
+        }
         var first_default: NodeId = hir_mod.none_node_id;
         var default_fn_name: ?hir_mod.StringId = null;
         var default_fn_impl: NodeId = hir_mod.none_node_id;
@@ -1549,6 +1556,54 @@ pub const Checker = struct {
                 }
             }
             try self.report(first_default, TsCodes.multiple_default_exports, "A module cannot have multiple default exports.");
+            try self.report(stmt, TsCodes.multiple_default_exports, "A module cannot have multiple default exports.");
+            return;
+        }
+    }
+
+    const DefaultExportSection = struct {
+        first_default: NodeId = hir_mod.none_node_id,
+        default_fn_name: ?hir_mod.StringId = null,
+        default_fn_impl: NodeId = hir_mod.none_node_id,
+    };
+
+    fn checkMultipleDefaultExportsByVirtualSection(self: *Checker, stmts: []const NodeId) CheckError!void {
+        var by_section: std.AutoHashMapUnmanaged(usize, DefaultExportSection) = .empty;
+        defer by_section.deinit(self.gpa);
+
+        for (stmts) |stmt| {
+            if (self.hir.kindOf(stmt) != .export_decl) continue;
+            const ex = hir_mod.exportOf(self.hir, stmt);
+            if (!ex.is_default) continue;
+
+            const section = self.virtualSectionStartForNode(stmt);
+            const gop = try by_section.getOrPut(self.gpa, section);
+            if (!gop.found_existing) gop.value_ptr.* = .{};
+            const state = gop.value_ptr;
+            if (state.first_default == hir_mod.none_node_id) {
+                state.first_default = stmt;
+                if (self.defaultExportFunctionInfo(stmt)) |info| {
+                    state.default_fn_name = info.name;
+                    if (info.has_body) state.default_fn_impl = stmt;
+                }
+                continue;
+            }
+            if (self.defaultExportFunctionInfo(stmt)) |info| {
+                if (state.default_fn_name) |name| {
+                    if (info.name == name) {
+                        if (info.has_body) {
+                            if (state.default_fn_impl != hir_mod.none_node_id) {
+                                try self.report(state.default_fn_impl, TsCodes.multiple_default_exports, "A module cannot have multiple default exports.");
+                                try self.report(stmt, TsCodes.multiple_default_exports, "A module cannot have multiple default exports.");
+                                return;
+                            }
+                            state.default_fn_impl = stmt;
+                        }
+                        continue;
+                    }
+                }
+            }
+            try self.report(state.first_default, TsCodes.multiple_default_exports, "A module cannot have multiple default exports.");
             try self.report(stmt, TsCodes.multiple_default_exports, "A module cannot have multiple default exports.");
             return;
         }
@@ -6736,6 +6791,7 @@ pub const Checker = struct {
             try self.checkNamedImportSpecifiers(node, imp, spec);
             return;
         }
+        if (try self.checkVirtualBareModuleImport(node, spec)) return;
         if (try self.isKnownAmbientModuleName(node, spec)) return;
         const msg = try std.fmt.allocPrint(
             self.diag_arena.allocator(),
@@ -6747,6 +6803,161 @@ pub const Checker = struct {
             .code = TsCodes.cannot_find_module,
             .message = msg,
         });
+    }
+
+    const VirtualModuleResolution = enum {
+        none,
+        declaration,
+        implementation,
+    };
+
+    fn checkVirtualBareModuleImport(self: *Checker, node: NodeId, spec: []const u8) CheckError!bool {
+        if (!self.sourceHasVirtualFilenameSections()) return false;
+        const resolution = try self.resolveVirtualBareModule(spec);
+        switch (resolution) {
+            .none => return false,
+            .declaration => return true,
+            .implementation => {
+                if (self.strict_flags.no_implicit_any) {
+                    const msg = try std.fmt.allocPrint(
+                        self.diag_arena.allocator(),
+                        "Could not find a declaration file for module '{s}'.",
+                        .{spec},
+                    );
+                    try self.diagnostics.append(self.gpa, .{
+                        .node = node,
+                        .code = TsCodes.untyped_module,
+                        .message = msg,
+                    });
+                }
+                return true;
+            },
+        }
+    }
+
+    fn resolveVirtualBareModule(self: *Checker, spec: []const u8) CheckError!VirtualModuleResolution {
+        if (std.mem.startsWith(u8, spec, ".")) return .none;
+        const slash = packageNameEnd(spec);
+        const package_name = spec[0..slash];
+        const subpath = if (slash < spec.len) spec[slash + 1 ..] else "";
+
+        if (try self.virtualPackageHasDeclaration("node_modules", package_name, subpath)) return .declaration;
+        if (try self.virtualPackageHasTypesVersionDeclaration("node_modules", package_name, subpath)) return .declaration;
+        if (try self.virtualPackageHasDeclaration("", package_name, subpath)) return .declaration;
+        if (try self.virtualPackageHasTypesVersionDeclaration("", package_name, subpath)) return .declaration;
+        if (try self.virtualTypesPackageHasDeclaration(spec)) return .declaration;
+
+        if (try self.virtualPackageHasImplementation("node_modules", package_name, subpath)) return .implementation;
+        if (try self.virtualPackageHasImplementation("", package_name, subpath)) return .implementation;
+        return .none;
+    }
+
+    fn packageNameEnd(spec: []const u8) usize {
+        if (std.mem.startsWith(u8, spec, "@")) {
+            const first = std.mem.indexOfScalar(u8, spec, '/') orelse return spec.len;
+            const rest = spec[first + 1 ..];
+            const second_rel = std.mem.indexOfScalar(u8, rest, '/') orelse return spec.len;
+            return first + 1 + second_rel;
+        }
+        return std.mem.indexOfScalar(u8, spec, '/') orelse spec.len;
+    }
+
+    fn virtualPackageHasDeclaration(self: *Checker, root: []const u8, package_name: []const u8, subpath: []const u8) CheckError!bool {
+        return try self.virtualPackageHasExt(root, package_name, subpath, ".d.ts");
+    }
+
+    fn virtualPackageHasImplementation(self: *Checker, root: []const u8, package_name: []const u8, subpath: []const u8) CheckError!bool {
+        if (try self.virtualPackageHasExt(root, package_name, subpath, ".ts")) return true;
+        if (try self.virtualPackageHasExt(root, package_name, subpath, ".tsx")) return true;
+        if (try self.virtualPackageHasExt(root, package_name, subpath, ".js")) return true;
+        if (try self.virtualPackageHasExt(root, package_name, subpath, ".jsx")) return true;
+        return false;
+    }
+
+    fn virtualPackageHasTypesVersionDeclaration(self: *Checker, root: []const u8, package_name: []const u8, subpath: []const u8) CheckError!bool {
+        return try self.virtualPackageHasExtAt(root, package_name, "ts3.1", subpath, ".d.ts");
+    }
+
+    fn virtualPackageHasExt(self: *Checker, root: []const u8, package_name: []const u8, subpath: []const u8, ext: []const u8) CheckError!bool {
+        return try self.virtualPackageHasExtAt(root, package_name, "", subpath, ext);
+    }
+
+    fn virtualPackageHasExtAt(self: *Checker, root: []const u8, package_name: []const u8, prefix: []const u8, subpath: []const u8, ext: []const u8) CheckError!bool {
+        var candidates: std.ArrayListUnmanaged([]u8) = .empty;
+        defer {
+            for (candidates.items) |candidate| self.gpa.free(candidate);
+            candidates.deinit(self.gpa);
+        }
+
+        if (subpath.len == 0) {
+            try self.appendVirtualPackagePathCandidate(&candidates, root, package_name, prefix, "index", ext);
+        } else {
+            try self.appendVirtualPackagePathCandidate(&candidates, root, package_name, prefix, subpath, ext);
+            const indexed = try std.fmt.allocPrint(self.gpa, "{s}/index", .{subpath});
+            defer self.gpa.free(indexed);
+            try self.appendVirtualPackagePathCandidate(&candidates, root, package_name, prefix, indexed, ext);
+        }
+
+        for (candidates.items) |candidate| {
+            if (self.virtualSourceHasFilename(candidate)) return true;
+        }
+        return false;
+    }
+
+    fn appendVirtualPackagePathCandidate(
+        self: *Checker,
+        candidates: *std.ArrayListUnmanaged([]u8),
+        root: []const u8,
+        package_name: []const u8,
+        prefix: []const u8,
+        relative: []const u8,
+        ext: []const u8,
+    ) CheckError!void {
+        const path = if (root.len > 0 and prefix.len > 0)
+            std.fmt.allocPrint(self.gpa, "{s}/{s}/{s}/{s}{s}", .{ root, package_name, prefix, relative, ext }) catch return error.OutOfMemory
+        else if (root.len > 0)
+            std.fmt.allocPrint(self.gpa, "{s}/{s}/{s}{s}", .{ root, package_name, relative, ext }) catch return error.OutOfMemory
+        else if (prefix.len > 0)
+            std.fmt.allocPrint(self.gpa, "{s}/{s}/{s}{s}", .{ package_name, prefix, relative, ext }) catch return error.OutOfMemory
+        else
+            std.fmt.allocPrint(self.gpa, "{s}/{s}{s}", .{ package_name, relative, ext }) catch return error.OutOfMemory;
+        try candidates.append(self.gpa, path);
+    }
+
+    fn virtualTypesPackageHasDeclaration(self: *Checker, spec: []const u8) CheckError!bool {
+        if (!std.mem.startsWith(u8, spec, "@")) return false;
+        const slash = packageNameEnd(spec);
+        const package_name = spec[0..slash];
+        const subpath = if (slash < spec.len) spec[slash + 1 ..] else "";
+        const scoped_slash = std.mem.indexOfScalar(u8, package_name[1..], '/') orelse return false;
+        const scope = package_name[1 .. 1 + scoped_slash];
+        const name = package_name[1 + scoped_slash + 1 ..];
+        const types_pkg = try std.fmt.allocPrint(self.gpa, "@types/{s}__{s}", .{ scope, name });
+        defer self.gpa.free(types_pkg);
+        return try self.virtualPackageHasDeclaration("node_modules", types_pkg, subpath);
+    }
+
+    fn virtualSourceHasFilename(self: *Checker, wanted: []const u8) bool {
+        const src = self.source orelse return false;
+        var lines = std.mem.splitScalar(u8, src, '\n');
+        while (lines.next()) |raw| {
+            const line = std.mem.trim(u8, raw, " \t\r");
+            const marker = std.mem.indexOf(u8, line, "@filename:") orelse
+                (std.mem.indexOf(u8, line, "@Filename:") orelse continue);
+            const path = std.mem.trim(u8, line[marker + "@filename:".len ..], " \t\r");
+            if (virtualPathEquals(path, wanted)) return true;
+        }
+        return false;
+    }
+
+    fn virtualPathEquals(path: []const u8, wanted: []const u8) bool {
+        var a = path;
+        var b = wanted;
+        while (std.mem.startsWith(u8, a, "/")) a = a[1..];
+        while (std.mem.startsWith(u8, b, "/")) b = b[1..];
+        while (std.mem.startsWith(u8, a, "./")) a = a[2..];
+        while (std.mem.startsWith(u8, b, "./")) b = b[2..];
+        return std.mem.eql(u8, a, b);
     }
 
     fn checkImportEqualsEntity(self: *Checker, node: NodeId, imp: hir_mod.ImportPayload) CheckError!void {
@@ -18194,6 +18405,23 @@ test "checker: virtual file export stars do not use single-source conflict heuri
     }
 }
 
+test "checker: default exports are scoped by virtual filename sections" {
+    const s = try newSetup(
+        \\// @filename: /project/a.js
+        \\export default "a.js";
+        \\// @filename: /project/a.js.js
+        \\export default "a.js.js";
+        \\// @filename: /project/b.ts
+        \\import a from "./a.js";
+    );
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+
+    for (s.checker.diagnostics.items) |d| {
+        try T.expect(d.code != TsCodes.multiple_default_exports);
+    }
+}
+
 test "checker: named export requires local declaration" {
     const b = try newBoundSetup(
         \\export { string };
@@ -22323,6 +22551,53 @@ test "checker: namespace re-export satisfies named import" {
     for (s.checker.diagnostics.items) |d| {
         try T.expect(d.code != TsCodes.no_exported_member_suggestion);
     }
+}
+
+test "checker: virtual node_modules declaration satisfies bare import" {
+    const s = try newSetup(
+        \\// @filename: /node_modules/foo/index.d.ts
+        \\export const x: number;
+        \\// @filename: /main.ts
+        \\import { x } from "foo";
+        \\x;
+    );
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+    for (s.checker.diagnostics.items) |d| {
+        try T.expect(d.code != TsCodes.cannot_find_module);
+    }
+}
+
+test "checker: virtual scoped package resolves through @types fallback" {
+    const s = try newSetup(
+        \\// @filename: /node_modules/@types/be__bop/e/z.d.ts
+        \\export const z: number;
+        \\// @filename: /main.ts
+        \\import { z } from "@be/bop/e/z";
+        \\z;
+    );
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+    for (s.checker.diagnostics.items) |d| {
+        try T.expect(d.code != TsCodes.cannot_find_module);
+    }
+}
+
+test "checker: virtual js package without declaration reports TS7016 under noImplicitAny" {
+    const s = try newSetup(
+        \\// @filename: /node_modules/foo/other.js
+        \\module.exports = {};
+        \\// @filename: /main.ts
+        \\import * as other from "foo/other";
+    );
+    defer destroySetup(s);
+    s.checker.setStrictFlags(.{ .no_implicit_any = true });
+    try s.checker.checkSourceFile(s.root);
+    var found = false;
+    for (s.checker.diagnostics.items) |d| {
+        if (d.code == TsCodes.untyped_module) found = true;
+    }
+    try T.expect(found);
 }
 
 test "checker: function and var declarations conflict in one declaration space" {
