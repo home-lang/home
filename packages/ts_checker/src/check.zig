@@ -2465,6 +2465,7 @@ pub const Checker = struct {
             .if_stmt => {
                 const i = hir_mod.ifOf(self.hir, node);
                 try self.scanExprForUsedBeforeAssign(i.cond, pending);
+                try self.removeDefinitelyAssignedAfterIf(i, pending);
             },
             .while_stmt => {
                 const w = hir_mod.whileOf(self.hir, node);
@@ -2632,6 +2633,66 @@ pub const Checker = struct {
                 const e = hir_mod.elementOf(self.hir, node);
                 try self.scanExprForUsedBeforeAssign(e.object, pending);
                 try self.scanExprForUsedBeforeAssign(e.index, pending);
+            },
+            else => {},
+        }
+    }
+
+    fn removeDefinitelyAssignedAfterIf(
+        self: *Checker,
+        i: hir_mod.IfPayload,
+        pending: *std.AutoHashMapUnmanaged(hir_mod.StringId, NodeId),
+    ) CheckError!void {
+        if (i.else_branch == hir_mod.none_node_id or pending.count() == 0) return;
+
+        var then_assigned: std.AutoHashMapUnmanaged(hir_mod.StringId, void) = .empty;
+        defer then_assigned.deinit(self.gpa);
+        var else_assigned: std.AutoHashMapUnmanaged(hir_mod.StringId, void) = .empty;
+        defer else_assigned.deinit(self.gpa);
+        try self.collectSimpleDefiniteAssignments(i.then_branch, &then_assigned);
+        try self.collectSimpleDefiniteAssignments(i.else_branch, &else_assigned);
+
+        const then_exits = self.statementDefinitelyExits(i.then_branch);
+        const else_exits = self.statementDefinitelyExits(i.else_branch);
+
+        var to_remove: std.ArrayListUnmanaged(hir_mod.StringId) = .empty;
+        defer to_remove.deinit(self.gpa);
+        var it = pending.keyIterator();
+        while (it.next()) |name_ptr| {
+            const name = name_ptr.*;
+            const then_ok = then_exits or then_assigned.contains(name);
+            const else_ok = else_exits or else_assigned.contains(name);
+            if (then_ok and else_ok) try to_remove.append(self.gpa, name);
+        }
+        for (to_remove.items) |name| _ = pending.remove(name);
+    }
+
+    fn collectSimpleDefiniteAssignments(
+        self: *Checker,
+        node: NodeId,
+        out: *std.AutoHashMapUnmanaged(hir_mod.StringId, void),
+    ) CheckError!void {
+        if (node == hir_mod.none_node_id) return;
+        switch (self.hir.kindOf(node)) {
+            .block_stmt => {
+                for (hir_mod.blockStmts(self.hir, node)) |stmt| {
+                    try self.collectSimpleDefiniteAssignments(stmt, out);
+                    if (self.hir.kindOf(stmt) == .return_stmt or self.hir.kindOf(stmt) == .throw_stmt) break;
+                }
+            },
+            .assignment => {
+                const a = hir_mod.assignmentOf(self.hir, node);
+                if (a.op == null and a.target != hir_mod.none_node_id and self.hir.kindOf(a.target) == .identifier) {
+                    const id = hir_mod.identifierOf(self.hir, a.target);
+                    try out.put(self.gpa, id.name, {});
+                }
+            },
+            .let_decl, .var_decl, .const_decl => {
+                const v = hir_mod.varDeclOf(self.hir, node);
+                if (v.init != hir_mod.none_node_id and v.name != hir_mod.none_node_id and self.hir.kindOf(v.name) == .identifier) {
+                    const id = hir_mod.identifierOf(self.hir, v.name);
+                    try out.put(self.gpa, id.name, {});
+                }
             },
             else => {},
         }
@@ -12176,6 +12237,9 @@ pub const Checker = struct {
         // typeof X === "kind"
         if (self.hir.kindOf(b.lhs) == .unary_op) {
             const u = hir_mod.unaryOf(self.hir, b.lhs);
+            if (u.op == .typeof) {
+                if (try self.applyTypeofPropertyGuard(u.operand, b.rhs, positive)) return;
+            }
             if (u.op == .typeof and self.hir.kindOf(u.operand) == .identifier) {
                 const id = hir_mod.identifierOf(self.hir, u.operand);
                 const type_name = (try self.staticStringValue(b.rhs)) orelse return;
@@ -12398,6 +12462,51 @@ pub const Checker = struct {
                     return;
                 }
             }
+        }
+    }
+
+    fn applyTypeofPropertyGuard(self: *Checker, operand: NodeId, rhs: NodeId, positive: bool) CheckError!bool {
+        const type_name = (try self.staticStringValue(rhs)) orelse return false;
+        const lit_str = self.string_interner.get(type_name);
+        const narrowed = typeOfTypeofString(lit_str) orelse return false;
+        const target = try self.memberNarrowTargetFromAccess(operand) orelse return false;
+        const current = self.lookupMemberNarrow(target.key) orelse target.current;
+        if (current == types.Primitive.none) return false;
+        const next = if (positive)
+            narrowed
+        else
+            (self.subtractType(current, narrowed) catch current);
+        try self.recordMemberNarrow(target.key, next);
+        return true;
+    }
+
+    const MemberNarrowTarget = struct {
+        key: MemberKey,
+        current: TypeId,
+    };
+
+    fn memberNarrowTargetFromAccess(self: *Checker, access: NodeId) CheckError!?MemberNarrowTarget {
+        switch (self.hir.kindOf(access)) {
+            .member_access => {
+                const m = hir_mod.memberOf(self.hir, access);
+                if (self.hir.kindOf(m.object) != .identifier) return null;
+                const obj_id = hir_mod.identifierOf(self.hir, m.object);
+                const key: MemberKey = .{ .obj_name = obj_id.name, .prop_name = m.name };
+                const obj_t = self.lookupNarrow(obj_id.name) orelse self.typeOfIdentifier(m.object);
+                const current = (try self.lookupObjectMember(obj_t, m.name)) orelse self.hir.typeOf(access);
+                return .{ .key = key, .current = current };
+            },
+            .element_access => {
+                const e = hir_mod.elementOf(self.hir, access);
+                if (self.hir.kindOf(e.object) != .identifier) return null;
+                const prop_name = (try self.staticStringValue(e.index)) orelse return null;
+                const obj_id = hir_mod.identifierOf(self.hir, e.object);
+                const key: MemberKey = .{ .obj_name = obj_id.name, .prop_name = prop_name };
+                const obj_t = self.lookupNarrow(obj_id.name) orelse self.typeOfIdentifier(e.object);
+                const current = (try self.lookupObjectMember(obj_t, prop_name)) orelse self.hir.typeOf(access);
+                return .{ .key = key, .current = current };
+            },
+            else => return null,
         }
     }
 
@@ -18691,6 +18800,35 @@ test "checker: typed let used in for-in body condition emits TS2454" {
     try T.expect(found);
 }
 
+test "checker: if branches that assign or exit satisfy TS2454" {
+    const s = try newSetup(
+        \\let cond: boolean;
+        \\function a() {
+        \\  let x: string | number;
+        \\  if (cond) {
+        \\    x = 42;
+        \\  } else {
+        \\    return;
+        \\  }
+        \\  x.toString();
+        \\}
+        \\function b() {
+        \\  let y: string | number;
+        \\  if (cond) {
+        \\    throw "";
+        \\  } else {
+        \\    y = "";
+        \\  }
+        \\  y.toString();
+        \\}
+    );
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+    for (s.checker.diagnostics.items) |d| {
+        try T.expect(d.code != TsCodes.used_before_assignment);
+    }
+}
+
 test "checker: namespace var in control-flow condition does not emit TS2454" {
     const s = try newSetup(
         \\namespace N {
@@ -22985,6 +23123,21 @@ test "checker: assertNever helper accepts narrowed never in exhaustive default" 
     for (s.checker.diagnostics.items) |d| {
         try T.expect(d.code != TsCodes.type_not_assignable);
         try T.expect(d.code != TsCodes.argument_type_mismatch);
+    }
+}
+
+test "checker: typeof element access guard narrows matching property access" {
+    const s = try newSetup(
+        \\declare const config: { [key: string]: boolean | { prop: string } };
+        \\if (typeof config["works"] !== "boolean") {
+        \\  config.works.prop = "test";
+        \\}
+    );
+    defer destroySetup(s);
+    s.checker.setStrictFlags(.{ .strict_null_checks = true, .no_implicit_any = true });
+    try s.checker.checkSourceFile(s.root);
+    for (s.checker.diagnostics.items) |d| {
+        try T.expect(d.code != TsCodes.property_does_not_exist);
     }
 }
 

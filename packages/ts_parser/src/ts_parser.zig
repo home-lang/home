@@ -324,6 +324,7 @@ pub const Parser = struct {
     /// `NodeId` (currently a synthesized block).
     pub fn parseSourceFile(self: *Parser) ParseError!NodeId {
         self.top_level_external_module_indicator = self.sourceHasTopLevelExternalModuleIndicator();
+        if (self.top_level_external_module_indicator) self.strict_mode = true;
         var stmts: std.ArrayListUnmanaged(NodeId) = .empty;
         defer stmts.deinit(self.gpa);
 
@@ -348,7 +349,7 @@ pub const Parser = struct {
                     depth -= 1;
                 },
                 .kw_import => {
-                    if (depth == 0 and self.tokens[@min(i + 1, self.tokens.len - 1)].kind != .open_paren) return true;
+                    if (depth == 0) return true;
                 },
                 .kw_export => if (depth == 0) return true,
                 .eof => return false,
@@ -8938,6 +8939,15 @@ test "parser: strict mode restricted names and delete operands report diagnostic
     try T.expectEqual(@as(u32, 1100), s.parser.diagnostics.items[1].code);
     try T.expectEqual(@as(u32, 1100), s.parser.diagnostics.items[2].code);
     try T.expectEqual(@as(u32, 2703), s.parser.diagnostics.items[3].code);
+}
+
+test "parser: top-level dynamic import makes file strict" {
+    var s = try newTestSetup("var p = import(\"./m\"); function arguments() {}");
+    defer destroyTestSetup(s);
+
+    _ = try s.parser.parseSourceFile();
+    try T.expectEqual(@as(usize, 1), s.parser.diagnostics.items.len);
+    try T.expectEqual(@as(u32, 1100), s.parser.diagnostics.items[0].code);
 }
 
 test "parser: strict mode legacy octal literal reports TS1121" {
