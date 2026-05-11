@@ -405,7 +405,13 @@ pub fn compileSource(
     errdefer c.hir.deinit();
 
     // ------ Lex ------
-    var scanner = ts_lexer.Scanner.init(gpa, source);
+    var tsx_lex_source: ?[]u8 = null;
+    if (options.is_tsx) {
+        tsx_lex_source = try sanitizeTsxLexSource(gpa, source);
+    }
+    defer if (tsx_lex_source) |buf| gpa.free(buf);
+    const lex_source = tsx_lex_source orelse source;
+    var scanner = ts_lexer.Scanner.init(gpa, lex_source);
     defer scanner.deinit(gpa);
     c.tokens = scanner.tokenize(gpa) catch |err| switch (err) {
         error.OutOfMemory => return error.OutOfMemory,
@@ -419,6 +425,11 @@ pub fn compileSource(
             c.tokens = .empty;
             errdefer c.tokens.deinit(gpa);
             for (scanner.diagnostics.items) |d| {
+                if (options.is_tsx and std.mem.eql(u8, d.message, "unexpected character") and
+                    isDiagnosticInsideJsxText(source, d.pos))
+                {
+                    continue;
+                }
                 try c.diagnostics.append(gpa, .{
                     .phase = .lex,
                     .pos = d.pos,
@@ -445,6 +456,11 @@ pub fn compileSource(
 
     // Drain scanner diagnostics.
     for (scanner.diagnostics.items) |d| {
+        if (options.is_tsx and std.mem.eql(u8, d.message, "unexpected character") and
+            isDiagnosticInsideJsxText(source, d.pos))
+        {
+            continue;
+        }
         try c.diagnostics.append(gpa, .{
             .phase = .lex,
             .pos = d.pos,
@@ -603,6 +619,91 @@ pub fn compileSource(
     }
 
     return c;
+}
+
+fn isDiagnosticInsideJsxText(source: []const u8, pos: u32) bool {
+    if (pos >= source.len) return false;
+    var i: usize = @intCast(pos);
+    var saw_opening_end = false;
+    while (i > 0) {
+        i -= 1;
+        switch (source[i]) {
+            '>' => {
+                saw_opening_end = true;
+                break;
+            },
+            '<', '{', '}' => return false,
+            else => {},
+        }
+    }
+    if (!saw_opening_end) return false;
+
+    var j: usize = @intCast(pos);
+    while (j < source.len) : (j += 1) {
+        switch (source[j]) {
+            '<' => return true,
+            '{', '}' => return false,
+            else => {},
+        }
+    }
+    return false;
+}
+
+fn sanitizeTsxLexSource(gpa: std.mem.Allocator, source: []const u8) ![]u8 {
+    var out = try gpa.dupe(u8, source);
+    var i: usize = 0;
+    var in_jsx_tag = false;
+    var in_jsx_text = false;
+    var tag_expr_depth: u32 = 0;
+    var quote: u8 = 0;
+    while (i < out.len) : (i += 1) {
+        const c = out[i];
+        if (quote != 0) {
+            if (c == '\\' and i + 1 < out.len and out[i + 1] == quote) {
+                out[i] = ' ';
+                continue;
+            }
+            if (c == quote) quote = 0;
+            continue;
+        }
+        if (in_jsx_tag) {
+            if (tag_expr_depth > 0) {
+                if (c == '{') {
+                    tag_expr_depth += 1;
+                } else if (c == '}') {
+                    tag_expr_depth -= 1;
+                }
+            } else if (c == '{') {
+                tag_expr_depth = 1;
+            } else if (c == '"' or c == '\'') {
+                quote = c;
+            } else if (c == '>') {
+                in_jsx_tag = false;
+                in_jsx_text = true;
+            }
+            continue;
+        }
+        if (in_jsx_text) {
+            if (c == '<') {
+                in_jsx_text = false;
+                in_jsx_tag = true;
+            } else if (c == '{') {
+                in_jsx_text = false;
+            } else if (c == '\\') {
+                out[i] = ' ';
+            }
+            continue;
+        }
+        if (c == '<' and i + 1 < out.len) {
+            const next = out[i + 1];
+            if (next == '/' or next == '>' or next == '_' or std.ascii.isAlphabetic(next)) {
+                in_jsx_tag = true;
+            }
+        } else if (c == '}') {
+            in_jsx_text = true;
+        }
+    }
+    return out;
 }
 
 fn sourceIsUncheckedJs(source: []const u8) bool {
@@ -1407,6 +1508,21 @@ test "driver: tsx fragment" {
         T.allocator.destroy(c);
     }
     try T.expect(std.mem.indexOf(u8, c.js, "React.Fragment") != null);
+}
+
+test "driver: tsx jsx text entities do not surface lex diagnostics" {
+    var c = try compileSource(T.allocator,
+        \\declare namespace JSX { interface Element {} interface IntrinsicElements { [name: string]: any; } }
+        \\declare var React: any;
+        \\let v = <div>&#123;&notAnEntity;\n</div>;
+    , .{ .is_tsx = true, .no_emit = true });
+    defer {
+        c.deinit();
+        T.allocator.destroy(c);
+    }
+    for (c.diagnostics.items) |d| {
+        try T.expect(d.phase != .lex);
+    }
 }
 
 test "driver: automatic jsx import source reports missing runtime module" {

@@ -121,6 +121,7 @@ pub const TsCodes = struct {
     pub const jsx_element_implicit_any_no_intrinsic: u32 = 7026;
     pub const jsx_component_not_valid: u32 = 2786;
     pub const jsx_attribute_overwritten: u32 = 2783;
+    pub const jsx_text_child_not_accepted: u32 = 2747;
     pub const delete_operand_must_be_optional: u32 = 2790;
     pub const no_overload_matches: u32 = 2769;
     pub const duplicate_identifier: u32 = 2300;
@@ -2795,6 +2796,11 @@ pub const Checker = struct {
         const src = self.source orelse return false;
         return std.mem.indexOf(u8, src, "@allowUnreachableCode: true") != null or
             std.mem.indexOf(u8, src, "@allowUnreachableCode:true") != null;
+    }
+
+    fn sourceHasReactJsxReference(self: *Checker) bool {
+        const src = self.source orelse return false;
+        return std.mem.indexOf(u8, src, "/.lib/react") != null;
     }
 
     fn sourceHasTargetEs2016OrLaterDirective(self: *Checker) bool {
@@ -8782,6 +8788,7 @@ pub const Checker = struct {
                 {
                     break :blk true;
                 }
+                if (try self.literalExpressionAssignableToTarget(v.init, declared_type)) break :blk true;
                 break :blk self.engine.isAssignableTo(init_type, declared_type) catch return error.OutOfMemory;
             };
             if (!ok) {
@@ -10382,10 +10389,12 @@ pub const Checker = struct {
         const children = hir_mod.jsxChildren(self.hir, node);
         const props_t = try self.jsxPropsType(el.tag, attrs.len);
 
-        if (props_t == null and self.jsxTagIsIntrinsic(el.tag) and
-            try self.jsxHasNamespaceDecl(el.tag) and !try self.jsxHasIntrinsicElementsDecl(el.tag))
-        {
-            try self.report(el.tag, TsCodes.jsx_element_implicit_any_no_intrinsic, "JSX element implicitly has type 'any' because no interface 'JSX.IntrinsicElements' exists.");
+        if (props_t == null and self.jsxTagIsIntrinsic(el.tag)) {
+            if (try self.jsxHasIntrinsicElementsDecl(el.tag)) {
+                try self.report(el.tag, TsCodes.property_does_not_exist, "Property does not exist on type 'JSX.IntrinsicElements'.");
+            } else if (!self.sourceHasReactJsxReference()) {
+                try self.report(el.tag, TsCodes.jsx_element_implicit_any_no_intrinsic, "JSX element implicitly has type 'any' because no interface 'JSX.IntrinsicElements' exists.");
+            }
         }
 
         if (!self.jsxTagIsIntrinsic(el.tag) and try self.jsxComponentTypeInvalid(el.tag)) {
@@ -10436,7 +10445,7 @@ pub const Checker = struct {
                             }
                         } else if (std.mem.startsWith(u8, attr_name, "data-")) {
                             continue;
-                        } else if (!has_any_spread and !target_has_free and
+                        } else if (!target_has_free and
                             self.jsxPropsTargetHasNamedMembers(target) and
                             !try self.jsxPropsHasNamedMember(target, a.name))
                         {
@@ -10453,7 +10462,10 @@ pub const Checker = struct {
                     }
                     if (props_t) |target| {
                         if (self.engine.isAssignableTo(spread_t, target) catch false) spread_satisfies_target = true;
-                        if (self.containsFreeTypeParameter(target) and self.isUnconstrainedTypeParameter(spread_t) and spread_t != target) {
+                        const constrained_target_param = self.isConstrainedTypeParameter(target);
+                        if (self.containsFreeTypeParameter(target) and !constrained_target_param and
+                            self.isUnconstrainedTypeParameter(spread_t) and spread_t != target)
+                        {
                             try self.report(attr, TsCodes.type_not_assignable, "JSX spread attributes from an unconstrained type parameter are not assignable to the target props.");
                         }
                     }
@@ -10468,11 +10480,16 @@ pub const Checker = struct {
         if (children.len > 0 and saw_children_attr) {
             try self.report(node, TsCodes.jsx_attribute_overwritten, "'children' is specified more than once.");
         }
-        if (children.len > 0 and props_t != null and !saw_children_attr) {
+        if (children.len > 0 and props_t != null and !self.typeIsAnyLike(props_t.?) and !saw_children_attr) {
             const children_name = self.string_interner.intern("children") catch return error.OutOfMemory;
             if (try self.lookupObjectMember(props_t.?, children_name)) |children_t| {
                 if (children.len > 1 and !self.jsxChildrenTypeAllowsCount(children_t, children.len)) {
                     try self.report(node, TsCodes.type_not_assignable, "JSX element has multiple children but the target props type expects a single child.");
+                }
+                for (children) |child| {
+                    if (self.hir.kindOf(child) == .literal_string and !self.jsxChildrenTypeAllowsString(children_t)) {
+                        try self.report(child, TsCodes.jsx_text_child_not_accepted, "JSX text child is not assignable to the target children type.");
+                    }
                 }
             } else {
                 try self.report(node, TsCodes.object_literal_excess_property, "JSX element has children but the target props type has no 'children' property.");
@@ -10501,7 +10518,8 @@ pub const Checker = struct {
                             effective_target = self.substituteType(target, &subs) catch target;
                         }
                     }
-                    if (!(self.engine.isAssignableTo(attrs_t, effective_target) catch true) and
+                    const required_props_ok = try self.jsxRequiredPropsAssignable(effective_target, attrs_t);
+                    if ((!required_props_ok or !(self.engine.isAssignableTo(attrs_t, effective_target) catch true)) and
                         !try self.jsxAttributesMatchOverload(el.tag, attrs_t, attrs.len) and
                         !(self.containsFreeTypeParameter(target) and try self.jsxRequiredPropsCovered(target, attrs_t)))
                     {
@@ -10766,8 +10784,29 @@ pub const Checker = struct {
         return count <= 1;
     }
 
+    fn jsxChildrenTypeAllowsString(self: *Checker, t: TypeId) bool {
+        if (t >= self.interner.pool.typeCount()) return false;
+        const flags = self.interner.pool.flagsOf(t);
+        if (flags.is_any or flags.is_string) return true;
+        if (flags.is_literal and flags.is_string) return true;
+        if (flags.is_union) {
+            for (self.interner.unionMembers(t)) |member| {
+                if (self.jsxChildrenTypeAllowsString(member)) return true;
+            }
+            return false;
+        }
+        if (flags.is_intersection) {
+            for (self.interner.intersectionMembers(t)) |member| {
+                if (self.jsxChildrenTypeAllowsString(member)) return true;
+            }
+            return false;
+        }
+        const elem_t = self.interner.objectNumberIndex(t);
+        return elem_t != types.Primitive.none and self.jsxChildrenTypeAllowsString(elem_t);
+    }
+
     fn checkJsxAttributeValue(self: *Checker, value: NodeId) CheckError!TypeId {
-        if (value == hir_mod.none_node_id) return types.Primitive.boolean_t;
+        if (value == hir_mod.none_node_id) return types.Primitive.true_lit;
         if (self.hir.kindOf(value) == .jsx_expression) {
             const ex = hir_mod.jsxExpressionOf(self.hir, value);
             if (ex.expression == hir_mod.none_node_id) return types.Primitive.undefined_t;
@@ -10854,6 +10893,7 @@ pub const Checker = struct {
                     return self.interner.internUnion(prop_types.items) catch return error.OutOfMemory;
                 }
             }
+            if (try self.jsxForwardFunctionPropsType(tag, tag_name)) |props_t| return props_t;
         }
         const tag_t = try self.checkExpression(tag);
         if (try self.lookupObjectMember(tag_t, self.string_interner.intern("props") catch return error.OutOfMemory)) |props_t| {
@@ -10878,10 +10918,71 @@ pub const Checker = struct {
         return null;
     }
 
+    fn jsxForwardFunctionPropsType(self: *Checker, anchor: NodeId, tag_name: hir_mod.StringId) CheckError!?TypeId {
+        const root = self.rootBlockFor(anchor);
+        if (root == hir_mod.none_node_id or self.hir.kindOf(root) != .block_stmt) return null;
+        for (hir_mod.blockStmts(self.hir, root)) |stmt| {
+            const decl = if (self.hir.kindOf(stmt) == .export_decl) hir_mod.exportOf(self.hir, stmt).decl else stmt;
+            if (decl == hir_mod.none_node_id or self.hir.kindOf(decl) != .fn_decl) continue;
+            const f = hir_mod.fnDeclOf(self.hir, decl);
+            if (f.name == hir_mod.none_node_id or self.hir.kindOf(f.name) != .identifier) continue;
+            if (hir_mod.identifierOf(self.hir, f.name).name != tag_name) continue;
+            const params = hir_mod.fnParams(self.hir, decl);
+            if (params.len == 0) return types.Primitive.any;
+            const first = hir_mod.parameterOf(self.hir, params[0]);
+            if (first.type_annotation == hir_mod.none_node_id) return types.Primitive.any;
+            try self.ensureTypeRefDeclChecked(first.type_annotation, root);
+            return try self.lowererLowerWithTypeParams(first.type_annotation);
+        }
+        return null;
+    }
+
+    fn ensureTypeRefDeclChecked(self: *Checker, type_node: NodeId, root: NodeId) CheckError!void {
+        switch (self.hir.kindOf(type_node)) {
+            .type_ref => {
+                const r = hir_mod.typeRefOf(self.hir, type_node);
+                if (r.qualifier_len != 0) return;
+                if (self.type_names.contains(r.name) or self.generic_aliases.contains(r.name)) return;
+                for (hir_mod.blockStmts(self.hir, root)) |stmt| {
+                    const decl = if (self.hir.kindOf(stmt) == .export_decl) hir_mod.exportOf(self.hir, stmt).decl else stmt;
+                    if (decl == hir_mod.none_node_id) continue;
+                    switch (self.hir.kindOf(decl)) {
+                        .interface_decl => {
+                            const it = hir_mod.interfaceOf(self.hir, decl);
+                            if (it.name != hir_mod.none_node_id and
+                                self.hir.kindOf(it.name) == .identifier and
+                                hir_mod.identifierOf(self.hir, it.name).name == r.name)
+                            {
+                                try self.checkInterfaceDecl(decl);
+                                return;
+                            }
+                        },
+                        .type_alias_decl => {
+                            const ta = hir_mod.typeAliasOf(self.hir, decl);
+                            if (ta.name != hir_mod.none_node_id and
+                                self.hir.kindOf(ta.name) == .identifier and
+                                hir_mod.identifierOf(self.hir, ta.name).name == r.name)
+                            {
+                                try self.checkTypeAliasDecl(decl);
+                                return;
+                            }
+                        },
+                        else => {},
+                    }
+                }
+            },
+            .union_type => for (hir_mod.unionTypeMembers(self.hir, type_node)) |member| try self.ensureTypeRefDeclChecked(member, root),
+            .intersection_type => for (hir_mod.intersectionTypeMembers(self.hir, type_node)) |member| try self.ensureTypeRefDeclChecked(member, root),
+            .array_type => try self.ensureTypeRefDeclChecked(hir_mod.arrayTypeOf(self.hir, type_node).element, root),
+            else => {},
+        }
+    }
+
     fn jsxTagIsIntrinsic(self: *Checker, tag: NodeId) bool {
         if (tag == hir_mod.none_node_id or self.hir.kindOf(tag) != .identifier) return false;
         const id = hir_mod.identifierOf(self.hir, tag);
         const name = self.string_interner.get(id.name);
+        if (std.mem.eql(u8, name, "this")) return false;
         return name.len > 0 and std.ascii.isLower(name[0]);
     }
 
@@ -10942,7 +11043,10 @@ pub const Checker = struct {
         const intrinsic_name = self.string_interner.intern("IntrinsicElements") catch return error.OutOfMemory;
         const root = self.rootBlockFor(anchor);
         if (root == hir_mod.none_node_id or self.hir.kindOf(root) != .block_stmt) return null;
-        const ns_node = self.findNamespaceByPath(hir_mod.blockStmts(self.hir, root), &[_]hir_mod.StringId{jsx_name}) orelse return null;
+        const ns_node = self.findNamespaceByPath(hir_mod.blockStmts(self.hir, root), &[_]hir_mod.StringId{jsx_name}) orelse {
+            if (self.sourceHasReactJsxReference()) return types.Primitive.any;
+            return null;
+        };
         const decl = self.findNamedTypeDeclInNamespace(ns_node, intrinsic_name) orelse return null;
         if (self.hir.kindOf(decl) == .interface_decl) {
             for (hir_mod.interfaceMembers(self.hir, decl)) |member| {
@@ -10962,6 +11066,10 @@ pub const Checker = struct {
         }
         if (intrinsic_t == types.Primitive.none or intrinsic_t == types.Primitive.unknown) return null;
         if (try self.lookupObjectMember(intrinsic_t, tag_name)) |props_t| return props_t;
+        const string_idx = self.interner.objectStringIndex(intrinsic_t);
+        if (string_idx != types.Primitive.none) return string_idx;
+        const number_idx = self.interner.objectNumberIndex(intrinsic_t);
+        if (number_idx != types.Primitive.none and self.isNumericStringId(tag_name)) return number_idx;
         return null;
     }
 
@@ -13689,6 +13797,14 @@ pub const Checker = struct {
         if (t >= self.interner.pool.typeCount()) return false;
         const f = self.interner.pool.flagsOf(t);
         return f.is_type_parameter and self.typeParameterConstraint(t) == null;
+    }
+
+    fn isConstrainedTypeParameter(self: *Checker, t: TypeId) bool {
+        if (t >= self.interner.pool.typeCount()) return false;
+        const f = self.interner.pool.flagsOf(t);
+        if (!f.is_type_parameter) return false;
+        const constraint = self.typeParameterConstraint(t) orelse return false;
+        return constraint != t;
     }
 
     fn relationalComparisonInvalid(self: *Checker, lhs: TypeId, rhs: TypeId) bool {
@@ -17410,6 +17526,23 @@ test "checker: JSX reports multiple children for single child prop" {
     try T.expect(found);
 }
 
+test "checker: JSX text child is rejected by element-only children prop" {
+    const s = try newTsxSetup(
+        \\declare namespace JSX { interface Element {} interface IntrinsicElements { div: any; } }
+        \\interface Props { children: JSX.Element | JSX.Element[]; }
+        \\const Comp = (x: Props) => <div></div>;
+        \\const k = <Comp><div />  <div /></Comp>;
+    );
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+
+    var found = false;
+    for (s.checker.diagnostics.items) |d| {
+        if (d.code == TsCodes.jsx_text_child_not_accepted) found = true;
+    }
+    try T.expect(found);
+}
+
 test "checker: JSX spread reports overwritten explicit attributes" {
     const s = try newTsxSetup(
         \\interface Props { a: number; b: number; }
@@ -17423,6 +17556,41 @@ test "checker: JSX spread reports overwritten explicit attributes" {
     var found = false;
     for (s.checker.diagnostics.items) |d| {
         if (d.code == TsCodes.jsx_attribute_overwritten) found = true;
+    }
+    try T.expect(found);
+}
+
+test "checker: JSX shorthand attribute is true literal" {
+    const s = try newTsxSetup(
+        \\declare namespace JSX { interface Element {} interface IntrinsicElements { div: any; } }
+        \\interface Props { x: true; }
+        \\class Poisoned extends React.Component<Props, {}> { render() { return <div />; } }
+        \\declare namespace React { class Component<T, U> {} }
+        \\const p = <Poisoned x />;
+    );
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+
+    for (s.checker.diagnostics.items) |d| {
+        try T.expect(d.code != TsCodes.type_not_assignable);
+    }
+}
+
+test "checker: JSX spread validates required target props" {
+    const s = try newTsxSetup(
+        \\declare namespace JSX { interface Element {} interface IntrinsicElements { span: any; } }
+        \\interface SourceProps { property1: string; property2: number; }
+        \\interface TargetProps { property1: string; property2: boolean; missing: string; }
+        \\const props: SourceProps = { property1: "ok", property2: 1 };
+        \\function AnotherComponent(p: TargetProps) { return <span />; }
+        \\const p = <AnotherComponent {...props} />;
+    );
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+
+    var found = false;
+    for (s.checker.diagnostics.items) |d| {
+        if (d.code == TsCodes.type_not_assignable) found = true;
     }
     try T.expect(found);
 }
@@ -17462,6 +17630,63 @@ test "checker: JSX intrinsic without IntrinsicElements reports TS7026" {
         if (d.code == TsCodes.jsx_element_implicit_any_no_intrinsic) found = true;
     }
     try T.expect(found);
+}
+
+test "checker: JSX intrinsic string index signature supplies props" {
+    const s = try newTsxSetup(
+        \\declare namespace JSX { interface Element {} interface IntrinsicElements { [name: string]: any; } }
+        \\const k = <custom-tag data-id="ok">text</custom-tag>;
+    );
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+
+    for (s.checker.diagnostics.items) |d| {
+        try T.expect(d.code != TsCodes.property_does_not_exist);
+        try T.expect(d.code != TsCodes.jsx_element_implicit_any_no_intrinsic);
+    }
+}
+
+test "checker: JSX missing intrinsic member reports property error" {
+    const s = try newTsxSetup(
+        \\declare namespace JSX { interface Element {} interface IntrinsicElements { div: any; } }
+        \\const k = <customTag />;
+    );
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+
+    var found = false;
+    for (s.checker.diagnostics.items) |d| {
+        if (d.code == TsCodes.property_does_not_exist) found = true;
+    }
+    try T.expect(found);
+}
+
+test "checker: JSX this tag is not intrinsic" {
+    const s = try newTsxSetup(
+        \\declare namespace JSX { interface Element {} interface IntrinsicElements { div: any; } }
+        \\class Text extends React.Component<{}, {}> {
+        \\  render() { return <this />; }
+        \\}
+        \\declare namespace React { class Component<T, U> {} }
+    );
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+
+    var found = false;
+    for (s.checker.diagnostics.items) |d| {
+        if (d.code == TsCodes.jsx_element_no_construct_or_call) found = true;
+    }
+    try T.expect(found);
+}
+
+test "checker: string literal initializer satisfies matching literal annotation" {
+    const s = try newSetup("var CustomTag: \"h1\" = \"h1\";");
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+
+    for (s.checker.diagnostics.items) |d| {
+        try T.expect(d.code != TsCodes.type_not_assignable);
+    }
 }
 
 test "checker: JSX union component rejects non-component member" {

@@ -5608,7 +5608,8 @@ pub const Parser = struct {
             _ = self.advance(); // `>`
             var children: std.ArrayListUnmanaged(NodeId) = .empty;
             defer children.deinit(self.gpa);
-            try self.parseJsxChildren(&children);
+            const content_start = self.tokens[self.cursor - 1].span.end;
+            try self.parseJsxChildren(&children, content_start);
             // Closing `</>`.
             _ = try self.expect(.less_than, "'<' to start fragment close");
             _ = try self.expect(.slash, "'/' in fragment close");
@@ -5629,6 +5630,10 @@ pub const Parser = struct {
                 member_id,
                 false,
             );
+        }
+        if (self.peek().kind == .less_than) {
+            const type_args = try self.parseTypeArgumentList();
+            self.gpa.free(type_args);
         }
 
         // Attributes.
@@ -5694,11 +5699,11 @@ pub const Parser = struct {
                 true,
             );
         }
-        _ = try self.expect(.greater_than, "'>' to close JSX opening tag");
+        const open_close = try self.expect(.greater_than, "'>' to close JSX opening tag");
 
         var children: std.ArrayListUnmanaged(NodeId) = .empty;
         defer children.deinit(self.gpa);
-        try self.parseJsxChildren(&children);
+        try self.parseJsxChildren(&children, open_close.span.end);
 
         // Closing tag `</Foo>`.
         _ = try self.expect(.less_than, "'<' to start JSX closing tag");
@@ -5759,14 +5764,23 @@ pub const Parser = struct {
         return try self.builder.addIdentifier(name.span, name.name);
     }
 
-    fn parseJsxChildren(self: *Parser, out: *std.ArrayListUnmanaged(NodeId)) ParseError!void {
+    fn parseJsxChildren(self: *Parser, out: *std.ArrayListUnmanaged(NodeId), content_start: u32) ParseError!void {
+        var last_child_end = content_start;
         while (true) {
             const t = self.peek();
+            if (t.span.start > last_child_end and self.jsxTextShouldBecomeChild(last_child_end, t.span.start)) {
+                const id = self.interner.intern(self.source[last_child_end..t.span.start]) catch return error.OutOfMemory;
+                const text = try self.builder.addLiteralString(.{ .start = last_child_end, .end = t.span.start }, id);
+                try out.append(self.gpa, text);
+                last_child_end = t.span.start;
+                continue;
+            }
             switch (t.kind) {
                 .less_than => {
                     if (self.peekAt(1).kind == .slash) return; // `</Foo>`
                     const child = try self.parseJsxElementOrFragment();
                     try out.append(self.gpa, child);
+                    last_child_end = self.hir.spanOf(child).end;
                 },
                 .open_brace => {
                     _ = self.advance();
@@ -5774,6 +5788,7 @@ pub const Parser = struct {
                         _ = self.advance();
                         const node = try self.builder.addJsxExpression(tokenSpan(t), hir_mod.none_node_id);
                         try out.append(self.gpa, node);
+                        last_child_end = self.hir.spanOf(node).end;
                         continue;
                     }
                     const expr = try self.parseAssignmentExpression();
@@ -5783,19 +5798,44 @@ pub const Parser = struct {
                         expr,
                     );
                     try out.append(self.gpa, node);
+                    last_child_end = close.span.end;
                 },
                 .eof => return,
                 else => {
-                    // JSX text currently arrives as ordinary lexer
-                    // tokens because we do not have a dedicated JSX
-                    // text mode yet. Preserve parse progress by
-                    // consuming those text-ish tokens and omitting a
-                    // text child node; expression and element children
-                    // above still keep their structure.
-                    _ = self.advance();
+                    const text_start = t.span.start;
+                    var text_end = t.span.end;
+                    while (self.peek().kind != .less_than and
+                        self.peek().kind != .open_brace and
+                        self.peek().kind != .eof)
+                    {
+                        const part = self.advance();
+                        text_end = part.span.end;
+                    }
+                    if (self.jsxTextShouldBecomeChild(text_start, text_end)) {
+                        const id = self.interner.intern(self.source[text_start..text_end]) catch return error.OutOfMemory;
+                        const text = try self.builder.addLiteralString(.{ .start = text_start, .end = text_end }, id);
+                        try out.append(self.gpa, text);
+                    }
+                    last_child_end = text_end;
                 },
             }
         }
+    }
+
+    fn jsxTextShouldBecomeChild(self: *const Parser, start: u32, end: u32) bool {
+        if (end <= start or end > self.source.len) return false;
+        var saw_non_ws = false;
+        var saw_newline = false;
+        for (self.source[start..end]) |ch| {
+            switch (ch) {
+                ' ', '\t', '\r', '\n' => {
+                    if (ch == '\r' or ch == '\n') saw_newline = true;
+                },
+                else => saw_non_ws = true,
+            }
+        }
+        if (saw_non_ws) return true;
+        return !saw_newline;
     }
 
     fn parseArrayLiteral(self: *Parser) ParseError!NodeId {
@@ -7977,6 +8017,28 @@ test "parser: jsx with expression child" {
     const children = hir_mod.jsxChildren(&s.hir, init_node);
     try T.expectEqual(@as(usize, 1), children.len);
     try T.expectEqual(hir_mod.NodeKind.jsx_expression, s.hir.kindOf(children[0]));
+}
+
+test "parser: jsx text child preserves same-line whitespace" {
+    var s = try newTsxTestSetup("let v = <Comp><A />  <B /></Comp>;");
+    defer destroyTestSetup(s);
+    const root = try s.parser.parseSourceFile();
+    const top = hir_mod.blockStmts(&s.hir, root)[0];
+    const init_node = hir_mod.varDeclOf(&s.hir, top).init;
+    const children = hir_mod.jsxChildren(&s.hir, init_node);
+    try T.expectEqual(@as(usize, 3), children.len);
+    try T.expectEqual(hir_mod.NodeKind.literal_string, s.hir.kindOf(children[1]));
+}
+
+test "parser: jsx tag type arguments are skipped before attributes" {
+    var s = try newTsxTestSetup("let v = <Foo<string> bar />;");
+    defer destroyTestSetup(s);
+    const root = try s.parser.parseSourceFile();
+    const top = hir_mod.blockStmts(&s.hir, root)[0];
+    const init_node = hir_mod.varDeclOf(&s.hir, top).init;
+    const attrs = hir_mod.jsxAttrs(&s.hir, init_node);
+    try T.expectEqual(@as(usize, 1), attrs.len);
+    try T.expectEqual(@as(usize, 0), s.parser.diagnostics.items.len);
 }
 
 test "parser: jsx nested elements" {
