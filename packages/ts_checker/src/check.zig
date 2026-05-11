@@ -2400,6 +2400,7 @@ pub const Checker = struct {
                     v.init == hir_mod.none_node_id and
                     v.type_annotation != hir_mod.none_node_id and
                     !self.varDeclHasExplicitAnyAnnotation(node) and
+                    !self.varDeclTypeIncludesUndefined(node) and
                     !self.isGlobalSymbolConstructorVarDecl(node) and
                     v.name != hir_mod.none_node_id and
                     self.hir.kindOf(v.name) == .identifier)
@@ -2409,6 +2410,7 @@ pub const Checker = struct {
                 }
                 if (v.init != hir_mod.none_node_id) {
                     try self.scanExprForUsedBeforeAssign(v.init, pending);
+                    try self.scanBindingPatternDefiniteSideEffects(v.name, pending);
                     if (v.name != hir_mod.none_node_id and self.hir.kindOf(v.name) == .identifier) {
                         const id = hir_mod.identifierOf(self.hir, v.name);
                         _ = pending.remove(id.name);
@@ -2419,6 +2421,7 @@ pub const Checker = struct {
                 const v = hir_mod.varDeclOf(self.hir, node);
                 if (v.init != hir_mod.none_node_id) {
                     try self.scanExprForUsedBeforeAssign(v.init, pending);
+                    try self.scanBindingPatternDefiniteSideEffects(v.name, pending);
                 }
             },
             .assignment => {
@@ -2569,6 +2572,10 @@ pub const Checker = struct {
             .call_expr, .new_expr => {
                 const c = hir_mod.callOf(self.hir, node);
                 try self.scanExprForUsedBeforeAssign(c.callee, pending);
+                if (self.hir.kindOf(c.callee) == .arrow_fn or self.hir.kindOf(c.callee) == .fn_expr) {
+                    const f = hir_mod.fnDeclOf(self.hir, c.callee);
+                    try self.scanForUsedBeforeAssign(f.body, pending);
+                }
                 for (hir_mod.callArgs(self.hir, node)) |arg| {
                     try self.scanExprForUsedBeforeAssign(arg, pending);
                 }
@@ -2659,6 +2666,31 @@ pub const Checker = struct {
                 try self.scanExprForUsedBeforeAssign(e.index, pending);
             },
             else => {},
+        }
+    }
+
+    fn scanBindingPatternDefiniteSideEffects(
+        self: *Checker,
+        node: NodeId,
+        pending: *std.AutoHashMapUnmanaged(hir_mod.StringId, NodeId),
+    ) CheckError!void {
+        if (node == hir_mod.none_node_id) return;
+        const k = self.hir.kindOf(node);
+        if (k != .object_pattern and k != .array_pattern) return;
+        for (hir_mod.patternElements(self.hir, node)) |elem| {
+            if (self.hir.kindOf(elem) != .parameter) continue;
+            const p = hir_mod.parameterOf(self.hir, elem);
+            if (p.flags.is_computed_binding_key) {
+                try self.scanExprForUsedBeforeAssign(p.default_value, pending);
+                continue;
+            }
+            if (p.default_value != hir_mod.none_node_id) {
+                var default_pending: std.AutoHashMapUnmanaged(hir_mod.StringId, NodeId) = .empty;
+                defer default_pending.deinit(self.gpa);
+                try self.clonePendingAssignments(pending, &default_pending);
+                try self.scanExprForUsedBeforeAssign(p.default_value, &default_pending);
+            }
+            try self.scanBindingPatternDefiniteSideEffects(p.name, pending);
         }
     }
 
@@ -2932,6 +2964,19 @@ pub const Checker = struct {
         if (self.hir.kindOf(v.type_annotation) != .type_ref) return false;
         const r = hir_mod.typeRefOf(self.hir, v.type_annotation);
         return r.qualifier_len == 0 and std.mem.eql(u8, self.string_interner.get(r.name), "any");
+    }
+
+    fn varDeclTypeIncludesUndefined(self: *Checker, node: NodeId) bool {
+        switch (self.hir.kindOf(node)) {
+            .var_decl, .let_decl, .const_decl => {},
+            else => return false,
+        }
+        const v = hir_mod.varDeclOf(self.hir, node);
+        if (v.type_annotation == hir_mod.none_node_id) return false;
+        const t = self.hir.typeOf(node);
+        if (t != types.Primitive.none) return self.typeIncludesUndefined(t);
+        const lowered = self.lowererLowerWithTypeParams(v.type_annotation) catch return false;
+        return self.typeIncludesUndefined(lowered);
     }
 
     fn isGlobalSymbolConstructorVarDecl(self: *Checker, node: NodeId) bool {
@@ -18913,6 +18958,32 @@ test "checker: explicit any let is not tracked for TS2454" {
     const s = try newSetup(
         \\let obj: any;
         \\(obj).foo = 1;
+    );
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+    for (s.checker.diagnostics.items) |d| {
+        try T.expect(d.code != TsCodes.used_before_assignment);
+    }
+}
+
+test "checker: let including undefined is not tracked for TS2454" {
+    const s = try newSetup(
+        \\let foo: string | undefined;
+        \\foo;
+    );
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+    for (s.checker.diagnostics.items) |d| {
+        try T.expect(d.code != TsCodes.used_before_assignment);
+    }
+}
+
+test "checker: computed binding key assignment satisfies TS2454" {
+    const s = try newSetup(
+        \\let foo: string;
+        \\let source: any;
+        \\const { [(() => { foo = ""; return "window"; })()]: bar } = source;
+        \\foo;
     );
     defer destroySetup(s);
     try s.checker.checkSourceFile(s.root);
