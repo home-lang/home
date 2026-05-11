@@ -509,7 +509,10 @@ pub const Parser = struct {
                 }
                 break :blk try self.parseExpressionStatement();
             },
-            .kw_interface => try self.parseInterfaceDeclaration(),
+            .kw_interface => blk: {
+                if (self.peekAt(1).flags.preceded_by_newline) break :blk try self.parseExpressionStatement();
+                break :blk try self.parseInterfaceDeclaration();
+            },
             .kw_enum => try self.parseEnumDeclaration(),
             .kw_namespace => blk: {
                 if (self.peekAt(1).flags.preceded_by_newline) break :blk try self.parseExpressionStatement();
@@ -524,6 +527,7 @@ pub const Parser = struct {
                 break :blk try self.parseNamespaceDeclaration();
             },
             .kw_declare => blk: {
+                if (self.peekAt(1).flags.preceded_by_newline) break :blk try self.parseExpressionStatement();
                 // `declare global { ... }` lowers through the
                 // `kw_global` arm below; `declare let x: T` and friends
                 // parse as ordinary declarations with an ambient bit.
@@ -673,6 +677,12 @@ pub const Parser = struct {
         try self.reportCodeAt(tok.span.start, tok.line, 1212, "Identifier expected. 'yield' is a reserved word in strict mode.");
     }
 
+    fn reportInvalidFutureReservedName(self: *Parser, tok: Token) ParseError!void {
+        if (!self.strict_mode and !self.target_es2015_or_later) return;
+        if (!self.tokenTextEquals(tok, "interface")) return;
+        try self.reportCodeAt(tok.span.start, tok.line, 1212, "Identifier expected. 'interface' is a reserved word in strict mode.");
+    }
+
     fn reportInvalidStrictIdentifierNode(self: *Parser, node: NodeId) ParseError!void {
         if (!self.strict_mode or self.hir.kindOf(node) != .identifier) return;
         const id = hir_mod.identifierOf(self.hir, node);
@@ -817,6 +827,7 @@ pub const Parser = struct {
             } else blk: {
                 const name_tok = try self.expectIdentifierLike();
                 try self.reportInvalidStrictName(name_tok);
+                try self.reportInvalidFutureReservedName(name_tok);
                 if (kw.kind == .kw_var and self.strict_mode and self.tokenTextEquals(name_tok, "let")) {
                     try self.reportCodeAt(name_tok.span.start, name_tok.line, 1212, "Identifier expected. 'let' is a reserved word in strict mode.");
                 }
@@ -1280,6 +1291,7 @@ pub const Parser = struct {
                     const name_tok = try self.expectIdentifierLike();
                     if (!self.suppress_strict_param_names) try self.reportInvalidStrictName(name_tok);
                     try self.reportInvalidYieldName(name_tok);
+                    try self.reportInvalidFutureReservedName(name_tok);
                     const name_id = try self.internToken(name_tok);
                     break :id_blk try self.builder.addIdentifier(tokenSpan(name_tok), name_id);
                 };
@@ -1439,6 +1451,7 @@ pub const Parser = struct {
         }
         const name_tok = try self.expectIdentifierLike();
         try self.reportInvalidStrictName(name_tok);
+        try self.reportInvalidFutureReservedName(name_tok);
         try self.reportAwaitBindingIfReserved(name_tok);
         try self.reportReservedBindingNameIfNeeded(name_tok);
         const name_id = try self.internToken(name_tok);
@@ -1581,7 +1594,7 @@ pub const Parser = struct {
                 member_start = self.peek();
             }
             const is_generator = self.match(.asterisk);
-            if (self.peek().kind == .kw_var) {
+            if (self.peek().kind == .kw_var and self.peekAt(1).kind != .open_paren and self.peekAt(1).kind != .less_than and self.peekAt(1).kind != .colon and self.peekAt(1).kind != .semicolon and self.peekAt(1).kind != .open_brace) {
                 const bad = self.advance();
                 try self.reportCodeAt(bad.span.start, bad.line, 1068, "Unexpected token. A constructor, method, accessor, or property was expected.");
                 try self.skipUntilTypeMemberSeparator();
@@ -1663,6 +1676,14 @@ pub const Parser = struct {
                 self.peek().kind == .number_literal or
                 self.peek().kind == .kw_constructor or
                 self.peek().kind == .kw_interface or
+                self.peek().kind == .kw_var or
+                (self.peek().kind.isKeyword() and
+                    (self.peekAt(1).kind == .open_paren or
+                        self.peekAt(1).kind == .less_than or
+                        self.peekAt(1).kind == .colon or
+                        self.peekAt(1).kind == .semicolon or
+                        self.peekAt(1).kind == .equal or
+                        self.peekAt(1).kind == .question)) or
                 isAccessibilityModifier(self.peek().kind) or
                 self.peek().kind.isContextualKeyword())
             {
@@ -2730,6 +2751,7 @@ pub const Parser = struct {
         } else id_blk: {
             const name_tok = try self.expectIdentifierLike();
             try self.reportInvalidStrictName(name_tok);
+            try self.reportInvalidFutureReservedName(name_tok);
             try self.reportAwaitBindingIfReserved(name_tok);
             const name_id = try self.internToken(name_tok);
             break :id_blk try self.builder.addIdentifier(tokenSpan(name_tok), name_id);
@@ -2758,6 +2780,7 @@ pub const Parser = struct {
             } else id_blk: {
                 const name_tok = try self.expectIdentifierLike();
                 try self.reportInvalidStrictName(name_tok);
+                try self.reportInvalidFutureReservedName(name_tok);
                 try self.reportAwaitBindingIfReserved(name_tok);
                 const name_id = try self.internToken(name_tok);
                 break :id_blk try self.builder.addIdentifier(tokenSpan(name_tok), name_id);
@@ -3141,7 +3164,7 @@ pub const Parser = struct {
                 while (self.peek().kind == .dot and
                     (self.peekAt(1).kind == .identifier or
                         self.peekAt(1).kind == .private_identifier or
-                        self.peekAt(1).kind.isContextualKeyword()))
+                        self.peekAt(1).kind.isKeyword()))
                 {
                     _ = self.advance();
                     ref_end = self.advance().span.end;
@@ -4561,10 +4584,13 @@ pub const Parser = struct {
                 continue;
             }
             // No comma + no `>` → bail to checkpoint.
-            if (self.peek().kind != .greater_than) break;
+            if (self.peek().kind != .greater_than and
+                self.peek().kind != .greater_greater and
+                self.peek().kind != .greater_greater_greater) break;
         }
         // Force-advance to the verified continuation token even if
         // structural recovery failed.
+        self.pending_type_gt = 0;
         self.cursor = after_gt;
         return args.toOwnedSlice(self.gpa);
     }
@@ -5472,8 +5498,9 @@ pub const Parser = struct {
                 const id = try self.internToken(t);
                 return try self.builder.addIdentifier(tokenSpan(t), id);
             },
-            .kw_any, .kw_unknown, .kw_never, .kw_void, .kw_string, .kw_number, .kw_boolean, .kw_bigint, .kw_symbol, .kw_object, .kw_get, .kw_set, .kw_global, .kw_from, .kw_require, .kw_module, .kw_namespace, .kw_of, .kw_type, .kw_using, .kw_await => {
+            .kw_any, .kw_unknown, .kw_never, .kw_void, .kw_string, .kw_number, .kw_boolean, .kw_bigint, .kw_symbol, .kw_object, .kw_get, .kw_set, .kw_global, .kw_from, .kw_require, .kw_module, .kw_namespace, .kw_interface, .kw_declare, .kw_of, .kw_type, .kw_using, .kw_await => {
                 _ = self.advance();
+                try self.reportInvalidFutureReservedName(t);
                 const id = try self.internToken(t);
                 return try self.builder.addIdentifier(tokenSpan(t), id);
             },
@@ -6177,6 +6204,8 @@ fn isExpressionIdentifierToken(kind: TokenKind) bool {
         .kw_require,
         .kw_module,
         .kw_namespace,
+        .kw_interface,
+        .kw_declare,
         .kw_of,
         .kw_type,
         => true,
@@ -7272,6 +7301,33 @@ test "parser: interface declaration" {
     try T.expectEqual(hir_mod.NodeKind.interface_decl, s.hir.kindOf(top));
 }
 
+test "parser: interface keyword followed by newline is expression identifier" {
+    var s = try newTestSetup(
+        \\interface
+        \\I
+        \\{}
+    );
+    defer destroyTestSetup(s);
+    s.parser.setTargetEs2015OrLater(true);
+    const root = try s.parser.parseSourceFile();
+    const stmts = hir_mod.blockStmts(&s.hir, root);
+    try T.expect(stmts.len >= 2);
+    try T.expectEqual(hir_mod.NodeKind.identifier, s.hir.kindOf(stmts[0]));
+    try T.expect(s.parser.diagnostics.items.len >= 1);
+}
+
+test "parser: nested explicit call type args in class extends" {
+    var s = try newTestSetup(
+        \\type T1 = { a: number };
+        \\type Identifiable<T> = { _id: string } & T;
+        \\declare function Constructor<T>(): new () => T;
+        \\class C extends Constructor<Identifiable<T1 & { b: number }>>() {}
+    );
+    defer destroyTestSetup(s);
+    _ = try s.parser.parseSourceFile();
+    try T.expectEqual(@as(usize, 0), s.parser.diagnostics.items.len);
+}
+
 test "parser: type alias" {
     var s = try newTestSetup("type Pair = [number, number];");
     defer destroyTestSetup(s);
@@ -7845,6 +7901,25 @@ test "parser: type annotation — typeof undefined accepts keyword operand" {
     try T.expectEqual(hir_mod.NodeKind.typeof_type, s.hir.kindOf(v.type_annotation));
     const tt = hir_mod.typeofTypeOf(&s.hir, v.type_annotation);
     try T.expectEqual(hir_mod.NodeKind.identifier, s.hir.kindOf(tt.operand));
+}
+
+test "parser: type annotation — typeof qualified reserved property" {
+    var s = try newTestSetup(
+        \\class Controller {
+        \\  create() {}
+        \\  delete() {}
+        \\  var() {}
+        \\}
+        \\interface IScope {
+        \\  create: typeof Controller.prototype.create;
+        \\  delete: typeof Controller.prototype.delete;
+        \\  var: typeof Controller.prototype.var;
+        \\}
+        \\let x: typeof Controller.prototype.var = null;
+    );
+    defer destroyTestSetup(s);
+    _ = try s.parser.parseSourceFile();
+    try T.expectEqual(@as(usize, 0), s.parser.diagnostics.items.len);
 }
 
 test "parser: type annotation — indexed access T[K]" {

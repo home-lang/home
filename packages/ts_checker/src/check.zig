@@ -494,6 +494,11 @@ pub const Checker = struct {
     /// aliases such as `type Circular<T> = { [K in keyof T]: Circular<T> }`
     /// must defer instead of recursively materializing forever.
     active_generic_aliases: std.AutoHashMapUnmanaged(hir_mod.StringId, void),
+    /// Value names whose declared annotation is currently being lowered.
+    /// `typeof` queries can legally participate in recursive value
+    /// shapes; this guard keeps mutual annotations from re-entering
+    /// `typeOfIdentifier` until the stack overflows.
+    resolving_value_types: std.AutoHashMapUnmanaged(hir_mod.StringId, void),
     /// Generic function name → owned `[]TypeId` of TypeParameter ids
     /// (in declaration order). Populated by `checkFnSignatureOnly`.
     /// Consulted by call-expression typing when explicit type args
@@ -658,6 +663,7 @@ pub const Checker = struct {
             .type_names = .empty,
             .generic_aliases = .empty,
             .active_generic_aliases = .empty,
+            .resolving_value_types = .empty,
             .generic_fns = .empty,
             .generic_signature_params = .empty,
             .fn_predicates = .empty,
@@ -733,6 +739,7 @@ pub const Checker = struct {
         while (ga_it.next()) |info| self.gpa.free(info.params);
         self.generic_aliases.deinit(self.gpa);
         self.active_generic_aliases.deinit(self.gpa);
+        self.resolving_value_types.deinit(self.gpa);
         var gf_it = self.generic_fns.valueIterator();
         while (gf_it.next()) |params| self.gpa.free(params.*);
         self.generic_fns.deinit(self.gpa);
@@ -1099,7 +1106,10 @@ pub const Checker = struct {
                     .var_decl, .let_decl, .const_decl => {
                         const v = hir_mod.varDeclOf(self.hir, fr.target);
                         if (v.type_annotation != hir_mod.none_node_id) {
-                            const declared_t = self.lowererLowerWithTypeParams(v.type_annotation) catch types.Primitive.any;
+                            const declared_t = if (v.name != hir_mod.none_node_id and self.hir.kindOf(v.name) == .identifier)
+                                self.lowerValueTypeAnnotation(hir_mod.identifierOf(self.hir, v.name).name, v.type_annotation) catch types.Primitive.any
+                            else
+                                self.lowererLowerWithTypeParams(v.type_annotation) catch types.Primitive.any;
                             if (!(self.engine.isAssignableTo(elem_t, declared_t) catch true)) {
                                 try self.report(fr.target, TsCodes.type_not_assignable, "Type is not assignable to declared type.");
                             }
@@ -1260,6 +1270,8 @@ pub const Checker = struct {
     fn checkDeclarationSpaceDiagnostics(self: *Checker, stmts: []const NodeId) CheckError!void {
         var seen: std.AutoHashMapUnmanaged(DeclarationKey, DeclarationEntry) = .empty;
         defer seen.deinit(self.gpa);
+        var seen_interfaces: std.AutoHashMapUnmanaged(DeclarationKey, NodeId) = .empty;
+        defer seen_interfaces.deinit(self.gpa);
 
         var previous_overload_name: ?hir_mod.StringId = null;
         var previous_overload_section: usize = 0;
@@ -1275,6 +1287,21 @@ pub const Checker = struct {
                 previous_overload_section = 0;
                 continue;
             };
+            if (kind == .interface_decl) {
+                if (self.interfaceHeritageReachesName(node, name, stmts, 0)) {
+                    try self.report(node, TsCodes.interface_incorrectly_extends, "An interface cannot recursively extend itself.");
+                }
+                const key: DeclarationKey = .{ .name = name, .virtual_section_start = virtual_section };
+                const gop = try seen_interfaces.getOrPut(self.gpa, key);
+                if (gop.found_existing) {
+                    try self.checkInterfaceMergeDiagnostics(gop.value_ptr.*, node, name);
+                } else {
+                    gop.value_ptr.* = node;
+                }
+                previous_overload_name = null;
+                previous_overload_section = 0;
+                continue;
+            }
             const is_fn = kind == .fn_decl or kind == .fn_expr;
             const is_var = kind == .var_decl;
             if (!is_fn and !is_var) {
@@ -1341,6 +1368,109 @@ pub const Checker = struct {
                 }
             }
         }
+    }
+
+    fn interfaceHeritageReachesName(
+        self: *Checker,
+        node: NodeId,
+        target_name: hir_mod.StringId,
+        stmts: []const NodeId,
+        depth: u8,
+    ) bool {
+        if (depth > 16 or node == hir_mod.none_node_id or self.hir.kindOf(node) != .interface_decl) return false;
+        for (hir_mod.interfaceExtends(self.hir, node)) |ext_node| {
+            const ext_name = self.unqualifiedTypeRefName(ext_node) orelse continue;
+            if (ext_name == target_name) return true;
+            for (stmts) |raw| {
+                const candidate = self.unwrapExportDecl(raw);
+                if (candidate == hir_mod.none_node_id or self.hir.kindOf(candidate) != .interface_decl) continue;
+                const candidate_name = self.declarationName(candidate) orelse continue;
+                if (candidate_name != ext_name) continue;
+                if (self.interfaceHeritageReachesName(candidate, target_name, stmts, depth + 1)) return true;
+            }
+        }
+        return false;
+    }
+
+    fn unqualifiedTypeRefName(self: *Checker, node: NodeId) ?hir_mod.StringId {
+        if (node == hir_mod.none_node_id or self.hir.kindOf(node) != .type_ref) return null;
+        const r = hir_mod.typeRefOf(self.hir, node);
+        if (r.qualifier_len != 0) return null;
+        return r.name;
+    }
+
+    fn checkInterfaceMergeDiagnostics(
+        self: *Checker,
+        first: NodeId,
+        current: NodeId,
+        name: hir_mod.StringId,
+    ) CheckError!void {
+        if (!try self.interfaceTypeParametersMerge(first, current)) {
+            try self.reportDuplicateIdentifier(current, name);
+            return;
+        }
+        if (!try self.interfaceMembersMerge(first, current)) {
+            try self.reportDuplicateIdentifier(current, name);
+        }
+    }
+
+    fn interfaceTypeParametersMerge(self: *Checker, first: NodeId, current: NodeId) CheckError!bool {
+        const a = hir_mod.interfaceOf(self.hir, first);
+        const b = hir_mod.interfaceOf(self.hir, current);
+        const a_params = self.hir.childSlice(a.type_params_start, a.type_params_len);
+        const b_params = self.hir.childSlice(b.type_params_start, b.type_params_len);
+        if (a_params.len != b_params.len) return false;
+        for (a_params, b_params) |a_tp_node, b_tp_node| {
+            if (self.hir.kindOf(a_tp_node) != .type_parameter or self.hir.kindOf(b_tp_node) != .type_parameter) continue;
+            const a_tp = hir_mod.typeParameterOf(self.hir, a_tp_node);
+            const b_tp = hir_mod.typeParameterOf(self.hir, b_tp_node);
+            if (a_tp.name != b_tp.name) return false;
+            if (a_tp.constraint != hir_mod.none_node_id and b_tp.constraint != hir_mod.none_node_id and
+                !self.nodeSourceTextEqual(a_tp.constraint, b_tp.constraint)) return false;
+        }
+        return true;
+    }
+
+    fn interfaceMembersMerge(self: *Checker, first: NodeId, current: NodeId) CheckError!bool {
+        const a_members = hir_mod.interfaceMembers(self.hir, first);
+        const b_members = hir_mod.interfaceMembers(self.hir, current);
+        for (a_members) |a_member| {
+            for (b_members) |b_member| {
+                if (self.interfaceMembersConflict(a_member, b_member)) return false;
+            }
+        }
+        return true;
+    }
+
+    fn interfaceMembersConflict(self: *Checker, a_member: NodeId, b_member: NodeId) bool {
+        const a_kind = self.hir.kindOf(a_member);
+        const b_kind = self.hir.kindOf(b_member);
+        if (a_kind == .index_signature and b_kind == .index_signature) {
+            const a = hir_mod.indexSignatureOf(self.hir, a_member);
+            const b = hir_mod.indexSignatureOf(self.hir, b_member);
+            if (!self.nodeSourceTextEqual(a.key_type, b.key_type)) return true;
+            if (!self.nodeSourceTextEqual(a.value_type, b.value_type)) return true;
+            return false;
+        }
+        if (a_kind != .interface_member or b_kind != .interface_member) return false;
+        const a = hir_mod.interfaceMemberOf(self.hir, a_member);
+        const b = hir_mod.interfaceMemberOf(self.hir, b_member);
+        if (a.name == 0 or b.name == 0 or a.name != b.name) return false;
+        if (a.is_optional != b.is_optional) return true;
+        if (a.is_method != b.is_method) return true;
+        return !self.nodeSourceTextEqual(a.type_node, b.type_node);
+    }
+
+    fn nodeSourceTextEqual(self: *Checker, a: NodeId, b: NodeId) bool {
+        if (a == b) return true;
+        if (a == hir_mod.none_node_id or b == hir_mod.none_node_id) return a == b;
+        const src = self.source orelse return self.hir.kindOf(a) == self.hir.kindOf(b);
+        const a_span = self.hir.spanOf(a);
+        const b_span = self.hir.spanOf(b);
+        if (a_span.end > src.len or b_span.end > src.len or a_span.start > a_span.end or b_span.start > b_span.end) {
+            return self.hir.kindOf(a) == self.hir.kindOf(b);
+        }
+        return std.mem.eql(u8, src[a_span.start..a_span.end], src[b_span.start..b_span.end]);
     }
 
     fn virtualSectionStartForNode(self: *Checker, node: NodeId) usize {
@@ -1731,7 +1861,10 @@ pub const Checker = struct {
     fn checkNamespaceValueDecl(self: *Checker, node: NodeId) CheckError!void {
         const v = hir_mod.varDeclOf(self.hir, node);
         if (v.type_annotation != hir_mod.none_node_id and self.hir.typeOf(node) == types.Primitive.none) {
-            const declared_type = try self.lowererLowerWithTypeParams(v.type_annotation);
+            const declared_type = if (v.name != hir_mod.none_node_id and self.hir.kindOf(v.name) == .identifier)
+                try self.lowerValueTypeAnnotation(hir_mod.identifierOf(self.hir, v.name).name, v.type_annotation)
+            else
+                try self.lowererLowerWithTypeParams(v.type_annotation);
             self.hir.setType(node, declared_type);
             if (v.name != hir_mod.none_node_id) self.hir.setType(v.name, declared_type);
         }
@@ -2109,7 +2242,7 @@ pub const Checker = struct {
                 if (v.name != hir_mod.none_node_id and self.hir.kindOf(v.name) == .identifier) {
                     const id = hir_mod.identifierOf(self.hir, v.name);
                     const t = if (v.type_annotation != hir_mod.none_node_id) blk: {
-                        const lowered = self.lowererLowerWithTypeParams(v.type_annotation) catch break :blk types.Primitive.any;
+                        const lowered = self.lowerValueTypeAnnotation(id.name, v.type_annotation) catch break :blk types.Primitive.any;
                         if (lowered < self.interner.pool.typeCount() and self.interner.pool.flagsOf(lowered).is_type_parameter) {
                             break :blk lowered;
                         }
@@ -2795,6 +2928,7 @@ pub const Checker = struct {
                 !(self.nodeHasAncestorKind(ref_node, .binary_op) and self.varDeclHasTypeAnnotation(decl_node)) and
                 !(self.nodeHasAncestorKind(ref_node, .logical_op) and self.varDeclHasTypeAnnotation(decl_node)) and
                 !(self.nodeHasAncestorKind(ref_node, .call_expr) and self.varDeclHasTypeAnnotation(decl_node)) and
+                !(self.nodeHasAncestorKind(ref_node, .new_expr) and self.varDeclHasTypeAnnotation(decl_node)) and
                 !(self.nodeHasAncestorKind(ref_node, .decorator) and self.varDeclHasTypeAnnotation(decl_node)) and
                 !self.isCompoundAssignmentTarget(ref_node) and
                 !self.isDirectExpressionStatement(ref_node)) return;
@@ -3010,7 +3144,10 @@ pub const Checker = struct {
         if (v.type_annotation == hir_mod.none_node_id) return false;
         const t = self.hir.typeOf(node);
         if (t != types.Primitive.none) return self.typeIncludesUndefined(t);
-        const lowered = self.lowererLowerWithTypeParams(v.type_annotation) catch return false;
+        const lowered = if (v.name != hir_mod.none_node_id and self.hir.kindOf(v.name) == .identifier)
+            self.lowerValueTypeAnnotation(hir_mod.identifierOf(self.hir, v.name).name, v.type_annotation) catch return false
+        else
+            self.lowererLowerWithTypeParams(v.type_annotation) catch return false;
         return self.typeIncludesUndefined(lowered);
     }
 
@@ -6917,11 +7054,12 @@ pub const Checker = struct {
         child_symbol_idx: TypeId,
     ) CheckError!void {
         for (extends) |ext_node| {
+            try self.checkInterfaceClassPrivateHeritage(node, ext_node, child_members);
             const parent_t = self.lowererLowerWithTypeParams(ext_node) catch continue;
             if (!self.interner.pool.flagsOf(parent_t).is_object_type) continue;
             const parent_string_idx = self.interner.objectStringIndex(parent_t);
             if (parent_string_idx != types.Primitive.none and child_string_idx != types.Primitive.none) {
-                const type_ok = self.heritageAssignable(child_string_idx, parent_string_idx) catch true;
+                const type_ok = try self.heritageAssignableDeep(child_string_idx, parent_string_idx);
                 if (!type_ok) {
                     try self.reportInterfaceExtendsIndexMismatch(node);
                     continue;
@@ -6929,7 +7067,14 @@ pub const Checker = struct {
             }
             const parent_number_idx = self.interner.objectNumberIndex(parent_t);
             if (parent_number_idx != types.Primitive.none and child_number_idx != types.Primitive.none) {
-                const type_ok = self.heritageAssignable(child_number_idx, parent_number_idx) catch true;
+                const type_ok = try self.heritageAssignableDeep(child_number_idx, parent_number_idx);
+                if (!type_ok) {
+                    try self.reportInterfaceExtendsIndexMismatch(node);
+                    continue;
+                }
+            }
+            if (parent_number_idx != types.Primitive.none and child_string_idx != types.Primitive.none) {
+                const type_ok = try self.heritageAssignableDeep(child_string_idx, parent_number_idx);
                 if (!type_ok) {
                     try self.reportInterfaceExtendsIndexMismatch(node);
                     continue;
@@ -6937,7 +7082,7 @@ pub const Checker = struct {
             }
             const parent_symbol_idx = self.interner.objectSymbolIndex(parent_t);
             if (parent_symbol_idx != types.Primitive.none and child_symbol_idx != types.Primitive.none) {
-                const type_ok = self.heritageAssignable(child_symbol_idx, parent_symbol_idx) catch true;
+                const type_ok = try self.heritageAssignableDeep(child_symbol_idx, parent_symbol_idx);
                 if (!type_ok) {
                     try self.reportInterfaceExtendsIndexMismatch(node);
                     continue;
@@ -6978,7 +7123,7 @@ pub const Checker = struct {
                         }
                     }
                     const optional_ok = pm.is_optional or !cm.is_optional;
-                    const type_ok = self.heritageAssignable(cm.type, pm.type) catch true;
+                    const type_ok = try self.heritageAssignableDeep(cm.type, pm.type);
                     if (optional_ok and type_ok) break;
                     const prop_name = self.string_interner.get(cm.name);
                     const msg = try std.fmt.allocPrint(
@@ -6995,6 +7140,88 @@ pub const Checker = struct {
                 }
             }
         }
+    }
+
+    fn checkInterfaceClassPrivateHeritage(
+        self: *Checker,
+        iface_node: NodeId,
+        extends_node: NodeId,
+        child_members: []const types.ObjectMember,
+    ) CheckError!void {
+        const class_name = self.unqualifiedTypeRefName(extends_node) orelse return;
+        const root = self.rootBlockFor(iface_node);
+        if (root == hir_mod.none_node_id or self.hir.kindOf(root) != .block_stmt) return;
+        for (hir_mod.blockStmts(self.hir, root)) |stmt| {
+            const decl = self.unwrapExportDecl(stmt);
+            if (decl == hir_mod.none_node_id or self.hir.kindOf(decl) != .class_decl) continue;
+            const found_name = self.declarationName(decl) orelse continue;
+            if (found_name != class_name) continue;
+            for (hir_mod.classMembers(self.hir, decl)) |member| {
+                const private_name = try self.privateOrProtectedClassMemberName(member);
+                if (private_name == null) continue;
+                for (child_members) |child| {
+                    if (child.name != private_name.?) continue;
+                    try self.report(iface_node, TsCodes.interface_incorrectly_extends, "Interface incorrectly extends class with private or protected member.");
+                    return;
+                }
+            }
+            for (child_members) |child| {
+                if (self.classSourceHasPrivateOrProtectedMember(decl, child.name)) {
+                    try self.report(iface_node, TsCodes.interface_incorrectly_extends, "Interface incorrectly extends class with private or protected member.");
+                    return;
+                }
+            }
+        }
+    }
+
+    fn privateOrProtectedClassMemberName(self: *Checker, member: NodeId) CheckError!?hir_mod.StringId {
+        return switch (self.hir.kindOf(member)) {
+            .fn_decl => blk: {
+                const f = hir_mod.fnDeclOf(self.hir, member);
+                if (!f.flags.is_private and !f.flags.is_protected) break :blk null;
+                break :blk try self.classMemberNameFromFunctionName(f.name);
+            },
+            .object_property => blk: {
+                const op = hir_mod.objectPropertyOf(self.hir, member);
+                if (op.visibility != .private and op.visibility != .protected) break :blk null;
+                break :blk try self.classMemberNameFromPropertyKey(op.key, op.is_computed);
+            },
+            else => null,
+        };
+    }
+
+    fn classSourceHasPrivateOrProtectedMember(self: *Checker, class_node: NodeId, name: hir_mod.StringId) bool {
+        const src = self.source orelse return false;
+        const span = self.hir.spanOf(class_node);
+        if (span.end > src.len or span.start > span.end) return false;
+        const body = src[span.start..span.end];
+        const name_text = self.string_interner.get(name);
+        var buf: [256]u8 = undefined;
+        const private_pat = std.fmt.bufPrint(&buf, "private {s}", .{name_text}) catch return false;
+        if (std.mem.indexOf(u8, body, private_pat) != null) return true;
+        const protected_pat = std.fmt.bufPrint(&buf, "protected {s}", .{name_text}) catch return false;
+        return std.mem.indexOf(u8, body, protected_pat) != null;
+    }
+
+    fn heritageAssignableDeep(self: *Checker, source: TypeId, target: TypeId) CheckError!bool {
+        if (!(self.heritageAssignable(source, target) catch false)) return false;
+        return try self.presentObjectMembersAssignable(source, target);
+    }
+
+    fn presentObjectMembersAssignable(self: *Checker, source: TypeId, target: TypeId) CheckError!bool {
+        if (source >= self.interner.pool.typeCount() or target >= self.interner.pool.typeCount()) return true;
+        const sf = self.interner.pool.flagsOf(source);
+        const tf = self.interner.pool.flagsOf(target);
+        if (!sf.is_object_type or !tf.is_object_type) return true;
+        for (self.interner.objectMembers(target)) |tm| {
+            const sm_t = self.interner.objectMember(source, tm.name) orelse {
+                if (tm.is_optional) continue;
+                return false;
+            };
+            if (!(self.heritageAssignable(sm_t, tm.type) catch false)) return false;
+            if (!try self.presentObjectMembersAssignable(sm_t, tm.type)) return false;
+        }
+        return true;
     }
 
     fn reportInterfaceExtendsIndexMismatch(self: *Checker, node: NodeId) CheckError!void {
@@ -7017,7 +7244,7 @@ pub const Checker = struct {
             for (members) |m| {
                 if (self.isSymbolNamedMember(m.name)) continue;
                 if (m.type == types.Primitive.any or string_idx == types.Primitive.any) continue;
-                if (self.engine.isAssignableTo(m.type, string_idx) catch true) continue;
+                if (try self.heritageAssignableDeep(m.type, string_idx)) continue;
                 const prop_str = self.string_interner.get(m.name);
                 const msg = try std.fmt.allocPrint(
                     self.diag_arena.allocator(),
@@ -7031,8 +7258,26 @@ pub const Checker = struct {
                 });
             }
         }
+        if (number_idx != types.Primitive.none) {
+            for (members) |m| {
+                if (!self.memberNameIsNumeric(m.name)) continue;
+                if (m.type == types.Primitive.any or number_idx == types.Primitive.any) continue;
+                if (try self.heritageAssignableDeep(m.type, number_idx)) continue;
+                const prop_str = self.string_interner.get(m.name);
+                const msg = try std.fmt.allocPrint(
+                    self.diag_arena.allocator(),
+                    "Property '{s}' is not assignable to number index type.",
+                    .{prop_str},
+                );
+                try self.diagnostics.append(self.gpa, .{
+                    .node = node,
+                    .code = TsCodes.property_not_assignable_to_index_type,
+                    .message = msg,
+                });
+            }
+        }
         if (number_idx != types.Primitive.none and string_idx != types.Primitive.none and
-            !(self.engine.isAssignableTo(number_idx, string_idx) catch true))
+            !(try self.heritageAssignableDeep(number_idx, string_idx)))
         {
             try self.report(node, TsCodes.property_not_assignable_to_index_type, "Number index type is not assignable to string index type.");
         }
@@ -7040,7 +7285,7 @@ pub const Checker = struct {
             for (members) |m| {
                 if (m.type == types.Primitive.any or symbol_idx == types.Primitive.any) continue;
                 if (!self.isSymbolNamedMember(m.name)) continue;
-                if (self.engine.isAssignableTo(m.type, symbol_idx) catch true) continue;
+                if (try self.heritageAssignableDeep(m.type, symbol_idx)) continue;
                 const prop_str = self.string_interner.get(m.name);
                 const msg = try std.fmt.allocPrint(
                     self.diag_arena.allocator(),
@@ -7054,6 +7299,15 @@ pub const Checker = struct {
                 });
             }
         }
+    }
+
+    fn memberNameIsNumeric(self: *Checker, name: hir_mod.StringId) bool {
+        const s = self.string_interner.get(name);
+        if (s.len == 0) return false;
+        for (s) |ch| {
+            if (ch < '0' or ch > '9') return false;
+        }
+        return true;
     }
 
     /// Pull in members from every parent interface listed in
@@ -7441,6 +7695,16 @@ pub const Checker = struct {
         if (ta.aliased == hir_mod.none_node_id) return;
         const type_params = self.hir.childSlice(ta.type_params_start, ta.type_params_len);
         if (type_params.len == 0) {
+            if (ta.name != hir_mod.none_node_id and self.hir.kindOf(ta.name) == .identifier) {
+                const id = hir_mod.identifierOf(self.hir, ta.name);
+                if (self.typeAliasCircularTypeofVar(ta.aliased, id.name)) {
+                    try self.report(node, 2456, "Type alias circularly references itself.");
+                    self.hir.setType(node, types.Primitive.any);
+                    try self.type_names.put(self.gpa, id.name, types.Primitive.any);
+                    self.hir.setType(ta.name, types.Primitive.any);
+                    return;
+                }
+            }
             const aliased_t = try self.lowererLowerWithTypeParams(ta.aliased);
             self.hir.setType(node, aliased_t);
             if (ta.name != hir_mod.none_node_id and self.hir.kindOf(ta.name) == .identifier) {
@@ -7517,6 +7781,36 @@ pub const Checker = struct {
             try self.type_names.put(self.gpa, id.name, body_t);
             self.hir.setType(ta.name, body_t);
         }
+    }
+
+    fn typeAliasCircularTypeofVar(self: *Checker, aliased: NodeId, alias_name: hir_mod.StringId) bool {
+        if (aliased == hir_mod.none_node_id or self.hir.kindOf(aliased) != .typeof_type) return false;
+        const tt = hir_mod.typeofTypeOf(self.hir, aliased);
+        if (self.hir.kindOf(tt.operand) != .identifier) return false;
+        const value_name = hir_mod.identifierOf(self.hir, tt.operand).name;
+        const root = self.rootBlockFor(aliased);
+        if (root == hir_mod.none_node_id or self.hir.kindOf(root) != .block_stmt) return false;
+        for (hir_mod.blockStmts(self.hir, root)) |raw| {
+            const decl = self.unwrapExportDecl(raw);
+            if (decl == hir_mod.none_node_id) continue;
+            const k = self.hir.kindOf(decl);
+            if (k != .var_decl and k != .let_decl and k != .const_decl) continue;
+            const v = hir_mod.varDeclOf(self.hir, decl);
+            if (v.name == hir_mod.none_node_id or self.hir.kindOf(v.name) != .identifier) continue;
+            if (hir_mod.identifierOf(self.hir, v.name).name != value_name) continue;
+            if (v.type_annotation == hir_mod.none_node_id or self.hir.kindOf(v.type_annotation) != .type_ref) continue;
+            const ref = hir_mod.typeRefOf(self.hir, v.type_annotation);
+            if (ref.qualifier_len == 0 and ref.name == alias_name) return true;
+        }
+        return false;
+    }
+
+    fn lowerValueTypeAnnotation(self: *Checker, name: hir_mod.StringId, type_annotation: NodeId) CheckError!TypeId {
+        if (type_annotation == hir_mod.none_node_id) return types.Primitive.none;
+        if (self.resolving_value_types.contains(name)) return types.Primitive.any;
+        try self.resolving_value_types.put(self.gpa, name, {});
+        defer _ = self.resolving_value_types.remove(name);
+        return try self.lowererLowerWithTypeParams(type_annotation);
     }
 
     /// Lower a type annotation while consulting the current
@@ -7811,6 +8105,7 @@ pub const Checker = struct {
                             return qualified_t;
                         }
                     }
+                    if (self.typeofQueryReferencesOwnDeclaration(type_node, name)) return types.Primitive.any;
                     return self.typeOfIdentifier(tt.operand);
                 }
             },
@@ -8046,6 +8341,19 @@ pub const Checker = struct {
             else => {},
         }
         return self.lowerer.lower(type_node);
+    }
+
+    fn typeofQueryReferencesOwnDeclaration(self: *Checker, type_node: NodeId, name: hir_mod.StringId) bool {
+        var cur = type_node;
+        while (cur != hir_mod.none_node_id) : (cur = self.hir.parentOf(cur)) {
+            const k = self.hir.kindOf(cur);
+            if (k != .var_decl and k != .let_decl and k != .const_decl) continue;
+            const v = hir_mod.varDeclOf(self.hir, cur);
+            if (v.type_annotation != type_node) return false;
+            if (v.name == hir_mod.none_node_id or self.hir.kindOf(v.name) != .identifier) return false;
+            return hir_mod.identifierOf(self.hir, v.name).name == name;
+        }
+        return false;
     }
 
     fn resolveQualifiedTypeRef(self: *Checker, type_node: NodeId) CheckError!?TypeId {
@@ -9250,7 +9558,10 @@ pub const Checker = struct {
         // Lower type annotation first (so we can check init against it).
         var declared_type: TypeId = types.Primitive.none;
         if (v.type_annotation != hir_mod.none_node_id) {
-            declared_type = try self.lowererLowerWithTypeParams(v.type_annotation);
+            declared_type = if (v.name != hir_mod.none_node_id and self.hir.kindOf(v.name) == .identifier)
+                try self.lowerValueTypeAnnotation(hir_mod.identifierOf(self.hir, v.name).name, v.type_annotation)
+            else
+                try self.lowererLowerWithTypeParams(v.type_annotation);
             self.hir.setType(node, declared_type);
         } else if (try self.jsDocTypeForVarDecl(node)) |jsdoc_t| {
             declared_type = jsdoc_t;
@@ -9718,6 +10029,15 @@ pub const Checker = struct {
             if (part.len == 0) return null;
             const prop_name = self.string_interner.intern(part) catch return error.OutOfMemory;
             if (root_for_narrow) |obj_name| {
+                if (std.mem.eql(u8, part, "prototype")) {
+                    if (self.class_instance_types.get(obj_name)) |instance_t| {
+                        current = instance_t;
+                        root_for_narrow = null;
+                        continue;
+                    }
+                }
+            }
+            if (root_for_narrow) |obj_name| {
                 const key: MemberKey = .{ .obj_name = obj_name, .prop_name = prop_name };
                 if (self.lookupMemberNarrow(key)) |nt| {
                     current = nt;
@@ -9760,7 +10080,7 @@ pub const Checker = struct {
                         const existing = self.hir.typeOf(s);
                         if (existing != types.Primitive.none) return existing;
                         if (v.type_annotation != hir_mod.none_node_id) {
-                            const declared_t = self.lowererLowerWithTypeParams(v.type_annotation) catch types.Primitive.any;
+                            const declared_t = self.lowerValueTypeAnnotation(vid.name, v.type_annotation) catch types.Primitive.any;
                             self.hir.setType(s, declared_t);
                             self.hir.setType(v.name, declared_t);
                             return declared_t;
@@ -13246,6 +13566,7 @@ pub const Checker = struct {
         // Narrowed binding from an enclosing type-guard takes
         // precedence over the static type.
         if (self.lookupNarrow(id.name)) |t| return t;
+        if (self.resolving_value_types.contains(id.name)) return types.Primitive.any;
 
         const name_str = self.string_interner.get(id.name);
         if (std.mem.eql(u8, name_str, "this")) {
@@ -13310,7 +13631,7 @@ pub const Checker = struct {
                                 const t = self.hir.typeOf(fr.init);
                                 if (t != types.Primitive.none) return t;
                                 if (v.type_annotation != hir_mod.none_node_id) {
-                                    const declared_t = self.lowererLowerWithTypeParams(v.type_annotation) catch types.Primitive.any;
+                                    const declared_t = self.lowerValueTypeAnnotation(id.name, v.type_annotation) catch types.Primitive.any;
                                     self.hir.setType(fr.init, declared_t);
                                     self.hir.setType(v.name, declared_t);
                                     return declared_t;
@@ -13334,7 +13655,7 @@ pub const Checker = struct {
                                 const t = self.hir.typeOf(s);
                                 if (t != types.Primitive.none) return t;
                                 if (v.type_annotation != hir_mod.none_node_id) {
-                                    const declared_t = self.lowererLowerWithTypeParams(v.type_annotation) catch types.Primitive.any;
+                                    const declared_t = self.lowerValueTypeAnnotation(id.name, v.type_annotation) catch types.Primitive.any;
                                     self.hir.setType(s, declared_t);
                                     self.hir.setType(v.name, declared_t);
                                     return declared_t;
@@ -13490,7 +13811,7 @@ pub const Checker = struct {
                     if (dk == .var_decl or dk == .let_decl or dk == .const_decl) {
                         const v = hir_mod.varDeclOf(self.hir, decl);
                         if (v.type_annotation != hir_mod.none_node_id) {
-                            const declared_t = self.lowererLowerWithTypeParams(v.type_annotation) catch types.Primitive.any;
+                            const declared_t = self.lowerValueTypeAnnotation(id.name, v.type_annotation) catch types.Primitive.any;
                             self.hir.setType(decl, declared_t);
                             if (v.name != hir_mod.none_node_id) self.hir.setType(v.name, declared_t);
                             return declared_t;
@@ -15447,6 +15768,7 @@ pub const Checker = struct {
             param_t < self.interner.pool.typeCount() and
             self.interner.pool.flagsOf(param_t).is_intersection)
         {
+            if (self.interner.pool.payloadOf(param_t) >= self.interner.pool.intersection_payloads.items.len) return;
             for (self.interner.intersectionMembers(param_t)) |member| {
                 try self.inferFromArgument(member, arg_t, arg_node, subs);
             }
@@ -19477,6 +19799,21 @@ test "checker: typed var used in control-flow condition emits TS2454" {
     try T.expect(found);
 }
 
+test "checker: typed var used as new target emits TS2454" {
+    const s = try newSetup(
+        \\interface Ctor { new (): {}; }
+        \\var d: Ctor;
+        \\var r = new d();
+    );
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+    var found = false;
+    for (s.checker.diagnostics.items) |d| {
+        if (d.code == TsCodes.used_before_assignment) found = true;
+    }
+    try T.expect(found);
+}
+
 test "checker: nullish-coalesce RHS assignment is not definite" {
     const s = try newSetup(
         \\let o: any;
@@ -19994,6 +20331,78 @@ test "checker: interface override modifiers participate in extends diagnostics" 
     try T.expect(saw_not_base);
 }
 
+test "checker: merged interfaces require matching type parameter names" {
+    const s = try newSetup(
+        \\interface A<T> { x: T; }
+        \\interface A<U> { y: U; }
+    );
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+    var found = false;
+    for (s.checker.diagnostics.items) |d| {
+        if (d.code == TsCodes.duplicate_identifier) found = true;
+    }
+    try T.expect(found);
+}
+
+test "checker: merged interfaces reject conflicting property declarations" {
+    const s = try newSetup(
+        \\interface A { x: string; }
+        \\interface A { x: number; }
+    );
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+    var found = false;
+    for (s.checker.diagnostics.items) |d| {
+        if (d.code == TsCodes.duplicate_identifier) found = true;
+    }
+    try T.expect(found);
+}
+
+test "checker: interface heritage detects recursive extends chain" {
+    const s = try newSetup(
+        \\interface A extends C { x: string; }
+        \\interface B extends A { y: string; }
+        \\interface C extends B { z: string; }
+    );
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+    var found = false;
+    for (s.checker.diagnostics.items) |d| {
+        if (d.code == TsCodes.interface_incorrectly_extends) found = true;
+    }
+    try T.expect(found);
+}
+
+test "checker: interface extends checks present optional parent member types" {
+    const s = try newSetup(
+        \\interface Base { x: { a?: string; b: string; } }
+        \\interface Base2 { x: { b: string; c?: number; } }
+        \\interface Derived extends Base, Base2 { x: { a: number; b: string; } }
+    );
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+    var found = false;
+    for (s.checker.diagnostics.items) |d| {
+        if (d.code == TsCodes.interface_incorrectly_extends) found = true;
+    }
+    try T.expect(found);
+}
+
+test "checker: interface extends rejects private class member redeclaration" {
+    const s = try newSetup(
+        \\class Base { private x(): void {} }
+        \\interface Foo extends Base { x(): void; }
+    );
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+    var found = false;
+    for (s.checker.diagnostics.items) |d| {
+        if (d.code == TsCodes.interface_incorrectly_extends) found = true;
+    }
+    try T.expect(found);
+}
+
 test "checker: generic extends instantiates parent field types for override checks" {
     const s = try newSetup(
         \\class Base<T> { x: T = "" as any; }
@@ -20368,6 +20777,40 @@ test "checker: typeof undefined query resolves to undefined type" {
     try s.checker.checkSourceFile(s.root);
     const stmts = hir_mod.blockStmts(&s.hir, s.root);
     try T.expectEqual(types.Primitive.undefined_t, s.hir.typeOf(stmts[0]));
+}
+
+test "checker: self-referential typeof var query does not recurse" {
+    const s = try newSetup("export var r12: typeof r12;");
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+    const ex = hir_mod.exportOf(&s.hir, hir_mod.blockStmts(&s.hir, s.root)[0]);
+    try T.expectEqual(types.Primitive.any, s.hir.typeOf(ex.decl));
+}
+
+test "checker: mutual typeof var query does not recurse" {
+    const s = try newSetup(
+        \\var d: typeof e;
+        \\var e: typeof d;
+    );
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+    const stmts = hir_mod.blockStmts(&s.hir, s.root);
+    try T.expectEqual(types.Primitive.any, s.hir.typeOf(stmts[0]));
+    try T.expectEqual(types.Primitive.any, s.hir.typeOf(stmts[1]));
+}
+
+test "checker: type alias through typeof annotated var reports cycle" {
+    const s = try newSetup(
+        \\type A = typeof value;
+        \\var value: A;
+    );
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+    var found = false;
+    for (s.checker.diagnostics.items) |d| {
+        if (d.code == 2456) found = true;
+    }
+    try T.expect(found);
 }
 
 test "checker: `as` cast yields the asserted type" {
@@ -23162,6 +23605,27 @@ test "checker: typeof qualified namespace value resolves exported const" {
     for (s.checker.diagnostics.items) |d| {
         try T.expect(d.code != TsCodes.cannot_find_name);
     }
+}
+
+test "checker: typeof class prototype reserved method resolves" {
+    const s = try newSetup(
+        \\class Controller { var(): string { return ""; } }
+        \\let f: typeof Controller.prototype.var;
+    );
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+    for (s.checker.diagnostics.items) |d| {
+        try T.expect(d.code != TsCodes.cannot_find_name);
+    }
+}
+
+test "checker: template literal intersection call inference does not crash" {
+    const s = try newSetup(
+        \\function conversionTest(groupName: | "downcast" | "dataDowncast" | "editingDowncast" | `${string}Downcast` & {}) {}
+        \\conversionTest("testDowncast");
+    );
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
 }
 
 test "checker: delegated yield requires an iterable operand" {
