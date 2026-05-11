@@ -30798,3 +30798,80 @@ test "checker: structural Promise.then accepts rejection callback" {
         try T.expect(d.code != TsCodes.expected_n_arguments);
     }
 }
+
+test "checker: bare truthy narrows optional member to non-undefined" {
+    // `obj.x` is `string | undefined`; inside `if (obj.x)` the
+    // member access should narrow to `string` so the typed
+    // assignment to `let s: string = obj.x` passes the relation
+    // check without TS2322.
+    const s = try newSetup(
+        \\function f(obj: { x?: string }) {
+        \\  if (obj.x) {
+        \\    let s: string = obj.x;
+        \\  }
+        \\}
+    );
+    defer destroySetup(s);
+    s.checker.setStrictFlags(.{ .strict_null_checks = true });
+    try s.checker.checkSourceFile(s.root);
+    for (s.checker.diagnostics.items) |d| {
+        try T.expect(d.code != TsCodes.type_not_assignable);
+    }
+}
+
+test "checker: logical-AND narrows optional member on RHS" {
+    // `obj.m && obj.m()` — inside the RHS, `obj.m` has been
+    // narrowed to the non-undefined branch by `applyTypeGuard`
+    // on the truthy side of `&&`. The call should typecheck
+    // cleanly without flagging the bare-undefined operand.
+    const s = try newSetup(
+        \\function f(obj: { m?: () => number }): number {
+        \\  return (obj.m && obj.m()) || 0;
+        \\}
+    );
+    defer destroySetup(s);
+    s.checker.setStrictFlags(.{ .strict_null_checks = true });
+    try s.checker.checkSourceFile(s.root);
+    for (s.checker.diagnostics.items) |d| {
+        try T.expect(d.code != TsCodes.type_not_assignable);
+    }
+}
+
+test "checker: conditional then-branch narrows optional member" {
+    // `obj.x ? obj.x.length : 0` — the then-branch picks up
+    // the member-access narrow recorded by the conditional's
+    // truthy guard scope, so `obj.x.length` resolves on the
+    // narrowed `string` half of the union.
+    const s = try newSetup(
+        \\function f(obj: { x?: string }): number {
+        \\  return obj.x ? obj.x.length : 0;
+        \\}
+    );
+    defer destroySetup(s);
+    s.checker.setStrictFlags(.{ .strict_null_checks = true });
+    try s.checker.checkSourceFile(s.root);
+    for (s.checker.diagnostics.items) |d| {
+        try T.expect(d.code != TsCodes.type_not_assignable);
+        try T.expect(d.code != TsCodes.property_does_not_exist);
+    }
+}
+
+test "checker: bare truthy on non-nullable member is a no-op" {
+    // Sanity: `if (obj.x)` over a non-nullable property must
+    // not break the existing static type. The narrowed type
+    // equals the original, so no narrow is recorded and the
+    // following statement keeps its inferred shape.
+    const s = try newSetup(
+        \\function f(obj: { x: string }) {
+        \\  if (obj.x) {
+        \\    let s: string = obj.x;
+        \\  }
+        \\}
+    );
+    defer destroySetup(s);
+    s.checker.setStrictFlags(.{ .strict_null_checks = true });
+    try s.checker.checkSourceFile(s.root);
+    for (s.checker.diagnostics.items) |d| {
+        try T.expect(d.code != TsCodes.type_not_assignable);
+    }
+}
