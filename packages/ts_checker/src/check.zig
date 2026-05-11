@@ -1018,6 +1018,8 @@ pub const Checker = struct {
                     self.popNarrowScope();
                 } else if (self.statementDefinitelyExits(i.then_branch)) {
                     try self.applyTypeGuard(i.cond, false);
+                } else {
+                    try self.applyNullishGuardAssignmentFlow(i.cond, i.then_branch);
                 }
             },
             .while_stmt => {
@@ -11726,6 +11728,81 @@ pub const Checker = struct {
         }
     }
 
+    const NullishGuardKind = enum { null_only, undefined_only, null_or_undefined };
+
+    const NullishGuard = struct {
+        name: hir_mod.StringId,
+        ident_node: NodeId,
+        kind: NullishGuardKind,
+    };
+
+    fn applyNullishGuardAssignmentFlow(self: *Checker, cond: NodeId, then_branch: NodeId) !void {
+        const guard = self.nullishEqualityGuard(cond) orelse return;
+        const value_node = self.singleAssignmentValueToIdentifier(then_branch, guard.name) orelse return;
+        var assigned_t = self.hir.typeOf(value_node);
+        if (assigned_t == types.Primitive.none) assigned_t = try self.checkExpression(value_node);
+        const current = self.lookupNarrow(guard.name) orelse self.typeOfIdentifier(guard.ident_node);
+        const false_t = try self.subtractNullishGuardedType(current, guard.kind);
+        const narrowed = if (false_t == types.Primitive.never)
+            assigned_t
+        else if (assigned_t == types.Primitive.never)
+            false_t
+        else
+            self.interner.internUnion(&.{ false_t, assigned_t }) catch return error.OutOfMemory;
+        try self.recordNarrow(guard.name, narrowed);
+    }
+
+    fn nullishEqualityGuard(self: *Checker, cond: NodeId) ?NullishGuard {
+        if (self.hir.kindOf(cond) != .binary_op) return null;
+        const b = hir_mod.binopOf(self.hir, cond);
+        if (b.op != .eq and b.op != .eq_strict) return null;
+        if (self.hir.kindOf(b.lhs) == .identifier) {
+            if (self.nullishGuardKindForNode(b.rhs, b.op)) |kind| {
+                return .{ .name = hir_mod.identifierOf(self.hir, b.lhs).name, .ident_node = b.lhs, .kind = kind };
+            }
+        }
+        if (self.hir.kindOf(b.rhs) == .identifier) {
+            if (self.nullishGuardKindForNode(b.lhs, b.op)) |kind| {
+                return .{ .name = hir_mod.identifierOf(self.hir, b.rhs).name, .ident_node = b.rhs, .kind = kind };
+            }
+        }
+        return null;
+    }
+
+    fn nullishGuardKindForNode(self: *Checker, node: NodeId, op: hir_mod.BinOp) ?NullishGuardKind {
+        return switch (self.hir.kindOf(node)) {
+            .literal_null => if (op == .eq) .null_or_undefined else .null_only,
+            .literal_undefined => if (op == .eq) .null_or_undefined else .undefined_only,
+            .identifier => blk: {
+                const id = hir_mod.identifierOf(self.hir, node);
+                if (!std.mem.eql(u8, self.string_interner.get(id.name), "undefined")) break :blk null;
+                break :blk if (op == .eq) .null_or_undefined else .undefined_only;
+            },
+            else => null,
+        };
+    }
+
+    fn singleAssignmentValueToIdentifier(self: *Checker, node: NodeId, name: hir_mod.StringId) ?NodeId {
+        const stmt = if (self.hir.kindOf(node) == .block_stmt) blk: {
+            const stmts = hir_mod.blockStmts(self.hir, node);
+            if (stmts.len != 1) return null;
+            break :blk stmts[0];
+        } else node;
+        if (self.hir.kindOf(stmt) != .assignment) return null;
+        const a = hir_mod.assignmentOf(self.hir, stmt);
+        if (a.op != null or self.hir.kindOf(a.target) != .identifier) return null;
+        if (hir_mod.identifierOf(self.hir, a.target).name != name) return null;
+        return a.value;
+    }
+
+    fn subtractNullishGuardedType(self: *Checker, t: TypeId, kind: NullishGuardKind) !TypeId {
+        return switch (kind) {
+            .null_only => self.subtractType(t, types.Primitive.null_t) catch t,
+            .undefined_only => self.subtractType(t, types.Primitive.undefined_t) catch t,
+            .null_or_undefined => try self.subtractNullUndefined(t),
+        };
+    }
+
     /// Assertion-function flow narrowing. If `stmt` is a call to a
     /// function whose return type is `asserts arg is T`, record
     /// `arg -> T` in the surrounding narrow scope so subsequent
@@ -12050,8 +12127,7 @@ pub const Checker = struct {
         // that *don't* declare it. LHS must be a string literal
         // (TS only narrows when the property name is statically
         // known); RHS must be an identifier we can record against.
-        if (b.op == .in and self.hir.kindOf(b.rhs) == .identifier)
-        {
+        if (b.op == .in and self.hir.kindOf(b.rhs) == .identifier) {
             const property_name = (try self.staticStringValue(b.lhs)) orelse return;
             const rhs_id = hir_mod.identifierOf(self.hir, b.rhs);
             const current = self.lookupNarrow(rhs_id.name) orelse self.typeOfIdentifier(b.rhs);
@@ -12084,8 +12160,7 @@ pub const Checker = struct {
         // typeof X === "kind"
         if (self.hir.kindOf(b.lhs) == .unary_op) {
             const u = hir_mod.unaryOf(self.hir, b.lhs);
-            if (u.op == .typeof and self.hir.kindOf(u.operand) == .identifier)
-            {
+            if (u.op == .typeof and self.hir.kindOf(u.operand) == .identifier) {
                 const id = hir_mod.identifierOf(self.hir, u.operand);
                 const type_name = (try self.staticStringValue(b.rhs)) orelse return;
                 const lit_str = self.string_interner.get(type_name);
@@ -12578,6 +12653,28 @@ pub const Checker = struct {
                 // Don't continue past the function — outer scopes
                 // would shadow but we still want module-level
                 // fallback below.
+            }
+            if (k == .for_stmt) {
+                const fr = hir_mod.forStmtOf(self.hir, cur);
+                if (fr.init != hir_mod.none_node_id) {
+                    const init_kind = self.hir.kindOf(fr.init);
+                    if (init_kind == .var_decl or init_kind == .let_decl or init_kind == .const_decl) {
+                        const v = hir_mod.varDeclOf(self.hir, fr.init);
+                        if (v.name != hir_mod.none_node_id and self.hir.kindOf(v.name) == .identifier) {
+                            const vid = hir_mod.identifierOf(self.hir, v.name);
+                            if (vid.name == id.name) {
+                                const t = self.hir.typeOf(fr.init);
+                                if (t != types.Primitive.none) return t;
+                                if (v.type_annotation != hir_mod.none_node_id) {
+                                    const declared_t = self.lowererLowerWithTypeParams(v.type_annotation) catch types.Primitive.any;
+                                    self.hir.setType(fr.init, declared_t);
+                                    self.hir.setType(v.name, declared_t);
+                                    return declared_t;
+                                }
+                            }
+                        }
+                    }
+                }
             }
             if (k == .block_stmt) {
                 // Look for a sibling var_decl/let_decl/const_decl
@@ -19892,6 +19989,19 @@ test "checker: for-in binds the key variable to string" {
     try T.expect(s.checker.diagnostics.items.len == 0);
 }
 
+test "checker: for loop initializer variable is visible to condition and update" {
+    const s = try newSetup(
+        \\function f(): number {
+        \\  let total = 0;
+        \\  for (let i = 0; i < 3; i++) { total = total + i; }
+        \\  return total;
+        \\}
+    );
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+    try T.expect(s.checker.diagnostics.items.len == 0);
+}
+
 test "checker: array literal indexes to its element type" {
     const s = try newSetup(
         \\let xs = [1, 2, 3];
@@ -20224,6 +20334,40 @@ test "checker: `in` operator narrows a union to variants with the named prop" {
         \\}
     );
     defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+    try T.expect(s.checker.diagnostics.items.len == 0);
+}
+
+test "checker: `in` operator narrows const computed type members" {
+    const s = try newSetup(
+        \\const keywordA = "a";
+        \\const keywordB = "b";
+        \\type A = { [keywordA]: number };
+        \\type B = { [keywordB]: string };
+        \\function f(c: A | B): number {
+        \\  if ("a" in c) { return c.a; }
+        \\  return 0;
+        \\}
+    );
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+    try T.expect(s.checker.diagnostics.items.len == 0);
+}
+
+test "checker: nullish guard assignment narrows after if" {
+    const s = try newSetup(
+        \\function f(id: string | undefined, seenIDs: { [key: string]: string }): string {
+        \\  if (id === undefined) {
+        \\    id = "1";
+        \\  }
+        \\  if (!(id in seenIDs)) {
+        \\    return id;
+        \\  }
+        \\  return "next";
+        \\}
+    );
+    defer destroySetup(s);
+    s.checker.setStrictFlags(.{ .strict_null_checks = true });
     try s.checker.checkSourceFile(s.root);
     try T.expect(s.checker.diagnostics.items.len == 0);
 }

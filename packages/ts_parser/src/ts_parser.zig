@@ -3832,8 +3832,7 @@ pub const Parser = struct {
         const checkpoint = self.cursor;
         const start_tok = self.peek();
         if (self.peek().kind != .open_bracket) return false;
-        if (self.peekAt(1).kind != .identifier or self.peekAt(2).kind != .dot) return false;
-        if (!std.mem.eql(u8, self.source[self.peekAt(1).span.start..self.peekAt(1).span.end], "Symbol")) return false;
+        if (self.computedTypeMemberLooksMalformedIndexSignature()) return false;
         _ = self.advance();
         const key_expr = self.parseExpression() catch {
             self.cursor = checkpoint;
@@ -3844,7 +3843,7 @@ pub const Parser = struct {
             return false;
         }
         const close_tok = self.advance();
-        const name_id = (try self.symbolMemberNameFromComputedKey(key_expr)) orelse {
+        const name_id = (try self.computedTypeMemberNameFromKey(key_expr)) orelse {
             self.cursor = checkpoint;
             return false;
         };
@@ -3887,6 +3886,58 @@ pub const Parser = struct {
         return true;
     }
 
+    fn computedTypeMemberLooksMalformedIndexSignature(self: *const Parser) bool {
+        var idx = self.cursor + 1;
+        while (idx < self.tokens.len and
+            self.tokens[idx].kind != .close_bracket and
+            self.tokens[idx].kind != .close_brace and
+            self.tokens[idx].kind != .eof)
+        {
+            switch (self.tokens[idx].kind) {
+                .dot_dot_dot, .question, .comma, .equal => return true,
+                else => {},
+            }
+            idx += 1;
+        }
+        return false;
+    }
+
+    fn computedTypeMemberNameFromKey(self: *Parser, key_expr: NodeId) ParseError!?hir_mod.StringId {
+        return switch (self.hir.kindOf(key_expr)) {
+            .literal_string => hir_mod.literalStringOf(self.hir, key_expr).value,
+            .literal_number => blk: {
+                const sp = self.hir.spanOf(key_expr);
+                if (sp.end > self.source.len or sp.start >= sp.end) break :blk null;
+                break :blk self.interner.intern(self.source[sp.start..sp.end]) catch return error.OutOfMemory;
+            },
+            .identifier => blk: {
+                const id = hir_mod.identifierOf(self.hir, key_expr);
+                break :blk try self.sourceConstLiteralMemberName(self.interner.get(id.name));
+            },
+            .member_access => try self.symbolMemberNameFromComputedKey(key_expr),
+            .as_expr, .satisfies_expr, .type_assertion => blk: {
+                const assertion = hir_mod.asExpressionOf(self.hir, key_expr);
+                if (try self.computedTypeMemberNameFromKey(assertion.expr)) |name| break :blk name;
+                break :blk try self.literalTypeMemberName(assertion.type_node);
+            },
+            else => null,
+        };
+    }
+
+    fn literalTypeMemberName(self: *Parser, type_node: NodeId) ParseError!?hir_mod.StringId {
+        if (type_node == hir_mod.none_node_id or self.hir.kindOf(type_node) != .type_literal) return null;
+        const lit_type = hir_mod.literalTypeOf(self.hir, type_node);
+        return switch (self.hir.kindOf(lit_type.literal)) {
+            .literal_string => hir_mod.literalStringOf(self.hir, lit_type.literal).value,
+            .literal_number => blk: {
+                const sp = self.hir.spanOf(type_node);
+                if (sp.end > self.source.len or sp.start >= sp.end) break :blk null;
+                break :blk self.interner.intern(self.source[sp.start..sp.end]) catch return error.OutOfMemory;
+            },
+            else => null,
+        };
+    }
+
     fn symbolMemberNameFromComputedKey(self: *Parser, key_expr: NodeId) ParseError!?hir_mod.StringId {
         if (self.hir.kindOf(key_expr) != .member_access) return null;
         const m = hir_mod.memberOf(self.hir, key_expr);
@@ -3897,6 +3948,53 @@ pub const Parser = struct {
         const synthetic = try std.fmt.allocPrint(self.gpa, "Symbol.{s}", .{prop});
         defer self.gpa.free(synthetic);
         return self.interner.intern(synthetic) catch return error.OutOfMemory;
+    }
+
+    fn sourceConstLiteralMemberName(self: *Parser, name: []const u8) ParseError!?hir_mod.StringId {
+        var search_start: usize = 0;
+        while (std.mem.indexOfPos(u8, self.source, search_start, "const")) |const_pos| {
+            search_start = const_pos + "const".len;
+            if (const_pos > 0 and sourceIdentChar(self.source[const_pos - 1])) continue;
+            if (search_start < self.source.len and sourceIdentChar(self.source[search_start])) continue;
+            const after_const = std.mem.trim(u8, self.source[search_start..], " \t\r\n");
+            if (!std.mem.startsWith(u8, after_const, name)) continue;
+            if (after_const.len > name.len and sourceIdentChar(after_const[name.len])) continue;
+            const line_end = std.mem.indexOfScalar(u8, after_const, '\n') orelse after_const.len;
+            const line = after_const[0..line_end];
+            const eq_pos = std.mem.indexOfScalar(u8, line, '=') orelse continue;
+            const rhs = std.mem.trim(u8, line[eq_pos + 1 ..], " \t\r;");
+            if (rhs.len == 0) continue;
+            if (rhs[0] == '\'' or rhs[0] == '"' or rhs[0] == '`') {
+                const quote = rhs[0];
+                var end: usize = 1;
+                while (end < rhs.len and rhs[end] != quote) : (end += 1) {}
+                if (end <= 1 or end >= rhs.len) continue;
+                return self.interner.intern(rhs[1..end]) catch return error.OutOfMemory;
+            }
+            if (std.mem.startsWith(u8, rhs, "Symbol.")) {
+                var end: usize = "Symbol.".len;
+                while (end < rhs.len and sourceIdentChar(rhs[end])) : (end += 1) {}
+                const synthetic = try std.fmt.allocPrint(self.gpa, "Symbol.{s}", .{rhs["Symbol.".len..end]});
+                defer self.gpa.free(synthetic);
+                return self.interner.intern(synthetic) catch return error.OutOfMemory;
+            }
+            if (rhs[0] == '-' or (rhs[0] >= '0' and rhs[0] <= '9')) {
+                var end: usize = if (rhs[0] == '-') 1 else 0;
+                while (end < rhs.len and ((rhs[end] >= '0' and rhs[end] <= '9') or rhs[end] == '.')) : (end += 1) {}
+                if (end > 0 and !(end == 1 and rhs[0] == '-')) {
+                    return self.interner.intern(rhs[0..end]) catch return error.OutOfMemory;
+                }
+            }
+        }
+        return null;
+    }
+
+    fn sourceIdentChar(c: u8) bool {
+        return (c >= 'a' and c <= 'z') or
+            (c >= 'A' and c <= 'Z') or
+            (c >= '0' and c <= '9') or
+            c == '_' or
+            c == '$';
     }
 
     fn computedSymbolMemberIsNonPropertySymbol(self: *Parser, key_expr: NodeId) bool {
@@ -7803,6 +7901,27 @@ test "parser: interface body parses members" {
     try T.expectEqualStrings("x", s.interner.get(m0.name));
     try T.expect(m0.type_node != hir_mod.none_node_id);
     try T.expectEqual(hir_mod.NodeKind.type_ref, s.hir.kindOf(m0.type_node));
+}
+
+test "parser: object type computed members accept const literal keys" {
+    var s = try newTestSetup(
+        \\const a = "a";
+        \\const b = 'b';
+        \\type Shape = { [a]: number; [b as "b"]: string; ["c"]: boolean; };
+    );
+    defer destroyTestSetup(s);
+    const root = try s.parser.parseSourceFile();
+    const stmts = hir_mod.blockStmts(&s.hir, root);
+    const alias = hir_mod.typeAliasOf(&s.hir, stmts[2]);
+    const members = hir_mod.objectTypeMembers(&s.hir, alias.aliased);
+    try T.expectEqual(@as(usize, 3), members.len);
+    const m0 = hir_mod.interfaceMemberOf(&s.hir, members[0]);
+    const m1 = hir_mod.interfaceMemberOf(&s.hir, members[1]);
+    const m2 = hir_mod.interfaceMemberOf(&s.hir, members[2]);
+    try T.expectEqualStrings("a", s.interner.get(m0.name));
+    try T.expectEqualStrings("b", s.interner.get(m1.name));
+    try T.expectEqualStrings("c", s.interner.get(m2.name));
+    try T.expectEqual(@as(usize, 0), s.parser.diagnostics.items.len);
 }
 
 test "parser: interface with optional + readonly members" {
