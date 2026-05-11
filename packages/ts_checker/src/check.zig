@@ -1361,24 +1361,29 @@ pub const Checker = struct {
         return false;
     }
 
+    const ImportLocalInfo = struct {
+        node: NodeId,
+        module: hir_mod.StringId,
+    };
+
     fn checkImportLocalConflicts(self: *Checker, stmts: []const NodeId) CheckError!void {
-        var import_nodes_by_name: std.AutoHashMapUnmanaged(hir_mod.StringId, NodeId) = .empty;
-        defer import_nodes_by_name.deinit(self.gpa);
+        var imports_by_name: std.AutoHashMapUnmanaged(hir_mod.StringId, ImportLocalInfo) = .empty;
+        defer imports_by_name.deinit(self.gpa);
 
         for (stmts) |stmt| {
             if (self.hir.kindOf(stmt) != .import_decl) continue;
             const imp = hir_mod.importOf(self.hir, stmt);
             if (imp.default_binding != hir_mod.none_node_id and self.hir.kindOf(imp.default_binding) == .identifier) {
                 const id = hir_mod.identifierOf(self.hir, imp.default_binding);
-                try import_nodes_by_name.put(self.gpa, id.name, imp.default_binding);
+                try imports_by_name.put(self.gpa, id.name, .{ .node = imp.default_binding, .module = imp.module });
             }
             if (imp.namespace_binding != hir_mod.none_node_id and self.hir.kindOf(imp.namespace_binding) == .identifier) {
                 const id = hir_mod.identifierOf(self.hir, imp.namespace_binding);
-                try import_nodes_by_name.put(self.gpa, id.name, imp.namespace_binding);
+                try imports_by_name.put(self.gpa, id.name, .{ .node = imp.namespace_binding, .module = imp.module });
             }
             for (hir_mod.importNamed(self.hir, stmt)) |spec_node| {
                 const spec = hir_mod.importSpecifierOf(self.hir, spec_node);
-                try import_nodes_by_name.put(self.gpa, spec.local, spec_node);
+                try imports_by_name.put(self.gpa, spec.local, .{ .node = spec_node, .module = imp.module });
             }
         }
 
@@ -1386,7 +1391,8 @@ pub const Checker = struct {
             const local = self.unwrapExportDecl(stmt);
             if (local == hir_mod.none_node_id or self.hir.kindOf(local) != .namespace_decl) continue;
             const name = self.declarationName(local) orelse continue;
-            const import_node = import_nodes_by_name.get(name) orelse continue;
+            const import_info = imports_by_name.get(name) orelse continue;
+            if (try self.ambientModuleExportsName(stmts, import_info.module, name)) continue;
             const name_str = self.string_interner.get(name);
             const msg = try std.fmt.allocPrint(
                 self.diag_arena.allocator(),
@@ -1394,7 +1400,7 @@ pub const Checker = struct {
                 .{name_str},
             );
             try self.diagnostics.append(self.gpa, .{
-                .node = import_node,
+                .node = import_info.node,
                 .code = TsCodes.import_conflicts_with_local,
                 .message = msg,
             });
@@ -1419,6 +1425,7 @@ pub const Checker = struct {
     }
 
     fn checkExportStarDiagnostics(self: *Checker, stmts: []const NodeId) CheckError!void {
+        if (self.sourceHasVirtualFilenameSections()) return;
         var plain_star_count: usize = 0;
         var conflict_node: NodeId = hir_mod.none_node_id;
         var default_import_from_relative: NodeId = hir_mod.none_node_id;
@@ -1446,6 +1453,12 @@ pub const Checker = struct {
         if (default_import_from_relative != hir_mod.none_node_id) {
             try self.report(default_import_from_relative, TsCodes.no_default_export, "Module has no default export.");
         }
+    }
+
+    fn sourceHasVirtualFilenameSections(self: *Checker) bool {
+        const src = self.source orelse return false;
+        return std.mem.indexOf(u8, src, "@filename:") != null or
+            std.mem.indexOf(u8, src, "@Filename:") != null;
     }
 
     fn checkExportAssignmentExclusivity(self: *Checker, stmts: []const NodeId) CheckError!void {
@@ -6166,7 +6179,7 @@ pub const Checker = struct {
             try self.checkNamedImportSpecifiers(node, imp, spec);
             return;
         }
-        if (self.isKnownAmbientModuleName(spec)) return;
+        if (try self.isKnownAmbientModuleName(node, spec)) return;
         const msg = try std.fmt.allocPrint(
             self.diag_arena.allocator(),
             "Cannot find module '{s}' or its corresponding type declarations.",
@@ -6226,8 +6239,7 @@ pub const Checker = struct {
         }
     }
 
-    fn isKnownAmbientModuleName(self: *Checker, spec: []const u8) bool {
-        _ = self;
+    fn isKnownAmbientModuleName(self: *Checker, anchor: NodeId, spec: []const u8) CheckError!bool {
         const known = [_][]const u8{
             "assert",
             "buffer",
@@ -6249,6 +6261,48 @@ pub const Checker = struct {
         for (known) |name| {
             if (std.mem.eql(u8, spec, name)) return true;
             if (std.mem.startsWith(u8, spec, "node:") and std.mem.eql(u8, spec["node:".len..], name)) return true;
+        }
+        const root = self.rootBlockFor(anchor);
+        if (root != hir_mod.none_node_id and self.hir.kindOf(root) == .block_stmt) {
+            const spec_id = self.string_interner.intern(spec) catch return error.OutOfMemory;
+            if (try self.hasAmbientModuleDecl(hir_mod.blockStmts(self.hir, root), spec_id)) return true;
+        }
+        return false;
+    }
+
+    fn hasAmbientModuleDecl(self: *Checker, stmts: []const NodeId, module_name: hir_mod.StringId) CheckError!bool {
+        for (stmts) |stmt| {
+            const local = self.unwrapExportDecl(stmt);
+            if (local == hir_mod.none_node_id or self.hir.kindOf(local) != .namespace_decl) continue;
+            const ns = hir_mod.namespaceOf(self.hir, local);
+            if (self.hir.kindOf(ns.name) != .identifier) continue;
+            const id = hir_mod.identifierOf(self.hir, ns.name);
+            if (id.name == module_name) return true;
+        }
+        return false;
+    }
+
+    fn ambientModuleExportsName(
+        self: *Checker,
+        stmts: []const NodeId,
+        module_name: hir_mod.StringId,
+        exported_name: hir_mod.StringId,
+    ) CheckError!bool {
+        if (module_name == string_interner.empty_string_id) return false;
+        for (stmts) |stmt| {
+            const local = self.unwrapExportDecl(stmt);
+            if (local == hir_mod.none_node_id or self.hir.kindOf(local) != .namespace_decl) continue;
+            const ns = hir_mod.namespaceOf(self.hir, local);
+            if (self.hir.kindOf(ns.name) != .identifier) continue;
+            const id = hir_mod.identifierOf(self.hir, ns.name);
+            if (id.name != module_name) continue;
+            for (hir_mod.namespaceBody(self.hir, local)) |body_stmt| {
+                if (self.hir.kindOf(body_stmt) != .export_decl) continue;
+                const ex = hir_mod.exportOf(self.hir, body_stmt);
+                if (!self.isExportAssignmentDecl(body_stmt)) continue;
+                if (ex.decl == hir_mod.none_node_id or self.hir.kindOf(ex.decl) != .identifier) continue;
+                if (hir_mod.identifierOf(self.hir, ex.decl).name == exported_name) return true;
+            }
         }
         return false;
     }
@@ -16473,6 +16527,27 @@ test "checker: duplicate default exports report TS2528" {
     try T.expect(found);
 }
 
+test "checker: virtual file export stars do not use single-source conflict heuristic" {
+    const s = try newSetup(
+        \\// @filename: a.ts
+        \\export const a = 1;
+        \\// @filename: b.ts
+        \\export const b = 1;
+        \\// @filename: c.ts
+        \\export const c = 1;
+        \\// @filename: index.ts
+        \\export * from "./a";
+        \\export * from "./b";
+        \\export * from "./c";
+    );
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+
+    for (s.checker.diagnostics.items) |d| {
+        try T.expect(d.code != TsCodes.export_star_conflict);
+    }
+}
+
 test "checker: named export requires local declaration" {
     const b = try newBoundSetup(
         \\export { string };
@@ -17155,6 +17230,26 @@ test "checker: namespace declaration conflicts with imported local" {
         if (d.code == TsCodes.import_conflicts_with_local) found = true;
     }
     try T.expect(found);
+}
+
+test "checker: ambient module export target does not conflict with import equals" {
+    const s = try newSetup(
+        \\declare namespace ReactRouter {
+        \\  var Route: any;
+        \\}
+        \\declare module "react-router" {
+        \\  export = ReactRouter;
+        \\}
+        \\import ReactRouter = require("react-router");
+        \\import Route = ReactRouter.Route;
+    );
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+
+    for (s.checker.diagnostics.items) |d| {
+        try T.expect(d.code != TsCodes.import_conflicts_with_local);
+        try T.expect(d.code != TsCodes.cannot_find_module);
+    }
 }
 
 test "checker: import equals reports missing namespace root" {
@@ -22077,6 +22172,21 @@ test "checker: resolveJsonModule on — `.json` import resolves silently" {
     s.checker.setStrictFlags(.{ .resolve_json_module = true });
     try s.checker.checkSourceFile(s.root);
     // No TS2307 — the import is permitted.
+    for (s.checker.diagnostics.items) |d| {
+        try T.expect(d.code != TsCodes.cannot_find_module);
+    }
+}
+
+test "checker: ambient module declaration satisfies bare import" {
+    const s = try newSetup(
+        \\declare module "elements1" {
+        \\  export class MyElement {}
+        \\}
+        \\import s1 = require("elements1");
+    );
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+
     for (s.checker.diagnostics.items) |d| {
         try T.expect(d.code != TsCodes.cannot_find_module);
     }

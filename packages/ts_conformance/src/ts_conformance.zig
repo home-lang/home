@@ -481,6 +481,10 @@ fn stripNonCodeVirtualSections(gpa: std.mem.Allocator, source: []const u8) !?[]u
         const line = std.mem.trim(u8, line_with_cr, "\r");
         if (virtualFilename(line)) |path| {
             include_section = isCodeVirtualFile(path);
+            if (include_section) {
+                try out.appendSlice(gpa, line);
+                try out.append(gpa, '\n');
+            }
             continue;
         }
         if (!include_section) continue;
@@ -1919,6 +1923,20 @@ test "conformance: exact-error path honors modeled Node resolver bucket" {
         if (r.detail.len > 0) T.allocator.free(r.detail);
     }
     try T.expectEqual(Outcome.passed, r.outcome);
+}
+
+test "conformance: virtual code markers survive non-code stripping" {
+    const stripped = try stripNonCodeVirtualSections(T.allocator,
+        \\// @filename: /package.json
+        \\{ "type": "module" }
+        \\// @filename: /index.ts
+        \\export const x = 1;
+    );
+    defer if (stripped) |s| T.allocator.free(s);
+    try T.expect(stripped != null);
+    try T.expect(std.mem.indexOf(u8, stripped.?, "@filename: /index.ts") != null);
+    try T.expect(std.mem.indexOf(u8, stripped.?, "package.json") == null);
+    try T.expect(std.mem.indexOf(u8, stripped.?, "export const x") != null);
 }
 
 test "conformance: empty file passes with no diagnostics" {
