@@ -5651,8 +5651,7 @@ pub const Parser = struct {
                 },
                 else => {
                     // `name`, `name="str"`, `name={expr}`.
-                    const name_tok = self.advance();
-                    const name_id = try self.internToken(name_tok);
+                    const name = try self.parseJsxName("JSX attribute name");
                     var value: NodeId = hir_mod.none_node_id;
                     if (self.match(.equal)) {
                         if (self.peek().kind == .string_literal) {
@@ -5663,7 +5662,7 @@ pub const Parser = struct {
                             _ = self.advance();
                             const expr = try self.parseAssignmentExpression();
                             _ = try self.expect(.close_brace, "'}' to close JSX expression value");
-                            value = try self.builder.addJsxExpression(tokenSpan(name_tok), expr);
+                            value = try self.builder.addJsxExpression(name.span, expr);
                         } else if (self.peek().kind == .less_than) {
                             // JSX-as-attribute-value: `prop={…}` is canonical
                             // but `prop=<Inner/>` is permitted by some
@@ -5675,8 +5674,8 @@ pub const Parser = struct {
                         }
                     }
                     const node = try self.builder.addJsxAttribute(
-                        .{ .start = name_tok.span.start, .end = self.tokens[self.cursor - 1].span.end },
-                        name_id,
+                        .{ .start = name.span.start, .end = self.tokens[self.cursor - 1].span.end },
+                        name.name,
                         value,
                     );
                     try attrs.append(self.gpa, node);
@@ -5707,10 +5706,10 @@ pub const Parser = struct {
         // Skip the closing tag identifier (and any qualified-name
         // chain) — semantic equivalence is the binder's job.
         if (self.peek().kind == .identifier or self.peek().kind.isKeyword() or self.peek().kind.isContextualKeyword()) {
-            _ = self.advance();
+            _ = try self.parseJsxName("JSX closing tag name");
             while (self.peek().kind == .dot) {
                 _ = self.advance();
-                _ = try self.expectIdentifierLike();
+                _ = try self.parseJsxName("JSX closing tag name");
             }
         }
         const close = try self.expect(.greater_than, "'>' to close JSX closing tag");
@@ -5723,6 +5722,32 @@ pub const Parser = struct {
         );
     }
 
+    const JsxName = struct {
+        name: hir_mod.StringId,
+        span: Span,
+    };
+
+    fn isJsxNamePart(kind: TokenKind) bool {
+        return kind == .identifier or kind.isKeyword() or kind.isContextualKeyword();
+    }
+
+    fn parseJsxName(self: *Parser, what: []const u8) ParseError!JsxName {
+        const tok = self.peek();
+        if (!isJsxNamePart(tok.kind)) {
+            _ = try self.expect(.identifier, what);
+        }
+        const first = self.advance();
+        var parsed_span = tokenSpan(first);
+        while (self.peek().kind == .minus and isJsxNamePart(self.peekAt(1).kind)) {
+            _ = self.advance();
+            const part = self.advance();
+            parsed_span.end = part.span.end;
+        }
+        const text = self.source[parsed_span.start..parsed_span.end];
+        const id = self.interner.intern(text) catch return error.OutOfMemory;
+        return .{ .name = id, .span = parsed_span };
+    }
+
     fn parseJsxTagName(self: *Parser, what: []const u8) ParseError!NodeId {
         const tok = self.peek();
         if (tok.kind == .kw_this) {
@@ -5730,12 +5755,8 @@ pub const Parser = struct {
             const this_id = self.interner.intern("this") catch return error.OutOfMemory;
             return try self.builder.addIdentifier(tokenSpan(tok), this_id);
         }
-        if (tok.kind != .identifier and !tok.kind.isKeyword() and !tok.kind.isContextualKeyword()) {
-            _ = try self.expect(.identifier, what);
-        }
-        const name_tok = self.advance();
-        const name_id = try self.internToken(name_tok);
-        return try self.builder.addIdentifier(tokenSpan(name_tok), name_id);
+        const name = try self.parseJsxName(what);
+        return try self.builder.addIdentifier(name.span, name.name);
     }
 
     fn parseJsxChildren(self: *Parser, out: *std.ArrayListUnmanaged(NodeId)) ParseError!void {
@@ -7885,6 +7906,23 @@ test "parser: jsx element with expression attribute" {
     const a = hir_mod.jsxAttributeOf(&s.hir, attrs[0]);
     try T.expect(a.value != hir_mod.none_node_id);
     try T.expectEqual(hir_mod.NodeKind.jsx_expression, s.hir.kindOf(a.value));
+}
+
+test "parser: jsx hyphenated tag and attribute names" {
+    var s = try newTsxTestSetup("let v = <my-element data-id=\"x\" ignore-prop />;");
+    defer destroyTestSetup(s);
+    const root = try s.parser.parseSourceFile();
+    const top = hir_mod.blockStmts(&s.hir, root)[0];
+    const init_node = hir_mod.varDeclOf(&s.hir, top).init;
+    const el = hir_mod.jsxElementOf(&s.hir, init_node);
+    try T.expectEqualStrings("my-element", s.interner.get(hir_mod.identifierOf(&s.hir, el.tag).name));
+    const attrs = hir_mod.jsxAttrs(&s.hir, init_node);
+    try T.expectEqual(@as(usize, 2), attrs.len);
+    const a0 = hir_mod.jsxAttributeOf(&s.hir, attrs[0]);
+    const a1 = hir_mod.jsxAttributeOf(&s.hir, attrs[1]);
+    try T.expectEqualStrings("data-id", s.interner.get(a0.name));
+    try T.expectEqualStrings("ignore-prop", s.interner.get(a1.name));
+    try T.expectEqual(@as(usize, 0), s.parser.diagnostics.items.len);
 }
 
 test "parser: jsx empty attribute initializer reports TS1145" {

@@ -10372,7 +10372,7 @@ pub const Checker = struct {
                     }
                     if (props_t) |target| {
                         const target_has_free = self.containsFreeTypeParameter(target);
-                        if (std.mem.eql(u8, attr_name, "key") or std.mem.startsWith(u8, attr_name, "data-")) continue;
+                        if (std.mem.eql(u8, attr_name, "key")) continue;
                         if (try self.lookupObjectMember(target, a.name)) |prop_t| {
                             try self.checkJsxContextualAttributeValue(a.value, prop_t);
                             if (a.value != hir_mod.none_node_id) {
@@ -10380,6 +10380,8 @@ pub const Checker = struct {
                                     try self.jsxAttributeAssignable(value_t, prop_t);
                                 if (!ok) try self.report(attr, TsCodes.type_not_assignable, "JSX attribute value is not assignable to the target property.");
                             }
+                        } else if (std.mem.startsWith(u8, attr_name, "data-")) {
+                            continue;
                         } else if (!has_any_spread and !target_has_free and
                             self.jsxPropsTargetHasNamedMembers(target) and
                             !try self.jsxPropsHasNamedMember(target, a.name))
@@ -10573,7 +10575,8 @@ pub const Checker = struct {
                 continue;
             }
             var target = params[0];
-            if (self.containsFreeTypeParameter(target)) {
+            const target_had_free = self.containsFreeTypeParameter(target);
+            if (target_had_free) {
                 var subs: std.AutoHashMapUnmanaged(TypeId, TypeId) = .empty;
                 defer subs.deinit(self.gpa);
                 try self.inferFromPair(target, attrs_t, &subs);
@@ -10582,8 +10585,35 @@ pub const Checker = struct {
                 }
             }
             if (self.engine.isAssignableTo(attrs_t, target) catch false) return true;
+            if (target_had_free and try self.jsxRequiredPropsAssignable(target, attrs_t)) return true;
         }
         return false;
+    }
+
+    fn jsxRequiredPropsAssignable(self: *Checker, target: TypeId, attrs_t: TypeId) CheckError!bool {
+        if (target >= self.interner.pool.typeCount()) return true;
+        const flags = self.interner.pool.flagsOf(target);
+        if (flags.is_type_parameter) return true;
+        if (flags.is_union) {
+            for (self.interner.unionMembers(target)) |member| {
+                if (try self.jsxRequiredPropsAssignable(member, attrs_t)) return true;
+            }
+            return false;
+        }
+        if (flags.is_intersection) {
+            for (self.interner.intersectionMembers(target)) |member| {
+                if (!try self.jsxRequiredPropsAssignable(member, attrs_t)) return false;
+            }
+            return true;
+        }
+        if (!flags.is_object_type) return false;
+        for (self.interner.objectMembers(target)) |member| {
+            if (member.is_optional) continue;
+            const attr_t = self.interner.objectMember(attrs_t, member.name) orelse return false;
+            if (self.containsFreeTypeParameter(member.type)) continue;
+            if (!try self.jsxAttributeAssignable(attr_t, member.type)) return false;
+        }
+        return true;
     }
 
     fn jsxRequiredPropsCovered(self: *Checker, target: TypeId, attrs_t: TypeId) CheckError!bool {
@@ -17478,6 +17508,64 @@ test "checker: JSX unconstrained generic spread is rejected" {
         \\const decorator1 = function <U extends {x: string}>(props: U) {
         \\  return <Component {...props} />;
         \\};
+    );
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+
+    var count: usize = 0;
+    for (s.checker.diagnostics.items) |d| {
+        if (d.code == TsCodes.type_not_assignable) count += 1;
+    }
+    try T.expectEqual(@as(usize, 1), count);
+}
+
+test "checker: JSX generic overload accepts spread-covered required props" {
+    const s = try newTsxSetup(
+        \\declare namespace JSX { interface Element {} interface IntrinsicElements { div: any; } }
+        \\declare function OverloadComponent<U>(): JSX.Element;
+        \\declare function OverloadComponent<U>(attr: { b: U, a?: string, "ignore-prop": boolean }): JSX.Element;
+        \\declare function OverloadComponent<T, U>(attr: { b: U, a: T }): JSX.Element;
+        \\function Baz<T extends { b: number }, U extends { a: boolean, b: string }>(arg1: T, arg2: U) {
+        \\  let a0 = <OverloadComponent {...arg2} />;
+        \\  let a1 = <OverloadComponent {...arg1} ignore-prop />;
+        \\}
+    );
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+
+    for (s.checker.diagnostics.items) |d| {
+        try T.expect(d.code != TsCodes.type_not_assignable);
+    }
+}
+
+test "checker: JSX generic overload permits extra attrs after prop inference" {
+    const s = try newTsxSetup(
+        \\declare namespace JSX { interface Element {} interface IntrinsicElements { div: any; } }
+        \\declare function ComponentSpecific<U>(l: { prop: U }): JSX.Element;
+        \\declare function ComponentSpecific1<U>(l: { prop: U, "ignore-prop": number }): JSX.Element;
+        \\function Bar<T extends { prop: number }>(arg: T) {
+        \\  let a1 = <ComponentSpecific {...arg} ignore-prop="hi" />;
+        \\  let a2 = <ComponentSpecific1 {...arg} ignore-prop={10} />;
+        \\  let a3 = <ComponentSpecific {...arg} prop="hello" />;
+        \\}
+    );
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+
+    for (s.checker.diagnostics.items) |d| {
+        try T.expect(d.code != TsCodes.type_not_assignable);
+    }
+}
+
+test "checker: JSX declared data attributes are type checked" {
+    const s = try newTsxSetup(
+        \\declare namespace JSX {
+        \\  interface Element {}
+        \\  interface IntrinsicElements { test1: { "data-foo"?: string }; }
+        \\}
+        \\<test1 data-foo={32} />;
+        \\<test1 data-foo={"32"} />;
+        \\<test1 data-bar={32} />;
     );
     defer destroySetup(s);
     try s.checker.checkSourceFile(s.root);
