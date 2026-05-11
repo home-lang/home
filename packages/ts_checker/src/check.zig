@@ -115,7 +115,10 @@ pub const TsCodes = struct {
     pub const no_exported_member_suggestion: u32 = 2724;
     pub const export_non_local_declaration: u32 = 2661;
     pub const delete_operand_property_reference: u32 = 2703;
+    pub const spread_types_object_only: u32 = 2698;
     pub const optional_chain_assignment_target: u32 = 2779;
+    pub const jsx_element_no_construct_or_call: u32 = 2604;
+    pub const jsx_component_not_valid: u32 = 2786;
     pub const jsx_attribute_overwritten: u32 = 2783;
     pub const delete_operand_must_be_optional: u32 = 2790;
     pub const no_overload_matches: u32 = 2769;
@@ -6035,7 +6038,12 @@ pub const Checker = struct {
 
     fn reactComponentInstanceType(self: *Checker, type_ref_node: NodeId) CheckError!?TypeId {
         const r = hir_mod.typeRefOf(self.hir, type_ref_node);
-        if (!std.mem.eql(u8, self.string_interner.get(r.name), "Component")) return null;
+        const ref_name = self.string_interner.get(r.name);
+        if (!std.mem.eql(u8, ref_name, "Component") and
+            !std.mem.eql(u8, ref_name, "PureComponent"))
+        {
+            return null;
+        }
         const qualifiers = self.hir.childSlice(r.qualifier_start, r.qualifier_len);
         if (qualifiers.len != 1 or self.hir.kindOf(qualifiers[0]) != .identifier) return null;
         const q = hir_mod.identifierOf(self.hir, qualifiers[0]);
@@ -10268,19 +10276,27 @@ pub const Checker = struct {
         const el = hir_mod.jsxElementOf(self.hir, node);
         const attrs = hir_mod.jsxAttrs(self.hir, node);
         const children = hir_mod.jsxChildren(self.hir, node);
-        const props_t = try self.jsxPropsType(el.tag);
+        const props_t = try self.jsxPropsType(el.tag, attrs.len);
 
-        var has_spread_attr = false;
+        if (!self.jsxTagIsIntrinsic(el.tag) and try self.jsxComponentTypeInvalid(el.tag)) {
+            try self.report(el.tag, TsCodes.jsx_element_no_construct_or_call, "JSX element type does not have any construct or call signatures.");
+        }
+
+        var has_any_spread = false;
         for (attrs) |attr| {
-            if (self.hir.kindOf(attr) == .jsx_spread_attribute) {
-                has_spread_attr = true;
-                break;
-            }
+            if (self.hir.kindOf(attr) != .jsx_spread_attribute) continue;
+            const sp = hir_mod.jsxSpreadAttributeOf(self.hir, attr);
+            const spread_t = try self.checkedExpressionType(sp.expression);
+            if (self.typeIsAnyLike(spread_t)) has_any_spread = true;
         }
 
         var saw_children_attr = false;
+        var attr_members: std.ArrayListUnmanaged(types.ObjectMember) = .empty;
+        defer attr_members.deinit(self.gpa);
         var explicit_attrs: std.ArrayListUnmanaged(NodeId) = .empty;
         defer explicit_attrs.deinit(self.gpa);
+        var spread_satisfies_target = false;
+        var explicit_value_attr_count: usize = 0;
         for (attrs) |attr| {
             switch (self.hir.kindOf(attr)) {
                 .jsx_attribute => {
@@ -10288,15 +10304,30 @@ pub const Checker = struct {
                     const attr_name = self.string_interner.get(a.name);
                     if (std.mem.eql(u8, attr_name, "children")) saw_children_attr = true;
                     const value_t = try self.checkJsxAttributeValue(a.value);
+                    if (!std.mem.eql(u8, attr_name, "key") and !std.mem.startsWith(u8, attr_name, "data-")) {
+                        explicit_value_attr_count += 1;
+                        try self.appendOrReplaceObjectMember(&attr_members, .{
+                            .name = a.name,
+                            .type = value_t,
+                            .is_optional = false,
+                            .is_readonly = false,
+                            .is_method = false,
+                        });
+                    }
                     if (props_t) |target| {
+                        const target_has_free = self.containsFreeTypeParameter(target);
                         if (std.mem.eql(u8, attr_name, "key") or std.mem.startsWith(u8, attr_name, "data-")) continue;
                         if (try self.lookupObjectMember(target, a.name)) |prop_t| {
                             try self.checkJsxContextualAttributeValue(a.value, prop_t);
                             if (a.value != hir_mod.none_node_id) {
-                                const ok = try self.jsxAttributeAssignable(value_t, prop_t);
+                                const ok = try self.jsxAttributeLiteralAssignable(a.value, prop_t) or
+                                    try self.jsxAttributeAssignable(value_t, prop_t);
                                 if (!ok) try self.report(attr, TsCodes.type_not_assignable, "JSX attribute value is not assignable to the target property.");
                             }
-                        } else if (!has_spread_attr) {
+                        } else if (!has_any_spread and !target_has_free and
+                            self.jsxPropsTargetHasNamedMembers(target) and
+                            !try self.jsxPropsHasNamedMember(target, a.name))
+                        {
                             try self.report(attr, TsCodes.object_literal_excess_property, "JSX attribute does not exist on target props.");
                         }
                     }
@@ -10304,7 +10335,17 @@ pub const Checker = struct {
                 },
                 .jsx_spread_attribute => {
                     const sp = hir_mod.jsxSpreadAttributeOf(self.hir, attr);
-                    const spread_t = try self.checkExpression(sp.expression);
+                    const spread_t = try self.checkedExpressionType(sp.expression);
+                    if (!try self.jsxSpreadTypeIsValid(spread_t)) {
+                        try self.report(sp.expression, TsCodes.spread_types_object_only, "Spread types may only be created from object types.");
+                    }
+                    if (props_t) |target| {
+                        if (self.engine.isAssignableTo(spread_t, target) catch false) spread_satisfies_target = true;
+                        if (self.containsFreeTypeParameter(target) and self.isUnconstrainedTypeParameter(spread_t) and spread_t != target) {
+                            try self.report(attr, TsCodes.type_not_assignable, "JSX spread attributes from an unconstrained type parameter are not assignable to the target props.");
+                        }
+                    }
+                    try self.appendJsxSpreadMembers(&attr_members, spread_t);
                     try self.checkJsxSpreadOverwritesExplicitAttrs(spread_t, explicit_attrs.items);
                 },
                 else => {},
@@ -10318,14 +10359,116 @@ pub const Checker = struct {
         if (children.len > 0 and props_t != null and !saw_children_attr) {
             const children_name = self.string_interner.intern("children") catch return error.OutOfMemory;
             if (try self.lookupObjectMember(props_t.?, children_name)) |children_t| {
-                if (children.len > 1 and !self.jsxChildrenTypeAllowsMultiple(children_t)) {
+                if (children.len > 1 and !self.jsxChildrenTypeAllowsCount(children_t, children.len)) {
                     try self.report(node, TsCodes.type_not_assignable, "JSX element has multiple children but the target props type expects a single child.");
                 }
             } else {
                 try self.report(node, TsCodes.object_literal_excess_property, "JSX element has children but the target props type has no 'children' property.");
             }
         }
+        if (children.len > 0 and !saw_children_attr) {
+            const children_name = self.string_interner.intern("children") catch return error.OutOfMemory;
+            try self.appendOrReplaceObjectMember(&attr_members, .{
+                .name = children_name,
+                .type = types.Primitive.any,
+                .is_optional = false,
+                .is_readonly = false,
+                .is_method = false,
+            });
+        }
+        if (props_t) |target| {
+            if (!has_any_spread and !self.typeIsAnyLike(target)) {
+                if (!(spread_satisfies_target and explicit_value_attr_count == 0)) {
+                    const attrs_t = self.interner.internObjectType(attr_members.items) catch return error.OutOfMemory;
+                    var effective_target = target;
+                    if (self.containsFreeTypeParameter(target)) {
+                        var subs: std.AutoHashMapUnmanaged(TypeId, TypeId) = .empty;
+                        defer subs.deinit(self.gpa);
+                        try self.inferFromPair(target, attrs_t, &subs);
+                        if (subs.count() > 0) {
+                            effective_target = self.substituteType(target, &subs) catch target;
+                        }
+                    }
+                    if (!(self.engine.isAssignableTo(attrs_t, effective_target) catch true) and
+                        !try self.jsxAttributesMatchOverload(el.tag, attrs_t, attrs.len) and
+                        !(self.containsFreeTypeParameter(target) and try self.jsxRequiredPropsCovered(target, attrs_t)))
+                    {
+                        try self.report(node, TsCodes.type_not_assignable, "JSX attributes are not assignable to the target props type.");
+                    }
+                }
+            }
+        }
         return types.Primitive.any;
+    }
+
+    fn checkedExpressionType(self: *Checker, node: NodeId) CheckError!TypeId {
+        const existing = self.hir.typeOf(node);
+        if (existing != types.Primitive.none) return existing;
+        return try self.checkExpression(node);
+    }
+
+    fn appendOrReplaceObjectMember(
+        self: *Checker,
+        members: *std.ArrayListUnmanaged(types.ObjectMember),
+        member: types.ObjectMember,
+    ) CheckError!void {
+        for (members.items) |*existing| {
+            if (existing.name == member.name) {
+                existing.* = member;
+                return;
+            }
+        }
+        try members.append(self.gpa, member);
+    }
+
+    fn appendJsxSpreadMembers(
+        self: *Checker,
+        members: *std.ArrayListUnmanaged(types.ObjectMember),
+        spread_t: TypeId,
+    ) CheckError!void {
+        if (spread_t >= self.interner.pool.typeCount()) return;
+        const flags = self.interner.pool.flagsOf(spread_t);
+        if (flags.is_type_parameter) {
+            const constraint = self.typeParameterConstraint(spread_t) orelse return;
+            if (constraint != spread_t) try self.appendJsxSpreadMembers(members, constraint);
+            return;
+        }
+        if (flags.is_intersection) {
+            for (self.interner.intersectionMembers(spread_t)) |member_t| {
+                try self.appendJsxSpreadMembers(members, member_t);
+            }
+            return;
+        }
+        if (flags.is_union) return;
+        if (!flags.is_object_type) return;
+        for (self.interner.objectMembers(spread_t)) |member| {
+            try self.appendOrReplaceObjectMember(members, member);
+        }
+    }
+
+    fn jsxSpreadTypeIsValid(self: *Checker, t: TypeId) CheckError!bool {
+        if (self.typeIsAnyLike(t)) return true;
+        if (t >= self.interner.pool.typeCount()) return false;
+        const flags = self.interner.pool.flagsOf(t);
+        if (flags.is_never or flags.is_null or flags.is_undefined or flags.is_void) return false;
+        if (flags.is_union) {
+            for (self.interner.unionMembers(t)) |member| {
+                if (!try self.jsxSpreadTypeIsValid(member)) return false;
+            }
+            return true;
+        }
+        if (flags.is_intersection) {
+            for (self.interner.intersectionMembers(t)) |member| {
+                if (try self.jsxSpreadTypeIsValid(member)) return true;
+            }
+            return false;
+        }
+        if (flags.is_type_parameter) {
+            const constraint = self.typeParameterConstraint(t) orelse return true;
+            if (constraint == t) return false;
+            return try self.jsxSpreadTypeIsValid(constraint);
+        }
+        return flags.is_object_type or flags.is_object or flags.is_signature;
     }
 
     fn jsxAttributeAssignable(self: *Checker, value_t: TypeId, prop_t: TypeId) CheckError!bool {
@@ -10350,6 +10493,67 @@ pub const Checker = struct {
         return self.engine.isAssignableTo(value_t, prop_t) catch true;
     }
 
+    fn jsxAttributeLiteralAssignable(self: *Checker, value: NodeId, prop_t: TypeId) CheckError!bool {
+        if (value == hir_mod.none_node_id) return false;
+        var inner = value;
+        if (self.hir.kindOf(value) == .jsx_expression) {
+            const ex = hir_mod.jsxExpressionOf(self.hir, value);
+            if (ex.expression == hir_mod.none_node_id) return false;
+            inner = ex.expression;
+        }
+        return try self.literalExpressionAssignableToTarget(inner, prop_t);
+    }
+
+    fn jsxAttributesMatchOverload(self: *Checker, tag: NodeId, attrs_t: TypeId, attr_count: usize) CheckError!bool {
+        if (tag == hir_mod.none_node_id or self.hir.kindOf(tag) != .identifier) return false;
+        const tag_name = hir_mod.identifierOf(self.hir, tag).name;
+        const overload_list = self.overloads.get(tag_name) orelse return false;
+        const has_impl = self.overload_has_implementation.contains(tag_name);
+        const visible_len = if (has_impl and overload_list.items.len > 0) overload_list.items.len - 1 else overload_list.items.len;
+        for (overload_list.items[0..visible_len]) |sig| {
+            const params = self.interner.signatureParams(sig);
+            if (params.len == 0) {
+                if (attr_count == 0) return true;
+                continue;
+            }
+            var target = params[0];
+            if (self.containsFreeTypeParameter(target)) {
+                var subs: std.AutoHashMapUnmanaged(TypeId, TypeId) = .empty;
+                defer subs.deinit(self.gpa);
+                try self.inferFromPair(target, attrs_t, &subs);
+                if (subs.count() > 0) {
+                    target = self.substituteType(target, &subs) catch target;
+                }
+            }
+            if (self.engine.isAssignableTo(attrs_t, target) catch false) return true;
+        }
+        return false;
+    }
+
+    fn jsxRequiredPropsCovered(self: *Checker, target: TypeId, attrs_t: TypeId) CheckError!bool {
+        if (target >= self.interner.pool.typeCount()) return true;
+        const flags = self.interner.pool.flagsOf(target);
+        if (flags.is_type_parameter) return true;
+        if (flags.is_union) {
+            for (self.interner.unionMembers(target)) |member| {
+                if (try self.jsxRequiredPropsCovered(member, attrs_t)) return true;
+            }
+            return false;
+        }
+        if (flags.is_intersection) {
+            for (self.interner.intersectionMembers(target)) |member| {
+                if (!try self.jsxRequiredPropsCovered(member, attrs_t)) return false;
+            }
+            return true;
+        }
+        if (!flags.is_object_type) return false;
+        for (self.interner.objectMembers(target)) |member| {
+            if (member.is_optional) continue;
+            if (self.interner.objectMember(attrs_t, member.name) == null) return false;
+        }
+        return true;
+    }
+
     fn checkJsxSpreadOverwritesExplicitAttrs(self: *Checker, spread_t: TypeId, attrs: []const NodeId) CheckError!void {
         if (spread_t >= self.interner.pool.typeCount()) return;
         for (attrs) |attr| {
@@ -10361,18 +10565,65 @@ pub const Checker = struct {
         }
     }
 
-    fn jsxChildrenTypeAllowsMultiple(self: *Checker, t: TypeId) bool {
+    fn jsxPropsTargetHasNamedMembers(self: *Checker, t: TypeId) bool {
+        if (t >= self.interner.pool.typeCount()) return false;
+        const flags = self.interner.pool.flagsOf(t);
+        if (flags.is_type_parameter) {
+            const constraint = self.typeParameterConstraint(t) orelse return false;
+            if (constraint == t) return false;
+            return self.jsxPropsTargetHasNamedMembers(constraint);
+        }
+        if (flags.is_union) {
+            for (self.interner.unionMembers(t)) |member| {
+                if (self.jsxPropsTargetHasNamedMembers(member)) return true;
+            }
+            return false;
+        }
+        if (flags.is_intersection) {
+            for (self.interner.intersectionMembers(t)) |member| {
+                if (self.jsxPropsTargetHasNamedMembers(member)) return true;
+            }
+            return false;
+        }
+        return flags.is_object_type;
+    }
+
+    fn jsxPropsHasNamedMember(self: *Checker, t: TypeId, name: hir_mod.StringId) CheckError!bool {
+        if (t >= self.interner.pool.typeCount()) return false;
+        const flags = self.interner.pool.flagsOf(t);
+        if (flags.is_type_parameter) {
+            const constraint = self.typeParameterConstraint(t) orelse return false;
+            if (constraint == t) return false;
+            return try self.jsxPropsHasNamedMember(constraint, name);
+        }
+        if (flags.is_union) {
+            for (self.interner.unionMembers(t)) |member| {
+                if (try self.jsxPropsHasNamedMember(member, name)) return true;
+            }
+            return false;
+        }
+        if (flags.is_intersection) {
+            for (self.interner.intersectionMembers(t)) |member| {
+                if (try self.jsxPropsHasNamedMember(member, name)) return true;
+            }
+            return false;
+        }
+        return self.interner.objectMember(t, name) != null;
+    }
+
+    fn jsxChildrenTypeAllowsCount(self: *Checker, t: TypeId, count: usize) bool {
         if (t >= self.interner.pool.typeCount()) return false;
         const flags = self.interner.pool.flagsOf(t);
         if (flags.is_any) return true;
         if (flags.is_union) {
             for (self.interner.unionMembers(t)) |member| {
-                if (self.jsxChildrenTypeAllowsMultiple(member)) return true;
+                if (self.jsxChildrenTypeAllowsCount(member, count)) return true;
             }
             return false;
         }
+        if (self.fixedTupleLength(t)) |length| return count <= length;
         if (flags.is_object_type and self.interner.objectNumberIndex(t) != types.Primitive.none) return true;
-        return false;
+        return count <= 1;
     }
 
     fn checkJsxAttributeValue(self: *Checker, value: NodeId) CheckError!TypeId {
@@ -10431,25 +10682,111 @@ pub const Checker = struct {
         }
     }
 
-    fn jsxPropsType(self: *Checker, tag: NodeId) CheckError!?TypeId {
+    fn jsxPropsType(self: *Checker, tag: NodeId, attr_count: usize) CheckError!?TypeId {
         if (tag == hir_mod.none_node_id) return null;
-        if (self.hir.kindOf(tag) == .identifier) {
+        if (self.jsxTagIsIntrinsic(tag)) {
             const id = hir_mod.identifierOf(self.hir, tag);
-            const name = self.string_interner.get(id.name);
-            if (name.len > 0 and std.ascii.isLower(name[0])) {
-                return try self.jsxIntrinsicPropsType(tag, id.name);
+            return try self.jsxIntrinsicPropsType(tag, id.name);
+        }
+        if (self.jsxClassInstanceTypeForTag(tag)) |instance_t| {
+            const props_name = self.string_interner.intern("props") catch return error.OutOfMemory;
+            if (try self.lookupObjectMember(instance_t, props_name)) |props_t| return props_t;
+        }
+        if (self.hir.kindOf(tag) == .identifier) {
+            const tag_name = hir_mod.identifierOf(self.hir, tag).name;
+            if (self.overloads.get(tag_name)) |overload_list| {
+                const has_impl = self.overload_has_implementation.contains(tag_name);
+                const visible_len = if (has_impl and overload_list.items.len > 0) overload_list.items.len - 1 else overload_list.items.len;
+                var prop_types: std.ArrayListUnmanaged(TypeId) = .empty;
+                defer prop_types.deinit(self.gpa);
+                var saw_zero_param = false;
+                for (overload_list.items[0..visible_len]) |sig| {
+                    const params = self.interner.signatureParams(sig);
+                    if (params.len == 0) {
+                        saw_zero_param = true;
+                        continue;
+                    }
+                    try prop_types.append(self.gpa, params[0]);
+                }
+                if (saw_zero_param and attr_count == 0) return types.Primitive.any;
+                if (prop_types.items.len > 0) {
+                    if (prop_types.items.len == 1) return prop_types.items[0];
+                    return self.interner.internUnion(prop_types.items) catch return error.OutOfMemory;
+                }
             }
         }
         const tag_t = try self.checkExpression(tag);
-        if (self.interner.pool.flagsOf(tag_t).is_signature) {
-            const params = self.interner.signatureParams(tag_t);
-            if (params.len > 0) return params[0];
-            return types.Primitive.any;
-        }
         if (try self.lookupObjectMember(tag_t, self.string_interner.intern("props") catch return error.OutOfMemory)) |props_t| {
             return props_t;
         }
+        var construct_sigs: std.ArrayListUnmanaged(TypeId) = .empty;
+        defer construct_sigs.deinit(self.gpa);
+        try self.collectConstructSignatures(tag_t, &construct_sigs);
+        if (construct_sigs.items.len > 0) {
+            const params = self.interner.signatureParams(construct_sigs.items[0]);
+            if (params.len > 0) return params[0];
+            return types.Primitive.any;
+        }
+        var call_sigs: std.ArrayListUnmanaged(TypeId) = .empty;
+        defer call_sigs.deinit(self.gpa);
+        try self.collectCallSignatures(tag_t, &call_sigs);
+        if (call_sigs.items.len > 0) {
+            const params = self.interner.signatureParams(call_sigs.items[0]);
+            if (params.len > 0) return params[0];
+            return types.Primitive.any;
+        }
         return null;
+    }
+
+    fn jsxTagIsIntrinsic(self: *Checker, tag: NodeId) bool {
+        if (tag == hir_mod.none_node_id or self.hir.kindOf(tag) != .identifier) return false;
+        const id = hir_mod.identifierOf(self.hir, tag);
+        const name = self.string_interner.get(id.name);
+        return name.len > 0 and std.ascii.isLower(name[0]);
+    }
+
+    fn jsxComponentTypeInvalid(self: *Checker, tag: NodeId) CheckError!bool {
+        if (tag == hir_mod.none_node_id) return false;
+        if (self.jsxClassInstanceTypeForTag(tag)) |_| return false;
+        const tag_t = try self.checkedExpressionType(tag);
+        return !(try self.jsxComponentTypeIsValid(tag_t));
+    }
+
+    fn jsxClassInstanceTypeForTag(self: *Checker, tag: NodeId) ?TypeId {
+        if (tag == hir_mod.none_node_id or self.hir.kindOf(tag) != .identifier) return null;
+        const id = hir_mod.identifierOf(self.hir, tag);
+        return self.class_instance_types.get(id.name);
+    }
+
+    fn jsxComponentTypeIsValid(self: *Checker, t: TypeId) CheckError!bool {
+        if (self.typeIsAnyLike(t)) return true;
+        if (t >= self.interner.pool.typeCount()) return false;
+        const flags = self.interner.pool.flagsOf(t);
+        if (flags.is_string) return true;
+        if (flags.is_union) {
+            for (self.interner.unionMembers(t)) |member| {
+                if (!try self.jsxComponentTypeIsValid(member)) return false;
+            }
+            return true;
+        }
+        if (flags.is_intersection) {
+            for (self.interner.intersectionMembers(t)) |member| {
+                if (try self.jsxComponentTypeIsValid(member)) return true;
+            }
+            return false;
+        }
+        if (flags.is_signature) return true;
+        if (!flags.is_object_type) return false;
+        const props_name = self.string_interner.intern("props") catch return error.OutOfMemory;
+        if ((try self.lookupObjectMember(t, props_name)) != null) return true;
+        var construct_sigs: std.ArrayListUnmanaged(TypeId) = .empty;
+        defer construct_sigs.deinit(self.gpa);
+        try self.collectConstructSignatures(t, &construct_sigs);
+        if (construct_sigs.items.len > 0) return true;
+        var call_sigs: std.ArrayListUnmanaged(TypeId) = .empty;
+        defer call_sigs.deinit(self.gpa);
+        try self.collectCallSignatures(t, &call_sigs);
+        return call_sigs.items.len > 0;
     }
 
     fn jsxIntrinsicPropsType(self: *Checker, anchor: NodeId, tag_name: hir_mod.StringId) CheckError!?TypeId {
@@ -10697,6 +11034,12 @@ pub const Checker = struct {
             if (self.signatureIsConstruct(t)) try out.append(self.gpa, t);
             return;
         }
+        if (flags.is_union) {
+            for (self.interner.unionMembers(t)) |member| {
+                try self.collectConstructSignatures(member, out);
+            }
+            return;
+        }
         if (flags.is_intersection) {
             for (self.interner.intersectionMembers(t)) |member| {
                 try self.collectConstructSignatures(member, out);
@@ -10708,6 +11051,39 @@ pub const Checker = struct {
         const construct_member_id = self.string_interner.intern("__construct") catch return error.OutOfMemory;
         for (self.interner.objectMembers(t)) |member| {
             if (member.name == construct_member_id and self.interner.isSignature(member.type)) {
+                try out.append(self.gpa, member.type);
+            }
+        }
+    }
+
+    fn collectCallSignatures(
+        self: *Checker,
+        t: TypeId,
+        out: *std.ArrayListUnmanaged(TypeId),
+    ) CheckError!void {
+        if (t < types.Primitive.first_dynamic or t >= self.interner.pool.typeCount()) return;
+        const flags = self.interner.pool.flagsOf(t);
+        if (flags.is_signature) {
+            if (!self.signatureIsConstruct(t)) try out.append(self.gpa, t);
+            return;
+        }
+        if (flags.is_union) {
+            for (self.interner.unionMembers(t)) |member| {
+                try self.collectCallSignatures(member, out);
+            }
+            return;
+        }
+        if (flags.is_intersection) {
+            for (self.interner.intersectionMembers(t)) |member| {
+                try self.collectCallSignatures(member, out);
+            }
+            return;
+        }
+        if (!flags.is_object_type) return;
+
+        const call_member_id = self.string_interner.intern("__call") catch return error.OutOfMemory;
+        for (self.interner.objectMembers(t)) |member| {
+            if (member.name == call_member_id and self.interner.isSignature(member.type)) {
                 try out.append(self.gpa, member.type);
             }
         }
@@ -16744,6 +17120,22 @@ test "checker: React.Component heritage supplies props member" {
     }
 }
 
+test "checker: React.PureComponent heritage supplies props member" {
+    const s = try newSetup(
+        \\declare namespace React { class PureComponent<T, U> {} }
+        \\interface Props { value: string; }
+        \\class View extends React.PureComponent<Props, {}> {
+        \\  render() { return this.props.value; }
+        \\}
+    );
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+
+    for (s.checker.diagnostics.items) |d| {
+        try T.expect(d.code != TsCodes.property_does_not_exist);
+    }
+}
+
 test "checker: JSX intrinsic attribute callback receives contextual param type" {
     const s = try newTsxSetup(
         \\declare namespace JSX {
@@ -16826,6 +17218,130 @@ test "checker: JSX spread reports overwritten explicit attributes" {
         if (d.code == TsCodes.jsx_attribute_overwritten) found = true;
     }
     try T.expect(found);
+}
+
+test "checker: JSX rejects uppercase values without call or construct signatures" {
+    const s = try newTsxSetup(
+        \\declare namespace JSX { interface Element {} interface IntrinsicElements {} }
+        \\var Div = 3;
+        \\<Div />;
+        \\interface Callable { (): number; }
+        \\declare var Obj2: Callable;
+        \\<Obj2 />;
+        \\interface Empty {}
+        \\declare var Obj3: Empty;
+        \\<Obj3 />;
+    );
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+
+    var count: usize = 0;
+    for (s.checker.diagnostics.items) |d| {
+        if (d.code == TsCodes.jsx_element_no_construct_or_call) count += 1;
+    }
+    try T.expectEqual(@as(usize, 2), count);
+}
+
+test "checker: JSX spread attributes must be object-like" {
+    const s = try newTsxSetup(
+        \\declare namespace JSX { interface Element {} interface IntrinsicElements { div: any; } }
+        \\const a = {} as never;
+        \\const b = null;
+        \\const c = undefined;
+        \\const d = <div {...a} />;
+        \\const e = <div {...b} />;
+        \\const f = <div {...c} />;
+    );
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+
+    var count: usize = 0;
+    for (s.checker.diagnostics.items) |d| {
+        if (d.code == TsCodes.spread_types_object_only) count += 1;
+    }
+    try T.expectEqual(@as(usize, 3), count);
+}
+
+test "checker: JSX class props validate required spread members" {
+    const s = try newTsxSetup(
+        \\declare namespace JSX { interface Element {} interface IntrinsicElements { div: any; } }
+        \\declare namespace React { class Component<T, U> {} }
+        \\interface Props { x: string; y: "2"; }
+        \\class Poisoned extends React.Component<Props, {}> { render() { return <div />; } }
+        \\const obj = {};
+        \\const ok = <Poisoned {...{x: "ok", y: "2"}} />;
+        \\const missing = <Poisoned {...obj} />;
+        \\const bad = <Poisoned {...{x: 5, y: "2"}} />;
+        \\const extra = <Poisoned {...{x: "ok", y: "2"}} X="hi" />;
+    );
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+
+    var assign_errors: usize = 0;
+    var excess_errors: usize = 0;
+    for (s.checker.diagnostics.items) |d| {
+        if (d.code == TsCodes.type_not_assignable) assign_errors += 1;
+        if (d.code == TsCodes.object_literal_excess_property) excess_errors += 1;
+    }
+    try T.expect(assign_errors >= 2);
+    try T.expect(excess_errors >= 1);
+}
+
+test "checker: JSX generic default props do not excess-check free target" {
+    const s = try newTsxSetup(
+        \\declare namespace JSX { interface Element {} interface IntrinsicElements { div: any; } }
+        \\interface Props { values: string; }
+        \\function MyComponent<T = Props>(attr: T) { return <div />; }
+        \\let i = <MyComponent values />;
+        \\let i1 = <MyComponent values="Hello" />;
+    );
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+
+    for (s.checker.diagnostics.items) |d| {
+        try T.expect(d.code != TsCodes.object_literal_excess_property);
+        try T.expect(d.code != TsCodes.type_not_assignable);
+    }
+}
+
+test "checker: JSX unconstrained generic spread is rejected" {
+    const s = try newTsxSetup(
+        \\declare namespace JSX { interface Element {} interface IntrinsicElements { div: any; } }
+        \\declare function Component<T>(props: T): JSX.Element;
+        \\const decorator = function <U>(props: U) {
+        \\  return <Component {...props} />;
+        \\};
+        \\const decorator1 = function <U extends {x: string}>(props: U) {
+        \\  return <Component {...props} />;
+        \\};
+    );
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+
+    var count: usize = 0;
+    for (s.checker.diagnostics.items) |d| {
+        if (d.code == TsCodes.type_not_assignable) count += 1;
+    }
+    try T.expectEqual(@as(usize, 1), count);
+}
+
+test "checker: JSX children respect fixed tuple arity" {
+    const s = try newTsxSetup(
+        \\declare namespace JSX { interface Element {} interface IntrinsicElements { div: any; span: any; } }
+        \\namespace React { export type ReactNode = JSX.Element; }
+        \\interface Props { children: [React.ReactNode, React.ReactNode]; }
+        \\const Pair = (x: Props) => <div />;
+        \\const ok = <Pair><span /><span /></Pair>;
+        \\const bad = <Pair><span /><span /><span /></Pair>;
+    );
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+
+    var count: usize = 0;
+    for (s.checker.diagnostics.items) |d| {
+        if (d.code == TsCodes.type_not_assignable) count += 1;
+    }
+    try T.expectEqual(@as(usize, 1), count);
 }
 
 test "checker: do-while bodies are checked for assignment diagnostics" {
