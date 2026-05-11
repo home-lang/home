@@ -1402,6 +1402,7 @@ const StrictDirectiveState = struct {
     exact_optional_property_types: ?bool = null,
     no_property_access_from_index_signature: ?bool = null,
     no_implicit_override: ?bool = null,
+    use_unknown_in_catch_variables: ?bool = null,
 };
 
 fn parseStrictDirectiveFlags(source: []const u8) ?ts_driver.StrictFlags {
@@ -1497,6 +1498,7 @@ fn strictFlagsFromState(state: StrictDirectiveState, strict_on: bool) ts_driver.
         .exact_optional_property_types = state.exact_optional_property_types orelse false,
         .no_property_access_from_index_signature = state.no_property_access_from_index_signature orelse false,
         .no_implicit_override = state.no_implicit_override orelse false,
+        .use_unknown_in_catch_variables = state.use_unknown_in_catch_variables orelse strict_on,
     };
 }
 
@@ -1538,6 +1540,8 @@ fn setStrictDirective(state: *StrictDirectiveState, name: []const u8, value: boo
         state.no_property_access_from_index_signature = value;
     } else if (std.mem.eql(u8, name, "noImplicitOverride")) {
         state.no_implicit_override = value;
+    } else if (std.mem.eql(u8, name, "useUnknownInCatchVariables")) {
+        state.use_unknown_in_catch_variables = value;
     } else {
         return false;
     }
@@ -1871,6 +1875,7 @@ test "conformance: parses strict directives into checker flags" {
     try T.expect(flags.strict_property_initialization);
     try T.expect(flags.no_unused_locals);
     try T.expect(!flags.no_unused_parameters);
+    try T.expect(flags.use_unknown_in_catch_variables);
 }
 
 test "conformance: strict false directive leaves strict family disabled" {
@@ -1883,6 +1888,63 @@ test "conformance: strict false directive leaves strict family disabled" {
     try T.expect(!flags.strict_function_types);
     try T.expect(!flags.strict_null_checks);
     try T.expect(!flags.strict_property_initialization);
+    try T.expect(!flags.use_unknown_in_catch_variables);
+}
+
+test "conformance: parses useUnknownInCatchVariables directive" {
+    const flags = parseStrictDirectiveFlags(
+        \\// @useUnknownInCatchVariables: true
+        \\try {} catch (e) { e; }
+    ).?;
+    try T.expect(flags.use_unknown_in_catch_variables);
+}
+
+test "conformance: catch-variable alias fixture matches TS18046 baseline" {
+    const result = try runOneEntry(T.allocator, .{
+        .name = "controlFlowAliasingCatchVariables",
+        .path = "controlFlowAliasingCatchVariables.ts",
+        .source =
+        \\// @target: es2015
+        \\// @useUnknownInCatchVariables: true,false
+        \\
+        \\try {}
+        \\catch (e) {
+        \\    const isString = typeof e === 'string';
+        \\    if (isString) {
+        \\        e.toUpperCase();
+        \\    }
+        \\
+        \\    if (typeof e === 'string') {
+        \\        e.toUpperCase();
+        \\    }
+        \\}
+        \\
+        \\try {}
+        \\catch (e) {
+        \\    const isString = typeof e === 'string';
+        \\
+        \\    e = 1;
+        \\
+        \\    if (isString) {
+        \\        e.toUpperCase();
+        \\    }
+        \\
+        \\    if (typeof e === 'string') {
+        \\        e.toUpperCase();
+        \\    }
+        \\}
+        ,
+        .expects_error = true,
+        .expected_errors = "controlFlowAliasingCatchVariables.ts(23,9): error TS18046: 'e' is of type 'unknown'.",
+        .use_exact_errors = true,
+        .strict_flags = .{ .use_unknown_in_catch_variables = true },
+        .syntax_target_es2015 = true,
+    });
+    defer {
+        T.allocator.free(result.name);
+        if (result.detail.len > 0) T.allocator.free(result.detail);
+    }
+    try T.expectEqual(Outcome.passed, result.outcome);
 }
 
 test "conformance: strict helper mirrors strict-family defaults" {
@@ -1891,6 +1953,7 @@ test "conformance: strict helper mirrors strict-family defaults" {
     try T.expect(flags.strict_function_types);
     try T.expect(flags.strict_null_checks);
     try T.expect(flags.strict_property_initialization);
+    try T.expect(flags.use_unknown_in_catch_variables);
     try T.expect(!flags.no_unused_locals);
     try T.expect(!flags.no_unused_parameters);
 }

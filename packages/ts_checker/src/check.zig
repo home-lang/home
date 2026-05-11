@@ -168,6 +168,7 @@ pub const TsCodes = struct {
     pub const expression_always_truthy: u32 = 2872;
     pub const expression_always_falsy: u32 = 2873;
     pub const nullish_rhs_unreachable: u32 = 2869;
+    pub const unknown_catch_variable: u32 = 18046;
     pub const object_possibly_nullish: u32 = 18049;
     pub const nullish_relational_operand: u32 = 18050;
     /// Emitted when `// @ts-expect-error` was placed above a line
@@ -388,6 +389,10 @@ pub const StrictFlags = struct {
     /// `noImplicitOverride`. When true, class members that override
     /// base-class members must carry the `override` modifier.
     no_implicit_override: bool = false,
+    /// `useUnknownInCatchVariables` (also implied by `strict`). When
+    /// true, unannotated `catch (e)` bindings are typed as `unknown`
+    /// rather than `any`.
+    use_unknown_in_catch_variables: bool = false,
 };
 
 pub const Checker = struct {
@@ -1148,7 +1153,12 @@ pub const Checker = struct {
                 if (ts.block != hir_mod.none_node_id) try self.checkStatement(ts.block);
                 if (ts.catch_param != hir_mod.none_node_id) {
                     const ck = self.hir.kindOf(ts.catch_param);
-                    if (ck == .object_pattern or ck == .array_pattern) {
+                    if (ck == .identifier) {
+                        self.hir.setType(
+                            ts.catch_param,
+                            if (self.strict_flags.use_unknown_in_catch_variables) types.Primitive.unknown else types.Primitive.any,
+                        );
+                    } else if (ck == .object_pattern or ck == .array_pattern) {
                         self.hir.setType(ts.catch_param, types.Primitive.any);
                     }
                 }
@@ -9696,6 +9706,7 @@ pub const Checker = struct {
                 if (self.hir.kindOf(a.target) == .identifier) {
                     const id = hir_mod.identifierOf(self.hir, a.target);
                     _ = self.cond_aliases.remove(id.name);
+                    try self.removeCondAliasesReferencing(id.name);
                     // TS2588: `const x = 1; x = 2;` — assigning to
                     // a const-bound identifier is a hard error.
                     if (self.identifierResolvesToConst(a.target)) {
@@ -10163,6 +10174,10 @@ pub const Checker = struct {
                 } else if (member_is_optional_chain) {
                     obj_t = self.subtractNullUndefined(obj_t) catch obj_t;
                 }
+                if (obj_t == types.Primitive.unknown and self.shouldReportUnknownReference(m.object)) {
+                    try self.reportUnknownReference(m.object);
+                    break :blk types.Primitive.any;
+                }
                 // TS2341: legacy `private` member access from
                 // outside the declaring class body. Runs before
                 // narrowing/index lookups so the diagnostic fires
@@ -10312,6 +10327,10 @@ pub const Checker = struct {
                 else
                     raw_obj_t;
                 const idx_t = try self.checkExpression(e.index);
+                if (obj_t == types.Primitive.unknown and self.shouldReportUnknownReference(e.object)) {
+                    try self.reportUnknownReference(e.object);
+                    break :blk types.Primitive.any;
+                }
                 // Numeric enum reverse-mapped lookup: `E[n]` where
                 // `E` is a numeric enum yields `string` (the member
                 // name) at runtime. String enums don't have reverse
@@ -12982,7 +13001,12 @@ pub const Checker = struct {
                     const ck = self.hir.kindOf(ts.catch_param);
                     if (ck == .identifier) {
                         const cid = hir_mod.identifierOf(self.hir, ts.catch_param);
-                        if (cid.name == id.name) return types.Primitive.any;
+                        if (cid.name == id.name) {
+                            return if (self.strict_flags.use_unknown_in_catch_variables)
+                                types.Primitive.unknown
+                            else
+                                types.Primitive.any;
+                        }
                     } else if (ck == .object_pattern or ck == .array_pattern) {
                         if (self.typeOfPatternBinding(ts.catch_param, types.Primitive.any, id.name)) |bt| {
                             return bt;
@@ -16241,6 +16265,37 @@ pub const Checker = struct {
         });
     }
 
+    fn reportUnknownReference(self: *Checker, node: NodeId) CheckError!void {
+        const name = if (self.hir.kindOf(node) == .identifier)
+            self.string_interner.get(hir_mod.identifierOf(self.hir, node).name)
+        else
+            "value";
+        const msg = try std.fmt.allocPrint(
+            self.diag_arena.allocator(),
+            "'{s}' is of type 'unknown'.",
+            .{name},
+        );
+        try self.diagnostics.append(self.gpa, .{
+            .node = node,
+            .code = TsCodes.unknown_catch_variable,
+            .message = msg,
+        });
+    }
+
+    fn shouldReportUnknownReference(self: *Checker, node: NodeId) bool {
+        if (self.hir.kindOf(node) != .identifier) return false;
+        const id = hir_mod.identifierOf(self.hir, node);
+        var cur = self.hir.parentOf(node);
+        while (cur != hir_mod.none_node_id) : (cur = self.hir.parentOf(cur)) {
+            if (self.hir.kindOf(cur) != .try_stmt) continue;
+            const ts = hir_mod.tryOf(self.hir, cur);
+            if (ts.catch_param == hir_mod.none_node_id or self.hir.kindOf(ts.catch_param) != .identifier) continue;
+            const catch_id = hir_mod.identifierOf(self.hir, ts.catch_param);
+            if (catch_id.name == id.name) return self.strict_flags.use_unknown_in_catch_variables;
+        }
+        return false;
+    }
+
     fn isAssignmentTarget(self: *Checker, node: NodeId) bool {
         const parent = self.hir.parentOf(node);
         if (parent == hir_mod.none_node_id or self.hir.kindOf(parent) != .assignment) return false;
@@ -16507,6 +16562,21 @@ pub const Checker = struct {
                 return false;
             },
             else => return false,
+        }
+    }
+
+    fn removeCondAliasesReferencing(self: *Checker, name: hir_mod.StringId) CheckError!void {
+        if (self.cond_aliases.count() == 0) return;
+        var to_remove: std.ArrayListUnmanaged(hir_mod.StringId) = .empty;
+        defer to_remove.deinit(self.gpa);
+        var it = self.cond_aliases.iterator();
+        while (it.next()) |entry| {
+            if (self.nodeContainsIdentifier(entry.value_ptr.*, name)) {
+                try to_remove.append(self.gpa, entry.key_ptr.*);
+            }
+        }
+        for (to_remove.items) |alias| {
+            _ = self.cond_aliases.remove(alias);
         }
     }
 
@@ -21424,6 +21494,51 @@ test "checker: aliased conditional narrows via stored guard" {
     const s_decl = then_stmts[0];
     const s_init = hir_mod.varDeclOf(&s.hir, s_decl).init;
     try T.expectEqual(types.Primitive.string_t, s.hir.typeOf(s_init));
+}
+
+test "checker: catch unknown property access reports TS18046" {
+    const s = try newSetup(
+        \\try {}
+        \\catch (e) {
+        \\  e.toUpperCase();
+        \\  e["name"];
+        \\}
+    );
+    defer destroySetup(s);
+    s.checker.setStrictFlags(.{ .use_unknown_in_catch_variables = true });
+    try s.checker.checkSourceFile(s.root);
+    var unknown_refs: usize = 0;
+    for (s.checker.diagnostics.items) |d| {
+        if (d.code == TsCodes.unknown_catch_variable) unknown_refs += 1;
+    }
+    try T.expectEqual(@as(usize, 2), unknown_refs);
+}
+
+test "checker: reassignment invalidates conditional aliases referencing name" {
+    const s = try newSetup(
+        \\try {}
+        \\catch (e) {
+        \\  const isString = typeof e === "string";
+        \\  if (isString) {
+        \\    e.toUpperCase();
+        \\  }
+        \\  e = 1;
+        \\  if (isString) {
+        \\    e.toUpperCase();
+        \\  }
+        \\  if (typeof e === "string") {
+        \\    e.toUpperCase();
+        \\  }
+        \\}
+    );
+    defer destroySetup(s);
+    s.checker.setStrictFlags(.{ .use_unknown_in_catch_variables = true });
+    try s.checker.checkSourceFile(s.root);
+    var unknown_refs: usize = 0;
+    for (s.checker.diagnostics.items) |d| {
+        if (d.code == TsCodes.unknown_catch_variable) unknown_refs += 1;
+    }
+    try T.expectEqual(@as(usize, 1), unknown_refs);
 }
 
 test "checker: asserts predicate narrows in fall-through" {
