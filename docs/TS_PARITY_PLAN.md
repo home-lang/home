@@ -1,8 +1,8 @@
 # TypeScript Parity Plan — Home
 
-> **Status:** Phase 0 in progress (started 2026-05-04). Authored 2026-05-04. Verified against tsgo source 2026-05-04 (see Appendix D).
+> **Status:** Phase 0 in progress (started 2026-05-04). Authored 2026-05-04. Verified against tsgo source 2026-05-04 (see Appendix D). Settlers III TS-flavor Home remake planning added 2026-05-11 (see Appendix E).
 >
-> Cross-references: [`ARCHITECTURE.md`](./ARCHITECTURE.md), [`COMPILER_PIPELINE.md`](./COMPILER_PIPELINE.md), [`CAPABILITY_MATRIX.md`](./CAPABILITY_MATRIX.md), [`ROADMAP-WEB-COMPETITIVE.md`](./ROADMAP-WEB-COMPETITIVE.md).
+> Cross-references: [`ARCHITECTURE.md`](./ARCHITECTURE.md), [`COMPILER_PIPELINE.md`](./COMPILER_PIPELINE.md), [`CAPABILITY_MATRIX.md`](./CAPABILITY_MATRIX.md), [`ROADMAP-WEB-COMPETITIVE.md`](./ROADMAP-WEB-COMPETITIVE.md), Appendix E below for the game-scale TS-flavor validation track.
 >
 > **Source verification.** All claims about tsgo internals in this document have been verified against the tsgo source tree at `~/Code/typescript-go` (Go port of `tsc` from microsoft/typescript-go). Citations use the form `path/file.go:line` referencing that tree. See Appendix D for a full verification table.
 
@@ -12,7 +12,7 @@
 
 **Last updated:** 2026-05-11
 **Current phase:** Phase 3 type checker substantially complete + Phase 4 emit + Phase 8 LSP all advancing in parallel. Type checker covers: generic instantiation (incl. explicit type args properly substituted through signatures and explicit `new Foo<T>()` class-instance instantiation), **contextual generic callback instantiation for concrete call slots plus expected-return fallback for nested generic calls**, generic type-alias + **generic interface** + **generic class** instantiation, **fresh declaration-scoped type-parameter identities for generic shadowing**, mapped types over string-literal-union constraints, conditional types evaluating eagerly with union distribution + deferred-conditional substitution under generic-alias instantiation, structural object assignability, signatures with return-type inference, **object/interface call and construct signatures**, full narrowing surface (typeof / null / undefined / else-branch / instanceof / `in` / discriminated unions / `as const` / **type predicates `arg is T`** / **`asserts arg is T` fall-through narrowing** / **`===`-with-literal-RHS narrowing**) with proper union subtraction, **`await` unwraps structural `Promise<T>`**, **cycle-safe auto-variance inference for generic params**, arrow-fn signatures, class+interface+type-alias resolution, getter/setter accessor typing, `this`/`super` typing, **explicit `this` parameters erased from callable signatures**, `extends` inheritance with **generic `extends Foo<T>` instantiation** and **TS2416 incompatible override diagnostics**, **structural class `implements` checks (TS2420)**, ctor signatures, index signatures with **TS2411 member/indexer compatibility diagnostics**, tuple lowering including generic tuple elements under type-parameter scope, `Array<T>` shape plus declared `interface Array<T>` member augmentation, optional params, `keyof T` including literal-object aliases + `T[keyof T]` distribution, seeded lib globals (`NaN`, `Infinity`, `isNaN`, `parseFloat`, `Math`, `Number`, `String`, `console`), strict-mode flags `noImplicitAny` (TS7005/TS7006), `strictPropertyInitialization` (TS2564), `noUnusedLocals`/`noUnusedParameters` (TS6133), `strictFunctionTypes` (bivariant ↔ contravariant signature-assignability), TS2353 fresh-object excess-property checks **including nested object literals, string-indexer tolerance, and numeric property tolerance for number index signatures**, non-null assertion `expr!`, ambient-overload fallback resolution, all-optional object assignment for unconstrained generics, and regex literals as object-typed expressions. JS emit covers: full Phase 1 surface, **generic class heritage type-argument erasure**, **`??` and `?.` lowering at ES2019 and below**, **JSX automatic runtime (`_jsx`/`_jsxs`/`_jsxDEV`)**, **CommonJS module emit with `__importDefault`/`__importStar` interop helpers**, **async/await `__awaiter` downlevel for ES2015-ES2016**, **private fields → WeakMap**, **legacy decorators with parameter metadata**, **Stage 3 class/member decorator helper shape with static-member contexts**, **object-method shorthand ES5 lowering**, regex literal preservation, source map V3, symbol-driven `.d.ts`, **basic `.d.hm` framing emitter**, zig-dtsx fast path. LSP covers: hover, definition, cross-file references, completion (module-level), **signatureHelp**, **inlayHints (inferred-let-type)**, **documentSymbols + workspaceSymbols**, **semanticTokens (13-element legend)**, **rename (cross-file)**, **codeActions (Organize Imports)**, **formatDocument stub + foldingRanges**, **`didChangeFile` triggers recompile + fresh diagnostics**, diagnostics. Program graph: parallel parse/bind, **incremental `compileAll` skips unchanged files**, persistent on-disk compilation cache, multi-file cache wiring, **streaming diagnostics callback hook**, **two-level relation cache (L1+L2) for parallelization readiness**, **`declare global` augmentation collection across files**. Conformance: harness + 56-case canon corpus exercising every landed feature, **patience-diff unified output on baseline mismatch**, **smoke + category runs against local TS conformance folders**. CLI: **`home-tsc --watch` uses real `ts_watch.Watcher` + `RealStatFs`**, **`--pretty` wires through `formatPretty` with source-snippet excerpt**.
-**Active deliverable:** Phase 6 — full local TypeScript conformance corpus integration (no submodule; use the locally-installed TypeScript checkout per user direction); Phase 7 — native codegen for typed TS subset; Phase 4.5 — bundler integration via Bun; Phase 4 follow-ups — generators→state-machine, full Stage 3 decorator initializer semantics, `.d.hm` type re-printing. Last verified full `zig build test --summary failures` under Pantry-managed Zig `0.17.0-dev.263+0add2dfc4`: **passing**, diagnostics snapshots pass **95/95**, the local TypeScript conformance smoke is clean at **16/16** (`comparable` 13/13, `inOperator` 2/2, `stringLiteral` 1/1), the named category ratchet is clean at **86/86**, and the baseline-aware type-relationships survey is clean at **175/175**. Full-corpus slice ratchets from `START=838` through `START=3998` in 40-case windows are all **40/40**, and the larger `START=4038 LIMIT=200`, `START=4238 LIMIT=200`, `START=4438 LIMIT=200`, `START=4638 LIMIT=200`, `START=4838 LIMIT=200`, `START=5038 LIMIT=200`, and `START=5238 LIMIT=200` sweeps are all **200/200**. The closed `START=5238 LIMIT=200` sweep advanced from 165/200 to **200/200** after source fixes for `Function.prototype.call`/`bind`/`apply` call-site typing, parameter default expression checking, computed binding-key expression checking, and a category-level Node16/NodeNext package-resolution full-program harness bucket that works in exact-baseline and coarse expected-error paths. The closed ratchet now leaves **469 / 5 907 cases (7.9%)** outside the promoted slice. The harness explicitly tracks coarse expected-error/expected-clean gaps for option-deprecation, resolver/package/library/reference-path, Node package-resolution/mode-selection fixtures, decorator signature/name-evaluation/metadata/emit-helper gaps, accessor override, auto-accessor, mixin, class constructor/accessibility/abstractness/static-block/async target semantics, `super` ordering, static-side `this`, private-name, ES/lib globals, enum/ambient/logical-assignment/JS CommonJS/JSDoc/parser/internal-module/resource-management/target-variant diagnostics, and regex/divide lexer-mode exactness not yet modeled by the single-source checker. The coarse type-relationships ratchet is saturated; next Phase 6 work should continue at `START=5438 LIMIT=200`, then graduate from expected-any checks to exact `.errors.txt` text comparison and a per-PR delta gate.
+**Active deliverable:** Phase 6 — full local TypeScript conformance corpus integration (no submodule; use the locally-installed TypeScript checkout per user direction); Phase 7 — native codegen for typed TS subset; Phase 7.5 — game-scale TS-flavor Home validation track, anchored by the planned Settlers III remake in `~/Code/Apps/settlers-iii`; Phase 4.5 — bundler integration via Bun; Phase 4 follow-ups — generators→state-machine, full Stage 3 decorator initializer semantics, `.d.hm` type re-printing. Last verified full `zig build test --summary failures` under Pantry-managed Zig `0.17.0-dev.263+0add2dfc4`: **passing**, diagnostics snapshots pass **95/95**, the local TypeScript conformance smoke is clean at **16/16** (`comparable` 13/13, `inOperator` 2/2, `stringLiteral` 1/1), the named category ratchet is clean at **86/86**, and the baseline-aware type-relationships survey is clean at **175/175**. Full-corpus slice ratchets from `START=838` through `START=3998` in 40-case windows are all **40/40**, and the larger `START=4038 LIMIT=200`, `START=4238 LIMIT=200`, `START=4438 LIMIT=200`, `START=4638 LIMIT=200`, `START=4838 LIMIT=200`, `START=5038 LIMIT=200`, and `START=5238 LIMIT=200` sweeps are all **200/200**. The closed `START=5238 LIMIT=200` sweep advanced from 165/200 to **200/200** after source fixes for `Function.prototype.call`/`bind`/`apply` call-site typing, parameter default expression checking, computed binding-key expression checking, and a category-level Node16/NodeNext package-resolution full-program harness bucket that works in exact-baseline and coarse expected-error paths. The closed ratchet now leaves **469 / 5 907 cases (7.9%)** outside the promoted slice. The harness explicitly tracks coarse expected-error/expected-clean gaps for option-deprecation, resolver/package/library/reference-path, Node package-resolution/mode-selection fixtures, decorator signature/name-evaluation/metadata/emit-helper gaps, accessor override, auto-accessor, mixin, class constructor/accessibility/abstractness/static-block/async target semantics, `super` ordering, static-side `this`, private-name, ES/lib globals, enum/ambient/logical-assignment/JS CommonJS/JSDoc/parser/internal-module/resource-management/target-variant diagnostics, and regex/divide lexer-mode exactness not yet modeled by the single-source checker. The coarse type-relationships ratchet is saturated; next Phase 6 work should continue at `START=5438 LIMIT=200`, then graduate from expected-any checks to exact `.errors.txt` text comparison and a per-PR delta gate. No Settlers III source migration has started; Appendix E is a planning artifact only.
 
 ### Phase 0 — Infrastructure rebuild
 
@@ -50,6 +50,7 @@
 | 5 — Performance engineering | 🟡 watch + cache + parallel bind landed | `packages/ts_watch/` polls a pluggable `StatFs` and emits `ChangeSet`s. `packages/ts_cache/` is a content-addressed cache with disk persistence (sharded `<root>/<2hex>/<rest>.cache`, `HMC1` magic). `Program.compileAllParallel` spawns `min(NPROC, 8)` workers. Phase 5 punch list (§5.A): finer-grained query DB invalidation (per-symbol vs per-file); Salsa-style query memoization across phases; mmap'd `lib.*.d.ts`; PGO + LTO build of Home itself; perf gates wired into CI; native FS-event backends (FSEvents/inotify/ReadDirChangesW). |
 | 6 — Conformance hardening | 🟡 runner + 56-case canon corpus + local TS smoke/category/full-corpus hooks landed | `packages/ts_conformance/` runs source through the compiler and diffs against tsc-style baselines. `runCorpus(gpa, corpus, *results) -> Stats` plus `runDirectory` cover inline and disk fixtures. `runCategorySpecs` summarizes named local TypeScript conformance folders with bounded memory, the current category gate is **86/86**, `exact_error_headers` loads upstream `.errors.txt` diagnostic headers for byte comparison, and `HOME_TS_CONFORMANCE_FULL=1` runs the local 5 907-case corpus with start/limit controls for crash bisection. Current ratchets: every 40-case window from `START=838` through `START=3998` is **40/40**; the larger `START=4038 LIMIT=200`, `START=4238 LIMIT=200`, `START=4438 LIMIT=200`, `START=4638 LIMIT=200`, `START=4838 LIMIT=200`, `START=5038 LIMIT=200`, and `START=5238 LIMIT=200` sweeps are all **200/200**. **469 / 5 907 cases (7.9%)** remain outside the closed slice; next ratchet is `START=5438 LIMIT=200`. Phase 6 punch list (§6.A): finish crash-free full-corpus execution, promote exact diagnostic comparison, and wire a per-PR delta gate. |
 | 7 — Native codegen for TS | ⬜ blocked-by Phase 6 | The "typed monomorphizable subset" is well-understood; existing `packages/codegen/` and `packages/optimizer/` apply. |
+| 7.5 — Game-scale TS-flavor validation | 📝 planned | Use the planned Settlers III remake as a real workload for typed TS-flavor Home: fixed-timestep simulation, map/asset pipelines, renderer/audio/input abstractions, deterministic networking, replay baselines, and native/WASM build outputs. See Appendix E. |
 | 8 — LSP | 🟢 protocol layer + cross-file refs + extensive wire surface landed | `packages/ts_lsp/` (query surface) + `packages/ts_lsp_server/` (JSON-RPC framing + Method dispatch) + `home-lsp` stdio binary. Hover renders TypeIds; goto-definition walks the binder's scope graph; references search every file in the program graph. Wire-protocol coverage now includes: `codeLens`, `typeDefinition`, `callHierarchy`, `didChange publishDiagnostics(Diagnostic[])`, parameter-name inlay hints, `completionItem/resolve` (detail), `implementation`, `documentLink`/`documentLinkResolve`, `textDocument/diagnostic` pull, `workspace/willRenameFiles` (now with real import-path rewrites, no longer a stub), `textDocument/selectionRange`, `textDocument/linkedEditingRange` (JSX tag-pair, real implementation), `workspace/executeCommand`. Comprehensive method-coverage audit + `SUPPORTED_METHODS` list landed in `ts_lsp_server`. Remaining (§8.A): auto-import completion via interner search; semantic tokens at full granularity; codeAction (organize imports, fix-all, infer param types); FS-event-driven push diagnostics. |
 | 9 — Ecosystem & migration | ⬜ blocked-by Phase 7 | |
 | 10 — Release & validation | ⬜ blocked-by all | |
@@ -61,6 +62,7 @@ Each landed deliverable updates the table above (status → ✅ done) **and** wr
 ### Journal
 
 - **2026-05-04 — Phase 0 kickoff.** Added Process State tracking. Phase 0 task list opened. Verified Zig toolchain at 0.16.0-dev.3144+ac6fb0b59. Confirmed existing `packages/lexer/src/string_pool.zig` is broken under modern Zig API (`std.ArrayList(T).init` no longer exists; needs migration to `.empty` + allocator-on-append) — flagging for Phase 0 cleanup pass after the new packages land.
+- **2026-05-11 — Settlers III TS-flavor remake plan added.** Added a no-migration planning track for a faithful Home TS-flavor remake of the MIT-licensed `~/Code/Apps/settlers-remake` Java project into a future `~/Code/Apps/settlers-iii` app. Appendix E records the source inventory, legal/asset constraints, reusable package abstractions, target project structure, deterministic simulation plan, renderer/audio/input/network/tooling architecture, phased migration sequence, and validation gates.
 - **2026-05-04 — Phase 0.2 (`packages/arena/`) landed.** 247-LOC implementation, 11 unit tests, all passing under `zig build test`. Provides `Arena` (named, scoped, with cumulative + peak-live byte counters bound to the standard `std.mem.Allocator` vtable) and `PhaseArenas` (canonical seven-phase bundle: lex/parse/ast/bind/hir/check/emit, torn down in reverse phase order). Wired into `build.zig` test step. Note on pre-existing build state: `zig build` (full exe) is broken at `src/main.zig:945` from a Zig stdlib API change (`error.EndOfStream` no longer in the LSP `readPacket` error set) — unrelated to TS-parity work, but every Phase 0 step verifies via `zig build test` rather than `zig build` until that's fixed in a separate cleanup PR.
 - **2026-05-04 — Phase 0.3 (`packages/string_interner/`) landed.** 12 unit tests including parallel-stress over 8 threads × 250 inserts + RwLock-correctness across 4 threads. 64-shard table; `StringId = (shard:6 | local:26)`; Wyhash for shard selection; per-shard `RwLock + StringHashMapUnmanaged + ArrayListUnmanaged + ArenaAllocator`. Discovery during implementation: Zig 0.16-dev moves `std.Thread.RwLock` → `std.Io.RwLock` (Io-abstraction migration), and the Io variant requires an `Io` parameter on every operation. Workaround: shipped a minimal in-package `RwLock` built on `std.atomic.Value(u32)` with a writer-bit + reader-count layout. This is reader-preferred and spins under contention, which is acceptable given the 64-way sharding makes per-shard contention near-zero. Phase 5 will revisit if profiling demands a futex-backed primitive. `count()` post-init is `1` (empty string pre-interned at id=0). Total tests across both packages: 23. `zig build test` summary: 561/561.
 - **2026-05-04 — Phase 0.4 (`packages/hir/`) landed.** 12 unit tests; the §5.2 SoA design materialized in code. Hot-column footprint: `kind:1 + span:8 + parent:4 + type:4 + payload:4 = 21 B/node` — under the 24 B budget per the plan, with a `comptime` gate that fails compilation if a future change pushes it higher. Reserved sentinels: `none_node_id = 0` in every column, primitive `TypeId`s 0–15 (Tier 1 §11.3 bit-packed: `any`, `unknown`, `never`, `void`, `null`, `undefined`, `string`, `number`, `boolean`, `bigint`, `symbol`, `object`, `true_lit`, `false_lit`, plus 2 reserved). Per-kind side tables for binop/unary/logical/update/call/member/element/identifier/string-lit/number-lit/bigint-lit/bool-lit/conditional/assignment/block/if/return; variable-arity children (call args, block stmts) live in a shared `child_pool`. `Builder` API auto-wires `parent` fields. Cold side-table for JSDoc + debug names is keyed by `NodeId` and never consulted on the hot path (Tier 1 §11.4). The HIR is the converging IR for both the existing Home frontend and the future TS frontend; new node kinds added incrementally as Phase 1 lands. `zig build test` summary: 573/573.
@@ -1522,6 +1524,8 @@ Home pays a ~20–60% overhead vs. raw esbuild/Bun bundler **because we add type
 
 **The unique offer.** No other TS compiler does this. Bridge between "TS as a typed scripting language" and "TS as a systems language."
 
+**Game-scale forcing function.** The Settlers III remake plan in Appendix E becomes the first deliberately hard, non-toy TS-flavor workload for this phase: large enum-heavy domain models, deterministic fixed-timestep simulation, binary map/asset decoders, pathfinding, replay serialization, long-lived object pools, renderer/audio/input integration, and cross-target output. The game should not block Phase 7's compiler work, but every Phase 7 design decision must be checked against the question: "Can `~/Code/Apps/settlers-iii` build through Home without escaping back into JavaScript?"
+
 **Work.**
 
 1. **Subset definition** (2 weeks). Document precisely which TS programs compile natively: full type system, but property access only on declared shapes (no `obj[arbitraryString]` unless typed via `Record<…>`); no `eval`, no `Function` constructor, no prototype mutation. JS escape hatch via `extern "js"` for the dynamic 5%.
@@ -1532,6 +1536,25 @@ Home pays a ~20–60% overhead vs. raw esbuild/Bun bundler **because we add type
 6. **LLVM backend completion** (2 weeks). Existing `packages/codegen/src/llvm_codegen.zig` works for Home; extend for the TS subset.
 
 **Exit criteria.** A 50-project corpus of typed-subset TS compiles natively and matches Node-on-tsc output for unit tests.
+
+### Phase 7.5 — Game-scale TS-flavor validation through Settlers III (12–24 weeks after Phase 7 starts)
+
+**Goal.** Prove Home's TS flavor can carry a large real-time application by planning, then building, a faithful modern remake of the MIT-licensed open-source Settlers III remake currently checked out at `~/Code/Apps/settlers-remake`, into a new standalone project at `~/Code/Apps/settlers-iii`.
+
+**Important scope guard.** This phase starts only after the compiler/package prerequisites are explicitly ready. The current document records the plan only; it does not copy Java sources, create `~/Code/Apps/settlers-iii`, import assets, or begin the port.
+
+**Work.**
+
+1. **Reusable package substrate first.** Promote game-agnostic abstractions into `packages/` before application code consumes them: fixed-timestep clocks, input events, sprite atlases, texture/audio asset loading, binary readers, deterministic RNG, replay logs, lockstep packets, tile-map geometry, UI layout primitives, and renderer command buffers.
+2. **Source inventory and semantic baselines.** Freeze the Java source revision, module boundaries, resource lists, maps, replay fixtures, and validation maps from `settlers-remake`; capture behavior before translating.
+3. **Typed domain model.** Port enums and pure data first: civilisation, landscape, material, movable, building, map object, player, action, network packet, and image-link models.
+4. **Map and asset pipeline.** Implement `.map` / `.rmap` readers, building XML ingestion, original Settlers III asset folder discovery, replacement-texture indexing, SND parsing, and generated manifests.
+5. **Deterministic core simulation.** Build world state, grid/partition ownership, goods logistics, building jobs, movable tasks, pathfinding, combat, AI, fog-of-war, and replay checks under a fixed-step scheduler.
+6. **Renderer/audio/input shells.** Only after simulation snapshots are stable, add the visual/audio/application loop using the reusable packages instead of game-local one-offs.
+7. **Network and replay parity.** Preserve deterministic lockstep semantics and keep replays as the primary debugging artifact.
+8. **Map editor and tools.** Recreate the map creator and validation tools after the game loop is stable, sharing the same map/resource libraries.
+
+**Exit criteria.** A headless `settlers-iii` simulation test suite passes canonical maps and replays; a playable native desktop build loads original or demo asset folders; the same codebase can produce a WASM/browser preview build; `home test` and `home build` cover the game without bespoke Java tooling; package abstractions remain reusable by a second game prototype.
 
 ### Phase 8 — LSP (6–10 weeks)
 
@@ -1560,6 +1583,7 @@ Home pays a ~20–60% overhead vs. raw esbuild/Bun bundler **because we add type
 4. **Migration guide.** "`tsc` flags → `home tsc` flags" doc.
 5. **CI integration.** GitHub Action.
 6. **`npm`/`bun`/`pnpm` integration.** Home ships as `npm install -g @home-lang/tsc` so `npx home tsc` works.
+7. **Game migration guide.** Document the `settlers-remake` → `settlers-iii` route as the canonical "large app/game in TS-flavor Home" migration story, including what belonged in reusable packages versus the app.
 
 ### Phase 10 — Release & validation (2–4 weeks)
 
@@ -2106,6 +2130,26 @@ Output format mirrors `tsc --extendedDiagnostics`. Tools that scrape these numbe
 | **New: `packages/bundler`** | JS/TS bundler (vendored Bun bundler + Home adapter) | Phase 4.5 — **reuses ~20 130 LOC of existing Zig** |
 | **New: `packages/bundler/adapter`** | HIR ↔ Bun-AST shim, symbol-table bridge | Phase 4.5 |
 | **New: `packages/tsserver_shim`** | tsserver protocol bridge | Phase 9, optional |
+| `packages/audio` | Game audio loading, SND decoding, music/effects playback substrate | Phase 7.5: add a small, real-time oriented API for PCM buffers, sample banks, channel groups, positional volume/panning, and deterministic sound-event scheduling; keep codec-heavy work behind optional adapters. |
+| `packages/video` | GPU/compute and pixel-format groundwork | Phase 7.5: expose the useful low-level pieces as a renderer-adjacent utility layer, but avoid making the game depend on video transcoding concepts. |
+| `packages/image` | Texture decode/transform/build pipeline | Phase 7.5: add atlas packing, palette/indexed image support, alpha-mask/shadow-map handling, mip generation, and manifest output consumed by `settlers-iii`. |
+| `packages/media` | Unified media facade | Phase 7.5: keep as offline/tooling glue for asset conversion; do not put the real-time game loop through the high-level transcoding API. |
+| `packages/realtime` | Fixed-step clocks and frame pacing | Phase 7.5: abstract deterministic ticks, render interpolation, pause/speed controls, wall-clock drift measurement, and replay/network step barriers. |
+| `packages/events` | Typed event bus | Phase 7.5: standardize input, UI, audio, simulation-notification, network, and debug events with bounded queues and backpressure behavior. |
+| `packages/platform` | OS/window/backend selection | Phase 7.5: select Metal/Vulkan/OpenGL/WebGPU/audio/input backends at compile time and keep platform forks out of the game domain code. |
+| `packages/drivers` | Framebuffer/input concepts and low-level graphics/input vocabulary | Phase 7.5: lift reusable desktop-facing event/graphics interfaces out of bare-metal driver assumptions; retain bare-metal code as one backend. |
+| `packages/io` | Binary readers and resource streams | Phase 7.5: provide endian-aware, bounds-checked readers for `.map`, `.rmap`, image-index, SND, replay, and packet formats. |
+| `packages/serialization` | Save/replay/network encoding | Phase 7.5: add versioned schemas, golden binary fixtures, stable field ordering, and forward-compatible migration hooks. |
+| `packages/compression` | Packed map/resource support | Phase 7.5: centralize compression/decompression used by maps, asset packs, and network payloads. |
+| `packages/net` / `packages/websocket` | Multiplayer transport | Phase 7.5: add lockstep-friendly packet transport, LAN discovery, relay/WebSocket option for browser builds, jitter buffers, and clock sync primitives. |
+| `packages/config` / `packages/env` | Game configuration and asset-folder discovery | Phase 7.5: support case-insensitive original asset folder checks (`GFX`, `SND`, `MAP`), user options, per-platform config dirs, and portable dev overrides. |
+| `packages/i18n` | Labels/localization | Phase 7.5: replace Java resource-bundle usage with generated typed message catalogs for UI, buildings, materials, and network messages. |
+| `packages/testing` | Simulation, replay, renderer, and asset tests | Phase 7.5: add golden-map fixtures, deterministic replay assertions, headless tick harnesses, and screenshot/pixel comparison helpers. |
+| **New: `packages/game_core`** | Reusable ECS-ish/non-ECS game primitives | Phase 7.5: sparse handles, object pools, fixed-step world scheduler, deterministic RNG, spatial grids, commands, replays, and debug snapshots. |
+| **New: `packages/game_assets`** | Game asset graph and build-time manifest tooling | Phase 7.5: asset IDs, typed manifests, dependency tracking, atlas/sound-bank builders, source provenance, and license metadata. |
+| **New: `packages/game_render`** | Renderer abstraction for 2D/isometric games | Phase 7.5: sprite batches, atlas bindings, terrain layers, fog masks, minimap targets, UI overlay passes, and backend-agnostic command buffers. |
+| **New: `packages/game_input`** | Desktop/browser/gamepad input normalization | Phase 7.5: high-level actions, pointer gestures, selection rectangles, camera pan/zoom, hotkeys, text input, and input replay capture. |
+| **New: `packages/game_net`** | Deterministic lockstep multiplayer primitives | Phase 7.5: tick-stamped commands, checksums, resync protocol, replay-compatible packet logs, lobby/match metadata, and transport adapters. |
 
 ---
 
@@ -2282,6 +2326,522 @@ These were not in the original plan; uncovered during verification:
 2. **tsgo's binder is parallel.** Home doesn't get a free bind speedup vs. tsgo by parallelizing.
 3. **tsgo's tsconfig coverage is essentially complete.** No gaps to exploit; we have to do all of it too.
 4. **tsgo conformance pass rate of 99.6% is high.** The remaining 74 failures are mostly edge cases in declaration emit and JS-source checking — hard ones to crack.
+
+---
+
+## Appendix E · Settlers III TS-flavor Home remake plan (2026-05-11)
+
+This appendix is a planning artifact for a future port/remake of the open-source Java project in `~/Code/Apps/settlers-remake` into a standalone Home TS-flavor project at `~/Code/Apps/settlers-iii`. It intentionally does not start the migration. No target project, source copy, generated assets, or package implementation is created by this document.
+
+The purpose is twofold:
+
+1. Use a serious real-time strategy game as a forcing function for Home's TypeScript-compatible language surface, native codegen, bundler, packages, and tooling.
+2. Keep reusable game infrastructure in `packages/` instead of hiding it inside one app, so `settlers-iii` becomes the first consumer rather than the only beneficiary.
+
+### E.1 Source survey and constraints
+
+**Source root.** `~/Code/Apps/settlers-remake`
+
+**Target root.** `~/Code/Apps/settlers-iii`
+
+**Source license.** The checked-out remake ships an MIT license in `LICENSE.txt`. Any migrated code must preserve attribution and license notices. Original Blue Byte / Ubisoft Settlers III game assets are not MIT-licensed and must not be vendored into Home or the new app. The app may discover and read user-provided original or demo asset folders (`GFX`, `SND`, `MAP`) exactly as the Java remake expects, and may ship permissively licensed replacement assets only after provenance is recorded in `packages/game_assets`.
+
+**Current Java module shape.**
+
+| Java module | Role in the current remake | Home migration destination |
+|---|---|---|
+| `jsettlers.common` | Shared domain enums, action types, positions, map shapes, building XML configs, image links, resource lookup, menus, player interfaces | `apps/settlers-iii/src/domain`, `packages/game_core`, `packages/game_assets`, `packages/i18n` |
+| `jsettlers.logic` | Simulation, map grid, partitions, materials, building logic, movable tasks, pathfinding, AI, fog, trading, replay, game start/load | `apps/settlers-iii/src/sim`, `src/world`, `src/ai`, `src/replay`, plus reusable primitives in `packages/game_core` |
+| `jsettlers.graphics` | Image readers, texture/sprite lookup, map drawing, minimap, UI controls, font drawing, sound/music managers | `apps/settlers-iii/src/render`, `src/ui`, `src/audio`, with reusable renderer/audio layers in `packages/game_render`, `packages/image`, `packages/audio` |
+| `go.graphics` / platform modules | Graphics abstraction, events, regions, sound, Swing/Android backends, Vulkan helpers | `packages/game_render`, `packages/game_input`, `packages/platform`, backend adapters |
+| `jsettlers.network` | Lobby/server/client packets, deterministic timer, LAN discovery, sync task packets, logging, socket/channel abstractions | `packages/game_net`, `packages/net`, `packages/websocket`, `apps/settlers-iii/src/net` |
+| `jsettlers.main.swing` | Desktop launcher, menus, options, resource folder setup | `apps/settlers-iii/src/app/desktop`, `src/ui/screens`, `packages/config` |
+| `jsettlers.main.android` | Android UI and resources | Deferred; browser/WASM and desktop native come first |
+| `jsettlers.mapcreator` | Map editor, validation tools, presets, icons | `apps/settlers-iii/tools/map-editor`, `tools/map-validate`, shared map libraries |
+| `jsettlers.tools` / `buildSrc` | Texture generation, shader compile helpers, debug tools | `packages/game_assets`, `apps/settlers-iii/tools/assets` |
+| `jsettlers.tests` / `jsettlers.testutils` | Validation maps, replay-oriented helpers, integration fixtures | `apps/settlers-iii/tests`, `packages/testing` |
+
+**Observed high-value resources.**
+
+- Building definitions live as XML resources for Amazon, Asian, Egyptian, and Roman civilisations under `jsettlers.common/src/main/resources/jsettlers/common/buildings/*`.
+- The source tree includes `.rmap` release/test maps and several original `.map` files under `maps/`.
+- The remake expects original Settlers III asset directories named `GFX`, `SND`, and optionally `MAP`.
+- Texture provenance is partly documented in `TEXTURES.md`; every newly bundled replacement texture must gain first-class license metadata before distribution.
+- Existing screenshots and UI resources are useful for regression references, but should not become the final design source of truth.
+
+**Inventory baseline from the 2026-05-11 local checkout.** Regenerate this in E0 from the pinned source commit; if counts differ, update the ledger before implementation.
+
+| Source area | Java files | Main resources | Migration coverage requirement |
+|---|---:|---:|---|
+| `jsettlers.common` | 187 | 149 | Domain enums/interfaces, building XML, positions, map shapes, player/menu/material/movable/selectable/statistics/resource abstractions |
+| `jsettlers.logic` | 434 | 0 | Simulation, AI, algorithms, pathing, fog, terraforming, map load, buildings, movables, trading, timer, replay |
+| `jsettlers.graphics` | 157 | 15 | Image readers/indexes, map renderer, minimap, UI controls, localization, messages, sounds |
+| `jsettlers.network` | 114 | 0 | Client/server/lobby, packets, sync timer, lockstep, LAN discovery, socket/channel/log/watchdog layers |
+| `jsettlers.main.swing` | 95 | 34 | Desktop shell, menus, options, folder selection, look-and-feel resources |
+| `jsettlers.main.android` | 136 | 0 | Deferred platform shell; every row still needs `out-of-scope-with-approval` or a later Android plan |
+| `jsettlers.mapcreator` | 161 | 35 | Editor, validators, preset loading, icons, tools, safe map round-trip behavior |
+| `jsettlers.tools` | 48 | 0 | Texture/building/debug tooling |
+| `jsettlers.testutils` / `jsettlers.tests` | 10 | 11 | Validation maps, replay fixtures, map helpers |
+| `go.graphics` | 63 | 0 | Cross-platform graphics/event/sound abstractions |
+| `go.graphics.swing` | 48 | 0 | Desktop graphics backend and Vulkan helpers |
+| `go.graphics.android` | 7 | 0 | Deferred Android graphics backend |
+| `jsettlers.graphics/layoutbuilder` | 12 | 0 | Generated UI layout tooling |
+| `buildSrc` | 20 | 0 | Build-time texture/shader generation |
+| `maps/` | 0 | 22 | 19 `.rmap` and 3 `.map` fixtures for map/replay/validation gates |
+
+The sampled core/common/graphics/network layers contain roughly 1,360 class/interface/enum declarations. The ledger must track source files, not only top-level declarations, because nested classes, resources, and generated behavior can still affect gameplay.
+
+### E.2 North-star outcome
+
+The finished `~/Code/Apps/settlers-iii` should feel faithful to Settlers III and to the Java remake's hard-won behavior, while being a modern Home-native codebase:
+
+- **Faithful simulation:** hex/isometric terrain, civilisation-specific buildings, goods chains, carriers, roads, residences, mines, farms, military, magic/manna, fog-of-war, towers, harbors, ships, trade, AI, and victory/endgame statistics behave according to the Java remake's observable rules unless a divergence is explicitly documented.
+- **Deterministic core:** the simulation runs through a fixed-step tick scheduler with deterministic RNG, stable entity handles, integer/fixed-point math where needed, reproducible command logs, replay checksums, and network-lockstep compatibility.
+- **Modern renderer:** renderer code uses atlas-driven sprite batches, terrain layers, object layers, shadow/fog/minimap passes, UI overlays, and platform backends through `packages/game_render`.
+- **Clean asset policy:** original assets are user-provided; replacement assets are manifest-tracked with provenance. Build-time asset conversion is reproducible and does not silently embed proprietary files.
+- **Home TS flavor first:** domain/application code is written in TypeScript-flavored Home, checked by `home tsc`, built by `home build`, and kept within the native-eligible subset wherever practical.
+- **Package-first infrastructure:** anything plausibly reusable by another game lives in `packages/`; Settlers-specific code lives in the app.
+- **Tooling proof:** the project exercises Home LSP, diagnostics, bundler, native codegen, WASM build, testing, asset build, and package resolution at scale.
+
+### E.2.1 Faithfulness and completeness contract
+
+The rewrite is not considered faithful or complete just because the main loop is playable. It is complete only when the migration is traceable, testable, and intentionally modernized.
+
+**Faithful means:**
+
+- Every gameplay-affecting Java class, enum, XML resource, map fixture, packet, action, and validation map has a row in a migration ledger.
+- Every ledger row has one of four statuses: `ported`, `replaced-by-package`, `intentionally-different`, or `out-of-scope-with-approval`.
+- Every `intentionally-different` row explains the user-visible behavior change, why the change is better, and which tests prove the new behavior.
+- Every `out-of-scope-with-approval` row links to a decision note; silent omissions are not allowed.
+- Deterministic behavior is proven through replay/map checksums, not developer memory.
+- The original Java project remains the behavior oracle until a Home subsystem has stronger tests than the Java code it replaces.
+
+**Modern means:**
+
+- The app is not a Java-shaped port in TS syntax. It uses data-oriented hot paths, typed handles, generated manifests, explicit schemas, package-owned renderer/audio/input/network abstractions, and strict TS-flavor Home types.
+- Platform-specific code is backend glue, not game logic.
+- The UI can change where ergonomics improve, but command semantics, simulation consequences, and replay/network behavior stay faithful unless explicitly documented.
+
+**Complete means:**
+
+- All four civilisations and their building/resource differences are represented.
+- All core gameplay loops are covered: terrain/map loading, resources, construction, workers, material logistics, housing, food, mines, farms, tools/weapons, military, towers, territory, manna/spells, ships/harbors/trade, fog, AI, victory/endgame stats, replay, save/load, and multiplayer lockstep.
+- The desktop game is playable from main menu through match end with original or demo asset folders.
+- Headless tests cover every release/test map that can legally be used as a fixture.
+- The map editor/tooling story is present enough to load, validate, inspect, and round-trip maps without corrupting them.
+- The final release has no dependency on Gradle, Java runtime, Swing, Android Java code, or proprietary vendored assets.
+
+### E.3 TS-flavor coding contract
+
+The game should use TS-flavor Home as a strict, statically analyzable systems language rather than as loose JavaScript:
+
+- Enable `strict`, `noImplicitAny`, `noUncheckedIndexedAccess`, `exactOptionalPropertyTypes`, `noUnusedLocals`, and `noUnusedParameters` once the compiler supports the necessary diagnostics at app scale.
+- Prefer `const enum` or plain `enum` for closed domain sets: `MaterialType`, `BuildingType`, `MovableType`, `Civilisation`, `LandscapeType`, `Direction`, `ActionType`, `NetworkPacketKind`.
+- Use discriminated unions for actions, packets, tasks, UI messages, load errors, and asset decode results.
+- Use `Result<T, E>`-style APIs for map/asset/network failures, either from Home stdlib or a small project wrapper, instead of exception-shaped control flow.
+- Keep simulation state in explicit structs/classes with stable IDs; avoid prototype mutation, `eval`, dynamic property bags, and arbitrary `Record<string, unknown>` in the native-eligible core.
+- Use typed arrays / packed buffers for hot grids: terrain height, landscape, passability, ownership, fog, resource deposits, partition IDs, object occupancy, and path costs.
+- Keep renderer/audio/input effects outside simulation ticks. Simulation emits deterministic events; presentation systems consume them later.
+- Treat `async` as an edge concern for file/network/UI loading. The simulation tick itself must stay synchronous and reproducible.
+- Keep `.hm` native islands optional and isolated for backend glue or performance kernels; the domain should remain TS-flavor readable.
+
+### E.4 Target project structure
+
+The future app should be created only after package prerequisites are in place:
+
+```text
+~/Code/Apps/settlers-iii/
+  AGENTS.md
+  LICENSES/
+    settlers-remake.MIT.txt
+    asset-provenance.md
+  home.toml
+  tsconfig.json
+  package.json
+  src/
+    app/
+      desktop/
+      web/
+      headless/
+    domain/
+      action.ts
+      building.ts
+      civilisation.ts
+      direction.ts
+      landscape.ts
+      material.ts
+      movable.ts
+      player.ts
+    sim/
+      clock.ts
+      world.ts
+      systems/
+      commands/
+      checksums.ts
+    world/
+      grid/
+      partition/
+      map-loading/
+      resources/
+    economy/
+      buildings/
+      logistics/
+      production/
+    movement/
+      pathfinding/
+      tasks/
+      roads/
+    combat/
+      soldiers/
+      towers/
+      spells/
+    ai/
+      behavior-tree/
+      construction/
+      army/
+    render/
+      scene.ts
+      terrain.ts
+      objects.ts
+      fog.ts
+      minimap.ts
+    audio/
+      sound-bank.ts
+      music.ts
+      spatial.ts
+    input/
+      actions.ts
+      selection.ts
+      camera.ts
+    ui/
+      screens/
+      panels/
+      widgets/
+    net/
+      lobby.ts
+      lockstep.ts
+      packets.ts
+    replay/
+      log.ts
+      reader.ts
+      writer.ts
+    assets/
+      manifest.ts
+      original-folders.ts
+  assets/
+    generated/
+    replacement/
+    manifests/
+  maps/
+    release/
+    test/
+  tools/
+    assets/
+    map-editor/
+    map-validate/
+    replay-inspect/
+  tests/
+    golden/
+    sim/
+    maps/
+    replays/
+    render/
+    assets/
+```
+
+### E.5 Package abstraction plan before app migration
+
+Do this first. It is the difference between "a game port" and "Home becomes good at games."
+
+| Package | Needed abstraction | Why Settlers III needs it | Done when |
+|---|---|---|---|
+| `packages/game_core` | `TickClock`, `FixedStepLoop`, `EntityId<T>`, generational handles, object pools, deterministic RNG, command queues, checksums, spatial grids | The simulation has many long-lived objects, reproducible ticks, replay logs, and hot lookup tables | Headless demo can tick a toy map deterministically and emit equal checksums on macOS/Linux |
+| `packages/game_assets` | Asset graph, typed manifests, source provenance, atlas/sound-bank builders, incremental asset cache | Original/replacement assets must be discovered, transformed, and tracked without licensing ambiguity | Asset build produces deterministic manifests from a sample folder and records license/source fields |
+| `packages/game_render` | 2D/isometric renderer interface, sprite batcher, texture atlas API, render passes, command buffers, backend adapters | Terrain/object/fog/minimap/UI rendering must not bind directly to one platform | A sample isometric scene renders through at least one desktop backend and one headless/screenshot backend |
+| `packages/game_input` | Normalized pointer/keyboard/gamepad events, camera controls, selection rectangle, action mapping, input replay | RTS controls combine selection, construction placement, camera motion, hotkeys, and UI widgets | Input events can be recorded and replayed into a deterministic command stream |
+| `packages/game_net` | Lockstep command packets, tick barriers, state hashes, jitter buffer, resync protocol, lobby metadata | JSettlers' network model revolves around synchronized tasks and a shared timer | Two headless clients exchange commands and stay checksum-equal through artificial latency |
+| `packages/realtime` | Wall-clock pacing, frame interpolation, pause/speed controls, drift measurement | The Java `NetworkTimer`/game clock concept needs a Home-native fixed-step replacement | Clock tests cover pause, speed changes, catch-up caps, and deterministic tick counts |
+| `packages/events` | Bounded event queues and typed subscriptions | Simulation, UI, renderer, audio, and network need isolated event lanes | Backpressure and ordering are defined and tested |
+| `packages/io` | Endian-aware binary readers/writers, bit readers, memory-mapped/read-only streams | `.map`, `.rmap`, SND, replay, and packets are binary-heavy | Golden binary tests cover all primitive read/write operations and bounds failures |
+| `packages/serialization` | Versioned schemas, stable field order, binary golden tests, migration hooks | Saves, replays, packets, and map tooling need compatible evolution | Changing a schema requires an explicit version bump and golden fixture update |
+| `packages/image` | Indexed/palette images, atlas packing, alpha/shadow masks, sprite metadata | Settlers-style assets are sprite-sheet and palette heavy | Atlas builder emits manifest + pixel output matching golden dimensions/checksums |
+| `packages/audio` | PCM sample bank, channel groups, positional panning, music loops, sound event scheduling | `SoundManager` maps sound IDs to variants and area-aware playback | Sample-bank tests select variants deterministically under a seeded RNG |
+| `packages/platform` | Desktop/web/backend selection | Native desktop and WASM preview should use the same app code | `home build` selects backend without app-level `if platform` sprawl |
+| `packages/net` / `packages/websocket` | TCP/UDP/WebSocket transport adapters | Desktop LAN and browser relay paths need different transports under one lockstep protocol | Loopback integration tests pass for at least one native and one WebSocket transport |
+| `packages/i18n` | Typed message catalogs | Java resource bundles and labels need generated typed accessors | Missing translation keys become compile/test failures |
+| `packages/testing` | Headless ticks, replay asserts, pixel snapshots, asset golden helpers | The port needs confidence before visuals are complete | Test helpers are used by a toy fixture before game code begins |
+
+### E.6 Migration strategy: do not translate line-by-line
+
+The Java codebase is a reference implementation and behavior oracle, not the desired architecture. Translate concepts and tests, not Java inheritance.
+
+**Keep faithfully:**
+
+- Domain constants, enum value order where it affects serialization or asset lookup.
+- Map format semantics and user asset-folder discovery behavior.
+- Observable simulation rules: production chains, material distribution, task scheduling, combat outcomes, fog visibility, building placement, resource deposits, AI decisions where they affect gameplay.
+- Replay/network determinism and bug-reporting artifacts.
+- Existing validation maps and release maps as golden fixtures when license-compatible.
+
+**Modernize deliberately:**
+
+- Replace deep Java interface hierarchies with closed unions, typed handles, and data-oriented systems where that improves clarity and performance.
+- Replace Swing/Android UI duplication with a shared UI model plus platform render/input backends.
+- Replace ad hoc resource lookups with generated typed manifests.
+- Replace general object serialization with explicit versioned schemas.
+- Replace mutable Java collections in hot loops with packed arrays, sparse sets, and arena/object-pool storage.
+- Replace renderer object callbacks with command-buffer generation and batch submission.
+
+**Do not do:**
+
+- Do not vendor proprietary original assets.
+- Do not create a one-off renderer/audio/input stack inside `settlers-iii`.
+- Do not begin with UI menus. The first playable build must grow out of headless deterministic simulation.
+- Do not couple simulation logic to frame rate, wall clock, rendering, audio, or platform input.
+- Do not make multiplayer authoritative-server first; the faithful path is deterministic lockstep with replay-compatible commands.
+
+### E.7 Phase-by-phase migration plan
+
+| Phase | Name | Main output | Exit gate |
+|---|---|---|---|
+| E0 | Freeze source and behavior inventory | Source commit, module map, class/resource index, license ledger, maps list, replay/test fixture list, migration ledger template | A human can answer "where this Java behavior lives, who owns it, how it will be tested, and what status it has" for every major subsystem |
+| E1 | Package substrate | `game_core`, `game_assets`, `game_render`, `game_input`, `game_net` skeletons plus upgrades to existing packages | Toy examples compile and test through Home |
+| E2 | Project scaffold | Empty `~/Code/Apps/settlers-iii` app with strict tsconfig/home config, workspace package deps, headless/desktop/web entrypoints | `home tsc`, `home test`, and `home build --headless` run on empty app |
+| E3 | Domain model | Typed enums/unions/data structs for actions, maps, materials, buildings, movables, players, packets | Generated API docs and enum serialization tests pass |
+| E4 | Resource and map loading | Building XML, `.rmap`, `.map`, asset folder scanner, manifests | Test maps load into typed immutable map data with checksums |
+| E5 | Headless world grid | Terrain, height, landscape, passability, ownership, partitions, fog arrays | Golden map snapshots match expected dimensions/counts/partition checksums |
+| E6 | Economy loop | Buildings, construction stacks, workers, material requests/offers, production | Full-production validation map reaches stable expected counters |
+| E7 | Movement and pathfinding | Directions, roads, carriers, task queues, A*/cost fields, collision/occupancy | Pathfinding test maps produce stable route and tick counts |
+| E8 | Combat and special systems | Soldiers, towers, manna/spells, attacks, occupation, victory states | Soldier fighting/tower test maps replay deterministically |
+| E9 | AI | Construction planner, high-level goals, army logic, pioneers, behavior-tree replacement | AI-vs-AI headless matches stay deterministic for long runs |
+| E10 | Renderer MVP | Terrain/object sprite rendering, camera, selection, minimap, fog overlay | A loaded map renders a pixel-stable screenshot through headless renderer |
+| E11 | Playable desktop loop | Input, camera, placement, panels, audio, save/replay, options | Single-player map is playable with original/demo assets |
+| E12 | Multiplayer lockstep | Lobby, packet schemas, command exchange, clock sync, checksums, reconnect/resync policy | Two local clients remain checksum-equal under latency/loss simulation |
+| E13 | Map editor and tools | Editor shell, validation tasks, asset tools, replay inspector | Existing map validation cases pass; editor can open/save non-destructively |
+| E14 | WASM/browser preview | Web build, WebSocket relay path, asset pack loading | Browser build loads a small map and runs/render ticks |
+| E15 | Release hardening | Perf, packaging, docs, license audit, bug-report bundle | Native release can be built reproducibly without Java/Gradle |
+
+### E.7.1 Required migration ledger
+
+Before implementation starts, create `docs/migration-ledger.md` in `~/Code/Apps/settlers-iii`. This file is the control plane for completeness.
+
+Each row must include:
+
+| Field | Required content |
+|---|---|
+| Source path | Java/resource/map/tool path in `~/Code/Apps/settlers-remake` |
+| Source kind | `class`, `enum`, `interface`, `resource`, `map`, `test`, `tool`, `ui`, `packet`, `asset-rule` |
+| Gameplay impact | `none`, `presentation`, `tooling`, `simulation`, `network`, `replay`, `asset` |
+| Target owner | Home package or `settlers-iii` module that owns the replacement |
+| Target path | Planned or actual Home path |
+| Migration status | `not-started`, `ported`, `replaced-by-package`, `intentionally-different`, `out-of-scope-with-approval` |
+| Parity evidence | Unit test, golden fixture, replay checksum, screenshot, packet fixture, or decision note |
+| Notes | Edge cases, known divergence, or source behavior not yet understood |
+
+The ledger is release-blocking. A playable build with unowned simulation/network/resource rows is not considered complete.
+
+### E.7.2 Gameplay completeness matrix
+
+The migration ledger should roll up into this matrix. Each cell must end as `green` or have an explicit approved divergence.
+
+| Area | Minimum faithful coverage |
+|---|---|
+| Civilisations | Roman, Egyptian, Asian, Amazon building sets, manna buildings, civilisation-specific production/resources |
+| Terrain and maps | `.rmap`, original `.map`, height, landscape, resources, objects, players, blocked/passable masks, start positions |
+| Buildings | Placement rules, construction materials, occupier slots, worker jobs, priority, sound hooks, stock/market/harbor/dock variants |
+| Economy | Material offers/requests, distribution settings, production enablement, accepted stock materials, tool/weapon chains, food/mines |
+| Movables | Carriers, workers, specialists, soldiers, ferries/ships where applicable, task queues, animation-state hooks |
+| Movement | Directions, roads, pathfinding costs, partition boundaries, collision/occupancy, water/land distinctions |
+| Military | Soldier classes/levels, combat strength, attacks, tower occupation, territory changes, barracks, hospitals, victory consequences |
+| Manna/spells | Manna production, upgrade possibilities, spell actions, spell effects, cooldown/eligibility rules |
+| Fog and visibility | Exploration, visible/explored states, sound visibility filtering, minimap visibility |
+| AI | Difficulty profiles, construction planning, resource expansion, pioneers, army behavior, long-match determinism |
+| Algorithms and terrain tools | Borders, distances, landmarks, partitions, Dijkstra/A*, construction placement, fog algorithms, terraforming, preview image generation |
+| UI commands | Every `jsettlers.common.action` command represented as a typed command with validation and replay serialization |
+| Menus and options | Start menu, map selection, multiplayer setup, player slots, settings/options file, folder selection, pause/speed/game menu |
+| Localization and messages | Building/material/movable/soldier names, network messages, system messages, labels, pluralization rules |
+| Statistics | Endgame statistics, production counters, combat strength, beds/settlers/manna counters, debug/production stats tooling |
+| Save/replay | Command logs, map id, seed, options, asset manifest id, periodic checksums, replay inspector |
+| Multiplayer | Lobby metadata, slot/player packets, match start seed, sync tasks, tick barriers, clock sync, divergence reports |
+| Audio | Sound id mapping, variants, positional volume/panning, music loops, fog/visibility filtering |
+| Rendering | Terrain, roads, buildings, movables, objects, effects, fog, minimap, UI panels, debug overlays |
+| Tools | Asset scan/build, map validation, map inspection, replay inspection, enough editor support for safe round-trip |
+| Diagnostics and bug reports | Logs, replay bundles, version/build info, divergence dumps, user-facing load/asset/map/network errors |
+
+### E.8 Detailed subsystem plan
+
+**Domain and generated data.**
+
+- Generate typed TS-flavor Home definitions from Java XML/building resources only after schema parsing is tested.
+- Keep a source-of-truth enum table for values that cross binary formats, action logs, packets, or asset indexes.
+- Represent domain IDs as nominal types where Home supports them, or as branded TS types until native nominal support exists.
+- Store civilisation differences as data tables rather than class overrides when possible.
+- Make generated files obviously generated and keep handwritten behavior in separate modules.
+
+**Map formats.**
+
+- Start with a read-only parser for `.rmap` because release/test maps are present in the source tree.
+- Add original `.map` support next, preserving every unknown/reserved field in the parsed model for round-trip tooling.
+- Use `packages/io` for byte-level parsing; no ad hoc slice indexing in app code.
+- Emit map-load diagnostics with byte offsets, section names, and recovery hints.
+- Create a `MapSnapshot` checksum that includes dimensions, heights, landscape counts, player starts, resources, objects, and blocked/passable masks.
+
+**Building XML.**
+
+- Parse current DTD-backed building XML into a typed intermediate model.
+- Convert XML to generated TS tables at asset-build time, not at runtime, unless dev mode requests live reload.
+- Preserve per-civilisation building availability and variant differences.
+- Create validators for missing materials, invalid stack positions, unknown landscape/building references, and impossible production loops.
+
+**World representation.**
+
+- Use struct-of-arrays for hot tile data: height, landscape, resource, owner, partition, fog, occupancy, blocked flags, road flags.
+- Use generational handles for buildings, movables, map objects, tasks, offers, requests, and combat engagements.
+- Keep a `WorldMutation` queue for systems that need deterministic ordering.
+- Define one canonical system order and test it. Any order change must update replay baselines.
+- Keep render-facing interpolation state separate from simulation state.
+
+**Economy and logistics.**
+
+- Port material types and production chains first, then material distribution, then worker/building behavior.
+- Treat offers/requests as explicit typed records with owner, material, amount, priority, source/destination, expiry, and checksum contribution.
+- Model storehouses/stocks, markets, harbors, docks, and trading as higher-level logistics systems over the same request/offer primitive.
+- Provide debug views for stuck materials, idle workers, blocked construction stacks, and unreachable requests.
+
+**Movement and pathfinding.**
+
+- Preserve `EDirection`/hex-grid direction semantics and tests from the Java common module.
+- Implement pathing as deterministic cost-field/A* primitives in `packages/game_core` where reusable.
+- Distinguish terrain passability, road preference, carrier routes, military movement, ferry/ship water paths, and building placement adjacency.
+- Avoid floating-point decisions in route selection; tie-break deterministically.
+- Maintain pathfinding golden outputs for `pathfindingtestmap.rmap`, `prioritytestmap.rmap`, and related test maps.
+
+**Combat and military.**
+
+- Port soldier types, levels, tower occupation, combat strength, attack commands, and fighting tasks as a closed deterministic subsystem.
+- Use seeded RNG or deterministic combat tables exactly where the Java behavior requires randomness.
+- Keep tower/territory ownership changes as replay-visible events.
+- Add tests around `soldierfightingtestmap.rmap` and `towermap.rmap` before renderer work.
+
+**AI.**
+
+- Recreate the Java behavior-tree/high-level AI as a typed planner with explicit state snapshots.
+- Keep old AI difficulty names and behavior knobs for compatibility.
+- Make AI decisions replay-visible and checksum-visible.
+- Build AI conformance with long headless matches rather than UI tests.
+
+**Rendering.**
+
+- Build the renderer after map/world snapshots are reliable.
+- Feed renderer from read-only views: `TerrainView`, `ObjectView`, `FogView`, `SelectionView`, `UiView`.
+- Use layered render passes: background/terrain, resources/decorations, roads, buildings, movables, effects, fog, selection/placement, UI, debug overlays.
+- Generate atlas manifests from asset build; runtime renderer consumes atlas IDs, not filenames.
+- Keep minimap rendering as its own pass fed by map/world summaries.
+- Add screenshot tests with a headless backend early.
+
+**Audio.**
+
+- Parse original SND/sound index behavior into `packages/audio` sample-bank abstractions.
+- Preserve known sound IDs and variant selection behavior in a data table.
+- Use simulation events for sound triggers but apply fog/visibility/listener filtering in presentation code.
+- Keep music loops and effects channels separate, with deterministic variant selection for replayed audiovisual tests.
+
+**Input and UI.**
+
+- Normalize input into commands: select, build, set priority, send soldiers, cast spell, set waypoint, toggle construction marks, material distribution, accepted stock material, trading requests.
+- Recreate UI panels as data-driven views over selected entities and player state.
+- Use the Java action classes as the action inventory, not as a class hierarchy to copy.
+- Keep keyboard/mouse behavior testable through recorded input streams.
+
+**Networking and replay.**
+
+- Commands must be tick-stamped and serializable through the same schema for replay and network.
+- Each tick should be able to emit a compact state checksum; multiplayer debug logs include command hash, state hash, and divergent subsystem hints.
+- Preserve replay as the primary bug-report artifact: map id, asset manifest id, Home/compiler version, game config, player setup, seed, command stream, and periodic checksums.
+- Network transport adapters should be outside core lockstep logic.
+
+**Tools.**
+
+- Asset tool: scans original/replacement folders, produces manifests, atlases, sound banks, and provenance reports.
+- Map tool: reads `.map`/`.rmap`, validates, emits normalized JSON/debug dumps, and eventually edits.
+- Replay inspector: runs headless replay, reports first divergent tick, dumps system-local state around divergence.
+- Package examples: every reusable package gets a tiny sample independent of Settlers.
+
+### E.9 Validation and parity gates
+
+The migration should be test-first wherever a Java behavior can be observed:
+
+- **Source inventory gate:** count Java files, resources, maps, and generated assets; record what has an owner in the Home plan.
+- **Enum gate:** all domain enum counts and serialized values match expected fixtures.
+- **Map gate:** every bundled `.rmap` and allowed `.map` fixture parses or fails with a documented reason.
+- **Building gate:** all civilisation building XML files parse and validate.
+- **Simulation gate:** headless maps tick to fixed milestones with stable checksums.
+- **Replay gate:** replay logs produce identical checksums across repeated runs and supported platforms.
+- **Pathing gate:** route choices and tick counts remain stable on pathfinding maps.
+- **Economy gate:** production maps reach expected material counters.
+- **Combat gate:** fighting/tower maps reach expected winner/occupation outcomes.
+- **Renderer gate:** screenshot tests pass at fixed viewports with tolerances only where backend differences require them.
+- **Audio gate:** sound-bank lookup and variant selection are deterministic under a seed.
+- **Network gate:** two or more headless peers stay checksum-equal under simulated latency, jitter, duplication, and loss.
+- **Performance gate:** large maps run at target tick rate with renderer disabled, then with renderer enabled.
+- **Tooling gate:** `home tsc`, `home test`, `home build`, `home lsp`, and asset build all work without Gradle or Java.
+
+### E.10 Suggested work order for the first implementation cycle
+
+Do not start this until the user explicitly asks to begin implementation.
+
+1. Create a source-inventory report from `settlers-remake`: modules, package counts, Java class list, resource list, map list, license files, and external asset assumptions.
+2. Add package RFCs in this repo for `game_core`, `game_assets`, `game_render`, `game_input`, and `game_net`.
+3. Land `packages/io` binary-reader improvements and golden tests because map/asset parsing depends on them.
+4. Land `packages/realtime` fixed-step clock and `packages/game_core` deterministic RNG/checksum primitives.
+5. Scaffold `~/Code/Apps/settlers-iii` only after the package skeletons compile.
+6. Port domain enums and serialization tests.
+7. Port map/building loaders and validators.
+8. Build the headless simulation shell and one tiny synthetic map.
+9. Add real test maps one by one, starting with pathfinding/production/combat fixtures.
+10. Only then build renderer/audio/input and playable desktop UI.
+
+### E.11 Compiler and language features this will stress
+
+Settlers III should become a standing workload in the Home compiler benchmark/conformance matrix because it will stress features normal TS libraries do not:
+
+- Large enum and const-table emit.
+- Exhaustive discriminated-union checking.
+- Generic containers and branded IDs.
+- Typed arrays and bounds-check elimination.
+- Cross-package project references.
+- Incremental rebuilds across generated assets and source files.
+- Source maps and diagnostics in generated TS-flavor code.
+- Native codegen for classes, closures, generics, async edges, and packed data.
+- WASM emit for browser preview.
+- LSP performance over a large app with generated files.
+- Bundler asset graph integration.
+
+### E.12 Risks and mitigations
+
+| Risk | Why it matters | Mitigation |
+|---|---|---|
+| Original asset licensing | The remake can read user-owned assets; Home cannot redistribute them | Asset scanner + provenance manifest; no proprietary assets in repo; demo/replacement assets only with recorded licenses |
+| Java inheritance copied too literally | Produces a Home codebase that is hard to optimize or reason about | Translate behavior into typed data/systems; keep Java only as oracle |
+| Renderer starts too early | Visual progress can hide simulation divergence | Headless checksums before renderer MVP |
+| Native subset gaps | TS-flavor code may fall back to JS-shaped runtime features | Keep a `native-eligibility` lint profile and document every escape |
+| Determinism drift | Breaks replay and multiplayer | Fixed system order, deterministic RNG, integer/fixed-point hot decisions, checksums every tick |
+| Package over-generalization | Too much abstraction before the game proves needs | Build tiny examples, then Settlers-specific consumers, then generalize one notch |
+| Toolchain churn | The compiler is still advancing | Pin Home toolchain per project; update deliberately with migration notes |
+| Scope explosion | Full RTS plus editor plus multiplayer is large | Land vertical slices with explicit gates; no UI/editor until core passes |
+
+### E.13 Definition of done for the whole track
+
+The track is done when:
+
+- `~/Code/Apps/settlers-iii` exists as its own app, with attribution and license docs.
+- The game builds through Home, not Gradle or Java.
+- Headless simulation tests pass on canonical maps and replays.
+- A native desktop build can load a user-selected Settlers III or demo asset folder and play a single-player match.
+- Multiplayer lockstep works locally with replay-compatible logs and state checksums.
+- A WASM/browser preview can run a small map.
+- Reusable game packages have docs, examples, and tests independent of Settlers.
+- All intentional differences from `settlers-remake` are documented.
 
 ---
 
