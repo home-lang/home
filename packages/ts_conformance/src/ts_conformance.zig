@@ -438,13 +438,15 @@ pub fn loadDirectoryWithOptions(
         if (options.exact_error_headers) {
             use_exact_errors = true;
             if (baseline_path) |bp| {
-                const baseline = try readFileAlloc(gpa, bp);
-                defer gpa.free(baseline);
-                expected_errors = try extractDiagnosticHeaders(gpa, baseline);
-                errdefer if (expected_errors.len > 0) gpa.free(expected_errors);
-                if (firstDiagnosticPath(expected_errors)) |first_path| {
-                    gpa.free(diag_path);
-                    diag_path = try gpa.dupe(u8, first_path);
+                if (!baseline_only_option_deprecation) {
+                    const baseline = try readFileAlloc(gpa, bp);
+                    defer gpa.free(baseline);
+                    expected_errors = try extractDiagnosticHeaders(gpa, baseline);
+                    errdefer if (expected_errors.len > 0) gpa.free(expected_errors);
+                    if (firstDiagnosticPath(expected_errors)) |first_path| {
+                        gpa.free(diag_path);
+                        diag_path = try gpa.dupe(u8, first_path);
+                    }
                 }
             }
         }
@@ -622,7 +624,11 @@ fn baselineHasOnlyOptionDeprecation(gpa: std.mem.Allocator, path: []const u8) !b
         const line = std.mem.trim(u8, raw, "\r");
         if (!isDiagnosticHeader(line)) continue;
         saw_diagnostic = true;
-        if (std.mem.indexOf(u8, line, "error TS5107:") == null) return false;
+        if (std.mem.indexOf(u8, line, "error TS5101:") == null and
+            std.mem.indexOf(u8, line, "error TS5107:") == null)
+        {
+            return false;
+        }
     }
     return saw_diagnostic;
 }
