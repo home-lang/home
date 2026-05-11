@@ -723,14 +723,31 @@ fn sourceHasTsCheck(source: []const u8) bool {
 }
 
 fn virtualFilenameIsJs(source: []const u8) bool {
+    var fallback_is_js = false;
     var lines = std.mem.splitScalar(u8, source, '\n');
     while (lines.next()) |raw_line| {
         const line = std.mem.trim(u8, raw_line, " \t\r");
         const marker = directiveValueStart(line, "filename") orelse continue;
         const value = std.mem.trim(u8, marker, " \t");
-        return std.mem.endsWith(u8, value, ".js") or std.mem.endsWith(u8, value, ".jsx");
+        const is_js = std.mem.endsWith(u8, value, ".js") or std.mem.endsWith(u8, value, ".jsx");
+        const is_code = is_js or
+            std.mem.endsWith(u8, value, ".ts") or
+            std.mem.endsWith(u8, value, ".tsx") or
+            std.mem.endsWith(u8, value, ".mts") or
+            std.mem.endsWith(u8, value, ".cts");
+        if (!is_code) continue;
+        if (!virtualPathIsNodeModules(value)) return is_js;
+        fallback_is_js = is_js;
     }
-    return false;
+    return fallback_is_js;
+}
+
+fn virtualPathIsNodeModules(path: []const u8) bool {
+    var p = path;
+    while (std.mem.startsWith(u8, p, "/")) p = p[1..];
+    while (std.mem.startsWith(u8, p, "./")) p = p[2..];
+    return std.mem.startsWith(u8, p, "node_modules/") or
+        std.mem.indexOf(u8, p, "/node_modules/") != null;
 }
 
 fn directiveBool(source: []const u8, name: []const u8) ?bool {
@@ -835,6 +852,23 @@ test "driver: allowJs virtual js without checkJs suppresses checker diagnostics"
     }
 
     try T.expect(!c.has_errors);
+}
+
+test "driver: allowJs node_modules js does not suppress project ts diagnostics" {
+    var c = try compileSource(T.allocator,
+        \\// @allowJs: true
+        \\// @filename: /node_modules/foo/index.js
+        \\exports.default = { bar() { return 0; } };
+        \\// @filename: /a.ts
+        \\import foo from "foo";
+        \\foo.bar();
+    , .{ .no_emit = true });
+    defer {
+        c.deinit();
+        T.allocator.destroy(c);
+    }
+
+    try T.expect(c.has_errors);
 }
 
 test "driver: checkJs virtual js surfaces checker diagnostics" {

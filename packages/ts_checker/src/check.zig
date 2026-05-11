@@ -58,12 +58,14 @@ pub const Diagnostic = struct {
 /// Matches `ts_diagnostics.TsCodes` numerically. We keep a local
 /// copy to avoid a cross-package dependency from the checker.
 pub const TsCodes = struct {
+    pub const type_only_import_used_as_value: u32 = 1361;
     pub const cannot_find_name: u32 = 2304;
     /// Emitted when the unresolved identifier closely resembles an
     /// in-scope name (Levenshtein distance ≤ threshold). Same as
     /// 2304 plus a `Did you mean 'X'?` suggestion.
     pub const cannot_find_name_did_you_mean: u32 = 2552;
     pub const cannot_find_module: u32 = 2307;
+    pub const invalid_module_name_augmentation: u32 = 2665;
     pub const untyped_module: u32 = 7016;
     pub const cannot_find_namespace: u32 = 2503;
     pub const destructuring_decl_must_have_initializer: u32 = 1182;
@@ -1191,6 +1193,7 @@ pub const Checker = struct {
     }
 
     fn checkNamespaceTypeStatements(self: *Checker, node: NodeId) CheckError!void {
+        try self.checkUntypedModuleAugmentation(node);
         try self.checkDeclarationSpaceDiagnostics(hir_mod.namespaceBody(self.hir, node));
         for (hir_mod.namespaceBody(self.hir, node)) |s| {
             switch (self.hir.kindOf(s)) {
@@ -1243,6 +1246,29 @@ pub const Checker = struct {
                 },
             }
         }
+    }
+
+    fn checkUntypedModuleAugmentation(self: *Checker, node: NodeId) CheckError!void {
+        if (!self.sourceHasVirtualFilenameSections()) return;
+        if (self.hir.kindOf(node) != .namespace_decl) return;
+        if (self.virtualSectionIsDeclarationFile(node)) return;
+        const ns = hir_mod.namespaceOf(self.hir, node);
+        if (ns.name == hir_mod.none_node_id or self.hir.kindOf(ns.name) != .identifier) return;
+        const module_name_id = hir_mod.identifierOf(self.hir, ns.name).name;
+        const module_name = self.string_interner.get(module_name_id);
+        if (module_name.len == 0 or std.mem.indexOfScalar(u8, module_name, '.') != null) return;
+        const resolution = try self.resolveVirtualBareModule(module_name);
+        if (resolution != .implementation) return;
+        const msg = try std.fmt.allocPrint(
+            self.diag_arena.allocator(),
+            "Invalid module name in augmentation. Module '{s}' resolves to an untyped module, which cannot be augmented.",
+            .{module_name},
+        );
+        try self.diagnostics.append(self.gpa, .{
+            .node = ns.name,
+            .code = TsCodes.invalid_module_name_augmentation,
+            .message = msg,
+        });
     }
 
     fn checkNamespaceFunctionMergeOrder(self: *Checker, stmts: []const NodeId) CheckError!void {
@@ -6830,7 +6856,10 @@ pub const Checker = struct {
             }
             return;
         }
-        if (try self.checkVirtualBareModuleImport(node, spec)) return;
+        if (try self.checkVirtualBareModuleImport(node, spec)) {
+            try self.checkNamedImportSpecifiers(node, imp, spec);
+            return;
+        }
         if (try self.isKnownAmbientModuleName(node, spec)) return;
         const msg = try std.fmt.allocPrint(
             self.diag_arena.allocator(),
@@ -6924,10 +6953,10 @@ pub const Checker = struct {
         const package_name = spec[0..slash];
         const subpath = if (slash < spec.len) spec[slash + 1 ..] else "";
 
-        if (try self.virtualPackageHasDeclaration("node_modules", package_name, subpath)) return .declaration;
-        if (try self.virtualPackageHasTypesVersionDeclaration("node_modules", package_name, subpath)) return .declaration;
-        if (try self.virtualPackageHasDeclaration("", package_name, subpath)) return .declaration;
-        if (try self.virtualPackageHasTypesVersionDeclaration("", package_name, subpath)) return .declaration;
+        if (try self.virtualBareModuleDeclarationFilename(spec)) |path| {
+            self.gpa.free(path);
+            return .declaration;
+        }
         if (try self.virtualTypesPackageHasDeclaration(spec)) return .declaration;
 
         if (try self.virtualPackageHasImplementation("node_modules", package_name, subpath)) return .implementation;
@@ -7039,7 +7068,11 @@ pub const Checker = struct {
     }
 
     fn virtualPackageHasTypesVersionDeclaration(self: *Checker, root: []const u8, package_name: []const u8, subpath: []const u8) CheckError!bool {
-        return try self.virtualPackageHasExtAt(root, package_name, "ts3.1", subpath, ".d.ts");
+        if (try self.virtualPackageDeclarationFilenameAt(root, package_name, "ts3.1", subpath, ".d.ts")) |path| {
+            self.gpa.free(path);
+            return true;
+        }
+        return false;
     }
 
     fn virtualPackageHasExt(self: *Checker, root: []const u8, package_name: []const u8, subpath: []const u8, ext: []const u8) CheckError!bool {
@@ -7066,6 +7099,59 @@ pub const Checker = struct {
             if (self.virtualSourceHasFilename(candidate)) return true;
         }
         return false;
+    }
+
+    fn virtualBareModuleDeclarationFilename(self: *Checker, spec: []const u8) CheckError!?[]u8 {
+        if (std.mem.startsWith(u8, spec, ".")) return null;
+        const slash = packageNameEnd(spec);
+        const package_name = spec[0..slash];
+        const subpath = if (slash < spec.len) spec[slash + 1 ..] else "";
+        const roots = [_][]const u8{ "node_modules", "" };
+        const prefixes = [_][]const u8{ "ts3.1", "" };
+        for (roots) |root| {
+            for (prefixes) |prefix| {
+                if (try self.virtualPackageDeclarationFilenameAt(root, package_name, prefix, subpath, ".d.ts")) |path| return path;
+            }
+        }
+        if (subpath.len > 0) {
+            for (roots) |root| {
+                for (prefixes) |prefix| {
+                    const index_path = (try self.virtualPackageDeclarationFilenameAt(root, package_name, prefix, "", ".d.ts")) orelse continue;
+                    if (self.virtualDeclarationFileHasAmbientModule(index_path, spec)) return index_path;
+                    self.gpa.free(index_path);
+                }
+            }
+        }
+        return null;
+    }
+
+    fn virtualPackageDeclarationFilenameAt(
+        self: *Checker,
+        root: []const u8,
+        package_name: []const u8,
+        prefix: []const u8,
+        subpath: []const u8,
+        ext: []const u8,
+    ) CheckError!?[]u8 {
+        var candidates: std.ArrayListUnmanaged([]u8) = .empty;
+        defer {
+            for (candidates.items) |candidate| self.gpa.free(candidate);
+            candidates.deinit(self.gpa);
+        }
+
+        if (subpath.len == 0) {
+            try self.appendVirtualPackagePathCandidate(&candidates, root, package_name, prefix, "index", ext);
+        } else {
+            try self.appendVirtualPackagePathCandidate(&candidates, root, package_name, prefix, subpath, ext);
+            const indexed = try std.fmt.allocPrint(self.gpa, "{s}/index", .{subpath});
+            defer self.gpa.free(indexed);
+            try self.appendVirtualPackagePathCandidate(&candidates, root, package_name, prefix, indexed, ext);
+        }
+
+        for (candidates.items) |candidate| {
+            if (self.virtualSourceHasFilename(candidate)) return try self.gpa.dupe(u8, candidate);
+        }
+        return null;
     }
 
     fn appendVirtualPackagePathCandidate(
@@ -7176,12 +7262,18 @@ pub const Checker = struct {
     fn checkNamedImportSpecifiers(self: *Checker, node: NodeId, imp: hir_mod.ImportPayload, spec: []const u8) CheckError!void {
         _ = imp;
         const scoped_virtual_relative = std.mem.startsWith(u8, spec, ".") and self.sourceHasVirtualFilenameSections();
+        const scoped_virtual_bare = !std.mem.startsWith(u8, spec, ".") and self.sourceHasVirtualFilenameSections();
         for (hir_mod.importNamed(self.hir, node)) |spec_node| {
             if (self.hir.kindOf(spec_node) != .import_specifier) continue;
             const sp = hir_mod.importSpecifierOf(self.hir, spec_node);
             if (sp.is_type_only or std.mem.eql(u8, self.string_interner.get(sp.imported), "default")) continue;
             if (scoped_virtual_relative) {
                 if (try self.virtualRelativeModuleHasNamedExport(node, spec, sp.imported)) continue;
+                try self.report(spec_node, TsCodes.no_exported_member_suggestion, "Module has no exported member.");
+                continue;
+            }
+            if (scoped_virtual_bare) {
+                if (try self.virtualBareModuleHasNamedExport(node, spec, sp.imported)) continue;
                 try self.report(spec_node, TsCodes.no_exported_member_suggestion, "Module has no exported member.");
                 continue;
             }
@@ -7219,6 +7311,197 @@ pub const Checker = struct {
             if (decl_name == name) return true;
         }
         return !found_module;
+    }
+
+    fn virtualBareModuleHasNamedExport(self: *Checker, anchor: NodeId, spec: []const u8, name: hir_mod.StringId) CheckError!bool {
+        const decl_file = (try self.virtualBareModuleDeclarationFilename(spec)) orelse return true;
+        defer self.gpa.free(decl_file);
+        const root = self.rootBlockFor(anchor);
+        if (root == hir_mod.none_node_id or self.hir.kindOf(root) != .block_stmt) return true;
+        var found_module = false;
+        for (hir_mod.blockStmts(self.hir, root)) |raw| {
+            const filename = self.virtualSectionFilenameForNode(raw) orelse continue;
+            if (!virtualPathEquals(filename, decl_file)) continue;
+            found_module = true;
+            const local = self.unwrapExportDecl(raw);
+            if (self.namespaceDeclMatchesModule(local, spec)) {
+                if (self.namespaceExportsName(local, name)) return true;
+                continue;
+            }
+            if (self.hir.kindOf(raw) != .export_decl) continue;
+            const decl = self.unwrapExportDecl(raw);
+            const decl_name = self.declarationName(decl) orelse continue;
+            if (decl_name == name) return true;
+        }
+        return !found_module;
+    }
+
+    fn virtualBareModuleExportType(self: *Checker, anchor: NodeId, spec: []const u8, name: hir_mod.StringId) CheckError!?TypeId {
+        const decl_file = (try self.virtualBareModuleDeclarationFilename(spec)) orelse return null;
+        defer self.gpa.free(decl_file);
+        const root = self.rootBlockFor(anchor);
+        if (root == hir_mod.none_node_id or self.hir.kindOf(root) != .block_stmt) return null;
+        for (hir_mod.blockStmts(self.hir, root)) |raw| {
+            const filename = self.virtualSectionFilenameForNode(raw) orelse continue;
+            if (!virtualPathEquals(filename, decl_file)) continue;
+            const local = self.unwrapExportDecl(raw);
+            if (self.namespaceDeclMatchesModule(local, spec)) {
+                if (try self.namespaceExportType(local, name)) |t| return t;
+                continue;
+            }
+            if (self.hir.kindOf(raw) != .export_decl) continue;
+            const decl = self.unwrapExportDecl(raw);
+            const decl_name = self.declarationName(decl) orelse continue;
+            if (decl_name != name) continue;
+            const dk = self.hir.kindOf(decl);
+            if (dk == .var_decl or dk == .let_decl or dk == .const_decl) {
+                const v = hir_mod.varDeclOf(self.hir, decl);
+                if (v.type_annotation != hir_mod.none_node_id) {
+                    const declared_t = try self.lowerValueTypeAnnotation(name, v.type_annotation);
+                    self.hir.setType(decl, declared_t);
+                    if (v.name != hir_mod.none_node_id) self.hir.setType(v.name, declared_t);
+                    return declared_t;
+                }
+                if (v.init != hir_mod.none_node_id) {
+                    var init_t = try self.checkExpression(v.init);
+                    if (dk == .const_decl) init_t = try self.constInitializerType(v.init, init_t);
+                    self.hir.setType(decl, init_t);
+                    if (v.name != hir_mod.none_node_id) self.hir.setType(v.name, init_t);
+                    return init_t;
+                }
+            }
+            const t = self.hir.typeOf(decl);
+            if (t != types.Primitive.none) return t;
+        }
+        return null;
+    }
+
+    fn virtualImportTypeForLocal(self: *Checker, local_name: hir_mod.StringId, anchor: NodeId) CheckError!?TypeId {
+        if (!self.sourceHasVirtualFilenameSections()) return null;
+        const root = self.rootBlockFor(anchor);
+        if (root == hir_mod.none_node_id or self.hir.kindOf(root) != .block_stmt) return null;
+        const anchor_section = self.virtualSectionStartForNode(anchor);
+        for (hir_mod.blockStmts(self.hir, root)) |stmt| {
+            if (self.hir.kindOf(stmt) != .import_decl) continue;
+            if (self.virtualSectionStartForNode(stmt) != anchor_section) continue;
+            const imp = hir_mod.importOf(self.hir, stmt);
+            const spec_text = self.string_interner.get(imp.module);
+            if (std.mem.startsWith(u8, spec_text, ".")) continue;
+            for (hir_mod.importNamed(self.hir, stmt)) |spec_node| {
+                if (self.hir.kindOf(spec_node) != .import_specifier) continue;
+                const sp = hir_mod.importSpecifierOf(self.hir, spec_node);
+                if (sp.local != local_name) continue;
+                return try self.virtualBareModuleExportType(stmt, spec_text, sp.imported);
+            }
+        }
+        return null;
+    }
+
+    fn virtualDefaultImportTypeForLocal(self: *Checker, local_name: hir_mod.StringId, anchor: NodeId) CheckError!?TypeId {
+        if (!self.sourceHasAllowJsDirective() or !self.sourceHasVirtualFilenameSections()) return null;
+        const root = self.rootBlockFor(anchor);
+        if (root == hir_mod.none_node_id or self.hir.kindOf(root) != .block_stmt) return null;
+        const anchor_section = self.virtualSectionStartForNode(anchor);
+        for (hir_mod.blockStmts(self.hir, root)) |stmt| {
+            if (self.hir.kindOf(stmt) != .import_decl) continue;
+            if (self.virtualSectionStartForNode(stmt) != anchor_section) continue;
+            const imp = hir_mod.importOf(self.hir, stmt);
+            if (imp.default_binding == hir_mod.none_node_id or self.hir.kindOf(imp.default_binding) != .identifier) continue;
+            const id = hir_mod.identifierOf(self.hir, imp.default_binding);
+            if (id.name != local_name) continue;
+            const spec_text = self.string_interner.get(imp.module);
+            if (std.mem.startsWith(u8, spec_text, ".")) continue;
+            if ((try self.resolveVirtualBareModule(spec_text)) != .implementation) continue;
+            const default_name = self.string_interner.intern("default") catch return error.OutOfMemory;
+            const members = [_]types.ObjectMember{.{
+                .name = default_name,
+                .type = types.Primitive.any,
+                .is_optional = false,
+                .is_readonly = true,
+                .is_method = false,
+            }};
+            return self.interner.internObjectType(&members) catch return error.OutOfMemory;
+        }
+        return null;
+    }
+
+    fn typeOnlyImportLocal(self: *Checker, local_name: hir_mod.StringId, anchor: NodeId) bool {
+        const root = self.rootBlockFor(anchor);
+        if (root == hir_mod.none_node_id or self.hir.kindOf(root) != .block_stmt) return false;
+        const anchor_section = if (self.sourceHasVirtualFilenameSections()) self.virtualSectionStartForNode(anchor) else 0;
+        for (hir_mod.blockStmts(self.hir, root)) |stmt| {
+            if (self.hir.kindOf(stmt) != .import_decl) continue;
+            if (self.sourceHasVirtualFilenameSections() and self.virtualSectionStartForNode(stmt) != anchor_section) continue;
+            const imp = hir_mod.importOf(self.hir, stmt);
+            if (!imp.is_type_only) continue;
+            if (imp.default_binding != hir_mod.none_node_id and self.hir.kindOf(imp.default_binding) == .identifier) {
+                if (hir_mod.identifierOf(self.hir, imp.default_binding).name == local_name) return true;
+            }
+            if (imp.namespace_binding != hir_mod.none_node_id and self.hir.kindOf(imp.namespace_binding) == .identifier) {
+                if (hir_mod.identifierOf(self.hir, imp.namespace_binding).name == local_name) return true;
+            }
+            for (hir_mod.importNamed(self.hir, stmt)) |spec_node| {
+                if (self.hir.kindOf(spec_node) != .import_specifier) continue;
+                const sp = hir_mod.importSpecifierOf(self.hir, spec_node);
+                if (sp.local == local_name) return true;
+            }
+        }
+        return false;
+    }
+
+    fn virtualDeclarationFileHasAmbientModule(self: *Checker, decl_file: []const u8, spec: []const u8) bool {
+        var node: hir_mod.NodeId = 1;
+        while (node < self.hir.nodeCount()) : (node += 1) {
+            const filename = self.virtualSectionFilenameForNode(node) orelse continue;
+            if (!virtualPathEquals(filename, decl_file)) continue;
+            if (self.namespaceDeclMatchesModule(node, spec)) return true;
+        }
+        return false;
+    }
+
+    fn namespaceDeclMatchesModule(self: *Checker, node: NodeId, spec: []const u8) bool {
+        if (node == hir_mod.none_node_id or self.hir.kindOf(node) != .namespace_decl) return false;
+        const ns = hir_mod.namespaceOf(self.hir, node);
+        if (ns.name == hir_mod.none_node_id or self.hir.kindOf(ns.name) != .identifier) return false;
+        const id = hir_mod.identifierOf(self.hir, ns.name);
+        return std.mem.eql(u8, self.string_interner.get(id.name), spec);
+    }
+
+    fn namespaceExportsName(self: *Checker, ns_node: NodeId, name: hir_mod.StringId) bool {
+        for (hir_mod.namespaceBody(self.hir, ns_node)) |body_stmt| {
+            const decl = self.unwrapExportDecl(body_stmt);
+            const decl_name = self.declarationName(decl) orelse continue;
+            if (decl_name == name) return true;
+        }
+        return false;
+    }
+
+    fn namespaceExportType(self: *Checker, ns_node: NodeId, name: hir_mod.StringId) CheckError!?TypeId {
+        for (hir_mod.namespaceBody(self.hir, ns_node)) |body_stmt| {
+            const decl = self.unwrapExportDecl(body_stmt);
+            const decl_name = self.declarationName(decl) orelse continue;
+            if (decl_name != name) continue;
+            const dk = self.hir.kindOf(decl);
+            if (dk == .var_decl or dk == .let_decl or dk == .const_decl) {
+                const v = hir_mod.varDeclOf(self.hir, decl);
+                if (v.type_annotation != hir_mod.none_node_id) {
+                    const declared_t = try self.lowerValueTypeAnnotation(name, v.type_annotation);
+                    self.hir.setType(decl, declared_t);
+                    if (v.name != hir_mod.none_node_id) self.hir.setType(v.name, declared_t);
+                    return declared_t;
+                }
+                if (v.init != hir_mod.none_node_id) {
+                    var init_t = try self.checkExpression(v.init);
+                    if (dk == .const_decl) init_t = try self.constInitializerType(v.init, init_t);
+                    self.hir.setType(decl, init_t);
+                    if (v.name != hir_mod.none_node_id) self.hir.setType(v.name, init_t);
+                    return init_t;
+                }
+            }
+            const t = self.hir.typeOf(decl);
+            if (t != types.Primitive.none) return t;
+        }
+        return null;
     }
 
     fn virtualSectionMatchesResolvedModule(self: *Checker, node: NodeId, resolved: []const u8, spec: []const u8) bool {
@@ -10105,6 +10388,9 @@ pub const Checker = struct {
         var init_type: TypeId = if (v.is_ambient) types.Primitive.any else types.Primitive.undefined_t;
         if (v.init != hir_mod.none_node_id) {
             init_type = try self.checkExpression(v.init);
+            if (declared_type == types.Primitive.none and self.hir.kindOf(node) == .const_decl) {
+                init_type = try self.constInitializerType(v.init, init_type);
+            }
         }
         if (v.name != hir_mod.none_node_id and
             v.init == hir_mod.none_node_id and
@@ -10249,6 +10535,20 @@ pub const Checker = struct {
                 .message = msg,
             });
         }
+    }
+
+    fn constInitializerType(self: *Checker, init_node: NodeId, fallback: TypeId) CheckError!TypeId {
+        return switch (self.hir.kindOf(init_node)) {
+            .literal_string, .literal_number, .literal_bool, .literal_bigint => self.literalizeForAsConst(init_node, fallback) catch return error.OutOfMemory,
+            .as_expr, .type_assertion => blk: {
+                const a = hir_mod.asExpressionOf(self.hir, init_node);
+                if (a.type_node != hir_mod.none_node_id and self.isAsConstMarker(a.type_node)) {
+                    break :blk self.literalizeForAsConst(a.expr, fallback) catch return error.OutOfMemory;
+                }
+                break :blk fallback;
+            },
+            else => fallback,
+        };
     }
 
     fn jsDocTypeForVarDecl(self: *Checker, node: NodeId) CheckError!?TypeId {
@@ -14151,6 +14451,19 @@ pub const Checker = struct {
         if (std.mem.eql(u8, name_str, "arguments") and self.hasNonArrowFunctionAncestor(node)) {
             return types.Primitive.any;
         }
+        if (!self.isDeclNameSlot(node) and self.typeOnlyImportLocal(id.name, node)) {
+            const msg = std.fmt.allocPrint(
+                self.diag_arena.allocator(),
+                "'{s}' cannot be used as a value because it was imported using 'import type'.",
+                .{name_str},
+            ) catch return types.Primitive.any;
+            self.diagnostics.append(self.gpa, .{
+                .node = node,
+                .code = TsCodes.type_only_import_used_as_value,
+                .message = msg,
+            }) catch return types.Primitive.any;
+            return types.Primitive.any;
+        }
         // Walk up the parent chain searching for parameters or
         // sibling let/const/var decls in scope.
         var cur: hir_mod.NodeId = self.hir.parentOf(node);
@@ -14358,6 +14671,8 @@ pub const Checker = struct {
         if (saw_namespace_scope) return types.Primitive.any;
 
         if (self.moduleNamespaceTypeForLocalImport(id.name, node) catch null) |ns_t| return ns_t;
+        if (self.virtualImportTypeForLocal(id.name, node) catch null) |import_t| return import_t;
+        if (self.virtualDefaultImportTypeForLocal(id.name, node) catch null) |import_t| return import_t;
 
         // Module-level fallback.
         if (self.module) |module| {
@@ -14368,6 +14683,15 @@ pub const Checker = struct {
             if (module.root.lookup(id.name)) |sym| {
                 if (sym.decls.items.len > 0) {
                     const decl = sym.decls.items[0];
+                    if (self.hir.kindOf(decl) == .import_specifier) {
+                        const parent = self.hir.parentOf(decl);
+                        if (parent != hir_mod.none_node_id and self.hir.kindOf(parent) == .import_decl) {
+                            const imp = hir_mod.importOf(self.hir, parent);
+                            const spec_text = self.string_interner.get(imp.module);
+                            const sp = hir_mod.importSpecifierOf(self.hir, decl);
+                            if (self.virtualBareModuleExportType(parent, spec_text, sp.imported) catch null) |import_t| return import_t;
+                        }
+                    }
                     if (self.moduleNamespaceTypeForImportBinding(decl) catch null) |ns_t| return ns_t;
                     if (self.hir.kindOf(decl) == .class_decl or self.hir.kindOf(decl) == .class_expr) {
                         if (self.class_static_types.get(id.name)) |static_t| return static_t;
@@ -19547,6 +19871,81 @@ test "checker: import equals reports missing namespace root" {
     try T.expect(found);
 }
 
+test "checker: virtual package imports prefer typesVersions declarations" {
+    const b = try newBoundSetup(
+        \\// @filename: node_modules/ext/package.json
+        \\// package metadata with typesVersions
+        \\// @filename: node_modules/ext/index.d.ts
+        \\export const a = "default a";
+        \\// @filename: node_modules/ext/ts3.1/index.d.ts
+        \\export const a = "ts3.1 a";
+        \\// @filename: main.ts
+        \\import { a } from "ext";
+        \\const aa: "ts3.1 a" = a;
+    );
+    defer destroyBoundSetup(b);
+    try b.base.checker.checkSourceFile(b.base.root);
+
+    for (b.base.checker.diagnostics.items) |d| {
+        try T.expect(d.code != TsCodes.type_not_assignable);
+    }
+}
+
+test "checker: ambient augmentation of untyped virtual module reports TS2665" {
+    const s = try newSetup(
+        \\// @filename: /node_modules/foo/index.js
+        \\module.exports = {};
+        \\// @filename: /a.ts
+        \\declare module "foo" {
+        \\  export const x: number;
+        \\}
+        \\import { x } from "foo";
+        \\x;
+    );
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+
+    var found = false;
+    for (s.checker.diagnostics.items) |d| {
+        if (d.code == TsCodes.invalid_module_name_augmentation) found = true;
+    }
+    try T.expect(found);
+}
+
+test "checker: allowJs default import from virtual js module is namespace-shaped" {
+    const s = try newSetup(
+        \\// @allowJs: true
+        \\// @filename: /node_modules/foo/index.js
+        \\exports.default = { bar() { return 0; } };
+        \\// @filename: /a.ts
+        \\import foo from "foo";
+        \\foo.bar();
+    );
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+
+    var found = false;
+    for (s.checker.diagnostics.items) |d| {
+        if (d.code == TsCodes.property_does_not_exist) found = true;
+    }
+    try T.expect(found);
+}
+
+test "checker: import type binding cannot be used as a value" {
+    const s = try newSetup(
+        \\import type Foo from "pkg" with { "resolution-mode": "require" };
+        \\Foo;
+    );
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+
+    var found = false;
+    for (s.checker.diagnostics.items) |d| {
+        if (d.code == TsCodes.type_only_import_used_as_value) found = true;
+    }
+    try T.expect(found);
+}
+
 test "checker: object literal accessors bind this without TS2683" {
     const s = try newSetup(
         \\var object = {
@@ -19852,6 +20251,25 @@ test "checker: string literal initializer satisfies matching literal annotation"
     for (s.checker.diagnostics.items) |d| {
         try T.expect(d.code != TsCodes.type_not_assignable);
     }
+}
+
+test "checker: const primitive initializer keeps literal type" {
+    const s = try newSetup(
+        \\const tag = "h1";
+        \\const same: "h1" = tag;
+        \\const count = 2;
+        \\const sameCount: 2 = count;
+        \\let widened = "h1";
+        \\const mismatch: "h1" = widened;
+    );
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+
+    var mismatch_count: usize = 0;
+    for (s.checker.diagnostics.items) |d| {
+        if (d.code == TsCodes.type_not_assignable) mismatch_count += 1;
+    }
+    try T.expectEqual(@as(usize, 1), mismatch_count);
 }
 
 test "checker: JSX union component rejects non-component member" {
