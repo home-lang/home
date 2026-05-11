@@ -6848,7 +6848,9 @@ pub const Checker = struct {
         if (try self.virtualTypesPackageHasDeclaration(spec)) return .declaration;
 
         if (try self.virtualPackageHasImplementation("node_modules", package_name, subpath)) return .implementation;
+        if (subpath.len == 0 and try self.virtualPackageHasAnyImplementation("node_modules", package_name)) return .implementation;
         if (try self.virtualPackageHasImplementation("", package_name, subpath)) return .implementation;
+        if (subpath.len == 0 and try self.virtualPackageHasAnyImplementation("", package_name)) return .implementation;
         return .none;
     }
 
@@ -6872,6 +6874,51 @@ pub const Checker = struct {
         if (try self.virtualPackageHasExt(root, package_name, subpath, ".js")) return true;
         if (try self.virtualPackageHasExt(root, package_name, subpath, ".jsx")) return true;
         return false;
+    }
+
+    fn virtualPackageHasAnyImplementation(self: *Checker, root: []const u8, package_name: []const u8) CheckError!bool {
+        const prefix = if (root.len > 0)
+            std.fmt.allocPrint(self.gpa, "{s}/{s}/", .{ root, package_name }) catch return error.OutOfMemory
+        else
+            std.fmt.allocPrint(self.gpa, "{s}/", .{package_name}) catch return error.OutOfMemory;
+        defer self.gpa.free(prefix);
+        const src = self.source orelse return false;
+        var lines = std.mem.splitScalar(u8, src, '\n');
+        while (lines.next()) |raw| {
+            const line = std.mem.trim(u8, raw, " \t\r");
+            const marker = std.mem.indexOf(u8, line, "@filename:") orelse
+                (std.mem.indexOf(u8, line, "@Filename:") orelse continue);
+            var path = std.mem.trim(u8, line[marker + "@filename:".len ..], " \t\r");
+            while (std.mem.startsWith(u8, path, "/")) path = path[1..];
+            while (std.mem.startsWith(u8, path, "./")) path = path[2..];
+            if (!std.mem.startsWith(u8, path, prefix)) continue;
+            const rest = path[prefix.len..];
+            if (std.mem.indexOfScalar(u8, rest, '/')) |slash| {
+                const tail = rest[slash + 1 ..];
+                if (std.mem.indexOfScalar(u8, tail, '/') == null and isVirtualIndexImplementationPath(tail)) return true;
+                continue;
+            }
+            if (isVirtualImplementationPath(rest)) return true;
+        }
+        return false;
+    }
+
+    fn isVirtualIndexImplementationPath(path: []const u8) bool {
+        return std.mem.eql(u8, path, "index.js") or
+            std.mem.eql(u8, path, "index.jsx") or
+            std.mem.eql(u8, path, "index.mjs") or
+            std.mem.eql(u8, path, "index.cjs") or
+            std.mem.eql(u8, path, "index.ts") or
+            std.mem.eql(u8, path, "index.tsx");
+    }
+
+    fn isVirtualImplementationPath(path: []const u8) bool {
+        return std.mem.endsWith(u8, path, ".js") or
+            std.mem.endsWith(u8, path, ".jsx") or
+            std.mem.endsWith(u8, path, ".mjs") or
+            std.mem.endsWith(u8, path, ".cjs") or
+            std.mem.endsWith(u8, path, ".ts") or
+            std.mem.endsWith(u8, path, ".tsx");
     }
 
     fn virtualPackageHasTypesVersionDeclaration(self: *Checker, root: []const u8, package_name: []const u8, subpath: []const u8) CheckError!bool {
@@ -22596,6 +22643,38 @@ test "checker: virtual js package without declaration reports TS7016 under noImp
     var found = false;
     for (s.checker.diagnostics.items) |d| {
         if (d.code == TsCodes.untyped_module) found = true;
+    }
+    try T.expect(found);
+}
+
+test "checker: virtual package main implementation satisfies bare import when noImplicitAny is off" {
+    const s = try newSetup(
+        \\// @filename: /node_modules/foo/oof.js
+        \\module.exports = 0;
+        \\// @filename: /main.ts
+        \\import foo = require("foo");
+        \\foo;
+    );
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+    for (s.checker.diagnostics.items) |d| {
+        try T.expect(d.code != TsCodes.cannot_find_module);
+        try T.expect(d.code != TsCodes.untyped_module);
+    }
+}
+
+test "checker: virtual package main implementation does not recurse through nested package main" {
+    const s = try newSetup(
+        \\// @filename: /node_modules/foo/oof/ofo.js
+        \\module.exports = 0;
+        \\// @filename: /main.ts
+        \\import foo = require("foo");
+    );
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+    var found = false;
+    for (s.checker.diagnostics.items) |d| {
+        if (d.code == TsCodes.cannot_find_module) found = true;
     }
     try T.expect(found);
 }

@@ -501,11 +501,14 @@ fn stripNonCodeVirtualSections(gpa: std.mem.Allocator, source: []const u8) !?[]u
     var out: std.ArrayListUnmanaged(u8) = .empty;
     errdefer out.deinit(gpa);
     var include_section = true;
+    var comment_section = false;
+    const allow_js = directiveBool(source, "allowJs") orelse false;
     var lines = std.mem.splitScalar(u8, source, '\n');
     while (lines.next()) |line_with_cr| {
         const line = std.mem.trim(u8, line_with_cr, "\r");
         if (virtualFilename(line)) |path| {
             include_section = isCodeVirtualFile(path);
+            comment_section = include_section and isNodeModulesVirtualPath(path) and isJsLikeVirtualFile(path) and !allow_js;
             if (include_section) {
                 try out.appendSlice(gpa, line);
                 try out.append(gpa, '\n');
@@ -513,6 +516,7 @@ fn stripNonCodeVirtualSections(gpa: std.mem.Allocator, source: []const u8) !?[]u
             continue;
         }
         if (!include_section) continue;
+        if (comment_section) try out.appendSlice(gpa, "// ");
         try out.appendSlice(gpa, line);
         try out.append(gpa, '\n');
     }
@@ -558,6 +562,13 @@ fn isNodeModulesVirtualPath(path: []const u8) bool {
     while (std.mem.startsWith(u8, p, "/")) p = p[1..];
     while (std.mem.startsWith(u8, p, "./")) p = p[2..];
     return std.mem.startsWith(u8, p, "node_modules/");
+}
+
+fn isJsLikeVirtualFile(path: []const u8) bool {
+    return std.mem.endsWith(u8, path, ".js") or
+        std.mem.endsWith(u8, path, ".jsx") or
+        std.mem.endsWith(u8, path, ".mjs") or
+        std.mem.endsWith(u8, path, ".cjs");
 }
 
 fn isDeclarationFilePath(path: []const u8) bool {
@@ -2077,6 +2088,19 @@ test "conformance: virtual mts files count as project code sections" {
         \\import {} from "dep";
     ;
     try T.expectEqualStrings("/index.mts", firstCodeVirtualFilename(source).?);
+}
+
+test "conformance: node_modules js virtual sections are commented when allowJs is off" {
+    const stripped = try stripNonCodeVirtualSections(T.allocator,
+        \\// @filename: /node_modules/foo/index.js
+        \\This file is not processed.
+        \\// @filename: /a.ts
+        \\import * as foo from "foo";
+    );
+    defer if (stripped) |s| T.allocator.free(s);
+    try T.expect(stripped != null);
+    try T.expect(std.mem.indexOf(u8, stripped.?, "// This file is not processed.") != null);
+    try T.expect(std.mem.indexOf(u8, stripped.?, "import * as foo") != null);
 }
 
 test "conformance: empty file passes with no diagnostics" {
