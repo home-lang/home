@@ -629,6 +629,7 @@ pub const Printer = struct {
             if (i > 0) try self.write(", ");
             if (self.hir.kindOf(elem) != .parameter) continue;
             const param = hir_mod.parameterOf(self.hir, elem);
+            if (param.flags.is_computed_binding_key) continue;
             if (param.flags.is_rest) try self.write("...");
             if (param.name != hir_mod.none_node_id) try self.printBindingName(param.name);
             if (param.default_value != hir_mod.none_node_id) {
@@ -646,6 +647,7 @@ pub const Printer = struct {
             if (i > 0) try self.write(", ");
             if (self.hir.kindOf(elem) != .parameter) continue;
             const param = hir_mod.parameterOf(self.hir, elem);
+            if (param.flags.is_computed_binding_key) continue;
             if (param.flags.is_rest) try self.write("...");
             if (param.name != hir_mod.none_node_id) try self.printBindingName(param.name);
             if (param.default_value != hir_mod.none_node_id) {
@@ -682,6 +684,7 @@ pub const Printer = struct {
         for (elements, 0..) |elem, i| {
             if (self.hir.kindOf(elem) != .parameter) continue;
             const param = hir_mod.parameterOf(self.hir, elem);
+            if (param.flags.is_computed_binding_key) continue;
             if (param.flags.is_rest) continue; // rest deferred
             if (param.name == hir_mod.none_node_id) continue;
             if (self.hir.kindOf(param.name) != .identifier) continue; // nested deferred

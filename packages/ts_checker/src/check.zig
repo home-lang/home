@@ -3087,10 +3087,12 @@ pub const Checker = struct {
             if (pp.name == hir_mod.none_node_id) continue;
             const nk = self.hir.kindOf(pp.name);
             if (nk == .object_pattern or nk == .array_pattern) {
+                try self.checkPatternComputedBindingKeys(pp.name);
                 try self.checkBindingPatternDefaultReferences(pp.name, .parameter);
                 try self.checkPatternDefaultsAgainstBodyVars(pp.name, &body_vars);
             }
             if (pp.default_value != hir_mod.none_node_id) {
+                _ = try self.checkExpression(pp.default_value);
                 try self.checkDefaultExprAgainstBodyVars(pp.default_value, &body_vars);
             }
             if (nk == .array_pattern and pp.default_value != hir_mod.none_node_id) {
@@ -3233,6 +3235,7 @@ pub const Checker = struct {
         for (hir_mod.patternElements(self.hir, pattern_node)) |e| {
             if (self.hir.kindOf(e) != .parameter) continue;
             const ep = hir_mod.parameterOf(self.hir, e);
+            if (ep.flags.is_computed_binding_key) continue;
             if (ep.name == hir_mod.none_node_id) continue;
             const nk = self.hir.kindOf(ep.name);
             if (nk == .identifier) {
@@ -3244,6 +3247,24 @@ pub const Checker = struct {
                 });
             } else if (nk == .object_pattern or nk == .array_pattern) {
                 try self.collectBindingSlots(ep.name, out);
+            }
+        }
+    }
+
+    fn checkPatternComputedBindingKeys(self: *Checker, pattern_node: NodeId) CheckError!void {
+        const pk = self.hir.kindOf(pattern_node);
+        if (pk != .object_pattern and pk != .array_pattern) return;
+        for (hir_mod.patternElements(self.hir, pattern_node)) |e| {
+            if (self.hir.kindOf(e) != .parameter) continue;
+            const ep = hir_mod.parameterOf(self.hir, e);
+            if (ep.flags.is_computed_binding_key) {
+                if (ep.default_value != hir_mod.none_node_id) _ = try self.checkExpression(ep.default_value);
+                continue;
+            }
+            if (ep.name == hir_mod.none_node_id) continue;
+            const nk = self.hir.kindOf(ep.name);
+            if (nk == .object_pattern or nk == .array_pattern) {
+                try self.checkPatternComputedBindingKeys(ep.name);
             }
         }
     }
@@ -8608,6 +8629,7 @@ pub const Checker = struct {
         if (v.name != hir_mod.none_node_id) {
             const nk = self.hir.kindOf(v.name);
             if (nk == .object_pattern or nk == .array_pattern) {
+                try self.checkPatternComputedBindingKeys(v.name);
                 try self.checkBindingPatternDefaultReferences(v.name, .variable);
             }
             if (nk == .object_pattern and v.init != hir_mod.none_node_id) {
@@ -9050,6 +9072,57 @@ pub const Checker = struct {
             return self.interner.internUnion(elems.items) catch return error.OutOfMemory;
         }
         return self.interner.objectNumberIndex(obj_t);
+    }
+
+    fn signaturePrototypeMember(self: *Checker, sig: TypeId, name: hir_mod.StringId) CheckError!?TypeId {
+        if (!self.interner.isSignature(sig)) return null;
+        const name_str = self.string_interner.get(name);
+        if (!std.mem.eql(u8, name_str, "call") and
+            !std.mem.eql(u8, name_str, "bind") and
+            !std.mem.eql(u8, name_str, "apply"))
+        {
+            return null;
+        }
+
+        const params = self.interner.signatureParams(sig);
+        const ret = self.interner.signatureReturn(sig) orelse types.Primitive.any;
+
+        if (std.mem.eql(u8, name_str, "call")) {
+            var call_params: std.ArrayListUnmanaged(TypeId) = .empty;
+            defer call_params.deinit(self.gpa);
+            try call_params.append(self.gpa, types.Primitive.any);
+            try call_params.appendSlice(self.gpa, params);
+            return try self.interner.internSignature(call_params.items, ret, false);
+        }
+
+        if (std.mem.eql(u8, name_str, "bind")) {
+            var bind_params: std.ArrayListUnmanaged(TypeId) = .empty;
+            defer bind_params.deinit(self.gpa);
+            try bind_params.append(self.gpa, types.Primitive.any);
+            try bind_params.appendSlice(self.gpa, params);
+            const bind_sig = try self.interner.internSignature(bind_params.items, types.Primitive.any, false);
+            var omittable: std.ArrayListUnmanaged(bool) = .empty;
+            defer omittable.deinit(self.gpa);
+            try omittable.append(self.gpa, false);
+            var i: usize = 0;
+            while (i < params.len) : (i += 1) try omittable.append(self.gpa, true);
+            try self.recordSignatureMinArgs(bind_sig, omittable.items);
+            return bind_sig;
+        }
+
+        var apply_params: [2]TypeId = undefined;
+        apply_params[0] = types.Primitive.any;
+        const rest_tuple = if (params.len == 0)
+            self.interner.internArrayType(self.string_interner, types.Primitive.any) catch types.Primitive.any
+        else blk: {
+            const members = try self.gpa.alloc(TypeId, params.len);
+            defer self.gpa.free(members);
+            @memcpy(members, params);
+            const union_t = self.interner.internUnion(members) catch types.Primitive.any;
+            break :blk self.interner.internArrayType(self.string_interner, union_t) catch types.Primitive.any;
+        };
+        apply_params[1] = rest_tuple;
+        return try self.interner.internSignature(&apply_params, ret, false);
     }
 
     fn lookupDeclaredArrayMember(self: *Checker, elem_t: TypeId, name: hir_mod.StringId) CheckError!?TypeId {
@@ -9611,6 +9684,9 @@ pub const Checker = struct {
                 // Optional chaining (`obj?.x`) widens the result to
                 // include `undefined` regardless of whether the
                 // object's static type already does.
+                if (try self.signaturePrototypeMember(access_obj_t, m.name)) |t| {
+                    break :blk try self.optionalChainResult(t, member_is_optional_chain);
+                }
                 if (try self.lookupObjectMember(obj_t, m.name)) |t| {
                     break :blk try self.optionalChainResult(t, member_is_optional_chain);
                 }
@@ -15499,6 +15575,34 @@ test "checker: unresolved identifier emits TS2304" {
     var found = false;
     for (b.base.checker.diagnostics.items) |d| {
         if (d.code == TsCodes.cannot_find_name) found = true;
+    }
+    try T.expect(found);
+}
+
+test "checker: parameter defaults and computed binding keys resolve names" {
+    const b = try newBoundSetup(
+        \\const { [missingKey]: x } = {};
+        \\function f(x, y = z) {}
+    );
+    defer destroyBoundSetup(b);
+    try b.base.checker.checkSourceFile(b.base.root);
+    var missing_name_count: usize = 0;
+    for (b.base.checker.diagnostics.items) |d| {
+        if (d.code == TsCodes.cannot_find_name or d.code == TsCodes.cannot_find_name_did_you_mean) missing_name_count += 1;
+    }
+    try T.expect(missing_name_count >= 2);
+}
+
+test "checker: Function call prototype checks original parameters" {
+    const b = try newBoundSetup(
+        \\declare function foo(a: number, b: string): string;
+        \\foo.call(undefined, 10, 20);
+    );
+    defer destroyBoundSetup(b);
+    try b.base.checker.checkSourceFile(b.base.root);
+    var found = false;
+    for (b.base.checker.diagnostics.items) |d| {
+        if (d.code == TsCodes.argument_type_mismatch) found = true;
     }
     try T.expect(found);
 }

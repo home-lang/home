@@ -193,6 +193,7 @@ pub const Emitter = struct {
 
     fn emitParameter(self: *Emitter, node: NodeId) !void {
         const p = hir_mod.parameterOf(self.hir, node);
+        if (p.flags.is_computed_binding_key) return;
         if (p.flags.is_rest) try self.write("...");
         if (p.name != hir_mod.none_node_id) try self.emitIdentifier(p.name);
         if (p.flags.is_optional) try self.write("?");

@@ -1356,9 +1356,18 @@ pub const Parser = struct {
                 if (self.match(.dot_dot_dot)) flags.is_rest = true;
                 const name_node = if (is_object and !flags.is_rest) blk: {
                     if (self.match(.open_bracket)) {
-                        _ = try self.parseExpression();
+                        const key_start = self.tokens[self.cursor - 1];
+                        const key_expr = try self.parseExpression();
                         _ = try self.expect(.close_bracket, "']' to close computed binding key");
                         _ = try self.expect(.colon, "':' after computed binding key");
+                        const key_elem = try self.builder.addParameter(
+                            .{ .start = key_start.span.start, .end = self.tokens[self.cursor - 1].span.end },
+                            hir_mod.none_node_id,
+                            hir_mod.none_node_id,
+                            key_expr,
+                            .{ .is_computed_binding_key = true },
+                        );
+                        try elements.append(self.gpa, key_elem);
                         break :blk try self.parseBindingTarget();
                     }
                     const key_tok = switch (self.peek().kind) {
@@ -6814,8 +6823,9 @@ test "parser: object binding pattern supports literal and computed keys" {
     const decl = hir_mod.varDeclOf(&s.hir, top);
     try T.expectEqual(hir_mod.NodeKind.object_pattern, s.hir.kindOf(decl.name));
     const elems = hir_mod.patternElements(&s.hir, decl.name);
-    try T.expectEqual(@as(usize, 3), elems.len);
-    try T.expect(hir_mod.parameterOf(&s.hir, elems[2]).flags.is_rest);
+    try T.expectEqual(@as(usize, 4), elems.len);
+    try T.expect(hir_mod.parameterOf(&s.hir, elems[1]).flags.is_computed_binding_key);
+    try T.expect(hir_mod.parameterOf(&s.hir, elems[3]).flags.is_rest);
 }
 
 test "parser: reserved object binding target reports TS1359" {

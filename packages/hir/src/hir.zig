@@ -543,12 +543,15 @@ pub const ParamFlags = packed struct(u8) {
     is_optional: bool = false,
     is_rest: bool = false,
     is_readonly: bool = false,
+    /// Synthetic pattern element carrying an object binding computed-key
+    /// expression (`{ [expr]: name }`). It is not a binding slot.
+    is_computed_binding_key: bool = false,
     /// True when the constructor parameter declares an instance
     /// property via `public` / `protected` / `private` / `readonly`.
     is_parameter_property: bool = false,
     /// TS 4.3 `override` modifier on a constructor parameter property.
     is_override: bool = false,
-    _pad: u3 = 0,
+    _pad: u2 = 0,
 };
 
 pub const TypeAliasPayload = struct {
