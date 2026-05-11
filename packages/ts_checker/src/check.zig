@@ -30799,6 +30799,27 @@ test "checker: structural Promise.then accepts rejection callback" {
     }
 }
 
+test "checker: optional class method super.m short-circuit call emits no diagnostics" {
+    // Probe: scan everything that fires on `super.m && super.m()`
+    // for the optional-method shape and prove the run is clean.
+    // The §6.A active-window journal flagged this pattern as a
+    // standalone false positive separate from implementation_missing.
+    const s = try newSetup(
+        \\class B {
+        \\  protected m?(): void;
+        \\}
+        \\class C extends B {
+        \\  body() {
+        \\    super.m && super.m();
+        \\  }
+        \\}
+    );
+    defer destroySetup(s);
+    s.checker.setStrictFlags(.{ .strict_null_checks = true });
+    try s.checker.checkSourceFile(s.root);
+    try T.expectEqual(@as(usize, 0), s.checker.diagnostics.items.len);
+}
+
 test "checker: bare truthy narrows optional member to non-undefined" {
     // `obj.x` is `string | undefined`; inside `if (obj.x)` the
     // member access should narrow to `string` so the typed
