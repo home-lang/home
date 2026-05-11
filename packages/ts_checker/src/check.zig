@@ -3770,14 +3770,107 @@ pub const Checker = struct {
         const then_params = [_]TypeId{ cb_sig, optional_any };
         const then_sig = self.interner.internSignature(&then_params, types.Primitive.any, false) catch return error.OutOfMemory;
         const then_id = self.string_interner.intern("then") catch return error.OutOfMemory;
-        const members = [_]types.ObjectMember{.{
-            .name = then_id,
-            .type = then_sig,
-            .is_optional = false,
-            .is_readonly = false,
-            .is_method = true,
-        }};
+        const value_id = self.string_interner.intern("__home_promise_value") catch return error.OutOfMemory;
+        const members = [_]types.ObjectMember{
+            .{
+                .name = then_id,
+                .type = then_sig,
+                .is_optional = false,
+                .is_readonly = false,
+                .is_method = true,
+            },
+            .{
+                .name = value_id,
+                .type = value_t,
+                .is_optional = false,
+                .is_readonly = true,
+                .is_method = false,
+            },
+        };
         return self.interner.internObjectType(&members) catch return error.OutOfMemory;
+    }
+
+    fn moduleNamespaceTypeForImportBinding(self: *Checker, decl: NodeId) CheckError!?TypeId {
+        if (self.hir.kindOf(decl) != .identifier) return null;
+        const parent = self.hir.parentOf(decl);
+        if (parent == hir_mod.none_node_id or self.hir.kindOf(parent) != .import_decl) return null;
+        const imp = hir_mod.importOf(self.hir, parent);
+        if (imp.namespace_binding != decl) return null;
+        return try self.moduleNamespaceTypeForSpecifier(imp.module, parent);
+    }
+
+    fn moduleNamespaceTypeForLocalImport(self: *Checker, name: hir_mod.StringId, anchor: NodeId) CheckError!?TypeId {
+        const root = self.rootBlockFor(anchor);
+        if (root == hir_mod.none_node_id or self.hir.kindOf(root) != .block_stmt) return null;
+        for (hir_mod.blockStmts(self.hir, root)) |stmt| {
+            if (self.hir.kindOf(stmt) != .import_decl) continue;
+            const imp = hir_mod.importOf(self.hir, stmt);
+            if (imp.namespace_binding == hir_mod.none_node_id or self.hir.kindOf(imp.namespace_binding) != .identifier) continue;
+            const id = hir_mod.identifierOf(self.hir, imp.namespace_binding);
+            if (id.name != name) continue;
+            return try self.moduleNamespaceTypeForSpecifier(imp.module, stmt);
+        }
+        return null;
+    }
+
+    fn moduleNamespaceTypeForSpecifier(self: *Checker, specifier: hir_mod.StringId, anchor: NodeId) CheckError!?TypeId {
+        const src = self.source orelse return null;
+        if (!self.sourceHasVirtualFilenameSections()) return null;
+        const spec = self.string_interner.get(specifier);
+        if (!std.mem.startsWith(u8, spec, ".")) return null;
+        const root = self.rootBlockFor(anchor);
+        if (root == hir_mod.none_node_id or self.hir.kindOf(root) != .block_stmt) return null;
+        var members: std.ArrayListUnmanaged(types.ObjectMember) = .empty;
+        defer members.deinit(self.gpa);
+        for (hir_mod.blockStmts(self.hir, root)) |raw| {
+            if (!self.virtualSectionMatchesSpecifier(src, raw, spec)) continue;
+            if (self.hir.kindOf(raw) != .export_decl) continue;
+            const decl = self.unwrapExportDecl(raw);
+            const name = self.declarationName(decl) orelse continue;
+            const member_t = try self.exportedValueTypeForNamespaceMember(decl, name);
+            if (member_t == types.Primitive.none) continue;
+            try members.append(self.gpa, .{
+                .name = name,
+                .type = member_t,
+                .is_optional = false,
+                .is_readonly = true,
+                .is_method = false,
+            });
+        }
+        if (members.items.len == 0) return null;
+        return self.interner.internObjectType(members.items) catch return error.OutOfMemory;
+    }
+
+    fn exportedValueTypeForNamespaceMember(self: *Checker, decl: NodeId, name: hir_mod.StringId) CheckError!TypeId {
+        if (self.hir.kindOf(decl) == .class_decl or self.hir.kindOf(decl) == .class_expr) {
+            if (self.class_static_types.get(name)) |static_t| return static_t;
+        }
+        const t = self.hir.typeOf(decl);
+        return if (t != types.Primitive.none) t else types.Primitive.any;
+    }
+
+    fn virtualSectionMatchesSpecifier(self: *Checker, src: []const u8, node: NodeId, spec: []const u8) bool {
+        const section = self.virtualSectionStartForNode(node);
+        if (section >= src.len) return false;
+        const line_end = std.mem.indexOfScalarPos(u8, src, section, '\n') orelse src.len;
+        const line = src[section..line_end];
+        const marker = std.mem.indexOf(u8, line, "@filename:") orelse
+            (std.mem.indexOf(u8, line, "@Filename:") orelse return false);
+        const filename = std.mem.trim(u8, line[marker + "@filename:".len ..], " \t\r");
+        return self.moduleSpecifierMatchesFilename(spec, filename);
+    }
+
+    fn moduleSpecifierMatchesFilename(self: *Checker, spec: []const u8, filename: []const u8) bool {
+        _ = self;
+        var spec_tail = spec;
+        while (std.mem.startsWith(u8, spec_tail, "./")) spec_tail = spec_tail[2..];
+        while (std.mem.startsWith(u8, spec_tail, "../")) spec_tail = spec_tail[3..];
+        if (std.mem.lastIndexOfScalar(u8, spec_tail, '/')) |idx| spec_tail = spec_tail[idx + 1 ..];
+        var file_tail = filename;
+        if (std.mem.lastIndexOfScalar(u8, file_tail, '/')) |idx| file_tail = file_tail[idx + 1 ..];
+        return std.mem.eql(u8, spec_tail, file_tail) or
+            (std.mem.endsWith(u8, file_tail, ".ts") and std.mem.eql(u8, spec_tail, file_tail[0 .. file_tail.len - ".ts".len])) or
+            (std.mem.endsWith(u8, file_tail, ".tsx") and std.mem.eql(u8, spec_tail, file_tail[0 .. file_tail.len - ".tsx".len]));
     }
 
     /// Re-intern the function's signature with `new_ret` as the
@@ -10089,7 +10182,11 @@ pub const Checker = struct {
                             try self.report(args[0], TsCodes.argument_type_mismatch, "Argument is not assignable to dynamic import specifier type.");
                         }
                     }
-                    break :blk try self.buildStructuralPromise(types.Primitive.any);
+                    const import_t = if (args.len > 0 and self.hir.kindOf(args[0]) == .literal_string) blk_import: {
+                        const lit = hir_mod.literalStringOf(self.hir, args[0]);
+                        break :blk_import (try self.moduleNamespaceTypeForSpecifier(lit.value, node)) orelse types.Primitive.any;
+                    } else types.Primitive.any;
+                    break :blk try self.buildStructuralPromise(import_t);
                 }
                 // Overload resolution: when the callee is a known
                 // overloaded fn, pick the first applicable signature.
@@ -13161,6 +13258,8 @@ pub const Checker = struct {
 
         if (saw_namespace_scope) return types.Primitive.any;
 
+        if (self.moduleNamespaceTypeForLocalImport(id.name, node) catch null) |ns_t| return ns_t;
+
         // Module-level fallback.
         if (self.module) |module| {
             if (!self.isDeclNameSlot(node) and self.moduleNameIsNamespaceOnlyValue(module, id.name)) {
@@ -13170,6 +13269,7 @@ pub const Checker = struct {
             if (module.root.lookup(id.name)) |sym| {
                 if (sym.decls.items.len > 0) {
                     const decl = sym.decls.items[0];
+                    if (self.moduleNamespaceTypeForImportBinding(decl) catch null) |ns_t| return ns_t;
                     if (self.hir.kindOf(decl) == .class_decl or self.hir.kindOf(decl) == .class_expr) {
                         if (self.class_static_types.get(id.name)) |static_t| return static_t;
                     }
@@ -16044,11 +16144,26 @@ pub const Checker = struct {
         if (try self.contextualCallReturnAssignableToParam(arg_node, param_t)) return true;
         if (try self.contextualGeneratorFunctionAssignableToParam(arg_node, arg_t, param_t)) return true;
         if (try self.typeParameterConstraintAssignableToParam(arg_t, param_t)) return true;
+        if (try self.promisePayloadArgumentAssignable(arg_t, param_t)) return true;
         if (self.strict_flags.strict_null_checks) {
             if (self.typeIncludesNull(arg_t) and !self.typeIncludesNull(param_t)) return false;
             if (self.typeIncludesUndefined(arg_t) and !self.typeIncludesUndefined(param_t)) return false;
         }
         return self.engine.isAssignableTo(arg_t, param_t);
+    }
+
+    fn promisePayloadArgumentAssignable(self: *Checker, arg_t: TypeId, param_t: TypeId) CheckError!bool {
+        const arg_payload = self.promisePayloadType(arg_t) orelse return false;
+        const param_payload = self.promisePayloadType(param_t) orelse return false;
+        if (param_payload == types.Primitive.any) return true;
+        return self.engine.isAssignableTo(arg_payload, param_payload) catch false;
+    }
+
+    fn promisePayloadType(self: *Checker, t: TypeId) ?TypeId {
+        if (t >= self.interner.pool.typeCount()) return null;
+        if (!self.interner.pool.flagsOf(t).is_object_type) return null;
+        const value_id = self.string_interner.intern("__home_promise_value") catch return null;
+        return self.interner.objectMember(t, value_id);
     }
 
     fn typeParameterConstraintAssignableToParam(self: *Checker, arg_t: TypeId, param_t: TypeId) !bool {
@@ -25241,6 +25356,40 @@ test "checker: dynamic import returns Promise<any> and validates specifier" {
         try T.expect(d.code != TsCodes.subsequent_var_type_mismatch);
     }
     try T.expect(found_bad_specifier);
+}
+
+test "checker: dynamic import literal uses virtual module namespace shape" {
+    const s = try newSetup(
+        \\// @filename: anotherModule.ts
+        \\export class D {}
+        \\// @filename: defaultPath.ts
+        \\export class C {}
+        \\// @filename: 1.ts
+        \\import * as anotherModule from "./anotherModule";
+        \\let p1: Promise<typeof anotherModule> = import("./defaultPath");
+    );
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+    var found = false;
+    for (s.checker.diagnostics.items) |d| {
+        if (d.code == TsCodes.type_not_assignable) found = true;
+    }
+    try T.expect(found);
+}
+
+test "checker: dynamic import namespace promise is assignable to Promise<any> parameter" {
+    const s = try newSetup(
+        \\// @filename: mod.ts
+        \\export function foo() { return "foo"; }
+        \\// @filename: main.ts
+        \\declare function compute(promise: Promise<any>): void;
+        \\compute(import("./mod"));
+    );
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+    for (s.checker.diagnostics.items) |d| {
+        try T.expect(d.code != TsCodes.argument_type_mismatch);
+    }
 }
 
 test "checker: structural Promise.then accepts rejection callback" {
