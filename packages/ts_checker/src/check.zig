@@ -78,9 +78,15 @@ pub const TsCodes = struct {
     pub const arithmetic_operand_type: u32 = 2356;
     pub const arithmetic_left_operand_type: u32 = 2362;
     pub const arithmetic_right_operand_type: u32 = 2363;
+    pub const parameter_initializer_implementation_only: u32 = 2371;
     pub const parameter_cannot_reference_self: u32 = 2372;
     pub const parameter_cannot_reference_later: u32 = 2373;
+    pub const overloads_must_all_be_exported_or_not: u32 = 2383;
+    pub const overloads_must_all_be_ambient_or_not: u32 = 2384;
+    pub const overloads_must_all_have_same_visibility: u32 = 2385;
     pub const duplicate_function_implementation: u32 = 2393;
+    pub const overload_signature_not_compatible: u32 = 2394;
+    pub const function_implementation_name_mismatch: u32 = 2389;
     pub const overload_must_be_static: u32 = 2387;
     pub const overload_must_not_be_static: u32 = 2388;
     pub const implementation_missing: u32 = 2391;
@@ -157,6 +163,8 @@ pub const TsCodes = struct {
     /// Emitted when `// @ts-expect-error` was placed above a line
     /// that produced no diagnostics — the directive is unused.
     pub const unused_ts_expect_error: u32 = 2578;
+    pub const use_strict_non_simple_parameter: u32 = 1346;
+    pub const use_strict_non_simple_parameter_list: u32 = 1347;
     /// `isolatedModules` violation: re-exporting a type when
     /// `isolatedModules` is enabled requires using `export type`.
     /// Also covers `export const enum` (whose runtime semantics
@@ -279,8 +287,18 @@ pub const VarDeclKey = struct {
 const ClassMethodSeen = struct {
     first_node: NodeId,
     first_static: bool,
+    first_visibility: u2,
     bodyless_count: u32 = 0,
     implementation_count: u32 = 0,
+};
+
+const DeclarationEntry = struct {
+    node: NodeId,
+    is_function: bool = false,
+    is_var: bool = false,
+    has_body: bool = false,
+    is_exported: bool = false,
+    is_ambient: bool = false,
 };
 
 pub const StrictFlags = struct {
@@ -714,6 +732,7 @@ pub const Checker = struct {
         if (self.source) |src| try self.scanDirectives(src);
         const stmts = hir_mod.blockStmts(self.hir, root);
         try self.checkNamespaceFunctionMergeOrder(stmts);
+        try self.checkDeclarationSpaceDiagnostics(stmts);
         if (!self.sourceHasModuleDirective("umd")) {
             try self.checkMultipleDefaultExports(stmts);
         }
@@ -1058,6 +1077,7 @@ pub const Checker = struct {
             },
             .block_stmt => {
                 const stmts = hir_mod.blockStmts(self.hir, node);
+                try self.checkDeclarationSpaceDiagnostics(stmts);
                 for (stmts) |s| {
                     try self.checkStatement(s);
                     // Assertion-function call as a statement: narrow
@@ -1096,6 +1116,7 @@ pub const Checker = struct {
     }
 
     fn checkNamespaceTypeStatements(self: *Checker, node: NodeId) CheckError!void {
+        try self.checkDeclarationSpaceDiagnostics(hir_mod.namespaceBody(self.hir, node));
         for (hir_mod.namespaceBody(self.hir, node)) |s| {
             switch (self.hir.kindOf(s)) {
                 .fn_decl => try self.checkFnSignatureOnlyNoBody(s),
@@ -1163,6 +1184,81 @@ pub const Checker = struct {
                     }
                 }
                 try self.checkNamespaceFunctionMergeOrder(hir_mod.namespaceBody(self.hir, node));
+            }
+        }
+    }
+
+    fn checkDeclarationSpaceDiagnostics(self: *Checker, stmts: []const NodeId) CheckError!void {
+        var seen: std.AutoHashMapUnmanaged(hir_mod.StringId, DeclarationEntry) = .empty;
+        defer seen.deinit(self.gpa);
+
+        var previous_overload_name: ?hir_mod.StringId = null;
+        for (stmts) |raw| {
+            const exported = self.hir.kindOf(raw) == .export_decl;
+            const node = self.unwrapExportDecl(raw);
+            if (node == hir_mod.none_node_id) continue;
+
+            const kind = self.hir.kindOf(node);
+            const name = self.declarationName(node) orelse {
+                previous_overload_name = null;
+                continue;
+            };
+            const is_fn = kind == .fn_decl or kind == .fn_expr;
+            const is_var = kind == .var_decl;
+            if (!is_fn and !is_var) {
+                previous_overload_name = null;
+                continue;
+            }
+
+            const has_body = if (is_fn) hir_mod.fnDeclOf(self.hir, node).body != hir_mod.none_node_id else false;
+            const is_ambient = if (is_fn)
+                !has_body and self.declarationSourceHasLeadingDeclare(node)
+            else
+                hir_mod.varDeclOf(self.hir, node).is_ambient;
+
+            if (is_fn and has_body) {
+                if (previous_overload_name) |expected| {
+                    if (expected != name) {
+                        const expected_name = self.string_interner.get(expected);
+                        const msg = try std.fmt.allocPrint(
+                            self.diag_arena.allocator(),
+                            "Function implementation name must be '{s}'.",
+                            .{expected_name},
+                        );
+                        try self.diagnostics.append(self.gpa, .{
+                            .node = node,
+                            .code = TsCodes.function_implementation_name_mismatch,
+                            .message = msg,
+                        });
+                    }
+                }
+            }
+            previous_overload_name = if (is_fn and !has_body and !is_ambient) name else null;
+
+            const gop = try seen.getOrPut(self.gpa, name);
+            if (!gop.found_existing) {
+                gop.value_ptr.* = .{
+                    .node = node,
+                    .is_function = is_fn,
+                    .is_var = is_var,
+                    .has_body = has_body,
+                    .is_exported = exported,
+                    .is_ambient = is_ambient,
+                };
+                continue;
+            }
+
+            if ((gop.value_ptr.is_function and is_var) or (gop.value_ptr.is_var and is_fn)) {
+                try self.reportDuplicateIdentifier(gop.value_ptr.node, name);
+                try self.reportDuplicateIdentifier(node, name);
+            }
+            if (gop.value_ptr.is_function and is_fn) {
+                if (gop.value_ptr.is_exported != exported) {
+                    try self.report(node, TsCodes.overloads_must_all_be_exported_or_not, "Overload signatures must all be exported or non-exported.");
+                }
+                if (gop.value_ptr.is_ambient != is_ambient) {
+                    try self.report(node, TsCodes.overloads_must_all_be_ambient_or_not, "Overload signatures must all be ambient or non-ambient.");
+                }
             }
         }
     }
@@ -1455,6 +1551,62 @@ pub const Checker = struct {
         if (hir_mod.fnTypeParams(self.hir, node).len > 0) self.popNarrowScope();
     }
 
+    fn checkFunctionOverloadCompatibilityAfterBody(self: *Checker, node: NodeId) CheckError!void {
+        const f = hir_mod.fnDeclOf(self.hir, node);
+        if (f.body == hir_mod.none_node_id) return;
+        if (f.flags.is_method or f.flags.is_constructor) return;
+        if (f.name == hir_mod.none_node_id or self.hir.kindOf(f.name) != .identifier) return;
+        const name = hir_mod.identifierOf(self.hir, f.name).name;
+        const overload_list = self.overloads.get(name) orelse return;
+        if (overload_list.items.len <= 1 or !self.overload_has_implementation.contains(name)) return;
+        const impl_sig = self.hir.typeOf(node);
+        if (impl_sig == types.Primitive.none) return;
+        for (overload_list.items[0 .. overload_list.items.len - 1]) |overload_sig| {
+            if (try self.overloadSignatureCompatibleWithImplementation(overload_sig, impl_sig)) continue;
+            try self.report(node, TsCodes.overload_signature_not_compatible, "This overload signature is not compatible with its implementation signature.");
+            return;
+        }
+    }
+
+    fn overloadSignatureCompatibleWithImplementation(self: *Checker, overload_sig: TypeId, impl_sig: TypeId) CheckError!bool {
+        const overload_params = self.interner.signatureParams(overload_sig);
+        const impl_params = self.interner.signatureParams(impl_sig);
+        const overload_min = self.signature_min_args.get(overload_sig) orelse overload_params.len;
+        const impl_min = self.signature_min_args.get(impl_sig) orelse impl_params.len;
+        if (impl_min > overload_min) {
+            var extra_i = overload_min;
+            while (extra_i < impl_min and extra_i < impl_params.len) : (extra_i += 1) {
+                if (impl_params[extra_i] != types.Primitive.any and impl_params[extra_i] != types.Primitive.unknown) return false;
+            }
+        }
+
+        const shared = @min(overload_params.len, impl_params.len);
+        var i: usize = 0;
+        while (i < shared) : (i += 1) {
+            if (!self.typeIsSimpleOverloadCompatibilityOperand(overload_params[i]) or
+                !self.typeIsSimpleOverloadCompatibilityOperand(impl_params[i])) return true;
+            if (impl_params[i] == types.Primitive.any or impl_params[i] == types.Primitive.unknown) continue;
+            if (overload_params[i] == types.Primitive.any or overload_params[i] == types.Primitive.unknown) continue;
+            if (!(self.engine.isAssignableTo(overload_params[i], impl_params[i]) catch return error.OutOfMemory)) return false;
+        }
+        const overload_ret = self.interner.signatureReturn(overload_sig) orelse types.Primitive.any;
+        const impl_ret = self.interner.signatureReturn(impl_sig) orelse types.Primitive.any;
+        if (!self.typeIsSimpleOverloadCompatibilityOperand(overload_ret) or
+            !self.typeIsSimpleOverloadCompatibilityOperand(impl_ret)) return true;
+        if (overload_ret == types.Primitive.any or impl_ret == types.Primitive.any or impl_ret == types.Primitive.unknown) return true;
+        if (overload_ret == types.Primitive.void_t) return true;
+        return self.engine.isAssignableTo(overload_ret, impl_ret) catch return error.OutOfMemory;
+    }
+
+    fn typeIsSimpleOverloadCompatibilityOperand(self: *Checker, t: TypeId) bool {
+        if (t == types.Primitive.none) return false;
+        if (t >= self.interner.pool.typeCount()) return true;
+        const flags = self.interner.pool.flagsOf(t);
+        if (flags.is_type_parameter or flags.is_object_type or flags.is_signature) return false;
+        if (flags.is_union or flags.is_intersection) return false;
+        return true;
+    }
+
     fn checkNamespaceValueDecl(self: *Checker, node: NodeId) CheckError!void {
         const v = hir_mod.varDeclOf(self.hir, node);
         if (v.type_annotation != hir_mod.none_node_id and self.hir.typeOf(node) == types.Primitive.none) {
@@ -1597,8 +1749,10 @@ pub const Checker = struct {
         const had_type_params = hir_mod.fnTypeParams(self.hir, node).len > 0;
         _ = try self.checkFnSignatureOnly(node);
         defer if (had_type_params) self.popNarrowScope();
+        try self.checkUseStrictNonSimpleParameterList(node);
         try self.checkFnParameterDefaultReferences(node);
         try self.walkFnBody(node);
+        try self.checkFunctionOverloadCompatibilityAfterBody(node);
     }
 
     fn checkFnDeclWithFlowBoundary(self: *Checker, node: NodeId) CheckError!void {
@@ -1606,6 +1760,40 @@ pub const Checker = struct {
         self.narrow_lookup_floor = self.narrow_scopes.items.len;
         defer self.narrow_lookup_floor = old_floor;
         try self.checkFnDecl(node);
+    }
+
+    fn checkUseStrictNonSimpleParameterList(self: *Checker, node: NodeId) CheckError!void {
+        if (!self.sourceHasTargetEs2016OrLaterDirective()) return;
+        const f = hir_mod.fnDeclOf(self.hir, node);
+        if (f.body == hir_mod.none_node_id or self.hir.kindOf(f.body) != .block_stmt) return;
+        const directive_node = self.useStrictDirectiveNode(f.body) orelse return;
+        var found_non_simple = false;
+        for (hir_mod.fnParams(self.hir, node)) |param| {
+            if (!self.parameterIsNonSimple(param)) continue;
+            found_non_simple = true;
+            try self.report(param, TsCodes.use_strict_non_simple_parameter, "This parameter is not allowed with 'use strict' directive.");
+        }
+        if (found_non_simple) {
+            try self.report(directive_node, TsCodes.use_strict_non_simple_parameter_list, "'use strict' directive cannot be used with non-simple parameter list.");
+        }
+    }
+
+    fn useStrictDirectiveNode(self: *Checker, body: NodeId) ?NodeId {
+        for (hir_mod.blockStmts(self.hir, body)) |stmt| {
+            if (self.hir.kindOf(stmt) != .literal_string) return null;
+            const lit = hir_mod.literalStringOf(self.hir, stmt);
+            if (std.mem.eql(u8, self.string_interner.get(lit.value), "use strict")) return stmt;
+        }
+        return null;
+    }
+
+    fn parameterIsNonSimple(self: *Checker, param: NodeId) bool {
+        if (param == hir_mod.none_node_id or self.hir.kindOf(param) != .parameter) return false;
+        const p = hir_mod.parameterOf(self.hir, param);
+        if (p.flags.is_rest or p.default_value != hir_mod.none_node_id) return true;
+        if (p.name == hir_mod.none_node_id) return false;
+        const k = self.hir.kindOf(p.name);
+        return k == .object_pattern or k == .array_pattern;
     }
 
     /// Type the body of a function/method/arrow. Split from
@@ -1620,7 +1808,7 @@ pub const Checker = struct {
         // narrowed types. Popped on return.
         try self.pushNarrowScope();
         defer self.popNarrowScope();
-        if (f.name != hir_mod.none_node_id and self.hir.kindOf(f.name) == .identifier) {
+        if (!f.flags.is_method and !f.flags.is_constructor and f.name != hir_mod.none_node_id and self.hir.kindOf(f.name) == .identifier) {
             const fn_id = hir_mod.identifierOf(self.hir, f.name);
             const fn_t = self.hir.typeOf(node);
             if (fn_t != types.Primitive.none) {
@@ -1649,6 +1837,7 @@ pub const Checker = struct {
         };
         if (self.hir.kindOf(f.body) == .block_stmt) {
             const stmts = hir_mod.blockStmts(self.hir, f.body);
+            try self.checkDeclarationSpaceDiagnostics(stmts);
             try self.hoistVarBindings(f.body);
             try self.precheckFunctionSignatures(stmts);
             for (stmts) |s| {
@@ -2524,6 +2713,22 @@ pub const Checker = struct {
         const src = self.source orelse return false;
         return std.mem.indexOf(u8, src, "@allowUnreachableCode: true") != null or
             std.mem.indexOf(u8, src, "@allowUnreachableCode:true") != null;
+    }
+
+    fn sourceHasTargetEs2016OrLaterDirective(self: *Checker) bool {
+        const src = self.source orelse return false;
+        const target_pos = std.mem.indexOf(u8, src, "@target") orelse return false;
+        const line_end = std.mem.indexOfScalarPos(u8, src, target_pos, '\n') orelse src.len;
+        var buf: [128]u8 = undefined;
+        const raw_line = std.mem.trim(u8, src[target_pos..line_end], " \t\r");
+        const n = @min(raw_line.len, buf.len);
+        const line = std.ascii.lowerString(buf[0..n], raw_line[0..n]);
+        return std.mem.indexOf(u8, line, "es2016") != null or
+            std.mem.indexOf(u8, line, "es2017") != null or
+            std.mem.indexOf(u8, line, "es2018") != null or
+            std.mem.indexOf(u8, line, "es2019") != null or
+            std.mem.indexOf(u8, line, "es202") != null or
+            std.mem.indexOf(u8, line, "esnext") != null;
     }
 
     /// `noUnusedParameters` (TS6133): walks the function body and
@@ -4018,6 +4223,9 @@ pub const Checker = struct {
         for (params) |p| {
             const pp = hir_mod.parameterOf(self.hir, p);
             const is_this_param = self.isThisParameter(p);
+            if (f.body == hir_mod.none_node_id and pp.default_value != hir_mod.none_node_id) {
+                try self.report(p, TsCodes.parameter_initializer_implementation_only, "A parameter initializer is only allowed in a function or constructor implementation.");
+            }
             if (pp.flags.is_rest and !is_this_param) has_rest_param = true;
             const has_anno = pp.type_annotation != hir_mod.none_node_id;
             var t: TypeId = if (has_anno)
@@ -4432,7 +4640,7 @@ pub const Checker = struct {
                     // implementations and satisfy any inherited
                     // abstract member of the same name.
                     const seen = if (fn_p.flags.is_static) &static_method_seen else &method_seen;
-                    try self.checkClassMethodOverloadState(m, member_name, fn_p.flags.is_static, fn_p.body != hir_mod.none_node_id, seen);
+                    try self.checkClassMethodOverloadState(m, member_name, fn_p.flags.is_static, self.methodVisibilityBits(fn_p.flags), fn_p.body != hir_mod.none_node_id, seen);
                     if (!fn_p.flags.is_static) {
                         if (c.is_abstract and fn_p.body == hir_mod.none_node_id) {
                             try abstract_names.put(self.gpa, member_name, {});
@@ -4492,7 +4700,7 @@ pub const Checker = struct {
                             if (hir_mod.fnTypeParams(self.hir, op.value).len > 0) self.popNarrowScope();
                             const fn_v = hir_mod.fnDeclOf(self.hir, op.value);
                             const seen = if (op.is_static) &static_method_seen else &method_seen;
-                            try self.checkClassMethodOverloadState(m, member_name, op.is_static, fn_v.body != hir_mod.none_node_id, seen);
+                            try self.checkClassMethodOverloadState(m, member_name, op.is_static, self.methodVisibilityBits(fn_v.flags), fn_v.body != hir_mod.none_node_id, seen);
                             break :blk sig;
                         } else try self.checkExpression(op.value);
                         const method_predicate = self.signature_predicates.get(method_t);
@@ -5252,6 +5460,7 @@ pub const Checker = struct {
         node: NodeId,
         name: hir_mod.StringId,
         is_static: bool,
+        visibility: u2,
         has_body: bool,
         seen: *std.AutoHashMapUnmanaged(hir_mod.StringId, ClassMethodSeen),
     ) CheckError!void {
@@ -5260,6 +5469,7 @@ pub const Checker = struct {
             gop.value_ptr.* = .{
                 .first_node = node,
                 .first_static = is_static,
+                .first_visibility = visibility,
                 .bodyless_count = if (has_body) 0 else 1,
                 .implementation_count = if (has_body) 1 else 0,
             };
@@ -5269,6 +5479,9 @@ pub const Checker = struct {
             const code = if (is_static) TsCodes.overload_must_not_be_static else TsCodes.overload_must_be_static;
             try self.report(node, code, "Overload signatures must all be static or non-static.");
         }
+        if (gop.value_ptr.first_visibility != visibility) {
+            try self.report(node, TsCodes.overloads_must_all_have_same_visibility, "Overload signatures must all be public, private or protected.");
+        }
         if (has_body) {
             gop.value_ptr.implementation_count += 1;
             if (gop.value_ptr.implementation_count > 1) {
@@ -5277,6 +5490,13 @@ pub const Checker = struct {
         } else {
             gop.value_ptr.bodyless_count += 1;
         }
+    }
+
+    fn methodVisibilityBits(self: *Checker, flags: hir_mod.FnFlags) u2 {
+        _ = self;
+        if (flags.is_private) return 1;
+        if (flags.is_protected) return 2;
+        return 0;
     }
 
     fn checkClassMethodMissingImplementations(
@@ -5293,8 +5513,12 @@ pub const Checker = struct {
     }
 
     fn classHasLeadingDeclare(self: *Checker, class_node: NodeId) bool {
+        return self.declarationSourceHasLeadingDeclare(class_node);
+    }
+
+    fn declarationSourceHasLeadingDeclare(self: *Checker, node: NodeId) bool {
         const src = self.source orelse return false;
-        const span = self.hir.spanOf(class_node);
+        const span = self.hir.spanOf(node);
         if (span.start == 0 or span.start > src.len) return false;
         var i: usize = span.start;
         while (i > 0 and std.ascii.isWhitespace(src[i - 1])) : (i -= 1) {}
@@ -17983,6 +18207,102 @@ test "checker: noUnusedLocals emits TS6133 for unread let" {
     }
     try T.expect(has_unused);
     try T.expect(!has_used);
+}
+
+test "checker: overload implementation compatibility emits TS2394" {
+    const s = try newSetup(
+        \\function f(x: string): number;
+        \\function f(x: string): void {
+        \\  return;
+        \\}
+    );
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+    var found = false;
+    for (s.checker.diagnostics.items) |d| {
+        if (d.code == TsCodes.overload_signature_not_compatible) found = true;
+    }
+    try T.expect(found);
+}
+
+test "checker: overload signatures cannot have parameter initializers" {
+    const s = try newSetup(
+        \\function f(x = 1);
+        \\function f() {}
+    );
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+    var found = false;
+    for (s.checker.diagnostics.items) |d| {
+        if (d.code == TsCodes.parameter_initializer_implementation_only) found = true;
+    }
+    try T.expect(found);
+}
+
+test "checker: function implementation name must match overload" {
+    const s = try newSetup(
+        \\function over();
+        \\function other() {}
+    );
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+    var found = false;
+    for (s.checker.diagnostics.items) |d| {
+        if (d.code == TsCodes.function_implementation_name_mismatch) found = true;
+    }
+    try T.expect(found);
+}
+
+test "checker: function and var declarations conflict in one declaration space" {
+    const s = try newSetup(
+        \\function f() {
+        \\  var inner;
+        \\  function inner() {}
+        \\}
+    );
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+    var found = false;
+    for (s.checker.diagnostics.items) |d| {
+        if (d.code == TsCodes.duplicate_identifier) found = true;
+    }
+    try T.expect(found);
+}
+
+test "checker: use strict rejects non-simple parameter lists" {
+    const s = try newSetup(
+        \\// @target: es2016
+        \\function f(a = 1, ...rest: any[]) {
+        \\  "use strict";
+        \\}
+    );
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+    var found_param = false;
+    var found_directive = false;
+    for (s.checker.diagnostics.items) |d| {
+        if (d.code == TsCodes.use_strict_non_simple_parameter) found_param = true;
+        if (d.code == TsCodes.use_strict_non_simple_parameter_list) found_directive = true;
+    }
+    try T.expect(found_param);
+    try T.expect(found_directive);
+}
+
+test "checker: class overload visibility must match" {
+    const s = try newSetup(
+        \\class C {
+        \\  public f();
+        \\  private f(x: string);
+        \\  f() {}
+        \\}
+    );
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+    var found = false;
+    for (s.checker.diagnostics.items) |d| {
+        if (d.code == TsCodes.overloads_must_all_have_same_visibility) found = true;
+    }
+    try T.expect(found);
 }
 
 test "checker: function with branches unions the return types" {
