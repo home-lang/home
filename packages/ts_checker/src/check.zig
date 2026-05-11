@@ -3843,6 +3843,10 @@ pub const Checker = struct {
     fn checkObjectBindingPatternAgainstType(self: *Checker, pattern_node: NodeId, container_t: TypeId) CheckError!void {
         if (container_t == types.Primitive.any or container_t == types.Primitive.unknown) return;
         if (container_t >= self.interner.pool.typeCount()) return;
+        if (container_t == types.Primitive.object_t) {
+            try self.checkObjectBindingPatternAgainstBroadObject(pattern_node);
+            return;
+        }
         const flags = self.interner.pool.flagsOf(container_t);
         if (flags.is_union) {
             for (self.interner.unionMembers(container_t)) |member| {
@@ -3881,6 +3885,28 @@ pub const Checker = struct {
             if (self.interner.objectStringIndex(container_t) != types.Primitive.none) continue;
             if (self.interner.objectNumberIndex(container_t) != types.Primitive.none and self.isNumericStringId(id.name)) continue;
             if (ep.default_value != hir_mod.none_node_id) continue;
+            const name_str = self.string_interner.get(id.name);
+            const msg = try std.fmt.allocPrint(
+                self.diag_arena.allocator(),
+                "Property '{s}' does not exist on type.",
+                .{name_str},
+            );
+            try self.diagnostics.append(self.gpa, .{
+                .node = ep.name,
+                .code = TsCodes.property_does_not_exist,
+                .message = msg,
+            });
+        }
+    }
+
+    fn checkObjectBindingPatternAgainstBroadObject(self: *Checker, pattern_node: NodeId) CheckError!void {
+        for (hir_mod.patternElements(self.hir, pattern_node)) |e| {
+            if (self.hir.kindOf(e) != .parameter) continue;
+            const ep = hir_mod.parameterOf(self.hir, e);
+            if (ep.name == hir_mod.none_node_id or ep.flags.is_rest) continue;
+            if (self.hir.kindOf(ep.name) != .identifier) continue;
+            if (!self.objectBindingElementUsesImplicitKey(e, ep.name)) continue;
+            const id = hir_mod.identifierOf(self.hir, ep.name);
             const name_str = self.string_interner.get(id.name);
             const msg = try std.fmt.allocPrint(
                 self.diag_arena.allocator(),
@@ -6789,6 +6815,7 @@ pub const Checker = struct {
         }
         if (std.mem.startsWith(u8, spec, ".")) {
             try self.checkNamedImportSpecifiers(node, imp, spec);
+            if (try self.checkVirtualRelativeModuleImport(node, spec)) return;
             return;
         }
         if (try self.checkVirtualBareModuleImport(node, spec)) return;
@@ -6810,6 +6837,30 @@ pub const Checker = struct {
         declaration,
         implementation,
     };
+
+    fn checkVirtualRelativeModuleImport(self: *Checker, node: NodeId, spec: []const u8) CheckError!bool {
+        if (!self.sourceHasVirtualFilenameSections()) return false;
+        const resolution = try self.resolveVirtualRelativeModule(node, spec);
+        switch (resolution) {
+            .none => return false,
+            .declaration => return true,
+            .implementation => {
+                if (self.strict_flags.no_implicit_any) {
+                    const msg = try std.fmt.allocPrint(
+                        self.diag_arena.allocator(),
+                        "Could not find a declaration file for module '{s}'.",
+                        .{spec},
+                    );
+                    try self.diagnostics.append(self.gpa, .{
+                        .node = node,
+                        .code = TsCodes.untyped_module,
+                        .message = msg,
+                    });
+                }
+                return true;
+            },
+        }
+    }
 
     fn checkVirtualBareModuleImport(self: *Checker, node: NodeId, spec: []const u8) CheckError!bool {
         if (!self.sourceHasVirtualFilenameSections()) return false;
@@ -6835,6 +6886,24 @@ pub const Checker = struct {
         }
     }
 
+    fn resolveVirtualRelativeModule(self: *Checker, node: NodeId, spec: []const u8) CheckError!VirtualModuleResolution {
+        const from = self.virtualSectionFilenameForNode(node) orelse return .none;
+        const resolved = try self.resolveVirtualRelativePath(from, spec);
+        defer self.gpa.free(resolved);
+
+        if (self.virtualSourceHasFilenameWithExtOrIndex(resolved, ".d.ts")) return .declaration;
+        if (self.virtualSourceHasFilenameWithExtOrIndex(resolved, ".d.mts")) return .declaration;
+        if (self.virtualSourceHasFilenameWithExtOrIndex(resolved, ".d.cts")) return .declaration;
+        if (self.virtualSourceHasFilenameWithExtOrIndex(resolved, ".ts")) return .declaration;
+        if (self.virtualSourceHasFilenameWithExtOrIndex(resolved, ".tsx")) return .declaration;
+
+        if (self.virtualSourceHasFilenameWithExtOrIndex(resolved, ".js")) return .implementation;
+        if (self.virtualSourceHasFilenameWithExtOrIndex(resolved, ".jsx")) return .implementation;
+        if (self.virtualSourceHasFilenameWithExtOrIndex(resolved, ".mjs")) return .implementation;
+        if (self.virtualSourceHasFilenameWithExtOrIndex(resolved, ".cjs")) return .implementation;
+        return .none;
+    }
+
     fn resolveVirtualBareModule(self: *Checker, spec: []const u8) CheckError!VirtualModuleResolution {
         if (std.mem.startsWith(u8, spec, ".")) return .none;
         const slash = packageNameEnd(spec);
@@ -6852,6 +6921,40 @@ pub const Checker = struct {
         if (try self.virtualPackageHasImplementation("", package_name, subpath)) return .implementation;
         if (subpath.len == 0 and try self.virtualPackageHasAnyImplementation("", package_name)) return .implementation;
         return .none;
+    }
+
+    fn resolveVirtualRelativePath(self: *Checker, from: []const u8, spec: []const u8) CheckError![]u8 {
+        var from_path = from;
+        while (std.mem.startsWith(u8, from_path, "/")) from_path = from_path[1..];
+        const dir = if (std.mem.lastIndexOfScalar(u8, from_path, '/')) |slash| from_path[0..slash] else "";
+        const joined = if (dir.len > 0)
+            try std.fmt.allocPrint(self.gpa, "{s}/{s}", .{ dir, spec })
+        else
+            try self.gpa.dupe(u8, spec);
+        defer self.gpa.free(joined);
+        return try self.normalizeVirtualPath(joined);
+    }
+
+    fn normalizeVirtualPath(self: *Checker, path: []const u8) CheckError![]u8 {
+        var parts: std.ArrayListUnmanaged([]const u8) = .empty;
+        defer parts.deinit(self.gpa);
+        var it = std.mem.splitScalar(u8, path, '/');
+        while (it.next()) |part| {
+            if (part.len == 0 or std.mem.eql(u8, part, ".")) continue;
+            if (std.mem.eql(u8, part, "..")) {
+                if (parts.items.len > 0) _ = parts.pop();
+                continue;
+            }
+            try parts.append(self.gpa, part);
+        }
+
+        var out: std.ArrayListUnmanaged(u8) = .empty;
+        errdefer out.deinit(self.gpa);
+        for (parts.items, 0..) |part, i| {
+            if (i > 0) try out.append(self.gpa, '/');
+            try out.appendSlice(self.gpa, part);
+        }
+        return try out.toOwnedSlice(self.gpa);
     }
 
     fn packageNameEnd(spec: []const u8) usize {
@@ -6982,6 +7085,16 @@ pub const Checker = struct {
         const types_pkg = try std.fmt.allocPrint(self.gpa, "@types/{s}__{s}", .{ scope, name });
         defer self.gpa.free(types_pkg);
         return try self.virtualPackageHasDeclaration("node_modules", types_pkg, subpath);
+    }
+
+    fn virtualSourceHasFilenameWithExtOrIndex(self: *Checker, base: []const u8, ext: []const u8) bool {
+        if (std.mem.endsWith(u8, base, ext) and self.virtualSourceHasFilename(base)) return true;
+        const direct = std.fmt.allocPrint(self.gpa, "{s}{s}", .{ base, ext }) catch return false;
+        defer self.gpa.free(direct);
+        if (self.virtualSourceHasFilename(direct)) return true;
+        const index = std.fmt.allocPrint(self.gpa, "{s}/index{s}", .{ base, ext }) catch return false;
+        defer self.gpa.free(index);
+        return self.virtualSourceHasFilename(index);
     }
 
     fn virtualSourceHasFilename(self: *Checker, wanted: []const u8) bool {
@@ -10259,6 +10372,22 @@ pub const Checker = struct {
         return std.mem.eql(u8, self.string_interner.get(id.name), "this");
     }
 
+    fn broadObjectPrototypeMember(self: *Checker, name: hir_mod.StringId) CheckError!?TypeId {
+        const text = self.string_interner.get(name);
+        if (std.mem.eql(u8, text, "toString")) {
+            return self.interner.internSignature(&.{}, types.Primitive.string_t, false) catch return error.OutOfMemory;
+        }
+        if (std.mem.eql(u8, text, "valueOf")) {
+            return self.interner.internSignature(&.{}, types.Primitive.object_t, false) catch return error.OutOfMemory;
+        }
+        if (std.mem.eql(u8, text, "hasOwnProperty") or
+            std.mem.eql(u8, text, "propertyIsEnumerable"))
+        {
+            return self.interner.internSignature(&.{types.Primitive.string_t}, types.Primitive.boolean_t, false) catch return error.OutOfMemory;
+        }
+        return null;
+    }
+
     fn lookupObjectMember(self: *Checker, obj_t: TypeId, name: hir_mod.StringId) CheckError!?TypeId {
         const flags = self.interner.pool.flagsOf(obj_t);
         if (flags.is_type_parameter) {
@@ -11194,6 +11323,13 @@ pub const Checker = struct {
                 if (try self.lookupObjectMember(obj_t, m.name)) |t| {
                     break :blk try self.optionalChainResult(t, member_is_optional_chain);
                 }
+                if (access_obj_t == types.Primitive.object_t) {
+                    if (try self.broadObjectPrototypeMember(m.name)) |t| {
+                        break :blk try self.optionalChainResult(t, member_is_optional_chain);
+                    }
+                    try self.reportPropertyDoesNotExist(node, m.name);
+                    break :blk types.Primitive.any;
+                }
                 // Lib lookup: primitive receivers consult the
                 // hard-coded prototype shapes. Catches both broad
                 // primitives and their literal variants.
@@ -11399,6 +11535,17 @@ pub const Checker = struct {
                                 .message = msg,
                             });
                         }
+                    }
+                }
+                if (obj_t == types.Primitive.object_t and self.strict_flags.no_implicit_any) {
+                    const idx_flags = self.interner.pool.flagsOf(idx_t);
+                    if (idx_flags.is_string or idx_flags.is_number or idx_flags.is_symbol) {
+                        const msg = try self.diag_arena.allocator().dupe(u8, "Element implicitly has an 'any' type because expression can't be used to index type 'object'.");
+                        try self.diagnostics.append(self.gpa, .{
+                            .node = node,
+                            .code = TsCodes.element_implicitly_any,
+                            .message = msg,
+                        });
                     }
                 }
                 if (!try self.computedPropertyKeyTypeIsValid(idx_t)) {
@@ -22643,6 +22790,87 @@ test "checker: virtual js package without declaration reports TS7016 under noImp
     var found = false;
     for (s.checker.diagnostics.items) |d| {
         if (d.code == TsCodes.untyped_module) found = true;
+    }
+    try T.expect(found);
+}
+
+test "checker: relative virtual js package reports TS7016 under noImplicitAny" {
+    const s = try newSetup(
+        \\// @filename: /node_modules/foo/index.js
+        \\module.exports = {};
+        \\// @filename: /main.ts
+        \\import * as foo from "./node_modules/foo";
+        \\foo;
+    );
+    defer destroySetup(s);
+    s.checker.setStrictFlags(.{ .no_implicit_any = true });
+    try s.checker.checkSourceFile(s.root);
+    var found = false;
+    for (s.checker.diagnostics.items) |d| {
+        if (d.code == TsCodes.untyped_module) found = true;
+    }
+    try T.expect(found);
+}
+
+test "checker: relative virtual declaration package satisfies import under noImplicitAny" {
+    const s = try newSetup(
+        \\// @filename: /types/foo/index.d.ts
+        \\export const value: number;
+        \\// @filename: /src/main.ts
+        \\import { value } from "../types/foo";
+        \\value;
+    );
+    defer destroySetup(s);
+    s.checker.setStrictFlags(.{ .no_implicit_any = true });
+    try s.checker.checkSourceFile(s.root);
+    for (s.checker.diagnostics.items) |d| {
+        try T.expect(d.code != TsCodes.untyped_module);
+    }
+}
+
+test "checker: lowercase object permits Object prototype but rejects missing property" {
+    const s = try newSetup(
+        \\var a: object = {};
+        \\a.toString();
+        \\a.nonExist();
+    );
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+    var found = false;
+    for (s.checker.diagnostics.items) |d| {
+        if (d.code == TsCodes.property_does_not_exist) found = true;
+    }
+    try T.expect(found);
+}
+
+test "checker: lowercase object destructuring reports missing implicit property" {
+    const s = try newSetup(
+        \\var a: object = {};
+        \\var { destructuring } = a;
+        \\var { ...rest } = a;
+    );
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+    var found = false;
+    for (s.checker.diagnostics.items) |d| {
+        if (d.code == TsCodes.property_does_not_exist) found = true;
+    }
+    try T.expect(found);
+}
+
+test "checker: lowercase object element access reports implicit any under noImplicitAny" {
+    const s = try newSetup(
+        \\var a: object = {};
+        \\for (var key in a) {
+        \\  var value = a[key];
+        \\}
+    );
+    defer destroySetup(s);
+    s.checker.setStrictFlags(.{ .no_implicit_any = true });
+    try s.checker.checkSourceFile(s.root);
+    var found = false;
+    for (s.checker.diagnostics.items) |d| {
+        if (d.code == TsCodes.element_implicitly_any) found = true;
     }
     try T.expect(found);
 }

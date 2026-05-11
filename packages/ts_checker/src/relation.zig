@@ -507,6 +507,17 @@ pub const Engine = struct {
             return true;
         }
 
+        // Lowercase `object` accepts non-primitive object-like values
+        // while still rejecting primitive values such as `string` and
+        // `number`.
+        if (target == Primitive.object_t) {
+            return sf.is_object or
+                sf.is_object_type or
+                sf.is_signature or
+                sf.is_tuple or
+                sf.is_intersection;
+        }
+
         // The empty object type (`{}` / uppercase `Object` in our
         // current lib approximation) accepts every non-nullish value,
         // including primitives. Lowercase `object` remains the
@@ -1088,6 +1099,18 @@ test "Engine: structural object assignability — exact match" {
     });
     try T.expect(try e.isAssignableTo(a, b));
     try T.expect(try e.isIdenticalTo(a, b));
+}
+
+test "Engine: object primitive accepts object-like sources only" {
+    var ti = try Interner.init(T.allocator);
+    defer ti.deinit();
+    var e = try Engine.init(T.allocator, &ti);
+    defer e.deinit();
+
+    const empty_obj = try ti.internObjectType(&.{});
+    try T.expect(try e.isAssignableTo(empty_obj, Primitive.object_t));
+    try T.expect(!try e.isAssignableTo(Primitive.string_t, Primitive.object_t));
+    try T.expect(!try e.isAssignableTo(Primitive.number_t, Primitive.object_t));
 }
 
 test "Engine: structural object — source missing required prop fails" {

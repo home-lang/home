@@ -3363,6 +3363,7 @@ pub const Parser = struct {
                 const id = try self.internToken(yield_tok);
                 break :blk try self.builder.addTypeRef(tokenSpan(yield_tok), id, &.{}, &.{});
             },
+            .kw_import => try self.parseImportTypeReference(),
             .identifier => try self.parseTypeReference(),
             .kw_public, .kw_private, .kw_protected => blk: {
                 const bad = self.advance();
@@ -4262,6 +4263,61 @@ pub const Parser = struct {
     /// `Foo`, `Foo.Bar`, `Foo<T, U>`. The lexer hands us the `<` only
     /// when it can tell from context — in type position it's always
     /// generic args, never a comparison.
+    fn parseImportTypeReference(self: *Parser) ParseError!NodeId {
+        const import_tok = self.advance();
+        _ = try self.expect(.open_paren, "'(' after import in import type");
+        _ = try self.expect(.string_literal, "module specifier in import type");
+        if (self.match(.comma)) {
+            var depth: i32 = 0;
+            while (self.peek().kind != .eof) {
+                if (depth == 0 and self.peek().kind == .close_paren) break;
+                const k = self.peek().kind;
+                if (k == .open_paren or k == .open_brace or k == .open_bracket) depth += 1;
+                if ((k == .close_paren or k == .close_brace or k == .close_bracket) and depth > 0) depth -= 1;
+                _ = self.advance();
+            }
+        }
+        _ = try self.expect(.close_paren, "')' to close import type");
+
+        var qualifier: std.ArrayListUnmanaged(NodeId) = .empty;
+        defer qualifier.deinit(self.gpa);
+        var name_id = self.interner.intern("unknown") catch return error.OutOfMemory;
+
+        if (self.match(.dot)) {
+            const first = try self.expectIdentifierLike();
+            name_id = try self.internToken(first);
+            var prev_tok = first;
+            while (self.match(.dot)) {
+                const next_tok = try self.expectIdentifierLike();
+                const prev_id = name_id;
+                const prev_node = try self.builder.addIdentifier(tokenSpan(prev_tok), prev_id);
+                try qualifier.append(self.gpa, prev_node);
+                name_id = try self.internToken(next_tok);
+                prev_tok = next_tok;
+            }
+        }
+
+        var args: std.ArrayListUnmanaged(NodeId) = .empty;
+        defer args.deinit(self.gpa);
+        if (self.peek().kind == .less_than) {
+            _ = self.advance();
+            while (self.peek().kind != .greater_than and self.peek().kind != .eof) {
+                const a = try self.parseTypeAnnotation();
+                try args.append(self.gpa, a);
+                if (!self.match(.comma)) break;
+            }
+            _ = try self.consumeTypeGreater("'>' to close import type arguments");
+        }
+
+        const end_pos = self.tokens[self.cursor - 1].span.end;
+        return try self.builder.addTypeRef(
+            .{ .start = import_tok.span.start, .end = end_pos },
+            name_id,
+            qualifier.items,
+            args.items,
+        );
+    }
+
     fn parseTypeReference(self: *Parser) ParseError!NodeId {
         const start = self.peek();
         const name_tok = try self.expect(.identifier, "type name");
@@ -7931,6 +7987,19 @@ test "parser: type annotation — qualified name" {
     const tr = hir_mod.typeRefOf(&s.hir, v.type_annotation);
     try T.expectEqualStrings("C", s.interner.get(tr.name));
     try T.expectEqual(@as(usize, 2), tr.qualifier_len);
+}
+
+test "parser: type annotation — import type qualified name" {
+    var s = try newTestSetup("export function getUser(): import(\"./types.d.ts\").Models.User { return user; }");
+    defer destroyTestSetup(s);
+    const root = try s.parser.parseSourceFile();
+    const top = hir_mod.blockStmts(&s.hir, root)[0];
+    const exp = hir_mod.exportOf(&s.hir, top);
+    const f = hir_mod.fnDeclOf(&s.hir, exp.decl);
+    try T.expectEqual(hir_mod.NodeKind.type_ref, s.hir.kindOf(f.return_type));
+    const tr = hir_mod.typeRefOf(&s.hir, f.return_type);
+    try T.expectEqualStrings("User", s.interner.get(tr.name));
+    try T.expectEqual(@as(usize, 1), tr.qualifier_len);
 }
 
 test "parser: type annotation — tuple" {
