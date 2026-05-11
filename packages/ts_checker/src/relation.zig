@@ -596,9 +596,10 @@ pub const Engine = struct {
             var members: std.ArrayListUnmanaged(types.ObjectMember) = .empty;
             defer members.deinit(self.interner.gpa);
             for (self.interner.objectMembers(t)) |m| {
+                const member_t = try self.substituteTpDeep(m.type, map);
                 try members.append(self.interner.gpa, .{
                     .name = m.name,
-                    .type = try self.substituteTpDeep(m.type, map),
+                    .type = self.validOrUnknown(member_t),
                     .is_optional = m.is_optional,
                     .is_readonly = m.is_readonly,
                     .is_method = m.is_method,
@@ -607,9 +608,9 @@ pub const Engine = struct {
             const str_idx = self.interner.objectStringIndex(t);
             const num_idx = self.interner.objectNumberIndex(t);
             const sym_idx = self.interner.objectSymbolIndex(t);
-            const new_str = if (str_idx != Primitive.none) try self.substituteTpDeep(str_idx, map) else Primitive.none;
-            const new_num = if (num_idx != Primitive.none) try self.substituteTpDeep(num_idx, map) else Primitive.none;
-            const new_sym = if (sym_idx != Primitive.none) try self.substituteTpDeep(sym_idx, map) else Primitive.none;
+            const new_str = if (str_idx != Primitive.none) self.validOrUnknown(try self.substituteTpDeep(str_idx, map)) else Primitive.none;
+            const new_num = if (num_idx != Primitive.none) self.validOrUnknown(try self.substituteTpDeep(num_idx, map)) else Primitive.none;
+            const new_sym = if (sym_idx != Primitive.none) self.validOrUnknown(try self.substituteTpDeep(sym_idx, map)) else Primitive.none;
             if (new_str == Primitive.none and new_num == Primitive.none and new_sym == Primitive.none) {
                 return self.interner.internObjectType(members.items) catch t;
             }
@@ -617,18 +618,23 @@ pub const Engine = struct {
         }
         if (flags.is_signature) {
             if (payload_idx >= self.interner.pool.signature_payloads.items.len) return t;
+            const sig_payload = self.interner.pool.signature_payloads.items[payload_idx];
             var params: std.ArrayListUnmanaged(TypeId) = .empty;
             defer params.deinit(self.interner.gpa);
             for (self.interner.signatureParams(t)) |p| {
-                try params.append(self.interner.gpa, try self.substituteTpDeep(p, map));
+                try params.append(self.interner.gpa, self.validOrUnknown(try self.substituteTpDeep(p, map)));
             }
             const ret = if (self.interner.signatureReturn(t)) |r|
-                try self.substituteTpDeep(r, map)
+                self.validOrUnknown(try self.substituteTpDeep(r, map))
             else
                 Primitive.void_t;
-            return self.interner.internSignature(params.items, ret, false) catch t;
+            return self.interner.internSignature(params.items, ret, sig_payload.is_construct) catch t;
         }
         return t;
+    }
+
+    fn validOrUnknown(self: *Engine, t: TypeId) TypeId {
+        return if (t < self.interner.pool.typeCount()) t else Primitive.unknown;
     }
 
     fn mappedTp(t: TypeId, map: []const TpPair) ?TypeId {
@@ -788,6 +794,7 @@ pub const Engine = struct {
     fn computeSignatureAssignableToCallableObject(self: *Engine, source: TypeId, target: TypeId) anyerror!bool {
         var saw_signature_member = false;
         for (self.interner.objectMembers(target)) |tm| {
+            if (tm.type >= self.interner.pool.typeCount()) return false;
             const tf = self.pool().flagsOf(tm.type);
             if (tf.is_signature) {
                 saw_signature_member = true;
@@ -801,6 +808,7 @@ pub const Engine = struct {
 
     fn computeCallableObjectAssignableToSignature(self: *Engine, source: TypeId, target: TypeId) anyerror!bool {
         for (self.interner.objectMembers(source)) |sm| {
+            if (sm.type >= self.interner.pool.typeCount()) continue;
             const sf = self.pool().flagsOf(sm.type);
             if (!sf.is_signature) continue;
             if (try self.isAssignableTo(sm.type, target)) return true;

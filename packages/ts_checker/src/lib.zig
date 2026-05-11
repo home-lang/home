@@ -32,6 +32,9 @@ pub const LibCache = struct {
     /// `string` itself. Built once and reused for every `string`-typed
     /// member access.
     string_proto: TypeId = types.Primitive.none,
+    /// `Number.prototype` shape — common formatting/conversion
+    /// methods on the primitive `number` receiver.
+    number_proto: TypeId = types.Primitive.none,
     /// `Object` global — `keys / values / entries / assign`. Built
     /// once on first access.
     object_global: TypeId = types.Primitive.none,
@@ -114,6 +117,32 @@ pub fn stringProto(
     // in lib types.)
     cache.string_proto = try ti.internObjectType(&m);
     return cache.string_proto;
+}
+
+/// Build (or fetch from cache) the `Number.prototype` member shape.
+pub fn numberProto(
+    cache: *LibCache,
+    ti: *interner_mod.Interner,
+    sint: *string_interner.Interner,
+) !TypeId {
+    if (cache.number_proto != types.Primitive.none) return cache.number_proto;
+
+    const number_t = types.Primitive.number_t;
+    const string_t = types.Primitive.string_t;
+
+    const sig_void_string = try ti.internSignature(&[_]TypeId{}, string_t, false);
+    const sig_num_string = try ti.internSignature(&[_]TypeId{number_t}, string_t, false);
+    const sig_void_number = try ti.internSignature(&[_]TypeId{}, number_t, false);
+
+    const m = [_]types.ObjectMember{
+        .{ .name = try sint.intern("toString"), .type = sig_void_string, .is_optional = false, .is_readonly = false, .is_method = true },
+        .{ .name = try sint.intern("toFixed"), .type = sig_num_string, .is_optional = false, .is_readonly = false, .is_method = true },
+        .{ .name = try sint.intern("toExponential"), .type = sig_num_string, .is_optional = false, .is_readonly = false, .is_method = true },
+        .{ .name = try sint.intern("toPrecision"), .type = sig_num_string, .is_optional = false, .is_readonly = false, .is_method = true },
+        .{ .name = try sint.intern("valueOf"), .type = sig_void_number, .is_optional = false, .is_readonly = false, .is_method = true },
+    };
+    cache.number_proto = try ti.internObjectType(&m);
+    return cache.number_proto;
 }
 
 /// Build (or fetch from cache) the `Array<T>.prototype` member shape
@@ -370,6 +399,24 @@ test "lib: stringProto exposes length/charAt/toUpperCase" {
     try T.expect(ti.objectMember(proto, charAt_id) != null);
     try T.expect(ti.objectMember(proto, upper_id) != null);
     try T.expectEqual(types.Primitive.number_t, ti.objectMember(proto, length_id).?);
+}
+
+test "lib: numberProto exposes formatting methods" {
+    var sint = try string_interner.Interner.init(T.allocator);
+    defer sint.deinit();
+    var ti = try interner_mod.Interner.init(T.allocator);
+    defer ti.deinit();
+    var cache: LibCache = .{};
+    defer cache.deinit(T.allocator);
+
+    const proto = try numberProto(&cache, &ti, &sint);
+    const fixed_id = try sint.intern("toFixed");
+    const precision_id = try sint.intern("toPrecision");
+    const value_of_id = try sint.intern("valueOf");
+    try T.expect(ti.objectMember(proto, fixed_id) != null);
+    try T.expect(ti.objectMember(proto, precision_id) != null);
+    try T.expect(ti.objectMember(proto, value_of_id) != null);
+    try T.expectEqual(types.Primitive.number_t, ti.signatureReturn(ti.objectMember(proto, value_of_id).?).?);
 }
 
 test "lib: arrayProto exposes length/push/map" {
