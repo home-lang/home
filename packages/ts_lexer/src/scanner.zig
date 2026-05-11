@@ -153,7 +153,7 @@ pub const Scanner = struct {
 
     /// Consume whitespace and comments; sets `saw_newline` if the
     /// trivia run included a line terminator.
-    fn skipTrivia(self: *Scanner) void {
+    fn skipTrivia(self: *Scanner, gpa: std.mem.Allocator) ScanError!void {
         self.saw_newline = false;
         const skipped_bom = self.pos == 0 and self.source.len >= 3 and
             std.mem.eql(u8, self.source[0..3], "\xEF\xBB\xBF");
@@ -200,10 +200,12 @@ pub const Scanner = struct {
                     } else if (self.peekCharAt(1) == '*') {
                         // Block comment.
                         self.pos += 2;
+                        var closed = false;
                         while (!self.isAtEnd()) {
                             const ch = self.source[self.pos];
                             if (ch == '*' and self.peekCharAt(1) == '/') {
                                 self.pos += 2;
+                                closed = true;
                                 break;
                             }
                             if (ch == '\n') {
@@ -217,6 +219,10 @@ pub const Scanner = struct {
                                 if (self.peekCharAt(1) == '\n') self.pos += 1;
                             }
                             self.pos += 1;
+                        }
+                        if (!closed) {
+                            self.report(gpa, "'*/' expected");
+                            return error.UnterminatedBlockComment;
                         }
                     } else {
                         return;
@@ -431,8 +437,26 @@ pub const Scanner = struct {
                     self.report(gpa, "unterminated string literal at EOF");
                     return error.UnterminatedString;
                 }
+                const esc_pos = self.pos;
                 const esc = self.source[self.pos];
                 self.pos += 1;
+                if (esc == 'u') {
+                    if (self.pos + 4 > self.source.len) {
+                        self.pos = esc_pos + 1;
+                        self.report(gpa, "Hexadecimal digit expected.");
+                        return error.InvalidEscapeSequence;
+                    }
+                    var i: usize = 0;
+                    while (i < 4) : (i += 1) {
+                        if (!isHexDigit(self.source[self.pos + i])) {
+                            self.pos += @intCast(i);
+                            self.report(gpa, "Hexadecimal digit expected.");
+                            return error.InvalidEscapeSequence;
+                        }
+                    }
+                    self.pos += 4;
+                    continue;
+                }
                 // Line-continuation: a backslash followed by \n / \r
                 // (handled above by consuming the `\\` then the newline).
                 if (esc == '\n') {
@@ -529,7 +553,7 @@ pub const Scanner = struct {
     /// Scan a single significant token. Whitespace and comments are
     /// silently consumed.
     pub fn next(self: *Scanner, gpa: std.mem.Allocator) ScanError!Token {
-        self.skipTrivia();
+        try self.skipTrivia(gpa);
         const start = self.pos;
         const line = self.line;
         const flags: TokenFlags = .{ .preceded_by_newline = self.saw_newline };
@@ -886,6 +910,20 @@ test "Scanner: unterminated string is an error" {
     var s = Scanner.init(t.allocator, "'oops");
     defer s.deinit(t.allocator);
     try t.expectError(error.UnterminatedString, s.next(t.allocator));
+}
+
+test "Scanner: invalid unicode escape in string reports diagnostic" {
+    var s = Scanner.init(t.allocator, "\"\\u000G\"");
+    defer s.deinit(t.allocator);
+    try t.expectError(error.InvalidEscapeSequence, s.next(t.allocator));
+    try t.expect(s.diagnostics.items.len > 0);
+}
+
+test "Scanner: unterminated block comment reports diagnostic" {
+    var s = Scanner.init(t.allocator, "/*CHECK#1/");
+    defer s.deinit(t.allocator);
+    try t.expectError(error.UnterminatedBlockComment, s.next(t.allocator));
+    try t.expect(s.diagnostics.items.len > 0);
 }
 
 test "Scanner: line and block comments are trivia" {

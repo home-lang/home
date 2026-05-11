@@ -173,6 +173,7 @@ pub fn arrayProto(
     const sig_concat = try ti.internSignature(&[_]TypeId{arr_t}, arr_t, false);
     const sig_reverse = try ti.internSignature(&[_]TypeId{}, arr_t, false);
     const sig_sort = try ti.internSignature(&[_]TypeId{cb_tt_num}, arr_t, false);
+    const sig_to_array = try ti.internSignature(&[_]TypeId{}, arr_t, false);
     // `values(): IterableIterator<T>` — modeled as `T[]` because the
     // checker's iterable path already understands array element types.
     const sig_values = try ti.internSignature(&[_]TypeId{}, arr_t, false);
@@ -193,6 +194,7 @@ pub fn arrayProto(
         .{ .name = try sint.intern("reverse"), .type = sig_reverse, .is_optional = false, .is_readonly = false, .is_method = true },
         .{ .name = try sint.intern("sort"), .type = sig_sort, .is_optional = false, .is_readonly = false, .is_method = true },
         .{ .name = try sint.intern("values"), .type = sig_values, .is_optional = false, .is_readonly = false, .is_method = true },
+        .{ .name = try sint.intern("toArray"), .type = sig_to_array, .is_optional = false, .is_readonly = false, .is_method = true },
     };
     const proto = try ti.internObjectType(&m);
     try cache.array_proto_by_elem.put(gpa, elem, proto);
@@ -385,6 +387,19 @@ test "lib: arrayProto exposes length/push/map" {
     try T.expect(ti.objectMember(proto, length_id) != null);
     try T.expect(ti.objectMember(proto, push_id) != null);
     try T.expect(ti.objectMember(proto, map_id) != null);
+}
+
+test "lib: arrayProto exposes iterator helper toArray" {
+    var sint = try string_interner.Interner.init(T.allocator);
+    defer sint.deinit();
+    var ti = try interner_mod.Interner.init(T.allocator);
+    defer ti.deinit();
+    var cache: LibCache = .{};
+    defer cache.deinit(T.allocator);
+
+    const proto = try arrayProto(&cache, &ti, &sint, T.allocator, types.Primitive.number_t);
+    const to_array_id = try sint.intern("toArray");
+    try T.expect(ti.objectMember(proto, to_array_id) != null);
 }
 
 test "lib: objectGlobal exposes keys/values/entries/assign" {
