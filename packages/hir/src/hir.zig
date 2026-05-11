@@ -224,8 +224,13 @@ pub const NodeKind = enum(u8) {
     /// Returns true if the kind is in the "expression" category.
     pub fn isExpression(self: NodeKind) bool {
         const v = @intFromEnum(self);
-        return v >= @intFromEnum(NodeKind.identifier) and
-            v <= @intFromEnum(NodeKind.import_call);
+        if (v >= @intFromEnum(NodeKind.identifier) and
+            v <= @intFromEnum(NodeKind.import_call)) return true;
+        return self == .jsx_element or
+            self == .jsx_self_closing or
+            self == .jsx_fragment or
+            self == .jsx_expression or
+            self == .jsx_text;
     }
 
     /// Returns true if the kind is in the "type" category.
@@ -618,6 +623,9 @@ pub const ImportPayload = struct {
     default_binding: NodeId,
     /// `none_node_id` if no namespace import (`import * as ns from "m"`).
     namespace_binding: NodeId,
+    /// Qualified entity name for `import Alias = Namespace.Member`.
+    /// `none_node_id` for ES imports and `import Alias = require("m")`.
+    import_equals: NodeId,
     /// Children pool slice: named-import-specifier nodes.
     named_start: u32,
     named_len: u32,
@@ -2051,6 +2059,7 @@ pub const Builder = struct {
         module: StringId,
         default_binding: NodeId,
         namespace_binding: NodeId,
+        import_equals: NodeId,
         named: []const NodeId,
         is_type_only: bool,
     ) !NodeId {
@@ -2061,6 +2070,7 @@ pub const Builder = struct {
             .module = module,
             .default_binding = default_binding,
             .namespace_binding = namespace_binding,
+            .import_equals = import_equals,
             .named_start = named_start,
             .named_len = @intCast(named.len),
             .is_type_only = is_type_only,
@@ -2068,6 +2078,7 @@ pub const Builder = struct {
         const id = try self.newNode(.import_decl, span, payload_idx);
         if (default_binding != none_node_id) self.hir.setParent(default_binding, id);
         if (namespace_binding != none_node_id) self.hir.setParent(namespace_binding, id);
+        if (import_equals != none_node_id) self.hir.setParent(import_equals, id);
         for (named) |n| self.hir.setParent(n, id);
         return id;
     }
@@ -3480,6 +3491,10 @@ test "Hir: NodeKind category predicates" {
     const t = std.testing;
     try t.expect(NodeKind.identifier.isExpression());
     try t.expect(NodeKind.binary_op.isExpression());
+    try t.expect(NodeKind.jsx_self_closing.isExpression());
+    try t.expect(NodeKind.jsx_element.isExpression());
+    try t.expect(NodeKind.jsx_fragment.isExpression());
+    try t.expect(NodeKind.jsx_expression.isExpression());
     try t.expect(!NodeKind.identifier.isStatement());
     try t.expect(NodeKind.if_stmt.isStatement());
     try t.expect(NodeKind.fn_decl.isDeclaration());

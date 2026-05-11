@@ -1512,6 +1512,8 @@ pub const Parser = struct {
                         &.{},
                         args,
                     );
+                } else if (self.hir.kindOf(extends) == .member_access) {
+                    extends = try self.memberAccessToTypeRef(extends, args);
                 }
             }
         }
@@ -1775,6 +1777,37 @@ pub const Parser = struct {
             implements_list.items,
             members.items,
             is_abstract,
+        );
+    }
+
+    fn memberAccessToTypeRef(self: *Parser, expr: NodeId, args: []const NodeId) ParseError!NodeId {
+        var names: std.ArrayListUnmanaged(hir_mod.StringId) = .empty;
+        defer names.deinit(self.gpa);
+        var cur = expr;
+        while (self.hir.kindOf(cur) == .member_access) {
+            const m = hir_mod.memberOf(self.hir, cur);
+            try names.append(self.gpa, m.name);
+            cur = m.object;
+        }
+        if (self.hir.kindOf(cur) != .identifier or names.items.len == 0) return expr;
+        const root = hir_mod.identifierOf(self.hir, cur).name;
+        try names.append(self.gpa, root);
+
+        var qualifiers: std.ArrayListUnmanaged(NodeId) = .empty;
+        defer qualifiers.deinit(self.gpa);
+        var i = names.items.len;
+        while (i > 1) {
+            i -= 1;
+            const q_name = names.items[i];
+            const q_node = try self.builder.addIdentifier(self.hir.spanOf(cur), q_name);
+            try qualifiers.append(self.gpa, q_node);
+        }
+        const final_name = names.items[0];
+        return try self.builder.addTypeRef(
+            .{ .start = self.hir.spanOf(expr).start, .end = self.tokens[self.cursor - 1].span.end },
+            final_name,
+            qualifiers.items,
+            args,
         );
     }
 
@@ -2223,6 +2256,7 @@ pub const Parser = struct {
             _ = self.advance(); // local alias
             _ = self.advance(); // =
             var module_id = self.interner.intern("") catch return error.OutOfMemory;
+            var import_equals = hir_mod.none_node_id;
             if (self.peek().kind == .kw_require and self.peekAt(1).kind == .open_paren and self.peekAt(2).kind == .string_literal) {
                 _ = self.advance(); // require
                 _ = self.advance(); // (
@@ -2230,8 +2264,15 @@ pub const Parser = struct {
                 module_id = try self.internStringLiteral(mod_tok);
                 _ = try self.expect(.close_paren, "')' after require module specifier");
                 try self.consumeStatementTerminator();
-            } else {
+            } else if (self.peek().kind == .kw_require and self.peekAt(1).kind == .open_paren) {
                 try self.consumeImportEqualsTail();
+            } else {
+                if (self.peek().kind == .identifier or self.peek().kind.isContextualKeyword() or self.peek().kind.isKeyword()) {
+                    import_equals = try self.parseImportEqualsEntityName();
+                    try self.consumeStatementTerminator();
+                } else {
+                    try self.consumeImportEqualsTail();
+                }
             }
             const end_pos = self.tokens[self.cursor - 1].span.end;
             return try self.builder.addImport(
@@ -2239,6 +2280,7 @@ pub const Parser = struct {
                 module_id,
                 alias_node,
                 hir_mod.none_node_id,
+                import_equals,
                 &.{},
                 is_type_only,
             );
@@ -2255,6 +2297,7 @@ pub const Parser = struct {
             return try self.builder.addImport(
                 .{ .start = start.span.start, .end = self.tokens[self.cursor - 1].span.end },
                 mod_id,
+                hir_mod.none_node_id,
                 hir_mod.none_node_id,
                 hir_mod.none_node_id,
                 &.{},
@@ -2350,6 +2393,7 @@ pub const Parser = struct {
             mod_id,
             default_binding,
             namespace_binding,
+            hir_mod.none_node_id,
             named.items,
             is_type_only,
         );
@@ -2383,6 +2427,32 @@ pub const Parser = struct {
             saw_token = true;
         }
         _ = self.match(.semicolon);
+    }
+
+    fn parseImportEqualsEntityName(self: *Parser) ParseError!NodeId {
+        const start = self.peek();
+        const name_tok = try self.expectIdentifierLike();
+        var name_id = try self.internToken(name_tok);
+
+        var qualifier: std.ArrayListUnmanaged(NodeId) = .empty;
+        defer qualifier.deinit(self.gpa);
+        var previous_tok = name_tok;
+
+        while (self.peek().kind == .dot) {
+            _ = self.advance();
+            const next_tok = try self.expectIdentifierLike();
+            const prev_node = try self.builder.addIdentifier(tokenSpan(previous_tok), name_id);
+            try qualifier.append(self.gpa, prev_node);
+            previous_tok = next_tok;
+            name_id = try self.internToken(next_tok);
+        }
+
+        return try self.builder.addTypeRef(
+            .{ .start = start.span.start, .end = self.tokens[self.cursor - 1].span.end },
+            name_id,
+            qualifier.items,
+            &.{},
+        );
     }
 
     /// Optional import-attributes clause appearing after a module
@@ -5546,13 +5616,12 @@ pub const Parser = struct {
             return try self.builder.addJsxFragment(.{ .start = open.span.start, .end = close.span.end }, children.items);
         }
 
-        // Tag identifier — accept identifier or member-access (`Foo.Bar`).
-        const tag_tok = try self.expect(.identifier, "JSX tag name");
-        const tag_id = try self.internToken(tag_tok);
-        var tag = try self.builder.addIdentifier(tokenSpan(tag_tok), tag_id);
+        // Tag identifier — accept identifier, keyword-like intrinsic names,
+        // and member-access (`Foo.Bar`, `this._tagName`).
+        var tag = try self.parseJsxTagName("JSX tag name");
         while (self.peek().kind == .dot) {
             _ = self.advance();
-            const member_tok = try self.expect(.identifier, "JSX qualified-tag member");
+            const member_tok = try self.expectIdentifierLike();
             const member_id = try self.internToken(member_tok);
             tag = try self.builder.addMemberAccess(
                 .{ .start = self.hir.spanOf(tag).start, .end = member_tok.span.end },
@@ -5634,11 +5703,11 @@ pub const Parser = struct {
         _ = try self.expect(.slash, "'/' in JSX closing tag");
         // Skip the closing tag identifier (and any qualified-name
         // chain) — semantic equivalence is the binder's job.
-        if (self.peek().kind == .identifier) {
+        if (self.peek().kind == .identifier or self.peek().kind.isKeyword() or self.peek().kind.isContextualKeyword()) {
             _ = self.advance();
             while (self.peek().kind == .dot) {
                 _ = self.advance();
-                _ = try self.expect(.identifier, "JSX closing-tag member");
+                _ = try self.expectIdentifierLike();
             }
         }
         const close = try self.expect(.greater_than, "'>' to close JSX closing tag");
@@ -5649,6 +5718,21 @@ pub const Parser = struct {
             children.items,
             false,
         );
+    }
+
+    fn parseJsxTagName(self: *Parser, what: []const u8) ParseError!NodeId {
+        const tok = self.peek();
+        if (tok.kind == .kw_this) {
+            _ = self.advance();
+            const this_id = self.interner.intern("this") catch return error.OutOfMemory;
+            return try self.builder.addIdentifier(tokenSpan(tok), this_id);
+        }
+        if (tok.kind != .identifier and !tok.kind.isKeyword() and !tok.kind.isContextualKeyword()) {
+            _ = try self.expect(.identifier, what);
+        }
+        const name_tok = self.advance();
+        const name_id = try self.internToken(name_tok);
+        return try self.builder.addIdentifier(tokenSpan(name_tok), name_id);
     }
 
     fn parseJsxChildren(self: *Parser, out: *std.ArrayListUnmanaged(NodeId)) ParseError!void {
@@ -7249,6 +7333,9 @@ test "parser: import equals accepts type/contextual aliases and ASI" {
     try T.expectEqual(hir_mod.NodeKind.import_decl, s.hir.kindOf(stmts[1]));
     try T.expectEqual(hir_mod.NodeKind.import_decl, s.hir.kindOf(stmts[2]));
     try T.expectEqual(hir_mod.NodeKind.class_decl, s.hir.kindOf(stmts[3]));
+    const imp = hir_mod.importOf(&s.hir, stmts[1]);
+    try T.expect(imp.import_equals != hir_mod.none_node_id);
+    try T.expectEqual(hir_mod.NodeKind.type_ref, s.hir.kindOf(imp.import_equals));
     try T.expectEqual(@as(usize, 0), s.parser.diagnostics.items.len);
 }
 
@@ -7861,6 +7948,17 @@ test "parser: jsx with member access tag" {
     try T.expectEqual(hir_mod.NodeKind.member_access, s.hir.kindOf(el.tag));
 }
 
+test "parser: jsx dynamic this member tag" {
+    var s = try newTsxTestSetup("let v = <this._tagName>Hello</this._tagName>;");
+    defer destroyTestSetup(s);
+    const root = try s.parser.parseSourceFile();
+    const top = hir_mod.blockStmts(&s.hir, root)[0];
+    const init_node = hir_mod.varDeclOf(&s.hir, top).init;
+    const el = hir_mod.jsxElementOf(&s.hir, init_node);
+    try T.expectEqual(hir_mod.NodeKind.member_access, s.hir.kindOf(el.tag));
+    try T.expectEqual(@as(usize, 0), s.parser.diagnostics.items.len);
+}
+
 // ====================================================================
 // Generics on declarations
 // ====================================================================
@@ -7900,6 +7998,19 @@ test "parser: contextual get/set keywords can be callee identifiers" {
     try T.expectEqual(@as(usize, 3), stmts.len);
     try T.expectEqual(hir_mod.NodeKind.call_expr, s.hir.kindOf(stmts[1]));
     try T.expectEqual(hir_mod.NodeKind.call_expr, s.hir.kindOf(stmts[2]));
+}
+
+test "parser: qualified generic class heritage is a type ref" {
+    var s = try newTestSetup("class View extends React.Component<Props, {}> {}");
+    defer destroyTestSetup(s);
+    const root = try s.parser.parseSourceFile();
+    const top = hir_mod.blockStmts(&s.hir, root)[0];
+    const c = hir_mod.classOf(&s.hir, top);
+    try T.expectEqual(hir_mod.NodeKind.type_ref, s.hir.kindOf(c.extends));
+    const r = hir_mod.typeRefOf(&s.hir, c.extends);
+    try T.expectEqualStrings("Component", s.interner.get(r.name));
+    try T.expectEqual(@as(usize, 1), s.hir.childSlice(r.qualifier_start, r.qualifier_len).len);
+    try T.expectEqual(@as(usize, 2), hir_mod.typeRefArgs(&s.hir, c.extends).len);
 }
 
 test "parser: function with constrained generic" {
