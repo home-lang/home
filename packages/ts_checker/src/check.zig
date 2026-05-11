@@ -292,6 +292,7 @@ const ParamPredicateEntry = struct {
 pub const VarDeclKey = struct {
     scope: hir_mod.NodeId,
     name: hir_mod.StringId,
+    virtual_section_start: usize,
 };
 
 const GeneratorTypeInfo = struct {
@@ -315,6 +316,16 @@ const DeclarationEntry = struct {
     has_body: bool = false,
     is_exported: bool = false,
     is_ambient: bool = false,
+};
+
+const DeclarationKey = struct {
+    name: hir_mod.StringId,
+    virtual_section_start: usize,
+};
+
+const ExportAssignmentSection = struct {
+    export_assignment: NodeId = hir_mod.none_node_id,
+    has_other_export: bool = false,
 };
 
 pub const StrictFlags = struct {
@@ -1233,24 +1244,28 @@ pub const Checker = struct {
     }
 
     fn checkDeclarationSpaceDiagnostics(self: *Checker, stmts: []const NodeId) CheckError!void {
-        var seen: std.AutoHashMapUnmanaged(hir_mod.StringId, DeclarationEntry) = .empty;
+        var seen: std.AutoHashMapUnmanaged(DeclarationKey, DeclarationEntry) = .empty;
         defer seen.deinit(self.gpa);
 
         var previous_overload_name: ?hir_mod.StringId = null;
+        var previous_overload_section: usize = 0;
         for (stmts) |raw| {
             const exported = self.hir.kindOf(raw) == .export_decl;
             const node = self.unwrapExportDecl(raw);
             if (node == hir_mod.none_node_id) continue;
+            const virtual_section = self.virtualSectionStartForNode(node);
 
             const kind = self.hir.kindOf(node);
             const name = self.declarationName(node) orelse {
                 previous_overload_name = null;
+                previous_overload_section = 0;
                 continue;
             };
             const is_fn = kind == .fn_decl or kind == .fn_expr;
             const is_var = kind == .var_decl;
             if (!is_fn and !is_var) {
                 previous_overload_name = null;
+                previous_overload_section = 0;
                 continue;
             }
 
@@ -1262,7 +1277,7 @@ pub const Checker = struct {
 
             if (is_fn and has_body) {
                 if (previous_overload_name) |expected| {
-                    if (expected != name) {
+                    if (previous_overload_section == virtual_section and expected != name) {
                         const expected_name = self.string_interner.get(expected);
                         const msg = try std.fmt.allocPrint(
                             self.diag_arena.allocator(),
@@ -1277,9 +1292,16 @@ pub const Checker = struct {
                     }
                 }
             }
-            previous_overload_name = if (is_fn and !has_body and !is_ambient) name else null;
+            if (is_fn and !has_body and !is_ambient) {
+                previous_overload_name = name;
+                previous_overload_section = virtual_section;
+            } else {
+                previous_overload_name = null;
+                previous_overload_section = 0;
+            }
 
-            const gop = try seen.getOrPut(self.gpa, name);
+            const key: DeclarationKey = .{ .name = name, .virtual_section_start = virtual_section };
+            const gop = try seen.getOrPut(self.gpa, key);
             if (!gop.found_existing) {
                 gop.value_ptr.* = .{
                     .node = node,
@@ -1305,6 +1327,27 @@ pub const Checker = struct {
                 }
             }
         }
+    }
+
+    fn virtualSectionStartForNode(self: *Checker, node: NodeId) usize {
+        const src = self.source orelse return 0;
+        if (!self.sourceHasVirtualFilenameSections()) return 0;
+        const span = self.hir.spanOf(node);
+        const limit = @min(span.start, src.len);
+        var last: usize = 0;
+        var line_start: usize = 0;
+        while (line_start <= limit and line_start < src.len) {
+            const line_end = std.mem.indexOfScalarPos(u8, src, line_start, '\n') orelse src.len;
+            const line = src[line_start..line_end];
+            if (std.mem.indexOf(u8, line, "@filename:") != null or
+                std.mem.indexOf(u8, line, "@Filename:") != null)
+            {
+                last = line_start;
+            }
+            if (line_end >= limit or line_end == src.len) break;
+            line_start = line_end + 1;
+        }
+        return last;
     }
 
     fn checkMultipleDefaultExports(self: *Checker, stmts: []const NodeId) CheckError!void {
@@ -1465,18 +1508,25 @@ pub const Checker = struct {
     }
 
     fn checkExportAssignmentExclusivity(self: *Checker, stmts: []const NodeId) CheckError!void {
-        var export_assignment: NodeId = hir_mod.none_node_id;
-        var has_other_export = false;
+        var by_section: std.AutoHashMapUnmanaged(usize, ExportAssignmentSection) = .empty;
+        defer by_section.deinit(self.gpa);
+
         for (stmts) |stmt| {
             if (self.hir.kindOf(stmt) != .export_decl) continue;
+            const section = self.virtualSectionStartForNode(stmt);
+            const gop = try by_section.getOrPut(self.gpa, section);
+            if (!gop.found_existing) gop.value_ptr.* = .{};
             if (self.isExportAssignmentDecl(stmt)) {
-                export_assignment = stmt;
+                gop.value_ptr.export_assignment = stmt;
             } else {
-                has_other_export = true;
+                gop.value_ptr.has_other_export = true;
             }
         }
-        if (export_assignment != hir_mod.none_node_id and has_other_export) {
-            try self.report(export_assignment, TsCodes.export_assignment_with_other_exports, "An export assignment cannot be used in a module with other exported elements.");
+        var it = by_section.valueIterator();
+        while (it.next()) |info| {
+            if (info.export_assignment != hir_mod.none_node_id and info.has_other_export) {
+                try self.report(info.export_assignment, TsCodes.export_assignment_with_other_exports, "An export assignment cannot be used in a module with other exported elements.");
+            }
         }
     }
 
@@ -9178,7 +9228,11 @@ pub const Checker = struct {
         const id = hir_mod.identifierOf(self.hir, v.name);
         const scope = self.hir.parentOf(node);
         if (scope == hir_mod.none_node_id) return;
-        const key: VarDeclKey = .{ .scope = scope, .name = id.name };
+        const key: VarDeclKey = .{
+            .scope = scope,
+            .name = id.name,
+            .virtual_section_start = self.virtualSectionStartForNode(node),
+        };
         const has_annotation = v.type_annotation != hir_mod.none_node_id;
         if (self.var_decl_types.get(key)) |prior| {
             const prior_explicit = self.var_decl_explicit.get(key) orelse false;
@@ -16853,6 +16907,22 @@ test "checker: export assignment cannot coexist with exported declarations" {
     try T.expect(found);
 }
 
+test "checker: export assignments are scoped by virtual filename sections" {
+    const b = try newBoundSetup(
+        \\// @filename: something.ts
+        \\export = 42;
+        \\// @filename: index.ts
+        \\export = async function() {
+        \\  return import("./something");
+        \\};
+    );
+    defer destroyBoundSetup(b);
+    try b.base.checker.checkSourceFile(b.base.root);
+    for (b.base.checker.diagnostics.items) |d| {
+        try T.expect(d.code != TsCodes.export_assignment_with_other_exports);
+    }
+}
+
 test "checker: duplicate default exports report TS2528" {
     const b = try newBoundSetup(
         \\export default function f() {}
@@ -20636,6 +20706,22 @@ test "checker: function implementation name must match overload" {
         if (d.code == TsCodes.function_implementation_name_mismatch) found = true;
     }
     try T.expect(found);
+}
+
+test "checker: declaration diagnostics respect virtual filename sections" {
+    const s = try newSetup(
+        \\// @filename: 0.ts
+        \\export function foo() { return "foo"; }
+        \\// @filename: 1.ts
+        \\function foo() {
+        \\  return import("./0");
+        \\}
+    );
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+    for (s.checker.diagnostics.items) |d| {
+        try T.expect(d.code != TsCodes.overloads_must_all_be_exported_or_not);
+    }
 }
 
 test "checker: function and var declarations conflict in one declaration space" {
