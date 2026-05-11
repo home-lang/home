@@ -7631,6 +7631,9 @@ pub const Checker = struct {
                         return types.Primitive.symbol_t;
                     }
                     if (std.mem.indexOfScalar(u8, raw, '.')) |_| {
+                        if (try self.typeOfDottedValueReference(raw, type_node)) |dotted_t| {
+                            return dotted_t;
+                        }
                         if (try self.typeOfQualifiedNamespaceValue(raw, type_node)) |qualified_t| {
                             return qualified_t;
                         }
@@ -9457,6 +9460,92 @@ pub const Checker = struct {
         return self.interner.objectMember(obj_t, name);
     }
 
+    fn typeOfDottedValueReference(self: *Checker, raw: []const u8, at_node: NodeId) CheckError!?TypeId {
+        var parts = std.mem.splitScalar(u8, raw, '.');
+        const root_raw = parts.next() orelse return null;
+        if (root_raw.len == 0) return null;
+        const root_name = self.string_interner.intern(root_raw) catch return error.OutOfMemory;
+        var current = self.lookupNarrow(root_name) orelse (try self.typeOfVisibleNameNoDiag(at_node, root_name)) orelse return null;
+        var root_for_narrow: ?hir_mod.StringId = root_name;
+        while (parts.next()) |part| {
+            if (part.len == 0) return null;
+            const prop_name = self.string_interner.intern(part) catch return error.OutOfMemory;
+            if (root_for_narrow) |obj_name| {
+                const key: MemberKey = .{ .obj_name = obj_name, .prop_name = prop_name };
+                if (self.lookupMemberNarrow(key)) |nt| {
+                    current = nt;
+                    root_for_narrow = null;
+                    continue;
+                }
+            }
+            current = (try self.lookupObjectMember(current, prop_name)) orelse return null;
+            root_for_narrow = null;
+        }
+        return current;
+    }
+
+    fn typeOfVisibleNameNoDiag(self: *Checker, at_node: NodeId, name: hir_mod.StringId) CheckError!?TypeId {
+        if (self.lookupNarrow(name)) |t| return t;
+        var cur: hir_mod.NodeId = self.hir.parentOf(at_node);
+        while (cur != hir_mod.none_node_id) : (cur = self.hir.parentOf(cur)) {
+            const k = self.hir.kindOf(cur);
+            if (k == .fn_decl or k == .fn_expr or k == .arrow_fn) {
+                for (hir_mod.fnParams(self.hir, cur)) |p| {
+                    if (self.hir.kindOf(p) != .parameter) continue;
+                    const pp = hir_mod.parameterOf(self.hir, p);
+                    if (pp.name == hir_mod.none_node_id or self.hir.kindOf(pp.name) != .identifier) continue;
+                    const pid = hir_mod.identifierOf(self.hir, pp.name);
+                    if (pid.name == name and self.hir.typeOf(p) != types.Primitive.none) return self.hir.typeOf(p);
+                }
+            }
+            if (k == .block_stmt or k == .namespace_decl) {
+                const stmts = if (k == .block_stmt)
+                    hir_mod.blockStmts(self.hir, cur)
+                else
+                    hir_mod.namespaceBody(self.hir, cur);
+                for (stmts) |s| {
+                    const sk = self.hir.kindOf(s);
+                    if (sk == .var_decl or sk == .let_decl or sk == .const_decl) {
+                        const v = hir_mod.varDeclOf(self.hir, s);
+                        if (v.name == hir_mod.none_node_id or self.hir.kindOf(v.name) != .identifier) continue;
+                        const vid = hir_mod.identifierOf(self.hir, v.name);
+                        if (vid.name != name) continue;
+                        const existing = self.hir.typeOf(s);
+                        if (existing != types.Primitive.none) return existing;
+                        if (v.type_annotation != hir_mod.none_node_id) {
+                            const declared_t = self.lowererLowerWithTypeParams(v.type_annotation) catch types.Primitive.any;
+                            self.hir.setType(s, declared_t);
+                            self.hir.setType(v.name, declared_t);
+                            return declared_t;
+                        }
+                    } else if (sk == .fn_decl or sk == .fn_expr) {
+                        const fp = hir_mod.fnDeclOf(self.hir, s);
+                        if (fp.name == hir_mod.none_node_id or self.hir.kindOf(fp.name) != .identifier) continue;
+                        const fid = hir_mod.identifierOf(self.hir, fp.name);
+                        if (fid.name == name and self.hir.typeOf(s) != types.Primitive.none) return self.hir.typeOf(s);
+                    } else if (sk == .class_decl or sk == .class_expr) {
+                        const cp = hir_mod.classOf(self.hir, s);
+                        if (cp.name == hir_mod.none_node_id or self.hir.kindOf(cp.name) != .identifier) continue;
+                        const cid = hir_mod.identifierOf(self.hir, cp.name);
+                        if (cid.name == name) {
+                            if (self.class_static_types.get(name)) |static_t| return static_t;
+                            if (self.hir.typeOf(s) != types.Primitive.none) return self.hir.typeOf(s);
+                        }
+                    }
+                }
+            }
+        }
+        if (self.module) |module| {
+            if (module.root.lookup(name)) |sym| {
+                if (sym.decls.items.len > 0) {
+                    const decl = sym.decls.items[0];
+                    if (self.hir.typeOf(decl) != types.Primitive.none) return self.hir.typeOf(decl);
+                }
+            }
+        }
+        return null;
+    }
+
     fn predicateTargetIsBroadObject(self: *Checker, target: TypeId) bool {
         _ = self;
         return target == types.Primitive.object_t;
@@ -10347,6 +10436,14 @@ pub const Checker = struct {
                     }
                 }
                 if (self.interner.pool.flagsOf(obj_t).is_object_type) {
+                    if (self.hir.kindOf(e.object) == .identifier and self.hir.kindOf(e.index) == .literal_string) {
+                        const obj_id = hir_mod.identifierOf(self.hir, e.object);
+                        const lit = hir_mod.literalStringOf(self.hir, e.index);
+                        const key: MemberKey = .{ .obj_name = obj_id.name, .prop_name = lit.value };
+                        if (self.lookupMemberNarrow(key)) |nt| {
+                            break :blk try self.optionalChainResult(nt, element_is_optional_chain);
+                        }
+                    }
                     // Tuple literal-index access: `tup[0]` should
                     // pick the per-index member typed under "0", not
                     // the broader number indexer's union. Only fires
@@ -23283,6 +23380,39 @@ test "checker: typeof element access guard narrows matching property access" {
     try s.checker.checkSourceFile(s.root);
     for (s.checker.diagnostics.items) |d| {
         try T.expect(d.code != TsCodes.property_does_not_exist);
+    }
+}
+
+test "checker: typeof element access guard narrows matching element access" {
+    const s = try newSetup(
+        \\declare const config: { [key: string]: boolean | { prop: string } };
+        \\if (typeof config["works"] !== "boolean") {
+        \\  config["works"].prop = "test";
+        \\}
+    );
+    defer destroySetup(s);
+    s.checker.setStrictFlags(.{ .strict_null_checks = true, .no_implicit_any = true });
+    try s.checker.checkSourceFile(s.root);
+    for (s.checker.diagnostics.items) |d| {
+        try T.expect(d.code != TsCodes.property_does_not_exist);
+    }
+}
+
+test "checker: typeof dotted value reference uses member narrow" {
+    const s = try newSetup(
+        \\interface I<T> { p: T; }
+        \\function f(x: I<"A" | "B">) {
+        \\  if (x.p === "A") {
+        \\    let a: "A" = (null as unknown as typeof x.p);
+        \\  }
+        \\}
+    );
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+    for (s.checker.diagnostics.items) |d| {
+        try T.expect(d.code != TsCodes.cannot_find_name);
+        try T.expect(d.code != TsCodes.cannot_find_name_did_you_mean);
+        try T.expect(d.code != TsCodes.type_not_assignable);
     }
 }
 
