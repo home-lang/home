@@ -2460,6 +2460,7 @@ pub const Checker = struct {
             .for_in_stmt, .for_of_stmt => {
                 const fr = hir_mod.forInOf(self.hir, node);
                 try self.scanExprForUsedBeforeAssign(fr.source, pending);
+                try self.scanForUsedBeforeAssign(fr.body, pending);
             },
             .if_stmt => {
                 const i = hir_mod.ifOf(self.hir, node);
@@ -2828,13 +2829,19 @@ pub const Checker = struct {
     }
 
     fn varDeclHasTypeAnnotation(self: *Checker, node: NodeId) bool {
-        if (self.hir.kindOf(node) != .var_decl) return false;
+        switch (self.hir.kindOf(node)) {
+            .var_decl, .let_decl, .const_decl => {},
+            else => return false,
+        }
         const v = hir_mod.varDeclOf(self.hir, node);
         return v.type_annotation != hir_mod.none_node_id;
     }
 
     fn varDeclHasExplicitAnyAnnotation(self: *Checker, node: NodeId) bool {
-        if (self.hir.kindOf(node) != .var_decl) return false;
+        switch (self.hir.kindOf(node)) {
+            .var_decl, .let_decl, .const_decl => {},
+            else => return false,
+        }
         const v = hir_mod.varDeclOf(self.hir, node);
         if (v.type_annotation == hir_mod.none_node_id) return false;
         if (self.hir.kindOf(v.type_annotation) != .type_ref) return false;
@@ -11736,6 +11743,11 @@ pub const Checker = struct {
         kind: NullishGuardKind,
     };
 
+    const DiscriminantTarget = struct {
+        name: hir_mod.StringId,
+        t: TypeId,
+    };
+
     fn applyNullishGuardAssignmentFlow(self: *Checker, cond: NodeId, then_branch: NodeId) !void {
         const guard = self.nullishEqualityGuard(cond) orelse return;
         const value_node = self.singleAssignmentValueToIdentifier(then_branch, guard.name) orelse return;
@@ -12090,6 +12102,10 @@ pub const Checker = struct {
             if (narrowed != current) try self.recordNarrow(id.name, narrowed);
             return;
         }
+        if (self.hir.kindOf(cond) == .member_access) {
+            try self.applyTruthyDiscriminantGuard(cond, when_true);
+            return;
+        }
         if (self.hir.kindOf(cond) == .unary_op) {
             const u = hir_mod.unaryOf(self.hir, cond);
             if (u.op == .not) return self.applyTypeGuard(u.operand, !when_true);
@@ -12427,11 +12443,47 @@ pub const Checker = struct {
                 else => return,
             }
         };
+        try self.applyDiscriminatedNarrowByType(obj_id.name, static_t, m.name, lit_t, positive);
+    }
 
+    fn applyTruthyDiscriminantGuard(self: *Checker, member_node: NodeId, when_true: bool) !void {
+        const m = hir_mod.memberOf(self.hir, member_node);
+        const target: DiscriminantTarget = switch (self.hir.kindOf(m.object)) {
+            .identifier => blk: {
+                const obj_id = hir_mod.identifierOf(self.hir, m.object);
+                break :blk .{ .name = obj_id.name, .t = self.typeOfIdentifier(m.object) };
+            },
+            .assignment => blk: {
+                const a = hir_mod.assignmentOf(self.hir, m.object);
+                if (a.op != null or self.hir.kindOf(a.target) != .identifier) return;
+                const target_id = hir_mod.identifierOf(self.hir, a.target);
+                var assigned_t = self.hir.typeOf(m.object);
+                if (assigned_t == types.Primitive.none) assigned_t = try self.checkExpression(m.object);
+                break :blk .{ .name = target_id.name, .t = assigned_t };
+            },
+            else => return,
+        };
+        const true_lit = self.interner.internBooleanLiteral(true);
+        try self.applyDiscriminatedNarrowByType(target.name, target.t, m.name, true_lit, when_true);
+    }
+
+    fn applyDiscriminatedNarrowByType(
+        self: *Checker,
+        obj_name: hir_mod.StringId,
+        static_t: TypeId,
+        prop_name: hir_mod.StringId,
+        lit_t: TypeId,
+        positive: bool,
+    ) !void {
         // Treat a single-object narrow as a one-element union so the
         // exhaustion logic below collapses it to `never` when the
         // last remaining variant is also subtracted (the
         // exhaustiveness-marker pattern in switch defaults).
+        if (static_t == types.Primitive.never) return;
+        const flags = self.interner.pool.flagsOf(static_t);
+        const is_union = flags.is_union;
+        const is_object = flags.is_object_type;
+        if (!is_union and !is_object) return;
         const single_buf = [_]TypeId{static_t};
         const members: []const TypeId = if (is_union)
             self.interner.unionMembers(static_t)
@@ -12441,7 +12493,7 @@ pub const Checker = struct {
         defer keep.deinit(self.gpa);
         for (members) |variant| {
             if (!self.interner.pool.flagsOf(variant).is_object_type) continue;
-            const disc_t = self.interner.objectMember(variant, m.name) orelse continue;
+            const disc_t = self.interner.objectMember(variant, prop_name) orelse continue;
             // Match: the variant's discriminant is exactly the literal.
             if (disc_t == lit_t) {
                 if (positive) {
@@ -12463,7 +12515,7 @@ pub const Checker = struct {
             keep.items[0]
         else
             self.interner.internUnion(keep.items) catch return;
-        try self.recordNarrow(obj_id.name, narrowed);
+        try self.recordNarrow(obj_name, narrowed);
     }
 
     fn recordNarrow(self: *Checker, name: hir_mod.StringId, t: TypeId) !void {
@@ -18567,6 +18619,18 @@ test "checker: use-before-assign emits TS2454" {
     try T.expect(found);
 }
 
+test "checker: explicit any let is not tracked for TS2454" {
+    const s = try newSetup(
+        \\let obj: any;
+        \\(obj).foo = 1;
+    );
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+    for (s.checker.diagnostics.items) |d| {
+        try T.expect(d.code != TsCodes.used_before_assignment);
+    }
+}
+
 test "checker: class used before declaration emits TS2449" {
     const s = try newSetup(
         \\function f(...items: any[]) {}
@@ -18600,6 +18664,23 @@ test "checker: typed var used in control-flow condition emits TS2454" {
     const s = try newSetup(
         \\var x: string | number;
         \\if (typeof x === "string") {}
+    );
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+    var found = false;
+    for (s.checker.diagnostics.items) |d| {
+        if (d.code == TsCodes.used_before_assignment) found = true;
+    }
+    try T.expect(found);
+}
+
+test "checker: typed let used in for-in body condition emits TS2454" {
+    const s = try newSetup(
+        \\let obj: any;
+        \\let cond: boolean;
+        \\for (let y in obj) {
+        \\  if (cond) {}
+        \\}
     );
     defer destroySetup(s);
     try s.checker.checkSourceFile(s.root);
@@ -22776,6 +22857,22 @@ test "checker: switch on x.kind narrows x per case body" {
     const b_stmts = hir_mod.switchCaseStmts(&s.hir, cases[1]);
     const str_init = hir_mod.varDeclOf(&s.hir, b_stmts[0]).init;
     try T.expectEqual(types.Primitive.string_t, s.hir.typeOf(str_init));
+}
+
+test "checker: truthy boolean discriminant on assignment expression narrows target" {
+    const s = try newSetup(
+        \\type D = { done: true, value: 1 } | { done: false, value: 2 };
+        \\declare function fn(): D;
+        \\let o: D;
+        \\if ((o = fn()).done) {
+        \\  const y: 1 = o.value;
+        \\}
+    );
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+    for (s.checker.diagnostics.items) |d| {
+        try T.expect(d.code != TsCodes.type_not_assignable);
+    }
 }
 
 test "checker: switch default narrows x to union minus listed cases" {

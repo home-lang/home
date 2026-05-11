@@ -1672,7 +1672,6 @@ pub const Parser = struct {
                     name_span.end = dot_tok.span.end;
                 }
                 const is_optional_member = self.match(.question);
-                _ = is_optional_member;
                 if (is_generator or self.peek().kind == .open_paren or self.peek().kind == .less_than) {
                     var type_params: []NodeId = &.{};
                     var owns_tps = false;
@@ -1704,7 +1703,7 @@ pub const Parser = struct {
                         } else if (is_generator) {
                             try self.reportCodeAt(member_start.span.start, member_start.line, 1222, "An overload signature cannot be declared as a generator.");
                         }
-                        if (!self.nextClassMemberNameMatches(name_tok)) {
+                        if (!is_optional_member and !self.nextClassMemberNameMatches(name_tok)) {
                             try self.reportMissingClassMemberImplementation(member_start, mods);
                         }
                     }
@@ -7133,6 +7132,20 @@ test "parser: class declaration with method and property" {
     try T.expect(cl.name != hir_mod.none_node_id);
     const members = hir_mod.classMembers(&s.hir, top);
     try T.expectEqual(@as(usize, 2), members.len);
+}
+
+test "parser: optional class method declaration does not require body" {
+    var s = try newTestSetup(
+        \\class B {
+        \\  protected m?(): void;
+        \\}
+    );
+    defer destroyTestSetup(s);
+    const root = try s.parser.parseSourceFile();
+    try T.expectEqual(@as(usize, 0), s.parser.diagnostics.items.len);
+    const top = hir_mod.blockStmts(&s.hir, root)[0];
+    const members = hir_mod.classMembers(&s.hir, top);
+    try T.expectEqual(@as(usize, 1), members.len);
 }
 
 test "parser: accessibility modifier before generator class method" {
