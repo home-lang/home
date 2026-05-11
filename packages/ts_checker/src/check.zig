@@ -13186,6 +13186,18 @@ pub const Checker = struct {
                     if (self.hir.kindOf(e.index) == .literal_string) {
                         const lit = hir_mod.literalStringOf(self.hir, e.index);
                         literal_string_key = lit.value;
+                        // Honor the (obj_name, prop_name) member-narrow
+                        // scope when the receiver is a bare identifier,
+                        // matching the member_access typing path. This
+                        // keeps `if (obj["x"]) { obj["x"]; }` and
+                        // `if (obj.x) { obj["x"]; }` typed identically.
+                        if (self.hir.kindOf(e.object) == .identifier) {
+                            const obj_id_ea = hir_mod.identifierOf(self.hir, e.object);
+                            const key: MemberKey = .{ .obj_name = obj_id_ea.name, .prop_name = lit.value };
+                            if (self.lookupMemberNarrow(key)) |nt| {
+                                break :blk try self.optionalChainResult(nt, element_is_optional_chain);
+                            }
+                        }
                         if (self.interner.objectMember(obj_t, lit.value)) |t| break :blk try self.optionalChainResult(t, element_is_optional_chain);
                     }
                     if (try self.classMemberNameFromPropertyKey(e.index, true)) |computed_key| {
@@ -15334,6 +15346,29 @@ pub const Checker = struct {
         if (self.hir.kindOf(cond) == .member_access) {
             try self.applyTruthyDiscriminantGuard(cond, when_true);
             return;
+        }
+        // Same shape but via element_access with a string-literal
+        // index: `if (obj["x"])` / `obj["x"] && rhs`. The
+        // (obj_name, prop_name) MemberKey is identical to the dot
+        // form, so any later `obj.x` access inside the branch picks
+        // up the same narrow — and vice versa.
+        if (self.hir.kindOf(cond) == .element_access and when_true) {
+            const e = hir_mod.elementOf(self.hir, cond);
+            if (self.hir.kindOf(e.object) == .identifier and
+                self.hir.kindOf(e.index) == .literal_string)
+            {
+                const obj_id = hir_mod.identifierOf(self.hir, e.object);
+                const lit = hir_mod.literalStringOf(self.hir, e.index);
+                const key: MemberKey = .{ .obj_name = obj_id.name, .prop_name = lit.value };
+                const obj_t = self.lookupNarrow(obj_id.name) orelse self.typeOfIdentifier(e.object);
+                const looked_up = (try self.lookupObjectMember(obj_t, lit.value));
+                const current = self.lookupMemberNarrow(key) orelse (looked_up orelse types.Primitive.none);
+                if (current != types.Primitive.none) {
+                    const narrowed = self.subtractNullUndefined(current) catch current;
+                    if (narrowed != current) try self.recordMemberNarrow(key, narrowed);
+                }
+                return;
+            }
         }
         if (self.hir.kindOf(cond) == .unary_op) {
             const u = hir_mod.unaryOf(self.hir, cond);
@@ -30886,6 +30921,47 @@ test "checker: bare truthy on non-nullable member is a no-op" {
         \\function f(obj: { x: string }) {
         \\  if (obj.x) {
         \\    let s: string = obj.x;
+        \\  }
+        \\}
+    );
+    defer destroySetup(s);
+    s.checker.setStrictFlags(.{ .strict_null_checks = true });
+    try s.checker.checkSourceFile(s.root);
+    for (s.checker.diagnostics.items) |d| {
+        try T.expect(d.code != TsCodes.type_not_assignable);
+    }
+}
+
+test "checker: bare truthy narrows element-access via string-literal key" {
+    // `obj[\"x\"]` should narrow exactly like `obj.x`. The shape
+    // hits the element_access HIR kind instead of member_access,
+    // but routes through the same (obj_name, prop_name)
+    // MemberKey scope so cross-form access inside the branch
+    // also sees the narrow.
+    const s = try newSetup(
+        \\function f(obj: { x?: string }) {
+        \\  if (obj["x"]) {
+        \\    let s: string = obj["x"];
+        \\    let t: string = obj.x;
+        \\  }
+        \\}
+    );
+    defer destroySetup(s);
+    s.checker.setStrictFlags(.{ .strict_null_checks = true });
+    try s.checker.checkSourceFile(s.root);
+    for (s.checker.diagnostics.items) |d| {
+        try T.expect(d.code != TsCodes.type_not_assignable);
+    }
+}
+
+test "checker: dot-form narrow visible from element-access in same branch" {
+    // Cross-form sanity: a dot-form guard `if (obj.x)` should
+    // be visible to a subsequent `obj["x"]` access since both
+    // resolve to the same MemberKey.
+    const s = try newSetup(
+        \\function f(obj: { x?: string }) {
+        \\  if (obj.x) {
+        \\    let s: string = obj["x"];
         \\  }
         \\}
     );
