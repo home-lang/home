@@ -11140,6 +11140,16 @@ pub const Checker = struct {
                 try self.report(el.tag, TsCodes.jsx_element_implicit_any_no_intrinsic, "JSX element implicitly has type 'any' because no interface 'JSX.IntrinsicElements' exists.");
             }
         }
+        if (props_t == null and !self.jsxTagIsIntrinsic(el.tag)) {
+            const tag_t = try self.checkedExpressionType(el.tag);
+            if ((try self.propertyNameFromLiteralType(tag_t)) != null) {
+                if (try self.jsxHasIntrinsicElementsDecl(el.tag)) {
+                    try self.report(el.tag, TsCodes.property_does_not_exist, "Property does not exist on type 'JSX.IntrinsicElements'.");
+                } else if (!self.sourceHasReactJsxReference()) {
+                    try self.report(el.tag, TsCodes.jsx_element_implicit_any_no_intrinsic, "JSX element implicitly has type 'any' because no interface 'JSX.IntrinsicElements' exists.");
+                }
+            }
+        }
 
         if (!self.jsxTagIsIntrinsic(el.tag) and try self.jsxComponentTypeInvalid(el.tag)) {
             try self.report(el.tag, TsCodes.jsx_element_no_construct_or_call, "JSX element type does not have any construct or call signatures.");
@@ -11167,11 +11177,12 @@ pub const Checker = struct {
                     const attr_name = self.string_interner.get(a.name);
                     if (std.mem.eql(u8, attr_name, "children")) saw_children_attr = true;
                     const value_t = try self.checkJsxAttributeValue(a.value);
+                    const attr_bag_t = try self.jsxAttributeBagValueType(a.value, value_t);
                     if (!std.mem.eql(u8, attr_name, "key") and !std.mem.startsWith(u8, attr_name, "data-")) {
                         explicit_value_attr_count += 1;
                         try self.appendOrReplaceObjectMember(&attr_members, .{
                             .name = a.name,
-                            .type = value_t,
+                            .type = attr_bag_t,
                             .is_optional = false,
                             .is_readonly = false,
                             .is_method = false,
@@ -11559,6 +11570,17 @@ pub const Checker = struct {
         return try self.checkExpression(value);
     }
 
+    fn jsxAttributeBagValueType(self: *Checker, value: NodeId, fallback: TypeId) CheckError!TypeId {
+        if (value == hir_mod.none_node_id) return types.Primitive.true_lit;
+        var inner = value;
+        if (self.hir.kindOf(value) == .jsx_expression) {
+            const ex = hir_mod.jsxExpressionOf(self.hir, value);
+            if (ex.expression == hir_mod.none_node_id) return types.Primitive.undefined_t;
+            inner = ex.expression;
+        }
+        return try self.flowTypeForAssignmentValue(inner, fallback);
+    }
+
     fn checkJsxContextualAttributeValue(self: *Checker, value: NodeId, prop_t: TypeId) CheckError!void {
         if (value == hir_mod.none_node_id) return;
         if (self.hir.kindOf(value) != .jsx_expression) return;
@@ -11637,9 +11659,13 @@ pub const Checker = struct {
                     return self.interner.internUnion(prop_types.items) catch return error.OutOfMemory;
                 }
             }
+            if (try self.jsxLogicalComponentPropsType(tag, tag_name)) |props_t| return props_t;
             if (try self.jsxForwardFunctionPropsType(tag, tag_name)) |props_t| return props_t;
         }
         const tag_t = try self.checkExpression(tag);
+        if (try self.propertyNameFromLiteralType(tag_t)) |intrinsic_name| {
+            return try self.jsxIntrinsicPropsType(tag, intrinsic_name);
+        }
         if (try self.lookupObjectMember(tag_t, self.string_interner.intern("props") catch return error.OutOfMemory)) |props_t| {
             return props_t;
         }
@@ -11663,6 +11689,10 @@ pub const Checker = struct {
     }
 
     fn jsxForwardFunctionPropsType(self: *Checker, anchor: NodeId, tag_name: hir_mod.StringId) CheckError!?TypeId {
+        return try self.jsxNamedFunctionPropsType(anchor, tag_name);
+    }
+
+    fn jsxNamedFunctionPropsType(self: *Checker, anchor: NodeId, tag_name: hir_mod.StringId) CheckError!?TypeId {
         const root = self.rootBlockFor(anchor);
         if (root == hir_mod.none_node_id or self.hir.kindOf(root) != .block_stmt) return null;
         for (hir_mod.blockStmts(self.hir, root)) |stmt| {
@@ -11672,13 +11702,54 @@ pub const Checker = struct {
             if (f.name == hir_mod.none_node_id or self.hir.kindOf(f.name) != .identifier) continue;
             if (hir_mod.identifierOf(self.hir, f.name).name != tag_name) continue;
             const params = hir_mod.fnParams(self.hir, decl);
-            if (params.len == 0) return types.Primitive.any;
+            if (params.len == 0) return self.interner.internObjectType(&.{}) catch return error.OutOfMemory;
             const first = hir_mod.parameterOf(self.hir, params[0]);
             if (first.type_annotation == hir_mod.none_node_id) return types.Primitive.any;
             try self.ensureTypeRefDeclChecked(first.type_annotation, root);
             return try self.lowererLowerWithTypeParams(first.type_annotation);
         }
         return null;
+    }
+
+    fn jsxLogicalComponentPropsType(self: *Checker, anchor: NodeId, tag_name: hir_mod.StringId) CheckError!?TypeId {
+        const root = self.rootBlockFor(anchor);
+        if (root == hir_mod.none_node_id or self.hir.kindOf(root) != .block_stmt) return null;
+        for (hir_mod.blockStmts(self.hir, root)) |stmt| {
+            const decl = if (self.hir.kindOf(stmt) == .export_decl) hir_mod.exportOf(self.hir, stmt).decl else stmt;
+            if (decl == hir_mod.none_node_id) continue;
+            const dk = self.hir.kindOf(decl);
+            if (dk != .var_decl and dk != .let_decl and dk != .const_decl) continue;
+            const v = hir_mod.varDeclOf(self.hir, decl);
+            if (v.name == hir_mod.none_node_id or self.hir.kindOf(v.name) != .identifier) continue;
+            if (hir_mod.identifierOf(self.hir, v.name).name != tag_name) continue;
+            if (v.init == hir_mod.none_node_id or self.hir.kindOf(v.init) != .logical_op) return null;
+            var prop_types: std.ArrayListUnmanaged(TypeId) = .empty;
+            defer prop_types.deinit(self.gpa);
+            try self.collectJsxLogicalComponentProps(anchor, v.init, &prop_types);
+            if (prop_types.items.len == 0) return null;
+            if (prop_types.items.len == 1) return prop_types.items[0];
+            return self.interner.internIntersection(prop_types.items) catch return error.OutOfMemory;
+        }
+        return null;
+    }
+
+    fn collectJsxLogicalComponentProps(
+        self: *Checker,
+        anchor: NodeId,
+        node: NodeId,
+        out: *std.ArrayListUnmanaged(TypeId),
+    ) CheckError!void {
+        if (node == hir_mod.none_node_id) return;
+        if (self.hir.kindOf(node) == .logical_op) {
+            const l = hir_mod.logicalOf(self.hir, node);
+            try self.collectJsxLogicalComponentProps(anchor, l.lhs, out);
+            try self.collectJsxLogicalComponentProps(anchor, l.rhs, out);
+            return;
+        }
+        if (self.hir.kindOf(node) != .identifier) return;
+        const id = hir_mod.identifierOf(self.hir, node);
+        const props_t = (try self.jsxNamedFunctionPropsType(anchor, id.name)) orelse return;
+        try out.append(self.gpa, props_t);
     }
 
     fn ensureTypeRefDeclChecked(self: *Checker, type_node: NodeId, root: NodeId) CheckError!void {
@@ -19060,6 +19131,70 @@ test "checker: JSX generic overload permits extra attrs after prop inference" {
     defer destroySetup(s);
     try s.checker.checkSourceFile(s.root);
 
+    for (s.checker.diagnostics.items) |d| {
+        try T.expect(d.code != TsCodes.type_not_assignable);
+    }
+}
+
+test "checker: JSX dynamic string-literal tag checks IntrinsicElements" {
+    const s = try newTsxSetup(
+        \\declare namespace JSX {
+        \\  interface Element {}
+        \\  interface IntrinsicElements { div: any }
+        \\}
+        \\var CustomTag: "h1" = "h1";
+        \\<CustomTag>Hello</CustomTag>;
+    );
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+    var found = false;
+    for (s.checker.diagnostics.items) |d| {
+        if (d.code == TsCodes.property_does_not_exist) found = true;
+    }
+    try T.expect(found);
+}
+
+test "checker: JSX logical union components require every arm's props" {
+    const s = try newTsxSetup(
+        \\declare namespace JSX { interface Element {} interface IntrinsicElements { div: any; h1: any; } }
+        \\function SFC1(prop: { x: number }) { return <div />; }
+        \\function SFC2(prop: { x: boolean }) { return <h1 />; }
+        \\function EmptySFC1() { return <div />; }
+        \\function EmptySFC2() { return <div />; }
+        \\var SFCComp = SFC1 || SFC2;
+        \\var EmptySFCComp = EmptySFC1 || EmptySFC2;
+        \\<SFCComp x />;
+        \\<SFCComp x={"hi"} />;
+        \\<EmptySFCComp x />;
+    );
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+    var count: usize = 0;
+    for (s.checker.diagnostics.items) |d| {
+        if (d.code == TsCodes.type_not_assignable or d.code == TsCodes.object_literal_excess_property) count += 1;
+    }
+    try T.expect(count >= 3);
+}
+
+test "checker: JSX union props keep literal discriminants in attr bag" {
+    const s = try newTsxSetup(
+        \\declare namespace JSX { interface Element {} interface IntrinsicElements { h1: any; } }
+        \\interface PS {
+        \\  multi: false;
+        \\  value: string | undefined;
+        \\  onChange: (selection: string | undefined) => void;
+        \\}
+        \\interface PM {
+        \\  multi: true;
+        \\  value: string[];
+        \\  onChange: (selection: string[]) => void;
+        \\}
+        \\function ComponentWithUnion(props: PM | PS) { return <h1 />; }
+        \\<ComponentWithUnion multi={false} value={"s"} onChange={val => val} />;
+    );
+    defer destroySetup(s);
+    s.checker.setStrictFlags(.{ .strict_null_checks = true });
+    try s.checker.checkSourceFile(s.root);
     for (s.checker.diagnostics.items) |d| {
         try T.expect(d.code != TsCodes.type_not_assignable);
     }
