@@ -1312,7 +1312,7 @@ pub const Checker = struct {
 
             const has_body = if (is_fn) hir_mod.fnDeclOf(self.hir, node).body != hir_mod.none_node_id else false;
             const is_ambient = if (is_fn)
-                !has_body and self.declarationSourceHasLeadingDeclare(node)
+                !has_body and (self.declarationSourceHasLeadingDeclare(node) or self.virtualSectionIsDeclarationFile(node))
             else
                 hir_mod.varDeclOf(self.hir, node).is_ambient;
 
@@ -1492,6 +1492,23 @@ pub const Checker = struct {
             line_start = line_end + 1;
         }
         return last;
+    }
+
+    fn virtualSectionFilenameForNode(self: *Checker, node: NodeId) ?[]const u8 {
+        const src = self.source orelse return null;
+        const section = self.virtualSectionStartForNode(node);
+        if (section >= src.len) return null;
+        const line_end = std.mem.indexOfScalarPos(u8, src, section, '\n') orelse src.len;
+        const line = src[section..line_end];
+        const marker = std.mem.indexOf(u8, line, "@filename:") orelse
+            (std.mem.indexOf(u8, line, "@Filename:") orelse return null);
+        return std.mem.trim(u8, line[marker + "@filename:".len ..], " \t\r");
+    }
+
+    fn virtualSectionIsDeclarationFile(self: *Checker, node: NodeId) bool {
+        const filename = self.virtualSectionFilenameForNode(node) orelse return false;
+        if (std.mem.endsWith(u8, filename, ".d.ts")) return true;
+        return std.mem.endsWith(u8, filename, ".ts") and std.mem.indexOf(u8, filename, ".d.") != null;
     }
 
     fn checkMultipleDefaultExports(self: *Checker, stmts: []const NodeId) CheckError!void {
@@ -6272,6 +6289,7 @@ pub const Checker = struct {
         seen: *const std.AutoHashMapUnmanaged(hir_mod.StringId, ClassMethodSeen),
     ) CheckError!void {
         if (self.classHasLeadingDeclare(class_node)) return;
+        if (self.virtualSectionIsDeclarationFile(class_node)) return;
         var it = seen.valueIterator();
         while (it.next()) |info| {
             if (info.bodyless_count == 0 or info.implementation_count != 0) continue;
@@ -6861,6 +6879,8 @@ pub const Checker = struct {
         var i: hir_mod.NodeId = 1;
         while (i < self.hir.nodeCount()) : (i += 1) {
             if (self.hir.kindOf(i) != .export_decl) continue;
+            const ex = hir_mod.exportOf(self.hir, i);
+            if (ex.is_namespace and ex.namespace_alias == name) return true;
             for (hir_mod.exportNamed(self.hir, i)) |spec_node| {
                 if (self.hir.kindOf(spec_node) != .import_specifier) continue;
                 const sp = hir_mod.importSpecifierOf(self.hir, spec_node);
@@ -22269,6 +22289,39 @@ test "checker: declaration diagnostics respect virtual filename sections" {
     try s.checker.checkSourceFile(s.root);
     for (s.checker.diagnostics.items) |d| {
         try T.expect(d.code != TsCodes.overloads_must_all_be_exported_or_not);
+    }
+}
+
+test "checker: virtual declaration files allow bodyless class members" {
+    const s = try newSetup(
+        \\// @filename: component.d.html.ts
+        \\export class HTML5Element {
+        \\  connectedCallback(): void;
+        \\}
+        \\// @filename: main.ts
+        \\let x = HTML5Element;
+    );
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+    for (s.checker.diagnostics.items) |d| {
+        try T.expect(d.code != TsCodes.implementation_missing);
+    }
+}
+
+test "checker: namespace re-export satisfies named import" {
+    const s = try newSetup(
+        \\// @filename: component.d.html.ts
+        \\export const blogPost: Element;
+        \\// @filename: file.d.ts
+        \\export * as mod from "./component.html";
+        \\// @filename: main.ts
+        \\import { mod } from "./file.js";
+        \\mod.blogPost;
+    );
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+    for (s.checker.diagnostics.items) |d| {
+        try T.expect(d.code != TsCodes.no_exported_member_suggestion);
     }
 }
 

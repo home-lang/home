@@ -60,6 +60,8 @@ pub const Case = struct {
     expected_errors: []const u8 = "",
     /// True for .tsx / .jsx sources.
     is_tsx: bool = false,
+    /// True for .d.ts sources.
+    is_declaration_file: bool = false,
     /// Optional file-scoped compiler strictness from upstream
     /// conformance directives.
     strict_flags: ?ts_driver.StrictFlags = null,
@@ -76,6 +78,7 @@ pub const Case = struct {
 pub fn run(gpa: std.mem.Allocator, c: Case) !Result {
     var compilation = ts_driver.compileSource(gpa, c.source, .{
         .is_tsx = c.is_tsx,
+        .is_declaration_file = c.is_declaration_file,
         .strict_flags = c.strict_flags,
         .always_strict = c.always_strict,
         .syntax_target_es2015 = c.syntax_target_es2015,
@@ -301,6 +304,7 @@ pub const CorpusEntry = struct {
     expected_errors: []const u8 = "",
     use_exact_errors: bool = false,
     is_tsx: bool = false,
+    is_declaration_file: bool = false,
     strict_flags: ?ts_driver.StrictFlags = null,
     always_strict: bool = false,
     syntax_target_es2015: bool = false,
@@ -317,6 +321,7 @@ pub const OwnedCorpusEntry = struct {
     expected_errors: []const u8 = "",
     use_exact_errors: bool = false,
     is_tsx: bool = false,
+    is_declaration_file: bool = false,
     strict_flags: ?ts_driver.StrictFlags = null,
     always_strict: bool = false,
     syntax_target_es2015: bool = false,
@@ -424,13 +429,22 @@ pub fn loadDirectoryWithOptions(
         const expects_error = std.mem.indexOf(u8, entry.basename, ".errors.") != null or
             (baseline_path != null and !baseline_only_option_deprecation);
         const directive_flags = parseStrictDirectiveFlags(case_src);
-        const strict_flags =
+        var strict_flags =
             if (options.honor_directives)
                 directive_flags
             else if (options.strict_default_for_expected_errors and expects_error)
                 directive_flags orelse strictFlagsFromStrict(true)
             else
                 null;
+        if (!options.honor_directives) {
+            if (directive_flags) |flags| {
+                if (flags.resolve_json_module) {
+                    var merged = strict_flags orelse ts_driver.StrictFlags{};
+                    merged.resolve_json_module = true;
+                    strict_flags = merged;
+                }
+            }
+        }
         const name = try gpa.dupe(u8, stem);
         var diag_path = default_path;
         var expected_errors: []const u8 = "";
@@ -458,6 +472,7 @@ pub fn loadDirectoryWithOptions(
             .expected_errors = expected_errors,
             .use_exact_errors = use_exact_errors,
             .is_tsx = basename_is_tsx or virtual_is_tsx,
+            .is_declaration_file = isDeclarationFilePath(diag_path),
             .strict_flags = strict_flags,
             .always_strict = expects_error and (directiveBool(case_src, "alwaysStrict") orelse false),
             .syntax_target_es2015 = directiveTargetEs2015OrLater(case_src),
@@ -517,6 +532,11 @@ fn isCodeVirtualFile(path: []const u8) bool {
         std.mem.endsWith(u8, path, ".d.ts") or
         std.mem.endsWith(u8, path, ".js") or
         std.mem.endsWith(u8, path, ".jsx");
+}
+
+fn isDeclarationFilePath(path: []const u8) bool {
+    if (std.mem.endsWith(u8, path, ".d.ts")) return true;
+    return std.mem.endsWith(u8, path, ".ts") and std.mem.indexOf(u8, path, ".d.") != null;
 }
 
 fn shouldSuppressJsCheckDiagnostics(path: []const u8, source: []const u8) bool {
@@ -1565,6 +1585,7 @@ pub fn runOwnedCorpus(
             .expected_errors = entry.expected_errors,
             .use_exact_errors = entry.use_exact_errors,
             .is_tsx = entry.is_tsx,
+            .is_declaration_file = std.mem.endsWith(u8, entry.path, ".d.ts"),
             .strict_flags = entry.strict_flags,
             .always_strict = entry.always_strict,
             .syntax_target_es2015 = entry.syntax_target_es2015,
@@ -1688,6 +1709,7 @@ fn runOneEntry(gpa: std.mem.Allocator, entry: CorpusEntry) !Result {
             .path = if (entry.path.len > 0) entry.path else entry.name,
             .expected_errors = entry.expected_errors,
             .is_tsx = entry.is_tsx,
+            .is_declaration_file = entry.is_declaration_file,
             .strict_flags = entry.strict_flags,
             .always_strict = entry.always_strict,
             .syntax_target_es2015 = entry.syntax_target_es2015,
@@ -1709,6 +1731,7 @@ fn runOneEntry(gpa: std.mem.Allocator, entry: CorpusEntry) !Result {
     const name_owned = try gpa.dupe(u8, entry.name);
     var compilation = ts_driver.compileSource(gpa, entry.source, .{
         .is_tsx = entry.is_tsx,
+        .is_declaration_file = entry.is_declaration_file,
         .strict_flags = entry.strict_flags,
         .always_strict = entry.always_strict,
         .syntax_target_es2015 = entry.syntax_target_es2015,
@@ -2458,6 +2481,7 @@ test "conformance: opt-in full local TypeScript corpus survey" {
             .expected_errors = entry.expected_errors,
             .use_exact_errors = entry.use_exact_errors,
             .is_tsx = entry.is_tsx,
+            .is_declaration_file = entry.is_declaration_file,
             .strict_flags = entry.strict_flags,
             .always_strict = entry.always_strict,
             .syntax_target_es2015 = entry.syntax_target_es2015,

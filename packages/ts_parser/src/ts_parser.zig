@@ -95,6 +95,9 @@ pub const Parser = struct {
     /// assertion) vs. `<T>x</T>` (JSX) via the `<T,>` and
     /// `<T extends unknown>` rules from the TS grammar.
     is_tsx: bool,
+    /// True for `.d.ts` inputs. Top-level declarations are ambient even
+    /// without an explicit `declare` modifier.
+    is_declaration_file: bool,
 
     pub fn init(
         gpa: std.mem.Allocator,
@@ -136,6 +139,7 @@ pub const Parser = struct {
             .top_level_external_module_indicator = false,
             .in_top_level_module_binding_decl = false,
             .is_tsx = false,
+            .is_declaration_file = false,
         };
     }
 
@@ -143,6 +147,10 @@ pub const Parser = struct {
     /// for `.tsx` source files).
     pub fn setTsx(self: *Parser, enabled: bool) void {
         self.is_tsx = enabled;
+    }
+
+    pub fn setDeclarationFile(self: *Parser, enabled: bool) void {
+        self.is_declaration_file = enabled;
     }
 
     pub fn setStrictMode(self: *Parser, enabled: bool) void {
@@ -1720,7 +1728,7 @@ pub const Parser = struct {
                         try self.reportAmbientClassImplementation(member_start);
                     } else {
                         try self.consumeStatementTerminator();
-                        if (is_generator and self.ambient_depth > 0) {
+                        if (is_generator and self.isAmbientContext()) {
                             try self.reportCodeAt(member_start.span.start, member_start.line, 1221, "Generators are not allowed in an ambient context.");
                         } else if (is_generator) {
                             try self.reportCodeAt(member_start.span.start, member_start.line, 1222, "An overload signature cannot be declared as a generator.");
@@ -1929,13 +1937,17 @@ pub const Parser = struct {
     }
 
     fn reportAmbientClassImplementation(self: *Parser, member_start: Token) ParseError!void {
-        if (self.ambient_depth == 0) return;
+        if (!self.isAmbientContext()) return;
         try self.reportCodeAt(member_start.span.start, member_start.line, 1183, "An implementation cannot be declared in ambient contexts.");
     }
 
     fn reportMissingClassMemberImplementation(self: *Parser, member_start: Token, mods: ClassModifiers) ParseError!void {
-        if (self.ambient_depth > 0 or mods.is_abstract) return;
+        if (self.isAmbientContext() or mods.is_abstract) return;
         try self.reportCodeAt(member_start.span.start, member_start.line, 2391, "Function implementation is missing or not immediately following the declaration.");
+    }
+
+    fn isAmbientContext(self: *const Parser) bool {
+        return self.ambient_depth > 0 or self.is_declaration_file;
     }
 
     fn nextClassMemberNameMatches(self: *const Parser, current: Token) bool {
@@ -2771,7 +2783,8 @@ pub const Parser = struct {
         if (self.match(.equal)) {
             init_node = try self.parseAssignmentExpression();
         }
-        if (decl_kind == .const_decl and init_node == hir_mod.none_node_id and self.ambient_depth == 0) {
+        const is_ambient_decl = self.ambient_depth > 0 or self.is_declaration_file;
+        if (decl_kind == .const_decl and init_node == hir_mod.none_node_id and !is_ambient_decl) {
             try self.reportCodeAt(self.hir.spanOf(name_node).start, start.line, 1155, "'const' declarations must be initialized.");
         }
         while (self.match(.comma)) {
@@ -2790,7 +2803,7 @@ pub const Parser = struct {
             if (self.match(.colon)) extra_type = try self.parseTypeAnnotation();
             var extra_init: NodeId = hir_mod.none_node_id;
             if (self.match(.equal)) extra_init = try self.parseAssignmentExpression();
-            if (decl_kind == .const_decl and extra_init == hir_mod.none_node_id and self.ambient_depth == 0) {
+            if (decl_kind == .const_decl and extra_init == hir_mod.none_node_id and !is_ambient_decl) {
                 try self.reportCodeAt(self.hir.spanOf(extra_name).start, start.line, 1155, "'const' declarations must be initialized.");
             }
             const extra_start = self.hir.spanOf(extra_name).start;
@@ -2803,7 +2816,7 @@ pub const Parser = struct {
                 extra_init,
                 false,
                 false,
-                self.ambient_depth > 0,
+                is_ambient_decl,
             );
             try self.pending_statements.append(self.gpa, extra_decl);
         }
@@ -2818,7 +2831,7 @@ pub const Parser = struct {
             init_node,
             false,
             false,
-            self.ambient_depth > 0,
+            is_ambient_decl,
         );
     }
 

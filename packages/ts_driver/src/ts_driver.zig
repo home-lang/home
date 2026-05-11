@@ -103,6 +103,9 @@ pub const CompileOptions = struct {
     no_emit: bool = false,
     /// Treat the source as `.tsx` — enables JSX parsing.
     is_tsx: bool = false,
+    /// Treat the source as a declaration file. Declaration files allow
+    /// ambient forms such as `export const x: T;` without initializers.
+    is_declaration_file: bool = false,
     /// Compiler option `alwaysStrict`: parse the file under strict-mode
     /// early-error rules even when it has no `"use strict"` prologue.
     always_strict: bool = false,
@@ -473,6 +476,7 @@ pub fn compileSource(
     // ------ Parse ------
     var parser = ts_parser.Parser.init(gpa, &c.hir, &c.interner, source, c.tokens.items);
     parser.setTsx(options.is_tsx);
+    parser.setDeclarationFile(options.is_declaration_file);
     parser.setStrictMode(options.always_strict);
     parser.setTargetEs2015OrLater(options.syntax_target_es2015);
     defer parser.deinit();
@@ -1630,6 +1634,20 @@ test "driver: scanner-error compilation deinitializes cleanly" {
     }
     try T.expect(c.has_errors);
     try T.expect(c.diagnostics.items.len > 0);
+}
+
+test "driver: declaration file allows exported const without initializer" {
+    var c = try compileSource(T.allocator, "export const blogPost: Element;", .{
+        .no_emit = true,
+        .is_declaration_file = true,
+    });
+    defer {
+        c.deinit();
+        T.allocator.destroy(c);
+    }
+    for (c.diagnostics.items) |d| {
+        try T.expect(d.code != 1155);
+    }
 }
 
 test "driver: classes with constructors and methods" {
