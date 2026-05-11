@@ -76,6 +76,9 @@ pub fn stringProto(
 
     // `(): string`
     const sig_void_string = try ti.internSignature(&[_]TypeId{}, string_t, false);
+    var number_or_undefined_members = [_]TypeId{ number_t, types.Primitive.undefined_t };
+    const optional_number_t = try ti.internUnion(&number_or_undefined_members);
+
     // `(s: string): boolean`
     const sig_str_bool = try ti.internSignature(&[_]TypeId{string_t}, boolean_t, false);
     // `(s: string): number`
@@ -84,12 +87,8 @@ pub fn stringProto(
     const sig_num_string = try ti.internSignature(&[_]TypeId{number_t}, string_t, false);
     // `(sep: string): string[]`
     const sig_split = try ti.internSignature(&[_]TypeId{string_t}, string_arr, false);
-    // `(start: number, end?: number): string` — modeled as
-    // `(start: number, end: number): string`. Optional-arg arity is
-    // handled by `signatureAccepts` checking `>=` rather than `==`,
-    // but for simplicity we leave both required and let argument
-    // count drive matching. v0.
-    const sig_slice = try ti.internSignature(&[_]TypeId{ number_t, number_t }, string_t, false);
+    // `(start: number, end?: number): string`.
+    const sig_slice = try ti.internSignature(&[_]TypeId{ number_t, optional_number_t }, string_t, false);
     // `(s: string): string` — used by `concat` (modeled as the
     // common single-arg form until rest params land in lib).
     const sig_str_string = try ti.internSignature(&[_]TypeId{string_t}, string_t, false);
@@ -131,7 +130,9 @@ pub fn numberProto(
     const string_t = types.Primitive.string_t;
 
     const sig_void_string = try ti.internSignature(&[_]TypeId{}, string_t, false);
-    const sig_num_string = try ti.internSignature(&[_]TypeId{number_t}, string_t, false);
+    var number_or_undefined_members = [_]TypeId{ number_t, types.Primitive.undefined_t };
+    const optional_number_t = try ti.internUnion(&number_or_undefined_members);
+    const sig_num_string = try ti.internSignature(&[_]TypeId{optional_number_t}, string_t, false);
     const sig_void_number = try ti.internSignature(&[_]TypeId{}, number_t, false);
 
     const m = [_]types.ObjectMember{

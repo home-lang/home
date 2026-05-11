@@ -5819,8 +5819,65 @@ pub const Checker = struct {
         var it = seen.valueIterator();
         while (it.next()) |info| {
             if (info.bodyless_count == 0 or info.implementation_count != 0) continue;
+            if (self.classMethodDeclIsOptional(info.first_node)) continue;
             try self.report(info.first_node, TsCodes.implementation_missing, "Function implementation is missing or not immediately following the declaration.");
         }
+    }
+
+    fn classMethodDeclIsOptional(self: *Checker, node: NodeId) bool {
+        if (node == hir_mod.none_node_id) return false;
+        const src = self.source orelse return false;
+        const member_name = self.classMethodDeclName(node) orelse return false;
+        const name_text = self.string_interner.get(member_name);
+        if (name_text.len == 0) return false;
+        if (name_text[name_text.len - 1] == '?') return true;
+        var search_start: usize = 0;
+        while (std.mem.indexOfPos(u8, src, search_start, name_text)) |pos| {
+            var i = pos + name_text.len;
+            while (i < src.len and std.ascii.isWhitespace(src[i])) : (i += 1) {}
+            if (i < src.len and src[i] == '?') {
+                i += 1;
+                while (i < src.len and std.ascii.isWhitespace(src[i])) : (i += 1) {}
+                if (i < src.len and src[i] == '(') return true;
+            }
+            search_start = pos + name_text.len;
+        }
+        const anchor_span = blk: {
+            const kind = self.hir.kindOf(node);
+            if (kind == .fn_decl or kind == .fn_expr) {
+                const f = hir_mod.fnDeclOf(self.hir, node);
+                if (f.name != hir_mod.none_node_id) break :blk self.hir.spanOf(f.name);
+            }
+            break :blk self.hir.spanOf(node);
+        };
+        var line_start: usize = @min(anchor_span.start, src.len);
+        while (line_start > 0 and src[line_start - 1] != '\n') : (line_start -= 1) {}
+        const line_end = std.mem.indexOfScalarPos(u8, src, line_start, '\n') orelse src.len;
+        var i: usize = line_start;
+        while (i < line_end) : (i += 1) {
+            switch (src[i]) {
+                '?' => return true,
+                '(' => return false,
+                else => {},
+            }
+        }
+        return false;
+    }
+
+    fn classMethodDeclName(self: *Checker, node: NodeId) ?hir_mod.StringId {
+        return switch (self.hir.kindOf(node)) {
+            .fn_decl, .fn_expr => blk: {
+                const f = hir_mod.fnDeclOf(self.hir, node);
+                if (f.name == hir_mod.none_node_id or self.hir.kindOf(f.name) != .identifier) break :blk null;
+                break :blk hir_mod.identifierOf(self.hir, f.name).name;
+            },
+            .object_property => blk: {
+                const op = hir_mod.objectPropertyOf(self.hir, node);
+                if (op.key == hir_mod.none_node_id or self.hir.kindOf(op.key) != .identifier) break :blk null;
+                break :blk hir_mod.identifierOf(self.hir, op.key).name;
+            },
+            else => null,
+        };
     }
 
     fn classHasLeadingDeclare(self: *Checker, class_node: NodeId) bool {
@@ -11907,14 +11964,12 @@ pub const Checker = struct {
         // that *don't* declare it. LHS must be a string literal
         // (TS only narrows when the property name is statically
         // known); RHS must be an identifier we can record against.
-        if (b.op == .in and
-            self.hir.kindOf(b.lhs) == .literal_string and
-            self.hir.kindOf(b.rhs) == .identifier)
+        if (b.op == .in and self.hir.kindOf(b.rhs) == .identifier)
         {
-            const lit = hir_mod.literalStringOf(self.hir, b.lhs);
+            const property_name = (try self.staticStringValue(b.lhs)) orelse return;
             const rhs_id = hir_mod.identifierOf(self.hir, b.rhs);
             const current = self.lookupNarrow(rhs_id.name) orelse self.typeOfIdentifier(b.rhs);
-            const narrowed = self.narrowByPropertyPresence(current, lit.value, when_true) catch current;
+            const narrowed = self.narrowByPropertyPresence(current, property_name, when_true) catch current;
             if (narrowed != current) try self.recordNarrow(rhs_id.name, narrowed);
             return;
         }
@@ -11943,12 +11998,11 @@ pub const Checker = struct {
         // typeof X === "kind"
         if (self.hir.kindOf(b.lhs) == .unary_op) {
             const u = hir_mod.unaryOf(self.hir, b.lhs);
-            if (u.op == .typeof and self.hir.kindOf(u.operand) == .identifier and
-                self.hir.kindOf(b.rhs) == .literal_string)
+            if (u.op == .typeof and self.hir.kindOf(u.operand) == .identifier)
             {
                 const id = hir_mod.identifierOf(self.hir, u.operand);
-                const lit = hir_mod.literalStringOf(self.hir, b.rhs);
-                const lit_str = self.string_interner.get(lit.value);
+                const type_name = (try self.staticStringValue(b.rhs)) orelse return;
+                const lit_str = self.string_interner.get(type_name);
                 if (typeOfTypeofString(lit_str)) |narrowed| {
                     if (positive) {
                         const current = self.lookupNarrow(id.name) orelse self.typeOfIdentifier(u.operand);
@@ -12168,6 +12222,14 @@ pub const Checker = struct {
                 }
             }
         }
+    }
+
+    fn staticStringValue(self: *Checker, node: NodeId) CheckError!?hir_mod.StringId {
+        return switch (self.hir.kindOf(node)) {
+            .literal_string => hir_mod.literalStringOf(self.hir, node).value,
+            .template_literal => try self.templateLiteralConcreteString(node),
+            else => null,
+        };
     }
 
     /// Discriminated-union narrowing. `lhs` is a member access
@@ -16167,8 +16229,8 @@ pub const Checker = struct {
     }
 
     fn parameterTypeCanBeOmitted(self: *Checker, t: TypeId) bool {
-        _ = self;
         if (t == types.Primitive.void_t) return true;
+        if (self.typeIncludesUndefined(t)) return true;
         return false;
     }
 
@@ -24251,4 +24313,56 @@ test "checker: getter without setter is read-only — `c.x = 2` emits TS2540" {
         if (d.code == TsCodes.readonly_property) found = true;
     }
     try T.expect(found);
+}
+
+test "checker: lib optional primitive method parameters can be omitted" {
+    const s = try newSetup(
+        \\declare const text: string;
+        \\declare const value: number;
+        \\text.slice(0);
+        \\value.toExponential();
+    );
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+    for (s.checker.diagnostics.items) |d| {
+        try T.expect(d.code != TsCodes.expected_n_arguments);
+    }
+}
+
+test "checker: template literal strings participate in type guards" {
+    const s = try newSetup(
+        \\declare const envVar: string | undefined;
+        \\if (typeof envVar === `string`) {
+        \\  envVar.slice(0);
+        \\}
+        \\declare const obj: { test: string } | {};
+        \\if (`test` in obj) {
+        \\  obj.test.slice(0);
+        \\}
+    );
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+    for (s.checker.diagnostics.items) |d| {
+        try T.expect(d.code != TsCodes.object_possibly_undefined);
+        try T.expect(d.code != TsCodes.property_does_not_exist);
+        try T.expect(d.code != TsCodes.expected_n_arguments);
+    }
+}
+
+test "checker: optional class method declaration does not require implementation" {
+    const s = try newSetup(
+        \\class B {
+        \\  protected m?(): void;
+        \\}
+        \\class C extends B {
+        \\  body() {
+        \\    super.m && super.m();
+        \\  }
+        \\}
+    );
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+    for (s.checker.diagnostics.items) |d| {
+        try T.expect(d.code != TsCodes.implementation_missing);
+    }
 }
