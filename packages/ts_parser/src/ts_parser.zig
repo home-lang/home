@@ -1304,7 +1304,15 @@ pub const Parser = struct {
                 );
                 try params.append(self.gpa, param);
                 if (!self.match(.comma)) break;
-                if (flags.is_rest and self.peek().kind != .close_paren) {
+                if (flags.is_rest and self.peek().kind == .close_paren and self.ambient_depth == 0) {
+                    const comma_tok = self.tokens[self.cursor - 1];
+                    try self.reportCodeAt(
+                        comma_tok.span.start,
+                        comma_tok.line,
+                        1013,
+                        "A rest parameter or binding pattern may not have a trailing comma.",
+                    );
+                } else if (flags.is_rest and self.peek().kind != .close_paren) {
                     try self.reportCodeAt(
                         self.hir.spanOf(name_node).start,
                         param_start.line,
@@ -4653,6 +4661,9 @@ pub const Parser = struct {
             if (@intFromEnum(prec) < @intFromEnum(min_prec)) break;
             if ((t.kind == .kw_as or t.kind == .kw_satisfies) and t.flags.preceded_by_newline) break;
             _ = self.advance();
+            if (t.kind == .asterisk_asterisk) {
+                try self.reportUnaryExponentiationLeft(left, t.line);
+            }
             // `as` / `satisfies` take a TYPE on the right, not an
             // expression — handle them before the generic
             // expression-RHS path so we don't try to parse `number`
@@ -4701,6 +4712,27 @@ pub const Parser = struct {
             }
         }
         return left;
+    }
+
+    fn reportUnaryExponentiationLeft(self: *Parser, left: NodeId, line: u32) ParseError!void {
+        if (self.hir.kindOf(left) != .unary_op or self.nodeLooksParenthesized(left)) return;
+        const u = hir_mod.unaryOf(self.hir, left);
+        const op_text: []const u8 = switch (u.op) {
+            .neg => "-",
+            .plus => "+",
+            .not => "!",
+            .bit_not => "~",
+            .typeof => "typeof",
+            .void_ => "void",
+            .delete => "delete",
+        };
+        const msg = try std.fmt.allocPrint(
+            self.gpa,
+            "An unary expression with the '{s}' operator is not allowed in the left-hand side of an exponentiation expression. Consider enclosing the expression in parentheses.",
+            .{op_text},
+        );
+        defer self.gpa.free(msg);
+        try self.reportCodeAt(self.hir.spanOf(left).start, line, 17006, msg);
     }
 
     fn reportMixedNullishLogical(
@@ -6763,6 +6795,17 @@ test "parser: rest parameter before another parameter reports TS1014" {
     try T.expectEqual(@as(u32, 1014), s.parser.diagnostics.items[0].code);
 }
 
+test "parser: rest parameter trailing comma reports TS1013 outside ambient contexts" {
+    var s = try newTestSetup(
+        \\function f(...rest,) {}
+        \\declare function g(...rest,): void;
+    );
+    defer destroyTestSetup(s);
+    _ = try s.parser.parseSourceFile();
+    try T.expectEqual(@as(usize, 1), s.parser.diagnostics.items.len);
+    try T.expectEqual(@as(u32, 1013), s.parser.diagnostics.items[0].code);
+}
+
 test "parser: object binding pattern supports literal and computed keys" {
     var s = try newTestSetup("const { 'a': a1, [k]: a2, ...rest } = obj;");
     defer destroyTestSetup(s);
@@ -8382,6 +8425,18 @@ test "parser: contextual primitive keyword can be parameter name and expression"
     const top = hir_mod.blockStmts(&s.hir, root)[0];
     const v = hir_mod.varDeclOf(&s.hir, top);
     try T.expectEqual(hir_mod.NodeKind.arrow_fn, s.hir.kindOf(v.init));
+}
+
+test "parser: unary expression before exponentiation reports TS17006" {
+    var s = try newTestSetup("-1 ** 2; 1 ** +2 ** 3; (-1) ** 2;");
+    defer destroyTestSetup(s);
+
+    _ = try s.parser.parseSourceFile();
+    var count: usize = 0;
+    for (s.parser.diagnostics.items) |d| {
+        if (d.code == 17006) count += 1;
+    }
+    try T.expectEqual(@as(usize, 2), count);
 }
 
 test "parser: contextual type keyword can be an expression identifier" {

@@ -116,6 +116,7 @@ pub const TsCodes = struct {
     pub const export_assignment_with_other_exports: u32 = 2309;
     pub const namespace_as_value: u32 = 2708;
     pub const namespace_before_merged_function: u32 = 2434;
+    pub const import_conflicts_with_local: u32 = 2440;
     pub const generic_type_requires_args: u32 = 2314;
     pub const circular_constraint: u32 = 2313;
     pub const static_member_type_parameter: u32 = 2302;
@@ -206,6 +207,7 @@ pub const TsCodes = struct {
     /// explicit initializer (or be string-valued); plain
     /// auto-increment is only valid after a numeric predecessor.
     pub const enum_computed_after_string: u32 = 2553;
+    pub const const_enum_initializer_must_be_constant: u32 = 2474;
 };
 
 /// Per-alias generic info: the type-parameter TypeIds in
@@ -716,6 +718,7 @@ pub const Checker = struct {
             try self.checkMultipleDefaultExports(stmts);
         }
         try self.checkDefaultExportMerges(stmts);
+        try self.checkImportLocalConflicts(stmts);
         try self.checkExportStarDiagnostics(stmts);
         try self.checkExportAssignmentExclusivity(stmts);
         // Pre-register top-level type aliases so recursive and mutually
@@ -936,6 +939,7 @@ pub const Checker = struct {
             .if_stmt => {
                 const i = hir_mod.ifOf(self.hir, node);
                 _ = try self.checkExpression(i.cond);
+                if (self.isElseIfStatement(node)) try self.reportStaticTruthiness(i.cond);
                 try self.pushNarrowScope();
                 try self.applyTypeGuard(i.cond, true);
                 try self.checkStatement(i.then_branch);
@@ -1218,6 +1222,46 @@ pub const Checker = struct {
             return std.ascii.eqlIgnoreCase(value, module_name);
         }
         return false;
+    }
+
+    fn checkImportLocalConflicts(self: *Checker, stmts: []const NodeId) CheckError!void {
+        var import_nodes_by_name: std.AutoHashMapUnmanaged(hir_mod.StringId, NodeId) = .empty;
+        defer import_nodes_by_name.deinit(self.gpa);
+
+        for (stmts) |stmt| {
+            if (self.hir.kindOf(stmt) != .import_decl) continue;
+            const imp = hir_mod.importOf(self.hir, stmt);
+            if (imp.default_binding != hir_mod.none_node_id and self.hir.kindOf(imp.default_binding) == .identifier) {
+                const id = hir_mod.identifierOf(self.hir, imp.default_binding);
+                try import_nodes_by_name.put(self.gpa, id.name, imp.default_binding);
+            }
+            if (imp.namespace_binding != hir_mod.none_node_id and self.hir.kindOf(imp.namespace_binding) == .identifier) {
+                const id = hir_mod.identifierOf(self.hir, imp.namespace_binding);
+                try import_nodes_by_name.put(self.gpa, id.name, imp.namespace_binding);
+            }
+            for (hir_mod.importNamed(self.hir, stmt)) |spec_node| {
+                const spec = hir_mod.importSpecifierOf(self.hir, spec_node);
+                try import_nodes_by_name.put(self.gpa, spec.local, spec_node);
+            }
+        }
+
+        for (stmts) |stmt| {
+            const local = self.unwrapExportDecl(stmt);
+            if (local == hir_mod.none_node_id or self.hir.kindOf(local) != .namespace_decl) continue;
+            const name = self.declarationName(local) orelse continue;
+            const import_node = import_nodes_by_name.get(name) orelse continue;
+            const name_str = self.string_interner.get(name);
+            const msg = try std.fmt.allocPrint(
+                self.diag_arena.allocator(),
+                "Import declaration conflicts with local declaration of '{s}'.",
+                .{name_str},
+            );
+            try self.diagnostics.append(self.gpa, .{
+                .node = import_node,
+                .code = TsCodes.import_conflicts_with_local,
+                .message = msg,
+            });
+        }
     }
 
     const DefaultFunctionInfo = struct {
@@ -2002,6 +2046,7 @@ pub const Checker = struct {
                     v.init == hir_mod.none_node_id and
                     v.type_annotation != hir_mod.none_node_id and
                     !self.varDeclHasExplicitAnyAnnotation(node) and
+                    !self.isGlobalSymbolConstructorVarDecl(node) and
                     v.name != hir_mod.none_node_id and
                     self.hir.kindOf(v.name) == .identifier)
                 {
@@ -2036,6 +2081,7 @@ pub const Checker = struct {
                     }
                 } else if (a.target != hir_mod.none_node_id) {
                     if (a.op == null) {
+                        try self.scanAssignmentTargetReadParts(a.target, pending);
                         try self.removeAssignedTargetFromPending(a.target, pending);
                     } else {
                         try self.scanExprForUsedBeforeAssign(a.target, pending);
@@ -2195,6 +2241,7 @@ pub const Checker = struct {
                     }
                 } else if (a.target != hir_mod.none_node_id) {
                     if (a.op == null) {
+                        try self.scanAssignmentTargetReadParts(a.target, pending);
                         try self.removeAssignedTargetFromPending(a.target, pending);
                     } else {
                         try self.scanExprForUsedBeforeAssign(a.target, pending);
@@ -2225,6 +2272,26 @@ pub const Checker = struct {
         }
     }
 
+    fn scanAssignmentTargetReadParts(
+        self: *Checker,
+        node: NodeId,
+        pending: *std.AutoHashMapUnmanaged(hir_mod.StringId, NodeId),
+    ) CheckError!void {
+        if (node == hir_mod.none_node_id) return;
+        switch (self.hir.kindOf(node)) {
+            .member_access => {
+                const m = hir_mod.memberOf(self.hir, node);
+                try self.scanExprForUsedBeforeAssign(m.object, pending);
+            },
+            .element_access => {
+                const e = hir_mod.elementOf(self.hir, node);
+                try self.scanExprForUsedBeforeAssign(e.object, pending);
+                try self.scanExprForUsedBeforeAssign(e.index, pending);
+            },
+            else => {},
+        }
+    }
+
     fn flagIfPending(
         self: *Checker,
         ref_node: NodeId,
@@ -2233,6 +2300,7 @@ pub const Checker = struct {
     ) CheckError!void {
         const decl_node = pending.get(name) orelse return;
         if (self.sourceHasStrictFalseDirective()) return;
+        if (self.nodeInsideComputedPropertyKey(ref_node)) return;
         if (self.hir.kindOf(decl_node) == .var_decl) {
             if (self.nodeHasAncestorKind(decl_node, .namespace_decl) and self.nodeIsInsideControlFlowCondition(ref_node)) return;
             if (!self.nodeHasAncestorKind(ref_node, .conditional) and
@@ -2245,6 +2313,7 @@ pub const Checker = struct {
                 !(self.nodeHasAncestorKind(ref_node, .logical_op) and self.varDeclHasTypeAnnotation(decl_node)) and
                 !(self.nodeHasAncestorKind(ref_node, .call_expr) and self.varDeclHasTypeAnnotation(decl_node)) and
                 !(self.nodeHasAncestorKind(ref_node, .decorator) and self.varDeclHasTypeAnnotation(decl_node)) and
+                !self.isCompoundAssignmentTarget(ref_node) and
                 !self.isDirectExpressionStatement(ref_node)) return;
         }
         const name_str = self.string_interner.get(name);
@@ -2261,6 +2330,27 @@ pub const Checker = struct {
         // Remove from pending so we only flag the first use; later
         // reads are noisy.
         _ = pending.remove(name);
+    }
+
+    fn isCompoundAssignmentTarget(self: *Checker, node: NodeId) bool {
+        const parent = self.hir.parentOf(node);
+        if (parent == hir_mod.none_node_id or self.hir.kindOf(parent) != .assignment) return false;
+        const a = hir_mod.assignmentOf(self.hir, parent);
+        return a.target == node and a.op != null;
+    }
+
+    fn nodeInsideComputedPropertyKey(self: *Checker, node: NodeId) bool {
+        var child = node;
+        var cur = self.hir.parentOf(node);
+        while (cur != hir_mod.none_node_id) : ({
+            child = cur;
+            cur = self.hir.parentOf(cur);
+        }) {
+            if (self.hir.kindOf(cur) != .object_property) continue;
+            const op = hir_mod.objectPropertyOf(self.hir, cur);
+            if (op.is_computed and op.key == child) return true;
+        }
+        return false;
     }
 
     fn isDirectExpressionStatement(self: *Checker, node: NodeId) bool {
@@ -2406,6 +2496,17 @@ pub const Checker = struct {
         if (self.hir.kindOf(v.type_annotation) != .type_ref) return false;
         const r = hir_mod.typeRefOf(self.hir, v.type_annotation);
         return r.qualifier_len == 0 and std.mem.eql(u8, self.string_interner.get(r.name), "any");
+    }
+
+    fn isGlobalSymbolConstructorVarDecl(self: *Checker, node: NodeId) bool {
+        if (self.hir.kindOf(node) != .var_decl) return false;
+        const v = hir_mod.varDeclOf(self.hir, node);
+        if (v.name == hir_mod.none_node_id or self.hir.kindOf(v.name) != .identifier) return false;
+        const id = hir_mod.identifierOf(self.hir, v.name);
+        if (!std.mem.eql(u8, self.string_interner.get(id.name), "Symbol")) return false;
+        if (v.type_annotation == hir_mod.none_node_id or self.hir.kindOf(v.type_annotation) != .type_ref) return false;
+        const r = hir_mod.typeRefOf(self.hir, v.type_annotation);
+        return r.qualifier_len == 0 and std.mem.eql(u8, self.string_interner.get(r.name), "SymbolConstructor");
     }
 
     fn sourceHasStrictFalseDirective(self: *Checker) bool {
@@ -6005,37 +6106,120 @@ pub const Checker = struct {
                 continue;
             }
 
-            // Has an initializer — resolve a small literal subset.
-            _ = try self.checkExpression(prop.value);
+            // Has an initializer — resolve a small constant-expression
+            // subset first so unqualified references to earlier enum
+            // members (`B = A`, `C = A + 1`) are treated as enum
+            // constants rather than unresolved value identifiers.
             const init_kind = self.hir.kindOf(prop.value);
             switch (init_kind) {
-                .literal_number => {
-                    const v = hir_mod.literalNumberOf(self.hir, prop.value);
-                    try self.enum_member_values.put(self.gpa, key, v);
-                    next_numeric = v + 1;
-                },
-                .unary_op => {
-                    const u = hir_mod.unaryOf(self.hir, prop.value);
-                    if (u.op == .neg and self.hir.kindOf(u.operand) == .literal_number) {
-                        const v = -hir_mod.literalNumberOf(self.hir, u.operand);
-                        try self.enum_member_values.put(self.gpa, key, v);
-                        next_numeric = v + 1;
-                    } else {
-                        next_numeric = null;
-                    }
-                },
                 .literal_string => {
                     saw_string = true;
                     next_numeric = null;
                 },
                 else => {
-                    next_numeric = null;
+                    if (self.evalEnumConstExpression(enum_name, prop.value)) |v| {
+                        try self.enum_member_values.put(self.gpa, key, v);
+                        next_numeric = v + 1;
+                    } else {
+                        if (e.is_const and self.hir.kindOf(prop.value) != .identifier) {
+                            try self.report(prop.value, TsCodes.const_enum_initializer_must_be_constant, "const enum member initializers must be constant expressions.");
+                        } else if (!e.is_const) {
+                            _ = try self.checkExpression(prop.value);
+                        }
+                        next_numeric = null;
+                    }
                 },
             }
         }
         try self.type_names.put(self.gpa, enum_name, types.Primitive.number_t);
         self.hir.setType(node, types.Primitive.number_t);
         self.hir.setType(e.name, types.Primitive.number_t);
+    }
+
+    fn evalEnumConstExpression(self: *Checker, enum_name: hir_mod.StringId, node: NodeId) ?f64 {
+        return switch (self.hir.kindOf(node)) {
+            .literal_number => hir_mod.literalNumberOf(self.hir, node),
+            .identifier => blk: {
+                const id = hir_mod.identifierOf(self.hir, node);
+                break :blk self.enum_member_values.get(.{ .obj_name = enum_name, .prop_name = id.name });
+            },
+            .member_access => blk: {
+                const m = hir_mod.memberOf(self.hir, node);
+                if (self.hir.kindOf(m.object) != .identifier) break :blk null;
+                const obj = hir_mod.identifierOf(self.hir, m.object);
+                break :blk self.enum_member_values.get(.{ .obj_name = obj.name, .prop_name = m.name });
+            },
+            .unary_op => blk: {
+                const u = hir_mod.unaryOf(self.hir, node);
+                const value = self.evalEnumConstExpression(enum_name, u.operand) orelse break :blk null;
+                break :blk switch (u.op) {
+                    .plus => value,
+                    .neg => -value,
+                    .bit_not => bitNotEnumValue(value),
+                    else => null,
+                };
+            },
+            .binary_op => blk: {
+                const b = hir_mod.binopOf(self.hir, node);
+                const lhs = self.evalEnumConstExpression(enum_name, b.lhs) orelse break :blk null;
+                const rhs = self.evalEnumConstExpression(enum_name, b.rhs) orelse break :blk null;
+                break :blk switch (b.op) {
+                    .add => lhs + rhs,
+                    .sub => lhs - rhs,
+                    .mul => lhs * rhs,
+                    .div => lhs / rhs,
+                    .mod => @mod(lhs, rhs),
+                    .bit_or => bitwiseEnumValue(lhs, rhs, .bit_or),
+                    .bit_and => bitwiseEnumValue(lhs, rhs, .bit_and),
+                    .bit_xor => bitwiseEnumValue(lhs, rhs, .bit_xor),
+                    .shl => shiftEnumValue(lhs, rhs, .shl),
+                    .shr => shiftEnumValue(lhs, rhs, .shr),
+                    .shr_unsigned => shiftEnumValue(lhs, rhs, .shr_unsigned),
+                    else => null,
+                };
+            },
+            else => null,
+        };
+    }
+
+    const EnumBitOp = enum { bit_or, bit_and, bit_xor };
+    const EnumShiftOp = enum { shl, shr, shr_unsigned };
+
+    fn enumIntValue(value: f64) ?i64 {
+        if (value != @floor(value)) return null;
+        const min: f64 = @floatFromInt(std.math.minInt(i64));
+        const max: f64 = @floatFromInt(std.math.maxInt(i64));
+        if (value < min or value > max) return null;
+        return @intFromFloat(value);
+    }
+
+    fn bitNotEnumValue(value: f64) ?f64 {
+        const int_value = enumIntValue(value) orelse return null;
+        return @floatFromInt(~int_value);
+    }
+
+    fn bitwiseEnumValue(lhs: f64, rhs: f64, op: EnumBitOp) ?f64 {
+        const lhs_int = enumIntValue(lhs) orelse return null;
+        const rhs_int = enumIntValue(rhs) orelse return null;
+        const result = switch (op) {
+            .bit_or => lhs_int | rhs_int,
+            .bit_and => lhs_int & rhs_int,
+            .bit_xor => lhs_int ^ rhs_int,
+        };
+        return @floatFromInt(result);
+    }
+
+    fn shiftEnumValue(lhs: f64, rhs: f64, op: EnumShiftOp) ?f64 {
+        const lhs_int = enumIntValue(lhs) orelse return null;
+        const rhs_int = enumIntValue(rhs) orelse return null;
+        if (rhs_int < 0) return null;
+        const amount: u6 = @intCast(@as(u64, @intCast(rhs_int)) & 63);
+        const result = switch (op) {
+            .shl => lhs_int << amount,
+            .shr => lhs_int >> amount,
+            .shr_unsigned => lhs_int >> amount,
+        };
+        return @floatFromInt(result);
     }
 
     /// If `obj_name` resolves to a `const enum` declaration and
@@ -8424,9 +8608,7 @@ pub const Checker = struct {
                 if (a.op) |op| {
                     switch (op) {
                         .add => {
-                            if (self.typeContainsSymbol(target_t) or self.typeContainsSymbol(value_t)) {
-                                try self.reportSymbolOperator(node, "+");
-                            }
+                            try self.checkCompoundAdditionAssignment(node, a.target, a.value, target_t, value_t);
                         },
                         .sub, .mul, .div, .mod, .pow, .bit_and, .bit_or, .bit_xor, .shl, .shr, .shr_unsigned => {
                             if (!self.isArithmeticOperandAllowed(target_t)) {
@@ -8582,6 +8764,8 @@ pub const Checker = struct {
                 if (self.hir.kindOf(c.callee) == .template_literal and
                     callee_t != types.Primitive.any and callee_t != types.Primitive.unknown)
                 {
+                    try self.report(node, 2351, "This expression is not constructable.");
+                } else if (self.typeIsDefinitelyNonConstructable(callee_t)) {
                     try self.report(node, 2351, "This expression is not constructable.");
                 }
                 break :blk types.Primitive.any;
@@ -8865,6 +9049,10 @@ pub const Checker = struct {
                     if (try self.enumMemberAccessType(obj_id.name, m.name)) |enum_t| {
                         break :blk try self.optionalChainResult(enum_t, member_is_optional_chain);
                     }
+                    if (self.const_enums.contains(obj_id.name)) {
+                        try self.reportPropertyDoesNotExist(node, m.name);
+                        break :blk types.Primitive.any;
+                    }
                     if (try self.constructorPrototypeAccess(obj_id.name, m.name)) |proto_t| {
                         break :blk proto_t;
                     }
@@ -8944,17 +9132,7 @@ pub const Checker = struct {
                     if (!self.sourceHasCheckJsDirective() and self.interner.objectMembers(access_obj_t).len == 0) {
                         break :blk types.Primitive.any;
                     }
-                    const name_str = self.string_interner.get(m.name);
-                    const msg = try std.fmt.allocPrint(
-                        self.diag_arena.allocator(),
-                        "Property '{s}' does not exist on type.",
-                        .{name_str},
-                    );
-                    try self.diagnostics.append(self.gpa, .{
-                        .node = node,
-                        .code = TsCodes.property_does_not_exist,
-                        .message = msg,
-                    });
+                    try self.reportPropertyDoesNotExist(node, m.name);
                 }
                 break :blk types.Primitive.any;
             },
@@ -9232,7 +9410,8 @@ pub const Checker = struct {
                         const op_is_method = op.is_method or
                             ((value_kind == .fn_decl or value_kind == .fn_expr or value_kind == .arrow_fn) and
                                 self.memberSourceLooksMethod(p));
-                        const vt = try self.checkExpression(op.value);
+                        const raw_vt = try self.checkExpression(op.value);
+                        const vt = self.objectAccessorPropertyType(op.value, raw_vt);
                         if (try self.classMemberNameFromPropertyKey(op.key, true)) |member_name| {
                             if (!op_is_method and objectMemberListContains(members.items, member_name)) {
                                 try self.report(p, TsCodes.object_literal_duplicate_property, "An object literal cannot have multiple properties with the same name.");
@@ -9258,7 +9437,8 @@ pub const Checker = struct {
                     const op_is_method = op.is_method or
                         ((value_kind == .fn_decl or value_kind == .fn_expr or value_kind == .arrow_fn) and
                             self.memberSourceLooksMethod(p));
-                    const vt = try self.checkExpression(op.value);
+                    const raw_vt = try self.checkExpression(op.value);
+                    const vt = self.objectAccessorPropertyType(op.value, raw_vt);
                     try upsert(self.gpa, &members, .{
                         .name = k.name,
                         .type = vt,
@@ -10441,7 +10621,10 @@ pub const Checker = struct {
 
         const name_str = self.string_interner.get(id.name);
         if (std.mem.eql(u8, name_str, "this")) {
-            if (!self.sourceHasStrictFalseDirective() and !self.identifierThisIsArrowCaptured(node)) {
+            if (!self.sourceHasStrictFalseDirective() and
+                !self.identifierThisIsArrowCaptured(node) and
+                !self.thisInsideObjectLiteralMethod(node))
+            {
                 self.report(node, TsCodes.this_implicitly_any, "'this' implicitly has type 'any' because it does not have a type annotation.") catch {};
             }
             return types.Primitive.any;
@@ -10839,9 +11022,10 @@ pub const Checker = struct {
             "Uint8ClampedArray", "Int8Array",          "Uint16Array",
             "Int16Array",        "Uint32Array",        "Int32Array",
             "Float32Array",      "Float64Array",       "BigUint64Array",
-            "BigInt64Array",
+            "BigInt64Array",     "SharedArrayBuffer",  "Atomics",
+            "Intl",
             // Global functions.
-                "parseInt",           "parseFloat",
+                         "parseInt",           "parseFloat",
             "isNaN",             "isFinite",           "encodeURI",
             "decodeURI",         "encodeURIComponent", "decodeURIComponent",
             // Timers / scheduling.
@@ -11627,7 +11811,7 @@ pub const Checker = struct {
 
     fn checkThisExpression(self: *Checker, node: NodeId) CheckError!TypeId {
         if (self.currentThisType()) |this_t| return this_t;
-        if (!self.sourceHasStrictFalseDirective()) {
+        if (!self.sourceHasStrictFalseDirective() and !self.thisInsideObjectLiteralMethod(node)) {
             try self.report(node, TsCodes.this_implicitly_any, "'this' implicitly has type 'any' because it does not have a type annotation.");
         }
         return types.Primitive.any;
@@ -11639,6 +11823,19 @@ pub const Checker = struct {
             const k = self.hir.kindOf(cur);
             if (k == .arrow_fn) return true;
             if (k == .fn_decl or k == .fn_expr) return false;
+        }
+        return false;
+    }
+
+    fn thisInsideObjectLiteralMethod(self: *Checker, node: NodeId) bool {
+        var cur = self.hir.parentOf(node);
+        while (cur != hir_mod.none_node_id) : (cur = self.hir.parentOf(cur)) {
+            const k = self.hir.kindOf(cur);
+            if (k != .fn_decl and k != .fn_expr and k != .arrow_fn) continue;
+            const fn_parent = self.hir.parentOf(cur);
+            if (fn_parent == hir_mod.none_node_id or self.hir.kindOf(fn_parent) != .object_property) return false;
+            const op = hir_mod.objectPropertyOf(self.hir, fn_parent);
+            return op.value == cur and (op.is_method or self.memberSourceLooksMethod(fn_parent));
         }
         return false;
     }
@@ -11695,6 +11892,21 @@ pub const Checker = struct {
             try self.checkFnDecl(op.value);
             self.popNarrowScope();
         }
+    }
+
+    fn objectAccessorPropertyType(self: *Checker, value_node: NodeId, raw_t: TypeId) TypeId {
+        if (value_node == hir_mod.none_node_id) return raw_t;
+        const kind = self.hir.kindOf(value_node);
+        if (kind != .fn_decl and kind != .fn_expr and kind != .arrow_fn) return raw_t;
+        const fnp = hir_mod.fnDeclOf(self.hir, value_node);
+        if (fnp.flags.is_getter) {
+            return self.interner.signatureReturn(raw_t) orelse types.Primitive.any;
+        }
+        if (fnp.flags.is_setter) {
+            const params = self.interner.signatureParams(raw_t);
+            return if (params.len > 0) params[0] else types.Primitive.any;
+        }
+        return raw_t;
     }
 
     fn functionContainsThis(self: *Checker, node: NodeId) bool {
@@ -11837,6 +12049,81 @@ pub const Checker = struct {
         }
         if (!self.strict_flags.strict_null_checks and (f.is_null or f.is_undefined)) return true;
         return f.is_number or f.is_bigint;
+    }
+
+    fn compoundAdditionAllowsNullish(self: *Checker, lhs: TypeId) bool {
+        if (self.typeIsAnyLike(lhs) or self.typeMaybeStringLike(lhs)) return true;
+        const f = self.interner.pool.flagsOf(lhs);
+        if (f.is_union) {
+            for (self.interner.unionMembers(lhs)) |member| {
+                if (!self.compoundAdditionAllowsNullish(member)) return false;
+            }
+            return true;
+        }
+        return self.isArithmeticOperandAllowed(lhs);
+    }
+
+    fn compoundAdditionAssignableBack(self: *Checker, result_t: TypeId, target_t: TypeId) CheckError!bool {
+        if (self.typeIsAnyLike(result_t) or self.typeIsAnyLike(target_t)) return true;
+        if (result_t == types.Primitive.string_t) return self.typeMaybeStringLike(target_t);
+        if (result_t == types.Primitive.number_t and self.isArithmeticOperandAllowed(target_t)) return true;
+        return self.engine.isAssignableTo(result_t, target_t) catch true;
+    }
+
+    fn checkCompoundAdditionAssignment(
+        self: *Checker,
+        node: NodeId,
+        target: NodeId,
+        value: NodeId,
+        target_t: TypeId,
+        value_t: TypeId,
+    ) CheckError!void {
+        if (self.typeContainsSymbol(target_t) or self.typeContainsSymbol(value_t)) {
+            try self.reportSymbolOperator(node, "+");
+            return;
+        }
+        if (self.typeIsExactNullish(value_t) and !self.compoundAdditionAllowsNullish(target_t)) {
+            try self.reportNullishRelationalOperand(value, value_t);
+            return;
+        }
+
+        const result_t: TypeId = blk: {
+            if (self.typeIsAnyLike(target_t) or self.typeIsAnyLike(value_t)) break :blk types.Primitive.any;
+            if (self.typeMaybeStringLike(target_t) or self.typeMaybeStringLike(value_t)) break :blk types.Primitive.string_t;
+            if (self.isArithmeticOperandAllowed(target_t) and self.isArithmeticOperandAllowed(value_t)) break :blk types.Primitive.number_t;
+            try self.report(node, TsCodes.operator_cannot_be_applied, "Operator '+=' cannot be applied to these operand types.");
+            return;
+        };
+
+        if (!try self.compoundAdditionAssignableBack(result_t, target_t)) {
+            try self.report(target, TsCodes.type_not_assignable, "Type is not assignable to target type.");
+        }
+    }
+
+    fn reportPropertyDoesNotExist(self: *Checker, node: NodeId, name: hir_mod.StringId) CheckError!void {
+        const name_str = self.string_interner.get(name);
+        const msg = try std.fmt.allocPrint(
+            self.diag_arena.allocator(),
+            "Property '{s}' does not exist on type.",
+            .{name_str},
+        );
+        try self.diagnostics.append(self.gpa, .{
+            .node = node,
+            .code = TsCodes.property_does_not_exist,
+            .message = msg,
+        });
+    }
+
+    fn typeIsDefinitelyNonConstructable(self: *Checker, t: TypeId) bool {
+        if (t == types.Primitive.none or self.typeIsAnyLike(t)) return false;
+        const f = self.interner.pool.flagsOf(t);
+        if (f.is_union) {
+            for (self.interner.unionMembers(t)) |member| {
+                if (!self.typeIsDefinitelyNonConstructable(member)) return false;
+            }
+            return true;
+        }
+        return f.is_string or f.is_number or f.is_bigint or f.is_boolean or f.is_symbol or f.is_null or f.is_undefined or f.is_void;
     }
 
     fn isRelationalOperandAllowed(self: *Checker, t: TypeId) bool {
@@ -12281,6 +12568,12 @@ pub const Checker = struct {
             },
             else => {},
         }
+    }
+
+    fn isElseIfStatement(self: *Checker, node: NodeId) bool {
+        const parent = self.hir.parentOf(node);
+        if (parent == hir_mod.none_node_id or self.hir.kindOf(parent) != .if_stmt) return false;
+        return hir_mod.ifOf(self.hir, parent).else_branch == node;
     }
 
     /// Generic call-site instantiation. For each parameter slot
@@ -15111,6 +15404,222 @@ test "checker: outer type guard does not narrow inside closure bodies" {
     }
     try T.expectEqual(@as(usize, 2), left_count);
     try T.expectEqual(@as(usize, 2), right_count);
+}
+
+test "checker: compound addition validates operands and assignment result" {
+    const s = try newSetup(
+        \\enum E { A }
+        \\declare var v: void;
+        \\declare var n: number;
+        \\declare var b: boolean;
+        \\b += n;
+        \\b += "";
+        \\n += v;
+    );
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+
+    var op_errors: usize = 0;
+    var assign_errors: usize = 0;
+    for (s.checker.diagnostics.items) |d| {
+        if (d.code == TsCodes.operator_cannot_be_applied) op_errors += 1;
+        if (d.code == TsCodes.type_not_assignable) assign_errors += 1;
+    }
+    try T.expectEqual(@as(usize, 2), op_errors);
+    try T.expectEqual(@as(usize, 1), assign_errors);
+}
+
+test "checker: compound addition reports nullish rhs where TS disallows it" {
+    const s = try newSetup(
+        \\declare var b: boolean;
+        \\declare var n: number;
+        \\b += null;
+        \\n += null;
+    );
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+
+    var nullish_errors: usize = 0;
+    for (s.checker.diagnostics.items) |d| {
+        if (d.code == TsCodes.nullish_relational_operand) nullish_errors += 1;
+    }
+    try T.expectEqual(@as(usize, 1), nullish_errors);
+}
+
+test "checker: new expression rejects primitive callee expressions" {
+    const s = try newSetup(
+        \\declare var a: any;
+        \\declare var b: any;
+        \\new (a ** b);
+    );
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+
+    var found = false;
+    for (s.checker.diagnostics.items) |d| {
+        if (d.code == 2351) found = true;
+    }
+    try T.expect(found);
+}
+
+test "checker: const enum initializer resolves earlier members" {
+    const s = try newSetup(
+        \\const enum E {
+        \\  a = 10,
+        \\  b = a,
+        \\  c = (a + 1),
+        \\  e,
+        \\  d = ~e,
+        \\  f = a << 2 >> 1,
+        \\  h = a | b,
+        \\}
+    );
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+
+    for (s.checker.diagnostics.items) |d| {
+        try T.expect(d.code != TsCodes.cannot_find_name);
+    }
+}
+
+test "checker: const enum reports non-constant member initializer" {
+    const s = try newSetup(
+        \\const enum E {
+        \\  A = 1,
+        \\  B = Math.random(),
+        \\}
+    );
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+
+    var found = false;
+    for (s.checker.diagnostics.items) |d| {
+        if (d.code == TsCodes.const_enum_initializer_must_be_constant) found = true;
+    }
+    try T.expect(found);
+}
+
+test "checker: const enum object has no Object prototype properties" {
+    const s = try newSetup(
+        \\const enum E {}
+        \\E.toString;
+    );
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+
+    var found = false;
+    for (s.checker.diagnostics.items) |d| {
+        if (d.code == TsCodes.property_does_not_exist) found = true;
+    }
+    try T.expect(found);
+}
+
+test "checker: else-if static numeric condition reports truthiness" {
+    const s = try newSetup(
+        \\if (1) {
+        \\} else if (2) {
+        \\}
+    );
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+
+    var truthy_errors: usize = 0;
+    for (s.checker.diagnostics.items) |d| {
+        if (d.code == TsCodes.expression_always_truthy) truthy_errors += 1;
+    }
+    try T.expectEqual(@as(usize, 1), truthy_errors);
+}
+
+test "checker: property assignment target reads object for TS2454" {
+    const s = try newSetup(
+        \\var obj: { x: number };
+        \\obj.x = 1;
+    );
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+
+    var found = false;
+    for (s.checker.diagnostics.items) |d| {
+        if (d.code == TsCodes.used_before_assignment) found = true;
+    }
+    try T.expect(found);
+}
+
+test "checker: compound assignment target reads typed var for TS2454" {
+    const s = try newSetup(
+        \\var n: number;
+        \\n **= 2;
+    );
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+
+    var found = false;
+    for (s.checker.diagnostics.items) |d| {
+        if (d.code == TsCodes.used_before_assignment) found = true;
+    }
+    try T.expect(found);
+}
+
+test "checker: computed property key does not trigger TS2454 for typed var" {
+    const s = try newSetup(
+        \\interface SymbolConstructor { foo: string; }
+        \\var Symbol: SymbolConstructor;
+        \\var obj = { [Symbol.foo]: 0 };
+    );
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+
+    for (s.checker.diagnostics.items) |d| {
+        try T.expect(d.code != TsCodes.used_before_assignment);
+    }
+}
+
+test "checker: namespace declaration conflicts with imported local" {
+    const s = try newSetup(
+        \\import { Enum } from "./enum";
+        \\namespace Enum {
+        \\  export type Foo = number;
+        \\}
+    );
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+
+    var found = false;
+    for (s.checker.diagnostics.items) |d| {
+        if (d.code == TsCodes.import_conflicts_with_local) found = true;
+    }
+    try T.expect(found);
+}
+
+test "checker: object literal accessors bind this without TS2683" {
+    const s = try newSetup(
+        \\var object = {
+        \\  _0: 2,
+        \\  get 0() { return this._0; },
+        \\  set 0(x: number) { this._0 = x; },
+        \\};
+        \\object[0] **= object[0];
+    );
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+
+    for (s.checker.diagnostics.items) |d| {
+        try T.expect(d.code != TsCodes.this_implicitly_any);
+    }
+}
+
+test "checker: modern shared-memory and intl globals are recognized" {
+    const s = try newSetup(
+        \\const sab = new SharedArrayBuffer(1024);
+        \\Atomics.pause();
+        \\new Intl.NumberFormat("en-US");
+    );
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+
+    for (s.checker.diagnostics.items) |d| {
+        try T.expect(d.code != TsCodes.cannot_find_name);
+    }
 }
 
 test "checker: do-while bodies are checked for assignment diagnostics" {
