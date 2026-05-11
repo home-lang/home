@@ -1122,7 +1122,7 @@ pub const Checker = struct {
                             try self.report(fr.target, TsCodes.type_not_assignable, "Type is not assignable to target type.");
                         }
                     },
-                    .array_literal => try self.checkArrayDestructuringAssignment(fr.target, elem_t),
+                    .array_literal => try self.checkArrayDestructuringAssignment(fr.target, elem_t, hir_mod.none_node_id),
                     .object_literal => try self.checkObjectDestructuringAssignment(fr.target, elem_t),
                     else => {},
                 }
@@ -1134,6 +1134,8 @@ pub const Checker = struct {
             },
             .block_stmt => {
                 const stmts = hir_mod.blockStmts(self.hir, node);
+                try self.pushNarrowScope();
+                defer self.popNarrowScope();
                 try self.checkDeclarationSpaceDiagnostics(stmts);
                 for (stmts) |s| {
                     try self.checkStatement(s);
@@ -2631,6 +2633,7 @@ pub const Checker = struct {
             },
             .array_literal => for (hir_mod.arrayLiteralElements(self.hir, node)) |el| try self.removeAssignedTargetFromPending(el, pending),
             .spread => try self.removeAssignedTargetFromPending(hir_mod.spreadOf(self.hir, node).expression, pending),
+            .assignment => try self.removeAssignedTargetFromPending(hir_mod.assignmentOf(self.hir, node).target, pending),
             .object_literal => for (hir_mod.objectLiteralProps(self.hir, node)) |p| try self.removeAssignedTargetFromPending(p, pending),
             .object_property => try self.removeAssignedTargetFromPending(hir_mod.objectPropertyOf(self.hir, node).value, pending),
             .member_access, .element_access => {},
@@ -2664,6 +2667,24 @@ pub const Checker = struct {
                 const e = hir_mod.elementOf(self.hir, node);
                 try self.scanExprForUsedBeforeAssign(e.object, pending);
                 try self.scanExprForUsedBeforeAssign(e.index, pending);
+            },
+            .assignment => {
+                const a = hir_mod.assignmentOf(self.hir, node);
+                try self.scanExprForUsedBeforeAssign(a.value, pending);
+                try self.scanAssignmentTargetReadParts(a.target, pending);
+            },
+            .array_literal => {
+                for (hir_mod.arrayLiteralElements(self.hir, node)) |el| {
+                    try self.scanAssignmentTargetReadParts(el, pending);
+                }
+            },
+            .object_literal => {
+                for (hir_mod.objectLiteralProps(self.hir, node)) |prop| {
+                    if (self.hir.kindOf(prop) != .object_property) continue;
+                    const op = hir_mod.objectPropertyOf(self.hir, prop);
+                    if (op.is_computed) try self.scanExprForUsedBeforeAssign(op.key, pending);
+                    try self.scanAssignmentTargetReadParts(op.value, pending);
+                }
             },
             else => {},
         }
@@ -2856,6 +2877,20 @@ pub const Checker = struct {
             if (self.hir.kindOf(cur) == kind) return true;
         }
         return false;
+    }
+
+    fn nodeIsInsideLoop(self: *Checker, node: NodeId) bool {
+        return self.nodeHasAncestorKind(node, .while_stmt) or
+            self.nodeHasAncestorKind(node, .do_while_stmt) or
+            self.nodeHasAncestorKind(node, .for_stmt) or
+            self.nodeHasAncestorKind(node, .for_in_stmt) or
+            self.nodeHasAncestorKind(node, .for_of_stmt);
+    }
+
+    fn nodeIsInsideFunctionLike(self: *Checker, node: NodeId) bool {
+        return self.nodeHasAncestorKind(node, .fn_decl) or
+            self.nodeHasAncestorKind(node, .fn_expr) or
+            self.nodeHasAncestorKind(node, .arrow_fn);
     }
 
     fn nodeIsBracketedComputedName(self: *Checker, node: NodeId) bool {
@@ -8952,14 +8987,18 @@ pub const Checker = struct {
         return true;
     }
 
-    fn checkArrayDestructuringAssignment(self: *Checker, target_node: NodeId, source_t: TypeId) CheckError!void {
+    fn checkArrayDestructuringAssignment(self: *Checker, target_node: NodeId, source_t: TypeId, source_node: NodeId) CheckError!void {
         const fallback_elem_t = try self.iterableElementType(source_t);
-        if (fallback_elem_t == types.Primitive.any or fallback_elem_t == types.Primitive.unknown) return;
         for (hir_mod.arrayLiteralElements(self.hir, target_node), 0..) |el, i| {
             if (el == hir_mod.none_node_id) continue;
             const k = self.hir.kindOf(el);
             const elem_t = self.tupleElementType(source_t, i);
-            const source_elem_t = if (elem_t != types.Primitive.none) elem_t else fallback_elem_t;
+            const source_elem_t = if (try self.arrayLiteralSourceElementType(source_node, i)) |literal_elem_t|
+                literal_elem_t
+            else if (elem_t != types.Primitive.none)
+                elem_t
+            else
+                fallback_elem_t;
             if (k == .spread) {
                 const sp = hir_mod.spreadOf(self.hir, el);
                 if (self.hir.kindOf(sp.expression) == .assignment) {
@@ -8982,14 +9021,9 @@ pub const Checker = struct {
             }
             if (k == .assignment) {
                 const a = hir_mod.assignmentOf(self.hir, el);
-                try self.checkDestructuringAssignmentTarget(a.target, source_elem_t);
                 const default_t = try self.checkExpression(a.value);
-                const target_t = try self.checkExpression(a.target);
-                if (target_t != types.Primitive.any and target_t != types.Primitive.unknown and
-                    !(self.engine.isAssignableTo(default_t, target_t) catch true))
-                {
-                    try self.report(a.value, TsCodes.type_not_assignable, "Type is not assignable to target type.");
-                }
+                const effective_t = try self.destructuringSourceWithDefault(source_elem_t, default_t);
+                try self.checkDestructuringAssignmentTarget(a.target, effective_t);
                 continue;
             }
             if (k == .identifier) {
@@ -9003,15 +9037,25 @@ pub const Checker = struct {
                 const ok = self.engine.isAssignableTo(source_elem_t, target_t) catch return error.OutOfMemory;
                 if (!ok) {
                     try self.report(el, TsCodes.type_not_assignable, "Type is not assignable to target type.");
+                } else {
+                    const id = hir_mod.identifierOf(self.hir, el);
+                    try self.recordNarrow(id.name, source_elem_t);
                 }
                 continue;
             }
             if (k == .array_literal) {
-                try self.checkArrayDestructuringAssignment(el, source_elem_t);
+                try self.checkArrayDestructuringAssignment(el, source_elem_t, hir_mod.none_node_id);
             } else if (k == .object_literal) {
                 try self.checkObjectDestructuringAssignment(el, source_elem_t);
             }
         }
+    }
+
+    fn arrayLiteralSourceElementType(self: *Checker, source_node: NodeId, index: usize) CheckError!?TypeId {
+        if (source_node == hir_mod.none_node_id or self.hir.kindOf(source_node) != .array_literal) return null;
+        const elements = hir_mod.arrayLiteralElements(self.hir, source_node);
+        if (index >= elements.len or elements[index] == hir_mod.none_node_id) return types.Primitive.never;
+        return try self.checkExpression(elements[index]);
     }
 
     fn checkObjectDestructuringAssignment(self: *Checker, target_node: NodeId, source_t: TypeId) CheckError!void {
@@ -9020,17 +9064,12 @@ pub const Checker = struct {
             if (self.hir.kindOf(prop_node) != .object_property) continue;
             const op = hir_mod.objectPropertyOf(self.hir, prop_node);
             if (op.value == hir_mod.none_node_id) continue;
-            const prop_t = self.objectPropertyTypeForDestructuring(source_t, op.key) orelse types.Primitive.any;
+            const prop_t = (try self.objectPropertyTypeForDestructuring(source_t, op.key, op.is_computed)) orelse types.Primitive.any;
             if (self.hir.kindOf(op.value) == .assignment) {
                 const a = hir_mod.assignmentOf(self.hir, op.value);
-                try self.checkDestructuringAssignmentTarget(a.target, prop_t);
                 const default_t = try self.checkExpression(a.value);
-                const target_t = try self.checkExpression(a.target);
-                if (target_t != types.Primitive.any and target_t != types.Primitive.unknown and
-                    !(self.engine.isAssignableTo(default_t, target_t) catch true))
-                {
-                    try self.report(a.value, TsCodes.type_not_assignable, "Type is not assignable to target type.");
-                }
+                const effective_t = try self.destructuringSourceWithDefault(prop_t, default_t);
+                try self.checkDestructuringAssignmentTarget(a.target, effective_t);
             } else {
                 try self.checkDestructuringAssignmentTarget(op.value, prop_t);
             }
@@ -9040,21 +9079,45 @@ pub const Checker = struct {
     fn checkDestructuringAssignmentTarget(self: *Checker, target_node: NodeId, source_t: TypeId) CheckError!void {
         switch (self.hir.kindOf(target_node)) {
             .identifier, .member_access, .element_access => {
-                const target_t = try self.checkExpression(target_node);
+                const target_t = if (self.hir.kindOf(target_node) == .identifier)
+                    self.typeOfIdentifierDeclared(target_node)
+                else
+                    try self.checkExpression(target_node);
                 if (target_t == types.Primitive.any or target_t == types.Primitive.unknown) return;
                 if (!(self.engine.isAssignableTo(source_t, target_t) catch true)) {
                     try self.report(target_node, TsCodes.type_not_assignable, "Type is not assignable to target type.");
+                } else if (self.hir.kindOf(target_node) == .identifier and
+                    source_t != types.Primitive.none and
+                    source_t != types.Primitive.any and
+                    source_t != types.Primitive.unknown)
+                {
+                    const id = hir_mod.identifierOf(self.hir, target_node);
+                    try self.recordNarrow(id.name, source_t);
                 }
             },
-            .array_literal => try self.checkArrayDestructuringAssignment(target_node, source_t),
+            .array_literal => try self.checkArrayDestructuringAssignment(target_node, source_t, hir_mod.none_node_id),
             .object_literal => try self.checkObjectDestructuringAssignment(target_node, source_t),
             else => {},
         }
     }
 
-    fn objectPropertyTypeForDestructuring(self: *Checker, source_t: TypeId, key_node: NodeId) ?TypeId {
-        const key_name = self.propertyNameFromKeyNode(key_node) orelse return null;
-        return self.objectPropertyTypeByName(source_t, key_name);
+    fn destructuringSourceWithDefault(self: *Checker, source_t: TypeId, default_t: TypeId) !TypeId {
+        if (source_t == types.Primitive.any or source_t == types.Primitive.unknown) return source_t;
+        if (default_t == types.Primitive.any or default_t == types.Primitive.unknown) return default_t;
+        const without_undefined = self.subtractType(source_t, types.Primitive.undefined_t) catch source_t;
+        if (without_undefined == types.Primitive.never or without_undefined == types.Primitive.none) return default_t;
+        if (default_t == types.Primitive.never or default_t == types.Primitive.none) return without_undefined;
+        if (without_undefined == default_t) return without_undefined;
+        return self.interner.internUnion(&.{ without_undefined, default_t }) catch return error.OutOfMemory;
+    }
+
+    fn objectPropertyTypeForDestructuring(self: *Checker, source_t: TypeId, key_node: NodeId, is_computed: bool) CheckError!?TypeId {
+        const key_name = if (is_computed)
+            try self.propertyNameFromComputedKeyNode(key_node)
+        else
+            self.propertyNameFromKeyNode(key_node);
+        const name = key_name orelse return null;
+        return self.objectPropertyTypeByName(source_t, name);
     }
 
     fn objectPropertyTypeByName(self: *Checker, source_t: TypeId, key_name: hir_mod.StringId) ?TypeId {
@@ -9101,6 +9164,33 @@ pub const Checker = struct {
             },
             else => null,
         };
+    }
+
+    fn propertyNameFromComputedKeyNode(self: *Checker, key_node: NodeId) CheckError!?hir_mod.StringId {
+        const key_t = try self.checkExpression(key_node);
+        if (try self.propertyNameFromLiteralType(key_t)) |name| return name;
+        return self.propertyNameFromKeyNode(key_node);
+    }
+
+    fn propertyNameFromLiteralType(self: *Checker, t: TypeId) CheckError!?hir_mod.StringId {
+        if (t == types.Primitive.true_lit) return self.string_interner.intern("true") catch return error.OutOfMemory;
+        if (t == types.Primitive.false_lit) return self.string_interner.intern("false") catch return error.OutOfMemory;
+        if (t >= self.interner.pool.typeCount()) return null;
+        const flags = self.interner.pool.flagsOf(t);
+        if (!flags.is_literal) return null;
+        switch (self.interner.literalOf(t)) {
+            .string_lit => |sid| return sid,
+            .number_lit => |bits| {
+                const v: f64 = @bitCast(bits);
+                var buf: [64]u8 = undefined;
+                const text = if (v == @floor(v) and v >= -9007199254740991 and v <= 9007199254740991)
+                    std.fmt.bufPrint(&buf, "{d}", .{@as(i64, @intFromFloat(v))}) catch return null
+                else
+                    std.fmt.bufPrint(&buf, "{d}", .{v}) catch return null;
+                return self.string_interner.intern(text) catch return error.OutOfMemory;
+            },
+            else => return null,
+        }
     }
 
     fn fixedTupleLength(self: *Checker, target: TypeId) ?u64 {
@@ -9250,6 +9340,25 @@ pub const Checker = struct {
         // Propagate the declaration's type to the name identifier
         // so hover-on-identifier returns the right type.
         if (v.name != hir_mod.none_node_id) self.hir.setType(v.name, final_type);
+        if (v.name != hir_mod.none_node_id and
+            v.init != hir_mod.none_node_id and
+            self.hir.kindOf(v.name) == .identifier)
+        {
+            const id = hir_mod.identifierOf(self.hir, v.name);
+            const flow_t = try self.flowTypeForAssignmentValue(v.init, init_type);
+            const flow_ok = (try self.literalExpressionAssignableToTarget(v.init, final_type)) or
+                (self.engine.isAssignableTo(flow_t, final_type) catch true);
+            if (flow_t != types.Primitive.none and
+                flow_t != types.Primitive.any and
+                flow_t != types.Primitive.unknown and
+                final_type != types.Primitive.any and
+                final_type != types.Primitive.unknown and
+                !self.nodeIsInsideFunctionLike(node) and
+                flow_ok)
+            {
+                try self.recordNarrow(id.name, flow_t);
+            }
+        }
         if (v.name != hir_mod.none_node_id) {
             const nk = self.hir.kindOf(v.name);
             if (nk == .object_pattern or nk == .array_pattern) {
@@ -9924,7 +10033,13 @@ pub const Checker = struct {
             .conditional => try self.checkConditional(node),
             .assignment => blk: {
                 const a = hir_mod.assignmentOf(self.hir, node);
-                const target_t = try self.checkExpression(a.target);
+                const target_kind = self.hir.kindOf(a.target);
+                const target_t = if (target_kind == .identifier)
+                    self.typeOfIdentifierDeclared(a.target)
+                else if (target_kind == .array_literal or target_kind == .object_literal)
+                    types.Primitive.none
+                else
+                    try self.checkExpression(a.target);
                 // Reassignment clears any prior conditional alias for
                 // the variable: `let cond = isString(x); cond = false;
                 // if (cond) ...` — the second branch shouldn't
@@ -9962,6 +10077,24 @@ pub const Checker = struct {
                     try self.checkReadonlyAssignment(a.target);
                 }
                 const value_t = try self.checkExpression(a.value);
+                var assignment_result_t = value_t;
+                if (a.op == null) {
+                    assignment_result_t = try self.flowTypeForAssignmentValue(a.value, value_t);
+                    if (!self.nodeIsInsideFunctionLike(node) and
+                        !self.nodeIsInsideLoop(node) and
+                        self.hir.kindOf(a.target) == .identifier and
+                        assignment_result_t != types.Primitive.none and
+                        assignment_result_t != types.Primitive.any and
+                        assignment_result_t != types.Primitive.unknown and
+                        target_t != types.Primitive.any and
+                        target_t != types.Primitive.unknown and
+                        ((try self.literalExpressionAssignableToTarget(a.value, target_t)) or
+                            (self.engine.isAssignableTo(assignment_result_t, target_t) catch true)))
+                    {
+                        const target_id = hir_mod.identifierOf(self.hir, a.target);
+                        try self.recordNarrow(target_id.name, assignment_result_t);
+                    }
+                }
                 if (a.op) |op| {
                     switch (op) {
                         .add => {
@@ -9979,7 +10112,7 @@ pub const Checker = struct {
                     }
                 }
                 if (a.op == null and self.hir.kindOf(a.target) == .array_literal) {
-                    try self.checkArrayDestructuringAssignment(a.target, value_t);
+                    try self.checkArrayDestructuringAssignment(a.target, value_t, a.value);
                 }
                 if (a.op == null and self.classPrivateStructuralMismatch(target_t, value_t)) {
                     try self.report(node, TsCodes.type_not_assignable, "Type is not assignable to declared type.");
@@ -9996,7 +10129,7 @@ pub const Checker = struct {
                     }
                 }
                 if (a.op == null) try self.checkGenericIndexedAssignment(node, a.target, a.value);
-                break :blk value_t;
+                break :blk assignment_result_t;
             },
             .new_expr => blk: {
                 const c = hir_mod.callOf(self.hir, node);
@@ -11855,6 +11988,13 @@ pub const Checker = struct {
             }
         }
         return null;
+    }
+
+    fn typeOfIdentifierDeclared(self: *Checker, node: NodeId) TypeId {
+        const old_floor = self.narrow_lookup_floor;
+        self.narrow_lookup_floor = self.narrow_scopes.items.len;
+        defer self.narrow_lookup_floor = old_floor;
+        return self.typeOfIdentifier(node);
     }
 
     /// Detect simple type guards in `cond` and write their
@@ -16587,6 +16727,58 @@ pub const Checker = struct {
         if (r.qualifier_len != 0 or r.args_len != 0) return false;
         const name = self.string_interner.get(r.name);
         return std.mem.eql(u8, name, "const");
+    }
+
+    fn flowTypeForAssignmentValue(self: *Checker, value_node: NodeId, fallback: TypeId) CheckError!TypeId {
+        return switch (self.hir.kindOf(value_node)) {
+            .literal_string => blk: {
+                const lit = hir_mod.literalStringOf(self.hir, value_node);
+                break :blk self.interner.internStringLiteral(lit.value) catch return error.OutOfMemory;
+            },
+            .literal_number => blk: {
+                const v = hir_mod.literalNumberOf(self.hir, value_node);
+                break :blk self.interner.internNumberLiteral(v) catch return error.OutOfMemory;
+            },
+            .literal_bool => blk: {
+                const v = hir_mod.literalBoolOf(self.hir, value_node);
+                break :blk if (v) types.Primitive.true_lit else types.Primitive.false_lit;
+            },
+            .literal_null => types.Primitive.null_t,
+            .literal_undefined => types.Primitive.undefined_t,
+            .as_expr, .type_assertion => blk: {
+                const a = hir_mod.asExpressionOf(self.hir, value_node);
+                if (a.type_node != hir_mod.none_node_id and self.isAsConstMarker(a.type_node)) {
+                    break :blk self.literalizeForAsConst(a.expr, fallback) catch fallback;
+                }
+                break :blk fallback;
+            },
+            .assignment => blk: {
+                const a = hir_mod.assignmentOf(self.hir, value_node);
+                if (a.op != null) break :blk fallback;
+                const value_t = if (self.hir.typeOf(a.value) != types.Primitive.none)
+                    self.hir.typeOf(a.value)
+                else
+                    try self.checkExpression(a.value);
+                const flow_t = try self.flowTypeForAssignmentValue(a.value, value_t);
+                if (!self.nodeIsInsideFunctionLike(value_node) and
+                    !self.nodeIsInsideLoop(value_node) and
+                    self.hir.kindOf(a.target) == .identifier and
+                    flow_t != types.Primitive.none and
+                    flow_t != types.Primitive.any and
+                    flow_t != types.Primitive.unknown)
+                {
+                    const id = hir_mod.identifierOf(self.hir, a.target);
+                    try self.recordNarrow(id.name, flow_t);
+                }
+                break :blk flow_t;
+            },
+            .identifier => blk: {
+                const t = self.typeOfIdentifier(value_node);
+                if (t < self.interner.pool.typeCount() and self.interner.pool.flagsOf(t).is_literal) break :blk t;
+                break :blk fallback;
+            },
+            else => fallback,
+        };
     }
 
     /// Implement `expr as const`: re-type the inner expression as
@@ -24744,6 +24936,28 @@ test "checker: array destructuring assignment checks iterator element assignabil
         if (d.code == TsCodes.type_not_assignable) found = true;
     }
     try T.expect(found);
+}
+
+test "checker: destructuring assignment records default and computed-key flow" {
+    const s = try newSetup(
+        \\{
+        \\  let a: 0 | 1 = 0;
+        \\  let b: 0 | 1 | 9;
+        \\  [{ [(a = 1)]: b } = [9, a] as const] = [];
+        \\  const bb: 0 = b;
+        \\}
+        \\{
+        \\  let a: 0 | 1 = 1;
+        \\  let b: 0 | 1 | 8 | 9;
+        \\  [{ [a]: b } = [a = 0, 9] as const] = [[8, 9] as const];
+        \\  const bb: 0 | 8 = b;
+        \\}
+    );
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+    for (s.checker.diagnostics.items) |d| {
+        try T.expect(d.code != TsCodes.type_not_assignable);
+    }
 }
 
 test "checker: array binding parameter rejects non-array iterator object" {
