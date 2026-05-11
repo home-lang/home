@@ -2526,7 +2526,10 @@ pub const Checker = struct {
             .logical_op => {
                 const l = hir_mod.logicalOf(self.hir, node);
                 try self.scanExprForUsedBeforeAssign(l.lhs, pending);
-                try self.scanExprForUsedBeforeAssign(l.rhs, pending);
+                var rhs_pending: std.AutoHashMapUnmanaged(hir_mod.StringId, NodeId) = .empty;
+                defer rhs_pending.deinit(self.gpa);
+                try self.clonePendingAssignments(pending, &rhs_pending);
+                try self.scanExprForUsedBeforeAssign(l.rhs, &rhs_pending);
             },
             .conditional => {
                 const c = hir_mod.conditionalOf(self.hir, node);
@@ -2615,6 +2618,17 @@ pub const Checker = struct {
             .object_property => try self.removeAssignedTargetFromPending(hir_mod.objectPropertyOf(self.hir, node).value, pending),
             .member_access, .element_access => {},
             else => {},
+        }
+    }
+
+    fn clonePendingAssignments(
+        self: *Checker,
+        source: *std.AutoHashMapUnmanaged(hir_mod.StringId, NodeId),
+        dest: *std.AutoHashMapUnmanaged(hir_mod.StringId, NodeId),
+    ) CheckError!void {
+        var it = source.iterator();
+        while (it.next()) |entry| {
+            try dest.put(self.gpa, entry.key_ptr.*, entry.value_ptr.*);
         }
     }
 
@@ -18773,6 +18787,22 @@ test "checker: typed var used in control-flow condition emits TS2454" {
     const s = try newSetup(
         \\var x: string | number;
         \\if (typeof x === "string") {}
+    );
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+    var found = false;
+    for (s.checker.diagnostics.items) |d| {
+        if (d.code == TsCodes.used_before_assignment) found = true;
+    }
+    try T.expect(found);
+}
+
+test "checker: nullish-coalesce RHS assignment is not definite" {
+    const s = try newSetup(
+        \\let o: any;
+        \\let a: number;
+        \\o ?? (a = 1);
+        \\a.toString();
     );
     defer destroySetup(s);
     try s.checker.checkSourceFile(s.root);
