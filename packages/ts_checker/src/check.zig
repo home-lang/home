@@ -118,6 +118,7 @@ pub const TsCodes = struct {
     pub const spread_types_object_only: u32 = 2698;
     pub const optional_chain_assignment_target: u32 = 2779;
     pub const jsx_element_no_construct_or_call: u32 = 2604;
+    pub const jsx_element_implicit_any_no_intrinsic: u32 = 7026;
     pub const jsx_component_not_valid: u32 = 2786;
     pub const jsx_attribute_overwritten: u32 = 2783;
     pub const delete_operand_must_be_optional: u32 = 2790;
@@ -1193,8 +1194,13 @@ pub const Checker = struct {
                         else => {},
                     }
                 },
-                else => if (self.hir.kindOf(s) == .call_expr) {
-                    _ = try self.checkExpression(s);
+                else => switch (self.hir.kindOf(s)) {
+                    .call_expr => _ = try self.checkExpression(s),
+                    .binary_op => {
+                        const b = hir_mod.binopOf(self.hir, s);
+                        if (b.op == .comma) _ = try self.checkExpression(s);
+                    },
+                    else => {},
                 },
             }
         }
@@ -6078,6 +6084,42 @@ pub const Checker = struct {
         return self.interner.internObjectType(&members) catch return error.OutOfMemory;
     }
 
+    fn reactComponentClassType(self: *Checker, type_ref_node: NodeId) CheckError!?TypeId {
+        const r = hir_mod.typeRefOf(self.hir, type_ref_node);
+        if (!std.mem.eql(u8, self.string_interner.get(r.name), "ComponentClass")) return null;
+        const qualifiers = self.hir.childSlice(r.qualifier_start, r.qualifier_len);
+        if (qualifiers.len != 1 or self.hir.kindOf(qualifiers[0]) != .identifier) return null;
+        const q = hir_mod.identifierOf(self.hir, qualifiers[0]);
+        const q_name = self.string_interner.get(q.name);
+        if (!std.mem.eql(u8, q_name, "React") and !std.mem.eql(u8, q_name, "__React")) return null;
+
+        const args = self.hir.childSlice(r.args_start, r.args_len);
+        const props_t: TypeId = if (args.len > 0)
+            try self.lowererLowerWithTypeParams(args[0])
+        else
+            types.Primitive.any;
+        const props_name = self.string_interner.intern("props") catch return error.OutOfMemory;
+        const instance_members = [_]types.ObjectMember{.{
+            .name = props_name,
+            .type = props_t,
+            .is_optional = false,
+            .is_readonly = true,
+            .is_method = false,
+        }};
+        const instance_t = self.interner.internObjectType(&instance_members) catch return error.OutOfMemory;
+        const ctor_params = [_]TypeId{props_t};
+        const ctor_sig = self.interner.internSignature(&ctor_params, instance_t, true) catch return error.OutOfMemory;
+        const construct_name = self.string_interner.intern("__construct") catch return error.OutOfMemory;
+        const class_members = [_]types.ObjectMember{.{
+            .name = construct_name,
+            .type = ctor_sig,
+            .is_optional = false,
+            .is_readonly = false,
+            .is_method = true,
+        }};
+        return self.interner.internObjectType(&class_members) catch return error.OutOfMemory;
+    }
+
     fn classExtendsStaticType(self: *Checker, extends_expr: NodeId) CheckError!?TypeId {
         return switch (self.hir.kindOf(extends_expr)) {
             .identifier => blk: {
@@ -7091,8 +7133,9 @@ pub const Checker = struct {
             .tuple_type => return try self.lowerTupleWithTypeParams(type_node),
             .type_ref => {
                 const r = hir_mod.typeRefOf(self.hir, type_node);
-                if (r.qualifier_len > 0 and r.args_len == 0) {
+                if (r.qualifier_len > 0) {
                     if (try self.resolveQualifiedTypeRef(type_node)) |t| return t;
+                    if (try self.reactComponentClassType(type_node)) |t| return t;
                 }
                 if (r.qualifier_len == 0 and r.args_len == 0) {
                     const name_str = self.string_interner.get(r.name);
@@ -8677,6 +8720,13 @@ pub const Checker = struct {
                     self.isTupleShapedTarget(declared_type))
                 {
                     break :blk try self.checkArrayLiteralAgainstTuple(v.init, declared_type);
+                }
+                if (self.hir.kindOf(v.init) == .object_literal and
+                    declared_type < self.interner.pool.typeCount() and
+                    self.interner.pool.flagsOf(declared_type).is_union and
+                    (self.objectLiteralAssignableToTarget(v.init, init_type, declared_type) catch false))
+                {
+                    break :blk true;
                 }
                 break :blk self.engine.isAssignableTo(init_type, declared_type) catch return error.OutOfMemory;
             };
@@ -10278,6 +10328,12 @@ pub const Checker = struct {
         const children = hir_mod.jsxChildren(self.hir, node);
         const props_t = try self.jsxPropsType(el.tag, attrs.len);
 
+        if (props_t == null and self.jsxTagIsIntrinsic(el.tag) and
+            try self.jsxHasNamespaceDecl(el.tag) and !try self.jsxHasIntrinsicElementsDecl(el.tag))
+        {
+            try self.report(el.tag, TsCodes.jsx_element_implicit_any_no_intrinsic, "JSX element implicitly has type 'any' because no interface 'JSX.IntrinsicElements' exists.");
+        }
+
         if (!self.jsxTagIsIntrinsic(el.tag) and try self.jsxComponentTypeInvalid(el.tag)) {
             try self.report(el.tag, TsCodes.jsx_element_no_construct_or_call, "JSX element type does not have any construct or call signatures.");
         }
@@ -10775,7 +10831,15 @@ pub const Checker = struct {
             }
             return false;
         }
-        if (flags.is_signature) return true;
+        if (flags.is_signature) {
+            const ret = self.interner.signatureReturn(t) orelse types.Primitive.any;
+            if (self.strict_flags.strict_null_checks and
+                (ret == types.Primitive.undefined_t or ret == types.Primitive.void_t))
+            {
+                return false;
+            }
+            return true;
+        }
         if (!flags.is_object_type) return false;
         const props_name = self.string_interner.intern("props") catch return error.OutOfMemory;
         if ((try self.lookupObjectMember(t, props_name)) != null) return true;
@@ -10815,6 +10879,22 @@ pub const Checker = struct {
         if (intrinsic_t == types.Primitive.none or intrinsic_t == types.Primitive.unknown) return null;
         if (try self.lookupObjectMember(intrinsic_t, tag_name)) |props_t| return props_t;
         return null;
+    }
+
+    fn jsxHasIntrinsicElementsDecl(self: *Checker, anchor: NodeId) CheckError!bool {
+        const jsx_name = self.string_interner.intern("JSX") catch return error.OutOfMemory;
+        const intrinsic_name = self.string_interner.intern("IntrinsicElements") catch return error.OutOfMemory;
+        const root = self.rootBlockFor(anchor);
+        if (root == hir_mod.none_node_id or self.hir.kindOf(root) != .block_stmt) return false;
+        const ns_node = self.findNamespaceByPath(hir_mod.blockStmts(self.hir, root), &[_]hir_mod.StringId{jsx_name}) orelse return false;
+        return self.findNamedTypeDeclInNamespace(ns_node, intrinsic_name) != null;
+    }
+
+    fn jsxHasNamespaceDecl(self: *Checker, anchor: NodeId) CheckError!bool {
+        const jsx_name = self.string_interner.intern("JSX") catch return error.OutOfMemory;
+        const root = self.rootBlockFor(anchor);
+        if (root == hir_mod.none_node_id or self.hir.kindOf(root) != .block_stmt) return false;
+        return self.findNamespaceByPath(hir_mod.blockStmts(self.hir, root), &[_]hir_mod.StringId{jsx_name}) != null;
     }
 
     fn nodeIsSuperReference(self: *Checker, node: NodeId) bool {
@@ -16621,6 +16701,7 @@ test "checker: conditional narrows identifier in then-branch" {
         \\function f(x: string | null) { return x ? x.length : -1; }
     );
     defer destroySetup(s);
+    s.checker.setStrictFlags(.{ .strict_null_checks = true });
     try s.checker.checkSourceFile(s.root);
     try T.expectEqual(@as(usize, 0), s.checker.diagnostics.items.len);
 }
@@ -16633,6 +16714,7 @@ test "checker: conditional return type is union of branch types" {
         \\function f(x: number) { return x > 0 ? "pos" : 0; }
     );
     defer destroySetup(s);
+    s.checker.setStrictFlags(.{ .strict_null_checks = true });
     try s.checker.checkSourceFile(s.root);
     const top = firstStatement(s);
     const f = hir_mod.fnDeclOf(&s.hir, top);
@@ -17240,6 +17322,88 @@ test "checker: JSX rejects uppercase values without call or construct signatures
         if (d.code == TsCodes.jsx_element_no_construct_or_call) count += 1;
     }
     try T.expectEqual(@as(usize, 2), count);
+}
+
+test "checker: JSX intrinsic without IntrinsicElements reports TS7026" {
+    const s = try newTsxSetup(
+        \\declare namespace JSX { interface Element {} }
+        \\<div n="x" />;
+    );
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+
+    var found = false;
+    for (s.checker.diagnostics.items) |d| {
+        if (d.code == TsCodes.jsx_element_implicit_any_no_intrinsic) found = true;
+    }
+    try T.expect(found);
+}
+
+test "checker: JSX union component rejects non-component member" {
+    const s = try newTsxSetup(
+        \\declare namespace JSX { interface Element {} interface IntrinsicElements {} }
+        \\declare namespace React { interface ComponentClass<P> { new(props?: P): any; } }
+        \\type Invalid1 = React.ComponentClass<any> | number;
+        \\const X: Invalid1 = 1;
+        \\<X />;
+    );
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+
+    var found = false;
+    for (s.checker.diagnostics.items) |d| {
+        if (d.code == TsCodes.jsx_element_no_construct_or_call) found = true;
+    }
+    try T.expect(found);
+}
+
+test "checker: JSX function component rejects undefined return" {
+    const s = try newTsxSetup(
+        \\declare namespace JSX { interface Element {} interface IntrinsicElements {} }
+        \\const Foo = (props: any) => undefined;
+        \\<Foo />;
+    );
+    defer destroySetup(s);
+    s.checker.setStrictFlags(.{ .strict_null_checks = true });
+    try s.checker.checkSourceFile(s.root);
+
+    var found = false;
+    for (s.checker.diagnostics.items) |d| {
+        if (d.code == TsCodes.jsx_element_no_construct_or_call) found = true;
+    }
+    try T.expect(found);
+}
+
+test "checker: namespace expression statements report comma left unused" {
+    const s = try newTsxSetup(
+        \\declare namespace JSX { interface Element {} interface IntrinsicElements {} }
+        \\namespace M {
+        \\  export class Foo {}
+        \\  Foo, <Foo />;
+        \\}
+    );
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+
+    var found = false;
+    for (s.checker.diagnostics.items) |d| {
+        if (d.code == TsCodes.comma_left_unused) found = true;
+    }
+    try T.expect(found);
+}
+
+test "checker: object literal bool discriminant satisfies union annotation" {
+    const s = try newSetup(
+        \\type TextProps = { editable: false } | { editable: true, onEdit: (newText: string) => void };
+        \\const textPropsFalse: TextProps = { editable: false };
+        \\const textPropsTrue: TextProps = { editable: true, onEdit: () => {} };
+    );
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+
+    for (s.checker.diagnostics.items) |d| {
+        try T.expect(d.code != TsCodes.type_not_assignable);
+    }
 }
 
 test "checker: JSX spread attributes must be object-like" {

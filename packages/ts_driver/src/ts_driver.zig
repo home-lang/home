@@ -131,6 +131,126 @@ pub const CompileOptions = struct {
     pub_tsconfig: ?*const tsconfig_mod.TsConfig = null,
 };
 
+fn appendDriverDiagnostic(
+    gpa: std.mem.Allocator,
+    c: *Compilation,
+    pos: u32,
+    code: u32,
+    message: []const u8,
+) CompileError!void {
+    try c.diagnostics.append(gpa, .{
+        .phase = .bind,
+        .pos = pos,
+        .line = 0,
+        .code = code,
+        .message = try gpa.dupe(u8, message),
+    });
+    c.has_errors = true;
+}
+
+fn directiveValue(source: []const u8, name: []const u8) ?[]const u8 {
+    var lines = std.mem.splitScalar(u8, source, '\n');
+    while (lines.next()) |line_raw| {
+        const line = std.mem.trim(u8, line_raw, " \t\r/*");
+        if (!std.mem.startsWith(u8, line, "@")) continue;
+        const rest = line[1..];
+        if (!std.mem.startsWith(u8, rest, name)) continue;
+        var value = std.mem.trim(u8, rest[name.len..], " \t:");
+        if (std.mem.indexOfAny(u8, value, " \t*/\r")) |end| value = value[0..end];
+        return value;
+    }
+    return null;
+}
+
+fn hasJsxSyntax(source: []const u8) bool {
+    return std.mem.indexOf(u8, source, "<>") != null or
+        std.mem.indexOf(u8, source, "</") != null or
+        std.mem.indexOf(u8, source, "/>") != null;
+}
+
+fn sourceMentionsValue(source: []const u8, name: []const u8) bool {
+    return std.mem.indexOf(u8, source, name) != null;
+}
+
+fn hasInlineJsxFactoryPragmaWithoutFragment(source: []const u8) bool {
+    var offset: usize = 0;
+    while (std.mem.indexOf(u8, source[offset..], "@jsx")) |rel| {
+        const idx = offset + rel;
+        const after_idx = idx + "@jsx".len;
+        if (after_idx >= source.len) return false;
+        const after = source[after_idx];
+        if (after == ':' or after == 'F' or after == 'f') {
+            offset = after_idx;
+            continue;
+        }
+        if (after != ' ' and after != '\t') {
+            offset = after_idx;
+            continue;
+        }
+        const section_end = if (std.mem.indexOf(u8, source[after_idx..], "@filename:")) |next_file|
+            after_idx + next_file
+        else
+            source.len;
+        const section = source[idx..section_end];
+        if (std.mem.indexOf(u8, section, "@jsxFrag") == null and
+            std.mem.indexOf(u8, section, "@jsxfrag") == null)
+        {
+            return true;
+        }
+        offset = after_idx;
+    }
+    return false;
+}
+
+fn appendJsxDirectiveDiagnostics(
+    gpa: std.mem.Allocator,
+    c: *Compilation,
+    source: []const u8,
+    options: CompileOptions,
+) CompileError!void {
+    if (!options.is_tsx or !hasJsxSyntax(source)) return;
+    const jsx_mode = directiveValue(source, "jsx");
+    const jsx_import_source = directiveValue(source, "jsxImportSource");
+    if (jsx_import_source) |import_source| {
+        if (jsx_mode != null and
+            (std.mem.startsWith(u8, jsx_mode.?, "react-jsx") or std.mem.startsWith(u8, jsx_mode.?, "react-jsxdev")))
+        {
+            const runtime = try std.fmt.allocPrint(gpa, "{s}/jsx-runtime", .{import_source});
+            defer gpa.free(runtime);
+            if (std.mem.indexOf(u8, source, runtime) == null) {
+                const msg = try std.fmt.allocPrint(
+                    gpa,
+                    "This JSX tag requires the module path '{s}' to exist, but none could be found. Make sure you have types for the appropriate package installed.",
+                    .{runtime},
+                );
+                defer gpa.free(msg);
+                try appendDriverDiagnostic(gpa, c, 0, 2875, msg);
+            }
+        }
+    }
+
+    if (jsx_mode) |mode| {
+        if (std.mem.eql(u8, mode, "react") and
+            directiveValue(source, "jsxFactory") == null and
+            !sourceMentionsValue(source, "React"))
+        {
+            try appendDriverDiagnostic(gpa, c, 0, 2874, "This JSX tag requires 'React' to be in scope, but it could not be found.");
+        }
+        if (!std.mem.eql(u8, mode, "preserve") and
+            !std.mem.eql(u8, mode, "react") and
+            !std.mem.startsWith(u8, mode, "react-jsx") and
+            std.mem.indexOf(u8, source, "<>") != null and
+            directiveValue(source, "jsxFrag") == null and
+            directiveValue(source, "jsxfrag") == null)
+        {
+            try appendDriverDiagnostic(gpa, c, 0, 17017, "An @jsxFrag pragma is required when using an @jsx pragma with JSX fragments.");
+        }
+    }
+    if (std.mem.indexOf(u8, source, "<>") != null and hasInlineJsxFactoryPragmaWithoutFragment(source)) {
+        try appendDriverDiagnostic(gpa, c, 0, 17017, "An @jsxFrag pragma is required when using an @jsx pragma with JSX fragments.");
+    }
+}
+
 /// Apply tsconfig.compilerOptions to a CompileOptions. Useful when
 /// callers want to derive options from a config file.
 pub fn optionsFromConfig(cfg: *const tsconfig_mod.TsConfig) CompileOptions {
@@ -362,6 +482,7 @@ pub fn compileSource(
         });
         c.has_errors = true;
     }
+    try appendJsxDirectiveDiagnostics(gpa, c, source, options);
 
     // ------ Bind ------
     var bind = binder.Binder.init(gpa, &c.hir, &c.interner, options.file_id) catch return error.OutOfMemory;
@@ -1286,6 +1407,40 @@ test "driver: tsx fragment" {
         T.allocator.destroy(c);
     }
     try T.expect(std.mem.indexOf(u8, c.js, "React.Fragment") != null);
+}
+
+test "driver: automatic jsx import source reports missing runtime module" {
+    var c = try compileSource(T.allocator,
+        \\// @jsx: react-jsx,react-jsxdev
+        \\// @jsxImportSource: preact
+        \\let v = <div />;
+    , .{ .is_tsx = true, .no_emit = true });
+    defer {
+        c.deinit();
+        T.allocator.destroy(c);
+    }
+    var found = false;
+    for (c.diagnostics.items) |d| {
+        if (d.code == 2875) found = true;
+    }
+    try T.expect(found);
+}
+
+test "driver: jsx pragma with fragment requires jsxFrag pragma" {
+    var c = try compileSource(T.allocator,
+        \\/** @jsx dom */
+        \\import { dom } from "./renderer";
+        \\let v = <></>;
+    , .{ .is_tsx = true, .no_emit = true });
+    defer {
+        c.deinit();
+        T.allocator.destroy(c);
+    }
+    var found = false;
+    for (c.diagnostics.items) |d| {
+        if (d.code == 17017) found = true;
+    }
+    try T.expect(found);
 }
 
 test "driver: optionsFromConfig enables tsx for jsx=react-jsx" {

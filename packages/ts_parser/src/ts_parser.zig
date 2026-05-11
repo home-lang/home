@@ -5669,6 +5669,9 @@ pub const Parser = struct {
                             // but `prop=<Inner/>` is permitted by some
                             // dialects. Phase 1 follow-up.
                             value = try self.parseJsx();
+                        } else {
+                            const bad = self.peek();
+                            try self.reportCodeAt(bad.span.start, bad.line, 1145, "'{' or JSX element expected.");
                         }
                     }
                     const node = try self.builder.addJsxAttribute(
@@ -7882,6 +7885,27 @@ test "parser: jsx element with expression attribute" {
     const a = hir_mod.jsxAttributeOf(&s.hir, attrs[0]);
     try T.expect(a.value != hir_mod.none_node_id);
     try T.expectEqual(hir_mod.NodeKind.jsx_expression, s.hir.kindOf(a.value));
+}
+
+test "parser: jsx empty attribute initializer reports TS1145" {
+    var s = try newTsxTestSetup("let v = <Foo attr= />;");
+    defer destroyTestSetup(s);
+    _ = try s.parser.parseSourceFile();
+    try T.expectEqual(@as(usize, 1), s.parser.diagnostics.items.len);
+    try T.expectEqual(@as(u32, 1145), s.parser.diagnostics.items[0].code);
+}
+
+test "parser: jsx element attribute initializer remains recoverable" {
+    var s = try newTsxTestSetup("let v = <Foo attr=<Bar /> />;");
+    defer destroyTestSetup(s);
+    const root = try s.parser.parseSourceFile();
+    const top = hir_mod.blockStmts(&s.hir, root)[0];
+    const init_node = hir_mod.varDeclOf(&s.hir, top).init;
+    const attrs = hir_mod.jsxAttrs(&s.hir, init_node);
+    const a = hir_mod.jsxAttributeOf(&s.hir, attrs[0]);
+    try T.expect(a.value != hir_mod.none_node_id);
+    try T.expectEqual(hir_mod.NodeKind.jsx_self_closing, s.hir.kindOf(a.value));
+    try T.expectEqual(@as(usize, 0), s.parser.diagnostics.items.len);
 }
 
 test "parser: jsx boolean shorthand attribute" {
