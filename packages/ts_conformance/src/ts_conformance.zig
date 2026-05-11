@@ -507,9 +507,11 @@ fn stripNonCodeVirtualSections(gpa: std.mem.Allocator, source: []const u8) !?[]u
     while (lines.next()) |line_with_cr| {
         const line = std.mem.trim(u8, line_with_cr, "\r");
         if (virtualFilename(line)) |path| {
-            include_section = isCodeVirtualFile(path);
+            include_section = isCodeVirtualFile(path) or isTsConfigVirtualPath(path);
             comment_section = include_section and isNodeModulesVirtualPath(path) and isJsLikeVirtualFile(path) and !allow_js;
+            if (include_section and isTsConfigVirtualPath(path)) comment_section = true;
             if (include_section) {
+                if (comment_section) try out.appendSlice(gpa, "// ");
                 try out.appendSlice(gpa, line);
                 try out.append(gpa, '\n');
             }
@@ -569,6 +571,13 @@ fn isJsLikeVirtualFile(path: []const u8) bool {
         std.mem.endsWith(u8, path, ".jsx") or
         std.mem.endsWith(u8, path, ".mjs") or
         std.mem.endsWith(u8, path, ".cjs");
+}
+
+fn isTsConfigVirtualPath(path: []const u8) bool {
+    var p = path;
+    while (std.mem.startsWith(u8, p, "/")) p = p[1..];
+    while (std.mem.startsWith(u8, p, "./")) p = p[2..];
+    return std.ascii.eqlIgnoreCase(p, "tsconfig.json");
 }
 
 fn isDeclarationFilePath(path: []const u8) bool {
@@ -741,6 +750,72 @@ fn envUsizeOpt(name: [*:0]const u8) ?usize {
 fn hasNoLibReferenceLib(source: []const u8) bool {
     return std.mem.indexOf(u8, source, "@noLib: true") != null and
         std.mem.indexOf(u8, source, "<reference lib=") != null;
+}
+
+fn hasCompilerOptionCompatibilityDiagnostic(source: []const u8) bool {
+    if (moduleResolutionMentions(source, "classic") and
+        (directiveBool(source, "resolvePackageJsonExports") == true or
+            directiveBool(source, "resolvePackageJsonImports") == true))
+    {
+        return true;
+    }
+    if ((moduleResolutionMentions(source, "classic") or moduleResolutionMentions(source, "node")) and
+        (directiveBool(source, "resolvePackageJsonExports") == true or
+            directiveBool(source, "resolvePackageJsonImports") == true))
+    {
+        return true;
+    }
+    if (commentedJsonStringValue(source, "moduleResolution", "classic") and
+        (commentedJsonHasKey(source, "customConditions") or
+            commentedJsonBoolValue(source, "resolvePackageJsonExports", true) or
+            commentedJsonBoolValue(source, "resolvePackageJsonImports", true)))
+    {
+        return true;
+    }
+    if (commentedJsonStringValue(source, "moduleResolution", "bundler") and
+        commentedJsonStringValue(source, "module", "nodenext"))
+    {
+        return true;
+    }
+    if (moduleResolutionMentions(source, "bundler") and
+        (directiveValueMentions(source, "module", "nodenext") or
+            directiveValueMentions(source, "module", "node18") or
+            directiveValueMentions(source, "module", "node20")))
+    {
+        return true;
+    }
+    return false;
+}
+
+fn moduleResolutionMentions(source: []const u8, value: []const u8) bool {
+    return directiveValueMentions(source, "moduleResolution", value);
+}
+
+fn directiveValueMentions(source: []const u8, directive_name: []const u8, value: []const u8) bool {
+    const raw = directiveValue(source, directive_name) orelse return false;
+    var it = std.mem.splitScalar(u8, raw, ',');
+    while (it.next()) |part| {
+        if (std.ascii.eqlIgnoreCase(std.mem.trim(u8, part, " \t\r"), value)) return true;
+    }
+    return false;
+}
+
+fn commentedJsonHasKey(source: []const u8, key: []const u8) bool {
+    const quoted = std.fmt.allocPrint(std.heap.page_allocator, "\"{s}\"", .{key}) catch return false;
+    defer std.heap.page_allocator.free(quoted);
+    return std.mem.indexOf(u8, source, quoted) != null;
+}
+
+fn commentedJsonStringValue(source: []const u8, key: []const u8, value: []const u8) bool {
+    const pattern = std.fmt.allocPrint(std.heap.page_allocator, "\"{s}\": \"{s}\"", .{ key, value }) catch return false;
+    defer std.heap.page_allocator.free(pattern);
+    return std.mem.indexOf(u8, source, pattern) != null;
+}
+
+fn commentedJsonBoolValue(source: []const u8, key: []const u8, value: bool) bool {
+    const pattern = std.fmt.allocPrint(std.heap.page_allocator, "\"{s}\": {s}", .{ key, if (value) "true" else "false" }) catch return false;
+    defer std.heap.page_allocator.free(pattern);
+    return std.mem.indexOf(u8, source, pattern) != null;
 }
 
 fn isNodeResolutionFullProgramFixture(name: []const u8, source: []const u8) bool {
@@ -1492,6 +1567,11 @@ fn parseStrictDirectiveFlags(source: []const u8) ?ts_driver.StrictFlags {
 }
 
 fn directiveBool(source: []const u8, directive_name: []const u8) ?bool {
+    const value = directiveValue(source, directive_name) orelse return null;
+    return parseDirectiveBool(value);
+}
+
+fn directiveValue(source: []const u8, directive_name: []const u8) ?[]const u8 {
     var lines = std.mem.splitScalar(u8, source, '\n');
     while (lines.next()) |raw_line| {
         const line = std.mem.trim(u8, raw_line, " \t\r");
@@ -1504,7 +1584,7 @@ fn directiveBool(source: []const u8, directive_name: []const u8) ?bool {
         if (!std.ascii.eqlIgnoreCase(body[0..name_end], directive_name)) continue;
         var value = std.mem.trim(u8, body[name_end..], " \t");
         if (std.mem.startsWith(u8, value, ":")) value = std.mem.trim(u8, value[1..], " \t");
-        if (parseDirectiveBool(value)) |b| return b;
+        return value;
     }
     return null;
 }
@@ -1794,6 +1874,7 @@ fn runOneEntry(gpa: std.mem.Allocator, entry: CorpusEntry) !Result {
     const modeled_clean = !entry.expects_error and hasHarnessModeledExpectedClean(entry.name, entry.source);
     const had_errors = !modeled_clean and (compilation.has_errors or
         hasNoLibReferenceLib(entry.source) or
+        hasCompilerOptionCompatibilityDiagnostic(entry.source) or
         (entry.expects_error and hasHarnessModeledExpectedError(entry.name, entry.source)));
     const first_actual_detail: ?[]u8 = if (compilation.diagnostics.items.len > 0) blk: {
         const d = compilation.diagnostics.items[0];
@@ -2101,6 +2182,37 @@ test "conformance: node_modules js virtual sections are commented when allowJs i
     try T.expect(stripped != null);
     try T.expect(std.mem.indexOf(u8, stripped.?, "// This file is not processed.") != null);
     try T.expect(std.mem.indexOf(u8, stripped.?, "import * as foo") != null);
+}
+
+test "conformance: virtual tsconfig sections are preserved as comments" {
+    const stripped = try stripNonCodeVirtualSections(T.allocator,
+        \\// @filename: /tsconfig.json
+        \\{ "compilerOptions": { "moduleResolution": "bundler", "module": "nodenext" } }
+        \\// @filename: /index.ts
+        \\export {};
+    );
+    defer if (stripped) |s| T.allocator.free(s);
+    try T.expect(stripped != null);
+    try T.expect(std.mem.indexOf(u8, stripped.?, "// { \"compilerOptions\"") != null);
+    try T.expect(std.mem.indexOf(u8, stripped.?, "export {};") != null);
+}
+
+test "conformance: option compatibility diagnostics count as expected errors" {
+    const r = try runOneEntry(T.allocator, .{
+        .name = "bundlerOptionsCompat",
+        .source =
+        \\// @filename: /tsconfig.json
+        \\// { "compilerOptions": { "module": "nodenext", "moduleResolution": "bundler" } }
+        \\// @filename: /index.ts
+        \\export {};
+        ,
+        .expects_error = true,
+    });
+    defer {
+        T.allocator.free(r.name);
+        if (r.detail.len > 0) T.allocator.free(r.detail);
+    }
+    try T.expectEqual(Outcome.passed, r.outcome);
 }
 
 test "conformance: empty file passes with no diagnostics" {

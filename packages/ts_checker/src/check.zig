@@ -6816,6 +6816,18 @@ pub const Checker = struct {
         if (std.mem.startsWith(u8, spec, ".")) {
             try self.checkNamedImportSpecifiers(node, imp, spec);
             if (try self.checkVirtualRelativeModuleImport(node, spec)) return;
+            if (self.sourceHasVirtualFilenameSections()) {
+                const msg = try std.fmt.allocPrint(
+                    self.diag_arena.allocator(),
+                    "Cannot find module '{s}' or its corresponding type declarations.",
+                    .{spec},
+                );
+                try self.diagnostics.append(self.gpa, .{
+                    .node = node,
+                    .code = TsCodes.cannot_find_module,
+                    .message = msg,
+                });
+            }
             return;
         }
         if (try self.checkVirtualBareModuleImport(node, spec)) return;
@@ -6896,6 +6908,8 @@ pub const Checker = struct {
         if (self.virtualSourceHasFilenameWithExtOrIndex(resolved, ".d.cts")) return .declaration;
         if (self.virtualSourceHasFilenameWithExtOrIndex(resolved, ".ts")) return .declaration;
         if (self.virtualSourceHasFilenameWithExtOrIndex(resolved, ".tsx")) return .declaration;
+        if (self.virtualSourceHasFilenameWithExtOrIndex(resolved, ".mts")) return .declaration;
+        if (self.virtualSourceHasFilenameWithExtOrIndex(resolved, ".cts")) return .declaration;
 
         if (self.virtualSourceHasFilenameWithExtOrIndex(resolved, ".js")) return .implementation;
         if (self.virtualSourceHasFilenameWithExtOrIndex(resolved, ".jsx")) return .implementation;
@@ -7089,12 +7103,28 @@ pub const Checker = struct {
 
     fn virtualSourceHasFilenameWithExtOrIndex(self: *Checker, base: []const u8, ext: []const u8) bool {
         if (std.mem.endsWith(u8, base, ext) and self.virtualSourceHasFilename(base)) return true;
+        if (virtualSourceHasExtensionSubstitution(self, base, ext)) return true;
         const direct = std.fmt.allocPrint(self.gpa, "{s}{s}", .{ base, ext }) catch return false;
         defer self.gpa.free(direct);
         if (self.virtualSourceHasFilename(direct)) return true;
         const index = std.fmt.allocPrint(self.gpa, "{s}/index{s}", .{ base, ext }) catch return false;
         defer self.gpa.free(index);
         return self.virtualSourceHasFilename(index);
+    }
+
+    fn virtualSourceHasExtensionSubstitution(self: *Checker, base: []const u8, ext: []const u8) bool {
+        const source_exts = [_][]const u8{ ".js", ".jsx", ".mjs", ".cjs" };
+        for (source_exts) |source_ext| {
+            if (!std.mem.endsWith(u8, base, source_ext)) continue;
+            if (std.mem.eql(u8, source_ext, ".mjs") and !std.mem.eql(u8, ext, ".mts") and !std.mem.eql(u8, ext, ".d.mts")) continue;
+            if (std.mem.eql(u8, source_ext, ".cjs") and !std.mem.eql(u8, ext, ".cts") and !std.mem.eql(u8, ext, ".d.cts")) continue;
+            if (std.mem.eql(u8, source_ext, ".jsx") and !std.mem.eql(u8, ext, ".tsx") and !std.mem.eql(u8, ext, ".d.ts")) continue;
+            const stem = base[0 .. base.len - source_ext.len];
+            const substituted = std.fmt.allocPrint(self.gpa, "{s}{s}", .{ stem, ext }) catch return false;
+            defer self.gpa.free(substituted);
+            if (self.virtualSourceHasFilename(substituted)) return true;
+        }
+        return false;
     }
 
     fn virtualSourceHasFilename(self: *Checker, wanted: []const u8) bool {
@@ -7145,10 +7175,16 @@ pub const Checker = struct {
 
     fn checkNamedImportSpecifiers(self: *Checker, node: NodeId, imp: hir_mod.ImportPayload, spec: []const u8) CheckError!void {
         _ = imp;
+        const scoped_virtual_relative = std.mem.startsWith(u8, spec, ".") and self.sourceHasVirtualFilenameSections();
         for (hir_mod.importNamed(self.hir, node)) |spec_node| {
             if (self.hir.kindOf(spec_node) != .import_specifier) continue;
             const sp = hir_mod.importSpecifierOf(self.hir, spec_node);
             if (sp.is_type_only or std.mem.eql(u8, self.string_interner.get(sp.imported), "default")) continue;
+            if (scoped_virtual_relative) {
+                if (try self.virtualRelativeModuleHasNamedExport(node, spec, sp.imported)) continue;
+                try self.report(spec_node, TsCodes.no_exported_member_suggestion, "Module has no exported member.");
+                continue;
+            }
             if (self.rootHasNonImportDeclarationNamed(sp.imported) or self.rootHasExportedName(sp.imported)) continue;
             if (self.closestNonImportDeclarationName(sp.imported)) |suggestion| {
                 const requested = self.string_interner.get(sp.imported);
@@ -7165,6 +7201,57 @@ pub const Checker = struct {
                 });
             }
         }
+    }
+
+    fn virtualRelativeModuleHasNamedExport(self: *Checker, node: NodeId, spec: []const u8, name: hir_mod.StringId) CheckError!bool {
+        const from = self.virtualSectionFilenameForNode(node) orelse return true;
+        const resolved = try self.resolveVirtualRelativePath(from, spec);
+        defer self.gpa.free(resolved);
+        const root = self.rootBlockFor(node);
+        if (root == hir_mod.none_node_id or self.hir.kindOf(root) != .block_stmt) return true;
+        var found_module = false;
+        for (hir_mod.blockStmts(self.hir, root)) |raw| {
+            if (!self.virtualSectionMatchesResolvedModule(raw, resolved, spec)) continue;
+            found_module = true;
+            if (self.hir.kindOf(raw) != .export_decl) continue;
+            const decl = self.unwrapExportDecl(raw);
+            const decl_name = self.declarationName(decl) orelse continue;
+            if (decl_name == name) return true;
+        }
+        return !found_module;
+    }
+
+    fn virtualSectionMatchesResolvedModule(self: *Checker, node: NodeId, resolved: []const u8, spec: []const u8) bool {
+        const filename = self.virtualSectionFilenameForNode(node) orelse return false;
+        if (virtualRelativeSpecifierPrefersIndex(spec)) {
+            const index_exts = [_][]const u8{ ".d.ts", ".ts", ".tsx", ".mts", ".cts", ".js", ".jsx", ".mjs", ".cjs" };
+            for (index_exts) |ext| {
+                const index = std.fmt.allocPrint(self.gpa, "{s}/index{s}", .{ resolved, ext }) catch return false;
+                defer self.gpa.free(index);
+                if (virtualPathEquals(filename, index)) return true;
+            }
+            return false;
+        }
+        if (virtualPathEquals(filename, resolved)) return true;
+        const exts = [_][]const u8{ ".d.ts", ".ts", ".tsx", ".mts", ".cts", ".js", ".jsx", ".mjs", ".cjs" };
+        for (exts) |ext| {
+            const direct = std.fmt.allocPrint(self.gpa, "{s}{s}", .{ resolved, ext }) catch return false;
+            defer self.gpa.free(direct);
+            if (virtualPathEquals(filename, direct)) return true;
+            const index = std.fmt.allocPrint(self.gpa, "{s}/index{s}", .{ resolved, ext }) catch return false;
+            defer self.gpa.free(index);
+            if (virtualPathEquals(filename, index)) return true;
+        }
+        return false;
+    }
+
+    fn virtualRelativeSpecifierPrefersIndex(spec: []const u8) bool {
+        return std.mem.eql(u8, spec, ".") or
+            std.mem.eql(u8, spec, "./") or
+            std.mem.eql(u8, spec, "..") or
+            std.mem.eql(u8, spec, "../") or
+            std.mem.endsWith(u8, spec, "/.") or
+            std.mem.endsWith(u8, spec, "/..");
     }
 
     fn isKnownAmbientModuleName(self: *Checker, anchor: NodeId, spec: []const u8) CheckError!bool {
@@ -22881,6 +22968,68 @@ test "checker: relative virtual declaration package satisfies import under noImp
     for (s.checker.diagnostics.items) |d| {
         try T.expect(d.code != TsCodes.untyped_module);
     }
+}
+
+test "checker: virtual relative js specifier resolves to ts source" {
+    const s = try newSetup(
+        \\// @filename: /src/mod.ts
+        \\export const value: number = 1;
+        \\// @filename: /src/main.ts
+        \\import { value } from "./mod.js";
+        \\value;
+    );
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+    for (s.checker.diagnostics.items) |d| {
+        try T.expect(d.code != TsCodes.cannot_find_module);
+    }
+}
+
+test "checker: virtual relative mjs specifier resolves to mts source" {
+    const s = try newSetup(
+        \\// @filename: /src/mod.mts
+        \\export const value: number = 1;
+        \\// @filename: /src/main.cts
+        \\import { value } from "./mod.mjs";
+        \\value;
+    );
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+    for (s.checker.diagnostics.items) |d| {
+        try T.expect(d.code != TsCodes.cannot_find_module);
+    }
+}
+
+test "checker: import from dot uses directory index exports" {
+    const s = try newSetup(
+        \\// @filename: /a.ts
+        \\export const rootA = 0;
+        \\// @filename: /a/index.ts
+        \\export const indexInA = 0;
+        \\// @filename: /a/b.ts
+        \\import { indexInA, rootA } from ".";
+    );
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+    var found = false;
+    for (s.checker.diagnostics.items) |d| {
+        if (d.code == TsCodes.no_exported_member_suggestion) found = true;
+    }
+    try T.expect(found);
+}
+
+test "checker: missing virtual relative import reports cannot find module" {
+    const s = try newSetup(
+        \\// @filename: /src/main.ts
+        \\import {} from "./missing.ts";
+    );
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+    var found = false;
+    for (s.checker.diagnostics.items) |d| {
+        if (d.code == TsCodes.cannot_find_module) found = true;
+    }
+    try T.expect(found);
 }
 
 test "checker: lowercase object permits Object prototype but rejects missing property" {
