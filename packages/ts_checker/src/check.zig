@@ -1959,10 +1959,9 @@ pub const Checker = struct {
         }
         const overload_ret = self.interner.signatureReturn(overload_sig) orelse types.Primitive.any;
         const impl_ret = self.interner.signatureReturn(impl_sig) orelse types.Primitive.any;
-        if (!self.typeIsSimpleOverloadCompatibilityOperand(overload_ret) or
-            !self.typeIsSimpleOverloadCompatibilityOperand(impl_ret)) return true;
         if (overload_ret == types.Primitive.any or impl_ret == types.Primitive.any or impl_ret == types.Primitive.unknown) return true;
         if (overload_ret == types.Primitive.void_t) return true;
+        if (self.containsFreeTypeParameter(overload_ret) or self.containsFreeTypeParameter(impl_ret)) return true;
         return self.engine.isAssignableTo(overload_ret, impl_ret) catch return error.OutOfMemory;
     }
 
@@ -20526,6 +20525,14 @@ pub const Checker = struct {
             });
             return;
         }
+        if (try self.assertionUnionConstituentHasNoOverlap(source_t, target_t)) {
+            try self.diagnostics.append(self.gpa, .{
+                .node = node,
+                .code = TsCodes.conversion_may_be_mistake,
+                .message = "Conversion may be a mistake because neither type sufficiently overlaps with the other.",
+            });
+            return;
+        }
         if (!self.shouldCheckNoOverlap(source_t, target_t)) return;
         const comparable = self.engine.isComparableTo(source_t, target_t) catch true;
         if (comparable) return;
@@ -20534,6 +20541,35 @@ pub const Checker = struct {
             .code = TsCodes.conversion_may_be_mistake,
             .message = "Conversion may be a mistake because neither type sufficiently overlaps with the other.",
         });
+    }
+
+    fn assertionUnionConstituentHasNoOverlap(self: *Checker, source_t: TypeId, target_t: TypeId) CheckError!bool {
+        if (source_t >= self.interner.pool.typeCount()) return false;
+        const source_flags = self.interner.pool.flagsOf(source_t);
+        if (!source_flags.is_union) return false;
+        for (self.interner.unionMembers(source_t)) |member| {
+            if (self.assertionObjectConstituentHasNoPrimitiveOverlap(member, target_t)) return true;
+            if (!self.shouldCheckNoOverlap(member, target_t)) continue;
+            const comparable = self.engine.isComparableTo(member, target_t) catch true;
+            if (!comparable) return true;
+        }
+        return false;
+    }
+
+    fn assertionObjectConstituentHasNoPrimitiveOverlap(self: *Checker, source_t: TypeId, target_t: TypeId) bool {
+        if (!self.isConcretePrimitiveLike(target_t)) return false;
+        if (source_t >= self.interner.pool.typeCount()) return false;
+        const source_flags = self.interner.pool.flagsOf(source_t);
+        if (!source_flags.is_object_type and !source_flags.is_signature and !source_flags.is_tuple) return false;
+        if (target_t == types.Primitive.string_t) {
+            const string_idx = self.interner.objectStringIndex(source_t);
+            if (string_idx != types.Primitive.none) return false;
+        }
+        if (target_t == types.Primitive.number_t) {
+            const number_idx = self.interner.objectNumberIndex(source_t);
+            if (number_idx != types.Primitive.none) return false;
+        }
+        return true;
     }
 
     fn nullAssertionTargetIsPermissive(self: *Checker, target_t: TypeId) bool {
@@ -20790,7 +20826,11 @@ pub const Checker = struct {
     }
 
     fn isNumericPropertyName(self: *Checker, name: hir_mod.StringId) bool {
-        const s = self.string_interner.get(name);
+        const s = self.string_interner.getOptional(name) orelse return false;
+        return isNumericPropertyNameText(s);
+    }
+
+    fn isNumericPropertyNameText(s: []const u8) bool {
         if (s.len == 0) return false;
         var saw_digit = false;
         for (s, 0..) |c, i| {
@@ -24213,6 +24253,29 @@ test "checker: null assertion to generic array target is allowed" {
     }
 }
 
+test "checker: assertion from union rejects non-overlapping constituents" {
+    const s = try newSetup(
+        \\type S = "a" | "b";
+        \\type T = S[] | S;
+        \\declare let t: T;
+        \\let str = t as string;
+    );
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+    var found = false;
+    for (s.checker.diagnostics.items) |d| {
+        if (d.code == TsCodes.conversion_may_be_mistake) found = true;
+    }
+    try T.expect(found);
+}
+
+test "checker: numeric property names tolerate missing interned names" {
+    try T.expect(Checker.isNumericPropertyNameText("0"));
+    try T.expect(Checker.isNumericPropertyNameText("123."));
+    try T.expect(!Checker.isNumericPropertyNameText(""));
+    try T.expect(!Checker.isNumericPropertyNameText("1.2"));
+}
+
 test "checker: `satisfies` preserves the original expression type" {
     const s = try newSetup(
         \\let x = { kind: "circle", r: 1 } satisfies { kind: string };
@@ -25701,6 +25764,26 @@ test "checker: overload implementation compatibility emits TS2394" {
         \\function f(x: string): number;
         \\function f(x: string): void {
         \\  return;
+        \\}
+    );
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+    var found = false;
+    for (s.checker.diagnostics.items) |d| {
+        if (d.code == TsCodes.overload_signature_not_compatible) found = true;
+    }
+    try T.expect(found);
+}
+
+test "checker: overload implementation return checks object types" {
+    const s = try newSetup(
+        \\interface Animal { animal: {} }
+        \\interface Dog extends Animal { dog: {} }
+        \\interface Moose extends Animal { moose: {} }
+        \\function doThing(x: "dog"): Dog;
+        \\function doThing(x: string): Animal;
+        \\function doThing(x: string): Moose {
+        \\  throw new Error();
         \\}
     );
     defer destroySetup(s);
