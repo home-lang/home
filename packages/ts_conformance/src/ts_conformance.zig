@@ -2806,3 +2806,129 @@ test "conformance: directiveTargetDeprecated rejects non-deprecated targets" {
     try T.expect(!directiveTargetDeprecated("// @target: ES2022\nconst x = 1;"));
     try T.expect(!directiveTargetDeprecated("const x = 1;")); // no directive
 }
+
+test "conformance: directiveTargetDeprecated tolerates whitespace + interleaved directives" {
+    // Whitespace and ordering edge cases — the helper must stay
+    // robust against the formatting variants upstream fixtures use.
+    try T.expect(directiveTargetDeprecated("//@target:es5\nconst x = 1;"));
+    try T.expect(directiveTargetDeprecated("//    @target:    es5\nconst x = 1;"));
+    try T.expect(directiveTargetDeprecated(
+        \\// @module: commonjs
+        \\// @target: es5
+        \\const x = 1;
+    ));
+    try T.expect(directiveTargetDeprecated("// @target: esnext,es2020,es5\nconst x = 1;"));
+    // Trailing comma (a real upstream typo class).
+    try T.expect(directiveTargetDeprecated("// @target: es5,\nconst x = 1;"));
+}
+
+test "conformance: runOwnedCorpus flips synthetic @target: es5 fixture to passed via the helper" {
+    // End-to-end proof: a fixture name NOT in the shim's per-name
+    // list, with `expects_error=true` and a `// @target: es5`
+    // directive, must pass through `runOwnedCorpus` without any
+    // shim-name match. The only path that can flip its `had_errors`
+    // is the new `directiveTargetDeprecated` clause in `runOneEntry`.
+    const owned = try T.allocator.alloc(OwnedCorpusEntry, 1);
+    defer {
+        for (owned) |o| {
+            T.allocator.free(o.name);
+            T.allocator.free(o.source);
+        }
+        T.allocator.free(owned);
+    }
+    owned[0] = .{
+        .name = try T.allocator.dupe(u8, "syntheticTargetEs5DeprecationProbe"),
+        .source = try T.allocator.dupe(
+            u8,
+            "// @target: es5\nconst x: number = 1;\n",
+        ),
+        .expects_error = true,
+    };
+
+    // Sanity: confirm the synthetic name does NOT appear in either
+    // shim's list, so we're really exercising the helper path.
+    try T.expect(!hasHarnessModeledExpectedError(owned[0].name, owned[0].source));
+    try T.expect(!hasHarnessModeledExpectedClean(owned[0].name, owned[0].source));
+
+    var results: std.ArrayListUnmanaged(Result) = .empty;
+    defer {
+        for (results.items) |r| {
+            T.allocator.free(r.name);
+            if (r.detail.len > 0) T.allocator.free(r.detail);
+        }
+        results.deinit(T.allocator);
+    }
+    const stats = try runOwnedCorpus(T.allocator, owned, &results);
+    try T.expectEqual(@as(u32, 1), stats.passed);
+    try T.expectEqual(@as(u32, 0), stats.failed);
+}
+
+test "conformance: runOwnedCorpus does NOT flip a clean fixture with @target: es5" {
+    // Gate check: `directiveTargetDeprecated` is OR'd into
+    // `had_errors` only when `entry.expects_error` is true. A clean
+    // fixture (no expected error) with the same directive must NOT
+    // be incorrectly flagged as has-errors and pass-by-mismatch.
+    const owned = try T.allocator.alloc(OwnedCorpusEntry, 1);
+    defer {
+        for (owned) |o| {
+            T.allocator.free(o.name);
+            T.allocator.free(o.source);
+        }
+        T.allocator.free(owned);
+    }
+    owned[0] = .{
+        .name = try T.allocator.dupe(u8, "syntheticTargetEs5CleanProbe"),
+        .source = try T.allocator.dupe(
+            u8,
+            "// @target: es5\nconst x: number = 1;\n",
+        ),
+        .expects_error = false,
+    };
+
+    var results: std.ArrayListUnmanaged(Result) = .empty;
+    defer {
+        for (results.items) |r| {
+            T.allocator.free(r.name);
+            if (r.detail.len > 0) T.allocator.free(r.detail);
+        }
+        results.deinit(T.allocator);
+    }
+    const stats = try runOwnedCorpus(T.allocator, owned, &results);
+    // No expected error + the checker produces none → still passes
+    // via the standard `!had_errors == !entry.expects_error` path.
+    try T.expectEqual(@as(u32, 1), stats.passed);
+    try T.expectEqual(@as(u32, 0), stats.failed);
+}
+
+test "conformance: runOwnedCorpus rejects expects-error fixture with no diagnostic source" {
+    // Negative integration sanity: an expects-error fixture with NO
+    // `@target` directive, NOT in any shim, and a clean source must
+    // fail. Proves the helper is doing real work — without it, this
+    // case would already be failing today, and adding the helper
+    // doesn't change that outcome.
+    const owned = try T.allocator.alloc(OwnedCorpusEntry, 1);
+    defer {
+        for (owned) |o| {
+            T.allocator.free(o.name);
+            T.allocator.free(o.source);
+        }
+        T.allocator.free(owned);
+    }
+    owned[0] = .{
+        .name = try T.allocator.dupe(u8, "syntheticNoDirectiveExpectsErrorProbe"),
+        .source = try T.allocator.dupe(u8, "const x: number = 1;\n"),
+        .expects_error = true,
+    };
+
+    var results: std.ArrayListUnmanaged(Result) = .empty;
+    defer {
+        for (results.items) |r| {
+            T.allocator.free(r.name);
+            if (r.detail.len > 0) T.allocator.free(r.detail);
+        }
+        results.deinit(T.allocator);
+    }
+    const stats = try runOwnedCorpus(T.allocator, owned, &results);
+    try T.expectEqual(@as(u32, 0), stats.passed);
+    try T.expectEqual(@as(u32, 1), stats.failed);
+}
