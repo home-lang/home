@@ -1491,9 +1491,15 @@ pub const Checker = struct {
         const a = hir_mod.interfaceMemberOf(self.hir, a_member);
         const b = hir_mod.interfaceMemberOf(self.hir, b_member);
         if (a.name == 0 or b.name == 0 or a.name != b.name) return false;
+        if (a.is_method and b.is_method and self.syntheticSignatureMemberName(a.name)) return false;
         if (a.is_optional != b.is_optional) return true;
         if (a.is_method != b.is_method) return true;
         return !self.nodeSourceTextEqual(a.type_node, b.type_node);
+    }
+
+    fn syntheticSignatureMemberName(self: *Checker, name: hir_mod.StringId) bool {
+        const raw = self.string_interner.get(name);
+        return std.mem.eql(u8, raw, "__call") or std.mem.eql(u8, raw, "__construct");
     }
 
     fn nodeSourceTextEqual(self: *Checker, a: NodeId, b: NodeId) bool {
@@ -12119,6 +12125,11 @@ pub const Checker = struct {
                         effective_callee_t = call_member_t;
                     }
                 }
+                if (type_arg_nodes.len == 0) {
+                    if (try self.resolveOverloadedObjectCall(node, c.callee, callee_t, args, arg_types.items, call_is_optional_chain)) |ret| {
+                        break :blk ret;
+                    }
+                }
                 var used_explicit_type_args = false;
                 var callee_had_generic_record = false;
                 if (type_arg_nodes.len > 0 and self.interner.isSignature(callee_t) and self.hir.kindOf(c.callee) == .identifier) {
@@ -12767,6 +12778,9 @@ pub const Checker = struct {
                             self.memberSourceLooksMethod(p));
                     const raw_vt = try self.checkExpression(op.value);
                     const vt = self.objectAccessorPropertyType(op.value, raw_vt);
+                    if (op_is_method and self.objectLiteralHasDuplicateMethodWithLiteralParam(members.items, k.name, op.value)) {
+                        try self.report(p, TsCodes.duplicate_identifier, "Duplicate identifier.");
+                    }
                     try upsert(self.gpa, &members, .{
                         .name = k.name,
                         .type = vt,
@@ -14018,6 +14032,67 @@ pub const Checker = struct {
                 try out.append(self.gpa, member.type);
             }
         }
+    }
+
+    fn collectNamedMemberSignatures(
+        self: *Checker,
+        t: TypeId,
+        name: hir_mod.StringId,
+        out: *std.ArrayListUnmanaged(TypeId),
+    ) CheckError!void {
+        if (t < types.Primitive.first_dynamic or t >= self.interner.pool.typeCount()) return;
+        const flags = self.interner.pool.flagsOf(t);
+        if (flags.is_union) {
+            for (self.interner.unionMembers(t)) |member| {
+                try self.collectNamedMemberSignatures(member, name, out);
+            }
+            return;
+        }
+        if (flags.is_intersection) {
+            for (self.interner.intersectionMembers(t)) |member| {
+                try self.collectNamedMemberSignatures(member, name, out);
+            }
+            return;
+        }
+        if (!flags.is_object_type) return;
+        for (self.interner.objectMembers(t)) |member| {
+            if (member.name == name and self.interner.isSignature(member.type)) {
+                try out.append(self.gpa, member.type);
+            }
+        }
+    }
+
+    fn resolveOverloadedObjectCall(
+        self: *Checker,
+        call_node: NodeId,
+        callee: NodeId,
+        callee_t: TypeId,
+        args: []const NodeId,
+        arg_types: []const TypeId,
+        call_is_optional_chain: bool,
+    ) CheckError!?TypeId {
+        var sigs: std.ArrayListUnmanaged(TypeId) = .empty;
+        defer sigs.deinit(self.gpa);
+        if (self.hir.kindOf(callee) == .member_access) {
+            const m = hir_mod.memberOf(self.hir, callee);
+            const receiver_t = try self.checkExpression(m.object);
+            try self.collectNamedMemberSignatures(receiver_t, m.name, &sigs);
+        } else {
+            try self.collectCallSignatures(callee_t, &sigs);
+        }
+        if (sigs.items.len <= 1) return null;
+        for (sigs.items) |sig| {
+            if (try self.signatureAccepts(sig, arg_types)) {
+                try self.checkArgsAgainstSignature(call_node, args, arg_types, sig);
+                const ret = self.interner.signatureReturn(sig) orelse types.Primitive.any;
+                const param_ts = self.interner.signatureParams(sig);
+                const instantiated = self.instantiateReturn(param_ts, arg_types, ret) catch ret;
+                return try self.optionalChainResult(instantiated, call_is_optional_chain);
+            }
+        }
+        try self.report(call_node, TsCodes.no_overload_matches, "No overload matches this call.");
+        const ret = self.interner.signatureReturn(sigs.items[0]) orelse types.Primitive.any;
+        return try self.optionalChainResult(ret, call_is_optional_chain);
     }
 
     fn checkMethodThisCompatibility(self: *Checker, call_node: NodeId, callee: NodeId, callee_t: TypeId) CheckError!void {
@@ -15677,6 +15752,51 @@ pub const Checker = struct {
             if (member.name == name) return true;
         }
         return false;
+    }
+
+    fn objectLiteralHasDuplicateMethodWithLiteralParam(
+        self: *Checker,
+        members: []const types.ObjectMember,
+        name: hir_mod.StringId,
+        value: NodeId,
+    ) bool {
+        var saw_method = false;
+        for (members) |member| {
+            if (member.name == name and member.is_method) {
+                saw_method = true;
+                break;
+            }
+        }
+        return saw_method and self.fnLikeHasLiteralParameterType(value);
+    }
+
+    fn fnLikeHasLiteralParameterType(self: *Checker, value: NodeId) bool {
+        return switch (self.hir.kindOf(value)) {
+            .fn_decl, .fn_expr, .arrow_fn => blk: {
+                const f = hir_mod.fnDeclOf(self.hir, value);
+                for (self.hir.childSlice(f.params_start, @intCast(f.params_len))) |param| {
+                    if (self.hir.kindOf(param) != .parameter) continue;
+                    const p = hir_mod.parameterOf(self.hir, param);
+                    if (self.typeNodeIsLiteralType(p.type_annotation)) break :blk true;
+                }
+                break :blk false;
+            },
+            else => false,
+        };
+    }
+
+    fn typeNodeIsLiteralType(self: *Checker, node: NodeId) bool {
+        if (node == hir_mod.none_node_id) return false;
+        return switch (self.hir.kindOf(node)) {
+            .type_literal => true,
+            .union_type => blk: {
+                for (hir_mod.unionTypeMembers(self.hir, node)) |member| {
+                    if (self.typeNodeIsLiteralType(member)) break :blk true;
+                }
+                break :blk false;
+            },
+            else => false,
+        };
     }
 
     fn builtinMapInstanceType(self: *Checker, key_t: TypeId, value_t: TypeId) CheckError!TypeId {
@@ -22638,6 +22758,58 @@ test "checker: merged interfaces reject conflicting property declarations" {
     const s = try newSetup(
         \\interface A { x: string; }
         \\interface A { x: number; }
+    );
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+    var found = false;
+    for (s.checker.diagnostics.items) |d| {
+        if (d.code == TsCodes.duplicate_identifier) found = true;
+    }
+    try T.expect(found);
+}
+
+test "checker: merged interfaces allow call signature overload sets" {
+    const s = try newSetup(
+        \\interface I { (x: string): string; }
+        \\interface I { (x: string): number; }
+    );
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+    for (s.checker.diagnostics.items) |d| {
+        try T.expect(d.code != TsCodes.duplicate_identifier);
+    }
+}
+
+test "checker: object call and method overloads use all signatures" {
+    const s = try newSetup(
+        \\interface I {
+        \\  (x?: number): void;
+        \\  (x?: number, y?: number): void;
+        \\  foo(x: number, y?: number): void;
+        \\  foo(x: number, y?: number, z?: number): void;
+        \\}
+        \\let i: I;
+        \\i();
+        \\i(1);
+        \\i(1, 2);
+        \\i.foo(1);
+        \\i.foo(1, 2);
+        \\i.foo(1, 2, 3);
+    );
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+    for (s.checker.diagnostics.items) |d| {
+        try T.expect(d.code != TsCodes.expected_n_arguments);
+        try T.expect(d.code != TsCodes.no_overload_matches);
+    }
+}
+
+test "checker: duplicate object literal methods with literal params report TS2300" {
+    const s = try newSetup(
+        \\let b = {
+        \\  foo(x: "hi") { },
+        \\  foo(x: "a") { },
+        \\};
     );
     defer destroySetup(s);
     try s.checker.checkSourceFile(s.root);

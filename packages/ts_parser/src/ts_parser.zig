@@ -1873,6 +1873,9 @@ pub const Parser = struct {
             const k = self.peek().kind;
             if (k.isModifierKeyword()) {
                 const next_can_start_member = canStartClassMemberAfterModifier(self.peekAt(1).kind);
+                if (!next_can_start_member and !self.peekAt(1).kind.isModifierKeyword()) {
+                    return mods;
+                }
                 if (isAccessibilityModifier(k) and
                     !next_can_start_member and
                     !self.peekAt(1).kind.isModifierKeyword())
@@ -2231,7 +2234,7 @@ pub const Parser = struct {
                 const member_tok = if (self.peek().kind == .string_literal)
                     self.advance()
                 else
-                    try self.expect(.identifier, "enum member name");
+                    try self.expectIdentifierLike();
                 const name_id = try self.internToken(member_tok);
                 break :blk try self.builder.addIdentifier(tokenSpan(member_tok), name_id);
             };
@@ -3627,10 +3630,14 @@ pub const Parser = struct {
         var elems: std.ArrayListUnmanaged(NodeId) = .empty;
         defer elems.deinit(self.gpa);
         while (self.peek().kind != .close_bracket and self.peek().kind != .eof) {
-            // Accept (and ignore for now) leading `name:` labelled
-            // tuple elements: `[x: number, y: number]`.
-            if (self.peek().kind == .identifier and self.peekAt(1).kind == .colon) {
+            // Accept (and ignore for now) leading labelled tuple
+            // elements: `[x: number, y?: number]`.
+            if (self.peek().kind == .identifier and
+                (self.peekAt(1).kind == .colon or
+                    (self.peekAt(1).kind == .question and self.peekAt(2).kind == .colon)))
+            {
                 _ = self.advance();
+                _ = self.match(.question);
                 _ = self.advance();
             }
             // Rest element prefix `...T` (TS 4.0+ variadic tuples).
@@ -7365,6 +7372,47 @@ test "parser: object type method overload optionality must match" {
         if (d.code == 2386) found = true;
     }
     try T.expect(found);
+}
+
+test "parser: enum members may use reserved property names" {
+    var s = try newTestSetup(
+        \\enum E {
+        \\  class,
+        \\  default,
+        \\  null,
+        \\  true,
+        \\}
+    );
+    defer destroyTestSetup(s);
+    _ = try s.parser.parseSourceFile();
+    try T.expectEqual(@as(usize, 0), s.parser.diagnostics.items.len);
+}
+
+test "parser: labeled tuple elements allow optional marker" {
+    var s = try newTestSetup("type T = [first: number, second?: string, ...rest: boolean[]];");
+    defer destroyTestSetup(s);
+    const root = try s.parser.parseSourceFile();
+    try T.expectEqual(@as(usize, 0), s.parser.diagnostics.items.len);
+    const top = hir_mod.blockStmts(&s.hir, root)[0];
+    const alias = hir_mod.typeAliasOf(&s.hir, top);
+    try T.expectEqual(hir_mod.NodeKind.tuple_type, s.hir.kindOf(alias.aliased));
+    try T.expectEqual(@as(usize, 3), hir_mod.tupleTypeElements(&s.hir, alias.aliased).len);
+}
+
+test "parser: class modifier keywords may be property names" {
+    var s = try newTestSetup(
+        \\class C {
+        \\  abstract;
+        \\  static;
+        \\  readonly;
+        \\}
+    );
+    defer destroyTestSetup(s);
+    const root = try s.parser.parseSourceFile();
+    try T.expectEqual(@as(usize, 0), s.parser.diagnostics.items.len);
+    const top = hir_mod.blockStmts(&s.hir, root)[0];
+    const members = hir_mod.classMembers(&s.hir, top);
+    try T.expectEqual(@as(usize, 3), members.len);
 }
 
 test "parser: optional binding pattern parameter reports TS2463" {
