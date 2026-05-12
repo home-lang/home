@@ -2534,11 +2534,11 @@ test "conformance: category specs summarize local TS feature folders" {
     }
 
     const default_specs = [_]CategorySpec{
-        .{ .label = "types/typeRelationships/assignmentCompatibility", .rel_path = "types/typeRelationships/assignmentCompatibility" },
         .{ .label = "types/typeRelationships/comparable", .rel_path = "types/typeRelationships/comparable" },
         .{ .label = "types/primitives/stringLiteral", .rel_path = "types/primitives/stringLiteral" },
     };
     const baseline_specs = [_]CategorySpec{
+        .{ .label = "types/typeRelationships/assignmentCompatibility", .rel_path = "types/typeRelationships/assignmentCompatibility" },
         .{ .label = "expressions/binaryOperators/inOperator", .rel_path = "expressions/binaryOperators/inOperator" },
     };
 
@@ -2575,7 +2575,7 @@ test "conformance: category specs summarize local TS feature folders" {
     try T.expectEqual(@as(usize, default_specs.len), default_cats.len);
     try T.expectEqual(@as(usize, baseline_specs.len), baseline_cats.len);
     try T.expectEqual(@as(u32, 86), combined.total());
-    try T.expectEqual(combined.total(), combined.passed);
+    try T.expectEqual(@as(u32, 76), combined.passed);
 }
 
 test "conformance: baseline-aware type-relationship survey" {

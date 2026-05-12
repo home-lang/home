@@ -444,6 +444,7 @@ pub const Engine = struct {
         }
         // Union on the target: source must assign to *some* member.
         if (tf.is_union) {
+            if (source == Primitive.boolean_t and self.unionContainsBooleanLiterals(target)) return true;
             const members = self.interner.unionMembers(target);
             for (members) |m| {
                 if (try self.isAssignableTo(source, m)) return true;
@@ -564,6 +565,18 @@ pub const Engine = struct {
 
         // Primitive-vs-primitive: only identity matches at this layer.
         return false;
+    }
+
+    fn unionContainsBooleanLiterals(self: *const Engine, t: TypeId) bool {
+        if (t >= self.interner.pool.typeCount()) return false;
+        if (!self.interner.pool.flagsOf(t).is_union) return false;
+        var saw_true = false;
+        var saw_false = false;
+        for (self.interner.unionMembers(t)) |member| {
+            if (member == Primitive.true_lit) saw_true = true;
+            if (member == Primitive.false_lit) saw_false = true;
+        }
+        return saw_true and saw_false;
     }
 
     /// Positional type-parameter rewrite entry: `from` (a target
@@ -782,6 +795,20 @@ pub const Engine = struct {
         const source_str_idx = self.interner.objectStringIndex(source);
         const source_num_idx = self.interner.objectNumberIndex(source);
         const source_sym_idx = self.interner.objectSymbolIndex(source);
+        if (target_members.len > 0) {
+            var target_has_required = false;
+            var source_has_named_member = false;
+            var has_common_member = false;
+            const source_members = self.interner.objectMembers(source);
+            for (target_members) |tm| {
+                if (!tm.is_optional) target_has_required = true;
+                for (source_members) |sm| {
+                    source_has_named_member = true;
+                    if (sm.name == tm.name) has_common_member = true;
+                }
+            }
+            if (!target_has_required and source_has_named_member and !has_common_member) return false;
+        }
         if (self.strict_null_checks) {
             if (target_str_idx != Primitive.none) {
                 if (source_str_idx == Primitive.none) return false;
@@ -916,6 +943,7 @@ pub const Engine = struct {
     ) anyerror!bool {
         for (self.interner.objectMembers(source)) |sm| {
             if (sm.name != target_member.name) continue;
+            if (!target_member.is_optional and sm.is_optional) return false;
             // readonly on target is fine even if source is mutable
             // (covariant). Mutable on target with readonly source is
             // still allowed for now to match the current default flag
@@ -1024,6 +1052,15 @@ test "Engine: literal assigns to its primitive but not vice versa" {
     const n42 = try ti.internNumberLiteral(42);
     try T.expect(try e.isAssignableTo(n42, Primitive.number_t));
     try T.expect(!try e.isAssignableTo(Primitive.number_t, n42));
+}
+
+test "Engine: boolean assigns to true-or-false union" {
+    var ti = try Interner.init(T.allocator);
+    defer ti.deinit();
+    var e = try Engine.init(T.allocator, &ti);
+    defer e.deinit();
+    const bool_union = try ti.internUnion(&.{ Primitive.true_lit, Primitive.false_lit });
+    try T.expect(try e.isAssignableTo(Primitive.boolean_t, bool_union));
 }
 
 test "Engine: union — every member of source assigns" {
@@ -1220,6 +1257,41 @@ test "Engine: structural object — optional target prop allowed missing" {
         .{ .name = y, .type = Primitive.string_t, .is_optional = true, .is_readonly = false, .is_method = false },
     });
     try T.expect(try e.isAssignableTo(src, tgt));
+}
+
+test "Engine: structural object — optional source prop cannot satisfy required target" {
+    var ti = try Interner.init(T.allocator);
+    defer ti.deinit();
+    var e = try Engine.init(T.allocator, &ti);
+    defer e.deinit();
+    var sint = try string_interner.Interner.init(T.allocator);
+    defer sint.deinit();
+    const x = try sint.intern("x");
+    const src = try ti.internObjectType(&.{
+        .{ .name = x, .type = Primitive.number_t, .is_optional = true, .is_readonly = false, .is_method = false },
+    });
+    const tgt = try ti.internObjectType(&.{
+        .{ .name = x, .type = Primitive.number_t, .is_optional = false, .is_readonly = false, .is_method = false },
+    });
+    try T.expect(!try e.isAssignableTo(src, tgt));
+}
+
+test "Engine: structural object — weak optional target requires common source property" {
+    var ti = try Interner.init(T.allocator);
+    defer ti.deinit();
+    var e = try Engine.init(T.allocator, &ti);
+    defer e.deinit();
+    var sint = try string_interner.Interner.init(T.allocator);
+    defer sint.deinit();
+    const x = try sint.intern("x");
+    const y = try sint.intern("y");
+    const src = try ti.internObjectType(&.{
+        .{ .name = y, .type = Primitive.number_t, .is_optional = false, .is_readonly = false, .is_method = false },
+    });
+    const tgt = try ti.internObjectType(&.{
+        .{ .name = x, .type = Primitive.number_t, .is_optional = true, .is_readonly = false, .is_method = false },
+    });
+    try T.expect(!try e.isAssignableTo(src, tgt));
 }
 
 test "Engine: structural object — extra source props allowed" {

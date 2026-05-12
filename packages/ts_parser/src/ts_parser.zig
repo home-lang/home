@@ -324,6 +324,24 @@ pub const Parser = struct {
         return self.interner.intern(inner) catch error.OutOfMemory;
     }
 
+    fn internPropertyName(self: *Parser, tok: Token, span_: Span) ParseError!hir_mod.StringId {
+        if (tok.kind == .string_literal) return self.internStringLiteral(tok);
+        const slice = self.source[span_.start..span_.end];
+        if (tok.kind != .number_literal) {
+            return self.interner.intern(slice) catch error.OutOfMemory;
+        }
+        var end = slice.len;
+        while (end > 0 and
+            slice[end - 1] == '0' and
+            std.mem.indexOfScalar(u8, slice[0..end], '.') != null)
+        {
+            end -= 1;
+        }
+        if (end > 0 and slice[end - 1] == '.') end -= 1;
+        if (end == 0) end = slice.len;
+        return self.interner.intern(slice[0..end]) catch error.OutOfMemory;
+    }
+
     // ========================================================================
     // Public entry
     // ========================================================================
@@ -1749,10 +1767,7 @@ pub const Parser = struct {
                             try self.reportMissingClassMemberImplementation(member_start, mods);
                         }
                     }
-                    const name_id = if (name_tok.kind == .string_literal)
-                        try self.internStringLiteral(name_tok)
-                    else
-                        self.interner.intern(self.source[name_span.start..name_span.end]) catch return error.OutOfMemory;
+                    const name_id = try self.internPropertyName(name_tok, name_span);
                     const name_node = try self.builder.addIdentifier(name_span, name_id);
                     const fn_node = try self.builder.addFnDeclGeneric(
                         .{ .start = member_start.span.start, .end = self.tokens[self.cursor - 1].span.end },
@@ -1786,10 +1801,7 @@ pub const Parser = struct {
                 var default_value: NodeId = hir_mod.none_node_id;
                 if (self.match(.equal)) default_value = try self.parseAssignmentExpression();
                 try self.consumeStatementTerminator();
-                const name_id = if (name_tok.kind == .string_literal)
-                    try self.internStringLiteral(name_tok)
-                else
-                    self.interner.intern(self.source[name_span.start..name_span.end]) catch return error.OutOfMemory;
+                const name_id = try self.internPropertyName(name_tok, name_span);
                 const name_node = try self.builder.addIdentifier(name_span, name_id);
                 const prop = try self.builder.addObjectPropertyFull(
                     .{ .start = member_start.span.start, .end = self.tokens[self.cursor - 1].span.end },
@@ -3825,10 +3837,7 @@ pub const Parser = struct {
                 name_span.end = dot_tok.span.end;
             }
             // Allow string-literal property names: `"foo": T`.
-            const name_id: hir_mod.StringId = if (name_tok.kind == .string_literal)
-                try self.internStringLiteral(name_tok)
-            else
-                self.interner.intern(self.source[name_span.start..name_span.end]) catch return error.OutOfMemory;
+            const name_id = try self.internPropertyName(name_tok, name_span);
             const is_optional = self.match(.question);
 
             // Method shorthand: `name<T>(p: T): R` / `name(p: T): R`.
@@ -6237,10 +6246,7 @@ pub const Parser = struct {
                         const dot_tok = self.advance();
                         key_span.end = dot_tok.span.end;
                     }
-                    const key_id = if (key_tok.kind == .string_literal)
-                        try self.internStringLiteral(key_tok)
-                    else
-                        self.interner.intern(self.source[key_span.start..key_span.end]) catch return error.OutOfMemory;
+                    const key_id = try self.internPropertyName(key_tok, key_span);
                     break :blk try self.builder.addIdentifier(key_span, key_id);
                 };
                 const saved_suppress_strict_param_names = self.suppress_strict_param_names;
@@ -6295,7 +6301,7 @@ pub const Parser = struct {
                     const dot_tok = self.advance();
                     key_span.end = dot_tok.span.end;
                 }
-                const key_id = self.interner.intern(self.source[key_span.start..key_span.end]) catch return error.OutOfMemory;
+                const key_id = try self.internPropertyName(key_tok, key_span);
                 key = try self.builder.addIdentifier(key_span, key_id);
             }
 
@@ -8029,7 +8035,7 @@ test "parser: object literal numeric key may end with dot before colon" {
     const props = hir_mod.objectLiteralProps(&s.hir, init_node);
     const prop = hir_mod.objectPropertyOf(&s.hir, props[0]);
     const key = hir_mod.identifierOf(&s.hir, prop.key);
-    try T.expectEqualStrings("1.", s.interner.get(key.name));
+    try T.expectEqualStrings("1", s.interner.get(key.name));
 }
 
 test "parser: object method shorthand" {

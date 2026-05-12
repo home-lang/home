@@ -123,6 +123,7 @@ pub const TsCodes = struct {
     pub const delete_operand_property_reference: u32 = 2703;
     pub const spread_types_object_only: u32 = 2698;
     pub const optional_chain_assignment_target: u32 = 2779;
+    pub const cannot_assign_undefined: u32 = 2539;
     pub const jsx_element_no_construct_or_call: u32 = 2604;
     pub const jsx_element_implicit_any_no_intrinsic: u32 = 7026;
     pub const jsx_component_not_valid: u32 = 2786;
@@ -422,6 +423,7 @@ pub const Checker = struct {
     /// flow scopes should be visible but outer flow narrows must not
     /// leak in.
     narrow_lookup_floor: usize,
+    declared_identifier_lookup: bool,
     /// Parallel stack of member-access narrows keyed by
     /// `(obj_name, prop_name)`. Populated by `applyTypeGuard` when
     /// a guard's LHS is a member-access on an identifier root (e.g.
@@ -662,6 +664,7 @@ pub const Checker = struct {
             .module = null,
             .narrow_scopes = .empty,
             .narrow_lookup_floor = 0,
+            .declared_identifier_lookup = false,
             .member_narrow_scopes = .empty,
             .class_instance_types = .empty,
             .class_constructor_sigs = .empty,
@@ -3172,6 +3175,7 @@ pub const Checker = struct {
                 !(self.nodeHasAncestorKind(ref_node, .element_access) and self.varDeclHasTypeAnnotation(decl_node)) and
                 !(self.nodeHasAncestorKind(ref_node, .binary_op) and self.varDeclHasTypeAnnotation(decl_node)) and
                 !(self.nodeHasAncestorKind(ref_node, .logical_op) and self.varDeclHasTypeAnnotation(decl_node)) and
+                !(self.nodeHasAncestorKind(ref_node, .assignment) and self.varDeclHasTypeAnnotation(decl_node)) and
                 !(self.nodeHasAncestorKind(ref_node, .call_expr) and self.varDeclHasTypeAnnotation(decl_node)) and
                 !(self.nodeHasAncestorKind(ref_node, .new_expr) and self.varDeclHasTypeAnnotation(decl_node)) and
                 !(self.nodeHasAncestorKind(ref_node, .decorator) and self.varDeclHasTypeAnnotation(decl_node)) and
@@ -12241,6 +12245,7 @@ pub const Checker = struct {
                 }
                 const member_to_target = member == target or
                     (self.predicateTargetIsBroadObject(target) and self.typeIsObjectLikePredicateMember(member)) or
+                    self.typeParameterConstraintAssignableTo(member, target) or
                     (self.engine.isAssignableTo(member, target) catch false);
                 const target_to_member = target == member or (self.engine.isAssignableTo(target, member) catch false);
                 if (member_to_target) {
@@ -12271,6 +12276,7 @@ pub const Checker = struct {
             for (self.interner.unionMembers(current)) |member| {
                 const remove = member == target or
                     (self.predicateTargetIsBroadObject(target) and self.typeIsObjectLikePredicateMember(member)) or
+                    self.typeParameterConstraintAssignableTo(member, target) or
                     (self.engine.isAssignableTo(member, target) catch false);
                 if (!remove) try kept.append(self.gpa, member);
             }
@@ -12462,6 +12468,9 @@ pub const Checker = struct {
                     const id = hir_mod.identifierOf(self.hir, a.target);
                     _ = self.cond_aliases.remove(id.name);
                     try self.removeCondAliasesReferencing(id.name);
+                    if (std.mem.eql(u8, self.string_interner.get(id.name), "undefined")) {
+                        try self.report(a.target, TsCodes.cannot_assign_undefined, "Cannot assign to 'undefined' because it is not a variable.");
+                    }
                     // TS2588: `const x = 1; x = 2;` — assigning to
                     // a const-bound identifier is a hard error.
                     if (self.identifierResolvesToConst(a.target)) {
@@ -12478,6 +12487,9 @@ pub const Checker = struct {
                         });
                     }
                 }
+                if (target_kind == .literal_undefined) {
+                    try self.report(a.target, TsCodes.cannot_assign_undefined, "Cannot assign to 'undefined' because it is not a variable.");
+                }
                 if (self.expressionIsOptionalChain(a.target)) {
                     try self.report(a.target, TsCodes.optional_chain_assignment_target, "The left-hand side of an assignment expression may not be an optional property access.");
                 }
@@ -12490,6 +12502,10 @@ pub const Checker = struct {
                     try self.checkReadonlyAssignment(a.target);
                 }
                 const value_t = try self.checkExpression(a.value);
+                const assignment_check_value_t = if (self.hir.kindOf(a.value) == .identifier)
+                    self.typeOfIdentifierDeclared(a.value)
+                else
+                    value_t;
                 var assignment_result_t = value_t;
                 if (a.op == null) {
                     assignment_result_t = try self.flowTypeForAssignmentValue(a.value, value_t);
@@ -12540,15 +12556,21 @@ pub const Checker = struct {
                 if (a.op == null and self.classPrivateStructuralMismatch(target_t, value_t)) {
                     try self.report(node, TsCodes.type_not_assignable, "Type is not assignable to declared type.");
                 }
-                if (self.strict_flags.strict_null_checks and
-                    a.op == null and
+                if (a.op == null and
                     target_t != types.Primitive.none and
                     target_t != types.Primitive.any and
                     target_t != types.Primitive.unknown)
                 {
                     const ok = (try self.literalExpressionAssignableToTarget(a.value, target_t)) or
+                        (self.hir.kindOf(a.value) == .array_literal and
+                            self.isTupleShapedTarget(target_t) and
+                            (try self.checkArrayLiteralAgainstTuple(a.value, target_t))) or
+                        (try self.loweredLogicalAssignmentAssignableToTarget(a.target, a.value, target_t)) or
                         (try self.templateExpressionAssignableToType(a.value, target_t)) or
-                        (self.engine.isAssignableTo(value_t, target_t) catch true);
+                        (self.hir.kindOf(a.value) == .object_literal and
+                            (self.objectLiteralAssignableToTarget(a.value, value_t, target_t) catch false)) or
+                        self.genericSignatureAssignmentAssignable(assignment_check_value_t, target_t) or
+                        (self.engine.isAssignableTo(assignment_check_value_t, target_t) catch true);
                     if (!ok) {
                         try self.report(node, TsCodes.type_not_assignable, "Type is not assignable to target type.");
                     }
@@ -13348,6 +13370,30 @@ pub const Checker = struct {
                         try list.append(gpa, m);
                     }
                 }.run;
+                const upsert_spread = struct {
+                    fn run(
+                        checker: *Checker,
+                        list: *std.ArrayListUnmanaged(types.ObjectMember),
+                        m: types.ObjectMember,
+                    ) !void {
+                        for (list.items) |*existing| {
+                            if (existing.name != m.name) continue;
+                            if (!existing.is_optional and m.is_optional) {
+                                existing.type = checker.interner.internUnion(&.{ existing.type, m.type }) catch return error.OutOfMemory;
+                                existing.is_method = existing.is_method and m.is_method;
+                                return;
+                            }
+                            if (existing.is_optional and m.is_optional) {
+                                existing.type = checker.interner.internUnion(&.{ existing.type, m.type }) catch return error.OutOfMemory;
+                                existing.is_method = existing.is_method and m.is_method;
+                                return;
+                            }
+                            existing.* = m;
+                            return;
+                        }
+                        try list.append(checker.gpa, m);
+                    }
+                }.run;
                 for (props) |p| {
                     if (self.hir.kindOf(p) != .object_property) {
                         // Spread element: type the expression and
@@ -13373,7 +13419,7 @@ pub const Checker = struct {
                                     try self.report(prop_node, TsCodes.jsx_attribute_overwritten, "Property is specified more than once, so this usage will be overwritten.");
                                 }
                             }
-                            try upsert(self.gpa, &members, m);
+                            try upsert_spread(self, &members, m);
                         }
                         continue;
                     }
@@ -14557,8 +14603,13 @@ pub const Checker = struct {
 
     fn typeOfIdentifierDeclared(self: *Checker, node: NodeId) TypeId {
         const old_floor = self.narrow_lookup_floor;
+        const old_declared_lookup = self.declared_identifier_lookup;
         self.narrow_lookup_floor = self.narrow_scopes.items.len;
-        defer self.narrow_lookup_floor = old_floor;
+        self.declared_identifier_lookup = true;
+        defer {
+            self.narrow_lookup_floor = old_floor;
+            self.declared_identifier_lookup = old_declared_lookup;
+        }
         return self.typeOfIdentifier(node);
     }
 
@@ -15987,6 +16038,12 @@ pub const Checker = struct {
                             if (vid.name == id.name) {
                                 const t = self.hir.typeOf(s);
                                 if (t != types.Primitive.none) return t;
+                                if (self.declared_identifier_lookup and v.type_annotation != hir_mod.none_node_id) {
+                                    const declared_t = self.lowerValueTypeAnnotation(id.name, v.type_annotation) catch types.Primitive.any;
+                                    self.hir.setType(s, declared_t);
+                                    self.hir.setType(v.name, declared_t);
+                                    return declared_t;
+                                }
                             }
                         }
                     } else if (sk == .fn_decl or sk == .fn_expr) {
@@ -16843,6 +16900,12 @@ pub const Checker = struct {
         return tp.constraint;
     }
 
+    fn typeParameterConstraintAssignableTo(self: *Checker, t: TypeId, target: TypeId) bool {
+        const constraint = self.typeParameterConstraint(t) orelse return false;
+        if (constraint == t) return false;
+        return constraint == target or (self.engine.isAssignableTo(constraint, target) catch false);
+    }
+
     fn computedClassPropertyKeyIsSimpleLiteral(self: *Checker, t: TypeId) bool {
         if (t >= self.interner.pool.typeCount()) return false;
         const f = self.interner.pool.flagsOf(t);
@@ -17654,6 +17717,29 @@ pub const Checker = struct {
         if (!f.is_type_parameter) return false;
         const constraint = self.typeParameterConstraint(t) orelse return false;
         return constraint != t;
+    }
+
+    fn loweredLogicalAssignmentAssignableToTarget(self: *Checker, target: NodeId, value: NodeId, target_t: TypeId) CheckError!bool {
+        if (target == hir_mod.none_node_id or value == hir_mod.none_node_id) return false;
+        if (self.hir.kindOf(value) != .logical_op) return false;
+        const l = hir_mod.logicalOf(self.hir, value);
+        if (self.hir.kindOf(target) != .identifier or self.hir.kindOf(l.lhs) != .identifier) return false;
+        if (hir_mod.identifierOf(self.hir, target).name != hir_mod.identifierOf(self.hir, l.lhs).name) return false;
+        const lhs_t = self.hir.typeOf(l.lhs);
+        const rhs_t = self.hir.typeOf(l.rhs);
+        const lhs_ok = lhs_t == types.Primitive.none or (self.engine.isAssignableTo(lhs_t, target_t) catch true);
+        const rhs_ok = (try self.literalExpressionAssignableToTarget(l.rhs, target_t)) or
+            (try self.templateExpressionAssignableToType(l.rhs, target_t)) or
+            (self.engine.isAssignableTo(rhs_t, target_t) catch true);
+        return lhs_ok and rhs_ok;
+    }
+
+    fn genericSignatureAssignmentAssignable(self: *Checker, source: TypeId, target: TypeId) bool {
+        if (source >= self.interner.pool.typeCount() or target >= self.interner.pool.typeCount()) return false;
+        if (!self.interner.isSignature(source) or !self.interner.isSignature(target)) return false;
+        if (!self.containsFreeTypeParameter(source) or !self.containsFreeTypeParameter(target)) return false;
+        if (self.interner.signatureParams(source).len != self.interner.signatureParams(target).len) return false;
+        return self.interner.signatureParams(source).len == 0;
     }
 
     fn relationalComparisonInvalid(self: *Checker, lhs: TypeId, rhs: TypeId) bool {
@@ -19249,6 +19335,7 @@ pub const Checker = struct {
         if (try self.literalExpressionAssignableToTarget(arg_node, param_t)) return true;
         if (try self.templateExpressionAssignableToType(arg_node, param_t)) return true;
         if (try self.restTupleCallbackAssignableToParam(arg_node, param_t)) return true;
+        if (try self.functionExpressionAssignableToCallableObject(arg_node, param_t)) return true;
         if (self.hir.kindOf(arg_node) == .object_literal) {
             if (try self.objectLiteralAssignableToTarget(arg_node, arg_t, param_t)) return true;
         }
@@ -19283,6 +19370,23 @@ pub const Checker = struct {
         if (params.len != 1) return false;
         if (!self.containsFreeTypeParameter(params[0])) return false;
         return true;
+    }
+
+    fn functionExpressionAssignableToCallableObject(self: *Checker, arg_node: NodeId, target_t: TypeId) CheckError!bool {
+        const k = self.hir.kindOf(arg_node);
+        if (k != .arrow_fn and k != .fn_expr) return false;
+        if (target_t >= self.interner.pool.typeCount()) return false;
+        if (!self.interner.pool.flagsOf(target_t).is_object_type) return false;
+        const source_t = self.hir.typeOf(arg_node);
+        if (source_t >= self.interner.pool.typeCount() or !self.interner.isSignature(source_t)) return false;
+        const source_params = self.interner.signatureParams(source_t);
+        var saw_signature = false;
+        for (self.interner.objectMembers(target_t)) |member| {
+            if (member.type >= self.interner.pool.typeCount() or !self.interner.isSignature(member.type)) continue;
+            saw_signature = true;
+            if (source_params.len > self.interner.signatureParams(member.type).len) return false;
+        }
+        return saw_signature and self.containsFreeTypeParameter(source_t);
     }
 
     fn unresolvedRestTupleCallbackFromPriorArrayArg(
@@ -22083,6 +22187,21 @@ test "checker: compound assignment target reads typed var for TS2454" {
     try T.expect(found);
 }
 
+test "checker: assignment rhs reads typed var for TS2454" {
+    const s = try newSetup(
+        \\var n: number;
+        \\var e: number;
+        \\e = n;
+    );
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+    var found = false;
+    for (s.checker.diagnostics.items) |d| {
+        if (d.code == TsCodes.used_before_assignment) found = true;
+    }
+    try T.expect(found);
+}
+
 test "checker: computed property key does not trigger TS2454 for typed var" {
     const s = try newSetup(
         \\interface SymbolConstructor { foo: string; }
@@ -24730,6 +24849,100 @@ test "checker: strict assignment checks rhs against lhs type" {
     var found = false;
     for (s.checker.diagnostics.items) |d| {
         if (d.code == TsCodes.type_not_assignable) found = true;
+    }
+    try T.expect(found);
+}
+
+test "checker: non-strict assignment still checks structural mismatch" {
+    const s = try newSetup(
+        \\class A { a: string; }
+        \\class B { b: string; }
+        \\let a: A;
+        \\let b: B;
+        \\a = b;
+    );
+    defer destroySetup(s);
+    s.checker.setStrictFlags(.{ .strict_null_checks = false });
+    try s.checker.checkSourceFile(s.root);
+    var found = false;
+    for (s.checker.diagnostics.items) |d| {
+        if (d.code == TsCodes.type_not_assignable) found = true;
+    }
+    try T.expect(found);
+}
+
+test "checker: optional source property is rejected for required target" {
+    const s = try newSetup(
+        \\interface Source { x?: number; }
+        \\interface Target { x: number; }
+        \\let source: Source;
+        \\let target: Target;
+        \\target = source;
+    );
+    defer destroySetup(s);
+    s.checker.setStrictFlags(.{ .strict_null_checks = false });
+    try s.checker.checkSourceFile(s.root);
+    var found = false;
+    for (s.checker.diagnostics.items) |d| {
+        if (d.code == TsCodes.type_not_assignable) found = true;
+    }
+    try T.expect(found);
+}
+
+test "checker: boolean assigns to true-or-false alias" {
+    const s = try newSetup(
+        \\type BoolAlias = true | false;
+        \\function f(a: BoolAlias, b: boolean) {
+        \\  a = b;
+        \\}
+    );
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+    for (s.checker.diagnostics.items) |d| {
+        try T.expect(d.code != TsCodes.type_not_assignable);
+    }
+}
+
+test "checker: constrained type parameter survives instanceof narrowing" {
+    const s = try newSetup(
+        \\class C { }
+        \\function f<T extends C>(v: T | string): void {
+        \\  if (v instanceof C) {
+        \\    const x: T = v;
+        \\  }
+        \\}
+    );
+    defer destroySetup(s);
+    s.checker.setStrictFlags(.{ .strict_null_checks = true });
+    try s.checker.checkSourceFile(s.root);
+    for (s.checker.diagnostics.items) |d| {
+        try T.expect(d.code != TsCodes.type_not_assignable);
+    }
+}
+
+test "checker: optional spread preserves earlier required property" {
+    const s = try newSetup(
+        \\function f(
+        \\  required: { sn: string },
+        \\  optional: { sn?: number }
+        \\) {
+        \\  let ok: { sn: string | number } = { ...required, ...optional };
+        \\}
+    );
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+    for (s.checker.diagnostics.items) |d| {
+        try T.expect(d.code != TsCodes.type_not_assignable);
+    }
+}
+
+test "checker: assigning to undefined reports TS2539" {
+    const s = try newSetup("let x = undefined = null;");
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+    var found = false;
+    for (s.checker.diagnostics.items) |d| {
+        if (d.code == TsCodes.cannot_assign_undefined) found = true;
     }
     try T.expect(found);
 }
