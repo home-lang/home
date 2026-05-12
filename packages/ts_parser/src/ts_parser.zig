@@ -3213,19 +3213,26 @@ pub const Parser = struct {
                         return error.UnexpectedToken;
                     },
                 };
-                var ref_end = ref_start.span.end;
+                var ref_name_end = ref_start.span.end;
                 while (self.peek().kind == .dot and
                     (self.peekAt(1).kind == .identifier or
                         self.peekAt(1).kind == .private_identifier or
                         self.peekAt(1).kind.isKeyword()))
                 {
                     _ = self.advance();
-                    ref_end = self.advance().span.end;
+                    ref_name_end = self.advance().span.end;
                 }
-                const ref_id = self.interner.intern(self.source[ref_start.span.start..ref_end]) catch return error.OutOfMemory;
+                var ref_end = ref_name_end;
+                if (self.peek().kind == .less_than) {
+                    const args = try self.parseTypeArgumentList();
+                    self.gpa.free(args);
+                    ref_end = self.tokens[self.cursor - 1].span.end;
+                }
+                const ref_id = self.interner.intern(self.source[ref_start.span.start..ref_name_end]) catch return error.OutOfMemory;
                 const ref = try self.builder.addIdentifier(.{ .start = ref_start.span.start, .end = ref_end }, ref_id);
                 const sp: Span = .{ .start = t.span.start, .end = ref_end };
-                return try self.builder.addTypeofType(sp, ref);
+                const typeof_t = try self.builder.addTypeofType(sp, ref);
+                return try self.parseArrayTypePostfix(typeof_t);
             },
             .kw_infer => {
                 _ = self.advance();
@@ -3262,7 +3269,12 @@ pub const Parser = struct {
     }
 
     fn parseArrayType(self: *Parser) ParseError!NodeId {
-        var node = try self.parsePrimaryType();
+        const node = try self.parsePrimaryType();
+        return try self.parseArrayTypePostfix(node);
+    }
+
+    fn parseArrayTypePostfix(self: *Parser, initial: NodeId) ParseError!NodeId {
+        var node = initial;
         while (true) {
             if (self.match(.open_bracket)) {
                 if (self.match(.close_bracket)) {
@@ -3470,7 +3482,10 @@ pub const Parser = struct {
                 var name_span = tokenSpan(ps);
                 var name_id: hir_mod.StringId = undefined;
                 var type_ann: NodeId = hir_mod.none_node_id;
-                if (self.peek().kind == .identifier or self.peek().kind == .kw_this) {
+                if (self.peek().kind == .identifier or
+                    self.peek().kind == .kw_this or
+                    (self.peek().kind.isKeyword() and (self.peekAt(1).kind == .colon or self.peekAt(1).kind == .question)))
+                {
                     const name_tok = self.advance();
                     name_span = tokenSpan(name_tok);
                     if (self.match(.question)) flags.is_optional = true;
@@ -7977,6 +7992,15 @@ test "parser: type annotation — nested generic closers split >> in type contex
     try T.expectEqual(hir_mod.NodeKind.fn_type, s.hir.kindOf(v.type_annotation));
 }
 
+test "parser: type annotation — function type keyword parameter name" {
+    var s = try newTestSetup("let f: (string: any) => string = null;");
+    defer destroyTestSetup(s);
+    const root = try s.parser.parseSourceFile();
+    const top = hir_mod.blockStmts(&s.hir, root)[0];
+    const v = hir_mod.varDeclOf(&s.hir, top);
+    try T.expectEqual(hir_mod.NodeKind.fn_type, s.hir.kindOf(v.type_annotation));
+}
+
 test "parser: type annotation — qualified name" {
     var s = try newTestSetup("let x: A.B.C = null;");
     defer destroyTestSetup(s);
@@ -8023,6 +8047,26 @@ test "parser: type annotation — keyof" {
 
 test "parser: type annotation — typeof in type position" {
     var s = try newTestSetup("let x: typeof y = null;");
+    defer destroyTestSetup(s);
+    const root = try s.parser.parseSourceFile();
+    const top = hir_mod.blockStmts(&s.hir, root)[0];
+    const v = hir_mod.varDeclOf(&s.hir, top);
+    try T.expectEqual(hir_mod.NodeKind.typeof_type, s.hir.kindOf(v.type_annotation));
+}
+
+test "parser: type annotation — typeof supports array postfix" {
+    var s = try newTestSetup("let xs: typeof x[] = null;");
+    defer destroyTestSetup(s);
+    const root = try s.parser.parseSourceFile();
+    const top = hir_mod.blockStmts(&s.hir, root)[0];
+    const v = hir_mod.varDeclOf(&s.hir, top);
+    try T.expectEqual(hir_mod.NodeKind.array_type, s.hir.kindOf(v.type_annotation));
+    const arr = hir_mod.arrayTypeOf(&s.hir, v.type_annotation);
+    try T.expectEqual(hir_mod.NodeKind.typeof_type, s.hir.kindOf(arr.element));
+}
+
+test "parser: type annotation — typeof accepts type arguments" {
+    var s = try newTestSetup("let xs: typeof Array<number> = null;");
     defer destroyTestSetup(s);
     const root = try s.parser.parseSourceFile();
     const top = hir_mod.blockStmts(&s.hir, root)[0];
