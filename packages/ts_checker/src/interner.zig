@@ -469,6 +469,22 @@ pub const Interner = struct {
         return payload.name;
     }
 
+    /// Look up the constraint TypeId of a type parameter, if one was
+    /// declared. Returns null for non-type-parameter ids and for
+    /// parameters with no constraint or a trivial unknown/none
+    /// placeholder. Mirrors `Checker.typeParameterConstraint` so the
+    /// relation engine can consult the constraint without reaching
+    /// into the checker.
+    pub fn typeParameterConstraint(self: *const Interner, id: TypeId) ?TypeId {
+        if (id >= self.pool.typeCount()) return null;
+        if (!self.pool.flagsOf(id).is_type_parameter) return null;
+        const payload_idx = self.pool.payloadOf(id);
+        if (payload_idx >= self.pool.type_parameter_payloads.items.len) return null;
+        const tp = self.pool.type_parameter_payloads.items[payload_idx];
+        if (tp.constraint == types.Primitive.none or tp.constraint == types.Primitive.unknown) return null;
+        return tp.constraint;
+    }
+
     /// Intern a function signature type: `(p1: T1, p2: T2) => R`.
     /// `param_types` is consumed via dupe; caller may free its
     /// original copy.

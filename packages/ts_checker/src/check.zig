@@ -12561,18 +12561,29 @@ pub const Checker = struct {
                     target_t != types.Primitive.any and
                     target_t != types.Primitive.unknown)
                 {
-                    const ok = (try self.literalExpressionAssignableToTarget(a.value, target_t)) or
-                        (self.hir.kindOf(a.value) == .array_literal and
-                            self.isTupleShapedTarget(target_t) and
-                            (try self.checkArrayLiteralAgainstTuple(a.value, target_t))) or
-                        (try self.loweredLogicalAssignmentAssignableToTarget(a.target, a.value, target_t)) or
-                        (try self.templateExpressionAssignableToType(a.value, target_t)) or
-                        (self.hir.kindOf(a.value) == .object_literal and
-                            (self.objectLiteralAssignableToTarget(a.value, value_t, target_t) catch false)) or
-                        self.genericSignatureAssignmentAssignable(assignment_check_value_t, target_t) or
-                        (self.engine.isAssignableTo(assignment_check_value_t, target_t) catch true);
-                    if (!ok) {
+                    // Upstream `typeParameterAssignability.ts`: two
+                    // declared type parameters `T` and `U` are mutually
+                    // unassignable unless one transitively constrains
+                    // the other. The relation engine stays permissive
+                    // on type-parameter targets to support inference,
+                    // so the assignment-expression checker pins this
+                    // case directly.
+                    if (self.unrelatedTypeParameterAssignment(assignment_check_value_t, target_t)) {
                         try self.report(node, TsCodes.type_not_assignable, "Type is not assignable to target type.");
+                    } else {
+                        const ok = (try self.literalExpressionAssignableToTarget(a.value, target_t)) or
+                            (self.hir.kindOf(a.value) == .array_literal and
+                                self.isTupleShapedTarget(target_t) and
+                                (try self.checkArrayLiteralAgainstTuple(a.value, target_t))) or
+                            (try self.loweredLogicalAssignmentAssignableToTarget(a.target, a.value, target_t)) or
+                            (try self.templateExpressionAssignableToType(a.value, target_t)) or
+                            (self.hir.kindOf(a.value) == .object_literal and
+                                (self.objectLiteralAssignableToTarget(a.value, value_t, target_t) catch false)) or
+                            self.genericSignatureAssignmentAssignable(assignment_check_value_t, target_t) or
+                            (self.engine.isAssignableTo(assignment_check_value_t, target_t) catch true);
+                        if (!ok) {
+                            try self.report(node, TsCodes.type_not_assignable, "Type is not assignable to target type.");
+                        }
                     }
                 }
                 if (a.op == null) try self.checkGenericIndexedAssignment(node, a.target, a.value);
@@ -16933,6 +16944,31 @@ pub const Checker = struct {
         const tp = self.interner.pool.type_parameter_payloads.items[payload_idx];
         if (tp.constraint == types.Primitive.none or tp.constraint == types.Primitive.unknown) return null;
         return tp.constraint;
+    }
+
+    /// True when `source` and `target` are both type parameters with
+    /// distinct ids and `source` does not transitively reach `target`
+    /// through its constraint chain — the upstream
+    /// `typeParameterAssignability.ts` shape that should surface
+    /// TS2322 instead of relying on the relation engine's permissive
+    /// inference-slot acceptance.
+    fn unrelatedTypeParameterAssignment(self: *Checker, source: TypeId, target: TypeId) bool {
+        if (source == target) return false;
+        if (source >= self.interner.pool.typeCount() or target >= self.interner.pool.typeCount()) return false;
+        const sf = self.interner.pool.flagsOf(source);
+        const tf = self.interner.pool.flagsOf(target);
+        if (!sf.is_type_parameter or !tf.is_type_parameter) return false;
+        var cur: TypeId = source;
+        var hops: u32 = 0;
+        while (hops < 16) : (hops += 1) {
+            const c = self.typeParameterConstraint(cur) orelse return true;
+            if (c == target) return false;
+            if (c == cur) return true;
+            const cf = self.interner.pool.flagsOf(c);
+            if (!cf.is_type_parameter) return true;
+            cur = c;
+        }
+        return true;
     }
 
     fn typeParameterConstraintAssignableTo(self: *Checker, t: TypeId, target: TypeId) bool {
@@ -30984,6 +31020,48 @@ test "checker: post-return narrow persists for member access" {
         \\function f(obj: { x?: string }): string {
         \\  if (!obj.x) return "default";
         \\  return obj.x;
+        \\}
+    );
+    defer destroySetup(s);
+    s.checker.setStrictFlags(.{ .strict_null_checks = true });
+    try s.checker.checkSourceFile(s.root);
+    for (s.checker.diagnostics.items) |d| {
+        try T.expect(d.code != TsCodes.type_not_assignable);
+    }
+}
+
+test "checker: unrelated type parameters are not mutually assignable (TS2322)" {
+    // Upstream `assignmentCompatibility/typeParameterAssignability.ts`
+    // expects both `t = u` and `u = t` over `function foo<T, U>` to
+    // produce TS2322. The relation engine stays permissive on
+    // type-parameter targets to keep generic inference working; the
+    // assignment-expression checker emits the diagnostic directly via
+    // `unrelatedTypeParameterAssignment`.
+    const s = try newSetup(
+        \\function foo<T, U>(t: T, u: U) {
+        \\  t = u;
+        \\  u = t;
+        \\}
+    );
+    defer destroySetup(s);
+    s.checker.setStrictFlags(.{ .strict_null_checks = true });
+    try s.checker.checkSourceFile(s.root);
+    var ts2322_count: u32 = 0;
+    for (s.checker.diagnostics.items) |d| {
+        if (d.code == TsCodes.type_not_assignable) ts2322_count += 1;
+    }
+    try T.expectEqual(@as(u32, 2), ts2322_count);
+}
+
+test "checker: same type parameter is self-assignable" {
+    // Sanity companion to the TS2322 case: `t = t` over the same
+    // declared type parameter `T` must not trip the new
+    // `unrelatedTypeParameterAssignment` gate. The source and target
+    // share a TypeId, so the helper short-circuits before walking
+    // the constraint chain.
+    const s = try newSetup(
+        \\function foo<T>(t: T, t2: T) {
+        \\  t = t2;
         \\}
     );
     defer destroySetup(s);
