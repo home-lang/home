@@ -9170,11 +9170,9 @@ pub const Checker = struct {
                 // remaining slot in place).
                 if (r.qualifier_len == 0 and r.args_len > 0) {
                     // `ThisType<T>` — TS marker that re-binds contextual
-                    // `this` inside object literals to T. For now, treat
-                    // it as a no-op unwrap so `let x: ThisType<{x:1}>`
-                    // is equivalent to `let x: {x:1}`. Propagating T as
-                    // the contextual `this` for method bodies inside
-                    // the literal is a Phase 6 follow-up.
+                    // `this` inside object literals to T. The marker is
+                    // structurally empty for assignment; contextual-this
+                    // handling is layered in the object-literal checker.
                     {
                         const name_str = self.string_interner.get(r.name);
                         if (!self.typeRefNameAcceptsTypeArgs(r.name, name_str) and self.typeRefNameExists(r.name)) {
@@ -9235,8 +9233,7 @@ pub const Checker = struct {
                             return self.interner.internArrayType(self.string_interner, inner) catch error.OutOfMemory;
                         }
                         if (std.mem.eql(u8, name_str, "ThisType")) {
-                            const args = hir_mod.typeRefArgs(self.hir, type_node);
-                            return try self.lowererLowerWithTypeParams(args[0]);
+                            return self.interner.internObjectType(&.{}) catch return error.OutOfMemory;
                         }
                         // `NoInfer<T>` (TS 5.4) — marks a type-arg
                         // slot as non-inference so callers can't
@@ -12437,6 +12434,9 @@ pub const Checker = struct {
                     if (!self.sourceHasCheckJsDirective() and self.interner.objectMembers(access_obj_t).len == 0) {
                         break :blk types.Primitive.any;
                     }
+                    if (self.memberAccessIsContextualObjectLiteralThis(m.object)) {
+                        break :blk types.Primitive.any;
+                    }
                     try self.reportPropertyDoesNotExist(node, m.name);
                 }
                 break :blk types.Primitive.any;
@@ -12788,7 +12788,9 @@ pub const Checker = struct {
                     symbol_index = self.interner.internUnion(computed_symbol_value_types.items) catch return error.OutOfMemory;
                 }
                 const obj_t = self.interner.internObjectTypeWithIndexAndSymbol(members.items, string_index, types.Primitive.none, symbol_index) catch return error.OutOfMemory;
-                try self.checkObjectLiteralMethodBodiesWithThis(node, obj_t);
+                if (!self.objectLiteralLikelyHasContextualTarget(node)) {
+                    try self.checkObjectLiteralMethodBodiesWithThis(node, obj_t);
+                }
                 break :blk obj_t;
             },
             // Arrow / function expression: lower the signature so the
@@ -16331,6 +16333,62 @@ pub const Checker = struct {
         return self.lookupNarrow(this_id);
     }
 
+    fn objectLiteralLikelyHasContextualTarget(self: *Checker, node: NodeId) bool {
+        var cur = node;
+        while (true) {
+            const parent = self.hir.parentOf(cur);
+            if (parent == hir_mod.none_node_id) return false;
+            switch (self.hir.kindOf(parent)) {
+                .var_decl => {
+                    const v = hir_mod.varDeclOf(self.hir, parent);
+                    return v.init == cur and v.type_annotation != hir_mod.none_node_id;
+                },
+                .assignment => {
+                    const a = hir_mod.assignmentOf(self.hir, parent);
+                    return a.value == cur;
+                },
+                .call_expr, .new_expr => {
+                    const c = hir_mod.callOf(self.hir, parent);
+                    for (hir_mod.callArgs(self.hir, parent)) |arg| {
+                        if (arg == cur) return true;
+                    }
+                    return c.callee == cur;
+                },
+                .object_property => {
+                    cur = parent;
+                    continue;
+                },
+                .object_literal => {
+                    cur = parent;
+                    continue;
+                },
+                .as_expr, .satisfies_expr => return true,
+                else => return false,
+            }
+        }
+    }
+
+    fn memberAccessIsContextualObjectLiteralThis(self: *Checker, object_node: NodeId) bool {
+        if (object_node == hir_mod.none_node_id) return false;
+        switch (self.hir.kindOf(object_node)) {
+            .this_expr => {},
+            .identifier => {
+                const id = hir_mod.identifierOf(self.hir, object_node);
+                if (!std.mem.eql(u8, self.string_interner.get(id.name), "this")) return false;
+            },
+            else => return false,
+        }
+        var cur = self.hir.parentOf(object_node);
+        while (cur != hir_mod.none_node_id) : (cur = self.hir.parentOf(cur)) {
+            switch (self.hir.kindOf(cur)) {
+                .object_literal => return true,
+                .fn_decl, .fn_expr, .arrow_fn, .block_stmt, .object_property, .member_access, .binary_op, .assignment, .logical_op, .if_stmt, .return_stmt => {},
+                else => {},
+            }
+        }
+        return false;
+    }
+
     fn checkThisExpression(self: *Checker, node: NodeId) CheckError!TypeId {
         if (self.currentThisType()) |this_t| return this_t;
         if (!self.sourceHasStrictFalseDirective() and !self.thisInsideObjectLiteralMethod(node)) {
@@ -16357,7 +16415,7 @@ pub const Checker = struct {
             const fn_parent = self.hir.parentOf(cur);
             if (fn_parent == hir_mod.none_node_id or self.hir.kindOf(fn_parent) != .object_property) return false;
             const op = hir_mod.objectPropertyOf(self.hir, fn_parent);
-            return op.value == cur and (op.is_method or self.memberSourceLooksMethod(fn_parent));
+            return op.value == cur and (op.is_method or self.memberSourceLooksMethod(fn_parent) or k == .fn_expr or k == .fn_decl);
         }
         return false;
     }
@@ -16407,7 +16465,7 @@ pub const Checker = struct {
             const value_kind = self.hir.kindOf(op.value);
             if (value_kind != .fn_decl and value_kind != .fn_expr and value_kind != .arrow_fn) continue;
             const op_is_method = op.is_method or self.memberSourceLooksMethod(p);
-            if (!op_is_method) continue;
+            if (!op_is_method and value_kind != .fn_expr and value_kind != .fn_decl) continue;
             if (!self.functionContainsThis(op.value)) continue;
             try self.pushNarrowScope();
             try self.recordNarrow(this_id, obj_t);
@@ -18722,6 +18780,7 @@ pub const Checker = struct {
             }
             if (!try self.engine.isAssignableTo(am_t, tm.type)) return false;
         }
+        try self.checkObjectLiteralMethodBodiesWithThis(arg_node, target_t);
         return true;
     }
 
@@ -21125,6 +21184,69 @@ test "checker: object literal accessors bind this without TS2683" {
 
     for (s.checker.diagnostics.items) |d| {
         try T.expect(d.code != TsCodes.this_implicitly_any);
+    }
+}
+
+test "checker: contextual object literal method this uses declared target" {
+    const s = try newSetup(
+        \\type Point = {
+        \\  x: number;
+        \\  y: number;
+        \\  z?: number;
+        \\  moveBy(dx: number, dy: number, dz?: number): void;
+        \\}
+        \\let p: Point = {
+        \\  x: 1,
+        \\  y: 2,
+        \\  moveBy(dx, dy, dz) {
+        \\    if (this.z && dz) this.z += dz;
+        \\  }
+        \\};
+    );
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+
+    for (s.checker.diagnostics.items) |d| {
+        try T.expect(d.code != TsCodes.property_does_not_exist);
+    }
+}
+
+test "checker: object literal function-valued property binds this to object" {
+    const s = try newSetup(
+        \\let o = {
+        \\  d: "bar",
+        \\  f: function() {
+        \\    return this.d.length;
+        \\  }
+        \\};
+    );
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+
+    for (s.checker.diagnostics.items) |d| {
+        try T.expect(d.code != TsCodes.this_implicitly_any);
+        try T.expect(d.code != TsCodes.property_does_not_exist);
+    }
+}
+
+test "checker: checked JavaScript object literal this has string indexer" {
+    const s = try newSetup(
+        \\// @allowJs: true
+        \\// @checkJs: true
+        \\// @Filename: context.js
+        \\const obj = {
+        \\  prop: 2,
+        \\  method() {
+        \\    this.prop;
+        \\    this.unknown;
+        \\  }
+        \\};
+    );
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+
+    for (s.checker.diagnostics.items) |d| {
+        try T.expect(d.code != TsCodes.property_does_not_exist);
     }
 }
 
@@ -26287,9 +26409,9 @@ test "checker: obj.x === <literal> narrows obj.x to literal type" {
     try T.expectEqual(expected, s.hir.typeOf(v_init));
 }
 
-test "checker: ThisType<T> unwraps to T" {
+test "checker: ThisType<T> marker is structurally empty" {
     const s = try newSetup(
-        \\let x: ThisType<{ value: number }> = { value: 1 };
+        \\let x: ThisType<{ value: number }> = {};
     );
     defer destroySetup(s);
     try s.checker.checkSourceFile(s.root);

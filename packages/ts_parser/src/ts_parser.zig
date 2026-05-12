@@ -1202,6 +1202,8 @@ pub const Parser = struct {
         _ = try self.expect(.open_paren, "'(' for parameter list");
         var params: std.ArrayListUnmanaged(NodeId) = .empty;
         errdefer params.deinit(self.gpa);
+        var seen_names: std.AutoHashMapUnmanaged(hir_mod.StringId, Span) = .empty;
+        defer seen_names.deinit(self.gpa);
         if (self.peek().kind != .close_paren) {
             while (true) {
                 const param_start = self.peek();
@@ -1309,6 +1311,16 @@ pub const Parser = struct {
                     if (nk == .object_pattern or nk == .array_pattern) {
                         const q_tok = self.tokens[self.cursor - 1];
                         try self.reportCodeAt(q_tok.span.start, q_tok.line, 2463, "A binding pattern parameter cannot be optional in an implementation signature.");
+                    }
+                }
+                if (self.hir.kindOf(name_node) == .identifier) {
+                    const id = hir_mod.identifierOf(self.hir, name_node);
+                    const name_span = self.hir.spanOf(name_node);
+                    if (seen_names.get(id.name)) |prev| {
+                        try self.reportCodeAt(prev.start, self.lineAt(prev.start), 2300, "Duplicate identifier.");
+                        try self.reportCodeAt(name_span.start, self.lineAt(name_span.start), 2300, "Duplicate identifier.");
+                    } else {
+                        try seen_names.put(self.gpa, id.name, name_span);
                     }
                 }
                 var type_ann: NodeId = hir_mod.none_node_id;
@@ -3474,6 +3486,8 @@ pub const Parser = struct {
         _ = try self.expect(.open_paren, "'(' for fn-type parameter list");
         var params: std.ArrayListUnmanaged(NodeId) = .empty;
         errdefer params.deinit(self.gpa);
+        var seen_names: std.AutoHashMapUnmanaged(hir_mod.StringId, Span) = .empty;
+        defer seen_names.deinit(self.gpa);
         if (self.peek().kind != .close_paren) {
             while (true) {
                 const ps = self.peek();
@@ -3507,6 +3521,12 @@ pub const Parser = struct {
                     hir_mod.none_node_id,
                     flags,
                 );
+                if (seen_names.get(name_id)) |prev| {
+                    try self.reportCodeAt(prev.start, self.lineAt(prev.start), 2300, "Duplicate identifier.");
+                    try self.reportCodeAt(name_span.start, self.lineAt(name_span.start), 2300, "Duplicate identifier.");
+                } else {
+                    try seen_names.put(self.gpa, name_id, name_span);
+                }
                 try params.append(self.gpa, param);
                 if (!self.match(.comma)) break;
                 if (self.peek().kind == .close_paren) break;
@@ -3732,8 +3752,14 @@ pub const Parser = struct {
     /// tracked as Phase 6 follow-ups so the harness can keep
     /// progressing.
     fn parseTypeMemberList(self: *Parser, out: *std.ArrayListUnmanaged(NodeId)) ParseError!void {
+        const MethodOptionality = struct {
+            optional: bool,
+            span: Span,
+        };
         var seen = std.AutoHashMapUnmanaged(hir_mod.StringId, Span){};
         defer seen.deinit(self.gpa);
+        var method_optionality = std.AutoHashMapUnmanaged(hir_mod.StringId, MethodOptionality){};
+        defer method_optionality.deinit(self.gpa);
         while (self.peek().kind != .close_brace and self.peek().kind != .eof) {
             const t = self.peek();
             // Index signature: `[k: K]: V` or `readonly [k: K]: V`.
@@ -3814,6 +3840,16 @@ pub const Parser = struct {
                     true,
                     is_override,
                 );
+                if (method_optionality.get(name_id)) |prev| {
+                    if (prev.optional != is_optional) {
+                        try self.reportCodeAt(prev.span.start, self.lineAt(prev.span.start), 2386, "Overload signatures must all be optional or required.");
+                    }
+                } else {
+                    try method_optionality.put(self.gpa, name_id, .{
+                        .optional = is_optional,
+                        .span = name_span,
+                    });
+                }
                 try out.append(self.gpa, member);
                 continue;
             }
@@ -3821,8 +3857,15 @@ pub const Parser = struct {
             // Property: `name: T;`.
             var type_node: NodeId = hir_mod.none_node_id;
             if (self.match(.colon)) type_node = try self.parseTypeAnnotation();
-            _ = self.match(.semicolon);
-            _ = self.match(.comma);
+            if (self.peek().kind == .semicolon or self.peek().kind == .comma) {
+                _ = self.advance();
+            } else if (self.peek().kind != .close_brace and self.peek().kind != .eof) {
+                const prev_tok = self.tokens[self.cursor - 1];
+                const next_tok = self.peek();
+                if (prev_tok.line == next_tok.line) {
+                    try self.reportCodeAt(next_tok.span.start, next_tok.line, 1005, "';' expected.");
+                }
+            }
             const member = try self.builder.addInterfaceMember(
                 name_span,
                 name_id,
@@ -6183,7 +6226,8 @@ pub const Parser = struct {
                 defer self.suppress_strict_param_names = saved_suppress_strict_param_names;
                 const params = try self.parseParameterList();
                 defer self.gpa.free(params);
-                if (self.match(.colon)) try self.skipTypeAnnotation();
+                var return_type: NodeId = hir_mod.none_node_id;
+                if (self.match(.colon)) return_type = try self.parseReturnTypeAnnotation(params);
                 var body: NodeId = hir_mod.none_node_id;
                 if (self.peek().kind == .open_brace) body = try self.parseBlockStatement();
                 const value = try self.builder.addFnDeclGeneric(
@@ -6191,7 +6235,7 @@ pub const Parser = struct {
                     hir_mod.none_node_id,
                     &.{},
                     params,
-                    hir_mod.none_node_id,
+                    return_type,
                     body,
                     .{
                         .is_method = true,
@@ -6249,7 +6293,8 @@ pub const Parser = struct {
                 defer if (owns_tps) self.gpa.free(type_params);
                 const params = try self.parseParameterList();
                 defer self.gpa.free(params);
-                if (self.match(.colon)) try self.skipTypeAnnotation();
+                var return_type: NodeId = hir_mod.none_node_id;
+                if (self.match(.colon)) return_type = try self.parseReturnTypeAnnotation(params);
                 var body: NodeId = hir_mod.none_node_id;
                 if (self.peek().kind == .open_brace) {
                     const prev_generator_depth = self.generator_depth;
@@ -6262,7 +6307,7 @@ pub const Parser = struct {
                     hir_mod.none_node_id,
                     type_params,
                     params,
-                    hir_mod.none_node_id,
+                    return_type,
                     body,
                     .{
                         .is_method = true,
@@ -7276,6 +7321,52 @@ test "parser: duplicate names in binding pattern report TS2300" {
     try T.expectEqual(@as(usize, 2), count);
 }
 
+test "parser: duplicate parameter names report TS2300" {
+    var s = try newTestSetup(
+        \\function f(x, x) {}
+        \\let g = (a: string, a: number) => a;
+        \\interface I { (p: string, p: number): void; }
+    );
+    defer destroyTestSetup(s);
+    _ = try s.parser.parseSourceFile();
+    var count: usize = 0;
+    for (s.parser.diagnostics.items) |d| {
+        if (d.code == 2300) count += 1;
+    }
+    try T.expectEqual(@as(usize, 6), count);
+}
+
+test "parser: same-line object type members require separator" {
+    var s = try newTestSetup(
+        \\let ok: { foo: string
+        \\  bar: string };
+        \\let bad: { foo: string bar: string };
+    );
+    defer destroyTestSetup(s);
+    _ = try s.parser.parseSourceFile();
+    var found = false;
+    for (s.parser.diagnostics.items) |d| {
+        if (d.code == 1005) found = true;
+    }
+    try T.expect(found);
+}
+
+test "parser: object type method overload optionality must match" {
+    var s = try newTestSetup(
+        \\let c: {
+        \\  func?(x: number): number;
+        \\  func(s: string): string;
+        \\};
+    );
+    defer destroyTestSetup(s);
+    _ = try s.parser.parseSourceFile();
+    var found = false;
+    for (s.parser.diagnostics.items) |d| {
+        if (d.code == 2386) found = true;
+    }
+    try T.expect(found);
+}
+
 test "parser: optional binding pattern parameter reports TS2463" {
     var s = try newTestSetup("function f([x]?: [number]) {}");
     defer destroyTestSetup(s);
@@ -8257,6 +8348,25 @@ test "parser: object literal generic method" {
     const op = hir_mod.objectPropertyOf(&s.hir, props[0]);
     try T.expectEqual(hir_mod.NodeKind.fn_expr, s.hir.kindOf(op.value));
     try T.expectEqual(@as(usize, 1), hir_mod.fnTypeParams(&s.hir, op.value).len);
+}
+
+test "parser: object literal method return annotation before block" {
+    var s = try newTestSetup(
+        \\let o = {
+        \\  sub1(n: number): number {
+        \\    return n;
+        \\  }
+        \\};
+    );
+    defer destroyTestSetup(s);
+    const root = try s.parser.parseSourceFile();
+    try T.expectEqual(@as(usize, 0), s.parser.diagnostics.items.len);
+    const top = hir_mod.blockStmts(&s.hir, root)[0];
+    const v = hir_mod.varDeclOf(&s.hir, top);
+    const props = hir_mod.objectLiteralProps(&s.hir, v.init);
+    const op = hir_mod.objectPropertyOf(&s.hir, props[0]);
+    const f = hir_mod.fnDeclOf(&s.hir, op.value);
+    try T.expect(f.return_type != hir_mod.none_node_id);
 }
 
 test "parser: object literal async computed method" {
