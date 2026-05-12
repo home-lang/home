@@ -2670,6 +2670,21 @@ pub const Service = struct {
                         .kind = .region,
                     });
                 },
+                .jsx_element => {
+                    // Multi-line JSX element — `<Foo>\n  ...\n</Foo>`
+                    // collapses to its opener tag in the editor.
+                    // Self-closing forms are single-line and skipped
+                    // by the line-span guard below.
+                    const span = c.hir.spanOf(i);
+                    const start_pos = ts_diagnostics.positionToLineCol(f.source, span.start);
+                    const end_pos = ts_diagnostics.positionToLineCol(f.source, span.end);
+                    if (end_pos.line <= start_pos.line) continue;
+                    try ranges.append(gpa, .{
+                        .start_line = if (start_pos.line > 0) start_pos.line - 1 else 0,
+                        .end_line = if (end_pos.line > 0) end_pos.line - 1 else 0,
+                        .kind = .region,
+                    });
+                },
                 else => {},
             }
         }
@@ -6564,6 +6579,41 @@ test "Service: foldingRanges folds long array literals" {
         }
     }
     try T.expect(saw_array_region);
+}
+
+test "Service: foldingRanges folds multi-line JSX elements" {
+    var vfs = ts_resolver.VirtualFs.init(T.allocator);
+    defer vfs.deinit();
+    var resolver = ts_resolver.Resolver.init(T.allocator, vfs.fs(), .{});
+    defer resolver.deinit();
+    var program = ts_program.Program.init(T.allocator, &resolver);
+    defer program.deinit();
+
+    // Multi-line JSX element — outer `<Foo>` opens, inner content,
+    // closing `</Foo>`. The element span should produce a region
+    // fold; self-closing single-line forms are filtered out by the
+    // line-span guard.
+    const src =
+        \\const el = (
+        \\  <Foo>
+        \\    <Bar />
+        \\  </Foo>
+        \\);
+    ;
+    _ = try program.add("/main.tsx", src);
+    try program.compileAll(.{ .is_tsx = true });
+
+    var svc = Service.init(T.allocator, &program);
+    const ranges = try svc.foldingRanges(T.allocator, "/main.tsx");
+    defer T.allocator.free(ranges);
+
+    var saw_multiline_region = false;
+    for (ranges) |r| {
+        if (r.kind == .region and r.end_line > r.start_line + 1) {
+            saw_multiline_region = true;
+        }
+    }
+    try T.expect(saw_multiline_region);
 }
 
 test "Service: foldingRanges groups 3 imports into one imports fold" {
