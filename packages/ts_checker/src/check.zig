@@ -2085,11 +2085,8 @@ pub const Checker = struct {
                     try case_literal_types.append(self.gpa, lit_t);
                 }
                 if (!self.switchCaseStatementsDefinitelyExit(stmts)) all_value_cases_exit = false;
-                if (self.shouldCheckNoOverlap(discriminant_t, case_t)) {
-                    const ok = self.engine.isComparableTo(case_t, discriminant_t) catch true;
-                    if (!ok) {
-                        try self.report(case_p.value, TsCodes.switch_case_not_comparable, "Type is not comparable to switch expression type.");
-                    }
+                if (!try self.typesHaveComparableOverlap(discriminant_t, case_t)) {
+                    try self.report(case_p.value, TsCodes.switch_case_not_comparable, "Type is not comparable to switch expression type.");
                 }
                 if (is_disc_narrowable) {
                     try self.applyDiscriminatedNarrow(sw.discriminant, case_p.value, true);
@@ -2824,7 +2821,7 @@ pub const Checker = struct {
                 const sw = hir_mod.switchOf(self.hir, node);
                 if (self.hir.kindOf(sw.discriminant) == .identifier) {
                     const id = hir_mod.identifierOf(self.hir, sw.discriminant);
-                    if (pending.contains(id.name) and self.switchBodyAssignsIdentifier(node, id.name)) {
+                    if (pending.contains(id.name)) {
                         try self.reportUsedBeforeAssignment(sw.discriminant, id.name, pending);
                     }
                 } else {
@@ -6118,6 +6115,21 @@ pub const Checker = struct {
                             break :blk try self.lowererLowerWithTypeParams(op.type_annotation);
                         }
                         if (op.value != hir_mod.none_node_id) {
+                            if (!op.is_static) {
+                                const this_id = self.string_interner.intern("this") catch return error.OutOfMemory;
+                                const partial_this_t = self.interner.internObjectTypeWithIndexAndSymbol(
+                                    instance_members.items,
+                                    string_idx,
+                                    number_idx,
+                                    symbol_idx,
+                                ) catch return error.OutOfMemory;
+                                try self.pushNarrowScope();
+                                errdefer self.popNarrowScope();
+                                try self.recordNarrow(this_id, partial_this_t);
+                                const init_t = try self.checkExpression(op.value);
+                                self.popNarrowScope();
+                                break :blk init_t;
+                            }
                             break :blk try self.checkExpression(op.value);
                         }
                         break :blk types.Primitive.any;
@@ -13314,10 +13326,9 @@ pub const Checker = struct {
                     if (self.sourceHasCheckJsDirective() and self.isInAssignmentTargetChain(node)) {
                         break :blk types.Primitive.any;
                     }
-                    if (!self.sourceHasCheckJsDirective() and self.interner.objectMembers(access_obj_t).len == 0) {
-                        break :blk types.Primitive.any;
-                    }
-                    if (self.memberAccessIsContextualObjectLiteralThis(m.object)) {
+                    if ((self.sourceHasCheckJsDirective() or self.currentThisType() == null) and
+                        self.memberAccessIsContextualObjectLiteralThis(m.object))
+                    {
                         break :blk types.Primitive.any;
                     }
                     try self.reportPropertyDoesNotExist(node, m.name);
@@ -14904,6 +14915,12 @@ pub const Checker = struct {
         const flags = self.interner.pool.flagsOf(t);
         if (flags.is_signature) {
             if (self.signatureIsConstruct(t)) try out.append(self.gpa, t);
+            return;
+        }
+        if (flags.is_type_parameter) {
+            if (self.typeParameterConstraint(t)) |constraint| {
+                if (constraint != t) try self.collectConstructSignatures(constraint, out);
+            }
             return;
         }
         if (flags.is_union) {
@@ -17052,6 +17069,138 @@ pub const Checker = struct {
         return self.isConcretePrimitiveLike(a) and self.isConcretePrimitiveLike(b);
     }
 
+    fn typesHaveComparableOverlap(self: *Checker, a: TypeId, b: TypeId) CheckError!bool {
+        return self.typesHaveComparableOverlapLimit(a, b, 0);
+    }
+
+    fn typesHaveComparableOverlapLimit(self: *Checker, a: TypeId, b: TypeId, depth: u8) CheckError!bool {
+        if (a == b) return true;
+        if (depth > 32) return true;
+        if (self.typeIsAnyLike(a) or self.typeIsAnyLike(b)) return true;
+        if (self.isNullishType(a) or self.isNullishType(b)) return true;
+        if (self.enumNumberLiteralOverlap(a, b)) |ok| return ok;
+        if (self.enumNumberLiteralOverlap(b, a)) |ok| return ok;
+        if (a >= self.interner.pool.typeCount() or b >= self.interner.pool.typeCount()) return true;
+
+        const af = self.interner.pool.flagsOf(a);
+        const bf = self.interner.pool.flagsOf(b);
+        if (af.is_union) {
+            for (self.interner.unionMembers(a)) |member| {
+                if (try self.typesHaveComparableOverlapLimit(member, b, depth + 1)) return true;
+            }
+            return false;
+        }
+        if (bf.is_union) {
+            for (self.interner.unionMembers(b)) |member| {
+                if (try self.typesHaveComparableOverlapLimit(a, member, depth + 1)) return true;
+            }
+            return false;
+        }
+        if (af.is_intersection) {
+            if (self.intersectionContainsObjectLike(a)) {
+                return self.engine.isComparableTo(a, b) catch true;
+            }
+            for (self.interner.intersectionMembers(a)) |member| {
+                if (try self.typesHaveComparableOverlapLimit(member, b, depth + 1)) return true;
+            }
+            return false;
+        }
+        if (bf.is_intersection) {
+            if (self.intersectionContainsObjectLike(b)) {
+                return self.engine.isComparableTo(a, b) catch true;
+            }
+            for (self.interner.intersectionMembers(b)) |member| {
+                if (try self.typesHaveComparableOverlapLimit(a, member, depth + 1)) return true;
+            }
+            return false;
+        }
+        if (self.weakObjectPrimitiveMayOverlap(a, b) or self.weakObjectPrimitiveMayOverlap(b, a)) return true;
+        if (self.objectPrimitiveHasNoOverlap(a, b) or self.objectPrimitiveHasNoOverlap(b, a)) return false;
+        if (self.isConcretePrimitiveLike(a) and self.isConcretePrimitiveLike(b)) {
+            return self.engine.isComparableTo(a, b) catch true;
+        }
+        if (af.is_object_type and bf.is_object_type) {
+            if (try self.objectTypesHaveIndependentOverlap(a, b, depth + 1)) return true;
+        }
+        if (self.isObjectLikeType(a) or self.isObjectLikeType(b)) {
+            return self.engine.isComparableTo(a, b) catch true;
+        }
+        return true;
+    }
+
+    fn enumNumberLiteralOverlap(self: *Checker, enum_t: TypeId, lit_t: TypeId) ?bool {
+        const enum_name = self.enumNameFromNominal(enum_t) orelse return null;
+        const value = self.numberLiteralValueFromType(lit_t) orelse return null;
+        var it = self.enum_member_values.iterator();
+        while (it.next()) |entry| {
+            if (entry.key_ptr.obj_name == enum_name and entry.value_ptr.* == value) return true;
+        }
+        return false;
+    }
+
+    fn numberLiteralValueFromType(self: *Checker, t: TypeId) ?f64 {
+        if (t >= self.interner.pool.typeCount()) return null;
+        const f = self.interner.pool.flagsOf(t);
+        if (!f.is_literal or !f.is_number) return null;
+        return switch (self.interner.literalOf(t)) {
+            .number_lit => |bits| @as(f64, @bitCast(bits)),
+            else => null,
+        };
+    }
+
+    fn objectPrimitiveHasNoOverlap(self: *Checker, maybe_obj: TypeId, maybe_prim: TypeId) bool {
+        if (!self.isConcretePrimitiveLike(maybe_prim)) return false;
+        return self.assertionObjectConstituentHasNoPrimitiveOverlap(maybe_obj, maybe_prim);
+    }
+
+    fn weakObjectPrimitiveMayOverlap(self: *Checker, maybe_obj: TypeId, maybe_prim: TypeId) bool {
+        if (!self.isConcretePrimitiveLike(maybe_prim)) return false;
+        return self.objectTypeIsWeak(maybe_obj);
+    }
+
+    fn isObjectLikeType(self: *Checker, t: TypeId) bool {
+        if (t >= self.interner.pool.typeCount()) return false;
+        const f = self.interner.pool.flagsOf(t);
+        return f.is_object_type or f.is_signature or f.is_tuple;
+    }
+
+    fn objectTypeIsWeak(self: *Checker, t: TypeId) bool {
+        if (t >= self.interner.pool.typeCount()) return false;
+        const f = self.interner.pool.flagsOf(t);
+        if (!f.is_object_type) return false;
+        if (self.interner.objectStringIndex(t) != types.Primitive.none or
+            self.interner.objectNumberIndex(t) != types.Primitive.none or
+            self.interner.objectSymbolIndex(t) != types.Primitive.none)
+        {
+            return false;
+        }
+        for (self.interner.objectMembers(t)) |member| {
+            if (!member.is_optional) return false;
+        }
+        return true;
+    }
+
+    fn objectTypesHaveIndependentOverlap(self: *Checker, a: TypeId, b: TypeId, depth: u8) CheckError!bool {
+        var saw_common = false;
+        for (self.interner.objectMembers(a)) |am| {
+            const bm = self.interner.objectMemberInfo(b, am.name) orelse continue;
+            saw_common = true;
+            if (am.is_optional or bm.is_optional) continue;
+            if (!try self.typesHaveComparableOverlapLimit(am.type, bm.type, depth + 1)) return false;
+        }
+        return saw_common or self.objectTypeIsWeak(a) or self.objectTypeIsWeak(b);
+    }
+
+    fn intersectionContainsObjectLike(self: *Checker, t: TypeId) bool {
+        if (t >= self.interner.pool.typeCount()) return false;
+        const f = self.interner.pool.flagsOf(t);
+        if (!f.is_intersection) return false;
+        for (self.interner.intersectionMembers(t)) |member| {
+            if (self.isObjectLikeType(member)) return true;
+        }
+        return false;
+    }
+
     fn templateTypesHaveNoOverlap(self: *Checker, a: TypeId, b: TypeId) bool {
         if (a >= self.interner.pool.typeCount() or b >= self.interner.pool.typeCount()) return false;
         const af = self.interner.pool.flagsOf(a);
@@ -18222,19 +18371,15 @@ pub const Checker = struct {
             },
             .eq, .neq, .eq_strict, .neq_strict => blk: {
                 // TS2367: warn when equality compares two known
-                // types that have no overlap. We're conservative here
-                // and only fire when both sides are concrete
-                // primitives (or literals of those primitives) so we
-                // don't flag legitimate union / object / generic
-                // comparisons that TS itself allows.
+                // types that have no overlap. Unions compare if any
+                // constituent can overlap, primitive intersections
+                // compare by constituent, and object intersections
+                // use the structural relation as a whole.
                 const cmp_lhs = (try self.expressionNarrowLiteralType(b.lhs)) orelse lhs;
                 const cmp_rhs = (try self.expressionNarrowLiteralType(b.rhs)) orelse rhs;
-                if (self.shouldCheckNoOverlap(cmp_lhs, cmp_rhs)) {
-                    const ok = self.engine.isComparableTo(cmp_lhs, cmp_rhs) catch true;
-                    if (!ok) {
-                        try self.report(node, TsCodes.no_overlap_comparison, "This comparison appears to be unintentional because the types have no overlap.");
-                    }
-                } else if (self.templateTypesHaveNoOverlap(cmp_lhs, cmp_rhs)) {
+                if (!try self.typesHaveComparableOverlap(cmp_lhs, cmp_rhs) or
+                    self.templateTypesHaveNoOverlap(cmp_lhs, cmp_rhs))
+                {
                     try self.report(node, TsCodes.no_overlap_comparison, "This comparison appears to be unintentional because the types have no overlap.");
                 }
                 break :blk types.Primitive.boolean_t;
@@ -18356,6 +18501,9 @@ pub const Checker = struct {
         if (l.op == .@"or" and self.hir.kindOf(l.lhs) == .object_literal) {
             try self.report(l.lhs, TsCodes.expression_always_truthy, "This kind of expression is always truthy.");
         }
+        if (l.op == .@"or" and self.expressionAlwaysFalsyInLogicalOr(l.lhs, lhs)) {
+            try self.report(l.lhs, TsCodes.expression_always_falsy, "This kind of expression is always falsy.");
+        }
         if (l.op == .@"or" and self.hir.kindOf(l.lhs) == .literal_string) {
             const lit = hir_mod.literalStringOf(self.hir, l.lhs);
             if (self.string_interner.get(lit.value).len == 0) {
@@ -18365,6 +18513,18 @@ pub const Checker = struct {
         const lhs_result = try self.expressionLiteralType(l.lhs, lhs);
         const rhs_result = try self.expressionLiteralType(l.rhs, rhs);
         return self.interner.internUnion(&.{ lhs_result, rhs_result }) catch error.OutOfMemory;
+    }
+
+    fn expressionAlwaysFalsyInLogicalOr(self: *Checker, node: NodeId, t: TypeId) bool {
+        _ = t;
+        return switch (self.hir.kindOf(node)) {
+            .literal_null, .literal_undefined => true,
+            .unary_op => blk: {
+                const u = hir_mod.unaryOf(self.hir, node);
+                break :blk u.op == .void_;
+            },
+            else => false,
+        };
     }
 
     fn checkConditional(self: *Checker, node: NodeId) CheckError!TypeId {
@@ -18865,9 +19025,11 @@ pub const Checker = struct {
         if (flags.is_union) {
             if (payload_idx >= self.interner.pool.union_payloads.items.len) return t;
             const members = self.interner.unionMembers(t);
+            const members_snapshot = try self.gpa.dupe(TypeId, members);
+            defer self.gpa.free(members_snapshot);
             var new: std.ArrayListUnmanaged(TypeId) = .empty;
             defer new.deinit(self.gpa);
-            for (members) |m| {
+            for (members_snapshot) |m| {
                 const subbed = try self.substituteType(m, subs);
                 try new.append(self.gpa, if (subbed < self.interner.pool.typeCount()) subbed else types.Primitive.unknown);
             }
@@ -18876,9 +19038,11 @@ pub const Checker = struct {
         if (flags.is_intersection) {
             if (payload_idx >= self.interner.pool.intersection_payloads.items.len) return t;
             const members = self.interner.intersectionMembers(t);
+            const members_snapshot = try self.gpa.dupe(TypeId, members);
+            defer self.gpa.free(members_snapshot);
             var new: std.ArrayListUnmanaged(TypeId) = .empty;
             defer new.deinit(self.gpa);
-            for (members) |m| {
+            for (members_snapshot) |m| {
                 const subbed = try self.substituteType(m, subs);
                 try new.append(self.gpa, if (subbed < self.interner.pool.typeCount()) subbed else types.Primitive.unknown);
             }
@@ -18887,9 +19051,11 @@ pub const Checker = struct {
         if (flags.is_signature) {
             if (payload_idx >= self.interner.pool.signature_payloads.items.len) return t;
             const params = self.interner.signatureParams(t);
+            const params_snapshot = try self.gpa.dupe(TypeId, params);
+            defer self.gpa.free(params_snapshot);
             var new: std.ArrayListUnmanaged(TypeId) = .empty;
             defer new.deinit(self.gpa);
-            for (params) |p| try new.append(self.gpa, try self.substituteType(p, subs));
+            for (params_snapshot) |p| try new.append(self.gpa, try self.substituteType(p, subs));
             const ret = if (self.interner.signatureReturn(t)) |r|
                 try self.substituteType(r, subs)
             else
@@ -18914,7 +19080,7 @@ pub const Checker = struct {
                 try self.signature_predicates.put(self.gpa, new_sig, next_pred);
             }
             var param_ix: usize = 0;
-            while (param_ix < params.len) : (param_ix += 1) {
+            while (param_ix < params_snapshot.len) : (param_ix += 1) {
                 const key: SignatureParamKey = .{ .signature = t, .param_index = @intCast(param_ix) };
                 if (self.signature_param_predicates.get(key)) |pred| {
                     var next_pred = pred;
@@ -18930,9 +19096,11 @@ pub const Checker = struct {
         if (flags.is_object_type) {
             if (payload_idx >= self.interner.pool.object_type_payloads.items.len) return t;
             const orig = self.interner.objectMembers(t);
+            const orig_snapshot = try self.gpa.dupe(types.ObjectMember, orig);
+            defer self.gpa.free(orig_snapshot);
             var new_members: std.ArrayListUnmanaged(types.ObjectMember) = .empty;
             defer new_members.deinit(self.gpa);
-            for (orig) |om| {
+            for (orig_snapshot) |om| {
                 try new_members.append(self.gpa, .{
                     .name = om.name,
                     .type = try self.substituteType(om.type, subs),
@@ -18973,7 +19141,7 @@ pub const Checker = struct {
                     .next_type = try self.substituteType(gen.next_type, subs),
                 });
             }
-            for (orig) |om| {
+            for (orig_snapshot) |om| {
                 var pred_opt = self.member_predicates.get(.{ .receiver_type = t, .member_name = om.name });
                 if (pred_opt == null) {
                     const substituted_member_t = self.substituteType(om.type, subs) catch om.type;
@@ -20963,9 +21131,7 @@ pub const Checker = struct {
             });
             return;
         }
-        if (!self.shouldCheckNoOverlap(source_t, target_t)) return;
-        const comparable = self.engine.isComparableTo(source_t, target_t) catch true;
-        if (comparable) return;
+        if (try self.typesHaveComparableOverlap(source_t, target_t)) return;
         try self.diagnostics.append(self.gpa, .{
             .node = node,
             .code = TsCodes.conversion_may_be_mistake,
@@ -20991,6 +21157,7 @@ pub const Checker = struct {
         if (source_t >= self.interner.pool.typeCount()) return false;
         const source_flags = self.interner.pool.flagsOf(source_t);
         if (!source_flags.is_object_type and !source_flags.is_signature and !source_flags.is_tuple) return false;
+        if (self.objectTypeIsWeak(source_t)) return false;
         if (target_t == types.Primitive.string_t) {
             const string_idx = self.interner.objectStringIndex(source_t);
             if (string_idx != types.Primitive.none) return false;
@@ -22649,6 +22816,7 @@ test "checker: object literal accessors bind this without TS2683" {
 
 test "checker: contextual object literal method this uses declared target" {
     const s = try newSetup(
+        \\// @strict: true
         \\type Point = {
         \\  x: number;
         \\  y: number;
@@ -22656,6 +22824,13 @@ test "checker: contextual object literal method this uses declared target" {
         \\  moveBy(dx: number, dy: number, dz?: number): void;
         \\}
         \\let p: Point = {
+        \\  x: 1,
+        \\  y: 2,
+        \\  moveBy(dx, dy, dz) {
+        \\    if (this.z && dz) this.z += dz;
+        \\  }
+        \\};
+        \\let p2: Point | null = {
         \\  x: 1,
         \\  y: 2,
         \\  moveBy(dx, dy, dz) {
@@ -22687,6 +22862,38 @@ test "checker: object literal function-valued property binds this to object" {
         try T.expect(d.code != TsCodes.this_implicitly_any);
         try T.expect(d.code != TsCodes.property_does_not_exist);
     }
+}
+
+test "checker: object literal method this reports missing members after object shape is known" {
+    const s = try newSetup(
+        \\var obj = {
+        \\  f() {
+        \\    return this.spaaace;
+        \\  }
+        \\};
+    );
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+    var found = false;
+    for (s.checker.diagnostics.items) |d| {
+        if (d.code == TsCodes.property_does_not_exist) found = true;
+    }
+    try T.expect(found);
+}
+
+test "checker: empty interface member access reports TS2339" {
+    const s = try newSetup(
+        \\interface Empty {}
+        \\declare let empty: Empty;
+        \\empty.nope;
+    );
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+    var found = false;
+    for (s.checker.diagnostics.items) |d| {
+        if (d.code == TsCodes.property_does_not_exist) found = true;
+    }
+    try T.expect(found);
 }
 
 test "checker: checked JavaScript object literal this has string indexer" {
@@ -24985,6 +25192,128 @@ test "checker: generic interface instantiation substitutes the type parameter" {
     const body = hir_mod.blockStmts(&s.hir, f.body);
     const ret_p = hir_mod.returnOf(&s.hir, body[0]);
     try T.expectEqual(types.Primitive.number_t, s.hir.typeOf(ret_p.value));
+}
+
+test "checker: generic interface construct signatures preserve method members" {
+    const s = try newSetup(
+        \\class Base { foo: string; }
+        \\class Derived extends Base { bar: string; }
+        \\interface Maker<T extends Base, U extends Derived> {
+        \\  new (t: T, u: U);
+        \\  make(t: T, u: U): T;
+        \\}
+        \\var m: Maker<Base, Derived>;
+        \\var d: Derived;
+        \\var r = m.make(d, d);
+        \\var ok: Base = r;
+    );
+    defer destroySetup(s);
+    s.checker.setStrictFlags(.{ .strict_null_checks = false });
+    try s.checker.checkSourceFile(s.root);
+    for (s.checker.diagnostics.items) |d| {
+        try T.expect(d.code != TsCodes.property_does_not_exist);
+        try T.expect(d.code != TsCodes.argument_type_mismatch);
+        try T.expect(d.code != TsCodes.type_not_assignable);
+    }
+}
+
+test "checker: generic interface method may share a name with constrained base property" {
+    const s = try newSetup(
+        \\class Base { foo: string; }
+        \\class Derived extends Base { bar: string; }
+        \\class Derived2 extends Derived { baz: string; }
+        \\interface I<T extends Base, U extends Derived> {
+        \\  new (t: T, u: U);
+        \\  foo(t: T, u: U): T;
+        \\}
+        \\var i: I<Base, Derived>;
+        \\var d1: Derived;
+        \\var d2: Derived2;
+        \\var r = i.foo(d1, d2);
+        \\var ok: Base = r;
+    );
+    defer destroySetup(s);
+    s.checker.setStrictFlags(.{ .strict_null_checks = false });
+    try s.checker.checkSourceFile(s.root);
+    for (s.checker.diagnostics.items) |d| {
+        try T.expect(d.code != TsCodes.property_does_not_exist);
+        try T.expect(d.code != TsCodes.argument_type_mismatch);
+        try T.expect(d.code != TsCodes.type_not_assignable);
+    }
+}
+
+test "checker: generic constrained calls across class and interface surfaces" {
+    const s = try newSetup(
+        \\class Base { foo: string; }
+        \\class Derived extends Base { bar: string; }
+        \\class Derived2 extends Derived { baz: string; }
+        \\var b: Base;
+        \\var d1: Derived;
+        \\var d2: Derived2;
+        \\function foo<T extends Base>(t: T) { return t; }
+        \\var r = foo(b);
+        \\var r2 = foo(d1);
+        \\function foo2<T extends Base, U extends Derived>(t: T, u: U) { return u; }
+        \\function foo2b<T extends Base, U extends Derived>(u: U) { var x: T; return x; }
+        \\function foo2c<T extends Base, U extends Derived>() { var x: T; return x; }
+        \\var r3 = foo2b(d1);
+        \\var r3b = foo2c();
+        \\class C<T extends Base, U extends Derived> {
+        \\  constructor(public t: T, public u: U) {}
+        \\  foo(t: T, u: U) { return t; }
+        \\  foo2(t: T, u: U) { return u; }
+        \\  foo3<T extends Derived>(t: T, u: U) { return t; }
+        \\  foo4<U extends Derived2>(t: T, u: U) { return t; }
+        \\  foo5<T extends Derived, U extends Derived2>(t: T, u: U) { return t; }
+        \\  foo6<T extends Derived, U extends Derived2>() { var x: T; return x; }
+        \\  foo7<T extends Base, U extends Derived>(u: U) { var x: T; return x; }
+        \\  foo8<T extends Base, U extends Derived>() { var x: T; return x; }
+        \\}
+        \\var c = new C(b, d1);
+        \\var r4 = c.foo(d1, d2);
+        \\var r5 = c.foo2(b, d2);
+        \\var r6 = c.foo3(d1, d1);
+        \\var r7 = c.foo4(d1, d2);
+        \\var r8 = c.foo5(d1, d2);
+        \\var r8b = c.foo5(d2, d2);
+        \\var r9 = c.foo6();
+        \\var r10 = c.foo7(d1);
+        \\var r11 = c.foo8();
+        \\interface I<T extends Base, U extends Derived> {
+        \\  new (t: T, u: U);
+        \\  foo(t: T, u: U): T;
+        \\  foo2(t: T, u: U): U;
+        \\  foo3<T extends Derived>(t: T, u: U): T;
+        \\  foo4<U extends Derived2>(t: T, u: U): T;
+        \\  foo5<T extends Derived, U extends Derived2>(t: T, u: U): T;
+        \\  foo6<T extends Derived, U extends Derived2>(): T;
+        \\  foo7<T extends Base, U extends Derived>(u: U): T;
+        \\  foo8<T extends Base, U extends Derived>(): T;
+        \\}
+        \\var i: I<Base, Derived>;
+        \\var ir4 = i.foo(d1, d2);
+        \\var ir5 = i.foo2(b, d2);
+        \\var ir6 = i.foo3(d1, d1);
+        \\var ir7 = i.foo4(d1, d2);
+        \\var ir8 = i.foo5(d1, d2);
+        \\var ir8b = i.foo5(d2, d2);
+        \\var ir9 = i.foo6();
+        \\var ir10 = i.foo7(d1);
+        \\var ir11 = i.foo8();
+    );
+    defer destroySetup(s);
+    s.checker.setStrictFlags(.{ .strict_null_checks = false });
+    try s.checker.checkSourceFile(s.root);
+    var found_target_diag = false;
+    for (s.checker.diagnostics.items) |d| {
+        if (d.code == TsCodes.property_does_not_exist or
+            d.code == TsCodes.argument_type_mismatch or
+            d.code == TsCodes.type_not_assignable)
+        {
+            found_target_diag = true;
+        }
+    }
+    try T.expect(!found_target_diag);
 }
 
 test "checker: explicit this parameter is not a call argument" {
@@ -28609,6 +28938,25 @@ test "checker: overloaded constructor-typed parameter checks all construct signa
     try T.expect(found);
 }
 
+test "checker: class field initializers bind this from prior instance members" {
+    const s = try newSetup(
+        \\class C {
+        \\  s!: Date;
+        \\  n = this.s;
+        \\  x() {
+        \\    var p = this.n;
+        \\    var p: Date;
+        \\  }
+        \\}
+    );
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+    for (s.checker.diagnostics.items) |d| {
+        try T.expect(d.code != TsCodes.this_implicitly_any);
+        try T.expect(d.code != TsCodes.subsequent_var_type_mismatch);
+    }
+}
+
 test "checker: new expression applies explicit generic construct signature args" {
     const s = try newSetup(
         \\declare var C: { new<T, U>(x: T, y: U): U };
@@ -28621,6 +28969,21 @@ test "checker: new expression applies explicit generic construct signature args"
         if (d.code == TsCodes.argument_type_mismatch) found = true;
     }
     try T.expect(found);
+}
+
+test "checker: new expression through constrained type parameter uses construct return" {
+    const s = try newSetup(
+        \\function newFn1<T extends { new (): number }>(s: T) {
+        \\  var p = new s;
+        \\  var p: number;
+        \\}
+    );
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+    for (s.checker.diagnostics.items) |d| {
+        try T.expect(d.code != TsCodes.subsequent_var_type_mismatch);
+        try T.expect(d.code != TsCodes.new_expression_implicitly_any);
+    }
 }
 
 test "checker: new expression resolves construct signature overloads" {
@@ -29081,6 +29444,95 @@ test "checker: expression-bodied arrow literals satisfy literal return signature
     defer destroySetup(s);
     try s.checker.checkSourceFile(s.root);
     try T.expectEqual(@as(usize, 0), s.checker.diagnostics.items.len);
+}
+
+test "checker: enum equality reports literals outside recorded enum values" {
+    const s = try newSetup(
+        \\enum E { a = 1, b = 2 }
+        \\function f(v: E) {
+        \\  if (v !== 0) {}
+        \\  if (v !== 1) {}
+        \\  if (v !== 3) {}
+        \\}
+    );
+    defer destroySetup(s);
+    s.checker.setStrictFlags(.{ .strict_null_checks = true });
+    try s.checker.checkSourceFile(s.root);
+    var misses: usize = 0;
+    for (s.checker.diagnostics.items) |d| {
+        if (d.code == TsCodes.no_overlap_comparison) misses += 1;
+    }
+    try T.expectEqual(@as(usize, 2), misses);
+}
+
+test "checker: union switch case comparability rejects disjoint case type" {
+    const s = try newSetup(
+        \\var value: string | number;
+        \\var flag: boolean;
+        \\switch (value) {
+        \\  case flag:
+        \\    break;
+        \\}
+    );
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+    var found = false;
+    for (s.checker.diagnostics.items) |d| {
+        if (d.code == TsCodes.switch_case_not_comparable) found = true;
+    }
+    try T.expect(found);
+}
+
+test "checker: object intersection equality reports no structural overlap" {
+    const s = try newSetup(
+        \\interface I1 { p1: number }
+        \\interface I2 extends I1 { p2: number }
+        \\interface I3 { p3: number }
+        \\var x = { p1: 1, p2: 2, p3: 3 };
+        \\var y: I1 & I3 = x;
+        \\var z: I2 = x;
+        \\if (y === z) {}
+    );
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+    var found = false;
+    for (s.checker.diagnostics.items) |d| {
+        if (d.code == TsCodes.no_overlap_comparison) found = true;
+    }
+    try T.expect(found);
+}
+
+test "checker: assertion to disjoint object intersection reports TS2352" {
+    const s = try newSetup(
+        \\interface I1 { p1: number }
+        \\interface I2 extends I1 { p2: number }
+        \\interface I3 { p3: number }
+        \\var x = { p1: 1, p2: 2, p3: 3 };
+        \\var z: I2 = x;
+        \\var a = <I1 & I3>z;
+    );
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+    var found = false;
+    for (s.checker.diagnostics.items) |d| {
+        if (d.code == TsCodes.conversion_may_be_mistake) found = true;
+    }
+    try T.expect(found);
+}
+
+test "checker: nullish logical-or lhs reports always falsy" {
+    const s = try newSetup(
+        \\var x = null || null;
+        \\var y = undefined || undefined;
+        \\var z = void 0 || void 0;
+    );
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+    var falsy: usize = 0;
+    for (s.checker.diagnostics.items) |d| {
+        if (d.code == TsCodes.expression_always_falsy) falsy += 1;
+    }
+    try T.expectEqual(@as(usize, 3), falsy);
 }
 
 test "checker: exhaustive if/else chain narrows discriminant to never in final else" {

@@ -2495,7 +2495,8 @@ test "conformance: smoke-run local TS conformance subdirectories" {
     var combined: Stats = .{};
     var ran_any = false;
     for (subdirs) |sd| {
-        const options: DirectoryLoadOptions = if (std.mem.eql(u8, sd.label, "inOperator")) .{
+        const options: DirectoryLoadOptions = if (std.mem.eql(u8, sd.label, "comparable") or
+            std.mem.eql(u8, sd.label, "inOperator")) .{
             .baseline_root = baseline_root,
             .strict_default_for_expected_errors = true,
         } else .{};
@@ -2534,10 +2535,10 @@ test "conformance: category specs summarize local TS feature folders" {
     }
 
     const default_specs = [_]CategorySpec{
-        .{ .label = "types/typeRelationships/comparable", .rel_path = "types/typeRelationships/comparable" },
         .{ .label = "types/primitives/stringLiteral", .rel_path = "types/primitives/stringLiteral" },
     };
     const baseline_specs = [_]CategorySpec{
+        .{ .label = "types/typeRelationships/comparable", .rel_path = "types/typeRelationships/comparable" },
         .{ .label = "types/typeRelationships/assignmentCompatibility", .rel_path = "types/typeRelationships/assignmentCompatibility" },
         .{ .label = "expressions/binaryOperators/inOperator", .rel_path = "expressions/binaryOperators/inOperator" },
     };

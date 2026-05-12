@@ -437,7 +437,9 @@ pub const Engine = struct {
         // Union on the source: every member must assign to target.
         if (sf.is_union) {
             const members = self.interner.unionMembers(source);
-            for (members) |m| {
+            const snapshot = try self.interner.gpa.dupe(TypeId, members);
+            defer self.interner.gpa.free(snapshot);
+            for (snapshot) |m| {
                 if (!try self.isAssignableTo(m, target)) return false;
             }
             return true;
@@ -446,7 +448,9 @@ pub const Engine = struct {
         if (tf.is_union) {
             if (source == Primitive.boolean_t and self.unionContainsBooleanLiterals(target)) return true;
             const members = self.interner.unionMembers(target);
-            for (members) |m| {
+            const snapshot = try self.interner.gpa.dupe(TypeId, members);
+            defer self.interner.gpa.free(snapshot);
+            for (snapshot) |m| {
                 if (try self.isAssignableTo(source, m)) return true;
             }
             return false;
@@ -456,7 +460,9 @@ pub const Engine = struct {
         // member.
         if (tf.is_intersection) {
             const members = self.interner.intersectionMembers(target);
-            for (members) |m| {
+            const snapshot = try self.interner.gpa.dupe(TypeId, members);
+            defer self.interner.gpa.free(snapshot);
+            for (snapshot) |m| {
                 if (!try self.isAssignableTo(source, m)) return false;
             }
             return true;
@@ -472,7 +478,9 @@ pub const Engine = struct {
         // any constituent member does.
         if (sf.is_intersection) {
             const members = self.interner.intersectionMembers(source);
-            for (members) |m| {
+            const snapshot = try self.interner.gpa.dupe(TypeId, members);
+            defer self.interner.gpa.free(snapshot);
+            for (snapshot) |m| {
                 if (try self.isAssignableTo(m, target)) return true;
             }
             return false;
@@ -611,9 +619,12 @@ pub const Engine = struct {
         const payload_idx = self.interner.pool.payloadOf(t);
         if (flags.is_union) {
             if (payload_idx >= self.interner.pool.union_payloads.items.len) return t;
+            const source_members = self.interner.unionMembers(t);
+            const snapshot = try self.interner.gpa.dupe(TypeId, source_members);
+            defer self.interner.gpa.free(snapshot);
             var members: std.ArrayListUnmanaged(TypeId) = .empty;
             defer members.deinit(self.interner.gpa);
-            for (self.interner.unionMembers(t)) |m| {
+            for (snapshot) |m| {
                 const subbed = try self.substituteTpDeepLimit(m, map, depth + 1);
                 try members.append(self.interner.gpa, if (subbed < self.interner.pool.typeCount()) subbed else Primitive.unknown);
             }
@@ -621,9 +632,12 @@ pub const Engine = struct {
         }
         if (flags.is_intersection) {
             if (payload_idx >= self.interner.pool.intersection_payloads.items.len) return t;
+            const source_members = self.interner.intersectionMembers(t);
+            const snapshot = try self.interner.gpa.dupe(TypeId, source_members);
+            defer self.interner.gpa.free(snapshot);
             var members: std.ArrayListUnmanaged(TypeId) = .empty;
             defer members.deinit(self.interner.gpa);
-            for (self.interner.intersectionMembers(t)) |m| {
+            for (snapshot) |m| {
                 const subbed = try self.substituteTpDeepLimit(m, map, depth + 1);
                 try members.append(self.interner.gpa, if (subbed < self.interner.pool.typeCount()) subbed else Primitive.unknown);
             }
@@ -631,9 +645,12 @@ pub const Engine = struct {
         }
         if (flags.is_object_type) {
             if (payload_idx >= self.interner.pool.object_type_payloads.items.len) return t;
+            const source_members = self.interner.objectMembers(t);
+            const snapshot = try self.interner.gpa.dupe(types.ObjectMember, source_members);
+            defer self.interner.gpa.free(snapshot);
             var members: std.ArrayListUnmanaged(types.ObjectMember) = .empty;
             defer members.deinit(self.interner.gpa);
-            for (self.interner.objectMembers(t)) |m| {
+            for (snapshot) |m| {
                 const member_t = try self.substituteTpDeepLimit(m.type, map, depth + 1);
                 try members.append(self.interner.gpa, .{
                     .name = m.name,
@@ -657,9 +674,12 @@ pub const Engine = struct {
         if (flags.is_signature) {
             if (payload_idx >= self.interner.pool.signature_payloads.items.len) return t;
             const sig_payload = self.interner.pool.signature_payloads.items[payload_idx];
+            const source_params = self.interner.signatureParams(t);
+            const snapshot = try self.interner.gpa.dupe(TypeId, source_params);
+            defer self.interner.gpa.free(snapshot);
             var params: std.ArrayListUnmanaged(TypeId) = .empty;
             defer params.deinit(self.interner.gpa);
-            for (self.interner.signatureParams(t)) |p| {
+            for (snapshot) |p| {
                 try params.append(self.interner.gpa, self.validOrUnknown(try self.substituteTpDeepLimit(p, map, depth + 1)));
             }
             const ret = if (self.interner.signatureReturn(t)) |r|
