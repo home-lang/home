@@ -4098,11 +4098,69 @@ fn collectInlayHints(
             const stmts = hir_mod.blockStmts(hir, root);
             for (stmts) |s| try collectInlayHints(gpa, hir, type_interner, sint, s, out);
         },
-        .fn_decl => {
+        .fn_decl, .fn_expr, .arrow_fn => {
             const f = hir_mod.fnDeclOf(hir, root);
             if (f.body != hir_mod.none_node_id) {
                 try collectInlayHints(gpa, hir, type_interner, sint, f.body, out);
             }
+        },
+        .if_stmt => {
+            const i = hir_mod.ifOf(hir, root);
+            if (i.then_branch != hir_mod.none_node_id) {
+                try collectInlayHints(gpa, hir, type_interner, sint, i.then_branch, out);
+            }
+            if (i.else_branch != hir_mod.none_node_id) {
+                try collectInlayHints(gpa, hir, type_interner, sint, i.else_branch, out);
+            }
+        },
+        .while_stmt => {
+            const w = hir_mod.whileOf(hir, root);
+            if (w.body != hir_mod.none_node_id) {
+                try collectInlayHints(gpa, hir, type_interner, sint, w.body, out);
+            }
+        },
+        .do_while_stmt => {
+            const d = hir_mod.doWhileOf(hir, root);
+            if (d.body != hir_mod.none_node_id) {
+                try collectInlayHints(gpa, hir, type_interner, sint, d.body, out);
+            }
+        },
+        .for_stmt => {
+            const fr = hir_mod.forStmtOf(hir, root);
+            if (fr.init != hir_mod.none_node_id) {
+                try collectInlayHints(gpa, hir, type_interner, sint, fr.init, out);
+            }
+            if (fr.body != hir_mod.none_node_id) {
+                try collectInlayHints(gpa, hir, type_interner, sint, fr.body, out);
+            }
+        },
+        .for_in_stmt, .for_of_stmt => {
+            const fr = hir_mod.forInOf(hir, root);
+            if (fr.body != hir_mod.none_node_id) {
+                try collectInlayHints(gpa, hir, type_interner, sint, fr.body, out);
+            }
+        },
+        .try_stmt => {
+            const ts = hir_mod.tryOf(hir, root);
+            if (ts.block != hir_mod.none_node_id) {
+                try collectInlayHints(gpa, hir, type_interner, sint, ts.block, out);
+            }
+            if (ts.catch_block != hir_mod.none_node_id) {
+                try collectInlayHints(gpa, hir, type_interner, sint, ts.catch_block, out);
+            }
+            if (ts.finally_block != hir_mod.none_node_id) {
+                try collectInlayHints(gpa, hir, type_interner, sint, ts.finally_block, out);
+            }
+        },
+        .switch_stmt => {
+            const cases = hir_mod.switchCases(hir, root);
+            for (cases) |case_node| {
+                try collectInlayHints(gpa, hir, type_interner, sint, case_node, out);
+            }
+        },
+        .switch_case => {
+            const stmts = hir_mod.switchCaseStmts(hir, root);
+            for (stmts) |s| try collectInlayHints(gpa, hir, type_interner, sint, s, out);
         },
         else => {},
     }
@@ -6178,6 +6236,60 @@ test "Service: inlayHints surfaces inferred types on let-bindings" {
     // x and z get hints; y has an explicit annotation so no hint.
     try T.expectEqual(@as(usize, 2), hints.len);
     for (hints) |h| try T.expectEqual(@as(@TypeOf(h.kind), .type_annotation), h.kind);
+}
+
+test "Service: inlayHints recurses into if/while/for/try bodies" {
+    var vfs = ts_resolver.VirtualFs.init(T.allocator);
+    defer vfs.deinit();
+    var resolver = ts_resolver.Resolver.init(T.allocator, vfs.fs(), .{});
+    defer resolver.deinit();
+    var program = ts_program.Program.init(T.allocator, &resolver);
+    defer program.deinit();
+
+    // Previously `collectInlayHints` only recursed into `block_stmt`
+    // and `fn_decl`, so nested let-bindings inside an `if` body got
+    // no hints. Verify the extension reaches each containing kind.
+    const src =
+        \\function f(): void {
+        \\  if (true) {
+        \\    let a = 1;
+        \\  } else {
+        \\    let b = 2;
+        \\  }
+        \\  while (true) {
+        \\    let c = 3;
+        \\  }
+        \\  for (let i = 0; i < 1; i++) {
+        \\    let d = 4;
+        \\  }
+        \\  try {
+        \\    let e = 5;
+        \\  } catch (err) {
+        \\    let f2 = 6;
+        \\  }
+        \\}
+    ;
+    _ = try program.add("/main.ts", src);
+    try program.compileAll(.{});
+
+    var svc = Service.init(T.allocator, &program);
+    const hints = try svc.inlayHints(T.allocator, "/main.ts");
+    defer {
+        for (hints) |h| {
+            T.allocator.free(h.label);
+            T.allocator.free(h.tooltip);
+        }
+        T.allocator.free(hints);
+    }
+    // 6 nested let-bindings (a, b, c, d, e, f2) plus the for-init `i`.
+    // The `i` from `for (let i = 0; ...)` also gets a hint via the
+    // for-init recursion. Lower bound is "at least 6" so the test
+    // doesn't become brittle if for-init handling changes.
+    var type_hint_count: u32 = 0;
+    for (hints) |h| {
+        if (h.kind == .type_annotation) type_hint_count += 1;
+    }
+    try T.expect(type_hint_count >= 6);
 }
 
 test "Service: inlayHints surfaces parameter-name hints at call sites" {
