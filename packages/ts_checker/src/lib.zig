@@ -261,9 +261,13 @@ pub fn objectGlobal(
     // `Object.entries(o: any): [string, any][]` — modeled loosely as
     // `any[]` (tuple-typed entries land later).
     const sig_entries = try ti.internSignature(&[_]TypeId{any_t}, any_arr, false);
-    // `Object.assign(t: any, u: any): any` — generic intersection
-    // `T & U` is deferred; loose `any` for now.
-    const sig_assign = try ti.internSignature(&[_]TypeId{ any_t, any_t }, any_t, false);
+    // `Object.assign(...)` is variadic in lib.d.ts. Model the common
+    // overload arities used by conformance while leaving the return
+    // loose (`any`) until generic intersection returns are wired here.
+    const sig_assign2 = try ti.internSignature(&[_]TypeId{ any_t, any_t }, any_t, false);
+    const sig_assign3 = try ti.internSignature(&[_]TypeId{ any_t, any_t, any_t }, any_t, false);
+    const sig_assign4 = try ti.internSignature(&[_]TypeId{ any_t, any_t, any_t, any_t }, any_t, false);
+    const sig_assign = try ti.internIntersection(&[_]TypeId{ sig_assign2, sig_assign3, sig_assign4 });
     // `Object.defineProperty(o, key, descriptor): any`.
     const sig_define_property = try ti.internSignature(&[_]TypeId{ any_t, any_t, any_t }, any_t, false);
 

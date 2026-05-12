@@ -15491,8 +15491,8 @@ pub const Checker = struct {
         }
         if (!flags.is_object_type) return;
         for (self.interner.objectMembers(t)) |member| {
-            if (member.name == name and self.interner.isSignature(member.type)) {
-                try out.append(self.gpa, member.type);
+            if (member.name == name) {
+                try self.collectCallSignatures(member.type, out);
             }
         }
     }
@@ -30644,6 +30644,16 @@ test "checker: lib — Object.keys is reachable as a member of `Object`" {
     for (b.base.checker.diagnostics.items) |d| {
         try T.expect(d.code != TsCodes.cannot_find_name);
         try T.expect(d.code != TsCodes.property_does_not_exist);
+    }
+}
+
+test "checker: lib — Object.assign accepts multiple sources" {
+    const b = try newBoundSetup("Object.assign({}, { a: 1 }, { b: 2 });");
+    defer destroyBoundSetup(b);
+    try b.base.checker.checkSourceFile(b.base.root);
+    for (b.base.checker.diagnostics.items) |d| {
+        try T.expect(d.code != TsCodes.expected_n_arguments);
+        try T.expect(d.code != TsCodes.not_callable);
     }
 }
 
