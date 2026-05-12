@@ -1276,6 +1276,33 @@ pub const Service = struct {
                 });
             }
         }
+        // Keyword completions — every TS-aware editor offers these
+        // alongside symbol completions. The editor filters by the
+        // user's typed prefix, so we can always emit the full set
+        // without paying a UX cost. Labels are literal keywords; the
+        // editor decides insertion text.
+        const ts_keywords = [_][]const u8{
+            "const",     "let",       "var",        "function",
+            "class",     "interface", "type",       "enum",
+            "namespace", "import",    "export",     "default",
+            "from",      "as",        "async",      "await",
+            "return",    "if",        "else",       "for",
+            "while",     "do",        "switch",     "case",
+            "break",     "continue",  "throw",      "try",
+            "catch",     "finally",   "new",        "this",
+            "super",     "typeof",    "instanceof", "in",
+            "of",        "void",      "null",       "undefined",
+            "true",      "false",     "extends",    "implements",
+            "public",    "private",   "protected",  "readonly",
+            "static",    "abstract",  "declare",    "yield",
+        };
+        for (ts_keywords) |kw| {
+            try items.append(gpa, .{
+                .label = kw,
+                .kind = .keyword,
+                .detail = "",
+            });
+        }
         return items.toOwnedSlice(gpa);
     }
 
@@ -4911,6 +4938,48 @@ test "Service: completions list module-level value symbols" {
     try T.expect(saw_bar);
     try T.expect(saw_baz);
     try T.expect(saw_i);
+}
+
+test "Service: completions include keyword suggestions" {
+    var vfs = ts_resolver.VirtualFs.init(T.allocator);
+    defer vfs.deinit();
+    var resolver = ts_resolver.Resolver.init(T.allocator, vfs.fs(), .{});
+    defer resolver.deinit();
+    var program = ts_program.Program.init(T.allocator, &resolver);
+    defer program.deinit();
+
+    // Every TS-aware editor offers keyword completions alongside
+    // symbol completions; without them the popup feels incomplete.
+    // The editor filters by the user's prefix, so we always emit a
+    // fixed set rather than gating on cursor context.
+    _ = try program.add("/main.ts", "let x = 1;");
+    try program.compileAll(.{});
+
+    var svc = Service.init(T.allocator, &program);
+    const items = try svc.completions(T.allocator, "/main.ts", 0);
+    defer deinitCompletionItems(T.allocator, items);
+
+    var saw_function = false;
+    var saw_const = false;
+    var saw_return = false;
+    var saw_async = false;
+    var keyword_count: u32 = 0;
+    for (items) |item| {
+        if (item.kind == .keyword) {
+            keyword_count += 1;
+            if (std.mem.eql(u8, item.label, "function")) saw_function = true;
+            if (std.mem.eql(u8, item.label, "const")) saw_const = true;
+            if (std.mem.eql(u8, item.label, "return")) saw_return = true;
+            if (std.mem.eql(u8, item.label, "async")) saw_async = true;
+        }
+    }
+    try T.expect(saw_function);
+    try T.expect(saw_const);
+    try T.expect(saw_return);
+    try T.expect(saw_async);
+    // Sanity: the set is non-trivial; today the static table holds
+    // around 50 entries.
+    try T.expect(keyword_count >= 20);
 }
 
 test "Service: completion items include declaration shape detail" {
