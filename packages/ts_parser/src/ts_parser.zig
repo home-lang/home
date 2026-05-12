@@ -4078,7 +4078,14 @@ pub const Parser = struct {
             },
             .identifier => blk: {
                 const id = hir_mod.identifierOf(self.hir, key_expr);
-                break :blk try self.sourceConstLiteralMemberName(self.interner.get(id.name));
+                const raw = self.interner.get(id.name);
+                if (try self.sourceConstLiteralMemberName(raw)) |name| break :blk name;
+                if (self.sourceHasUniqueSymbolConst(raw)) {
+                    const synthetic = try std.fmt.allocPrint(self.gpa, "[computed:{s}]", .{raw});
+                    defer self.gpa.free(synthetic);
+                    break :blk self.interner.intern(synthetic) catch return error.OutOfMemory;
+                }
+                break :blk null;
             },
             .member_access => try self.symbolMemberNameFromComputedKey(key_expr),
             .as_expr, .satisfies_expr, .type_assertion => blk: {
@@ -4153,6 +4160,25 @@ pub const Parser = struct {
             }
         }
         return null;
+    }
+
+    fn sourceHasUniqueSymbolConst(self: *Parser, name: []const u8) bool {
+        var search_start: usize = 0;
+        while (std.mem.indexOfPos(u8, self.source, search_start, "const")) |const_pos| {
+            search_start = const_pos + "const".len;
+            if (const_pos > 0 and sourceIdentChar(self.source[const_pos - 1])) continue;
+            if (search_start < self.source.len and sourceIdentChar(self.source[search_start])) continue;
+            const after_const = std.mem.trim(u8, self.source[search_start..], " \t\r\n");
+            if (!std.mem.startsWith(u8, after_const, name)) continue;
+            if (after_const.len > name.len and sourceIdentChar(after_const[name.len])) continue;
+            const line_end = std.mem.indexOfScalar(u8, after_const, '\n') orelse after_const.len;
+            const line = after_const[0..line_end];
+            const colon_pos = std.mem.indexOfScalar(u8, line, ':') orelse continue;
+            const type_end = std.mem.indexOfAnyPos(u8, line, colon_pos + 1, "=;") orelse line.len;
+            const type_text = std.mem.trim(u8, line[colon_pos + 1 .. type_end], " \t\r");
+            if (std.mem.eql(u8, type_text, "unique symbol")) return true;
+        }
+        return false;
     }
 
     fn sourceIdentChar(c: u8) bool {
@@ -9301,6 +9327,20 @@ test "parser: unique symbol type annotation" {
     const top = hir_mod.blockStmts(&s.hir, root)[0];
     const v = hir_mod.varDeclOf(&s.hir, top);
     try T.expectEqual(hir_mod.NodeKind.type_ref, s.hir.kindOf(v.type_annotation));
+}
+
+test "parser: unique symbol computed type members parse without TS1169" {
+    var s = try newTestSetup(
+        \\declare const tag: unique symbol;
+        \\interface I { [tag]: any; [tag](): any; }
+        \\type T = { [tag]: any; [tag](): any; };
+    );
+    defer destroyTestSetup(s);
+
+    _ = try s.parser.parseSourceFile();
+    for (s.parser.diagnostics.items) |d| {
+        try T.expect(d.code != 1169);
+    }
 }
 
 test "parser: lone accessibility keyword in class body can be field name" {
