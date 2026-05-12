@@ -117,6 +117,7 @@ pub const TsCodes = struct {
     pub const no_default_export: u32 = 1192;
     pub const multiple_default_exports: u32 = 2528;
     pub const default_export_merge: u32 = 2652;
+    pub const infer_constraints_not_identical: u32 = 2838;
     pub const no_exported_member_suggestion: u32 = 2724;
     pub const export_non_local_declaration: u32 = 2661;
     pub const delete_operand_property_reference: u32 = 2703;
@@ -9510,6 +9511,7 @@ pub const Checker = struct {
                 // ext side first (registering each infer'd name), then
                 // lower the branches.
                 const c = hir_mod.conditionalTypeOf(self.hir, type_node);
+                try self.checkConditionalInferConstraints(c.extends);
                 try self.pushNarrowScope();
                 defer self.popNarrowScope();
 
@@ -9526,7 +9528,7 @@ pub const Checker = struct {
                         const ff = try self.lowererLowerWithTypeParams(c.false_branch);
                         // Non-distributing: evaluate as a single check
                         // (skipping the union-distribute branch).
-                        return self.evalConditionalNonDistributing(check, ext, tt, ff);
+                        return self.evalConditionalNonDistributing(check, ext, tt, ff, self.typeNodeContainsInfer(ext_elems[0]));
                     }
                 }
 
@@ -9535,7 +9537,7 @@ pub const Checker = struct {
                 try self.registerInferNames(c.extends, ext);
                 const tt = try self.lowererLowerWithTypeParams(c.true_branch);
                 const ff = try self.lowererLowerWithTypeParams(c.false_branch);
-                return self.evalConditional(check, ext, tt, ff);
+                return self.evalConditional(check, ext, tt, ff, self.typeNodeContainsInfer(c.extends));
             },
             .mapped_type => {
                 // `{ [K in T]: V }` — when `T` resolves to a known
@@ -10054,6 +10056,7 @@ pub const Checker = struct {
         ext: TypeId,
         tt: TypeId,
         ff: TypeId,
+        allow_infer_match: bool,
     ) CheckError!TypeId {
         // Distribute over a union check.
         if (self.interner.pool.flagsOf(check).is_union) {
@@ -10061,7 +10064,7 @@ pub const Checker = struct {
             var built: std.ArrayListUnmanaged(TypeId) = .empty;
             defer built.deinit(self.gpa);
             for (members) |m| {
-                const r = try self.evalConditional(m, ext, tt, ff);
+                const r = try self.evalConditional(m, ext, tt, ff, allow_infer_match);
                 try built.append(self.gpa, r);
             }
             return self.interner.internUnion(built.items) catch return error.OutOfMemory;
@@ -10070,9 +10073,7 @@ pub const Checker = struct {
         // type-parameter placeholders and `check` is also a signature,
         // bind each infer'd placeholder structurally and substitute
         // into `tt` before returning.
-        if (self.interner.pool.flagsOf(ext).is_signature and
-            self.interner.pool.flagsOf(check).is_signature)
-        {
+        if (allow_infer_match) {
             var infer_subs: std.AutoHashMapUnmanaged(TypeId, TypeId) = .empty;
             defer infer_subs.deinit(self.gpa);
             const matched = self.matchInfer(check, ext, &infer_subs) catch false;
@@ -10100,10 +10101,9 @@ pub const Checker = struct {
         ext: TypeId,
         tt: TypeId,
         ff: TypeId,
+        allow_infer_match: bool,
     ) CheckError!TypeId {
-        if (self.interner.pool.flagsOf(ext).is_signature and
-            self.interner.pool.flagsOf(check).is_signature)
-        {
+        if (allow_infer_match) {
             var infer_subs: std.AutoHashMapUnmanaged(TypeId, TypeId) = .empty;
             defer infer_subs.deinit(self.gpa);
             const matched = self.matchInfer(check, ext, &infer_subs) catch false;
@@ -10128,6 +10128,294 @@ pub const Checker = struct {
     fn registerInferNames(self: *Checker, ext_node: NodeId, ext_t: TypeId) !void {
         _ = ext_t;
         try self.walkAndRegisterInfer(ext_node);
+    }
+
+    const InferConstraintInfo = struct {
+        node: NodeId,
+        constraint: NodeId,
+        first_reported: bool = false,
+    };
+
+    fn checkConditionalInferConstraints(self: *Checker, ext_node: NodeId) CheckError!void {
+        var inferred: std.AutoHashMapUnmanaged(hir_mod.StringId, InferConstraintInfo) = .empty;
+        defer inferred.deinit(self.gpa);
+        try self.collectInferConstraintInfo(ext_node, &inferred);
+        try self.reportInvalidInferConstraintRefs(ext_node, &inferred);
+    }
+
+    fn collectInferConstraintInfo(
+        self: *Checker,
+        node: NodeId,
+        inferred: *std.AutoHashMapUnmanaged(hir_mod.StringId, InferConstraintInfo),
+    ) CheckError!void {
+        if (node == hir_mod.none_node_id) return;
+        switch (self.hir.kindOf(node)) {
+            .infer_type => {
+                const ip = hir_mod.inferTypeOf(self.hir, node);
+                if (inferred.getPtr(ip.name)) |prior| {
+                    if (!self.inferConstraintsEqual(prior.constraint, ip.constraint)) {
+                        if (!prior.first_reported) {
+                            try self.report(prior.node, TsCodes.infer_constraints_not_identical, "All declarations of this type parameter must have identical constraints.");
+                            prior.first_reported = true;
+                        }
+                        try self.report(node, TsCodes.infer_constraints_not_identical, "All declarations of this type parameter must have identical constraints.");
+                    }
+                } else {
+                    try inferred.put(self.gpa, ip.name, .{ .node = node, .constraint = ip.constraint });
+                }
+                if (ip.constraint != hir_mod.none_node_id) {
+                    try self.collectInferConstraintInfo(ip.constraint, inferred);
+                }
+            },
+            .object_type => {
+                for (hir_mod.objectTypeMembers(self.hir, node)) |member| {
+                    switch (self.hir.kindOf(member)) {
+                        .interface_member => {
+                            const im = hir_mod.interfaceMemberOf(self.hir, member);
+                            try self.collectInferConstraintInfo(im.type_node, inferred);
+                        },
+                        .index_signature => {
+                            const ix = hir_mod.indexSignatureOf(self.hir, member);
+                            try self.collectInferConstraintInfo(ix.key_type, inferred);
+                            try self.collectInferConstraintInfo(ix.value_type, inferred);
+                        },
+                        else => {},
+                    }
+                }
+            },
+            .fn_type, .constructor_type => {
+                const ft = hir_mod.fnTypeOf(self.hir, node);
+                const params = self.hir.childSlice(ft.params_start, @intCast(ft.params_len));
+                for (params) |p| {
+                    if (self.hir.kindOf(p) != .parameter) continue;
+                    const pp = hir_mod.parameterOf(self.hir, p);
+                    try self.collectInferConstraintInfo(pp.type_annotation, inferred);
+                }
+                try self.collectInferConstraintInfo(ft.return_type, inferred);
+            },
+            .union_type => for (hir_mod.unionTypeMembers(self.hir, node)) |m| try self.collectInferConstraintInfo(m, inferred),
+            .intersection_type => for (hir_mod.intersectionTypeMembers(self.hir, node)) |m| try self.collectInferConstraintInfo(m, inferred),
+            .array_type => try self.collectInferConstraintInfo(hir_mod.arrayTypeOf(self.hir, node).element, inferred),
+            .tuple_type => for (hir_mod.tupleTypeElements(self.hir, node)) |e| try self.collectInferConstraintInfo(e, inferred),
+            .rest_type => try self.collectInferConstraintInfo(hir_mod.restTypeOf(self.hir, node).operand, inferred),
+            .indexed_access_type => {
+                const ia = hir_mod.indexedAccessTypeOf(self.hir, node);
+                try self.collectInferConstraintInfo(ia.object, inferred);
+                try self.collectInferConstraintInfo(ia.index, inferred);
+            },
+            .keyof_type => try self.collectInferConstraintInfo(hir_mod.keyofTypeOf(self.hir, node).operand, inferred),
+            .conditional_type => {
+                const c = hir_mod.conditionalTypeOf(self.hir, node);
+                try self.collectInferConstraintInfo(c.check, inferred);
+                try self.collectInferConstraintInfo(c.extends, inferred);
+                try self.collectInferConstraintInfo(c.true_branch, inferred);
+                try self.collectInferConstraintInfo(c.false_branch, inferred);
+            },
+            else => {},
+        }
+    }
+
+    fn inferConstraintsEqual(self: *Checker, a: NodeId, b: NodeId) bool {
+        if (a == hir_mod.none_node_id or b == hir_mod.none_node_id) return true;
+        return self.nodeSourceTextEqual(a, b);
+    }
+
+    fn reportInvalidInferConstraintRefs(
+        self: *Checker,
+        node: NodeId,
+        inferred: *const std.AutoHashMapUnmanaged(hir_mod.StringId, InferConstraintInfo),
+    ) CheckError!void {
+        if (node == hir_mod.none_node_id) return;
+        switch (self.hir.kindOf(node)) {
+            .infer_type => {
+                const ip = hir_mod.inferTypeOf(self.hir, node);
+                if (ip.constraint != hir_mod.none_node_id) {
+                    try self.reportInvalidInferConstraintRefsInConstraint(ip.constraint, inferred);
+                }
+            },
+            .object_type => {
+                for (hir_mod.objectTypeMembers(self.hir, node)) |member| {
+                    switch (self.hir.kindOf(member)) {
+                        .interface_member => {
+                            const im = hir_mod.interfaceMemberOf(self.hir, member);
+                            try self.reportInvalidInferConstraintRefs(im.type_node, inferred);
+                        },
+                        .index_signature => {
+                            const ix = hir_mod.indexSignatureOf(self.hir, member);
+                            try self.reportInvalidInferConstraintRefs(ix.key_type, inferred);
+                            try self.reportInvalidInferConstraintRefs(ix.value_type, inferred);
+                        },
+                        else => {},
+                    }
+                }
+            },
+            .fn_type, .constructor_type => {
+                const ft = hir_mod.fnTypeOf(self.hir, node);
+                const params = self.hir.childSlice(ft.params_start, @intCast(ft.params_len));
+                for (params) |p| {
+                    if (self.hir.kindOf(p) != .parameter) continue;
+                    const pp = hir_mod.parameterOf(self.hir, p);
+                    try self.reportInvalidInferConstraintRefs(pp.type_annotation, inferred);
+                }
+                try self.reportInvalidInferConstraintRefs(ft.return_type, inferred);
+            },
+            .union_type => for (hir_mod.unionTypeMembers(self.hir, node)) |m| try self.reportInvalidInferConstraintRefs(m, inferred),
+            .intersection_type => for (hir_mod.intersectionTypeMembers(self.hir, node)) |m| try self.reportInvalidInferConstraintRefs(m, inferred),
+            .array_type => try self.reportInvalidInferConstraintRefs(hir_mod.arrayTypeOf(self.hir, node).element, inferred),
+            .tuple_type => for (hir_mod.tupleTypeElements(self.hir, node)) |e| try self.reportInvalidInferConstraintRefs(e, inferred),
+            .rest_type => try self.reportInvalidInferConstraintRefs(hir_mod.restTypeOf(self.hir, node).operand, inferred),
+            .indexed_access_type => {
+                const ia = hir_mod.indexedAccessTypeOf(self.hir, node);
+                try self.reportInvalidInferConstraintRefs(ia.object, inferred);
+                try self.reportInvalidInferConstraintRefs(ia.index, inferred);
+            },
+            .keyof_type => try self.reportInvalidInferConstraintRefs(hir_mod.keyofTypeOf(self.hir, node).operand, inferred),
+            .conditional_type => {
+                const c = hir_mod.conditionalTypeOf(self.hir, node);
+                try self.reportInvalidInferConstraintRefs(c.check, inferred);
+                try self.reportInvalidInferConstraintRefs(c.extends, inferred);
+                try self.reportInvalidInferConstraintRefs(c.true_branch, inferred);
+                try self.reportInvalidInferConstraintRefs(c.false_branch, inferred);
+            },
+            else => {},
+        }
+    }
+
+    fn reportInvalidInferConstraintRefsInConstraint(
+        self: *Checker,
+        node: NodeId,
+        inferred: *const std.AutoHashMapUnmanaged(hir_mod.StringId, InferConstraintInfo),
+    ) CheckError!void {
+        if (node == hir_mod.none_node_id) return;
+        switch (self.hir.kindOf(node)) {
+            .type_ref => {
+                const r = hir_mod.typeRefOf(self.hir, node);
+                if (r.qualifier_len == 0) {
+                    if (inferred.contains(r.name) or !self.inferConstraintTypeRefResolvable(r.name)) {
+                        try self.reportCannotFindName(node, r.name);
+                    }
+                }
+                for (hir_mod.typeRefArgs(self.hir, node)) |arg| {
+                    try self.reportInvalidInferConstraintRefsInConstraint(arg, inferred);
+                }
+            },
+            .union_type => for (hir_mod.unionTypeMembers(self.hir, node)) |m| try self.reportInvalidInferConstraintRefsInConstraint(m, inferred),
+            .intersection_type => for (hir_mod.intersectionTypeMembers(self.hir, node)) |m| try self.reportInvalidInferConstraintRefsInConstraint(m, inferred),
+            .array_type => try self.reportInvalidInferConstraintRefsInConstraint(hir_mod.arrayTypeOf(self.hir, node).element, inferred),
+            .tuple_type => for (hir_mod.tupleTypeElements(self.hir, node)) |e| try self.reportInvalidInferConstraintRefsInConstraint(e, inferred),
+            .rest_type => try self.reportInvalidInferConstraintRefsInConstraint(hir_mod.restTypeOf(self.hir, node).operand, inferred),
+            .keyof_type => try self.reportInvalidInferConstraintRefsInConstraint(hir_mod.keyofTypeOf(self.hir, node).operand, inferred),
+            .indexed_access_type => {
+                const ia = hir_mod.indexedAccessTypeOf(self.hir, node);
+                try self.reportInvalidInferConstraintRefsInConstraint(ia.object, inferred);
+                try self.reportInvalidInferConstraintRefsInConstraint(ia.index, inferred);
+            },
+            .conditional_type => {
+                const c = hir_mod.conditionalTypeOf(self.hir, node);
+                try self.reportInvalidInferConstraintRefsInConstraint(c.check, inferred);
+                try self.reportInvalidInferConstraintRefsInConstraint(c.extends, inferred);
+                try self.reportInvalidInferConstraintRefsInConstraint(c.true_branch, inferred);
+                try self.reportInvalidInferConstraintRefsInConstraint(c.false_branch, inferred);
+            },
+            .object_type => {
+                for (hir_mod.objectTypeMembers(self.hir, node)) |member| {
+                    switch (self.hir.kindOf(member)) {
+                        .interface_member => {
+                            const im = hir_mod.interfaceMemberOf(self.hir, member);
+                            try self.reportInvalidInferConstraintRefsInConstraint(im.type_node, inferred);
+                        },
+                        .index_signature => {
+                            const ix = hir_mod.indexSignatureOf(self.hir, member);
+                            try self.reportInvalidInferConstraintRefsInConstraint(ix.key_type, inferred);
+                            try self.reportInvalidInferConstraintRefsInConstraint(ix.value_type, inferred);
+                        },
+                        else => {},
+                    }
+                }
+            },
+            else => {},
+        }
+    }
+
+    fn inferConstraintTypeRefResolvable(self: *Checker, name: hir_mod.StringId) bool {
+        const raw = self.string_interner.get(name);
+        if (std.mem.eql(u8, raw, "any") or
+            std.mem.eql(u8, raw, "unknown") or
+            std.mem.eql(u8, raw, "never") or
+            std.mem.eql(u8, raw, "void") or
+            std.mem.eql(u8, raw, "null") or
+            std.mem.eql(u8, raw, "undefined") or
+            std.mem.eql(u8, raw, "string") or
+            std.mem.eql(u8, raw, "number") or
+            std.mem.eql(u8, raw, "boolean") or
+            std.mem.eql(u8, raw, "bigint") or
+            std.mem.eql(u8, raw, "symbol") or
+            std.mem.eql(u8, raw, "object"))
+        {
+            return true;
+        }
+        if (self.generic_aliases.contains(name)) return true;
+        return self.typeRefNameExists(name);
+    }
+
+    fn typeNodeContainsInfer(self: *Checker, node: NodeId) bool {
+        if (node == hir_mod.none_node_id) return false;
+        switch (self.hir.kindOf(node)) {
+            .infer_type => return true,
+            .object_type => {
+                for (hir_mod.objectTypeMembers(self.hir, node)) |member| {
+                    switch (self.hir.kindOf(member)) {
+                        .interface_member => {
+                            const im = hir_mod.interfaceMemberOf(self.hir, member);
+                            if (self.typeNodeContainsInfer(im.type_node)) return true;
+                        },
+                        .index_signature => {
+                            const ix = hir_mod.indexSignatureOf(self.hir, member);
+                            if (self.typeNodeContainsInfer(ix.key_type) or self.typeNodeContainsInfer(ix.value_type)) return true;
+                        },
+                        else => {},
+                    }
+                }
+                return false;
+            },
+            .fn_type, .constructor_type => {
+                const ft = hir_mod.fnTypeOf(self.hir, node);
+                const params = self.hir.childSlice(ft.params_start, @intCast(ft.params_len));
+                for (params) |p| {
+                    if (self.hir.kindOf(p) != .parameter) continue;
+                    const pp = hir_mod.parameterOf(self.hir, p);
+                    if (self.typeNodeContainsInfer(pp.type_annotation)) return true;
+                }
+                return self.typeNodeContainsInfer(ft.return_type);
+            },
+            .union_type => {
+                for (hir_mod.unionTypeMembers(self.hir, node)) |m| if (self.typeNodeContainsInfer(m)) return true;
+                return false;
+            },
+            .intersection_type => {
+                for (hir_mod.intersectionTypeMembers(self.hir, node)) |m| if (self.typeNodeContainsInfer(m)) return true;
+                return false;
+            },
+            .array_type => return self.typeNodeContainsInfer(hir_mod.arrayTypeOf(self.hir, node).element),
+            .tuple_type => {
+                for (hir_mod.tupleTypeElements(self.hir, node)) |e| if (self.typeNodeContainsInfer(e)) return true;
+                return false;
+            },
+            .rest_type => return self.typeNodeContainsInfer(hir_mod.restTypeOf(self.hir, node).operand),
+            .keyof_type => return self.typeNodeContainsInfer(hir_mod.keyofTypeOf(self.hir, node).operand),
+            .indexed_access_type => {
+                const ia = hir_mod.indexedAccessTypeOf(self.hir, node);
+                return self.typeNodeContainsInfer(ia.object) or self.typeNodeContainsInfer(ia.index);
+            },
+            .conditional_type => {
+                const c = hir_mod.conditionalTypeOf(self.hir, node);
+                return self.typeNodeContainsInfer(c.check) or
+                    self.typeNodeContainsInfer(c.extends) or
+                    self.typeNodeContainsInfer(c.true_branch) or
+                    self.typeNodeContainsInfer(c.false_branch);
+            },
+            else => return false,
+        }
     }
 
     fn walkAndRegisterInfer(self: *Checker, node: NodeId) !void {
@@ -10182,6 +10470,39 @@ pub const Checker = struct {
             try self.walkAndRegisterInfer(ia.index);
             return;
         }
+        if (k == .rest_type) {
+            try self.walkAndRegisterInfer(hir_mod.restTypeOf(self.hir, node).operand);
+            return;
+        }
+        if (k == .keyof_type) {
+            try self.walkAndRegisterInfer(hir_mod.keyofTypeOf(self.hir, node).operand);
+            return;
+        }
+        if (k == .conditional_type) {
+            const c = hir_mod.conditionalTypeOf(self.hir, node);
+            try self.walkAndRegisterInfer(c.check);
+            try self.walkAndRegisterInfer(c.extends);
+            try self.walkAndRegisterInfer(c.true_branch);
+            try self.walkAndRegisterInfer(c.false_branch);
+            return;
+        }
+        if (k == .object_type) {
+            for (hir_mod.objectTypeMembers(self.hir, node)) |member| {
+                switch (self.hir.kindOf(member)) {
+                    .interface_member => {
+                        const im = hir_mod.interfaceMemberOf(self.hir, member);
+                        try self.walkAndRegisterInfer(im.type_node);
+                    },
+                    .index_signature => {
+                        const ix = hir_mod.indexSignatureOf(self.hir, member);
+                        try self.walkAndRegisterInfer(ix.key_type);
+                        try self.walkAndRegisterInfer(ix.value_type);
+                    },
+                    else => {},
+                }
+            }
+            return;
+        }
         // Other type-node kinds either don't carry infer placeholders
         // in normal usage, or are deferred to a Phase 6 follow-up.
     }
@@ -10197,6 +10518,13 @@ pub const Checker = struct {
         subs: *std.AutoHashMapUnmanaged(TypeId, TypeId),
     ) !bool {
         if (self.interner.pool.flagsOf(ext).is_type_parameter) {
+            const tp = self.interner.pool.type_parameter_payloads.items[self.interner.pool.payloadOf(ext)];
+            if (tp.constraint != types.Primitive.none and
+                tp.constraint != types.Primitive.unknown and
+                !(self.engine.isAssignableTo(check, tp.constraint) catch false))
+            {
+                return false;
+            }
             try subs.put(self.gpa, ext, check);
             return true;
         }
@@ -17908,7 +18236,7 @@ pub const Checker = struct {
             const new_ext = try self.substituteType(c.extends_type, subs);
             const new_tt = try self.substituteType(c.true_branch, subs);
             const new_ff = try self.substituteType(c.false_branch, subs);
-            return self.evalConditional(new_check, new_ext, new_tt, new_ff);
+            return self.evalConditional(new_check, new_ext, new_tt, new_ff, false);
         }
         if (flags.is_keyof) {
             // `keyof T` after substitution may resolve eagerly.
@@ -25681,6 +26009,69 @@ test "checker: ReturnType<T> infers signature return via infer R" {
     const r_decl = stmts[1];
     // r should resolve to `string`.
     try T.expectEqual(types.Primitive.string_t, s.hir.typeOf(r_decl));
+}
+
+test "checker: any extends infer resolves inferred placeholder to any" {
+    const s = try newSetup(
+        \\type Weird = any extends infer U ? U : never;
+        \\const a: Weird = null;
+        \\const b: string = a;
+    );
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+    for (s.checker.diagnostics.items) |d| {
+        try T.expect(d.code != TsCodes.type_not_assignable);
+    }
+}
+
+test "checker: infer constraint reports unresolved type references" {
+    const s = try newSetup(
+        \\type Test<T> = T extends infer A extends B ? number : string;
+    );
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+    var found = false;
+    for (s.checker.diagnostics.items) |d| {
+        if (d.code == TsCodes.cannot_find_name) found = true;
+    }
+    try T.expect(found);
+}
+
+test "checker: duplicate infer names require identical constraints" {
+    const s = try newSetup(
+        \\type X<T> = T extends { a: infer U extends string, b: infer U extends number } ? U : never;
+    );
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+    var count: usize = 0;
+    for (s.checker.diagnostics.items) |d| {
+        if (d.code == TsCodes.infer_constraints_not_identical) count += 1;
+    }
+    try T.expectEqual(@as(usize, 2), count);
+}
+
+test "checker: duplicate infer names allow a missing paired constraint" {
+    const s = try newSetup(
+        \\type X<T> = T extends { a: infer U extends string, b: infer U } ? U : never;
+    );
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+    for (s.checker.diagnostics.items) |d| {
+        try T.expect(d.code != TsCodes.infer_constraints_not_identical);
+    }
+}
+
+test "checker: infer constraint cannot reference same extends clause infer name" {
+    const s = try newSetup(
+        \\type X<T> = T extends { a: infer U, b: infer V extends U } ? [U, V] : never;
+    );
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+    var found = false;
+    for (s.checker.diagnostics.items) |d| {
+        if (d.code == TsCodes.cannot_find_name) found = true;
+    }
+    try T.expect(found);
 }
 
 test "checker: Required<T> -? strips optional from source" {
