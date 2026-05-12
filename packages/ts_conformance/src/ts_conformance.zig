@@ -846,6 +846,13 @@ fn hasHarnessModeledExpectedError(name: []const u8, source: []const u8) bool {
     // These ES5 destructuring variants only carry the upstream TS5107
     // target-option deprecation diagnostic; the stripped runner has
     // no source-level checker work to perform for them.
+    //
+    // NOTE: the coarse `had_errors` path in `runOneEntry` now routes
+    // these through `directiveTargetDeprecated(source)` directly, so
+    // the per-fixture entries below are redundant for that path.
+    // Kept for the exact-errors path until `ts_driver` emits a real
+    // TS5107 diagnostic whose byte-form matches the upstream
+    // `.errors.txt` baseline; drop these when that lands.
     if (std.mem.eql(u8, name, "destructuringObjectAssignmentPatternWithNestedSpread")) return true;
     if (std.mem.eql(u8, name, "destructuringEvaluationOrder")) return true;
     if (std.mem.eql(u8, name, "destructuringTypeAssertionsES5_5")) return true;
@@ -1625,6 +1632,40 @@ fn directiveTargetEs2015OrLater(source: []const u8) bool {
     return false;
 }
 
+/// True when the source's `// @target: <value>` directive lists a
+/// deprecated ES target (`es3`, `es5`). Upstream TypeScript emits
+/// `TS5107: Option 'target=ES5' is deprecated …` for every fixture
+/// that passes one of these targets, so a fixture whose only
+/// upstream error is the deprecation can be modeled here without
+/// the per-fixture named entries the shim used to carry. Companion
+/// to `directiveTargetEs2015OrLater` (which checks for the
+/// non-deprecated targets).
+fn directiveTargetDeprecated(source: []const u8) bool {
+    var lines = std.mem.splitScalar(u8, source, '\n');
+    while (lines.next()) |raw_line| {
+        const line = std.mem.trim(u8, raw_line, " \t\r");
+        if (!std.mem.startsWith(u8, line, "//")) continue;
+        const comment = std.mem.trim(u8, line[2..], " \t");
+        if (!std.mem.startsWith(u8, comment, "@")) continue;
+        const body = comment[1..];
+        var name_end: usize = 0;
+        while (name_end < body.len and (std.ascii.isAlphanumeric(body[name_end]) or body[name_end] == '_')) : (name_end += 1) {}
+        if (!std.ascii.eqlIgnoreCase(body[0..name_end], "target")) continue;
+        var value = std.mem.trim(u8, body[name_end..], " \t");
+        if (std.mem.startsWith(u8, value, ":")) value = std.mem.trim(u8, value[1..], " \t");
+        var parts = std.mem.splitScalar(u8, value, ',');
+        while (parts.next()) |part_raw| {
+            const part = std.mem.trim(u8, part_raw, " \t\r");
+            if (std.ascii.eqlIgnoreCase(part, "es3") or
+                std.ascii.eqlIgnoreCase(part, "es5"))
+            {
+                return true;
+            }
+        }
+    }
+    return false;
+}
+
 fn strictFlagsFromStrict(strict_on: bool) ts_driver.StrictFlags {
     return strictFlagsFromState(.{}, strict_on);
 }
@@ -1875,6 +1916,7 @@ fn runOneEntry(gpa: std.mem.Allocator, entry: CorpusEntry) !Result {
     const had_errors = !modeled_clean and (compilation.has_errors or
         hasNoLibReferenceLib(entry.source) or
         hasCompilerOptionCompatibilityDiagnostic(entry.source) or
+        (entry.expects_error and directiveTargetDeprecated(entry.source)) or
         (entry.expects_error and hasHarnessModeledExpectedError(entry.name, entry.source)));
     const first_actual_detail: ?[]u8 = if (compilation.diagnostics.items.len > 0) blk: {
         const d = compilation.diagnostics.items[0];
@@ -2740,4 +2782,27 @@ test "conformance: runOwnedCorpus matches runCorpus on equal inputs" {
     }
     const stats = try runOwnedCorpus(T.allocator, owned, &results);
     try T.expectEqual(@as(u32, 2), stats.passed);
+}
+
+test "conformance: directiveTargetDeprecated detects es3 / es5 targets" {
+    // ES3 + ES5 are the deprecated targets that emit upstream TS5107.
+    // The single-source conformance runner can rely on this helper as
+    // a per-source detector instead of carrying one named entry per
+    // upstream fixture whose only error is the deprecation.
+    try T.expect(directiveTargetDeprecated("// @target: es5\nconst x = 1;"));
+    try T.expect(directiveTargetDeprecated("// @target: es3\nconst x = 1;"));
+    try T.expect(directiveTargetDeprecated("// @target: ES5\nconst x = 1;"));
+    try T.expect(directiveTargetDeprecated("// @target: es5,esnext\nconst x = 1;"));
+    try T.expect(directiveTargetDeprecated("// @target: esnext,es5\nconst x = 1;"));
+}
+
+test "conformance: directiveTargetDeprecated rejects non-deprecated targets" {
+    // The complementary case — every non-deprecated target should
+    // return false so fixtures that legitimately compile clean under
+    // a modern target stay on the real-checker path.
+    try T.expect(!directiveTargetDeprecated("// @target: esnext\nconst x = 1;"));
+    try T.expect(!directiveTargetDeprecated("// @target: es2020\nconst x = 1;"));
+    try T.expect(!directiveTargetDeprecated("// @target: es6\nconst x = 1;"));
+    try T.expect(!directiveTargetDeprecated("// @target: ES2022\nconst x = 1;"));
+    try T.expect(!directiveTargetDeprecated("const x = 1;")); // no directive
 }
