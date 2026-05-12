@@ -31,6 +31,7 @@ for the full list. Legend: ✅ Stable · 🚧 In progress / partial · ❌ Not y
 | TS pipeline | Module resolver (5 strategies + paths) | 🚧 In progress |
 | TS pipeline | tsc-compatible diagnostic formatting | 🚧 In progress |
 | TS pipeline | `home tsc` CLI flag surface | 🚧 In progress |
+| TS pipeline | `home-lsp` Language Server (~50 LSP methods routed: hover, definition, references, completion, codeActions, semantic tokens, inlay hints, folding, …) | 🚧 In progress |
 | TS pipeline | Conformance harness (tsc-baseline format) | 🚧 In progress |
 | Language | Pattern matching | 🚧 In progress |
 | Language | Closures | 🚧 In progress |
@@ -77,8 +78,16 @@ Top-level shape (each link is a Zig package with its own tests):
 - [`packages/ts_diagnostics`](./packages/ts_diagnostics/) — tsc-compatible diagnostic formatting (default + pretty)
 - [`packages/ts_cli`](./packages/ts_cli/) — `home tsc` CLI flag surface
 - [`packages/ts_conformance`](./packages/ts_conformance/) — tsc-baseline conformance harness
+- [`packages/ts_lsp`](./packages/ts_lsp/) — Language Server query surface (hover, definition, references, completion, codeActions, semantic tokens, inlay hints, folding, document symbols, …)
+- [`packages/ts_lsp_server`](./packages/ts_lsp_server/) — JSON-RPC framing + method dispatch (~50 LSP-spec methods routed)
+- [`packages/ts_cache`](./packages/ts_cache/) — content-addressed compilation cache with sharded disk persistence
+- [`packages/ts_watch`](./packages/ts_watch/) — pluggable `StatFs` + watcher driving incremental recompiles in `home-tsc --watch`
 - [`packages/d_hm`](./packages/d_hm/) — Home declaration files (the `.d.ts` analogue for `.home`)
 - [`pantry/zig-dtsx`](https://github.com/stacksjs/dtsx/tree/main/packages/zig-dtsx) — vendored as a pantry dep; powers the `.d.ts` fast path (15-19× faster than tsgo per published benchmarks)
+
+`home-tsc` and `home-lsp` ship as standalone binaries — see the
+[`zig build` invocation](#build-commands) to compile them; they
+install into `zig-out/bin/`.
 
 ## Install
 
@@ -365,7 +374,7 @@ let another = 17 ~/ 5     // 3
 // Standard operators
 let sum = 10 + 5          // 15
 let diff = 10 - 3         // 7
-let prod = 4 _ 3          // 12
+let prod = 4 * 3          // 12
 let quot = 10 / 4         // 2.5 (regular division)
 let rem = 10 % 3          // 1 (modulo)
 ```
@@ -425,7 +434,7 @@ comptime fn factorial(n: int): int {
   if (n <= 1) {
     return 1
   }
-  return n _ factorial(n - 1)
+  return n * factorial(n - 1)
 }
 
 const FACT_10 = factorial(10)  // computed at compile time
@@ -497,15 +506,27 @@ fn main(): async {
 ```
 home/
 ├── src/main.zig           # CLI entry point
-├── packages/
-│   ├── lexer/             # Tokenization
-│   ├── parser/            # AST generation
-│   ├── ast/               # Syntax tree types
-│   ├── types/             # Type system
-│   ├── codegen/           # Native code generation (x64)
-│   ├── interpreter/       # Direct execution
+├── packages/              # 130+ Zig packages, each with its own tests
+│   ├── lexer/             # Home tokenization
+│   ├── parser/            # Home AST generation
+│   ├── ast/               # Home syntax tree types
+│   ├── types/             # Home type system
+│   ├── codegen/           # Native code generation (x64 + arm64)
+│   ├── interpreter/       # Tree-walking execution
 │   ├── diagnostics/       # Error reporting
-│   └── ...
+│   ├── ts_lexer/          # TS scanner (full ES2024 + TS keywords)
+│   ├── ts_parser/         # TS parser (statements, expressions, JSX, generics)
+│   ├── ts_checker/        # TS type interner, relation cache, expression typing
+│   ├── ts_emit/           # JS + .d.ts emit (V3 source maps, zig-dtsx fast path)
+│   ├── ts_driver/         # End-to-end per-file lex→parse→bind→check→emit
+│   ├── ts_program/        # Multi-file graph + parallel compile + watch
+│   ├── ts_resolver/       # Module resolution (5 tsc strategies + paths)
+│   ├── ts_lsp/            # Language Server query surface
+│   ├── ts_lsp_server/     # JSON-RPC framing + dispatch
+│   ├── ts_conformance/    # tsc-baseline conformance harness
+│   ├── hir/               # SoA HIR shared between both frontends
+│   ├── binder/            # Symbol table (3 TS meaning-spaces, decl merging)
+│   └── ...                # http, database, async, ffi, graphics, …
 ├── examples/              # Example programs
 ├── tests/                 # Integration tests
 └── stdlib/                # Standard library
@@ -556,7 +577,7 @@ zig build run -- examples/fibonacci.home
 - **Generics** - Type-safe generic functions and types
 - **Comptime** - Compile-time code execution
 - **Error handling** - Result types with `?` propagation
-- **Power operator**- `**` for exponentiation (`2** 10`)
+- **Power operator** — `**` for exponentiation (`2 ** 10`)
 - **Integer division** - `~/` for truncating division
 - **Range methods** - `.len()`, `.step()`, `.contains()`, `.to_array()`
 - **Default parameters** - `fn greet(name: string = "World")`
