@@ -8802,6 +8802,7 @@ pub const Checker = struct {
         symbol_idx: TypeId,
     ) CheckError!void {
         if (string_idx != types.Primitive.none) {
+            try self.checkObjectInterfaceStringIndexerCompatibility(node, members);
             for (members) |m| {
                 if (self.isSymbolNamedMember(m.name)) continue;
                 if (m.type == types.Primitive.any or string_idx == types.Primitive.any) continue;
@@ -8860,6 +8861,85 @@ pub const Checker = struct {
                 });
             }
         }
+    }
+
+    fn checkObjectInterfaceStringIndexerCompatibility(
+        self: *Checker,
+        node: NodeId,
+        members: []const types.ObjectMember,
+    ) CheckError!void {
+        if (self.hir.kindOf(node) != .interface_decl) return;
+        const iface_name = self.declarationName(node) orelse return;
+        if (!std.mem.eql(u8, self.string_interner.get(iface_name), "Object")) return;
+
+        for (members) |member| {
+            if (member.type == types.Primitive.any or member.type == types.Primitive.unknown) continue;
+            if (self.objectStringIndexObjectValueCompatible(member.type)) continue;
+            try self.reportPropertyNotAssignableToStringIndex(node, member.name);
+        }
+
+        const function_t = self.lowerBuiltinObjectType("Function") orelse types.Primitive.any;
+        const Probe = struct {
+            name: []const u8,
+            type: TypeId,
+        };
+        const object_members = [_]Probe{
+            .{ .name = "constructor", .type = function_t },
+            .{ .name = "toString", .type = try self.interner.internSignature(&.{}, types.Primitive.string_t, false) },
+            .{ .name = "toLocaleString", .type = try self.interner.internSignature(&.{}, types.Primitive.string_t, false) },
+            .{ .name = "valueOf", .type = try self.interner.internSignature(&.{}, types.Primitive.object_t, false) },
+            .{ .name = "hasOwnProperty", .type = try self.interner.internSignature(&.{types.Primitive.string_t}, types.Primitive.boolean_t, false) },
+            .{ .name = "isPrototypeOf", .type = try self.interner.internSignature(&.{types.Primitive.object_t}, types.Primitive.boolean_t, false) },
+            .{ .name = "propertyIsEnumerable", .type = try self.interner.internSignature(&.{types.Primitive.string_t}, types.Primitive.boolean_t, false) },
+        };
+        for (object_members) |entry| {
+            if (self.objectStringIndexObjectValueCompatible(entry.type)) continue;
+            const name = self.string_interner.intern(entry.name) catch return error.OutOfMemory;
+            try self.reportPropertyNotAssignableToStringIndex(node, name);
+        }
+    }
+
+    fn objectStringIndexObjectValueCompatible(self: *Checker, t: TypeId) bool {
+        if (t == types.Primitive.any or t == types.Primitive.unknown or t == types.Primitive.object_t) return true;
+        if (t < types.Primitive.first_dynamic or t >= self.interner.pool.typeCount()) return false;
+        const flags = self.interner.pool.flagsOf(t);
+        if (flags.is_signature) return false;
+        if (flags.is_type_parameter) return true;
+        if (flags.is_union) {
+            for (self.interner.unionMembers(t)) |member| {
+                if (!self.objectStringIndexObjectValueCompatible(member)) return false;
+            }
+            return true;
+        }
+        if (flags.is_intersection) {
+            for (self.interner.intersectionMembers(t)) |member| {
+                if (self.objectStringIndexObjectValueCompatible(member)) return true;
+            }
+            return false;
+        }
+        if (!flags.is_object_type) return false;
+        for (self.interner.objectMembers(t)) |member| {
+            if (!self.objectStringIndexObjectValueCompatible(member.type)) return false;
+        }
+        return true;
+    }
+
+    fn reportPropertyNotAssignableToStringIndex(
+        self: *Checker,
+        node: NodeId,
+        name: hir_mod.StringId,
+    ) CheckError!void {
+        const prop_str = self.string_interner.get(name);
+        const msg = try std.fmt.allocPrint(
+            self.diag_arena.allocator(),
+            "Property '{s}' is not assignable to string index type.",
+            .{prop_str},
+        );
+        try self.diagnostics.append(self.gpa, .{
+            .node = node,
+            .code = TsCodes.property_not_assignable_to_index_type,
+            .message = msg,
+        });
     }
 
     fn memberNameIsNumeric(self: *Checker, name: hir_mod.StringId) bool {
@@ -9972,17 +10052,20 @@ pub const Checker = struct {
                 if (std.mem.eql(u8, name_str, "symbol")) return types.Primitive.symbol_t;
                 if (std.mem.eql(u8, name_str, "object")) return types.Primitive.object_t;
                 if (std.mem.eql(u8, name_str, "this")) return try self.freshThisTypeParameter(id.name);
-                if (std.mem.eql(u8, name_str, "String")) {
-                    return lib.stringProto(&self.lib_cache, self.interner, self.string_interner) catch types.Primitive.unknown;
-                }
-                if (self.lowerBuiltinObjectType(name_str)) |t| return t;
+                if (self.lookupNarrow(id.name)) |t| return t;
                 if (self.numeric_enums.contains(id.name)) return try self.enumNominalType(id.name);
                 if (self.enumDeclForNameAt(id.name, type_node)) |decl| {
                     const e = hir_mod.enumOf(self.hir, decl);
                     if (!e.is_const and (self.enumDeclIsNumeric(decl, id.name) orelse false)) return try self.enumNominalType(id.name);
                 }
-                if (self.lookupNarrow(id.name)) |t| return t;
                 if (try self.resolveForwardClassInstanceType(type_node, id.name)) |t| return t;
+                if (std.mem.eql(u8, name_str, "Object")) {
+                    if (self.type_names.get(id.name)) |t| return t;
+                }
+                if (std.mem.eql(u8, name_str, "String")) {
+                    return lib.stringProto(&self.lib_cache, self.interner, self.string_interner) catch types.Primitive.unknown;
+                }
+                if (self.lowerBuiltinObjectType(name_str)) |t| return t;
                 if (self.type_names.get(id.name)) |t| return t;
                 if (try self.reportInvalidUppercasePrimitiveTypeRef(type_node, id.name)) return types.Primitive.any;
             },
@@ -10082,16 +10165,12 @@ pub const Checker = struct {
                 if (r.qualifier_len == 0 and r.args_len == 0) {
                     const name_str = self.string_interner.get(r.name);
                     if (std.mem.eql(u8, name_str, "this")) return try self.freshThisTypeParameter(r.name);
-                    if (std.mem.eql(u8, name_str, "String")) {
-                        return lib.stringProto(&self.lib_cache, self.interner, self.string_interner) catch types.Primitive.unknown;
-                    }
-                    if (self.lowerBuiltinObjectType(name_str)) |t| return t;
+                    if (self.lookupNarrow(r.name)) |t| return t;
                     if (self.numeric_enums.contains(r.name)) return try self.enumNominalType(r.name);
                     if (self.enumDeclForNameAt(r.name, type_node)) |decl| {
                         const e = hir_mod.enumOf(self.hir, decl);
                         if (!e.is_const and (self.enumDeclIsNumeric(decl, r.name) orelse false)) return try self.enumNominalType(r.name);
                     }
-                    if (self.lookupNarrow(r.name)) |t| return t;
                     if (self.generic_aliases.get(r.name)) |info| {
                         if (self.genericAliasHasMissingRequiredArgs(info, 0)) {
                             try self.reportGenericTypeRequiresArgs(type_node, r.name, info);
@@ -10110,6 +10189,13 @@ pub const Checker = struct {
                     }
                     if (try self.resolveUnqualifiedNamespaceTypeRef(type_node, r.name)) |t| return t;
                     if (try self.resolveForwardClassInstanceType(type_node, r.name)) |t| return t;
+                    if (std.mem.eql(u8, name_str, "Object")) {
+                        if (self.type_names.get(r.name)) |t| return t;
+                    }
+                    if (std.mem.eql(u8, name_str, "String")) {
+                        return lib.stringProto(&self.lib_cache, self.interner, self.string_interner) catch types.Primitive.unknown;
+                    }
+                    if (self.lowerBuiltinObjectType(name_str)) |t| return t;
                     if (self.type_names.get(r.name)) |t| return t;
                     if (try self.reportInvalidUppercasePrimitiveTypeRef(type_node, r.name)) return types.Primitive.any;
                 }
@@ -25932,6 +26018,38 @@ test "checker: duplicate index signatures report both declarations" {
         if (d.code == TsCodes.duplicate_index_signature) count += 1;
     }
     try T.expectEqual(@as(usize, 6), count);
+}
+
+test "checker: Object string indexer constrains apparent members" {
+    const s = try newSetup(
+        \\interface Object {
+        \\  [x: string]: Object;
+        \\}
+    );
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+    var found = false;
+    for (s.checker.diagnostics.items) |d| {
+        if (d.code == TsCodes.property_not_assignable_to_index_type) found = true;
+    }
+    try T.expect(found);
+}
+
+test "checker: Object string indexer constrains own object members" {
+    const s = try newSetup(
+        \\class A { foo: string; }
+        \\interface Object {
+        \\  data: A;
+        \\  [x: string]: Object;
+        \\}
+    );
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+    var found = false;
+    for (s.checker.diagnostics.items) |d| {
+        if (d.code == TsCodes.property_not_assignable_to_index_type) found = true;
+    }
+    try T.expect(found);
 }
 
 test "checker: new expression explicit class type args instantiate instance" {
