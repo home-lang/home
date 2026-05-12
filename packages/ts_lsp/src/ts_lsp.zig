@@ -1850,6 +1850,75 @@ pub const Service = struct {
             });
         }
 
+        // ---- Add missing return type --------------------------------------
+        // For each top-level function declaration with a body but no
+        // explicit return-type annotation, surface a quick-fix that
+        // inserts `: <inferred>` right after the closing `)` of the
+        // parameter list. Skips trivial inferences (any / unknown /
+        // none / void) so the suggestion only fires when it adds
+        // real type information.
+        for (stmts) |s| {
+            if (c.hir.kindOf(s) != .fn_decl) continue;
+            const fn_payload = hir_mod.fnDeclOf(&c.hir, s);
+            if (fn_payload.flags.is_arrow) continue;
+            if (fn_payload.return_type != hir_mod.none_node_id) continue;
+            if (fn_payload.body == hir_mod.none_node_id) continue;
+            if (fn_payload.name == hir_mod.none_node_id) continue;
+            if (c.hir.kindOf(fn_payload.name) != .identifier) continue;
+            const sig_t = c.hir.typeOf(fn_payload.name);
+            if (sig_t == ts_checker.Primitive.none) continue;
+            if (!c.type_interner.isSignature(sig_t)) continue;
+            const ret_t = c.type_interner.signatureReturn(sig_t) orelse continue;
+            if (ret_t == ts_checker.Primitive.none) continue;
+            if (ret_t == ts_checker.Primitive.any) continue;
+            if (ret_t == ts_checker.Primitive.unknown) continue;
+            if (ret_t == ts_checker.Primitive.void_t) continue;
+            // Insertion point: byte right after the closing `)` of the
+            // param list, found by scanning backwards from the body
+            // span's start. Keeps us robust to whitespace, newlines,
+            // and (later) explicit-`this` parameters between `)` and
+            // the body.
+            const body_start = c.hir.spanOf(fn_payload.body).start;
+            if (body_start == 0 or @as(usize, body_start) > f.source.len) continue;
+            var ins_byte: u32 = 0;
+            var found_paren = false;
+            var i: usize = body_start;
+            while (i > 0) {
+                i -= 1;
+                if (f.source[i] == ')') {
+                    ins_byte = @intCast(i + 1);
+                    found_paren = true;
+                    break;
+                }
+            }
+            if (!found_paren) continue;
+            const repr = renderType(gpa, &c.type_interner, &c.interner, ret_t) catch continue;
+            defer gpa.free(repr);
+            const new_text = try std.fmt.allocPrint(gpa, ": {s}", .{repr});
+            errdefer gpa.free(new_text);
+            const fn_name_id = hir_mod.identifierOf(&c.hir, fn_payload.name).name;
+            const fn_name_str = c.interner.get(fn_name_id);
+            const title = try std.fmt.allocPrint(gpa, "Add return type to {s}", .{fn_name_str});
+            errdefer gpa.free(title);
+            const ins_pos = ts_diagnostics.positionToLineCol(f.source, ins_byte);
+            const ln: u32 = if (ins_pos.line > 0) ins_pos.line - 1 else 0;
+            const co: u32 = if (ins_pos.col > 0) ins_pos.col - 1 else 0;
+            var edits = try gpa.alloc(TextEdit, 1);
+            edits[0] = .{
+                .file = f.path,
+                .start_line = ln,
+                .start_col = co,
+                .end_line = ln,
+                .end_col = co,
+                .new_text = new_text,
+            };
+            try actions.append(gpa, .{
+                .title = title,
+                .kind = .quick_fix,
+                .edits = edits,
+            });
+        }
+
         // ---- Add import for unresolved identifier (TS2304) ----------------
         // For each "Cannot find name 'X'." diagnostic in this file,
         // search every *other* file in the program for a top-level
@@ -6719,4 +6788,97 @@ test "Service: linkedEditingRanges returns null for self-closing tag" {
     // pair with, so v0 declines to return ranges.
     const r = try svc.linkedEditingRanges(T.allocator, "/main.tsx", 2);
     try T.expect(r == null);
+}
+
+test "Service: codeActions surfaces add-return-type quick-fix for fn without annotation" {
+    var vfs = ts_resolver.VirtualFs.init(T.allocator);
+    defer vfs.deinit();
+    var resolver = ts_resolver.Resolver.init(T.allocator, vfs.fs(), .{});
+    defer resolver.deinit();
+    var program = ts_program.Program.init(T.allocator, &resolver);
+    defer program.deinit();
+
+    _ = try program.add("/main.ts", "function add(a: number, b: number) { return a + b; }");
+    try program.compileAll(.{});
+
+    var svc = Service.init(T.allocator, &program);
+    const actions = try svc.codeActions(T.allocator, "/main.ts");
+    defer {
+        for (actions) |a| {
+            T.allocator.free(a.title);
+            for (a.edits) |e| T.allocator.free(e.new_text);
+            T.allocator.free(a.edits);
+        }
+        T.allocator.free(actions);
+    }
+    var found_add_return: ?CodeAction = null;
+    for (actions) |a| {
+        if (std.mem.startsWith(u8, a.title, "Add return type to ")) {
+            found_add_return = a;
+            break;
+        }
+    }
+    try T.expect(found_add_return != null);
+    const a = found_add_return.?;
+    try T.expectEqual(@as(CodeAction.Kind, .quick_fix), a.kind);
+    try T.expectEqualStrings("Add return type to add", a.title);
+    try T.expectEqual(@as(usize, 1), a.edits.len);
+    try T.expectEqualStrings(": number", a.edits[0].new_text);
+    // Zero-width insertion.
+    try T.expectEqual(a.edits[0].start_line, a.edits[0].end_line);
+    try T.expectEqual(a.edits[0].start_col, a.edits[0].end_col);
+}
+
+test "Service: codeActions skips add-return-type when annotation already present" {
+    var vfs = ts_resolver.VirtualFs.init(T.allocator);
+    defer vfs.deinit();
+    var resolver = ts_resolver.Resolver.init(T.allocator, vfs.fs(), .{});
+    defer resolver.deinit();
+    var program = ts_program.Program.init(T.allocator, &resolver);
+    defer program.deinit();
+
+    _ = try program.add("/main.ts", "function add(a: number, b: number): number { return a + b; }");
+    try program.compileAll(.{});
+
+    var svc = Service.init(T.allocator, &program);
+    const actions = try svc.codeActions(T.allocator, "/main.ts");
+    defer {
+        for (actions) |a| {
+            T.allocator.free(a.title);
+            for (a.edits) |e| T.allocator.free(e.new_text);
+            T.allocator.free(a.edits);
+        }
+        T.allocator.free(actions);
+    }
+    for (actions) |a| {
+        try T.expect(!std.mem.startsWith(u8, a.title, "Add return type to "));
+    }
+}
+
+test "Service: codeActions skips add-return-type when inferred return is void" {
+    var vfs = ts_resolver.VirtualFs.init(T.allocator);
+    defer vfs.deinit();
+    var resolver = ts_resolver.Resolver.init(T.allocator, vfs.fs(), .{});
+    defer resolver.deinit();
+    var program = ts_program.Program.init(T.allocator, &resolver);
+    defer program.deinit();
+
+    // No `return` statement — inferred return is void; skip the
+    // quick-fix to avoid spamming `: void` everywhere.
+    _ = try program.add("/main.ts", "function side(a: number) { let x = a + 1; }");
+    try program.compileAll(.{});
+
+    var svc = Service.init(T.allocator, &program);
+    const actions = try svc.codeActions(T.allocator, "/main.ts");
+    defer {
+        for (actions) |a| {
+            T.allocator.free(a.title);
+            for (a.edits) |e| T.allocator.free(e.new_text);
+            T.allocator.free(a.edits);
+        }
+        T.allocator.free(actions);
+    }
+    for (actions) |a| {
+        try T.expect(!std.mem.startsWith(u8, a.title, "Add return type to "));
+    }
 }
