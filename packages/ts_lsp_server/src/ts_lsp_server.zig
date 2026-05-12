@@ -156,6 +156,7 @@ pub const Method = enum {
     text_document_inline_completion,
     text_document_document_color,
     text_document_color_presentation,
+    text_document_will_save_wait_until,
     unknown,
 
     pub fn fromString(s: []const u8) Method {
@@ -212,6 +213,7 @@ pub const Method = enum {
             .{ "textDocument/inlineCompletion", Method.text_document_inline_completion },
             .{ "textDocument/documentColor", Method.text_document_document_color },
             .{ "textDocument/colorPresentation", Method.text_document_color_presentation },
+            .{ "textDocument/willSaveWaitUntil", Method.text_document_will_save_wait_until },
         };
         inline for (map) |entry| {
             if (std.mem.eql(u8, s, entry[0])) return entry[1];
@@ -276,6 +278,7 @@ pub const SUPPORTED_METHODS = &[_][]const u8{
     "codeLens/resolve",
     "documentLink/resolve",
     "inlayHint/resolve",
+    "textDocument/willSaveWaitUntil",
     // Workspace.
     "workspace/symbol",
     "workspace/diagnostic",
@@ -2880,6 +2883,49 @@ pub fn handleOnTypeFormatting(
     return encodeResponse(gpa, request_id, buf.items);
 }
 
+/// Handle a `textDocument/willSaveWaitUntil` JSON-RPC request: extract
+/// the URI + LSP `TextDocumentSaveReason` integer (1 = manual,
+/// 2 = afterDelay, 3 = focusOut — note LSP collapses our `manual`
+/// + `auto` into the single `manual` value), route to
+/// `Service.willSaveWaitUntil`, and emit an LSP `TextEdit[]` array.
+/// Returns `[]` for unknown files. Caller owns the returned slice.
+pub fn handleWillSaveWaitUntil(
+    service: *ts_lsp.Service,
+    gpa: std.mem.Allocator,
+    request_id: RequestId,
+    params_json: []const u8,
+) ![]u8 {
+    const uri = findJsonStringField(params_json, "uri") orelse return error.MissingUri;
+    const path = uriToPath(uri);
+
+    // `reason` is optional per the LSP spec — default to `manual` when
+    // absent or out of range.
+    const reason_int = findJsonIntField(params_json, "reason") orelse 1;
+    const reason: ts_lsp.SaveReason = switch (reason_int) {
+        1 => .manual,
+        2 => .after_delay,
+        3 => .focus_out,
+        else => .manual,
+    };
+
+    if (service.program.lookupPath(path) == null) {
+        return encodeResponse(gpa, request_id, "[]");
+    }
+
+    const edits = try service.willSaveWaitUntil(gpa, path, reason);
+    defer gpa.free(edits);
+
+    var buf: std.ArrayListUnmanaged(u8) = .empty;
+    defer buf.deinit(gpa);
+    try buf.append(gpa, '[');
+    for (edits, 0..) |e, i| {
+        if (i > 0) try buf.append(gpa, ',');
+        try writeTextEdit(&buf, gpa, e);
+    }
+    try buf.append(gpa, ']');
+    return encodeResponse(gpa, request_id, buf.items);
+}
+
 /// Handle a `textDocument/codeLens` JSON-RPC request: extract the
 /// URI, route to `Service.codeLenses`, and emit an LSP `CodeLens[]`
 /// array. Each lens has a `range` and a `command` carrying the
@@ -3478,6 +3524,10 @@ pub fn dispatchRequest(
         .text_document_inline_value => {
             if (is_notification) return &.{};
             return try handleInlineValue(service, gpa, id, params);
+        },
+        .text_document_will_save_wait_until => {
+            if (is_notification) return &.{};
+            return try handleWillSaveWaitUntil(service, gpa, id, params);
         },
         .text_document_inline_completion => {
             if (is_notification) return &.{};
@@ -5228,4 +5278,47 @@ test "handleDocumentColor + handleColorPresentation: stubs return empty arrays" 
     try T.expect(std.mem.indexOf(u8, init_caps, "\"colorProvider\":true") != null);
     try T.expect(std.mem.indexOf(u8, init_caps, "\"textDocument/documentColor\"") != null);
     try T.expect(std.mem.indexOf(u8, init_caps, "\"textDocument/colorPresentation\"") != null);
+}
+
+test "handleWillSaveWaitUntil: returns TextEdit array (no-op for clean file)" {
+    var vfs = ts_resolver.VirtualFs.init(T.allocator);
+    defer vfs.deinit();
+    var resolver = ts_resolver.Resolver.init(T.allocator, vfs.fs(), .{});
+    defer resolver.deinit();
+    var program = ts_program.Program.init(T.allocator, &resolver);
+    defer program.deinit();
+
+    _ = try program.add("/main.ts", "let x = 1;");
+    try program.compileAll(.{});
+    var svc = ts_lsp.Service.init(T.allocator, &program);
+
+    const body =
+        \\{"jsonrpc":"2.0","id":830,"method":"textDocument/willSaveWaitUntil","params":{"textDocument":{"uri":"file:///main.ts"},"reason":1}}
+    ;
+    const out = try handleWillSaveWaitUntil(&svc, T.allocator, .{ .integer = 830 }, body);
+    defer T.allocator.free(out);
+    try T.expect(std.mem.indexOf(u8, out, "\"jsonrpc\":\"2.0\"") != null);
+    try T.expect(std.mem.indexOf(u8, out, "\"id\":830") != null);
+    // formatDocument is currently a stub returning `[]`, so we expect
+    // an empty result envelope.
+    try T.expect(std.mem.indexOf(u8, out, "\"result\":[]") != null);
+}
+
+test "handleWillSaveWaitUntil: returns [] for unknown file" {
+    var vfs = ts_resolver.VirtualFs.init(T.allocator);
+    defer vfs.deinit();
+    var resolver = ts_resolver.Resolver.init(T.allocator, vfs.fs(), .{});
+    defer resolver.deinit();
+    var program = ts_program.Program.init(T.allocator, &resolver);
+    defer program.deinit();
+
+    var svc = ts_lsp.Service.init(T.allocator, &program);
+
+    const body =
+        \\{"jsonrpc":"2.0","id":831,"method":"textDocument/willSaveWaitUntil","params":{"textDocument":{"uri":"file:///ghost.ts"},"reason":3}}
+    ;
+    const out = try handleWillSaveWaitUntil(&svc, T.allocator, .{ .integer = 831 }, body);
+    defer T.allocator.free(out);
+    try T.expect(std.mem.indexOf(u8, out, "\"id\":831") != null);
+    try T.expect(std.mem.indexOf(u8, out, "\"result\":[]") != null);
 }
