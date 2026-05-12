@@ -84,6 +84,8 @@ pub const TypeFlags = packed struct(u32) {
     is_infer: bool = false,
     /// Template-literal type, e.g. `` `${A}.${B}` ``.
     is_template_literal: bool = false,
+    /// Intrinsic string mapping type, e.g. `Uppercase<T>`.
+    is_string_mapping: bool = false,
     /// Tuple type — fixed-arity ordered element types.
     is_tuple: bool = false,
     /// Generic instantiation reference (`Array<T>` after substitution).
@@ -95,7 +97,7 @@ pub const TypeFlags = packed struct(u32) {
     /// Class/interface object type with declared members.
     is_object_type: bool = false,
 
-    _padding: u5 = 0,
+    _padding: u4 = 0,
 };
 
 /// A union literal-type tag. Lives in the `LiteralData` payload of
@@ -170,6 +172,25 @@ pub const IndexedAccessPayload = struct {
 
 pub const KeyofPayload = struct {
     operand: TypeId,
+};
+
+pub const TemplateLiteralPayload = struct {
+    texts_start: u32,
+    texts_len: u32,
+    types_start: u32,
+    types_len: u32,
+};
+
+pub const StringMappingKind = enum(u8) {
+    lowercase,
+    uppercase,
+    capitalize,
+    uncapitalize,
+};
+
+pub const StringMappingPayload = struct {
+    kind: StringMappingKind,
+    inner: TypeId,
 };
 
 pub const TupleElement = struct {
@@ -289,6 +310,8 @@ pub const Pool = struct {
     mapped_payloads: std.ArrayListUnmanaged(MappedPayload),
     indexed_access_payloads: std.ArrayListUnmanaged(IndexedAccessPayload),
     keyof_payloads: std.ArrayListUnmanaged(KeyofPayload),
+    template_literal_payloads: std.ArrayListUnmanaged(TemplateLiteralPayload),
+    string_mapping_payloads: std.ArrayListUnmanaged(StringMappingPayload),
     tuple_payloads: std.ArrayListUnmanaged(TuplePayload),
     type_parameter_payloads: std.ArrayListUnmanaged(TypeParameterPayload),
     signature_payloads: std.ArrayListUnmanaged(SignaturePayload),
@@ -297,6 +320,7 @@ pub const Pool = struct {
 
     /// Variable-arity element pools.
     member_pool: std.ArrayListUnmanaged(TypeId),
+    string_id_pool: std.ArrayListUnmanaged(StringId),
     tuple_element_pool: std.ArrayListUnmanaged(TupleElement),
     type_arg_pool: std.ArrayListUnmanaged(TypeId),
     signature_param_pool: std.ArrayListUnmanaged(SignatureParameter),
@@ -313,12 +337,15 @@ pub const Pool = struct {
             .mapped_payloads = .empty,
             .indexed_access_payloads = .empty,
             .keyof_payloads = .empty,
+            .template_literal_payloads = .empty,
+            .string_mapping_payloads = .empty,
             .tuple_payloads = .empty,
             .type_parameter_payloads = .empty,
             .signature_payloads = .empty,
             .object_type_payloads = .empty,
             .instantiation_payloads = .empty,
             .member_pool = .empty,
+            .string_id_pool = .empty,
             .tuple_element_pool = .empty,
             .type_arg_pool = .empty,
             .signature_param_pool = .empty,
@@ -332,12 +359,15 @@ pub const Pool = struct {
         try p.mapped_payloads.append(gpa, std.mem.zeroes(MappedPayload));
         try p.indexed_access_payloads.append(gpa, std.mem.zeroes(IndexedAccessPayload));
         try p.keyof_payloads.append(gpa, .{ .operand = Primitive.none });
+        try p.template_literal_payloads.append(gpa, std.mem.zeroes(TemplateLiteralPayload));
+        try p.string_mapping_payloads.append(gpa, .{ .kind = .lowercase, .inner = Primitive.none });
         try p.tuple_payloads.append(gpa, .{ .elements_start = 0, .elements_len = 0 });
         try p.type_parameter_payloads.append(gpa, std.mem.zeroes(TypeParameterPayload));
         try p.signature_payloads.append(gpa, std.mem.zeroes(SignaturePayload));
         try p.object_type_payloads.append(gpa, std.mem.zeroes(ObjectTypePayload));
         try p.instantiation_payloads.append(gpa, std.mem.zeroes(InstantiationPayload));
         try p.member_pool.append(gpa, Primitive.none);
+        try p.string_id_pool.append(gpa, 0);
         try p.tuple_element_pool.append(gpa, .{ .type = Primitive.none, .is_optional = false, .is_rest = false });
         try p.type_arg_pool.append(gpa, Primitive.none);
         try p.signature_param_pool.append(gpa, std.mem.zeroes(SignatureParameter));
@@ -376,12 +406,15 @@ pub const Pool = struct {
         self.mapped_payloads.deinit(g);
         self.indexed_access_payloads.deinit(g);
         self.keyof_payloads.deinit(g);
+        self.template_literal_payloads.deinit(g);
+        self.string_mapping_payloads.deinit(g);
         self.tuple_payloads.deinit(g);
         self.type_parameter_payloads.deinit(g);
         self.signature_payloads.deinit(g);
         self.object_type_payloads.deinit(g);
         self.instantiation_payloads.deinit(g);
         self.member_pool.deinit(g);
+        self.string_id_pool.deinit(g);
         self.tuple_element_pool.deinit(g);
         self.type_arg_pool.deinit(g);
         self.signature_param_pool.deinit(g);

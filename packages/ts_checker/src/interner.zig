@@ -41,6 +41,11 @@ pub const TypeKey = union(Kind) {
     mapped: types.MappedPayload,
     indexed_access: types.IndexedAccessPayload,
     keyof: TypeId,
+    template_literal: struct {
+        texts: []const StringId,
+        types: []const TypeId,
+    },
+    string_mapping: types.StringMappingPayload,
     tuple: []const types.TupleElement,
     type_parameter: types.TypeParameterPayload,
     instantiation: struct {
@@ -67,6 +72,8 @@ pub const TypeKey = union(Kind) {
         mapped,
         indexed_access,
         keyof,
+        template_literal,
+        string_mapping,
         tuple,
         type_parameter,
         instantiation,
@@ -101,6 +108,15 @@ pub const TypeKey = union(Kind) {
                 hasher.update(std.mem.asBytes(&ia.index));
             },
             .keyof => |op| hasher.update(std.mem.asBytes(&op)),
+            .template_literal => |tl| {
+                for (tl.texts) |text| hasher.update(std.mem.asBytes(&text));
+                hasher.update(&[_]u8{0xff});
+                for (tl.types) |t| hasher.update(std.mem.asBytes(&t));
+            },
+            .string_mapping => |sm| {
+                hasher.update(&[_]u8{@intFromEnum(sm.kind)});
+                hasher.update(std.mem.asBytes(&sm.inner));
+            },
             .tuple => |elems| {
                 for (elems) |e| {
                     hasher.update(std.mem.asBytes(&e.type));
@@ -157,6 +173,15 @@ pub const TypeKey = union(Kind) {
                     a.index == other.indexed_access.index;
             },
             .keyof => |a| a == other.keyof,
+            .template_literal => |a| {
+                const b = other.template_literal;
+                return std.mem.eql(StringId, a.texts, b.texts) and
+                    std.mem.eql(TypeId, a.types, b.types);
+            },
+            .string_mapping => |a| {
+                const b = other.string_mapping;
+                return a.kind == b.kind and a.inner == b.inner;
+            },
             .tuple => |a| {
                 const b = other.tuple;
                 if (a.len != b.len) return false;
@@ -305,6 +330,19 @@ pub const Interner = struct {
     pub fn internKeyof(self: *Interner, operand: TypeId) !TypeId {
         const key: TypeKey = .{ .keyof = operand };
         return try self.internKey(key, .{ .is_keyof = true });
+    }
+
+    pub fn internTemplateLiteral(self: *Interner, texts: []const StringId, type_parts: []const TypeId) !TypeId {
+        const key_texts = try self.key_arena.allocator().dupe(StringId, texts);
+        const key_types = try self.key_arena.allocator().dupe(TypeId, type_parts);
+        const key: TypeKey = .{ .template_literal = .{ .texts = key_texts, .types = key_types } };
+        return try self.internKey(key, .{ .is_string = true, .is_template_literal = true });
+    }
+
+    pub fn internStringMapping(self: *Interner, kind: types.StringMappingKind, inner: TypeId) !TypeId {
+        const payload: types.StringMappingPayload = .{ .kind = kind, .inner = inner };
+        const key: TypeKey = .{ .string_mapping = payload };
+        return try self.internKey(key, .{ .is_string = true, .is_string_mapping = true });
     }
 
     pub fn internIndexedAccess(self: *Interner, object: TypeId, index: TypeId) !TypeId {
@@ -679,6 +717,25 @@ pub const Interner = struct {
                 try self.pool.keyof_payloads.append(self.gpa, .{ .operand = op });
                 break :blk idx;
             },
+            .template_literal => |tl| blk: {
+                const texts_start: u32 = @intCast(self.pool.string_id_pool.items.len);
+                try self.pool.string_id_pool.appendSlice(self.gpa, tl.texts);
+                const types_start: u32 = @intCast(self.pool.type_arg_pool.items.len);
+                try self.pool.type_arg_pool.appendSlice(self.gpa, tl.types);
+                const idx: u32 = @intCast(self.pool.template_literal_payloads.items.len);
+                try self.pool.template_literal_payloads.append(self.gpa, .{
+                    .texts_start = texts_start,
+                    .texts_len = @intCast(tl.texts.len),
+                    .types_start = types_start,
+                    .types_len = @intCast(tl.types.len),
+                });
+                break :blk idx;
+            },
+            .string_mapping => |sm| blk: {
+                const idx: u32 = @intCast(self.pool.string_mapping_payloads.items.len);
+                try self.pool.string_mapping_payloads.append(self.gpa, sm);
+                break :blk idx;
+            },
             .tuple => |elems| blk: {
                 const start: u32 = @intCast(self.pool.tuple_element_pool.items.len);
                 try self.pool.tuple_element_pool.appendSlice(self.gpa, elems);
@@ -759,6 +816,26 @@ pub const Interner = struct {
     pub fn mappedPayload(self: *const Interner, id: TypeId) types.MappedPayload {
         std.debug.assert(self.pool.flagsOf(id).is_mapped);
         return self.pool.mapped_payloads.items[self.pool.payloadOf(id)];
+    }
+
+    pub fn templateLiteralPayload(self: *const Interner, id: TypeId) types.TemplateLiteralPayload {
+        std.debug.assert(self.pool.flagsOf(id).is_template_literal);
+        return self.pool.template_literal_payloads.items[self.pool.payloadOf(id)];
+    }
+
+    pub fn templateLiteralTexts(self: *const Interner, id: TypeId) []const StringId {
+        const p = self.templateLiteralPayload(id);
+        return self.pool.string_id_pool.items[p.texts_start .. p.texts_start + p.texts_len];
+    }
+
+    pub fn templateLiteralTypes(self: *const Interner, id: TypeId) []const TypeId {
+        const p = self.templateLiteralPayload(id);
+        return self.pool.type_arg_pool.items[p.types_start .. p.types_start + p.types_len];
+    }
+
+    pub fn stringMappingPayload(self: *const Interner, id: TypeId) types.StringMappingPayload {
+        std.debug.assert(self.pool.flagsOf(id).is_string_mapping);
+        return self.pool.string_mapping_payloads.items[self.pool.payloadOf(id)];
     }
 };
 

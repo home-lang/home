@@ -479,6 +479,8 @@ pub const Engine = struct {
             if (sf.is_bigint and target == Primitive.bigint_t) return true;
             if (sf.is_boolean and target == Primitive.boolean_t) return true;
         }
+        if ((sf.is_template_literal or sf.is_string_mapping) and target == Primitive.string_t) return true;
+        if (tf.is_template_literal or tf.is_string_mapping) return false;
 
         // `null` and `undefined` assign to themselves only under
         // `strictNullChecks`. Without it, tsc treats both as

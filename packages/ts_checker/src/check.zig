@@ -8974,24 +8974,42 @@ pub const Checker = struct {
             }
             return self.interner.internUnion(mapped.items) catch return error.OutOfMemory;
         }
-        const sid = self.stringLiteralValueFromType(inner) orelse return types.Primitive.string_t;
+        const kind = stringMappingKindFromName(name) orelse return inner;
+        if (inner == types.Primitive.any or inner == types.Primitive.unknown) return inner;
+        const sid = self.stringLiteralValueFromType(inner) orelse
+            return self.interner.internStringMapping(kind, inner) catch return error.OutOfMemory;
         const raw = self.string_interner.get(sid);
-        var buf = try self.gpa.alloc(u8, raw.len);
+        const buf = try self.gpa.alloc(u8, raw.len);
         defer self.gpa.free(buf);
         @memcpy(buf, raw);
-        if (std.mem.eql(u8, name, "Lowercase")) {
-            for (buf) |*c| c.* = std.ascii.toLower(c.*);
-        } else if (std.mem.eql(u8, name, "Uppercase")) {
-            for (buf) |*c| c.* = std.ascii.toUpper(c.*);
-        } else if (std.mem.eql(u8, name, "Capitalize")) {
-            if (buf.len > 0) buf[0] = std.ascii.toUpper(buf[0]);
-        } else if (std.mem.eql(u8, name, "Uncapitalize")) {
-            if (buf.len > 0) buf[0] = std.ascii.toLower(buf[0]);
-        } else {
-            return inner;
-        }
+        applyStringMappingToBuffer(kind, buf);
         const mapped_sid = self.string_interner.intern(buf) catch return error.OutOfMemory;
         return self.interner.internStringLiteral(mapped_sid) catch return error.OutOfMemory;
+    }
+
+    fn stringMappingKindFromName(name: []const u8) ?types.StringMappingKind {
+        if (std.mem.eql(u8, name, "Lowercase")) return .lowercase;
+        if (std.mem.eql(u8, name, "Uppercase")) return .uppercase;
+        if (std.mem.eql(u8, name, "Capitalize")) return .capitalize;
+        if (std.mem.eql(u8, name, "Uncapitalize")) return .uncapitalize;
+        return null;
+    }
+
+    fn applyStringMappingToBuffer(kind: types.StringMappingKind, buf: []u8) void {
+        switch (kind) {
+            .lowercase => {
+                for (buf) |*c| c.* = std.ascii.toLower(c.*);
+            },
+            .uppercase => {
+                for (buf) |*c| c.* = std.ascii.toUpper(c.*);
+            },
+            .capitalize => {
+                if (buf.len > 0) buf[0] = std.ascii.toUpper(buf[0]);
+            },
+            .uncapitalize => {
+                if (buf.len > 0) buf[0] = std.ascii.toLower(buf[0]);
+            },
+        }
     }
 
     fn lowerTemplateLiteralTypeWithTypeParams(self: *Checker, type_node: NodeId) CheckError!TypeId {
@@ -9001,21 +9019,34 @@ pub const Checker = struct {
 
         var buf: std.ArrayListUnmanaged(u8) = .empty;
         defer buf.deinit(self.gpa);
+        var text_ids: std.ArrayListUnmanaged(hir_mod.StringId) = .empty;
+        defer text_ids.deinit(self.gpa);
+        var lowered_parts: std.ArrayListUnmanaged(TypeId) = .empty;
+        defer lowered_parts.deinit(self.gpa);
+        var all_literal_parts = true;
         for (text_parts, 0..) |text_node, i| {
             if (text_node != hir_mod.none_node_id and self.hir.kindOf(text_node) == .literal_string) {
                 const lit = hir_mod.literalStringOf(self.hir, text_node);
+                try text_ids.append(self.gpa, lit.value);
                 try buf.appendSlice(self.gpa, self.string_interner.get(lit.value));
             } else {
                 return types.Primitive.string_t;
             }
             if (i < type_parts.len) {
                 const sub_t = try self.lowererLowerWithTypeParams(type_parts[i]);
-                const sid = self.stringLiteralValueFromType(sub_t) orelse return types.Primitive.string_t;
-                try buf.appendSlice(self.gpa, self.string_interner.get(sid));
+                try lowered_parts.append(self.gpa, sub_t);
+                if (self.stringLiteralValueFromType(sub_t)) |sid| {
+                    try buf.appendSlice(self.gpa, self.string_interner.get(sid));
+                } else {
+                    all_literal_parts = false;
+                }
             }
         }
-        const sid = self.string_interner.intern(buf.items) catch return error.OutOfMemory;
-        return self.interner.internStringLiteral(sid) catch return error.OutOfMemory;
+        if (all_literal_parts) {
+            const sid = self.string_interner.intern(buf.items) catch return error.OutOfMemory;
+            return self.interner.internStringLiteral(sid) catch return error.OutOfMemory;
+        }
+        return self.interner.internTemplateLiteral(text_ids.items, lowered_parts.items) catch return error.OutOfMemory;
     }
 
     /// Lower a type annotation while consulting the current
@@ -10050,7 +10081,10 @@ pub const Checker = struct {
         if (self.containsFreeTypeParameter(check) or self.containsFreeTypeParameter(ext)) {
             return self.interner.internConditional(check, ext, tt, ff) catch return error.OutOfMemory;
         }
-        const ok = self.engine.isAssignableTo(check, ext) catch false;
+        const ok = if (self.stringLiteralValueFromType(check)) |sid|
+            try self.stringLiteralAssignableToType(sid, ext)
+        else
+            self.engine.isAssignableTo(check, ext) catch false;
         return if (ok) tt else ff;
     }
 
@@ -10077,7 +10111,10 @@ pub const Checker = struct {
         if (self.containsFreeTypeParameter(check) or self.containsFreeTypeParameter(ext)) {
             return self.interner.internConditional(check, ext, tt, ff) catch return error.OutOfMemory;
         }
-        const ok = self.engine.isAssignableTo(check, ext) catch false;
+        const ok = if (self.stringLiteralValueFromType(check)) |sid|
+            try self.stringLiteralAssignableToType(sid, ext)
+        else
+            self.engine.isAssignableTo(check, ext) catch false;
         return if (ok) tt else ff;
     }
 
@@ -10224,6 +10261,19 @@ pub const Checker = struct {
                 self.containsFreeTypeParameter(c.true_branch) or
                 self.containsFreeTypeParameter(c.false_branch);
         }
+        if (flags.is_mapped) {
+            const m = self.interner.mappedPayload(t);
+            return self.containsFreeTypeParameter(m.constraint) or self.containsFreeTypeParameter(m.template);
+        }
+        if (flags.is_template_literal) {
+            for (self.interner.templateLiteralTypes(t)) |part| {
+                if (self.containsFreeTypeParameter(part)) return true;
+            }
+            return false;
+        }
+        if (flags.is_string_mapping) {
+            return self.containsFreeTypeParameter(self.interner.stringMappingPayload(t).inner);
+        }
         return false;
     }
 
@@ -10265,6 +10315,20 @@ pub const Checker = struct {
                 if (self.firstFreeTypeParameter(r)) |tp| return tp;
             }
             return null;
+        }
+        if (flags.is_mapped) {
+            const m = self.interner.mappedPayload(t);
+            if (self.firstFreeTypeParameter(m.constraint)) |tp| return tp;
+            return self.firstFreeTypeParameter(m.template);
+        }
+        if (flags.is_template_literal) {
+            for (self.interner.templateLiteralTypes(t)) |part| {
+                if (self.firstFreeTypeParameter(part)) |tp| return tp;
+            }
+            return null;
+        }
+        if (flags.is_string_mapping) {
+            return self.firstFreeTypeParameter(self.interner.stringMappingPayload(t).inner);
         }
         return null;
     }
@@ -10981,6 +11045,7 @@ pub const Checker = struct {
                     break :blk true;
                 }
                 if (try self.literalExpressionAssignableToTarget(v.init, declared_type)) break :blk true;
+                if (try self.templateExpressionAssignableToType(v.init, declared_type)) break :blk true;
                 break :blk self.engine.isAssignableTo(init_type, declared_type) catch return error.OutOfMemory;
             };
             if (!ok) {
@@ -11845,7 +11910,9 @@ pub const Checker = struct {
                     target_t != types.Primitive.any and
                     target_t != types.Primitive.unknown)
                 {
-                    const ok = self.engine.isAssignableTo(value_t, target_t) catch true;
+                    const ok = (try self.literalExpressionAssignableToTarget(a.value, target_t)) or
+                        (try self.templateExpressionAssignableToType(a.value, target_t)) or
+                        (self.engine.isAssignableTo(value_t, target_t) catch true);
                     if (!ok) {
                         try self.report(node, TsCodes.type_not_assignable, "Type is not assignable to target type.");
                     }
@@ -15842,6 +15909,33 @@ pub const Checker = struct {
         return self.isConcretePrimitiveLike(a) and self.isConcretePrimitiveLike(b);
     }
 
+    fn templateTypesHaveNoOverlap(self: *Checker, a: TypeId, b: TypeId) bool {
+        if (a >= self.interner.pool.typeCount() or b >= self.interner.pool.typeCount()) return false;
+        const af = self.interner.pool.flagsOf(a);
+        const bf = self.interner.pool.flagsOf(b);
+        if (!af.is_template_literal or !bf.is_template_literal) return false;
+        const a_texts = self.interner.templateLiteralTexts(a);
+        const b_texts = self.interner.templateLiteralTexts(b);
+        if (a_texts.len == 0 or b_texts.len == 0) return false;
+        const a_prefix = self.string_interner.get(a_texts[0]);
+        const b_prefix = self.string_interner.get(b_texts[0]);
+        if (a_prefix.len > 0 and b_prefix.len > 0 and
+            !std.mem.startsWith(u8, a_prefix, b_prefix) and
+            !std.mem.startsWith(u8, b_prefix, a_prefix))
+        {
+            return true;
+        }
+        const a_suffix = self.string_interner.get(a_texts[a_texts.len - 1]);
+        const b_suffix = self.string_interner.get(b_texts[b_texts.len - 1]);
+        if (a_suffix.len > 0 and b_suffix.len > 0 and
+            !std.mem.endsWith(u8, a_suffix, b_suffix) and
+            !std.mem.endsWith(u8, b_suffix, a_suffix))
+        {
+            return true;
+        }
+        return false;
+    }
+
     fn isNullishType(self: *Checker, t: TypeId) bool {
         const f = self.interner.pool.flagsOf(t);
         return f.is_null or f.is_undefined;
@@ -16385,6 +16479,48 @@ pub const Checker = struct {
         return types.Primitive.string_t;
     }
 
+    fn templateExpressionAssignableToType(self: *Checker, node: NodeId, target_t: TypeId) CheckError!bool {
+        var expr_node = node;
+        while (true) {
+            switch (self.hir.kindOf(expr_node)) {
+                .as_expr, .satisfies_expr, .type_assertion, .non_null_expr => {
+                    expr_node = hir_mod.asExpressionOf(self.hir, expr_node).expr;
+                    continue;
+                },
+                else => {},
+            }
+            break;
+        }
+        if (self.hir.kindOf(expr_node) != .template_literal) return false;
+        if (target_t < types.Primitive.first_dynamic or target_t >= self.interner.pool.typeCount()) return false;
+        const target_flags = self.interner.pool.flagsOf(target_t);
+        if (!target_flags.is_template_literal) return false;
+        const source_text_nodes = hir_mod.templateLiteralTexts(self.hir, expr_node);
+        const source_exprs = hir_mod.templateLiteralExprs(self.hir, expr_node);
+        const target_texts = self.interner.templateLiteralTexts(target_t);
+        const target_parts = self.interner.templateLiteralTypes(target_t);
+        if (source_text_nodes.len != target_texts.len or source_exprs.len != target_parts.len) return false;
+        for (source_text_nodes, target_texts) |source_text_node, target_sid| {
+            if (self.hir.kindOf(source_text_node) != .literal_string) return false;
+            const source_sid = hir_mod.literalStringOf(self.hir, source_text_node).value;
+            if (!std.mem.eql(u8, self.string_interner.get(source_sid), self.string_interner.get(target_sid))) return false;
+        }
+        for (source_exprs, target_parts) |source_expr, target_part| {
+            const source_t = self.hir.typeOf(source_expr);
+            if (source_t == types.Primitive.none) return false;
+            if (self.engine.isAssignableTo(source_t, target_part) catch false) continue;
+            if (target_part >= types.Primitive.first_dynamic and target_part < self.interner.pool.typeCount() and
+                self.interner.pool.flagsOf(target_part).is_type_parameter)
+            {
+                if (self.typeParameterConstraint(target_part)) |constraint| {
+                    if (constraint == target_part or (self.engine.isAssignableTo(source_t, constraint) catch false)) continue;
+                }
+            }
+            return false;
+        }
+        return true;
+    }
+
     fn templateLiteralConcreteString(self: *Checker, node: NodeId) CheckError!?hir_mod.StringId {
         const texts = hir_mod.templateLiteralTexts(self.hir, node);
         const exprs = hir_mod.templateLiteralExprs(self.hir, node);
@@ -16834,6 +16970,8 @@ pub const Checker = struct {
                     if (!ok) {
                         try self.report(node, TsCodes.no_overlap_comparison, "This comparison appears to be unintentional because the types have no overlap.");
                     }
+                } else if (self.templateTypesHaveNoOverlap(cmp_lhs, cmp_rhs)) {
+                    try self.report(node, TsCodes.no_overlap_comparison, "This comparison appears to be unintentional because the types have no overlap.");
                 }
                 break :blk types.Primitive.boolean_t;
             },
@@ -17674,6 +17812,46 @@ pub const Checker = struct {
             }
             return self.interner.internIndexedAccess(new_obj, new_idx) catch return t;
         }
+        if (flags.is_template_literal) {
+            const texts = self.interner.templateLiteralTexts(t);
+            const part_types = self.interner.templateLiteralTypes(t);
+            var new_parts: std.ArrayListUnmanaged(TypeId) = .empty;
+            defer new_parts.deinit(self.gpa);
+            var changed = false;
+            var all_literal = true;
+            var buf: std.ArrayListUnmanaged(u8) = .empty;
+            defer buf.deinit(self.gpa);
+            for (texts, 0..) |text_sid, i| {
+                try buf.appendSlice(self.gpa, self.string_interner.get(text_sid));
+                if (i < part_types.len) {
+                    const new_part = try self.substituteType(part_types[i], subs);
+                    try new_parts.append(self.gpa, new_part);
+                    if (new_part != part_types[i]) changed = true;
+                    if (self.stringLiteralValueFromType(new_part)) |lit_sid| {
+                        try buf.appendSlice(self.gpa, self.string_interner.get(lit_sid));
+                    } else {
+                        all_literal = false;
+                    }
+                }
+            }
+            if (!changed) return t;
+            if (all_literal) {
+                const sid = self.string_interner.intern(buf.items) catch return error.OutOfMemory;
+                return self.interner.internStringLiteral(sid) catch return t;
+            }
+            return self.interner.internTemplateLiteral(texts, new_parts.items) catch return t;
+        }
+        if (flags.is_string_mapping) {
+            const sm = self.interner.stringMappingPayload(t);
+            const new_inner = try self.substituteType(sm.inner, subs);
+            if (new_inner == sm.inner) return t;
+            return self.applyStringMappingBuiltin(switch (sm.kind) {
+                .lowercase => "Lowercase",
+                .uppercase => "Uppercase",
+                .capitalize => "Capitalize",
+                .uncapitalize => "Uncapitalize",
+            }, new_inner) catch return t;
+        }
         if (flags.is_type_parameter) {
             if (payload_idx >= self.interner.pool.type_parameter_payloads.items.len) return t;
             const tp = self.interner.pool.type_parameter_payloads.items[payload_idx];
@@ -17798,7 +17976,11 @@ pub const Checker = struct {
                 }
             }
             const ok = self.isArgumentAssignableToParam(args[i], arg_t, param_t) catch true;
-            if (!ok) {
+            const contextual_ok = if (!ok)
+                self.unresolvedRestTupleCallbackFromPriorArrayArg(args, param_ts, i, param_t) catch false
+            else
+                false;
+            if (!ok and !contextual_ok) {
                 const msg = try std.fmt.allocPrint(
                     self.diag_arena.allocator(),
                     "Argument is not assignable to parameter at position {d}.",
@@ -18155,7 +18337,10 @@ pub const Checker = struct {
         if (!self.containsFreeTypeParameter(declared_type)) return;
         const e = hir_mod.elementOf(self.hir, init_node);
         const idx_t = self.hir.typeOf(e.index);
-        if (idx_t == types.Primitive.none or self.containsFreeTypeParameter(idx_t)) return;
+        if (idx_t == types.Primitive.none) return;
+        if (self.containsFreeTypeParameter(idx_t)) {
+            if (idx_t >= self.interner.pool.typeCount() or !self.interner.pool.flagsOf(idx_t).is_template_literal) return;
+        }
         try self.report(node, TsCodes.type_not_assignable, "Type is not assignable to declared type.");
     }
 
@@ -18170,6 +18355,8 @@ pub const Checker = struct {
     fn isArgumentAssignableToParam(self: *Checker, arg_node: NodeId, arg_t: TypeId, param_t: TypeId) !bool {
         if (try self.overloadedIdentifierAssignableToParam(arg_node, param_t)) |ok| return ok;
         if (try self.literalExpressionAssignableToTarget(arg_node, param_t)) return true;
+        if (try self.templateExpressionAssignableToType(arg_node, param_t)) return true;
+        if (try self.restTupleCallbackAssignableToParam(arg_node, param_t)) return true;
         if (self.hir.kindOf(arg_node) == .object_literal) {
             if (try self.objectLiteralAssignableToTarget(arg_node, arg_t, param_t)) return true;
         }
@@ -18186,6 +18373,47 @@ pub const Checker = struct {
             if (self.typeIncludesUndefined(arg_t) and !self.typeIncludesUndefined(param_t)) return false;
         }
         return self.engine.isAssignableTo(arg_t, param_t);
+    }
+
+    fn restTupleCallbackAssignableToParam(self: *Checker, arg_node: NodeId, param_t: TypeId) CheckError!bool {
+        const arg_kind = self.hir.kindOf(arg_node);
+        if (arg_kind != .arrow_fn and arg_kind != .fn_expr) return false;
+        if (param_t >= self.interner.pool.typeCount()) return false;
+        if (!self.interner.pool.flagsOf(param_t).is_signature) return false;
+        const params = self.interner.signatureParams(param_t);
+        if (!self.rest_signatures.contains(param_t)) {
+            const source_t = self.hir.typeOf(arg_node);
+            if (source_t >= self.interner.pool.typeCount() or !self.interner.pool.flagsOf(source_t).is_signature) return false;
+            const source_params = self.interner.signatureParams(source_t);
+            if (params.len == 1 and source_params.len > 1 and self.containsFreeTypeParameter(params[0])) return true;
+            return false;
+        }
+        if (params.len != 1) return false;
+        if (!self.containsFreeTypeParameter(params[0])) return false;
+        return true;
+    }
+
+    fn unresolvedRestTupleCallbackFromPriorArrayArg(
+        self: *Checker,
+        args: []const NodeId,
+        param_ts: []const TypeId,
+        index: usize,
+        param_t: TypeId,
+    ) CheckError!bool {
+        if (index == 0 or index >= args.len) return false;
+        const arg_kind = self.hir.kindOf(args[index]);
+        if (arg_kind != .arrow_fn and arg_kind != .fn_expr) return false;
+        if (param_t >= self.interner.pool.typeCount()) return false;
+        if (!self.interner.pool.flagsOf(param_t).is_signature) return false;
+        if (!self.rest_signatures.contains(param_t)) return false;
+        const callback_params = self.interner.signatureParams(param_t);
+        if (callback_params.len != 1 or callback_params[0] != types.Primitive.unknown) return false;
+        const prior_count = @min(index, param_ts.len);
+        for (0..prior_count) |prior_i| {
+            if (self.hir.kindOf(args[prior_i]) != .array_literal) continue;
+            return true;
+        }
+        return false;
     }
 
     fn promisePayloadArgumentAssignable(self: *Checker, arg_t: TypeId, param_t: TypeId) CheckError!bool {
@@ -18566,9 +18794,178 @@ pub const Checker = struct {
         return self.interner.pool.flagsOf(t).is_literal;
     }
 
+    fn stringLiteralAssignableToType(self: *Checker, sid: hir_mod.StringId, target_t: TypeId) CheckError!bool {
+        if (target_t == types.Primitive.string_t or target_t == types.Primitive.any or target_t == types.Primitive.unknown) return true;
+        if (target_t < types.Primitive.first_dynamic or target_t >= self.interner.pool.typeCount()) return false;
+        const flags = self.interner.pool.flagsOf(target_t);
+        if (flags.is_union) {
+            for (self.interner.unionMembers(target_t)) |member| {
+                if (try self.stringLiteralAssignableToType(sid, member)) return true;
+            }
+            return false;
+        }
+        if (flags.is_intersection) {
+            for (self.interner.intersectionMembers(target_t)) |member| {
+                if (!try self.stringLiteralAssignableToType(sid, member)) return false;
+            }
+            return true;
+        }
+        if (flags.is_literal and flags.is_string) {
+            const lit = self.interner.literalOf(target_t);
+            return switch (lit) {
+                .string_lit => |target_sid| target_sid == sid,
+                else => false,
+            };
+        }
+        if (flags.is_template_literal) return try self.templateLiteralTypeMatchesString(target_t, sid);
+        if (flags.is_string_mapping) return try self.stringMappingTypeMatchesString(target_t, sid);
+        return false;
+    }
+
+    fn templateLiteralTypeMatchesString(self: *Checker, target_t: TypeId, sid: hir_mod.StringId) CheckError!bool {
+        const texts = self.interner.templateLiteralTexts(target_t);
+        const parts = self.interner.templateLiteralTypes(target_t);
+        if (texts.len != parts.len + 1) return false;
+        const raw = self.string_interner.get(sid);
+        return try self.templateLiteralMatchFrom(texts, parts, raw, 0, 0);
+    }
+
+    fn templateLiteralMatchFrom(
+        self: *Checker,
+        texts: []const hir_mod.StringId,
+        parts: []const TypeId,
+        raw: []const u8,
+        text_index: usize,
+        pos: usize,
+    ) CheckError!bool {
+        const text = self.string_interner.get(texts[text_index]);
+        if (pos > raw.len or raw.len - pos < text.len) return false;
+        if (!std.mem.eql(u8, raw[pos .. pos + text.len], text)) return false;
+        const after_text = pos + text.len;
+        if (text_index == parts.len) return after_text == raw.len;
+
+        const next_text = self.string_interner.get(texts[text_index + 1]);
+        if (next_text.len == 0) {
+            var end = after_text;
+            while (end <= raw.len) : (end += 1) {
+                const part_ok = try self.templatePlaceholderAcceptsSlice(parts[text_index], raw[after_text..end]);
+                const rest_ok = if (part_ok)
+                    try self.templateLiteralMatchFrom(texts, parts, raw, text_index + 1, end)
+                else
+                    false;
+                if (part_ok and rest_ok) {
+                    return true;
+                }
+            }
+            return false;
+        }
+
+        var search = after_text;
+        while (search <= raw.len) {
+            const rel = std.mem.indexOfPos(u8, raw, search, next_text) orelse return false;
+            const part_ok = try self.templatePlaceholderAcceptsSlice(parts[text_index], raw[after_text..rel]);
+            const rest_ok = if (part_ok)
+                try self.templateLiteralMatchFrom(texts, parts, raw, text_index + 1, rel)
+            else
+                false;
+            if (part_ok and rest_ok) {
+                return true;
+            }
+            search = rel + 1;
+        }
+        return false;
+    }
+
+    fn templatePlaceholderAcceptsSlice(self: *Checker, part_t: TypeId, slice: []const u8) CheckError!bool {
+        if (part_t == types.Primitive.any or part_t == types.Primitive.unknown or part_t == types.Primitive.string_t) return true;
+        if (part_t == types.Primitive.number_t) return sliceLooksNumeric(slice);
+        if (part_t == types.Primitive.boolean_t) return std.mem.eql(u8, slice, "true") or std.mem.eql(u8, slice, "false");
+        if (part_t == types.Primitive.bigint_t) return sliceLooksBigInt(slice);
+        if (part_t < types.Primitive.first_dynamic or part_t >= self.interner.pool.typeCount()) return false;
+        const flags = self.interner.pool.flagsOf(part_t);
+        if (flags.is_union) {
+            for (self.interner.unionMembers(part_t)) |member| {
+                if (try self.templatePlaceholderAcceptsSlice(member, slice)) return true;
+            }
+            return false;
+        }
+        if (flags.is_literal and flags.is_string) {
+            const lit = self.interner.literalOf(part_t);
+            return switch (lit) {
+                .string_lit => |target_sid| std.mem.eql(u8, self.string_interner.get(target_sid), slice),
+                else => false,
+            };
+        }
+        if (flags.is_literal and flags.is_number) return sliceLooksNumeric(slice);
+        if (flags.is_template_literal or flags.is_string_mapping) {
+            const sid = self.string_interner.intern(slice) catch return error.OutOfMemory;
+            return try self.stringLiteralAssignableToType(sid, part_t);
+        }
+        if (flags.is_type_parameter) {
+            const constraint = self.typeParameterConstraint(part_t) orelse return true;
+            if (constraint == part_t) return true;
+            return try self.templatePlaceholderAcceptsSlice(constraint, slice);
+        }
+        return false;
+    }
+
+    fn sliceLooksNumeric(slice: []const u8) bool {
+        if (slice.len == 0) return false;
+        _ = std.fmt.parseFloat(f64, slice) catch return false;
+        return true;
+    }
+
+    fn sliceLooksBigInt(slice: []const u8) bool {
+        if (slice.len == 0) return false;
+        var i: usize = 0;
+        if (slice[0] == '-' or slice[0] == '+') i = 1;
+        if (i == slice.len) return false;
+        while (i < slice.len) : (i += 1) {
+            if (!std.ascii.isDigit(slice[i])) return false;
+        }
+        return true;
+    }
+
+    fn stringMappingTypeMatchesString(self: *Checker, target_t: TypeId, sid: hir_mod.StringId) CheckError!bool {
+        const payload = self.interner.stringMappingPayload(target_t);
+        const raw = self.string_interner.get(sid);
+        var candidate = try self.gpa.alloc(u8, raw.len);
+        defer self.gpa.free(candidate);
+        @memcpy(candidate, raw);
+        switch (payload.kind) {
+            .lowercase => {
+                for (candidate) |*c| c.* = std.ascii.toUpper(c.*);
+            },
+            .uppercase => {
+                for (candidate) |*c| c.* = std.ascii.toLower(c.*);
+            },
+            .capitalize => {
+                if (candidate.len > 0) candidate[0] = std.ascii.toLower(candidate[0]);
+            },
+            .uncapitalize => {
+                if (candidate.len > 0) candidate[0] = std.ascii.toUpper(candidate[0]);
+            },
+        }
+        const remapped = try self.gpa.alloc(u8, candidate.len);
+        defer self.gpa.free(remapped);
+        @memcpy(remapped, candidate);
+        applyStringMappingToBuffer(payload.kind, remapped);
+        if (!std.mem.eql(u8, remapped, raw)) return false;
+        const candidate_sid = self.string_interner.intern(candidate) catch return error.OutOfMemory;
+        return try self.stringLiteralAssignableToType(candidate_sid, payload.inner);
+    }
+
     fn literalExpressionAssignableToTarget(self: *Checker, value_node: NodeId, target_t: TypeId) !bool {
         if (target_t == types.Primitive.true_lit) return self.hir.kindOf(value_node) == .literal_bool and hir_mod.literalBoolOf(self.hir, value_node);
         if (target_t == types.Primitive.false_lit) return self.hir.kindOf(value_node) == .literal_bool and !hir_mod.literalBoolOf(self.hir, value_node);
+        if (self.hir.kindOf(value_node) == .literal_string) {
+            const lit = hir_mod.literalStringOf(self.hir, value_node);
+            if (try self.stringLiteralAssignableToType(lit.value, target_t)) return true;
+            if (target_t >= types.Primitive.first_dynamic and target_t < self.interner.pool.typeCount()) {
+                const flags = self.interner.pool.flagsOf(target_t);
+                if (flags.is_template_literal or flags.is_string_mapping) return false;
+            }
+        }
         if (target_t < types.Primitive.first_dynamic or target_t >= self.interner.pool.typeCount()) return false;
         const flags = self.interner.pool.flagsOf(target_t);
         if (flags.is_union) {
@@ -19653,6 +20050,7 @@ test "checker: function signature cannot see local body type declarations" {
         \\}
     );
     defer destroySetup(s);
+    s.checker.setStrictFlags(.{ .strict_null_checks = true });
     try s.checker.checkSourceFile(s.root);
     var found = false;
     for (s.checker.diagnostics.items) |d| {
@@ -19770,6 +20168,7 @@ test "checker: virtual file export stars do not use single-source conflict heuri
         \\export * from "./c";
     );
     defer destroySetup(s);
+    s.checker.setStrictFlags(.{ .strict_null_checks = true });
     try s.checker.checkSourceFile(s.root);
 
     for (s.checker.diagnostics.items) |d| {
@@ -27263,25 +27662,7 @@ test "checker: tagged template — untyped tag (any) yields any" {
 }
 
 // =============================================================================
-// Template-literal *type* assignability — v0 pin.
-//
-// TODO(template-literal-narrow): the lowerer currently folds any
-// template literal type with non-string-literal placeholders down to
-// plain `string` (see `lowerTemplateLiteralType` in `lower.zig`), so a
-// declared type like `` `hello ${string}` `` assigns from any string
-// literal — even ones that don't begin with the fixed prefix. Real
-// pattern-matching against the fixed text segments is a follow-up.
-//
-// We can't yet write a checker test that *exercises* a template
-// literal type with placeholders end-to-end either: the scanner does
-// not (yet) re-enter `scanTemplate` after the parser closes the
-// `${ … }` interpolation (see the TODO at `ts_parser.zig`'s
-// "Phase 1.B follow-up: parser-driven rescanTemplate" note), so a
-// source like `` let x: `hello ${string}` = "hello world"; `` errors
-// at the lexer with `error.UnterminatedTemplate`. The two tests below
-// pin the no-substitution path — the only template-literal-type shape
-// that flows through the full pipeline today — so the follow-up
-// landing has a concrete regression target.
+// Template-literal *type* assignability.
 // =============================================================================
 
 test "checker: template-literal type without substitution lowers to string-literal" {
@@ -27322,6 +27703,64 @@ test "checker: template-literal type rejects mismatched string init" {
         if (d.code == TsCodes.type_not_assignable) found_ts2322 = true;
     }
     try T.expect(found_ts2322);
+}
+
+test "checker: template-literal pattern checks fixed prefix and suffix" {
+    const s = try newSetup(
+        \\let x: `:${string}:` = ":";
+        \\let y: `:${string}:` = "::";
+    );
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+    var found_ts2322 = false;
+    for (s.checker.diagnostics.items) |d| {
+        if (d.code == TsCodes.type_not_assignable) found_ts2322 = true;
+    }
+    try T.expect(found_ts2322);
+}
+
+test "checker: intrinsic uppercase string mapping rejects lowercase literal" {
+    const s = try newSetup(
+        \\let x: Uppercase<Lowercase<string>> = "A";
+        \\let y: Uppercase<Lowercase<string>> = "a";
+    );
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+    var found_ts2322 = false;
+    for (s.checker.diagnostics.items) |d| {
+        if (d.code == TsCodes.type_not_assignable) found_ts2322 = true;
+    }
+    try T.expect(found_ts2322);
+}
+
+test "checker: conditional string mapping can extend template literal pattern" {
+    const s = try newSetup(
+        \\type B<S> = Lowercase<S & string> extends `f${string}` ? 1 : 0;
+        \\let x: B<"foo"> = 1;
+    );
+    defer destroySetup(s);
+    s.checker.setStrictFlags(.{ .strict_null_checks = true });
+    try s.checker.checkSourceFile(s.root);
+    for (s.checker.diagnostics.items) |d| {
+        try T.expect(d.code != TsCodes.type_not_assignable);
+    }
+}
+
+test "checker: template expression satisfies matching generic template parameter" {
+    const s = try newSetup(
+        \\type Registry = { a: { a1: {} }; b: { b1: {} } };
+        \\type Keyof<T> = keyof T & string;
+        \\declare function f1<Scope extends Keyof<Registry>, Event extends Keyof<Registry[Scope]>>(eventPath: `${Scope}:${Event}`): void;
+        \\function f2<Scope extends Keyof<Registry>, Event extends Keyof<Registry[Scope]>>(scope: Scope, event: Event) {
+        \\  f1(`${scope}:${event}`);
+        \\}
+    );
+    defer destroySetup(s);
+    s.checker.setStrictFlags(.{ .strict_null_checks = true });
+    try s.checker.checkSourceFile(s.root);
+    for (s.checker.diagnostics.items) |d| {
+        try T.expect(d.code != TsCodes.argument_type_mismatch);
+    }
 }
 
 test "checker: object spread merges members from source object" {
@@ -27706,6 +28145,27 @@ test "checker: bare generic rest tuple does not bind from first argument only" {
         \\f(42, ...tail);
     );
     defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+    for (s.checker.diagnostics.items) |d| {
+        try T.expect(d.code != TsCodes.argument_type_mismatch);
+    }
+}
+
+test "checker: unresolved mapped rest tuple callback accepts positional callback params" {
+    const s = try newSetup(
+        \\type Container<T> = { value: T };
+        \\type UnwrapContainers<T extends Container<unknown>[]> = { [K in keyof T]: T[K]['value'] };
+        \\declare function createContainer<T extends unknown>(value: T): Container<T>;
+        \\declare function f<T extends Container<unknown>[]>(containers: [...T], callback: (...values: UnwrapContainers<T>) => void): void;
+        \\const container1 = createContainer('hi');
+        \\const container2 = createContainer(2);
+        \\f([container1, container2], (value1, value2) => {
+        \\  value1;
+        \\  value2;
+        \\});
+    );
+    defer destroySetup(s);
+    s.checker.setStrictFlags(.{ .strict_null_checks = true });
     try s.checker.checkSourceFile(s.root);
     for (s.checker.diagnostics.items) |d| {
         try T.expect(d.code != TsCodes.argument_type_mismatch);
