@@ -2017,6 +2017,10 @@ pub const Checker = struct {
             break :blk self.hir.kindOf(m.object) == .identifier;
         };
         const is_ident_narrowable = self.hir.kindOf(sw.discriminant) == .identifier;
+        var case_literal_types: std.ArrayListUnmanaged(TypeId) = .empty;
+        defer case_literal_types.deinit(self.gpa);
+        var has_default = false;
+        var all_value_cases_exit = true;
 
         for (cases) |case_node| {
             const case_p = hir_mod.switchCaseOf(self.hir, case_node);
@@ -2030,6 +2034,10 @@ pub const Checker = struct {
                 // the discriminant's object to the matching variant.
                 const case_expr_t = try self.checkExpression(case_p.value);
                 const case_t = self.expressionLiteralType(case_p.value, case_expr_t) catch case_expr_t;
+                if (try self.expressionNarrowLiteralType(case_p.value)) |lit_t| {
+                    try case_literal_types.append(self.gpa, lit_t);
+                }
+                if (!self.switchCaseStatementsDefinitelyExit(stmts)) all_value_cases_exit = false;
                 if (self.shouldCheckNoOverlap(discriminant_t, case_t)) {
                     const ok = self.engine.isComparableTo(case_t, discriminant_t) catch true;
                     if (!ok) {
@@ -2042,6 +2050,7 @@ pub const Checker = struct {
                     try self.applyIdentifierLiteralNarrow(sw.discriminant, case_p.value, true);
                 }
             } else if (is_disc_narrowable) {
+                has_default = true;
                 // `default:` — narrow to the union minus every
                 // listed case. Each call to `applyDiscriminatedNarrow`
                 // with `positive=false` consults the current narrow
@@ -2053,6 +2062,7 @@ pub const Checker = struct {
                     try self.applyDiscriminatedNarrow(sw.discriminant, other_p.value, false);
                 }
             } else if (is_ident_narrowable) {
+                has_default = true;
                 // `default:` for `switch (x)` — subtract every
                 // listed case literal from `x`'s static type so the
                 // exhaustiveness-marker pattern `let _: never = x`
@@ -2066,6 +2076,53 @@ pub const Checker = struct {
 
             for (stmts) |s| try self.checkStatement(s);
         }
+
+        if (!has_default and all_value_cases_exit and case_literal_types.items.len > 0) {
+            if (is_ident_narrowable) {
+                const id = hir_mod.identifierOf(self.hir, sw.discriminant);
+                var current = self.lookupNarrow(id.name) orelse self.typeOfIdentifier(sw.discriminant);
+                for (case_literal_types.items) |lit_t| {
+                    current = self.subtractType(current, lit_t) catch current;
+                }
+                try self.recordNarrow(id.name, current);
+            } else if (is_disc_narrowable) {
+                const m = hir_mod.memberOf(self.hir, sw.discriminant);
+                const obj_id = hir_mod.identifierOf(self.hir, m.object);
+                var current = self.lookupNarrow(obj_id.name) orelse self.typeOfIdentifier(m.object);
+                for (case_literal_types.items) |lit_t| {
+                    try self.applyDiscriminatedNarrowByType(obj_id.name, current, m.name, lit_t, false);
+                    current = self.lookupNarrow(obj_id.name) orelse current;
+                }
+            }
+        }
+    }
+
+    fn switchCaseStatementsDefinitelyExit(self: *Checker, stmts: []const NodeId) bool {
+        if (stmts.len == 0) return false;
+        return self.statementDefinitelyExits(stmts[stmts.len - 1]);
+    }
+
+    fn expressionNarrowLiteralType(self: *Checker, node: NodeId) CheckError!?TypeId {
+        return switch (self.hir.kindOf(node)) {
+            .literal_string => blk: {
+                const lit = hir_mod.literalStringOf(self.hir, node);
+                break :blk self.interner.internStringLiteral(lit.value) catch return error.OutOfMemory;
+            },
+            .literal_number => blk: {
+                const value = self.literalNumberWithSourceSign(node);
+                break :blk self.interner.internNumberLiteral(value) catch return error.OutOfMemory;
+            },
+            .literal_bool => self.interner.internBooleanLiteral(hir_mod.literalBoolOf(self.hir, node)),
+            .member_access => blk: {
+                const m = hir_mod.memberOf(self.hir, node);
+                if (self.hir.kindOf(m.object) == .identifier) {
+                    const obj = hir_mod.identifierOf(self.hir, m.object);
+                    if (self.constEnumLiteralAccess(obj.name, m.name, node)) |lit_t| break :blk lit_t;
+                }
+                break :blk null;
+            },
+            else => null,
+        };
     }
 
     /// Narrow a bare-identifier discriminant in a switch `case`
@@ -2075,23 +2132,7 @@ pub const Checker = struct {
     fn applyIdentifierLiteralNarrow(self: *Checker, ident: NodeId, lit_node: NodeId, positive: bool) !void {
         if (self.hir.kindOf(ident) != .identifier) return;
         const id = hir_mod.identifierOf(self.hir, ident);
-        const lit_t: TypeId = blk: {
-            switch (self.hir.kindOf(lit_node)) {
-                .literal_string => {
-                    const lit = hir_mod.literalStringOf(self.hir, lit_node);
-                    break :blk self.interner.internStringLiteral(lit.value) catch return;
-                },
-                .literal_number => {
-                    const v = hir_mod.literalNumberOf(self.hir, lit_node);
-                    break :blk self.interner.internNumberLiteral(v) catch return;
-                },
-                .literal_bool => {
-                    const v = hir_mod.literalBoolOf(self.hir, lit_node);
-                    break :blk self.interner.internBooleanLiteral(v);
-                },
-                else => return,
-            }
-        };
+        const lit_t = (try self.expressionNarrowLiteralType(lit_node)) orelse return;
         if (positive) {
             try self.recordNarrow(id.name, lit_t);
         } else {
@@ -8170,6 +8211,8 @@ pub const Checker = struct {
         // Once a string-valued member appears, plain auto-increment
         // is forbidden for any later un-initialized member.
         var saw_string: bool = false;
+        var member_literal_types: std.ArrayListUnmanaged(TypeId) = .empty;
+        defer member_literal_types.deinit(self.gpa);
 
         for (members) |m| {
             if (self.hir.kindOf(m) != .object_property) continue;
@@ -8192,6 +8235,7 @@ pub const Checker = struct {
                 }
                 const v = next_numeric.?;
                 try self.enum_member_values.put(self.gpa, key, v);
+                try member_literal_types.append(self.gpa, self.interner.internNumberLiteral(v) catch return error.OutOfMemory);
                 next_numeric = v + 1;
                 continue;
             }
@@ -8204,16 +8248,20 @@ pub const Checker = struct {
             switch (init_kind) {
                 .literal_string => {
                     saw_string = true;
+                    const lit = hir_mod.literalStringOf(self.hir, prop.value);
+                    try member_literal_types.append(self.gpa, self.interner.internStringLiteral(lit.value) catch return error.OutOfMemory);
                     next_numeric = null;
                 },
                 else => {
-                    if (self.nodeSourceStringLiteralId(prop.value) != null) {
+                    if (self.nodeSourceStringLiteralId(prop.value)) |sid| {
                         saw_string = true;
+                        try member_literal_types.append(self.gpa, self.interner.internStringLiteral(sid) catch return error.OutOfMemory);
                         next_numeric = null;
                         continue;
                     }
                     if (self.evalEnumConstExpression(enum_name, prop.value)) |v| {
                         try self.enum_member_values.put(self.gpa, key, v);
+                        try member_literal_types.append(self.gpa, self.interner.internNumberLiteral(v) catch return error.OutOfMemory);
                         next_numeric = v + 1;
                     } else {
                         if (e.is_const and self.hir.kindOf(prop.value) != .identifier) {
@@ -8226,9 +8274,13 @@ pub const Checker = struct {
                 },
             }
         }
-        try self.type_names.put(self.gpa, enum_name, types.Primitive.number_t);
-        self.hir.setType(node, types.Primitive.number_t);
-        self.hir.setType(e.name, types.Primitive.number_t);
+        const enum_t: TypeId = if (saw_string and member_literal_types.items.len > 0)
+            self.interner.internUnion(member_literal_types.items) catch return error.OutOfMemory
+        else
+            types.Primitive.number_t;
+        try self.type_names.put(self.gpa, enum_name, enum_t);
+        self.hir.setType(node, enum_t);
+        self.hir.setType(e.name, enum_t);
     }
 
     fn evalEnumConstExpression(self: *Checker, enum_name: hir_mod.StringId, node: NodeId) ?f64 {
@@ -8792,7 +8844,7 @@ pub const Checker = struct {
                 const u = hir_mod.unaryOf(self.hir, type_node);
                 if ((u.op == .neg or u.op == .plus) and self.hir.kindOf(u.operand) == .literal_number) {
                     const value = hir_mod.literalNumberOf(self.hir, u.operand);
-                    const signed = if (u.op == .neg) -value else value;
+                    const signed = if (u.op == .neg and value > 0) -value else value;
                     return self.interner.internNumberLiteral(signed) catch return error.OutOfMemory;
                 }
             },
@@ -8800,6 +8852,7 @@ pub const Checker = struct {
             .type_ref => {
                 const r = hir_mod.typeRefOf(self.hir, type_node);
                 if (r.qualifier_len > 0) {
+                    if (try self.qualifiedEnumMemberTypeRef(type_node)) |t| return t;
                     if (try self.resolveQualifiedTypeRef(type_node)) |t| return t;
                     if (try self.reactComponentClassType(type_node)) |t| return t;
                 }
@@ -9283,7 +9336,7 @@ pub const Checker = struct {
                 i -= 1;
                 continue;
             }
-            if (c == '-') value = -value;
+            if (c == '-' and value > 0) value = -value;
             break;
         }
         return value;
@@ -9355,6 +9408,16 @@ pub const Checker = struct {
             .enum_decl => self.hir.typeOf(decl),
             else => null,
         };
+    }
+
+    fn qualifiedEnumMemberTypeRef(self: *Checker, type_node: NodeId) CheckError!?TypeId {
+        const r = hir_mod.typeRefOf(self.hir, type_node);
+        const qualifiers = hir_mod.typeRefQualifier(self.hir, type_node);
+        if (qualifiers.len != 1 or self.hir.kindOf(qualifiers[0]) != .identifier) return null;
+        const enum_name = hir_mod.identifierOf(self.hir, qualifiers[0]).name;
+        if (self.constEnumLiteralAccess(enum_name, r.name, type_node)) |lit_t| return lit_t;
+        if (self.enumHasMember(enum_name, r.name)) return try self.enumNominalType(enum_name);
+        return null;
     }
 
     fn qualifiedDeclHasMissingRequiredTypeArgs(self: *Checker, decl: NodeId, supplied: usize) bool {
@@ -14075,12 +14138,10 @@ pub const Checker = struct {
         // member access's object's static type — if it's a union of
         // object types, keep the variants whose discriminant prop's
         // type matches the RHS literal.
-        if (self.hir.kindOf(b.lhs) == .member_access and
-            (self.hir.kindOf(b.rhs) == .literal_string or
-                self.hir.kindOf(b.rhs) == .literal_number or
-                self.hir.kindOf(b.rhs) == .literal_bool))
-        {
-            try self.applyDiscriminatedNarrow(b.lhs, b.rhs, positive);
+        if (self.hir.kindOf(b.lhs) == .member_access) {
+            if (try self.expressionNarrowLiteralType(b.rhs)) |rhs_lit_t| {
+                try self.applyDiscriminatedNarrowWithLiteralType(b.lhs, rhs_lit_t, positive);
+            }
             // Don't return — fall through so other guards still try
             // to match (rare overlap, but keeps the logic
             // additive).
@@ -14131,10 +14192,8 @@ pub const Checker = struct {
             break :blk u.op == .neg and self.hir.kindOf(u.operand) == .literal_bigint;
         };
         if (self.hir.kindOf(b.lhs) == .identifier and
-            (self.hir.kindOf(b.rhs) == .literal_string or
-                self.hir.kindOf(b.rhs) == .literal_number or
+            ((try self.expressionNarrowLiteralType(b.rhs)) != null or
                 self.hir.kindOf(b.rhs) == .literal_bigint or
-                self.hir.kindOf(b.rhs) == .literal_bool or
                 rhs_is_neg_bigint))
         {
             const id = hir_mod.identifierOf(self.hir, b.lhs);
@@ -14153,22 +14212,11 @@ pub const Checker = struct {
                     const neg_digits_id = self.string_interner.intern(buf[0 .. 1 + digits_str.len]) catch return;
                     break :blk self.interner.internBigIntLiteral(neg_digits_id) catch return;
                 }
+                if (try self.expressionNarrowLiteralType(b.rhs)) |lit| break :blk lit;
                 switch (self.hir.kindOf(b.rhs)) {
-                    .literal_string => {
-                        const lit = hir_mod.literalStringOf(self.hir, b.rhs);
-                        break :blk self.interner.internStringLiteral(lit.value) catch return;
-                    },
-                    .literal_number => {
-                        const v = hir_mod.literalNumberOf(self.hir, b.rhs);
-                        break :blk self.interner.internNumberLiteral(v) catch return;
-                    },
                     .literal_bigint => {
                         const lit = hir_mod.literalBigIntOf(self.hir, b.rhs);
                         break :blk self.interner.internBigIntLiteral(lit.digits) catch return;
-                    },
-                    .literal_bool => {
-                        const v = hir_mod.literalBoolOf(self.hir, b.rhs);
-                        break :blk self.interner.internBooleanLiteral(v);
                     },
                     else => unreachable,
                 }
@@ -14280,27 +14328,7 @@ pub const Checker = struct {
                 // whole object when its type is a union; this
                 // records a property-level narrow so non-union
                 // object roots also see the literal type.
-                if (self.hir.kindOf(b.rhs) == .literal_string or
-                    self.hir.kindOf(b.rhs) == .literal_number or
-                    self.hir.kindOf(b.rhs) == .literal_bool)
-                {
-                    const lit_t: TypeId = blk: {
-                        switch (self.hir.kindOf(b.rhs)) {
-                            .literal_string => {
-                                const lit = hir_mod.literalStringOf(self.hir, b.rhs);
-                                break :blk self.interner.internStringLiteral(lit.value) catch return;
-                            },
-                            .literal_number => {
-                                const v = hir_mod.literalNumberOf(self.hir, b.rhs);
-                                break :blk self.interner.internNumberLiteral(v) catch return;
-                            },
-                            .literal_bool => {
-                                const v = hir_mod.literalBoolOf(self.hir, b.rhs);
-                                break :blk self.interner.internBooleanLiteral(v);
-                            },
-                            else => unreachable,
-                        }
-                    };
+                if (try self.expressionNarrowLiteralType(b.rhs)) |lit_t| {
                     if (positive) {
                         try self.recordMemberNarrow(key, lit_t);
                     } else {
@@ -14374,6 +14402,11 @@ pub const Checker = struct {
     /// If `obj` is a union of object types and one of its members'
     /// `disc` field matches `rhs_lit`, we narrow `obj` to that member.
     fn applyDiscriminatedNarrow(self: *Checker, lhs: NodeId, rhs_lit: NodeId, positive: bool) !void {
+        const lit_t = (try self.expressionNarrowLiteralType(rhs_lit)) orelse return;
+        try self.applyDiscriminatedNarrowWithLiteralType(lhs, lit_t, positive);
+    }
+
+    fn applyDiscriminatedNarrowWithLiteralType(self: *Checker, lhs: NodeId, lit_t: TypeId, positive: bool) !void {
         const m = hir_mod.memberOf(self.hir, lhs);
         if (self.hir.kindOf(m.object) != .identifier) return;
         const obj_id = hir_mod.identifierOf(self.hir, m.object);
@@ -14385,24 +14418,6 @@ pub const Checker = struct {
         const is_object = self.interner.pool.flagsOf(static_t).is_object_type;
         if (!is_union and !is_object) return;
 
-        // Compute the literal's type id for comparison.
-        const lit_t: TypeId = blk: {
-            switch (self.hir.kindOf(rhs_lit)) {
-                .literal_string => {
-                    const lit = hir_mod.literalStringOf(self.hir, rhs_lit);
-                    break :blk self.interner.internStringLiteral(lit.value) catch return;
-                },
-                .literal_number => {
-                    const v = hir_mod.literalNumberOf(self.hir, rhs_lit);
-                    break :blk self.interner.internNumberLiteral(v) catch return;
-                },
-                .literal_bool => {
-                    const v = hir_mod.literalBoolOf(self.hir, rhs_lit);
-                    break :blk self.interner.internBooleanLiteral(v);
-                },
-                else => return,
-            }
-        };
         try self.applyDiscriminatedNarrowByType(obj_id.name, static_t, m.name, lit_t, positive);
     }
 
@@ -18120,7 +18135,7 @@ pub const Checker = struct {
             .number_lit => |bits| blk: {
                 const expected = @as(f64, @bitCast(bits));
                 if (self.hir.kindOf(value_node) == .literal_number) {
-                    break :blk hir_mod.literalNumberOf(self.hir, value_node) == expected;
+                    break :blk self.literalNumberWithSourceSign(value_node) == expected;
                 }
                 if (self.hir.kindOf(value_node) == .unary_op) {
                     const u = hir_mod.unaryOf(self.hir, value_node);
@@ -25824,6 +25839,59 @@ test "checker: exhaustive switch on string-literal union narrows to never in def
     for (s.checker.diagnostics.items) |d| {
         try T.expect(d.code != TsCodes.type_not_assignable);
     }
+}
+
+test "checker: returning exhaustive switch narrows following identifier to never" {
+    const s = try newSetup(
+        \\function unreachable(x: never): never { throw 0; }
+        \\function f(x: 0 | 1 | 2) {
+        \\  switch (x) {
+        \\    case 0: return "a";
+        \\    case 1: return "b";
+        \\    case 2: return "c";
+        \\  }
+        \\  return unreachable(x);
+        \\}
+    );
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+    try T.expectEqual(@as(usize, 0), s.checker.diagnostics.items.len);
+}
+
+test "checker: const enum literal switch narrows following identifier to never" {
+    const b = try newBoundSetup(
+        \\const enum Choice { Yes = "yes", No = "no" }
+        \\type YesNo = Choice.Yes | Choice.No;
+        \\function unreachable(x: never): never { throw 0; }
+        \\function f(x: YesNo) {
+        \\  switch (x) {
+        \\    case Choice.Yes: return "yes";
+        \\    case Choice.No: return "no";
+        \\  }
+        \\  return unreachable(x);
+        \\}
+    );
+    defer destroyBoundSetup(b);
+    try b.base.checker.checkSourceFile(b.base.root);
+    try T.expectEqual(@as(usize, 0), b.base.checker.diagnostics.items.len);
+}
+
+test "checker: const enum literal discriminant switch narrows object to never" {
+    const b = try newBoundSetup(
+        \\const enum Choice { Yes = "yes", No = "no" }
+        \\type Item = { kind: Choice.Yes, a: string } | { kind: Choice.No, b: string };
+        \\function unreachable(x: never): never { throw 0; }
+        \\function f(x: Item) {
+        \\  switch (x.kind) {
+        \\    case Choice.Yes: return x.a;
+        \\    case Choice.No: return x.b;
+        \\  }
+        \\  return unreachable(x);
+        \\}
+    );
+    defer destroyBoundSetup(b);
+    try b.base.checker.checkSourceFile(b.base.root);
+    try T.expectEqual(@as(usize, 0), b.base.checker.diagnostics.items.len);
 }
 
 test "checker: exhaustive if/else chain narrows discriminant to never in final else" {
