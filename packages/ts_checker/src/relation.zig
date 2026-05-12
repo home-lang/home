@@ -869,6 +869,7 @@ pub const Engine = struct {
             if (try self.someSourceMemberAssignableToTarget(source, tm)) {
                 continue;
             }
+            if (self.sourceObjectHasMemberNamed(source, tm.name)) return false;
             // No same-named member on source. For purely numeric
             // property names ("0", "1", …) fall back to source's
             // number-key indexer when wired. This is what makes
@@ -886,6 +887,13 @@ pub const Engine = struct {
             return false;
         }
         return true;
+    }
+
+    fn sourceObjectHasMemberNamed(self: *Engine, source: TypeId, name: types.StringId) bool {
+        for (self.interner.objectMembers(source)) |sm| {
+            if (sm.name == name) return true;
+        }
+        return false;
     }
 
     fn computeIntersectionObjectAssignable(self: *Engine, source: TypeId, target: TypeId) anyerror!bool {
@@ -909,9 +917,26 @@ pub const Engine = struct {
                     break;
                 }
             }
-            if (!found and !tm.is_optional) return false;
+            if (!found) {
+                if (try self.intersectionObjectHasMemberNamed(source, tm.name)) return false;
+                if (!tm.is_optional) return false;
+            }
         }
         return true;
+    }
+
+    fn intersectionObjectHasMemberNamed(self: *Engine, source: TypeId, name: types.StringId) anyerror!bool {
+        for (self.interner.intersectionMembers(source)) |member_t| {
+            if (member_t >= self.interner.pool.typeCount()) continue;
+            const mf = self.pool().flagsOf(member_t);
+            if (mf.is_intersection) {
+                if (try self.intersectionObjectHasMemberNamed(member_t, name)) return true;
+                continue;
+            }
+            if (!mf.is_object_type) continue;
+            if (self.sourceObjectHasMemberNamed(member_t, name)) return true;
+        }
+        return false;
     }
 
     fn computeIntersectionObjectMemberAssignable(

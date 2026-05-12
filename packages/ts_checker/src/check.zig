@@ -10876,9 +10876,14 @@ pub const Checker = struct {
             var built: std.ArrayListUnmanaged(TypeId) = .empty;
             defer built.deinit(self.gpa);
             for (members) |m| {
-                const r = try self.evalConditional(m, ext, tt, ff, allow_infer_match);
+                const member_tt = if (tt == check) m else tt;
+                const member_ff = if (ff == check) m else ff;
+                const r = try self.evalConditional(m, ext, member_tt, member_ff, allow_infer_match);
+                if (r == types.Primitive.never) continue;
                 try built.append(self.gpa, r);
             }
+            if (built.items.len == 0) return types.Primitive.never;
+            if (built.items.len == 1) return built.items[0];
             return self.interner.internUnion(built.items) catch return error.OutOfMemory;
         }
         // `infer X` matching: when `ext` is a signature with infer'd
@@ -27821,6 +27826,20 @@ test "checker: conditional distributes over a union check" {
     const t = s.hir.typeOf(r_decl);
     // The result should be a union of the literal types `1 | 0`.
     try T.expect(s.ti.pool.flagsOf(t).is_union);
+}
+
+test "checker: distributive conditional filters intersection union members by optional literal property" {
+    const s = try newSetup(
+        \\type U = { kind?: 'A', a: string } | { kind?: 'B' } & { b: string };
+        \\type Ex<T, U> = T extends U ? T : never;
+        \\declare let x: Ex<U, { kind?: 'A' }>;
+        \\x.a;
+    );
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+    for (s.checker.diagnostics.items) |d| {
+        try T.expect(d.code != TsCodes.property_does_not_exist);
+    }
 }
 
 test "checker: type predicate narrows in then-branch" {
