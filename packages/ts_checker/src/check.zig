@@ -2122,8 +2122,8 @@ pub const Checker = struct {
     fn expressionNarrowLiteralType(self: *Checker, node: NodeId) CheckError!?TypeId {
         return switch (self.hir.kindOf(node)) {
             .literal_string => blk: {
-                const lit = hir_mod.literalStringOf(self.hir, node);
-                break :blk self.interner.internStringLiteral(lit.value) catch return error.OutOfMemory;
+                const sid = try self.literalStringCookedId(node);
+                break :blk self.interner.internStringLiteral(sid) catch return error.OutOfMemory;
             },
             .literal_number => blk: {
                 const value = self.literalNumberWithSourceSign(node);
@@ -2343,7 +2343,7 @@ pub const Checker = struct {
                 defer ret_types.deinit(self.gpa);
                 try self.collectReturnTypes(f.body, &ret_types);
                 const inferred: TypeId = if (ret_types.items.len == 0)
-                    types.Primitive.void_t
+                    (if (self.statementDefinitelyExits(f.body)) types.Primitive.never else types.Primitive.void_t)
                 else if (ret_types.items.len == 1)
                     ret_types.items[0]
                 else
@@ -2790,6 +2790,27 @@ pub const Checker = struct {
                 const w = hir_mod.doWhileOf(self.hir, node);
                 try self.scanExprForUsedBeforeAssign(w.cond, pending);
             },
+            .switch_stmt => {
+                const sw = hir_mod.switchOf(self.hir, node);
+                if (self.hir.kindOf(sw.discriminant) == .identifier) {
+                    const id = hir_mod.identifierOf(self.hir, sw.discriminant);
+                    if (pending.contains(id.name) and self.switchBodyAssignsIdentifier(node, id.name)) {
+                        try self.reportUsedBeforeAssignment(sw.discriminant, id.name, pending);
+                    }
+                } else {
+                    try self.scanExprForUsedBeforeAssign(sw.discriminant, pending);
+                }
+                for (hir_mod.switchCases(self.hir, node)) |case_node| {
+                    try self.scanForUsedBeforeAssign(case_node, pending);
+                }
+            },
+            .switch_case => {
+                const sc = hir_mod.switchCaseOf(self.hir, node);
+                try self.scanExprForUsedBeforeAssign(sc.value, pending);
+                for (hir_mod.switchCaseStmts(self.hir, node)) |stmt| {
+                    try self.scanForUsedBeforeAssign(stmt, pending);
+                }
+            },
             .for_stmt => {
                 const fr = hir_mod.forStmtOf(self.hir, node);
                 if (fr.init != hir_mod.none_node_id) {
@@ -2803,7 +2824,6 @@ pub const Checker = struct {
                 }
             },
             .try_stmt,
-            .switch_stmt,
             .fn_decl,
             .fn_expr,
             .arrow_fn,
@@ -3075,6 +3095,39 @@ pub const Checker = struct {
         }
     }
 
+    fn switchBodyAssignsIdentifier(self: *Checker, switch_node: NodeId, name: hir_mod.StringId) bool {
+        for (hir_mod.switchCases(self.hir, switch_node)) |case_node| {
+            for (hir_mod.switchCaseStmts(self.hir, case_node)) |stmt| {
+                if (self.nodeAssignsIdentifier(stmt, name)) return true;
+            }
+        }
+        return false;
+    }
+
+    fn nodeAssignsIdentifier(self: *Checker, node: NodeId, name: hir_mod.StringId) bool {
+        if (node == hir_mod.none_node_id) return false;
+        switch (self.hir.kindOf(node)) {
+            .assignment => {
+                const a = hir_mod.assignmentOf(self.hir, node);
+                if (a.op == null and self.hir.kindOf(a.target) == .identifier and hir_mod.identifierOf(self.hir, a.target).name == name) return true;
+                return self.nodeAssignsIdentifier(a.value, name) or self.nodeAssignsIdentifier(a.target, name);
+            },
+            .block_stmt => for (hir_mod.blockStmts(self.hir, node)) |stmt| {
+                if (self.nodeAssignsIdentifier(stmt, name)) return true;
+            },
+            .if_stmt => {
+                const i = hir_mod.ifOf(self.hir, node);
+                return self.nodeAssignsIdentifier(i.then_branch, name) or self.nodeAssignsIdentifier(i.else_branch, name);
+            },
+            .switch_stmt => return self.switchBodyAssignsIdentifier(node, name),
+            .switch_case => for (hir_mod.switchCaseStmts(self.hir, node)) |stmt| {
+                if (self.nodeAssignsIdentifier(stmt, name)) return true;
+            },
+            else => {},
+        }
+        return false;
+    }
+
     fn flagIfPending(
         self: *Checker,
         ref_node: NodeId,
@@ -3082,7 +3135,12 @@ pub const Checker = struct {
         pending: *std.AutoHashMapUnmanaged(hir_mod.StringId, NodeId),
     ) CheckError!void {
         const decl_node = pending.get(name) orelse return;
-        if (self.sourceHasStrictFalseDirective()) return;
+        if (self.sourceHasStrictFalseDirective() and
+            !self.nodeHasAncestorKind(ref_node, .as_expr) and
+            !self.nodeHasAncestorKind(ref_node, .type_assertion))
+        {
+            return;
+        }
         if (self.nodeInsideComputedPropertyKey(ref_node)) return;
         if (self.hir.kindOf(decl_node) == .var_decl) {
             if (self.nodeHasAncestorKind(decl_node, .namespace_decl) and self.nodeIsInsideControlFlowCondition(ref_node)) return;
@@ -3100,6 +3158,15 @@ pub const Checker = struct {
                 !self.isCompoundAssignmentTarget(ref_node) and
                 !self.isDirectExpressionStatement(ref_node)) return;
         }
+        try self.reportUsedBeforeAssignment(ref_node, name, pending);
+    }
+
+    fn reportUsedBeforeAssignment(
+        self: *Checker,
+        ref_node: NodeId,
+        name: hir_mod.StringId,
+        pending: *std.AutoHashMapUnmanaged(hir_mod.StringId, NodeId),
+    ) CheckError!void {
         const name_str = self.string_interner.get(name);
         const msg = try std.fmt.allocPrint(
             self.diag_arena.allocator(),
@@ -12642,7 +12709,7 @@ pub const Checker = struct {
                             const visible_len = if (has_impl) overload_list.items.len - 1 else overload_list.items.len;
                             const overloads = overload_list.items[0..visible_len];
                             for (overloads) |sig| {
-                                if (try self.signatureAccepts(sig, arg_types.items)) {
+                                if (try self.signatureAccepts(sig, args, arg_types.items)) {
                                     try self.checkArgsAgainstSignature(node, args, arg_types.items, sig);
                                     if (self.interner.signatureReturn(sig)) |ret| break :blk try self.optionalChainResult(ret, call_is_optional_chain);
                                 }
@@ -13238,6 +13305,8 @@ pub const Checker = struct {
                 const props = hir_mod.objectLiteralProps(self.hir, node);
                 var members: std.ArrayListUnmanaged(types.ObjectMember) = .empty;
                 defer members.deinit(self.gpa);
+                var explicit_props: std.AutoHashMapUnmanaged(hir_mod.StringId, NodeId) = .empty;
+                defer explicit_props.deinit(self.gpa);
                 var computed_string_value_types: std.ArrayListUnmanaged(TypeId) = .empty;
                 defer computed_string_value_types.deinit(self.gpa);
                 var computed_symbol_value_types: std.ArrayListUnmanaged(TypeId) = .empty;
@@ -13263,9 +13332,24 @@ pub const Checker = struct {
                         // merge each of its members. Skip silently
                         // when the spread source isn't an object
                         // type (v0: ignore arrays / strings / any).
-                        const st = try self.checkExpression(p);
+                        const spread_expr = if (self.hir.kindOf(p) == .spread) hir_mod.spreadOf(self.hir, p).expression else p;
+                        const raw_st = try self.checkExpression(p);
+                        const st = try self.objectSpreadEffectiveType(spread_expr, raw_st);
+                        if (!try self.objectSpreadSourceIsValid(st)) {
+                            try self.report(p, TsCodes.spread_types_object_only, "Spread types may only be created from object types.");
+                            continue;
+                        }
                         const src_members = self.interner.objectMembers(st);
-                        for (src_members) |m| try upsert(self.gpa, &members, m);
+                        const source_is_class_instance = self.class_name_by_instance.contains(st);
+                        for (src_members) |m| {
+                            if (source_is_class_instance and (m.is_method or m.is_readonly)) continue;
+                            if (!m.is_optional) {
+                                if (explicit_props.get(m.name)) |prop_node| {
+                                    try self.report(prop_node, TsCodes.jsx_attribute_overwritten, "Property is specified more than once, so this usage will be overwritten.");
+                                }
+                            }
+                            try upsert(self.gpa, &members, m);
+                        }
                         continue;
                     }
                     const op = hir_mod.objectPropertyOf(self.hir, p);
@@ -13327,6 +13411,7 @@ pub const Checker = struct {
                     if (op_is_method and self.objectLiteralHasDuplicateMethodWithLiteralParam(members.items, k.name, op.value)) {
                         try self.report(p, TsCodes.duplicate_identifier, "Duplicate identifier.");
                     }
+                    try explicit_props.put(self.gpa, k.name, p);
                     try upsert(self.gpa, &members, .{
                         .name = k.name,
                         .type = vt,
@@ -13694,6 +13779,46 @@ pub const Checker = struct {
             return try self.jsxSpreadTypeIsValid(constraint);
         }
         return flags.is_object_type or flags.is_object or flags.is_signature;
+    }
+
+    fn objectSpreadSourceIsValid(self: *Checker, t: TypeId) CheckError!bool {
+        if (self.typeIsAnyLike(t)) return true;
+        if (t >= self.interner.pool.typeCount()) return false;
+        const flags = self.interner.pool.flagsOf(t);
+        if (flags.is_never) return true;
+        if (flags.is_null or flags.is_undefined or flags.is_void) return false;
+        if (flags.is_boolean and (t == types.Primitive.boolean_t or t == types.Primitive.false_lit)) return true;
+        if (flags.is_union) {
+            for (self.interner.unionMembers(t)) |member| {
+                if (member == types.Primitive.null_t or member == types.Primitive.undefined_t or member == types.Primitive.false_lit) continue;
+                if (!try self.objectSpreadSourceIsValid(member)) return false;
+            }
+            return true;
+        }
+        if (flags.is_intersection) {
+            for (self.interner.intersectionMembers(t)) |member| {
+                if (try self.objectSpreadSourceIsValid(member)) return true;
+            }
+            return false;
+        }
+        if (flags.is_type_parameter) {
+            const constraint = self.typeParameterConstraint(t) orelse return true;
+            if (constraint == t) return true;
+            return try self.objectSpreadSourceIsValid(constraint);
+        }
+        return flags.is_object_type or flags.is_object or flags.is_signature;
+    }
+
+    fn objectSpreadEffectiveType(self: *Checker, expr: NodeId, fallback: TypeId) CheckError!TypeId {
+        if (expr == hir_mod.none_node_id or self.hir.kindOf(expr) != .logical_op) return fallback;
+        const l = hir_mod.logicalOf(self.hir, expr);
+        if (l.op != .@"and") return fallback;
+        const rhs_t = if (self.hir.typeOf(l.rhs) != types.Primitive.none)
+            self.hir.typeOf(l.rhs)
+        else
+            try self.checkExpression(l.rhs);
+        if (try self.objectSpreadSourceIsValid(rhs_t)) return rhs_t;
+        return fallback;
     }
 
     fn jsxAttributeAssignable(self: *Checker, value_t: TypeId, prop_t: TypeId) CheckError!bool {
@@ -14420,7 +14545,7 @@ pub const Checker = struct {
     /// True if `sig` accepts the given `arg_types` — i.e., the call
     /// would type-check without TS2554 / TS2345. Used by overload
     /// resolution to pick the first applicable signature.
-    fn signatureAccepts(self: *Checker, sig: TypeId, arg_types: []const TypeId) !bool {
+    fn signatureAccepts(self: *Checker, sig: TypeId, args: []const NodeId, arg_types: []const TypeId) !bool {
         const params = self.interner.signatureParams(sig);
         const is_variadic = self.rest_signatures.contains(sig) and params.len > 0;
         const fixed_count: usize = if (is_variadic) params.len - 1 else params.len;
@@ -14433,6 +14558,8 @@ pub const Checker = struct {
         const n = @min(arg_types.len, fixed_count);
         for (0..n) |i| {
             if (self.interner.pool.flagsOf(params[i]).is_type_parameter) continue;
+            if (i < args.len and try self.literalExpressionAssignableToTarget(args[i], params[i])) continue;
+            if (i < args.len and try self.templateExpressionAssignableToType(args[i], params[i])) continue;
             const ok = self.engine.isAssignableTo(arg_types[i], params[i]) catch false;
             if (!ok) return false;
         }
@@ -14443,7 +14570,9 @@ pub const Checker = struct {
             const target_t = if (elem_t == types.Primitive.none) rest_arr_t else elem_t;
             if (target_t >= self.interner.pool.typeCount()) return true;
             if (self.interner.pool.flagsOf(target_t).is_type_parameter) return true;
-            for (arg_types[fixed_count..]) |arg_t| {
+            for (arg_types[fixed_count..], fixed_count..) |arg_t, arg_i| {
+                if (arg_i < args.len and try self.literalExpressionAssignableToTarget(args[arg_i], target_t)) continue;
+                if (arg_i < args.len and try self.templateExpressionAssignableToType(args[arg_i], target_t)) continue;
                 if (!(try self.restArgumentAssignable(arg_t, target_t))) return false;
             }
         }
@@ -14517,7 +14646,7 @@ pub const Checker = struct {
                 effective_sig = try self.instantiateSignatureFromArgs(sig, args, arg_types);
             }
 
-            if (try self.signatureAccepts(effective_sig, arg_types)) {
+            if (try self.signatureAccepts(effective_sig, args, arg_types)) {
                 selected_sig = effective_sig;
                 found_applicable = true;
                 break;
@@ -14628,7 +14757,7 @@ pub const Checker = struct {
         }
         if (sigs.items.len <= 1) return null;
         for (sigs.items) |sig| {
-            if (try self.signatureAccepts(sig, arg_types)) {
+            if (try self.signatureAccepts(sig, args, arg_types)) {
                 try self.checkArgsAgainstSignature(call_node, args, arg_types, sig);
                 const ret = self.interner.signatureReturn(sig) orelse types.Primitive.any;
                 const param_ts = self.interner.signatureParams(sig);
@@ -17227,7 +17356,7 @@ pub const Checker = struct {
         for (source_text_nodes, target_texts) |source_text_node, target_sid| {
             if (self.hir.kindOf(source_text_node) != .literal_string) return false;
             const source_sid = hir_mod.literalStringOf(self.hir, source_text_node).value;
-            if (!std.mem.eql(u8, self.string_interner.get(source_sid), self.string_interner.get(target_sid))) return false;
+            if (!try self.cookedStringIdEquals(source_sid, target_sid)) return false;
         }
         for (source_exprs, target_parts) |source_expr, target_part| {
             const source_t = self.hir.typeOf(source_expr);
@@ -17254,7 +17383,7 @@ pub const Checker = struct {
         for (texts, 0..) |text_node, i| {
             if (self.hir.kindOf(text_node) != .literal_string) return null;
             const text = hir_mod.literalStringOf(self.hir, text_node);
-            try buf.appendSlice(self.gpa, self.string_interner.get(text.value));
+            try self.appendCookedStringText(self.string_interner.get(text.value), &buf);
             if (i < exprs.len) {
                 if (!try self.appendTemplateSubstitutionString(exprs[i], &buf)) return null;
             }
@@ -17270,7 +17399,7 @@ pub const Checker = struct {
         switch (self.hir.kindOf(node)) {
             .literal_string => {
                 const lit = hir_mod.literalStringOf(self.hir, node);
-                try out.appendSlice(self.gpa, self.string_interner.get(lit.value));
+                try self.appendCookedStringText(self.string_interner.get(lit.value), out);
                 return true;
             },
             .literal_number => {
@@ -17822,7 +17951,9 @@ pub const Checker = struct {
                 try self.report(l.lhs, TsCodes.expression_always_falsy, "This kind of expression is always falsy.");
             }
         }
-        return self.interner.internUnion(&.{ lhs, rhs }) catch error.OutOfMemory;
+        const lhs_result = try self.expressionLiteralType(l.lhs, lhs);
+        const rhs_result = try self.expressionLiteralType(l.rhs, rhs);
+        return self.interner.internUnion(&.{ lhs_result, rhs_result }) catch error.OutOfMemory;
     }
 
     fn checkConditional(self: *Checker, node: NodeId) CheckError!TypeId {
@@ -19538,7 +19669,7 @@ pub const Checker = struct {
         if (flags.is_literal and flags.is_string) {
             const lit = self.interner.literalOf(target_t);
             return switch (lit) {
-                .string_lit => |target_sid| target_sid == sid,
+                .string_lit => |target_sid| target_sid == sid or try self.cookedStringIdEquals(sid, target_sid),
                 else => false,
             };
         }
@@ -19617,7 +19748,8 @@ pub const Checker = struct {
         if (flags.is_literal and flags.is_string) {
             const lit = self.interner.literalOf(part_t);
             return switch (lit) {
-                .string_lit => |target_sid| std.mem.eql(u8, self.string_interner.get(target_sid), slice),
+                .string_lit => |target_sid| std.mem.eql(u8, self.string_interner.get(target_sid), slice) or
+                    try self.cookedStringEqualsSlice(target_sid, slice),
                 else => false,
             };
         }
@@ -19649,6 +19781,142 @@ pub const Checker = struct {
             if (!std.ascii.isDigit(slice[i])) return false;
         }
         return true;
+    }
+
+    fn literalStringCookedId(self: *Checker, node: NodeId) CheckError!hir_mod.StringId {
+        const lit = hir_mod.literalStringOf(self.hir, node);
+        const raw = self.string_interner.get(lit.value);
+        if (std.mem.indexOfScalar(u8, raw, '\\') == null and std.mem.indexOfScalar(u8, raw, '\r') == null) return lit.value;
+        var buf: std.ArrayListUnmanaged(u8) = .empty;
+        defer buf.deinit(self.gpa);
+        try self.appendCookedStringText(raw, &buf);
+        return self.string_interner.intern(buf.items) catch return error.OutOfMemory;
+    }
+
+    fn cookedStringIdEquals(self: *Checker, a: hir_mod.StringId, b: hir_mod.StringId) CheckError!bool {
+        if (a == b) return true;
+        const raw_a = self.string_interner.get(a);
+        const raw_b = self.string_interner.get(b);
+        if (std.mem.eql(u8, raw_a, raw_b)) return true;
+        var cooked_a: std.ArrayListUnmanaged(u8) = .empty;
+        defer cooked_a.deinit(self.gpa);
+        var cooked_b: std.ArrayListUnmanaged(u8) = .empty;
+        defer cooked_b.deinit(self.gpa);
+        try self.appendCookedStringText(raw_a, &cooked_a);
+        try self.appendCookedStringText(raw_b, &cooked_b);
+        return std.mem.eql(u8, cooked_a.items, cooked_b.items);
+    }
+
+    fn cookedStringEqualsSlice(self: *Checker, sid: hir_mod.StringId, slice: []const u8) CheckError!bool {
+        const raw = self.string_interner.get(sid);
+        if (std.mem.eql(u8, raw, slice)) return true;
+        var cooked: std.ArrayListUnmanaged(u8) = .empty;
+        defer cooked.deinit(self.gpa);
+        try self.appendCookedStringText(raw, &cooked);
+        return std.mem.eql(u8, cooked.items, slice);
+    }
+
+    fn appendCookedStringText(
+        self: *Checker,
+        raw: []const u8,
+        out: *std.ArrayListUnmanaged(u8),
+    ) CheckError!void {
+        var i: usize = 0;
+        while (i < raw.len) {
+            const c = raw[i];
+            if (c == '\r') {
+                try out.append(self.gpa, '\n');
+                i += if (i + 1 < raw.len and raw[i + 1] == '\n') 2 else 1;
+                continue;
+            }
+            if (c != '\\') {
+                try out.append(self.gpa, c);
+                i += 1;
+                continue;
+            }
+            if (i + 1 >= raw.len) {
+                try out.append(self.gpa, c);
+                i += 1;
+                continue;
+            }
+            const esc = raw[i + 1];
+            i += 2;
+            switch (esc) {
+                '0' => try out.append(self.gpa, 0),
+                'b' => try out.append(self.gpa, 0x08),
+                'f' => try out.append(self.gpa, 0x0c),
+                'n' => try out.append(self.gpa, '\n'),
+                'r' => try out.append(self.gpa, '\r'),
+                't' => try out.append(self.gpa, '\t'),
+                'v' => try out.append(self.gpa, 0x0b),
+                '\n' => {},
+                '\r' => {
+                    if (i < raw.len and raw[i] == '\n') i += 1;
+                },
+                'x' => {
+                    if (i + 1 < raw.len) {
+                        if (hexValue(raw[i])) |hi| {
+                            if (hexValue(raw[i + 1])) |lo| {
+                                try out.append(self.gpa, (hi << 4) | lo);
+                                i += 2;
+                                continue;
+                            }
+                        }
+                    }
+                    try out.appendSlice(self.gpa, "\\x");
+                },
+                'u' => {
+                    if (try self.appendUnicodeEscape(raw, &i, out)) continue;
+                    try out.appendSlice(self.gpa, "\\u");
+                },
+                else => try out.append(self.gpa, esc),
+            }
+        }
+    }
+
+    fn appendUnicodeEscape(
+        self: *Checker,
+        raw: []const u8,
+        index: *usize,
+        out: *std.ArrayListUnmanaged(u8),
+    ) CheckError!bool {
+        if (index.* < raw.len and raw[index.*] == '{') {
+            var j = index.* + 1;
+            var cp: u21 = 0;
+            var saw_digit = false;
+            while (j < raw.len and raw[j] != '}') : (j += 1) {
+                const v = hexValue(raw[j]) orelse return false;
+                saw_digit = true;
+                const next = (@as(u32, cp) << 4) | v;
+                if (next > 0x10ffff) return false;
+                cp = @intCast(next);
+            }
+            if (!saw_digit or j >= raw.len or raw[j] != '}') return false;
+            var enc: [4]u8 = undefined;
+            const len = std.unicode.utf8Encode(cp, &enc) catch return false;
+            try out.appendSlice(self.gpa, enc[0..len]);
+            index.* = j + 1;
+            return true;
+        }
+        if (index.* + 3 >= raw.len) return false;
+        var cp: u21 = 0;
+        var j = index.*;
+        while (j < index.* + 4) : (j += 1) {
+            const v = hexValue(raw[j]) orelse return false;
+            cp = @intCast((@as(u32, cp) << 4) | v);
+        }
+        var enc: [4]u8 = undefined;
+        const len = std.unicode.utf8Encode(cp, &enc) catch return false;
+        try out.appendSlice(self.gpa, enc[0..len]);
+        index.* += 4;
+        return true;
+    }
+
+    fn hexValue(c: u8) ?u8 {
+        if (c >= '0' and c <= '9') return c - '0';
+        if (c >= 'a' and c <= 'f') return c - 'a' + 10;
+        if (c >= 'A' and c <= 'F') return c - 'A' + 10;
+        return null;
     }
 
     fn stringMappingTypeMatchesString(self: *Checker, target_t: TypeId, sid: hir_mod.StringId) CheckError!bool {
@@ -19684,11 +19952,16 @@ pub const Checker = struct {
         if (target_t == types.Primitive.true_lit) return self.hir.kindOf(value_node) == .literal_bool and hir_mod.literalBoolOf(self.hir, value_node);
         if (target_t == types.Primitive.false_lit) return self.hir.kindOf(value_node) == .literal_bool and !hir_mod.literalBoolOf(self.hir, value_node);
         if (self.hir.kindOf(value_node) == .literal_string) {
-            const lit = hir_mod.literalStringOf(self.hir, value_node);
-            if (try self.stringLiteralAssignableToType(lit.value, target_t)) return true;
+            const sid = try self.literalStringCookedId(value_node);
+            if (try self.stringLiteralAssignableToType(sid, target_t)) return true;
             if (target_t >= types.Primitive.first_dynamic and target_t < self.interner.pool.typeCount()) {
                 const flags = self.interner.pool.flagsOf(target_t);
                 if (flags.is_template_literal or flags.is_string_mapping) return false;
+            }
+        }
+        if (self.hir.kindOf(value_node) == .template_literal) {
+            if (try self.templateLiteralConcreteString(value_node)) |sid| {
+                if (try self.stringLiteralAssignableToType(sid, target_t)) return true;
             }
         }
         if (target_t < types.Primitive.first_dynamic or target_t >= self.interner.pool.typeCount()) return false;
@@ -19708,7 +19981,8 @@ pub const Checker = struct {
         if (!flags.is_literal) return false;
         const lit = self.interner.literalOf(target_t);
         return switch (lit) {
-            .string_lit => |sid| self.hir.kindOf(value_node) == .literal_string and hir_mod.literalStringOf(self.hir, value_node).value == sid,
+            .string_lit => |sid| self.hir.kindOf(value_node) == .literal_string and
+                try self.cookedStringIdEquals(try self.literalStringCookedId(value_node), sid),
             .number_lit => |bits| blk: {
                 const expected = @as(f64, @bitCast(bits));
                 if (self.hir.kindOf(value_node) == .literal_number) {
@@ -19733,8 +20007,8 @@ pub const Checker = struct {
     fn expressionLiteralType(self: *Checker, value_node: NodeId, fallback: TypeId) !TypeId {
         return switch (self.hir.kindOf(value_node)) {
             .literal_string => blk: {
-                const lit = hir_mod.literalStringOf(self.hir, value_node);
-                break :blk self.interner.internStringLiteral(lit.value) catch return error.OutOfMemory;
+                const sid = try self.literalStringCookedId(value_node);
+                break :blk self.interner.internStringLiteral(sid) catch return error.OutOfMemory;
             },
             .literal_number => blk: {
                 const value = self.literalNumberWithSourceSign(value_node);
@@ -19748,6 +20022,10 @@ pub const Checker = struct {
                     if (self.constEnumLiteralAccess(obj.name, m.name, value_node)) |lit_t| break :blk lit_t;
                 }
                 break :blk fallback;
+            },
+            .template_literal => blk: {
+                const sid = (try self.templateLiteralConcreteString(value_node)) orelse break :blk fallback;
+                break :blk self.interner.internStringLiteral(sid) catch return error.OutOfMemory;
             },
             else => fallback,
         };
@@ -19888,8 +20166,8 @@ pub const Checker = struct {
     fn literalizeForAsConst(self: *Checker, expr: NodeId, fallback: TypeId) !TypeId {
         switch (self.hir.kindOf(expr)) {
             .literal_string => {
-                const lit = hir_mod.literalStringOf(self.hir, expr);
-                return self.interner.internStringLiteral(lit.value) catch return error.OutOfMemory;
+                const sid = try self.literalStringCookedId(expr);
+                return self.interner.internStringLiteral(sid) catch return error.OutOfMemory;
             },
             .literal_number => {
                 const v = hir_mod.literalNumberOf(self.hir, expr);
@@ -21088,6 +21366,35 @@ test "checker: logical op produces union of operands" {
     try T.expect(s.ti.pool.flagsOf(t).is_union);
     try T.expect(s.ti.pool.flagsOf(t).is_number);
     try T.expect(s.ti.pool.flagsOf(t).is_string);
+}
+
+test "checker: logical-or preserves string literal operands" {
+    const s = try newSetup(
+        \\let a: "foo" = "foo";
+        \\let b = a || "foo";
+        \\let c: "foo" = b;
+        \\let d = b || "bar";
+        \\let e: "foo" | "bar" = d;
+    );
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+    for (s.checker.diagnostics.items) |d| {
+        try T.expect(d.code != TsCodes.type_not_assignable);
+    }
+}
+
+test "checker: string and template literal types compare cooked text" {
+    const s = try newSetup(
+        \\let escaped: "I'm" = 'I\'m';
+        \\let newline: "DE\nF" = `DE
+        \\F`;
+        \\let backtick: "JK`L" = `JK\`L`;
+    );
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+    for (s.checker.diagnostics.items) |d| {
+        try T.expect(d.code != TsCodes.type_not_assignable);
+    }
 }
 
 test "checker: var with annotation; assignable init OK" {
@@ -22927,6 +23234,27 @@ test "checker: typed object var used as call arg emits TS2454" {
     try T.expect(found);
 }
 
+test "checker: switch discriminant and cases participate in TS2454" {
+    const s = try newSetup(
+        \\type S = "a" | "b";
+        \\var value: S;
+        \\switch (value) {
+        \\  case "a":
+        \\    break;
+        \\  default:
+        \\    value = "b";
+        \\    value;
+        \\}
+    );
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+    var found = false;
+    for (s.checker.diagnostics.items) |d| {
+        if (d.code == TsCodes.used_before_assignment) found = true;
+    }
+    try T.expect(found);
+}
+
 test "checker: namespace body participates in TS2454 scan" {
     const s = try newSetup(
         \\namespace N {
@@ -24647,6 +24975,21 @@ test "checker: contextual tuple return prevents recursive nullish tuple narrowin
     }
 }
 
+test "checker: throw-only block-bodied arrow infers never" {
+    const s = try newSetup(
+        \\function test(cb: () => string) {
+        \\  return cb();
+        \\}
+        \\test(() => { throw new Error(); });
+    );
+    defer destroySetup(s);
+    s.checker.setStrictFlags(.{ .strict_null_checks = true });
+    try s.checker.checkSourceFile(s.root);
+    for (s.checker.diagnostics.items) |d| {
+        try T.expect(d.code != TsCodes.argument_type_mismatch);
+    }
+}
+
 test "checker: noUncheckedIndexedAccess widens arr[i] with undefined" {
     const s = try newSetup(
         \\const arr: number[] = [1];
@@ -25869,6 +26212,25 @@ test "checker: overload resolution picks the matching signature" {
     // stmts[4] = let s2 = pick(42) — return is string.
     try T.expectEqual(types.Primitive.number_t, s.hir.typeOf(stmts[3]));
     try T.expectEqual(types.Primitive.string_t, s.hir.typeOf(stmts[4]));
+}
+
+test "checker: overload resolution accepts string literal parameters" {
+    const s = try newSetup(
+        \\type Kind = "A" | "B";
+        \\function hasKind(kind: "A"): number;
+        \\function hasKind(kind: "B"): string;
+        \\function hasKind(kind: Kind): number | string { return 0; }
+        \\let a = hasKind("A");
+        \\let b = hasKind("B");
+    );
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+    for (s.checker.diagnostics.items) |d| {
+        try T.expect(d.code != TsCodes.no_overload_matches);
+    }
+    const stmts = hir_mod.blockStmts(&s.hir, s.root);
+    try T.expectEqual(types.Primitive.number_t, s.hir.typeOf(stmts[4]));
+    try T.expectEqual(types.Primitive.string_t, s.hir.typeOf(stmts[5]));
 }
 
 test "checker: TS2769 when no overload matches the call" {
@@ -28801,6 +29163,75 @@ test "checker: object spread — later spread overrides earlier members" {
     try s.checker.checkSourceFile(s.root);
     for (s.checker.diagnostics.items) |d| {
         try T.expect(d.code != TsCodes.type_not_assignable);
+    }
+}
+
+test "checker: object spread reports required property overwrite" {
+    const s = try newSetup(
+        \\declare let a: { a: string };
+        \\declare let b: { b?: string };
+        \\let x = { a: 123, ...a };
+        \\let y = { b: 123, ...b };
+    );
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+    var count: usize = 0;
+    for (s.checker.diagnostics.items) |d| {
+        if (d.code == TsCodes.jsx_attribute_overwritten) count += 1;
+    }
+    try T.expectEqual(@as(usize, 1), count);
+}
+
+test "checker: object spread omits class methods and accessors" {
+    const s = try newSetup(
+        \\class K {
+        \\  p = 12;
+        \\  m() {}
+        \\  get g() { return 0; }
+        \\}
+        \\let k = new K();
+        \\let sk = { ...k };
+        \\sk.p;
+        \\sk.m();
+        \\sk.g;
+    );
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+    var missing: usize = 0;
+    for (s.checker.diagnostics.items) |d| {
+        if (d.code == TsCodes.property_does_not_exist) missing += 1;
+    }
+    try T.expectEqual(@as(usize, 2), missing);
+}
+
+test "checker: object spread rejects primitive-constrained type parameter" {
+    const s = try newSetup(
+        \\function f<T extends number>(arg: T) {
+        \\  return { ...arg };
+        \\}
+        \\function g<T>(arg: T) {
+        \\  return { ...arg };
+        \\}
+    );
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+    var count: usize = 0;
+    for (s.checker.diagnostics.items) |d| {
+        if (d.code == TsCodes.spread_types_object_only) count += 1;
+    }
+    try T.expectEqual(@as(usize, 1), count);
+}
+
+test "checker: object spread accepts logical-and object branch" {
+    const s = try newSetup(
+        \\function f(authToken: string) {
+        \\  return { ...authToken && { authToken } };
+        \\}
+    );
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+    for (s.checker.diagnostics.items) |d| {
+        try T.expect(d.code != TsCodes.spread_types_object_only);
     }
 }
 
