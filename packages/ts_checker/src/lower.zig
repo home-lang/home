@@ -259,7 +259,7 @@ pub const Lowerer = struct {
             },
             .literal_number => blk: {
                 const v = hir_mod.literalNumberOf(self.hir, lit);
-                const signed: f64 = if (lt.negative) -v else v;
+                const signed: f64 = if (lt.negative and v > 0) -v else v;
                 break :blk self.interner.internNumberLiteral(signed) catch error.OutOfMemory;
             },
             .literal_bool => blk: {

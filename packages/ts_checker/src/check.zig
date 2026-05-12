@@ -8750,6 +8750,11 @@ pub const Checker = struct {
             std.mem.eql(u8, raw, "Record") or
             std.mem.eql(u8, raw, "ThisType") or
             std.mem.eql(u8, raw, "NoInfer") or
+            std.mem.eql(u8, raw, "NonNullable") or
+            std.mem.eql(u8, raw, "Uppercase") or
+            std.mem.eql(u8, raw, "Lowercase") or
+            std.mem.eql(u8, raw, "Capitalize") or
+            std.mem.eql(u8, raw, "Uncapitalize") or
             std.mem.eql(u8, raw, "Promise") or
             std.mem.eql(u8, raw, "Awaited") or
             std.mem.eql(u8, raw, "Generator") or
@@ -8767,6 +8772,76 @@ pub const Checker = struct {
             return t != types.Primitive.none and t != types.Primitive.any and t != types.Primitive.unknown;
         }
         return false;
+    }
+
+    fn stringLiteralValueFromType(self: *Checker, t: TypeId) ?hir_mod.StringId {
+        if (t >= self.interner.pool.typeCount()) return null;
+        const flags = self.interner.pool.flagsOf(t);
+        if (flags.is_literal and flags.is_string) {
+            return switch (self.interner.literalOf(t)) {
+                .string_lit => |sid| sid,
+                else => null,
+            };
+        }
+        if (flags.is_intersection) {
+            for (self.interner.intersectionMembers(t)) |member| {
+                if (self.stringLiteralValueFromType(member)) |sid| return sid;
+            }
+        }
+        return null;
+    }
+
+    fn applyStringMappingBuiltin(self: *Checker, name: []const u8, inner: TypeId) CheckError!TypeId {
+        if (inner < self.interner.pool.typeCount() and self.interner.pool.flagsOf(inner).is_union) {
+            var mapped: std.ArrayListUnmanaged(TypeId) = .empty;
+            defer mapped.deinit(self.gpa);
+            for (self.interner.unionMembers(inner)) |member| {
+                try mapped.append(self.gpa, try self.applyStringMappingBuiltin(name, member));
+            }
+            return self.interner.internUnion(mapped.items) catch return error.OutOfMemory;
+        }
+        const sid = self.stringLiteralValueFromType(inner) orelse return types.Primitive.string_t;
+        const raw = self.string_interner.get(sid);
+        var buf = try self.gpa.alloc(u8, raw.len);
+        defer self.gpa.free(buf);
+        @memcpy(buf, raw);
+        if (std.mem.eql(u8, name, "Lowercase")) {
+            for (buf) |*c| c.* = std.ascii.toLower(c.*);
+        } else if (std.mem.eql(u8, name, "Uppercase")) {
+            for (buf) |*c| c.* = std.ascii.toUpper(c.*);
+        } else if (std.mem.eql(u8, name, "Capitalize")) {
+            if (buf.len > 0) buf[0] = std.ascii.toUpper(buf[0]);
+        } else if (std.mem.eql(u8, name, "Uncapitalize")) {
+            if (buf.len > 0) buf[0] = std.ascii.toLower(buf[0]);
+        } else {
+            return inner;
+        }
+        const mapped_sid = self.string_interner.intern(buf) catch return error.OutOfMemory;
+        return self.interner.internStringLiteral(mapped_sid) catch return error.OutOfMemory;
+    }
+
+    fn lowerTemplateLiteralTypeWithTypeParams(self: *Checker, type_node: NodeId) CheckError!TypeId {
+        const text_parts = hir_mod.templateLiteralTypeTexts(self.hir, type_node);
+        const type_parts = hir_mod.templateLiteralTypeTypes(self.hir, type_node);
+        if (text_parts.len == 0) return types.Primitive.string_t;
+
+        var buf: std.ArrayListUnmanaged(u8) = .empty;
+        defer buf.deinit(self.gpa);
+        for (text_parts, 0..) |text_node, i| {
+            if (text_node != hir_mod.none_node_id and self.hir.kindOf(text_node) == .literal_string) {
+                const lit = hir_mod.literalStringOf(self.hir, text_node);
+                try buf.appendSlice(self.gpa, self.string_interner.get(lit.value));
+            } else {
+                return types.Primitive.string_t;
+            }
+            if (i < type_parts.len) {
+                const sub_t = try self.lowererLowerWithTypeParams(type_parts[i]);
+                const sid = self.stringLiteralValueFromType(sub_t) orelse return types.Primitive.string_t;
+                try buf.appendSlice(self.gpa, self.string_interner.get(sid));
+            }
+        }
+        const sid = self.string_interner.intern(buf.items) catch return error.OutOfMemory;
+        return self.interner.internStringLiteral(sid) catch return error.OutOfMemory;
     }
 
     /// Lower a type annotation while consulting the current
@@ -8849,6 +8924,7 @@ pub const Checker = struct {
                 }
             },
             .tuple_type => return try self.lowerTupleWithTypeParams(type_node),
+            .template_literal_type => return try self.lowerTemplateLiteralTypeWithTypeParams(type_node),
             .type_ref => {
                 const r = hir_mod.typeRefOf(self.hir, type_node);
                 if (r.qualifier_len > 0) {
@@ -8970,6 +9046,25 @@ pub const Checker = struct {
                             const args = hir_mod.typeRefArgs(self.hir, type_node);
                             return try self.lowererLowerWithTypeParams(args[0]);
                         }
+                        // `NonNullable<T>` is defined in lib.es5 as
+                        // `T & {}`. Model the observable utility
+                        // behavior directly so generic return
+                        // instantiation preserves literal/enum-member
+                        // candidates while dropping nullish branches.
+                        if (std.mem.eql(u8, name_str, "NonNullable")) {
+                            const args = hir_mod.typeRefArgs(self.hir, type_node);
+                            const inner = try self.lowererLowerWithTypeParams(args[0]);
+                            return self.subtractNullUndefined(inner);
+                        }
+                        if (std.mem.eql(u8, name_str, "Uppercase") or
+                            std.mem.eql(u8, name_str, "Lowercase") or
+                            std.mem.eql(u8, name_str, "Capitalize") or
+                            std.mem.eql(u8, name_str, "Uncapitalize"))
+                        {
+                            const args = hir_mod.typeRefArgs(self.hir, type_node);
+                            const inner = try self.lowererLowerWithTypeParams(args[0]);
+                            return try self.applyStringMappingBuiltin(name_str, inner);
+                        }
                         // `Promise<T>` — there is no real lib.d.ts
                         // wired up yet, so synthesize a minimal
                         // structural Promise (`{ then: (cb: (v: T) =>
@@ -9044,6 +9139,26 @@ pub const Checker = struct {
                                 try self.recordNarrow(tp.name, arg_t);
                             }
                             return self.evalMappedType(info.body_node) catch info.body;
+                        }
+                        if (info.body_node != hir_mod.none_node_id and
+                            (self.hir.kindOf(info.body_node) == .conditional_type or
+                                self.hir.kindOf(info.body_node) == .template_literal_type or
+                                self.hir.kindOf(info.body_node) == .type_ref or
+                                self.hir.kindOf(info.body_node) == .intersection_type or
+                                self.hir.kindOf(info.body_node) == .union_type or
+                                self.hir.kindOf(info.body_node) == .indexed_access_type or
+                                self.hir.kindOf(info.body_node) == .keyof_type))
+                        {
+                            try self.pushNarrowScope();
+                            defer self.popNarrowScope();
+                            for (info.params) |param_t| {
+                                if (param_t >= self.interner.pool.typeCount()) continue;
+                                if (!self.interner.pool.flagsOf(param_t).is_type_parameter) continue;
+                                const tp = self.interner.pool.type_parameter_payloads.items[self.interner.pool.payloadOf(param_t)];
+                                const arg_t = subs.get(param_t) orelse continue;
+                                try self.recordNarrow(tp.name, arg_t);
+                            }
+                            return self.lowererLowerWithTypeParams(info.body_node) catch info.body;
                         }
                         const instantiated = self.substituteType(info.body, &subs) catch info.body;
                         try self.copyMemberPredicatesFromReceiver(instantiated, info.body);
@@ -10776,6 +10891,21 @@ pub const Checker = struct {
                     break :blk self.literalizeForAsConst(a.expr, fallback) catch return error.OutOfMemory;
                 }
                 break :blk fallback;
+            },
+            .conditional => blk: {
+                const c = hir_mod.conditionalOf(self.hir, init_node);
+                const then_fallback = self.hir.typeOf(c.then_branch);
+                const else_fallback = self.hir.typeOf(c.else_branch);
+                const then_t = try self.constInitializerType(
+                    c.then_branch,
+                    if (then_fallback != types.Primitive.none) then_fallback else fallback,
+                );
+                const else_t = try self.constInitializerType(
+                    c.else_branch,
+                    if (else_fallback != types.Primitive.none) else_fallback else fallback,
+                );
+                if (then_t == else_t) break :blk then_t;
+                break :blk self.interner.internUnion(&.{ then_t, else_t }) catch return error.OutOfMemory;
             },
             else => fallback,
         };
@@ -16746,12 +16876,65 @@ pub const Checker = struct {
     ///     contributes a mapping). Keeps `T | undefined` working.
     ///
     /// First-seen wins on conflict; common-supertype is a follow-up.
+    fn inferUnionRemainder(
+        self: *Checker,
+        param_t: TypeId,
+        arg_t: TypeId,
+        subs: *std.AutoHashMapUnmanaged(TypeId, TypeId),
+    ) CheckError!bool {
+        const pool = &self.interner.pool;
+        if (arg_t >= pool.typeCount()) return false;
+        const a_flags = pool.flagsOf(arg_t);
+        if (!a_flags.is_union) return false;
+
+        const param_members = self.interner.unionMembers(param_t);
+        var generic_member: TypeId = types.Primitive.none;
+        var generic_count: usize = 0;
+        var fixed_count: usize = 0;
+        for (param_members) |member| {
+            if (self.containsFreeTypeParameter(member)) {
+                generic_member = member;
+                generic_count += 1;
+            } else {
+                fixed_count += 1;
+            }
+        }
+        if (generic_count != 1 or fixed_count == 0) return false;
+
+        var remaining: std.ArrayListUnmanaged(TypeId) = .empty;
+        defer remaining.deinit(self.gpa);
+        var removed_fixed = false;
+        for (self.interner.unionMembers(arg_t)) |arg_member| {
+            var covered_by_fixed = false;
+            for (param_members) |param_member| {
+                if (self.containsFreeTypeParameter(param_member)) continue;
+                if (arg_member == param_member or (self.engine.isAssignableTo(arg_member, param_member) catch false)) {
+                    covered_by_fixed = true;
+                    break;
+                }
+            }
+            if (covered_by_fixed) {
+                removed_fixed = true;
+            } else {
+                try remaining.append(self.gpa, arg_member);
+            }
+        }
+        if (!removed_fixed or remaining.items.len == 0) return false;
+
+        const inferred_arg = if (remaining.items.len == 1)
+            remaining.items[0]
+        else
+            self.interner.internUnion(remaining.items) catch return error.OutOfMemory;
+        try self.inferFromPair(generic_member, inferred_arg, subs);
+        return true;
+    }
+
     fn inferFromPair(
         self: *Checker,
         param_t: TypeId,
         arg_t: TypeId,
         subs: *std.AutoHashMapUnmanaged(TypeId, TypeId),
-    ) !void {
+    ) CheckError!void {
         const pool = &self.interner.pool;
         if (param_t >= pool.typeCount()) return;
         if (arg_t >= pool.typeCount()) return;
@@ -16763,6 +16946,7 @@ pub const Checker = struct {
         // case or `(T | undefined)[]` will bind the whole union as T.
         if (p_flags.is_union) {
             if (p_payload >= pool.union_payloads.items.len) return;
+            if (try self.inferUnionRemainder(param_t, arg_t, subs)) return;
             for (self.interner.unionMembers(param_t)) |um| {
                 try self.inferFromPair(um, arg_t, subs);
             }
@@ -25892,6 +26076,82 @@ test "checker: const enum literal discriminant switch narrows object to never" {
     defer destroyBoundSetup(b);
     try b.base.checker.checkSourceFile(b.base.root);
     try T.expectEqual(@as(usize, 0), b.base.checker.diagnostics.items.len);
+}
+
+test "checker: negative numeric literal type remains negative" {
+    const s = try newSetup(
+        \\type B1 = -1 | 0 | 1;
+        \\function f() {
+        \\  var b: B1 = -1;
+        \\}
+    );
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+    try T.expectEqual(@as(usize, 0), s.checker.diagnostics.items.len);
+}
+
+test "checker: const conditional literal initializer keeps literal union for annotation" {
+    const s = try newSetup(
+        \\function f(cond: boolean) {
+        \\  const c1 = cond ? "foo" : "bar";
+        \\  const c2: "foo" | "bar" = c1;
+        \\}
+    );
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+    try T.expectEqual(@as(usize, 0), s.checker.diagnostics.items.len);
+}
+
+test "checker: generic predicate infers type parameter from union remainder" {
+    const s = try newSetup(
+        \\type FAILURE = "FAILURE";
+        \\const FAILURE = "FAILURE";
+        \\type Result<T> = T | FAILURE;
+        \\function doWork<T>(): Result<T> { return FAILURE; }
+        \\function isFailure<T>(result: Result<T>): result is FAILURE { return result === FAILURE; }
+        \\function isSuccess<T>(result: Result<T>): result is T { return !isFailure(result); }
+        \\function increment(x: number): number { return x + 1; }
+        \\let result = doWork<number>();
+        \\if (isSuccess(result)) { increment(result); }
+    );
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+    try T.expectEqual(@as(usize, 0), s.checker.diagnostics.items.len);
+}
+
+test "checker: NonNullable preserves inferred enum member candidate" {
+    const s = try newSetup(
+        \\declare function f<T>(x: T): NonNullable<T>;
+        \\enum E { A, B }
+        \\const a = f(E.A);
+        \\const b: E.A = a;
+    );
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+    try T.expectEqual(@as(usize, 0), s.checker.diagnostics.items.len);
+}
+
+test "checker: string mapping builtins re-evaluate inside generic conditional aliases" {
+    const s = try newSetup(
+        \\type A<S> = Lowercase<S & string> extends "foo" ? 1 : 0;
+        \\let x1: A<"foo"> = 1;
+        \\type C<S> = Capitalize<Lowercase<S & string>> extends "Foo" ? 1 : 0;
+        \\let x2: C<"foo"> = 1;
+    );
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+    try T.expectEqual(@as(usize, 0), s.checker.diagnostics.items.len);
+}
+
+test "checker: string mapping builtins fold concrete template literal type intersections" {
+    const s = try newSetup(
+        \\type E<S> = Lowercase<`f${S & string}` & `${S & string}f`>;
+        \\type G<S> = E<S> extends "f" ? 1 : 0;
+        \\let x: G<""> = 1;
+    );
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+    try T.expectEqual(@as(usize, 0), s.checker.diagnostics.items.len);
 }
 
 test "checker: exhaustive if/else chain narrows discriminant to never in final else" {
