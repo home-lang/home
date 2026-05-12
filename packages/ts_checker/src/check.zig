@@ -78,6 +78,7 @@ pub const TsCodes = struct {
     pub const property_does_not_exist: u32 = 2339;
     pub const argument_type_mismatch: u32 = 2345;
     pub const conversion_may_be_mistake: u32 = 2352;
+    pub const this_context_not_assignable: u32 = 2684;
     pub const new_expression_not_void: u32 = 2350;
     pub const instanceof_left_type: u32 = 2358;
     pub const instanceof_right_type: u32 = 2359;
@@ -2207,11 +2208,22 @@ pub const Checker = struct {
                 break :blk self.interner.internNumberLiteral(value) catch return error.OutOfMemory;
             },
             .literal_bool => self.interner.internBooleanLiteral(hir_mod.literalBoolOf(self.hir, node)),
+            .literal_undefined => types.Primitive.undefined_t,
+            .template_literal => blk: {
+                const sid = (try self.templateLiteralConcreteString(node)) orelse break :blk null;
+                break :blk self.interner.internStringLiteral(sid) catch return error.OutOfMemory;
+            },
+            .identifier => blk: {
+                const id = hir_mod.identifierOf(self.hir, node);
+                if (std.mem.eql(u8, self.string_interner.get(id.name), "undefined")) break :blk types.Primitive.undefined_t;
+                break :blk null;
+            },
             .member_access => blk: {
                 const m = hir_mod.memberOf(self.hir, node);
                 if (self.hir.kindOf(m.object) == .identifier) {
                     const obj = hir_mod.identifierOf(self.hir, m.object);
                     if (self.constEnumLiteralAccess(obj.name, m.name, node)) |lit_t| break :blk lit_t;
+                    if (self.enumMemberStringLiteralAccess(obj.name, m.name, node)) |lit_t| break :blk lit_t;
                 }
                 break :blk null;
             },
@@ -6035,7 +6047,9 @@ pub const Checker = struct {
                             }
                         }
                         if (already) {
-                            if (fn_p.flags.is_getter) try self.report(m, TsCodes.duplicate_identifier, "Duplicate identifier.");
+                            if (fn_p.flags.is_getter and !setter_names.contains(member_name)) {
+                                try self.report(m, TsCodes.duplicate_identifier, "Duplicate identifier.");
+                            }
                             continue;
                         }
                         const accessor_t: TypeId = blk: {
@@ -9093,13 +9107,50 @@ pub const Checker = struct {
         return null;
     }
 
+    fn enumMemberStringLiteralAccess(
+        self: *Checker,
+        obj_name: hir_mod.StringId,
+        prop_name: hir_mod.StringId,
+        anchor: NodeId,
+    ) ?TypeId {
+        const decl = self.enumDeclForNameAt(obj_name, anchor) orelse return null;
+        for (hir_mod.enumMembers(self.hir, decl)) |member| {
+            if (self.hir.kindOf(member) != .object_property) continue;
+            const prop = hir_mod.objectPropertyOf(self.hir, member);
+            if (prop.key == hir_mod.none_node_id or self.hir.kindOf(prop.key) != .identifier) continue;
+            if (hir_mod.identifierOf(self.hir, prop.key).name != prop_name) continue;
+            if (prop.value != hir_mod.none_node_id and self.hir.kindOf(prop.value) == .literal_string) {
+                const lit = hir_mod.literalStringOf(self.hir, prop.value);
+                return self.interner.internStringLiteral(lit.value) catch null;
+            }
+            return null;
+        }
+        return null;
+    }
+
     fn enumMemberAccessType(
         self: *Checker,
         obj_name: hir_mod.StringId,
         prop_name: hir_mod.StringId,
+        anchor: NodeId,
     ) CheckError!?TypeId {
         if (self.const_enums.contains(obj_name)) return null;
-        if (!self.enumHasMember(obj_name, prop_name)) return null;
+        const decl = self.enumDeclForNameAt(obj_name, anchor) orelse return null;
+        var found = false;
+        for (hir_mod.enumMembers(self.hir, decl)) |member| {
+            if (self.hir.kindOf(member) != .object_property) continue;
+            const prop = hir_mod.objectPropertyOf(self.hir, member);
+            const key_name: ?hir_mod.StringId = switch (self.hir.kindOf(prop.key)) {
+                .identifier => hir_mod.identifierOf(self.hir, prop.key).name,
+                .literal_string => hir_mod.literalStringOf(self.hir, prop.key).value,
+                else => null,
+            };
+            if (key_name != null and key_name.? == prop_name) {
+                found = true;
+                break;
+            }
+        }
+        if (!found) return null;
         return try self.enumNominalType(obj_name);
     }
 
@@ -10618,6 +10669,7 @@ pub const Checker = struct {
         if (qualifiers.len != 1 or self.hir.kindOf(qualifiers[0]) != .identifier) return null;
         const enum_name = hir_mod.identifierOf(self.hir, qualifiers[0]).name;
         if (self.constEnumLiteralAccess(enum_name, r.name, type_node)) |lit_t| return lit_t;
+        if (self.enumMemberStringLiteralAccess(enum_name, r.name, type_node)) |lit_t| return lit_t;
         if (self.enumHasMember(enum_name, r.name)) return try self.enumNominalType(enum_name);
         return null;
     }
@@ -12258,6 +12310,7 @@ pub const Checker = struct {
                 {
                     break :blk true;
                 }
+                if (try self.logicalExpressionAssignableToTarget(v.init, declared_type)) break :blk true;
                 if (try self.awaitedExpressionAssignableToTarget(v.init, init_type, declared_type)) break :blk true;
                 if (try self.literalExpressionAssignableToTarget(v.init, declared_type)) break :blk true;
                 if (try self.templateExpressionAssignableToType(v.init, declared_type)) break :blk true;
@@ -12382,6 +12435,23 @@ pub const Checker = struct {
         const awaited_t = self.unwrapPromise(operand_t);
         if (awaited_t != value_t and try self.expressionNodeAssignableToTarget(a.expr, awaited_t, target_t)) return true;
         return try self.expressionNodeAssignableToTarget(a.expr, value_t, target_t);
+    }
+
+    fn logicalExpressionAssignableToTarget(self: *Checker, value_node: NodeId, target_t: TypeId) CheckError!bool {
+        if (value_node == hir_mod.none_node_id or self.hir.kindOf(value_node) != .logical_op) return false;
+        const l = hir_mod.logicalOf(self.hir, value_node);
+        if (l.op != .@"and" and l.op != .@"or") return false;
+        const rhs_t = if (self.hir.typeOf(l.rhs) != types.Primitive.none)
+            self.hir.typeOf(l.rhs)
+        else
+            try self.checkExpression(l.rhs);
+        if (try self.expressionNodeAssignableToTarget(l.rhs, rhs_t, target_t)) return true;
+        if ((self.hir.kindOf(l.rhs) == .arrow_fn or self.hir.kindOf(l.rhs) == .fn_expr) and
+            try self.functionExpressionAssignableToTarget(l.rhs, target_t))
+        {
+            return true;
+        }
+        return false;
     }
 
     fn constInitializerType(self: *Checker, init_node: NodeId, fallback: TypeId) CheckError!TypeId {
@@ -12594,6 +12664,7 @@ pub const Checker = struct {
                 if (self.typeContainsUnknown(final_type)) break :blk true;
                 if ((prior == types.Primitive.any or final_type == types.Primitive.any) and prior != final_type) break :blk false;
                 if (self.engine.isIdenticalTo(prior, final_type) catch true) break :blk true;
+                if (self.exactlyOneTypeIsUnion(prior, final_type)) break :blk false;
                 break :blk (self.engine.isAssignableTo(prior, final_type) catch true) and
                     (self.engine.isAssignableTo(final_type, prior) catch true);
             };
@@ -12619,6 +12690,15 @@ pub const Checker = struct {
             !self.typeIsEnumNominal(final_type)) return;
         try self.var_decl_types.put(self.gpa, key, final_type);
         try self.var_decl_explicit.put(self.gpa, key, has_annotation);
+    }
+
+    fn exactlyOneTypeIsUnion(self: *Checker, a: TypeId, b: TypeId) bool {
+        return self.typeIsUnion(a) != self.typeIsUnion(b);
+    }
+
+    fn typeIsUnion(self: *Checker, t: TypeId) bool {
+        if (t < types.Primitive.first_dynamic or t >= self.interner.pool.typeCount()) return false;
+        return self.interner.pool.flagsOf(t).is_union;
     }
 
     fn typeIsEnumNominal(self: *Checker, t: TypeId) bool {
@@ -13290,6 +13370,7 @@ pub const Checker = struct {
                                 self.isTupleShapedTarget(target_t) and
                                 (try self.checkArrayLiteralAgainstTuple(a.value, target_t))) or
                             (try self.loweredLogicalAssignmentAssignableToTarget(a.target, a.value, target_t)) or
+                            (try self.logicalExpressionAssignableToTarget(a.value, target_t)) or
                             (try self.templateExpressionAssignableToType(a.value, target_t)) or
                             (self.hir.kindOf(a.value) == .object_literal and
                                 (self.objectLiteralAssignableToTarget(a.value, value_t, target_t) catch false)) or
@@ -13454,6 +13535,8 @@ pub const Checker = struct {
                 }
                 if (self.hir.kindOf(c.callee) == .member_access) {
                     try self.checkMethodThisCompatibility(node, c.callee, callee_t);
+                } else if (!self.callCalleeHasSyntacticThisReceiver(c.callee)) {
+                    try self.checkBareCallThisCompatibility(node, callee_t, args, arg_types.items);
                 }
                 if (self.isDynamicImportCallee(c.callee)) {
                     if (args.len == 0) {
@@ -13745,7 +13828,10 @@ pub const Checker = struct {
                     if (self.constEnumLiteralAccess(obj_id.name, m.name, node)) |lit_t| {
                         break :blk try self.optionalChainResult(lit_t, member_is_optional_chain);
                     }
-                    if (try self.enumMemberAccessType(obj_id.name, m.name)) |enum_t| {
+                    if (self.enumMemberStringLiteralAccess(obj_id.name, m.name, node)) |lit_t| {
+                        break :blk try self.optionalChainResult(lit_t, member_is_optional_chain);
+                    }
+                    if (try self.enumMemberAccessType(obj_id.name, m.name, node)) |enum_t| {
                         break :blk try self.optionalChainResult(enum_t, member_is_optional_chain);
                     }
                     if (self.const_enums.contains(obj_id.name)) {
@@ -15411,10 +15497,12 @@ pub const Checker = struct {
             const target_t = if (elem_t == types.Primitive.none) rest_arr_t else elem_t;
             if (target_t >= self.interner.pool.typeCount()) return true;
             if (self.interner.pool.flagsOf(target_t).is_type_parameter) return true;
-            for (arg_types[fixed_count..], fixed_count..) |arg_t, arg_i| {
-                if (arg_i < args.len and try self.literalExpressionAssignableToTarget(args[arg_i], target_t)) continue;
-                if (arg_i < args.len and try self.templateExpressionAssignableToType(args[arg_i], target_t)) continue;
-                if (!(try self.restArgumentAssignable(arg_t, target_t))) return false;
+            if (arg_types.len > fixed_count) {
+                for (arg_types[fixed_count..], fixed_count..) |arg_t, arg_i| {
+                    if (arg_i < args.len and try self.literalExpressionAssignableToTarget(args[arg_i], target_t)) continue;
+                    if (arg_i < args.len and try self.templateExpressionAssignableToType(args[arg_i], target_t)) continue;
+                    if (!(try self.restArgumentAssignable(arg_t, target_t))) return false;
+                }
             }
         }
         return true;
@@ -15718,6 +15806,48 @@ pub const Checker = struct {
         }
         if (saw_this_param) {
             try self.report(call_node, TsCodes.argument_type_mismatch, "The 'this' context is not assignable to method's 'this' type.");
+        }
+    }
+
+    fn checkBareCallThisCompatibility(
+        self: *Checker,
+        call_node: NodeId,
+        callee_t: TypeId,
+        args: []const NodeId,
+        arg_types: []const TypeId,
+    ) CheckError!void {
+        var call_sigs: std.ArrayListUnmanaged(TypeId) = .empty;
+        defer call_sigs.deinit(self.gpa);
+        try self.collectCallSignatures(callee_t, &call_sigs);
+
+        var expected_this: TypeId = types.Primitive.none;
+        for (call_sigs.items) |sig| {
+            if (!try self.signatureAccepts(sig, args, arg_types)) continue;
+            const this_t = self.signature_this_params.get(sig) orelse continue;
+            if (expected_this == types.Primitive.none) {
+                expected_this = this_t;
+                continue;
+            }
+            if (self.engine.isIdenticalTo(expected_this, this_t) catch false) continue;
+            expected_this = types.Primitive.never;
+            break;
+        }
+        if (expected_this == types.Primitive.none) return;
+        if (self.engine.isAssignableTo(types.Primitive.void_t, expected_this) catch false) return;
+        try self.report(call_node, TsCodes.this_context_not_assignable, "The 'this' context of type 'void' is not assignable to method's 'this' type.");
+    }
+
+    fn callCalleeHasSyntacticThisReceiver(self: *Checker, callee: NodeId) bool {
+        var cur = callee;
+        while (true) {
+            switch (self.hir.kindOf(cur)) {
+                .member_access, .element_access => return true,
+                .non_null_expr => {
+                    cur = hir_mod.asExpressionOf(self.hir, cur).expr;
+                    continue;
+                },
+                else => return false,
+            }
         }
     }
 
@@ -16600,7 +16730,7 @@ pub const Checker = struct {
             if (!self.interner.pool.flagsOf(variant).is_object_type) continue;
             const disc_t = self.interner.objectMember(variant, prop_name) orelse continue;
             // Match: the variant's discriminant is exactly the literal.
-            if (disc_t == lit_t) {
+            if (try self.discriminantTypeMatchesLiteral(disc_t, lit_t)) {
                 if (positive) {
                     try keep.append(self.gpa, variant);
                 }
@@ -16621,6 +16751,21 @@ pub const Checker = struct {
         else
             self.interner.internUnion(keep.items) catch return;
         try self.recordNarrow(obj_name, narrowed);
+    }
+
+    fn discriminantTypeMatchesLiteral(self: *Checker, disc_t: TypeId, lit_t: TypeId) CheckError!bool {
+        if (disc_t == lit_t) return true;
+        if (self.engine.isAssignableTo(lit_t, disc_t) catch false) return true;
+        if (self.engine.isAssignableTo(disc_t, lit_t) catch false) return true;
+        if (lit_t >= types.Primitive.first_dynamic and lit_t < self.interner.pool.typeCount() and
+            self.interner.pool.flagsOf(lit_t).is_literal)
+        {
+            switch (self.interner.literalOf(lit_t)) {
+                .string_lit => |sid| return try self.stringLiteralAssignableToType(sid, disc_t),
+                else => {},
+            }
+        }
+        return false;
     }
 
     fn recordNarrow(self: *Checker, name: hir_mod.StringId, t: TypeId) !void {
@@ -18707,6 +18852,29 @@ pub const Checker = struct {
                     return try self.appendTemplateSubstitutionString(u.operand, out);
                 }
                 return false;
+            },
+            .member_access => {
+                const m = hir_mod.memberOf(self.hir, node);
+                if (self.hir.kindOf(m.object) != .identifier) return false;
+                const obj = hir_mod.identifierOf(self.hir, m.object);
+                const lit_t = self.constEnumLiteralAccess(obj.name, m.name, node) orelse
+                    self.enumMemberStringLiteralAccess(obj.name, m.name, node) orelse
+                    return false;
+                if (lit_t < types.Primitive.first_dynamic or lit_t >= self.interner.pool.typeCount()) return false;
+                const flags = self.interner.pool.flagsOf(lit_t);
+                if (!flags.is_literal) return false;
+                switch (self.interner.literalOf(lit_t)) {
+                    .string_lit => |sid| try self.appendCookedStringText(self.string_interner.get(sid), out),
+                    .number_lit => |bits| {
+                        const v = @as(f64, @bitCast(bits));
+                        const text = try std.fmt.allocPrint(self.gpa, "{d}", .{v});
+                        defer self.gpa.free(text);
+                        try out.appendSlice(self.gpa, text);
+                    },
+                    .boolean_lit => |b| try out.appendSlice(self.gpa, if (b) "true" else "false"),
+                    .bigint_lit => return false,
+                }
+                return true;
             },
             .as_expr, .satisfies_expr, .type_assertion, .non_null_expr => {
                 const a = hir_mod.asExpressionOf(self.hir, node);
@@ -21024,6 +21192,16 @@ pub const Checker = struct {
         const f = hir_mod.fnDeclOf(self.hir, fn_node);
         if (f.body == hir_mod.none_node_id or self.hir.kindOf(f.body) == .block_stmt) return false;
         const target_ret = self.interner.signatureReturn(target_t) orelse return false;
+        if (self.hir.kindOf(f.body) == .identifier) {
+            const body_id = hir_mod.identifierOf(self.hir, f.body);
+            for (hir_mod.fnParams(self.hir, fn_node), 0..) |param, i| {
+                if (self.hir.kindOf(param) != .parameter) continue;
+                const p = hir_mod.parameterOf(self.hir, param);
+                if (p.name == hir_mod.none_node_id or self.hir.kindOf(p.name) != .identifier) continue;
+                if (hir_mod.identifierOf(self.hir, p.name).name != body_id.name) continue;
+                if (i < target_params.len and (self.engine.isAssignableTo(target_params[i], target_ret) catch false)) return true;
+            }
+        }
         return try self.literalExpressionAssignableToTarget(f.body, target_ret);
     }
 
@@ -26005,6 +26183,29 @@ test "checker: repeated var declarations require identical annotated types" {
     try T.expect(found);
 }
 
+test "checker: repeated var declarations reject subtype-collapsed unions" {
+    const s = try newSetup(
+        \\class C { }
+        \\class D extends C { foo() { } }
+        \\var x: C;
+        \\var x: C | D;
+        \\var y: string | number;
+        \\var y: number | string;
+    );
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+    var found = false;
+    var mismatch_count: usize = 0;
+    for (s.checker.diagnostics.items) |d| {
+        if (d.code == TsCodes.subsequent_var_type_mismatch) {
+            found = true;
+            mismatch_count += 1;
+        }
+    }
+    try T.expect(found);
+    try T.expectEqual(@as(usize, 1), mismatch_count);
+}
+
 test "checker: function without return annotation infers from a single return" {
     const s = try newSetup("function add(a: number, b: number) { return a + b; }");
     defer destroySetup(s);
@@ -28428,6 +28629,62 @@ test "checker: Array constructor accepts element type arguments" {
     }
 }
 
+test "checker: getter after setter is an accessor pair, not duplicate identifier" {
+    const s = try newSetup(
+        \\class C {
+        \\  set x(value: number) { }
+        \\  get x() { return 1; }
+        \\}
+    );
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+    for (s.checker.diagnostics.items) |d| {
+        try T.expect(d.code != TsCodes.duplicate_identifier);
+    }
+}
+
+test "checker: logical-and expression contextually assigns arrow rhs" {
+    const s = try newSetup(
+        \\let x: (a: string) => string;
+        \\let y = true;
+        \\x = y && (a => a);
+    );
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+    for (s.checker.diagnostics.items) |d| {
+        try T.expect(d.code != TsCodes.type_not_assignable);
+        try T.expect(d.code != TsCodes.parameter_implicitly_any);
+    }
+}
+
+test "checker: discriminated unions narrow with undefined and template enum literals" {
+    const s = try newSetup(
+        \\type Correct = { code: string; property: true; err: undefined; }
+        \\type Err = { err: `${string} is wrong!`; }
+        \\type SomeReturnType = Correct | Err;
+        \\const example: SomeReturnType = {} as SomeReturnType;
+        \\if (example.err === undefined) {
+        \\  example.property;
+        \\}
+        \\enum AnimalType { cat = "cat", dog = "dog" }
+        \\type Animal =
+        \\  | { type: `${AnimalType.cat}`; meow: string; }
+        \\  | { type: `${AnimalType.dog}`; bark: string; };
+        \\function action(animal: Animal) {
+        \\  if (animal.type === AnimalType.cat) {
+        \\    animal.meow;
+        \\  } else if (animal.type === AnimalType.dog) {
+        \\    animal.bark;
+        \\  }
+        \\}
+    );
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+    for (s.checker.diagnostics.items) |d| {
+        try T.expect(d.code != TsCodes.property_does_not_exist);
+    }
+}
+
 test "checker: type predicate narrows in then-branch" {
     const s = try newSetup(
         \\function isString(x: any): x is string { return true; }
@@ -28487,6 +28744,23 @@ test "checker: overload resolution accepts string literal parameters" {
     const stmts = hir_mod.blockStmts(&s.hir, s.root);
     try T.expectEqual(types.Primitive.number_t, s.hir.typeOf(stmts[4]));
     try T.expectEqual(types.Primitive.string_t, s.hir.typeOf(stmts[5]));
+}
+
+test "checker: bare calls validate explicit this parameters across union signatures" {
+    const s = try newSetup(
+        \\interface A { (this: void, b?: number): void; }
+        \\interface B { (this: number, b?: number): void; }
+        \\interface C { (i: number): void; }
+        \\declare const fn: A | B | C;
+        \\fn(0);
+    );
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+    var found = false;
+    for (s.checker.diagnostics.items) |d| {
+        if (d.code == TsCodes.this_context_not_assignable) found = true;
+    }
+    try T.expect(found);
 }
 
 test "checker: TS2769 when no overload matches the call" {
