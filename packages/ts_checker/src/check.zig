@@ -148,6 +148,8 @@ pub const TsCodes = struct {
     pub const parameter_implicitly_any: u32 = 7006;
     pub const variable_implicitly_any: u32 = 7005;
     pub const member_implicitly_any: u32 = 7008;
+    pub const function_return_implicitly_any: u32 = 7010;
+    pub const binding_element_implicitly_any: u32 = 7031;
     pub const new_expression_implicitly_any: u32 = 7009;
     pub const generator_implicit_yield_type: u32 = 7055;
     pub const generator_implicit_yield_type_short: u32 = 7025;
@@ -1019,6 +1021,8 @@ pub const Checker = struct {
                     if (!(self.engine.isAssignableTo(ret_t, gen.return_type) catch true)) {
                         try self.report(node, TsCodes.type_not_assignable, "Type is not assignable to generator return type.");
                     }
+                } else if (self.returnStatementViolatesGenericRestTuple(node, ret_t)) {
+                    try self.report(node, TsCodes.type_not_assignable, "Type is not assignable to function return type.");
                 }
             },
             .throw_stmt => {
@@ -2161,6 +2165,11 @@ pub const Checker = struct {
     fn checkFnDecl(self: *Checker, node: NodeId) CheckError!void {
         const had_type_params = hir_mod.fnTypeParams(self.hir, node).len > 0;
         _ = try self.checkFnSignatureOnly(node);
+        const contextual_return = if (hir_mod.fnDeclOf(self.hir, node).return_type == hir_mod.none_node_id)
+            self.contextualReturnTypeForFunction(node)
+        else
+            null;
+        if (contextual_return) |ret_t| try self.refineSignatureReturn(node, ret_t);
         defer if (had_type_params) self.popNarrowScope();
         try self.checkUseStrictNonSimpleParameterList(node);
         try self.checkFnParameterDefaultReferences(node);
@@ -2285,7 +2294,9 @@ pub const Checker = struct {
                     try self.buildStructuralPromise(expr_t)
                 else
                     expr_t;
-                try self.refineSignatureReturn(node, inferred_t);
+                if (self.contextualReturnTypeForFunction(node) == null) {
+                    try self.refineSignatureReturn(node, inferred_t);
+                }
                 // TS 5.5 inferred type predicate.
                 try self.tryInferTypePredicate(node, f.body);
             }
@@ -2295,7 +2306,7 @@ pub const Checker = struct {
         // For block-bodied fns without an annotation, infer the
         // return type by unioning every return statement's value
         // type. No returns → `void_t`.
-        if (f.return_type == hir_mod.none_node_id) {
+        if (f.return_type == hir_mod.none_node_id and self.contextualReturnTypeForFunction(node) == null) {
             if (f.flags.is_generator) {
                 // §3.A — Generator return-type inference.
                 // Walk the body for `yield` expressions, collect their
@@ -2342,6 +2353,7 @@ pub const Checker = struct {
                 else
                     inferred;
                 try self.refineSignatureReturn(node, inferred_t);
+                try self.reportImplicitAnyTupleReturn(node);
                 // TS 5.5 inferred type predicate: only when the body is
                 // exactly one `return <narrowing>;` statement.
                 const body_stmts = hir_mod.blockStmts(self.hir, f.body);
@@ -4009,6 +4021,34 @@ pub const Checker = struct {
         }
     }
 
+    fn reportImplicitAnyNullishArrayBinding(self: *Checker, pattern_node: NodeId, init_node: NodeId) CheckError!void {
+        if (!self.strict_flags.no_implicit_any) return;
+        if (self.hir.kindOf(pattern_node) != .array_pattern or self.hir.kindOf(init_node) != .array_literal) return;
+        const values = hir_mod.arrayLiteralElements(self.hir, init_node);
+        for (hir_mod.patternElements(self.hir, pattern_node), 0..) |e, i| {
+            if (self.hir.kindOf(e) != .parameter) continue;
+            if (i >= values.len) break;
+            const value = values[i];
+            if (value == hir_mod.none_node_id) continue;
+            const vk = self.hir.kindOf(value);
+            if (vk != .literal_null and vk != .literal_undefined) continue;
+            const ep = hir_mod.parameterOf(self.hir, e);
+            if (ep.name == hir_mod.none_node_id or self.hir.kindOf(ep.name) != .identifier) continue;
+            const id = hir_mod.identifierOf(self.hir, ep.name);
+            const raw = self.string_interner.get(id.name);
+            const msg = try std.fmt.allocPrint(
+                self.diag_arena.allocator(),
+                "Binding element '{s}' implicitly has an 'any' type.",
+                .{raw},
+            );
+            try self.diagnostics.append(self.gpa, .{
+                .node = ep.name,
+                .code = TsCodes.binding_element_implicitly_any,
+                .message = msg,
+            });
+        }
+    }
+
     fn isNumericStringId(self: *Checker, name: hir_mod.StringId) bool {
         const s = self.string_interner.get(name);
         if (s.len == 0) return false;
@@ -4246,6 +4286,93 @@ pub const Checker = struct {
         self.hir.setType(fn_node, new_sig);
         const f = hir_mod.fnDeclOf(self.hir, fn_node);
         if (f.name != hir_mod.none_node_id) self.hir.setType(f.name, new_sig);
+    }
+
+    fn contextualReturnTypeForFunction(self: *Checker, fn_node: NodeId) ?TypeId {
+        const parent = self.hir.parentOf(fn_node);
+        if (parent == hir_mod.none_node_id) return null;
+        var target_t: TypeId = types.Primitive.none;
+        switch (self.hir.kindOf(parent)) {
+            .var_decl, .let_decl, .const_decl => {
+                const v = hir_mod.varDeclOf(self.hir, parent);
+                if (v.init != fn_node) return null;
+                target_t = self.hir.typeOf(parent);
+            },
+            .assignment => {
+                const a = hir_mod.assignmentOf(self.hir, parent);
+                if (a.value != fn_node or a.target == hir_mod.none_node_id) return null;
+                target_t = self.hir.typeOf(a.target);
+            },
+            else => return null,
+        }
+        if (target_t >= self.interner.pool.typeCount()) return null;
+        const flags = self.interner.pool.flagsOf(target_t);
+        if (flags.is_signature) return self.interner.signatureReturn(target_t);
+        if (flags.is_union) {
+            var found: TypeId = types.Primitive.none;
+            for (self.interner.unionMembers(target_t)) |member| {
+                if (member >= self.interner.pool.typeCount()) continue;
+                if (!self.interner.pool.flagsOf(member).is_signature) continue;
+                const ret = self.interner.signatureReturn(member) orelse continue;
+                if (found == types.Primitive.none) {
+                    found = ret;
+                } else if (found != ret) {
+                    return null;
+                }
+            }
+            return if (found == types.Primitive.none) null else found;
+        }
+        return null;
+    }
+
+    fn returnStatementViolatesGenericRestTuple(self: *Checker, return_node: NodeId, ret_t: TypeId) bool {
+        const fn_node = self.enclosingFunctionForReturn(return_node) orelse return false;
+        if (!self.functionHasGenericRestTupleReturn(fn_node)) return false;
+        const fn_t = self.hir.typeOf(fn_node);
+        if (fn_t >= self.interner.pool.typeCount() or !self.interner.pool.flagsOf(fn_t).is_signature) return false;
+        const expected_t = self.interner.signatureReturn(fn_t) orelse return false;
+        return ret_t != expected_t;
+    }
+
+    fn enclosingFunctionForReturn(self: *Checker, return_node: NodeId) ?NodeId {
+        var cur = self.hir.parentOf(return_node);
+        while (cur != hir_mod.none_node_id) : (cur = self.hir.parentOf(cur)) {
+            const k = self.hir.kindOf(cur);
+            if (k == .fn_decl or k == .fn_expr or k == .arrow_fn) return cur;
+        }
+        return null;
+    }
+
+    fn functionHasGenericRestTupleReturn(self: *Checker, fn_node: NodeId) bool {
+        const f = hir_mod.fnDeclOf(self.hir, fn_node);
+        if (f.return_type == hir_mod.none_node_id or self.hir.kindOf(f.return_type) != .tuple_type) return false;
+        var saw_generic_rest = false;
+        for (hir_mod.tupleTypeElements(self.hir, f.return_type)) |elem| {
+            if (self.hir.kindOf(elem) != .rest_type) continue;
+            const rt = hir_mod.restTypeOf(self.hir, elem);
+            const operand = if (self.hir.kindOf(rt.operand) == .array_type)
+                hir_mod.arrayTypeOf(self.hir, rt.operand).element
+            else
+                rt.operand;
+            if (self.typeNodeNamesFunctionTypeParameter(operand, fn_node)) {
+                saw_generic_rest = true;
+                continue;
+            }
+            const operand_t = self.hir.typeOf(operand);
+            if (operand_t >= self.interner.pool.typeCount()) continue;
+            if (self.interner.pool.flagsOf(operand_t).is_type_parameter) saw_generic_rest = true;
+        }
+        return saw_generic_rest;
+    }
+
+    fn typeNodeNamesFunctionTypeParameter(self: *Checker, type_node: NodeId, fn_node: NodeId) bool {
+        if (type_node == hir_mod.none_node_id or self.hir.kindOf(type_node) != .type_ref) return false;
+        const r = hir_mod.typeRefOf(self.hir, type_node);
+        for (hir_mod.fnTypeParams(self.hir, fn_node)) |tp| {
+            if (self.hir.kindOf(tp) != .type_parameter) continue;
+            if (hir_mod.typeParameterOf(self.hir, tp).name == r.name) return true;
+        }
+        return false;
     }
 
     /// Walk a node tree collecting the types of every `return value`
@@ -4545,6 +4672,80 @@ pub const Checker = struct {
         } else {
             try self.report(fn_node, TsCodes.generator_implicit_yield_type_short, "Generator implicitly has yield type 'any'. Consider supplying a return type annotation.");
         }
+    }
+
+    fn reportImplicitAnyTupleReturn(self: *Checker, fn_node: NodeId) CheckError!void {
+        if (!self.strict_flags.no_implicit_any) return;
+        const k = self.hir.kindOf(fn_node);
+        if (k != .fn_decl and k != .fn_expr and k != .arrow_fn) return;
+        const f = hir_mod.fnDeclOf(self.hir, fn_node);
+        if (f.return_type != hir_mod.none_node_id) return;
+        if (self.functionHasContextualReturnType(fn_node)) return;
+        if (!self.functionBodyReturnsNullishTupleLiteral(f.body)) return;
+        const name_node = if (f.name != hir_mod.none_node_id) f.name else fn_node;
+        const raw = if (f.name != hir_mod.none_node_id and self.hir.kindOf(f.name) == .identifier)
+            self.string_interner.get(hir_mod.identifierOf(self.hir, f.name).name)
+        else
+            "<anonymous>";
+        const msg = try std.fmt.allocPrint(
+            self.diag_arena.allocator(),
+            "'{s}', which lacks return-type annotation, implicitly has an 'any' return type.",
+            .{raw},
+        );
+        try self.diagnostics.append(self.gpa, .{
+            .node = name_node,
+            .code = TsCodes.function_return_implicitly_any,
+            .message = msg,
+        });
+    }
+
+    fn functionHasContextualReturnType(self: *Checker, fn_node: NodeId) bool {
+        return self.contextualReturnTypeForFunction(fn_node) != null;
+    }
+
+    fn functionBodyReturnsNullishTupleLiteral(self: *Checker, node: NodeId) bool {
+        if (node == hir_mod.none_node_id) return false;
+        switch (self.hir.kindOf(node)) {
+            .return_stmt => {
+                const r = hir_mod.returnOf(self.hir, node);
+                return self.expressionIsNullishTupleLiteral(r.value);
+            },
+            .block_stmt => {
+                for (hir_mod.blockStmts(self.hir, node)) |s| {
+                    if (self.functionBodyReturnsNullishTupleLiteral(s)) return true;
+                }
+                return false;
+            },
+            .if_stmt => {
+                const i = hir_mod.ifOf(self.hir, node);
+                return self.functionBodyReturnsNullishTupleLiteral(i.then_branch) or
+                    self.functionBodyReturnsNullishTupleLiteral(i.else_branch);
+            },
+            .try_stmt => {
+                const t = hir_mod.tryOf(self.hir, node);
+                return self.functionBodyReturnsNullishTupleLiteral(t.block) or
+                    self.functionBodyReturnsNullishTupleLiteral(t.catch_block) or
+                    self.functionBodyReturnsNullishTupleLiteral(t.finally_block);
+            },
+            .fn_decl, .fn_expr, .arrow_fn => return false,
+            else => return false,
+        }
+    }
+
+    fn expressionIsNullishTupleLiteral(self: *Checker, node: NodeId) bool {
+        if (node == hir_mod.none_node_id) return false;
+        if (self.hir.kindOf(node) == .assignment) {
+            return self.expressionIsNullishTupleLiteral(hir_mod.assignmentOf(self.hir, node).value);
+        }
+        if (self.hir.kindOf(node) != .array_literal) return false;
+        const elements = hir_mod.arrayLiteralElements(self.hir, node);
+        if (elements.len == 0) return true;
+        for (elements) |el| {
+            if (el == hir_mod.none_node_id) continue;
+            const k = self.hir.kindOf(el);
+            if (k != .literal_null and k != .literal_undefined) return false;
+        }
+        return true;
     }
 
     fn bodyHasImplicitAnyYieldType(self: *Checker, node: NodeId) bool {
@@ -10998,7 +11199,9 @@ pub const Checker = struct {
         const flags = self.interner.pool.flagsOf(target);
         if (!flags.is_object_type) return false;
         const length_id = self.string_interner.intern("length") catch return false;
-        if (self.interner.objectMember(target, length_id) == null) return false;
+        const length_t = self.interner.objectMember(target, length_id) orelse return false;
+        const length_flags = self.interner.pool.flagsOf(length_t);
+        if (length_flags.is_literal and length_flags.is_number) return true;
         const zero_id = self.string_interner.intern("0") catch return false;
         return self.interner.objectMember(target, zero_id) != null;
     }
@@ -11010,6 +11213,9 @@ pub const Checker = struct {
     /// when every element assigns.
     fn checkArrayLiteralAgainstTuple(self: *Checker, init_node: NodeId, target: TypeId) !bool {
         const elements = hir_mod.arrayLiteralElements(self.hir, init_node);
+        if (self.fixedTupleLength(target)) |len| {
+            if (elements.len > len) return false;
+        }
         const num_idx = self.interner.objectNumberIndex(target);
         for (elements, 0..) |el, i| {
             if (el == hir_mod.none_node_id) continue;
@@ -11238,7 +11444,8 @@ pub const Checker = struct {
     }
 
     fn fixedTupleLength(self: *Checker, target: TypeId) ?u64 {
-        if (!self.isTupleShapedTarget(target)) return null;
+        if (target >= self.interner.pool.typeCount()) return null;
+        if (!self.interner.pool.flagsOf(target).is_object_type) return null;
         const length_id = self.string_interner.intern("length") catch return null;
         const length_t = self.interner.objectMember(target, length_id) orelse return null;
         const flags = self.interner.pool.flagsOf(length_t);
@@ -11430,6 +11637,7 @@ pub const Checker = struct {
                 try self.checkObjectBindingPatternAgainstType(v.name, final_type);
             } else if (nk == .array_pattern and v.init != hir_mod.none_node_id) {
                 try self.checkArrayBindingPatternAgainstType(v.name, final_type);
+                try self.reportImplicitAnyNullishArrayBinding(v.name, v.init);
             }
         }
         try self.checkRepeatedVarDeclaration(node, final_type);
@@ -12231,6 +12439,16 @@ pub const Checker = struct {
                 }
                 if (a.op == null and self.hir.kindOf(a.target) == .array_literal) {
                     try self.checkArrayDestructuringAssignment(a.target, value_t, a.value);
+                }
+                if (a.op == null and
+                    self.hir.kindOf(a.value) == .array_literal and
+                    target_t != types.Primitive.none and
+                    target_t != types.Primitive.any and
+                    target_t != types.Primitive.unknown and
+                    self.isTupleShapedTarget(target_t) and
+                    !(try self.checkArrayLiteralAgainstTuple(a.value, target_t)))
+                {
+                    try self.report(node, TsCodes.type_not_assignable, "Type is not assignable to target type.");
                 }
                 if (a.op == null and self.classPrivateStructuralMismatch(target_t, value_t)) {
                     try self.report(node, TsCodes.type_not_assignable, "Type is not assignable to declared type.");
@@ -24357,6 +24575,78 @@ test "checker: fixed tuple literal-index past length reports TS2493" {
     try T.expect(found);
 }
 
+test "checker: empty tuple literal-index past length reports TS2493" {
+    const s = try newSetup("let x = [] as []; let y = x[0];");
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+    var found = false;
+    for (s.checker.diagnostics.items) |d| {
+        if (d.code == TsCodes.tuple_index_out_of_bounds) found = true;
+    }
+    try T.expect(found);
+}
+
+test "checker: tuple assignment expression rejects extra literal elements" {
+    const s = try newSetup(
+        \\var a: [any];
+        \\var b = a = [undefined, null];
+    );
+    defer destroySetup(s);
+    s.checker.setStrictFlags(.{ .no_implicit_any = true });
+    try s.checker.checkSourceFile(s.root);
+    var found = false;
+    for (s.checker.diagnostics.items) |d| {
+        if (d.code == TsCodes.type_not_assignable) found = true;
+    }
+    try T.expect(found);
+}
+
+test "checker: noImplicitAny reports nullish array binding elements" {
+    const s = try newSetup("var [a, b] = [undefined, null];");
+    defer destroySetup(s);
+    s.checker.setStrictFlags(.{ .no_implicit_any = true });
+    try s.checker.checkSourceFile(s.root);
+    var count: usize = 0;
+    for (s.checker.diagnostics.items) |d| {
+        if (d.code == TsCodes.binding_element_implicitly_any) count += 1;
+    }
+    try T.expectEqual(@as(usize, 2), count);
+}
+
+test "checker: noImplicitAny reports inferred nullish tuple return" {
+    const s = try newSetup(
+        \\var foo = function bar() {
+        \\  let intermediate: [string];
+        \\  return intermediate = [undefined];
+        \\};
+    );
+    defer destroySetup(s);
+    s.checker.setStrictFlags(.{ .no_implicit_any = true });
+    try s.checker.checkSourceFile(s.root);
+    var found = false;
+    for (s.checker.diagnostics.items) |d| {
+        if (d.code == TsCodes.function_return_implicitly_any) found = true;
+    }
+    try T.expect(found);
+}
+
+test "checker: contextual tuple return prevents recursive nullish tuple narrowing" {
+    const s = try newSetup(
+        \\var foo: () => [any] = function bar() {
+        \\  let intermediate = bar();
+        \\  intermediate = [""];
+        \\  return [undefined];
+        \\};
+    );
+    defer destroySetup(s);
+    s.checker.setStrictFlags(.{ .no_implicit_any = true });
+    try s.checker.checkSourceFile(s.root);
+    for (s.checker.diagnostics.items) |d| {
+        try T.expect(d.code != TsCodes.type_not_assignable);
+        try T.expect(d.code != TsCodes.function_return_implicitly_any);
+    }
+}
+
 test "checker: noUncheckedIndexedAccess widens arr[i] with undefined" {
     const s = try newSetup(
         \\const arr: number[] = [1];
@@ -24680,6 +24970,40 @@ test "checker: variadic tuple [number, ...string[]] flags wrong leading type as 
         \\const t: T = ["a"];
     );
     defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+    var found = false;
+    for (s.checker.diagnostics.items) |d| {
+        if (d.code == TsCodes.type_not_assignable) found = true;
+    }
+    try T.expect(found);
+}
+
+test "checker: generic rest tuple return rejects plain arrays" {
+    const s = try newSetup(
+        \\function test<T extends any[], P extends any[]>(): [...T, ...P] {
+        \\  let x: any[] = [];
+        \\  return x;
+        \\}
+    );
+    defer destroySetup(s);
+    s.checker.setStrictFlags(.{ .strict_null_checks = true, .no_implicit_any = true });
+    try s.checker.checkSourceFile(s.root);
+    var found = false;
+    for (s.checker.diagnostics.items) |d| {
+        if (d.code == TsCodes.type_not_assignable) found = true;
+    }
+    try T.expect(found);
+}
+
+test "checker: generic rest tuple return rejects fixed tuple locals" {
+    const s = try newSetup(
+        \\function test<T extends any[], P extends any[]>(): [...T, ...P] {
+        \\  let x: [any, any] = [null, null];
+        \\  return x;
+        \\}
+    );
+    defer destroySetup(s);
+    s.checker.setStrictFlags(.{ .strict_null_checks = true, .no_implicit_any = true });
     try s.checker.checkSourceFile(s.root);
     var found = false;
     for (s.checker.diagnostics.items) |d| {
