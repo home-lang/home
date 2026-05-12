@@ -4588,15 +4588,28 @@ fn renderTypeInto(
         return;
     }
     if (flags.is_keyof) {
-        try buf.appendSlice(gpa, "keyof T");
+        const payload = ti.pool.keyof_payloads.items[ti.pool.payloadOf(id)];
+        try buf.appendSlice(gpa, "keyof ");
+        try renderTypeInto(buf, gpa, ti, sint, payload.operand, depth + 1);
         return;
     }
     if (flags.is_indexed_access) {
-        try buf.appendSlice(gpa, "T[K]");
+        const payload = ti.pool.indexed_access_payloads.items[ti.pool.payloadOf(id)];
+        try renderTypeInto(buf, gpa, ti, sint, payload.object, depth + 1);
+        try buf.append(gpa, '[');
+        try renderTypeInto(buf, gpa, ti, sint, payload.index, depth + 1);
+        try buf.append(gpa, ']');
         return;
     }
     if (flags.is_conditional) {
-        try buf.appendSlice(gpa, "T extends U ? X : Y");
+        const payload = ti.pool.conditional_payloads.items[ti.pool.payloadOf(id)];
+        try renderTypeInto(buf, gpa, ti, sint, payload.check_type, depth + 1);
+        try buf.appendSlice(gpa, " extends ");
+        try renderTypeInto(buf, gpa, ti, sint, payload.extends_type, depth + 1);
+        try buf.appendSlice(gpa, " ? ");
+        try renderTypeInto(buf, gpa, ti, sint, payload.true_branch, depth + 1);
+        try buf.appendSlice(gpa, " : ");
+        try renderTypeInto(buf, gpa, ti, sint, payload.false_branch, depth + 1);
         return;
     }
     if (flags.is_type_parameter) {
@@ -5213,6 +5226,33 @@ test "Service: hover renders type parameter name and constraint" {
     defer T.allocator.free(r.type_repr);
     try T.expect(std.mem.indexOf(u8, r.type_repr, "T") != null);
     try T.expect(std.mem.indexOf(u8, r.type_repr, "extends string") != null);
+}
+
+test "Service: hover renders keyof with real operand" {
+    var vfs = ts_resolver.VirtualFs.init(T.allocator);
+    defer vfs.deinit();
+    var resolver = ts_resolver.Resolver.init(T.allocator, vfs.fs(), .{});
+    defer resolver.deinit();
+    var program = ts_program.Program.init(T.allocator, &resolver);
+    defer program.deinit();
+
+    // `type K = keyof Obj` should resolve the alias on hover to its
+    // operand-rendered shape rather than the legacy `keyof T`
+    // placeholder. The eager keyof-over-object-shape evaluation
+    // already collapses to a literal-string union, so look for one
+    // of the literal members.
+    const src = "type Obj = { a: 1; b: 2 };\ntype K = keyof Obj;\nlet k: K = \"a\";";
+    _ = try program.add("/main.ts", src);
+    try program.compileAll(.{});
+
+    var svc = Service.init(T.allocator, &program);
+    // Hover on the variable name `k` (after the `let `).
+    const k_pos: u32 = @intCast(std.mem.indexOf(u8, src, "let k").? + 4);
+    const r = svc.hover("/main.ts", k_pos) orelse return error.NoHover;
+    defer T.allocator.free(r.type_repr);
+    // The render should no longer be the literal placeholder "keyof T".
+    try T.expectEqualStrings("keyof T", "keyof T"); // self-check
+    try T.expect(!std.mem.eql(u8, r.type_repr, "keyof T"));
 }
 
 test "Service: hover renders type parameter without constraint as bare name" {
