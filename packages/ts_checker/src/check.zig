@@ -3936,19 +3936,9 @@ pub const Checker = struct {
             if (!self.objectBindingElementUsesImplicitKey(e, ep.name)) continue;
             const id = hir_mod.identifierOf(self.hir, ep.name);
             if (self.interner.objectMemberInfo(container_t, id.name)) |member| {
+                _ = member;
                 if (ep.default_value != hir_mod.none_node_id) {
-                    const dk = self.hir.kindOf(ep.default_value);
-                    if (dk == .literal_string or dk == .literal_number or dk == .literal_bool) {
-                        const default_t = try self.checkExpression(ep.default_value);
-                        const target_t = if (member.is_optional)
-                            self.unionWithUndefined(member.type) catch member.type
-                        else
-                            member.type;
-                        const stripped = self.subtractType(target_t, types.Primitive.undefined_t) catch target_t;
-                        if (!(self.engine.isAssignableTo(default_t, stripped) catch false)) {
-                            try self.report(ep.default_value, TsCodes.type_not_assignable, "Type is not assignable to binding element type.");
-                        }
-                    }
+                    _ = try self.checkExpression(ep.default_value);
                 }
                 continue;
             }
@@ -10450,6 +10440,7 @@ pub const Checker = struct {
                 num_idx
             else
                 return false;
+            if (try self.literalExpressionAssignableToTarget(el, tgt_t)) continue;
             const ok = self.engine.isAssignableTo(el_t, tgt_t) catch return error.OutOfMemory;
             if (!ok) return false;
         }
@@ -10786,6 +10777,17 @@ pub const Checker = struct {
                     declared_type < self.interner.pool.typeCount() and
                     self.interner.pool.flagsOf(declared_type).is_union and
                     (self.objectLiteralAssignableToTarget(v.init, init_type, declared_type) catch false))
+                {
+                    break :blk true;
+                }
+                if (self.hir.kindOf(v.init) == .object_literal and
+                    self.objectTargetHasLiteralMember(declared_type) and
+                    (self.objectLiteralAssignableToTarget(v.init, init_type, declared_type) catch false))
+                {
+                    break :blk true;
+                }
+                if ((self.hir.kindOf(v.init) == .arrow_fn or self.hir.kindOf(v.init) == .fn_expr) and
+                    try self.functionExpressionAssignableToTarget(v.init, declared_type))
                 {
                     break :blk true;
                 }
@@ -16602,8 +16604,10 @@ pub const Checker = struct {
                 // primitives (or literals of those primitives) so we
                 // don't flag legitimate union / object / generic
                 // comparisons that TS itself allows.
-                if (self.shouldCheckNoOverlap(lhs, rhs)) {
-                    const ok = self.engine.isComparableTo(lhs, rhs) catch true;
+                const cmp_lhs = (try self.expressionNarrowLiteralType(b.lhs)) orelse lhs;
+                const cmp_rhs = (try self.expressionNarrowLiteralType(b.rhs)) orelse rhs;
+                if (self.shouldCheckNoOverlap(cmp_lhs, cmp_rhs)) {
+                    const ok = self.engine.isComparableTo(cmp_lhs, cmp_rhs) catch true;
                     if (!ok) {
                         try self.report(node, TsCodes.no_overlap_comparison, "This comparison appears to be unintentional because the types have no overlap.");
                     }
@@ -18171,6 +18175,50 @@ pub const Checker = struct {
             if (!(self.engine.isAssignableTo(elem_t, elem_target) catch false)) return false;
         }
         return true;
+    }
+
+    fn objectTargetHasLiteralMember(self: *Checker, target_t: TypeId) bool {
+        if (target_t >= self.interner.pool.typeCount()) return false;
+        const flags = self.interner.pool.flagsOf(target_t);
+        if (flags.is_literal) return true;
+        if (flags.is_union) {
+            for (self.interner.unionMembers(target_t)) |member| {
+                if (self.objectTargetHasLiteralMember(member)) return true;
+            }
+            return false;
+        }
+        if (flags.is_intersection) {
+            for (self.interner.intersectionMembers(target_t)) |member| {
+                if (self.objectTargetHasLiteralMember(member)) return true;
+            }
+            return false;
+        }
+        if (!flags.is_object_type) return false;
+        for (self.interner.objectMembers(target_t)) |member| {
+            if (self.objectTargetHasLiteralMember(member.type)) return true;
+        }
+        return false;
+    }
+
+    fn functionExpressionAssignableToTarget(self: *Checker, fn_node: NodeId, target_t: TypeId) CheckError!bool {
+        if (target_t >= self.interner.pool.typeCount()) return false;
+        const target_flags = self.interner.pool.flagsOf(target_t);
+        if (target_flags.is_union) {
+            for (self.interner.unionMembers(target_t)) |member| {
+                if (try self.functionExpressionAssignableToTarget(fn_node, member)) return true;
+            }
+            return false;
+        }
+        if (!target_flags.is_signature) return false;
+        const source_t = self.hir.typeOf(fn_node);
+        if (source_t >= self.interner.pool.typeCount() or !self.interner.pool.flagsOf(source_t).is_signature) return false;
+        const source_params = self.interner.signatureParams(source_t);
+        const target_params = self.interner.signatureParams(target_t);
+        if (source_params.len != target_params.len) return false;
+        const f = hir_mod.fnDeclOf(self.hir, fn_node);
+        if (f.body == hir_mod.none_node_id or self.hir.kindOf(f.body) == .block_stmt) return false;
+        const target_ret = self.interner.signatureReturn(target_t) orelse return false;
+        return try self.literalExpressionAssignableToTarget(f.body, target_ret);
     }
 
     fn objectLiteralAssignableToTarget(self: *Checker, arg_node: NodeId, arg_t: TypeId, target_t: TypeId) !bool {
@@ -26154,6 +26202,40 @@ test "checker: string mapping builtins fold concrete template literal type inter
     try T.expectEqual(@as(usize, 0), s.checker.diagnostics.items.len);
 }
 
+test "checker: object binding defaults are not checked against existing literal member type" {
+    const s = try newSetup(
+        \\let { c = "foo" } = { c: "bar" as "bar" };
+        \\let { d = "foo" as "foo" } = { d: "bar" as "bar" };
+    );
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+    try T.expectEqual(@as(usize, 0), s.checker.diagnostics.items.len);
+}
+
+test "checker: object literal property expression can satisfy literal property target" {
+    const s = try newSetup("const c: { kind: 123 } = { kind: 123 };");
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+    try T.expectEqual(@as(usize, 0), s.checker.diagnostics.items.len);
+}
+
+test "checker: array literal elements can satisfy union literal tuple targets" {
+    const s = try newSetup("const c: [1 | 2, \"foo\" | \"bar\"] = [1, \"bar\"];");
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+    try T.expectEqual(@as(usize, 0), s.checker.diagnostics.items.len);
+}
+
+test "checker: expression-bodied arrow literals satisfy literal return signatures" {
+    const s = try newSetup(
+        \\const f1: () => "foo" | "bar" = () => "bar";
+        \\const f2: (() => "foo") | (() => "bar") = () => "bar";
+    );
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+    try T.expectEqual(@as(usize, 0), s.checker.diagnostics.items.len);
+}
+
 test "checker: exhaustive if/else chain narrows discriminant to never in final else" {
     // Mirror of the switch exhaustiveness pattern using a
     // chained `if (x === "a") ... else if (x === "b") ... else`.
@@ -26247,6 +26329,17 @@ test "checker: number === string-literal emits TS2367 (no overlap)" {
         \\let x: number = 1;
         \\if (x === "hello") {}
     );
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+    var found = false;
+    for (s.checker.diagnostics.items) |d| {
+        if (d.code == TsCodes.no_overlap_comparison) found = true;
+    }
+    try T.expect(found);
+}
+
+test "checker: incompatible string literal equality emits TS2367" {
+    const s = try newSetup("let b = \"foo\" === \"bar\";");
     defer destroySetup(s);
     try s.checker.checkSourceFile(s.root);
     var found = false;

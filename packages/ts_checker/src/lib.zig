@@ -170,6 +170,7 @@ pub fn arrayProto(
     const undef_t = types.Primitive.undefined_t;
     const void_t = types.Primitive.void_t;
     const any_t = types.Primitive.any;
+    const optional_number_t = try ti.internUnion(&[_]TypeId{ number_t, undef_t });
 
     // `T[]` itself — used as both receiver and return type for
     // `slice`, `filter`, `concat`, `reverse`, `sort`.
@@ -197,7 +198,7 @@ pub fn arrayProto(
     const sig_forEach = try ti.internSignature(&[_]TypeId{cb_t_void}, void_t, false);
     const sig_includes = try ti.internSignature(&[_]TypeId{elem}, boolean_t, false);
     const sig_indexOf = try ti.internSignature(&[_]TypeId{elem}, number_t, false);
-    const sig_slice = try ti.internSignature(&[_]TypeId{ number_t, number_t }, arr_t, false);
+    const sig_slice = try ti.internSignature(&[_]TypeId{ optional_number_t, optional_number_t }, arr_t, false);
     const sig_join = try ti.internSignature(&[_]TypeId{string_t}, string_t, false);
     const sig_find = try ti.internSignature(&[_]TypeId{cb_t_bool}, t_or_undef, false);
     const sig_concat = try ti.internSignature(&[_]TypeId{arr_t}, arr_t, false);
