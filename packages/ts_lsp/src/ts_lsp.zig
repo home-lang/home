@@ -2005,6 +2005,55 @@ pub const Service = struct {
             }
         }
 
+        // ---- Prefix unused identifier with underscore (TS6133) -----------
+        // For each "'x' is declared but its value is never read." (TS6133)
+        // diagnostic in this file, surface a quick-fix that renames the
+        // binding from `x` to `_x`. Matches upstream tsserver — safer
+        // than auto-deletion and respects the `_`-prefix convention
+        // already exempted by the checker. Driver diagnostics carry the
+        // anchor's source position but not its HIR node, so we extract
+        // the name from the message (single-quoted at the start) and
+        // scan the source from `pos` forward to find the first matching
+        // identifier byte to insert `_` before.
+        for (c.diagnostics.items) |d| {
+            if (d.code != ts_checker.check.TsCodes.declared_but_not_read) continue;
+            const ident = parseCannotFindName(d.message) orelse continue;
+            if (ident.len == 0 or ident[0] == '_') continue;
+            if (@as(usize, d.pos) >= f.source.len) continue;
+            // Find the first byte of `ident` at or after `d.pos`. The
+            // checker anchors the diagnostic at the binding's span
+            // start (var_decl keyword or parameter start), so the name
+            // appears within a short, bounded forward scan.
+            const hit = std.mem.indexOfPos(u8, f.source, d.pos, ident) orelse continue;
+            // Guard against a substring match: require word boundaries.
+            const before_ok = hit == 0 or !isIdentChar(f.source[hit - 1]);
+            const after_idx = hit + ident.len;
+            const after_ok = after_idx >= f.source.len or !isIdentChar(f.source[after_idx]);
+            if (!before_ok or !after_ok) continue;
+            const ins_byte: u32 = @intCast(hit);
+            const pos = ts_diagnostics.positionToLineCol(f.source, ins_byte);
+            const ln: u32 = if (pos.line > 0) pos.line - 1 else 0;
+            const co: u32 = if (pos.col > 0) pos.col - 1 else 0;
+            const title = try std.fmt.allocPrint(gpa, "Prefix '{s}' with an underscore", .{ident});
+            errdefer gpa.free(title);
+            const new_text = try gpa.dupe(u8, "_");
+            errdefer gpa.free(new_text);
+            var edits = try gpa.alloc(TextEdit, 1);
+            edits[0] = .{
+                .file = f.path,
+                .start_line = ln,
+                .start_col = co,
+                .end_line = ln,
+                .end_col = co,
+                .new_text = new_text,
+            };
+            try actions.append(gpa, .{
+                .title = title,
+                .kind = .quick_fix,
+                .edits = edits,
+            });
+        }
+
         // ---- Disable next-line with @ts-ignore ----------------------------
         // Universal escape hatch — for every error/warning diagnostic in
         // this file, surface a quick-fix that inserts
@@ -4082,6 +4131,15 @@ fn parseCannotFindName(message: []const u8) ?[]const u8 {
     const close = after + close_rel;
     if (close <= after) return null;
     return message[after..close];
+}
+
+/// True for ASCII identifier characters (letters, digits, `_`, `$`).
+/// Used by the prefix-with-underscore quick-fix to enforce word
+/// boundaries when locating the binding name in source — keeps the
+/// edit from accidentally inserting `_` inside a longer identifier
+/// that happens to contain the binding name as a substring.
+fn isIdentChar(b: u8) bool {
+    return std.ascii.isAlphanumeric(b) or b == '_' or b == '$';
 }
 
 /// Return `true` when `decl` is a top-level declaration whose name
@@ -6951,6 +7009,85 @@ test "Service: codeActions omits fix-all when only one fn needs a return type" {
     }
     for (actions) |a| {
         try T.expect(a.kind != .fix_all);
+    }
+}
+
+test "Service: codeActions surfaces prefix-underscore quick-fix for unused local" {
+    var vfs = ts_resolver.VirtualFs.init(T.allocator);
+    defer vfs.deinit();
+    var resolver = ts_resolver.Resolver.init(T.allocator, vfs.fs(), .{});
+    defer resolver.deinit();
+    var program = ts_program.Program.init(T.allocator, &resolver);
+    defer program.deinit();
+
+    // TS6133 only walks function bodies, so the unused must live
+    // inside one. The checker's TS6133 path emits the diagnostic
+    // anchored at the var-decl span; the LSP quick-fix uses that
+    // position + the message-extracted name to locate the binding.
+    _ = try program.add(
+        "/main.ts",
+        "function f(): void { let unread = 42; }",
+    );
+    try program.compileAll(.{ .strict_flags = .{ .no_unused_locals = true } });
+
+    var svc = Service.init(T.allocator, &program);
+    const actions = try svc.codeActions(T.allocator, "/main.ts");
+    defer {
+        for (actions) |a| {
+            T.allocator.free(a.title);
+            for (a.edits) |e| T.allocator.free(e.new_text);
+            T.allocator.free(a.edits);
+        }
+        T.allocator.free(actions);
+    }
+    var found: ?CodeAction = null;
+    for (actions) |a| {
+        if (std.mem.startsWith(u8, a.title, "Prefix '")) {
+            found = a;
+            break;
+        }
+    }
+    try T.expect(found != null);
+    const a = found.?;
+    try T.expectEqual(@as(CodeAction.Kind, .quick_fix), a.kind);
+    try T.expectEqualStrings("Prefix 'unread' with an underscore", a.title);
+    try T.expectEqual(@as(usize, 1), a.edits.len);
+    try T.expectEqualStrings("_", a.edits[0].new_text);
+    // Zero-width insertion.
+    try T.expectEqual(a.edits[0].start_line, a.edits[0].end_line);
+    try T.expectEqual(a.edits[0].start_col, a.edits[0].end_col);
+}
+
+test "Service: codeActions skips prefix-underscore when name already begins with _" {
+    var vfs = ts_resolver.VirtualFs.init(T.allocator);
+    defer vfs.deinit();
+    var resolver = ts_resolver.Resolver.init(T.allocator, vfs.fs(), .{});
+    defer resolver.deinit();
+    var program = ts_program.Program.init(T.allocator, &resolver);
+    defer program.deinit();
+
+    // The checker already exempts `_`-prefixed names from TS6133, so
+    // no diagnostic — and no quick-fix — should fire here. Pin it as
+    // a regression gate so future changes don't accidentally re-add
+    // the suggestion.
+    _ = try program.add(
+        "/main.ts",
+        "function f(): void { let _unread = 42; }",
+    );
+    try program.compileAll(.{ .strict_flags = .{ .no_unused_locals = true } });
+
+    var svc = Service.init(T.allocator, &program);
+    const actions = try svc.codeActions(T.allocator, "/main.ts");
+    defer {
+        for (actions) |a| {
+            T.allocator.free(a.title);
+            for (a.edits) |e| T.allocator.free(e.new_text);
+            T.allocator.free(a.edits);
+        }
+        T.allocator.free(actions);
+    }
+    for (actions) |a| {
+        try T.expect(!std.mem.startsWith(u8, a.title, "Prefix '"));
     }
 }
 
