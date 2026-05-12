@@ -843,26 +843,19 @@ fn hasHarnessModeledExpectedError(name: []const u8, source: []const u8) bool {
     }
     if (std.mem.indexOf(u8, name, "verbatimModuleSyntaxCompat2") != null) return true;
     if (std.mem.indexOf(u8, name, "verbatimModuleSyntaxCompat3") != null) return true;
-    // These ES5 destructuring variants only carry the upstream TS5107
-    // target-option deprecation diagnostic; the stripped runner has
-    // no source-level checker work to perform for them.
-    //
-    // NOTE: the coarse `had_errors` path in `runOneEntry` now routes
-    // these through `directiveTargetDeprecated(source)` directly, so
-    // the per-fixture entries below are redundant for that path.
-    // Kept for the exact-errors path until `ts_driver` emits a real
-    // TS5107 diagnostic whose byte-form matches the upstream
-    // `.errors.txt` baseline; drop these when that lands.
-    if (std.mem.eql(u8, name, "destructuringObjectAssignmentPatternWithNestedSpread")) return true;
-    if (std.mem.eql(u8, name, "destructuringEvaluationOrder")) return true;
-    if (std.mem.eql(u8, name, "destructuringTypeAssertionsES5_5")) return true;
-    if (std.mem.eql(u8, name, "destructuringObjectBindingPatternAndAssignment6")) return true;
-    if (std.mem.eql(u8, name, "destructuringObjectBindingPatternAndAssignment7")) return true;
-    if (std.mem.eql(u8, name, "destructuringObjectBindingPatternAndAssignment8")) return true;
-    if (std.mem.eql(u8, name, "emptyAssignmentPatterns01_ES5")) return true;
-    if (std.mem.eql(u8, name, "emptyAssignmentPatterns01_ES5iterable")) return true;
-    if (std.mem.eql(u8, name, "emptyAssignmentPatterns03_ES5")) return true;
-    if (std.mem.eql(u8, name, "emptyAssignmentPatterns03_ES5iterable")) return true;
+    // (Retired 2026-05-12) The ES5 destructuring + empty-assignment
+    // fixtures whose only upstream error is TS5107 target deprecation
+    // (`destructuringObjectBindingPatternAndAssignment6/7/8`,
+    // `destructuringObjectAssignmentPatternWithNestedSpread`,
+    // `destructuringEvaluationOrder`, `destructuringTypeAssertionsES5_5`,
+    // `emptyAssignmentPatterns01_ES5{,iterable}`,
+    // `emptyAssignmentPatterns03_ES5{,iterable}`) used to be modeled
+    // here. They were dead code: `loadDirectoryWithOptions` short-
+    // circuits via `baselineHasOnlyOptionDeprecation` and sets
+    // `expects_error=false` for these fixtures, so this shim was
+    // never consulted in the corpus path. Coarse-mode coverage of
+    // any *other* fixture with the same directive shape comes from
+    // `directiveTargetDeprecated(source)` in `runOneEntry`.
     // Target/emit-mode diagnostics in this arrow/unicode slice depend on
     // the upstream runner materializing target variants. The stripped
     // single-source checker runs one targetless source; keep those
