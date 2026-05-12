@@ -456,6 +456,12 @@ pub const Engine = struct {
             return false;
         }
 
+        // Numeric enum types are represented as branded
+        // intersections (`number & { __enum:E: never }`), while TS
+        // still allows plain numbers to flow into numeric enum
+        // variables for historical compatibility.
+        if (tf.is_intersection and self.isNumericEnumNominal(target) and self.isNumberLikeForEnumAssign(source)) return true;
+
         // Intersection on the target: source must assign to *every*
         // member.
         if (tf.is_intersection) {
@@ -553,6 +559,8 @@ pub const Engine = struct {
                 source != Primitive.unknown;
         }
 
+        if (tf.is_object_type and self.primitiveApparentAssignableToObject(source, target)) return true;
+
         // Object types: structural subtyping. Source must have all
         // properties target requires, and each shared property type
         // must be assignable in the same direction (depth-checked).
@@ -572,6 +580,89 @@ pub const Engine = struct {
         }
 
         // Primitive-vs-primitive: only identity matches at this layer.
+        return false;
+    }
+
+    fn isNumberLikeForEnumAssign(self: *Engine, source: TypeId) bool {
+        if (source == Primitive.number_t) return true;
+        const sf = self.pool().flagsOf(source);
+        if (sf.is_literal and sf.is_number) return true;
+        return false;
+    }
+
+    fn isNumericEnumNominal(self: *Engine, t: TypeId) bool {
+        const si = self.string_interner orelse return false;
+        if (t >= self.pool().typeCount()) return false;
+        const flags = self.pool().flagsOf(t);
+        if (!flags.is_intersection) return false;
+        var saw_number = false;
+        var saw_enum_brand = false;
+        for (self.interner.intersectionMembers(t)) |member| {
+            if (member == Primitive.number_t) {
+                saw_number = true;
+                continue;
+            }
+            if (member >= self.pool().typeCount()) continue;
+            const mf = self.pool().flagsOf(member);
+            if (!mf.is_object_type) continue;
+            for (self.interner.objectMembers(member)) |om| {
+                const name = si.getOptional(om.name) orelse continue;
+                if (std.mem.startsWith(u8, name, "__enum:")) {
+                    saw_enum_brand = true;
+                    break;
+                }
+            }
+        }
+        return saw_number and saw_enum_brand;
+    }
+
+    fn primitiveApparentAssignableToObject(self: *Engine, source: TypeId, target: TypeId) bool {
+        if (self.interner.objectStringIndex(target) != Primitive.none) return false;
+        if (self.interner.objectNumberIndex(target) != Primitive.none) return false;
+        if (self.interner.objectSymbolIndex(target) != Primitive.none) return false;
+        const sf = self.pool().flagsOf(source);
+        const is_string = source == Primitive.string_t or (sf.is_literal and sf.is_string);
+        const is_number = source == Primitive.number_t or (sf.is_literal and sf.is_number);
+        if (!is_string and !is_number) return false;
+        for (self.interner.objectMembers(target)) |member| {
+            if (member.is_optional) continue;
+            if (!self.primitiveApparentHasMember(member.name, is_string, is_number)) return false;
+        }
+        return true;
+    }
+
+    fn primitiveApparentHasMember(self: *Engine, name_id: string_interner.StringId, is_string: bool, is_number: bool) bool {
+        const si = self.string_interner orelse return false;
+        const name = si.getOptional(name_id) orelse return false;
+        if (std.mem.eql(u8, name, "toString") or
+            std.mem.eql(u8, name, "valueOf") or
+            std.mem.eql(u8, name, "hasOwnProperty") or
+            std.mem.eql(u8, name, "propertyIsEnumerable"))
+        {
+            return true;
+        }
+        if (is_string and (std.mem.eql(u8, name, "length") or
+            std.mem.eql(u8, name, "charAt") or
+            std.mem.eql(u8, name, "toUpperCase") or
+            std.mem.eql(u8, name, "toLowerCase") or
+            std.mem.eql(u8, name, "startsWith") or
+            std.mem.eql(u8, name, "endsWith") or
+            std.mem.eql(u8, name, "includes") or
+            std.mem.eql(u8, name, "split") or
+            std.mem.eql(u8, name, "indexOf") or
+            std.mem.eql(u8, name, "slice") or
+            std.mem.eql(u8, name, "trim") or
+            std.mem.eql(u8, name, "concat") or
+            std.mem.eql(u8, name, "repeat")))
+        {
+            return true;
+        }
+        if (is_number and (std.mem.eql(u8, name, "toFixed") or
+            std.mem.eql(u8, name, "toExponential") or
+            std.mem.eql(u8, name, "toPrecision")))
+        {
+            return true;
+        }
         return false;
     }
 

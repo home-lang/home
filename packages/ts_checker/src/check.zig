@@ -12717,6 +12717,32 @@ pub const Checker = struct {
         return null;
     }
 
+    fn declaredInterfaceMember(self: *Checker, interface_name: []const u8, member_name: hir_mod.StringId) CheckError!?TypeId {
+        const id = self.string_interner.intern(interface_name) catch return error.OutOfMemory;
+        const iface_t = self.type_names.get(id) orelse return null;
+        return self.lookupObjectMember(iface_t, member_name);
+    }
+
+    fn primitivePrototypeMember(self: *Checker, receiver_t: TypeId, member_name: hir_mod.StringId) CheckError!?TypeId {
+        if (self.typeHasStringPrimitivePart(receiver_t)) {
+            if (try self.declaredInterfaceMember("String", member_name)) |t| return t;
+            if (lib.stringProto(&self.lib_cache, self.interner, self.string_interner)) |proto| {
+                if (self.interner.objectMember(proto, member_name)) |t| return t;
+            } else |_| {}
+            if (try self.broadObjectPrototypeMember(member_name)) |t| return t;
+            return null;
+        }
+        if (self.typeHasNumericPrimitivePart(receiver_t)) {
+            if (try self.declaredInterfaceMember("Number", member_name)) |t| return t;
+            if (lib.numberProto(&self.lib_cache, self.interner, self.string_interner)) |proto| {
+                if (self.interner.objectMember(proto, member_name)) |t| return t;
+            } else |_| {}
+            if (try self.broadObjectPrototypeMember(member_name)) |t| return t;
+            return null;
+        }
+        return null;
+    }
+
     fn lookupObjectMember(self: *Checker, obj_t: TypeId, name: hir_mod.StringId) CheckError!?TypeId {
         const flags = self.interner.pool.flagsOf(obj_t);
         if (flags.is_type_parameter) {
@@ -13693,22 +13719,10 @@ pub const Checker = struct {
                 // hard-coded prototype shapes. Catches both broad
                 // primitives and their literal variants.
                 {
-                    const obj_flags = self.interner.pool.flagsOf(access_obj_t);
-                    if (obj_flags.is_string and !obj_flags.is_object_type) {
-                        if (lib.stringProto(&self.lib_cache, self.interner, self.string_interner)) |proto| {
-                            if (self.interner.objectMember(proto, m.name)) |t| {
-                                break :blk try self.optionalChainResult(t, member_is_optional_chain);
-                            }
-                        } else |_| {}
-                        try self.reportPropertyDoesNotExist(node, m.name);
-                        break :blk types.Primitive.any;
-                    }
-                    if (obj_flags.is_number and !obj_flags.is_object_type) {
-                        if (lib.numberProto(&self.lib_cache, self.interner, self.string_interner)) |proto| {
-                            if (self.interner.objectMember(proto, m.name)) |t| {
-                                break :blk try self.optionalChainResult(t, member_is_optional_chain);
-                            }
-                        } else |_| {}
+                    if (self.typeHasStringPrimitivePart(access_obj_t) or self.typeHasNumericPrimitivePart(access_obj_t)) {
+                        if (try self.primitivePrototypeMember(access_obj_t, m.name)) |t| {
+                            break :blk try self.optionalChainResult(t, member_is_optional_chain);
+                        }
                         try self.reportPropertyDoesNotExist(node, m.name);
                         break :blk types.Primitive.any;
                     }
@@ -13789,6 +13803,17 @@ pub const Checker = struct {
                 if (obj_t == types.Primitive.unknown and self.shouldReportUnknownReference(e.object)) {
                     try self.reportUnknownReference(e.object);
                     break :blk types.Primitive.any;
+                }
+                if (self.hir.kindOf(e.index) == .literal_string) {
+                    const access_obj_t = self.typeParameterConstraint(obj_t) orelse obj_t;
+                    if (self.typeHasStringPrimitivePart(access_obj_t) or self.typeHasNumericPrimitivePart(access_obj_t)) {
+                        const lit = hir_mod.literalStringOf(self.hir, e.index);
+                        if (try self.primitivePrototypeMember(access_obj_t, lit.value)) |t| {
+                            break :blk try self.optionalChainResult(t, element_is_optional_chain);
+                        }
+                        try self.reportPropertyDoesNotExist(node, lit.value);
+                        break :blk types.Primitive.any;
+                    }
                 }
                 // Numeric enum reverse-mapped lookup: `E[n]` where
                 // `E` is a numeric enum yields `string` (the member
@@ -13879,11 +13904,11 @@ pub const Checker = struct {
                     // miss. Tuple positional access above is exempt
                     // because the arity is statically known.
                     const idx_flags = self.interner.pool.flagsOf(idx_t);
-                    if (idx_flags.is_string) {
+                    if (self.typeMaybeStringLike(idx_t)) {
                         const v = self.interner.objectStringIndex(obj_t);
                         if (v != types.Primitive.none) break :blk try self.optionalChainResult(self.maybeWidenWithUndefined(v), element_is_optional_chain);
                     }
-                    if (idx_flags.is_number) {
+                    if (self.typeMaybeNumericLike(idx_t)) {
                         const v = self.interner.objectNumberIndex(obj_t);
                         if (v != types.Primitive.none) break :blk try self.optionalChainResult(self.maybeWidenWithUndefined(v), element_is_optional_chain);
                     }
@@ -17570,9 +17595,6 @@ pub const Checker = struct {
             return false;
         }
         if (af.is_intersection) {
-            if (self.intersectionContainsObjectLike(a)) {
-                return self.engine.isComparableTo(a, b) catch true;
-            }
             var saw_concrete = false;
             for (self.interner.intersectionMembers(a)) |member| {
                 if (!self.isConcretePrimitiveLike(member)) continue;
@@ -17580,15 +17602,15 @@ pub const Checker = struct {
                 if (!try self.typesHaveComparableOverlapLimit(member, b, depth + 1)) return false;
             }
             if (saw_concrete) return true;
+            if (self.intersectionContainsObjectLike(a)) {
+                return self.engine.isComparableTo(a, b) catch true;
+            }
             for (self.interner.intersectionMembers(a)) |member| {
                 if (try self.typesHaveComparableOverlapLimit(member, b, depth + 1)) return true;
             }
             return false;
         }
         if (bf.is_intersection) {
-            if (self.intersectionContainsObjectLike(b)) {
-                return self.engine.isComparableTo(a, b) catch true;
-            }
             var saw_concrete = false;
             for (self.interner.intersectionMembers(b)) |member| {
                 if (!self.isConcretePrimitiveLike(member)) continue;
@@ -17596,6 +17618,9 @@ pub const Checker = struct {
                 if (!try self.typesHaveComparableOverlapLimit(a, member, depth + 1)) return false;
             }
             if (saw_concrete) return true;
+            if (self.intersectionContainsObjectLike(b)) {
+                return self.engine.isComparableTo(a, b) catch true;
+            }
             for (self.interner.intersectionMembers(b)) |member| {
                 if (try self.typesHaveComparableOverlapLimit(a, member, depth + 1)) return true;
             }
@@ -17765,6 +17790,12 @@ pub const Checker = struct {
                 if (!try self.computedPropertyKeyTypeIsValid(member)) return false;
             }
             return true;
+        }
+        if (f.is_intersection) {
+            for (self.interner.intersectionMembers(t)) |member| {
+                if (try self.computedPropertyKeyTypeIsValid(member)) return true;
+            }
+            return false;
         }
         if (f.is_void) return true;
         if (f.is_string or f.is_number or f.is_symbol) return true;
@@ -18770,14 +18801,67 @@ pub const Checker = struct {
                 if (self.typeMaybeStringLike(member)) return true;
             }
         }
+        if (f.is_intersection) {
+            for (self.interner.intersectionMembers(t)) |member| {
+                if (self.typeMaybeStringLike(member)) return true;
+            }
+        }
+        return false;
+    }
+
+    fn typeHasStringPrimitivePart(self: *Checker, t: TypeId) bool {
+        const f = self.interner.pool.flagsOf(t);
+        if (f.is_string) return true;
+        if (f.is_union) {
+            for (self.interner.unionMembers(t)) |member| {
+                if (self.typeHasStringPrimitivePart(member)) return true;
+            }
+            return false;
+        }
+        if (f.is_intersection) {
+            for (self.interner.intersectionMembers(t)) |member| {
+                if (self.typeHasStringPrimitivePart(member)) return true;
+            }
+            return false;
+        }
         return false;
     }
 
     fn typeMaybeNumericLike(self: *Checker, t: TypeId) bool {
         if (self.typeIsAnyLike(t)) return true;
         const f = self.interner.pool.flagsOf(t);
+        if (f.is_union) {
+            for (self.interner.unionMembers(t)) |member| {
+                if (self.typeMaybeNumericLike(member)) return true;
+            }
+            return false;
+        }
+        if (f.is_intersection) {
+            for (self.interner.intersectionMembers(t)) |member| {
+                if (self.typeMaybeNumericLike(member)) return true;
+            }
+            return false;
+        }
         if (f.is_boolean or f.is_string or f.is_symbol or f.is_object or f.is_object_type or f.is_signature or f.is_tuple) return false;
         return f.is_number or f.is_bigint;
+    }
+
+    fn typeHasNumericPrimitivePart(self: *Checker, t: TypeId) bool {
+        const f = self.interner.pool.flagsOf(t);
+        if (f.is_number or f.is_bigint) return true;
+        if (f.is_union) {
+            for (self.interner.unionMembers(t)) |member| {
+                if (self.typeHasNumericPrimitivePart(member)) return true;
+            }
+            return false;
+        }
+        if (f.is_intersection) {
+            for (self.interner.intersectionMembers(t)) |member| {
+                if (self.typeHasNumericPrimitivePart(member)) return true;
+            }
+            return false;
+        }
+        return false;
     }
 
     fn isInstanceofLeftAllowed(self: *Checker, t: TypeId) bool {
@@ -28042,6 +28126,83 @@ test "checker: member calls substitute this return type through intersections" {
     for (s.checker.diagnostics.items) |d| {
         try T.expect(d.code != TsCodes.type_not_assignable);
         try T.expect(d.code != TsCodes.property_does_not_exist);
+    }
+}
+
+test "checker: tagged primitive intersections stay primitive-like for operators and index keys" {
+    const s = try newSetup(
+        \\type Guid = string & { $Guid };
+        \\type SerialNo = number & { $SerialNo };
+        \\function createGuid() { return "x" as Guid; }
+        \\function createSerialNo() { return 1 as SerialNo; }
+        \\let map1: { [x: string]: number } = {};
+        \\let guid = createGuid();
+        \\map1[guid] = 123;
+        \\let map2: { [x: number]: string } = {};
+        \\let serialNo = createSerialNo();
+        \\map2[serialNo] = "hello";
+        \\const s1 = "{" + guid + "}";
+        \\const s2 = guid.toLowerCase();
+        \\const s3 = guid + guid;
+        \\const s4 = guid + serialNo;
+        \\const s5 = serialNo.toPrecision(0);
+        \\const n1 = serialNo * 3;
+        \\const n2 = serialNo + serialNo;
+        \\const b1 = guid === "";
+        \\const b2 = guid === guid;
+        \\const b3 = serialNo === 0;
+        \\const b4 = serialNo === serialNo;
+    );
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+    for (s.checker.diagnostics.items) |d| {
+        try T.expect(d.code != TsCodes.type_cannot_be_used_as_index);
+        try T.expect(d.code != TsCodes.property_does_not_exist);
+        try T.expect(d.code != TsCodes.operator_cannot_be_applied);
+        try T.expect(d.code != TsCodes.arithmetic_left_operand_type);
+        try T.expect(d.code != TsCodes.arithmetic_right_operand_type);
+        try T.expect(d.code != TsCodes.no_overlap_comparison);
+    }
+}
+
+test "checker: primitive receivers include Object prototype and interface augmentations" {
+    const s = try newSetup(
+        \\interface Number {
+        \\  doStuff(): string;
+        \\  doOtherStuff<T>(x: T): T;
+        \\}
+        \\interface String {
+        \\  doStuff(): string;
+        \\  doOtherStuff<T>(x: T): T;
+        \\}
+        \\var n = 1;
+        \\var s = "";
+        \\var a = n.hasOwnProperty("toFixed");
+        \\var b = s.hasOwnProperty("charAt");
+        \\var c = n["hasOwnProperty"]("toFixed");
+        \\var d = s["hasOwnProperty"]("charAt");
+        \\var e: string = n.doStuff();
+        \\var f: string = n.doOtherStuff("hm");
+        \\var g: string = n["doStuff"]();
+        \\var h: string = n["doOtherStuff"]("hm");
+        \\var i: string = s.doStuff();
+        \\var j: string = s.doOtherStuff("hm");
+        \\var k: string = s["doStuff"]();
+        \\var l: string = s["doOtherStuff"]("hm");
+        \\var nObj: Object = n;
+        \\var sObj: Object = s;
+        \\var nWrap: Number = n;
+        \\var sWrap: String = s;
+        \\enum E { A }
+        \\var en: E = n;
+        \\var em = E.A;
+        \\em = n;
+    );
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+    for (s.checker.diagnostics.items) |d| {
+        try T.expect(d.code != TsCodes.property_does_not_exist);
+        try T.expect(d.code != TsCodes.type_not_assignable);
     }
 }
 
