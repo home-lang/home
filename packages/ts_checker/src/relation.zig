@@ -460,8 +460,15 @@ pub const Engine = struct {
             }
             return true;
         }
-        // Intersection on the source: source assigns to target if any
-        // constituent member does.
+        // Object intersections accumulate members from each constituent.
+        // This matters for generic object spreads such as
+        // `{ ...t, ...u, id: "id" }`, whose instantiated return type is
+        // `T & U & { id: string }`.
+        if (sf.is_intersection and tf.is_object_type) {
+            return self.computeIntersectionObjectAssignable(source, target);
+        }
+        // Non-object intersection fallback: source assigns to target if
+        // any constituent member does.
         if (sf.is_intersection) {
             const members = self.interner.intersectionMembers(source);
             for (members) |m| {
@@ -679,6 +686,15 @@ pub const Engine = struct {
     /// mapped to the source tp at the matching position, and that
     /// substitution is honoured when comparing the return types.
     fn computeSignatureAssignable(self: *Engine, source: TypeId, target: TypeId) anyerror!bool {
+        return self.computeSignatureAssignableWithMode(source, target, false);
+    }
+
+    fn computeSignatureAssignableWithMode(
+        self: *Engine,
+        source: TypeId,
+        target: TypeId,
+        force_strict_params: bool,
+    ) anyerror!bool {
         const sp = self.interner.signatureParams(source);
         const tp = self.interner.signatureParams(target);
         var source_required: usize = sp.len;
@@ -730,7 +746,7 @@ pub const Engine = struct {
             // Strict mode: target's param must be assignable to
             // source's (contravariant). Non-strict: bivariant —
             // accept either direction.
-            if (self.strict_function_types) {
+            if (force_strict_params or self.strict_function_types) {
                 if (!try self.isAssignableTo(t_param, s_param_ctx)) return false;
             } else {
                 const ct = try self.isAssignableTo(t_param, s_param_ctx);
@@ -804,14 +820,67 @@ pub const Engine = struct {
         return true;
     }
 
+    fn computeIntersectionObjectAssignable(self: *Engine, source: TypeId, target: TypeId) anyerror!bool {
+        const source_members = self.interner.intersectionMembers(source);
+        const target_members = self.interner.objectMembers(target);
+        for (target_members) |tm| {
+            var found = false;
+            for (source_members) |member_t| {
+                if (member_t >= self.interner.pool.typeCount()) continue;
+                const mf = self.pool().flagsOf(member_t);
+                if (mf.is_intersection) {
+                    if (try self.computeIntersectionObjectMemberAssignable(member_t, tm)) {
+                        found = true;
+                        break;
+                    }
+                    continue;
+                }
+                if (!mf.is_object_type) continue;
+                if (try self.someSourceMemberAssignableToTarget(member_t, tm)) {
+                    found = true;
+                    break;
+                }
+            }
+            if (!found and !tm.is_optional) return false;
+        }
+        return true;
+    }
+
+    fn computeIntersectionObjectMemberAssignable(
+        self: *Engine,
+        source: TypeId,
+        target_member: types.ObjectMember,
+    ) anyerror!bool {
+        for (self.interner.intersectionMembers(source)) |member_t| {
+            if (member_t >= self.interner.pool.typeCount()) continue;
+            const mf = self.pool().flagsOf(member_t);
+            if (mf.is_intersection) {
+                if (try self.computeIntersectionObjectMemberAssignable(member_t, target_member)) return true;
+                continue;
+            }
+            if (!mf.is_object_type) continue;
+            if (try self.someSourceMemberAssignableToTarget(member_t, target_member)) return true;
+        }
+        return false;
+    }
+
     fn computeSignatureAssignableToCallableObject(self: *Engine, source: TypeId, target: TypeId) anyerror!bool {
         var saw_signature_member = false;
+        var signature_member_count: usize = 0;
+        for (self.interner.objectMembers(target)) |tm| {
+            if (tm.type >= self.interner.pool.typeCount()) continue;
+            if (self.pool().flagsOf(tm.type).is_signature) signature_member_count += 1;
+        }
         for (self.interner.objectMembers(target)) |tm| {
             if (tm.type >= self.interner.pool.typeCount()) return false;
             const tf = self.pool().flagsOf(tm.type);
             if (tf.is_signature) {
                 saw_signature_member = true;
-                if (!try self.isAssignableTo(source, tm.type)) return false;
+                const ok = if (signature_member_count > 1)
+                    try self.computeSignatureAssignableWithMode(source, tm.type, true)
+                else
+                    try self.isAssignableTo(source, tm.type);
+                if (!ok) return false;
                 continue;
             }
             if (!tm.is_optional) return false;

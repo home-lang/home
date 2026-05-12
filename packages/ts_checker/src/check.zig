@@ -1965,6 +1965,27 @@ pub const Checker = struct {
         return self.engine.isAssignableTo(overload_ret, impl_ret) catch return error.OutOfMemory;
     }
 
+    fn overloadedFunctionValueType(self: *Checker, name: hir_mod.StringId) CheckError!?TypeId {
+        const overload_list = self.overloads.get(name) orelse return null;
+        const has_impl = self.overload_has_implementation.contains(name);
+        const visible_len = if (has_impl and overload_list.items.len > 0) overload_list.items.len - 1 else overload_list.items.len;
+        if (visible_len == 0) return null;
+        if (visible_len == 1) return overload_list.items[0];
+        const call_member_id = self.string_interner.intern("__call") catch return error.OutOfMemory;
+        var members: std.ArrayListUnmanaged(types.ObjectMember) = .empty;
+        defer members.deinit(self.gpa);
+        for (overload_list.items[0..visible_len]) |sig| {
+            try members.append(self.gpa, .{
+                .name = call_member_id,
+                .type = sig,
+                .is_optional = false,
+                .is_readonly = true,
+                .is_method = true,
+            });
+        }
+        return self.interner.internObjectType(members.items) catch return error.OutOfMemory;
+    }
+
     fn typeIsSimpleOverloadCompatibilityOperand(self: *Checker, t: TypeId) bool {
         if (t == types.Primitive.none) return false;
         if (t >= self.interner.pool.typeCount()) return true;
@@ -13310,6 +13331,8 @@ pub const Checker = struct {
                 defer computed_string_value_types.deinit(self.gpa);
                 var computed_symbol_value_types: std.ArrayListUnmanaged(TypeId) = .empty;
                 defer computed_symbol_value_types.deinit(self.gpa);
+                var generic_spread_parts: std.ArrayListUnmanaged(TypeId) = .empty;
+                defer generic_spread_parts.deinit(self.gpa);
                 const upsert = struct {
                     fn run(
                         gpa: std.mem.Allocator,
@@ -13337,6 +13360,9 @@ pub const Checker = struct {
                         if (!try self.objectSpreadSourceIsValid(st)) {
                             try self.report(p, TsCodes.spread_types_object_only, "Spread types may only be created from object types.");
                             continue;
+                        }
+                        if (self.containsFreeTypeParameter(st)) {
+                            try generic_spread_parts.append(self.gpa, st);
                         }
                         const src_members = self.interner.objectMembers(st);
                         const source_is_class_instance = self.class_name_by_instance.contains(st);
@@ -13434,6 +13460,10 @@ pub const Checker = struct {
                 const obj_t = self.interner.internObjectTypeWithIndexAndSymbol(members.items, string_index, types.Primitive.none, symbol_index) catch return error.OutOfMemory;
                 if (!self.objectLiteralLikelyHasContextualTarget(node)) {
                     try self.checkObjectLiteralMethodBodiesWithThis(node, obj_t);
+                }
+                if (generic_spread_parts.items.len > 0) {
+                    try generic_spread_parts.append(self.gpa, obj_t);
+                    break :blk self.interner.internIntersection(generic_spread_parts.items) catch return error.OutOfMemory;
                 }
                 break :blk obj_t;
             },
@@ -15927,6 +15957,7 @@ pub const Checker = struct {
                         if (fp.name != hir_mod.none_node_id and self.hir.kindOf(fp.name) == .identifier) {
                             const fid = hir_mod.identifierOf(self.hir, fp.name);
                             if (fid.name == id.name) {
+                                if (self.overloadedFunctionValueType(id.name) catch null) |overload_t| return overload_t;
                                 const t = self.hir.typeOf(s);
                                 if (t != types.Primitive.none) return t;
                             }
@@ -15963,6 +15994,7 @@ pub const Checker = struct {
                         if (fp.name != hir_mod.none_node_id and self.hir.kindOf(fp.name) == .identifier) {
                             const fid = hir_mod.identifierOf(self.hir, fp.name);
                             if (fid.name == id.name) {
+                                if (self.overloadedFunctionValueType(id.name) catch null) |overload_t| return overload_t;
                                 const t = self.hir.typeOf(s);
                                 if (t != types.Primitive.none) return t;
                             }
@@ -16042,6 +16074,9 @@ pub const Checker = struct {
         if (self.moduleNamespaceTypeForLocalImport(id.name, node) catch null) |ns_t| return ns_t;
         if (self.virtualImportTypeForLocal(id.name, node) catch null) |import_t| return import_t;
         if (self.virtualDefaultImportTypeForLocal(id.name, node) catch null) |import_t| return import_t;
+        if (!self.isDeclNameSlot(node)) {
+            if (self.overloadedFunctionValueType(id.name) catch null) |overload_t| return overload_t;
+        }
         if (self.enumDeclForNameAt(id.name, node)) |decl| {
             const t = self.hir.typeOf(decl);
             if (t != types.Primitive.none) return t;
@@ -16069,6 +16104,9 @@ pub const Checker = struct {
                     if (self.moduleNamespaceTypeForImportBinding(decl) catch null) |ns_t| return ns_t;
                     if (self.hir.kindOf(decl) == .class_decl or self.hir.kindOf(decl) == .class_expr) {
                         if (self.class_static_types.get(id.name)) |static_t| return static_t;
+                    }
+                    if (self.hir.kindOf(decl) == .fn_decl or self.hir.kindOf(decl) == .fn_expr) {
+                        if (self.overloadedFunctionValueType(id.name) catch null) |overload_t| return overload_t;
                     }
                     const t = self.hir.typeOf(decl);
                     if (t != types.Primitive.none) return t;
@@ -21229,6 +21267,7 @@ test "checker: default exports are scoped by virtual filename sections" {
         \\import a from "./a.js";
     );
     defer destroySetup(s);
+    s.checker.setStrictFlags(.{ .strict_null_checks = true });
     try s.checker.checkSourceFile(s.root);
 
     for (s.checker.diagnostics.items) |d| {
@@ -21417,6 +21456,7 @@ test "checker: logical-or preserves string literal operands" {
         \\let e: "foo" | "bar" = d;
     );
     defer destroySetup(s);
+    s.checker.setStrictFlags(.{ .strict_null_checks = true });
     try s.checker.checkSourceFile(s.root);
     for (s.checker.diagnostics.items) |d| {
         try T.expect(d.code != TsCodes.type_not_assignable);
@@ -25795,6 +25835,30 @@ test "checker: overload implementation return checks object types" {
     try T.expect(found);
 }
 
+test "checker: narrowed callable cannot satisfy wider overload set" {
+    const s = try newSetup(
+        \\{
+        \\  function f(x: "foo"): number;
+        \\  function f(x: string): number;
+        \\  function f(x: string): number { return 0; }
+        \\  function g(x: "foo"): number;
+        \\  function g(x: string): number { return 0; }
+        \\  let a = f;
+        \\  let b = g;
+        \\  a = b;
+        \\  b = a;
+        \\}
+    );
+    defer destroySetup(s);
+    s.checker.setStrictFlags(.{ .strict_null_checks = true });
+    try s.checker.checkSourceFile(s.root);
+    var assignability_errors: usize = 0;
+    for (s.checker.diagnostics.items) |d| {
+        if (d.code == TsCodes.type_not_assignable) assignability_errors += 1;
+    }
+    try T.expectEqual(@as(usize, 1), assignability_errors);
+}
+
 test "checker: overload signatures cannot have parameter initializers" {
     const s = try newSetup(
         \\function f(x = 1);
@@ -29315,6 +29379,22 @@ test "checker: object spread accepts logical-and object branch" {
     try s.checker.checkSourceFile(s.root);
     for (s.checker.diagnostics.items) |d| {
         try T.expect(d.code != TsCodes.spread_types_object_only);
+    }
+}
+
+test "checker: generic object spread return preserves inferred members" {
+    const s = try newSetup(
+        \\function f<T, U>(t: T, u: U) {
+        \\  return { ...t, ...u, id: "id" };
+        \\}
+        \\let exclusive: { id: string, a: number, b: string, c: string, d: boolean } =
+        \\  f({ a: 1, b: "yes" }, { c: "no", d: false });
+    );
+    defer destroySetup(s);
+    s.checker.setStrictFlags(.{ .strict_null_checks = true });
+    try s.checker.checkSourceFile(s.root);
+    for (s.checker.diagnostics.items) |d| {
+        try T.expect(d.code != TsCodes.type_not_assignable);
     }
 }
 

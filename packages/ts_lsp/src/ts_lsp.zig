@@ -1340,7 +1340,9 @@ pub const Service = struct {
         const call_node = walkUpToCallExpr(&c.hir, start) orelse return null;
         const call = hir_mod.callOf(&c.hir, call_node);
         const callee_t = c.hir.typeOf(call.callee);
-        if (!c.type_interner.pool.flagsOf(callee_t).is_signature) return null;
+        if (callee_t >= c.type_interner.pool.typeCount()) return null;
+        const callee_flags = c.type_interner.pool.flagsOf(callee_t);
+        if (!callee_flags.is_signature and !callee_flags.is_object_type) return null;
 
         // Determine active parameter — count comma-separated args
         // before byte_pos by walking the call's argument spans.
@@ -1392,7 +1394,18 @@ pub const Service = struct {
             }
         }
         if (sig_types.items.len == 0) {
-            try sig_types.append(gpa, callee_t);
+            if (c.type_interner.isSignature(callee_t)) {
+                try sig_types.append(gpa, callee_t);
+            } else {
+                for (c.type_interner.objectMembers(callee_t)) |member| {
+                    if (!std.mem.eql(u8, c.interner.get(member.name), "__call")) continue;
+                    if (!c.type_interner.isSignature(member.type)) continue;
+                    try sig_types.append(gpa, member.type);
+                }
+            }
+        }
+        if (sig_types.items.len == 0) {
+            return null;
         }
 
         // Pick the active signature: first overload whose params
