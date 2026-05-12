@@ -290,6 +290,7 @@ pub const RelationCache = TwoLevelCache;
 /// Relation engine. Wraps the interner + cache and exposes the
 /// `assignable`, `subtype`, `identity`, `comparable` queries.
 pub const Engine = struct {
+    gpa: std.mem.Allocator,
     interner: *Interner,
     cache: RelationCache,
     /// When true, function-type parameters are checked
@@ -309,6 +310,7 @@ pub const Engine = struct {
 
     pub fn init(gpa: std.mem.Allocator, ti: *Interner) !Engine {
         return .{
+            .gpa = gpa,
             .interner = ti,
             .cache = try RelationCache.init(gpa),
         };
@@ -931,7 +933,8 @@ pub const Engine = struct {
             var target_has_required = false;
             var source_has_named_member = false;
             var has_common_member = false;
-            const source_members = self.interner.objectMembers(source);
+            const source_members = try self.gpa.dupe(types.ObjectMember, self.interner.objectMembers(source));
+            defer self.gpa.free(source_members);
             for (target_members) |tm| {
                 if (!tm.is_optional) target_has_required = true;
                 for (source_members) |sm| {
@@ -956,11 +959,15 @@ pub const Engine = struct {
                 if (!try self.isAssignableTo(source_sym_idx, target_sym_idx)) return false;
             }
         }
-        for (target_members) |tm| {
-            if (try self.someSourceMemberAssignableToTarget(source, tm)) {
+        const stable_target_members = try self.gpa.dupe(types.ObjectMember, target_members);
+        defer self.gpa.free(stable_target_members);
+        const stable_source_members = try self.gpa.dupe(types.ObjectMember, self.interner.objectMembers(source));
+        defer self.gpa.free(stable_source_members);
+        for (stable_target_members) |tm| {
+            if (try self.someSourceMemberAssignableToTargetFromMembers(stable_source_members, tm)) {
                 continue;
             }
-            if (self.sourceObjectHasMemberNamed(source, tm.name)) return false;
+            if (sourceObjectMembersHaveName(stable_source_members, tm.name)) return false;
             // No same-named member on source. For purely numeric
             // property names ("0", "1", …) fall back to source's
             // number-key indexer when wired. This is what makes
@@ -981,9 +988,11 @@ pub const Engine = struct {
     }
 
     fn sourceObjectHasMemberNamed(self: *Engine, source: TypeId, name: types.StringId) bool {
-        for (self.interner.objectMembers(source)) |sm| {
-            if (sm.name == name) return true;
-        }
+        return sourceObjectMembersHaveName(self.interner.objectMembers(source), name);
+    }
+
+    fn sourceObjectMembersHaveName(source_members: []const types.ObjectMember, name: types.StringId) bool {
+        for (source_members) |sm| if (sm.name == name) return true;
         return false;
     }
 
@@ -1051,11 +1060,13 @@ pub const Engine = struct {
     fn computeSignatureAssignableToCallableObject(self: *Engine, source: TypeId, target: TypeId) anyerror!bool {
         var saw_signature_member = false;
         var signature_member_count: usize = 0;
-        for (self.interner.objectMembers(target)) |tm| {
+        const target_members = try self.gpa.dupe(types.ObjectMember, self.interner.objectMembers(target));
+        defer self.gpa.free(target_members);
+        for (target_members) |tm| {
             if (tm.type >= self.interner.pool.typeCount()) continue;
             if (self.pool().flagsOf(tm.type).is_signature) signature_member_count += 1;
         }
-        for (self.interner.objectMembers(target)) |tm| {
+        for (target_members) |tm| {
             if (tm.type >= self.interner.pool.typeCount()) return false;
             const tf = self.pool().flagsOf(tm.type);
             if (tf.is_signature) {
@@ -1073,7 +1084,9 @@ pub const Engine = struct {
     }
 
     fn computeCallableObjectAssignableToSignature(self: *Engine, source: TypeId, target: TypeId) anyerror!bool {
-        for (self.interner.objectMembers(source)) |sm| {
+        const source_members = try self.gpa.dupe(types.ObjectMember, self.interner.objectMembers(source));
+        defer self.gpa.free(source_members);
+        for (source_members) |sm| {
             if (sm.type >= self.interner.pool.typeCount()) continue;
             const sf = self.pool().flagsOf(sm.type);
             if (!sf.is_signature) continue;
@@ -1098,7 +1111,17 @@ pub const Engine = struct {
         source: TypeId,
         target_member: types.ObjectMember,
     ) anyerror!bool {
-        for (self.interner.objectMembers(source)) |sm| {
+        const source_members = try self.gpa.dupe(types.ObjectMember, self.interner.objectMembers(source));
+        defer self.gpa.free(source_members);
+        return self.someSourceMemberAssignableToTargetFromMembers(source_members, target_member);
+    }
+
+    fn someSourceMemberAssignableToTargetFromMembers(
+        self: *Engine,
+        source_members: []const types.ObjectMember,
+        target_member: types.ObjectMember,
+    ) anyerror!bool {
+        for (source_members) |sm| {
             if (sm.name != target_member.name) continue;
             if (!target_member.is_optional and sm.is_optional) return false;
             // readonly on target is fine even if source is mutable

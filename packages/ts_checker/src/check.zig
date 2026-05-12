@@ -88,6 +88,7 @@ pub const TsCodes = struct {
     pub const parameter_initializer_implementation_only: u32 = 2371;
     pub const parameter_cannot_reference_self: u32 = 2372;
     pub const parameter_cannot_reference_later: u32 = 2373;
+    pub const duplicate_index_signature: u32 = 2374;
     pub const overloads_must_all_be_exported_or_not: u32 = 2383;
     pub const overloads_must_all_be_ambient_or_not: u32 = 2384;
     pub const overloads_must_all_have_same_visibility: u32 = 2385;
@@ -314,6 +315,15 @@ const GeneratorTypeInfo = struct {
     yield_type: TypeId,
     return_type: TypeId,
     next_type: TypeId,
+};
+
+const IndexSignatureDuplicateState = struct {
+    first_string: NodeId = hir_mod.none_node_id,
+    first_number: NodeId = hir_mod.none_node_id,
+    first_symbol: NodeId = hir_mod.none_node_id,
+    reported_string: bool = false,
+    reported_number: bool = false,
+    reported_symbol: bool = false,
 };
 
 const ClassMethodSeen = struct {
@@ -2864,7 +2874,11 @@ pub const Checker = struct {
             .for_in_stmt, .for_of_stmt => {
                 const fr = hir_mod.forInOf(self.hir, node);
                 try self.scanExprForUsedBeforeAssign(fr.source, pending);
-                try self.scanForUsedBeforeAssign(fr.body, pending);
+                var body_pending: std.AutoHashMapUnmanaged(hir_mod.StringId, NodeId) = .empty;
+                defer body_pending.deinit(self.gpa);
+                try self.clonePendingAssignments(pending, &body_pending);
+                self.removeForLoopTargetFromPending(fr.target, &body_pending);
+                try self.scanForUsedBeforeAssign(fr.body, &body_pending);
             },
             .if_stmt => {
                 const i = hir_mod.ifOf(self.hir, node);
@@ -3215,6 +3229,33 @@ pub const Checker = struct {
             else => {},
         }
         return false;
+    }
+
+    fn removeForLoopTargetFromPending(
+        self: *Checker,
+        target: NodeId,
+        pending: *std.AutoHashMapUnmanaged(hir_mod.StringId, NodeId),
+    ) void {
+        if (target == hir_mod.none_node_id) return;
+        switch (self.hir.kindOf(target)) {
+            .identifier => {
+                const id = hir_mod.identifierOf(self.hir, target);
+                _ = pending.remove(id.name);
+            },
+            .var_decl, .let_decl, .const_decl => {
+                const v = hir_mod.varDeclOf(self.hir, target);
+                self.removeForLoopTargetFromPending(v.name, pending);
+            },
+            .object_pattern, .array_pattern => {
+                const elements = hir_mod.patternElements(self.hir, target);
+                for (elements) |element| {
+                    if (self.hir.kindOf(element) != .parameter) continue;
+                    const p = hir_mod.parameterOf(self.hir, element);
+                    self.removeForLoopTargetFromPending(p.name, pending);
+                }
+            },
+            else => {},
+        }
     }
 
     fn flagIfPending(
@@ -5884,6 +5925,7 @@ pub const Checker = struct {
         var number_idx: TypeId = types.Primitive.none;
         var symbol_idx: TypeId = types.Primitive.none;
         var has_readonly_index = false;
+        var own_index_signatures: IndexSignatureDuplicateState = .{};
         // Names of class members declared `private`. After the class
         // name is known we move ownership into `class_private_members`
         // and reset this local to `.empty` so the trailing `defer` is
@@ -5947,6 +5989,7 @@ pub const Checker = struct {
                         try self.lowererLowerWithTypeParams(ix.key_type)
                     else
                         types.Primitive.string_t;
+                    try self.checkDuplicateIndexSignature(m, key_t, &own_index_signatures);
                     if (key_t == types.Primitive.string_t) string_idx = value_t;
                     if (key_t == types.Primitive.number_t) number_idx = value_t;
                     if (key_t == types.Primitive.symbol_t) symbol_idx = value_t;
@@ -6091,6 +6134,7 @@ pub const Checker = struct {
                     // implementations and satisfy any inherited
                     // abstract member of the same name.
                     const seen = if (fn_p.flags.is_static) &static_method_seen else &method_seen;
+                    const overload_info_before = seen.get(member_name);
                     try self.checkClassMethodOverloadState(m, member_name, fn_p.flags.is_static, self.methodVisibilityBits(fn_p.flags), fn_p.body != hir_mod.none_node_id, seen);
                     if (!fn_p.flags.is_static) {
                         if (c.is_abstract and fn_p.body == hir_mod.none_node_id) {
@@ -6099,6 +6143,10 @@ pub const Checker = struct {
                             try concrete_names.put(self.gpa, member_name, {});
                         }
                     }
+                    const is_visible_overload_implementation = fn_p.body != hir_mod.none_node_id and
+                        overload_info_before != null and
+                        overload_info_before.?.bodyless_count > 0;
+                    if (is_visible_overload_implementation) continue;
                     const method_member: types.ObjectMember = .{
                         .name = member_name,
                         .type = sig,
@@ -6151,11 +6199,19 @@ pub const Checker = struct {
                             if (hir_mod.fnTypeParams(self.hir, op.value).len > 0) self.popNarrowScope();
                             const fn_v = hir_mod.fnDeclOf(self.hir, op.value);
                             const seen = if (op.is_static) &static_method_seen else &method_seen;
+                            const overload_info_before = seen.get(member_name);
                             try self.checkClassMethodOverloadState(m, member_name, op.is_static, self.methodVisibilityBits(fn_v.flags), fn_v.body != hir_mod.none_node_id, seen);
+                            if (fn_v.body != hir_mod.none_node_id and
+                                overload_info_before != null and
+                                overload_info_before.?.bodyless_count > 0)
+                            {
+                                break :blk types.Primitive.none;
+                            }
                             break :blk sig;
                         } else try self.checkExpression(op.value);
-                        const method_predicate = self.signature_predicates.get(method_t);
                         if (!op.is_static) try concrete_names.put(self.gpa, member_name, {});
+                        if (method_t == types.Primitive.none) continue;
+                        const method_predicate = self.signature_predicates.get(method_t);
                         const method_member: types.ObjectMember = .{
                             .name = member_name,
                             .type = method_t,
@@ -7108,6 +7164,56 @@ pub const Checker = struct {
 
     fn classHasLeadingDeclare(self: *Checker, class_node: NodeId) bool {
         return self.declarationSourceHasLeadingDeclare(class_node);
+    }
+
+    fn checkDuplicateIndexSignature(
+        self: *Checker,
+        node: NodeId,
+        key_t: TypeId,
+        state: *IndexSignatureDuplicateState,
+    ) CheckError!void {
+        const slot = if (key_t == types.Primitive.string_t)
+            &state.first_string
+        else if (key_t == types.Primitive.number_t)
+            &state.first_number
+        else if (key_t == types.Primitive.symbol_t)
+            &state.first_symbol
+        else
+            return;
+        const reported = if (key_t == types.Primitive.string_t)
+            &state.reported_string
+        else if (key_t == types.Primitive.number_t)
+            &state.reported_number
+        else
+            &state.reported_symbol;
+        if (slot.* == hir_mod.none_node_id) {
+            slot.* = node;
+            return;
+        }
+        const kind = if (key_t == types.Primitive.number_t)
+            "number"
+        else if (key_t == types.Primitive.symbol_t)
+            "symbol"
+        else
+            "string";
+        const msg = try std.fmt.allocPrint(
+            self.diag_arena.allocator(),
+            "Duplicate index signature for type '{s}'.",
+            .{kind},
+        );
+        if (!reported.*) {
+            try self.diagnostics.append(self.gpa, .{
+                .node = slot.*,
+                .code = TsCodes.duplicate_index_signature,
+                .message = msg,
+            });
+            reported.* = true;
+        }
+        try self.diagnostics.append(self.gpa, .{
+            .node = node,
+            .code = TsCodes.duplicate_index_signature,
+            .message = msg,
+        });
     }
 
     fn declarationSourceHasLeadingDeclare(self: *Checker, node: NodeId) bool {
@@ -8344,6 +8450,7 @@ pub const Checker = struct {
         var number_idx: TypeId = types.Primitive.none;
         var symbol_idx: TypeId = types.Primitive.none;
         var has_readonly_index = false;
+        var own_index_signatures: IndexSignatureDuplicateState = .{};
         const extends = hir_mod.interfaceExtends(self.hir, node);
         for (members) |m| {
             if (self.hir.kindOf(m) == .index_signature) {
@@ -8357,6 +8464,7 @@ pub const Checker = struct {
                     try self.lowererLowerWithTypeParams(ix.key_type)
                 else
                     types.Primitive.string_t;
+                try self.checkDuplicateIndexSignature(m, key_t, &own_index_signatures);
                 if (key_t == types.Primitive.string_t) string_idx = value_t;
                 if (key_t == types.Primitive.number_t) number_idx = value_t;
                 if (key_t == types.Primitive.symbol_t) symbol_idx = value_t;
@@ -9898,6 +10006,7 @@ pub const Checker = struct {
                 var string_idx: TypeId = types.Primitive.none;
                 var number_idx: TypeId = types.Primitive.none;
                 var has_readonly_index = false;
+                var own_index_signatures: IndexSignatureDuplicateState = .{};
                 for (members) |m| {
                     if (self.hir.kindOf(m) == .index_signature) {
                         const ix = hir_mod.indexSignatureOf(self.hir, m);
@@ -9910,6 +10019,7 @@ pub const Checker = struct {
                             try self.lowererLowerWithTypeParams(ix.key_type)
                         else
                             types.Primitive.string_t;
+                        try self.checkDuplicateIndexSignature(m, key_t, &own_index_signatures);
                         if (key_t == types.Primitive.string_t) string_idx = value_t;
                         if (key_t == types.Primitive.number_t) number_idx = value_t;
                         continue;
@@ -12903,6 +13013,34 @@ pub const Checker = struct {
         return self.interner.objectMember(obj_t, name);
     }
 
+    fn objectHasCallOrConstructSignature(self: *Checker, obj_t: TypeId) bool {
+        if (obj_t >= self.interner.pool.typeCount() or !self.interner.pool.flagsOf(obj_t).is_object_type) return false;
+        const call_id = self.string_interner.intern("__call") catch return false;
+        const construct_id = self.string_interner.intern("__construct") catch return false;
+        for (self.interner.objectMembers(obj_t)) |member| {
+            if (member.name != call_id and member.name != construct_id) continue;
+            if (self.interner.isSignature(member.type)) return true;
+        }
+        return false;
+    }
+
+    fn functionInterfaceMemberForCallableObject(self: *Checker, obj_t: TypeId, name: hir_mod.StringId) CheckError!?TypeId {
+        if (!self.objectHasCallOrConstructSignature(obj_t)) return null;
+        const function_name = self.string_interner.intern("Function") catch return error.OutOfMemory;
+        const function_t = self.type_names.get(function_name) orelse return null;
+        if (try self.lookupObjectMember(function_t, name)) |member_t| return member_t;
+        const string_idx = self.interner.objectStringIndex(function_t);
+        return if (string_idx != types.Primitive.none) string_idx else null;
+    }
+
+    fn functionInterfaceStringIndexForCallableObject(self: *Checker, obj_t: TypeId) CheckError!?TypeId {
+        if (!self.objectHasCallOrConstructSignature(obj_t)) return null;
+        const function_name = self.string_interner.intern("Function") catch return error.OutOfMemory;
+        const function_t = self.type_names.get(function_name) orelse return null;
+        const string_idx = self.interner.objectStringIndex(function_t);
+        return if (string_idx != types.Primitive.none) string_idx else null;
+    }
+
     fn typeOfDottedValueReference(self: *Checker, raw: []const u8, at_node: NodeId) CheckError!?TypeId {
         var parts = std.mem.splitScalar(u8, raw, '.');
         const root_raw = parts.next() orelse return null;
@@ -13856,6 +13994,9 @@ pub const Checker = struct {
                 if (try self.lookupObjectMember(obj_t, m.name)) |t| {
                     break :blk try self.optionalChainResult(t, member_is_optional_chain);
                 }
+                if (try self.functionInterfaceMemberForCallableObject(access_obj_t, m.name)) |t| {
+                    break :blk try self.optionalChainResult(t, member_is_optional_chain);
+                }
                 if (access_obj_t == types.Primitive.object_t) {
                     if (try self.broadObjectPrototypeMember(m.name)) |t| {
                         break :blk try self.optionalChainResult(t, member_is_optional_chain);
@@ -14055,6 +14196,9 @@ pub const Checker = struct {
                     if (self.typeMaybeStringLike(idx_t)) {
                         const v = self.interner.objectStringIndex(obj_t);
                         if (v != types.Primitive.none) break :blk try self.optionalChainResult(self.maybeWidenWithUndefined(v), element_is_optional_chain);
+                        if (try self.functionInterfaceStringIndexForCallableObject(obj_t)) |function_idx| {
+                            break :blk try self.optionalChainResult(self.maybeWidenWithUndefined(function_idx), element_is_optional_chain);
+                        }
                     }
                     if (self.typeMaybeNumericLike(idx_t)) {
                         const v = self.interner.objectNumberIndex(obj_t);
@@ -19219,6 +19363,7 @@ pub const Checker = struct {
             if (constraint == t) return false;
             return self.isInLeftOperandAllowed(constraint);
         }
+        if (f.is_keyof) return true;
         return f.is_string or f.is_number or f.is_symbol;
     }
 
@@ -24892,6 +25037,31 @@ test "checker: typed let used in for-in body condition emits TS2454" {
     try T.expect(found);
 }
 
+test "checker: for-in target assignment satisfies keyed body reads" {
+    const s = try newSetup(
+        \\function f1<K extends string, T>(obj: { [P in K]: T }, k: K) {
+        \\  const b = k in obj;
+        \\  let k1: K;
+        \\  for (k1 in obj) {
+        \\    let x1 = obj[k1];
+        \\  }
+        \\}
+        \\function f2<T>(obj: { [P in keyof T]: T[P] }, k: keyof T) {
+        \\  const b = k in obj;
+        \\  let k1: keyof T;
+        \\  for (k1 in obj) {
+        \\    let x1 = obj[k1];
+        \\  }
+        \\}
+    );
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+    for (s.checker.diagnostics.items) |d| {
+        try T.expect(d.code != TsCodes.used_before_assignment);
+        try T.expect(d.code != TsCodes.type_not_assignable);
+    }
+}
+
 test "checker: if branches that assign or exit satisfy TS2454" {
     const s = try newSetup(
         \\let cond: boolean;
@@ -25597,6 +25767,69 @@ test "checker: constructor parameter properties contribute to instance shape" {
     }
 }
 
+test "checker: class method overload implementation is hidden from instance shape" {
+    const s = try newSetup(
+        \\class Base { foo: string }
+        \\class Derived1 extends Base { bar: string }
+        \\class Derived2 extends Base { baz: string }
+        \\class C {
+        \\  foo(x: "hi"): Derived1;
+        \\  foo(x: "bye"): Derived2;
+        \\  foo(x: string): Base;
+        \\  foo(x) { return x; }
+        \\}
+        \\interface I {
+        \\  foo(x: "hi"): Derived1;
+        \\  foo(x: "bye"): Derived2;
+        \\  foo(x: string): Base;
+        \\}
+        \\let c = new C();
+        \\let i: I;
+        \\i = c;
+        \\let r1: Derived1 = c.foo("hi");
+        \\let r2: Derived2 = c.foo("bye");
+        \\let r3: Base = c.foo("hm");
+    );
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+    for (s.checker.diagnostics.items) |d| {
+        try T.expect(d.code != TsCodes.type_not_assignable);
+        try T.expect(d.code != TsCodes.argument_type_mismatch);
+    }
+}
+
+test "checker: callable object members fall back to Function interface augmentations" {
+    const s = try newSetup(
+        \\interface Function {
+        \\  data: number;
+        \\  [x: string]: Object;
+        \\}
+        \\interface I {
+        \\  (): void;
+        \\  apply(a: any, b?: any): void;
+        \\  call(thisArg: number, ...argArray: number[]): any;
+        \\}
+        \\let i: I;
+        \\let r1 = i.arguments;
+        \\let r2: number = i.data;
+        \\let r3: Object = i["hm"];
+        \\let x: {
+        \\  new(): number;
+        \\  apply(a: any, b?: any): void;
+        \\  call(thisArg: number, ...argArray: number[]): any;
+        \\}
+        \\let r4 = x.arguments;
+        \\let r5: number = x.data;
+        \\let r6: Object = x["hm"];
+    );
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+    for (s.checker.diagnostics.items) |d| {
+        try T.expect(d.code != TsCodes.property_does_not_exist);
+        try T.expect(d.code != TsCodes.type_not_assignable);
+    }
+}
+
 test "checker: interface extends rejects incompatible property override" {
     const s = try newSetup(
         \\interface Base { x: { a: string } }
@@ -25675,6 +25908,30 @@ test "checker: interface property must match string index signature" {
         if (d.code == TsCodes.property_not_assignable_to_index_type) found = true;
     }
     try T.expect(found);
+}
+
+test "checker: duplicate index signatures report both declarations" {
+    const s = try newSetup(
+        \\interface I {
+        \\  [x: string]: string;
+        \\  [x: string]: string;
+        \\}
+        \\class C {
+        \\  [x: number]: string;
+        \\  [x: number]: string;
+        \\}
+        \\let a: {
+        \\  [x: symbol]: string;
+        \\  [x: symbol]: string;
+        \\}
+    );
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+    var count: usize = 0;
+    for (s.checker.diagnostics.items) |d| {
+        if (d.code == TsCodes.duplicate_index_signature) count += 1;
+    }
+    try T.expectEqual(@as(usize, 6), count);
 }
 
 test "checker: new expression explicit class type args instantiate instance" {
