@@ -442,6 +442,11 @@ pub const Checker = struct {
     /// to refer to a constructable runtime entity (not an interface
     /// or a type alias).
     class_instance_types: std.AutoHashMapUnmanaged(hir_mod.StringId, TypeId),
+    /// Class declarations currently being materialized for forward
+    /// type-reference resolution. This is only a recursion guard for
+    /// shallow type-shape construction; the normal top-level pass still
+    /// fully checks class bodies and diagnostics later.
+    checked_class_decls: std.AutoHashMapUnmanaged(NodeId, void),
     /// Class-name → constructor signature TypeId. Populated when a
     /// class declares an explicit `constructor(...)`; consulted by
     /// `new_expr` typing to check argument count / types. Classes
@@ -685,6 +690,7 @@ pub const Checker = struct {
             .declared_identifier_lookup = false,
             .member_narrow_scopes = .empty,
             .class_instance_types = .empty,
+            .checked_class_decls = .empty,
             .class_constructor_sigs = .empty,
             .class_static_types = .empty,
             .class_name_by_instance = .empty,
@@ -757,6 +763,7 @@ pub const Checker = struct {
         }
         self.member_narrow_scopes.deinit(self.gpa);
         self.class_instance_types.deinit(self.gpa);
+        self.checked_class_decls.deinit(self.gpa);
         self.class_constructor_sigs.deinit(self.gpa);
         self.class_static_types.deinit(self.gpa);
         self.class_name_by_instance.deinit(self.gpa);
@@ -7326,7 +7333,8 @@ pub const Checker = struct {
         return switch (self.hir.kindOf(extends_expr)) {
             .identifier => blk: {
                 const id = hir_mod.identifierOf(self.hir, extends_expr);
-                break :blk self.class_instance_types.get(id.name);
+                if (self.class_instance_types.get(id.name)) |t| break :blk t;
+                break :blk try self.resolveForwardClassInstanceType(extends_expr, id.name);
             },
             .type_ref => blk: {
                 if (try self.reactComponentInstanceType(extends_expr)) |t| break :blk t;
@@ -9416,6 +9424,139 @@ pub const Checker = struct {
         return null;
     }
 
+    fn resolveForwardClassInstanceType(self: *Checker, anchor: NodeId, name: hir_mod.StringId) CheckError!?TypeId {
+        if (self.class_instance_types.get(name)) |t| return t;
+        const root = self.rootBlockFor(anchor);
+        if (root == hir_mod.none_node_id or self.hir.kindOf(root) != .block_stmt) return null;
+        for (hir_mod.blockStmts(self.hir, root)) |raw| {
+            const decl = self.unwrapExportDecl(raw);
+            if (decl == hir_mod.none_node_id) continue;
+            const k = self.hir.kindOf(decl);
+            if (k != .class_decl and k != .class_expr) continue;
+            const c = hir_mod.classOf(self.hir, decl);
+            if (c.name == hir_mod.none_node_id or self.hir.kindOf(c.name) != .identifier) continue;
+            if (hir_mod.identifierOf(self.hir, c.name).name != name) continue;
+            if (self.nodeHasAncestor(anchor, decl)) return null;
+            try self.preRegisterClassInstanceShape(decl);
+            return self.class_instance_types.get(name);
+        }
+        return null;
+    }
+
+    fn preRegisterClassInstanceShape(self: *Checker, node: NodeId) CheckError!void {
+        if (self.checked_class_decls.contains(node)) return;
+        try self.checked_class_decls.put(self.gpa, node, {});
+        defer _ = self.checked_class_decls.remove(node);
+
+        const c = hir_mod.classOf(self.hir, node);
+        if (c.name == hir_mod.none_node_id or self.hir.kindOf(c.name) != .identifier) return;
+        const cid = hir_mod.identifierOf(self.hir, c.name);
+        if (self.class_instance_types.contains(cid.name)) return;
+
+        const type_params = self.hir.childSlice(c.type_params_start, c.type_params_len);
+        if (type_params.len > 0) try self.pushNarrowScope();
+        defer if (type_params.len > 0) self.popNarrowScope();
+        for (type_params) |tp| {
+            if (self.hir.kindOf(tp) != .type_parameter) continue;
+            const tpp = hir_mod.typeParameterOf(self.hir, tp);
+            const constraint: TypeId = if (tpp.constraint != hir_mod.none_node_id)
+                (self.lowererLowerWithTypeParams(tpp.constraint) catch types.Primitive.unknown)
+            else
+                types.Primitive.unknown;
+            const tp_id = self.interner.internFreshTypeParameterWithFlags(
+                tpp.name,
+                constraint,
+                types.Primitive.none,
+                types.Variance.fromHirBits(tpp.variance),
+                tpp.is_const,
+            ) catch return error.OutOfMemory;
+            self.hir.setType(tp, tp_id);
+            try self.recordNarrow(tpp.name, tp_id);
+        }
+
+        var instance_members: std.ArrayListUnmanaged(types.ObjectMember) = .empty;
+        defer instance_members.deinit(self.gpa);
+        var string_idx: TypeId = types.Primitive.none;
+        var number_idx: TypeId = types.Primitive.none;
+        var symbol_idx: TypeId = types.Primitive.none;
+        var has_readonly_index = false;
+
+        if (c.extends != hir_mod.none_node_id) {
+            if (try self.classExtendsInstanceType(c.extends)) |parent_t| {
+                if (parent_t < self.interner.pool.typeCount() and self.interner.pool.flagsOf(parent_t).is_object_type) {
+                    try instance_members.appendSlice(self.gpa, self.interner.objectMembers(parent_t));
+                    string_idx = self.interner.objectStringIndex(parent_t);
+                    number_idx = self.interner.objectNumberIndex(parent_t);
+                    symbol_idx = self.interner.objectSymbolIndex(parent_t);
+                    if (self.typeHasReadonlyIndexSignature(parent_t)) has_readonly_index = true;
+                }
+            }
+        }
+
+        for (hir_mod.classMembers(self.hir, node)) |m| {
+            switch (self.hir.kindOf(m)) {
+                .index_signature => {
+                    const ix = hir_mod.indexSignatureOf(self.hir, m);
+                    has_readonly_index = true;
+                    const value_t = if (ix.value_type != hir_mod.none_node_id)
+                        (self.lowererLowerWithTypeParams(ix.value_type) catch types.Primitive.any)
+                    else
+                        types.Primitive.any;
+                    const key_t = if (ix.key_type != hir_mod.none_node_id)
+                        (self.lowererLowerWithTypeParams(ix.key_type) catch types.Primitive.string_t)
+                    else
+                        types.Primitive.string_t;
+                    if (key_t == types.Primitive.string_t) string_idx = value_t;
+                    if (key_t == types.Primitive.number_t) number_idx = value_t;
+                    if (key_t == types.Primitive.symbol_t) symbol_idx = value_t;
+                },
+                .object_property => {
+                    const op = hir_mod.objectPropertyOf(self.hir, m);
+                    if (op.is_static) continue;
+                    const member_name = (try self.classMemberNameFromPropertyKey(op.key, op.is_computed)) orelse continue;
+                    const field_t: TypeId = if (op.type_annotation != hir_mod.none_node_id)
+                        (self.lowererLowerWithTypeParams(op.type_annotation) catch types.Primitive.any)
+                    else
+                        types.Primitive.any;
+                    try instance_members.append(self.gpa, .{
+                        .name = member_name,
+                        .type = field_t,
+                        .is_optional = false,
+                        .is_readonly = false,
+                        .is_method = false,
+                    });
+                },
+                .fn_decl, .fn_expr, .arrow_fn => {
+                    const fp = hir_mod.fnDeclOf(self.hir, m);
+                    if (fp.flags.is_static or fp.flags.is_constructor) continue;
+                    const member_name = (try self.classMemberNameFromFunctionName(fp.name)) orelse continue;
+                    const sig = self.interner.internSignature(&.{}, types.Primitive.any, false) catch return error.OutOfMemory;
+                    try instance_members.append(self.gpa, .{
+                        .name = member_name,
+                        .type = sig,
+                        .is_optional = false,
+                        .is_readonly = false,
+                        .is_method = true,
+                    });
+                },
+                else => {},
+            }
+        }
+
+        const instance_t = self.interner.internObjectTypeWithIndexAndSymbol(
+            instance_members.items,
+            string_idx,
+            number_idx,
+            symbol_idx,
+        ) catch return error.OutOfMemory;
+        if (has_readonly_index) try self.readonly_index_types.put(self.gpa, instance_t, {});
+        try self.class_instance_types.put(self.gpa, cid.name, instance_t);
+        try self.class_name_by_instance.put(self.gpa, instance_t, cid.name);
+        try self.type_names.put(self.gpa, cid.name, instance_t);
+        self.hir.setType(node, instance_t);
+        self.hir.setType(c.name, instance_t);
+    }
+
     fn lowerValueTypeAnnotation(self: *Checker, name: hir_mod.StringId, type_annotation: NodeId) CheckError!TypeId {
         if (type_annotation == hir_mod.none_node_id) return types.Primitive.none;
         if (self.resolving_value_types.contains(name)) return types.Primitive.any;
@@ -9629,6 +9770,7 @@ pub const Checker = struct {
                     if (!e.is_const and (self.enumDeclIsNumeric(decl, id.name) orelse false)) return try self.enumNominalType(id.name);
                 }
                 if (self.lookupNarrow(id.name)) |t| return t;
+                if (try self.resolveForwardClassInstanceType(type_node, id.name)) |t| return t;
                 if (self.type_names.get(id.name)) |t| return t;
             },
             .literal_number => {
@@ -9747,6 +9889,7 @@ pub const Checker = struct {
                         }
                     }
                     if (try self.resolveUnqualifiedNamespaceTypeRef(type_node, r.name)) |t| return t;
+                    if (try self.resolveForwardClassInstanceType(type_node, r.name)) |t| return t;
                     if (self.type_names.get(r.name)) |t| return t;
                 }
                 // `Alias<X, Y>` — instantiate the generic alias by
@@ -30348,6 +30491,29 @@ test "checker: assigning through readonly index signatures emits TS2542" {
     var found: usize = 0;
     for (s.checker.diagnostics.items) |d| {
         if (d.code == TsCodes.readonly_index_signature) found += 1;
+    }
+    try T.expectEqual(@as(usize, 2), found);
+}
+
+test "checker: forward class references in recursive alias preserve readonly index signatures" {
+    const s = try newSetup(
+        \\type StringTree = string | StringTreeCollection;
+        \\class StringTreeCollectionBase {
+        \\  [n: number]: StringTree;
+        \\}
+        \\class StringTreeCollection extends StringTreeCollectionBase {}
+        \\let x: StringTree;
+        \\if (typeof x !== "string") {
+        \\  x[0] = "";
+        \\  x[0] = new StringTreeCollection();
+        \\}
+    );
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+    var found: usize = 0;
+    for (s.checker.diagnostics.items) |d| {
+        if (d.code == TsCodes.readonly_index_signature) found += 1;
+        try T.expect(d.code != TsCodes.type_alias_circular);
     }
     try T.expectEqual(@as(usize, 2), found);
 }
