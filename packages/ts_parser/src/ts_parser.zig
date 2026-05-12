@@ -3153,6 +3153,21 @@ pub const Parser = struct {
 
     fn parseConditionalType(self: *Parser) ParseError!NodeId {
         const check = try self.parseUnionType();
+        if (self.hir.kindOf(check) == .infer_type and self.peek().kind == .question) {
+            const inf = hir_mod.inferTypeOf(self.hir, check);
+            if (inf.constraint != hir_mod.none_node_id) {
+                _ = self.advance();
+                const bare = try self.builder.addInferType(self.hir.spanOf(check), inf.name, hir_mod.none_node_id);
+                const true_branch = try self.parseTypeAnnotation();
+                _ = try self.expect(.colon, "':' in conditional type");
+                const false_branch = try self.parseTypeAnnotation();
+                const sp: Span = .{
+                    .start = self.hir.spanOf(check).start,
+                    .end = self.hir.spanOf(false_branch).end,
+                };
+                return try self.builder.addConditionalType(sp, bare, inf.constraint, true_branch, false_branch);
+            }
+        }
         if (self.peek().kind != .kw_extends) return check;
         const extends_kw = self.advance(); // extends
         _ = extends_kw;
@@ -7397,6 +7412,16 @@ test "parser: labeled tuple elements allow optional marker" {
     const alias = hir_mod.typeAliasOf(&s.hir, top);
     try T.expectEqual(hir_mod.NodeKind.tuple_type, s.hir.kindOf(alias.aliased));
     try T.expectEqual(@as(usize, 3), hir_mod.tupleTypeElements(&s.hir, alias.aliased).len);
+}
+
+test "parser: infer extends before question parses as conditional in grouped type" {
+    var s = try newTestSetup("type X<T> = T extends (infer U extends number ? 1 : 0) ? 1 : 0;");
+    defer destroyTestSetup(s);
+    const root = try s.parser.parseSourceFile();
+    try T.expectEqual(@as(usize, 0), s.parser.diagnostics.items.len);
+    const top = hir_mod.blockStmts(&s.hir, root)[0];
+    const alias = hir_mod.typeAliasOf(&s.hir, top);
+    try T.expectEqual(hir_mod.NodeKind.conditional_type, s.hir.kindOf(alias.aliased));
 }
 
 test "parser: class modifier keywords may be property names" {
