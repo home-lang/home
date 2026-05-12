@@ -4600,7 +4600,25 @@ fn renderTypeInto(
         return;
     }
     if (flags.is_type_parameter) {
-        try buf.append(gpa, 'T');
+        // Render the declared name when the interner has it; otherwise
+        // fall back to the historical `T` placeholder so older callers
+        // still see a non-empty marker. When a constraint is present
+        // append ` extends <constraint>` so hover surfaces the bound
+        // (`function f<T extends string>(x: T)` shows `T extends string`).
+        if (ti.typeParameterName(id)) |name_id| {
+            const name = sint.get(name_id);
+            if (name.len == 0) {
+                try buf.append(gpa, 'T');
+            } else {
+                try buf.appendSlice(gpa, name);
+            }
+        } else {
+            try buf.append(gpa, 'T');
+        }
+        if (ti.typeParameterConstraint(id)) |constraint| {
+            try buf.appendSlice(gpa, " extends ");
+            try renderTypeInto(buf, gpa, ti, sint, constraint, depth + 1);
+        }
         return;
     }
     try buf.appendSlice(gpa, "unknown");
@@ -5170,6 +5188,53 @@ test "Service: hover renders union types" {
     // The union type should render with 'number' and 'string'.
     try T.expect(std.mem.indexOf(u8, r.type_repr, "number") != null or
         std.mem.indexOf(u8, r.type_repr, "string") != null);
+}
+
+test "Service: hover renders type parameter name and constraint" {
+    var vfs = ts_resolver.VirtualFs.init(T.allocator);
+    defer vfs.deinit();
+    var resolver = ts_resolver.Resolver.init(T.allocator, vfs.fs(), .{});
+    defer resolver.deinit();
+    var program = ts_program.Program.init(T.allocator, &resolver);
+    defer program.deinit();
+
+    // `function f<T extends string>(x: T) { return x; }` — hover on
+    // the parameter `x` should resolve `T` to its declared name plus
+    // the `extends` constraint, surfacing `T extends string` rather
+    // than the legacy bare `T` placeholder.
+    const src = "function f<T extends string>(x: T) { return x; }";
+    _ = try program.add("/main.ts", src);
+    try program.compileAll(.{});
+
+    var svc = Service.init(T.allocator, &program);
+    // Locate the parameter name `x` byte position.
+    const x_pos: u32 = @intCast(std.mem.indexOf(u8, src, "(x:").? + 1);
+    const r = svc.hover("/main.ts", x_pos) orelse return error.NoHover;
+    defer T.allocator.free(r.type_repr);
+    try T.expect(std.mem.indexOf(u8, r.type_repr, "T") != null);
+    try T.expect(std.mem.indexOf(u8, r.type_repr, "extends string") != null);
+}
+
+test "Service: hover renders type parameter without constraint as bare name" {
+    var vfs = ts_resolver.VirtualFs.init(T.allocator);
+    defer vfs.deinit();
+    var resolver = ts_resolver.Resolver.init(T.allocator, vfs.fs(), .{});
+    defer resolver.deinit();
+    var program = ts_program.Program.init(T.allocator, &resolver);
+    defer program.deinit();
+
+    // No constraint on `MyParam`: hover should show the declared
+    // name without an `extends` clause.
+    const src = "function f<MyParam>(x: MyParam) { return x; }";
+    _ = try program.add("/main.ts", src);
+    try program.compileAll(.{});
+
+    var svc = Service.init(T.allocator, &program);
+    const x_pos: u32 = @intCast(std.mem.indexOf(u8, src, "(x:").? + 1);
+    const r = svc.hover("/main.ts", x_pos) orelse return error.NoHover;
+    defer T.allocator.free(r.type_repr);
+    try T.expect(std.mem.indexOf(u8, r.type_repr, "MyParam") != null);
+    try T.expect(std.mem.indexOf(u8, r.type_repr, "extends") == null);
 }
 
 test "Service: hover renders function declaration shape" {
