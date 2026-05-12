@@ -516,6 +516,10 @@ pub const Checker = struct {
     /// side table gives explicit type-argument calls on function
     /// values the same substitution path.
     generic_signature_params: std.AutoHashMapUnmanaged(TypeId, []TypeId),
+    /// Signature TypeId → explicit `this` parameter type. The `this`
+    /// parameter is not a call argument, but method calls on union
+    /// receivers must still prove the receiver satisfies it.
+    signature_this_params: std.AutoHashMapUnmanaged(TypeId, TypeId),
     /// Function name → type-predicate info. Populated when the
     /// function's return type is `arg is T` or `asserts arg is T`.
     /// Consulted by `applyTypeGuard` at call sites so the caller's
@@ -671,6 +675,7 @@ pub const Checker = struct {
             .resolving_value_types = .empty,
             .generic_fns = .empty,
             .generic_signature_params = .empty,
+            .signature_this_params = .empty,
             .fn_predicates = .empty,
             .signature_predicates = .empty,
             .member_predicates = .empty,
@@ -751,6 +756,7 @@ pub const Checker = struct {
         var gsig_it = self.generic_signature_params.valueIterator();
         while (gsig_it.next()) |params| self.gpa.free(params.*);
         self.generic_signature_params.deinit(self.gpa);
+        self.signature_this_params.deinit(self.gpa);
         self.fn_predicates.deinit(self.gpa);
         self.signature_predicates.deinit(self.gpa);
         self.member_predicates.deinit(self.gpa);
@@ -4223,6 +4229,13 @@ pub const Checker = struct {
         if (self.signature_min_args.get(sig)) |min_required| {
             try self.signature_min_args.put(self.gpa, new_sig, min_required);
         }
+        const recorded_node_params = try self.recordFunctionNodeGenericSignatureParams(new_sig, fn_node);
+        if (!recorded_node_params) if (self.generic_signature_params.get(sig)) |type_params| {
+            try self.recordGenericSignatureParams(new_sig, type_params);
+        };
+        if (self.signature_this_params.get(sig)) |this_t| {
+            try self.signature_this_params.put(self.gpa, new_sig, this_t);
+        }
         self.hir.setType(fn_node, new_sig);
         const f = hir_mod.fnDeclOf(self.hir, fn_node);
         if (f.name != hir_mod.none_node_id) self.hir.setType(f.name, new_sig);
@@ -5110,6 +5123,7 @@ pub const Checker = struct {
         const f = hir_mod.fnDeclOf(self.hir, node);
         const type_params = hir_mod.fnTypeParams(self.hir, node);
         try self.checkTypeParameterDeclList(type_params);
+        try self.checkFunctionSignatureLocalTypeVisibility(node, type_params);
         if (type_params.len > 0) try self.pushNarrowScope();
         var captured_tp_ids: std.ArrayListUnmanaged(TypeId) = .empty;
         defer captured_tp_ids.deinit(self.gpa);
@@ -5144,6 +5158,7 @@ pub const Checker = struct {
         defer param_predicates.deinit(self.gpa);
         const params = hir_mod.fnParams(self.hir, node);
         var has_rest_param = false;
+        var explicit_this_t: TypeId = types.Primitive.none;
         var value_param_index: u16 = 0;
         for (params) |p| {
             const pp = hir_mod.parameterOf(self.hir, p);
@@ -5169,7 +5184,10 @@ pub const Checker = struct {
             }
             self.hir.setType(p, t);
             if (pp.name != hir_mod.none_node_id) self.hir.setType(pp.name, t);
-            if (is_this_param) continue;
+            if (is_this_param) {
+                explicit_this_t = t;
+                continue;
+            }
             try param_types.append(self.gpa, t);
             try param_omittable.append(self.gpa, !has_anno or pp.flags.is_optional or pp.default_value != hir_mod.none_node_id or t == types.Primitive.void_t);
             if (self.signature_predicates.get(t)) |param_pred| {
@@ -5216,6 +5234,8 @@ pub const Checker = struct {
         }
 
         const sig = self.interner.internSignature(param_types.items, ret_t, false) catch return error.OutOfMemory;
+        try self.recordGenericSignatureParams(sig, captured_tp_ids.items);
+        if (explicit_this_t != types.Primitive.none) try self.signature_this_params.put(self.gpa, sig, explicit_this_t);
         try self.recordSignatureMinArgs(sig, param_omittable.items);
         self.hir.setType(node, sig);
         if (f.name != hir_mod.none_node_id) self.hir.setType(f.name, sig);
@@ -5303,6 +5323,114 @@ pub const Checker = struct {
         return sig;
     }
 
+    fn checkFunctionSignatureLocalTypeVisibility(self: *Checker, fn_node: NodeId, type_params: []const NodeId) CheckError!void {
+        const f = hir_mod.fnDeclOf(self.hir, fn_node);
+        if (f.body == hir_mod.none_node_id or self.hir.kindOf(f.body) != .block_stmt) return;
+        var local_type_names: std.AutoHashMapUnmanaged(hir_mod.StringId, NodeId) = .empty;
+        defer local_type_names.deinit(self.gpa);
+        for (hir_mod.blockStmts(self.hir, f.body)) |stmt| {
+            const name_node: NodeId = switch (self.hir.kindOf(stmt)) {
+                .interface_decl => hir_mod.interfaceOf(self.hir, stmt).name,
+                .type_alias_decl => hir_mod.typeAliasOf(self.hir, stmt).name,
+                .class_decl, .class_expr => hir_mod.classOf(self.hir, stmt).name,
+                else => continue,
+            };
+            if (name_node == hir_mod.none_node_id or self.hir.kindOf(name_node) != .identifier) continue;
+            try local_type_names.put(self.gpa, hir_mod.identifierOf(self.hir, name_node).name, stmt);
+        }
+        if (local_type_names.count() == 0) return;
+
+        for (type_params) |tp| {
+            if (self.hir.kindOf(tp) != .type_parameter) continue;
+            const tpp = hir_mod.typeParameterOf(self.hir, tp);
+            if (local_type_names.contains(tpp.name)) {
+                try self.report(tp, TsCodes.duplicate_identifier, "Duplicate identifier.");
+            }
+        }
+
+        const params = hir_mod.fnParams(self.hir, fn_node);
+        for (params) |p| {
+            if (self.hir.kindOf(p) != .parameter) continue;
+            const pp = hir_mod.parameterOf(self.hir, p);
+            if (pp.type_annotation != hir_mod.none_node_id) {
+                try self.reportTypeRefsToLocalBodyTypes(pp.type_annotation, &local_type_names);
+            }
+        }
+        if (f.return_type != hir_mod.none_node_id) {
+            try self.reportTypeRefsToLocalBodyTypes(f.return_type, &local_type_names);
+        }
+    }
+
+    fn reportTypeRefsToLocalBodyTypes(
+        self: *Checker,
+        type_node: NodeId,
+        local_type_names: *const std.AutoHashMapUnmanaged(hir_mod.StringId, NodeId),
+    ) CheckError!void {
+        if (type_node == hir_mod.none_node_id) return;
+        switch (self.hir.kindOf(type_node)) {
+            .identifier => {
+                const id = hir_mod.identifierOf(self.hir, type_node);
+                if (local_type_names.contains(id.name)) {
+                    try self.reportCannotFindName(type_node, id.name);
+                }
+            },
+            .type_ref => {
+                const r = hir_mod.typeRefOf(self.hir, type_node);
+                if (r.qualifier_len == 0 and local_type_names.contains(r.name)) {
+                    try self.reportCannotFindName(type_node, r.name);
+                }
+                for (hir_mod.typeRefArgs(self.hir, type_node)) |arg| {
+                    try self.reportTypeRefsToLocalBodyTypes(arg, local_type_names);
+                }
+            },
+            .union_type => for (hir_mod.unionTypeMembers(self.hir, type_node)) |member| try self.reportTypeRefsToLocalBodyTypes(member, local_type_names),
+            .intersection_type => for (hir_mod.intersectionTypeMembers(self.hir, type_node)) |member| try self.reportTypeRefsToLocalBodyTypes(member, local_type_names),
+            .array_type => try self.reportTypeRefsToLocalBodyTypes(hir_mod.arrayTypeOf(self.hir, type_node).element, local_type_names),
+            .tuple_type => for (hir_mod.tupleTypeElements(self.hir, type_node)) |elem| try self.reportTypeRefsToLocalBodyTypes(elem, local_type_names),
+            .rest_type => try self.reportTypeRefsToLocalBodyTypes(hir_mod.restTypeOf(self.hir, type_node).operand, local_type_names),
+            .keyof_type => try self.reportTypeRefsToLocalBodyTypes(hir_mod.keyofTypeOf(self.hir, type_node).operand, local_type_names),
+            .indexed_access_type => {
+                const ia = hir_mod.indexedAccessTypeOf(self.hir, type_node);
+                try self.reportTypeRefsToLocalBodyTypes(ia.object, local_type_names);
+                try self.reportTypeRefsToLocalBodyTypes(ia.index, local_type_names);
+            },
+            .conditional_type => {
+                const c = hir_mod.conditionalTypeOf(self.hir, type_node);
+                try self.reportTypeRefsToLocalBodyTypes(c.check, local_type_names);
+                try self.reportTypeRefsToLocalBodyTypes(c.extends, local_type_names);
+                try self.reportTypeRefsToLocalBodyTypes(c.true_branch, local_type_names);
+                try self.reportTypeRefsToLocalBodyTypes(c.false_branch, local_type_names);
+            },
+            else => {},
+        }
+    }
+
+    fn recordGenericSignatureParams(self: *Checker, sig: TypeId, params: []const TypeId) CheckError!void {
+        if (params.len == 0) return;
+        if (self.generic_signature_params.fetchRemove(sig)) |old| {
+            self.gpa.free(old.value);
+        }
+        const owned = try self.gpa.dupe(TypeId, params);
+        errdefer self.gpa.free(owned);
+        try self.generic_signature_params.put(self.gpa, sig, owned);
+    }
+
+    fn recordFunctionNodeGenericSignatureParams(self: *Checker, sig: TypeId, fn_node: NodeId) CheckError!bool {
+        const type_params = hir_mod.fnTypeParams(self.hir, fn_node);
+        if (type_params.len == 0) return false;
+        var params: std.ArrayListUnmanaged(TypeId) = .empty;
+        defer params.deinit(self.gpa);
+        for (type_params) |tp| {
+            if (self.hir.kindOf(tp) != .type_parameter) continue;
+            const tp_t = self.hir.typeOf(tp);
+            if (tp_t == types.Primitive.none) continue;
+            try params.append(self.gpa, tp_t);
+        }
+        if (params.items.len == 0) return false;
+        try self.recordGenericSignatureParams(sig, params.items);
+        return true;
+    }
+
     /// Lower a class declaration into an instance object type. Each
     /// method becomes an object member typed as a signature; each
     /// declared field becomes an object member typed as the
@@ -5359,6 +5487,7 @@ pub const Checker = struct {
         var static_members: std.ArrayListUnmanaged(types.ObjectMember) = .empty;
         defer static_members.deinit(self.gpa);
         var ctor_sig: TypeId = types.Primitive.none;
+        var has_explicit_ctor = false;
         var string_idx: TypeId = types.Primitive.none;
         var number_idx: TypeId = types.Primitive.none;
         var symbol_idx: TypeId = types.Primitive.none;
@@ -5436,6 +5565,7 @@ pub const Checker = struct {
                     const fn_p = hir_mod.fnDeclOf(self.hir, m);
                     if (fn_p.flags.is_constructor) {
                         ctor_sig = sig;
+                        has_explicit_ctor = true;
                         const ctor_params = hir_mod.fnParams(self.hir, m);
                         for (ctor_params) |param_node| {
                             const pp = hir_mod.parameterOf(self.hir, param_node);
@@ -5724,10 +5854,12 @@ pub const Checker = struct {
 
         var instance_t = self.interner.internObjectTypeWithIndexAndSymbol(instance_members.items, string_idx, number_idx, symbol_idx) catch return error.OutOfMemory;
         var static_ctor_sig = ctor_sig;
-        if (ctor_sig != types.Primitive.none) {
+        {
             const construct_name = self.string_interner.intern("__construct") catch return error.OutOfMemory;
-            const ctor_params = self.interner.signatureParams(ctor_sig);
+            const empty_params: [0]TypeId = .{};
+            const ctor_params: []const TypeId = if (has_explicit_ctor) self.interner.signatureParams(ctor_sig) else empty_params[0..];
             static_ctor_sig = self.interner.internSignature(ctor_params, instance_t, true) catch return error.OutOfMemory;
+            try self.recordGenericSignatureParams(static_ctor_sig, class_param_ids.items);
             try static_members.append(self.gpa, .{
                 .name = construct_name,
                 .type = static_ctor_sig,
@@ -5736,7 +5868,7 @@ pub const Checker = struct {
                 .is_method = true,
             });
         }
-        const static_t = self.interner.internObjectType(static_members.items) catch return error.OutOfMemory;
+        var static_t = self.interner.internObjectType(static_members.items) catch return error.OutOfMemory;
         try self.recordMemberPredicatesForReceiver(instance_t, &instance_member_predicates);
         try self.recordMemberPredicatesForReceiver(static_t, &static_member_predicates);
         if (parent_instance_t) |pt| try self.copyMemberPredicatesFromReceiver(instance_t, pt);
@@ -5760,7 +5892,7 @@ pub const Checker = struct {
                 });
             }
             try self.class_name_by_instance.put(self.gpa, instance_t, cid.name);
-            if (static_ctor_sig != types.Primitive.none) {
+            if (has_explicit_ctor) {
                 try self.class_constructor_sigs.put(self.gpa, cid.name, static_ctor_sig);
             }
             const implements = self.hir.childSlice(c.implements_start, c.implements_len);
@@ -5945,12 +6077,25 @@ pub const Checker = struct {
         if (changed) {
             try self.checkIndexSignatureMemberCompatibility(node, refined_members.items, string_idx, number_idx, symbol_idx);
             instance_t = self.interner.internObjectTypeWithIndexAndSymbol(refined_members.items, string_idx, number_idx, symbol_idx) catch return error.OutOfMemory;
+            const construct_name = self.string_interner.intern("__construct") catch return error.OutOfMemory;
+            const empty_params: [0]TypeId = .{};
+            const ctor_params: []const TypeId = if (has_explicit_ctor) self.interner.signatureParams(ctor_sig) else empty_params[0..];
+            static_ctor_sig = self.interner.internSignature(ctor_params, instance_t, true) catch return error.OutOfMemory;
+            try self.recordGenericSignatureParams(static_ctor_sig, class_param_ids.items);
+            for (static_members.items) |*member| {
+                if (member.name == construct_name) {
+                    member.type = static_ctor_sig;
+                    break;
+                }
+            }
+            static_t = self.interner.internObjectType(static_members.items) catch return error.OutOfMemory;
             try self.recordMemberPredicatesForReceiver(instance_t, &instance_member_predicates);
             if (parent_instance_t) |pt| try self.copyMemberPredicatesFromReceiver(instance_t, pt);
             self.hir.setType(node, instance_t);
             if (c.name != hir_mod.none_node_id and self.hir.kindOf(c.name) == .identifier) {
                 const cid = hir_mod.identifierOf(self.hir, c.name);
                 try self.class_instance_types.put(self.gpa, cid.name, instance_t);
+                try self.class_static_types.put(self.gpa, cid.name, static_t);
                 try self.type_names.put(self.gpa, cid.name, instance_t);
                 if (self.generic_aliases.getPtr(cid.name)) |info| {
                     info.body = instance_t;
@@ -7822,6 +7967,11 @@ pub const Checker = struct {
         self.hir.setType(node, iface_t);
         if (it.name != hir_mod.none_node_id and self.hir.kindOf(it.name) == .identifier) {
             const id = hir_mod.identifierOf(self.hir, it.name);
+            for (iface_members.items) |member| {
+                if (self.interfaceMemberHasSelfThisParameter(members, member.name, id.name)) {
+                    try self.signature_this_params.put(self.gpa, member.type, iface_t);
+                }
+            }
             try self.type_names.put(self.gpa, id.name, iface_t);
             if (param_ids.items.len > 0) {
                 const owned_params = try self.gpa.dupe(TypeId, param_ids.items);
@@ -7836,6 +7986,40 @@ pub const Checker = struct {
             }
             self.hir.setType(it.name, iface_t);
         }
+    }
+
+    fn interfaceMemberHasSelfThisParameter(
+        self: *Checker,
+        members: []const NodeId,
+        member_name: hir_mod.StringId,
+        iface_name: hir_mod.StringId,
+    ) bool {
+        for (members) |m| {
+            if (self.hir.kindOf(m) != .interface_member) continue;
+            const im = hir_mod.interfaceMemberOf(self.hir, m);
+            if (im.name != member_name or im.type_node == hir_mod.none_node_id) continue;
+            if (self.hir.kindOf(im.type_node) != .fn_type) continue;
+            const ft = hir_mod.fnTypeOf(self.hir, im.type_node);
+            const params = self.hir.childSlice(ft.params_start, @intCast(ft.params_len));
+            if (params.len == 0 or !self.isThisParameter(params[0])) return false;
+            const p = hir_mod.parameterOf(self.hir, params[0]);
+            if (p.type_annotation == hir_mod.none_node_id) return false;
+            return switch (self.hir.kindOf(p.type_annotation)) {
+                .type_ref => blk: {
+                    const r = hir_mod.typeRefOf(self.hir, p.type_annotation);
+                    if (r.qualifier_len != 0) break :blk false;
+                    const raw = self.string_interner.get(r.name);
+                    break :blk r.name == iface_name or std.mem.eql(u8, raw, "this");
+                },
+                .identifier => blk: {
+                    const id = hir_mod.identifierOf(self.hir, p.type_annotation);
+                    const raw = self.string_interner.get(id.name);
+                    break :blk id.name == iface_name or std.mem.eql(u8, raw, "this");
+                },
+                else => false,
+            };
+        }
+        return false;
     }
 
     fn reportMemberImplicitAny(self: *Checker, node: NodeId, name: hir_mod.StringId) CheckError!void {
@@ -9378,6 +9562,7 @@ pub const Checker = struct {
                 defer fn_param_omittable.deinit(self.gpa);
                 const fn_params = self.hir.childSlice(ft.params_start, @intCast(ft.params_len));
                 var has_rest_param = false;
+                var explicit_this_t: TypeId = types.Primitive.none;
                 for (fn_params) |p| {
                     if (self.hir.kindOf(p) != .parameter) continue;
                     const pp = hir_mod.parameterOf(self.hir, p);
@@ -9387,7 +9572,10 @@ pub const Checker = struct {
                         try self.lowererLowerWithTypeParams(pp.type_annotation)
                     else
                         types.Primitive.any;
-                    if (is_this_param) continue;
+                    if (is_this_param) {
+                        explicit_this_t = t;
+                        continue;
+                    }
                     try fn_param_ts.append(self.gpa, t);
                     try fn_param_omittable.append(self.gpa, pp.type_annotation == hir_mod.none_node_id or pp.flags.is_optional or pp.default_value != hir_mod.none_node_id or t == types.Primitive.void_t);
                 }
@@ -9400,6 +9588,7 @@ pub const Checker = struct {
                 const is_construct = self.hir.kindOf(type_node) == .constructor_type;
                 const sig = self.interner.internSignature(fn_param_ts.items, ret_t, is_construct) catch return error.OutOfMemory;
                 try self.recordSignatureMinArgs(sig, fn_param_omittable.items);
+                if (explicit_this_t != types.Primitive.none) try self.signature_this_params.put(self.gpa, sig, explicit_this_t);
                 if (is_predicate) {
                     const pred = hir_mod.typePredicateOf(self.hir, ft.return_type);
                     const target_t: TypeId = if (pred.target_type != hir_mod.none_node_id)
@@ -10830,7 +11019,6 @@ pub const Checker = struct {
                 flow_t != types.Primitive.unknown and
                 final_type != types.Primitive.any and
                 final_type != types.Primitive.unknown and
-                !self.nodeIsInsideFunctionLike(node) and
                 flow_ok)
             {
                 try self.recordNarrow(id.name, flow_t);
@@ -11675,13 +11863,6 @@ pub const Checker = struct {
                     const t = try self.checkExpression(arg);
                     try arg_types.append(self.gpa, t);
                 }
-                // `new Foo(...)` produces the instance type recorded
-                // by `checkClassDecl`. If the class declared an
-                // explicit constructor we also typecheck args against
-                // its signature (TS2554 + TS2345 mirror call-site
-                // checking). If the callee isn't a known class
-                // identifier (e.g. `new someExpr()`), fall back to
-                // `any`.
                 if (self.hir.kindOf(c.callee) == .identifier) {
                     const id = hir_mod.identifierOf(self.hir, c.callee);
                     if (std.mem.eql(u8, self.string_interner.get(id.name), "Symbol")) {
@@ -11694,6 +11875,19 @@ pub const Checker = struct {
                             "Cannot create an instance of an abstract class.",
                         );
                     }
+                }
+                if (try self.checkNewConstructSignatures(node, callee_t, args, arg_types.items)) |ret| {
+                    break :blk ret;
+                }
+                // `new Foo(...)` produces the instance type recorded
+                // by `checkClassDecl`. If the class declared an
+                // explicit constructor we also typecheck args against
+                // its signature (TS2554 + TS2345 mirror call-site
+                // checking). If the callee isn't a known class
+                // identifier (e.g. `new someExpr()`), fall back to
+                // `any`.
+                if (self.hir.kindOf(c.callee) == .identifier) {
+                    const id = hir_mod.identifierOf(self.hir, c.callee);
                     if (self.class_constructor_sigs.get(id.name)) |ctor_sig| {
                         var effective_ctor_sig = ctor_sig;
                         var ctor_subs: std.AutoHashMapUnmanaged(TypeId, TypeId) = .empty;
@@ -11735,55 +11929,6 @@ pub const Checker = struct {
                     if (self.isBuiltinObjectConstructor(id.name)) {
                         break :blk self.interner.internObjectType(&.{}) catch return error.OutOfMemory;
                     }
-                }
-                var construct_sigs: std.ArrayListUnmanaged(TypeId) = .empty;
-                defer construct_sigs.deinit(self.gpa);
-                try self.collectConstructSignatures(callee_t, &construct_sigs);
-                if (construct_sigs.items.len > 0) {
-                    const type_arg_nodes = hir_mod.callTypeArgs(self.hir, node);
-                    var selected_sig: TypeId = construct_sigs.items[0];
-                    var found_applicable = false;
-                    var saw_generic_record = false;
-
-                    for (construct_sigs.items) |sig| {
-                        var effective_sig = sig;
-                        if (type_arg_nodes.len > 0) {
-                            var used_explicit_type_args = false;
-                            effective_sig = try self.instantiateSignatureWithExplicitTypeArgs(node, sig, type_arg_nodes, &used_explicit_type_args);
-                            if (self.generic_signature_params.get(sig) != null) saw_generic_record = true;
-                        } else {
-                            effective_sig = try self.instantiateSignatureFromArgs(sig, args, arg_types.items);
-                        }
-
-                        if (try self.signatureAccepts(effective_sig, arg_types.items)) {
-                            selected_sig = effective_sig;
-                            found_applicable = true;
-                            break;
-                        }
-                        if (selected_sig == construct_sigs.items[0]) selected_sig = effective_sig;
-                    }
-
-                    if (type_arg_nodes.len > 0 and !saw_generic_record) {
-                        const msg = try std.fmt.allocPrint(
-                            self.diag_arena.allocator(),
-                            "Expected 0 type arguments, but got {d}.",
-                            .{type_arg_nodes.len},
-                        );
-                        try self.diagnostics.append(self.gpa, .{
-                            .node = node,
-                            .code = TsCodes.expected_n_type_arguments,
-                            .message = msg,
-                        });
-                    }
-
-                    if (!found_applicable and construct_sigs.items.len > 1) {
-                        try self.report(node, TsCodes.no_overload_matches, "No overload matches this call.");
-                    } else {
-                        try self.checkArgsAgainstSignature(node, args, arg_types.items, selected_sig);
-                    }
-
-                    if (self.interner.signatureReturn(selected_sig)) |ret| break :blk ret;
-                    break :blk types.Primitive.any;
                 }
                 if (self.strict_flags.no_implicit_any and self.interner.isSignature(callee_t)) {
                     try self.report(node, TsCodes.new_expression_implicitly_any, "'new' expression, whose target lacks a construct signature, implicitly has an 'any' type.");
@@ -11837,6 +11982,9 @@ pub const Checker = struct {
                 for (args) |arg| {
                     const t = try self.checkExpression(arg);
                     try arg_types.append(self.gpa, t);
+                }
+                if (self.hir.kindOf(c.callee) == .member_access) {
+                    try self.checkMethodThisCompatibility(node, c.callee, callee_t);
                 }
                 if (self.isDynamicImportCallee(c.callee)) {
                     if (args.len == 0) {
@@ -13713,6 +13861,63 @@ pub const Checker = struct {
         }
     }
 
+    fn checkNewConstructSignatures(
+        self: *Checker,
+        node: NodeId,
+        callee_t: TypeId,
+        args: []const NodeId,
+        arg_types: []const TypeId,
+    ) CheckError!?TypeId {
+        var construct_sigs: std.ArrayListUnmanaged(TypeId) = .empty;
+        defer construct_sigs.deinit(self.gpa);
+        try self.collectConstructSignatures(callee_t, &construct_sigs);
+        if (construct_sigs.items.len == 0) return null;
+
+        const type_arg_nodes = hir_mod.callTypeArgs(self.hir, node);
+        var selected_sig: TypeId = construct_sigs.items[0];
+        var found_applicable = false;
+        var saw_generic_record = false;
+
+        for (construct_sigs.items) |sig| {
+            var effective_sig = sig;
+            if (type_arg_nodes.len > 0) {
+                var used_explicit_type_args = false;
+                effective_sig = try self.instantiateSignatureWithExplicitTypeArgs(node, sig, type_arg_nodes, &used_explicit_type_args);
+                if (self.generic_signature_params.get(sig) != null) saw_generic_record = true;
+            } else {
+                effective_sig = try self.instantiateSignatureFromArgs(sig, args, arg_types);
+            }
+
+            if (try self.signatureAccepts(effective_sig, arg_types)) {
+                selected_sig = effective_sig;
+                found_applicable = true;
+                break;
+            }
+            if (selected_sig == construct_sigs.items[0]) selected_sig = effective_sig;
+        }
+
+        if (type_arg_nodes.len > 0 and !saw_generic_record) {
+            const msg = try std.fmt.allocPrint(
+                self.diag_arena.allocator(),
+                "Expected 0 type arguments, but got {d}.",
+                .{type_arg_nodes.len},
+            );
+            try self.diagnostics.append(self.gpa, .{
+                .node = node,
+                .code = TsCodes.expected_n_type_arguments,
+                .message = msg,
+            });
+        }
+
+        if (!found_applicable and construct_sigs.items.len > 1) {
+            try self.report(node, TsCodes.no_overload_matches, "No overload matches this call.");
+        } else {
+            try self.checkArgsAgainstSignature(node, args, arg_types, selected_sig);
+        }
+
+        return self.interner.signatureReturn(selected_sig) orelse types.Primitive.any;
+    }
+
     fn collectCallSignatures(
         self: *Checker,
         t: TypeId,
@@ -13743,6 +13948,24 @@ pub const Checker = struct {
             if (member.name == call_member_id and self.interner.isSignature(member.type)) {
                 try out.append(self.gpa, member.type);
             }
+        }
+    }
+
+    fn checkMethodThisCompatibility(self: *Checker, call_node: NodeId, callee: NodeId, callee_t: TypeId) CheckError!void {
+        if (self.hir.kindOf(callee) != .member_access) return;
+        const m = hir_mod.memberOf(self.hir, callee);
+        const receiver_t = try self.checkExpression(m.object);
+        var call_sigs: std.ArrayListUnmanaged(TypeId) = .empty;
+        defer call_sigs.deinit(self.gpa);
+        try self.collectCallSignatures(callee_t, &call_sigs);
+        var saw_this_param = false;
+        for (call_sigs.items) |sig| {
+            const this_t = self.signature_this_params.get(sig) orelse continue;
+            saw_this_param = true;
+            if (self.engine.isAssignableTo(receiver_t, this_t) catch false) return;
+        }
+        if (saw_this_param) {
+            try self.report(call_node, TsCodes.argument_type_mismatch, "The 'this' context is not assignable to method's 'this' type.");
         }
     }
 
@@ -19420,6 +19643,24 @@ test "checker: unresolved identifier emits TS2304" {
     try T.expect(found);
 }
 
+test "checker: function signature cannot see local body type declarations" {
+    const s = try newSetup(
+        \\function outer() {
+        \\  function f(x: T): T {
+        \\    interface T {}
+        \\    return undefined;
+        \\  }
+        \\}
+    );
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+    var found = false;
+    for (s.checker.diagnostics.items) |d| {
+        if (d.code == TsCodes.cannot_find_name or d.code == TsCodes.cannot_find_name_did_you_mean) found = true;
+    }
+    try T.expect(found);
+}
+
 test "checker: parameter defaults and computed binding keys resolve names" {
     const b = try newBoundSetup(
         \\const { [missingKey]: x } = {};
@@ -20004,6 +20245,45 @@ test "checker: new Foo() yields the class instance type" {
     const v = hir_mod.varDeclOf(&s.hir, decl);
     try T.expectEqual(hir_mod.NodeKind.new_expr, s.hir.kindOf(v.init));
     try T.expectEqual(class_t, s.hir.typeOf(v.init));
+}
+
+test "checker: returned local class values keep their own construct signature" {
+    const s = try newSetup(
+        \\function f1() {
+        \\  function make() {
+        \\    class C { constructor(public y: number) {} }
+        \\    return C;
+        \\  }
+        \\  let C = make();
+        \\  let v = new C(20);
+        \\  let y = v.y;
+        \\}
+        \\function f2() {
+        \\  function make(x: number, y: number) {
+        \\    class C { public x = x; public y = y; }
+        \\    return C;
+        \\  }
+        \\  let C = make(10, 20);
+        \\  let v = new C();
+        \\  let x = v.x;
+        \\  let y = v.y;
+        \\}
+    );
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+    try T.expectEqual(@as(usize, 0), s.checker.diagnostics.items.len);
+}
+
+test "checker: anonymous generic calls and generic class construction accept explicit type args" {
+    const s = try newSetup(
+        \\let y = (function <D>() {
+        \\  class Y<E> {}
+        \\  return new Y<string>();
+        \\})<Date>();
+    );
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+    try T.expectEqual(@as(usize, 0), s.checker.diagnostics.items.len);
 }
 
 test "checker: parameter typed as a declared class resolves member access" {
@@ -22642,6 +22922,23 @@ test "checker: explicit this parameter is not a call argument" {
     for (s.checker.diagnostics.items) |d| {
         try T.expect(d.code != TsCodes.expected_n_arguments);
     }
+}
+
+test "checker: union receiver method checks explicit this parameter" {
+    const s = try newSetup(
+        \\interface Real { method(this: Real, n: number): void; data: string; }
+        \\interface Fake { method(this: Fake, n: number): void; data: number; }
+        \\function test(r: Real | Fake) {
+        \\  r.method(12);
+        \\}
+    );
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+    var found = false;
+    for (s.checker.diagnostics.items) |d| {
+        if (d.code == TsCodes.argument_type_mismatch) found = true;
+    }
+    try T.expect(found);
 }
 
 test "checker: declared Array interface augments array member access" {
