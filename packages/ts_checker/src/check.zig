@@ -9608,6 +9608,15 @@ pub const Checker = struct {
         return try self.lowererLowerWithTypeParams(type_annotation);
     }
 
+    fn reportInvalidUppercasePrimitiveTypeRef(self: *Checker, type_node: NodeId, name: hir_mod.StringId) CheckError!bool {
+        const raw = self.string_interner.get(name);
+        if (std.mem.eql(u8, raw, "Null") or std.mem.eql(u8, raw, "Undefined")) {
+            try self.reportCannotFindName(type_node, name);
+            return true;
+        }
+        return false;
+    }
+
     fn genericAliasHasMissingRequiredArgs(self: *Checker, info: GenericAliasInfo, supplied: usize) bool {
         if (supplied >= info.params.len) return false;
         for (info.params[supplied..]) |p| {
@@ -9816,6 +9825,7 @@ pub const Checker = struct {
                 if (self.lookupNarrow(id.name)) |t| return t;
                 if (try self.resolveForwardClassInstanceType(type_node, id.name)) |t| return t;
                 if (self.type_names.get(id.name)) |t| return t;
+                if (try self.reportInvalidUppercasePrimitiveTypeRef(type_node, id.name)) return types.Primitive.any;
             },
             .literal_number => {
                 const value = self.literalNumberWithSourceSign(type_node);
@@ -9940,6 +9950,7 @@ pub const Checker = struct {
                     if (try self.resolveUnqualifiedNamespaceTypeRef(type_node, r.name)) |t| return t;
                     if (try self.resolveForwardClassInstanceType(type_node, r.name)) |t| return t;
                     if (self.type_names.get(r.name)) |t| return t;
+                    if (try self.reportInvalidUppercasePrimitiveTypeRef(type_node, r.name)) return types.Primitive.any;
                 }
                 // `Alias<X, Y>` — instantiate the generic alias by
                 // substituting each declared parameter with the
@@ -12247,6 +12258,7 @@ pub const Checker = struct {
                 {
                     break :blk true;
                 }
+                if (try self.awaitedExpressionAssignableToTarget(v.init, init_type, declared_type)) break :blk true;
                 if (try self.literalExpressionAssignableToTarget(v.init, declared_type)) break :blk true;
                 if (try self.templateExpressionAssignableToType(v.init, declared_type)) break :blk true;
                 break :blk self.engine.isAssignableTo(init_type, declared_type) catch return error.OutOfMemory;
@@ -12339,6 +12351,37 @@ pub const Checker = struct {
                 .message = msg,
             });
         }
+    }
+
+    fn expressionNodeAssignableToTarget(self: *Checker, value_node: NodeId, value_t: TypeId, target_t: TypeId) CheckError!bool {
+        if (try self.literalExpressionAssignableToTarget(value_node, target_t)) return true;
+        if (try self.templateExpressionAssignableToType(value_node, target_t)) return true;
+        if (self.hir.kindOf(value_node) == .object_literal and
+            (self.objectLiteralAssignableToTarget(value_node, value_t, target_t) catch false))
+        {
+            return true;
+        }
+        return self.engine.isAssignableTo(value_t, target_t) catch return error.OutOfMemory;
+    }
+
+    fn awaitedExpressionAssignableToTarget(self: *Checker, value_node: NodeId, value_t: TypeId, target_t: TypeId) CheckError!bool {
+        if (value_node == hir_mod.none_node_id or self.hir.kindOf(value_node) != .await_expr) return false;
+        const a = hir_mod.awaitExprOf(self.hir, value_node);
+        if (a.expr == hir_mod.none_node_id) return false;
+        const operand_t = if (self.hir.typeOf(a.expr) != types.Primitive.none)
+            self.hir.typeOf(a.expr)
+        else
+            try self.checkExpression(a.expr);
+        if (self.promiseConstructorResolvedArgumentFromExpr(a.expr)) |resolved| {
+            const resolved_t = if (self.hir.typeOf(resolved) != types.Primitive.none)
+                self.hir.typeOf(resolved)
+            else
+                try self.checkExpression(resolved);
+            if (try self.expressionNodeAssignableToTarget(resolved, resolved_t, target_t)) return true;
+        }
+        const awaited_t = self.unwrapPromise(operand_t);
+        if (awaited_t != value_t and try self.expressionNodeAssignableToTarget(a.expr, awaited_t, target_t)) return true;
+        return try self.expressionNodeAssignableToTarget(a.expr, value_t, target_t);
     }
 
     fn constInitializerType(self: *Checker, init_node: NodeId, fallback: TypeId) CheckError!TypeId {
@@ -13286,6 +13329,12 @@ pub const Checker = struct {
                 if (try self.checkNewConstructSignatures(node, callee_t, args, arg_types.items)) |ret| {
                     break :blk ret;
                 }
+                const type_arg_nodes = hir_mod.callTypeArgs(self.hir, node);
+                const callee_is_builtin = self.hir.kindOf(c.callee) == .identifier and
+                    self.isBuiltinName(hir_mod.identifierOf(self.hir, c.callee).name);
+                if (type_arg_nodes.len > 0 and !callee_is_builtin and (callee_t == types.Primitive.any or callee_t == types.Primitive.unknown)) {
+                    try self.report(node, TsCodes.untyped_function_type_args, "Untyped function calls may not accept type arguments.");
+                }
                 // `new Foo(...)` produces the instance type recorded
                 // by `checkClassDecl`. If the class declared an
                 // explicit constructor we also typecheck args against
@@ -13306,7 +13355,6 @@ pub const Checker = struct {
                         try self.checkArgsAgainstSignature(node, args, arg_types.items, effective_ctor_sig);
                     }
                     if (self.class_instance_types.get(id.name)) |inst| {
-                        const type_arg_nodes = hir_mod.callTypeArgs(self.hir, node);
                         if (type_arg_nodes.len > 0) {
                             if (self.generic_aliases.get(id.name)) |info| {
                                 var subs: std.AutoHashMapUnmanaged(TypeId, TypeId) = .empty;
@@ -13323,6 +13371,13 @@ pub const Checker = struct {
                         }
                         break :blk inst;
                     }
+                    if (std.mem.eql(u8, self.string_interner.get(id.name), "Array")) {
+                        const elem_t = if (type_arg_nodes.len > 0)
+                            self.lowererLowerWithTypeParams(type_arg_nodes[0]) catch types.Primitive.any
+                        else
+                            types.Primitive.any;
+                        break :blk self.interner.internArrayType(self.string_interner, elem_t) catch return error.OutOfMemory;
+                    }
                     if (std.mem.eql(u8, self.string_interner.get(id.name), "Map")) {
                         const entry = try self.inferMapEntryTypes(args);
                         if (entry.invalid_mixed_value_entries) {
@@ -13332,6 +13387,13 @@ pub const Checker = struct {
                     }
                     if (std.mem.eql(u8, self.string_interner.get(id.name), "Date")) {
                         break :blk self.lowerBuiltinObjectType("Date") orelse types.Primitive.any;
+                    }
+                    if (std.mem.eql(u8, self.string_interner.get(id.name), "Promise")) {
+                        const payload_t = if (try self.inferPromiseConstructorPayload(args)) |payload|
+                            payload
+                        else
+                            types.Primitive.any;
+                        break :blk try self.buildStructuralPromise(payload_t);
                     }
                     if (self.isBuiltinObjectConstructor(id.name)) {
                         break :blk self.interner.internObjectType(&.{}) catch return error.OutOfMemory;
@@ -15459,6 +15521,90 @@ pub const Checker = struct {
         }
 
         return self.interner.signatureReturn(selected_sig) orelse types.Primitive.any;
+    }
+
+    fn inferPromiseConstructorPayload(self: *Checker, args: []const NodeId) CheckError!?TypeId {
+        if (self.promiseConstructorResolvedArgument(args)) |resolved| {
+            return try self.checkExpression(resolved);
+        }
+        return null;
+    }
+
+    fn promiseConstructorResolvedArgumentFromExpr(self: *Checker, expr: NodeId) ?NodeId {
+        if (expr == hir_mod.none_node_id or self.hir.kindOf(expr) != .new_expr) return null;
+        const c = hir_mod.callOf(self.hir, expr);
+        if (self.hir.kindOf(c.callee) != .identifier) return null;
+        const id = hir_mod.identifierOf(self.hir, c.callee);
+        if (!std.mem.eql(u8, self.string_interner.get(id.name), "Promise")) return null;
+        return self.promiseConstructorResolvedArgument(hir_mod.callArgs(self.hir, expr));
+    }
+
+    fn promiseConstructorResolvedArgument(self: *Checker, args: []const NodeId) ?NodeId {
+        if (args.len == 0) return null;
+        const executor = args[0];
+        const k = self.hir.kindOf(executor);
+        if (k != .arrow_fn and k != .fn_expr and k != .fn_decl) return null;
+        const f = hir_mod.fnDeclOf(self.hir, executor);
+        const params = hir_mod.fnParams(self.hir, executor);
+        if (params.len == 0) return null;
+        const first_param = hir_mod.parameterOf(self.hir, params[0]);
+        if (first_param.name == hir_mod.none_node_id or self.hir.kindOf(first_param.name) != .identifier) return null;
+        const resolve_name = hir_mod.identifierOf(self.hir, first_param.name).name;
+        return self.firstCallArgumentNodeToIdentifier(f.body, resolve_name);
+    }
+
+    fn firstCallArgumentToIdentifier(self: *Checker, node: NodeId, callee_name: hir_mod.StringId) CheckError!?TypeId {
+        if (self.firstCallArgumentNodeToIdentifier(node, callee_name)) |arg| {
+            return try self.checkExpression(arg);
+        }
+        return null;
+    }
+
+    fn firstCallArgumentNodeToIdentifier(self: *Checker, node: NodeId, callee_name: hir_mod.StringId) ?NodeId {
+        if (node == hir_mod.none_node_id) return null;
+        switch (self.hir.kindOf(node)) {
+            .call_expr => {
+                const c = hir_mod.callOf(self.hir, node);
+                if (self.hir.kindOf(c.callee) == .identifier and
+                    hir_mod.identifierOf(self.hir, c.callee).name == callee_name)
+                {
+                    const args = hir_mod.callArgs(self.hir, node);
+                    if (args.len > 0) return args[0];
+                    return null;
+                }
+                if (self.firstCallArgumentNodeToIdentifier(c.callee, callee_name)) |arg| return arg;
+                for (hir_mod.callArgs(self.hir, node)) |arg| {
+                    if (self.firstCallArgumentNodeToIdentifier(arg, callee_name)) |found| return found;
+                }
+                return null;
+            },
+            .return_stmt => {
+                const r = hir_mod.returnOf(self.hir, node);
+                return self.firstCallArgumentNodeToIdentifier(r.value, callee_name);
+            },
+            .block_stmt => {
+                for (hir_mod.blockStmts(self.hir, node)) |stmt| {
+                    if (self.firstCallArgumentNodeToIdentifier(stmt, callee_name)) |arg| return arg;
+                }
+                return null;
+            },
+            .if_stmt => {
+                const i = hir_mod.ifOf(self.hir, node);
+                if (self.firstCallArgumentNodeToIdentifier(i.then_branch, callee_name)) |arg| return arg;
+                return self.firstCallArgumentNodeToIdentifier(i.else_branch, callee_name);
+            },
+            .logical_op => {
+                const l = hir_mod.logicalOf(self.hir, node);
+                if (self.firstCallArgumentNodeToIdentifier(l.lhs, callee_name)) |arg| return arg;
+                return self.firstCallArgumentNodeToIdentifier(l.rhs, callee_name);
+            },
+            .conditional => {
+                const c = hir_mod.conditionalOf(self.hir, node);
+                if (self.firstCallArgumentNodeToIdentifier(c.then_branch, callee_name)) |arg| return arg;
+                return self.firstCallArgumentNodeToIdentifier(c.else_branch, callee_name);
+            },
+            else => return null,
+        }
     }
 
     fn collectCallSignatures(
@@ -21814,6 +21960,7 @@ pub const Checker = struct {
     /// member of a union. `any` and `unknown` count as well, since
     /// they accept any value.
     fn typeIncludesUndefined(self: *Checker, t: TypeId) bool {
+        if (t == types.Primitive.void_t) return true;
         if (t >= self.interner.pool.typeCount()) return false;
         const f = self.interner.pool.flagsOf(t);
         if (f.is_undefined or f.is_any or f.is_unknown) return true;
@@ -28202,6 +28349,81 @@ test "checker: primitive receivers include Object prototype and interface augmen
     try s.checker.checkSourceFile(s.root);
     for (s.checker.diagnostics.items) |d| {
         try T.expect(d.code != TsCodes.property_does_not_exist);
+        try T.expect(d.code != TsCodes.type_not_assignable);
+    }
+}
+
+test "checker: uppercase Null and Undefined type references are missing names" {
+    const s = try newSetup(
+        \\var x: Null;
+        \\var y: Undefined;
+        \\var z = undefined;
+    );
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+    var missing: usize = 0;
+    for (s.checker.diagnostics.items) |d| {
+        if (d.code == TsCodes.cannot_find_name or d.code == TsCodes.cannot_find_name_did_you_mean) missing += 1;
+    }
+    try T.expect(missing >= 2);
+}
+
+test "checker: void declarations are not used-before-assigned on undefined-admitting reads" {
+    const s = try newSetup(
+        \\var x: void;
+        \\var y: any;
+        \\var z: void;
+        \\y = x;
+        \\x = y;
+        \\x = z;
+    );
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+    for (s.checker.diagnostics.items) |d| {
+        try T.expect(d.code != TsCodes.used_before_assignment);
+    }
+}
+
+test "checker: new Promise executor resolve call infers awaited payload" {
+    const s = try newSetup(
+        \\interface Obj { key: "value"; }
+        \\async function fn1(): Promise<Obj> {
+        \\  const obj1: Obj = await { key: "value" };
+        \\  const obj2: Obj = await new Promise(resolve => resolve({ key: "value" }));
+        \\  return await { key: "value" };
+        \\}
+    );
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+    for (s.checker.diagnostics.items) |d| {
+        try T.expect(d.code != TsCodes.type_not_assignable);
+        try T.expect(d.code != TsCodes.argument_type_mismatch);
+    }
+}
+
+test "checker: untyped new expression with type arguments reports TS2347" {
+    const s = try newSetup(
+        \\var x: any;
+        \\var d = new x<any>(x);
+    );
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+    var found = false;
+    for (s.checker.diagnostics.items) |d| {
+        if (d.code == TsCodes.untyped_function_type_args) found = true;
+    }
+    try T.expect(found);
+}
+
+test "checker: Array constructor accepts element type arguments" {
+    const s = try newSetup(
+        \\var y = new Array<number>();
+        \\var y2: number[] = new Array<number>();
+    );
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+    for (s.checker.diagnostics.items) |d| {
+        try T.expect(d.code != TsCodes.untyped_function_type_args);
         try T.expect(d.code != TsCodes.type_not_assignable);
     }
 }
