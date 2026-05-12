@@ -6847,7 +6847,14 @@ pub const Checker = struct {
     fn baseClassHasMember(self: *Checker, parent_t: ?TypeId, name: hir_mod.StringId) bool {
         const pt = parent_t orelse return false;
         if (pt >= self.interner.pool.typeCount()) return false;
-        if (!self.interner.pool.flagsOf(pt).is_object_type) return false;
+        const flags = self.interner.pool.flagsOf(pt);
+        if (flags.is_intersection) {
+            for (self.interner.intersectionMembers(pt)) |member| {
+                if (self.baseClassHasMember(member, name)) return true;
+            }
+            return false;
+        }
+        if (!flags.is_object_type) return false;
         return self.interner.objectMember(pt, name) != null;
     }
 
@@ -8764,27 +8771,63 @@ pub const Checker = struct {
             // Each entry is a `type_ref`; lower it through the
             // type-name table to get the parent's interned shape.
             const parent_t = self.lowererLowerWithTypeParams(ext_node) catch continue;
-            if (!self.interner.pool.flagsOf(parent_t).is_object_type) continue;
-            for (self.interner.objectMembers(parent_t)) |pm| {
-                if (child_names.contains(pm.name)) continue;
-                try inherited.append(self.gpa, pm);
-                try child_names.put(self.gpa, pm.name, {});
-            }
-            if (string_idx.* == types.Primitive.none) {
-                const pi = self.interner.objectStringIndex(parent_t);
-                if (pi != types.Primitive.none) string_idx.* = pi;
-            }
-            if (number_idx.* == types.Primitive.none) {
-                const pi = self.interner.objectNumberIndex(parent_t);
-                if (pi != types.Primitive.none) number_idx.* = pi;
-            }
-            if (symbol_idx.* == types.Primitive.none) {
-                const pi = self.interner.objectSymbolIndex(parent_t);
-                if (pi != types.Primitive.none) symbol_idx.* = pi;
-            }
+            try self.appendInheritedInterfaceMembers(parent_t, &child_names, &inherited);
+            self.inheritInterfaceIndexSignatures(parent_t, string_idx, number_idx, symbol_idx);
         }
         if (inherited.items.len > 0) {
             try child_members.insertSlice(self.gpa, 0, inherited.items);
+        }
+    }
+
+    fn appendInheritedInterfaceMembers(
+        self: *Checker,
+        parent_t: TypeId,
+        child_names: *std.AutoHashMapUnmanaged(hir_mod.StringId, void),
+        inherited: *std.ArrayListUnmanaged(types.ObjectMember),
+    ) CheckError!void {
+        if (parent_t >= self.interner.pool.typeCount()) return;
+        const flags = self.interner.pool.flagsOf(parent_t);
+        if (flags.is_intersection) {
+            for (self.interner.intersectionMembers(parent_t)) |member_t| {
+                try self.appendInheritedInterfaceMembers(member_t, child_names, inherited);
+            }
+            return;
+        }
+        if (!flags.is_object_type) return;
+        for (self.interner.objectMembers(parent_t)) |pm| {
+            if (child_names.contains(pm.name)) continue;
+            try inherited.append(self.gpa, pm);
+            try child_names.put(self.gpa, pm.name, {});
+        }
+    }
+
+    fn inheritInterfaceIndexSignatures(
+        self: *Checker,
+        parent_t: TypeId,
+        string_idx: *TypeId,
+        number_idx: *TypeId,
+        symbol_idx: *TypeId,
+    ) void {
+        if (parent_t >= self.interner.pool.typeCount()) return;
+        const flags = self.interner.pool.flagsOf(parent_t);
+        if (flags.is_intersection) {
+            for (self.interner.intersectionMembers(parent_t)) |member_t| {
+                self.inheritInterfaceIndexSignatures(member_t, string_idx, number_idx, symbol_idx);
+            }
+            return;
+        }
+        if (!flags.is_object_type) return;
+        if (string_idx.* == types.Primitive.none) {
+            const pi = self.interner.objectStringIndex(parent_t);
+            if (pi != types.Primitive.none) string_idx.* = pi;
+        }
+        if (number_idx.* == types.Primitive.none) {
+            const pi = self.interner.objectNumberIndex(parent_t);
+            if (pi != types.Primitive.none) number_idx.* = pi;
+        }
+        if (symbol_idx.* == types.Primitive.none) {
+            const pi = self.interner.objectSymbolIndex(parent_t);
+            if (pi != types.Primitive.none) symbol_idx.* = pi;
         }
     }
 
@@ -9760,6 +9803,7 @@ pub const Checker = struct {
                 if (std.mem.eql(u8, name_str, "bigint")) return types.Primitive.bigint_t;
                 if (std.mem.eql(u8, name_str, "symbol")) return types.Primitive.symbol_t;
                 if (std.mem.eql(u8, name_str, "object")) return types.Primitive.object_t;
+                if (std.mem.eql(u8, name_str, "this")) return try self.freshThisTypeParameter(id.name);
                 if (std.mem.eql(u8, name_str, "String")) {
                     return lib.stringProto(&self.lib_cache, self.interner, self.string_interner) catch types.Primitive.unknown;
                 }
@@ -9776,6 +9820,10 @@ pub const Checker = struct {
             .literal_number => {
                 const value = self.literalNumberWithSourceSign(type_node);
                 return self.interner.internNumberLiteral(value) catch return error.OutOfMemory;
+            },
+            .this_expr => {
+                const this_name = self.string_interner.intern("this") catch return error.OutOfMemory;
+                return try self.freshThisTypeParameter(this_name);
             },
             .object_type => {
                 // Member types must lower under the same narrow
@@ -9862,6 +9910,7 @@ pub const Checker = struct {
                 }
                 if (r.qualifier_len == 0 and r.args_len == 0) {
                     const name_str = self.string_interner.get(r.name);
+                    if (std.mem.eql(u8, name_str, "this")) return try self.freshThisTypeParameter(r.name);
                     if (std.mem.eql(u8, name_str, "String")) {
                         return lib.stringProto(&self.lib_cache, self.interner, self.string_interner) catch types.Primitive.unknown;
                     }
@@ -12597,6 +12646,16 @@ pub const Checker = struct {
         return std.mem.eql(u8, self.string_interner.get(name), "this");
     }
 
+    fn freshThisTypeParameter(self: *Checker, name: hir_mod.StringId) CheckError!TypeId {
+        return self.interner.internFreshTypeParameterWithFlags(
+            name,
+            types.Primitive.unknown,
+            types.Primitive.none,
+            .bivariant,
+            false,
+        ) catch return error.OutOfMemory;
+    }
+
     fn typeContainsUnknown(self: *Checker, t: TypeId) bool {
         if (t == types.Primitive.unknown) return true;
         if (t < types.Primitive.first_dynamic) return false;
@@ -13525,13 +13584,20 @@ pub const Checker = struct {
                         // skip argument-driven inference (it's
                         // redundant and the substituted return is
                         // canonical).
-                        if (used_explicit_type_args) break :blk try self.optionalChainResult(ret, call_is_optional_chain);
+                        if (used_explicit_type_args) {
+                            const this_ret = try self.instantiateMemberThisReturn(c.callee, ret);
+                            break :blk try self.optionalChainResult(this_ret, call_is_optional_chain);
+                        }
                         const param_ts = self.interner.signatureParams(effective_callee_t);
-                        const instantiated = self.instantiateReturn(param_ts, arg_types.items, ret) catch ret;
+                        var instantiated = self.instantiateReturn(param_ts, arg_types.items, ret) catch ret;
+                        instantiated = try self.instantiateMemberThisReturn(c.callee, instantiated);
                         break :blk try self.optionalChainResult(instantiated, call_is_optional_chain);
                     }
                 }
-                if (self.interner.signatureReturn(effective_callee_t)) |ret| break :blk try self.optionalChainResult(ret, call_is_optional_chain);
+                if (self.interner.signatureReturn(effective_callee_t)) |ret| {
+                    const this_ret = try self.instantiateMemberThisReturn(c.callee, ret);
+                    break :blk try self.optionalChainResult(this_ret, call_is_optional_chain);
+                }
                 if (callee_t != types.Primitive.any and callee_t != types.Primitive.unknown) {
                     try self.report(c.callee, TsCodes.not_callable, "This expression is not callable.");
                 }
@@ -15455,12 +15521,14 @@ pub const Checker = struct {
                 try self.checkArgsAgainstSignature(call_node, args, arg_types, sig);
                 const ret = self.interner.signatureReturn(sig) orelse types.Primitive.any;
                 const param_ts = self.interner.signatureParams(sig);
-                const instantiated = self.instantiateReturn(param_ts, arg_types, ret) catch ret;
+                var instantiated = self.instantiateReturn(param_ts, arg_types, ret) catch ret;
+                instantiated = try self.instantiateMemberThisReturn(callee, instantiated);
                 return try self.optionalChainResult(instantiated, call_is_optional_chain);
             }
         }
         try self.report(call_node, TsCodes.no_overload_matches, "No overload matches this call.");
-        const ret = self.interner.signatureReturn(sigs.items[0]) orelse types.Primitive.any;
+        var ret = self.interner.signatureReturn(sigs.items[0]) orelse types.Primitive.any;
+        ret = try self.instantiateMemberThisReturn(callee, ret);
         return try self.optionalChainResult(ret, call_is_optional_chain);
     }
 
@@ -19474,6 +19542,7 @@ pub const Checker = struct {
         const flags = self.interner.pool.flagsOf(t);
         const payload_idx = self.interner.pool.payloadOf(t);
         if (flags.is_type_parameter) {
+            if (self.isThisTypeParameter(t)) return;
             if (!subs.contains(t)) try subs.put(self.gpa, t, types.Primitive.unknown);
             return;
         }
@@ -19805,6 +19874,108 @@ pub const Checker = struct {
             ) catch return t;
         }
         return t;
+    }
+
+    fn substituteThisTypeParametersInReturn(self: *Checker, ret: TypeId, receiver_t: TypeId) CheckError!TypeId {
+        if (ret >= self.interner.pool.typeCount()) return ret;
+        var subs: std.AutoHashMapUnmanaged(TypeId, TypeId) = .empty;
+        defer subs.deinit(self.gpa);
+        var visited: std.AutoHashMapUnmanaged(TypeId, void) = .empty;
+        defer visited.deinit(self.gpa);
+        try self.collectThisTypeParameterSubs(ret, receiver_t, &subs, &visited);
+        if (subs.count() == 0) return ret;
+        return self.substituteType(ret, &subs) catch ret;
+    }
+
+    fn collectThisTypeParameterSubs(
+        self: *Checker,
+        t: TypeId,
+        receiver_t: TypeId,
+        subs: *std.AutoHashMapUnmanaged(TypeId, TypeId),
+        visited: *std.AutoHashMapUnmanaged(TypeId, void),
+    ) CheckError!void {
+        if (t >= self.interner.pool.typeCount()) return;
+        if (visited.contains(t)) return;
+        try visited.put(self.gpa, t, {});
+        if (self.isThisTypeParameter(t)) {
+            try subs.put(self.gpa, t, receiver_t);
+            return;
+        }
+        const flags = self.interner.pool.flagsOf(t);
+        if (flags.is_union) {
+            for (self.interner.unionMembers(t)) |m| try self.collectThisTypeParameterSubs(m, receiver_t, subs, visited);
+            return;
+        }
+        if (flags.is_intersection) {
+            for (self.interner.intersectionMembers(t)) |m| try self.collectThisTypeParameterSubs(m, receiver_t, subs, visited);
+            return;
+        }
+        if (flags.is_object_type) {
+            for (self.interner.objectMembers(t)) |m| try self.collectThisTypeParameterSubs(m.type, receiver_t, subs, visited);
+            const str_idx = self.interner.objectStringIndex(t);
+            if (str_idx != types.Primitive.none) try self.collectThisTypeParameterSubs(str_idx, receiver_t, subs, visited);
+            const num_idx = self.interner.objectNumberIndex(t);
+            if (num_idx != types.Primitive.none) try self.collectThisTypeParameterSubs(num_idx, receiver_t, subs, visited);
+            const sym_idx = self.interner.objectSymbolIndex(t);
+            if (sym_idx != types.Primitive.none) try self.collectThisTypeParameterSubs(sym_idx, receiver_t, subs, visited);
+            return;
+        }
+        if (flags.is_signature) {
+            for (self.interner.signatureParams(t)) |p| try self.collectThisTypeParameterSubs(p, receiver_t, subs, visited);
+            if (self.interner.signatureReturn(t)) |r| try self.collectThisTypeParameterSubs(r, receiver_t, subs, visited);
+            return;
+        }
+        if (flags.is_conditional) {
+            const c = self.interner.conditionalPayload(t);
+            try self.collectThisTypeParameterSubs(c.check_type, receiver_t, subs, visited);
+            try self.collectThisTypeParameterSubs(c.extends_type, receiver_t, subs, visited);
+            try self.collectThisTypeParameterSubs(c.true_branch, receiver_t, subs, visited);
+            try self.collectThisTypeParameterSubs(c.false_branch, receiver_t, subs, visited);
+            return;
+        }
+        if (flags.is_keyof) {
+            const k = self.interner.pool.keyof_payloads.items[self.interner.pool.payloadOf(t)];
+            try self.collectThisTypeParameterSubs(k.operand, receiver_t, subs, visited);
+            return;
+        }
+        if (flags.is_indexed_access) {
+            const ia = self.interner.pool.indexed_access_payloads.items[self.interner.pool.payloadOf(t)];
+            try self.collectThisTypeParameterSubs(ia.object, receiver_t, subs, visited);
+            try self.collectThisTypeParameterSubs(ia.index, receiver_t, subs, visited);
+            return;
+        }
+        if (flags.is_template_literal) {
+            for (self.interner.templateLiteralTypes(t)) |part| try self.collectThisTypeParameterSubs(part, receiver_t, subs, visited);
+            return;
+        }
+        if (flags.is_string_mapping) {
+            const sm = self.interner.stringMappingPayload(t);
+            try self.collectThisTypeParameterSubs(sm.inner, receiver_t, subs, visited);
+            return;
+        }
+        if (flags.is_type_parameter) {
+            const payload_idx = self.interner.pool.payloadOf(t);
+            if (payload_idx >= self.interner.pool.type_parameter_payloads.items.len) return;
+            const tp = self.interner.pool.type_parameter_payloads.items[payload_idx];
+            if (tp.constraint != types.Primitive.none) try self.collectThisTypeParameterSubs(tp.constraint, receiver_t, subs, visited);
+            if (tp.default != types.Primitive.none) try self.collectThisTypeParameterSubs(tp.default, receiver_t, subs, visited);
+        }
+    }
+
+    fn memberCallReceiverType(self: *Checker, callee: NodeId) CheckError!?TypeId {
+        if (self.hir.kindOf(callee) != .member_access) return null;
+        const m = hir_mod.memberOf(self.hir, callee);
+        var receiver_t = self.hir.typeOf(m.object);
+        if (receiver_t == types.Primitive.none) receiver_t = try self.checkExpression(m.object);
+        if (m.optional or self.expressionIsOptionalChain(m.object)) {
+            receiver_t = self.subtractNullUndefined(receiver_t) catch receiver_t;
+        }
+        return receiver_t;
+    }
+
+    fn instantiateMemberThisReturn(self: *Checker, callee: NodeId, ret: TypeId) CheckError!TypeId {
+        const receiver_t = (try self.memberCallReceiverType(callee)) orelse return ret;
+        return try self.substituteThisTypeParametersInReturn(ret, receiver_t);
     }
 
     /// Shared arg / signature checker used by both `call_expr` and
@@ -27838,6 +28009,38 @@ test "checker: distributive conditional filters intersection union members by op
     defer destroySetup(s);
     try s.checker.checkSourceFile(s.root);
     for (s.checker.diagnostics.items) |d| {
+        try T.expect(d.code != TsCodes.property_does_not_exist);
+    }
+}
+
+test "checker: member calls substitute this return type through intersections" {
+    const source =
+        \\interface Thing1 { a: number; self(): this; }
+        \\interface Thing2 { b: number; me(): this; }
+        \\type Thing3 = Thing1 & Thing2;
+        \\type Thing4 = Thing3 & string[];
+        \\interface Thing5 extends Thing4 { c: string; }
+        \\interface Component { extend<T>(props: T): this & T; }
+        \\interface Label extends Component { title: string; }
+        \\function f1(t: Thing3) {
+        \\  t = t.self();
+        \\  t = t.me().self().me();
+        \\}
+        \\function f2(t: Thing5) {
+        \\  t = t.self();
+        \\  t = t.me().self().me();
+        \\}
+        \\function test(label: Label) {
+        \\  const extended = label.extend({ id: 67 }).extend({ tag: "hello" });
+        \\  extended.id;
+        \\  extended.tag;
+        \\}
+    ;
+    const s = try newSetup(source);
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+    for (s.checker.diagnostics.items) |d| {
+        try T.expect(d.code != TsCodes.type_not_assignable);
         try T.expect(d.code != TsCodes.property_does_not_exist);
     }
 }
