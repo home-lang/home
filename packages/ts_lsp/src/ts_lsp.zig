@@ -1857,6 +1857,8 @@ pub const Service = struct {
         // parameter list. Skips trivial inferences (any / unknown /
         // none / void) so the suggestion only fires when it adds
         // real type information.
+        var return_type_edits: std.ArrayListUnmanaged(TextEdit) = .empty;
+        defer return_type_edits.deinit(gpa);
         for (stmts) |s| {
             if (c.hir.kindOf(s) != .fn_decl) continue;
             const fn_payload = hir_mod.fnDeclOf(&c.hir, s);
@@ -1903,8 +1905,7 @@ pub const Service = struct {
             const ins_pos = ts_diagnostics.positionToLineCol(f.source, ins_byte);
             const ln: u32 = if (ins_pos.line > 0) ins_pos.line - 1 else 0;
             const co: u32 = if (ins_pos.col > 0) ins_pos.col - 1 else 0;
-            var edits = try gpa.alloc(TextEdit, 1);
-            edits[0] = .{
+            const edit: TextEdit = .{
                 .file = f.path,
                 .start_line = ln,
                 .start_col = co,
@@ -1912,10 +1913,43 @@ pub const Service = struct {
                 .end_col = co,
                 .new_text = new_text,
             };
+            var edits = try gpa.alloc(TextEdit, 1);
+            edits[0] = edit;
             try actions.append(gpa, .{
                 .title = title,
                 .kind = .quick_fix,
                 .edits = edits,
+            });
+            // Track the same edit (no copy yet) so the fix-all
+            // aggregate can decide whether to emit. We dupe only when
+            // emitting so single-fix runs don't leak the duplicate.
+            try return_type_edits.append(gpa, edit);
+        }
+        // Fix-all aggregate: when at least two functions are missing a
+        // return type, bundle every per-fn insertion into one action
+        // so editors with "fix all in file" support can apply them in
+        // a single round-trip. The per-action and aggregate edits each
+        // own their `new_text`, so the cleanup loop can free both
+        // independently without a double-free.
+        if (return_type_edits.items.len >= 2) {
+            const agg_title = try gpa.dupe(u8, "Fix all: add missing return types");
+            errdefer gpa.free(agg_title);
+            const agg_edits = try gpa.alloc(TextEdit, return_type_edits.items.len);
+            errdefer gpa.free(agg_edits);
+            for (return_type_edits.items, 0..) |e, idx| {
+                agg_edits[idx] = .{
+                    .file = e.file,
+                    .start_line = e.start_line,
+                    .start_col = e.start_col,
+                    .end_line = e.end_line,
+                    .end_col = e.end_col,
+                    .new_text = try gpa.dupe(u8, e.new_text),
+                };
+            }
+            try actions.append(gpa, .{
+                .title = agg_title,
+                .kind = .fix_all,
+                .edits = agg_edits,
             });
         }
 
@@ -6852,6 +6886,71 @@ test "Service: codeActions skips add-return-type when annotation already present
     }
     for (actions) |a| {
         try T.expect(!std.mem.startsWith(u8, a.title, "Add return type to "));
+    }
+}
+
+test "Service: codeActions emits fix-all aggregate when ≥2 fns lack return types" {
+    var vfs = ts_resolver.VirtualFs.init(T.allocator);
+    defer vfs.deinit();
+    var resolver = ts_resolver.Resolver.init(T.allocator, vfs.fs(), .{});
+    defer resolver.deinit();
+    var program = ts_program.Program.init(T.allocator, &resolver);
+    defer program.deinit();
+
+    _ = try program.add(
+        "/main.ts",
+        "function add(a: number, b: number) { return a + b; }\n" ++
+            "function mul(a: number, b: number) { return a * b; }",
+    );
+    try program.compileAll(.{});
+
+    var svc = Service.init(T.allocator, &program);
+    const actions = try svc.codeActions(T.allocator, "/main.ts");
+    defer {
+        for (actions) |a| {
+            T.allocator.free(a.title);
+            for (a.edits) |e| T.allocator.free(e.new_text);
+            T.allocator.free(a.edits);
+        }
+        T.allocator.free(actions);
+    }
+    var per_fn: u32 = 0;
+    var fix_all: ?CodeAction = null;
+    for (actions) |a| {
+        if (a.kind == .fix_all and std.mem.eql(u8, a.title, "Fix all: add missing return types")) {
+            fix_all = a;
+        } else if (std.mem.startsWith(u8, a.title, "Add return type to ")) {
+            per_fn += 1;
+        }
+    }
+    try T.expectEqual(@as(u32, 2), per_fn);
+    try T.expect(fix_all != null);
+    try T.expectEqual(@as(usize, 2), fix_all.?.edits.len);
+}
+
+test "Service: codeActions omits fix-all when only one fn needs a return type" {
+    var vfs = ts_resolver.VirtualFs.init(T.allocator);
+    defer vfs.deinit();
+    var resolver = ts_resolver.Resolver.init(T.allocator, vfs.fs(), .{});
+    defer resolver.deinit();
+    var program = ts_program.Program.init(T.allocator, &resolver);
+    defer program.deinit();
+
+    _ = try program.add("/main.ts", "function add(a: number, b: number) { return a + b; }");
+    try program.compileAll(.{});
+
+    var svc = Service.init(T.allocator, &program);
+    const actions = try svc.codeActions(T.allocator, "/main.ts");
+    defer {
+        for (actions) |a| {
+            T.allocator.free(a.title);
+            for (a.edits) |e| T.allocator.free(e.new_text);
+            T.allocator.free(a.edits);
+        }
+        T.allocator.free(actions);
+    }
+    for (actions) |a| {
+        try T.expect(a.kind != .fix_all);
     }
 }
 
