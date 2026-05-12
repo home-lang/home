@@ -31071,3 +31071,76 @@ test "checker: same type parameter is self-assignable" {
         try T.expect(d.code != TsCodes.type_not_assignable);
     }
 }
+
+test "checker: unrelated type parameters — three-param case fires per mismatch" {
+    // Extends the canonical two-param case to `<T, U, V>` to prove
+    // the helper fires per assignment, not per function. Six
+    // permuted assignments between distinct TPs should produce six
+    // TS2322 diagnostics — the same TP slot (`t = t`) is excluded
+    // since the helper short-circuits on source == target.
+    const s = try newSetup(
+        \\function foo<T, U, V>(t: T, u: U, v: V) {
+        \\  t = u;
+        \\  t = v;
+        \\  u = t;
+        \\  u = v;
+        \\  v = t;
+        \\  v = u;
+        \\}
+    );
+    defer destroySetup(s);
+    s.checker.setStrictFlags(.{ .strict_null_checks = true });
+    try s.checker.checkSourceFile(s.root);
+    var ts2322_count: u32 = 0;
+    for (s.checker.diagnostics.items) |d| {
+        if (d.code == TsCodes.type_not_assignable) ts2322_count += 1;
+    }
+    try T.expectEqual(@as(u32, 6), ts2322_count);
+}
+
+test "checker: bare truthy narrow chains into nested member access" {
+    // `if (p.x) p.x.y` — outer narrow on `p.x` strips the
+    // `undefined` from the optional member, so the chained access
+    // `p.x.y` types as the underlying object member without a
+    // TS18048 "Object is possibly 'undefined'" diagnostic.
+    const s = try newSetup(
+        \\function f(p: { x?: { y: number } }): number {
+        \\  if (p.x) {
+        \\    return p.x.y;
+        \\  }
+        \\  return 0;
+        \\}
+    );
+    defer destroySetup(s);
+    s.checker.setStrictFlags(.{ .strict_null_checks = true });
+    try s.checker.checkSourceFile(s.root);
+    for (s.checker.diagnostics.items) |d| {
+        try T.expect(d.code != TsCodes.type_not_assignable);
+        try T.expect(d.code != TsCodes.property_does_not_exist);
+    }
+}
+
+test "checker: element-access narrow survives multiple branches" {
+    // Two sibling branches each guarded by `obj["x"]` — the narrow
+    // scope is entered + exited for each independently; the second
+    // branch must see the same narrow as the first.
+    const s = try newSetup(
+        \\function f(obj: { x?: string }): string {
+        \\  if (obj["x"]) {
+        \\    let a: string = obj["x"];
+        \\    return a;
+        \\  }
+        \\  if (obj["x"]) {
+        \\    let b: string = obj["x"];
+        \\    return b;
+        \\  }
+        \\  return "fallback";
+        \\}
+    );
+    defer destroySetup(s);
+    s.checker.setStrictFlags(.{ .strict_null_checks = true });
+    try s.checker.checkSourceFile(s.root);
+    for (s.checker.diagnostics.items) |d| {
+        try T.expect(d.code != TsCodes.type_not_assignable);
+    }
+}

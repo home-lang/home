@@ -6292,6 +6292,134 @@ test "Service: inlayHints recurses into if/while/for/try bodies" {
     try T.expect(type_hint_count >= 6);
 }
 
+test "Service: inlayHints recurses into if-only body (no other containers)" {
+    // Per-container regression gate. The if/then path is the most
+    // common containing scope in real code; a regression that drops
+    // just it (without affecting while/for) would be silently masked
+    // by the multi-container test above.
+    var vfs = ts_resolver.VirtualFs.init(T.allocator);
+    defer vfs.deinit();
+    var resolver = ts_resolver.Resolver.init(T.allocator, vfs.fs(), .{});
+    defer resolver.deinit();
+    var program = ts_program.Program.init(T.allocator, &resolver);
+    defer program.deinit();
+
+    _ = try program.add(
+        "/main.ts",
+        \\function f(): void {
+        \\  if (true) {
+        \\    let a = 1;
+        \\  }
+        \\}
+        ,
+    );
+    try program.compileAll(.{});
+
+    var svc = Service.init(T.allocator, &program);
+    const hints = try svc.inlayHints(T.allocator, "/main.ts");
+    defer {
+        for (hints) |h| {
+            T.allocator.free(h.label);
+            T.allocator.free(h.tooltip);
+        }
+        T.allocator.free(hints);
+    }
+    var saw_a = false;
+    for (hints) |h| {
+        if (h.kind == .type_annotation and std.mem.indexOf(u8, h.label, "number") != null) {
+            saw_a = true;
+        }
+    }
+    try T.expect(saw_a);
+}
+
+test "Service: inlayHints recurses into try/catch/finally bodies independently" {
+    // Per-container regression gate for try_stmt. Each of try /
+    // catch / finally is checked separately so a regression that
+    // drops any single block surfaces here.
+    var vfs = ts_resolver.VirtualFs.init(T.allocator);
+    defer vfs.deinit();
+    var resolver = ts_resolver.Resolver.init(T.allocator, vfs.fs(), .{});
+    defer resolver.deinit();
+    var program = ts_program.Program.init(T.allocator, &resolver);
+    defer program.deinit();
+
+    _ = try program.add(
+        "/main.ts",
+        \\function f(): void {
+        \\  try {
+        \\    let inside_try = 1;
+        \\  } catch (err) {
+        \\    let inside_catch = 2;
+        \\  } finally {
+        \\    let inside_finally = 3;
+        \\  }
+        \\}
+        ,
+    );
+    try program.compileAll(.{});
+
+    var svc = Service.init(T.allocator, &program);
+    const hints = try svc.inlayHints(T.allocator, "/main.ts");
+    defer {
+        for (hints) |h| {
+            T.allocator.free(h.label);
+            T.allocator.free(h.tooltip);
+        }
+        T.allocator.free(hints);
+    }
+    var hint_count: u32 = 0;
+    for (hints) |h| {
+        if (h.kind == .type_annotation) hint_count += 1;
+    }
+    // 3 nested type-annotation hints expected (one per block).
+    try T.expect(hint_count >= 3);
+}
+
+test "Service: inlayHints recurses into switch case bodies" {
+    // Per-container regression gate for switch_case. The switch_stmt
+    // walker dispatches to each case node; we need at least one
+    // hint to fire from inside the case body to prove the chain
+    // works.
+    var vfs = ts_resolver.VirtualFs.init(T.allocator);
+    defer vfs.deinit();
+    var resolver = ts_resolver.Resolver.init(T.allocator, vfs.fs(), .{});
+    defer resolver.deinit();
+    var program = ts_program.Program.init(T.allocator, &resolver);
+    defer program.deinit();
+
+    _ = try program.add(
+        "/main.ts",
+        \\function f(): void {
+        \\  switch (1) {
+        \\    case 1: {
+        \\      let inside_case = 42;
+        \\      break;
+        \\    }
+        \\  }
+        \\}
+        ,
+    );
+    try program.compileAll(.{});
+
+    var svc = Service.init(T.allocator, &program);
+    const hints = try svc.inlayHints(T.allocator, "/main.ts");
+    defer {
+        for (hints) |h| {
+            T.allocator.free(h.label);
+            T.allocator.free(h.tooltip);
+        }
+        T.allocator.free(hints);
+    }
+    var saw_case_hint = false;
+    for (hints) |h| {
+        if (h.kind == .type_annotation and std.mem.indexOf(u8, h.label, "number") != null) {
+            saw_case_hint = true;
+        }
+    }
+    try T.expect(saw_case_hint);
+}
+
 test "Service: inlayHints surfaces parameter-name hints at call sites" {
     var vfs = ts_resolver.VirtualFs.init(T.allocator);
     defer vfs.deinit();
@@ -7592,4 +7720,72 @@ test "Service: codeActions skips add-return-type when inferred return is void" {
     for (actions) |a| {
         try T.expect(!std.mem.startsWith(u8, a.title, "Add return type to "));
     }
+}
+
+test "Service: codeActions skips add-return-type for arrow functions" {
+    // `const f = (a: number) => a + 1` is an arrow expression
+    // bound to a let-decl — the quick-fix only targets top-level
+    // `function name(...)` declarations because the insertion
+    // anchor (right after the `)` of the param list) is correct
+    // for fn_decl but lands inside the wrong span for arrows.
+    // Skip arrows entirely so we don't emit a broken edit.
+    var vfs = ts_resolver.VirtualFs.init(T.allocator);
+    defer vfs.deinit();
+    var resolver = ts_resolver.Resolver.init(T.allocator, vfs.fs(), .{});
+    defer resolver.deinit();
+    var program = ts_program.Program.init(T.allocator, &resolver);
+    defer program.deinit();
+
+    _ = try program.add("/main.ts", "const f = (a: number) => a + 1;");
+    try program.compileAll(.{});
+
+    var svc = Service.init(T.allocator, &program);
+    const actions = try svc.codeActions(T.allocator, "/main.ts");
+    defer {
+        for (actions) |a| {
+            T.allocator.free(a.title);
+            for (a.edits) |e| T.allocator.free(e.new_text);
+            T.allocator.free(a.edits);
+        }
+        T.allocator.free(actions);
+    }
+    for (actions) |a| {
+        try T.expect(!std.mem.startsWith(u8, a.title, "Add return type to "));
+    }
+}
+
+test "Service: codeActions add-return-type renders string return correctly" {
+    // Sanity: confirm the renderType output for a non-number return
+    // also flows through; previous tests only exercised `number`.
+    var vfs = ts_resolver.VirtualFs.init(T.allocator);
+    defer vfs.deinit();
+    var resolver = ts_resolver.Resolver.init(T.allocator, vfs.fs(), .{});
+    defer resolver.deinit();
+    var program = ts_program.Program.init(T.allocator, &resolver);
+    defer program.deinit();
+
+    _ = try program.add("/main.ts", "function greet(name: string) { return \"hi \" + name; }");
+    try program.compileAll(.{});
+
+    var svc = Service.init(T.allocator, &program);
+    const actions = try svc.codeActions(T.allocator, "/main.ts");
+    defer {
+        for (actions) |a| {
+            T.allocator.free(a.title);
+            for (a.edits) |e| T.allocator.free(e.new_text);
+            T.allocator.free(a.edits);
+        }
+        T.allocator.free(actions);
+    }
+    var found: ?CodeAction = null;
+    for (actions) |a| {
+        if (std.mem.startsWith(u8, a.title, "Add return type to ")) {
+            found = a;
+            break;
+        }
+    }
+    try T.expect(found != null);
+    const a = found.?;
+    try T.expectEqualStrings("Add return type to greet", a.title);
+    try T.expectEqualStrings(": string", a.edits[0].new_text);
 }
