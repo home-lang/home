@@ -3736,7 +3736,9 @@ fn classifyNodeForSemantic(hir: *const hir_mod.Hir, node: hir_mod.NodeId) ?Seman
             switch (pk) {
                 .fn_decl, .fn_expr => {
                     const f = hir_mod.fnDeclOf(hir, p);
-                    if (f.name == node) return .function;
+                    if (f.name == node) {
+                        return if (f.flags.is_method) .method else .function;
+                    }
                     return .variable;
                 },
                 .class_decl, .class_expr => {
@@ -3757,6 +3759,17 @@ fn classifyNodeForSemantic(hir: *const hir_mod.Hir, node: hir_mod.NodeId) ?Seman
                 .enum_decl => {
                     const e = hir_mod.enumOf(hir, p);
                     if (e.name == node) return .enum_;
+                    return .variable;
+                },
+                .enum_member => return .property,
+                .object_property => {
+                    const op = hir_mod.objectPropertyOf(hir, p);
+                    if (op.key == node) {
+                        // The key is a property name; the value side
+                        // takes the default .variable classification
+                        // when it's a bare identifier reference.
+                        return if (op.is_method) .method else .property;
+                    }
                     return .variable;
                 },
                 .parameter => return .parameter,
@@ -5946,6 +5959,64 @@ test "Service: semanticTokens classifies identifiers by declaring kind" {
     try T.expect(has_class);
     try T.expect(has_parameter);
     try T.expect(has_variable);
+}
+
+test "Service: semanticTokens classifies object-literal property keys" {
+    var vfs = ts_resolver.VirtualFs.init(T.allocator);
+    defer vfs.deinit();
+    var resolver = ts_resolver.Resolver.init(T.allocator, vfs.fs(), .{});
+    defer resolver.deinit();
+    var program = ts_program.Program.init(T.allocator, &resolver);
+    defer program.deinit();
+
+    // Object-literal property keys (`x`, `y`) should classify as
+    // `.property`; method-shorthand keys (`m`) should classify as
+    // `.method`. Previously they fell through to the default
+    // `.variable` classification.
+    const src = "let p = { x: 1, y: 2, m() { return 0; } };";
+    _ = try program.add("/main.ts", src);
+    try program.compileAll(.{});
+
+    var svc = Service.init(T.allocator, &program);
+    const tokens = try svc.semanticTokens(T.allocator, "/main.ts");
+    defer T.allocator.free(tokens);
+
+    var property_count: u32 = 0;
+    var method_count: u32 = 0;
+    for (tokens) |tok| {
+        if (tok.token_type == .property) property_count += 1;
+        if (tok.token_type == .method) method_count += 1;
+    }
+    try T.expect(property_count >= 2);
+    try T.expect(method_count >= 1);
+}
+
+test "Service: semanticTokens classifies enum members as property" {
+    var vfs = ts_resolver.VirtualFs.init(T.allocator);
+    defer vfs.deinit();
+    var resolver = ts_resolver.Resolver.init(T.allocator, vfs.fs(), .{});
+    defer resolver.deinit();
+    var program = ts_program.Program.init(T.allocator, &resolver);
+    defer program.deinit();
+
+    // `enum E { A, B }` — the member names should classify as
+    // `.property` rather than falling through to `.variable`.
+    const src = "enum Color { Red, Green, Blue }";
+    _ = try program.add("/main.ts", src);
+    try program.compileAll(.{});
+
+    var svc = Service.init(T.allocator, &program);
+    const tokens = try svc.semanticTokens(T.allocator, "/main.ts");
+    defer T.allocator.free(tokens);
+
+    var has_enum_class = false;
+    var member_count: u32 = 0;
+    for (tokens) |tok| {
+        if (tok.token_type == .enum_) has_enum_class = true;
+        if (tok.token_type == .property) member_count += 1;
+    }
+    try T.expect(has_enum_class);
+    try T.expect(member_count >= 3);
 }
 
 test "Service: semanticTokens emits keyword tokens from the scanner stream" {
