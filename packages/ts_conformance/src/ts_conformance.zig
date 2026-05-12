@@ -2575,7 +2575,7 @@ test "conformance: category specs summarize local TS feature folders" {
     try T.expectEqual(@as(usize, default_specs.len), default_cats.len);
     try T.expectEqual(@as(usize, baseline_specs.len), baseline_cats.len);
     try T.expectEqual(@as(u32, 86), combined.total());
-    try T.expectEqual(@as(u32, 76), combined.passed);
+    try T.expectEqual(@as(u32, 86), combined.passed);
 }
 
 test "conformance: baseline-aware type-relationship survey" {

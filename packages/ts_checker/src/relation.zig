@@ -597,9 +597,14 @@ pub const Engine = struct {
     }
 
     fn substituteTpDeep(self: *Engine, t: TypeId, map: []const TpPair) anyerror!TypeId {
+        return self.substituteTpDeepLimit(t, map, 0);
+    }
+
+    fn substituteTpDeepLimit(self: *Engine, t: TypeId, map: []const TpPair, depth: u8) anyerror!TypeId {
+        if (depth > 64) return t;
         if (mappedTp(t, map)) |replacement| {
             if (replacement == t) return replacement;
-            return self.substituteTpDeep(replacement, map);
+            return self.substituteTpDeepLimit(replacement, map, depth + 1);
         }
         if (t < Primitive.first_dynamic or t >= self.interner.pool.typeCount()) return t;
         const flags = self.interner.pool.flagsOf(t);
@@ -609,7 +614,7 @@ pub const Engine = struct {
             var members: std.ArrayListUnmanaged(TypeId) = .empty;
             defer members.deinit(self.interner.gpa);
             for (self.interner.unionMembers(t)) |m| {
-                const subbed = try self.substituteTpDeep(m, map);
+                const subbed = try self.substituteTpDeepLimit(m, map, depth + 1);
                 try members.append(self.interner.gpa, if (subbed < self.interner.pool.typeCount()) subbed else Primitive.unknown);
             }
             return self.interner.internUnion(members.items) catch t;
@@ -619,7 +624,7 @@ pub const Engine = struct {
             var members: std.ArrayListUnmanaged(TypeId) = .empty;
             defer members.deinit(self.interner.gpa);
             for (self.interner.intersectionMembers(t)) |m| {
-                const subbed = try self.substituteTpDeep(m, map);
+                const subbed = try self.substituteTpDeepLimit(m, map, depth + 1);
                 try members.append(self.interner.gpa, if (subbed < self.interner.pool.typeCount()) subbed else Primitive.unknown);
             }
             return self.interner.internIntersection(members.items) catch t;
@@ -629,7 +634,7 @@ pub const Engine = struct {
             var members: std.ArrayListUnmanaged(types.ObjectMember) = .empty;
             defer members.deinit(self.interner.gpa);
             for (self.interner.objectMembers(t)) |m| {
-                const member_t = try self.substituteTpDeep(m.type, map);
+                const member_t = try self.substituteTpDeepLimit(m.type, map, depth + 1);
                 try members.append(self.interner.gpa, .{
                     .name = m.name,
                     .type = self.validOrUnknown(member_t),
@@ -641,9 +646,9 @@ pub const Engine = struct {
             const str_idx = self.interner.objectStringIndex(t);
             const num_idx = self.interner.objectNumberIndex(t);
             const sym_idx = self.interner.objectSymbolIndex(t);
-            const new_str = if (str_idx != Primitive.none) self.validOrUnknown(try self.substituteTpDeep(str_idx, map)) else Primitive.none;
-            const new_num = if (num_idx != Primitive.none) self.validOrUnknown(try self.substituteTpDeep(num_idx, map)) else Primitive.none;
-            const new_sym = if (sym_idx != Primitive.none) self.validOrUnknown(try self.substituteTpDeep(sym_idx, map)) else Primitive.none;
+            const new_str = if (str_idx != Primitive.none) self.validOrUnknown(try self.substituteTpDeepLimit(str_idx, map, depth + 1)) else Primitive.none;
+            const new_num = if (num_idx != Primitive.none) self.validOrUnknown(try self.substituteTpDeepLimit(num_idx, map, depth + 1)) else Primitive.none;
+            const new_sym = if (sym_idx != Primitive.none) self.validOrUnknown(try self.substituteTpDeepLimit(sym_idx, map, depth + 1)) else Primitive.none;
             if (new_str == Primitive.none and new_num == Primitive.none and new_sym == Primitive.none) {
                 return self.interner.internObjectType(members.items) catch t;
             }
@@ -655,10 +660,10 @@ pub const Engine = struct {
             var params: std.ArrayListUnmanaged(TypeId) = .empty;
             defer params.deinit(self.interner.gpa);
             for (self.interner.signatureParams(t)) |p| {
-                try params.append(self.interner.gpa, self.validOrUnknown(try self.substituteTpDeep(p, map)));
+                try params.append(self.interner.gpa, self.validOrUnknown(try self.substituteTpDeepLimit(p, map, depth + 1)));
             }
             const ret = if (self.interner.signatureReturn(t)) |r|
-                self.validOrUnknown(try self.substituteTpDeep(r, map))
+                self.validOrUnknown(try self.substituteTpDeepLimit(r, map, depth + 1))
             else
                 Primitive.void_t;
             return self.interner.internSignature(params.items, ret, sig_payload.is_construct) catch t;
@@ -668,6 +673,16 @@ pub const Engine = struct {
 
     fn validOrUnknown(self: *Engine, t: TypeId) TypeId {
         return if (t < self.interner.pool.typeCount()) t else Primitive.unknown;
+    }
+
+    fn typeParameterConstraint(self: *Engine, t: TypeId) ?TypeId {
+        if (t >= self.interner.pool.typeCount()) return null;
+        if (!self.pool().flagsOf(t).is_type_parameter) return null;
+        const payload_idx = self.pool().payloadOf(t);
+        if (payload_idx >= self.interner.pool.type_parameter_payloads.items.len) return null;
+        const tp = self.interner.pool.type_parameter_payloads.items[payload_idx];
+        if (tp.constraint == Primitive.none or tp.constraint == Primitive.unknown) return null;
+        return tp.constraint;
     }
 
     fn mappedTp(t: TypeId, map: []const TpPair) ?TypeId {
@@ -753,6 +768,12 @@ pub const Engine = struct {
                 if (tp_map_len < tp_map_buf.len) {
                     tp_map_buf[tp_map_len] = .{ .from = t_param, .to = s_param };
                     tp_map_len += 1;
+                }
+                const s_constraint = self.typeParameterConstraint(s_param);
+                const t_constraint_raw = self.typeParameterConstraint(t_param);
+                if (s_constraint != null and t_constraint_raw != null) {
+                    const t_constraint = try self.substituteTpDeep(t_constraint_raw.?, tp_map_buf[0..tp_map_len]);
+                    if (!try self.isAssignableTo(s_constraint.?, t_constraint)) return false;
                 }
                 continue;
             }
