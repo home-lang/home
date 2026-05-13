@@ -4158,6 +4158,11 @@ pub const Parser = struct {
                 defer self.gpa.free(synthetic);
                 return self.interner.intern(synthetic) catch return error.OutOfMemory;
             }
+            if (std.mem.startsWith(u8, rhs, "Symbol(")) {
+                const synthetic = try std.fmt.allocPrint(self.gpa, "[computed:{s}]", .{name});
+                defer self.gpa.free(synthetic);
+                return self.interner.intern(synthetic) catch return error.OutOfMemory;
+            }
             if (rhs[0] == '-' or (rhs[0] >= '0' and rhs[0] <= '9')) {
                 var end: usize = if (rhs[0] == '-') 1 else 0;
                 while (end < rhs.len and ((rhs[end] >= '0' and rhs[end] <= '9') or rhs[end] == '.')) : (end += 1) {}
@@ -9350,8 +9355,9 @@ test "parser: unique symbol type annotation" {
 test "parser: unique symbol computed type members parse without TS1169" {
     var s = try newTestSetup(
         \\declare const tag: unique symbol;
+        \\const inferredTag = Symbol();
         \\interface I { [tag]: any; [tag](): any; }
-        \\type T = { [tag]: any; [tag](): any; };
+        \\type T = { [tag]: any; [tag](): any; [inferredTag]: string; };
     );
     defer destroyTestSetup(s);
 

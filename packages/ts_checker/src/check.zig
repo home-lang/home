@@ -13859,7 +13859,7 @@ pub const Checker = struct {
                         );
                     }
                 }
-                if (try self.checkNewConstructSignatures(node, callee_t, args, arg_types.items)) |ret| {
+                if (try self.checkNewConstructSignatures(node, c.callee, callee_t, args, arg_types.items)) |ret| {
                     break :blk ret;
                 }
                 const type_arg_nodes = hir_mod.callTypeArgs(self.hir, node);
@@ -14155,7 +14155,11 @@ pub const Checker = struct {
                                         .signature = effective_callee_t,
                                         .param_index = @intCast(i),
                                     });
-                                    _ = try self.inferFromPredicateSignatureArgument(param_ts[i], param_pred, args[i], arg_types.items[i], &call_subs);
+                                    if (!try self.inferFromPredicateSignatureArgument(param_ts[i], param_pred, args[i], arg_types.items[i], &call_subs) and
+                                        self.signatureHasBareGenericRestParam(param_ts[i]))
+                                    {
+                                        try self.inferFromArgument(param_ts[i], arg_types.items[i], args[i], &call_subs);
+                                    }
                                     continue;
                                 }
                                 try self.inferFromArgument(param_ts[i], arg_types.items[i], args[i], &call_subs);
@@ -14191,7 +14195,11 @@ pub const Checker = struct {
                                         .signature = effective_callee_t,
                                         .param_index = @intCast(i),
                                     });
-                                    _ = try self.inferFromPredicateSignatureArgument(param_ts[i], param_pred, args[i], arg_types.items[i], &call_subs);
+                                    if (!try self.inferFromPredicateSignatureArgument(param_ts[i], param_pred, args[i], arg_types.items[i], &call_subs) and
+                                        self.signatureHasBareGenericRestParam(param_ts[i]))
+                                    {
+                                        try self.inferFromArgument(param_ts[i], arg_types.items[i], args[i], &call_subs);
+                                    }
                                     continue;
                                 }
                                 try self.inferFromArgument(param_ts[i], arg_types.items[i], args[i], &call_subs);
@@ -16015,6 +16023,7 @@ pub const Checker = struct {
     fn checkNewConstructSignatures(
         self: *Checker,
         node: NodeId,
+        callee_node: NodeId,
         callee_t: TypeId,
         args: []const NodeId,
         arg_types: []const TypeId,
@@ -16047,7 +16056,7 @@ pub const Checker = struct {
             if (selected_sig == construct_sigs.items[0]) selected_sig = effective_sig;
         }
 
-        if (type_arg_nodes.len > 0 and !saw_generic_record) {
+        if (type_arg_nodes.len > 0 and !saw_generic_record and !self.newCalleeAcceptsTypeArguments(callee_node)) {
             const msg = try std.fmt.allocPrint(
                 self.diag_arena.allocator(),
                 "Expected 0 type arguments, but got {d}.",
@@ -16067,6 +16076,12 @@ pub const Checker = struct {
         }
 
         return self.interner.signatureReturn(selected_sig) orelse types.Primitive.any;
+    }
+
+    fn newCalleeAcceptsTypeArguments(self: *Checker, callee_node: NodeId) bool {
+        if (callee_node == hir_mod.none_node_id or self.hir.kindOf(callee_node) != .identifier) return false;
+        const id = hir_mod.identifierOf(self.hir, callee_node);
+        return self.generic_aliases.contains(id.name);
     }
 
     fn inferPromiseConstructorPayload(self: *Checker, args: []const NodeId) CheckError!?TypeId {
@@ -20212,6 +20227,7 @@ pub const Checker = struct {
             if (pool.payloadOf(arg_t) >= pool.signature_payloads.items.len) return;
             const pp = self.interner.signatureParams(param_t);
             const ap = self.interner.signatureParams(arg_t);
+            try self.inferRestTupleFromSignatureParams(param_t, pp, ap, subs);
             const m = @min(pp.len, ap.len);
             var source_subs: std.AutoHashMapUnmanaged(TypeId, TypeId) = .empty;
             defer source_subs.deinit(self.gpa);
@@ -20240,6 +20256,66 @@ pub const Checker = struct {
             }
             return;
         }
+    }
+
+    fn inferRestTupleFromSignatureParams(
+        self: *Checker,
+        param_sig: TypeId,
+        param_params: []const TypeId,
+        arg_params: []const TypeId,
+        subs: *std.AutoHashMapUnmanaged(TypeId, TypeId),
+    ) CheckError!void {
+        if (!self.rest_signatures.contains(param_sig) or param_params.len == 0) return;
+        const rest_param_t = param_params[param_params.len - 1];
+        if (rest_param_t >= self.interner.pool.typeCount()) return;
+        if (!self.interner.pool.flagsOf(rest_param_t).is_type_parameter) return;
+        if (subs.contains(rest_param_t)) return;
+        const fixed_count = param_params.len - 1;
+        if (arg_params.len < fixed_count) return;
+        const tuple_t = try self.internTupleFromTypes(arg_params[fixed_count..], false);
+        try subs.put(self.gpa, rest_param_t, tuple_t);
+    }
+
+    fn signatureHasBareGenericRestParam(self: *Checker, sig: TypeId) bool {
+        if (!self.rest_signatures.contains(sig)) return false;
+        const params = self.interner.signatureParams(sig);
+        if (params.len == 0) return false;
+        const rest_param_t = params[params.len - 1];
+        if (rest_param_t >= self.interner.pool.typeCount()) return false;
+        return self.interner.pool.flagsOf(rest_param_t).is_type_parameter;
+    }
+
+    fn internTupleFromTypes(self: *Checker, elem_types: []const TypeId, readonly: bool) CheckError!TypeId {
+        var members: std.ArrayListUnmanaged(types.ObjectMember) = .empty;
+        defer members.deinit(self.gpa);
+        for (elem_types, 0..) |t, i| {
+            var nbuf: [12]u8 = undefined;
+            const name_str = std.fmt.bufPrint(&nbuf, "{d}", .{i}) catch continue;
+            const name = self.string_interner.intern(name_str) catch return error.OutOfMemory;
+            try members.append(self.gpa, .{
+                .name = name,
+                .type = t,
+                .is_optional = false,
+                .is_readonly = readonly,
+                .is_method = false,
+            });
+        }
+        const length_id = self.string_interner.intern("length") catch return error.OutOfMemory;
+        const length_t = self.interner.internNumberLiteral(@floatFromInt(elem_types.len)) catch types.Primitive.number_t;
+        try members.append(self.gpa, .{
+            .name = length_id,
+            .type = length_t,
+            .is_optional = false,
+            .is_readonly = true,
+            .is_method = false,
+        });
+        const elem_union: TypeId = if (elem_types.len == 0)
+            types.Primitive.never
+        else if (elem_types.len == 1)
+            elem_types[0]
+        else
+            self.interner.internUnion(elem_types) catch types.Primitive.any;
+        return self.interner.internObjectTypeWithIndex(members.items, types.Primitive.none, elem_union) catch error.OutOfMemory;
     }
 
     fn inferFromArgument(
@@ -20819,16 +20895,28 @@ pub const Checker = struct {
                 effective_min_count += 1;
             }
         }
+        const rest_max_count: ?usize = if (is_variadic) blk: {
+            if (self.fixedTupleLength(param_ts[param_ts.len - 1])) |len| {
+                break :blk fixed_count + @as(usize, @intCast(len));
+            }
+            break :blk null;
+        } else null;
         const too_few = effective_min_count < min_required;
-        const too_many = !is_variadic and args.len > param_ts.len;
+        const too_many = if (is_variadic)
+            (if (rest_max_count) |max_count| effective_min_count > max_count else false)
+        else
+            args.len > param_ts.len;
         if (too_few or too_many) {
-            const expected_label: []const u8 = if (is_variadic)
+            const fixed_variadic_count = is_variadic and rest_max_count != null;
+            const expected_label: []const u8 = if (fixed_variadic_count)
+                ""
+            else if (is_variadic)
                 " or more"
             else if (min_required == param_ts.len)
                 ""
             else
                 " or fewer";
-            const expected_n: usize = if (is_variadic) min_required else param_ts.len;
+            const expected_n: usize = if (fixed_variadic_count) rest_max_count.? else if (is_variadic) min_required else param_ts.len;
             const msg = try std.fmt.allocPrint(
                 self.diag_arena.allocator(),
                 "Expected {d}{s} arguments, but got {d}.",
@@ -20853,7 +20941,7 @@ pub const Checker = struct {
             if (self.hir.kindOf(args[i]) == .spread) {
                 if (!is_variadic or i < fixed_count) {
                     const is_union_arg = arg_t < self.interner.pool.typeCount() and self.interner.pool.flagsOf(arg_t).is_union;
-                    if (is_union_arg or self.fixedTupleLength(arg_t) == null) {
+                    if (is_union_arg or !self.isTupleShapedTarget(arg_t)) {
                         try self.report(args[i], TsCodes.spread_argument_requires_tuple_or_rest, "A spread argument must either have a tuple type or be passed to a rest parameter.");
                     }
                 }
@@ -21506,6 +21594,13 @@ pub const Checker = struct {
         if (!self.interner.pool.flagsOf(source_t).is_signature or !self.interner.pool.flagsOf(target_t).is_signature) return false;
         const source_params = self.interner.signatureParams(source_t);
         const target_params = self.interner.signatureParams(target_t);
+        if (self.rest_signatures.contains(target_t) and target_params.len > 0) {
+            if (!try self.contextualRestSignatureParamsAssignable(source_params, target_params)) return false;
+            const source_ret_rest = self.interner.signatureReturn(source_t) orelse types.Primitive.void_t;
+            const target_ret_rest = self.interner.signatureReturn(target_t) orelse types.Primitive.void_t;
+            if (target_ret_rest == types.Primitive.void_t or target_ret_rest == types.Primitive.any or target_ret_rest == types.Primitive.unknown) return true;
+            return self.engine.isAssignableTo(source_ret_rest, target_ret_rest) catch false;
+        }
         if (source_params.len > target_params.len) return false;
         for (source_params, 0..) |source_param, i| {
             if (!try self.contextualTargetParamAssignableToSource(target_params[i], source_param)) return false;
@@ -21514,6 +21609,27 @@ pub const Checker = struct {
         const target_ret = self.interner.signatureReturn(target_t) orelse types.Primitive.void_t;
         if (target_ret == types.Primitive.void_t or target_ret == types.Primitive.any or target_ret == types.Primitive.unknown) return true;
         return self.engine.isAssignableTo(source_ret, target_ret) catch false;
+    }
+
+    fn contextualRestSignatureParamsAssignable(
+        self: *Checker,
+        source_params: []const TypeId,
+        target_params: []const TypeId,
+    ) CheckError!bool {
+        const fixed_count = target_params.len - 1;
+        const rest_t = target_params[target_params.len - 1];
+        if (self.fixedTupleLength(rest_t)) |rest_len| {
+            if (source_params.len > fixed_count + @as(usize, @intCast(rest_len))) return false;
+        }
+        for (source_params, 0..) |source_param, i| {
+            const target_param = if (i < fixed_count)
+                target_params[i]
+            else
+                self.tupleElementType(rest_t, i - fixed_count);
+            if (target_param == types.Primitive.none) return false;
+            if (!try self.contextualTargetParamAssignableToSource(target_param, source_param)) return false;
+        }
+        return true;
     }
 
     fn contextualTargetParamAssignableToSource(self: *Checker, target_param: TypeId, source_param: TypeId) CheckError!bool {
@@ -33508,6 +33624,46 @@ test "checker: bare generic rest tuple does not bind from first argument only" {
     defer destroySetup(s);
     try s.checker.checkSourceFile(s.root);
     for (s.checker.diagnostics.items) |d| {
+        try T.expect(d.code != TsCodes.argument_type_mismatch);
+    }
+}
+
+test "checker: callback params infer fixed generic rest tuple arity" {
+    const s = try newSetup(
+        \\declare function call<TS extends unknown[]>(
+        \\  handler: (...args: TS) => void,
+        \\  ...args: TS): void;
+        \\call((x: number, y: number) => x + y);
+        \\call((x: number, y: number) => x + y, 1, 2, 3);
+    );
+    defer destroySetup(s);
+    s.checker.setStrictFlags(.{ .strict_null_checks = true });
+    try s.checker.checkSourceFile(s.root);
+    var found = false;
+    for (s.checker.diagnostics.items) |d| {
+        if (d.code == TsCodes.expected_n_arguments) found = true;
+    }
+    try T.expect(found);
+}
+
+test "checker: variadic tuple spreads satisfy fixed plus rest signatures" {
+    const s = try newSetup(
+        \\declare const t1: [number, string, ...boolean[]];
+        \\declare const t2: [string, ...boolean[]];
+        \\declare const t3: [...boolean[]];
+        \\declare let f11: (a: number, ...x: [string, ...boolean[]]) => void;
+        \\declare let f12: (a: number, b: string, ...x: [...boolean[]]) => void;
+        \\declare let f13: (a: number, b: string, ...c: boolean[]) => void;
+        \\f11(...t1);
+        \\f12(...t1);
+        \\f12(42, ...t2);
+        \\f13(...t1);
+        \\f13(42, ...t2);
+    );
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+    for (s.checker.diagnostics.items) |d| {
+        try T.expect(d.code != TsCodes.spread_argument_requires_tuple_or_rest);
         try T.expect(d.code != TsCodes.argument_type_mismatch);
     }
 }
