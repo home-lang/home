@@ -1223,6 +1223,21 @@ pub const Printer = struct {
                         if (self.subtreeContainsYield(s)) return false;
                     }
                 },
+                .if_stmt => {
+                    // Pass-through is fine when the subtree carries no yields.
+                    if (!self.subtreeContainsYield(s)) continue;
+                    // §4.A.4.2 part 2a — narrow `if (cond) yield E;`
+                    // CFG slice. Supported shape: no `else_branch`,
+                    // `then_branch` is a single bare `yield_expr`
+                    // (in or out of a block), and the cond + yielded
+                    // expression don't themselves contain yields.
+                    const ip = hir_mod.ifOf(self.hir, s);
+                    if (ip.else_branch != hir_mod.none_node_id) return false;
+                    if (self.subtreeContainsYield(ip.cond)) return false;
+                    const ye = self.singleYieldInThen(ip.then_branch) orelse return false;
+                    const yp = hir_mod.yieldExprOf(self.hir, ye);
+                    if (yp.expr != hir_mod.none_node_id and self.subtreeContainsYield(yp.expr)) return false;
+                },
                 .break_stmt, .continue_stmt, .fn_decl, .class_decl => return false,
                 else => {
                     if (self.subtreeContainsYield(s)) return false;
@@ -1230,6 +1245,23 @@ pub const Printer = struct {
             }
         }
         return true;
+    }
+
+    /// §4.A.4.2 part 2a — if `then_branch` is a single `yield E`
+    /// (bare expression-statement, either standalone or inside a
+    /// single-statement block), return that yield node. Otherwise
+    /// `null`. v0 of the CFG slice only handles this narrow shape;
+    /// multi-statement bodies and any other statement kind fall
+    /// outside the supported subset.
+    fn singleYieldInThen(self: *const Printer, then_branch: NodeId) ?NodeId {
+        if (then_branch == hir_mod.none_node_id) return null;
+        const k = self.hir.kindOf(then_branch);
+        if (k == .yield_expr) return then_branch;
+        if (k == .block_stmt) {
+            const stmts = hir_mod.blockStmts(self.hir, then_branch);
+            if (stmts.len == 1 and self.hir.kindOf(stmts[0]) == .yield_expr) return stmts[0];
+        }
+        return null;
     }
 
     /// §4.A.4.2 — true iff any node in the subtree rooted at `root`
@@ -1341,6 +1373,48 @@ pub const Printer = struct {
                     try self.write(" ");
                     try self.printNonIndentStatement(stmt);
                 }
+            } else if (k == .if_stmt and self.subtreeContainsYield(stmt)) {
+                // §4.A.4.2 part 2a — `if (cond) yield E;` (no else)
+                // lowers to a conditional `[3, afterIfLabel]` jump
+                // followed by the yield, with the resumption case
+                // and the after-if case both opened (the resumption
+                // falls through to the after-if). Predicate has
+                // already verified the shape.
+                const ip = hir_mod.ifOf(self.hir, stmt);
+                const ye = self.singleYieldInThen(ip.then_branch) orelse unreachable;
+                const yp = hir_mod.yieldExprOf(self.hir, ye);
+                const op: []const u8 = if (yp.type_node != hir_mod.none_node_id) "5" else "4";
+                // Conditional skip to the after-if label (state + 2).
+                const after_if = state + 2;
+                const num_after = std.fmt.bufPrint(&buf, "{d}", .{after_if}) catch unreachable;
+                try self.write(" if (!(");
+                try self.printExpression(ip.cond);
+                try self.write(")) return [3, ");
+                try self.write(num_after);
+                try self.write("];");
+                // Yield from the then-branch.
+                try self.write(" return [");
+                try self.write(op);
+                if (yp.expr != hir_mod.none_node_id) {
+                    try self.write(", ");
+                    try self.printExpression(yp.expr);
+                }
+                try self.write("];");
+                // Open yield-resumption case.
+                state += 1;
+                const num_resume = std.fmt.bufPrint(&buf, "{d}", .{state}) catch unreachable;
+                try self.writeNewlineIndent();
+                try self.write("case ");
+                try self.write(num_resume);
+                try self.write(": _a.sent();");
+                // Open after-if case (fall-through target for both
+                // the resumption and the skip jump).
+                state += 1;
+                const num_after_open = std.fmt.bufPrint(&buf, "{d}", .{state}) catch unreachable;
+                try self.writeNewlineIndent();
+                try self.write("case ");
+                try self.write(num_after_open);
+                try self.write(":");
             } else {
                 try self.write(" ");
                 try self.printNonIndentStatement(stmt);
@@ -4206,11 +4280,13 @@ test "emit: generator preserved at es2015+" {
     try T.expect(std.mem.indexOf(u8, out, "__generator") == null);
 }
 
-test "emit: generator with nested control flow falls back to native + marker at es5" {
-    // Bodies with control flow around yields are outside v0's
-    // supported subset — emit native `function*` plus a TODO marker.
+test "emit: generator with if/else around yields falls back to native + marker at es5" {
+    // The §4.A.4.2 part 2a slice supports `if (cond) yield E;` (no
+    // else); anything beyond that shape — including an else branch
+    // — is still outside v0 and bails to the native `function*`
+    // fallback with a TODO marker.
     const out = try emitWithOpts(
-        "function* g() { if (cond) { yield 1; } }",
+        "function* g() { if (cond) { yield 1; } else { yield 2; } }",
         .{ .es_target = .es5 },
     );
     defer T.allocator.free(out);
@@ -4310,6 +4386,54 @@ test "emit: generator with non-yielding try lowers as inline try" {
     try T.expect(std.mem.indexOf(u8, out, "try ") != null);
     try T.expect(std.mem.indexOf(u8, out, "catch (e)") != null);
     try T.expect(std.mem.indexOf(u8, out, "return [4, done]") != null);
+}
+
+test "emit: generator with if-then-yield lowers to [3, label] conditional jump" {
+    const out = try emitWithOpts(
+        "function* g() { if (cond) yield 1; yield 2; }",
+        .{ .es_target = .es5 },
+    );
+    defer T.allocator.free(out);
+    try T.expect(std.mem.indexOf(u8, out, "__generator") != null);
+    try T.expect(std.mem.indexOf(u8, out, "TODO: ES5 generator") == null);
+    // Conditional skip to the after-if case (label 2).
+    try T.expect(std.mem.indexOf(u8, out, "if (!(cond)) return [3, 2];") != null);
+    // Yield from the then-branch — op-code 4.
+    try T.expect(std.mem.indexOf(u8, out, "return [4, 1]") != null);
+    // Yield resumption case + after-if case both opened.
+    try T.expect(std.mem.indexOf(u8, out, "case 1: _a.sent();") != null);
+    try T.expect(std.mem.indexOf(u8, out, "case 2:") != null);
+    // The trailing `yield 2;` becomes case 3.
+    try T.expect(std.mem.indexOf(u8, out, "return [4, 2]") != null);
+    try T.expect(std.mem.indexOf(u8, out, "case 3: _a.sent();") != null);
+    // Final synthesized fall-through return.
+    try T.expect(std.mem.indexOf(u8, out, "return [2];") != null);
+}
+
+test "emit: generator with if-then-yield (block body) lowers same as bare-stmt body" {
+    const out = try emitWithOpts(
+        "function* g() { if (cond) { yield 1; } }",
+        .{ .es_target = .es5 },
+    );
+    defer T.allocator.free(out);
+    try T.expect(std.mem.indexOf(u8, out, "__generator") != null);
+    try T.expect(std.mem.indexOf(u8, out, "TODO: ES5 generator") == null);
+    try T.expect(std.mem.indexOf(u8, out, "if (!(cond)) return [3, 2];") != null);
+    try T.expect(std.mem.indexOf(u8, out, "return [4, 1]") != null);
+    try T.expect(std.mem.indexOf(u8, out, "case 1: _a.sent();") != null);
+    try T.expect(std.mem.indexOf(u8, out, "case 2:") != null);
+}
+
+test "emit: generator with if-then-yield containing multi-stmt body still bails" {
+    // Multi-statement then-branch (even single non-yield statement
+    // before the yield) is outside v0 — bail to native function*.
+    const out = try emitWithOpts(
+        "function* g() { if (cond) { f(); yield 1; } }",
+        .{ .es_target = .es5 },
+    );
+    defer T.allocator.free(out);
+    try T.expect(std.mem.indexOf(u8, out, "TODO: ES5 generator") != null);
+    try T.expect(std.mem.indexOf(u8, out, "__generator") == null);
 }
 
 test "emit: generator with sub-expr yield (console.log(yield E)) still bails" {
