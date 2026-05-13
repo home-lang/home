@@ -1336,6 +1336,8 @@ pub const Printer = struct {
                     } else if (self.splitLoopBody(dwp.body, true)) |split| {
                         const yp = hir_mod.yieldExprOf(self.hir, split.yield_node);
                         if (yp.expr != hir_mod.none_node_id and self.subtreeContainsYield(yp.expr)) return false;
+                    } else if (self.multiYieldLoopBodyOk(dwp.body, true)) {
+                        // multi-yield body — emit handles it.
                     } else {
                         return false;
                     }
@@ -1355,6 +1357,8 @@ pub const Printer = struct {
                     } else if (self.splitLoopBody(fp.body, true)) |split| {
                         const yp = hir_mod.yieldExprOf(self.hir, split.yield_node);
                         if (yp.expr != hir_mod.none_node_id and self.subtreeContainsYield(yp.expr)) return false;
+                    } else if (self.multiYieldLoopBodyOk(fp.body, true)) {
+                        // multi-yield body — emit handles it.
                     } else {
                         return false;
                     }
@@ -1849,6 +1853,95 @@ pub const Printer = struct {
                     self.gen_continue_label = prev_continue;
                 }
                 const fp = hir_mod.forStmtOf(self.hir, stmt);
+                // Multi-yield path — header + N resumes + continue + exit.
+                if (self.singleYieldInThen(fp.body) == null and self.splitLoopBody(fp.body, true) == null) {
+                    const header = state + 1;
+                    const body_stmts = hir_mod.blockStmts(self.hir, fp.body);
+                    var n_yields: u32 = 0;
+                    for (body_stmts) |s| {
+                        if (self.hir.kindOf(s) == .yield_expr) n_yields += 1;
+                    }
+                    const continue_label = state + 1 + n_yields + 1; // header + N resumes + continue
+                    const exit_label = continue_label + 1;
+                    self.gen_break_label = exit_label;
+                    self.gen_continue_label = continue_label;
+                    // Init in current case.
+                    if (fp.init != hir_mod.none_node_id) {
+                        try self.write(" ");
+                        try self.printNonIndentStatement(fp.init);
+                    }
+                    // Open header case.
+                    state += 1;
+                    {
+                        const num_header = std.fmt.bufPrint(&buf, "{d}", .{header}) catch unreachable;
+                        try self.writeNewlineIndent();
+                        try self.write("case ");
+                        try self.write(num_header);
+                        try self.write(":");
+                        if (fp.cond != hir_mod.none_node_id) {
+                            var num_exit_buf: [16]u8 = undefined;
+                            const num_exit = std.fmt.bufPrint(&num_exit_buf, "{d}", .{exit_label}) catch unreachable;
+                            try self.write(" if (!(");
+                            try self.printExpression(fp.cond);
+                            try self.write(")) return [3, ");
+                            try self.write(num_exit);
+                            try self.write("];");
+                        }
+                    }
+                    // Walk body stmts inline.
+                    for (body_stmts) |s| {
+                        if (self.hir.kindOf(s) == .yield_expr) {
+                            const yp_n = hir_mod.yieldExprOf(self.hir, s);
+                            const op_n: []const u8 = if (yp_n.type_node != hir_mod.none_node_id) "5" else "4";
+                            try self.write(" return [");
+                            try self.write(op_n);
+                            if (yp_n.expr != hir_mod.none_node_id) {
+                                try self.write(", ");
+                                try self.printExpression(yp_n.expr);
+                            }
+                            try self.write("];");
+                            state += 1;
+                            const num_resume = std.fmt.bufPrint(&buf, "{d}", .{state}) catch unreachable;
+                            try self.writeNewlineIndent();
+                            try self.write("case ");
+                            try self.write(num_resume);
+                            try self.write(": _a.sent();");
+                        } else {
+                            try self.write(" ");
+                            try self.printNonIndentStatement(s);
+                        }
+                    }
+                    // Final resumption case falls through to continue.
+                    // Open continue case: update + loopback.
+                    state += 1;
+                    {
+                        const num_continue = std.fmt.bufPrint(&buf, "{d}", .{state}) catch unreachable;
+                        try self.writeNewlineIndent();
+                        try self.write("case ");
+                        try self.write(num_continue);
+                        try self.write(":");
+                        if (fp.update != hir_mod.none_node_id) {
+                            try self.write(" ");
+                            try self.printExpression(fp.update);
+                            try self.write(";");
+                        }
+                        var num_header_buf: [16]u8 = undefined;
+                        const num_header_back = std.fmt.bufPrint(&num_header_buf, "{d}", .{header}) catch unreachable;
+                        try self.write(" return [3, ");
+                        try self.write(num_header_back);
+                        try self.write("];");
+                    }
+                    // Open exit case.
+                    state += 1;
+                    {
+                        const num_exit_open = std.fmt.bufPrint(&buf, "{d}", .{state}) catch unreachable;
+                        try self.writeNewlineIndent();
+                        try self.write("case ");
+                        try self.write(num_exit_open);
+                        try self.write(":");
+                    }
+                    continue;
+                }
                 var pre: []const NodeId = &[_]NodeId{};
                 var post: []const NodeId = &[_]NodeId{};
                 const ye_node: NodeId = if (self.singleYieldInThen(fp.body)) |single|
@@ -1957,6 +2050,77 @@ pub const Printer = struct {
                     self.gen_continue_label = prev_continue;
                 }
                 const dwp = hir_mod.doWhileOf(self.hir, stmt);
+                // Multi-yield path — body + N resumes + continue + exit.
+                if (self.singleYieldInThen(dwp.body) == null and self.splitLoopBody(dwp.body, true) == null) {
+                    const body_label = state + 1;
+                    const body_stmts = hir_mod.blockStmts(self.hir, dwp.body);
+                    var n_yields: u32 = 0;
+                    for (body_stmts) |s| {
+                        if (self.hir.kindOf(s) == .yield_expr) n_yields += 1;
+                    }
+                    const continue_label = state + 1 + n_yields + 1; // body + N resumes + continue
+                    const exit_label = continue_label + 1;
+                    self.gen_break_label = exit_label;
+                    self.gen_continue_label = continue_label;
+                    // Open body case.
+                    state += 1;
+                    {
+                        const num_body = std.fmt.bufPrint(&buf, "{d}", .{body_label}) catch unreachable;
+                        try self.writeNewlineIndent();
+                        try self.write("case ");
+                        try self.write(num_body);
+                        try self.write(":");
+                    }
+                    // Walk body stmts inline.
+                    for (body_stmts) |s| {
+                        if (self.hir.kindOf(s) == .yield_expr) {
+                            const yp_n = hir_mod.yieldExprOf(self.hir, s);
+                            const op_n: []const u8 = if (yp_n.type_node != hir_mod.none_node_id) "5" else "4";
+                            try self.write(" return [");
+                            try self.write(op_n);
+                            if (yp_n.expr != hir_mod.none_node_id) {
+                                try self.write(", ");
+                                try self.printExpression(yp_n.expr);
+                            }
+                            try self.write("];");
+                            state += 1;
+                            const num_resume = std.fmt.bufPrint(&buf, "{d}", .{state}) catch unreachable;
+                            try self.writeNewlineIndent();
+                            try self.write("case ");
+                            try self.write(num_resume);
+                            try self.write(": _a.sent();");
+                        } else {
+                            try self.write(" ");
+                            try self.printNonIndentStatement(s);
+                        }
+                    }
+                    // Open continue case: cond loopback to body.
+                    state += 1;
+                    {
+                        const num_continue = std.fmt.bufPrint(&buf, "{d}", .{state}) catch unreachable;
+                        try self.writeNewlineIndent();
+                        try self.write("case ");
+                        try self.write(num_continue);
+                        try self.write(":");
+                        var num_body_buf: [16]u8 = undefined;
+                        const num_body_back = std.fmt.bufPrint(&num_body_buf, "{d}", .{body_label}) catch unreachable;
+                        try self.write(" if (");
+                        try self.printExpression(dwp.cond);
+                        try self.write(") return [3, ");
+                        try self.write(num_body_back);
+                        try self.write("];");
+                    }
+                    // Open exit case.
+                    state += 1;
+                    {
+                        const num_exit_open = std.fmt.bufPrint(&buf, "{d}", .{state}) catch unreachable;
+                        try self.writeNewlineIndent();
+                        try self.write("case ");
+                        try self.write(num_exit_open);
+                        try self.write(":");
+                    }
+                    continue;
+                }
                 var pre: []const NodeId = &[_]NodeId{};
                 var post: []const NodeId = &[_]NodeId{};
                 const ye_node: NodeId = if (self.singleYieldInThen(dwp.body)) |single|
@@ -5349,6 +5513,45 @@ test "emit: generator with multi-yield while body lowers to N+2 cases" {
     try T.expect(std.mem.indexOf(u8, out, "case 3: _a.sent(); return [3, 1];") != null);
     // Exit case 4.
     try T.expect(std.mem.indexOf(u8, out, "case 4:") != null);
+}
+
+test "emit: generator with multi-yield do-while body lowers to N+3 cases" {
+    const out = try emitWithOpts(
+        "function* g() { do { yield 1; yield 2; } while (cond); }",
+        .{ .es_target = .es5 },
+    );
+    defer T.allocator.free(out);
+    try T.expect(std.mem.indexOf(u8, out, "__generator") != null);
+    // Body case 1: first yield.
+    try T.expect(std.mem.indexOf(u8, out, "case 1: return [4, 1]") != null);
+    // Resumption case 2: sent + second yield.
+    try T.expect(std.mem.indexOf(u8, out, "case 2: _a.sent(); return [4, 2]") != null);
+    // Resumption case 3: sent (falls through to continue).
+    try T.expect(std.mem.indexOf(u8, out, "case 3: _a.sent();") != null);
+    // Continue case 4: cond + loopback to body.
+    try T.expect(std.mem.indexOf(u8, out, "case 4: if (cond) return [3, 1];") != null);
+    // Exit case 5.
+    try T.expect(std.mem.indexOf(u8, out, "case 5:") != null);
+}
+
+test "emit: generator with multi-yield for body lowers to N+3 cases" {
+    const out = try emitWithOpts(
+        "function* g() { for (let i = 0; i < 3; i++) { yield i; yield i + 1; } }",
+        .{ .es_target = .es5 },
+    );
+    defer T.allocator.free(out);
+    try T.expect(std.mem.indexOf(u8, out, "__generator") != null);
+    try T.expect(std.mem.indexOf(u8, out, "var i = 0;") != null);
+    // Header case 1: cond + first yield. exit is case 5.
+    try T.expect(std.mem.indexOf(u8, out, "case 1: if (!((i < 3))) return [3, 5]; return [4, i];") != null);
+    // Resumption case 2: sent + second yield.
+    try T.expect(std.mem.indexOf(u8, out, "case 2: _a.sent(); return [4, (i + 1)]") != null);
+    // Resumption case 3: sent.
+    try T.expect(std.mem.indexOf(u8, out, "case 3: _a.sent();") != null);
+    // Continue case 4: update + loopback.
+    try T.expect(std.mem.indexOf(u8, out, "case 4: i += 1; return [3, 1];") != null);
+    // Exit case 5.
+    try T.expect(std.mem.indexOf(u8, out, "case 5:") != null);
 }
 
 test "emit: generator with multi-yield while body + stmts splits correctly" {
