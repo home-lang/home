@@ -185,11 +185,11 @@ pub const Options = struct {
     emit_decorator_metadata: bool = false,
     /// `importHelpers` — when true, prepend an
     /// `import { __awaiter, __decorate, __esDecorate, __extends,
-    /// __param, __importDefault, __importStar, __values } from "tslib";`
-    /// line at the top of the file so the runtime helpers come from
-    /// the `tslib` package rather than being expected as ambient
-    /// globals. v0 emits the full helper set unconditionally and
-    /// lets the bundler tree-shake unused names.
+    /// __generator, __param, __importDefault, __importStar, __values }
+    /// from "tslib";` line at the top of the file so the runtime
+    /// helpers come from the `tslib` package rather than being
+    /// expected as ambient globals. v0 emits the full helper set
+    /// unconditionally and lets the bundler tree-shake unused names.
     import_helpers: bool = false,
     /// `downlevelIteration` — when true and `es_target` is below
     /// ES2015, lower `for-of` over a non-array iterable using the
@@ -364,7 +364,7 @@ pub const Printer = struct {
         // before any user-level statement so the helpers are in
         // scope for the lowered code below.
         if (self.options.import_helpers) {
-            try self.write("import { __awaiter, __decorate, __esDecorate, __extends, __metadata, __param, __importDefault, __importStar, __values } from \"tslib\";");
+            try self.write("import { __awaiter, __decorate, __esDecorate, __extends, __generator, __metadata, __param, __importDefault, __importStar, __values } from \"tslib\";");
             try self.write(self.options.newline);
         }
         // §4.A.10 — auto-import the runtime helpers when the file
@@ -1084,10 +1084,36 @@ pub const Printer = struct {
         // becomes `yield E`. The `__awaiter` runtime helper is the
         // same shape tsc emits.
         const downlevel_async = f.flags.is_async and !self.options.es_target.supportsNativeAsync();
+        // §4.A.4 v0 — generator state-machine downlevel. At ES2014
+        // and below, a `function* g(args) { … }` whose body is *linear*
+        // (only top-level `yield E` / `return [E]` / plain expression
+        // statements — no `if`/`while`/`for`/`try`/`switch` around the
+        // yields) is rewritten to
+        // `function g(args) { return __generator(this, function (_a) {
+        //   switch (_a.label) { case 0: …; return [4, V1]; case 1: …; … } }); }`
+        // matching tsc's emit shape. The `__generator` runtime helper
+        // is the same one tsc uses. Bodies outside the supported
+        // subset fall through to native `function*` with a leading
+        // `/* TODO */` marker so the unsupported emit is visible to
+        // downstream tools (the v1 of this transform covers nested
+        // control flow).
+        const downlevel_generator = f.flags.is_generator and
+            !f.flags.is_method and
+            !f.flags.is_constructor and
+            !self.options.es_target.supportsNativeGenerators() and
+            f.body != hir_mod.none_node_id and
+            self.hir.kindOf(f.body) == .block_stmt and
+            self.canLowerGeneratorBody(f.body);
+        const generator_native_at_es5 = f.flags.is_generator and
+            !self.options.es_target.supportsNativeGenerators() and
+            !downlevel_generator;
         if (!f.flags.is_method and !f.flags.is_constructor) {
             if (f.flags.is_async and !downlevel_async) try self.write("async ");
+            if (generator_native_at_es5) {
+                try self.write("/* TODO: ES5 generator state-machine doesn't yet handle nested control flow with yields — keeping native function*, will fail at runtime in ES5 */ ");
+            }
             try self.write("function");
-            if (f.flags.is_generator) try self.write("*");
+            if (f.flags.is_generator and !downlevel_generator) try self.write("*");
             if (f.name != hir_mod.none_node_id) {
                 try self.write(" ");
                 try self.printExpression(f.name);
@@ -1108,6 +1134,8 @@ pub const Printer = struct {
             try self.write(" ");
             if (downlevel_async) {
                 try self.printAsyncDownlevelBody(f.body);
+            } else if (downlevel_generator) {
+                try self.printGeneratorDownlevelBody(f.body);
             } else if (self.options.es_target == .es5 and self.hasDefaultParam(params)) {
                 // §4.A — at ES5, lower default-parameter syntax to a
                 // body-prefix `if (x === void 0) { x = ...; }` shim.
@@ -1140,6 +1168,121 @@ pub const Printer = struct {
             try self.write("; }");
         }
         try self.write(");");
+        self.depth -= 1;
+        try self.writeNewlineIndent();
+        try self.write("}");
+    }
+
+    /// §4.A.4 v0 — true iff `body` is a `block_stmt` whose top-level
+    /// statements are all in the lowerable set: top-level `yield_expr`
+    /// (as expression-stmt), `return_stmt`, or any other statement
+    /// kind that is *not* a structured statement carrying nested
+    /// yields. v0 deliberately bails on `if`/`while`/`for`/`try`/
+    /// `switch` and on declarations, since lowering `let x = yield E`
+    /// requires routing the resumed value through `_a.sent()` — that
+    /// rewrite is tracked as a §4.A.4.1 follow-up.
+    fn canLowerGeneratorBody(self: *const Printer, body: NodeId) bool {
+        if (self.hir.kindOf(body) != .block_stmt) return false;
+        const stmts = hir_mod.blockStmts(self.hir, body);
+        for (stmts) |s| {
+            const k = self.hir.kindOf(s);
+            switch (k) {
+                .yield_expr, .return_stmt => continue,
+                .var_decl, .let_decl, .const_decl, .if_stmt, .while_stmt, .do_while_stmt, .for_stmt, .for_in_stmt, .for_of_stmt, .try_stmt, .switch_stmt, .throw_stmt, .break_stmt, .continue_stmt, .fn_decl, .class_decl => return false,
+                else => continue,
+            }
+        }
+        return true;
+    }
+
+    /// §4.A.4 v0 — emit the linear state-machine downlevel:
+    ///
+    /// ```js
+    /// {
+    ///     return __generator(this, function (_a) {
+    ///         switch (_a.label) {
+    ///             case 0: <pre-yield stmts> return [4 /*yield*/, V1];
+    ///             case 1: _a.sent(); <stmts> return [4 /*yield*/, V2];
+    ///             …
+    ///             case N: _a.sent(); <tail> return [2 /*return*/];
+    ///         }
+    ///     });
+    /// }
+    /// ```
+    ///
+    /// Op-code conventions (matching tslib's `__generator`):
+    ///   * `[4, value]` — yield value
+    ///   * `[5, expr]`  — yield* expr (delegate)
+    ///   * `[2, value]` — return value (terminates)
+    ///   * `[2]`        — bare return (terminates)
+    ///
+    /// Caller is responsible for gating on `canLowerGeneratorBody`.
+    fn printGeneratorDownlevelBody(self: *Printer, body: NodeId) anyerror!void {
+        try self.write("{");
+        self.depth += 1;
+        try self.writeNewlineIndent();
+        try self.write("return __generator(this, function (_a) {");
+        self.depth += 1;
+        try self.writeNewlineIndent();
+        try self.write("switch (_a.label) {");
+        self.depth += 1;
+
+        const stmts = hir_mod.blockStmts(self.hir, body);
+        var state: u32 = 0;
+        var buf: [16]u8 = undefined;
+
+        try self.writeNewlineIndent();
+        try self.write("case 0:");
+        var ended = false;
+
+        for (stmts) |stmt| {
+            const k = self.hir.kindOf(stmt);
+            if (k == .yield_expr) {
+                const y = hir_mod.yieldExprOf(self.hir, stmt);
+                // `yield*` is encoded by the parser as a yield_expr
+                // whose `type_node` slot is set (re-used as the
+                // delegate marker). Map to op-code 5; plain yields
+                // use op-code 4.
+                const op: []const u8 = if (y.type_node != hir_mod.none_node_id) "5" else "4";
+                try self.write(" return [");
+                try self.write(op);
+                if (y.expr != hir_mod.none_node_id) {
+                    try self.write(", ");
+                    try self.printExpression(y.expr);
+                }
+                try self.write("];");
+                state += 1;
+                const num = std.fmt.bufPrint(&buf, "{d}", .{state}) catch unreachable;
+                try self.writeNewlineIndent();
+                try self.write("case ");
+                try self.write(num);
+                try self.write(": _a.sent();");
+            } else if (k == .return_stmt) {
+                const r = hir_mod.returnOf(self.hir, stmt);
+                try self.write(" return [2");
+                if (r.value != hir_mod.none_node_id) {
+                    try self.write(", ");
+                    try self.printExpression(r.value);
+                }
+                try self.write("];");
+                ended = true;
+                break;
+            } else {
+                try self.write(" ");
+                try self.printNonIndentStatement(stmt);
+            }
+        }
+
+        if (!ended) {
+            try self.write(" return [2];");
+        }
+
+        self.depth -= 1;
+        try self.writeNewlineIndent();
+        try self.write("}");
+        self.depth -= 1;
+        try self.writeNewlineIndent();
+        try self.write("});");
         self.depth -= 1;
         try self.writeNewlineIndent();
         try self.write("}");
@@ -3802,7 +3945,7 @@ test "emit: importHelpers prepends tslib import when async lowers at es2015" {
         .{ .es_target = .es2015, .import_helpers = true },
     );
     defer T.allocator.free(out);
-    try T.expect(std.mem.indexOf(u8, out, "import { __awaiter, __decorate, __esDecorate, __extends, __metadata, __param, __importDefault, __importStar, __values } from \"tslib\";") != null);
+    try T.expect(std.mem.indexOf(u8, out, "import { __awaiter, __decorate, __esDecorate, __extends, __generator, __metadata, __param, __importDefault, __importStar, __values } from \"tslib\";") != null);
     // Helper still gets referenced from user code.
     try T.expect(std.mem.indexOf(u8, out, "__awaiter(this, void 0, void 0, function* ()") != null);
 }
@@ -3869,6 +4012,107 @@ test "emit: bare yield emits without operand" {
     const out = try emit("function* g() { yield; }");
     defer T.allocator.free(out);
     try T.expect(std.mem.indexOf(u8, out, "yield") != null);
+}
+
+test "emit: generator downlevels to __generator state-machine at es5" {
+    const out = try emitWithOpts(
+        "function* g() { yield 1; yield 2; }",
+        .{ .es_target = .es5 },
+    );
+    defer T.allocator.free(out);
+    // `function*` is gone — emitted as plain `function g(`.
+    try T.expect(std.mem.indexOf(u8, out, "function*") == null);
+    try T.expect(std.mem.indexOf(u8, out, "function g(") != null);
+    // __generator wrapper present, with the `(this, function (_a) { … })` shape.
+    try T.expect(std.mem.indexOf(u8, out, "return __generator(this, function (_a)") != null);
+    // switch on _a.label drives the state machine.
+    try T.expect(std.mem.indexOf(u8, out, "switch (_a.label)") != null);
+    try T.expect(std.mem.indexOf(u8, out, "case 0:") != null);
+    try T.expect(std.mem.indexOf(u8, out, "case 1: _a.sent()") != null);
+    try T.expect(std.mem.indexOf(u8, out, "case 2: _a.sent()") != null);
+    // [4, <value>] is the yield opcode.
+    try T.expect(std.mem.indexOf(u8, out, "return [4, 1]") != null);
+    try T.expect(std.mem.indexOf(u8, out, "return [4, 2]") != null);
+    // Fall-through return [2] terminates the machine.
+    try T.expect(std.mem.indexOf(u8, out, "return [2]") != null);
+    // No leftover `yield` keyword — every yield was rewritten.
+    try T.expect(std.mem.indexOf(u8, out, "yield 1") == null);
+    try T.expect(std.mem.indexOf(u8, out, "yield 2") == null);
+}
+
+test "emit: generator with bare yield emits [4] opcode" {
+    const out = try emitWithOpts(
+        "function* g() { yield; }",
+        .{ .es_target = .es5 },
+    );
+    defer T.allocator.free(out);
+    try T.expect(std.mem.indexOf(u8, out, "return [4];") != null);
+    try T.expect(std.mem.indexOf(u8, out, "case 1: _a.sent()") != null);
+    try T.expect(std.mem.indexOf(u8, out, "return [2];") != null);
+}
+
+test "emit: generator with yield* emits [5] delegate opcode" {
+    const out = try emitWithOpts(
+        "function* g() { yield* other(); }",
+        .{ .es_target = .es5 },
+    );
+    defer T.allocator.free(out);
+    try T.expect(std.mem.indexOf(u8, out, "return [5, other()]") != null);
+    try T.expect(std.mem.indexOf(u8, out, "yield* other()") == null);
+}
+
+test "emit: generator with return value emits [2, value] terminator" {
+    const out = try emitWithOpts(
+        "function* g() { yield 1; return 42; }",
+        .{ .es_target = .es5 },
+    );
+    defer T.allocator.free(out);
+    try T.expect(std.mem.indexOf(u8, out, "return [4, 1]") != null);
+    try T.expect(std.mem.indexOf(u8, out, "return [2, 42]") != null);
+    // The post-return fall-through `return [2]` should NOT also appear —
+    // explicit return short-circuits the synthesized fall-through.
+    // Count occurrences of `return [2]` — exactly one (the `[2, 42]`).
+    var idx: usize = 0;
+    var bare_count: usize = 0;
+    while (std.mem.indexOfPos(u8, out, idx, "return [2]")) |pos| : (idx = pos + 1) {
+        bare_count += 1;
+    }
+    try T.expect(bare_count == 0);
+}
+
+test "emit: generator preserved at es2015+" {
+    const out = try emitWithOpts(
+        "function* g() { yield 1; yield 2; }",
+        .{ .es_target = .es2015 },
+    );
+    defer T.allocator.free(out);
+    // Native `function*` survives — no state-machine lowering.
+    try T.expect(std.mem.indexOf(u8, out, "function* g(") != null);
+    try T.expect(std.mem.indexOf(u8, out, "yield 1") != null);
+    try T.expect(std.mem.indexOf(u8, out, "__generator") == null);
+}
+
+test "emit: generator with nested control flow falls back to native + marker at es5" {
+    // Bodies with control flow around yields are outside v0's
+    // supported subset — emit native `function*` plus a TODO marker.
+    const out = try emitWithOpts(
+        "function* g() { if (cond) { yield 1; } }",
+        .{ .es_target = .es5 },
+    );
+    defer T.allocator.free(out);
+    try T.expect(std.mem.indexOf(u8, out, "TODO: ES5 generator") != null);
+    try T.expect(std.mem.indexOf(u8, out, "function*") != null);
+    try T.expect(std.mem.indexOf(u8, out, "__generator") == null);
+}
+
+test "emit: importHelpers tslib import includes __generator" {
+    const out = try emitWithOpts(
+        "async function f() { await g(); }",
+        .{ .es_target = .es2015, .import_helpers = true },
+    );
+    defer T.allocator.free(out);
+    try T.expect(std.mem.indexOf(u8, out, "__generator") != null);
+    try T.expect(std.mem.indexOf(u8, out, "from \"tslib\"") != null);
 }
 
 test "emit: dynamic import preserved for esm" {
