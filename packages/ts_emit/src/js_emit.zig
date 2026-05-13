@@ -104,6 +104,15 @@ pub const EsTarget = enum {
     pub fn supportsNativeBigInt(self: EsTarget) bool {
         return @intFromEnum(self) >= @intFromEnum(EsTarget.es2020);
     }
+
+    /// Native `function*` generator syntax is an ES2015 feature. Below
+    /// that we lower to a `__generator(this, function (_state) { … })`
+    /// state-machine, matching tsc's downlevel shape. v0 of the
+    /// state-machine transform is tracked separately (§4.A.4); this
+    /// predicate is the gate that future lowering will branch on.
+    pub fn supportsNativeGenerators(self: EsTarget) bool {
+        return @intFromEnum(self) >= @intFromEnum(EsTarget.es2015);
+    }
 };
 
 pub const JsxRuntime = enum {
@@ -176,12 +185,20 @@ pub const Options = struct {
     emit_decorator_metadata: bool = false,
     /// `importHelpers` — when true, prepend an
     /// `import { __awaiter, __decorate, __esDecorate, __extends,
-    /// __param, __importDefault, __importStar } from "tslib";` line at the top
-    /// of the file so the runtime helpers come from the `tslib`
-    /// package rather than being expected as ambient globals. v0
-    /// emits the full helper set unconditionally and lets the bundler
-    /// tree-shake unused names.
+    /// __param, __importDefault, __importStar, __values } from "tslib";`
+    /// line at the top of the file so the runtime helpers come from
+    /// the `tslib` package rather than being expected as ambient
+    /// globals. v0 emits the full helper set unconditionally and
+    /// lets the bundler tree-shake unused names.
     import_helpers: bool = false,
+    /// `downlevelIteration` — when true and `es_target` is below
+    /// ES2015, lower `for-of` over a non-array iterable using the
+    /// iterator protocol (`__values(source).next()` loop wrapped in
+    /// try/catch/finally that closes the iterator via `.return()` on
+    /// abrupt completion). When false (default) `for-of` at ES5 stays
+    /// on the cheaper indexed-for shape, which assumes the source is
+    /// array-like. Matches tsc's `downlevelIteration` compiler flag.
+    downlevel_iteration: bool = false,
     /// `removeComments` — when true, strip JSDoc `/** … */` comments
     /// from the output. When false (default), JSDoc comments that
     /// appear immediately before a top-level declaration in the
@@ -347,7 +364,7 @@ pub const Printer = struct {
         // before any user-level statement so the helpers are in
         // scope for the lowered code below.
         if (self.options.import_helpers) {
-            try self.write("import { __awaiter, __decorate, __esDecorate, __extends, __metadata, __param, __importDefault, __importStar } from \"tslib\";");
+            try self.write("import { __awaiter, __decorate, __esDecorate, __extends, __metadata, __param, __importDefault, __importStar, __values } from \"tslib\";");
             try self.write(self.options.newline);
         }
         // §4.A.10 — auto-import the runtime helpers when the file
@@ -808,11 +825,18 @@ pub const Printer = struct {
 
     fn printForInOf(self: *Printer, node: NodeId) !void {
         const p = hir_mod.forInOf(self.hir, node);
-        // §4.A.3 — `for-of` lowers to indexed `for` at ES5.
-        // Conservative: assume the source is array-shaped. Iterator-
-        // protocol fallback would need an `__values` helper +
-        // try/finally; that's a Phase 4 follow-up.
+        // §4.A.3 — `for-of` lowers at ES5. Two shapes:
+        //   * default: assume array-shape, lower to indexed `for`
+        //     (cheap, but breaks for `Map`/`Set`/custom iterables).
+        //   * `downlevel_iteration: true`: full iterator-protocol
+        //     loop wrapped in try/catch/finally so the iterator's
+        //     `.return()` runs on abrupt completion. Matches tsc's
+        //     `downlevelIteration` flag.
         if (self.hir.kindOf(node) == .for_of_stmt and self.options.es_target == .es5) {
+            if (self.options.downlevel_iteration) {
+                try self.printForOfIteratorProtocol(p.target, p.source, p.body);
+                return;
+            }
             try self.write("for (var _i = 0, _arr = ");
             try self.printExpression(p.source);
             try self.write("; _i < _arr.length; _i++) { ");
@@ -869,6 +893,47 @@ pub const Printer = struct {
         } else {
             try self.printNonIndentStatement(body);
         }
+    }
+
+    /// §4.A.3 — emit a for-of using the iterator protocol so a
+    /// `Map`/`Set`/custom iterable downlevels correctly. Shape mirrors
+    /// tsc with `downlevelIteration`:
+    ///
+    /// ```js
+    /// try {
+    ///     for (var _b = __values(source), _c = _b.next(); !_c.done; _c = _b.next()) {
+    ///         var x = _c.value;
+    ///         <body>
+    ///     }
+    /// }
+    /// catch (e_1_1) { e_1 = { error: e_1_1 }; }
+    /// finally {
+    ///     try { if (_c && !_c.done && (_a = _b.return)) _a.call(_b); }
+    ///     finally { if (e_1) throw e_1.error; }
+    /// }
+    /// var e_1, _a;
+    /// ```
+    ///
+    /// Notes:
+    ///   * `e_1` / `_a` / `_b` / `_c` are static names — nested for-of
+    ///     under `downlevel_iteration` may collide. Hoisting / per-loop
+    ///     uniquing is a follow-up (§4.A.3.2).
+    ///   * The declarations for `e_1, _a` are emitted *before* the
+    ///     try so they're hoisted into the enclosing scope, matching
+    ///     tsc's shape (var hoist).
+    fn printForOfIteratorProtocol(
+        self: *Printer,
+        target: NodeId,
+        source: NodeId,
+        body: NodeId,
+    ) anyerror!void {
+        try self.write("var e_1, _a; try { for (var _b = __values(");
+        try self.printExpression(source);
+        try self.write("), _c = _b.next(); !_c.done; _c = _b.next()) { ");
+        try self.printForOfBindingDecl(target);
+        try self.write(" = _c.value; ");
+        try self.printForOfBody(body);
+        try self.write(" } } catch (e_1_1) { e_1 = { error: e_1_1 }; } finally { try { if (_c && !_c.done && (_a = _b.return)) _a.call(_b); } finally { if (e_1) throw e_1.error; } }");
     }
 
     fn printReturn(self: *Printer, node: NodeId) !void {
@@ -3504,6 +3569,68 @@ test "emit: for-of preserves native syntax at es2015 with array literal" {
     try T.expect(std.mem.indexOf(u8, out, "_i") == null);
 }
 
+test "emit: for-of with downlevel_iteration emits iterator-protocol loop at es5" {
+    const out = try emitWithOpts(
+        "for (const v of iterable) { use(v); }",
+        .{ .es_target = .es5, .downlevel_iteration = true },
+    );
+    defer T.allocator.free(out);
+    // No native `for-of` keyword survived.
+    try T.expect(std.mem.indexOf(u8, out, " of ") == null);
+    // Hoisted error + return-fn temps.
+    try T.expect(std.mem.indexOf(u8, out, "var e_1, _a;") != null);
+    // __values()-driven iterator setup, .next() loop.
+    try T.expect(std.mem.indexOf(u8, out, "__values(iterable)") != null);
+    try T.expect(std.mem.indexOf(u8, out, "_c = _b.next()") != null);
+    try T.expect(std.mem.indexOf(u8, out, "!_c.done") != null);
+    // Binding via .value.
+    try T.expect(std.mem.indexOf(u8, out, "var v = _c.value") != null);
+    // catch / finally with .return() call.
+    try T.expect(std.mem.indexOf(u8, out, "catch (e_1_1)") != null);
+    try T.expect(std.mem.indexOf(u8, out, "_a = _b.return") != null);
+    try T.expect(std.mem.indexOf(u8, out, "_a.call(_b)") != null);
+    try T.expect(std.mem.indexOf(u8, out, "if (e_1) throw e_1.error;") != null);
+}
+
+test "emit: for-of without downlevel_iteration keeps indexed-for at es5" {
+    const out = try emitWithOpts(
+        "for (const v of iterable) { use(v); }",
+        .{ .es_target = .es5, .downlevel_iteration = false },
+    );
+    defer T.allocator.free(out);
+    // Cheaper indexed-for form, no iterator protocol.
+    try T.expect(std.mem.indexOf(u8, out, "_i < _arr.length") != null);
+    try T.expect(std.mem.indexOf(u8, out, "__values(") == null);
+    try T.expect(std.mem.indexOf(u8, out, "e_1") == null);
+}
+
+test "emit: for-of with downlevel_iteration is a no-op at es2015+" {
+    // downlevel_iteration only fires below ES2015 — native for-of survives at es2015+.
+    const out = try emitWithOpts(
+        "for (const v of iterable) { use(v); }",
+        .{ .es_target = .es2015, .downlevel_iteration = true },
+    );
+    defer T.allocator.free(out);
+    try T.expect(std.mem.indexOf(u8, out, " of ") != null);
+    try T.expect(std.mem.indexOf(u8, out, "__values(") == null);
+}
+
+test "emit: importHelpers tslib import includes __values" {
+    const out = try emitWithOpts(
+        "async function f() { await g(); }",
+        .{ .es_target = .es2015, .import_helpers = true },
+    );
+    defer T.allocator.free(out);
+    try T.expect(std.mem.indexOf(u8, out, "__values") != null);
+    try T.expect(std.mem.indexOf(u8, out, "from \"tslib\"") != null);
+}
+
+test "EsTarget.supportsNativeGenerators is es2015+" {
+    try T.expectEqual(false, EsTarget.supportsNativeGenerators(.es5));
+    try T.expectEqual(true, EsTarget.supportsNativeGenerators(.es2015));
+    try T.expectEqual(true, EsTarget.supportsNativeGenerators(.esnext));
+}
+
 test "emit: class downlevels to function-with-prototype at es5" {
     const out = try emitWithOpts("class Foo { greet() { return 1; } }", .{ .es_target = .es5 });
     defer T.allocator.free(out);
@@ -3675,7 +3802,7 @@ test "emit: importHelpers prepends tslib import when async lowers at es2015" {
         .{ .es_target = .es2015, .import_helpers = true },
     );
     defer T.allocator.free(out);
-    try T.expect(std.mem.indexOf(u8, out, "import { __awaiter, __decorate, __esDecorate, __extends, __metadata, __param, __importDefault, __importStar } from \"tslib\";") != null);
+    try T.expect(std.mem.indexOf(u8, out, "import { __awaiter, __decorate, __esDecorate, __extends, __metadata, __param, __importDefault, __importStar, __values } from \"tslib\";") != null);
     // Helper still gets referenced from user code.
     try T.expect(std.mem.indexOf(u8, out, "__awaiter(this, void 0, void 0, function* ()") != null);
 }
