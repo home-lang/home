@@ -125,7 +125,15 @@ pub const TsCodes = struct {
     pub const default_export_merge: u32 = 2652;
     pub const infer_constraints_not_identical: u32 = 2838;
     pub const decorator_too_few_arguments: u32 = 1329;
+    pub const decorators_not_valid_here: u32 = 1206;
+    pub const multiple_accessor_decorators: u32 = 1207;
+    pub const class_decorator_signature_unresolved: u32 = 1238;
+    pub const parameter_decorator_signature_unresolved: u32 = 1239;
     pub const property_decorator_signature_unresolved: u32 = 1240;
+    pub const method_decorator_signature_unresolved: u32 = 1241;
+    pub const decorator_on_method_overload: u32 = 1249;
+    pub const decorator_or_modifier_on_this_parameter: u32 = 1433;
+    pub const this_parameter_must_be_first: u32 = 2680;
     pub const no_exported_member_suggestion: u32 = 2724;
     pub const export_non_local_declaration: u32 = 2661;
     pub const delete_operand_property_reference: u32 = 2703;
@@ -886,6 +894,7 @@ pub const Checker = struct {
             }
         }
         for (stmts) |s| try self.checkStatement(s);
+        try self.checkTopLevelDecoratorDiagnostics(stmts);
         try self.checkUsedBeforeAssignment(stmts);
         try self.checkClassUsedBeforeDeclaration(stmts);
         if (self.source != null) try self.applyDirectives(root);
@@ -5709,11 +5718,15 @@ pub const Checker = struct {
         var has_rest_param = false;
         var explicit_this_t: TypeId = types.Primitive.none;
         var value_param_index: u16 = 0;
-        for (params) |p| {
+        for (params, 0..) |p, param_index| {
             const pp = hir_mod.parameterOf(self.hir, p);
             const is_this_param = self.isThisParameter(p);
+            try self.checkParameterDecoratorDiagnostics(p, node, param_index, is_this_param);
             if (f.body == hir_mod.none_node_id and pp.default_value != hir_mod.none_node_id) {
                 try self.report(p, TsCodes.parameter_initializer_implementation_only, "A parameter initializer is only allowed in a function or constructor implementation.");
+            }
+            if (is_this_param and param_index != 0) {
+                try self.report(p, TsCodes.this_parameter_must_be_first, "A 'this' parameter must be the first parameter.");
             }
             if (pp.flags.is_rest and !is_this_param) has_rest_param = true;
             const has_anno = pp.type_annotation != hir_mod.none_node_id;
@@ -5991,7 +6004,41 @@ pub const Checker = struct {
         return true;
     }
 
+    fn checkTopLevelDecoratorDiagnostics(self: *Checker, stmts: []const NodeId) CheckError!void {
+        var i: usize = 0;
+        while (i < stmts.len) {
+            if (self.hir.kindOf(stmts[i]) != .decorator) {
+                i += 1;
+                continue;
+            }
+            const start = i;
+            while (i < stmts.len and self.hir.kindOf(stmts[i]) == .decorator) : (i += 1) {}
+            if (i >= stmts.len) break;
+            const target = self.unwrapExportDecl(stmts[i]);
+            if (target == hir_mod.none_node_id or (self.hir.kindOf(target) != .class_decl and self.hir.kindOf(target) != .class_expr)) continue;
+            for (stmts[start..i]) |decorator_node| {
+                try self.checkClassDecoratorDiagnostic(decorator_node);
+            }
+        }
+    }
+
+    fn checkClassDecoratorDiagnostic(self: *Checker, decorator_node: NodeId) CheckError!void {
+        if (self.hir.kindOf(decorator_node) != .decorator) return;
+        const d = hir_mod.decoratorOf(self.hir, decorator_node);
+        if (d.expression == hir_mod.none_node_id) return;
+        const dec_t = try self.checkExpression(d.expression);
+        try self.checkDecoratorRuntimeArity(
+            decorator_node,
+            dec_t,
+            1,
+            TsCodes.class_decorator_signature_unresolved,
+            "class",
+        );
+    }
+
     fn checkClassMemberDecoratorDiagnostics(self: *Checker, members: []const NodeId) CheckError!void {
+        var accessor_decorators: std.AutoHashMapUnmanaged(hir_mod.StringId, NodeId) = .empty;
+        defer accessor_decorators.deinit(self.gpa);
         var i: usize = 0;
         while (i < members.len) {
             if (self.hir.kindOf(members[i]) != .decorator) {
@@ -6005,7 +6052,26 @@ pub const Checker = struct {
             for (members[start..i]) |decorator_node| {
                 try self.checkClassMemberDecoratorDiagnostic(decorator_node, target);
             }
+            try self.checkAccessorDecoratorPairDiagnostic(target, members[start], &accessor_decorators);
         }
+    }
+
+    fn checkAccessorDecoratorPairDiagnostic(
+        self: *Checker,
+        target: NodeId,
+        decorator_node: NodeId,
+        seen: *std.AutoHashMapUnmanaged(hir_mod.StringId, NodeId),
+    ) CheckError!void {
+        if (target == hir_mod.none_node_id) return;
+        if (self.hir.kindOf(target) != .fn_decl and self.hir.kindOf(target) != .fn_expr and self.hir.kindOf(target) != .arrow_fn) return;
+        const f = hir_mod.fnDeclOf(self.hir, target);
+        if (!f.flags.is_getter and !f.flags.is_setter) return;
+        const member_name = (try self.classMemberNameFromFunctionName(f.name)) orelse return;
+        if (seen.contains(member_name)) {
+            try self.report(decorator_node, TsCodes.multiple_accessor_decorators, "Decorators cannot be applied to multiple get/set accessors of the same name.");
+            return;
+        }
+        try seen.put(self.gpa, member_name, decorator_node);
     }
 
     fn checkClassMemberDecoratorDiagnostic(self: *Checker, decorator_node: NodeId, target: NodeId) CheckError!void {
@@ -6016,9 +6082,24 @@ pub const Checker = struct {
         const target_kind = self.hir.kindOf(target);
         if (target_kind == .fn_decl or target_kind == .fn_expr or target_kind == .arrow_fn) {
             const fn_p = hir_mod.fnDeclOf(self.hir, target);
+            if (fn_p.flags.is_constructor) {
+                try self.report(decorator_node, TsCodes.decorators_not_valid_here, "Decorators are not valid here.");
+                return;
+            }
+            if (fn_p.body == hir_mod.none_node_id and !fn_p.flags.is_getter and !fn_p.flags.is_setter) {
+                try self.report(decorator_node, TsCodes.decorator_on_method_overload, "A decorator can only decorate a method implementation, not an overload.");
+                return;
+            }
             if (!fn_p.flags.is_constructor and self.sourceHasNoLibTrueDirective()) {
                 try self.reportMissingGlobalTypeOnce(decorator_node, "TypedPropertyDescriptor");
             }
+            try self.checkDecoratorRuntimeArity(
+                decorator_node,
+                self.hir.typeOf(d.expression),
+                3,
+                TsCodes.method_decorator_signature_unresolved,
+                "method",
+            );
             return;
         }
         if (target_kind == .object_property) {
@@ -6027,7 +6108,15 @@ pub const Checker = struct {
                 (op.value != hir_mod.none_node_id and
                     (self.hir.kindOf(op.value) == .fn_decl or self.hir.kindOf(op.value) == .fn_expr or self.hir.kindOf(op.value) == .arrow_fn) and
                     self.memberSourceLooksMethod(target));
-            if (!op_is_method and !self.classMemberSourceHasLeadingKeyword(target, "accessor")) {
+            if (op_is_method) {
+                try self.checkDecoratorRuntimeArity(
+                    decorator_node,
+                    self.hir.typeOf(d.expression),
+                    3,
+                    TsCodes.method_decorator_signature_unresolved,
+                    "method",
+                );
+            } else if (!self.classMemberSourceHasLeadingKeyword(target, "accessor")) {
                 try self.checkPropertyDecoratorCallableShape(decorator_node, d.expression);
             }
         }
@@ -6095,6 +6184,41 @@ pub const Checker = struct {
         });
     }
 
+    fn checkParameterDecoratorDiagnostics(self: *Checker, param_node: NodeId, fn_node: NodeId, param_index: usize, is_this_param: bool) CheckError!void {
+        const decorators = hir_mod.parameterDecorators(self.hir, param_node);
+        if (decorators.len == 0) return;
+        if (is_this_param) {
+            for (decorators) |decorator_node| {
+                try self.report(decorator_node, TsCodes.decorator_or_modifier_on_this_parameter, "Neither decorators nor modifiers may be applied to 'this' parameters.");
+            }
+            return;
+        }
+        const f = hir_mod.fnDeclOf(self.hir, fn_node);
+        for (decorators) |decorator_node| {
+            if (self.hir.kindOf(decorator_node) != .decorator) continue;
+            const d = hir_mod.decoratorOf(self.hir, decorator_node);
+            if (d.expression == hir_mod.none_node_id) continue;
+            const dec_t = try self.checkExpression(d.expression);
+            if (f.flags.is_constructor) {
+                try self.checkConstructorParameterDecoratorSignature(decorator_node, dec_t, param_index);
+            }
+        }
+    }
+
+    fn checkConstructorParameterDecoratorSignature(self: *Checker, decorator_node: NodeId, dec_t: TypeId, param_index: usize) CheckError!void {
+        _ = param_index;
+        if (dec_t >= self.interner.pool.typeCount() or !self.interner.pool.flagsOf(dec_t).is_signature) return;
+        const params = self.interner.signatureParams(dec_t);
+        if (params.len < 2) return;
+        const property_key_t = params[1];
+        if (self.typeIncludesUndefined(property_key_t)) return;
+        try self.report(
+            decorator_node,
+            TsCodes.parameter_decorator_signature_unresolved,
+            "Unable to resolve signature of parameter decorator when called as an expression.\n  Argument of type 'undefined' is not assignable to parameter of type 'string | symbol'.",
+        );
+    }
+
     fn checkPropertyDecoratorCallableShape(self: *Checker, decorator_node: NodeId, expr: NodeId) CheckError!void {
         const dec_t = self.hir.typeOf(expr);
         if (dec_t >= self.interner.pool.typeCount()) return;
@@ -6124,23 +6248,47 @@ pub const Checker = struct {
     }
 
     fn checkPropertyDecoratorSignatureArity(self: *Checker, decorator_node: NodeId, sig: TypeId) CheckError!void {
+        try self.checkDecoratorRuntimeArity(
+            decorator_node,
+            sig,
+            2,
+            TsCodes.property_decorator_signature_unresolved,
+            "property",
+        );
+    }
+
+    fn checkDecoratorRuntimeArity(
+        self: *Checker,
+        decorator_node: NodeId,
+        sig: TypeId,
+        runtime_arg_count: usize,
+        code: u32,
+        kind: []const u8,
+    ) CheckError!void {
         if (sig >= self.interner.pool.typeCount() or !self.interner.pool.flagsOf(sig).is_signature) return;
-        const runtime_arg_count: usize = 2;
         const params = self.interner.signatureParams(sig);
         const min_required = self.signatureMinRequiredArgs(sig, params);
         const has_unbounded_rest = self.rest_signatures.contains(sig) and params.len > 0 and self.fixedTupleLength(params[params.len - 1]) == null;
+        if (runtime_arg_count > params.len and self.decoratorSignatureAllowsExtraRuntimeArgs(kind, params)) return;
         if (runtime_arg_count >= min_required and (has_unbounded_rest or runtime_arg_count <= params.len)) return;
         const expected_count = if (runtime_arg_count < min_required) min_required else params.len;
         const msg = try std.fmt.allocPrint(
             self.diag_arena.allocator(),
-            "Unable to resolve signature of property decorator when called as an expression.\n  The runtime will invoke the decorator with 2 arguments, but the decorator expects {d}.",
-            .{expected_count},
+            "Unable to resolve signature of {s} decorator when called as an expression.\n  The runtime will invoke the decorator with {d} arguments, but the decorator expects {d}.",
+            .{ kind, runtime_arg_count, expected_count },
         );
         try self.diagnostics.append(self.gpa, .{
             .node = decorator_node,
-            .code = TsCodes.property_decorator_signature_unresolved,
+            .code = code,
             .message = msg,
         });
+    }
+
+    fn decoratorSignatureAllowsExtraRuntimeArgs(self: *Checker, kind: []const u8, params: []const TypeId) bool {
+        if (!std.mem.eql(u8, kind, "method")) return false;
+        if (params.len != 2) return false;
+        _ = self;
+        return params[0] == types.Primitive.any or params[0] == types.Primitive.unknown;
     }
 
     /// Lower a class declaration into an instance object type. Each
@@ -26224,6 +26372,164 @@ test "checker: auto-accessor decorator is not checked as property decorator" {
     for (s.checker.diagnostics.items) |d| {
         try T.expect(d.code != TsCodes.property_decorator_signature_unresolved);
     }
+}
+
+test "checker: class decorator signature must accept runtime arity" {
+    const s = try newSetup(
+        \\declare function dec(): (target: Function, extra: number) => void;
+        \\@dec()
+        \\class C {}
+    );
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+    var found = false;
+    for (s.checker.diagnostics.items) |d| {
+        if (d.code == TsCodes.class_decorator_signature_unresolved) found = true;
+    }
+    try T.expect(found);
+}
+
+test "checker: method decorator signature must accept runtime arity" {
+    const s = try newSetup(
+        \\declare function dec(target: Function): void;
+        \\class C {
+        \\  @dec method() {}
+        \\}
+    );
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+    var found = false;
+    for (s.checker.diagnostics.items) |d| {
+        if (d.code == TsCodes.method_decorator_signature_unresolved) found = true;
+    }
+    try T.expect(found);
+}
+
+test "checker: method decorator may ignore trailing descriptor argument" {
+    const s = try newSetup(
+        \\declare function dec(handler: any): (target: any, propertyKey: string) => void;
+        \\class C {
+        \\  @dec(() => true)
+        \\  static method() {}
+        \\}
+    );
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+    for (s.checker.diagnostics.items) |d| {
+        try T.expect(d.code != TsCodes.method_decorator_signature_unresolved);
+    }
+}
+
+test "checker: decorator cannot target a method overload signature" {
+    const s = try newSetup(
+        \\declare var dec: any;
+        \\class C {
+        \\  @dec method();
+        \\  method() {}
+        \\}
+    );
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+    var found = false;
+    for (s.checker.diagnostics.items) |d| {
+        if (d.code == TsCodes.decorator_on_method_overload) found = true;
+    }
+    try T.expect(found);
+}
+
+test "checker: decorated overload implementation satisfies previous signature" {
+    const s = try newSetup(
+        \\declare var dec: any;
+        \\class C {
+        \\  method();
+        \\  @dec method() {}
+        \\}
+    );
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+    for (s.checker.diagnostics.items) |d| {
+        try T.expect(d.code != TsCodes.implementation_missing);
+    }
+}
+
+test "checker: constructor member decorators are not valid" {
+    const s = try newSetup(
+        \\declare var dec: any;
+        \\class C {
+        \\  @dec constructor() {}
+        \\}
+    );
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+    var found = false;
+    for (s.checker.diagnostics.items) |d| {
+        if (d.code == TsCodes.decorators_not_valid_here) found = true;
+    }
+    try T.expect(found);
+}
+
+test "checker: constructor parameter decorator property key may be undefined" {
+    const s = try newSetup(
+        \\declare function dec(target: Function, propertyKey: string | symbol, parameterIndex: number): void;
+        \\class C {
+        \\  constructor(@dec value: number) {}
+        \\}
+    );
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+    var found = false;
+    for (s.checker.diagnostics.items) |d| {
+        if (d.code == TsCodes.parameter_decorator_signature_unresolved) found = true;
+    }
+    try T.expect(found);
+}
+
+test "checker: decorators are not valid on this parameters" {
+    const s = try newSetup(
+        \\declare var dec: any;
+        \\class C {
+        \\  method(@dec this: C) {}
+        \\}
+    );
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+    var found = false;
+    for (s.checker.diagnostics.items) |d| {
+        if (d.code == TsCodes.decorator_or_modifier_on_this_parameter) found = true;
+    }
+    try T.expect(found);
+}
+
+test "checker: this parameter must be first" {
+    const s = try newSetup(
+        \\class C {
+        \\  method(value: number, this: C) {}
+        \\}
+    );
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+    var found = false;
+    for (s.checker.diagnostics.items) |d| {
+        if (d.code == TsCodes.this_parameter_must_be_first) found = true;
+    }
+    try T.expect(found);
+}
+
+test "checker: get and set accessor pair cannot both have decorators" {
+    const s = try newSetup(
+        \\declare function dec(target: any, propertyKey: string, descriptor: any): void;
+        \\class C {
+        \\  @dec get value(): number { return 1; }
+        \\  @dec set value(v: number) {}
+        \\}
+    );
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+    var found = false;
+    for (s.checker.diagnostics.items) |d| {
+        if (d.code == TsCodes.multiple_accessor_decorators) found = true;
+    }
+    try T.expect(found);
 }
 
 test "checker: typed var used in conditional emits TS2454" {

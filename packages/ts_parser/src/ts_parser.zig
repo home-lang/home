@@ -1264,6 +1264,10 @@ pub const Parser = struct {
                         else => {},
                     }
                 }
+                if (flags.is_parameter_property and self.peek().kind == .at) {
+                    const at_tok = self.peek();
+                    try self.reportCodeAt(at_tok.span.start, at_tok.line, 1005, "',' expected.");
+                }
                 while (self.peek().kind == .at) {
                     const at_tok = self.advance();
                     const dec_expr = try self.parseLeftHandSideExpression();
@@ -1296,12 +1300,13 @@ pub const Parser = struct {
                     if (self.match(.colon)) this_ann = try self.parseTypeAnnotation();
                     const this_name_id = self.interner.intern("this") catch return error.OutOfMemory;
                     const this_ident = try self.builder.addIdentifier(tokenSpan(this_tok), this_name_id);
-                    const this_param = try self.builder.addParameter(
+                    const this_param = try self.builder.addParameterWithDecorators(
                         .{ .start = this_tok.span.start, .end = self.tokens[self.cursor - 1].span.end },
                         this_ident,
                         this_ann,
                         hir_mod.none_node_id,
                         .{},
+                        param_decorators.items,
                     );
                     try params.append(self.gpa, this_param);
                     if (!self.match(.comma)) break;
@@ -2020,12 +2025,62 @@ pub const Parser = struct {
     }
 
     fn nextClassMemberNameMatches(self: *const Parser, current: Token) bool {
-        var idx = self.cursor;
-        while (idx < self.tokens.len and self.tokens[idx].kind.isModifierKeyword()) : (idx += 1) {}
+        var idx: usize = self.cursor;
+        while (idx < self.tokens.len) {
+            while (idx < self.tokens.len and self.tokens[idx].kind == .at) {
+                idx = self.skipDecoratorLookahead(idx);
+            }
+            if (idx < self.tokens.len and self.tokens[idx].kind.isModifierKeyword()) {
+                idx += 1;
+                continue;
+            }
+            break;
+        }
         if (idx < self.tokens.len and self.tokens[idx].kind == .asterisk) idx += 1;
         if (idx >= self.tokens.len) return false;
         const next = self.tokens[idx];
         return self.classMemberNameTextMatches(current, next);
+    }
+
+    fn skipDecoratorLookahead(self: *const Parser, start: usize) usize {
+        var idx = start + 1;
+        if (idx >= self.tokens.len) return idx;
+
+        if (self.tokens[idx].kind == .open_paren) {
+            idx = self.skipBalancedLookahead(idx);
+        } else {
+            idx += 1;
+        }
+
+        while (idx < self.tokens.len) {
+            if (self.tokens[idx].kind == .dot and idx + 1 < self.tokens.len) {
+                idx += 2;
+                continue;
+            }
+            if (self.tokens[idx].kind == .open_paren) {
+                idx = self.skipBalancedLookahead(idx);
+                continue;
+            }
+            break;
+        }
+        return idx;
+    }
+
+    fn skipBalancedLookahead(self: *const Parser, start: usize) usize {
+        var idx = start;
+        var depth: usize = 0;
+        while (idx < self.tokens.len) : (idx += 1) {
+            switch (self.tokens[idx].kind) {
+                .open_paren, .open_bracket, .open_brace => depth += 1,
+                .close_paren, .close_bracket, .close_brace => {
+                    if (depth == 0) return idx + 1;
+                    depth -= 1;
+                    if (depth == 0) return idx + 1;
+                },
+                else => {},
+            }
+        }
+        return idx;
     }
 
     fn classMemberNameTextMatches(self: *const Parser, a: Token, b: Token) bool {
@@ -8868,6 +8923,33 @@ test "parser: parameter properties skip modifiers" {
     const root = try s.parser.parseSourceFile();
     const top = hir_mod.blockStmts(&s.hir, root)[0];
     try T.expectEqual(hir_mod.NodeKind.class_decl, s.hir.kindOf(top));
+}
+
+test "parser: this parameter preserves decorators" {
+    var s = try newTestSetup("class Foo { method(@dec this: Foo) {} }");
+    defer destroyTestSetup(s);
+    const root = try s.parser.parseSourceFile();
+    const top = hir_mod.blockStmts(&s.hir, root)[0];
+    const members = hir_mod.classMembers(&s.hir, top);
+    const params = hir_mod.fnParams(&s.hir, members[0]);
+    try T.expectEqual(@as(usize, 1), hir_mod.parameterDecorators(&s.hir, params[0]).len);
+}
+
+test "parser: parameter property decorator after modifier reports comma expected" {
+    var s = try newTestSetup("class Foo { constructor(public @dec x: number) {} }");
+    defer destroyTestSetup(s);
+    _ = try s.parser.parseSourceFile();
+    try T.expectEqual(@as(usize, 1), s.parser.diagnostics.items.len);
+    try T.expectEqual(@as(u32, 1005), s.parser.diagnostics.items[0].code);
+}
+
+test "parser: overload implementation lookahead skips decorators" {
+    var s = try newTestSetup("class Foo { method(); @dec method() {} }");
+    defer destroyTestSetup(s);
+    _ = try s.parser.parseSourceFile();
+    for (s.parser.diagnostics.items) |d| {
+        try T.expect(d.code != 2391);
+    }
 }
 
 test "parser: accessibility after static is an order diagnostic only before another member name" {
