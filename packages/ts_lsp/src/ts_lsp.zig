@@ -3174,6 +3174,13 @@ pub const Service = struct {
                 .target = target,
             });
         }
+        // Scan line comments + block comments for `https://` / `http://`
+        // URLs and emit a clickable DocumentLink per match. URLs run
+        // until the first byte that can't be part of a URL (whitespace
+        // or a common trailing-punctuation closer like `)`, `]`, `>`,
+        // `"`, `'`, `\``). The trailing `.`, `,`, `;`, `:` are dropped
+        // so `(See https://example.com.)` links to `https://example.com`.
+        try collectUrlLinksInComments(gpa, f, &links);
         return links.toOwnedSlice(gpa);
     }
 
@@ -4253,6 +4260,120 @@ fn parseCannotFindName(message: []const u8) ?[]const u8 {
 /// that happens to contain the binding name as a substring.
 fn isIdentChar(b: u8) bool {
     return std.ascii.isAlphanumeric(b) or b == '_' or b == '$';
+}
+
+/// Walk `f.source` and emit a `DocumentLink` for each `http://` /
+/// `https://` URL inside a line comment (`// …`) or block comment
+/// (`/* … */`). URLs run from the scheme prefix until the first byte
+/// that can't be a URL character; trailing `.`, `,`, `;`, `:`, `!`,
+/// `?`, `)` are stripped so `(See https://example.com.)` resolves to
+/// `https://example.com`. The detector ignores URL-looking bytes
+/// outside comments (string literals especially) so we don't surface
+/// false positives from runtime URL constants.
+fn collectUrlLinksInComments(
+    gpa: std.mem.Allocator,
+    f: anytype,
+    out: *std.ArrayListUnmanaged(DocumentLink),
+) !void {
+    const src = f.source;
+    var i: usize = 0;
+    var in_line_comment = false;
+    var in_block_comment = false;
+    var in_string = false;
+    var string_delim: u8 = 0;
+    while (i < src.len) : (i += 1) {
+        const b = src[i];
+        if (in_line_comment) {
+            if (b == '\n') {
+                in_line_comment = false;
+                continue;
+            }
+            // Fall through to URL detection — we're still in the
+            // comment.
+        } else if (in_block_comment) {
+            if (b == '*' and i + 1 < src.len and src[i + 1] == '/') {
+                in_block_comment = false;
+                i += 1;
+                continue;
+            }
+            // Fall through to URL detection.
+        } else if (in_string) {
+            if (b == '\\') {
+                i += 1;
+            } else if (b == string_delim) {
+                in_string = false;
+            }
+            continue;
+        } else {
+            if (b == '/' and i + 1 < src.len) {
+                const next = src[i + 1];
+                if (next == '/') {
+                    in_line_comment = true;
+                    i += 1;
+                    continue;
+                }
+                if (next == '*') {
+                    in_block_comment = true;
+                    i += 1;
+                    continue;
+                }
+            }
+            if (b == '"' or b == '\'' or b == '`') {
+                in_string = true;
+                string_delim = b;
+            }
+            continue;
+        }
+
+        // We're inside a comment. Look for a URL scheme starting at i.
+        const remaining = src[i..];
+        const scheme_len: usize = if (std.mem.startsWith(u8, remaining, "https://"))
+            8
+        else if (std.mem.startsWith(u8, remaining, "http://"))
+            7
+        else
+            continue;
+        // URL runs from i until first delimiter byte.
+        var end = i + scheme_len;
+        while (end < src.len) : (end += 1) {
+            const c = src[end];
+            if (c == ' ' or c == '\t' or c == '\n' or c == '\r' or
+                c == ')' or c == ']' or c == '>' or
+                c == '"' or c == '\'' or c == '`')
+            {
+                break;
+            }
+            if (in_block_comment and c == '*' and end + 1 < src.len and src[end + 1] == '/') {
+                break;
+            }
+        }
+        // Strip trailing punctuation that's typically not part of a URL.
+        while (end > i + scheme_len) {
+            const last = src[end - 1];
+            if (last == '.' or last == ',' or last == ';' or
+                last == ':' or last == '!' or last == '?')
+            {
+                end -= 1;
+            } else break;
+        }
+        if (end <= i + scheme_len) continue; // empty after scheme — skip
+        const url_bytes = src[i..end];
+        const target = try gpa.dupe(u8, url_bytes);
+        errdefer gpa.free(target);
+        const start_pos = ts_diagnostics.positionToLineCol(src, @intCast(i));
+        const end_pos = ts_diagnostics.positionToLineCol(src, @intCast(end));
+        try out.append(gpa, .{
+            .span = .{
+                .file = f.path,
+                .start_line = start_pos.line,
+                .start_col = start_pos.col,
+                .end_line = end_pos.line,
+                .end_col = end_pos.col,
+            },
+            .target = target,
+        });
+        i = end - 1; // -1 because loop bumps it back to +1 on continue
+    }
 }
 
 /// Return `true` when `decl` is a top-level declaration whose name
@@ -7429,6 +7550,122 @@ test "Service: documentLinks surfaces resolved import specifiers" {
     try T.expectEqual(@as(u32, 1), links[0].span.start_line);
     try T.expectEqual(@as(u32, 1), links[0].span.end_line);
     try T.expect(links[0].span.end_col > links[0].span.start_col);
+}
+
+test "Service: documentLinks surfaces URLs in line comments" {
+    var vfs = ts_resolver.VirtualFs.init(T.allocator);
+    defer vfs.deinit();
+    var resolver = ts_resolver.Resolver.init(T.allocator, vfs.fs(), .{});
+    defer resolver.deinit();
+    var program = ts_program.Program.init(T.allocator, &resolver);
+    defer program.deinit();
+
+    _ = try program.add(
+        "/main.ts",
+        "// See https://example.com for details.\nlet x = 1;",
+    );
+    try program.compileAll(.{});
+
+    var svc = Service.init(T.allocator, &program);
+    const links = try svc.documentLinks(T.allocator, "/main.ts");
+    defer freeDocumentLinks(T.allocator, links);
+
+    var found_url: ?DocumentLink = null;
+    for (links) |l| {
+        if (std.mem.startsWith(u8, l.target, "https://")) {
+            found_url = l;
+            break;
+        }
+    }
+    try T.expect(found_url != null);
+    // The trailing `.` and ` for details.` must not be part of the URL.
+    try T.expectEqualStrings("https://example.com", found_url.?.target);
+}
+
+test "Service: documentLinks surfaces URLs in block comments" {
+    var vfs = ts_resolver.VirtualFs.init(T.allocator);
+    defer vfs.deinit();
+    var resolver = ts_resolver.Resolver.init(T.allocator, vfs.fs(), .{});
+    defer resolver.deinit();
+    var program = ts_program.Program.init(T.allocator, &resolver);
+    defer program.deinit();
+
+    _ = try program.add(
+        "/main.ts",
+        "/* docs at http://example.org/path */\nlet x = 1;",
+    );
+    try program.compileAll(.{});
+
+    var svc = Service.init(T.allocator, &program);
+    const links = try svc.documentLinks(T.allocator, "/main.ts");
+    defer freeDocumentLinks(T.allocator, links);
+
+    var found_url: ?DocumentLink = null;
+    for (links) |l| {
+        if (std.mem.startsWith(u8, l.target, "http://")) {
+            found_url = l;
+            break;
+        }
+    }
+    try T.expect(found_url != null);
+    try T.expectEqualStrings("http://example.org/path", found_url.?.target);
+}
+
+test "Service: documentLinks skips URL-like text inside string literals" {
+    var vfs = ts_resolver.VirtualFs.init(T.allocator);
+    defer vfs.deinit();
+    var resolver = ts_resolver.Resolver.init(T.allocator, vfs.fs(), .{});
+    defer resolver.deinit();
+    var program = ts_program.Program.init(T.allocator, &resolver);
+    defer program.deinit();
+
+    // The string literal here contains `https://...` but it's runtime
+    // data, not a comment URL. The detector must NOT surface it as a
+    // clickable link.
+    _ = try program.add(
+        "/main.ts",
+        "let url = \"https://example.com\";",
+    );
+    try program.compileAll(.{});
+
+    var svc = Service.init(T.allocator, &program);
+    const links = try svc.documentLinks(T.allocator, "/main.ts");
+    defer freeDocumentLinks(T.allocator, links);
+
+    for (links) |l| {
+        try T.expect(!std.mem.startsWith(u8, l.target, "http"));
+    }
+}
+
+test "Service: documentLinks strips trailing punctuation closers from URLs" {
+    var vfs = ts_resolver.VirtualFs.init(T.allocator);
+    defer vfs.deinit();
+    var resolver = ts_resolver.Resolver.init(T.allocator, vfs.fs(), .{});
+    defer resolver.deinit();
+    var program = ts_program.Program.init(T.allocator, &resolver);
+    defer program.deinit();
+
+    // Parens, commas, and trailing periods are all common around URLs
+    // in prose. The link target must point to the bare URL, not the
+    // surrounding markup.
+    _ = try program.add(
+        "/main.ts",
+        "// (See https://example.com/api, https://example.com/v2.)\nlet x = 1;",
+    );
+    try program.compileAll(.{});
+
+    var svc = Service.init(T.allocator, &program);
+    const links = try svc.documentLinks(T.allocator, "/main.ts");
+    defer freeDocumentLinks(T.allocator, links);
+
+    var found_first = false;
+    var found_second = false;
+    for (links) |l| {
+        if (std.mem.eql(u8, l.target, "https://example.com/api")) found_first = true;
+        if (std.mem.eql(u8, l.target, "https://example.com/v2")) found_second = true;
+    }
+    try T.expect(found_first);
+    try T.expect(found_second);
 }
 
 test "Service: workspaceWillRenameFiles returns no edits when no file imports the renamed one" {
