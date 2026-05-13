@@ -104,6 +104,7 @@ pub const TsCodes = struct {
     pub const subsequent_var_type_mismatch: u32 = 2403;
     pub const interface_incorrectly_extends: u32 = 2430;
     pub const property_not_assignable_to_base: u32 = 2416;
+    pub const class_incorrectly_extends_base: u32 = 2415;
     pub const property_not_assignable_to_index_type: u32 = 2411;
     pub const number_index_not_assignable_to_string_index: u32 = 2413;
     pub const class_incorrectly_implements_interface: u32 = 2420;
@@ -180,6 +181,7 @@ pub const TsCodes = struct {
     pub const block_scoped_used_before_decl: u32 = 2448;
     pub const property_not_initialized: u32 = 2564;
     pub const cannot_assign_const: u32 = 2588;
+    pub const property_used_before_initialization: u32 = 2729;
     pub const await_only_in_async: u32 = 1308;
     pub const generator_void_return: u32 = 2505;
     pub const yield_star_not_iterable: u32 = 2488;
@@ -243,6 +245,14 @@ pub const TsCodes = struct {
     pub const readonly_property: u32 = 2540;
     /// TS2378 — a `get` accessor body must return a value.
     pub const getter_must_return_value: u32 = 2378;
+    /// TS1267 — abstract class fields cannot carry initializers.
+    pub const abstract_property_initializer: u32 = 1267;
+    /// TS1318 — abstract accessors must be declarations only.
+    pub const abstract_accessor_implementation: u32 = 1318;
+    /// TS2610 / TS2611 — TS distinguishes data properties from
+    /// accessors across class inheritance.
+    pub const property_overrides_accessor: u32 = 2610;
+    pub const accessor_overrides_property: u32 = 2611;
     /// `new X()` where `X` is an abstract class. Abstract classes
     /// cannot be instantiated directly — only concrete subclasses can.
     pub const abstract_class_instantiation: u32 = 2511;
@@ -489,6 +499,10 @@ pub const Checker = struct {
     /// methods/properties; consulted for `super.x` inside static
     /// methods of derived classes.
     class_static_types: std.AutoHashMapUnmanaged(hir_mod.StringId, TypeId),
+    /// Class declaration/expression node → static-side object type.
+    /// Anonymous class expressions have no class name but still need
+    /// to flow as constructor values when returned or assigned.
+    class_static_type_by_node: std.AutoHashMapUnmanaged(NodeId, TypeId),
     /// Instance TypeId → declaring class name (StringId). Inverse
     /// of `class_instance_types`. The member-access path uses it
     /// to map the receiver type back to a class for privacy checks.
@@ -528,6 +542,19 @@ pub const Checker = struct {
     /// consulted on each non-abstract subclass to emit TS2515 for
     /// inherited abstract members the child fails to implement.
     class_abstract_members: std.AutoHashMapUnmanaged(
+        hir_mod.StringId,
+        std.AutoHashMapUnmanaged(hir_mod.StringId, void),
+    ),
+    /// Class-name → names declared as instance data properties.
+    /// Used for TS2611 when a subclass replaces a property with an
+    /// accessor.
+    class_property_members: std.AutoHashMapUnmanaged(
+        hir_mod.StringId,
+        std.AutoHashMapUnmanaged(hir_mod.StringId, void),
+    ),
+    /// Class-name → names declared as instance accessors. Used for
+    /// TS2610 when a subclass replaces an accessor with a property.
+    class_accessor_members: std.AutoHashMapUnmanaged(
         hir_mod.StringId,
         std.AutoHashMapUnmanaged(hir_mod.StringId, void),
     ),
@@ -729,12 +756,15 @@ pub const Checker = struct {
             .checked_class_decls = .empty,
             .class_constructor_sigs = .empty,
             .class_static_types = .empty,
+            .class_static_type_by_node = .empty,
             .class_name_by_instance = .empty,
             .class_private_members = .empty,
             .class_protected_members = .empty,
             .class_parent = .empty,
             .abstract_classes = .empty,
             .class_abstract_members = .empty,
+            .class_property_members = .empty,
+            .class_accessor_members = .empty,
             .type_names = .empty,
             .generic_aliases = .empty,
             .active_generic_aliases = .empty,
@@ -802,6 +832,7 @@ pub const Checker = struct {
         self.checked_class_decls.deinit(self.gpa);
         self.class_constructor_sigs.deinit(self.gpa);
         self.class_static_types.deinit(self.gpa);
+        self.class_static_type_by_node.deinit(self.gpa);
         self.class_name_by_instance.deinit(self.gpa);
         var pm_it = self.class_private_members.valueIterator();
         while (pm_it.next()) |set| set.deinit(self.gpa);
@@ -814,6 +845,12 @@ pub const Checker = struct {
         var am_it = self.class_abstract_members.valueIterator();
         while (am_it.next()) |set| set.deinit(self.gpa);
         self.class_abstract_members.deinit(self.gpa);
+        var cpm_it = self.class_property_members.valueIterator();
+        while (cpm_it.next()) |set| set.deinit(self.gpa);
+        self.class_property_members.deinit(self.gpa);
+        var cam_it = self.class_accessor_members.valueIterator();
+        while (cam_it.next()) |set| set.deinit(self.gpa);
+        self.class_accessor_members.deinit(self.gpa);
         self.type_names.deinit(self.gpa);
         var ga_it = self.generic_aliases.valueIterator();
         while (ga_it.next()) |info| self.gpa.free(info.params);
@@ -3570,6 +3607,12 @@ pub const Checker = struct {
             std.mem.indexOf(u8, src, "@allowUnreachableCode:true") != null;
     }
 
+    fn sourceHasUseDefineForClassFieldsTrueDirective(self: *Checker) bool {
+        const src = self.source orelse return false;
+        return std.mem.indexOf(u8, src, "@useDefineForClassFields: true") != null or
+            std.mem.indexOf(u8, src, "@useDefineForClassFields:true") != null;
+    }
+
     fn sourceHasReactJsxReference(self: *Checker) bool {
         const src = self.source orelse return false;
         return std.mem.indexOf(u8, src, "/.lib/react") != null;
@@ -5742,7 +5785,10 @@ pub const Checker = struct {
             if (has_anno and pp.default_value != hir_mod.none_node_id) {
                 const default_t = try self.checkExpression(pp.default_value);
                 const literal_ok = try self.literalExpressionAssignableToTarget(pp.default_value, declared_param_t);
+                const loose_nullish_ok = !self.strict_flags.strict_null_checks and
+                    (default_t == types.Primitive.null_t or default_t == types.Primitive.undefined_t);
                 if (!literal_ok and
+                    !loose_nullish_ok and
                     (self.parameterDefaultInvalid(default_t, declared_param_t) or
                         !(self.engine.isAssignableTo(default_t, declared_param_t) catch true)))
                 {
@@ -6343,6 +6389,10 @@ pub const Checker = struct {
             }
             break :blk try self.classExtendsInstanceType(c.extends);
         } else null;
+        const parent_static_t: ?TypeId = if (c.extends != hir_mod.none_node_id)
+            self.classExtendsStaticType(c.extends) catch null
+        else
+            null;
         var instance_members: std.ArrayListUnmanaged(types.ObjectMember) = .empty;
         defer instance_members.deinit(self.gpa);
         var static_members: std.ArrayListUnmanaged(types.ObjectMember) = .empty;
@@ -6353,7 +6403,13 @@ pub const Checker = struct {
         var number_idx: TypeId = types.Primitive.none;
         var symbol_idx: TypeId = types.Primitive.none;
         var has_readonly_index = false;
+        var static_string_idx: TypeId = types.Primitive.none;
+        var static_number_idx: TypeId = types.Primitive.none;
+        var static_symbol_idx: TypeId = types.Primitive.none;
+        var has_static_readonly_index = false;
         var own_index_signatures: IndexSignatureDuplicateState = .{};
+        var own_static_index_signatures: IndexSignatureDuplicateState = .{};
+        const parent_class_name = if (c.extends != hir_mod.none_node_id) self.classExtendsName(c.extends) else null;
         // Names of class members declared `private`. After the class
         // name is known we move ownership into `class_private_members`
         // and reset this local to `.empty` so the trailing `defer` is
@@ -6367,6 +6423,14 @@ pub const Checker = struct {
         // `class_abstract_members` once the class name is known.
         var abstract_names: std.AutoHashMapUnmanaged(hir_mod.StringId, void) = .empty;
         defer abstract_names.deinit(self.gpa);
+        var property_names: std.AutoHashMapUnmanaged(hir_mod.StringId, void) = .empty;
+        defer property_names.deinit(self.gpa);
+        var parameter_property_names: std.AutoHashMapUnmanaged(hir_mod.StringId, void) = .empty;
+        defer parameter_property_names.deinit(self.gpa);
+        var accessor_names: std.AutoHashMapUnmanaged(hir_mod.StringId, void) = .empty;
+        defer accessor_names.deinit(self.gpa);
+        var own_member_names: std.AutoHashMapUnmanaged(hir_mod.StringId, void) = .empty;
+        defer own_member_names.deinit(self.gpa);
         // Names the child concretely implements (methods with a body
         // or any field). Used to satisfy inherited abstract members.
         var concrete_names: std.AutoHashMapUnmanaged(hir_mod.StringId, void) = .empty;
@@ -6408,7 +6472,6 @@ pub const Checker = struct {
             switch (self.hir.kindOf(m)) {
                 .index_signature => {
                     const ix = hir_mod.indexSignatureOf(self.hir, m);
-                    has_readonly_index = true;
                     const value_t = if (ix.value_type != hir_mod.none_node_id)
                         try self.lowererLowerWithTypeParams(ix.value_type)
                     else
@@ -6417,10 +6480,19 @@ pub const Checker = struct {
                         try self.lowererLowerWithTypeParams(ix.key_type)
                     else
                         types.Primitive.string_t;
-                    try self.checkDuplicateIndexSignature(m, key_t, &own_index_signatures);
-                    if (key_t == types.Primitive.string_t) string_idx = value_t;
-                    if (key_t == types.Primitive.number_t) number_idx = value_t;
-                    if (key_t == types.Primitive.symbol_t) symbol_idx = value_t;
+                    if (ix.is_static) {
+                        if (ix.is_readonly) has_static_readonly_index = true;
+                        try self.checkDuplicateIndexSignature(m, key_t, &own_static_index_signatures);
+                        if (key_t == types.Primitive.string_t) static_string_idx = value_t;
+                        if (key_t == types.Primitive.number_t) static_number_idx = value_t;
+                        if (key_t == types.Primitive.symbol_t) static_symbol_idx = value_t;
+                    } else {
+                        if (ix.is_readonly) has_readonly_index = true;
+                        try self.checkDuplicateIndexSignature(m, key_t, &own_index_signatures);
+                        if (key_t == types.Primitive.string_t) string_idx = value_t;
+                        if (key_t == types.Primitive.number_t) number_idx = value_t;
+                        if (key_t == types.Primitive.symbol_t) symbol_idx = value_t;
+                    }
                 },
                 .fn_decl, .fn_expr, .arrow_fn => {
                     const sig = try self.checkFnSignatureOnly(m);
@@ -6452,10 +6524,16 @@ pub const Checker = struct {
                                     .is_method = false,
                                 });
                                 try concrete_names.put(self.gpa, pid.name, {});
+                                try property_names.put(self.gpa, pid.name, {});
+                                try parameter_property_names.put(self.gpa, pid.name, {});
+                                try own_member_names.put(self.gpa, pid.name, {});
+                                if (pp.flags.is_private) try private_names.put(self.gpa, pid.name, {});
+                                if (pp.flags.is_protected) try protected_names.put(self.gpa, pid.name, {});
+                                try self.checkPropertyOverridesAccessor(param_node, parent_class_name, pid.name);
                             }
                             try self.checkOverrideModifier(param_node, parent_instance_t, pid.name, pp.flags.is_override, true);
                         }
-                        try self.collectConstructorThisAssignments(m, &instance_members);
+                        try self.collectConstructorThisAssignments(m, parent_instance_t, &instance_members);
                         continue;
                     }
                     const fn_name_is_computed = self.nodeIsBracketedComputedName(fn_p.name) or self.nodeIsBracketedComputedName(m) or self.memberSourceLooksComputed(m);
@@ -6500,9 +6578,10 @@ pub const Checker = struct {
                     if (fn_p.flags.is_static) {
                         try static_names.put(self.gpa, member_name, m);
                     }
-                    try self.checkOverrideModifier(m, parent_instance_t, member_name, fn_p.flags.is_override, false);
+                    try self.checkOverrideModifier(m, if (fn_p.flags.is_static) parent_static_t else parent_instance_t, member_name, fn_p.flags.is_override, false);
                     if (fn_p.flags.is_private) try private_names.put(self.gpa, member_name, {});
                     if (fn_p.flags.is_protected) try protected_names.put(self.gpa, member_name, {});
+                    if (!fn_p.flags.is_static) try own_member_names.put(self.gpa, member_name, {});
 
                     // Accessor (get/set): the property type is the
                     // getter's return or the setter's first param.
@@ -6511,7 +6590,20 @@ pub const Checker = struct {
                     // for a name appends the member; later sibling
                     // accessors of either kind are folded by skipping.
                     if (fn_p.flags.is_getter or fn_p.flags.is_setter) {
-                        if (!fn_p.flags.is_static) try concrete_names.put(self.gpa, member_name, {});
+                        if (fn_p.flags.is_abstract and fn_p.body != hir_mod.none_node_id) {
+                            try self.report(m, TsCodes.abstract_accessor_implementation, "An abstract accessor cannot have an implementation.");
+                        }
+                        if (!fn_p.flags.is_static) {
+                            try accessor_names.put(self.gpa, member_name, {});
+                            try self.checkAccessorOverridesProperty(m, parent_class_name, member_name);
+                        }
+                        if (!fn_p.flags.is_static) {
+                            if (fn_p.flags.is_abstract and fn_p.body == hir_mod.none_node_id) {
+                                try abstract_names.put(self.gpa, member_name, {});
+                            } else {
+                                try concrete_names.put(self.gpa, member_name, {});
+                            }
+                        }
                         var already: bool = false;
                         const accessor_members = if (fn_p.flags.is_static) static_members.items else instance_members.items;
                         for (accessor_members) |im| {
@@ -6568,7 +6660,7 @@ pub const Checker = struct {
                     const overload_info_before = seen.get(member_name);
                     try self.checkClassMethodOverloadState(m, member_name, fn_p.flags.is_static, self.methodVisibilityBits(fn_p.flags), fn_p.body != hir_mod.none_node_id, seen);
                     if (!fn_p.flags.is_static) {
-                        if (c.is_abstract and fn_p.body == hir_mod.none_node_id) {
+                        if ((c.is_abstract or fn_p.flags.is_abstract) and fn_p.body == hir_mod.none_node_id) {
                             try abstract_names.put(self.gpa, member_name, {});
                         } else {
                             try concrete_names.put(self.gpa, member_name, {});
@@ -6613,7 +6705,10 @@ pub const Checker = struct {
                         const key_t = try self.checkExpression(op.key);
                         if (!try self.computedPropertyKeyTypeIsValid(key_t)) {
                             try self.report(m, TsCodes.computed_property_name_type, "A computed property name must be of type 'string', 'number', 'symbol', or 'any'.");
-                        } else if (!op_is_method and !self.computedClassPropertyKeyIsSimpleLiteral(key_t)) {
+                        } else if (!op_is_method and
+                            !self.classMemberSourceHasLeadingKeyword(m, "accessor") and
+                            !self.computedClassPropertyKeyIsSimpleLiteral(key_t))
+                        {
                             try self.report(m, 1166, "A computed property name in a class property declaration must have a simple literal type or a 'unique symbol' type.");
                         }
                     }
@@ -6628,9 +6723,10 @@ pub const Checker = struct {
                     if (op.is_static) {
                         try static_names.put(self.gpa, member_name, m);
                     }
-                    try self.checkOverrideModifier(m, parent_instance_t, member_name, op.is_override, false);
+                    try self.checkOverrideModifier(m, if (op.is_static) parent_static_t else parent_instance_t, member_name, op.is_override, false);
                     if (op.visibility == .private) try private_names.put(self.gpa, member_name, {});
                     if (op.visibility == .protected) try protected_names.put(self.gpa, member_name, {});
+                    if (!op.is_static) try own_member_names.put(self.gpa, member_name, {});
                     if (op_is_method and op.value != hir_mod.none_node_id) {
                         const method_t = if (self.hir.kindOf(op.value) == .fn_decl or self.hir.kindOf(op.value) == .fn_expr or self.hir.kindOf(op.value) == .arrow_fn) blk: {
                             const sig = try self.checkFnSignatureOnly(op.value);
@@ -6669,7 +6765,26 @@ pub const Checker = struct {
                     // Class fields count as concrete implementations
                     // for the purpose of satisfying inherited abstract
                     // members (v0 has no syntax for abstract fields).
-                    if (!op.is_static) try concrete_names.put(self.gpa, member_name, {});
+                    const is_abstract_property = self.classMemberSourceHasLeadingKeyword(m, "abstract");
+                    const is_auto_accessor = self.classMemberSourceHasLeadingKeyword(m, "accessor");
+                    if (!op.is_static) {
+                        if (is_auto_accessor) {
+                            try accessor_names.put(self.gpa, member_name, {});
+                            try self.checkAccessorOverridesProperty(m, parent_class_name, member_name);
+                        } else {
+                            try property_names.put(self.gpa, member_name, {});
+                            try self.checkPropertyOverridesAccessor(m, parent_class_name, member_name);
+                        }
+                        try self.checkFieldInitializerParameterPropertyOrder(m, op.value, &parameter_property_names);
+                        if (is_abstract_property and op.value != hir_mod.none_node_id) {
+                            try self.report(m, TsCodes.abstract_property_initializer, "Property cannot have an initializer because it is marked abstract.");
+                        }
+                        if (is_abstract_property and op.value == hir_mod.none_node_id) {
+                            try abstract_names.put(self.gpa, member_name, {});
+                        } else {
+                            try concrete_names.put(self.gpa, member_name, {});
+                        }
+                    }
                     const field_t: TypeId = blk: {
                         if (op.type_annotation != hir_mod.none_node_id) {
                             break :blk try self.lowererLowerWithTypeParams(op.type_annotation);
@@ -6722,7 +6837,7 @@ pub const Checker = struct {
                         .name = member_name,
                         .type = field_t,
                         .is_optional = false,
-                        .is_readonly = false,
+                        .is_readonly = self.classMemberSourceHasLeadingKeyword(m, "readonly"),
                         .is_method = false,
                     };
                     if (op.is_static) {
@@ -6755,8 +6870,19 @@ pub const Checker = struct {
                 if (symbol_idx == types.Primitive.none) symbol_idx = parent_symbol_idx;
                 if (self.typeHasReadonlyIndexSignature(parent_t)) has_readonly_index = true;
             }
+            if (parent_static_t) |pst| {
+                try self.mergeInheritedStaticMembers(pst, &static_members);
+                const parent_static_string_idx = self.interner.objectStringIndex(pst);
+                const parent_static_number_idx = self.interner.objectNumberIndex(pst);
+                const parent_static_symbol_idx = self.interner.objectSymbolIndex(pst);
+                if (static_string_idx == types.Primitive.none) static_string_idx = parent_static_string_idx;
+                if (static_number_idx == types.Primitive.none) static_number_idx = parent_static_number_idx;
+                if (static_symbol_idx == types.Primitive.none) static_symbol_idx = parent_static_symbol_idx;
+                if (self.typeHasReadonlyIndexSignature(pst)) has_static_readonly_index = true;
+            }
         }
         try self.checkIndexSignatureMemberCompatibility(node, instance_members.items, string_idx, number_idx, symbol_idx);
+        try self.checkIndexSignatureMemberCompatibility(node, static_members.items, static_string_idx, static_number_idx, static_symbol_idx);
 
         var instance_t = self.interner.internObjectTypeWithIndexAndSymbol(instance_members.items, string_idx, number_idx, symbol_idx) catch return error.OutOfMemory;
         if (has_readonly_index) try self.readonly_index_types.put(self.gpa, instance_t, {});
@@ -6775,11 +6901,13 @@ pub const Checker = struct {
                 .is_method = true,
             });
         }
-        var static_t = self.interner.internObjectType(static_members.items) catch return error.OutOfMemory;
+        var static_t = self.interner.internObjectTypeWithIndexAndSymbol(static_members.items, static_string_idx, static_number_idx, static_symbol_idx) catch return error.OutOfMemory;
+        if (has_static_readonly_index) try self.readonly_index_types.put(self.gpa, static_t, {});
+        try self.class_static_type_by_node.put(self.gpa, node, static_t);
         try self.recordMemberPredicatesForReceiver(instance_t, &instance_member_predicates);
         try self.recordMemberPredicatesForReceiver(static_t, &static_member_predicates);
         if (parent_instance_t) |pt| try self.copyMemberPredicatesFromReceiver(instance_t, pt);
-        self.hir.setType(node, instance_t);
+        self.hir.setType(node, if (self.hir.kindOf(node) == .class_expr) static_t else instance_t);
         if (c.name != hir_mod.none_node_id and self.hir.kindOf(c.name) == .identifier) {
             const cid = hir_mod.identifierOf(self.hir, c.name);
             try self.checkMergedNamespaceStaticConflicts(node, cid.name, &static_names);
@@ -6827,6 +6955,9 @@ pub const Checker = struct {
             } else {
                 _ = self.abstract_classes.remove(cid.name);
             }
+            if (parent_class_name) |ext_name| {
+                try self.checkPrivateBaseRedeclarations(node, cid.name, ext_name, &private_names, &own_member_names);
+            }
             // Register the private-member set under the class name.
             // A prior registration (rare — repeated checks of the
             // same source) gets clobbered; release the old set's
@@ -6853,6 +6984,18 @@ pub const Checker = struct {
             }
             try self.class_abstract_members.put(self.gpa, cid.name, abstract_names);
             abstract_names = .empty;
+            if (self.class_property_members.fetchRemove(cid.name)) |old| {
+                var owned = old.value;
+                owned.deinit(self.gpa);
+            }
+            try self.class_property_members.put(self.gpa, cid.name, property_names);
+            property_names = .empty;
+            if (self.class_accessor_members.fetchRemove(cid.name)) |old| {
+                var owned = old.value;
+                owned.deinit(self.gpa);
+            }
+            try self.class_accessor_members.put(self.gpa, cid.name, accessor_names);
+            accessor_names = .empty;
             if (c.extends != hir_mod.none_node_id) {
                 if (self.classExtendsName(c.extends)) |ext_name| {
                     if (self.class_instance_types.contains(ext_name)) {
@@ -6995,10 +7138,12 @@ pub const Checker = struct {
                     break;
                 }
             }
-            static_t = self.interner.internObjectType(static_members.items) catch return error.OutOfMemory;
+            static_t = self.interner.internObjectTypeWithIndexAndSymbol(static_members.items, static_string_idx, static_number_idx, static_symbol_idx) catch return error.OutOfMemory;
+            if (has_static_readonly_index) try self.readonly_index_types.put(self.gpa, static_t, {});
+            try self.class_static_type_by_node.put(self.gpa, node, static_t);
             try self.recordMemberPredicatesForReceiver(instance_t, &instance_member_predicates);
             if (parent_instance_t) |pt| try self.copyMemberPredicatesFromReceiver(instance_t, pt);
-            self.hir.setType(node, instance_t);
+            self.hir.setType(node, if (self.hir.kindOf(node) == .class_expr) static_t else instance_t);
             if (c.name != hir_mod.none_node_id and self.hir.kindOf(c.name) == .identifier) {
                 const cid = hir_mod.identifierOf(self.hir, c.name);
                 try self.class_instance_types.put(self.gpa, cid.name, instance_t);
@@ -7035,37 +7180,39 @@ pub const Checker = struct {
     fn collectConstructorThisAssignments(
         self: *Checker,
         ctor_node: NodeId,
+        parent_instance_t: ?TypeId,
         members: *std.ArrayListUnmanaged(types.ObjectMember),
     ) CheckError!void {
         const f = hir_mod.fnDeclOf(self.hir, ctor_node);
         if (f.body == hir_mod.none_node_id) return;
-        try self.collectThisAssignmentsFromNode(f.body, members);
+        try self.collectThisAssignmentsFromNode(f.body, parent_instance_t, members);
     }
 
     fn collectThisAssignmentsFromNode(
         self: *Checker,
         node: NodeId,
+        parent_instance_t: ?TypeId,
         members: *std.ArrayListUnmanaged(types.ObjectMember),
     ) CheckError!void {
         if (node == hir_mod.none_node_id) return;
         switch (self.hir.kindOf(node)) {
             .block_stmt => {
                 for (hir_mod.blockStmts(self.hir, node)) |stmt| {
-                    try self.collectThisAssignmentsFromNode(stmt, members);
+                    try self.collectThisAssignmentsFromNode(stmt, parent_instance_t, members);
                 }
             },
             .assignment => {
                 const a = hir_mod.assignmentOf(self.hir, node);
-                try self.collectThisAssignmentTarget(a.target, a.value, members);
-                try self.collectThisAssignmentsFromNode(a.value, members);
+                try self.collectThisAssignmentTarget(a.target, a.value, parent_instance_t, members);
+                try self.collectThisAssignmentsFromNode(a.value, parent_instance_t, members);
             },
             .if_stmt => {
                 const i = hir_mod.ifOf(self.hir, node);
-                try self.collectThisAssignmentsFromNode(i.then_branch, members);
-                try self.collectThisAssignmentsFromNode(i.else_branch, members);
+                try self.collectThisAssignmentsFromNode(i.then_branch, parent_instance_t, members);
+                try self.collectThisAssignmentsFromNode(i.else_branch, parent_instance_t, members);
             },
-            .while_stmt => try self.collectThisAssignmentsFromNode(hir_mod.whileOf(self.hir, node).body, members),
-            .do_while_stmt => try self.collectThisAssignmentsFromNode(hir_mod.doWhileOf(self.hir, node).body, members),
+            .while_stmt => try self.collectThisAssignmentsFromNode(hir_mod.whileOf(self.hir, node).body, parent_instance_t, members),
+            .do_while_stmt => try self.collectThisAssignmentsFromNode(hir_mod.doWhileOf(self.hir, node).body, parent_instance_t, members),
             else => {},
         }
     }
@@ -7074,6 +7221,7 @@ pub const Checker = struct {
         self: *Checker,
         target: NodeId,
         value: NodeId,
+        parent_instance_t: ?TypeId,
         members: *std.ArrayListUnmanaged(types.ObjectMember),
     ) CheckError!void {
         if (target == hir_mod.none_node_id or self.hir.kindOf(target) != .member_access) return;
@@ -7083,6 +7231,9 @@ pub const Checker = struct {
         if (!std.mem.eql(u8, self.string_interner.get(obj.name), "this")) return;
         for (members.items) |existing| {
             if (existing.name == m.name) return;
+        }
+        if (parent_instance_t) |pt| {
+            if (self.interner.objectMemberInfo(pt, m.name) != null) return;
         }
         const value_t = if (value != hir_mod.none_node_id)
             (self.checkExpression(value) catch types.Primitive.any)
@@ -7304,25 +7455,20 @@ pub const Checker = struct {
     fn checkReadonlyAssignment(self: *Checker, target: NodeId) CheckError!void {
         if (self.hir.kindOf(target) != .member_access) return;
         const m = hir_mod.memberOf(self.hir, target);
-        const obj_t = self.hir.typeOf(m.object);
+        var obj_t = self.hir.typeOf(m.object);
         if (obj_t == types.Primitive.none) return;
+        if (obj_t < self.interner.pool.typeCount() and self.interner.pool.flagsOf(obj_t).is_type_parameter) {
+            obj_t = self.typeParameterConstraint(obj_t) orelse obj_t;
+        }
         if (!self.interner.pool.flagsOf(obj_t).is_object_type) return;
         const info = self.interner.objectMemberInfo(obj_t, m.name) orelse return;
         if (!info.is_readonly) return;
-        // Constructor exception: a class-level readonly field may be
-        // initialized inside the class's own constructor via
-        // `this.x = ...`. Approximate by allowing any `this.<x>`
-        // assignment whose nearest enclosing fn is a constructor.
-        if (self.hir.kindOf(m.object) == .this_expr) {
-            var cur = self.hir.parentOf(target);
-            while (cur != hir_mod.none_node_id) : (cur = self.hir.parentOf(cur)) {
-                const k = self.hir.kindOf(cur);
-                if (k == .fn_decl or k == .fn_expr or k == .arrow_fn) {
-                    const fp = hir_mod.fnDeclOf(self.hir, cur);
-                    if (fp.flags.is_constructor) return;
-                    break;
-                }
-            }
+        // Constructor exception: `this.x = ...` is only allowed in
+        // the constructor of the class that declares readonly `x`.
+        // Subclass constructors cannot reassign inherited readonly
+        // fields unless they redeclare their own parameter property.
+        if (self.nodeIsThisReference(m.object) and self.enclosingConstructorDeclaresReadonlyMember(target, m.name)) {
+            return;
         }
         const prop_str = self.string_interner.get(m.name);
         const msg = try std.fmt.allocPrint(
@@ -7335,6 +7481,65 @@ pub const Checker = struct {
             .code = TsCodes.readonly_property,
             .message = msg,
         });
+    }
+
+    fn nodeIsThisReference(self: *Checker, node: NodeId) bool {
+        return switch (self.hir.kindOf(node)) {
+            .this_expr => true,
+            .identifier => blk: {
+                const id = hir_mod.identifierOf(self.hir, node);
+                break :blk std.mem.eql(u8, self.string_interner.get(id.name), "this");
+            },
+            else => false,
+        };
+    }
+
+    fn enclosingConstructorDeclaresReadonlyMember(
+        self: *Checker,
+        node: NodeId,
+        member_name: hir_mod.StringId,
+    ) bool {
+        var cur = self.hir.parentOf(node);
+        while (cur != hir_mod.none_node_id) : (cur = self.hir.parentOf(cur)) {
+            const k = self.hir.kindOf(cur);
+            if (k != .fn_decl and k != .fn_expr and k != .arrow_fn) continue;
+            const fp = hir_mod.fnDeclOf(self.hir, cur);
+            if (!fp.flags.is_constructor) return false;
+            var parent = self.hir.parentOf(cur);
+            while (parent != hir_mod.none_node_id) : (parent = self.hir.parentOf(parent)) {
+                const pk = self.hir.kindOf(parent);
+                if (pk == .class_decl or pk == .class_expr) {
+                    return self.classDeclaresReadonlyMember(parent, member_name);
+                }
+                if (pk == .fn_decl or pk == .fn_expr or pk == .arrow_fn) return false;
+            }
+            return false;
+        }
+        return false;
+    }
+
+    fn classDeclaresReadonlyMember(self: *Checker, class_node: NodeId, member_name: hir_mod.StringId) bool {
+        for (hir_mod.classMembers(self.hir, class_node)) |member| {
+            switch (self.hir.kindOf(member)) {
+                .object_property => {
+                    const op = hir_mod.objectPropertyOf(self.hir, member);
+                    const name = (self.classMemberNameFromPropertyKey(op.key, op.is_computed) catch null) orelse continue;
+                    if (name == member_name and self.classMemberSourceHasLeadingKeyword(member, "readonly")) return true;
+                },
+                .fn_decl, .fn_expr, .arrow_fn => {
+                    const fn_p = hir_mod.fnDeclOf(self.hir, member);
+                    if (!fn_p.flags.is_constructor) continue;
+                    for (hir_mod.fnParams(self.hir, member)) |param_node| {
+                        const pp = hir_mod.parameterOf(self.hir, param_node);
+                        if (!pp.flags.is_parameter_property or !pp.flags.is_readonly) continue;
+                        if (pp.name == hir_mod.none_node_id or self.hir.kindOf(pp.name) != .identifier) continue;
+                        if (hir_mod.identifierOf(self.hir, pp.name).name == member_name) return true;
+                    }
+                },
+                else => {},
+            }
+        }
+        return false;
     }
 
     fn checkReadonlyIndexAssignment(self: *Checker, target: NodeId) CheckError!void {
@@ -7872,6 +8077,138 @@ pub const Checker = struct {
         }
         if (inherited.items.len == 0) return;
         try child_members.insertSlice(self.gpa, 0, inherited.items);
+    }
+
+    fn mergeInheritedStaticMembers(
+        self: *Checker,
+        parent_static_t: TypeId,
+        child_members: *std.ArrayListUnmanaged(types.ObjectMember),
+    ) CheckError!void {
+        const construct_name = self.string_interner.intern("__construct") catch return error.OutOfMemory;
+        var child_by_name: std.AutoHashMapUnmanaged(hir_mod.StringId, void) = .empty;
+        defer child_by_name.deinit(self.gpa);
+        for (child_members.items) |m| try child_by_name.put(self.gpa, m.name, {});
+
+        var inherited: std.ArrayListUnmanaged(types.ObjectMember) = .empty;
+        defer inherited.deinit(self.gpa);
+        for (self.interner.objectMembers(parent_static_t)) |pm| {
+            if (pm.name == construct_name) continue;
+            if (child_by_name.contains(pm.name)) continue;
+            try inherited.append(self.gpa, pm);
+        }
+        if (inherited.items.len == 0) return;
+        try child_members.insertSlice(self.gpa, 0, inherited.items);
+    }
+
+    fn checkPropertyOverridesAccessor(
+        self: *Checker,
+        node: NodeId,
+        parent_class_name: ?hir_mod.StringId,
+        member_name: hir_mod.StringId,
+    ) CheckError!void {
+        const parent_name = parent_class_name orelse return;
+        const parent_accessors = self.class_accessor_members.getPtr(parent_name) orelse return;
+        if (!parent_accessors.contains(member_name)) return;
+        try self.report(node, TsCodes.property_overrides_accessor, "Property overrides an accessor in the base class.");
+    }
+
+    fn checkAccessorOverridesProperty(
+        self: *Checker,
+        node: NodeId,
+        parent_class_name: ?hir_mod.StringId,
+        member_name: hir_mod.StringId,
+    ) CheckError!void {
+        const parent_name = parent_class_name orelse return;
+        const parent_props = self.class_property_members.getPtr(parent_name) orelse return;
+        if (!parent_props.contains(member_name)) return;
+        if (self.class_abstract_members.getPtr(parent_name)) |parent_abs| {
+            if (parent_abs.contains(member_name)) return;
+        }
+        try self.report(node, TsCodes.accessor_overrides_property, "Accessor overrides a property in the base class.");
+    }
+
+    fn checkFieldInitializerParameterPropertyOrder(
+        self: *Checker,
+        field_node: NodeId,
+        init_node: NodeId,
+        parameter_properties: *const std.AutoHashMapUnmanaged(hir_mod.StringId, void),
+    ) CheckError!void {
+        if (init_node == hir_mod.none_node_id or parameter_properties.count() == 0) return;
+        if (!self.sourceHasUseDefineForClassFieldsTrueDirective()) return;
+        var it = parameter_properties.keyIterator();
+        while (it.next()) |name_ptr| {
+            if (!self.expressionContainsThisMember(init_node, name_ptr.*)) continue;
+            const name_text = self.string_interner.get(name_ptr.*);
+            const msg = try std.fmt.allocPrint(
+                self.diag_arena.allocator(),
+                "Property '{s}' is used before its initialization.",
+                .{name_text},
+            );
+            try self.diagnostics.append(self.gpa, .{
+                .node = field_node,
+                .code = TsCodes.property_used_before_initialization,
+                .message = msg,
+            });
+            return;
+        }
+    }
+
+    fn expressionContainsThisMember(self: *Checker, node: NodeId, member_name: hir_mod.StringId) bool {
+        if (node == hir_mod.none_node_id) return false;
+        switch (self.hir.kindOf(node)) {
+            .member_access => {
+                const m = hir_mod.memberOf(self.hir, node);
+                if (m.name == member_name and self.nodeIsThisReference(m.object)) return true;
+                return self.expressionContainsThisMember(m.object, member_name);
+            },
+            .call_expr, .new_expr => {
+                const c = hir_mod.callOf(self.hir, node);
+                if (self.expressionContainsThisMember(c.callee, member_name)) return true;
+                for (hir_mod.callArgs(self.hir, node)) |arg| {
+                    if (self.expressionContainsThisMember(arg, member_name)) return true;
+                }
+                return false;
+            },
+            .binary_op => {
+                const b = hir_mod.binopOf(self.hir, node);
+                return self.expressionContainsThisMember(b.lhs, member_name) or self.expressionContainsThisMember(b.rhs, member_name);
+            },
+            .assignment => {
+                const a = hir_mod.assignmentOf(self.hir, node);
+                return self.expressionContainsThisMember(a.target, member_name) or self.expressionContainsThisMember(a.value, member_name);
+            },
+            else => return false,
+        }
+    }
+
+    fn checkPrivateBaseRedeclarations(
+        self: *Checker,
+        node: NodeId,
+        child_name: hir_mod.StringId,
+        parent_name: hir_mod.StringId,
+        child_private: *const std.AutoHashMapUnmanaged(hir_mod.StringId, void),
+        child_members: *const std.AutoHashMapUnmanaged(hir_mod.StringId, void),
+    ) CheckError!void {
+        const parent_private = self.class_private_members.getPtr(parent_name) orelse return;
+        var it = parent_private.keyIterator();
+        while (it.next()) |name_ptr| {
+            const member_name = name_ptr.*;
+            if (!child_members.contains(member_name)) continue;
+            if (child_private.contains(member_name)) continue;
+            const child_str = self.string_interner.get(child_name);
+            const parent_str = self.string_interner.get(parent_name);
+            const msg = try std.fmt.allocPrint(
+                self.diag_arena.allocator(),
+                "Class '{s}' incorrectly extends base class '{s}'.",
+                .{ child_str, parent_str },
+            );
+            try self.diagnostics.append(self.gpa, .{
+                .node = node,
+                .code = TsCodes.class_incorrectly_extends_base,
+                .message = msg,
+            });
+            return;
+        }
     }
 
     fn reportClassExtendsIndexMismatch(self: *Checker, node: NodeId) CheckError!void {
@@ -15393,6 +15730,12 @@ pub const Checker = struct {
             },
             .class_decl, .class_expr => blk: {
                 try self.checkClassDecl(node);
+                if (self.hir.kindOf(node) == .class_expr) {
+                    if (self.class_static_type_by_node.get(node)) |static_t| {
+                        self.hir.setType(node, static_t);
+                        break :blk static_t;
+                    }
+                }
                 break :blk self.hir.typeOf(node);
             },
             .await_expr => blk: {
@@ -26998,6 +27341,53 @@ test "checker: class extends inherits parent fields" {
     try T.expectEqual(types.Primitive.string_t, s.hir.typeOf(ret_p.value));
 }
 
+test "checker: class extends inherits static-side members" {
+    const s = try newSetup(
+        \\class Base {
+        \\  foo(): number { return 1; }
+        \\  static create() { return new this(); }
+        \\}
+        \\class Derived extends Base {
+        \\  foo(): number { return 2; }
+        \\}
+        \\let d = Derived.create();
+        \\d.foo();
+    );
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+    for (s.checker.diagnostics.items) |d| {
+        try T.expect(d.code != TsCodes.property_does_not_exist);
+    }
+}
+
+test "checker: class property overriding base accessor emits TS2610" {
+    const s = try newSetup(
+        \\class Animal { get sound(): string { return ""; } }
+        \\class Lion extends Animal { sound = "roar"; }
+    );
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+    var found = false;
+    for (s.checker.diagnostics.items) |d| {
+        if (d.code == TsCodes.property_overrides_accessor) found = true;
+    }
+    try T.expect(found);
+}
+
+test "checker: class accessor overriding base property emits TS2611" {
+    const s = try newSetup(
+        \\abstract class A { abstract p = "" }
+        \\class B extends A { get p(): string { return ""; } }
+    );
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+    var found = false;
+    for (s.checker.diagnostics.items) |d| {
+        if (d.code == TsCodes.accessor_overrides_property) found = true;
+    }
+    try T.expect(found);
+}
+
 test "checker: unannotated override may refine before comparing this-return base method" {
     const s = try newSetup(
         \\class Base {
@@ -33481,7 +33871,7 @@ test "checker: assigning through readonly index signatures emits TS2542" {
         \\interface I { readonly [n: number]: string }
         \\let i: I;
         \\i[0] = "x";
-        \\class C { [n: number]: string; }
+        \\class C { readonly [n: number]: string; }
         \\let c: C;
         \\c[0] = "x";
     );
@@ -33492,6 +33882,34 @@ test "checker: assigning through readonly index signatures emits TS2542" {
         if (d.code == TsCodes.readonly_index_signature) found += 1;
     }
     try T.expectEqual(@as(usize, 2), found);
+}
+
+test "checker: mutable class index signature assignment remains allowed" {
+    const s = try newSetup(
+        \\class C { [n: number]: string; }
+        \\let c: C;
+        \\c[0] = "x";
+    );
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+    for (s.checker.diagnostics.items) |d| {
+        try T.expect(d.code != TsCodes.readonly_index_signature);
+    }
+}
+
+test "checker: static index signatures constrain only static class members" {
+    const s = try newSetup(
+        \\class C {
+        \\  static [s: string]: number;
+        \\  static [s: number]: 42;
+        \\  foo(): string { return ""; }
+        \\}
+    );
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+    for (s.checker.diagnostics.items) |d| {
+        try T.expect(d.code != TsCodes.property_not_assignable_to_index_type);
+    }
 }
 
 test "checker: forward class references in recursive alias preserve readonly index signatures" {
@@ -33539,6 +33957,54 @@ test "checker: `this.x = …` inside a class constructor passes (no TS2540)" {
     for (s.checker.diagnostics.items) |d| {
         try T.expect(d.code != TsCodes.readonly_property);
     }
+}
+
+test "checker: subclass constructor cannot assign inherited readonly property" {
+    const s = try newSetup(
+        \\class A { constructor(readonly x: number) {} }
+        \\class B extends A { constructor() { super(0); this.x = 1; } }
+        \\class C extends A { constructor(readonly x: number) { super(x); this.x = 1; } }
+    );
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+    var found: usize = 0;
+    for (s.checker.diagnostics.items) |d| {
+        if (d.code == TsCodes.readonly_property) found += 1;
+    }
+    try T.expectEqual(@as(usize, 1), found);
+}
+
+test "checker: constructor parameter property visibility controls access" {
+    const s = try newSetup(
+        \\class A { constructor(private x: number, protected y: number) {} }
+        \\let a = new A(1, 2);
+        \\a.x;
+        \\a.y;
+    );
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+    var private_found = false;
+    var protected_found = false;
+    for (s.checker.diagnostics.items) |d| {
+        if (d.code == TsCodes.private_member_access) private_found = true;
+        if (d.code == TsCodes.protected_member_access) protected_found = true;
+    }
+    try T.expect(private_found);
+    try T.expect(protected_found);
+}
+
+test "checker: public redeclaration of private parameter property emits TS2415" {
+    const s = try newSetup(
+        \\class D { constructor(private x: number) {} }
+        \\class E extends D { constructor(readonly x: number) { super(x); } }
+    );
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+    var found = false;
+    for (s.checker.diagnostics.items) |d| {
+        if (d.code == TsCodes.class_incorrectly_extends_base) found = true;
+    }
+    try T.expect(found);
 }
 
 test "checker: `new AbstractClass()` emits TS2511" {
@@ -33591,6 +34057,53 @@ test "checker: non-abstract subclass implementing abstract member passes (no TS2
     try s.checker.checkSourceFile(s.root);
     for (s.checker.diagnostics.items) |d| {
         try T.expect(d.code != TsCodes.abstract_member_not_implemented);
+    }
+}
+
+test "checker: abstract property initializer and accessor implementation report TS1267 and TS1318" {
+    const s = try newSetup(
+        \\abstract class A {
+        \\  abstract p = "";
+        \\  abstract get q(): string { return ""; }
+        \\}
+    );
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+    var prop_found = false;
+    var accessor_found = false;
+    for (s.checker.diagnostics.items) |d| {
+        if (d.code == TsCodes.abstract_property_initializer) prop_found = true;
+        if (d.code == TsCodes.abstract_accessor_implementation) accessor_found = true;
+    }
+    try T.expect(prop_found);
+    try T.expect(accessor_found);
+}
+
+test "checker: strict false accepts null constructor parameter default" {
+    const s = try newSetup(
+        \\// @strict: false
+        \\class C<T> {
+        \\  constructor(x: T = null) {}
+        \\}
+    );
+    defer destroySetup(s);
+    s.checker.setStrictFlags(.{ .strict_null_checks = false });
+    try s.checker.checkSourceFile(s.root);
+    for (s.checker.diagnostics.items) |d| {
+        try T.expect(d.code != TsCodes.type_not_assignable);
+    }
+}
+
+test "checker: computed auto-accessor class member skips TS1166" {
+    const s = try newSetup(
+        \\class C {
+        \\  accessor ["m"]: any;
+        \\}
+    );
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+    for (s.checker.diagnostics.items) |d| {
+        try T.expect(d.code != 1166);
     }
 }
 
