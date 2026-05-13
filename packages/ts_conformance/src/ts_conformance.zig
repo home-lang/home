@@ -861,23 +861,26 @@ fn hasHarnessModeledExpectedError(name: []const u8, source: []const u8) bool {
     // single-source checker runs one targetless source; keep those
     // target-only expected-error variants explicit until compile options
     // are threaded into checker diagnostics.
+    //
+    // (Retired 2026-05-13) `arrayLiteralSpreadES5iterable`,
+    // `objectLiteralShorthandProperties` (@target: es5),
+    // `newTarget.es5` (@target: es5) used to live here. All three had
+    // baselines whose only diagnostics were TS5101 / TS5107 option
+    // deprecations, so `loadDirectoryWithOptions` already short-
+    // circuits via `baselineHasOnlyOptionDeprecation` and sets
+    // `expects_error=false`. The shim was never consulted for them.
     if (std.mem.eql(u8, name, "emitArrowFunctionWhenUsingArguments10")) return true;
     if (std.mem.eql(u8, name, "emitArrowFunctionWhenUsingArguments18")) return true;
     if (std.mem.eql(u8, name, "emitArrowFunctionWhenUsingArguments19")) return true;
     if (std.mem.eql(u8, name, "emitArrowFunctionThisCapturing")) return true;
     if (std.mem.eql(u8, name, "emitArrowFunctionThisCapturingES6")) return true;
-    if (std.mem.eql(u8, name, "arrayLiteralSpreadES5iterable")) return true;
     if (std.mem.eql(u8, name, "arraySpreadImportHelpers")) return true;
-    if (std.mem.eql(u8, name, "objectLiteralShorthandProperties") and
-        std.mem.indexOf(u8, source, "@target: es5") != null)
-    {
-        return true;
-    }
-    if (std.mem.eql(u8, name, "newTarget.es5") and
-        std.mem.indexOf(u8, source, "@target: es5") != null)
-    {
-        return true;
-    }
+    // The `unicodeExtendedEscapesInTemplates*` / `unicodeExtendedEscapesInStrings*`
+    // substring match stays — most variants (08/13/16, 06) carry
+    // only TS5107 and are dead-code through the loader, but at least
+    // one (`unicodeExtendedEscapesInStrings19`) pairs TS5107 with a
+    // real TS1125 source-level diagnostic, so the shim is still
+    // load-bearing for that one.
     if ((std.mem.indexOf(u8, name, "unicodeExtendedEscapesInTemplates") != null or
         std.mem.indexOf(u8, name, "unicodeExtendedEscapesInStrings") != null) and
         std.mem.indexOf(u8, source, "@target: es5") != null)
