@@ -1451,8 +1451,22 @@ pub const Printer = struct {
                         }
                     }
                     if (tp.finally_block != hir_mod.none_node_id) {
-                        if (self.subtreeContainsYield(tp.finally_block)) return false;
                         if (self.classifyBreakContinue(tp.finally_block) == .unhandleable) return false;
+                        if (self.subtreeContainsYield(tp.finally_block)) {
+                            // Yields inside finally are OK with the same
+                            // top-level-statement rule as catch.
+                            if (self.hir.kindOf(tp.finally_block) != .block_stmt) return false;
+                            const fstmts = hir_mod.blockStmts(self.hir, tp.finally_block);
+                            for (fstmts) |fs| {
+                                if (self.hir.kindOf(fs) == .yield_expr) {
+                                    const ypf = hir_mod.yieldExprOf(self.hir, fs);
+                                    if (ypf.type_node != hir_mod.none_node_id) return false;
+                                    if (ypf.expr != hir_mod.none_node_id and self.subtreeContainsYield(ypf.expr)) return false;
+                                } else if (self.subtreeContainsYield(fs)) {
+                                    return false;
+                                }
+                            }
+                        }
                     }
                     if (tp.catch_block == hir_mod.none_node_id and tp.finally_block == hir_mod.none_node_id) return false;
                 },
@@ -2440,8 +2454,18 @@ pub const Printer = struct {
                 const catch_start: ?u32 = if (has_catch) yield_resume + 1 else null;
                 // catch section takes (n_catch_yields + 1) cases when has_catch.
                 const catch_total: u32 = if (has_catch) n_catch_yields + 1 else 0;
+                // Count yields in the finally body (0 when no finally).
+                var n_finally_yields: u32 = 0;
+                if (has_finally and self.hir.kindOf(tp.finally_block) == .block_stmt) {
+                    const fstmts = hir_mod.blockStmts(self.hir, tp.finally_block);
+                    for (fstmts) |fs| {
+                        if (self.hir.kindOf(fs) == .yield_expr) n_finally_yields += 1;
+                    }
+                }
+                // finally section takes (n_finally_yields + 1) cases when has_finally.
+                const finally_total: u32 = if (has_finally) n_finally_yields + 1 else 0;
                 const finally_start: ?u32 = if (has_finally) yield_resume + catch_total + 1 else null;
-                const end_label: u32 = yield_resume + catch_total + 1 + @as(u32, if (has_finally) 1 else 0);
+                const end_label: u32 = yield_resume + catch_total + finally_total + 1;
                 // Emit `_a.trys.push([tryStart, catchStart?, finallyStart?, endLabel]);`
                 {
                     var nbuf: [16]u8 = undefined;
@@ -2567,11 +2591,32 @@ pub const Printer = struct {
                         try self.write(std.fmt.bufPrint(&nbuf, "{d}", .{finally_start.?}) catch unreachable);
                         try self.write(":");
                     }
+                    // Walk finally body — yields close the current case
+                    // and open new resumption cases, same as try body.
+                    // The final case ends with [7] endfinally.
                     if (self.hir.kindOf(tp.finally_block) == .block_stmt) {
                         const fstmts = hir_mod.blockStmts(self.hir, tp.finally_block);
                         for (fstmts) |fs| {
-                            try self.write(" ");
-                            try self.printNonIndentStatement(fs);
+                            if (self.hir.kindOf(fs) == .yield_expr) {
+                                const ypf = hir_mod.yieldExprOf(self.hir, fs);
+                                const opf: []const u8 = if (ypf.type_node != hir_mod.none_node_id) "5" else "4";
+                                try self.write(" return [");
+                                try self.write(opf);
+                                if (ypf.expr != hir_mod.none_node_id) {
+                                    try self.write(", ");
+                                    try self.printExpression(ypf.expr);
+                                }
+                                try self.write("];");
+                                state += 1;
+                                const num_resume = std.fmt.bufPrint(&buf, "{d}", .{state}) catch unreachable;
+                                try self.writeNewlineIndent();
+                                try self.write("case ");
+                                try self.write(num_resume);
+                                try self.write(": _a.sent();");
+                            } else {
+                                try self.write(" ");
+                                try self.printNonIndentStatement(fs);
+                            }
                         }
                     }
                     // [7] endfinally — pops the trys frame and resumes pending op.
@@ -6530,16 +6575,24 @@ test "emit: async generator at es5 still wraps via __asyncGenerator" {
     try T.expect(std.mem.indexOf(u8, out, "return [4, __await(1)]") != null);
 }
 
-test "emit: generator with try-finally + yield-in-finally still bails" {
-    // v0 only supports yield-free catch/finally bodies. Yields
-    // inside finally need nested frame handling.
+test "emit: generator with try-finally + yield-in-finally lowers via resumption case" {
+    // §4.A.4.6 (cont.3) — yields in finally now lower like yields
+    // in catch: each yield opens a new resumption case before the
+    // final [7] endfinally.
     const out = try emitWithOpts(
         "function* g() { try { yield 1; } finally { yield 2; } }",
         .{ .es_target = .es5 },
     );
     defer T.allocator.free(out);
-    try T.expect(std.mem.indexOf(u8, out, "TODO: ES5 generator") != null);
-    try T.expect(std.mem.indexOf(u8, out, "__generator") == null);
+    try T.expect(std.mem.indexOf(u8, out, "__generator") != null);
+    // trys frame: tryStart=0, finallyStart=2, endLabel=4 (finally takes 2 cases).
+    try T.expect(std.mem.indexOf(u8, out, "_a.trys.push([0, , 2, 4]);") != null);
+    try T.expect(std.mem.indexOf(u8, out, "case 1: _a.sent(); return [3, 4];") != null);
+    // Finally entry case 2: yields V2 first.
+    try T.expect(std.mem.indexOf(u8, out, "case 2: return [4, 2];") != null);
+    // Finally yield-resume case 3: sent + [7] endfinally.
+    try T.expect(std.mem.indexOf(u8, out, "case 3: _a.sent(); return [7];") != null);
+    try T.expect(std.mem.indexOf(u8, out, "case 4:") != null);
 }
 
 test "emit: generator with bare try (no catch/finally) bails — handled by yield path" {
