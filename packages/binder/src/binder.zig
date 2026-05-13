@@ -401,11 +401,12 @@ pub const Binder = struct {
             .do_while_stmt => try self.bindStatement(hir_mod.doWhileOf(self.hir, node).body),
             .for_stmt => {
                 const p = hir_mod.forStmtOf(self.hir, node);
-                // for-init binding goes into the body's scope, but
-                // since we collapse the for-init into an assignment in
-                // the parser today, we don't synthesize a binding for
-                // the loop-variable here. Phase 2 follow-up: parser
-                // emits `let_decl` nodes inside for-init.
+                if (p.init != hir_mod.none_node_id) {
+                    const init_kind = self.hir.kindOf(p.init);
+                    if (init_kind == .var_decl or init_kind == .let_decl or init_kind == .const_decl) {
+                        try self.bindStatement(p.init);
+                    }
+                }
                 try self.bindStatement(p.body);
             },
             .for_in_stmt, .for_of_stmt => {

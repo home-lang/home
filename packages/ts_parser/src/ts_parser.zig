@@ -1017,9 +1017,12 @@ pub const Parser = struct {
 
     fn parseWithStatement(self: *Parser) ParseError!NodeId {
         const start = self.advance(); // with
-        if (self.strict_mode) {
+        if (self.isAmbientContextAt(start.span.start)) {
+            try self.reportCodeAt(start.span.start, start.line, 1036, "Statements are not allowed in ambient contexts.");
+        } else if (self.strict_mode or self.target_es2015_or_later) {
             try self.reportCodeAt(start.span.start, start.line, 1101, "'with' statements are not allowed in strict mode.");
         }
+        try self.reportCodeAt(start.span.start, start.line, 2410, "The 'with' statement is not supported. All symbols in a 'with' block will have type 'any'.");
         _ = try self.expect(.open_paren, "'(' after 'with'");
         _ = try self.parseExpression();
         _ = try self.expect(.close_paren, "')' after with expression");
@@ -9667,6 +9670,28 @@ test "parser: strict mode legacy octal literal reports TS1121" {
     _ = try s.parser.parseSourceFile();
     try T.expectEqual(@as(usize, 1), s.parser.diagnostics.items.len);
     try T.expectEqual(@as(u32, 1121), s.parser.diagnostics.items[0].code);
+}
+
+test "parser: with statement reports strict and unsupported diagnostics" {
+    var s = try newTestSetup("with (1) return;");
+    defer destroyTestSetup(s);
+
+    s.parser.setTargetEs2015OrLater(true);
+    _ = try s.parser.parseSourceFile();
+    try T.expect(s.parser.diagnostics.items.len >= 2);
+    try T.expectEqual(@as(u32, 1101), s.parser.diagnostics.items[0].code);
+    try T.expectEqual(@as(u32, 2410), s.parser.diagnostics.items[1].code);
+}
+
+test "parser: with statement in declaration file reports ambient and unsupported diagnostics" {
+    var s = try newTestSetup("with (foo) {}");
+    defer destroyTestSetup(s);
+
+    s.parser.setDeclarationFile(true);
+    _ = try s.parser.parseSourceFile();
+    try T.expect(s.parser.diagnostics.items.len >= 2);
+    try T.expectEqual(@as(u32, 1036), s.parser.diagnostics.items[0].code);
+    try T.expectEqual(@as(u32, 2410), s.parser.diagnostics.items[1].code);
 }
 
 test "parser: strict mode catch binding reports restricted name" {

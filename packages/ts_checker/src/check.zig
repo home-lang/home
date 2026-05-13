@@ -19158,6 +19158,17 @@ pub const Checker = struct {
                                     return declared_t;
                                 }
                             }
+                        } else if (v.name != hir_mod.none_node_id) {
+                            const vk = self.hir.kindOf(v.name);
+                            if (vk == .object_pattern or vk == .array_pattern) {
+                                const container_t = if (self.hir.typeOf(fr.init) != types.Primitive.none)
+                                    self.hir.typeOf(fr.init)
+                                else
+                                    types.Primitive.any;
+                                if (self.typeOfPatternBinding(v.name, container_t, id.name)) |bt| {
+                                    return bt;
+                                }
+                            }
                         }
                     }
                 }

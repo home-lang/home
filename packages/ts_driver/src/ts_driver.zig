@@ -1780,6 +1780,20 @@ test "driver: missing triple-slash path reference reports TS6053" {
     try T.expect(found);
 }
 
+test "driver: classic for initializer binding pattern is visible in condition update and body" {
+    var c = try compileSource(T.allocator,
+        \\for (let [x = 'a' in {}] = []; !x; x = !x) console.log(x)
+        \\for (let {y = 'a' in {}} = {}; !y; y = !y) console.log(y)
+    , .{ .no_emit = true, .syntax_target_es2015 = true });
+    defer {
+        c.deinit();
+        T.allocator.destroy(c);
+    }
+    for (c.diagnostics.items) |d| {
+        try T.expect(d.code != 2304);
+    }
+}
+
 test "driver: harness lib triple-slash path reference is provided externally" {
     var c = try compileSource(T.allocator, "/// <reference path=\"/.lib/react16.d.ts\" />\nlet x = 1;", .{ .no_emit = true });
     defer {
