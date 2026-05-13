@@ -1331,7 +1331,7 @@ pub const Printer = struct {
                     if (self.singleYieldInThen(dwp.body)) |ye| {
                         const yp = hir_mod.yieldExprOf(self.hir, ye);
                         if (yp.expr != hir_mod.none_node_id and self.subtreeContainsYield(yp.expr)) return false;
-                    } else if (self.splitLoopBody(dwp.body, false)) |split| {
+                    } else if (self.splitLoopBody(dwp.body, true)) |split| {
                         const yp = hir_mod.yieldExprOf(self.hir, split.yield_node);
                         if (yp.expr != hir_mod.none_node_id and self.subtreeContainsYield(yp.expr)) return false;
                     } else {
@@ -1350,7 +1350,7 @@ pub const Printer = struct {
                     if (self.singleYieldInThen(fp.body)) |ye| {
                         const yp = hir_mod.yieldExprOf(self.hir, ye);
                         if (yp.expr != hir_mod.none_node_id and self.subtreeContainsYield(yp.expr)) return false;
-                    } else if (self.splitLoopBody(fp.body, false)) |split| {
+                    } else if (self.splitLoopBody(fp.body, true)) |split| {
                         const yp = hir_mod.yieldExprOf(self.hir, split.yield_node);
                         if (yp.expr != hir_mod.none_node_id and self.subtreeContainsYield(yp.expr)) return false;
                     } else {
@@ -1737,19 +1737,29 @@ pub const Printer = struct {
                 }
                 state += 3;
             } else if (k == .for_stmt and self.subtreeContainsYield(stmt)) {
-                // §4.A.4.2 part 2f / §4.A.4.3 — `for (init; cond; update) body;`
-                // 3-case loop with init in current case, header
-                // (cond + pre-stmts + yield), resume (sent + post-stmts
-                // + update + loopback), exit.
+                // §4.A.4.2 part 2f / §4.A.4.3 / §4.A.4.4 part 3 —
+                // `for (init; cond; update) body;` 4-case loop:
+                //   case state+1 (header): if (!cond) return [3, exit]; pre; return [op, E];
+                //   case state+2 (resume): _a.sent(); + post-stmts; falls through
+                //   case state+3 (continue): update; return [3, header];
+                //   case state+4 (exit): post-loop fall-through
+                // Init runs in the current case before fall-through
+                // into the header. continue jumps to the continue
+                // case so the update step runs once before the next
+                // cond check.
                 const prev_break = self.gen_break_label;
-                defer self.gen_break_label = prev_break;
+                const prev_continue = self.gen_continue_label;
+                defer {
+                    self.gen_break_label = prev_break;
+                    self.gen_continue_label = prev_continue;
+                }
                 const fp = hir_mod.forStmtOf(self.hir, stmt);
                 var pre: []const NodeId = &[_]NodeId{};
                 var post: []const NodeId = &[_]NodeId{};
                 const ye_node: NodeId = if (self.singleYieldInThen(fp.body)) |single|
                     single
                 else blk: {
-                    const split = self.splitLoopBody(fp.body, false) orelse unreachable;
+                    const split = self.splitLoopBody(fp.body, true) orelse unreachable;
                     pre = split.pre;
                     post = split.post;
                     break :blk split.yield_node;
@@ -1758,9 +1768,11 @@ pub const Printer = struct {
                 const op: []const u8 = if (yp.type_node != hir_mod.none_node_id) "5" else "4";
                 const header = state + 1;
                 const resume_label = state + 2;
-                const exit_label = state + 3;
-                // §4.A.4.4 — set break label for the body's pre/post.
+                const continue_label = state + 3;
+                const exit_label = state + 4;
+                // §4.A.4.4 — set break/continue labels for the body's pre/post.
                 self.gen_break_label = exit_label;
+                self.gen_continue_label = continue_label;
                 // Init in the current case (if any).
                 if (fp.init != hir_mod.none_node_id) {
                     try self.write(" ");
@@ -1794,7 +1806,7 @@ pub const Printer = struct {
                     }
                     try self.write("];");
                 }
-                // Open resume case: sent + post-stmts + optional update + loopback.
+                // Open resume case: sent + post-stmts (falls through to continue).
                 {
                     const num_resume = std.fmt.bufPrint(&buf, "{d}", .{resume_label}) catch unreachable;
                     try self.writeNewlineIndent();
@@ -1805,6 +1817,14 @@ pub const Printer = struct {
                         try self.write(" ");
                         try self.printNonIndentStatement(ps);
                     }
+                }
+                // Open continue case: optional update + loopback.
+                {
+                    const num_continue = std.fmt.bufPrint(&buf, "{d}", .{continue_label}) catch unreachable;
+                    try self.writeNewlineIndent();
+                    try self.write("case ");
+                    try self.write(num_continue);
+                    try self.write(":");
                     if (fp.update != hir_mod.none_node_id) {
                         try self.write(" ");
                         try self.printExpression(fp.update);
@@ -1824,22 +1844,30 @@ pub const Printer = struct {
                     try self.write(num_exit_open);
                     try self.write(":");
                 }
-                state += 3;
+                state += 4;
             } else if (k == .do_while_stmt and self.subtreeContainsYield(stmt)) {
-                // §4.A.4.2 part 2e / §4.A.4.3 — `do body while (cond);`
-                // 3-case loop with cond-test at the resume:
+                // §4.A.4.2 part 2e / §4.A.4.3 / §4.A.4.4 part 3 —
+                // `do body while (cond);` 4-case loop:
                 //   case state+1 (body): pre-stmts + yield
-                //   case state+2 (resume): _a.sent(); + post-stmts + if (cond) return [3, body];
-                //   case state+3 (exit): post-loop fall-through
+                //   case state+2 (resume): _a.sent(); + post-stmts; falls through
+                //   case state+3 (continue): if (cond) return [3, body];
+                //   case state+4 (exit): post-loop fall-through
+                // The dedicated continue case lets `continue;` inside
+                // the body jump to it (running the cond-check without
+                // re-running post-stmts).
                 const prev_break = self.gen_break_label;
-                defer self.gen_break_label = prev_break;
+                const prev_continue = self.gen_continue_label;
+                defer {
+                    self.gen_break_label = prev_break;
+                    self.gen_continue_label = prev_continue;
+                }
                 const dwp = hir_mod.doWhileOf(self.hir, stmt);
                 var pre: []const NodeId = &[_]NodeId{};
                 var post: []const NodeId = &[_]NodeId{};
                 const ye_node: NodeId = if (self.singleYieldInThen(dwp.body)) |single|
                     single
                 else blk: {
-                    const split = self.splitLoopBody(dwp.body, false) orelse unreachable;
+                    const split = self.splitLoopBody(dwp.body, true) orelse unreachable;
                     pre = split.pre;
                     post = split.post;
                     break :blk split.yield_node;
@@ -1848,9 +1876,11 @@ pub const Printer = struct {
                 const op: []const u8 = if (yp.type_node != hir_mod.none_node_id) "5" else "4";
                 const body_label = state + 1;
                 const resume_label = state + 2;
-                const exit_label = state + 3;
-                // §4.A.4.4 — set break label for the body's pre/post.
+                const continue_label = state + 3;
+                const exit_label = state + 4;
+                // §4.A.4.4 — set break/continue labels for the body's pre/post.
                 self.gen_break_label = exit_label;
+                self.gen_continue_label = continue_label;
                 // Open body case: pre-stmts + yield.
                 {
                     const num_body = std.fmt.bufPrint(&buf, "{d}", .{body_label}) catch unreachable;
@@ -1870,7 +1900,7 @@ pub const Printer = struct {
                     }
                     try self.write("];");
                 }
-                // Open resume case: sent + post-stmts + cond-check loopback.
+                // Open resume case: sent + post-stmts (falls through to continue).
                 {
                     const num_resume = std.fmt.bufPrint(&buf, "{d}", .{resume_label}) catch unreachable;
                     try self.writeNewlineIndent();
@@ -1881,6 +1911,14 @@ pub const Printer = struct {
                         try self.write(" ");
                         try self.printNonIndentStatement(ps);
                     }
+                }
+                // Open continue case: cond-check loopback to body.
+                {
+                    const num_continue = std.fmt.bufPrint(&buf, "{d}", .{continue_label}) catch unreachable;
+                    try self.writeNewlineIndent();
+                    try self.write("case ");
+                    try self.write(num_continue);
+                    try self.write(":");
                     var num_body_buf: [16]u8 = undefined;
                     const num_body_back = std.fmt.bufPrint(&num_body_buf, "{d}", .{body_label}) catch unreachable;
                     try self.write(" if (");
@@ -1897,7 +1935,7 @@ pub const Printer = struct {
                     try self.write(num_exit);
                     try self.write(":");
                 }
-                state += 3;
+                state += 4;
             } else if (k == .if_stmt and self.subtreeContainsYield(stmt)) {
                 // §4.A.4.2 part 2a / 2b / 2c — `if (cond) yield E;`
                 // with optional else (non-yielding *or* itself a
@@ -5119,17 +5157,35 @@ test "emit: generator with continue targeting lowered while rewrites to [3, head
     try T.expect(std.mem.indexOf(u8, out, "return [4, 1]") != null);
 }
 
-test "emit: generator with continue targeting lowered for still bails (v0)" {
-    // for-loops need a dedicated continue case to run the update
-    // before re-checking the cond; v0 of continue rewriting only
-    // handles while-loops.
+test "emit: generator with continue targeting lowered for rewrites to [3, continue]" {
+    // §4.A.4.4 part 3 — for-loops now have a dedicated continue
+    // case where the update runs before re-checking the cond.
+    // continue rewrites to a jump targeting that case.
     const out = try emitWithOpts(
         "function* g() { for (let i = 0; i < 3; i++) { if (other) continue; yield i; } }",
         .{ .es_target = .es5 },
     );
     defer T.allocator.free(out);
-    try T.expect(std.mem.indexOf(u8, out, "TODO: ES5 generator") != null);
-    try T.expect(std.mem.indexOf(u8, out, "__generator") == null);
+    try T.expect(std.mem.indexOf(u8, out, "__generator") != null);
+    try T.expect(std.mem.indexOf(u8, out, "TODO: ES5 generator") == null);
+    // Continue case is case 3 (between resume 2 and exit 4).
+    try T.expect(std.mem.indexOf(u8, out, "if (other) return [3, 3];") != null);
+    // Continue case body: update + loopback to header.
+    try T.expect(std.mem.indexOf(u8, out, "case 3: i += 1; return [3, 1];") != null);
+}
+
+test "emit: generator with continue targeting lowered do-while rewrites to [3, continue]" {
+    // Companion for do-while: continue jumps to the cond-check case.
+    const out = try emitWithOpts(
+        "function* g() { do { if (other) continue; yield 1; } while (cond); }",
+        .{ .es_target = .es5 },
+    );
+    defer T.allocator.free(out);
+    try T.expect(std.mem.indexOf(u8, out, "__generator") != null);
+    try T.expect(std.mem.indexOf(u8, out, "TODO: ES5 generator") == null);
+    // Continue case for do-while is case 3 (cond check).
+    try T.expect(std.mem.indexOf(u8, out, "if (other) return [3, 3];") != null);
+    try T.expect(std.mem.indexOf(u8, out, "case 3: if (cond) return [3, 1];") != null);
 }
 
 test "emit: generator with break inside nested inner loop targets the inner loop" {
@@ -5201,7 +5257,7 @@ test "emit: generator with while-yield + cond containing yield still bails" {
     try T.expect(std.mem.indexOf(u8, out, "__generator") == null);
 }
 
-test "emit: generator with for-loop-yield lowers to 3-case loop with init+update" {
+test "emit: generator with for-loop-yield lowers to 4-case loop with continue case" {
     const out = try emitWithOpts(
         "function* g() { for (let i = 0; i < 3; i++) yield i; }",
         .{ .es_target = .es5 },
@@ -5211,13 +5267,15 @@ test "emit: generator with for-loop-yield lowers to 3-case loop with init+update
     try T.expect(std.mem.indexOf(u8, out, "TODO: ES5 generator") == null);
     // Init emitted in case 0 (before fall-through to header).
     try T.expect(std.mem.indexOf(u8, out, "var i = 0;") != null);
-    // Header case 1: cond + yield.
-    try T.expect(std.mem.indexOf(u8, out, "case 1: if (!((i < 3))) return [3, 3];") != null);
+    // Header case 1: cond + yield. exit now case 4.
+    try T.expect(std.mem.indexOf(u8, out, "case 1: if (!((i < 3))) return [3, 4];") != null);
     try T.expect(std.mem.indexOf(u8, out, "return [4, i]") != null);
-    // Resume case 2: sent + update (i++ lowers to i += 1) + loopback.
-    try T.expect(std.mem.indexOf(u8, out, "case 2: _a.sent(); i += 1; return [3, 1];") != null);
-    // Exit case 3.
-    try T.expect(std.mem.indexOf(u8, out, "case 3:") != null);
+    // Resume case 2: sent (falls through to continue case).
+    try T.expect(std.mem.indexOf(u8, out, "case 2: _a.sent();") != null);
+    // Continue case 3: update (i++ lowers to i += 1) + loopback.
+    try T.expect(std.mem.indexOf(u8, out, "case 3: i += 1; return [3, 1];") != null);
+    // Exit case 4.
+    try T.expect(std.mem.indexOf(u8, out, "case 4:") != null);
 }
 
 test "emit: postfix i++ in expression statement emits i += 1" {
@@ -5242,9 +5300,11 @@ test "emit: generator with bare-for-yield (no init/cond/update) lowers as infini
     try T.expect(std.mem.indexOf(u8, out, "__generator") != null);
     // No init or cond emitted. Header case 1 yields directly.
     try T.expect(std.mem.indexOf(u8, out, "case 1: return [4, 1]") != null);
-    // Resume case 2: sent + bare loopback (no update).
-    try T.expect(std.mem.indexOf(u8, out, "case 2: _a.sent(); return [3, 1];") != null);
-    try T.expect(std.mem.indexOf(u8, out, "case 3:") != null);
+    // Resume case 2: sent (falls through to continue).
+    try T.expect(std.mem.indexOf(u8, out, "case 2: _a.sent();") != null);
+    // Continue case 3: bare loopback (no update).
+    try T.expect(std.mem.indexOf(u8, out, "case 3: return [3, 1];") != null);
+    try T.expect(std.mem.indexOf(u8, out, "case 4:") != null);
 }
 
 test "emit: generator with for-loop-yield + yield-in-init still bails" {
@@ -5257,7 +5317,7 @@ test "emit: generator with for-loop-yield + yield-in-init still bails" {
     try T.expect(std.mem.indexOf(u8, out, "__generator") == null);
 }
 
-test "emit: generator with do-while-yield lowers to 3-case loop with cond at resume" {
+test "emit: generator with do-while-yield lowers to 4-case loop with continue case" {
     const out = try emitWithOpts(
         "function* g() { do yield 1; while (cond); }",
         .{ .es_target = .es5 },
@@ -5265,12 +5325,14 @@ test "emit: generator with do-while-yield lowers to 3-case loop with cond at res
     defer T.allocator.free(out);
     try T.expect(std.mem.indexOf(u8, out, "__generator") != null);
     try T.expect(std.mem.indexOf(u8, out, "TODO: ES5 generator") == null);
-    // Body case 1 — yield directly.
+    // Body case 1: yield directly.
     try T.expect(std.mem.indexOf(u8, out, "case 1: return [4, 1]") != null);
-    // Resume case 2 — sent + conditional loopback to body.
-    try T.expect(std.mem.indexOf(u8, out, "case 2: _a.sent(); if (cond) return [3, 1];") != null);
-    // Exit case 3.
-    try T.expect(std.mem.indexOf(u8, out, "case 3:") != null);
+    // Resume case 2: sent (falls through to continue case).
+    try T.expect(std.mem.indexOf(u8, out, "case 2: _a.sent();") != null);
+    // Continue case 3: cond-check + loopback to body.
+    try T.expect(std.mem.indexOf(u8, out, "case 3: if (cond) return [3, 1];") != null);
+    // Exit case 4.
+    try T.expect(std.mem.indexOf(u8, out, "case 4:") != null);
 }
 
 test "emit: generator with multi-stmt do-while body splits pre/post" {
@@ -5282,9 +5344,11 @@ test "emit: generator with multi-stmt do-while body splits pre/post" {
     try T.expect(std.mem.indexOf(u8, out, "__generator") != null);
     // Body case 1: pre() then yield.
     try T.expect(std.mem.indexOf(u8, out, "case 1: pre(); return [4, 1];") != null);
-    // Resume case 2: sent + post() + cond-loopback to body.
-    try T.expect(std.mem.indexOf(u8, out, "case 2: _a.sent(); post(); if (cond) return [3, 1];") != null);
-    try T.expect(std.mem.indexOf(u8, out, "case 3:") != null);
+    // Resume case 2: sent + post() (falls through).
+    try T.expect(std.mem.indexOf(u8, out, "case 2: _a.sent(); post();") != null);
+    // Continue case 3: cond-check + loopback.
+    try T.expect(std.mem.indexOf(u8, out, "case 3: if (cond) return [3, 1];") != null);
+    try T.expect(std.mem.indexOf(u8, out, "case 4:") != null);
 }
 
 test "emit: generator with multi-stmt for body splits pre/post around yield" {
@@ -5295,11 +5359,13 @@ test "emit: generator with multi-stmt for body splits pre/post around yield" {
     defer T.allocator.free(out);
     try T.expect(std.mem.indexOf(u8, out, "__generator") != null);
     try T.expect(std.mem.indexOf(u8, out, "var i = 0;") != null);
-    // Header case 1: cond check + pre() + yield.
-    try T.expect(std.mem.indexOf(u8, out, "case 1: if (!((i < 3))) return [3, 3]; pre(); return [4, i];") != null);
-    // Resume case 2: sent + post() + update + loopback.
-    try T.expect(std.mem.indexOf(u8, out, "case 2: _a.sent(); post(); i += 1; return [3, 1];") != null);
-    try T.expect(std.mem.indexOf(u8, out, "case 3:") != null);
+    // Header case 1: cond check + pre() + yield. exit now case 4.
+    try T.expect(std.mem.indexOf(u8, out, "case 1: if (!((i < 3))) return [3, 4]; pre(); return [4, i];") != null);
+    // Resume case 2: sent + post() (falls through to continue).
+    try T.expect(std.mem.indexOf(u8, out, "case 2: _a.sent(); post();") != null);
+    // Continue case 3: update + loopback.
+    try T.expect(std.mem.indexOf(u8, out, "case 3: i += 1; return [3, 1];") != null);
+    try T.expect(std.mem.indexOf(u8, out, "case 4:") != null);
 }
 
 test "emit: generator with do-while-yield + yield-in-cond still bails" {
