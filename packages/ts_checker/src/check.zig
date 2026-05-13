@@ -507,6 +507,10 @@ pub const Checker = struct {
     /// of `class_instance_types`. The member-access path uses it
     /// to map the receiver type back to a class for privacy checks.
     class_name_by_instance: std.AutoHashMapUnmanaged(TypeId, hir_mod.StringId),
+    /// Static-side TypeId → declaring class name (StringId). Mirrors
+    /// `class_name_by_instance` for checks like `Base.privateStatic`
+    /// where the receiver is the constructor object.
+    class_name_by_static: std.AutoHashMapUnmanaged(TypeId, hir_mod.StringId),
     /// Class-name → set of member names declared `private`.
     /// Populated by `checkClassDecl`; consulted on `member_access`
     /// to flag TS2341 when the access site is outside the
@@ -758,6 +762,7 @@ pub const Checker = struct {
             .class_static_types = .empty,
             .class_static_type_by_node = .empty,
             .class_name_by_instance = .empty,
+            .class_name_by_static = .empty,
             .class_private_members = .empty,
             .class_protected_members = .empty,
             .class_parent = .empty,
@@ -834,6 +839,7 @@ pub const Checker = struct {
         self.class_static_types.deinit(self.gpa);
         self.class_static_type_by_node.deinit(self.gpa);
         self.class_name_by_instance.deinit(self.gpa);
+        self.class_name_by_static.deinit(self.gpa);
         var pm_it = self.class_private_members.valueIterator();
         while (pm_it.next()) |set| set.deinit(self.gpa);
         self.class_private_members.deinit(self.gpa);
@@ -1805,6 +1811,7 @@ pub const Checker = struct {
     const ImportLocalInfo = struct {
         node: NodeId,
         module: hir_mod.StringId,
+        section_start: usize,
     };
 
     fn checkImportLocalConflicts(self: *Checker, stmts: []const NodeId) CheckError!void {
@@ -1814,17 +1821,19 @@ pub const Checker = struct {
         for (stmts) |stmt| {
             if (self.hir.kindOf(stmt) != .import_decl) continue;
             const imp = hir_mod.importOf(self.hir, stmt);
-            if (imp.default_binding != hir_mod.none_node_id and self.hir.kindOf(imp.default_binding) == .identifier) {
+            const import_section = self.virtualSectionStartForNode(stmt);
+            if (!imp.is_type_only and imp.default_binding != hir_mod.none_node_id and self.hir.kindOf(imp.default_binding) == .identifier) {
                 const id = hir_mod.identifierOf(self.hir, imp.default_binding);
-                try imports_by_name.put(self.gpa, id.name, .{ .node = imp.default_binding, .module = imp.module });
+                try imports_by_name.put(self.gpa, id.name, .{ .node = imp.default_binding, .module = imp.module, .section_start = import_section });
             }
-            if (imp.namespace_binding != hir_mod.none_node_id and self.hir.kindOf(imp.namespace_binding) == .identifier) {
+            if (!imp.is_type_only and imp.namespace_binding != hir_mod.none_node_id and self.hir.kindOf(imp.namespace_binding) == .identifier) {
                 const id = hir_mod.identifierOf(self.hir, imp.namespace_binding);
-                try imports_by_name.put(self.gpa, id.name, .{ .node = imp.namespace_binding, .module = imp.module });
+                try imports_by_name.put(self.gpa, id.name, .{ .node = imp.namespace_binding, .module = imp.module, .section_start = import_section });
             }
             for (hir_mod.importNamed(self.hir, stmt)) |spec_node| {
                 const spec = hir_mod.importSpecifierOf(self.hir, spec_node);
-                try imports_by_name.put(self.gpa, spec.local, .{ .node = spec_node, .module = imp.module });
+                if (imp.is_type_only or spec.is_type_only) continue;
+                try imports_by_name.put(self.gpa, spec.local, .{ .node = spec_node, .module = imp.module, .section_start = import_section });
             }
         }
 
@@ -1833,6 +1842,7 @@ pub const Checker = struct {
             if (local == hir_mod.none_node_id or self.hir.kindOf(local) != .namespace_decl) continue;
             const name = self.declarationName(local) orelse continue;
             const import_info = imports_by_name.get(name) orelse continue;
+            if (self.sourceHasVirtualFilenameSections() and self.virtualSectionStartForNode(local) != import_info.section_start) continue;
             if (try self.ambientModuleExportsName(stmts, import_info.module, name)) continue;
             const name_str = self.string_interner.get(name);
             const msg = try std.fmt.allocPrint(
@@ -2343,6 +2353,17 @@ pub const Checker = struct {
         const old_floor = self.narrow_lookup_floor;
         self.narrow_lookup_floor = self.narrow_scopes.items.len;
         defer self.narrow_lookup_floor = old_floor;
+        const kind = self.hir.kindOf(node);
+        if (self.sourceHasStrictFalseDirective() and kind != .arrow_fn) {
+            const this_id = self.string_interner.intern("this") catch return error.OutOfMemory;
+            const super_id = self.string_interner.intern("super") catch return error.OutOfMemory;
+            try self.pushNarrowScope();
+            defer self.popNarrowScope();
+            try self.recordNarrow(this_id, types.Primitive.any);
+            try self.recordNarrow(super_id, types.Primitive.any);
+            try self.checkFnDecl(node);
+            return;
+        }
         try self.checkFnDecl(node);
     }
 
@@ -4815,6 +4836,45 @@ pub const Checker = struct {
         }
     }
 
+    fn firstReturnExpressionTypeWithClassMemberThis(
+        self: *Checker,
+        node: NodeId,
+        is_static: bool,
+        instance_members: []const types.ObjectMember,
+        static_members: []const types.ObjectMember,
+        string_idx: TypeId,
+        number_idx: TypeId,
+        symbol_idx: TypeId,
+        static_string_idx: TypeId,
+        static_number_idx: TypeId,
+        static_symbol_idx: TypeId,
+        parent_instance_t: ?TypeId,
+        parent_static_t: ?TypeId,
+    ) CheckError!?TypeId {
+        const this_id = self.string_interner.intern("this") catch return error.OutOfMemory;
+        const super_id = self.string_interner.intern("super") catch return error.OutOfMemory;
+        const this_t = if (is_static)
+            self.interner.internObjectTypeWithIndexAndSymbol(
+                static_members,
+                static_string_idx,
+                static_number_idx,
+                static_symbol_idx,
+            ) catch return error.OutOfMemory
+        else
+            self.interner.internObjectTypeWithIndexAndSymbol(
+                instance_members,
+                string_idx,
+                number_idx,
+                symbol_idx,
+            ) catch return error.OutOfMemory;
+        try self.pushNarrowScope();
+        defer self.popNarrowScope();
+        try self.recordNarrow(this_id, this_t);
+        const super_t = if (is_static) parent_static_t else parent_instance_t;
+        if (super_t) |st| try self.recordNarrow(super_id, st);
+        return try self.firstReturnExpressionType(node);
+    }
+
     fn forEachChildCollect(
         self: *Checker,
         node: NodeId,
@@ -6351,6 +6411,14 @@ pub const Checker = struct {
         const c = hir_mod.classOf(self.hir, node);
         const members = hir_mod.classMembers(self.hir, node);
         try self.checkClassMemberDecoratorDiagnostics(members);
+        const class_name_scope = c.name != hir_mod.none_node_id and
+            self.hir.kindOf(c.name) == .identifier;
+        if (class_name_scope) {
+            const cid = hir_mod.identifierOf(self.hir, c.name);
+            try self.pushNarrowScope();
+            try self.recordNarrow(cid.name, types.Primitive.any);
+        }
+        defer if (class_name_scope) self.popNarrowScope();
         const type_params = self.hir.childSlice(c.type_params_start, c.type_params_len);
         try self.checkTypeParameterDeclList(type_params);
         if (type_params.len > 0) try self.pushNarrowScope();
@@ -6565,7 +6633,20 @@ pub const Checker = struct {
                             const accessor_t: TypeId = if (fn_p.flags.is_getter) blk: {
                                 var getter_t = self.interner.signatureReturn(sig) orelse types.Primitive.any;
                                 if (getter_t == types.Primitive.any and fn_p.return_type == hir_mod.none_node_id) {
-                                    getter_t = (try self.firstReturnExpressionType(fn_p.body)) orelse getter_t;
+                                    getter_t = (try self.firstReturnExpressionTypeWithClassMemberThis(
+                                        fn_p.body,
+                                        fn_p.flags.is_static,
+                                        instance_members.items,
+                                        static_members.items,
+                                        string_idx,
+                                        number_idx,
+                                        symbol_idx,
+                                        static_string_idx,
+                                        static_number_idx,
+                                        static_symbol_idx,
+                                        parent_instance_t,
+                                        parent_static_t,
+                                    )) orelse getter_t;
                                 }
                                 break :blk getter_t;
                             } else blk: {
@@ -6625,7 +6706,20 @@ pub const Checker = struct {
                             if (fn_p.flags.is_getter) {
                                 var getter_t = self.interner.signatureReturn(sig) orelse types.Primitive.any;
                                 if (getter_t == types.Primitive.any and fn_p.return_type == hir_mod.none_node_id) {
-                                    getter_t = (try self.firstReturnExpressionType(fn_p.body)) orelse getter_t;
+                                    getter_t = (try self.firstReturnExpressionTypeWithClassMemberThis(
+                                        fn_p.body,
+                                        fn_p.flags.is_static,
+                                        instance_members.items,
+                                        static_members.items,
+                                        string_idx,
+                                        number_idx,
+                                        symbol_idx,
+                                        static_string_idx,
+                                        static_number_idx,
+                                        static_symbol_idx,
+                                        parent_instance_t,
+                                        parent_static_t,
+                                    )) orelse getter_t;
                                 }
                                 if (setter_types.get(member_name)) |setter_t| {
                                     if (!(self.engine.isAssignableTo(getter_t, setter_t) catch true)) {
@@ -6710,7 +6804,7 @@ pub const Checker = struct {
                             try self.report(m, TsCodes.computed_property_name_type, "A computed property name must be of type 'string', 'number', 'symbol', or 'any'.");
                         } else if (!op_is_method and
                             !self.classMemberSourceHasLeadingKeyword(m, "accessor") and
-                            !self.computedClassPropertyKeyIsSimpleLiteral(key_t))
+                            !self.computedClassPropertyKeyIsSimpleLiteralNode(op.key, key_t))
                         {
                             try self.report(m, 1166, "A computed property name in a class property declaration must have a simple literal type or a 'unique symbol' type.");
                         }
@@ -6793,21 +6887,33 @@ pub const Checker = struct {
                             break :blk try self.lowererLowerWithTypeParams(op.type_annotation);
                         }
                         if (op.value != hir_mod.none_node_id) {
-                            if (!op.is_static) {
-                                const this_id = self.string_interner.intern("this") catch return error.OutOfMemory;
-                                const partial_this_t = self.interner.internObjectTypeWithIndexAndSymbol(
+                            const value_kind = self.hir.kindOf(op.value);
+                            if (value_kind == .fn_expr) {
+                                const sig = try self.checkFnSignatureOnly(op.value);
+                                if (hir_mod.fnTypeParams(self.hir, op.value).len > 0) self.popNarrowScope();
+                                break :blk sig;
+                            }
+                            const this_id = self.string_interner.intern("this") catch return error.OutOfMemory;
+                            const super_id = self.string_interner.intern("super") catch return error.OutOfMemory;
+                            const partial_this_t = if (op.is_static)
+                                self.interner.internObjectTypeWithIndexAndSymbol(
+                                    static_members.items,
+                                    static_string_idx,
+                                    static_number_idx,
+                                    static_symbol_idx,
+                                ) catch return error.OutOfMemory
+                            else
+                                self.interner.internObjectTypeWithIndexAndSymbol(
                                     instance_members.items,
                                     string_idx,
                                     number_idx,
                                     symbol_idx,
                                 ) catch return error.OutOfMemory;
-                                try self.pushNarrowScope();
-                                errdefer self.popNarrowScope();
-                                try self.recordNarrow(this_id, partial_this_t);
-                                const init_t = try self.checkExpression(op.value);
-                                self.popNarrowScope();
-                                break :blk init_t;
-                            }
+                            try self.pushNarrowScope();
+                            defer self.popNarrowScope();
+                            try self.recordNarrow(this_id, partial_this_t);
+                            const field_super_t = if (op.is_static) parent_static_t else parent_instance_t;
+                            if (field_super_t) |st| try self.recordNarrow(super_id, st);
                             break :blk try self.checkExpression(op.value);
                         }
                         break :blk types.Primitive.any;
@@ -6890,12 +6996,32 @@ pub const Checker = struct {
         var instance_t = self.interner.internObjectTypeWithIndexAndSymbol(instance_members.items, string_idx, number_idx, symbol_idx) catch return error.OutOfMemory;
         if (has_readonly_index) try self.readonly_index_types.put(self.gpa, instance_t, {});
         var static_ctor_sig = ctor_sig;
+        var inherited_ctor_sig: ?TypeId = null;
+        if (!has_explicit_ctor) {
+            if (parent_static_t) |pst| {
+                var parent_construct_sigs: std.ArrayListUnmanaged(TypeId) = .empty;
+                defer parent_construct_sigs.deinit(self.gpa);
+                try self.collectConstructSignatures(pst, &parent_construct_sigs);
+                if (parent_construct_sigs.items.len > 0) inherited_ctor_sig = parent_construct_sigs.items[0];
+            }
+        }
         {
             const construct_name = self.string_interner.intern("__construct") catch return error.OutOfMemory;
             const empty_params: [0]TypeId = .{};
-            const ctor_params: []const TypeId = if (has_explicit_ctor) self.interner.signatureParams(ctor_sig) else empty_params[0..];
+            const ctor_params: []const TypeId = if (has_explicit_ctor)
+                self.interner.signatureParams(ctor_sig)
+            else if (inherited_ctor_sig) |parent_sig|
+                self.interner.signatureParams(parent_sig)
+            else
+                empty_params[0..];
             static_ctor_sig = self.interner.internSignature(ctor_params, instance_t, true) catch return error.OutOfMemory;
             try self.recordGenericSignatureParams(static_ctor_sig, class_param_ids.items);
+            if (inherited_ctor_sig) |parent_sig| {
+                if (self.rest_signatures.contains(parent_sig)) try self.rest_signatures.put(self.gpa, static_ctor_sig, {});
+                if (self.signature_min_args.get(parent_sig)) |min_required| {
+                    try self.signature_min_args.put(self.gpa, static_ctor_sig, min_required);
+                }
+            }
             try static_members.append(self.gpa, .{
                 .name = construct_name,
                 .type = static_ctor_sig,
@@ -6930,6 +7056,7 @@ pub const Checker = struct {
                 });
             }
             try self.class_name_by_instance.put(self.gpa, instance_t, cid.name);
+            try self.class_name_by_static.put(self.gpa, static_t, cid.name);
             if (has_explicit_ctor) {
                 try self.class_constructor_sigs.put(self.gpa, cid.name, static_ctor_sig);
             }
@@ -7085,7 +7212,11 @@ pub const Checker = struct {
                 try self.recordNarrow(this_id, if (op.is_static) static_t else instance_this_t);
                 const method_super_t = if (op.is_static) static_super_t else super_t;
                 if (method_super_t) |st| try self.recordNarrow(super_id, st);
-                try self.checkFnDecl(op.value);
+                if (value_kind == .fn_expr and !op.is_method and !self.memberSourceLooksMethod(m)) {
+                    try self.checkFnDeclWithFlowBoundary(op.value);
+                } else {
+                    try self.checkFnDecl(op.value);
+                }
                 self.popNarrowScope();
                 self.narrow_lookup_floor = old_floor;
             },
@@ -7156,6 +7287,7 @@ pub const Checker = struct {
                     info.body = instance_t;
                 }
                 try self.class_name_by_instance.put(self.gpa, instance_t, cid.name);
+                try self.class_name_by_static.put(self.gpa, static_t, cid.name);
                 const implements = self.hir.childSlice(c.implements_start, c.implements_len);
                 for (implements) |impl_node| {
                     const target_t = self.lowererLowerWithTypeParams(impl_node) catch types.Primitive.unknown;
@@ -7378,7 +7510,9 @@ pub const Checker = struct {
         obj_t: TypeId,
         prop_name: hir_mod.StringId,
     ) CheckError!void {
-        const class_name = self.class_name_by_instance.get(obj_t) orelse return;
+        const class_name = self.class_name_by_instance.get(obj_t) orelse
+            self.class_name_by_static.get(obj_t) orelse
+            return;
         const private_set = self.class_private_members.getPtr(class_name) orelse return;
         if (!private_set.contains(prop_name)) return;
         // Walk parents looking for an enclosing `class_decl` whose
@@ -7419,7 +7553,9 @@ pub const Checker = struct {
         obj_t: TypeId,
         prop_name: hir_mod.StringId,
     ) CheckError!void {
-        const class_name = self.class_name_by_instance.get(obj_t) orelse return;
+        const class_name = self.class_name_by_instance.get(obj_t) orelse
+            self.class_name_by_static.get(obj_t) orelse
+            return;
         const protected_set = self.class_protected_members.getPtr(class_name) orelse return;
         if (!protected_set.contains(prop_name)) return;
         var cur = self.hir.parentOf(node);
@@ -13699,6 +13835,7 @@ pub const Checker = struct {
                 flow_t != types.Primitive.unknown and
                 final_type != types.Primitive.any and
                 final_type != types.Primitive.unknown and
+                (try self.shouldRecordDeclaredVariableFlowNarrow(declared_type, flow_t, final_type)) and
                 flow_ok)
             {
                 try self.recordNarrow(id.name, flow_t);
@@ -13751,6 +13888,19 @@ pub const Checker = struct {
                 .message = msg,
             });
         }
+    }
+
+    fn shouldRecordDeclaredVariableFlowNarrow(
+        self: *Checker,
+        declared_type: TypeId,
+        flow_t: TypeId,
+        final_type: TypeId,
+    ) CheckError!bool {
+        if (declared_type == types.Primitive.none) return true;
+        if (flow_t == final_type or (self.engine.isIdenticalTo(flow_t, final_type) catch false)) return true;
+        if (flow_t >= self.interner.pool.typeCount()) return false;
+        if (!self.interner.pool.flagsOf(flow_t).is_literal) return false;
+        return self.engine.isAssignableTo(flow_t, final_type) catch false;
     }
 
     fn virtualSectionIsJsLike(self: *Checker, node: NodeId) bool {
@@ -18371,13 +18521,19 @@ pub const Checker = struct {
     /// (function parameter use, top-level decl reference).
     fn typeOfIdentifier(self: *Checker, node: NodeId) TypeId {
         const id = hir_mod.identifierOf(self.hir, node);
+        const name_str = self.string_interner.get(id.name);
+        if (std.mem.eql(u8, name_str, "this") and
+            self.sourceHasStrictFalseDirective() and
+            self.thisInsideNonArrowPlainFunction(node))
+        {
+            return types.Primitive.any;
+        }
 
         // Narrowed binding from an enclosing type-guard takes
         // precedence over the static type.
         if (self.lookupNarrow(id.name)) |t| return t;
         if (self.resolving_value_types.contains(id.name)) return types.Primitive.any;
 
-        const name_str = self.string_interner.get(id.name);
         if (std.mem.eql(u8, name_str, "this")) {
             if (!self.sourceHasStrictFalseDirective() and
                 !self.identifierThisIsArrowCaptured(node) and
@@ -18680,6 +18836,7 @@ pub const Checker = struct {
             // identifier that introduces the name.
             if (!self.isDeclNameSlot(node) and !self.isBuiltinName(id.name)) {
                 if (self.moduleHasRuntimeNamespacePrefix(module, id.name)) return types.Primitive.any;
+                if (self.identifierNamesEnclosingClassExpression(node, id.name)) return types.Primitive.any;
                 self.reportCannotFindName(node, id.name) catch {};
             }
         }
@@ -18750,9 +18907,23 @@ pub const Checker = struct {
             } else |_| {}
         }
         if (self.module == null and !self.isDeclNameSlot(node) and !self.isBuiltinName(id.name)) {
-            self.reportCannotFindName(node, id.name) catch {};
+            if (!self.identifierNamesEnclosingClassExpression(node, id.name)) {
+                self.reportCannotFindName(node, id.name) catch {};
+            }
         }
         return types.Primitive.any;
+    }
+
+    fn identifierNamesEnclosingClassExpression(self: *Checker, node: NodeId, name: hir_mod.StringId) bool {
+        var cur = self.hir.parentOf(node);
+        while (cur != hir_mod.none_node_id) : (cur = self.hir.parentOf(cur)) {
+            const k = self.hir.kindOf(cur);
+            if (k != .class_decl and k != .class_expr) continue;
+            const c = hir_mod.classOf(self.hir, cur);
+            if (c.name == hir_mod.none_node_id or self.hir.kindOf(c.name) != .identifier) continue;
+            if (hir_mod.identifierOf(self.hir, c.name).name == name) return true;
+        }
+        return false;
     }
 
     fn moduleNameIsNamespaceOnlyValue(
@@ -19631,6 +19802,13 @@ pub const Checker = struct {
         return f.is_literal and (f.is_string or f.is_number);
     }
 
+    fn computedClassPropertyKeyIsSimpleLiteralNode(self: *Checker, key: NodeId, t: TypeId) bool {
+        switch (self.hir.kindOf(key)) {
+            .literal_string, .literal_number => return true,
+            else => return self.computedClassPropertyKeyIsSimpleLiteral(t),
+        }
+    }
+
     fn computedPropertyKeyTypeIsSymbolLike(self: *Checker, t: TypeId) CheckError!bool {
         if (t >= self.interner.pool.typeCount()) return false;
         const f = self.interner.pool.flagsOf(t);
@@ -20003,11 +20181,25 @@ pub const Checker = struct {
     }
 
     fn checkThisExpression(self: *Checker, node: NodeId) CheckError!TypeId {
+        if (self.sourceHasStrictFalseDirective() and self.thisInsideNonArrowPlainFunction(node)) return types.Primitive.any;
         if (self.currentThisType()) |this_t| return this_t;
         if (!self.sourceHasStrictFalseDirective() and !self.thisInsideObjectLiteralMethod(node)) {
             try self.report(node, TsCodes.this_implicitly_any, "'this' implicitly has type 'any' because it does not have a type annotation.");
         }
         return types.Primitive.any;
+    }
+
+    fn thisInsideNonArrowPlainFunction(self: *Checker, node: NodeId) bool {
+        var cur = self.hir.parentOf(node);
+        while (cur != hir_mod.none_node_id) : (cur = self.hir.parentOf(cur)) {
+            const k = self.hir.kindOf(cur);
+            if (k == .arrow_fn) return false;
+            if (k == .fn_decl or k == .fn_expr) {
+                const f = hir_mod.fnDeclOf(self.hir, cur);
+                return !f.flags.is_method and !f.flags.is_constructor;
+            }
+        }
+        return false;
     }
 
     fn identifierThisIsArrowCaptured(self: *Checker, node: NodeId) bool {
@@ -22559,11 +22751,24 @@ pub const Checker = struct {
         if (try self.contextualGeneratorFunctionAssignableToParam(arg_node, arg_t, param_t)) return true;
         if (try self.typeParameterConstraintAssignableToParam(arg_t, param_t)) return true;
         if (try self.promisePayloadArgumentAssignable(arg_t, param_t)) return true;
+        if (try self.restAnySignatureAssignableToCallback(arg_t, param_t)) return true;
         if (self.strict_flags.strict_null_checks) {
             if (self.typeIncludesNull(arg_t) and !self.typeIncludesNull(param_t)) return false;
             if (self.typeIncludesUndefined(arg_t) and !self.typeIncludesUndefined(param_t)) return false;
         }
         return self.engine.isAssignableTo(arg_t, param_t);
+    }
+
+    fn restAnySignatureAssignableToCallback(self: *Checker, arg_t: TypeId, param_t: TypeId) CheckError!bool {
+        if (arg_t >= self.interner.pool.typeCount() or param_t >= self.interner.pool.typeCount()) return false;
+        if (!self.interner.pool.flagsOf(arg_t).is_signature or !self.interner.pool.flagsOf(param_t).is_signature) return false;
+        if (!self.rest_signatures.contains(arg_t)) return false;
+        const params = self.interner.signatureParams(arg_t);
+        if (params.len == 0) return false;
+        const rest_arr = params[params.len - 1];
+        if (rest_arr >= self.interner.pool.typeCount()) return false;
+        const elem_t = self.interner.objectNumberIndex(rest_arr);
+        return elem_t == types.Primitive.any or elem_t == types.Primitive.unknown;
     }
 
     fn functionExpressionAssignableToSignatureTarget(self: *Checker, arg_node: NodeId, arg_t: TypeId, target_t: TypeId) CheckError!bool {
@@ -26621,6 +26826,108 @@ test "checker: protected member accessed inside declaring class via this is allo
     try s.checker.checkSourceFile(s.root);
     for (s.checker.diagnostics.items) |d| {
         try T.expect(d.code != TsCodes.protected_member_access);
+    }
+}
+
+test "checker: type-only imports do not create virtual-file local conflicts" {
+    const s = try newSetup(
+        \\// @filename: external.ts
+        \\export default class Reflect {}
+        \\// @filename: main.ts
+        \\import type Reflect from "./external";
+        \\type T = Reflect;
+    );
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+    for (s.checker.diagnostics.items) |d| {
+        try T.expect(d.code != TsCodes.import_conflicts_with_local);
+    }
+}
+
+test "checker: private static member access outside class emits TS2341" {
+    const s = try newSetup(
+        \\class Base { private static foo: string; }
+        \\class Derived extends Base {
+        \\  static bar = Base.foo;
+        \\}
+    );
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+    var found = false;
+    for (s.checker.diagnostics.items) |d| {
+        if (d.code == TsCodes.private_member_access) found = true;
+    }
+    try T.expect(found);
+}
+
+test "checker: plain function class field this stays loose under strict false" {
+    const s = try newSetup(
+        \\// @strict: false
+        \\class A {
+        \\  static #fieldFunc = function () { this.x = 10; };
+        \\  #fieldFunc = function () { this.x = 10; };
+        \\  x = 1;
+        \\  test() {
+        \\    A.#fieldFunc();
+        \\    this.#fieldFunc();
+        \\  }
+        \\}
+    );
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+    for (s.checker.diagnostics.items) |d| {
+        try T.expect(d.code != TsCodes.property_does_not_exist);
+    }
+}
+
+test "checker: annotated Record keeps string index for private computed keys" {
+    const s = try newSetup(
+        \\class A {
+        \\  #a = "a";
+        \\  test() {
+        \\    const data: Record<string, string> = { a: "a" };
+        \\    const { [this.#a]: a } = data;
+        \\    const b = data[this.#a];
+        \\  }
+        \\}
+    );
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+    for (s.checker.diagnostics.items) |d| {
+        try T.expect(d.code != TsCodes.no_matching_index_signature);
+    }
+}
+
+test "checker: named class field expressions are visible inside nested classes" {
+    const s = try newSetup(
+        \\class Test {
+        \\  static ["X"] = class Inner {
+        \\    #foo = 10;
+        \\    static C = class InnerInner {
+        \\      m() { new Inner().#foo; }
+        \\    }
+        \\  }
+        \\}
+    );
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+    for (s.checker.diagnostics.items) |d| {
+        try T.expect(d.code != TsCodes.cannot_find_name);
+    }
+}
+
+test "checker: rest-any callbacks are assignable to Promise then callbacks" {
+    const s = try newSetup(
+        \\const C = class {
+        \\  async #bar() { return await Promise.resolve(42); }
+        \\  async foo() { return await this.#bar(); }
+        \\}
+        \\new C().foo().then(console.log);
+    );
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+    for (s.checker.diagnostics.items) |d| {
+        try T.expect(d.code != TsCodes.argument_type_mismatch);
     }
 }
 
