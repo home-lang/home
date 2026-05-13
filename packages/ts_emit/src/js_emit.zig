@@ -1395,24 +1395,29 @@ pub const Printer = struct {
                     // Pass-through is fine when the subtree carries no yields.
                     if (!self.subtreeContainsYield(s)) continue;
                     // §4.A.4.2 part 2a/2b/2c + §4.A.4.5 — supported shapes:
-                    //   * then-branch is a single bare yield; else either
-                    //     absent, non-yielding, or another single bare yield
-                    //   * then-branch is a block with ≥2 top-level yields
-                    //     and no else (multi-yield if-then path)
+                    //   * then-branch: single bare yield OR multi-yield block
+                    //   * else-branch (when present): single bare yield OR
+                    //     multi-yield block OR non-yielding
+                    //   * cond + each yielded expression has no nested yield
                     const ip = hir_mod.ifOf(self.hir, s);
                     if (self.subtreeContainsYield(ip.cond)) return false;
+                    // Validate then-branch shape.
                     if (self.singleYieldInThen(ip.then_branch)) |ye_then| {
                         const yp_then = hir_mod.yieldExprOf(self.hir, ye_then);
                         if (yp_then.expr != hir_mod.none_node_id and self.subtreeContainsYield(yp_then.expr)) return false;
-                        if (ip.else_branch != hir_mod.none_node_id and self.subtreeContainsYield(ip.else_branch)) {
-                            const ye_else = self.singleYieldInThen(ip.else_branch) orelse return false;
-                            const yp_else = hir_mod.yieldExprOf(self.hir, ye_else);
-                            if (yp_else.expr != hir_mod.none_node_id and self.subtreeContainsYield(yp_else.expr)) return false;
-                        }
-                    } else if (ip.else_branch == hir_mod.none_node_id and self.multiYieldLoopBodyOk(ip.then_branch, false)) {
-                        // multi-yield if-then with no else — OK.
-                    } else {
+                    } else if (!self.multiYieldLoopBodyOk(ip.then_branch, false)) {
                         return false;
+                    }
+                    // Validate else-branch (if present).
+                    if (ip.else_branch != hir_mod.none_node_id) {
+                        if (self.subtreeContainsYield(ip.else_branch)) {
+                            if (self.singleYieldInThen(ip.else_branch)) |ye_else| {
+                                const yp_else = hir_mod.yieldExprOf(self.hir, ye_else);
+                                if (yp_else.expr != hir_mod.none_node_id and self.subtreeContainsYield(yp_else.expr)) return false;
+                            } else if (!self.multiYieldLoopBodyOk(ip.else_branch, false)) {
+                                return false;
+                            }
+                        }
                     }
                 },
                 .try_stmt => {
@@ -2282,100 +2287,86 @@ pub const Printer = struct {
                 }
                 state += 4;
             } else if (k == .if_stmt and self.subtreeContainsYield(stmt)) {
-                // §4.A.4.2 part 2a / 2b / 2c + §4.A.4.5 — supported shapes:
-                //   single-yield + no else (3 cases): cur | thenResume | afterIf
-                //   single-yield + non-yielding else (4): cur | thenResume+skip | elseBody | afterIf
-                //   single-yield + yielding else (5): cur | thenResume+skip | elseYield | elseResume | afterIf
-                //   multi-yield then + no else (N+1 new cases past cur):
-                //     cur (cond skip + first yield) | N-1 inter resumes |
-                //     final resume (falls through) | afterIf
+                // §4.A.4.2 + §4.A.4.5 — unified if-CFG. Handles all
+                // combinations of N then-yields × (no else | non-yielding
+                // else | M else-yields). Layout, in terms of cases past
+                // the current case:
+                //   no else:                  N then resumes (last falls through to afterIf)
+                //   non-yielding else:        N then resumes (last → [3, afterIf]) | elseLabel | afterIf
+                //   yielding else (M ≥ 1):    N then resumes (last → [3, afterIf]) | M+1 else cases | afterIf
+                //
+                // N = then-branch yield count (≥1, since the predicate
+                //     required some yield in either then or else and we
+                //     handle else as non-yielding-block fall-through).
+                // M = else-branch yield count (0 = non-yielding/no else,
+                //     ≥1 = walk-inline like the then-branch).
                 const ip = hir_mod.ifOf(self.hir, stmt);
-                // Multi-yield then-branch (no else) — fan out inline.
-                if (self.singleYieldInThen(ip.then_branch) == null) {
-                    const then_stmts = hir_mod.blockStmts(self.hir, ip.then_branch);
-                    var n_yields: u32 = 0;
-                    for (then_stmts) |s| {
-                        if (self.hir.kindOf(s) == .yield_expr) n_yields += 1;
+                // Count then-branch yields.
+                var n_then: u32 = 1;
+                const then_is_single = self.singleYieldInThen(ip.then_branch) != null;
+                const then_stmts: []const NodeId = if (then_is_single) blk: {
+                    break :blk @as([]const NodeId, &[_]NodeId{self.singleYieldInThen(ip.then_branch).?});
+                } else stmts2: {
+                    const sl = hir_mod.blockStmts(self.hir, ip.then_branch);
+                    n_then = 0;
+                    for (sl) |s| {
+                        if (self.hir.kindOf(s) == .yield_expr) n_then += 1;
                     }
-                    const after_if_label = state + n_yields + 1;
-                    var num_skip_buf2: [16]u8 = undefined;
-                    const num_skip2 = std.fmt.bufPrint(&num_skip_buf2, "{d}", .{after_if_label}) catch unreachable;
-                    try self.write(" if (!(");
-                    try self.printExpression(ip.cond);
-                    try self.write(")) return [3, ");
-                    try self.write(num_skip2);
-                    try self.write("];");
-                    // Walk then-body inline; each yield closes the current
-                    // case and opens the next resumption case.
-                    for (then_stmts) |s| {
-                        if (self.hir.kindOf(s) == .yield_expr) {
-                            const yp_n = hir_mod.yieldExprOf(self.hir, s);
-                            const op_n: []const u8 = if (yp_n.type_node != hir_mod.none_node_id) "5" else "4";
-                            try self.write(" return [");
-                            try self.write(op_n);
-                            if (yp_n.expr != hir_mod.none_node_id) {
-                                try self.write(", ");
-                                try self.printExpression(yp_n.expr);
-                            }
-                            try self.write("];");
-                            state += 1;
-                            const num_resume = std.fmt.bufPrint(&buf, "{d}", .{state}) catch unreachable;
-                            try self.writeNewlineIndent();
-                            try self.write("case ");
-                            try self.write(num_resume);
-                            try self.write(": _a.sent();");
-                        } else {
-                            try self.write(" ");
-                            try self.printNonIndentStatement(s);
-                        }
-                    }
-                    // Final resumption falls through to afterIf.
-                    state += 1;
-                    {
-                        const num_after = std.fmt.bufPrint(&buf, "{d}", .{state}) catch unreachable;
-                        try self.writeNewlineIndent();
-                        try self.write("case ");
-                        try self.write(num_after);
-                        try self.write(":");
-                    }
-                    continue;
-                }
-                const ye_then = self.singleYieldInThen(ip.then_branch) orelse unreachable;
-                const yp_then = hir_mod.yieldExprOf(self.hir, ye_then);
-                const op_then: []const u8 = if (yp_then.type_node != hir_mod.none_node_id) "5" else "4";
+                    break :stmts2 sl;
+                };
+                // Else-branch shape.
                 const has_else = ip.else_branch != hir_mod.none_node_id;
-                const ye_else_opt: ?NodeId = if (has_else) self.singleYieldInThen(ip.else_branch) else null;
                 const else_yields = has_else and self.subtreeContainsYield(ip.else_branch);
-                const else_label = state + 2;
-                const after_if = if (else_yields) state + 4 else if (has_else) state + 3 else state + 2;
-                // Cur case: conditional jump + then-yield.
+                var m_else: u32 = 0;
+                const else_is_single = has_else and else_yields and self.singleYieldInThen(ip.else_branch) != null;
+                const else_stmts: []const NodeId = if (!has_else) &[_]NodeId{} else (if (else_is_single) (blk: {
+                    m_else = 1;
+                    break :blk @as([]const NodeId, &[_]NodeId{self.singleYieldInThen(ip.else_branch).?});
+                }) else (if (else_yields) (stmts2: {
+                    const sl = hir_mod.blockStmts(self.hir, ip.else_branch);
+                    for (sl) |s| {
+                        if (self.hir.kindOf(s) == .yield_expr) m_else += 1;
+                    }
+                    break :stmts2 sl;
+                }) else &[_]NodeId{}));
+                const else_section_size: u32 = if (has_else) (if (else_yields) m_else + 1 else 1) else 0;
+                const after_if_label = state + n_then + else_section_size + (if (has_else) @as(u32, 1) else @as(u32, 1));
+                const else_label_start: u32 = state + n_then + 1;
+                // Cur case: cond skip + walk-then.
                 var num_skip_buf: [16]u8 = undefined;
-                const num_skip = std.fmt.bufPrint(&num_skip_buf, "{d}", .{if (has_else) else_label else after_if}) catch unreachable;
+                const num_skip = std.fmt.bufPrint(&num_skip_buf, "{d}", .{if (has_else) else_label_start else after_if_label}) catch unreachable;
                 try self.write(" if (!(");
                 try self.printExpression(ip.cond);
                 try self.write(")) return [3, ");
                 try self.write(num_skip);
                 try self.write("];");
-                try self.write(" return [");
-                try self.write(op_then);
-                if (yp_then.expr != hir_mod.none_node_id) {
-                    try self.write(", ");
-                    try self.printExpression(yp_then.expr);
+                // Walk then-body.
+                for (then_stmts) |s| {
+                    if (self.hir.kindOf(s) == .yield_expr) {
+                        const yp_n = hir_mod.yieldExprOf(self.hir, s);
+                        const op_n: []const u8 = if (yp_n.type_node != hir_mod.none_node_id) "5" else "4";
+                        try self.write(" return [");
+                        try self.write(op_n);
+                        if (yp_n.expr != hir_mod.none_node_id) {
+                            try self.write(", ");
+                            try self.printExpression(yp_n.expr);
+                        }
+                        try self.write("];");
+                        state += 1;
+                        const num_resume = std.fmt.bufPrint(&buf, "{d}", .{state}) catch unreachable;
+                        try self.writeNewlineIndent();
+                        try self.write("case ");
+                        try self.write(num_resume);
+                        try self.write(": _a.sent();");
+                    } else {
+                        try self.write(" ");
+                        try self.printNonIndentStatement(s);
+                    }
                 }
-                try self.write("];");
-                // Open then-resumption case.
-                state += 1;
-                {
-                    const num_resume = std.fmt.bufPrint(&buf, "{d}", .{state}) catch unreachable;
-                    try self.writeNewlineIndent();
-                    try self.write("case ");
-                    try self.write(num_resume);
-                    try self.write(": _a.sent();");
-                }
+                // After then-walk: if else exists, jump past it.
                 if (has_else) {
-                    // Unconditional skip past the else section.
                     var num_after_buf: [16]u8 = undefined;
-                    const num_after = std.fmt.bufPrint(&num_after_buf, "{d}", .{after_if}) catch unreachable;
+                    const num_after = std.fmt.bufPrint(&num_after_buf, "{d}", .{after_if_label}) catch unreachable;
                     try self.write(" return [3, ");
                     try self.write(num_after);
                     try self.write("];");
@@ -2389,34 +2380,42 @@ pub const Printer = struct {
                         try self.write(":");
                     }
                     if (else_yields) {
-                        const ye_else = ye_else_opt.?;
-                        const yp_else = hir_mod.yieldExprOf(self.hir, ye_else);
-                        const op_else: []const u8 = if (yp_else.type_node != hir_mod.none_node_id) "5" else "4";
-                        try self.write(" return [");
-                        try self.write(op_else);
-                        if (yp_else.expr != hir_mod.none_node_id) {
-                            try self.write(", ");
-                            try self.printExpression(yp_else.expr);
+                        // Walk else-body, same shape as then-walk.
+                        for (else_stmts) |s| {
+                            if (self.hir.kindOf(s) == .yield_expr) {
+                                const yp_n = hir_mod.yieldExprOf(self.hir, s);
+                                const op_n: []const u8 = if (yp_n.type_node != hir_mod.none_node_id) "5" else "4";
+                                try self.write(" return [");
+                                try self.write(op_n);
+                                if (yp_n.expr != hir_mod.none_node_id) {
+                                    try self.write(", ");
+                                    try self.printExpression(yp_n.expr);
+                                }
+                                try self.write("];");
+                                state += 1;
+                                const num_resume = std.fmt.bufPrint(&buf, "{d}", .{state}) catch unreachable;
+                                try self.writeNewlineIndent();
+                                try self.write("case ");
+                                try self.write(num_resume);
+                                try self.write(": _a.sent();");
+                            } else {
+                                try self.write(" ");
+                                try self.printNonIndentStatement(s);
+                            }
                         }
-                        try self.write("];");
-                        // Open else-resumption case.
-                        state += 1;
-                        const num_else_resume = std.fmt.bufPrint(&buf, "{d}", .{state}) catch unreachable;
-                        try self.writeNewlineIndent();
-                        try self.write("case ");
-                        try self.write(num_else_resume);
-                        try self.write(": _a.sent();");
                     } else {
                         try self.emitGenInlineStatements(ip.else_branch);
                     }
                 }
-                // Open after-if case.
+                // Open afterIf case.
                 state += 1;
-                const num_after_open = std.fmt.bufPrint(&buf, "{d}", .{state}) catch unreachable;
-                try self.writeNewlineIndent();
-                try self.write("case ");
-                try self.write(num_after_open);
-                try self.write(":");
+                {
+                    const num_after_open = std.fmt.bufPrint(&buf, "{d}", .{state}) catch unreachable;
+                    try self.writeNewlineIndent();
+                    try self.write("case ");
+                    try self.write(num_after_open);
+                    try self.write(":");
+                }
             } else if (k == .try_stmt and self.subtreeContainsYield(stmt)) {
                 // §4.A.4.6 — `try { yield... } [catch (e) {...}] [finally {...}]`
                 // via tslib __generator's try-frame protocol:
@@ -6340,6 +6339,56 @@ test "emit: generator with multi-yield if-then + post-if yield sequences correct
     try T.expect(std.mem.indexOf(u8, out, "if (!(cond)) return [3, 3];") != null);
     try T.expect(std.mem.indexOf(u8, out, "case 3: return [4, 3]") != null);
     try T.expect(std.mem.indexOf(u8, out, "case 4: _a.sent();") != null);
+}
+
+test "emit: generator with multi-yield if-then + non-yielding else lowers" {
+    const out = try emitWithOpts(
+        "function* g() { if (cond) { yield 1; yield 2; } else { f(); } }",
+        .{ .es_target = .es5 },
+    );
+    defer T.allocator.free(out);
+    try T.expect(std.mem.indexOf(u8, out, "__generator") != null);
+    try T.expect(std.mem.indexOf(u8, out, "TODO: ES5 generator") == null);
+    // 2 then-yields → state advances by 2; non-yielding else takes 1 case;
+    // afterIf = state + 2 + 1 + 1 = state + 4.
+    try T.expect(std.mem.indexOf(u8, out, "if (!(cond)) return [3, 3];") != null);
+    try T.expect(std.mem.indexOf(u8, out, "return [4, 1]") != null);
+    try T.expect(std.mem.indexOf(u8, out, "case 1: _a.sent(); return [4, 2];") != null);
+    try T.expect(std.mem.indexOf(u8, out, "case 2: _a.sent(); return [3, 4];") != null);
+    try T.expect(std.mem.indexOf(u8, out, "case 3: f();") != null);
+    try T.expect(std.mem.indexOf(u8, out, "case 4:") != null);
+}
+
+test "emit: generator with multi-yield if-then + yielding else lowers" {
+    const out = try emitWithOpts(
+        "function* g() { if (cond) { yield 1; yield 2; } else { yield 3; } }",
+        .{ .es_target = .es5 },
+    );
+    defer T.allocator.free(out);
+    try T.expect(std.mem.indexOf(u8, out, "__generator") != null);
+    // 2 then-yields + 1 else-yield. afterIf = state + 2 + 2 + 1 = state + 5.
+    try T.expect(std.mem.indexOf(u8, out, "if (!(cond)) return [3, 3];") != null);
+    try T.expect(std.mem.indexOf(u8, out, "case 1: _a.sent(); return [4, 2];") != null);
+    try T.expect(std.mem.indexOf(u8, out, "case 2: _a.sent(); return [3, 5];") != null);
+    try T.expect(std.mem.indexOf(u8, out, "case 3: return [4, 3];") != null);
+    try T.expect(std.mem.indexOf(u8, out, "case 4: _a.sent();") != null);
+    try T.expect(std.mem.indexOf(u8, out, "case 5:") != null);
+}
+
+test "emit: generator with single-yield then + multi-yield else lowers" {
+    const out = try emitWithOpts(
+        "function* g() { if (cond) yield 1; else { yield 2; yield 3; } }",
+        .{ .es_target = .es5 },
+    );
+    defer T.allocator.free(out);
+    try T.expect(std.mem.indexOf(u8, out, "__generator") != null);
+    // 1 then-yield + 2 else-yields. afterIf = state + 1 + 3 + 1 = state + 5.
+    try T.expect(std.mem.indexOf(u8, out, "if (!(cond)) return [3, 2];") != null);
+    try T.expect(std.mem.indexOf(u8, out, "case 1: _a.sent(); return [3, 5];") != null);
+    try T.expect(std.mem.indexOf(u8, out, "case 2: return [4, 2];") != null);
+    try T.expect(std.mem.indexOf(u8, out, "case 3: _a.sent(); return [4, 3];") != null);
+    try T.expect(std.mem.indexOf(u8, out, "case 4: _a.sent();") != null);
+    try T.expect(std.mem.indexOf(u8, out, "case 5:") != null);
 }
 
 test "emit: generator with if-then-yield containing multi-stmt body still bails" {
