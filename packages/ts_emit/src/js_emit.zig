@@ -1223,6 +1223,19 @@ pub const Printer = struct {
                         if (self.subtreeContainsYield(s)) return false;
                     }
                 },
+                .while_stmt => {
+                    // Pass-through is fine when the subtree carries no yields.
+                    if (!self.subtreeContainsYield(s)) continue;
+                    // §4.A.4.2 part 2d — `while (cond) yield E;` slice.
+                    // Supported: body is a single bare `yield_expr`
+                    // (in or out of a block); cond + yielded expr
+                    // don't themselves contain yields.
+                    const wp = hir_mod.whileOf(self.hir, s);
+                    if (self.subtreeContainsYield(wp.cond)) return false;
+                    const ye = self.singleYieldInThen(wp.body) orelse return false;
+                    const yp = hir_mod.yieldExprOf(self.hir, ye);
+                    if (yp.expr != hir_mod.none_node_id and self.subtreeContainsYield(yp.expr)) return false;
+                },
                 .if_stmt => {
                     // Pass-through is fine when the subtree carries no yields.
                     if (!self.subtreeContainsYield(s)) continue;
@@ -1398,6 +1411,67 @@ pub const Printer = struct {
                     try self.write(" ");
                     try self.printNonIndentStatement(stmt);
                 }
+            } else if (k == .while_stmt and self.subtreeContainsYield(stmt)) {
+                // §4.A.4.2 part 2d — `while (cond) yield E;` lowers
+                // to a 3-case loop:
+                //   case state+1 (header): if (!cond) return [3, exit]; return [op, E];
+                //   case state+2 (resume): _a.sent(); return [3, header];
+                //   case state+3 (exit):   <after-loop continuation>
+                // The current case falls through naturally into the
+                // header (no explicit jump needed). Predicate has
+                // verified the supported shape.
+                const wp = hir_mod.whileOf(self.hir, stmt);
+                const ye = self.singleYieldInThen(wp.body) orelse unreachable;
+                const yp = hir_mod.yieldExprOf(self.hir, ye);
+                const op: []const u8 = if (yp.type_node != hir_mod.none_node_id) "5" else "4";
+                const header = state + 1;
+                const resume_label = state + 2;
+                const exit_label = state + 3;
+                // Open header case.
+                {
+                    const num_header = std.fmt.bufPrint(&buf, "{d}", .{header}) catch unreachable;
+                    try self.writeNewlineIndent();
+                    try self.write("case ");
+                    try self.write(num_header);
+                    try self.write(":");
+                    var num_exit_buf: [16]u8 = undefined;
+                    const num_exit = std.fmt.bufPrint(&num_exit_buf, "{d}", .{exit_label}) catch unreachable;
+                    try self.write(" if (!(");
+                    try self.printExpression(wp.cond);
+                    try self.write(")) return [3, ");
+                    try self.write(num_exit);
+                    try self.write("];");
+                    // Yield from the body.
+                    try self.write(" return [");
+                    try self.write(op);
+                    if (yp.expr != hir_mod.none_node_id) {
+                        try self.write(", ");
+                        try self.printExpression(yp.expr);
+                    }
+                    try self.write("];");
+                }
+                // Open resume case (with loopback jump).
+                {
+                    const num_resume = std.fmt.bufPrint(&buf, "{d}", .{resume_label}) catch unreachable;
+                    try self.writeNewlineIndent();
+                    try self.write("case ");
+                    try self.write(num_resume);
+                    try self.write(": _a.sent();");
+                    var num_header_buf: [16]u8 = undefined;
+                    const num_header_back = std.fmt.bufPrint(&num_header_buf, "{d}", .{header}) catch unreachable;
+                    try self.write(" return [3, ");
+                    try self.write(num_header_back);
+                    try self.write("];");
+                }
+                // Open exit case.
+                {
+                    const num_exit_open = std.fmt.bufPrint(&buf, "{d}", .{exit_label}) catch unreachable;
+                    try self.writeNewlineIndent();
+                    try self.write("case ");
+                    try self.write(num_exit_open);
+                    try self.write(":");
+                }
+                state += 3;
             } else if (k == .if_stmt and self.subtreeContainsYield(stmt)) {
                 // §4.A.4.2 part 2a / 2b / 2c — `if (cond) yield E;`
                 // with optional else (non-yielding *or* itself a
@@ -4531,6 +4605,47 @@ test "emit: generator with if-then-yield + non-yielding bare-stmt else lowers" {
     try T.expect(std.mem.indexOf(u8, out, "case 2:") != null);
     try T.expect(std.mem.indexOf(u8, out, "f();") != null);
     try T.expect(std.mem.indexOf(u8, out, "case 3:") != null);
+}
+
+test "emit: generator with while-yield lowers to 3-case loop" {
+    const out = try emitWithOpts(
+        "function* g() { while (cond) yield 1; }",
+        .{ .es_target = .es5 },
+    );
+    defer T.allocator.free(out);
+    try T.expect(std.mem.indexOf(u8, out, "__generator") != null);
+    try T.expect(std.mem.indexOf(u8, out, "TODO: ES5 generator") == null);
+    // Header (case 1): cond check + yield.
+    try T.expect(std.mem.indexOf(u8, out, "case 1: if (!(cond)) return [3, 3];") != null);
+    try T.expect(std.mem.indexOf(u8, out, "return [4, 1]") != null);
+    // Resume (case 2): sent + jump-back to header.
+    try T.expect(std.mem.indexOf(u8, out, "case 2: _a.sent(); return [3, 1];") != null);
+    // Exit (case 3): falls through to final return [2].
+    try T.expect(std.mem.indexOf(u8, out, "case 3:") != null);
+    try T.expect(std.mem.indexOf(u8, out, "return [2]") != null);
+}
+
+test "emit: generator with while-yield + trailing yield sequences correctly" {
+    const out = try emitWithOpts(
+        "function* g() { while (cond) yield 1; yield 2; }",
+        .{ .es_target = .es5 },
+    );
+    defer T.allocator.free(out);
+    try T.expect(std.mem.indexOf(u8, out, "case 1: if (!(cond)) return [3, 3];") != null);
+    try T.expect(std.mem.indexOf(u8, out, "case 2: _a.sent(); return [3, 1];") != null);
+    // After exit case 3, the trailing `yield 2` advances state to 4.
+    try T.expect(std.mem.indexOf(u8, out, "return [4, 2]") != null);
+    try T.expect(std.mem.indexOf(u8, out, "case 4: _a.sent();") != null);
+}
+
+test "emit: generator with while-yield + cond containing yield still bails" {
+    const out = try emitWithOpts(
+        "function* g() { while (yield 1) yield 2; }",
+        .{ .es_target = .es5 },
+    );
+    defer T.allocator.free(out);
+    try T.expect(std.mem.indexOf(u8, out, "TODO: ES5 generator") != null);
+    try T.expect(std.mem.indexOf(u8, out, "__generator") == null);
 }
 
 test "emit: generator with if-then-yield + else-yield lowers to 5-case shape" {
