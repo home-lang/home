@@ -2610,11 +2610,17 @@ pub const Printer = struct {
     /// §4.A.4.7 v0 — true iff `body` is a `block_stmt` whose top-level
     /// statements are all in the lowerable set for async generators:
     ///   * `yield_expr` (not `yield*`)
+    ///   * top-level `await_expr` (statement form)
+    ///   * `var/let/const` decl whose init is either absent, a top-level
+    ///     `await_expr`, or any yield/await-free expression
+    ///   * `assignment` (plain `=`) whose value is a top-level
+    ///     `await_expr`, or any yield/await-free expression
     ///   * `return_stmt`
-    ///   * any other statement whose subtree contains no `yield_expr`
+    ///   * any other statement whose subtree contains no yield/await
     /// v0 deliberately bails on yield*, structured statements with
-    /// nested yields, and yield-in-RHS shapes — those will follow
-    /// the regular generator-state-machine path's incremental ladder.
+    /// nested yields, and any awaits/yields appearing as sub-expressions
+    /// inside non-RHS positions — those will follow the regular
+    /// generator-state-machine path's incremental ladder.
     fn canLowerAsyncGeneratorBody(self: *const Printer, body: NodeId) bool {
         if (self.hir.kindOf(body) != .block_stmt) return false;
         const stmts = hir_mod.blockStmts(self.hir, body);
@@ -2624,16 +2630,71 @@ pub const Printer = struct {
                 .yield_expr => {
                     const yp = hir_mod.yieldExprOf(self.hir, s);
                     if (yp.type_node != hir_mod.none_node_id) return false; // bail on yield*
-                    if (yp.expr != hir_mod.none_node_id and self.subtreeContainsYield(yp.expr)) return false;
+                    if (yp.expr != hir_mod.none_node_id) {
+                        if (self.subtreeContainsYield(yp.expr)) return false;
+                        if (self.subtreeContainsAwait(yp.expr)) return false;
+                    }
+                },
+                .await_expr => {
+                    const ap = hir_mod.awaitExprOf(self.hir, s);
+                    if (ap.expr != hir_mod.none_node_id) {
+                        if (self.subtreeContainsYield(ap.expr)) return false;
+                        if (self.subtreeContainsAwait(ap.expr)) return false;
+                    }
                 },
                 .return_stmt => continue,
-                .var_decl, .let_decl, .const_decl, .if_stmt, .while_stmt, .do_while_stmt, .for_stmt, .for_in_stmt, .for_of_stmt, .try_stmt, .switch_stmt, .throw_stmt, .break_stmt, .continue_stmt, .fn_decl, .class_decl, .assignment => return false,
+                .var_decl, .let_decl, .const_decl => {
+                    const v = hir_mod.varDeclOf(self.hir, s);
+                    if (v.name == hir_mod.none_node_id or self.hir.kindOf(v.name) != .identifier) return false;
+                    if (v.init != hir_mod.none_node_id) {
+                        const init_kind = self.hir.kindOf(v.init);
+                        if (init_kind == .await_expr) {
+                            const ap = hir_mod.awaitExprOf(self.hir, v.init);
+                            if (ap.expr != hir_mod.none_node_id and (self.subtreeContainsYield(ap.expr) or self.subtreeContainsAwait(ap.expr))) return false;
+                        } else {
+                            if (self.subtreeContainsYield(v.init) or self.subtreeContainsAwait(v.init)) return false;
+                        }
+                    }
+                },
+                .assignment => {
+                    const a = hir_mod.assignmentOf(self.hir, s);
+                    if (a.op != null and self.hir.kindOf(a.value) == .await_expr) return false;
+                    if (self.hir.kindOf(a.value) == .await_expr) {
+                        const ap = hir_mod.awaitExprOf(self.hir, a.value);
+                        if (ap.expr != hir_mod.none_node_id and (self.subtreeContainsYield(ap.expr) or self.subtreeContainsAwait(ap.expr))) return false;
+                    } else {
+                        if (self.subtreeContainsYield(s) or self.subtreeContainsAwait(s)) return false;
+                    }
+                },
+                .if_stmt, .while_stmt, .do_while_stmt, .for_stmt, .for_in_stmt, .for_of_stmt, .try_stmt, .switch_stmt, .throw_stmt, .break_stmt, .continue_stmt, .fn_decl, .class_decl => return false,
                 else => {
-                    if (self.subtreeContainsYield(s)) return false;
+                    if (self.subtreeContainsYield(s) or self.subtreeContainsAwait(s)) return false;
                 },
             }
         }
         return true;
+    }
+
+    /// Companion to `subtreeContainsYield` — true iff any node in the
+    /// subtree rooted at `root` is an `await_expr`. Used by the async-
+    /// generator predicate to reject await sub-expressions in
+    /// non-supported positions.
+    fn subtreeContainsAwait(self: *const Printer, root: NodeId) bool {
+        if (root == hir_mod.none_node_id) return false;
+        if (self.hir.kindOf(root) == .await_expr) return true;
+        const total = self.hir.nodeCount();
+        var i: u32 = 0;
+        while (i < total) : (i += 1) {
+            if (self.hir.kindOf(i) != .await_expr) continue;
+            var cur: NodeId = self.hir.parentOf(i);
+            while (cur != hir_mod.none_node_id) {
+                if (cur == root) return true;
+                const p = self.hir.parentOf(cur);
+                if (p == cur) break;
+                cur = p;
+            }
+        }
+        return false;
     }
 
     /// §4.A.4.7 v0 — emit the async-generator wrapper + inner generator
@@ -2692,6 +2753,62 @@ pub const Printer = struct {
                     try self.write("case ");
                     try self.write(num);
                     try self.write(": _a.sent();");
+                }
+            } else if (k == .await_expr) {
+                // Top-level `await E;` — single resumption (no emit).
+                const ap = hir_mod.awaitExprOf(self.hir, stmt);
+                try self.write(" return [4, __await(");
+                if (ap.expr != hir_mod.none_node_id) try self.printExpression(ap.expr);
+                try self.write(")];");
+                state += 1;
+                const num = std.fmt.bufPrint(&buf, "{d}", .{state}) catch unreachable;
+                try self.writeNewlineIndent();
+                try self.write("case ");
+                try self.write(num);
+                try self.write(": _a.sent();");
+            } else if ((k == .var_decl or k == .let_decl or k == .const_decl)) {
+                const v = hir_mod.varDeclOf(self.hir, stmt);
+                if (v.init != hir_mod.none_node_id and self.hir.kindOf(v.init) == .await_expr) {
+                    // `let x = await E;` — yield + bind.
+                    const ap = hir_mod.awaitExprOf(self.hir, v.init);
+                    try self.write(" return [4, __await(");
+                    if (ap.expr != hir_mod.none_node_id) try self.printExpression(ap.expr);
+                    try self.write(")];");
+                    state += 1;
+                    const num = std.fmt.bufPrint(&buf, "{d}", .{state}) catch unreachable;
+                    try self.writeNewlineIndent();
+                    try self.write("case ");
+                    try self.write(num);
+                    try self.write(": var ");
+                    if (v.name != hir_mod.none_node_id) try self.printExpression(v.name);
+                    try self.write(" = _a.sent();");
+                } else {
+                    try self.write(" var ");
+                    if (v.name != hir_mod.none_node_id) try self.printExpression(v.name);
+                    if (v.init != hir_mod.none_node_id) {
+                        try self.write(" = ");
+                        try self.printExpression(v.init);
+                    }
+                    try self.write(";");
+                }
+            } else if (k == .assignment) {
+                const a = hir_mod.assignmentOf(self.hir, stmt);
+                if (a.op == null and self.hir.kindOf(a.value) == .await_expr) {
+                    const ap = hir_mod.awaitExprOf(self.hir, a.value);
+                    try self.write(" return [4, __await(");
+                    if (ap.expr != hir_mod.none_node_id) try self.printExpression(ap.expr);
+                    try self.write(")];");
+                    state += 1;
+                    const num = std.fmt.bufPrint(&buf, "{d}", .{state}) catch unreachable;
+                    try self.writeNewlineIndent();
+                    try self.write("case ");
+                    try self.write(num);
+                    try self.write(": ");
+                    try self.printExpression(a.target);
+                    try self.write(" = _a.sent();");
+                } else {
+                    try self.write(" ");
+                    try self.printNonIndentStatement(stmt);
                 }
             } else if (k == .return_stmt) {
                 const r = hir_mod.returnOf(self.hir, stmt);
@@ -6341,6 +6458,47 @@ test "emit: async generator lowers to __asyncGenerator + __generator at es2017" 
     try T.expect(std.mem.indexOf(u8, out, "case 4: _a.sent();") != null);
     // Terminating return.
     try T.expect(std.mem.indexOf(u8, out, "return [2]") != null);
+}
+
+test "emit: async generator with top-level await lowers as single-yield resumption" {
+    const out = try emitWithOpts(
+        "async function* g() { await fetch(); yield 1; }",
+        .{ .es_target = .es2017 },
+    );
+    defer T.allocator.free(out);
+    try T.expect(std.mem.indexOf(u8, out, "__asyncGenerator") != null);
+    // Await: case 0 ends with [4, __await(fetch())]; case 1 resumes.
+    try T.expect(std.mem.indexOf(u8, out, "return [4, __await(fetch())]") != null);
+    try T.expect(std.mem.indexOf(u8, out, "case 1: _a.sent();") != null);
+    // Yield: cases 2-3-4 (double-yield).
+    try T.expect(std.mem.indexOf(u8, out, "return [4, __await(1)]") != null);
+}
+
+test "emit: async generator with let x = await E binds via _a.sent()" {
+    const out = try emitWithOpts(
+        "async function* g() { let x = await fetch(); yield x; }",
+        .{ .es_target = .es2017 },
+    );
+    defer T.allocator.free(out);
+    try T.expect(std.mem.indexOf(u8, out, "__asyncGenerator") != null);
+    // case 0 yields __await(fetch()); case 1 binds via var x = _a.sent().
+    try T.expect(std.mem.indexOf(u8, out, "return [4, __await(fetch())]") != null);
+    try T.expect(std.mem.indexOf(u8, out, "case 1: var x = _a.sent();") != null);
+    // case 2 yields __await(x) (the user yield).
+    try T.expect(std.mem.indexOf(u8, out, "return [4, __await(x)]") != null);
+}
+
+test "emit: async generator with x = await E (pre-declared) uses no var prefix" {
+    const out = try emitWithOpts(
+        "async function* g() { var x; x = await fetch(); yield x; }",
+        .{ .es_target = .es2017 },
+    );
+    defer T.allocator.free(out);
+    try T.expect(std.mem.indexOf(u8, out, "__asyncGenerator") != null);
+    try T.expect(std.mem.indexOf(u8, out, "return [4, __await(fetch())]") != null);
+    // case 1 should bind via plain `x = _a.sent();` (no var prefix).
+    try T.expect(std.mem.indexOf(u8, out, "case 1: x = _a.sent();") != null);
+    try T.expect(std.mem.indexOf(u8, out, "case 1: var x = _a.sent();") == null);
 }
 
 test "emit: async generator preserved at es2018+" {
