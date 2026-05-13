@@ -1226,18 +1226,23 @@ pub const Printer = struct {
                 .if_stmt => {
                     // Pass-through is fine when the subtree carries no yields.
                     if (!self.subtreeContainsYield(s)) continue;
-                    // §4.A.4.2 part 2a/2b — narrow if-then-yield CFG slice.
+                    // §4.A.4.2 part 2a/2b/2c — narrow if-then-yield CFG slice.
                     // Supported: `then_branch` is a single bare `yield_expr`
                     // (in or out of a block); cond + yielded expression
                     // don't themselves contain yields; `else_branch` is
-                    // either absent or non-yielding (its statements
-                    // run between the yield-resumption and the after-if).
+                    // either absent, non-yielding, or itself a single
+                    // bare `yield_expr` (whose expression has no nested
+                    // yield).
                     const ip = hir_mod.ifOf(self.hir, s);
                     if (self.subtreeContainsYield(ip.cond)) return false;
-                    const ye = self.singleYieldInThen(ip.then_branch) orelse return false;
-                    const yp = hir_mod.yieldExprOf(self.hir, ye);
-                    if (yp.expr != hir_mod.none_node_id and self.subtreeContainsYield(yp.expr)) return false;
-                    if (ip.else_branch != hir_mod.none_node_id and self.subtreeContainsYield(ip.else_branch)) return false;
+                    const ye_then = self.singleYieldInThen(ip.then_branch) orelse return false;
+                    const yp_then = hir_mod.yieldExprOf(self.hir, ye_then);
+                    if (yp_then.expr != hir_mod.none_node_id and self.subtreeContainsYield(yp_then.expr)) return false;
+                    if (ip.else_branch != hir_mod.none_node_id and self.subtreeContainsYield(ip.else_branch)) {
+                        const ye_else = self.singleYieldInThen(ip.else_branch) orelse return false;
+                        const yp_else = hir_mod.yieldExprOf(self.hir, ye_else);
+                        if (yp_else.expr != hir_mod.none_node_id and self.subtreeContainsYield(yp_else.expr)) return false;
+                    }
                 },
                 .break_stmt, .continue_stmt, .fn_decl, .class_decl => return false,
                 else => {
@@ -1394,64 +1399,86 @@ pub const Printer = struct {
                     try self.printNonIndentStatement(stmt);
                 }
             } else if (k == .if_stmt and self.subtreeContainsYield(stmt)) {
-                // §4.A.4.2 part 2a / 2b — `if (cond) yield E;` with
-                // an optional non-yielding else lowers to:
-                //   no-else:  conditional `[3, afterIfLabel]` then yield
-                //   with-else: conditional `[3, elseLabel]` then yield,
-                //              resumption ends with `[3, afterIfLabel]`,
-                //              else-body lands in `elseLabel`,
-                //              after-if continuation lands in `afterIfLabel`.
+                // §4.A.4.2 part 2a / 2b / 2c — `if (cond) yield E;`
+                // with optional else (non-yielding *or* itself a
+                // single bare yield) lowers to a 3-, 4-, or 5-case
+                // shape:
+                //   no-else (3 cases):       cur | thenResume | afterIf
+                //   non-yielding else (4):   cur | thenResume+skip | elseBody | afterIf
+                //   yielding else (5):       cur | thenResume+skip | elseYield | elseResume | afterIf
                 // Predicate has already verified the shape.
                 const ip = hir_mod.ifOf(self.hir, stmt);
-                const ye = self.singleYieldInThen(ip.then_branch) orelse unreachable;
-                const yp = hir_mod.yieldExprOf(self.hir, ye);
-                const op: []const u8 = if (yp.type_node != hir_mod.none_node_id) "5" else "4";
+                const ye_then = self.singleYieldInThen(ip.then_branch) orelse unreachable;
+                const yp_then = hir_mod.yieldExprOf(self.hir, ye_then);
+                const op_then: []const u8 = if (yp_then.type_node != hir_mod.none_node_id) "5" else "4";
                 const has_else = ip.else_branch != hir_mod.none_node_id;
-                // Label allocations:
-                //   resumption = state + 1
-                //   else (if present) = state + 2
-                //   after-if = state + 2 (no else) or state + 3 (with else)
-                const skip_to = if (has_else) state + 2 else state + 2;
-                const after_if = if (has_else) state + 3 else state + 2;
+                const ye_else_opt: ?NodeId = if (has_else) self.singleYieldInThen(ip.else_branch) else null;
+                const else_yields = has_else and self.subtreeContainsYield(ip.else_branch);
+                const else_label = state + 2;
+                const after_if = if (else_yields) state + 4 else if (has_else) state + 3 else state + 2;
+                // Cur case: conditional jump + then-yield.
                 var num_skip_buf: [16]u8 = undefined;
-                const num_skip = std.fmt.bufPrint(&num_skip_buf, "{d}", .{skip_to}) catch unreachable;
+                const num_skip = std.fmt.bufPrint(&num_skip_buf, "{d}", .{if (has_else) else_label else after_if}) catch unreachable;
                 try self.write(" if (!(");
                 try self.printExpression(ip.cond);
                 try self.write(")) return [3, ");
                 try self.write(num_skip);
                 try self.write("];");
-                // Yield from the then-branch.
                 try self.write(" return [");
-                try self.write(op);
-                if (yp.expr != hir_mod.none_node_id) {
+                try self.write(op_then);
+                if (yp_then.expr != hir_mod.none_node_id) {
                     try self.write(", ");
-                    try self.printExpression(yp.expr);
+                    try self.printExpression(yp_then.expr);
                 }
                 try self.write("];");
-                // Open yield-resumption case.
+                // Open then-resumption case.
                 state += 1;
-                const num_resume = std.fmt.bufPrint(&buf, "{d}", .{state}) catch unreachable;
-                try self.writeNewlineIndent();
-                try self.write("case ");
-                try self.write(num_resume);
-                try self.write(": _a.sent();");
+                {
+                    const num_resume = std.fmt.bufPrint(&buf, "{d}", .{state}) catch unreachable;
+                    try self.writeNewlineIndent();
+                    try self.write("case ");
+                    try self.write(num_resume);
+                    try self.write(": _a.sent();");
+                }
                 if (has_else) {
-                    // Unconditional skip past the else body.
+                    // Unconditional skip past the else section.
                     var num_after_buf: [16]u8 = undefined;
                     const num_after = std.fmt.bufPrint(&num_after_buf, "{d}", .{after_if}) catch unreachable;
                     try self.write(" return [3, ");
                     try self.write(num_after);
                     try self.write("];");
-                    // Open else-body case and emit the else block.
+                    // Open else case.
                     state += 1;
-                    const num_else = std.fmt.bufPrint(&buf, "{d}", .{state}) catch unreachable;
-                    try self.writeNewlineIndent();
-                    try self.write("case ");
-                    try self.write(num_else);
-                    try self.write(":");
-                    try self.emitGenInlineStatements(ip.else_branch);
+                    {
+                        const num_else = std.fmt.bufPrint(&buf, "{d}", .{state}) catch unreachable;
+                        try self.writeNewlineIndent();
+                        try self.write("case ");
+                        try self.write(num_else);
+                        try self.write(":");
+                    }
+                    if (else_yields) {
+                        const ye_else = ye_else_opt.?;
+                        const yp_else = hir_mod.yieldExprOf(self.hir, ye_else);
+                        const op_else: []const u8 = if (yp_else.type_node != hir_mod.none_node_id) "5" else "4";
+                        try self.write(" return [");
+                        try self.write(op_else);
+                        if (yp_else.expr != hir_mod.none_node_id) {
+                            try self.write(", ");
+                            try self.printExpression(yp_else.expr);
+                        }
+                        try self.write("];");
+                        // Open else-resumption case.
+                        state += 1;
+                        const num_else_resume = std.fmt.bufPrint(&buf, "{d}", .{state}) catch unreachable;
+                        try self.writeNewlineIndent();
+                        try self.write("case ");
+                        try self.write(num_else_resume);
+                        try self.write(": _a.sent();");
+                    } else {
+                        try self.emitGenInlineStatements(ip.else_branch);
+                    }
                 }
-                // Open after-if case (fall-through target).
+                // Open after-if case.
                 state += 1;
                 const num_after_open = std.fmt.bufPrint(&buf, "{d}", .{state}) catch unreachable;
                 try self.writeNewlineIndent();
@@ -4323,13 +4350,13 @@ test "emit: generator preserved at es2015+" {
     try T.expect(std.mem.indexOf(u8, out, "__generator") == null);
 }
 
-test "emit: generator with if/else around yields falls back to native + marker at es5" {
-    // The §4.A.4.2 part 2a slice supports `if (cond) yield E;` (no
-    // else); anything beyond that shape — including an else branch
-    // — is still outside v0 and bails to the native `function*`
-    // fallback with a TODO marker.
+test "emit: generator with else-if chain still bails at es5" {
+    // §4.A.4.2 parts 2a/2b/2c handle a single if (with optional
+    // non-yielding or single-bare-yield else); deeper else-if chains
+    // where the else_branch itself is another if_stmt are outside
+    // v0 and still bail to the native function* fallback.
     const out = try emitWithOpts(
-        "function* g() { if (cond) { yield 1; } else { yield 2; } }",
+        "function* g() { if (a) yield 1; else if (b) yield 2; else yield 3; }",
         .{ .es_target = .es5 },
     );
     defer T.allocator.free(out);
@@ -4504,6 +4531,28 @@ test "emit: generator with if-then-yield + non-yielding bare-stmt else lowers" {
     try T.expect(std.mem.indexOf(u8, out, "case 2:") != null);
     try T.expect(std.mem.indexOf(u8, out, "f();") != null);
     try T.expect(std.mem.indexOf(u8, out, "case 3:") != null);
+}
+
+test "emit: generator with if-then-yield + else-yield lowers to 5-case shape" {
+    const out = try emitWithOpts(
+        "function* g() { if (cond) yield 1; else yield 2; }",
+        .{ .es_target = .es5 },
+    );
+    defer T.allocator.free(out);
+    try T.expect(std.mem.indexOf(u8, out, "__generator") != null);
+    try T.expect(std.mem.indexOf(u8, out, "TODO: ES5 generator") == null);
+    // Then-branch path: cond skip → case 2 (else); then-yield → case 1.
+    try T.expect(std.mem.indexOf(u8, out, "if (!(cond)) return [3, 2];") != null);
+    try T.expect(std.mem.indexOf(u8, out, "return [4, 1]") != null);
+    // Then-resumption: case 1, then jumps past else-yield to after-if (case 4).
+    try T.expect(std.mem.indexOf(u8, out, "case 1: _a.sent(); return [3, 4];") != null);
+    // Else-yield: case 2.
+    try T.expect(std.mem.indexOf(u8, out, "case 2:") != null);
+    try T.expect(std.mem.indexOf(u8, out, "return [4, 2]") != null);
+    // Else-resumption: case 3.
+    try T.expect(std.mem.indexOf(u8, out, "case 3: _a.sent();") != null);
+    // After-if: case 4 (falls through to final `return [2];`).
+    try T.expect(std.mem.indexOf(u8, out, "case 4:") != null);
 }
 
 test "emit: generator with if-then-yield containing multi-stmt body still bails" {
