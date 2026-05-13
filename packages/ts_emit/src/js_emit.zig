@@ -1174,13 +1174,21 @@ pub const Printer = struct {
     }
 
     /// §4.A.4 v0 — true iff `body` is a `block_stmt` whose top-level
-    /// statements are all in the lowerable set: top-level `yield_expr`
-    /// (as expression-stmt), `return_stmt`, or any other statement
-    /// kind that is *not* a structured statement carrying nested
-    /// yields. v0 deliberately bails on `if`/`while`/`for`/`try`/
-    /// `switch` and on declarations, since lowering `let x = yield E`
-    /// requires routing the resumed value through `_a.sent()` — that
-    /// rewrite is tracked as a §4.A.4.1 follow-up.
+    /// statements are all in the lowerable set:
+    ///   * `yield_expr` (top-level expression-statement yield)
+    ///   * `return_stmt`
+    ///   * `var/let/const` decl whose initializer is either absent,
+    ///     a top-level `yield_expr`, or any other non-yield expression
+    ///     (§4.A.4.1 — yield-in-RHS resumes via `_a.sent()`; non-yield
+    ///     decls pass through as plain `var`)
+    ///   * `assignment` (plain `=`, not compound) whose `value` is a
+    ///     top-level `yield_expr` (§4.A.4.1)
+    ///   * any other expression statement that is *not* itself a
+    ///     structured statement carrying nested yields
+    /// v0 deliberately bails on `if`/`while`/`for`/`try`/`switch`,
+    /// compound-assignment-to-yield, and on expression statements
+    /// where a `yield` is a sub-expression but not the immediate RHS
+    /// (e.g. `console.log(yield E)`) — those are §4.A.4.2.
     fn canLowerGeneratorBody(self: *const Printer, body: NodeId) bool {
         if (self.hir.kindOf(body) != .block_stmt) return false;
         const stmts = hir_mod.blockStmts(self.hir, body);
@@ -1188,7 +1196,22 @@ pub const Printer = struct {
             const k = self.hir.kindOf(s);
             switch (k) {
                 .yield_expr, .return_stmt => continue,
-                .var_decl, .let_decl, .const_decl, .if_stmt, .while_stmt, .do_while_stmt, .for_stmt, .for_in_stmt, .for_of_stmt, .try_stmt, .switch_stmt, .throw_stmt, .break_stmt, .continue_stmt, .fn_decl, .class_decl => return false,
+                .var_decl, .let_decl, .const_decl => {
+                    const v = hir_mod.varDeclOf(self.hir, s);
+                    // Reject destructuring targets and named-only
+                    // patterns this v0 doesn't handle yet.
+                    if (v.name == hir_mod.none_node_id) return false;
+                    if (self.hir.kindOf(v.name) != .identifier) return false;
+                },
+                .assignment => {
+                    const a = hir_mod.assignmentOf(self.hir, s);
+                    // Compound assignment to a yield isn't supported
+                    // yet — `x += yield E` would need to evaluate
+                    // `x` once before the yield, which v0 doesn't
+                    // do. Plain `=` is fine.
+                    if (a.op != null and self.hir.kindOf(a.value) == .yield_expr) return false;
+                },
+                .if_stmt, .while_stmt, .do_while_stmt, .for_stmt, .for_in_stmt, .for_of_stmt, .try_stmt, .switch_stmt, .throw_stmt, .break_stmt, .continue_stmt, .fn_decl, .class_decl => return false,
                 else => continue,
             }
         }
@@ -1238,25 +1261,8 @@ pub const Printer = struct {
         for (stmts) |stmt| {
             const k = self.hir.kindOf(stmt);
             if (k == .yield_expr) {
-                const y = hir_mod.yieldExprOf(self.hir, stmt);
-                // `yield*` is encoded by the parser as a yield_expr
-                // whose `type_node` slot is set (re-used as the
-                // delegate marker). Map to op-code 5; plain yields
-                // use op-code 4.
-                const op: []const u8 = if (y.type_node != hir_mod.none_node_id) "5" else "4";
-                try self.write(" return [");
-                try self.write(op);
-                if (y.expr != hir_mod.none_node_id) {
-                    try self.write(", ");
-                    try self.printExpression(y.expr);
-                }
-                try self.write("];");
-                state += 1;
-                const num = std.fmt.bufPrint(&buf, "{d}", .{state}) catch unreachable;
-                try self.writeNewlineIndent();
-                try self.write("case ");
-                try self.write(num);
-                try self.write(": _a.sent();");
+                try self.emitGenYieldTransition(stmt, &state, &buf, null, .new_decl);
+                try self.write(" _a.sent();");
             } else if (k == .return_stmt) {
                 const r = hir_mod.returnOf(self.hir, stmt);
                 try self.write(" return [2");
@@ -1267,6 +1273,37 @@ pub const Printer = struct {
                 try self.write("];");
                 ended = true;
                 break;
+            } else if (k == .var_decl or k == .let_decl or k == .const_decl) {
+                const v = hir_mod.varDeclOf(self.hir, stmt);
+                // §4.A.4.1 — `let x = yield E;` lowers to a
+                // `var x = _a.sent();` binding immediately after
+                // the yield-state transition. Decls without a
+                // yield initializer pass through as plain `var`
+                // (let/const semantics are softened to var for
+                // the state-machine body; preserving block scope
+                // would require splitting cases by lexical scope,
+                // which is part of §4.A.4.2).
+                if (v.init != hir_mod.none_node_id and self.hir.kindOf(v.init) == .yield_expr) {
+                    try self.emitGenYieldTransition(v.init, &state, &buf, v.name, .new_decl);
+                } else {
+                    try self.write(" var ");
+                    if (v.name != hir_mod.none_node_id) try self.printExpression(v.name);
+                    if (v.init != hir_mod.none_node_id) {
+                        try self.write(" = ");
+                        try self.printExpression(v.init);
+                    }
+                    try self.write(";");
+                }
+            } else if (k == .assignment) {
+                const a = hir_mod.assignmentOf(self.hir, stmt);
+                // §4.A.4.1 — `x = yield E;` (plain `=`) lowers to
+                // `x = _a.sent();` after the yield transition.
+                if (a.op == null and self.hir.kindOf(a.value) == .yield_expr) {
+                    try self.emitGenYieldTransition(a.value, &state, &buf, a.target, .assignment);
+                } else {
+                    try self.write(" ");
+                    try self.printNonIndentStatement(stmt);
+                }
             } else {
                 try self.write(" ");
                 try self.printNonIndentStatement(stmt);
@@ -1286,6 +1323,46 @@ pub const Printer = struct {
         self.depth -= 1;
         try self.writeNewlineIndent();
         try self.write("}");
+    }
+
+    /// §4.A.4 — close the current `case` with `return [op, expr];`
+    /// (op-code 4 for `yield`, 5 for `yield*`) and open the next
+    /// `case N+1:`. When `bind_target` is non-null, the resumed
+    /// value lands in `<bind_target> = _a.sent();`, prefixed with
+    /// `var` iff `bind_kind == .new_decl` (§4.A.4.1 — decl form
+    /// introduces a fresh binding hoisted via `var`; assignment
+    /// form writes to an already-declared name). When `bind_target`
+    /// is null the caller emits the bare `_a.sent();` resumption.
+    const BindKind = enum { new_decl, assignment };
+    fn emitGenYieldTransition(
+        self: *Printer,
+        yield_node: NodeId,
+        state: *u32,
+        buf: *[16]u8,
+        bind_target: ?NodeId,
+        bind_kind: BindKind,
+    ) anyerror!void {
+        const y = hir_mod.yieldExprOf(self.hir, yield_node);
+        const op: []const u8 = if (y.type_node != hir_mod.none_node_id) "5" else "4";
+        try self.write(" return [");
+        try self.write(op);
+        if (y.expr != hir_mod.none_node_id) {
+            try self.write(", ");
+            try self.printExpression(y.expr);
+        }
+        try self.write("];");
+        state.* += 1;
+        const num = std.fmt.bufPrint(buf, "{d}", .{state.*}) catch unreachable;
+        try self.writeNewlineIndent();
+        try self.write("case ");
+        try self.write(num);
+        try self.write(":");
+        if (bind_target) |t| {
+            try self.write(" ");
+            if (bind_kind == .new_decl) try self.write("var ");
+            try self.printExpression(t);
+            try self.write(" = _a.sent();");
+        }
     }
 
     fn printParameter(self: *Printer, node: NodeId) !void {
@@ -4103,6 +4180,63 @@ test "emit: generator with nested control flow falls back to native + marker at 
     try T.expect(std.mem.indexOf(u8, out, "TODO: ES5 generator") != null);
     try T.expect(std.mem.indexOf(u8, out, "function*") != null);
     try T.expect(std.mem.indexOf(u8, out, "__generator") == null);
+}
+
+test "emit: generator with let x = yield E binds via _a.sent()" {
+    const out = try emitWithOpts(
+        "function* g() { let x = yield 1; return x; }",
+        .{ .es_target = .es5 },
+    );
+    defer T.allocator.free(out);
+    // Yield op-code remains [4, 1].
+    try T.expect(std.mem.indexOf(u8, out, "return [4, 1]") != null);
+    // Resumed value lands in `var x = _a.sent();` (var-hoisted so
+    // the next case can read it).
+    try T.expect(std.mem.indexOf(u8, out, "case 1: var x = _a.sent();") != null);
+    // Final return forwards the bound value.
+    try T.expect(std.mem.indexOf(u8, out, "return [2, x]") != null);
+    // No leftover `let` keyword survived the lowering.
+    try T.expect(std.mem.indexOf(u8, out, "let x") == null);
+}
+
+test "emit: generator with assignment x = yield E uses no var prefix" {
+    const out = try emitWithOpts(
+        "function* g() { var x; x = yield 1; return x; }",
+        .{ .es_target = .es5 },
+    );
+    defer T.allocator.free(out);
+    // Assignment-form (var pre-declared) — no `var` introduced by
+    // the resumption; just plain `x = _a.sent();`.
+    try T.expect(std.mem.indexOf(u8, out, "case 1: x = _a.sent();") != null);
+    try T.expect(std.mem.indexOf(u8, out, "case 1: var x = _a.sent();") == null);
+    // Pre-decl `var x;` still survives in the first case.
+    try T.expect(std.mem.indexOf(u8, out, "var x;") != null);
+}
+
+test "emit: generator with multiple yield bindings sequences cases correctly" {
+    const out = try emitWithOpts(
+        "function* g() { let a = yield 1; let b = yield 2; return a + b; }",
+        .{ .es_target = .es5 },
+    );
+    defer T.allocator.free(out);
+    try T.expect(std.mem.indexOf(u8, out, "return [4, 1]") != null);
+    try T.expect(std.mem.indexOf(u8, out, "case 1: var a = _a.sent();") != null);
+    try T.expect(std.mem.indexOf(u8, out, "return [4, 2]") != null);
+    try T.expect(std.mem.indexOf(u8, out, "case 2: var b = _a.sent();") != null);
+    try T.expect(std.mem.indexOf(u8, out, "return [2, (a + b)]") != null);
+}
+
+test "emit: generator with non-yield decl passes through as plain var" {
+    const out = try emitWithOpts(
+        "function* g() { let x = 42; yield x; }",
+        .{ .es_target = .es5 },
+    );
+    defer T.allocator.free(out);
+    // Decl without yield-RHS lowers to plain `var x = 42;` inside
+    // the state machine — no _a.sent() involved.
+    try T.expect(std.mem.indexOf(u8, out, "var x = 42;") != null);
+    try T.expect(std.mem.indexOf(u8, out, "return [4, x]") != null);
+    try T.expect(std.mem.indexOf(u8, out, "case 1: _a.sent();") != null);
 }
 
 test "emit: importHelpers tslib import includes __generator" {
