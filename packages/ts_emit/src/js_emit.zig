@@ -3051,6 +3051,20 @@ pub const Printer = struct {
                         if (self.subtreeContainsYield(s) or self.subtreeContainsAwait(s)) return false;
                     }
                 },
+                .call_expr => {
+                    // §4.A.4.7 (cont.2) — accept `f(await E);` shape:
+                    // call with exactly one arg that's an await_expr,
+                    // callee + arg's await-target are yield/await-free.
+                    const cp = hir_mod.callOf(self.hir, s);
+                    const args = hir_mod.callArgs(self.hir, s);
+                    if (args.len == 1 and self.hir.kindOf(args[0]) == .await_expr) {
+                        if (self.subtreeContainsYield(cp.callee) or self.subtreeContainsAwait(cp.callee)) return false;
+                        const ap = hir_mod.awaitExprOf(self.hir, args[0]);
+                        if (ap.expr != hir_mod.none_node_id and (self.subtreeContainsYield(ap.expr) or self.subtreeContainsAwait(ap.expr))) return false;
+                    } else {
+                        if (self.subtreeContainsYield(s) or self.subtreeContainsAwait(s)) return false;
+                    }
+                },
                 .if_stmt, .while_stmt, .do_while_stmt, .for_stmt, .for_in_stmt, .for_of_stmt, .try_stmt, .switch_stmt, .throw_stmt, .break_stmt, .continue_stmt, .fn_decl, .class_decl => return false,
                 else => {
                     if (self.subtreeContainsYield(s) or self.subtreeContainsAwait(s)) return false;
@@ -3191,6 +3205,27 @@ pub const Printer = struct {
                     try self.write(": ");
                     try self.printExpression(a.target);
                     try self.write(" = _a.sent();");
+                } else {
+                    try self.write(" ");
+                    try self.printNonIndentStatement(stmt);
+                }
+            } else if (k == .call_expr) {
+                // §4.A.4.7 (cont.2) — `f(await E);`: yield + apply call to sent.
+                const cp = hir_mod.callOf(self.hir, stmt);
+                const args = hir_mod.callArgs(self.hir, stmt);
+                if (args.len == 1 and self.hir.kindOf(args[0]) == .await_expr) {
+                    const ap = hir_mod.awaitExprOf(self.hir, args[0]);
+                    try self.write(" return [4, __await(");
+                    if (ap.expr != hir_mod.none_node_id) try self.printExpression(ap.expr);
+                    try self.write(")];");
+                    state += 1;
+                    const num = std.fmt.bufPrint(&buf, "{d}", .{state}) catch unreachable;
+                    try self.writeNewlineIndent();
+                    try self.write("case ");
+                    try self.write(num);
+                    try self.write(": ");
+                    try self.printExpression(cp.callee);
+                    try self.write("(_a.sent());");
                 } else {
                     try self.write(" ");
                     try self.printNonIndentStatement(stmt);
@@ -6999,6 +7034,33 @@ test "emit: async generator with x = await E (pre-declared) uses no var prefix" 
     // case 1 should bind via plain `x = _a.sent();` (no var prefix).
     try T.expect(std.mem.indexOf(u8, out, "case 1: x = _a.sent();") != null);
     try T.expect(std.mem.indexOf(u8, out, "case 1: var x = _a.sent();") == null);
+}
+
+test "emit: async generator with f(await E) lowers to yield + call(_a.sent())" {
+    const out = try emitWithOpts(
+        "async function* g() { log(await fetch()); yield 1; }",
+        .{ .es_target = .es2017 },
+    );
+    defer T.allocator.free(out);
+    try T.expect(std.mem.indexOf(u8, out, "__asyncGenerator") != null);
+    // First await: case 0 yields __await(fetch()); case 1 calls log(_a.sent()).
+    try T.expect(std.mem.indexOf(u8, out, "return [4, __await(fetch())]") != null);
+    try T.expect(std.mem.indexOf(u8, out, "case 1: log(_a.sent());") != null);
+    // Then the user yield 1 expands to the double-yield pattern.
+    try T.expect(std.mem.indexOf(u8, out, "return [4, __await(1)]") != null);
+}
+
+test "emit: async generator with f(await E, other) (multi-arg) still bails" {
+    // v0 only handles call_expr with exactly one arg that's an await.
+    const out = try emitWithOpts(
+        "async function* g() { log(await fetch(), 2); }",
+        .{ .es_target = .es2017 },
+    );
+    defer T.allocator.free(out);
+    // The await as a sub-expression in a multi-arg call isn't supported,
+    // so the lowering bails to native `async function*`.
+    try T.expect(std.mem.indexOf(u8, out, "async function* g(") != null);
+    try T.expect(std.mem.indexOf(u8, out, "__asyncGenerator") == null);
 }
 
 test "emit: async generator preserved at es2018+" {
