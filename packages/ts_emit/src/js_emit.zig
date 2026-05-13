@@ -915,6 +915,27 @@ pub const Printer = struct {
             try self.write(" }");
             return;
         }
+        // §4.A.4.9 v0 — `for await (... of ...)` downlevel at ES2017
+        // and below. Lowers to the iterator-protocol with __asyncValues
+        // + try/catch/finally cleanup. Uses `await _aiter.next()` inside
+        // a native async context (or at ES5 where async functions are
+        // wrapped by __awaiter and `yield` is the resumption op).
+        if (self.hir.kindOf(node) == .for_of_stmt and p.is_await and !self.options.es_target.supportsNativeAsyncGenerators()) {
+            const await_kw: []const u8 = if (self.in_async_downlevel) "yield " else "await ";
+            try self.write("var _aiter, _astep, e_1, _r;");
+            try self.write(" try { for (_aiter = __asyncValues(");
+            try self.printExpression(p.source);
+            try self.write("); _astep = ");
+            try self.write(await_kw);
+            try self.write("_aiter.next(), !_astep.done; ) { ");
+            try self.printForOfBindingDecl(p.target);
+            try self.write(" = _astep.value; ");
+            try self.printForOfBody(p.body);
+            try self.write(" } } catch (e_1_1) { e_1 = { error: e_1_1 }; } finally { try { if (_astep && !_astep.done && (_r = _aiter.return)) ");
+            try self.write(await_kw);
+            try self.write("_r.call(_aiter); } finally { if (e_1) throw e_1.error; } }");
+            return;
+        }
         const kw = if (self.hir.kindOf(node) == .for_in_stmt) "in" else "of";
         if (self.hir.kindOf(node) == .for_of_stmt and p.is_await) {
             try self.write("for await (");
@@ -5758,11 +5779,33 @@ test "emit: for-of preserved at es2015+" {
     try T.expect(std.mem.indexOf(u8, out, " of ") != null);
 }
 
-test "emit: for-await-of emits 'for await'" {
-    const out = try emitWithOpts("for await (const v of items) { use(v); }", .{ .es_target = .es2015 });
+test "emit: for-await-of preserves native syntax at es2018+" {
+    // Native `for await (...)` is ES2018+. At ES2018 and above the
+    // existing emit passes it through unchanged.
+    const out = try emitWithOpts("for await (const v of items) { use(v); }", .{ .es_target = .es2018 });
     defer T.allocator.free(out);
     try T.expect(std.mem.indexOf(u8, out, "for await (") != null);
     try T.expect(std.mem.indexOf(u8, out, " of items") != null);
+}
+
+test "emit: for-await-of lowers via __asyncValues + try/finally at es2017" {
+    const out = try emitWithOpts(
+        "for await (const v of items) { use(v); }",
+        .{ .es_target = .es2017 },
+    );
+    defer T.allocator.free(out);
+    // Native for-await-of is gone.
+    try T.expect(std.mem.indexOf(u8, out, "for await (") == null);
+    // Iterator-protocol with __asyncValues + native `await`.
+    try T.expect(std.mem.indexOf(u8, out, "var _aiter, _astep, e_1, _r;") != null);
+    try T.expect(std.mem.indexOf(u8, out, "_aiter = __asyncValues(items)") != null);
+    try T.expect(std.mem.indexOf(u8, out, "_astep = await _aiter.next()") != null);
+    try T.expect(std.mem.indexOf(u8, out, "var v = _astep.value;") != null);
+    try T.expect(std.mem.indexOf(u8, out, "use(v);") != null);
+    // Try/catch/finally with .return() cleanup using `await`.
+    try T.expect(std.mem.indexOf(u8, out, "catch (e_1_1)") != null);
+    try T.expect(std.mem.indexOf(u8, out, "await _r.call(_aiter)") != null);
+    try T.expect(std.mem.indexOf(u8, out, "if (e_1) throw e_1.error;") != null);
 }
 
 test "emit: for-in is unaffected by es_target" {
