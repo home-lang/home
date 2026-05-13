@@ -1994,11 +1994,19 @@ pub const Parser = struct {
     }
 
     fn isAmbientContextAt(self: *const Parser, pos: u32) bool {
-        return self.isAmbientContext() or self.isVirtualDeclarationSectionAt(pos);
+        if (self.ambient_depth > 0) return true;
+        if (self.virtualSectionFilenameAt(pos)) |filename| {
+            return isDeclarationFilename(filename);
+        }
+        return self.is_declaration_file;
     }
 
     fn isVirtualDeclarationSectionAt(self: *const Parser, pos: u32) bool {
         const filename = self.virtualSectionFilenameAt(pos) orelse return false;
+        return isDeclarationFilename(filename);
+    }
+
+    fn isDeclarationFilename(filename: []const u8) bool {
         if (std.mem.endsWith(u8, filename, ".d.ts")) return true;
         if (std.mem.endsWith(u8, filename, ".d.mts")) return true;
         if (std.mem.endsWith(u8, filename, ".d.cts")) return true;
@@ -6797,6 +6805,25 @@ test "parser: virtual declaration sections allow ambient exported const" {
     const ex = hir_mod.exportOf(&s.hir, stmts[0]);
     const vd = hir_mod.varDeclOf(&s.hir, ex.decl);
     try T.expect(vd.is_ambient);
+}
+
+test "parser: virtual ts section overrides declaration-file ambient default" {
+    var s = try newTestSetup(
+        \\// @filename: module.d.ts
+        \\declare namespace A {
+        \\  export var x: number;
+        \\}
+        \\// @filename: classPoint.ts
+        \\namespace A {
+        \\  export class Point { constructor(public x: number) {} }
+        \\}
+    );
+    defer destroyTestSetup(s);
+    s.parser.setDeclarationFile(true);
+    _ = try s.parser.parseSourceFile();
+    for (s.parser.diagnostics.items) |d| {
+        try T.expect(d.code != 1183);
+    }
 }
 
 test "parser: contextual keyword may be variable name" {

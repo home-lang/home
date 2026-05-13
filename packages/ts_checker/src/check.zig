@@ -7654,6 +7654,51 @@ pub const Checker = struct {
         };
     }
 
+    fn mergedNamespaceValueMemberType(
+        self: *Checker,
+        namespace_name: hir_mod.StringId,
+        member_name: hir_mod.StringId,
+        anchor: NodeId,
+    ) CheckError!?TypeId {
+        const root = self.rootBlockFor(anchor);
+        if (root == hir_mod.none_node_id or self.hir.kindOf(root) != .block_stmt) return null;
+        for (hir_mod.blockStmts(self.hir, root)) |raw| {
+            const ns_node = self.unwrapExportDecl(raw);
+            if (self.hir.kindOf(ns_node) != .namespace_decl) continue;
+            const ns = hir_mod.namespaceOf(self.hir, ns_node);
+            if (ns.name == hir_mod.none_node_id or self.hir.kindOf(ns.name) != .identifier) continue;
+            if (hir_mod.identifierOf(self.hir, ns.name).name != namespace_name) continue;
+            for (hir_mod.namespaceBody(self.hir, ns_node)) |member_raw| {
+                if (self.hir.kindOf(member_raw) != .export_decl) continue;
+                const member_node = self.unwrapExportDecl(member_raw);
+                const decl_name = self.declarationName(member_node) orelse continue;
+                if (decl_name != member_name) continue;
+                switch (self.hir.kindOf(member_node)) {
+                    .class_decl, .class_expr => {
+                        try self.checkClassDecl(member_node);
+                        if (self.class_static_types.get(member_name)) |static_t| return static_t;
+                        return self.hir.typeOf(member_node);
+                    },
+                    .fn_decl, .fn_expr => {
+                        try self.checkFnDeclWithFlowBoundary(member_node);
+                        return self.hir.typeOf(member_node);
+                    },
+                    .var_decl, .let_decl, .const_decl => {
+                        try self.checkNamespaceValueDecl(member_node);
+                        return self.hir.typeOf(member_node);
+                    },
+                    .enum_decl => {
+                        try self.checkEnumDecl(member_node);
+                        return try self.enumNominalType(member_name);
+                    },
+                    .namespace_decl => return types.Primitive.any,
+                    else => return null,
+                }
+            }
+        }
+        return null;
+    }
+
     fn declarationContainer(self: *Checker, node: NodeId) NodeId {
         var cur = node;
         var parent = self.hir.parentOf(cur);
@@ -14710,6 +14755,7 @@ pub const Checker = struct {
         const has_annotation = v.type_annotation != hir_mod.none_node_id;
         if (self.var_decl_types.get(key)) |prior| {
             const prior_explicit = self.var_decl_explicit.get(key) orelse false;
+            if (final_type == types.Primitive.any and (!has_annotation or self.varDeclAnnotationIsQualifiedName(v.type_annotation))) return;
             if (!has_annotation and !prior_explicit and !self.typeIsEnumNominal(prior)) return;
             const compatible = blk: {
                 if (self.isThisTypeParameter(prior) or self.isThisTypeParameter(final_type)) break :blk false;
@@ -14742,6 +14788,11 @@ pub const Checker = struct {
             !self.typeIsEnumNominal(final_type)) return;
         try self.var_decl_types.put(self.gpa, key, final_type);
         try self.var_decl_explicit.put(self.gpa, key, has_annotation);
+    }
+
+    fn varDeclAnnotationIsQualifiedName(self: *Checker, type_annotation: NodeId) bool {
+        if (type_annotation == hir_mod.none_node_id or self.hir.kindOf(type_annotation) != .type_ref) return false;
+        return hir_mod.typeRefOf(self.hir, type_annotation).qualifier_len != 0;
     }
 
     fn checkRepeatedObjectRestVarBinding(
@@ -15991,6 +16042,9 @@ pub const Checker = struct {
                     }
                     if (try self.enumMemberAccessType(obj_id.name, m.name, node)) |enum_t| {
                         break :blk try self.optionalChainResult(enum_t, member_is_optional_chain);
+                    }
+                    if (try self.mergedNamespaceValueMemberType(obj_id.name, m.name, node)) |member_t| {
+                        break :blk try self.optionalChainResult(member_t, member_is_optional_chain);
                     }
                     if (self.const_enums.contains(obj_id.name)) {
                         try self.reportPropertyDoesNotExist(node, m.name);
@@ -19573,6 +19627,7 @@ pub const Checker = struct {
 
     fn namespaceHasRuntimeValue(self: *Checker, node: NodeId) bool {
         if (node == hir_mod.none_node_id or self.hir.kindOf(node) != .namespace_decl) return false;
+        if (self.declarationSourceHasLeadingDeclare(node) or self.virtualSectionIsDeclarationFile(node)) return true;
         for (hir_mod.namespaceBody(self.hir, node)) |raw| {
             const s = self.unwrapExportDecl(raw);
             switch (self.hir.kindOf(s)) {
@@ -37470,6 +37525,39 @@ test "checker: qualified namespace interface refs satisfy repeated var declarati
     try s.checker.checkSourceFile(s.root);
     for (s.checker.diagnostics.items) |d| {
         try T.expect(d.code != TsCodes.subsequent_var_type_mismatch);
+    }
+}
+
+test "checker: enum namespace merge exposes exported class value" {
+    const b = try newBoundSetup(
+        \\enum enumdule { Red, Blue }
+        \\namespace enumdule {
+        \\  export class Point {
+        \\    constructor(public x: number, public y: number) {}
+        \\  }
+        \\}
+        \\var y: { x: number; y: number };
+        \\var y = new enumdule.Point(0, 0);
+    );
+    defer destroyBoundSetup(b);
+    try b.base.checker.checkSourceFile(b.base.root);
+    for (b.base.checker.diagnostics.items) |d| {
+        try T.expect(d.code != TsCodes.property_does_not_exist);
+    }
+}
+
+test "checker: ambient namespace can be used as a value" {
+    const b = try newBoundSetup(
+        \\declare namespace mod2 {
+        \\  type test1 = string;
+        \\  export { test1 };
+        \\}
+        \\const test2 = mod2;
+    );
+    defer destroyBoundSetup(b);
+    try b.base.checker.checkSourceFile(b.base.root);
+    for (b.base.checker.diagnostics.items) |d| {
+        try T.expect(d.code != TsCodes.namespace_as_value);
     }
 }
 
