@@ -696,7 +696,15 @@ fn baselineHasOnlyOptionDeprecation(gpa: std.mem.Allocator, path: []const u8) !b
         const line = std.mem.trim(u8, raw, "\r");
         if (!isDiagnosticHeader(line)) continue;
         saw_diagnostic = true;
+        // Three upstream codes belong to the option-validation family
+        // the single-source runner can't reproduce — treat all of
+        // them as "harness gap" so the fixture flips to expected-clean
+        // instead of expected-error:
+        //   - TS5101 "Option 'X' is deprecated and will stop functioning…"
+        //   - TS5102 "Option 'X' has been removed. Please remove it…"
+        //   - TS5107 "Option 'target=X' is deprecated and will stop functioning…"
         if (std.mem.indexOf(u8, line, "error TS5101:") == null and
+            std.mem.indexOf(u8, line, "error TS5102:") == null and
             std.mem.indexOf(u8, line, "error TS5107:") == null)
         {
             return false;
@@ -841,8 +849,12 @@ fn hasHarnessModeledExpectedError(name: []const u8, source: []const u8) bool {
     {
         return true;
     }
-    if (std.mem.indexOf(u8, name, "verbatimModuleSyntaxCompat2") != null) return true;
-    if (std.mem.indexOf(u8, name, "verbatimModuleSyntaxCompat3") != null) return true;
+    // (Retired 2026-05-13) `verbatimModuleSyntaxCompat2` and
+    // `verbatimModuleSyntaxCompat3` used to live here. Their baselines
+    // are TS5102-only ("Option 'X' has been removed"); we now treat
+    // TS5102 the same as TS5101/TS5107 in
+    // `baselineHasOnlyOptionDeprecation`, so the loader short-circuits
+    // them to `expects_error=false` and this shim is bypassed.
     // (Retired 2026-05-12) The ES5 destructuring + empty-assignment
     // fixtures whose only upstream error is TS5107 target deprecation
     // (`destructuringObjectBindingPatternAndAssignment6/7/8`,
