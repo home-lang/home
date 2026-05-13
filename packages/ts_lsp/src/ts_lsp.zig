@@ -4791,6 +4791,59 @@ fn renderTypeInto(
         try buf.append(gpa, '>');
         return;
     }
+    if (flags.is_mapped) {
+        // `{ [K in Constraint]: Template }` with the canonical
+        // `readonly` / `?` modifiers when present. K's name isn't
+        // stored on the payload (the interner keys on shape, not
+        // identifier), so we render it as the literal `K` placeholder.
+        const payload = ti.mappedPayload(id);
+        try buf.appendSlice(gpa, "{ ");
+        switch (payload.readonly) {
+            .add => try buf.appendSlice(gpa, "readonly "),
+            .remove => try buf.appendSlice(gpa, "-readonly "),
+            .none => {},
+        }
+        try buf.appendSlice(gpa, "[K in ");
+        try renderTypeInto(buf, gpa, ti, sint, payload.constraint, depth + 1);
+        try buf.append(gpa, ']');
+        switch (payload.optional) {
+            .add => try buf.append(gpa, '?'),
+            .remove => try buf.appendSlice(gpa, "-?"),
+            .none => {},
+        }
+        try buf.appendSlice(gpa, ": ");
+        try renderTypeInto(buf, gpa, ti, sint, payload.template, depth + 1);
+        try buf.appendSlice(gpa, " }");
+        return;
+    }
+    if (flags.is_instantiation) {
+        // `Origin<Arg1, Arg2, ...>` — read the origin TypeId and
+        // arg slice from the instantiation payload pool.
+        const payload = ti.pool.instantiation_payloads.items[ti.pool.payloadOf(id)];
+        const args = ti.pool.type_arg_pool.items[payload.args_start .. payload.args_start + payload.args_len];
+        try renderTypeInto(buf, gpa, ti, sint, payload.origin, depth + 1);
+        if (args.len > 0) {
+            try buf.append(gpa, '<');
+            for (args, 0..) |arg, i| {
+                if (i > 0) try buf.appendSlice(gpa, ", ");
+                try renderTypeInto(buf, gpa, ti, sint, arg, depth + 1);
+            }
+            try buf.append(gpa, '>');
+        }
+        return;
+    }
+    if (flags.is_typeof) {
+        // `typeof X` — the interner records only the bit, no operand
+        // payload. Render the keyword form so hover at least surfaces
+        // the shape; a full identifier capture is a follow-up.
+        try buf.appendSlice(gpa, "typeof");
+        return;
+    }
+    if (flags.is_infer) {
+        // `infer T` — same flag-only situation; surface the keyword.
+        try buf.appendSlice(gpa, "infer");
+        return;
+    }
     try buf.appendSlice(gpa, "unknown");
 }
 
@@ -5476,6 +5529,49 @@ test "Service: hover renders keyof with real operand" {
     // The render should no longer be the literal placeholder "keyof T".
     try T.expectEqualStrings("keyof T", "keyof T"); // self-check
     try T.expect(!std.mem.eql(u8, r.type_repr, "keyof T"));
+}
+
+test "Service: hover render no longer falls through to `unknown` on mapped/instantiation" {
+    // Smoke test for the mapped-type and instantiation render
+    // branches added alongside this commit. We deliberately don't
+    // assert exact bytes for the mapped form because the checker
+    // may eagerly evaluate the mapped expression into a concrete
+    // object shape (which has its own render path). Either way,
+    // the result must not be the literal `unknown` fallback that
+    // older render code emitted for these kinds.
+    var vfs = ts_resolver.VirtualFs.init(T.allocator);
+    defer vfs.deinit();
+    var resolver = ts_resolver.Resolver.init(T.allocator, vfs.fs(), .{});
+    defer resolver.deinit();
+    var program = ts_program.Program.init(T.allocator, &resolver);
+    defer program.deinit();
+
+    // Both forms exercise the new render branches:
+    //   - `Wrap<T>` instantiation of a generic alias
+    //   - `MyPartial<…>` mapped-type usage
+    // If the checker can't evaluate them eagerly, render falls
+    // through to either the new instantiation or mapped branch.
+    const src =
+        \\type Wrap<T> = { value: T };
+        \\type MyPartial<T> = { [K in keyof T]?: T[K] };
+        \\let w: Wrap<number> = { value: 1 };
+        \\let p: MyPartial<{ a: 1 }> = {};
+    ;
+    _ = try program.add("/main.ts", src);
+    try program.compileAll(.{});
+
+    var svc = Service.init(T.allocator, &program);
+    // Hover on `w` (the let binding name).
+    const w_pos: u32 = @intCast(std.mem.indexOf(u8, src, "let w").? + 4);
+    const rw = svc.hover("/main.ts", w_pos) orelse return error.NoHover;
+    defer T.allocator.free(rw.type_repr);
+    try T.expect(!std.mem.eql(u8, rw.type_repr, "unknown"));
+
+    // Hover on `p`.
+    const p_pos: u32 = @intCast(std.mem.indexOf(u8, src, "let p").? + 4);
+    const rp = svc.hover("/main.ts", p_pos) orelse return error.NoHover;
+    defer T.allocator.free(rp.type_repr);
+    try T.expect(!std.mem.eql(u8, rp.type_repr, "unknown"));
 }
 
 test "Service: hover renders type parameter without constraint as bare name" {
