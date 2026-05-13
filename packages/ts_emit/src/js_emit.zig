@@ -3017,7 +3017,15 @@ pub const Printer = struct {
                     if (yp.type_node != hir_mod.none_node_id) return false; // bail on yield*
                     if (yp.expr != hir_mod.none_node_id) {
                         if (self.subtreeContainsYield(yp.expr)) return false;
-                        if (self.subtreeContainsAwait(yp.expr)) return false;
+                        // `yield await E` (immediate await as yield value)
+                        // is fine — we unwrap to `__await(E.expr)` in emit.
+                        // Nested awaits deeper in the expression are not.
+                        if (self.hir.kindOf(yp.expr) == .await_expr) {
+                            const inner = hir_mod.awaitExprOf(self.hir, yp.expr);
+                            if (inner.expr != hir_mod.none_node_id and (self.subtreeContainsYield(inner.expr) or self.subtreeContainsAwait(inner.expr))) return false;
+                        } else if (self.subtreeContainsAwait(yp.expr)) {
+                            return false;
+                        }
                     }
                 },
                 .await_expr => {
@@ -3130,7 +3138,19 @@ pub const Printer = struct {
                 const yp = hir_mod.yieldExprOf(self.hir, stmt);
                 try self.write(" return [4, __await(");
                 if (yp.expr != hir_mod.none_node_id) {
-                    try self.printExpression(yp.expr);
+                    // `yield await E` — unwrap the user's redundant await
+                    // so we emit `__await(E)` rather than `__await(await E)`
+                    // (which would be invalid inside the sync inner generator).
+                    if (self.hir.kindOf(yp.expr) == .await_expr) {
+                        const inner = hir_mod.awaitExprOf(self.hir, yp.expr);
+                        if (inner.expr != hir_mod.none_node_id) {
+                            try self.printExpression(inner.expr);
+                        } else {
+                            try self.write("void 0");
+                        }
+                    } else {
+                        try self.printExpression(yp.expr);
+                    }
                 } else {
                     try self.write("void 0");
                 }
@@ -7048,6 +7068,25 @@ test "emit: async generator with f(await E) lowers to yield + call(_a.sent())" {
     try T.expect(std.mem.indexOf(u8, out, "case 1: log(_a.sent());") != null);
     // Then the user yield 1 expands to the double-yield pattern.
     try T.expect(std.mem.indexOf(u8, out, "return [4, __await(1)]") != null);
+}
+
+test "emit: async generator with yield await E unwraps to single __await" {
+    // `yield await E` in async-gen body: the user's await is redundant
+    // (yield already implicitly awaits), but the pattern is common.
+    // Lower to `return [4, __await(E)];` rather than the invalid
+    // `return [4, __await(await E)];`.
+    const out = try emitWithOpts(
+        "async function* g() { yield await fetch(); }",
+        .{ .es_target = .es2017 },
+    );
+    defer T.allocator.free(out);
+    try T.expect(std.mem.indexOf(u8, out, "__asyncGenerator") != null);
+    try T.expect(std.mem.indexOf(u8, out, "return [4, __await(fetch())]") != null);
+    // No leftover `await fetch` inside __await wrap.
+    try T.expect(std.mem.indexOf(u8, out, "__await(await") == null);
+    // Rest of the double-yield pattern.
+    try T.expect(std.mem.indexOf(u8, out, "case 1: _a.sent(); return [4];") != null);
+    try T.expect(std.mem.indexOf(u8, out, "case 2: _a.sent();") != null);
 }
 
 test "emit: async generator with f(await E, other) (multi-arg) still bails" {
