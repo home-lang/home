@@ -1829,6 +1829,79 @@ pub const Service = struct {
             });
         }
 
+        // ---- Convert `"x" + y + "z"` to template literal -----------------
+        // When a `let`/`const`/`var x = …` initializer is a chain of `+`
+        // operations with at least one string-literal leaf, surface a
+        // quick-fix that rewrites it as `` `x${y}z` ``. The detection is
+        // deliberately scoped to declaration initializers — broader
+        // expression-position rewrites would need to thread parenthesis-
+        // safety through every parent context, which buys little user
+        // value for v0.
+        for (stmts) |s| {
+            const sk = c.hir.kindOf(s);
+            if (sk != .let_decl and sk != .const_decl and sk != .var_decl) continue;
+            const v = hir_mod.varDeclOf(&c.hir, s);
+            if (v.name == hir_mod.none_node_id) continue;
+            if (v.init == hir_mod.none_node_id) continue;
+            if (c.hir.kindOf(v.name) != .identifier) continue;
+            if (c.hir.kindOf(v.init) != .binary_op) continue;
+            const root_binop = hir_mod.binopOf(&c.hir, v.init);
+            if (root_binop.op != .add) continue;
+
+            // Flatten the `+` chain into an in-order leaf list. Bail
+            // if any sub-expression's source slice would be unsafe to
+            // embed verbatim inside `${ … }` — for v0 the leaf
+            // sources are just identifier-rooted member/call/element
+            // chains and string/number literals.
+            var leaves: std.ArrayListUnmanaged(hir_mod.NodeId) = .empty;
+            defer leaves.deinit(gpa);
+            var saw_string = false;
+            const flattenOk = (try flattenAddChain(&c.hir, v.init, &leaves, &saw_string, gpa));
+            if (!flattenOk or !saw_string) continue;
+            if (leaves.items.len < 2) continue;
+
+            // Build the template literal text.
+            var buf: std.ArrayListUnmanaged(u8) = .empty;
+            defer buf.deinit(gpa);
+            try buf.append(gpa, '`');
+            for (leaves.items) |leaf| {
+                if (c.hir.kindOf(leaf) == .literal_string) {
+                    const lit = hir_mod.literalStringOf(&c.hir, leaf);
+                    const text = c.interner.get(lit.value);
+                    try writeTemplateText(&buf, gpa, text);
+                } else {
+                    try buf.appendSlice(gpa, "${");
+                    const lsp = c.hir.spanOf(leaf);
+                    try buf.appendSlice(gpa, f.source[lsp.start..lsp.end]);
+                    try buf.append(gpa, '}');
+                }
+            }
+            try buf.append(gpa, '`');
+
+            const init_span = c.hir.spanOf(v.init);
+            const new_text = try buf.toOwnedSlice(gpa);
+            errdefer gpa.free(new_text);
+            const sp = ts_diagnostics.positionToLineCol(f.source, init_span.start);
+            const ep = ts_diagnostics.positionToLineCol(f.source, init_span.end);
+            const var_name_str = c.interner.get(hir_mod.identifierOf(&c.hir, v.name).name);
+            const title = try std.fmt.allocPrint(gpa, "Convert {s} to template literal", .{var_name_str});
+            errdefer gpa.free(title);
+            var conv_edits = try gpa.alloc(TextEdit, 1);
+            conv_edits[0] = .{
+                .file = f.path,
+                .start_line = if (sp.line > 0) sp.line - 1 else 0,
+                .start_col = if (sp.col > 0) sp.col - 1 else 0,
+                .end_line = if (ep.line > 0) ep.line - 1 else 0,
+                .end_col = if (ep.col > 0) ep.col - 1 else 0,
+                .new_text = new_text,
+            };
+            try actions.append(gpa, .{
+                .title = title,
+                .kind = .quick_fix,
+                .edits = conv_edits,
+            });
+        }
+
         // ---- Sort keys in top-level object literals ----------------------
         // For each `let`/`const`/`var x = { … }` whose initializer is an
         // object literal with 3+ sortable named properties, surface a
@@ -4380,6 +4453,64 @@ fn isIdentChar(b: u8) bool {
     return std.ascii.isAlphanumeric(b) or b == '_' or b == '$';
 }
 
+/// Recursively flatten a left-associative `+` chain rooted at `node`
+/// into an in-order list of leaf NodeIds. Returns `false` (and leaves
+/// `out` in an indeterminate state — the caller drops it) when any
+/// non-`+` sub-expression is unsafe to embed inside a template
+/// literal's `${ … }` slot — today that's just any sub-expression
+/// that's itself an arrow function, comma expression, or assignment
+/// (those need explicit parenthesization to keep precedence stable
+/// in template position). Sets `saw_string` to true when any leaf is
+/// a string literal; callers use that as the "this is concatenation,
+/// not numeric addition" gate before offering the conversion.
+fn flattenAddChain(
+    hir: *const hir_mod.Hir,
+    node: hir_mod.NodeId,
+    out: *std.ArrayListUnmanaged(hir_mod.NodeId),
+    saw_string: *bool,
+    gpa: std.mem.Allocator,
+) !bool {
+    if (hir.kindOf(node) == .binary_op) {
+        const b = hir_mod.binopOf(hir, node);
+        if (b.op == .add) {
+            if (!(try flattenAddChain(hir, b.lhs, out, saw_string, gpa))) return false;
+            if (!(try flattenAddChain(hir, b.rhs, out, saw_string, gpa))) return false;
+            return true;
+        }
+    }
+    // Leaf — assess whether it's safe inside `${ … }`.
+    switch (hir.kindOf(node)) {
+        .arrow_fn, .assignment => return false,
+        .literal_string => saw_string.* = true,
+        else => {},
+    }
+    try out.append(gpa, node);
+    return true;
+}
+
+/// Write `text` into `buf` as a template-literal text segment,
+/// escaping the two byte classes that can't appear raw: `` ` `` and
+/// `${`. `\` is also escaped so any leading backslashes in the
+/// original string survive (the literal interner already unescaped
+/// the source's `\n` / `\"` etc., so the bytes we see here are the
+/// runtime values — re-escaping is the caller's job).
+fn writeTemplateText(buf: *std.ArrayListUnmanaged(u8), gpa: std.mem.Allocator, text: []const u8) !void {
+    var i: usize = 0;
+    while (i < text.len) : (i += 1) {
+        const b = text[i];
+        if (b == '\\') {
+            try buf.appendSlice(gpa, "\\\\");
+        } else if (b == '`') {
+            try buf.appendSlice(gpa, "\\`");
+        } else if (b == '$' and i + 1 < text.len and text[i + 1] == '{') {
+            try buf.appendSlice(gpa, "\\${");
+            i += 1;
+        } else {
+            try buf.append(gpa, b);
+        }
+    }
+}
+
 /// Walk `f.source` and emit a `DocumentLink` for each `http://` /
 /// `https://` URL inside a line comment (`// …`) or block comment
 /// (`/* … */`). URLs run from the scheme prefix until the first byte
@@ -6475,6 +6606,118 @@ test "Service: codeActions skips sort-keys when literal is already sorted" {
     for (actions) |a| {
         try T.expect(!std.mem.startsWith(u8, a.title, "Sort keys in "));
     }
+}
+
+test "Service: codeActions converts string-concat init to template literal" {
+    // `let greet = "hi " + name + "!"` is the canonical TS antipattern
+    // that template literals replace. The quick-fix flattens the `+`
+    // chain, emits each string leaf as raw text and each non-string
+    // leaf as `${ … }`, wrapped in backticks.
+    var vfs = ts_resolver.VirtualFs.init(T.allocator);
+    defer vfs.deinit();
+    var resolver = ts_resolver.Resolver.init(T.allocator, vfs.fs(), .{});
+    defer resolver.deinit();
+    var program = ts_program.Program.init(T.allocator, &resolver);
+    defer program.deinit();
+
+    _ = try program.add("/main.ts", "let name: string;\nlet greet = \"hi \" + name + \"!\";");
+    try program.compileAll(.{});
+
+    var svc = Service.init(T.allocator, &program);
+    const actions = try svc.codeActions(T.allocator, "/main.ts");
+    defer {
+        for (actions) |a| {
+            T.allocator.free(a.title);
+            for (a.edits) |e| T.allocator.free(e.new_text);
+            T.allocator.free(a.edits);
+        }
+        T.allocator.free(actions);
+    }
+    var found: ?CodeAction = null;
+    for (actions) |a| {
+        if (std.mem.startsWith(u8, a.title, "Convert ")) {
+            found = a;
+            break;
+        }
+    }
+    try T.expect(found != null);
+    const a = found.?;
+    try T.expectEqualStrings("Convert greet to template literal", a.title);
+    try T.expectEqual(@as(usize, 1), a.edits.len);
+    try T.expectEqualStrings("`hi ${name}!`", a.edits[0].new_text);
+}
+
+test "Service: codeActions skips template-literal conversion when no string leaf" {
+    // Pure numeric `+` chain — must NOT be offered as a string-concat
+    // conversion (that would silently change `5` into `"5"` semantics).
+    var vfs = ts_resolver.VirtualFs.init(T.allocator);
+    defer vfs.deinit();
+    var resolver = ts_resolver.Resolver.init(T.allocator, vfs.fs(), .{});
+    defer resolver.deinit();
+    var program = ts_program.Program.init(T.allocator, &resolver);
+    defer program.deinit();
+
+    _ = try program.add("/main.ts", "let x = 1 + 2 + 3;");
+    try program.compileAll(.{});
+
+    var svc = Service.init(T.allocator, &program);
+    const actions = try svc.codeActions(T.allocator, "/main.ts");
+    defer {
+        for (actions) |a| {
+            T.allocator.free(a.title);
+            for (a.edits) |e| T.allocator.free(e.new_text);
+            T.allocator.free(a.edits);
+        }
+        T.allocator.free(actions);
+    }
+    for (actions) |a| {
+        try T.expect(!std.mem.startsWith(u8, a.title, "Convert "));
+    }
+}
+
+test "Service: codeActions template-literal conversion escapes backticks + ${} in string leaf" {
+    // Special bytes in the string-literal leaves must be escaped so
+    // the rewritten template doesn't break parsing. Backtick needs
+    // `\``, raw `${` needs `\${`.
+    var vfs = ts_resolver.VirtualFs.init(T.allocator);
+    defer vfs.deinit();
+    var resolver = ts_resolver.Resolver.init(T.allocator, vfs.fs(), .{});
+    defer resolver.deinit();
+    var program = ts_program.Program.init(T.allocator, &resolver);
+    defer program.deinit();
+
+    _ = try program.add(
+        "/main.ts",
+        "let name: string;\nlet s = \"`hi`${escape}\" + name;",
+    );
+    try program.compileAll(.{});
+
+    var svc = Service.init(T.allocator, &program);
+    const actions = try svc.codeActions(T.allocator, "/main.ts");
+    defer {
+        for (actions) |a| {
+            T.allocator.free(a.title);
+            for (a.edits) |e| T.allocator.free(e.new_text);
+            T.allocator.free(a.edits);
+        }
+        T.allocator.free(actions);
+    }
+    var found: ?CodeAction = null;
+    for (actions) |a| {
+        if (std.mem.startsWith(u8, a.title, "Convert ")) {
+            found = a;
+            break;
+        }
+    }
+    try T.expect(found != null);
+    const nt = found.?.edits[0].new_text;
+    // The literal backtick from the string is preserved as `\``.
+    try T.expect(std.mem.indexOf(u8, nt, "\\`hi\\`") != null);
+    // The literal `${escape}` text is preserved as `\${escape}` so it
+    // doesn't become a substitution at template-parse time.
+    try T.expect(std.mem.indexOf(u8, nt, "\\${escape}") != null);
+    // The real `${name}` substitution lands at the end.
+    try T.expect(std.mem.indexOf(u8, nt, "${name}") != null);
 }
 
 test "Service: codeActions skips sort-keys when literal has fewer than 3 properties" {
