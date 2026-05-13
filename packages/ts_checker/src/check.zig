@@ -2505,8 +2505,10 @@ pub const Checker = struct {
             if (self.hir.kindOf(pp.name) != .identifier) continue;
             const id = hir_mod.identifierOf(self.hir, pp.name);
             if (id.name != tid) continue;
-            if (pp.type_annotation == hir_mod.none_node_id) continue;
-            const this_t = self.lowererLowerWithTypeParams(pp.type_annotation) catch continue;
+            const this_t = if (pp.type_annotation == hir_mod.none_node_id)
+                types.Primitive.any
+            else
+                self.lowererLowerWithTypeParams(pp.type_annotation) catch continue;
             try self.recordNarrow(tid, this_t);
             break;
         };
@@ -2618,7 +2620,7 @@ pub const Checker = struct {
                 }
             }
         }
-        if (f.flags.is_getter and !self.fnBodyHasValueReturn(f.body)) {
+        if (f.flags.is_getter and !self.fnBodyHasReturn(f.body)) {
             try self.report(node, TsCodes.getter_must_return_value, "A 'get' accessor must return a value.");
         }
         try self.checkUnusedParameters(node, f.body);
@@ -2702,51 +2704,48 @@ pub const Checker = struct {
         }
     }
 
-    fn fnBodyHasValueReturn(self: *Checker, node: NodeId) bool {
+    fn fnBodyHasReturn(self: *Checker, node: NodeId) bool {
         if (node == hir_mod.none_node_id) return false;
         switch (self.hir.kindOf(node)) {
-            .return_stmt => {
-                const r = hir_mod.returnOf(self.hir, node);
-                return r.value != hir_mod.none_node_id;
-            },
+            .return_stmt => return true,
             .fn_decl, .fn_expr, .arrow_fn => return false,
             .block_stmt => {
                 for (hir_mod.blockStmts(self.hir, node)) |s| {
-                    if (self.fnBodyHasValueReturn(s)) return true;
+                    if (self.fnBodyHasReturn(s)) return true;
                 }
                 return false;
             },
             .if_stmt => {
                 const i = hir_mod.ifOf(self.hir, node);
-                return self.fnBodyHasValueReturn(i.then_branch) or self.fnBodyHasValueReturn(i.else_branch);
+                return self.fnBodyHasReturn(i.then_branch) or self.fnBodyHasReturn(i.else_branch);
             },
             .while_stmt => {
                 const w = hir_mod.whileOf(self.hir, node);
-                return self.fnBodyHasValueReturn(w.body);
+                return self.fnBodyHasReturn(w.body);
             },
             .do_while_stmt => {
                 const w = hir_mod.doWhileOf(self.hir, node);
-                return self.fnBodyHasValueReturn(w.body);
+                return self.fnBodyHasReturn(w.body);
             },
             .for_stmt => {
                 const fr = hir_mod.forStmtOf(self.hir, node);
-                return self.fnBodyHasValueReturn(fr.body);
+                return self.fnBodyHasReturn(fr.body);
             },
             .try_stmt => {
                 const ts = hir_mod.tryOf(self.hir, node);
-                return self.fnBodyHasValueReturn(ts.block) or
-                    self.fnBodyHasValueReturn(ts.catch_block) or
-                    self.fnBodyHasValueReturn(ts.finally_block);
+                return self.fnBodyHasReturn(ts.block) or
+                    self.fnBodyHasReturn(ts.catch_block) or
+                    self.fnBodyHasReturn(ts.finally_block);
             },
             .switch_stmt => {
                 for (hir_mod.switchCases(self.hir, node)) |case| {
-                    if (self.fnBodyHasValueReturn(case)) return true;
+                    if (self.fnBodyHasReturn(case)) return true;
                 }
                 return false;
             },
             .switch_case => {
                 for (hir_mod.switchCaseStmts(self.hir, node)) |s| {
-                    if (self.fnBodyHasValueReturn(s)) return true;
+                    if (self.fnBodyHasReturn(s)) return true;
                 }
                 return false;
             },
@@ -6219,7 +6218,7 @@ pub const Checker = struct {
         try self.checkDecoratorRuntimeArity(
             decorator_node,
             dec_t,
-            1,
+            if (self.sourceUsesLegacyDecorators()) 1 else 2,
             TsCodes.class_decorator_signature_unresolved,
             "class",
         );
@@ -6241,7 +6240,9 @@ pub const Checker = struct {
             for (members[start..i]) |decorator_node| {
                 try self.checkClassMemberDecoratorDiagnostic(decorator_node, target);
             }
-            try self.checkAccessorDecoratorPairDiagnostic(target, members[start], &accessor_decorators);
+            if (self.sourceUsesLegacyDecorators()) {
+                try self.checkAccessorDecoratorPairDiagnostic(target, members[start], &accessor_decorators);
+            }
         }
     }
 
@@ -6279,13 +6280,13 @@ pub const Checker = struct {
                 try self.report(decorator_node, TsCodes.decorator_on_method_overload, "A decorator can only decorate a method implementation, not an overload.");
                 return;
             }
-            if (!fn_p.flags.is_constructor and self.sourceHasNoLibTrueDirective()) {
+            if (self.sourceUsesLegacyDecorators() and !fn_p.flags.is_constructor and self.sourceHasNoLibTrueDirective()) {
                 try self.reportMissingGlobalTypeOnce(decorator_node, "TypedPropertyDescriptor");
             }
             try self.checkDecoratorRuntimeArity(
                 decorator_node,
                 self.hir.typeOf(d.expression),
-                3,
+                if (self.sourceUsesLegacyDecorators()) 3 else 2,
                 TsCodes.method_decorator_signature_unresolved,
                 "method",
             );
@@ -6301,14 +6302,31 @@ pub const Checker = struct {
                 try self.checkDecoratorRuntimeArity(
                     decorator_node,
                     self.hir.typeOf(d.expression),
-                    3,
+                    if (self.sourceUsesLegacyDecorators()) 3 else 2,
                     TsCodes.method_decorator_signature_unresolved,
                     "method",
                 );
-            } else if (!self.classMemberSourceHasLeadingKeyword(target, "accessor")) {
+            } else if (self.sourceUsesLegacyDecorators() and !self.classMemberSourceHasLeadingKeyword(target, "accessor")) {
                 try self.checkPropertyDecoratorCallableShape(decorator_node, d.expression);
+            } else if (!self.sourceUsesLegacyDecorators()) {
+                try self.checkDecoratorRuntimeArity(
+                    decorator_node,
+                    self.hir.typeOf(d.expression),
+                    2,
+                    TsCodes.property_decorator_signature_unresolved,
+                    "field",
+                );
             }
         }
+    }
+
+    fn sourceUsesLegacyDecorators(self: *Checker) bool {
+        const src = self.source orelse return false;
+        if (std.mem.indexOf(u8, src, "@experimentalDecorators: true") != null) return true;
+        if (std.mem.indexOf(u8, src, "@experimentaldecorators: true") != null) return true;
+        if (std.mem.indexOf(u8, src, "\"experimentalDecorators\": true") != null) return true;
+        if (std.mem.indexOf(u8, src, "\"experimentalDecorators\":true") != null) return true;
+        return false;
     }
 
     fn classMemberSourceHasLeadingKeyword(self: *Checker, node: NodeId, keyword: []const u8) bool {
@@ -6541,7 +6559,7 @@ pub const Checker = struct {
             break :blk try self.classExtendsInstanceType(c.extends);
         } else null;
         const parent_static_t: ?TypeId = if (c.extends != hir_mod.none_node_id)
-            self.classExtendsStaticType(c.extends) catch null
+            (self.classExtendsStaticType(c.extends) catch null) orelse types.Primitive.any
         else
             null;
         var instance_members: std.ArrayListUnmanaged(types.ObjectMember) = .empty;
@@ -7072,6 +7090,16 @@ pub const Checker = struct {
         }
         try self.checkIndexSignatureMemberCompatibility(node, instance_members.items, string_idx, number_idx, symbol_idx);
         try self.checkIndexSignatureMemberCompatibility(node, static_members.items, static_string_idx, static_number_idx, static_symbol_idx);
+        const class_static_name_id = self.string_interner.intern("name") catch return error.OutOfMemory;
+        if (!objectMemberListContains(static_members.items, class_static_name_id)) {
+            try static_members.append(self.gpa, .{
+                .name = class_static_name_id,
+                .type = types.Primitive.string_t,
+                .is_optional = false,
+                .is_readonly = true,
+                .is_method = false,
+            });
+        }
 
         var instance_t = self.interner.internObjectTypeWithIndexAndSymbol(instance_members.items, string_idx, number_idx, symbol_idx) catch return error.OutOfMemory;
         if (has_readonly_index) try self.readonly_index_types.put(self.gpa, instance_t, {});
@@ -7265,7 +7293,7 @@ pub const Checker = struct {
         else
             null;
         const static_super_t = if (c.extends != hir_mod.none_node_id)
-            self.classExtendsStaticType(c.extends) catch null
+            (self.classExtendsStaticType(c.extends) catch null) orelse types.Primitive.any
         else
             null;
         const instance_this_t = try self.classThisType(instance_t);
@@ -15436,6 +15464,9 @@ pub const Checker = struct {
                         }
                         break :blk try self.builtinMapInstanceType(entry.key, entry.value);
                     }
+                    if (std.mem.eql(u8, self.string_interner.get(id.name), "WeakMap")) {
+                        break :blk try self.builtinWeakMapInstanceType(types.Primitive.any, types.Primitive.any);
+                    }
                     if (std.mem.eql(u8, self.string_interner.get(id.name), "Date")) {
                         break :blk self.lowerBuiltinObjectType("Date") orelse types.Primitive.any;
                     }
@@ -18912,6 +18943,8 @@ pub const Checker = struct {
         if (self.resolving_value_types.contains(id.name)) return types.Primitive.any;
 
         if (std.mem.eql(u8, name_str, "this")) {
+            if (self.isDeclNameSlot(node) or self.nodeIsThisParameterName(node) or self.thisInsideDecoratorInitializerCallback(node)) return types.Primitive.any;
+            if (self.nodeHasAncestorKind(node, .decorator)) return types.Primitive.any;
             if (!self.sourceHasStrictFalseDirective() and
                 !self.identifierThisIsArrowCaptured(node) and
                 !self.thisInsideObjectLiteralMethod(node))
@@ -19518,6 +19551,7 @@ pub const Checker = struct {
             "search",
             "species",
             "split",
+            "metadata",
             "toPrimitive",
             "toStringTag",
             "unscopables",
@@ -19664,6 +19698,23 @@ pub const Checker = struct {
         try members.append(self.gpa, .{ .name = self.string_interner.intern("keys") catch return error.OutOfMemory, .type = sig_values, .is_optional = false, .is_readonly = false, .is_method = true });
         try members.append(self.gpa, .{ .name = self.string_interner.intern("entries") catch return error.OutOfMemory, .type = sig_entries, .is_optional = false, .is_readonly = false, .is_method = true });
         return self.interner.internObjectTypeWithIndex(members.items, types.Primitive.none, value_t) catch return error.OutOfMemory;
+    }
+
+    fn builtinWeakMapInstanceType(self: *Checker, key_t: TypeId, value_t: TypeId) CheckError!TypeId {
+        var members: std.ArrayListUnmanaged(types.ObjectMember) = .empty;
+        defer members.deinit(self.gpa);
+        const get_id = self.string_interner.intern("get") catch return error.OutOfMemory;
+        const set_id = self.string_interner.intern("set") catch return error.OutOfMemory;
+        const has_id = self.string_interner.intern("has") catch return error.OutOfMemory;
+        const delete_id = self.string_interner.intern("delete") catch return error.OutOfMemory;
+        const get_sig = self.interner.internSignature(&[_]TypeId{key_t}, value_t, false) catch return error.OutOfMemory;
+        const set_sig = self.interner.internSignature(&[_]TypeId{ key_t, value_t }, types.Primitive.any, false) catch return error.OutOfMemory;
+        const bool_sig = self.interner.internSignature(&[_]TypeId{key_t}, types.Primitive.boolean_t, false) catch return error.OutOfMemory;
+        try members.append(self.gpa, .{ .name = get_id, .type = get_sig, .is_optional = false, .is_readonly = false, .is_method = true });
+        try members.append(self.gpa, .{ .name = set_id, .type = set_sig, .is_optional = false, .is_readonly = false, .is_method = true });
+        try members.append(self.gpa, .{ .name = has_id, .type = bool_sig, .is_optional = false, .is_readonly = false, .is_method = true });
+        try members.append(self.gpa, .{ .name = delete_id, .type = bool_sig, .is_optional = false, .is_readonly = false, .is_method = true });
+        return self.interner.internObjectType(members.items) catch return error.OutOfMemory;
     }
 
     fn isBuiltinObjectConstructor(self: *const Checker, name: hir_mod.StringId) bool {
@@ -20558,12 +20609,48 @@ pub const Checker = struct {
     }
 
     fn checkThisExpression(self: *Checker, node: NodeId) CheckError!TypeId {
+        if (self.nodeIsThisParameterName(node)) return types.Primitive.any;
+        if (self.thisInsideDecoratorInitializerCallback(node)) return types.Primitive.any;
         if (self.sourceHasStrictFalseDirective() and self.thisInsideNonArrowPlainFunction(node)) return types.Primitive.any;
         if (self.currentThisType()) |this_t| return this_t;
+        if (self.nodeHasAncestorKind(node, .decorator)) return types.Primitive.any;
         if (!self.sourceHasStrictFalseDirective() and !self.thisInsideObjectLiteralMethod(node)) {
             try self.report(node, TsCodes.this_implicitly_any, "'this' implicitly has type 'any' because it does not have a type annotation.");
         }
         return types.Primitive.any;
+    }
+
+    fn nodeIsThisParameterName(self: *Checker, node: NodeId) bool {
+        const parent = self.hir.parentOf(node);
+        if (parent == hir_mod.none_node_id or self.hir.kindOf(parent) != .parameter) return false;
+        const p = hir_mod.parameterOf(self.hir, parent);
+        return p.name == node and self.isThisParameter(parent);
+    }
+
+    fn thisInsideDecoratorInitializerCallback(self: *Checker, node: NodeId) bool {
+        var cur = self.hir.parentOf(node);
+        while (cur != hir_mod.none_node_id) : (cur = self.hir.parentOf(cur)) {
+            const k = self.hir.kindOf(cur);
+            if (k != .fn_decl and k != .fn_expr) continue;
+            var p = self.hir.parentOf(cur);
+            while (p != hir_mod.none_node_id) : (p = self.hir.parentOf(p)) {
+                if (self.hir.kindOf(p) != .call_expr) continue;
+                const call = hir_mod.callOf(self.hir, p);
+                var is_arg = false;
+                for (hir_mod.callArgs(self.hir, p)) |arg| {
+                    if (arg == cur) {
+                        is_arg = true;
+                        break;
+                    }
+                }
+                if (!is_arg) continue;
+                if (self.hir.kindOf(call.callee) != .member_access) continue;
+                const member = hir_mod.memberOf(self.hir, call.callee);
+                if (std.mem.eql(u8, self.string_interner.get(member.name), "addInitializer")) return true;
+            }
+            return false;
+        }
+        return false;
     }
 
     fn thisInsideNonArrowPlainFunction(self: *Checker, node: NodeId) bool {
@@ -27424,6 +27511,7 @@ test "checker: class self-reference in class body and decorator expression is no
 test "checker: method decorators under noLib require TypedPropertyDescriptor" {
     const s = try newSetup(
         \\// @noLib: true
+        \\// @experimentalDecorators: true
         \\interface Object { }
         \\declare function dec(t, k, d);
         \\class C {
@@ -27442,6 +27530,7 @@ test "checker: method decorators under noLib require TypedPropertyDescriptor" {
 
 test "checker: property decorator factory must be called" {
     const s = try newSetup(
+        \\// @experimentalDecorators: true
         \\declare function dec(): <T>(target: any, propertyKey: string) => void;
         \\class C {
         \\  @dec prop;
@@ -27458,6 +27547,7 @@ test "checker: property decorator factory must be called" {
 
 test "checker: property decorator signature must accept runtime arity" {
     const s = try newSetup(
+        \\// @experimentalDecorators: true
         \\declare function dec(target: Function): void;
         \\class C {
         \\  @dec prop;
@@ -27474,6 +27564,7 @@ test "checker: property decorator signature must accept runtime arity" {
 
 test "checker: property decorator optional key accepts runtime arity" {
     const s = try newSetup(
+        \\// @experimentalDecorators: true
         \\declare function dec(target: Function, propertyKey?: string): void;
         \\class C {
         \\  @dec prop;
@@ -27488,6 +27579,7 @@ test "checker: property decorator optional key accepts runtime arity" {
 
 test "checker: method decorator is not checked as property decorator" {
     const s = try newSetup(
+        \\// @experimentalDecorators: true
         \\declare function dec(target: Function, propertyKey: string, descriptor: any): void;
         \\class C {
         \\  @dec method() {}
@@ -27502,6 +27594,7 @@ test "checker: method decorator is not checked as property decorator" {
 
 test "checker: auto-accessor decorator is not checked as property decorator" {
     const s = try newSetup(
+        \\// @experimentalDecorators: true
         \\declare function dec(target: any, propertyKey: string, descriptor: PropertyDescriptor): void;
         \\class C {
         \\  @dec accessor prop;
@@ -27516,6 +27609,7 @@ test "checker: auto-accessor decorator is not checked as property decorator" {
 
 test "checker: class decorator signature must accept runtime arity" {
     const s = try newSetup(
+        \\// @experimentalDecorators: true
         \\declare function dec(): (target: Function, extra: number) => void;
         \\@dec()
         \\class C {}
@@ -27531,6 +27625,7 @@ test "checker: class decorator signature must accept runtime arity" {
 
 test "checker: method decorator signature must accept runtime arity" {
     const s = try newSetup(
+        \\// @experimentalDecorators: true
         \\declare function dec(target: Function): void;
         \\class C {
         \\  @dec method() {}
@@ -27547,6 +27642,7 @@ test "checker: method decorator signature must accept runtime arity" {
 
 test "checker: method decorator may ignore trailing descriptor argument" {
     const s = try newSetup(
+        \\// @experimentalDecorators: true
         \\declare function dec(handler: any): (target: any, propertyKey: string) => void;
         \\class C {
         \\  @dec(() => true)
@@ -27562,6 +27658,7 @@ test "checker: method decorator may ignore trailing descriptor argument" {
 
 test "checker: decorator cannot target a method overload signature" {
     const s = try newSetup(
+        \\// @experimentalDecorators: true
         \\declare var dec: any;
         \\class C {
         \\  @dec method();
@@ -27579,6 +27676,7 @@ test "checker: decorator cannot target a method overload signature" {
 
 test "checker: decorated overload implementation satisfies previous signature" {
     const s = try newSetup(
+        \\// @experimentalDecorators: true
         \\declare var dec: any;
         \\class C {
         \\  method();
@@ -27594,6 +27692,7 @@ test "checker: decorated overload implementation satisfies previous signature" {
 
 test "checker: constructor member decorators are not valid" {
     const s = try newSetup(
+        \\// @experimentalDecorators: true
         \\declare var dec: any;
         \\class C {
         \\  @dec constructor() {}
@@ -27610,6 +27709,7 @@ test "checker: constructor member decorators are not valid" {
 
 test "checker: constructor parameter decorator property key may be undefined" {
     const s = try newSetup(
+        \\// @experimentalDecorators: true
         \\declare function dec(target: Function, propertyKey: string | symbol, parameterIndex: number): void;
         \\class C {
         \\  constructor(@dec value: number) {}
@@ -27626,6 +27726,7 @@ test "checker: constructor parameter decorator property key may be undefined" {
 
 test "checker: decorators are not valid on this parameters" {
     const s = try newSetup(
+        \\// @experimentalDecorators: true
         \\declare var dec: any;
         \\class C {
         \\  method(@dec this: C) {}
@@ -27657,6 +27758,7 @@ test "checker: this parameter must be first" {
 
 test "checker: get and set accessor pair cannot both have decorators" {
     const s = try newSetup(
+        \\// @experimentalDecorators: true
         \\declare function dec(target: any, propertyKey: string, descriptor: any): void;
         \\class C {
         \\  @dec get value(): number { return 1; }
@@ -27670,6 +27772,67 @@ test "checker: get and set accessor pair cannot both have decorators" {
         if (d.code == TsCodes.multiple_accessor_decorators) found = true;
     }
     try T.expect(found);
+}
+
+test "checker: stage 3 method decorator accepts value and context arity" {
+    const s = try newSetup(
+        \\declare function dec(value: any, context: any): void;
+        \\class C {
+        \\  @dec method() {}
+        \\}
+    );
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+    for (s.checker.diagnostics.items) |d| {
+        try T.expect(d.code != TsCodes.method_decorator_signature_unresolved);
+    }
+}
+
+test "checker: stage 3 class decorator accepts value and context arity" {
+    const s = try newSetup(
+        \\declare function dec(value: any, context: any): void;
+        \\@dec
+        \\class C {}
+    );
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+    for (s.checker.diagnostics.items) |d| {
+        try T.expect(d.code != TsCodes.class_decorator_signature_unresolved);
+    }
+}
+
+test "checker: stage 3 get and set accessors may both be decorated" {
+    const s = try newSetup(
+        \\declare function dec(value: any, context: any): void;
+        \\class C {
+        \\  @dec get value(): number { return 1; }
+        \\  @dec set value(v: number) {}
+        \\}
+    );
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+    for (s.checker.diagnostics.items) |d| {
+        try T.expect(d.code != TsCodes.multiple_accessor_decorators);
+        try T.expect(d.code != TsCodes.method_decorator_signature_unresolved);
+    }
+}
+
+test "checker: stage 3 decorator initializer callback supplies contextual this" {
+    const s = try newSetup(
+        \\function dec(value: any, context: any) {
+        \\  context.addInitializer(function () {
+        \\    this;
+        \\  });
+        \\}
+        \\class C {
+        \\  @dec method() {}
+        \\}
+    );
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+    for (s.checker.diagnostics.items) |d| {
+        try T.expect(d.code != TsCodes.this_implicitly_any);
+    }
 }
 
 test "checker: typed var used in conditional emits TS2454" {
@@ -28876,6 +29039,20 @@ test "checker: super.x in subclass method resolves to parent member" {
     defer destroySetup(s);
     try s.checker.checkSourceFile(s.root);
     try T.expect(s.checker.diagnostics.items.len == 0);
+}
+
+test "checker: static super.name is available through any heritage expressions" {
+    const s = try newSetup(
+        \\class Box extends (class {} as any) {
+        \\  static what(): string { return super.name; }
+        \\}
+    );
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+    for (s.checker.diagnostics.items) |d| {
+        try T.expect(d.code != TsCodes.super_not_derived);
+        try T.expect(d.code != TsCodes.property_does_not_exist);
+    }
 }
 
 test "checker: super property miss emits TS2339" {
@@ -34590,6 +34767,21 @@ test "checker: lib — array, Map, and Set expose iterator methods" {
     }
 }
 
+test "checker: lib — Symbol.metadata and WeakMap metadata access are modeled" {
+    const s = try newSetup(
+        \\Symbol.metadata;
+        \\const metadata = new WeakMap();
+        \\metadata.set({}, {});
+        \\metadata.get({});
+    );
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+    for (s.checker.diagnostics.items) |d| {
+        try T.expect(d.code != TsCodes.property_does_not_exist);
+        try T.expect(d.code != TsCodes.not_callable);
+    }
+}
+
 test "checker: lib — Object.keys is reachable as a member of `Object`" {
     const b = try newBoundSetup("Object.keys({});");
     defer destroyBoundSetup(b);
@@ -36645,6 +36837,15 @@ test "checker: getter body without value return reports TS2378" {
         if (d.code == TsCodes.getter_must_return_value) found = true;
     }
     try T.expect(found);
+}
+
+test "checker: getter body with bare return satisfies TS2378" {
+    const s = try newSetup("class C { get x(): any { return; } }");
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+    for (s.checker.diagnostics.items) |d| {
+        try T.expect(d.code != TsCodes.getter_must_return_value);
+    }
 }
 
 test "checker: namespace-only declarations cannot be used as values" {
