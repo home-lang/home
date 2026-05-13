@@ -581,21 +581,20 @@ pub fn compileSource(
         };
     }
     const suppress_js_check_diagnostics = options.suppress_js_check_diagnostics or sourceIsUncheckedJs(source);
-    if (!suppress_js_check_diagnostics) {
-        for (checker.diagnostics.items) |d| {
-            try c.diagnostics.append(gpa, .{
-                .phase = .bind,
-                .pos = c.hir.spanOf(d.node).start,
-                .line = 0,
-                .code = d.code,
-                .code_prefix = switch (d.code_prefix) {
-                    .TS => .TS,
-                    .HM => .HM,
-                },
-                .message = try gpa.dupe(u8, d.message),
-            });
-            c.has_errors = true;
-        }
+    for (checker.diagnostics.items) |d| {
+        if (suppress_js_check_diagnostics and !checkerDiagnosticSurfacesInUncheckedJs(d.code)) continue;
+        try c.diagnostics.append(gpa, .{
+            .phase = .bind,
+            .pos = c.hir.spanOf(d.node).start,
+            .line = 0,
+            .code = d.code,
+            .code_prefix = switch (d.code_prefix) {
+                .TS => .TS,
+                .HM => .HM,
+            },
+            .message = try gpa.dupe(u8, d.message),
+        });
+        c.has_errors = true;
     }
 
     // ------ Emit ------
@@ -716,6 +715,11 @@ fn sourceIsUncheckedJs(source: []const u8) bool {
     if (directiveBool(source, "checkJs") orelse false) return false;
     if (sourceHasTsCheck(source)) return false;
     return virtualFilenameIsJs(source);
+}
+
+fn checkerDiagnosticSurfacesInUncheckedJs(code: u32) bool {
+    return code == ts_checker.check.TsCodes.private_name_not_declared or
+        code == ts_checker.check.TsCodes.await_only_in_async;
 }
 
 fn sourceHasTsCheck(source: []const u8) bool {
@@ -852,6 +856,35 @@ test "driver: allowJs virtual js without checkJs suppresses checker diagnostics"
     }
 
     try T.expect(!c.has_errors);
+}
+
+test "driver: unchecked allowJs still surfaces JS grammar diagnostics" {
+    var c = try compileSource(T.allocator,
+        \\// @allowJs: true
+        \\// @filename: unchecked.js
+        \\function foo() {
+        \\  await new Promise(undefined);
+        \\}
+        \\class A {
+        \\  #a;
+        \\  m() {
+        \\    this.#b;
+        \\  }
+        \\}
+    , .{ .no_emit = true });
+    defer {
+        c.deinit();
+        T.allocator.destroy(c);
+    }
+
+    var found_await = false;
+    var found_private = false;
+    for (c.diagnostics.items) |d| {
+        if (d.code == 1308) found_await = true;
+        if (d.code == 1111) found_private = true;
+    }
+    try T.expect(found_await);
+    try T.expect(found_private);
 }
 
 test "driver: allowJs node_modules js does not suppress project ts diagnostics" {

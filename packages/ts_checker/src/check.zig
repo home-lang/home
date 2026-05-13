@@ -137,7 +137,9 @@ pub const TsCodes = struct {
     pub const this_parameter_must_be_first: u32 = 2680;
     pub const no_exported_member_suggestion: u32 = 2724;
     pub const export_non_local_declaration: u32 = 2661;
+    pub const global_augmentation_not_external: u32 = 2669;
     pub const delete_operand_property_reference: u32 = 2703;
+    pub const private_name_not_declared: u32 = 1111;
     pub const spread_types_object_only: u32 = 2698;
     pub const optional_chain_assignment_target: u32 = 2779;
     pub const cannot_assign_undefined: u32 = 2539;
@@ -1391,6 +1393,7 @@ pub const Checker = struct {
 
     fn checkNamespaceTypeStatements(self: *Checker, node: NodeId) CheckError!void {
         try self.checkUntypedModuleAugmentation(node);
+        try self.checkGlobalAugmentationDiagnostics(node);
         try self.checkDeclarationSpaceDiagnostics(hir_mod.namespaceBody(self.hir, node));
         for (hir_mod.namespaceBody(self.hir, node)) |s| {
             switch (self.hir.kindOf(s)) {
@@ -1444,6 +1447,52 @@ pub const Checker = struct {
                 },
             }
         }
+    }
+
+    fn checkGlobalAugmentationDiagnostics(self: *Checker, node: NodeId) CheckError!void {
+        if (!self.namespaceNameIs(node, "global")) return;
+        if (!self.rootHasTopLevelExternalModuleMarker(node)) {
+            const ns = hir_mod.namespaceOf(self.hir, node);
+            try self.report(ns.name, TsCodes.global_augmentation_not_external, "Augmentations for the global scope can only be directly nested in external modules or ambient module declarations.");
+        }
+        const global_this_id = self.string_interner.intern("globalThis") catch return error.OutOfMemory;
+        for (hir_mod.namespaceBody(self.hir, node)) |s| {
+            if (self.hir.kindOf(s) != .export_decl) continue;
+            for (hir_mod.exportNamed(self.hir, s)) |spec_node| {
+                if (self.hir.kindOf(spec_node) != .import_specifier) continue;
+                const spec = hir_mod.importSpecifierOf(self.hir, spec_node);
+                if (spec.imported != global_this_id) continue;
+                try self.report(spec_node, TsCodes.export_non_local_declaration, "Cannot export 'globalThis'. Only local declarations can be exported from a module.");
+            }
+        }
+    }
+
+    fn namespaceNameIs(self: *Checker, node: NodeId, name: []const u8) bool {
+        if (node == hir_mod.none_node_id or self.hir.kindOf(node) != .namespace_decl) return false;
+        const ns = hir_mod.namespaceOf(self.hir, node);
+        if (ns.name == hir_mod.none_node_id or self.hir.kindOf(ns.name) != .identifier) return false;
+        const id = hir_mod.identifierOf(self.hir, ns.name);
+        return std.mem.eql(u8, self.string_interner.get(id.name), name);
+    }
+
+    fn rootHasTopLevelExternalModuleMarker(self: *Checker, node: NodeId) bool {
+        const root = self.rootBlockFor(node);
+        if (root == hir_mod.none_node_id or self.hir.kindOf(root) != .block_stmt) return false;
+        if (self.sourceContainsImportMeta()) return true;
+        for (hir_mod.blockStmts(self.hir, root)) |stmt| {
+            if (stmt == node) continue;
+            switch (self.hir.kindOf(stmt)) {
+                .import_decl => return true,
+                .export_decl => return true,
+                else => {},
+            }
+        }
+        return false;
+    }
+
+    fn sourceContainsImportMeta(self: *Checker) bool {
+        const src = self.source orelse return false;
+        return std.mem.indexOf(u8, src, "import.meta") != null;
     }
 
     fn checkUntypedModuleAugmentation(self: *Checker, node: NodeId) CheckError!void {
@@ -4932,20 +4981,25 @@ pub const Checker = struct {
     ) CheckError!?TypeId {
         const this_id = self.string_interner.intern("this") catch return error.OutOfMemory;
         const super_id = self.string_interner.intern("super") catch return error.OutOfMemory;
-        const this_t = if (is_static)
-            self.interner.internObjectTypeWithIndexAndSymbol(
-                static_members,
-                static_string_idx,
-                static_number_idx,
-                static_symbol_idx,
-            ) catch return error.OutOfMemory
-        else
-            self.interner.internObjectTypeWithIndexAndSymbol(
-                instance_members,
-                string_idx,
-                number_idx,
-                symbol_idx,
-            ) catch return error.OutOfMemory;
+        var merged_members: std.ArrayListUnmanaged(types.ObjectMember) = .empty;
+        defer merged_members.deinit(self.gpa);
+        const own_members = if (is_static) static_members else instance_members;
+        const inherited_t = if (is_static) parent_static_t else parent_instance_t;
+        if (inherited_t) |pt| {
+            if (pt < self.interner.pool.typeCount() and self.interner.pool.flagsOf(pt).is_object_type) {
+                try merged_members.appendSlice(self.gpa, self.interner.objectMembers(pt));
+            }
+        }
+        try merged_members.appendSlice(self.gpa, own_members);
+        const this_string_idx = if (is_static) static_string_idx else string_idx;
+        const this_number_idx = if (is_static) static_number_idx else number_idx;
+        const this_symbol_idx = if (is_static) static_symbol_idx else symbol_idx;
+        const this_t = self.interner.internObjectTypeWithIndexAndSymbol(
+            merged_members.items,
+            this_string_idx,
+            this_number_idx,
+            this_symbol_idx,
+        ) catch return error.OutOfMemory;
         try self.pushNarrowScope();
         defer self.popNarrowScope();
         try self.recordNarrow(this_id, this_t);
@@ -8908,6 +8962,7 @@ pub const Checker = struct {
         if (std.mem.startsWith(u8, spec, ".")) {
             try self.checkNamedImportSpecifiers(node, imp, spec);
             if (try self.checkVirtualRelativeModuleImport(node, spec)) return;
+            if (try self.isKnownAmbientModuleName(node, spec)) return;
             if (self.sourceHasVirtualFilenameSections()) {
                 const msg = try std.fmt.allocPrint(
                     self.diag_arena.allocator(),
@@ -9456,6 +9511,7 @@ pub const Checker = struct {
                 continue;
             }
             if (scoped_virtual_bare) {
+                if (try self.ambientModuleExportsNameForSpec(node, spec, sp.imported)) continue;
                 if (try self.virtualBareModuleHasNamedExport(node, spec, sp.imported)) continue;
                 try self.report(spec_node, TsCodes.no_exported_member_suggestion, "Module has no exported member.");
                 continue;
@@ -9647,7 +9703,7 @@ pub const Checker = struct {
         const ns = hir_mod.namespaceOf(self.hir, node);
         if (ns.name == hir_mod.none_node_id or self.hir.kindOf(ns.name) != .identifier) return false;
         const id = hir_mod.identifierOf(self.hir, ns.name);
-        return std.mem.eql(u8, self.string_interner.get(id.name), spec);
+        return self.moduleNameMatchesSpecifier(self.string_interner.get(id.name), spec);
     }
 
     fn namespaceExportsName(self: *Checker, ns_node: NodeId, name: hir_mod.StringId) bool {
@@ -9869,13 +9925,29 @@ pub const Checker = struct {
     }
 
     fn hasAmbientModuleDecl(self: *Checker, stmts: []const NodeId, module_name: hir_mod.StringId) CheckError!bool {
+        const spec = self.string_interner.get(module_name);
         for (stmts) |stmt| {
             const local = self.unwrapExportDecl(stmt);
             if (local == hir_mod.none_node_id or self.hir.kindOf(local) != .namespace_decl) continue;
             const ns = hir_mod.namespaceOf(self.hir, local);
             if (self.hir.kindOf(ns.name) != .identifier) continue;
             const id = hir_mod.identifierOf(self.hir, ns.name);
-            if (id.name == module_name) return true;
+            if (self.moduleNameMatchesSpecifier(self.string_interner.get(id.name), spec)) return true;
+        }
+        return false;
+    }
+
+    fn ambientModuleExportsNameForSpec(self: *Checker, anchor: NodeId, spec: []const u8, exported_name: hir_mod.StringId) CheckError!bool {
+        const root = self.rootBlockFor(anchor);
+        if (root == hir_mod.none_node_id or self.hir.kindOf(root) != .block_stmt) return false;
+        for (hir_mod.blockStmts(self.hir, root)) |stmt| {
+            const local = self.unwrapExportDecl(stmt);
+            if (local == hir_mod.none_node_id or self.hir.kindOf(local) != .namespace_decl) continue;
+            const ns = hir_mod.namespaceOf(self.hir, local);
+            if (self.hir.kindOf(ns.name) != .identifier) continue;
+            const id = hir_mod.identifierOf(self.hir, ns.name);
+            if (!self.moduleNameMatchesSpecifier(self.string_interner.get(id.name), spec)) continue;
+            if (self.namespaceExportsName(local, exported_name)) return true;
         }
         return false;
     }
@@ -9887,13 +9959,14 @@ pub const Checker = struct {
         exported_name: hir_mod.StringId,
     ) CheckError!bool {
         if (module_name == string_interner.empty_string_id) return false;
+        const spec = self.string_interner.get(module_name);
         for (stmts) |stmt| {
             const local = self.unwrapExportDecl(stmt);
             if (local == hir_mod.none_node_id or self.hir.kindOf(local) != .namespace_decl) continue;
             const ns = hir_mod.namespaceOf(self.hir, local);
             if (self.hir.kindOf(ns.name) != .identifier) continue;
             const id = hir_mod.identifierOf(self.hir, ns.name);
-            if (id.name != module_name) continue;
+            if (!self.moduleNameMatchesSpecifier(self.string_interner.get(id.name), spec)) continue;
             for (hir_mod.namespaceBody(self.hir, local)) |body_stmt| {
                 if (self.hir.kindOf(body_stmt) != .export_decl) continue;
                 const ex = hir_mod.exportOf(self.hir, body_stmt);
@@ -9903,6 +9976,18 @@ pub const Checker = struct {
             }
         }
         return false;
+    }
+
+    fn moduleNameMatchesSpecifier(self: *Checker, pattern: []const u8, spec: []const u8) bool {
+        _ = self;
+        if (std.mem.eql(u8, pattern, spec)) return true;
+        const star = std.mem.indexOfScalar(u8, pattern, '*') orelse return false;
+        if (std.mem.indexOfScalarPos(u8, pattern, star + 1, '*') != null) return false;
+        const prefix = pattern[0..star];
+        const suffix = pattern[star + 1 ..];
+        return spec.len >= prefix.len + suffix.len and
+            std.mem.startsWith(u8, spec, prefix) and
+            std.mem.endsWith(u8, spec, suffix);
     }
 
     fn rootHasNonImportDeclarationNamed(self: *Checker, name: hir_mod.StringId) bool {
@@ -15865,6 +15950,20 @@ pub const Checker = struct {
                 if (try self.lookupObjectMember(obj_t, m.name)) |t| {
                     break :blk try self.optionalChainResult(t, member_is_optional_chain);
                 }
+                if (self.memberNameIsEcmaPrivate(m.name) and self.interner.pool.flagsOf(access_obj_t).is_object_type) {
+                    const name_str = self.string_interner.get(m.name);
+                    const msg = try std.fmt.allocPrint(
+                        self.diag_arena.allocator(),
+                        "Private field '{s}' must be declared in an enclosing class.",
+                        .{name_str},
+                    );
+                    try self.diagnostics.append(self.gpa, .{
+                        .node = node,
+                        .code = TsCodes.private_name_not_declared,
+                        .message = msg,
+                    });
+                    break :blk types.Primitive.any;
+                }
                 if (try self.functionInterfaceMemberForCallableObject(access_obj_t, m.name)) |t| {
                     break :blk try self.optionalChainResult(t, member_is_optional_chain);
                 }
@@ -18945,6 +19044,7 @@ pub const Checker = struct {
         if (std.mem.eql(u8, name_str, "this")) {
             if (self.isDeclNameSlot(node) or self.nodeIsThisParameterName(node) or self.thisInsideDecoratorInitializerCallback(node)) return types.Primitive.any;
             if (self.nodeHasAncestorKind(node, .decorator)) return types.Primitive.any;
+            if (self.thisInsideCheckJsConstructorFunction(node)) return types.Primitive.any;
             if (!self.sourceHasStrictFalseDirective() and
                 !self.identifierThisIsArrowCaptured(node) and
                 !self.thisInsideObjectLiteralMethod(node))
@@ -19596,6 +19696,10 @@ pub const Checker = struct {
             if (member.name == name) return true;
         }
         return false;
+    }
+
+    fn memberNameIsEcmaPrivate(self: *Checker, name: hir_mod.StringId) bool {
+        return std.mem.startsWith(u8, self.string_interner.get(name), "#");
     }
 
     fn objectLiteralHasDuplicateMethodWithLiteralParam(
@@ -20612,6 +20716,7 @@ pub const Checker = struct {
         if (self.nodeIsThisParameterName(node)) return types.Primitive.any;
         if (self.thisInsideDecoratorInitializerCallback(node)) return types.Primitive.any;
         if (self.sourceHasStrictFalseDirective() and self.thisInsideNonArrowPlainFunction(node)) return types.Primitive.any;
+        if (self.thisInsideCheckJsConstructorFunction(node)) return types.Primitive.any;
         if (self.currentThisType()) |this_t| return this_t;
         if (self.nodeHasAncestorKind(node, .decorator)) return types.Primitive.any;
         if (!self.sourceHasStrictFalseDirective() and !self.thisInsideObjectLiteralMethod(node)) {
@@ -20651,6 +20756,52 @@ pub const Checker = struct {
             return false;
         }
         return false;
+    }
+
+    fn thisInsideCheckJsConstructorFunction(self: *Checker, node: NodeId) bool {
+        if (!self.sourceHasCheckJsDirective()) return false;
+        var cur = self.hir.parentOf(node);
+        while (cur != hir_mod.none_node_id) : (cur = self.hir.parentOf(cur)) {
+            const k = self.hir.kindOf(cur);
+            if (k == .arrow_fn) return false;
+            if (k != .fn_decl and k != .fn_expr) continue;
+            const f = hir_mod.fnDeclOf(self.hir, cur);
+            if (f.flags.is_method or f.flags.is_constructor) return false;
+            return self.fnLooksLikeCheckJsConstructor(cur);
+        }
+        return false;
+    }
+
+    fn fnLooksLikeCheckJsConstructor(self: *Checker, fn_node: NodeId) bool {
+        const f = hir_mod.fnDeclOf(self.hir, fn_node);
+        if (f.name != hir_mod.none_node_id and self.hir.kindOf(f.name) == .identifier) {
+            const id = hir_mod.identifierOf(self.hir, f.name);
+            if (self.identifierNameStartsUppercase(id.name)) return true;
+        }
+        if (self.leadingJsDocBody(self.source orelse "", self.hir.spanOf(fn_node).start)) |body| {
+            if (std.mem.indexOf(u8, body, "@class") != null or
+                std.mem.indexOf(u8, body, "@constructor") != null) return true;
+        }
+        const parent = self.hir.parentOf(fn_node);
+        if (parent != hir_mod.none_node_id and self.hir.kindOf(parent) == .assignment) {
+            const a = hir_mod.assignmentOf(self.hir, parent);
+            if (a.value == fn_node and self.assignmentTargetIsPrototypeMember(a.target)) return true;
+        }
+        return false;
+    }
+
+    fn identifierNameStartsUppercase(self: *Checker, name: hir_mod.StringId) bool {
+        const text = self.string_interner.get(name);
+        if (text.len == 0) return false;
+        return text[0] >= 'A' and text[0] <= 'Z';
+    }
+
+    fn assignmentTargetIsPrototypeMember(self: *Checker, target: NodeId) bool {
+        if (target == hir_mod.none_node_id or self.hir.kindOf(target) != .member_access) return false;
+        const m = hir_mod.memberOf(self.hir, target);
+        if (m.object == hir_mod.none_node_id or self.hir.kindOf(m.object) != .member_access) return false;
+        const parent_member = hir_mod.memberOf(self.hir, m.object);
+        return std.mem.eql(u8, self.string_interner.get(parent_member.name), "prototype");
     }
 
     fn thisInsideNonArrowPlainFunction(self: *Checker, node: NodeId) bool {
@@ -33179,6 +33330,22 @@ test "checker: TS1308 `await` only allowed in async functions" {
     try T.expect(!found_in_async);
 }
 
+test "checker: checkjs await in non-async function reports TS1308" {
+    const s = try newSetup(
+        \\// @allowJs: true
+        \\function foo() {
+        \\  await new Promise(undefined);
+        \\}
+    );
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+    var found = false;
+    for (s.checker.diagnostics.items) |d| {
+        if (d.code == TsCodes.await_only_in_async) found = true;
+    }
+    try T.expect(found);
+}
+
 test "checker: unwrapPromise extracts T from a structural Promise<T>" {
     const s = try newSetup("");
     defer destroySetup(s);
@@ -34640,6 +34807,31 @@ test "checker: ambient module declaration satisfies bare import" {
 
     for (s.checker.diagnostics.items) |d| {
         try T.expect(d.code != TsCodes.cannot_find_module);
+    }
+}
+
+test "checker: ambient wildcard module declaration satisfies matching imports" {
+    const s = try newSetup(
+        \\// @filename: declarations.d.ts
+        \\declare module "foo*baz" {
+        \\  export function foo(s: string): void;
+        \\  export const baz: string;
+        \\}
+        \\declare module "*!text" {
+        \\  const x: string;
+        \\  export default x;
+        \\}
+        \\// @filename: user.ts
+        \\import { foo, baz } from "foobarbaz";
+        \\import text from "./file!text";
+        \\foo(baz);
+        \\foo(text);
+    );
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+    for (s.checker.diagnostics.items) |d| {
+        try T.expect(d.code != TsCodes.cannot_find_module);
+        try T.expect(d.code != TsCodes.no_exported_member_suggestion);
     }
 }
 
@@ -36724,6 +36916,62 @@ test "checker: checkjs expando namespace prototype assignment target does not re
     }
 }
 
+test "checker: checkjs constructor and prototype functions do not report implicit this" {
+    const s = try newSetup(
+        \\// @checkJs: true
+        \\function C() {
+        \\  this.a = 1;
+        \\}
+        \\C.prototype.foo = function () {
+        \\  return this.a;
+        \\};
+    );
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+    for (s.checker.diagnostics.items) |d| {
+        try T.expect(d.code != TsCodes.this_implicitly_any);
+    }
+}
+
+test "checker: inherited checkjs class accessor is visible from subclass getter" {
+    const s = try newSetup(
+        \\// @checkJs: true
+        \\export class Element {
+        \\  get textContent() { return ""; }
+        \\  set textContent(x) {}
+        \\}
+        \\export class HTMLElement extends Element {}
+        \\export class TextElement extends HTMLElement {
+        \\  get innerHTML() { return this.textContent; }
+        \\  set innerHTML(html) { this.textContent = html; }
+        \\}
+    );
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+    for (s.checker.diagnostics.items) |d| {
+        try T.expect(d.code != TsCodes.property_does_not_exist);
+    }
+}
+
+test "checker: undeclared ECMAScript private field reports TS1111" {
+    const s = try newSetup(
+        \\class A {
+        \\  #a;
+        \\  m() {
+        \\    this.#a;
+        \\    this.#b;
+        \\  }
+        \\}
+    );
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+    var found = false;
+    for (s.checker.diagnostics.items) |d| {
+        if (d.code == TsCodes.private_name_not_declared) found = true;
+    }
+    try T.expect(found);
+}
+
 test "checker: keyof T resolves to the literal union of property names" {
     // `keyof { a: number; b: string }` should produce `"a" | "b"` —
     // a two-member union of string-literal types. Pins the basic
@@ -36875,6 +37123,38 @@ test "checker: declare global value is visible from later virtual sections" {
     try s.checker.checkSourceFile(s.root);
     for (s.checker.diagnostics.items) |d| {
         try T.expect(d.code != TsCodes.cannot_find_name);
+    }
+}
+
+test "checker: declare global outside external module reports TS2669 and nonlocal export TS2661" {
+    const s = try newSetup(
+        \\declare global {
+        \\  export { globalThis as global }
+        \\}
+    );
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+    var found_global = false;
+    var found_export = false;
+    for (s.checker.diagnostics.items) |d| {
+        if (d.code == TsCodes.global_augmentation_not_external) found_global = true;
+        if (d.code == TsCodes.export_non_local_declaration) found_export = true;
+    }
+    try T.expect(found_global);
+    try T.expect(found_export);
+}
+
+test "checker: declare global with import.meta context is accepted" {
+    const s = try newSetup(
+        \\declare global { interface ImportMeta { foo?: () => void } }
+        \\if (import.meta.foo) {
+        \\  import.meta.foo();
+        \\}
+    );
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+    for (s.checker.diagnostics.items) |d| {
+        try T.expect(d.code != TsCodes.global_augmentation_not_external);
     }
 }
 
