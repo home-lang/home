@@ -1226,15 +1226,21 @@ pub const Printer = struct {
                 .while_stmt => {
                     // Pass-through is fine when the subtree carries no yields.
                     if (!self.subtreeContainsYield(s)) continue;
-                    // §4.A.4.2 part 2d — `while (cond) yield E;` slice.
-                    // Supported: body is a single bare `yield_expr`
-                    // (in or out of a block); cond + yielded expr
-                    // don't themselves contain yields.
+                    // §4.A.4.2 part 2d / §4.A.4.3 — `while (cond) body;`
+                    // where cond is yield-free and body is either a
+                    // bare single yield or a block containing exactly
+                    // one yield surrounded by yield-free statements.
                     const wp = hir_mod.whileOf(self.hir, s);
                     if (self.subtreeContainsYield(wp.cond)) return false;
-                    const ye = self.singleYieldInThen(wp.body) orelse return false;
-                    const yp = hir_mod.yieldExprOf(self.hir, ye);
-                    if (yp.expr != hir_mod.none_node_id and self.subtreeContainsYield(yp.expr)) return false;
+                    if (self.singleYieldInThen(wp.body)) |ye| {
+                        const yp = hir_mod.yieldExprOf(self.hir, ye);
+                        if (yp.expr != hir_mod.none_node_id and self.subtreeContainsYield(yp.expr)) return false;
+                    } else if (self.splitLoopBody(wp.body)) |split| {
+                        const yp = hir_mod.yieldExprOf(self.hir, split.yield_node);
+                        if (yp.expr != hir_mod.none_node_id and self.subtreeContainsYield(yp.expr)) return false;
+                    } else {
+                        return false;
+                    }
                 },
                 .do_while_stmt => {
                     if (!self.subtreeContainsYield(s)) continue;
@@ -1324,6 +1330,41 @@ pub const Printer = struct {
             if (stmts.len == 1 and self.hir.kindOf(stmts[0]) == .yield_expr) return stmts[0];
         }
         return null;
+    }
+
+    /// §4.A.4.3 — split a block-statement loop body into its
+    /// pre-yield statements, the single yield node, and its
+    /// post-yield statements. Returns `null` if the body isn't a
+    /// block with exactly one top-level yield and where every
+    /// non-yield statement is itself yield-free in its subtree.
+    /// Bare-yield bodies (no block, or a one-statement block whose
+    /// statement is the yield) are handled by `singleYieldInThen`
+    /// and intentionally return `null` here so callers stay on the
+    /// existing simpler emit path for that shape.
+    fn splitLoopBody(self: *const Printer, body: NodeId) ?struct {
+        pre: []const NodeId,
+        yield_node: NodeId,
+        post: []const NodeId,
+    } {
+        if (body == hir_mod.none_node_id) return null;
+        if (self.hir.kindOf(body) != .block_stmt) return null;
+        const stmts = hir_mod.blockStmts(self.hir, body);
+        if (stmts.len < 2) return null;
+        var yield_idx: ?usize = null;
+        for (stmts, 0..) |s, i| {
+            if (self.hir.kindOf(s) == .yield_expr) {
+                if (yield_idx != null) return null;
+                yield_idx = i;
+            } else {
+                if (self.subtreeContainsYield(s)) return null;
+            }
+        }
+        const idx = yield_idx orelse return null;
+        return .{
+            .pre = stmts[0..idx],
+            .yield_node = stmts[idx],
+            .post = stmts[idx + 1 ..],
+        };
     }
 
     /// §4.A.4.2 — true iff any node in the subtree rooted at `root`
@@ -1436,22 +1477,29 @@ pub const Printer = struct {
                     try self.printNonIndentStatement(stmt);
                 }
             } else if (k == .while_stmt and self.subtreeContainsYield(stmt)) {
-                // §4.A.4.2 part 2d — `while (cond) yield E;` lowers
-                // to a 3-case loop:
-                //   case state+1 (header): if (!cond) return [3, exit]; return [op, E];
-                //   case state+2 (resume): _a.sent(); return [3, header];
-                //   case state+3 (exit):   <after-loop continuation>
-                // The current case falls through naturally into the
-                // header (no explicit jump needed). Predicate has
-                // verified the supported shape.
+                // §4.A.4.2 part 2d / §4.A.4.3 — `while (cond) body;` 3-case loop.
+                // Body is either a bare single yield (no extra
+                // statements) or a block with one yield among
+                // yield-free siblings; pre-yield statements go in
+                // the header before the yield; post-yield go in the
+                // resume before the loopback.
                 const wp = hir_mod.whileOf(self.hir, stmt);
-                const ye = self.singleYieldInThen(wp.body) orelse unreachable;
-                const yp = hir_mod.yieldExprOf(self.hir, ye);
+                var pre: []const NodeId = &[_]NodeId{};
+                var post: []const NodeId = &[_]NodeId{};
+                const ye_node: NodeId = if (self.singleYieldInThen(wp.body)) |single|
+                    single
+                else blk: {
+                    const split = self.splitLoopBody(wp.body) orelse unreachable;
+                    pre = split.pre;
+                    post = split.post;
+                    break :blk split.yield_node;
+                };
+                const yp = hir_mod.yieldExprOf(self.hir, ye_node);
                 const op: []const u8 = if (yp.type_node != hir_mod.none_node_id) "5" else "4";
                 const header = state + 1;
                 const resume_label = state + 2;
                 const exit_label = state + 3;
-                // Open header case.
+                // Open header case: cond check + pre-stmts + yield.
                 {
                     const num_header = std.fmt.bufPrint(&buf, "{d}", .{header}) catch unreachable;
                     try self.writeNewlineIndent();
@@ -1465,7 +1513,10 @@ pub const Printer = struct {
                     try self.write(")) return [3, ");
                     try self.write(num_exit);
                     try self.write("];");
-                    // Yield from the body.
+                    for (pre) |ps| {
+                        try self.write(" ");
+                        try self.printNonIndentStatement(ps);
+                    }
                     try self.write(" return [");
                     try self.write(op);
                     if (yp.expr != hir_mod.none_node_id) {
@@ -1474,13 +1525,17 @@ pub const Printer = struct {
                     }
                     try self.write("];");
                 }
-                // Open resume case (with loopback jump).
+                // Open resume case: sent + post-stmts + loopback.
                 {
                     const num_resume = std.fmt.bufPrint(&buf, "{d}", .{resume_label}) catch unreachable;
                     try self.writeNewlineIndent();
                     try self.write("case ");
                     try self.write(num_resume);
                     try self.write(": _a.sent();");
+                    for (post) |ps| {
+                        try self.write(" ");
+                        try self.printNonIndentStatement(ps);
+                    }
                     var num_header_buf: [16]u8 = undefined;
                     const num_header_back = std.fmt.bufPrint(&num_header_buf, "{d}", .{header}) catch unreachable;
                     try self.write(" return [3, ");
@@ -4804,6 +4859,34 @@ test "emit: generator with while-yield + trailing yield sequences correctly" {
     // After exit case 3, the trailing `yield 2` advances state to 4.
     try T.expect(std.mem.indexOf(u8, out, "return [4, 2]") != null);
     try T.expect(std.mem.indexOf(u8, out, "case 4: _a.sent();") != null);
+}
+
+test "emit: generator with multi-stmt while body splits pre/post stmts across cases" {
+    const out = try emitWithOpts(
+        "function* g() { while (cond) { pre(); yield 1; post(); } }",
+        .{ .es_target = .es5 },
+    );
+    defer T.allocator.free(out);
+    try T.expect(std.mem.indexOf(u8, out, "__generator") != null);
+    try T.expect(std.mem.indexOf(u8, out, "TODO: ES5 generator") == null);
+    // Header case 1: cond + pre() + yield.
+    try T.expect(std.mem.indexOf(u8, out, "case 1: if (!(cond)) return [3, 3]; pre(); return [4, 1];") != null);
+    // Resume case 2: sent + post() + loopback.
+    try T.expect(std.mem.indexOf(u8, out, "case 2: _a.sent(); post(); return [3, 1];") != null);
+    // Exit case 3.
+    try T.expect(std.mem.indexOf(u8, out, "case 3:") != null);
+}
+
+test "emit: generator with multi-stmt while body + extra yield still bails" {
+    // §4.A.4.3 supports exactly one yield in the body; two yields
+    // requires the full multi-yield CFG lowering (still outside v0).
+    const out = try emitWithOpts(
+        "function* g() { while (cond) { yield 1; yield 2; } }",
+        .{ .es_target = .es5 },
+    );
+    defer T.allocator.free(out);
+    try T.expect(std.mem.indexOf(u8, out, "TODO: ES5 generator") != null);
+    try T.expect(std.mem.indexOf(u8, out, "__generator") == null);
 }
 
 test "emit: generator with while-yield + cond containing yield still bails" {
