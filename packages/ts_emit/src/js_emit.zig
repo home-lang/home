@@ -1317,6 +1317,8 @@ pub const Printer = struct {
                     } else if (self.splitLoopBody(wp.body, true)) |split| {
                         const yp = hir_mod.yieldExprOf(self.hir, split.yield_node);
                         if (yp.expr != hir_mod.none_node_id and self.subtreeContainsYield(yp.expr)) return false;
+                    } else if (self.multiYieldLoopBodyOk(wp.body, true)) {
+                        // multi-yield body — emit handles it.
                     } else {
                         return false;
                     }
@@ -1421,6 +1423,29 @@ pub const Printer = struct {
             if (stmts.len == 1 and self.hir.kindOf(stmts[0]) == .yield_expr) return stmts[0];
         }
         return null;
+    }
+
+    /// §4.A.4.5 — true iff `body` is a block with **two or more**
+    /// top-level `yield_expr`s and every other statement is yield-
+    /// and break/continue-safe. Multi-yield bodies lower through a
+    /// separate emit path that walks the body inline, opening a new
+    /// resumption case after each yield.
+    fn multiYieldLoopBodyOk(self: *const Printer, body: NodeId, accept_continue: bool) bool {
+        if (body == hir_mod.none_node_id) return false;
+        if (self.hir.kindOf(body) != .block_stmt) return false;
+        const stmts = hir_mod.blockStmts(self.hir, body);
+        var yield_count: usize = 0;
+        for (stmts) |s| {
+            if (self.hir.kindOf(s) == .yield_expr) {
+                const yp = hir_mod.yieldExprOf(self.hir, s);
+                if (yp.expr != hir_mod.none_node_id and self.subtreeContainsYield(yp.expr)) return false;
+                yield_count += 1;
+            } else {
+                if (self.subtreeContainsYield(s)) return false;
+                if (self.classifyBreakContinueImpl(s, accept_continue) == .unhandleable) return false;
+            }
+        }
+        return yield_count >= 2;
     }
 
     /// §4.A.4.3 — split a block-statement loop body into its
@@ -1650,12 +1675,10 @@ pub const Printer = struct {
                     try self.printNonIndentStatement(stmt);
                 }
             } else if (k == .while_stmt and self.subtreeContainsYield(stmt)) {
-                // §4.A.4.2 part 2d / §4.A.4.3 — `while (cond) body;` 3-case loop.
-                // Body is either a bare single yield (no extra
-                // statements) or a block with one yield among
-                // yield-free siblings; pre-yield statements go in
-                // the header before the yield; post-yield go in the
-                // resume before the loopback.
+                // §4.A.4.2 part 2d / §4.A.4.3 / §4.A.4.5 — `while (cond) body;`.
+                // Single-yield body: 3-case loop (header / resume / exit).
+                // Multi-yield body: N+2-case loop (header / N resumption
+                // cases — last loops back to header / exit).
                 const prev_break = self.gen_break_label;
                 const prev_continue = self.gen_continue_label;
                 defer {
@@ -1663,6 +1686,78 @@ pub const Printer = struct {
                     self.gen_continue_label = prev_continue;
                 }
                 const wp = hir_mod.whileOf(self.hir, stmt);
+                // Multi-yield path — fan out body inline.
+                if (self.singleYieldInThen(wp.body) == null and self.splitLoopBody(wp.body, true) == null) {
+                    const header = state + 1;
+                    // Count yields to derive the exit label up front.
+                    const body_stmts = hir_mod.blockStmts(self.hir, wp.body);
+                    var n_yields: u32 = 0;
+                    for (body_stmts) |s| {
+                        if (self.hir.kindOf(s) == .yield_expr) n_yields += 1;
+                    }
+                    const exit_label = state + 1 + n_yields + 1; // header + N resumes + exit
+                    self.gen_break_label = exit_label;
+                    self.gen_continue_label = header;
+                    // Open header case.
+                    state += 1;
+                    {
+                        const num_header = std.fmt.bufPrint(&buf, "{d}", .{header}) catch unreachable;
+                        try self.writeNewlineIndent();
+                        try self.write("case ");
+                        try self.write(num_header);
+                        try self.write(":");
+                        var num_exit_buf: [16]u8 = undefined;
+                        const num_exit = std.fmt.bufPrint(&num_exit_buf, "{d}", .{exit_label}) catch unreachable;
+                        try self.write(" if (!(");
+                        try self.printExpression(wp.cond);
+                        try self.write(")) return [3, ");
+                        try self.write(num_exit);
+                        try self.write("];");
+                    }
+                    // Walk body stmts inline; each yield closes the current
+                    // case and opens the next resumption case. The last
+                    // resumption case ends with the loopback to header.
+                    var emitted_yields: u32 = 0;
+                    for (body_stmts) |s| {
+                        if (self.hir.kindOf(s) == .yield_expr) {
+                            const yp_n = hir_mod.yieldExprOf(self.hir, s);
+                            const op_n: []const u8 = if (yp_n.type_node != hir_mod.none_node_id) "5" else "4";
+                            try self.write(" return [");
+                            try self.write(op_n);
+                            if (yp_n.expr != hir_mod.none_node_id) {
+                                try self.write(", ");
+                                try self.printExpression(yp_n.expr);
+                            }
+                            try self.write("];");
+                            state += 1;
+                            emitted_yields += 1;
+                            const num_resume = std.fmt.bufPrint(&buf, "{d}", .{state}) catch unreachable;
+                            try self.writeNewlineIndent();
+                            try self.write("case ");
+                            try self.write(num_resume);
+                            try self.write(": _a.sent();");
+                        } else {
+                            try self.write(" ");
+                            try self.printNonIndentStatement(s);
+                        }
+                    }
+                    // Last resumption case: loopback to header.
+                    var num_header_buf: [16]u8 = undefined;
+                    const num_header_back = std.fmt.bufPrint(&num_header_buf, "{d}", .{header}) catch unreachable;
+                    try self.write(" return [3, ");
+                    try self.write(num_header_back);
+                    try self.write("];");
+                    // Open exit case.
+                    state += 1;
+                    {
+                        const num_exit_open = std.fmt.bufPrint(&buf, "{d}", .{state}) catch unreachable;
+                        try self.writeNewlineIndent();
+                        try self.write("case ");
+                        try self.write(num_exit_open);
+                        try self.write(":");
+                    }
+                    continue;
+                }
                 var pre: []const NodeId = &[_]NodeId{};
                 var post: []const NodeId = &[_]NodeId{};
                 const ye_node: NodeId = if (self.singleYieldInThen(wp.body)) |single|
@@ -5235,16 +5330,41 @@ test "emit: generator with multi-stmt while body splits pre/post stmts across ca
     try T.expect(std.mem.indexOf(u8, out, "case 3:") != null);
 }
 
-test "emit: generator with multi-stmt while body + extra yield still bails" {
-    // §4.A.4.3 supports exactly one yield in the body; two yields
-    // requires the full multi-yield CFG lowering (still outside v0).
+test "emit: generator with multi-yield while body lowers to N+2 cases" {
+    // §4.A.4.5 — two yields in a while body fan out into 4 cases:
+    // header (cond + first yield), res1 (sent + second yield),
+    // res2 (sent + loopback), exit.
     const out = try emitWithOpts(
         "function* g() { while (cond) { yield 1; yield 2; } }",
         .{ .es_target = .es5 },
     );
     defer T.allocator.free(out);
-    try T.expect(std.mem.indexOf(u8, out, "TODO: ES5 generator") != null);
-    try T.expect(std.mem.indexOf(u8, out, "__generator") == null);
+    try T.expect(std.mem.indexOf(u8, out, "__generator") != null);
+    try T.expect(std.mem.indexOf(u8, out, "TODO: ES5 generator") == null);
+    // Header case 1: cond + first yield. exit is case 4.
+    try T.expect(std.mem.indexOf(u8, out, "case 1: if (!(cond)) return [3, 4]; return [4, 1];") != null);
+    // Resumption case 2: sent + second yield.
+    try T.expect(std.mem.indexOf(u8, out, "case 2: _a.sent(); return [4, 2];") != null);
+    // Resumption case 3: sent + loopback to header.
+    try T.expect(std.mem.indexOf(u8, out, "case 3: _a.sent(); return [3, 1];") != null);
+    // Exit case 4.
+    try T.expect(std.mem.indexOf(u8, out, "case 4:") != null);
+}
+
+test "emit: generator with multi-yield while body + stmts splits correctly" {
+    const out = try emitWithOpts(
+        "function* g() { while (cond) { pre(); yield 1; mid(); yield 2; post(); } }",
+        .{ .es_target = .es5 },
+    );
+    defer T.allocator.free(out);
+    try T.expect(std.mem.indexOf(u8, out, "__generator") != null);
+    // Header case 1: cond + pre() + first yield.
+    try T.expect(std.mem.indexOf(u8, out, "case 1: if (!(cond)) return [3, 4]; pre(); return [4, 1];") != null);
+    // Resumption case 2: sent + mid() + second yield.
+    try T.expect(std.mem.indexOf(u8, out, "case 2: _a.sent(); mid(); return [4, 2];") != null);
+    // Resumption case 3: sent + post() + loopback.
+    try T.expect(std.mem.indexOf(u8, out, "case 3: _a.sent(); post(); return [3, 1];") != null);
+    try T.expect(std.mem.indexOf(u8, out, "case 4:") != null);
 }
 
 test "emit: generator with while-yield + cond containing yield still bails" {
