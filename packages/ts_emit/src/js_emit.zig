@@ -1432,7 +1432,6 @@ pub const Printer = struct {
                     // — bigger work).
                     const fop = hir_mod.forInOf(self.hir, s);
                     if (fop.is_await) return false;
-                    if (self.options.downlevel_iteration and self.options.es_target == .es5) return false;
                     if (self.subtreeContainsYield(fop.source)) return false;
                     if (self.singleYieldInThen(fop.body)) |ye| {
                         const yp = hir_mod.yieldExprOf(self.hir, ye);
@@ -2189,11 +2188,23 @@ pub const Printer = struct {
                 const exit_label = continue_label + 1;
                 self.gen_break_label = exit_label;
                 self.gen_continue_label = continue_label;
-                // Init in current case: `var _i = 0, _arr = <source>;`.
-                try self.write(" var _i = 0, _arr = ");
-                try self.printExpression(fop.source);
-                try self.write(";");
-                // Resolve binding name from the target.
+                // §4.A.4.8 cont.2 — pick the iteration shape:
+                //   * `downlevel_iteration=true`: iterator protocol via
+                //     `__values` + `.next()` (works for Map/Set/custom
+                //     iterables). v0 omits the `.return()` cleanup —
+                //     abrupt-completion safety is a follow-up.
+                //   * default: cheaper indexed-for (assumes array-shape).
+                const use_iter_protocol = self.options.downlevel_iteration;
+                // Init in current case.
+                if (use_iter_protocol) {
+                    try self.write(" var _b = __values(");
+                    try self.printExpression(fop.source);
+                    try self.write("), _c = _b.next();");
+                } else {
+                    try self.write(" var _i = 0, _arr = ");
+                    try self.printExpression(fop.source);
+                    try self.write(";");
+                }
                 const target_name: NodeId = blk: {
                     const tk = self.hir.kindOf(fop.target);
                     if (tk == .identifier) break :blk fop.target;
@@ -2207,12 +2218,22 @@ pub const Printer = struct {
                     try self.writeNewlineIndent();
                     try self.write("case ");
                     try self.write(num_header);
-                    try self.write(": if (!(_i < _arr.length)) return [3, ");
+                    try self.write(":");
                     var num_exit_buf: [16]u8 = undefined;
-                    try self.write(std.fmt.bufPrint(&num_exit_buf, "{d}", .{exit_label}) catch unreachable);
-                    try self.write("]; var ");
-                    try self.printExpression(target_name);
-                    try self.write(" = _arr[_i];");
+                    const num_exit = std.fmt.bufPrint(&num_exit_buf, "{d}", .{exit_label}) catch unreachable;
+                    if (use_iter_protocol) {
+                        try self.write(" if (_c.done) return [3, ");
+                        try self.write(num_exit);
+                        try self.write("]; var ");
+                        try self.printExpression(target_name);
+                        try self.write(" = _c.value;");
+                    } else {
+                        try self.write(" if (!(_i < _arr.length)) return [3, ");
+                        try self.write(num_exit);
+                        try self.write("]; var ");
+                        try self.printExpression(target_name);
+                        try self.write(" = _arr[_i];");
+                    }
                 }
                 // Body emission: bare-yield → emit pre / yield / post around
                 // the existing 3-case shape; multi-yield body → walk inline.
@@ -2267,14 +2288,18 @@ pub const Printer = struct {
                         }
                     }
                 }
-                // Open continue case: i++ + loopback to header.
+                // Open continue case: advance iteration + loopback to header.
                 state += 1;
                 {
                     const num_continue = std.fmt.bufPrint(&buf, "{d}", .{state}) catch unreachable;
                     try self.writeNewlineIndent();
                     try self.write("case ");
                     try self.write(num_continue);
-                    try self.write(": _i++; return [3, ");
+                    if (use_iter_protocol) {
+                        try self.write(": _c = _b.next(); return [3, ");
+                    } else {
+                        try self.write(": _i++; return [3, ");
+                    }
                     var num_header_buf: [16]u8 = undefined;
                     try self.write(std.fmt.bufPrint(&num_header_buf, "{d}", .{header}) catch unreachable);
                     try self.write("];");
@@ -6763,6 +6788,26 @@ test "emit: generator with for-of-yield lowers to indexed-for state machine" {
     try T.expect(std.mem.indexOf(u8, out, "case 3: _i++; return [3, 1];") != null);
     // Exit case 4.
     try T.expect(std.mem.indexOf(u8, out, "case 4:") != null);
+}
+
+test "emit: generator with for-of-yield + downlevel_iteration uses __values + .next()" {
+    const out = try emitWithOpts(
+        "function* g() { for (const x of items) yield x; }",
+        .{ .es_target = .es5, .downlevel_iteration = true },
+    );
+    defer T.allocator.free(out);
+    try T.expect(std.mem.indexOf(u8, out, "__generator") != null);
+    try T.expect(std.mem.indexOf(u8, out, "TODO: ES5 generator") == null);
+    // Iterator-protocol init: __values + first .next().
+    try T.expect(std.mem.indexOf(u8, out, "var _b = __values(items), _c = _b.next();") != null);
+    // Header case 1: done-check + binding + yield.
+    try T.expect(std.mem.indexOf(u8, out, "case 1: if (_c.done) return [3, 4]; var x = _c.value; return [4, x];") != null);
+    // Continue case 3 advances via _b.next().
+    try T.expect(std.mem.indexOf(u8, out, "case 3: _c = _b.next(); return [3, 1];") != null);
+    try T.expect(std.mem.indexOf(u8, out, "case 4:") != null);
+    // The indexed-for forms (`_arr` / `_i++`) must NOT appear.
+    try T.expect(std.mem.indexOf(u8, out, "_arr") == null);
+    try T.expect(std.mem.indexOf(u8, out, "_i++") == null);
 }
 
 test "emit: generator with for-of-yield + multi-stmt body lowers" {
