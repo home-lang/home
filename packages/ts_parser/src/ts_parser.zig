@@ -1256,6 +1256,8 @@ pub const Parser = struct {
                                 try self.reportCodeAt(mod.span.start, mod.line, 1029, "Accessibility modifier must precede 'override' modifier.");
                             }
                             flags.is_parameter_property = true;
+                            if (mod.kind == .kw_private) flags.is_private = true;
+                            if (mod.kind == .kw_protected) flags.is_protected = true;
                         },
                         .kw_override => {
                             flags.is_override = true;
@@ -1644,7 +1646,7 @@ pub const Parser = struct {
                 continue;
             }
             if (self.peek().kind == .open_bracket) {
-                if (try self.tryParseIndexSignature(&members)) {
+                if (try self.tryParseIndexSignature(&members, mods.is_static, mods.is_readonly)) {
                     if (invalid_index_modifier) |bad| {
                         try self.reportCodeAt(bad.span.start, bad.line, 1071, "'export' modifier cannot appear on an index signature.");
                     } else if (mods.has_accessibility) {
@@ -1884,6 +1886,7 @@ pub const Parser = struct {
         is_async: bool = false,
         is_override: bool = false,
         is_abstract: bool = false,
+        is_readonly: bool = false,
     };
 
     fn skipClassModifiers(self: *Parser) ParseError!ClassModifiers {
@@ -1938,6 +1941,7 @@ pub const Parser = struct {
                     .kw_async => mods.is_async = true,
                     .kw_override => mods.is_override = true,
                     .kw_abstract => mods.is_abstract = true,
+                    .kw_readonly => mods.is_readonly = true,
                     else => {},
                 }
                 _ = self.advance();
@@ -3866,7 +3870,7 @@ pub const Parser = struct {
             if (t.kind == .open_bracket or
                 (t.kind == .kw_readonly and self.peekAt(1).kind == .open_bracket))
             {
-                if (try self.tryParseIndexSignature(out)) continue;
+                if (try self.tryParseIndexSignature(out, false, false)) continue;
                 if (try self.tryParseComputedTypeMember(out, false)) continue;
                 // Not an index signature or supported computed key.
                 try self.reportMalformedTypeMemberBracket(t);
@@ -4273,10 +4277,15 @@ pub const Parser = struct {
     /// computed key or mapped-type form). Mapped types live in a
     /// dedicated `mapped_type` HIR node and are dispatched
     /// separately by `parseTypeAnnotation`.
-    fn tryParseIndexSignature(self: *Parser, out: *std.ArrayListUnmanaged(NodeId)) ParseError!bool {
+    fn tryParseIndexSignature(
+        self: *Parser,
+        out: *std.ArrayListUnmanaged(NodeId),
+        is_static: bool,
+        leading_readonly: bool,
+    ) ParseError!bool {
         const checkpoint = self.cursor;
         const start_tok = self.peek();
-        var is_readonly = false;
+        var is_readonly = leading_readonly;
         if (self.peek().kind == .kw_readonly and self.peekAt(1).kind == .open_bracket) {
             _ = self.advance();
             is_readonly = true;
@@ -4319,7 +4328,7 @@ pub const Parser = struct {
         _ = self.match(.semicolon);
         _ = self.match(.comma);
         const sp: Span = .{ .start = start_tok.span.start, .end = self.tokens[self.cursor - 1].span.end };
-        const node = try self.builder.addIndexSignature(sp, key_type, value_type, is_readonly);
+        const node = try self.builder.addIndexSignature(sp, key_type, value_type, is_readonly, is_static);
         try out.append(self.gpa, node);
         return true;
     }
@@ -7645,6 +7654,18 @@ test "parser: class declaration with index signature" {
     const members = hir_mod.classMembers(&s.hir, top);
     try T.expectEqual(@as(usize, 1), members.len);
     try T.expectEqual(hir_mod.NodeKind.index_signature, s.hir.kindOf(members[0]));
+}
+
+test "parser: static class index signature preserves class side" {
+    var s = try newTestSetup("class A { static readonly [x: string]: number; }");
+    defer destroyTestSetup(s);
+    const root = try s.parser.parseSourceFile();
+    const top = hir_mod.blockStmts(&s.hir, root)[0];
+    const members = hir_mod.classMembers(&s.hir, top);
+    try T.expectEqual(@as(usize, 1), members.len);
+    const ix = hir_mod.indexSignatureOf(&s.hir, members[0]);
+    try T.expect(ix.is_static);
+    try T.expect(ix.is_readonly);
 }
 
 test "parser: class extends" {

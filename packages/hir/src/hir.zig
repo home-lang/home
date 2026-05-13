@@ -558,7 +558,8 @@ pub const ParamFlags = packed struct(u8) {
     is_parameter_property: bool = false,
     /// TS 4.3 `override` modifier on a constructor parameter property.
     is_override: bool = false,
-    _pad: u2 = 0,
+    is_private: bool = false,
+    is_protected: bool = false,
 };
 
 pub const TypeAliasPayload = struct {
@@ -847,6 +848,9 @@ pub const IndexSignaturePayload = struct {
     /// Value type — the type of any indexed access.
     value_type: NodeId,
     is_readonly: bool,
+    /// `static [k: string]: T` inside a class declares an indexer
+    /// on the constructor side, not on instances.
+    is_static: bool = false,
 };
 
 /// `T extends U ? X : Y`.
@@ -2563,12 +2567,14 @@ pub const Builder = struct {
         key_type: NodeId,
         value_type: NodeId,
         is_readonly: bool,
+        is_static: bool,
     ) !NodeId {
         const payload_idx: u32 = @intCast(self.hir.index_signature_payloads.items.len);
         try self.hir.index_signature_payloads.append(self.hir.gpa, .{
             .key_type = key_type,
             .value_type = value_type,
             .is_readonly = is_readonly,
+            .is_static = is_static,
         });
         const id = try self.newNode(.index_signature, span, payload_idx);
         if (key_type != none_node_id) self.hir.setParent(key_type, id);
