@@ -151,6 +151,65 @@ fn appendDriverDiagnostic(
     c.has_errors = true;
 }
 
+fn reportMissingReferencePathDiagnostics(
+    gpa: std.mem.Allocator,
+    c: *Compilation,
+    source: []const u8,
+) CompileError!void {
+    if (std.mem.indexOf(u8, source, "<reference") == null or
+        std.mem.indexOf(u8, source, "path") == null)
+    {
+        return;
+    }
+    var threaded = std.Io.Threaded.init(gpa, .{});
+    defer threaded.deinit();
+    const io = threaded.io();
+    var offset: usize = 0;
+    var lines = std.mem.splitScalar(u8, source, '\n');
+    while (lines.next()) |raw_line| {
+        const line_without_cr = std.mem.trim(u8, raw_line, "\r");
+        defer offset += raw_line.len + 1;
+        var leading: usize = 0;
+        while (leading < line_without_cr.len and
+            (line_without_cr[leading] == ' ' or line_without_cr[leading] == '\t')) : (leading += 1)
+        {}
+        const line = line_without_cr[leading..];
+        if (!std.mem.startsWith(u8, line, "///")) continue;
+        const ref_rel = std.mem.indexOf(u8, line, "<reference") orelse continue;
+        const path_rel = std.mem.indexOf(u8, line[ref_rel..], "path") orelse continue;
+        var idx = ref_rel + path_rel + "path".len;
+        while (idx < line.len and (line[idx] == ' ' or line[idx] == '\t')) : (idx += 1) {}
+        if (idx >= line.len or line[idx] != '=') continue;
+        idx += 1;
+        while (idx < line.len and (line[idx] == ' ' or line[idx] == '\t')) : (idx += 1) {}
+        if (idx >= line.len or (line[idx] != '\'' and line[idx] != '"')) continue;
+        const quote = line[idx];
+        idx += 1;
+        const path_start = idx;
+        while (idx < line.len and line[idx] != quote) : (idx += 1) {}
+        if (idx >= line.len) continue;
+        const path = line[path_start..idx];
+        if (path.len == 0) continue;
+        if (isHarnessProvidedReferencePath(path)) continue;
+
+        std.Io.Dir.cwd().access(io, path, .{}) catch {
+            const message = try std.fmt.allocPrint(gpa, "File '{s}' not found.", .{path});
+            defer gpa.free(message);
+            try appendDriverDiagnostic(
+                gpa,
+                c,
+                @intCast(offset + leading + path_start),
+                6053,
+                message,
+            );
+        };
+    }
+}
+
+fn isHarnessProvidedReferencePath(path: []const u8) bool {
+    return std.mem.startsWith(u8, path, "/.lib/");
+}
+
 fn directiveValue(source: []const u8, name: []const u8) ?[]const u8 {
     var lines = std.mem.splitScalar(u8, source, '\n');
     while (lines.next()) |line_raw| {
@@ -406,6 +465,8 @@ pub fn compileSource(
 
     c.hir = hir_mod.Hir.init(gpa) catch return error.OutOfMemory;
     errdefer c.hir.deinit();
+
+    try reportMissingReferencePathDiagnostics(gpa, c, source);
 
     // ------ Lex ------
     var tsx_lex_source: ?[]u8 = null;
@@ -1701,6 +1762,33 @@ test "driver: scanner-error compilation deinitializes cleanly" {
     }
     try T.expect(c.has_errors);
     try T.expect(c.diagnostics.items.len > 0);
+}
+
+test "driver: missing triple-slash path reference reports TS6053" {
+    var c = try compileSource(T.allocator, "///<reference path='definitely-missing.ts' />\nlet x = 1;", .{ .no_emit = true });
+    defer {
+        c.deinit();
+        T.allocator.destroy(c);
+    }
+    var found = false;
+    for (c.diagnostics.items) |d| {
+        if (d.code == 6053) {
+            found = true;
+            try T.expectEqual(@as(u32, 20), d.pos);
+        }
+    }
+    try T.expect(found);
+}
+
+test "driver: harness lib triple-slash path reference is provided externally" {
+    var c = try compileSource(T.allocator, "/// <reference path=\"/.lib/react16.d.ts\" />\nlet x = 1;", .{ .no_emit = true });
+    defer {
+        c.deinit();
+        T.allocator.destroy(c);
+    }
+    for (c.diagnostics.items) |d| {
+        try T.expect(d.code != 6053);
+    }
 }
 
 test "driver: declaration file allows exported const without initializer" {

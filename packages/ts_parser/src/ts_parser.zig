@@ -3861,10 +3861,16 @@ pub const Parser = struct {
             optional: bool,
             span: Span,
         };
+        const AccessorPair = struct {
+            getter: ?Span = null,
+            setter: ?Span = null,
+        };
         var seen = std.AutoHashMapUnmanaged(hir_mod.StringId, Span){};
         defer seen.deinit(self.gpa);
         var method_optionality = std.AutoHashMapUnmanaged(hir_mod.StringId, MethodOptionality){};
         defer method_optionality.deinit(self.gpa);
+        var accessor_pairs = std.AutoHashMapUnmanaged(hir_mod.StringId, AccessorPair){};
+        defer accessor_pairs.deinit(self.gpa);
         while (self.peek().kind != .close_brace and self.peek().kind != .eof) {
             const t = self.peek();
             // Index signature: `[k: K]: V` or `readonly [k: K]: V`.
@@ -3889,6 +3895,62 @@ pub const Parser = struct {
             if (t.kind == .kw_new and self.isConstructSignatureStart()) {
                 const sig = try self.parseTypeSignatureMember(true);
                 try out.append(self.gpa, sig);
+                continue;
+            }
+            // Accessor signatures in interfaces/type literals:
+            // `get foo(): T` and `set foo(value: T)`.
+            if ((t.kind == .kw_get or t.kind == .kw_set) and self.isTypeAccessorSignatureStart()) {
+                const accessor_tok = self.advance();
+                const is_getter = accessor_tok.kind == .kw_get;
+                const name_tok = self.advance();
+                const name_span = tokenSpan(name_tok);
+                const name_id = try self.internPropertyName(name_tok, name_span);
+                const params = try self.parseTypeParameterList();
+                defer self.gpa.free(params);
+                var type_node: NodeId = hir_mod.none_node_id;
+                if (is_getter) {
+                    if (self.match(.colon)) type_node = try self.parseReturnTypeAnnotation(params);
+                } else if (params.len > 0 and self.hir.kindOf(params[0]) == .parameter) {
+                    const p = hir_mod.parameterOf(self.hir, params[0]);
+                    type_node = p.type_annotation;
+                }
+                if (!is_getter and self.match(.colon)) {
+                    _ = try self.parseReturnTypeAnnotation(params);
+                }
+                if (self.peek().kind == .semicolon or self.peek().kind == .comma) {
+                    _ = self.advance();
+                } else if (self.peek().kind != .close_brace and self.peek().kind != .eof) {
+                    const prev_tok = self.tokens[self.cursor - 1];
+                    const next_tok = self.peek();
+                    if (prev_tok.line == next_tok.line) {
+                        try self.reportCodeAt(next_tok.span.start, next_tok.line, 1005, "';' expected.");
+                    }
+                }
+                const member = try self.builder.addInterfaceMember(
+                    .{ .start = accessor_tok.span.start, .end = self.tokens[self.cursor - 1].span.end },
+                    name_id,
+                    type_node,
+                    false,
+                    is_getter,
+                    false,
+                    false,
+                );
+                var pair = accessor_pairs.get(name_id) orelse AccessorPair{};
+                if (is_getter) {
+                    if (pair.getter) |prev| {
+                        try self.reportCodeAt(prev.start, self.lineAt(prev.start), 2300, "Duplicate identifier.");
+                        try self.reportCodeAt(name_span.start, name_tok.line, 2300, "Duplicate identifier.");
+                    }
+                    pair.getter = name_span;
+                } else {
+                    if (pair.setter) |prev| {
+                        try self.reportCodeAt(prev.start, self.lineAt(prev.start), 2300, "Duplicate identifier.");
+                        try self.reportCodeAt(name_span.start, name_tok.line, 2300, "Duplicate identifier.");
+                    }
+                    pair.setter = name_span;
+                }
+                try accessor_pairs.put(self.gpa, name_id, pair);
+                try out.append(self.gpa, member);
                 continue;
             }
             var is_readonly = false;
@@ -4026,6 +4088,15 @@ pub const Parser = struct {
 
     fn isConstructSignatureStart(self: *const Parser) bool {
         return self.peekAt(1).kind == .open_paren or self.peekAt(1).kind == .less_than;
+    }
+
+    fn isTypeAccessorSignatureStart(self: *const Parser) bool {
+        const name_kind = self.peekAt(1).kind;
+        return (name_kind == .identifier or
+            name_kind == .string_literal or
+            name_kind == .number_literal or
+            name_kind.isContextualKeyword()) and
+            self.peekAt(2).kind == .open_paren;
     }
 
     fn reportMalformedTypeMemberBracket(self: *Parser, start: Token) ParseError!void {
@@ -9485,6 +9556,27 @@ test "parser: lone accessibility keyword in class body can be field name" {
 
 test "parser: type member `new` can be a property or optional method name" {
     var s = try newTestSetup("interface C { foo; new; }\nlet c: { new?(): any; };");
+    defer destroyTestSetup(s);
+
+    _ = try s.parser.parseSourceFile();
+    try T.expectEqual(@as(usize, 0), s.parser.diagnostics.items.len);
+}
+
+test "parser: interface accessor signatures allow comma semicolon and newline separators" {
+    var s = try newTestSetup(
+        \\interface I1 {
+        \\  get foo(): number,
+        \\  set foo(value: number),
+        \\}
+        \\interface I2 {
+        \\  get bar(): string;
+        \\  set bar(value: string);
+        \\}
+        \\interface I3 {
+        \\  get baz(): boolean
+        \\  set baz(value: boolean)
+        \\}
+    );
     defer destroyTestSetup(s);
 
     _ = try s.parser.parseSourceFile();
