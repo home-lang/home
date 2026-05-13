@@ -391,7 +391,7 @@ pub const Printer = struct {
         // before any user-level statement so the helpers are in
         // scope for the lowered code below.
         if (self.options.import_helpers) {
-            try self.write("import { __asyncGenerator, __await, __awaiter, __decorate, __esDecorate, __extends, __generator, __metadata, __param, __importDefault, __importStar, __values } from \"tslib\";");
+            try self.write("import { __asyncDelegator, __asyncGenerator, __asyncValues, __await, __awaiter, __decorate, __esDecorate, __extends, __generator, __metadata, __param, __importDefault, __importStar, __values } from \"tslib\";");
             try self.write(self.options.newline);
         }
         // §4.A.10 — auto-import the runtime helpers when the file
@@ -3014,7 +3014,6 @@ pub const Printer = struct {
             switch (k) {
                 .yield_expr => {
                     const yp = hir_mod.yieldExprOf(self.hir, s);
-                    if (yp.type_node != hir_mod.none_node_id) return false; // bail on yield*
                     if (yp.expr != hir_mod.none_node_id) {
                         if (self.subtreeContainsYield(yp.expr)) return false;
                         // `yield await E` (immediate await as yield value)
@@ -3027,6 +3026,8 @@ pub const Printer = struct {
                             return false;
                         }
                     }
+                    // §4.A.4.7 cont.4 — `yield* E` is supported via
+                    // `__asyncDelegator(__asyncValues(E))` wrap.
                 },
                 .await_expr => {
                     const ap = hir_mod.awaitExprOf(self.hir, s);
@@ -3136,6 +3137,35 @@ pub const Printer = struct {
             const k = self.hir.kindOf(stmt);
             if (k == .yield_expr) {
                 const yp = hir_mod.yieldExprOf(self.hir, stmt);
+                if (yp.type_node != hir_mod.none_node_id) {
+                    // §4.A.4.7 cont.4 — `yield* E` in async gen.
+                    // Wrap with `__asyncDelegator(__asyncValues(E))` so
+                    // the delegate handles both sync and async iterables
+                    // uniformly. Op-code 5 is the delegation opcode.
+                    // After delegation, case +1 re-yields the produced
+                    // value via `return [4, __await(_a.sent())];`; case +2
+                    // resumes.
+                    try self.write(" return [5, __asyncDelegator(__asyncValues(");
+                    if (yp.expr != hir_mod.none_node_id) try self.printExpression(yp.expr);
+                    try self.write("))];");
+                    state += 1;
+                    {
+                        const num = std.fmt.bufPrint(&buf, "{d}", .{state}) catch unreachable;
+                        try self.writeNewlineIndent();
+                        try self.write("case ");
+                        try self.write(num);
+                        try self.write(": return [4, __await(_a.sent())];");
+                    }
+                    state += 1;
+                    {
+                        const num = std.fmt.bufPrint(&buf, "{d}", .{state}) catch unreachable;
+                        try self.writeNewlineIndent();
+                        try self.write("case ");
+                        try self.write(num);
+                        try self.write(": _a.sent();");
+                    }
+                    continue;
+                }
                 try self.write(" return [4, __await(");
                 if (yp.expr != hir_mod.none_node_id) {
                     // `yield await E` — unwrap the user's redundant await
@@ -6004,7 +6034,7 @@ test "emit: importHelpers prepends tslib import when async lowers at es2015" {
         .{ .es_target = .es2015, .import_helpers = true },
     );
     defer T.allocator.free(out);
-    try T.expect(std.mem.indexOf(u8, out, "import { __asyncGenerator, __await, __awaiter, __decorate, __esDecorate, __extends, __generator, __metadata, __param, __importDefault, __importStar, __values } from \"tslib\";") != null);
+    try T.expect(std.mem.indexOf(u8, out, "import { __asyncDelegator, __asyncGenerator, __asyncValues, __await, __awaiter, __decorate, __esDecorate, __extends, __generator, __metadata, __param, __importDefault, __importStar, __values } from \"tslib\";") != null);
     // Helper still gets referenced from user code.
     try T.expect(std.mem.indexOf(u8, out, "__awaiter(this, void 0, void 0, function* ()") != null);
 }
@@ -7100,6 +7130,22 @@ test "emit: async generator with f(await E, other) (multi-arg) still bails" {
     // so the lowering bails to native `async function*`.
     try T.expect(std.mem.indexOf(u8, out, "async function* g(") != null);
     try T.expect(std.mem.indexOf(u8, out, "__asyncGenerator") == null);
+}
+
+test "emit: async generator with yield* lowers via __asyncDelegator + [5] opcode" {
+    const out = try emitWithOpts(
+        "async function* g() { yield* other(); }",
+        .{ .es_target = .es2017 },
+    );
+    defer T.allocator.free(out);
+    try T.expect(std.mem.indexOf(u8, out, "__asyncGenerator") != null);
+    try T.expect(std.mem.indexOf(u8, out, "TODO: ES5 generator") == null);
+    // Op-code 5 with __asyncDelegator(__asyncValues(E)) wrap.
+    try T.expect(std.mem.indexOf(u8, out, "return [5, __asyncDelegator(__asyncValues(other()))];") != null);
+    // Resumption case 1 re-yields via __await(_a.sent()).
+    try T.expect(std.mem.indexOf(u8, out, "case 1: return [4, __await(_a.sent())];") != null);
+    // Resumption case 2 continues.
+    try T.expect(std.mem.indexOf(u8, out, "case 2: _a.sent();") != null);
 }
 
 test "emit: async generator preserved at es2018+" {
