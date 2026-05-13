@@ -1246,6 +1246,20 @@ pub const Printer = struct {
                     const yp = hir_mod.yieldExprOf(self.hir, ye);
                     if (yp.expr != hir_mod.none_node_id and self.subtreeContainsYield(yp.expr)) return false;
                 },
+                .for_stmt => {
+                    if (!self.subtreeContainsYield(s)) continue;
+                    // §4.A.4.2 part 2f — `for (init; cond; update) yield E;`
+                    // slice. init/cond/update may each be absent or
+                    // any yield-free expression / declaration; body
+                    // must be a single bare `yield_expr`.
+                    const fp = hir_mod.forStmtOf(self.hir, s);
+                    if (fp.init != hir_mod.none_node_id and self.subtreeContainsYield(fp.init)) return false;
+                    if (fp.cond != hir_mod.none_node_id and self.subtreeContainsYield(fp.cond)) return false;
+                    if (fp.update != hir_mod.none_node_id and self.subtreeContainsYield(fp.update)) return false;
+                    const ye = self.singleYieldInThen(fp.body) orelse return false;
+                    const yp = hir_mod.yieldExprOf(self.hir, ye);
+                    if (yp.expr != hir_mod.none_node_id and self.subtreeContainsYield(yp.expr)) return false;
+                },
                 .if_stmt => {
                     // Pass-through is fine when the subtree carries no yields.
                     if (!self.subtreeContainsYield(s)) continue;
@@ -1467,6 +1481,75 @@ pub const Printer = struct {
                     try self.write("case ");
                     try self.write(num_resume);
                     try self.write(": _a.sent();");
+                    var num_header_buf: [16]u8 = undefined;
+                    const num_header_back = std.fmt.bufPrint(&num_header_buf, "{d}", .{header}) catch unreachable;
+                    try self.write(" return [3, ");
+                    try self.write(num_header_back);
+                    try self.write("];");
+                }
+                // Open exit case.
+                {
+                    const num_exit_open = std.fmt.bufPrint(&buf, "{d}", .{exit_label}) catch unreachable;
+                    try self.writeNewlineIndent();
+                    try self.write("case ");
+                    try self.write(num_exit_open);
+                    try self.write(":");
+                }
+                state += 3;
+            } else if (k == .for_stmt and self.subtreeContainsYield(stmt)) {
+                // §4.A.4.2 part 2f — `for (init; cond; update) yield E;`
+                // lowers to a 3-case loop with init emitted into the
+                // current case (before fall-through to header) and
+                // update folded into the resume case before the
+                // loopback. Predicate has verified the shape.
+                const fp = hir_mod.forStmtOf(self.hir, stmt);
+                const ye = self.singleYieldInThen(fp.body) orelse unreachable;
+                const yp = hir_mod.yieldExprOf(self.hir, ye);
+                const op: []const u8 = if (yp.type_node != hir_mod.none_node_id) "5" else "4";
+                const header = state + 1;
+                const resume_label = state + 2;
+                const exit_label = state + 3;
+                // Init in the current case (if any).
+                if (fp.init != hir_mod.none_node_id) {
+                    try self.write(" ");
+                    try self.printNonIndentStatement(fp.init);
+                }
+                // Open header case: optional cond check + yield.
+                {
+                    const num_header = std.fmt.bufPrint(&buf, "{d}", .{header}) catch unreachable;
+                    try self.writeNewlineIndent();
+                    try self.write("case ");
+                    try self.write(num_header);
+                    try self.write(":");
+                    if (fp.cond != hir_mod.none_node_id) {
+                        var num_exit_buf: [16]u8 = undefined;
+                        const num_exit = std.fmt.bufPrint(&num_exit_buf, "{d}", .{exit_label}) catch unreachable;
+                        try self.write(" if (!(");
+                        try self.printExpression(fp.cond);
+                        try self.write(")) return [3, ");
+                        try self.write(num_exit);
+                        try self.write("];");
+                    }
+                    try self.write(" return [");
+                    try self.write(op);
+                    if (yp.expr != hir_mod.none_node_id) {
+                        try self.write(", ");
+                        try self.printExpression(yp.expr);
+                    }
+                    try self.write("];");
+                }
+                // Open resume case: sent + optional update + loopback.
+                {
+                    const num_resume = std.fmt.bufPrint(&buf, "{d}", .{resume_label}) catch unreachable;
+                    try self.writeNewlineIndent();
+                    try self.write("case ");
+                    try self.write(num_resume);
+                    try self.write(": _a.sent();");
+                    if (fp.update != hir_mod.none_node_id) {
+                        try self.write(" ");
+                        try self.printExpression(fp.update);
+                        try self.write(";");
+                    }
                     var num_header_buf: [16]u8 = undefined;
                     const num_header_back = std.fmt.bufPrint(&num_header_buf, "{d}", .{header}) catch unreachable;
                     try self.write(" return [3, ");
@@ -4703,6 +4786,53 @@ test "emit: generator with while-yield + trailing yield sequences correctly" {
 test "emit: generator with while-yield + cond containing yield still bails" {
     const out = try emitWithOpts(
         "function* g() { while (yield 1) yield 2; }",
+        .{ .es_target = .es5 },
+    );
+    defer T.allocator.free(out);
+    try T.expect(std.mem.indexOf(u8, out, "TODO: ES5 generator") != null);
+    try T.expect(std.mem.indexOf(u8, out, "__generator") == null);
+}
+
+test "emit: generator with for-loop-yield lowers to 3-case loop with init+update" {
+    // Use `i = i + 1` instead of `i++` to sidestep an unrelated
+    // existing emit issue where `i++` lowers as `i += ++`.
+    const out = try emitWithOpts(
+        "function* g() { for (let i = 0; i < 3; i = i + 1) yield i; }",
+        .{ .es_target = .es5 },
+    );
+    defer T.allocator.free(out);
+    try T.expect(std.mem.indexOf(u8, out, "__generator") != null);
+    try T.expect(std.mem.indexOf(u8, out, "TODO: ES5 generator") == null);
+    // Init emitted in case 0 (before fall-through to header).
+    try T.expect(std.mem.indexOf(u8, out, "var i = 0;") != null);
+    // Header case 1: cond + yield.
+    try T.expect(std.mem.indexOf(u8, out, "case 1: if (!((i < 3))) return [3, 3];") != null);
+    try T.expect(std.mem.indexOf(u8, out, "return [4, i]") != null);
+    // Resume case 2: sent + update + loopback.
+    try T.expect(std.mem.indexOf(u8, out, "_a.sent();") != null);
+    try T.expect(std.mem.indexOf(u8, out, "i = (i + 1)") != null);
+    try T.expect(std.mem.indexOf(u8, out, "return [3, 1];") != null);
+    // Exit case 3.
+    try T.expect(std.mem.indexOf(u8, out, "case 3:") != null);
+}
+
+test "emit: generator with bare-for-yield (no init/cond/update) lowers as infinite loop" {
+    const out = try emitWithOpts(
+        "function* g() { for (;;) yield 1; }",
+        .{ .es_target = .es5 },
+    );
+    defer T.allocator.free(out);
+    try T.expect(std.mem.indexOf(u8, out, "__generator") != null);
+    // No init or cond emitted. Header case 1 yields directly.
+    try T.expect(std.mem.indexOf(u8, out, "case 1: return [4, 1]") != null);
+    // Resume case 2: sent + bare loopback (no update).
+    try T.expect(std.mem.indexOf(u8, out, "case 2: _a.sent(); return [3, 1];") != null);
+    try T.expect(std.mem.indexOf(u8, out, "case 3:") != null);
+}
+
+test "emit: generator with for-loop-yield + yield-in-init still bails" {
+    const out = try emitWithOpts(
+        "function* g() { for (let x = yield 0; cond; x++) yield x; }",
         .{ .es_target = .es5 },
     );
     defer T.allocator.free(out);
