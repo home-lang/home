@@ -74,6 +74,7 @@ pub const TsCodes = struct {
     pub const rest_element_cannot_have_initializer: u32 = 1186;
     pub const object_literal_duplicate_property: u32 = 1117;
     pub const type_not_assignable: u32 = 2322;
+    pub const type_missing_properties: u32 = 2739;
     pub const super_not_derived: u32 = 2335;
     pub const property_does_not_exist: u32 = 2339;
     pub const argument_type_mismatch: u32 = 2345;
@@ -1266,7 +1267,13 @@ pub const Checker = struct {
                     },
                     .identifier => {
                         const target_t = try self.checkExpression(fr.target);
-                        if (!(self.engine.isAssignableTo(elem_t, target_t) catch true)) {
+                        if (target_t == types.Primitive.undefined_t and
+                            self.identifierIsUntypedUninitializedVar(fr.target))
+                        {
+                            // Existing untyped `var` targets are writable
+                            // even though their current flow type is
+                            // `undefined`.
+                        } else if (!(self.engine.isAssignableTo(elem_t, target_t) catch true)) {
                             try self.report(fr.target, TsCodes.type_not_assignable, "Type is not assignable to target type.");
                         }
                     },
@@ -3903,7 +3910,17 @@ pub const Checker = struct {
             }
 
             const k = self.hir.kindOf(s);
-            if (k == .class_decl or k == .class_expr) {
+            if (k == .var_decl or k == .let_decl or k == .const_decl) {
+                const v = hir_mod.varDeclOf(self.hir, s);
+                if (v.name != hir_mod.none_node_id and self.hir.kindOf(v.name) == .identifier) {
+                    try declared.put(self.gpa, hir_mod.identifierOf(self.hir, v.name).name, {});
+                }
+            } else if (k == .fn_decl or k == .fn_expr) {
+                const f = hir_mod.fnDeclOf(self.hir, s);
+                if (f.name != hir_mod.none_node_id and self.hir.kindOf(f.name) == .identifier) {
+                    try declared.put(self.gpa, hir_mod.identifierOf(self.hir, f.name).name, {});
+                }
+            } else if (k == .class_decl or k == .class_expr) {
                 const c = hir_mod.classOf(self.hir, s);
                 if (c.name != hir_mod.none_node_id and self.hir.kindOf(c.name) == .identifier) {
                     const id = hir_mod.identifierOf(self.hir, c.name);
@@ -14211,6 +14228,22 @@ pub const Checker = struct {
             if (declared_type == types.Primitive.none and self.hir.kindOf(node) == .const_decl) {
                 init_type = try self.constInitializerType(v.init, init_type);
             }
+            if (declared_type == types.Primitive.none and
+                self.sourceHasCheckJsDirective() and
+                self.virtualSectionIsJsLike(node) and
+                self.hir.kindOf(v.init) == .object_literal and
+                v.name != hir_mod.none_node_id and
+                self.hir.kindOf(v.name) == .identifier)
+            {
+                const id = hir_mod.identifierOf(self.hir, v.name);
+                if (self.class_static_types.get(id.name)) |class_t| {
+                    const ok = (self.objectLiteralAssignableToTarget(v.init, init_type, class_t) catch false) or
+                        (self.engine.isAssignableTo(init_type, class_t) catch true);
+                    if (!ok) {
+                        try self.report(node, TsCodes.type_missing_properties, "Type is missing the following properties from target type.");
+                    }
+                }
+            }
         }
         if (v.name != hir_mod.none_node_id and
             v.init == hir_mod.none_node_id and
@@ -19290,6 +19323,7 @@ pub const Checker = struct {
         if (self.virtualImportTypeForLocal(id.name, node) catch null) |import_t| return import_t;
         if (self.virtualDefaultImportTypeForLocal(id.name, node) catch null) |import_t| return import_t;
         if (self.globalAugmentedValueType(id.name, node) catch null) |global_t| return global_t;
+        if (self.checkJsTopLevelThisExpandoName(id.name, node)) return types.Primitive.any;
         if (!self.isDeclNameSlot(node)) {
             if (self.overloadedFunctionValueType(id.name) catch null) |overload_t| return overload_t;
         }
@@ -19434,6 +19468,31 @@ pub const Checker = struct {
             if (hir_mod.identifierOf(self.hir, c.name).name == name) return true;
         }
         return false;
+    }
+
+    fn checkJsTopLevelThisExpandoName(self: *Checker, name: hir_mod.StringId, node: NodeId) bool {
+        if (!self.sourceHasCheckJsDirective()) return false;
+        if (self.isDeclNameSlot(node)) return false;
+        const root = self.rootBlockFor(node);
+        if (root == hir_mod.none_node_id or self.hir.kindOf(root) != .block_stmt) return false;
+        for (hir_mod.blockStmts(self.hir, root)) |stmt| {
+            if (self.topLevelThisAssignmentName(stmt)) |assigned| {
+                if (assigned == name) return true;
+            }
+        }
+        return false;
+    }
+
+    fn topLevelThisAssignmentName(self: *Checker, node: NodeId) ?hir_mod.StringId {
+        const local = self.unwrapExportDecl(node);
+        if (local == hir_mod.none_node_id or self.hir.kindOf(local) != .assignment) return null;
+        const a = hir_mod.assignmentOf(self.hir, local);
+        if (a.target == hir_mod.none_node_id or self.hir.kindOf(a.target) != .member_access) return null;
+        const m = hir_mod.memberOf(self.hir, a.target);
+        if (m.object == hir_mod.none_node_id or self.hir.kindOf(m.object) != .identifier) return null;
+        const obj = hir_mod.identifierOf(self.hir, m.object);
+        if (!std.mem.eql(u8, self.string_interner.get(obj.name), "this")) return null;
+        return m.name;
     }
 
     fn moduleNameIsNamespaceOnlyValue(
@@ -20783,9 +20842,23 @@ pub const Checker = struct {
                 std.mem.indexOf(u8, body, "@constructor") != null) return true;
         }
         const parent = self.hir.parentOf(fn_node);
+        if (parent != hir_mod.none_node_id) {
+            const pk = self.hir.kindOf(parent);
+            if (pk == .var_decl or pk == .let_decl or pk == .const_decl) {
+                const v = hir_mod.varDeclOf(self.hir, parent);
+                if (v.init == fn_node and
+                    v.name != hir_mod.none_node_id and
+                    self.hir.kindOf(v.name) == .identifier and
+                    self.identifierNameStartsUppercase(hir_mod.identifierOf(self.hir, v.name).name))
+                {
+                    return true;
+                }
+            }
+        }
         if (parent != hir_mod.none_node_id and self.hir.kindOf(parent) == .assignment) {
             const a = hir_mod.assignmentOf(self.hir, parent);
             if (a.value == fn_node and self.assignmentTargetIsPrototypeMember(a.target)) return true;
+            if (a.value == fn_node and self.assignmentTargetLastNameStartsUppercase(a.target)) return true;
         }
         return false;
     }
@@ -20802,6 +20875,12 @@ pub const Checker = struct {
         if (m.object == hir_mod.none_node_id or self.hir.kindOf(m.object) != .member_access) return false;
         const parent_member = hir_mod.memberOf(self.hir, m.object);
         return std.mem.eql(u8, self.string_interner.get(parent_member.name), "prototype");
+    }
+
+    fn assignmentTargetLastNameStartsUppercase(self: *Checker, target: NodeId) bool {
+        if (target == hir_mod.none_node_id or self.hir.kindOf(target) != .member_access) return false;
+        const m = hir_mod.memberOf(self.hir, target);
+        return self.identifierNameStartsUppercase(m.name);
     }
 
     fn thisInsideNonArrowPlainFunction(self: *Checker, node: NodeId) bool {
@@ -27641,6 +27720,22 @@ test "checker: class used before declaration emits TS2449" {
         if (d.code == TsCodes.class_used_before_declaration) found = true;
     }
     try T.expect(found);
+}
+
+test "checker: prior var declaration suppresses class used-before-declaration for merged JS constructor" {
+    const s = try newSetup(
+        \\// @checkJs: true
+        \\var SomeClass = function () {
+        \\  this.otherProp = 0;
+        \\};
+        \\new SomeClass();
+        \\class SomeClass {}
+    );
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+    for (s.checker.diagnostics.items) |d| {
+        try T.expect(d.code != TsCodes.class_used_before_declaration);
+    }
 }
 
 test "checker: class self-reference in class body and decorator expression is not TS2449" {
@@ -36930,6 +37025,70 @@ test "checker: checkjs constructor and prototype functions do not report implici
     try s.checker.checkSourceFile(s.root);
     for (s.checker.diagnostics.items) |d| {
         try T.expect(d.code != TsCodes.this_implicitly_any);
+    }
+}
+
+test "checker: checkjs variable and expando constructor functions do not report implicit this" {
+    const s = try newSetup(
+        \\// @checkJs: true
+        \\var SomeClass = function () {
+        \\  this.otherProp = 0;
+        \\};
+        \\exports.n = {};
+        \\exports.n.K = function () {
+        \\  this.x = 10;
+        \\};
+    );
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+    for (s.checker.diagnostics.items) |d| {
+        try T.expect(d.code != TsCodes.this_implicitly_any);
+    }
+}
+
+test "checker: checkjs top-level this assignment exposes global expando name" {
+    const s = try newSetup(
+        \\// @checkJs: true
+        \\// @strict: false
+        \\this.a = 10;
+        \\this.a;
+        \\a;
+    );
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+    for (s.checker.diagnostics.items) |d| {
+        try T.expect(d.code != TsCodes.cannot_find_name);
+    }
+}
+
+test "checker: checkjs object declaration conflicting with ambient class reports missing properties" {
+    const s = try newSetup(
+        \\// @allowJs: true
+        \\// @checkJs: true
+        \\// @Filename: a.d.ts
+        \\declare class A {}
+        \\// @Filename: b.js
+        \\const A = {};
+        \\A.d = {};
+    );
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+    var found = false;
+    for (s.checker.diagnostics.items) |d| {
+        if (d.code == TsCodes.type_missing_properties) found = true;
+    }
+    try T.expect(found);
+}
+
+test "checker: for-of assignment to untyped var target is accepted" {
+    const s = try newSetup(
+        \\var async;
+        \\for ((async) of [1, 2]);
+    );
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+    for (s.checker.diagnostics.items) |d| {
+        try T.expect(d.code != TsCodes.type_not_assignable);
     }
 }
 
