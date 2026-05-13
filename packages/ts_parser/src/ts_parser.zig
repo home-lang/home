@@ -1702,6 +1702,7 @@ pub const Parser = struct {
                         .is_static = mods.is_static,
                         .is_async = mods.is_async,
                         .is_override = mods.is_override,
+                        .is_abstract = mods.is_abstract,
                     },
                 );
                 try members.append(self.gpa, fn_node);
@@ -1785,6 +1786,7 @@ pub const Parser = struct {
                             .is_async = mods.is_async,
                             .is_generator = is_generator,
                             .is_override = mods.is_override,
+                            .is_abstract = mods.is_abstract,
                         },
                     );
                     try members.append(self.gpa, fn_node);
@@ -2109,6 +2111,7 @@ pub const Parser = struct {
                     .is_async = mods.is_async,
                     .is_generator = is_generator,
                     .is_override = mods.is_override,
+                    .is_abstract = mods.is_abstract,
                 },
             );
             is_method = true;

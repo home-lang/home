@@ -526,7 +526,9 @@ pub const FnFlags = packed struct(u16) {
     is_static: bool = false,
     /// TS 4.3 `override` modifier on a class method.
     is_override: bool = false,
-    _pad: u5 = 0,
+    /// TS `abstract` modifier on a class method.
+    is_abstract: bool = false,
+    _pad: u4 = 0,
 };
 
 pub const ParameterPayload = struct {

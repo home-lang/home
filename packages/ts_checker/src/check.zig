@@ -112,6 +112,7 @@ pub const TsCodes = struct {
     pub const not_constructor_function_type: u32 = 2507;
     pub const computed_property_name_type: u32 = 2464;
     pub const super_in_computed_property_name: u32 = 2466;
+    pub const no_matching_index_signature: u32 = 2537;
     pub const type_cannot_be_used_to_index_type: u32 = 2536;
     pub const type_cannot_be_used_as_index: u32 = 2538;
     pub const object_possibly_undefined: u32 = 2532;
@@ -210,6 +211,8 @@ pub const TsCodes = struct {
     pub const index_signature_property_access: u32 = 4111;
     /// `override` was used but the base class has no matching member.
     pub const override_not_in_base: u32 = 4113;
+    /// `override` cannot be used with a dynamic computed member name.
+    pub const override_dynamic_name: u32 = 4127;
     /// `noImplicitOverride`: a class member overrides a base member
     /// but lacks the `override` modifier.
     pub const missing_override: u32 = 4114;
@@ -339,6 +342,8 @@ const ClassMethodSeen = struct {
     bodyless_count: u32 = 0,
     implementation_count: u32 = 0,
 };
+
+const IndexKind = enum { string, number, symbol };
 
 const DeclarationEntry = struct {
     node: NodeId,
@@ -4161,10 +4166,19 @@ pub const Checker = struct {
         if (self.interner.objectMembers(container_t).len == 0 and
             self.interner.objectStringIndex(container_t) == types.Primitive.none and
             self.interner.objectNumberIndex(container_t) == types.Primitive.none) return;
+        const has_dynamic_computed_key = try self.checkObjectBindingComputedKeysAgainstType(pattern_node, container_t);
         for (hir_mod.patternElements(self.hir, pattern_node)) |e| {
             if (self.hir.kindOf(e) != .parameter) continue;
             const ep = hir_mod.parameterOf(self.hir, e);
-            if (ep.name == hir_mod.none_node_id or ep.flags.is_rest) continue;
+            if (ep.name == hir_mod.none_node_id) continue;
+            if (ep.flags.is_rest) {
+                if (has_dynamic_computed_key and self.hir.kindOf(ep.name) == .identifier) {
+                    const id = hir_mod.identifierOf(self.hir, ep.name);
+                    const rest_t = self.interner.internObjectType(&.{}) catch return error.OutOfMemory;
+                    try self.checkRepeatedObjectRestVarBinding(pattern_node, ep.name, id.name, rest_t);
+                }
+                continue;
+            }
             if (self.hir.kindOf(ep.name) != .identifier) continue;
             if (!self.objectBindingElementUsesImplicitKey(e, ep.name)) continue;
             const id = hir_mod.identifierOf(self.hir, ep.name);
@@ -4190,6 +4204,95 @@ pub const Checker = struct {
                 .message = msg,
             });
         }
+    }
+
+    fn checkObjectBindingComputedKeysAgainstType(self: *Checker, pattern_node: NodeId, container_t: TypeId) CheckError!bool {
+        var saw_dynamic = false;
+        for (hir_mod.patternElements(self.hir, pattern_node)) |e| {
+            if (self.hir.kindOf(e) != .parameter) continue;
+            const ep = hir_mod.parameterOf(self.hir, e);
+            if (ep.flags.is_computed_binding_key) {
+                if (ep.default_value == hir_mod.none_node_id) continue;
+                const key_t = try self.checkExpression(ep.default_value);
+                if (try self.reportMissingIndexForComputedBindingKey(ep.default_value, container_t, key_t)) {
+                    saw_dynamic = true;
+                }
+                continue;
+            }
+            if (ep.name == hir_mod.none_node_id) continue;
+            const nk = self.hir.kindOf(ep.name);
+            if (nk == .object_pattern or nk == .array_pattern) {
+                if (try self.checkObjectBindingComputedKeysAgainstType(ep.name, types.Primitive.any)) saw_dynamic = true;
+            }
+        }
+        return saw_dynamic;
+    }
+
+    fn reportMissingIndexForComputedBindingKey(self: *Checker, node: NodeId, container_t: TypeId, key_t: TypeId) CheckError!bool {
+        if (container_t == types.Primitive.any or container_t == types.Primitive.unknown) return false;
+        if (key_t == types.Primitive.any or key_t == types.Primitive.unknown) return false;
+        switch (self.hir.kindOf(node)) {
+            .literal_string, .literal_number, .literal_bool, .literal_bigint => return false,
+            else => {},
+        }
+        if (container_t >= self.interner.pool.typeCount()) return false;
+        const cf = self.interner.pool.flagsOf(container_t);
+        if (cf.is_union) {
+            var reported = false;
+            for (self.interner.unionMembers(container_t)) |member| {
+                if (try self.reportMissingIndexForComputedBindingKey(node, member, key_t)) reported = true;
+            }
+            return reported;
+        }
+        if (!cf.is_object_type) return false;
+        const key_kind = try self.dynamicComputedIndexKind(key_t) orelse return false;
+        const has_index = switch (key_kind) {
+            .string => self.interner.objectStringIndex(container_t) != types.Primitive.none,
+            .number => self.interner.objectNumberIndex(container_t) != types.Primitive.none,
+            .symbol => self.interner.objectSymbolIndex(container_t) != types.Primitive.none,
+        };
+        if (has_index) return true;
+        const kind_text = switch (key_kind) {
+            .string => "string",
+            .number => "number",
+            .symbol => "symbol",
+        };
+        const msg = try std.fmt.allocPrint(
+            self.diag_arena.allocator(),
+            "Type has no matching index signature for type '{s}'.",
+            .{kind_text},
+        );
+        try self.diagnostics.append(self.gpa, .{
+            .node = node,
+            .code = TsCodes.no_matching_index_signature,
+            .message = msg,
+        });
+        return true;
+    }
+
+    fn dynamicComputedIndexKind(self: *Checker, key_t: TypeId) CheckError!?IndexKind {
+        if (key_t == types.Primitive.string_t) return .string;
+        if (key_t == types.Primitive.number_t) return .number;
+        if (key_t == types.Primitive.symbol_t) return .symbol;
+        if (key_t >= self.interner.pool.typeCount()) return null;
+        const f = self.interner.pool.flagsOf(key_t);
+        if (f.is_literal) return null;
+        if (f.is_string) return .string;
+        if (f.is_number) return .number;
+        if (f.is_symbol) return .symbol;
+        if (f.is_union) {
+            var result: ?IndexKind = null;
+            for (self.interner.unionMembers(key_t)) |member| {
+                const member_kind = (try self.dynamicComputedIndexKind(member)) orelse return null;
+                if (result) |existing| {
+                    if (existing != member_kind) return null;
+                } else {
+                    result = member_kind;
+                }
+            }
+            return result;
+        }
+        return null;
     }
 
     fn checkObjectBindingPatternAgainstBroadObject(self: *Checker, pattern_node: NodeId) CheckError!void {
@@ -6059,6 +6162,9 @@ pub const Checker = struct {
                     else
                         try self.classMemberNameFromFunctionName(fn_p.name);
                     if (member_name_opt == null) {
+                        if (fn_name_is_computed and fn_p.flags.is_override) {
+                            try self.report(m, TsCodes.override_dynamic_name, "This member cannot have an 'override' modifier because its name is dynamic.");
+                        }
                         if (fn_name_is_computed and (fn_p.flags.is_getter or fn_p.flags.is_setter)) {
                             const accessor_t: TypeId = if (fn_p.flags.is_getter) blk: {
                                 var getter_t = self.interner.signatureReturn(sig) orelse types.Primitive.any;
@@ -6196,7 +6302,14 @@ pub const Checker = struct {
                             try self.report(m, 1166, "A computed property name in a class property declaration must have a simple literal type or a 'unique symbol' type.");
                         }
                     }
-                    const member_name = (try self.classMemberNameFromPropertyKey(op.key, op_is_computed)) orelse continue;
+                    const member_name_opt = try self.classMemberNameFromPropertyKey(op.key, op_is_computed);
+                    if (member_name_opt == null) {
+                        if (op_is_computed and op.is_override) {
+                            try self.report(m, TsCodes.override_dynamic_name, "This member cannot have an 'override' modifier because its name is dynamic.");
+                        }
+                        continue;
+                    }
+                    const member_name = member_name_opt.?;
                     if (op.is_static) {
                         try static_names.put(self.gpa, member_name, m);
                     }
@@ -7130,7 +7243,25 @@ pub const Checker = struct {
         while (it.next()) |info| {
             if (info.bodyless_count == 0 or info.implementation_count != 0) continue;
             if (self.classMethodDeclIsOptional(info.first_node)) continue;
+            if (self.classMethodDeclIsAbstract(info.first_node)) continue;
             try self.report(info.first_node, TsCodes.implementation_missing, "Function implementation is missing or not immediately following the declaration.");
+        }
+    }
+
+    fn classMethodDeclIsAbstract(self: *Checker, node: NodeId) bool {
+        if (node == hir_mod.none_node_id) return false;
+        switch (self.hir.kindOf(node)) {
+            .fn_decl, .fn_expr, .arrow_fn => return hir_mod.fnDeclOf(self.hir, node).flags.is_abstract,
+            .object_property => {
+                const op = hir_mod.objectPropertyOf(self.hir, node);
+                if (op.value == hir_mod.none_node_id) return false;
+                const vk = self.hir.kindOf(op.value);
+                if (vk == .fn_decl or vk == .fn_expr or vk == .arrow_fn) {
+                    return hir_mod.fnDeclOf(self.hir, op.value).flags.is_abstract;
+                }
+                return false;
+            },
+            else => return false,
         }
     }
 
@@ -12447,10 +12578,23 @@ pub const Checker = struct {
 
     fn checkObjectDestructuringAssignment(self: *Checker, target_node: NodeId, source_t: TypeId) CheckError!void {
         if (source_t == types.Primitive.any or source_t == types.Primitive.unknown) return;
+        var has_dynamic_computed_key = false;
         for (hir_mod.objectLiteralProps(self.hir, target_node)) |prop_node| {
-            if (self.hir.kindOf(prop_node) != .object_property) continue;
+            if (self.hir.kindOf(prop_node) != .object_property) {
+                if (has_dynamic_computed_key) {
+                    const rest_t = self.interner.internObjectType(&.{}) catch return error.OutOfMemory;
+                    try self.checkDestructuringAssignmentTarget(prop_node, rest_t);
+                }
+                continue;
+            }
             const op = hir_mod.objectPropertyOf(self.hir, prop_node);
             if (op.value == hir_mod.none_node_id) continue;
+            if (op.is_computed) {
+                const key_t = try self.checkExpression(op.key);
+                if (try self.reportMissingIndexForComputedBindingKey(op.key, source_t, key_t)) {
+                    has_dynamic_computed_key = true;
+                }
+            }
             const prop_t = (try self.objectPropertyTypeForDestructuring(source_t, op.key, op.is_computed)) orelse types.Primitive.any;
             if (self.hir.kindOf(op.value) == .assignment) {
                 const a = hir_mod.assignmentOf(self.hir, op.value);
@@ -12470,7 +12614,13 @@ pub const Checker = struct {
                     self.typeOfIdentifierDeclared(target_node)
                 else
                     try self.checkExpression(target_node);
-                if (target_t == types.Primitive.any or target_t == types.Primitive.unknown) return;
+                if (target_t == types.Primitive.none or target_t == types.Primitive.any or target_t == types.Primitive.unknown) return;
+                if (target_t == types.Primitive.undefined_t and
+                    self.hir.kindOf(target_node) == .identifier and
+                    self.identifierIsUntypedUninitializedVar(target_node))
+                {
+                    return;
+                }
                 if (!(self.engine.isAssignableTo(source_t, target_t) catch true)) {
                     try self.report(target_node, TsCodes.type_not_assignable, "Type is not assignable to target type.");
                 } else if (self.hir.kindOf(target_node) == .identifier and
@@ -12486,6 +12636,35 @@ pub const Checker = struct {
             .object_literal => try self.checkObjectDestructuringAssignment(target_node, source_t),
             else => {},
         }
+    }
+
+    fn identifierIsUntypedUninitializedVar(self: *Checker, node: NodeId) bool {
+        if (node == hir_mod.none_node_id or self.hir.kindOf(node) != .identifier) return false;
+        const id = hir_mod.identifierOf(self.hir, node);
+        const use_start = self.hir.spanOf(node).start;
+        var cur = self.hir.parentOf(node);
+        while (cur != hir_mod.none_node_id) : (cur = self.hir.parentOf(cur)) {
+            const stmts: ?[]const NodeId = switch (self.hir.kindOf(cur)) {
+                .block_stmt => hir_mod.blockStmts(self.hir, cur),
+                .namespace_decl => hir_mod.namespaceBody(self.hir, cur),
+                else => null,
+            };
+            if (stmts) |items| {
+                for (items) |stmt| {
+                    if (self.hir.spanOf(stmt).start >= use_start) break;
+                    const decl = if (self.hir.kindOf(stmt) == .export_decl) hir_mod.exportOf(self.hir, stmt).decl else stmt;
+                    if (decl == hir_mod.none_node_id) continue;
+                    const dk = self.hir.kindOf(decl);
+                    if (dk != .var_decl and dk != .let_decl and dk != .const_decl) continue;
+                    const v = hir_mod.varDeclOf(self.hir, decl);
+                    if (v.name == hir_mod.none_node_id or self.hir.kindOf(v.name) != .identifier) continue;
+                    if (hir_mod.identifierOf(self.hir, v.name).name != id.name) continue;
+                    return v.type_annotation == hir_mod.none_node_id and v.init == hir_mod.none_node_id;
+                }
+                return false;
+            }
+        }
+        return false;
     }
 
     fn destructuringSourceWithDefault(self: *Checker, source_t: TypeId, default_t: TypeId) !TypeId {
@@ -13114,6 +13293,64 @@ pub const Checker = struct {
             !self.typeIsEnumNominal(final_type)) return;
         try self.var_decl_types.put(self.gpa, key, final_type);
         try self.var_decl_explicit.put(self.gpa, key, has_annotation);
+    }
+
+    fn checkRepeatedObjectRestVarBinding(
+        self: *Checker,
+        pattern_node: NodeId,
+        name_node: NodeId,
+        name: hir_mod.StringId,
+        final_type: TypeId,
+    ) CheckError!void {
+        const decl = self.hir.parentOf(pattern_node);
+        if (decl == hir_mod.none_node_id or self.hir.kindOf(decl) != .var_decl) return;
+        const scope = self.hir.parentOf(decl);
+        if (scope == hir_mod.none_node_id) return;
+        const prior = self.previousVarDeclTypeInScope(scope, decl, name) orelse return;
+        if (self.repeatedVarTypesCompatible(prior, final_type)) return;
+        const name_text = self.string_interner.get(name);
+        const msg = try std.fmt.allocPrint(
+            self.diag_arena.allocator(),
+            "Subsequent variable declarations must have the same type. Variable '{s}' has a conflicting type.",
+            .{name_text},
+        );
+        try self.diagnostics.append(self.gpa, .{
+            .node = name_node,
+            .code = TsCodes.subsequent_var_type_mismatch,
+            .message = msg,
+        });
+    }
+
+    fn previousVarDeclTypeInScope(self: *Checker, scope: NodeId, before_decl: NodeId, name: hir_mod.StringId) ?TypeId {
+        const stmts: []const NodeId = switch (self.hir.kindOf(scope)) {
+            .block_stmt => hir_mod.blockStmts(self.hir, scope),
+            .namespace_decl => hir_mod.namespaceBody(self.hir, scope),
+            else => return null,
+        };
+        for (stmts) |stmt| {
+            if (stmt == before_decl) return null;
+            const decl = if (self.hir.kindOf(stmt) == .export_decl) hir_mod.exportOf(self.hir, stmt).decl else stmt;
+            if (decl == hir_mod.none_node_id) continue;
+            const dk = self.hir.kindOf(decl);
+            if (dk != .var_decl and dk != .let_decl and dk != .const_decl) continue;
+            const v = hir_mod.varDeclOf(self.hir, decl);
+            if (v.name == hir_mod.none_node_id or self.hir.kindOf(v.name) != .identifier) continue;
+            const id = hir_mod.identifierOf(self.hir, v.name);
+            if (id.name != name) continue;
+            const t = self.hir.typeOf(decl);
+            if (t != types.Primitive.none) return t;
+        }
+        return null;
+    }
+
+    fn repeatedVarTypesCompatible(self: *Checker, prior: TypeId, final_type: TypeId) bool {
+        if (self.isThisTypeParameter(prior) or self.isThisTypeParameter(final_type)) return false;
+        if (self.typeContainsUnknown(final_type)) return true;
+        if ((prior == types.Primitive.any or final_type == types.Primitive.any) and prior != final_type) return false;
+        if (self.engine.isIdenticalTo(prior, final_type) catch true) return true;
+        if (self.exactlyOneTypeIsUnion(prior, final_type)) return false;
+        return (self.engine.isAssignableTo(prior, final_type) catch true) and
+            (self.engine.isAssignableTo(final_type, prior) catch true);
     }
 
     fn exactlyOneTypeIsUnion(self: *Checker, a: TypeId, b: TypeId) bool {
@@ -13752,6 +13989,8 @@ pub const Checker = struct {
                     self.typeOfIdentifierDeclared(a.value)
                 else
                     value_t;
+                const target_is_destructuring = a.op == null and
+                    (self.hir.kindOf(a.target) == .array_literal or self.hir.kindOf(a.target) == .object_literal);
                 var assignment_result_t = value_t;
                 if (a.op == null) {
                     assignment_result_t = try self.flowTypeForAssignmentValue(a.value, value_t);
@@ -13789,6 +14028,9 @@ pub const Checker = struct {
                 if (a.op == null and self.hir.kindOf(a.target) == .array_literal) {
                     try self.checkArrayDestructuringAssignment(a.target, value_t, a.value);
                 }
+                if (a.op == null and self.hir.kindOf(a.target) == .object_literal) {
+                    try self.checkObjectDestructuringAssignment(a.target, value_t);
+                }
                 if (a.op == null and
                     self.hir.kindOf(a.value) == .array_literal and
                     target_t != types.Primitive.none and
@@ -13799,10 +14041,10 @@ pub const Checker = struct {
                 {
                     try self.report(node, TsCodes.type_not_assignable, "Type is not assignable to target type.");
                 }
-                if (a.op == null and self.classPrivateStructuralMismatch(target_t, value_t)) {
+                if (!target_is_destructuring and a.op == null and self.classPrivateStructuralMismatch(target_t, value_t)) {
                     try self.report(node, TsCodes.type_not_assignable, "Type is not assignable to declared type.");
                 }
-                if (a.op == null and
+                if (!target_is_destructuring and a.op == null and
                     target_t != types.Primitive.none and
                     target_t != types.Primitive.any and
                     target_t != types.Primitive.unknown)
@@ -26281,6 +26523,45 @@ test "checker: computed class override checks base computed members" {
     try T.expect(saw_not_base);
 }
 
+test "checker: dynamic computed override reports TS4127" {
+    const s = try newSetup(
+        \\let prop = "foo";
+        \\const sym: symbol = Symbol();
+        \\class A { [prop]() {} [sym]() {} }
+        \\class B extends A {
+        \\  override [prop]() {}
+        \\  override [sym]() {}
+        \\}
+    );
+    defer destroySetup(s);
+    s.checker.setStrictFlags(.{ .no_implicit_override = true });
+    try s.checker.checkSourceFile(s.root);
+    var count: usize = 0;
+    for (s.checker.diagnostics.items) |d| {
+        if (d.code == TsCodes.override_dynamic_name) count += 1;
+    }
+    try T.expectEqual(@as(usize, 2), count);
+}
+
+test "checker: abstract override signatures do not require implementation" {
+    const s = try newSetup(
+        \\abstract class Base {
+        \\  abstract foo(): unknown;
+        \\  abstract bar(): void;
+        \\}
+        \\abstract class Sub extends Base {
+        \\  abstract override foo(): number;
+        \\  bar() {}
+        \\}
+    );
+    defer destroySetup(s);
+    s.checker.setStrictFlags(.{ .no_implicit_override = true });
+    try s.checker.checkSourceFile(s.root);
+    for (s.checker.diagnostics.items) |d| {
+        try T.expect(d.code != TsCodes.implementation_missing);
+    }
+}
+
 test "checker: computed class member key expressions are checked" {
     const s = try newSetup(
         \\class C {
@@ -33840,6 +34121,29 @@ test "checker: destructuring assignment records default and computed-key flow" {
     for (s.checker.diagnostics.items) |d| {
         try T.expect(d.code != TsCodes.type_not_assignable);
     }
+}
+
+test "checker: object rest with dynamic computed keys checks index signatures and rest target" {
+    const s = try newSetup(
+        \\var o = { a: 1, b: "no" };
+        \\let computed = "b";
+        \\let computed2 = "a";
+        \\var { [computed]: stillNotGreat, [computed2]: soSo, ...o } = o;
+        \\({ [computed]: stillNotGreat, [computed2]: soSo, ...o } = o);
+    );
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+    var index_count: usize = 0;
+    var var_mismatch = false;
+    var assignment_mismatch = false;
+    for (s.checker.diagnostics.items) |d| {
+        if (d.code == TsCodes.no_matching_index_signature) index_count += 1;
+        if (d.code == TsCodes.subsequent_var_type_mismatch) var_mismatch = true;
+        if (d.code == TsCodes.type_not_assignable) assignment_mismatch = true;
+    }
+    try T.expect(index_count >= 2);
+    try T.expect(var_mismatch);
+    try T.expect(assignment_mismatch);
 }
 
 test "checker: array binding parameter rejects non-array iterator object" {
