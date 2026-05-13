@@ -476,6 +476,7 @@ pub const Checker = struct {
     /// leak in.
     narrow_lookup_floor: usize,
     declared_identifier_lookup: bool,
+    report_unresolved_in_namespace_scope: bool,
     /// Parallel stack of member-access narrows keyed by
     /// `(obj_name, prop_name)`. Populated by `applyTypeGuard` when
     /// a guard's LHS is a member-access on an identifier root (e.g.
@@ -760,6 +761,7 @@ pub const Checker = struct {
             .narrow_scopes = .empty,
             .narrow_lookup_floor = 0,
             .declared_identifier_lookup = false,
+            .report_unresolved_in_namespace_scope = false,
             .member_narrow_scopes = .empty,
             .class_instance_types = .empty,
             .checked_class_decls = .empty,
@@ -1323,7 +1325,7 @@ pub const Checker = struct {
                 if (ts.finally_block != hir_mod.none_node_id) try self.checkStatement(ts.finally_block);
                 try self.checkUnusedCatchParam(node);
             },
-            .namespace_decl => try self.checkNamespaceTypeStatements(node),
+            .namespace_decl, .module_decl => try self.checkNamespaceTypeStatements(node),
             .switch_stmt => try self.checkSwitchStatement(node),
             // Expressions used as statements.
             else => {
@@ -1429,7 +1431,24 @@ pub const Checker = struct {
                 .export_decl => {
                     const ex = hir_mod.exportOf(self.hir, s);
                     if (ex.decl == hir_mod.none_node_id) continue;
-                    switch (self.hir.kindOf(ex.decl)) {
+                    const decl_kind = self.hir.kindOf(ex.decl);
+                    if (self.isExportAssignmentDecl(s)) {
+                        if (decl_kind == .identifier) {
+                            const id = hir_mod.identifierOf(self.hir, ex.decl);
+                            if (!self.isBuiltinName(id.name) and !self.namespaceBodyDeclaresValueName(hir_mod.namespaceBody(self.hir, node), id.name)) {
+                                try self.reportCannotFindNamePlain(ex.decl, id.name);
+                            } else {
+                                _ = try self.checkExpression(ex.decl);
+                            }
+                            continue;
+                        }
+                        const old_report = self.report_unresolved_in_namespace_scope;
+                        self.report_unresolved_in_namespace_scope = true;
+                        defer self.report_unresolved_in_namespace_scope = old_report;
+                        _ = try self.checkExpression(ex.decl);
+                        continue;
+                    }
+                    switch (decl_kind) {
                         .class_decl,
                         .interface_decl,
                         .enum_decl,
@@ -1472,6 +1491,18 @@ pub const Checker = struct {
                 try self.report(spec_node, TsCodes.export_non_local_declaration, "Cannot export 'globalThis'. Only local declarations can be exported from a module.");
             }
         }
+    }
+
+    fn namespaceBodyDeclaresValueName(self: *Checker, stmts: []const NodeId, name: hir_mod.StringId) bool {
+        for (stmts) |raw| {
+            const stmt = self.unwrapExportDecl(raw);
+            const k = self.hir.kindOf(stmt);
+            if (k == .interface_decl or k == .type_alias_decl) continue;
+            if (self.declarationName(stmt)) |decl_name| {
+                if (decl_name == name) return true;
+            }
+        }
+        return false;
     }
 
     fn namespaceNameIs(self: *Checker, node: NodeId, name: []const u8) bool {
@@ -19328,7 +19359,7 @@ pub const Checker = struct {
             cur = self.hir.parentOf(cur);
         }
 
-        if (saw_namespace_scope) return types.Primitive.any;
+        if (saw_namespace_scope and !self.report_unresolved_in_namespace_scope) return types.Primitive.any;
 
         if (self.moduleNamespaceTypeForLocalImport(id.name, node) catch null) |ns_t| return ns_t;
         if (self.virtualImportTypeForLocal(id.name, node) catch null) |import_t| return import_t;
@@ -20001,6 +20032,19 @@ pub const Checker = struct {
         try self.diagnostics.append(self.gpa, .{
             .node = node,
             .code = if (has_suggestion) TsCodes.cannot_find_name_did_you_mean else TsCodes.cannot_find_name,
+            .message = msg,
+        });
+    }
+
+    fn reportCannotFindNamePlain(self: *Checker, node: NodeId, name: hir_mod.StringId) !void {
+        const msg = try std.fmt.allocPrint(
+            self.diag_arena.allocator(),
+            "Cannot find name '{s}'.",
+            .{self.string_interner.get(name)},
+        );
+        try self.diagnostics.append(self.gpa, .{
+            .node = node,
+            .code = TsCodes.cannot_find_name,
             .message = msg,
         });
     }
@@ -25665,6 +25709,35 @@ test "checker: export assignments are scoped by virtual filename sections" {
     try b.base.checker.checkSourceFile(b.base.root);
     for (b.base.checker.diagnostics.items) |d| {
         try T.expect(d.code != TsCodes.export_assignment_with_other_exports);
+    }
+}
+
+test "checker: ambient module export assignment checks expression name" {
+    const b = try newBoundSetup(
+        \\declare module "M" {
+        \\  export = A;
+        \\}
+    );
+    defer destroyBoundSetup(b);
+    try b.base.checker.checkSourceFile(b.base.root);
+    var found = false;
+    for (b.base.checker.diagnostics.items) |d| {
+        if (d.code == TsCodes.cannot_find_name) found = true;
+    }
+    try T.expect(found);
+}
+
+test "checker: ambient module export assignment accepts local value target" {
+    const b = try newBoundSetup(
+        \\declare module "M" {
+        \\  const A: number;
+        \\  export = A;
+        \\}
+    );
+    defer destroyBoundSetup(b);
+    try b.base.checker.checkSourceFile(b.base.root);
+    for (b.base.checker.diagnostics.items) |d| {
+        try T.expect(d.code != TsCodes.cannot_find_name);
     }
 }
 
