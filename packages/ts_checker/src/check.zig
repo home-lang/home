@@ -183,6 +183,8 @@ pub const TsCodes = struct {
     pub const cannot_assign_const: u32 = 2588;
     pub const property_used_before_initialization: u32 = 2729;
     pub const await_only_in_async: u32 = 1308;
+    pub const await_in_class_static_block: u32 = 18037;
+    pub const reserved_word_cannot_be_used_here: u32 = 1359;
     pub const generator_void_return: u32 = 2505;
     pub const yield_star_not_iterable: u32 = 2488;
     pub const for_of_lhs_invalid: u32 = 2487;
@@ -1089,6 +1091,7 @@ pub const Checker = struct {
     }
 
     fn checkStatement(self: *Checker, node: NodeId) CheckError!void {
+        try self.checkStaticBlockReservedAwaitBinding(node);
         switch (self.hir.kindOf(node)) {
             .var_decl, .let_decl, .const_decl => try self.checkVarDecl(node),
             .fn_decl, .fn_expr, .arrow_fn => try self.checkFnDeclWithFlowBoundary(node),
@@ -1104,6 +1107,9 @@ pub const Checker = struct {
                 // "m"`) have no inner decl and are handled later by
                 // cross-file resolution.
                 const ex = hir_mod.exportOf(self.hir, node);
+                if (self.string_interner.get(ex.module).len != 0 and self.nodeSourceContainsImportAttributes(node)) {
+                    try self.report(node, TsCodes.type_not_assignable, "Import attributes are not valid on this export declaration.");
+                }
                 try self.checkNamedExportLocals(node, ex);
                 if (ex.decl != hir_mod.none_node_id) {
                     // isolatedModules: `export const enum E { ... }`
@@ -1317,6 +1323,70 @@ pub const Checker = struct {
                 }
             },
         }
+    }
+
+    fn checkStaticBlockReservedAwaitBinding(self: *Checker, node: NodeId) CheckError!void {
+        if (!self.nodeIsInClassStaticBlockBeforeFunction(node)) return;
+        const await_id = self.string_interner.intern("await") catch return error.OutOfMemory;
+        switch (self.hir.kindOf(node)) {
+            .var_decl, .let_decl, .const_decl => {
+                const v = hir_mod.varDeclOf(self.hir, node);
+                if (self.bindingPatternDeclaresName(v.name, await_id)) {
+                    try self.report(node, TsCodes.reserved_word_cannot_be_used_here, "Identifier expected. 'await' is a reserved word that cannot be used here.");
+                }
+            },
+            .fn_decl => {
+                const f = hir_mod.fnDeclOf(self.hir, node);
+                if (f.name != hir_mod.none_node_id and self.hir.kindOf(f.name) == .identifier and
+                    hir_mod.identifierOf(self.hir, f.name).name == await_id)
+                {
+                    try self.report(f.name, TsCodes.reserved_word_cannot_be_used_here, "Identifier expected. 'await' is a reserved word that cannot be used here.");
+                }
+            },
+            .class_decl => {
+                const c = hir_mod.classOf(self.hir, node);
+                if (c.name != hir_mod.none_node_id and self.hir.kindOf(c.name) == .identifier and
+                    hir_mod.identifierOf(self.hir, c.name).name == await_id)
+                {
+                    try self.report(c.name, TsCodes.reserved_word_cannot_be_used_here, "Identifier expected. 'await' is a reserved word that cannot be used here.");
+                }
+            },
+            else => {},
+        }
+    }
+
+    fn bindingPatternDeclaresName(self: *Checker, node: NodeId, name: hir_mod.StringId) bool {
+        if (node == hir_mod.none_node_id) return false;
+        switch (self.hir.kindOf(node)) {
+            .identifier => return hir_mod.identifierOf(self.hir, node).name == name,
+            .object_pattern, .array_pattern => {
+                const p = hir_mod.patternOf(self.hir, node);
+                for (self.hir.childSlice(p.elements_start, p.elements_len)) |elem| {
+                    if (self.hir.kindOf(elem) != .parameter) continue;
+                    const pp = hir_mod.parameterOf(self.hir, elem);
+                    if (self.bindingPatternDeclaresName(pp.name, name)) return true;
+                }
+                return false;
+            },
+            else => return false,
+        }
+    }
+
+    fn nodeIsInClassStaticBlockBeforeFunction(self: *Checker, node: NodeId) bool {
+        var cur = node;
+        while (cur != hir_mod.none_node_id) : (cur = self.hir.parentOf(cur)) {
+            const k = self.hir.kindOf(cur);
+            if (cur != node and (k == .fn_decl or k == .fn_expr or k == .arrow_fn)) return false;
+            if (k != .block_stmt) continue;
+            const parent = self.hir.parentOf(cur);
+            if (parent == hir_mod.none_node_id) continue;
+            const pk = self.hir.kindOf(parent);
+            if (pk != .class_decl and pk != .class_expr) continue;
+            for (hir_mod.classMembers(self.hir, parent)) |member| {
+                if (member == cur) return true;
+            }
+        }
+        return false;
     }
 
     fn checkNamespaceTypeStatements(self: *Checker, node: NodeId) CheckError!void {
@@ -4553,12 +4623,22 @@ pub const Checker = struct {
         const optional_any = self.interner.internUnion(&any_or_undefined_members) catch return error.OutOfMemory;
         const then_params = [_]TypeId{ cb_sig, optional_any };
         const then_sig = self.interner.internSignature(&then_params, types.Primitive.any, false) catch return error.OutOfMemory;
+        const finally_cb_sig = self.interner.internSignature(&[_]TypeId{}, types.Primitive.any, false) catch return error.OutOfMemory;
+        const finally_sig = self.interner.internSignature(&[_]TypeId{finally_cb_sig}, types.Primitive.any, false) catch return error.OutOfMemory;
         const then_id = self.string_interner.intern("then") catch return error.OutOfMemory;
+        const finally_id = self.string_interner.intern("finally") catch return error.OutOfMemory;
         const value_id = self.string_interner.intern("__home_promise_value") catch return error.OutOfMemory;
         const members = [_]types.ObjectMember{
             .{
                 .name = then_id,
                 .type = then_sig,
+                .is_optional = false,
+                .is_readonly = false,
+                .is_method = true,
+            },
+            .{
+                .name = finally_id,
+                .type = finally_sig,
                 .is_optional = false,
                 .is_readonly = false,
                 .is_method = true,
@@ -7037,6 +7117,11 @@ pub const Checker = struct {
         try self.recordMemberPredicatesForReceiver(static_t, &static_member_predicates);
         if (parent_instance_t) |pt| try self.copyMemberPredicatesFromReceiver(instance_t, pt);
         self.hir.setType(node, if (self.hir.kindOf(node) == .class_expr) static_t else instance_t);
+        const class_name_for_static_order: ?hir_mod.StringId = if (c.name != hir_mod.none_node_id and self.hir.kindOf(c.name) == .identifier)
+            hir_mod.identifierOf(self.hir, c.name).name
+        else
+            null;
+        try self.checkStaticInitializationOrder(class_name_for_static_order, members);
         if (c.name != hir_mod.none_node_id and self.hir.kindOf(c.name) == .identifier) {
             const cid = hir_mod.identifierOf(self.hir, c.name);
             try self.checkMergedNamespaceStaticConflicts(node, cid.name, &static_names);
@@ -7185,6 +7270,18 @@ pub const Checker = struct {
             null;
         const instance_this_t = try self.classThisType(instance_t);
         for (members) |m| switch (self.hir.kindOf(m)) {
+            .block_stmt => {
+                const old_floor = self.narrow_lookup_floor;
+                self.narrow_lookup_floor = self.narrow_scopes.items.len;
+                errdefer self.narrow_lookup_floor = old_floor;
+                try self.pushNarrowScope();
+                errdefer self.popNarrowScope();
+                try self.recordNarrow(this_id, static_t);
+                if (static_super_t) |st| try self.recordNarrow(super_id, st);
+                try self.checkStatement(m);
+                self.popNarrowScope();
+                self.narrow_lookup_floor = old_floor;
+            },
             .fn_decl, .fn_expr, .arrow_fn => {
                 const fn_p = hir_mod.fnDeclOf(self.hir, m);
                 const old_floor = self.narrow_lookup_floor;
@@ -8320,6 +8417,186 @@ pub const Checker = struct {
         }
     }
 
+    fn checkStaticInitializationOrder(
+        self: *Checker,
+        class_name: ?hir_mod.StringId,
+        members: []const NodeId,
+    ) CheckError!void {
+        var declared_static_fields: std.AutoHashMapUnmanaged(hir_mod.StringId, void) = .empty;
+        defer declared_static_fields.deinit(self.gpa);
+        for (members) |member| {
+            if (self.hir.kindOf(member) != .object_property) continue;
+            const op = hir_mod.objectPropertyOf(self.hir, member);
+            if (!op.is_static) continue;
+            const name = (try self.classMemberNameFromPropertyKey(op.key, op.is_computed)) orelse continue;
+            try declared_static_fields.put(self.gpa, name, {});
+        }
+
+        var initialized_static_fields: std.AutoHashMapUnmanaged(hir_mod.StringId, void) = .empty;
+        defer initialized_static_fields.deinit(self.gpa);
+        for (members) |member| {
+            switch (self.hir.kindOf(member)) {
+                .block_stmt => try self.reportStaticFutureFieldReads(member, class_name, &declared_static_fields, &initialized_static_fields),
+                .object_property => {
+                    const op = hir_mod.objectPropertyOf(self.hir, member);
+                    if (!op.is_static) continue;
+                    if (op.value != hir_mod.none_node_id) {
+                        try self.reportStaticFutureFieldReads(op.value, class_name, &declared_static_fields, &initialized_static_fields);
+                    }
+                    if ((try self.classMemberNameFromPropertyKey(op.key, op.is_computed))) |name| {
+                        try initialized_static_fields.put(self.gpa, name, {});
+                    }
+                },
+                else => {},
+            }
+        }
+    }
+
+    fn reportStaticFutureFieldReads(
+        self: *Checker,
+        node: NodeId,
+        class_name: ?hir_mod.StringId,
+        declared_static_fields: *const std.AutoHashMapUnmanaged(hir_mod.StringId, void),
+        initialized_static_fields: *const std.AutoHashMapUnmanaged(hir_mod.StringId, void),
+    ) CheckError!void {
+        if (node == hir_mod.none_node_id) return;
+        switch (self.hir.kindOf(node)) {
+            .member_access => {
+                const m = hir_mod.memberOf(self.hir, node);
+                if (declared_static_fields.contains(m.name) and !initialized_static_fields.contains(m.name) and
+                    self.staticMemberAccessUsesCurrentClass(m.object, class_name))
+                {
+                    const name_text = self.string_interner.get(m.name);
+                    const msg = try std.fmt.allocPrint(
+                        self.diag_arena.allocator(),
+                        "Property '{s}' is used before its initialization.",
+                        .{name_text},
+                    );
+                    try self.diagnostics.append(self.gpa, .{
+                        .node = node,
+                        .code = TsCodes.property_used_before_initialization,
+                        .message = msg,
+                    });
+                }
+                try self.reportStaticFutureFieldReads(m.object, class_name, declared_static_fields, initialized_static_fields);
+            },
+            .element_access => {
+                const e = hir_mod.elementOf(self.hir, node);
+                try self.reportStaticFutureFieldReads(e.object, class_name, declared_static_fields, initialized_static_fields);
+                try self.reportStaticFutureFieldReads(e.index, class_name, declared_static_fields, initialized_static_fields);
+            },
+            .call_expr, .new_expr => {
+                const c = hir_mod.callOf(self.hir, node);
+                try self.reportStaticFutureFieldReads(c.callee, class_name, declared_static_fields, initialized_static_fields);
+                for (hir_mod.callArgs(self.hir, node)) |arg| {
+                    try self.reportStaticFutureFieldReads(arg, class_name, declared_static_fields, initialized_static_fields);
+                }
+            },
+            .binary_op => {
+                const b = hir_mod.binopOf(self.hir, node);
+                try self.reportStaticFutureFieldReads(b.lhs, class_name, declared_static_fields, initialized_static_fields);
+                try self.reportStaticFutureFieldReads(b.rhs, class_name, declared_static_fields, initialized_static_fields);
+            },
+            .logical_op => {
+                const l = hir_mod.logicalOf(self.hir, node);
+                try self.reportStaticFutureFieldReads(l.lhs, class_name, declared_static_fields, initialized_static_fields);
+                try self.reportStaticFutureFieldReads(l.rhs, class_name, declared_static_fields, initialized_static_fields);
+            },
+            .assignment => {
+                const a = hir_mod.assignmentOf(self.hir, node);
+                if (a.op == null) {
+                    try self.reportStaticAssignmentTargetReads(a.target, class_name, declared_static_fields, initialized_static_fields);
+                } else {
+                    try self.reportStaticFutureFieldReads(a.target, class_name, declared_static_fields, initialized_static_fields);
+                }
+                try self.reportStaticFutureFieldReads(a.value, class_name, declared_static_fields, initialized_static_fields);
+            },
+            .conditional => {
+                const c = hir_mod.conditionalOf(self.hir, node);
+                try self.reportStaticFutureFieldReads(c.cond, class_name, declared_static_fields, initialized_static_fields);
+                try self.reportStaticFutureFieldReads(c.then_branch, class_name, declared_static_fields, initialized_static_fields);
+                try self.reportStaticFutureFieldReads(c.else_branch, class_name, declared_static_fields, initialized_static_fields);
+            },
+            .array_literal => for (hir_mod.arrayLiteralElements(self.hir, node)) |elem| {
+                try self.reportStaticFutureFieldReads(elem, class_name, declared_static_fields, initialized_static_fields);
+            },
+            .object_literal => for (hir_mod.objectLiteralProps(self.hir, node)) |prop| {
+                if (self.hir.kindOf(prop) == .object_property) {
+                    const op = hir_mod.objectPropertyOf(self.hir, prop);
+                    if (op.is_computed) try self.reportStaticFutureFieldReads(op.key, class_name, declared_static_fields, initialized_static_fields);
+                    try self.reportStaticFutureFieldReads(op.value, class_name, declared_static_fields, initialized_static_fields);
+                } else {
+                    try self.reportStaticFutureFieldReads(prop, class_name, declared_static_fields, initialized_static_fields);
+                }
+            },
+            .block_stmt => for (hir_mod.blockStmts(self.hir, node)) |stmt| {
+                try self.reportStaticFutureFieldReads(stmt, class_name, declared_static_fields, initialized_static_fields);
+            },
+            .return_stmt => {
+                const r = hir_mod.returnOf(self.hir, node);
+                try self.reportStaticFutureFieldReads(r.value, class_name, declared_static_fields, initialized_static_fields);
+            },
+            .var_decl, .let_decl, .const_decl => {
+                const v = hir_mod.varDeclOf(self.hir, node);
+                try self.reportStaticFutureFieldReads(v.init, class_name, declared_static_fields, initialized_static_fields);
+            },
+            .as_expr, .satisfies_expr, .type_assertion, .non_null_expr => {
+                const a = hir_mod.asExpressionOf(self.hir, node);
+                try self.reportStaticFutureFieldReads(a.expr, class_name, declared_static_fields, initialized_static_fields);
+            },
+            .await_expr => {
+                const a = hir_mod.awaitExprOf(self.hir, node);
+                try self.reportStaticFutureFieldReads(a.expr, class_name, declared_static_fields, initialized_static_fields);
+            },
+            else => {},
+        }
+    }
+
+    fn reportStaticAssignmentTargetReads(
+        self: *Checker,
+        node: NodeId,
+        class_name: ?hir_mod.StringId,
+        declared_static_fields: *const std.AutoHashMapUnmanaged(hir_mod.StringId, void),
+        initialized_static_fields: *const std.AutoHashMapUnmanaged(hir_mod.StringId, void),
+    ) CheckError!void {
+        if (node == hir_mod.none_node_id) return;
+        switch (self.hir.kindOf(node)) {
+            .member_access => {
+                const m = hir_mod.memberOf(self.hir, node);
+                try self.reportStaticFutureFieldReads(m.object, class_name, declared_static_fields, initialized_static_fields);
+            },
+            .element_access => {
+                const e = hir_mod.elementOf(self.hir, node);
+                try self.reportStaticFutureFieldReads(e.object, class_name, declared_static_fields, initialized_static_fields);
+                try self.reportStaticFutureFieldReads(e.index, class_name, declared_static_fields, initialized_static_fields);
+            },
+            .array_literal => for (hir_mod.arrayLiteralElements(self.hir, node)) |elem| {
+                try self.reportStaticAssignmentTargetReads(elem, class_name, declared_static_fields, initialized_static_fields);
+            },
+            .object_literal => for (hir_mod.objectLiteralProps(self.hir, node)) |prop| {
+                if (self.hir.kindOf(prop) == .object_property) {
+                    const op = hir_mod.objectPropertyOf(self.hir, prop);
+                    if (op.is_computed) try self.reportStaticFutureFieldReads(op.key, class_name, declared_static_fields, initialized_static_fields);
+                    try self.reportStaticAssignmentTargetReads(op.value, class_name, declared_static_fields, initialized_static_fields);
+                } else {
+                    try self.reportStaticAssignmentTargetReads(prop, class_name, declared_static_fields, initialized_static_fields);
+                }
+            },
+            else => try self.reportStaticFutureFieldReads(node, class_name, declared_static_fields, initialized_static_fields),
+        }
+    }
+
+    fn staticMemberAccessUsesCurrentClass(self: *Checker, object: NodeId, class_name: ?hir_mod.StringId) bool {
+        if (object == hir_mod.none_node_id) return false;
+        if (self.nodeIsThisReference(object)) return true;
+        if (class_name) |name| {
+            if (self.hir.kindOf(object) == .identifier) {
+                return hir_mod.identifierOf(self.hir, object).name == name;
+            }
+        }
+        return false;
+    }
+
     fn checkPrivateBaseRedeclarations(
         self: *Checker,
         node: NodeId,
@@ -8581,7 +8858,10 @@ pub const Checker = struct {
             return;
         }
         if (std.mem.endsWith(u8, spec, ".json")) {
-            if (self.strict_flags.resolve_json_module) return;
+            if (self.strict_flags.resolve_json_module or
+                self.nodeSourceContainsImportAttributes(node) or
+                self.sourceContainsImportAttributesForSpecifier(spec) or
+                try self.virtualJsonModuleExists(node, spec)) return;
             const msg = try std.fmt.allocPrint(
                 self.diag_arena.allocator(),
                 "Cannot find module '{s}' or its corresponding type declarations.",
@@ -8593,6 +8873,9 @@ pub const Checker = struct {
                 .message = msg,
             });
             return;
+        }
+        if (imp.is_type_only and self.nodeSourceContainsImportAttributes(node)) {
+            try self.report(node, TsCodes.type_not_assignable, "Import attributes are not valid on type-only imports.");
         }
         if (std.mem.startsWith(u8, spec, ".")) {
             try self.checkNamedImportSpecifiers(node, imp, spec);
@@ -8626,6 +8909,50 @@ pub const Checker = struct {
             .code = TsCodes.cannot_find_module,
             .message = msg,
         });
+    }
+
+    fn nodeSourceContainsImportAttributes(self: *Checker, node: NodeId) bool {
+        const src = self.source orelse return false;
+        const sp = self.hir.spanOf(node);
+        if (sp.start >= sp.end or sp.end > src.len) return false;
+        const text = src[sp.start..sp.end];
+        return std.mem.indexOf(u8, text, " with") != null or
+            std.mem.indexOf(u8, text, " assert") != null;
+    }
+
+    fn sourceContainsImportAttributesForSpecifier(self: *Checker, spec: []const u8) bool {
+        const src = self.source orelse return false;
+        var search_start: usize = 0;
+        while (std.mem.indexOfPos(u8, src, search_start, spec)) |pos| {
+            search_start = pos + spec.len;
+            const end = std.mem.indexOfScalarPos(u8, src, search_start, ';') orelse @min(src.len, search_start + 160);
+            const tail = src[search_start..@min(end, src.len)];
+            if (std.mem.indexOf(u8, tail, "with") != null or std.mem.indexOf(u8, tail, "assert") != null) return true;
+        }
+        return false;
+    }
+
+    fn virtualJsonModuleExists(self: *Checker, node: NodeId, spec: []const u8) CheckError!bool {
+        if (!self.sourceHasVirtualFilenameSections() or !std.mem.startsWith(u8, spec, ".")) return false;
+        const from = self.virtualSectionFilenameForNode(node) orelse return false;
+        const resolved = try self.resolveVirtualRelativePath(from, spec);
+        defer self.gpa.free(resolved);
+        if (self.virtualSourceHasFilename(resolved)) return true;
+        var tail = spec;
+        while (std.mem.startsWith(u8, tail, "./")) tail = tail[2..];
+        if (std.mem.lastIndexOfScalar(u8, tail, '/')) |slash| tail = tail[slash + 1 ..];
+        const src = self.source orelse return false;
+        var lines = std.mem.splitScalar(u8, src, '\n');
+        while (lines.next()) |raw| {
+            const line = std.mem.trim(u8, raw, " \t\r");
+            const marker = std.mem.indexOf(u8, line, "@filename:") orelse
+                (std.mem.indexOf(u8, line, "@Filename:") orelse continue);
+            var path = std.mem.trim(u8, line[marker + "@filename:".len ..], " \t\r");
+            while (std.mem.startsWith(u8, path, "/")) path = path[1..];
+            if (std.mem.lastIndexOfScalar(u8, path, '/')) |slash| path = path[slash + 1 ..];
+            if (std.mem.eql(u8, path, tail)) return true;
+        }
+        return false;
     }
 
     const VirtualModuleResolution = enum {
@@ -8712,7 +9039,6 @@ pub const Checker = struct {
             self.gpa.free(path);
             return .declaration;
         }
-        if (try self.virtualTypesPackageHasDeclaration(spec)) return .declaration;
 
         if (try self.virtualPackageHasImplementation("node_modules", package_name, subpath)) return .implementation;
         if (subpath.len == 0 and try self.virtualPackageHasAnyImplementation("node_modules", package_name)) return .implementation;
@@ -8868,6 +9194,7 @@ pub const Checker = struct {
                 if (try self.virtualPackageDeclarationFilenameAt(root, package_name, prefix, subpath, ".d.ts")) |path| return path;
             }
         }
+        if (try self.virtualAnyTypesPackageDeclarationFilename(spec)) |path| return path;
         if (subpath.len > 0) {
             for (roots) |root| {
                 for (prefixes) |prefix| {
@@ -8930,16 +9257,59 @@ pub const Checker = struct {
     }
 
     fn virtualTypesPackageHasDeclaration(self: *Checker, spec: []const u8) CheckError!bool {
-        if (!std.mem.startsWith(u8, spec, "@")) return false;
+        const path = (try self.virtualAnyTypesPackageDeclarationFilename(spec)) orelse return false;
+        self.gpa.free(path);
+        return true;
+    }
+
+    fn virtualAnyTypesPackageDeclarationFilename(self: *Checker, spec: []const u8) CheckError!?[]u8 {
+        if (std.mem.startsWith(u8, spec, ".")) return null;
         const slash = packageNameEnd(spec);
         const package_name = spec[0..slash];
         const subpath = if (slash < spec.len) spec[slash + 1 ..] else "";
-        const scoped_slash = std.mem.indexOfScalar(u8, package_name[1..], '/') orelse return false;
-        const scope = package_name[1 .. 1 + scoped_slash];
-        const name = package_name[1 + scoped_slash + 1 ..];
-        const types_pkg = try std.fmt.allocPrint(self.gpa, "@types/{s}__{s}", .{ scope, name });
+        const types_pkg = if (std.mem.startsWith(u8, package_name, "@")) blk: {
+            const scoped_slash = std.mem.indexOfScalar(u8, package_name[1..], '/') orelse return null;
+            const scope = package_name[1 .. 1 + scoped_slash];
+            const name = package_name[1 + scoped_slash + 1 ..];
+            break :blk try std.fmt.allocPrint(self.gpa, "@types/{s}__{s}", .{ scope, name });
+        } else try std.fmt.allocPrint(self.gpa, "@types/{s}", .{package_name});
         defer self.gpa.free(types_pkg);
-        return try self.virtualPackageHasDeclaration("node_modules", types_pkg, subpath);
+        const needle = try std.fmt.allocPrint(self.gpa, "node_modules/{s}/", .{types_pkg});
+        defer self.gpa.free(needle);
+        const src = self.source orelse return null;
+        var lines = std.mem.splitScalar(u8, src, '\n');
+        while (lines.next()) |raw| {
+            const line = std.mem.trim(u8, raw, " \t\r");
+            const marker = std.mem.indexOf(u8, line, "@filename:") orelse
+                (std.mem.indexOf(u8, line, "@Filename:") orelse continue);
+            var path = std.mem.trim(u8, line[marker + "@filename:".len ..], " \t\r");
+            while (std.mem.startsWith(u8, path, "/")) path = path[1..];
+            const pos = std.mem.indexOf(u8, path, needle) orelse continue;
+            const rest = path[pos + needle.len ..];
+            if (!virtualTypesPackageRestMatches(rest, subpath)) continue;
+            return try self.gpa.dupe(u8, path);
+        }
+        return null;
+    }
+
+    fn virtualTypesPackageRestMatches(rest: []const u8, subpath: []const u8) bool {
+        if (std.mem.eql(u8, rest, "package.json")) return false;
+        if (subpath.len == 0) {
+            return std.mem.endsWith(u8, rest, ".d.ts") or
+                std.mem.endsWith(u8, rest, ".ts") or
+                std.mem.endsWith(u8, rest, ".tsx");
+        }
+        if (std.mem.startsWith(u8, rest, subpath)) {
+            const tail = rest[subpath.len..];
+            if (std.mem.eql(u8, tail, ".d.ts") or
+                std.mem.eql(u8, tail, ".ts") or
+                std.mem.eql(u8, tail, ".tsx")) return true;
+            if (std.mem.startsWith(u8, tail, "/index") and
+                (std.mem.endsWith(u8, tail, ".d.ts") or
+                    std.mem.endsWith(u8, tail, ".ts") or
+                    std.mem.endsWith(u8, tail, ".tsx"))) return true;
+        }
+        return false;
     }
 
     fn virtualSourceHasFilenameWithExtOrIndex(self: *Checker, base: []const u8, ext: []const u8) bool {
@@ -13549,7 +13919,7 @@ pub const Checker = struct {
                     if (hir_mod.identifierOf(self.hir, v.name).name != id.name) continue;
                     return v.type_annotation == hir_mod.none_node_id and v.init == hir_mod.none_node_id;
                 }
-                return false;
+                continue;
             }
         }
         return false;
@@ -14893,6 +15263,10 @@ pub const Checker = struct {
                     value_t;
                 const target_is_destructuring = a.op == null and
                     (self.hir.kindOf(a.target) == .array_literal or self.hir.kindOf(a.target) == .object_literal);
+                const target_is_untyped_uninitialized_var =
+                    self.hir.kindOf(a.target) == .identifier and
+                    target_t == types.Primitive.undefined_t and
+                    self.identifierIsUntypedUninitializedVar(a.target);
                 var assignment_result_t = value_t;
                 if (a.op == null) {
                     assignment_result_t = try self.flowTypeForAssignmentValue(a.value, value_t);
@@ -14943,10 +15317,10 @@ pub const Checker = struct {
                 {
                     try self.report(node, TsCodes.type_not_assignable, "Type is not assignable to target type.");
                 }
-                if (!target_is_destructuring and a.op == null and self.classPrivateStructuralMismatch(target_t, value_t)) {
+                if (!target_is_destructuring and !target_is_untyped_uninitialized_var and a.op == null and self.classPrivateStructuralMismatch(target_t, value_t)) {
                     try self.report(node, TsCodes.type_not_assignable, "Type is not assignable to declared type.");
                 }
-                if (!target_is_destructuring and a.op == null and
+                if (!target_is_destructuring and !target_is_untyped_uninitialized_var and a.op == null and
                     target_t != types.Primitive.none and
                     target_t != types.Primitive.any and
                     target_t != types.Primitive.unknown)
@@ -15995,6 +16369,9 @@ pub const Checker = struct {
                 // through.
                 const a = hir_mod.awaitExprOf(self.hir, node);
                 const inner_t = try self.checkExpression(a.expr);
+                if (self.nodeIsInClassStaticBlockBeforeFunction(node)) {
+                    try self.report(node, TsCodes.await_in_class_static_block, "'await' expression cannot be used inside a class static block.");
+                }
                 // TS1308: `await` is only allowed inside an async
                 // function or at the top level of a module. Walk up
                 // the parent chain looking for the nearest enclosing
@@ -36795,5 +37172,131 @@ test "checker: element-access narrow survives multiple branches" {
     try s.checker.checkSourceFile(s.root);
     for (s.checker.diagnostics.items) |d| {
         try T.expect(d.code != TsCodes.type_not_assignable);
+    }
+}
+
+test "checker: class static block reports static field read before initialization" {
+    const s = try newSetup(
+        \\class C {
+        \\  static f1 = 1;
+        \\  static { C.f2; this.f2; }
+        \\  static f2 = 2;
+        \\}
+    );
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+    var count: usize = 0;
+    for (s.checker.diagnostics.items) |d| {
+        if (d.code == TsCodes.property_used_before_initialization) count += 1;
+    }
+    try T.expectEqual(@as(usize, 2), count);
+}
+
+test "checker: class static block assignment target is not future-field read" {
+    const s = try newSetup(
+        \\class C {
+        \\  static { this.f2 = 1; C.f2 = 2; }
+        \\  static f2 = 2;
+        \\}
+    );
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+    for (s.checker.diagnostics.items) |d| {
+        try T.expect(d.code != TsCodes.property_used_before_initialization);
+    }
+}
+
+test "checker: class static block can assign an untyped outer variable" {
+    const s = try newSetup(
+        \\let getX;
+        \\class C {
+        \\  #x = 1;
+        \\  static { getX = (obj: C) => obj.#x; }
+        \\}
+    );
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+    for (s.checker.diagnostics.items) |d| {
+        try T.expect(d.code != TsCodes.type_not_assignable);
+    }
+}
+
+test "checker: await expression in class static block reports TS18037" {
+    const s = try newSetup(
+        \\class C {
+        \\  static { await (1); }
+        \\  static { function f() { await (1); } }
+        \\}
+    );
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+    var count: usize = 0;
+    for (s.checker.diagnostics.items) |d| {
+        if (d.code == TsCodes.await_in_class_static_block) count += 1;
+    }
+    try T.expectEqual(@as(usize, 1), count);
+}
+
+test "checker: structural Promise exposes finally" {
+    const s = try newSetup(
+        \\let p = new Promise(function(resolve, reject) {});
+        \\p.finally(function() {});
+    );
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+    for (s.checker.diagnostics.items) |d| {
+        try T.expect(d.code != TsCodes.property_does_not_exist);
+    }
+}
+
+test "checker: virtual json import with attributes resolves existing json file" {
+    const s = try newSetup(
+        \\// @filename: ./a.json
+        \\// { "key": "value" }
+        \\// @filename: ./b.mts
+        \\import a from "./a.json" with { type: "json" };
+    );
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+    for (s.checker.diagnostics.items) |d| {
+        try T.expect(d.code != TsCodes.cannot_find_module);
+    }
+}
+
+test "checker: import attributes on type-only imports and re-exports report diagnostics" {
+    const s = try newSetup(
+        \\// @filename: 0.ts
+        \\export interface I {}
+        \\// @filename: 1.ts
+        \\import type { I } from "./0" with { type: "json" };
+        \\export type { I } from "./0" with { type: "json" };
+    );
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+    var count: usize = 0;
+    for (s.checker.diagnostics.items) |d| {
+        if (d.code == TsCodes.type_not_assignable) count += 1;
+    }
+    try T.expect(count >= 2);
+}
+
+test "checker: virtual at-types package declarations resolve from typings layouts" {
+    const s = try newSetup(
+        \\// @filename: /node_modules/@types/jquery/package.json
+        \\// { "typings": "jquery.d.ts" }
+        \\// @filename: /node_modules/@types/jquery/jquery.d.ts
+        \\export const j: number;
+        \\// @filename: /x/node_modules/@types/b/index.d.ts
+        \\export const b: number;
+        \\// @filename: /x/y/foo.ts
+        \\import { j } from "jquery";
+        \\import { b } from "b";
+        \\j + b;
+    );
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+    for (s.checker.diagnostics.items) |d| {
+        try T.expect(d.code != TsCodes.cannot_find_module);
+        try T.expect(d.code != TsCodes.no_exported_member_suggestion);
     }
 }

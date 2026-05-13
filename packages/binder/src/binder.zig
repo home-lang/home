@@ -587,6 +587,11 @@ pub const Binder = struct {
                         }, m);
                     }
                 },
+                .block_stmt => {
+                    _ = try self.openScope(.block, m);
+                    defer self.closeScope();
+                    for (hir_mod.blockStmts(self.hir, m)) |s| try self.bindStatement(s);
+                },
                 else => {},
             }
         }

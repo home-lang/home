@@ -3629,6 +3629,10 @@ pub const Printer = struct {
                     }
                     try self.writeSemi();
                 },
+                .block_stmt => {
+                    try self.write("static ");
+                    try self.printStatement(m);
+                },
                 else => {},
             }
         }

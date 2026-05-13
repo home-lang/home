@@ -1613,8 +1613,10 @@ pub const Parser = struct {
             if (self.peek().kind == .kw_static and self.peekAt(1).kind == .open_brace) {
                 _ = self.advance();
                 self.static_block_depth += 1;
-                defer self.static_block_depth -= 1;
-                _ = try self.parseBlockStatement();
+                errdefer self.static_block_depth -= 1;
+                const block = try self.parseBlockStatement();
+                self.static_block_depth -= 1;
+                try members.append(self.gpa, block);
                 continue;
             }
             const mods = try self.skipClassModifiers();
