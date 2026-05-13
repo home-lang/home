@@ -124,6 +124,8 @@ pub const TsCodes = struct {
     pub const multiple_default_exports: u32 = 2528;
     pub const default_export_merge: u32 = 2652;
     pub const infer_constraints_not_identical: u32 = 2838;
+    pub const decorator_too_few_arguments: u32 = 1329;
+    pub const property_decorator_signature_unresolved: u32 = 1240;
     pub const no_exported_member_suggestion: u32 = 2724;
     pub const export_non_local_declaration: u32 = 2661;
     pub const delete_operand_property_reference: u32 = 2703;
@@ -3687,6 +3689,9 @@ pub const Checker = struct {
             var refs: std.AutoHashMapUnmanaged(hir_mod.StringId, void) = .empty;
             defer refs.deinit(self.gpa);
             try self.collectIdentifierRefs(s, &refs);
+            if (self.classDeclarationName(s)) |own_name| {
+                _ = refs.remove(own_name);
+            }
             var it = refs.keyIterator();
             while (it.next()) |name_ptr| {
                 const name = name_ptr.*;
@@ -3714,6 +3719,15 @@ pub const Checker = struct {
                 }
             }
         }
+    }
+
+    fn classDeclarationName(self: *Checker, node: NodeId) ?hir_mod.StringId {
+        if (node == hir_mod.none_node_id) return null;
+        const k = self.hir.kindOf(node);
+        if (k != .class_decl and k != .class_expr) return null;
+        const c = hir_mod.classOf(self.hir, node);
+        if (c.name == hir_mod.none_node_id or self.hir.kindOf(c.name) != .identifier) return null;
+        return hir_mod.identifierOf(self.hir, c.name).name;
     }
 
     /// Recursively collect every identifier StringId reachable from
@@ -5977,6 +5991,158 @@ pub const Checker = struct {
         return true;
     }
 
+    fn checkClassMemberDecoratorDiagnostics(self: *Checker, members: []const NodeId) CheckError!void {
+        var i: usize = 0;
+        while (i < members.len) {
+            if (self.hir.kindOf(members[i]) != .decorator) {
+                i += 1;
+                continue;
+            }
+            const start = i;
+            while (i < members.len and self.hir.kindOf(members[i]) == .decorator) : (i += 1) {}
+            if (i >= members.len) break;
+            const target = members[i];
+            for (members[start..i]) |decorator_node| {
+                try self.checkClassMemberDecoratorDiagnostic(decorator_node, target);
+            }
+        }
+    }
+
+    fn checkClassMemberDecoratorDiagnostic(self: *Checker, decorator_node: NodeId, target: NodeId) CheckError!void {
+        if (self.hir.kindOf(decorator_node) != .decorator) return;
+        const d = hir_mod.decoratorOf(self.hir, decorator_node);
+        if (d.expression == hir_mod.none_node_id) return;
+        _ = try self.checkExpression(d.expression);
+        const target_kind = self.hir.kindOf(target);
+        if (target_kind == .fn_decl or target_kind == .fn_expr or target_kind == .arrow_fn) {
+            const fn_p = hir_mod.fnDeclOf(self.hir, target);
+            if (!fn_p.flags.is_constructor and self.sourceHasNoLibTrueDirective()) {
+                try self.reportMissingGlobalTypeOnce(decorator_node, "TypedPropertyDescriptor");
+            }
+            return;
+        }
+        if (target_kind == .object_property) {
+            const op = hir_mod.objectPropertyOf(self.hir, target);
+            const op_is_method = op.is_method or
+                (op.value != hir_mod.none_node_id and
+                    (self.hir.kindOf(op.value) == .fn_decl or self.hir.kindOf(op.value) == .fn_expr or self.hir.kindOf(op.value) == .arrow_fn) and
+                    self.memberSourceLooksMethod(target));
+            if (!op_is_method and !self.classMemberSourceHasLeadingKeyword(target, "accessor")) {
+                try self.checkPropertyDecoratorCallableShape(decorator_node, d.expression);
+            }
+        }
+    }
+
+    fn classMemberSourceHasLeadingKeyword(self: *Checker, node: NodeId, keyword: []const u8) bool {
+        const src = self.source orelse return false;
+        const span = self.hir.spanOf(node);
+        if (span.start >= src.len) return false;
+        var i: usize = span.start;
+        while (i < src.len) : (i += 1) {
+            switch (src[i]) {
+                ' ', '\t', '\r', '\n' => continue,
+                else => break,
+            }
+        }
+        if (std.mem.startsWith(u8, src[i..], keyword)) {
+            const end = i + keyword.len;
+            if (end >= src.len) return true;
+            if (!std.ascii.isAlphanumeric(src[end]) and src[end] != '_' and src[end] != '$') return true;
+        }
+
+        i = span.start;
+        while (i > 0) {
+            const prev = src[i - 1];
+            if (prev == ' ' or prev == '\t' or prev == '\r' or prev == '\n') {
+                i -= 1;
+                continue;
+            }
+            break;
+        }
+        const word_end = i;
+        while (i > 0) {
+            const prev = src[i - 1];
+            if (std.ascii.isAlphanumeric(prev) or prev == '_' or prev == '$') {
+                i -= 1;
+                continue;
+            }
+            break;
+        }
+        return std.mem.eql(u8, src[i..word_end], keyword);
+    }
+
+    fn sourceHasNoLibTrueDirective(self: *Checker) bool {
+        const src = self.source orelse return false;
+        const pos = std.mem.indexOf(u8, src, "@noLib") orelse std.mem.indexOf(u8, src, "@nolib") orelse return false;
+        const line_end = std.mem.indexOfScalarPos(u8, src, pos, '\n') orelse src.len;
+        const line = src[pos..line_end];
+        return std.mem.indexOf(u8, line, "true") != null;
+    }
+
+    fn reportMissingGlobalTypeOnce(self: *Checker, node: NodeId, name: []const u8) CheckError!void {
+        for (self.diagnostics.items) |d| {
+            if (d.code == TsCodes.cannot_find_global_type and std.mem.indexOf(u8, d.message, name) != null) return;
+        }
+        const msg = try std.fmt.allocPrint(
+            self.diag_arena.allocator(),
+            "Cannot find global type '{s}'.",
+            .{name},
+        );
+        try self.diagnostics.append(self.gpa, .{
+            .node = node,
+            .code = TsCodes.cannot_find_global_type,
+            .message = msg,
+        });
+    }
+
+    fn checkPropertyDecoratorCallableShape(self: *Checker, decorator_node: NodeId, expr: NodeId) CheckError!void {
+        const dec_t = self.hir.typeOf(expr);
+        if (dec_t >= self.interner.pool.typeCount()) return;
+        if (!self.interner.pool.flagsOf(dec_t).is_signature) return;
+        const params = self.interner.signatureParams(dec_t);
+        const ret_t = self.interner.signatureReturn(dec_t) orelse types.Primitive.void_t;
+        if (self.hir.kindOf(expr) == .identifier and params.len == 0 and ret_t < self.interner.pool.typeCount() and self.interner.pool.flagsOf(ret_t).is_signature) {
+            try self.reportDecoratorFactoryMustBeCalled(decorator_node, expr);
+            return;
+        }
+        try self.checkPropertyDecoratorSignatureArity(decorator_node, dec_t);
+    }
+
+    fn reportDecoratorFactoryMustBeCalled(self: *Checker, decorator_node: NodeId, expr: NodeId) CheckError!void {
+        const id = hir_mod.identifierOf(self.hir, expr);
+        const name = self.string_interner.get(id.name);
+        const msg = try std.fmt.allocPrint(
+            self.diag_arena.allocator(),
+            "'{s}' accepts too few arguments to be used as a decorator here. Did you mean to call it first and write '@{s}()'?",
+            .{ name, name },
+        );
+        try self.diagnostics.append(self.gpa, .{
+            .node = decorator_node,
+            .code = TsCodes.decorator_too_few_arguments,
+            .message = msg,
+        });
+    }
+
+    fn checkPropertyDecoratorSignatureArity(self: *Checker, decorator_node: NodeId, sig: TypeId) CheckError!void {
+        if (sig >= self.interner.pool.typeCount() or !self.interner.pool.flagsOf(sig).is_signature) return;
+        const runtime_arg_count: usize = 2;
+        const params = self.interner.signatureParams(sig);
+        const min_required = self.signatureMinRequiredArgs(sig, params);
+        const has_unbounded_rest = self.rest_signatures.contains(sig) and params.len > 0 and self.fixedTupleLength(params[params.len - 1]) == null;
+        if (runtime_arg_count >= min_required and (has_unbounded_rest or runtime_arg_count <= params.len)) return;
+        const expected_count = if (runtime_arg_count < min_required) min_required else params.len;
+        const msg = try std.fmt.allocPrint(
+            self.diag_arena.allocator(),
+            "Unable to resolve signature of property decorator when called as an expression.\n  The runtime will invoke the decorator with 2 arguments, but the decorator expects {d}.",
+            .{expected_count},
+        );
+        try self.diagnostics.append(self.gpa, .{
+            .node = decorator_node,
+            .code = TsCodes.property_decorator_signature_unresolved,
+            .message = msg,
+        });
+    }
+
     /// Lower a class declaration into an instance object type. Each
     /// method becomes an object member typed as a signature; each
     /// declared field becomes an object member typed as the
@@ -5987,6 +6153,7 @@ pub const Checker = struct {
     fn checkClassDecl(self: *Checker, node: NodeId) CheckError!void {
         const c = hir_mod.classOf(self.hir, node);
         const members = hir_mod.classMembers(self.hir, node);
+        try self.checkClassMemberDecoratorDiagnostics(members);
         const type_params = self.hir.childSlice(c.type_params_start, c.type_params_len);
         try self.checkTypeParameterDeclList(type_params);
         if (type_params.len > 0) try self.pushNarrowScope();
@@ -25948,6 +26115,115 @@ test "checker: class used before declaration emits TS2449" {
         if (d.code == TsCodes.class_used_before_declaration) found = true;
     }
     try T.expect(found);
+}
+
+test "checker: class self-reference in class body and decorator expression is not TS2449" {
+    const s = try newSetup(
+        \\declare var Something: any;
+        \\@Something({ v: () => Testing123 })
+        \\export class Testing123 {
+        \\  static prop0: string;
+        \\  static prop1 = Testing123.prop0;
+        \\}
+    );
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+    for (s.checker.diagnostics.items) |d| {
+        try T.expect(d.code != TsCodes.class_used_before_declaration);
+    }
+}
+
+test "checker: method decorators under noLib require TypedPropertyDescriptor" {
+    const s = try newSetup(
+        \\// @noLib: true
+        \\interface Object { }
+        \\declare function dec(t, k, d);
+        \\class C {
+        \\  @dec
+        \\  method() {}
+        \\}
+    );
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+    var found = false;
+    for (s.checker.diagnostics.items) |d| {
+        if (d.code == TsCodes.cannot_find_global_type and std.mem.indexOf(u8, d.message, "TypedPropertyDescriptor") != null) found = true;
+    }
+    try T.expect(found);
+}
+
+test "checker: property decorator factory must be called" {
+    const s = try newSetup(
+        \\declare function dec(): <T>(target: any, propertyKey: string) => void;
+        \\class C {
+        \\  @dec prop;
+        \\}
+    );
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+    var found = false;
+    for (s.checker.diagnostics.items) |d| {
+        if (d.code == TsCodes.decorator_too_few_arguments) found = true;
+    }
+    try T.expect(found);
+}
+
+test "checker: property decorator signature must accept runtime arity" {
+    const s = try newSetup(
+        \\declare function dec(target: Function): void;
+        \\class C {
+        \\  @dec prop;
+        \\}
+    );
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+    var found = false;
+    for (s.checker.diagnostics.items) |d| {
+        if (d.code == TsCodes.property_decorator_signature_unresolved) found = true;
+    }
+    try T.expect(found);
+}
+
+test "checker: property decorator optional key accepts runtime arity" {
+    const s = try newSetup(
+        \\declare function dec(target: Function, propertyKey?: string): void;
+        \\class C {
+        \\  @dec prop;
+        \\}
+    );
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+    for (s.checker.diagnostics.items) |d| {
+        try T.expect(d.code != TsCodes.property_decorator_signature_unresolved);
+    }
+}
+
+test "checker: method decorator is not checked as property decorator" {
+    const s = try newSetup(
+        \\declare function dec(target: Function, propertyKey: string, descriptor: any): void;
+        \\class C {
+        \\  @dec method() {}
+        \\}
+    );
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+    for (s.checker.diagnostics.items) |d| {
+        try T.expect(d.code != TsCodes.property_decorator_signature_unresolved);
+    }
+}
+
+test "checker: auto-accessor decorator is not checked as property decorator" {
+    const s = try newSetup(
+        \\declare function dec(target: any, propertyKey: string, descriptor: PropertyDescriptor): void;
+        \\class C {
+        \\  @dec accessor prop;
+        \\}
+    );
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+    for (s.checker.diagnostics.items) |d| {
+        try T.expect(d.code != TsCodes.property_decorator_signature_unresolved);
+    }
 }
 
 test "checker: typed var used in conditional emits TS2454" {
