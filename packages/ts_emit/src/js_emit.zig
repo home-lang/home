@@ -3335,20 +3335,27 @@ pub const Printer = struct {
             const end: usize = @intCast(span.end);
             if (end > start and end <= src.len) {
                 const slice = src[start..end];
-                if (self.options.es_target.supportsNumericSeparators()) {
-                    try self.write(slice);
-                } else {
-                    var i: usize = 0;
-                    var run_start: usize = 0;
-                    while (i < slice.len) : (i += 1) {
-                        if (slice[i] == '_') {
-                            if (i > run_start) try self.write(slice[run_start..i]);
-                            run_start = i + 1;
+                // Validate the slice actually looks like a numeric
+                // literal — synthetic literals (e.g. the implicit `1`
+                // that `i++` lowers through) carry the span of their
+                // originating token instead, so we must fall back to
+                // the stored value when the source bytes don't match.
+                if (sliceLooksLikeNumber(slice)) {
+                    if (self.options.es_target.supportsNumericSeparators()) {
+                        try self.write(slice);
+                    } else {
+                        var i: usize = 0;
+                        var run_start: usize = 0;
+                        while (i < slice.len) : (i += 1) {
+                            if (slice[i] == '_') {
+                                if (i > run_start) try self.write(slice[run_start..i]);
+                                run_start = i + 1;
+                            }
                         }
+                        if (run_start < slice.len) try self.write(slice[run_start..]);
                     }
-                    if (run_start < slice.len) try self.write(slice[run_start..]);
+                    return;
                 }
-                return;
             }
         }
         const v = hir_mod.literalNumberOf(self.hir, node);
@@ -3797,6 +3804,22 @@ fn unaryOpString(op: hir_mod.UnaryOp) []const u8 {
         .void_ => "void",
         .delete => "delete",
     };
+}
+
+/// True if `slice` looks like the source text of a JavaScript
+/// numeric literal — used by `printLiteralNumber` to detect when a
+/// HIR literal's span was synthesized from a non-number token (e.g.
+/// `i++` lowers to `i += 1` whose `1` literal carries the `++`
+/// token span). In that case we fall back to the stored numeric value.
+fn sliceLooksLikeNumber(slice: []const u8) bool {
+    if (slice.len == 0) return false;
+    const c0 = slice[0];
+    if (c0 >= '0' and c0 <= '9') return true;
+    if (c0 == '.' and slice.len > 1) {
+        const c1 = slice[1];
+        return c1 >= '0' and c1 <= '9';
+    }
+    return false;
 }
 
 fn compoundOpString(op: hir_mod.BinOp) []const u8 {
@@ -4794,10 +4817,8 @@ test "emit: generator with while-yield + cond containing yield still bails" {
 }
 
 test "emit: generator with for-loop-yield lowers to 3-case loop with init+update" {
-    // Use `i = i + 1` instead of `i++` to sidestep an unrelated
-    // existing emit issue where `i++` lowers as `i += ++`.
     const out = try emitWithOpts(
-        "function* g() { for (let i = 0; i < 3; i = i + 1) yield i; }",
+        "function* g() { for (let i = 0; i < 3; i++) yield i; }",
         .{ .es_target = .es5 },
     );
     defer T.allocator.free(out);
@@ -4808,12 +4829,23 @@ test "emit: generator with for-loop-yield lowers to 3-case loop with init+update
     // Header case 1: cond + yield.
     try T.expect(std.mem.indexOf(u8, out, "case 1: if (!((i < 3))) return [3, 3];") != null);
     try T.expect(std.mem.indexOf(u8, out, "return [4, i]") != null);
-    // Resume case 2: sent + update + loopback.
-    try T.expect(std.mem.indexOf(u8, out, "_a.sent();") != null);
-    try T.expect(std.mem.indexOf(u8, out, "i = (i + 1)") != null);
-    try T.expect(std.mem.indexOf(u8, out, "return [3, 1];") != null);
+    // Resume case 2: sent + update (i++ lowers to i += 1) + loopback.
+    try T.expect(std.mem.indexOf(u8, out, "case 2: _a.sent(); i += 1; return [3, 1];") != null);
     // Exit case 3.
     try T.expect(std.mem.indexOf(u8, out, "case 3:") != null);
+}
+
+test "emit: postfix i++ in expression statement emits i += 1" {
+    // Regression: the synthetic `1` literal from `i++`'s parser
+    // lowering carries the `++` token span. `printLiteralNumber`
+    // must validate the slice looks like a number before reusing
+    // source bytes — otherwise the emit reproduces `++` instead
+    // of `1` and the output becomes `i += ++`.
+    const out = try emit("function f() { let i = 0; i++; }");
+    defer T.allocator.free(out);
+    try T.expect(std.mem.indexOf(u8, out, "i += 1;") != null);
+    try T.expect(std.mem.indexOf(u8, out, "++ ++") == null);
+    try T.expect(std.mem.indexOf(u8, out, "i += ++") == null);
 }
 
 test "emit: generator with bare-for-yield (no init/cond/update) lowers as infinite loop" {
