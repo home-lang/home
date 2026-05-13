@@ -263,6 +263,13 @@ pub const Printer = struct {
     /// it with a `/* TODO: top-level await requires ES2022+ */` marker
     /// so downstream tools can flag the unsupported emit.
     fn_depth: u32,
+    /// §4.A.4.4 — when non-null, top-level `break;` statements
+    /// emitted via `printNonIndentStatement` rewrite to
+    /// `return [3, gen_break_label];` so the break correctly exits
+    /// the lowered loop (rather than escaping the state machine's
+    /// switch). Only set while emitting pre/post statements of a
+    /// lowered loop body via `emitGenInloopStmt`.
+    gen_break_label: ?u32,
 
     pub fn init(
         gpa: std.mem.Allocator,
@@ -285,6 +292,7 @@ pub const Printer = struct {
             .current_class_name = null,
             .in_es5_super_lowering = false,
             .fn_depth = 0,
+            .gen_break_label = null,
         };
     }
 
@@ -790,6 +798,12 @@ pub const Printer = struct {
     }
 
     fn printWhile(self: *Printer, node: NodeId) !void {
+        // §4.A.4.4 — clear the outer lowered-loop break label while
+        // emitting this inner loop so any break inside targets the
+        // inner while (not the outer state-machine exit).
+        const prev_break = self.gen_break_label;
+        self.gen_break_label = null;
+        defer self.gen_break_label = prev_break;
         const p = hir_mod.whileOf(self.hir, node);
         try self.write("while (");
         try self.printExpression(p.cond);
@@ -798,6 +812,9 @@ pub const Printer = struct {
     }
 
     fn printDoWhile(self: *Printer, node: NodeId) !void {
+        const prev_break = self.gen_break_label;
+        self.gen_break_label = null;
+        defer self.gen_break_label = prev_break;
         const p = hir_mod.doWhileOf(self.hir, node);
         try self.write("do ");
         try self.printStatementInline(p.body);
@@ -808,6 +825,9 @@ pub const Printer = struct {
     }
 
     fn printFor(self: *Printer, node: NodeId) !void {
+        const prev_break = self.gen_break_label;
+        self.gen_break_label = null;
+        defer self.gen_break_label = prev_break;
         const p = hir_mod.forStmtOf(self.hir, node);
         try self.write("for (");
         if (p.init != hir_mod.none_node_id) {
@@ -831,6 +851,9 @@ pub const Printer = struct {
     }
 
     fn printForInOf(self: *Printer, node: NodeId) !void {
+        const prev_break = self.gen_break_label;
+        self.gen_break_label = null;
+        defer self.gen_break_label = prev_break;
         const p = hir_mod.forInOf(self.hir, node);
         // §4.A.3 — `for-of` lowers at ES5. Two shapes:
         //   * default: assume array-shape, lower to indexed `for`
@@ -954,6 +977,21 @@ pub const Printer = struct {
     }
 
     fn printBreakOrContinue(self: *Printer, node: NodeId, kw: []const u8) !void {
+        // §4.A.4.4 — when emitting a bare unlabeled `break;` inside
+        // a lowered generator loop, rewrite to the state-machine
+        // jump `return [3, exit_label];` so the break exits the
+        // loop (not the enclosing switch case).
+        if (std.mem.eql(u8, kw, "break") and self.gen_break_label != null) {
+            const lab = hir_mod.labelOf(self.hir, node);
+            if (lab.label == hir_mod.none_node_id) {
+                var buf: [16]u8 = undefined;
+                const num = std.fmt.bufPrint(&buf, "{d}", .{self.gen_break_label.?}) catch unreachable;
+                try self.write("return [3, ");
+                try self.write(num);
+                try self.write("];");
+                return;
+            }
+        }
         try self.write(kw);
         const lab = hir_mod.labelOf(self.hir, node);
         if (lab.label != hir_mod.none_node_id) {
@@ -991,6 +1029,9 @@ pub const Printer = struct {
     }
 
     fn printSwitch(self: *Printer, node: NodeId) !void {
+        const prev_break = self.gen_break_label;
+        self.gen_break_label = null;
+        defer self.gen_break_label = prev_break;
         const p = hir_mod.switchOf(self.hir, node);
         try self.write("switch (");
         try self.printExpression(p.discriminant);
@@ -1373,7 +1414,7 @@ pub const Printer = struct {
                 yield_idx = i;
             } else {
                 if (self.subtreeContainsYield(s)) return null;
-                if (self.subtreeContainsBreakOrContinue(s)) return null;
+                if (self.classifyBreakContinue(s) == .unhandleable) return null;
             }
         }
         const idx = yield_idx orelse return null;
@@ -1384,37 +1425,46 @@ pub const Printer = struct {
         };
     }
 
-    /// True iff the subtree rooted at `root` contains a `break_stmt`
-    /// or `continue_stmt` whose target is *outside* the subtree —
-    /// i.e. a break/continue whose innermost enclosing
-    /// loop/switch within the subtree is the lowered loop itself
-    /// (not nested any deeper). State-machine lowering of such a
-    /// jump needs `[3, label]` rewriting; the existing pass-through
-    /// emit would write a bare `break;`/`continue;` inside the
-    /// switch case, which incorrectly exits the switch rather than
-    /// the loop. break/continue contained inside a nested
-    /// loop/switch within the subtree pass through fine.
-    fn subtreeContainsBreakOrContinue(self: *const Printer, root: NodeId) bool {
-        if (root == hir_mod.none_node_id) return false;
-        // If `root` itself is a loop/switch, all break/continue
-        // inside it target either `root` or something nested inside
-        // `root` — both stay inside the passed-through inline
-        // statement, so no rewriting is needed.
+    /// Verdict from inspecting break/continue nodes inside a
+    /// candidate generator loop body.
+    const BreakContinueScan = enum {
+        /// No problematic break/continue — emit normally.
+        none,
+        /// Top-level (or block/if-nested) `break;` targets the
+        /// lowered loop and can be rewritten to `return [3, exit];`.
+        break_only,
+        /// `continue;` targets the lowered loop, OR a break/continue
+        /// passes through a `try_stmt` on its way out of the body —
+        /// neither shape lowers in v0; bail to native function*.
+        unhandleable,
+    };
+
+    /// Classify every `break_stmt` / `continue_stmt` in the subtree
+    /// rooted at `root` based on whether its target is inside or
+    /// outside the subtree, and whether the path to that target
+    /// passes through any construct (`try_stmt`) the state-machine
+    /// lowering can't safely re-route. break/continue contained
+    /// inside a nested loop/switch within the subtree pass through
+    /// fine and don't contribute to the verdict.
+    fn classifyBreakContinue(self: *const Printer, root: NodeId) BreakContinueScan {
+        if (root == hir_mod.none_node_id) return .none;
+        // If `root` itself is a loop/switch, every break/continue
+        // inside it targets `root` or something nested deeper —
+        // all stay inside the passed-through inline construct.
         const root_kind = self.hir.kindOf(root);
         switch (root_kind) {
-            .while_stmt, .do_while_stmt, .for_stmt, .for_in_stmt, .for_of_stmt, .switch_stmt => return false,
+            .while_stmt, .do_while_stmt, .for_stmt, .for_in_stmt, .for_of_stmt, .switch_stmt => return .none,
             else => {},
         }
         const total = self.hir.nodeCount();
+        var result: BreakContinueScan = .none;
         var i: u32 = 0;
         while (i < total) : (i += 1) {
             const k = self.hir.kindOf(i);
             if (k != .break_stmt and k != .continue_stmt) continue;
-            // Walk ancestors until we either hit a nested
-            // loop/switch (fine — break/continue targets that)
-            // or hit `root` (target is outside, bail).
             var cur: NodeId = self.hir.parentOf(i);
             var nested: bool = false;
+            var through_try: bool = false;
             while (cur != hir_mod.none_node_id and cur != root) {
                 const pk = self.hir.kindOf(cur);
                 switch (pk) {
@@ -1422,15 +1472,20 @@ pub const Printer = struct {
                         nested = true;
                         break;
                     },
+                    .try_stmt => through_try = true,
                     else => {},
                 }
                 const p = self.hir.parentOf(cur);
                 if (p == cur) break;
                 cur = p;
             }
-            if (cur == root and !nested) return true;
+            if (nested) continue;
+            if (cur != root) continue;
+            // This break/continue targets the lowered loop.
+            if (through_try or k == .continue_stmt) return .unhandleable;
+            result = .break_only;
         }
-        return false;
+        return result;
     }
 
     /// §4.A.4.2 — true iff any node in the subtree rooted at `root`
@@ -1549,6 +1604,8 @@ pub const Printer = struct {
                 // yield-free siblings; pre-yield statements go in
                 // the header before the yield; post-yield go in the
                 // resume before the loopback.
+                const prev_break = self.gen_break_label;
+                defer self.gen_break_label = prev_break;
                 const wp = hir_mod.whileOf(self.hir, stmt);
                 var pre: []const NodeId = &[_]NodeId{};
                 var post: []const NodeId = &[_]NodeId{};
@@ -1565,6 +1622,10 @@ pub const Printer = struct {
                 const header = state + 1;
                 const resume_label = state + 2;
                 const exit_label = state + 3;
+                // §4.A.4.4 — set break label so `break;` inside pre/post
+                // rewrites to `return [3, exit];` (inner loops/switches
+                // save+clear this in their own printers).
+                self.gen_break_label = exit_label;
                 // Open header case: cond check + pre-stmts + yield.
                 {
                     const num_header = std.fmt.bufPrint(&buf, "{d}", .{header}) catch unreachable;
@@ -1608,6 +1669,7 @@ pub const Printer = struct {
                     try self.write(num_header_back);
                     try self.write("];");
                 }
+                self.gen_break_label = prev_break;
                 // Open exit case.
                 {
                     const num_exit_open = std.fmt.bufPrint(&buf, "{d}", .{exit_label}) catch unreachable;
@@ -1622,6 +1684,8 @@ pub const Printer = struct {
                 // 3-case loop with init in current case, header
                 // (cond + pre-stmts + yield), resume (sent + post-stmts
                 // + update + loopback), exit.
+                const prev_break = self.gen_break_label;
+                defer self.gen_break_label = prev_break;
                 const fp = hir_mod.forStmtOf(self.hir, stmt);
                 var pre: []const NodeId = &[_]NodeId{};
                 var post: []const NodeId = &[_]NodeId{};
@@ -1638,6 +1702,8 @@ pub const Printer = struct {
                 const header = state + 1;
                 const resume_label = state + 2;
                 const exit_label = state + 3;
+                // §4.A.4.4 — set break label for the body's pre/post.
+                self.gen_break_label = exit_label;
                 // Init in the current case (if any).
                 if (fp.init != hir_mod.none_node_id) {
                     try self.write(" ");
@@ -1708,6 +1774,8 @@ pub const Printer = struct {
                 //   case state+1 (body): pre-stmts + yield
                 //   case state+2 (resume): _a.sent(); + post-stmts + if (cond) return [3, body];
                 //   case state+3 (exit): post-loop fall-through
+                const prev_break = self.gen_break_label;
+                defer self.gen_break_label = prev_break;
                 const dwp = hir_mod.doWhileOf(self.hir, stmt);
                 var pre: []const NodeId = &[_]NodeId{};
                 var post: []const NodeId = &[_]NodeId{};
@@ -1724,6 +1792,8 @@ pub const Printer = struct {
                 const body_label = state + 1;
                 const resume_label = state + 2;
                 const exit_label = state + 3;
+                // §4.A.4.4 — set break label for the body's pre/post.
+                self.gen_break_label = exit_label;
                 // Open body case: pre-stmts + yield.
                 {
                     const num_body = std.fmt.bufPrint(&buf, "{d}", .{body_label}) catch unreachable;
@@ -4960,18 +5030,48 @@ test "emit: generator with while-yield + trailing yield sequences correctly" {
     try T.expect(std.mem.indexOf(u8, out, "case 4: _a.sent();") != null);
 }
 
-test "emit: generator with break targeting lowered while still bails" {
-    // A top-level `break;` inside the loop body's pre/post would
-    // emit as bare `break;` inside the switch case and exit the
-    // *switch* rather than the loop. The predicate bails to the
-    // native function* fallback in this case.
+test "emit: generator with break targeting lowered while rewrites to [3, exit]" {
+    // §4.A.4.4 — `if (other) break;` inside a lowered while body
+    // rewrites the break to `return [3, exit_label];` so it exits
+    // the lowered loop (not the enclosing switch case).
     const out = try emitWithOpts(
         "function* g() { while (cond) { if (other) break; yield 1; } }",
         .{ .es_target = .es5 },
     );
     defer T.allocator.free(out);
+    try T.expect(std.mem.indexOf(u8, out, "__generator") != null);
+    try T.expect(std.mem.indexOf(u8, out, "TODO: ES5 generator") == null);
+    // Exit label is case 3 for this single-yield body.
+    try T.expect(std.mem.indexOf(u8, out, "if (other) return [3, 3];") != null);
+    try T.expect(std.mem.indexOf(u8, out, "return [4, 1]") != null);
+}
+
+test "emit: generator with continue targeting lowered while still bails" {
+    // v0 of break-rewriting only handles `break;`; `continue;` needs
+    // a separate continue case between resume and exit (deferred).
+    const out = try emitWithOpts(
+        "function* g() { while (cond) { if (other) continue; yield 1; } }",
+        .{ .es_target = .es5 },
+    );
+    defer T.allocator.free(out);
     try T.expect(std.mem.indexOf(u8, out, "TODO: ES5 generator") != null);
     try T.expect(std.mem.indexOf(u8, out, "__generator") == null);
+}
+
+test "emit: generator with break inside nested inner loop targets the inner loop" {
+    // break inside an inner non-yielding while/for/switch should
+    // emit as native `break;` (its target is the inner construct);
+    // only break targeting the *lowered* outer loop gets rewritten.
+    const out = try emitWithOpts(
+        "function* g() { while (cond) { while (inner) break; yield 1; } }",
+        .{ .es_target = .es5 },
+    );
+    defer T.allocator.free(out);
+    try T.expect(std.mem.indexOf(u8, out, "__generator") != null);
+    // The inner while keeps its native break.
+    try T.expect(std.mem.indexOf(u8, out, "while (inner) break;") != null);
+    // The outer yield still lowers normally.
+    try T.expect(std.mem.indexOf(u8, out, "return [4, 1]") != null);
 }
 
 test "emit: generator with break inside nested switch in loop body still lowers" {
