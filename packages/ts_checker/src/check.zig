@@ -10643,13 +10643,14 @@ pub const Checker = struct {
                 // the result is a known object type.
                 const k = hir_mod.keyofTypeOf(self.hir, type_node);
                 const operand = try self.lowererLowerWithTypeParams(k.operand);
-                if (self.interner.pool.flagsOf(operand).is_object_type) {
-                    const members = self.interner.objectMembers(operand);
-                    if (members.len == 0) return types.Primitive.never;
+                var key_names: std.ArrayListUnmanaged(hir_mod.StringId) = .empty;
+                defer key_names.deinit(self.gpa);
+                if (try self.collectKeyofObjectKeys(operand, &key_names)) {
+                    if (key_names.items.len == 0) return types.Primitive.never;
                     var lits: std.ArrayListUnmanaged(TypeId) = .empty;
                     defer lits.deinit(self.gpa);
-                    for (members) |m| {
-                        const lit = self.interner.internStringLiteral(m.name) catch continue;
+                    for (key_names.items) |name| {
+                        const lit = self.interner.internStringLiteral(name) catch continue;
                         try lits.append(self.gpa, lit);
                     }
                     if (lits.items.len == 1) return lits.items[0];
@@ -12240,6 +12241,33 @@ pub const Checker = struct {
             });
         }
         return self.interner.internObjectType(built.items) catch return error.OutOfMemory;
+    }
+
+    fn collectKeyofObjectKeys(
+        self: *Checker,
+        t: TypeId,
+        out: *std.ArrayListUnmanaged(hir_mod.StringId),
+    ) CheckError!bool {
+        if (t < types.Primitive.first_dynamic or t >= self.interner.pool.typeCount()) return false;
+        const flags = self.interner.pool.flagsOf(t);
+        if (flags.is_intersection) {
+            for (self.interner.intersectionMembers(t)) |member| {
+                _ = try self.collectKeyofObjectKeys(member, out);
+            }
+            return true;
+        }
+        if (!flags.is_object_type) return false;
+        for (self.interner.objectMembers(t)) |member| {
+            var seen = false;
+            for (out.items) |existing| {
+                if (existing == member.name) {
+                    seen = true;
+                    break;
+                }
+            }
+            if (!seen) try out.append(self.gpa, member.name);
+        }
+        return true;
     }
 
     fn mappedTypeHasIdentityTemplate(self: *Checker, m: hir_mod.MappedTypePayload) bool {
@@ -20567,13 +20595,14 @@ pub const Checker = struct {
             // `keyof T` after substitution may resolve eagerly.
             const k = self.interner.pool.keyof_payloads.items[self.interner.pool.payloadOf(t)];
             const new_operand = try self.substituteType(k.operand, subs);
-            if (self.interner.pool.flagsOf(new_operand).is_object_type) {
-                const members = self.interner.objectMembers(new_operand);
-                if (members.len == 0) return types.Primitive.never;
+            var key_names: std.ArrayListUnmanaged(hir_mod.StringId) = .empty;
+            defer key_names.deinit(self.gpa);
+            if (try self.collectKeyofObjectKeys(new_operand, &key_names)) {
+                if (key_names.items.len == 0) return types.Primitive.never;
                 var lits: std.ArrayListUnmanaged(TypeId) = .empty;
                 defer lits.deinit(self.gpa);
-                for (members) |m| {
-                    const lit = self.interner.internStringLiteral(m.name) catch continue;
+                for (key_names.items) |name| {
+                    const lit = self.interner.internStringLiteral(name) catch continue;
                     try lits.append(self.gpa, lit);
                 }
                 if (lits.items.len == 1) return lits.items[0];
@@ -21332,7 +21361,8 @@ pub const Checker = struct {
     fn resolveObjectIndexedAccessType(self: *Checker, object_t: TypeId, index_t: TypeId) CheckError!?TypeId {
         const obj = self.typeParameterConstraint(object_t) orelse object_t;
         if (obj >= self.interner.pool.typeCount()) return null;
-        if (!self.interner.pool.flagsOf(obj).is_object_type) return null;
+        const obj_flags = self.interner.pool.flagsOf(obj);
+        if (!obj_flags.is_object_type and !obj_flags.is_intersection) return null;
 
         var keys: std.ArrayListUnmanaged(hir_mod.StringId) = .empty;
         defer keys.deinit(self.gpa);
@@ -21340,7 +21370,7 @@ pub const Checker = struct {
         var vals: std.ArrayListUnmanaged(TypeId) = .empty;
         defer vals.deinit(self.gpa);
         for (keys.items) |key| {
-            const member_t = self.interner.objectMember(obj, key) orelse return null;
+            const member_t = (try self.lookupObjectMember(obj, key)) orelse return null;
             try vals.append(self.gpa, member_t);
         }
         if (vals.items.len == 1) return vals.items[0];
@@ -21427,6 +21457,7 @@ pub const Checker = struct {
         if (try self.templateExpressionAssignableToType(arg_node, param_t)) return true;
         if (try self.restTupleCallbackAssignableToParam(arg_node, param_t)) return true;
         if (try self.functionExpressionAssignableToCallableObject(arg_node, param_t)) return true;
+        if (try self.functionExpressionAssignableToSignatureTarget(arg_node, arg_t, param_t)) return true;
         if (self.hir.kindOf(arg_node) == .object_literal) {
             if (try self.objectLiteralAssignableToTarget(arg_node, arg_t, param_t)) return true;
             if (self.thisTypeMarkerConstraint(param_t) != null) {
@@ -21447,6 +21478,54 @@ pub const Checker = struct {
             if (self.typeIncludesUndefined(arg_t) and !self.typeIncludesUndefined(param_t)) return false;
         }
         return self.engine.isAssignableTo(arg_t, param_t);
+    }
+
+    fn functionExpressionAssignableToSignatureTarget(self: *Checker, arg_node: NodeId, arg_t: TypeId, target_t: TypeId) CheckError!bool {
+        const arg_kind = self.hir.kindOf(arg_node);
+        if (arg_kind != .arrow_fn and arg_kind != .fn_expr) return false;
+        if (target_t >= self.interner.pool.typeCount()) return false;
+        const target_flags = self.interner.pool.flagsOf(target_t);
+        if (target_flags.is_union) {
+            for (self.interner.unionMembers(target_t)) |member| {
+                if (try self.functionExpressionAssignableToSignatureTarget(arg_node, arg_t, member)) return true;
+            }
+            return false;
+        }
+        if (!target_flags.is_signature) return false;
+        const source_t = if (arg_t < self.interner.pool.typeCount() and self.interner.pool.flagsOf(arg_t).is_signature)
+            arg_t
+        else
+            self.hir.typeOf(arg_node);
+        if (source_t >= self.interner.pool.typeCount() or !self.interner.pool.flagsOf(source_t).is_signature) return false;
+        if (self.engine.isAssignableTo(source_t, target_t) catch false) return true;
+        return self.contextualFunctionSignatureAssignable(source_t, target_t) catch false;
+    }
+
+    fn contextualFunctionSignatureAssignable(self: *Checker, source_t: TypeId, target_t: TypeId) CheckError!bool {
+        if (source_t >= self.interner.pool.typeCount() or target_t >= self.interner.pool.typeCount()) return false;
+        if (!self.interner.pool.flagsOf(source_t).is_signature or !self.interner.pool.flagsOf(target_t).is_signature) return false;
+        const source_params = self.interner.signatureParams(source_t);
+        const target_params = self.interner.signatureParams(target_t);
+        if (source_params.len > target_params.len) return false;
+        for (source_params, 0..) |source_param, i| {
+            if (!try self.contextualTargetParamAssignableToSource(target_params[i], source_param)) return false;
+        }
+        const source_ret = self.interner.signatureReturn(source_t) orelse types.Primitive.void_t;
+        const target_ret = self.interner.signatureReturn(target_t) orelse types.Primitive.void_t;
+        if (target_ret == types.Primitive.void_t or target_ret == types.Primitive.any or target_ret == types.Primitive.unknown) return true;
+        return self.engine.isAssignableTo(source_ret, target_ret) catch false;
+    }
+
+    fn contextualTargetParamAssignableToSource(self: *Checker, target_param: TypeId, source_param: TypeId) CheckError!bool {
+        if (self.engine.isAssignableTo(target_param, source_param) catch false) return true;
+        if (target_param >= self.interner.pool.typeCount()) return false;
+        const flags = self.interner.pool.flagsOf(target_param);
+        if (flags.is_intersection) {
+            for (self.interner.intersectionMembers(target_param)) |member| {
+                if (self.engine.isAssignableTo(member, source_param) catch false) return true;
+            }
+        }
+        return false;
     }
 
     fn restTupleCallbackAssignableToParam(self: *Checker, arg_node: NodeId, param_t: TypeId) CheckError!bool {
@@ -21651,8 +21730,101 @@ pub const Checker = struct {
         }
     }
 
+    fn findSiblingFunctionDecl(self: *Checker, callee_node: NodeId) ?NodeId {
+        if (self.hir.kindOf(callee_node) != .identifier) return null;
+        const id = hir_mod.identifierOf(self.hir, callee_node);
+        var cur = self.hir.parentOf(callee_node);
+        while (cur != hir_mod.none_node_id) : (cur = self.hir.parentOf(cur)) {
+            const k = self.hir.kindOf(cur);
+            if (k == .namespace_decl) {
+                return self.findFunctionDeclInStatements(hir_mod.namespaceBody(self.hir, cur), id.name);
+            }
+            if (k == .block_stmt) {
+                if (self.findFunctionDeclInStatements(hir_mod.blockStmts(self.hir, cur), id.name)) |fn_node| return fn_node;
+            }
+        }
+        return null;
+    }
+
+    fn findFunctionDeclInStatements(self: *Checker, stmts: []const NodeId, name: hir_mod.StringId) ?NodeId {
+        for (stmts) |stmt| {
+            var fn_node = stmt;
+            if (self.hir.kindOf(stmt) == .export_decl) {
+                const ex = hir_mod.exportOf(self.hir, stmt);
+                if (ex.decl == hir_mod.none_node_id) continue;
+                fn_node = ex.decl;
+            }
+            if (self.hir.kindOf(fn_node) != .fn_decl) continue;
+            const f = hir_mod.fnDeclOf(self.hir, fn_node);
+            if (f.name == hir_mod.none_node_id or self.hir.kindOf(f.name) != .identifier) continue;
+            if (hir_mod.identifierOf(self.hir, f.name).name == name) return fn_node;
+        }
+        return null;
+    }
+
+    fn relowerFunctionSignatureWithSubstitutions(
+        self: *Checker,
+        fn_node: NodeId,
+        subs: *const std.AutoHashMapUnmanaged(TypeId, TypeId),
+    ) CheckError!?TypeId {
+        if (self.hir.kindOf(fn_node) != .fn_decl) return null;
+        const f = hir_mod.fnDeclOf(self.hir, fn_node);
+        try self.pushNarrowScope();
+        defer self.popNarrowScope();
+
+        var it = subs.iterator();
+        while (it.next()) |entry| {
+            const param_t = entry.key_ptr.*;
+            if (param_t >= self.interner.pool.typeCount()) continue;
+            const flags = self.interner.pool.flagsOf(param_t);
+            if (!flags.is_type_parameter) continue;
+            const payload_idx = self.interner.pool.payloadOf(param_t);
+            if (payload_idx >= self.interner.pool.type_parameter_payloads.items.len) continue;
+            const payload = self.interner.pool.type_parameter_payloads.items[payload_idx];
+            try self.recordNarrow(payload.name, entry.value_ptr.*);
+        }
+
+        var param_types: std.ArrayListUnmanaged(TypeId) = .empty;
+        defer param_types.deinit(self.gpa);
+        var omittable: std.ArrayListUnmanaged(bool) = .empty;
+        defer omittable.deinit(self.gpa);
+        var has_rest = false;
+        for (hir_mod.fnParams(self.hir, fn_node)) |param_node| {
+            const p = hir_mod.parameterOf(self.hir, param_node);
+            if (self.isThisParameter(param_node)) continue;
+            if (p.flags.is_rest) has_rest = true;
+            const has_anno = p.type_annotation != hir_mod.none_node_id;
+            var param_t: TypeId = if (has_anno)
+                try self.lowererLowerWithTypeParams(p.type_annotation)
+            else
+                types.Primitive.any;
+            if (p.flags.is_optional or p.default_value != hir_mod.none_node_id) {
+                param_t = self.unionWithUndefined(param_t) catch param_t;
+            }
+            try param_types.append(self.gpa, param_t);
+            try omittable.append(self.gpa, !has_anno or p.flags.is_optional or p.default_value != hir_mod.none_node_id or param_t == types.Primitive.void_t);
+        }
+        const ret_t = if (f.return_type != hir_mod.none_node_id)
+            try self.lowererLowerWithTypeParams(f.return_type)
+        else
+            types.Primitive.void_t;
+        const sig = self.interner.internSignature(param_types.items, ret_t, false) catch return error.OutOfMemory;
+        try self.recordSignatureMinArgs(sig, omittable.items);
+        if (has_rest) try self.rest_signatures.put(self.gpa, sig, {});
+        return sig;
+    }
+
     fn contextualCallReturnAssignableToParam(self: *Checker, arg_node: NodeId, param_t: TypeId) !bool {
         if (self.hir.kindOf(arg_node) != .call_expr) return false;
+        if (param_t >= types.Primitive.first_dynamic and param_t < self.interner.pool.typeCount()) {
+            const param_flags = self.interner.pool.flagsOf(param_t);
+            if (param_flags.is_union) {
+                for (self.interner.unionMembers(param_t)) |member| {
+                    if (try self.contextualCallReturnAssignableToParam(arg_node, member)) return true;
+                }
+                return false;
+            }
+        }
         const c = hir_mod.callOf(self.hir, arg_node);
         var callee_t = self.hir.typeOf(c.callee);
         if (callee_t == types.Primitive.none) {
@@ -21678,6 +21850,11 @@ pub const Checker = struct {
         const instantiated_ret = self.interner.signatureReturn(instantiated_sig) orelse ret_t;
         if (!(self.engine.isAssignableTo(instantiated_ret, param_t) catch false)) return false;
 
+        const checking_sig = if (self.findSiblingFunctionDecl(c.callee)) |fn_node|
+            (try self.relowerFunctionSignatureWithSubstitutions(fn_node, &subs)) orelse instantiated_sig
+        else
+            instantiated_sig;
+
         const inner_args = hir_mod.callArgs(self.hir, arg_node);
         var inner_arg_types: std.ArrayListUnmanaged(TypeId) = .empty;
         defer inner_arg_types.deinit(self.gpa);
@@ -21688,8 +21865,38 @@ pub const Checker = struct {
             }
             try inner_arg_types.append(self.gpa, inner_t);
         }
-        try self.checkArgsAgainstSignature(arg_node, inner_args, inner_arg_types.items, instantiated_sig);
+        const retry_diag_start = self.diagnostics.items.len;
+        try self.checkArgsAgainstSignature(arg_node, inner_args, inner_arg_types.items, checking_sig);
+        if (self.diagnostics.items.len != retry_diag_start) return false;
+        self.clearContextualCallShapeDiagnostics(arg_node, inner_args);
         return true;
+    }
+
+    fn clearContextualCallShapeDiagnostics(self: *Checker, call_node: NodeId, args: []const NodeId) void {
+        var write_i: usize = 0;
+        for (self.diagnostics.items) |d| {
+            if (!self.isContextualCallShapeDiagnostic(d, call_node, args)) {
+                self.diagnostics.items[write_i] = d;
+                write_i += 1;
+            }
+        }
+        self.diagnostics.shrinkRetainingCapacity(write_i);
+    }
+
+    fn isContextualCallShapeDiagnostic(self: *Checker, d: Diagnostic, call_node: NodeId, args: []const NodeId) bool {
+        switch (d.code) {
+            TsCodes.argument_type_mismatch,
+            TsCodes.expected_n_arguments,
+            TsCodes.no_overload_matches,
+            => {},
+            else => return false,
+        }
+        if (d.node == call_node) return true;
+        for (args) |arg| {
+            if (d.node == arg) return true;
+        }
+        _ = self;
+        return false;
     }
 
     fn callHasFreeGenericArrayArgument(self: *Checker, call_node: NodeId, sig: TypeId) bool {
@@ -21773,11 +21980,11 @@ pub const Checker = struct {
         return try self.literalExpressionAssignableToTarget(f.body, target_ret);
     }
 
-    fn objectLiteralAssignableToTarget(self: *Checker, arg_node: NodeId, arg_t: TypeId, target_t: TypeId) !bool {
+    fn objectLiteralAssignableToTarget(self: *Checker, arg_node: NodeId, arg_t: TypeId, target_t: TypeId) anyerror!bool {
         return try self.objectLiteralAssignableToTargetInner(arg_node, arg_t, target_t, true);
     }
 
-    fn objectLiteralAssignableToTargetInner(self: *Checker, arg_node: NodeId, arg_t: TypeId, target_t: TypeId, check_methods: bool) !bool {
+    fn objectLiteralAssignableToTargetInner(self: *Checker, arg_node: NodeId, arg_t: TypeId, target_t: TypeId, check_methods: bool) anyerror!bool {
         if (target_t < types.Primitive.first_dynamic or target_t >= self.interner.pool.typeCount()) return false;
         const flags = self.interner.pool.flagsOf(target_t);
         if (flags.is_union) {
@@ -21826,6 +22033,7 @@ pub const Checker = struct {
                     continue;
                 }
                 if (try self.literalExpressionAssignableToTarget(value_node, tm.type)) continue;
+                if (try self.isArgumentAssignableToParam(value_node, am_t, tm.type)) continue;
             }
             if (!try self.engine.isAssignableTo(am_t, tm.type)) return false;
         }
@@ -30451,6 +30659,54 @@ test "checker: nested generic call uses expected return for keyof inference" {
     defer destroyBoundSetup(b);
     try b.base.checker.checkSourceFile(b.base.root);
     try T.expectEqual(@as(usize, 0), b.base.checker.diagnostics.items.len);
+}
+
+test "checker: object literal property contextually instantiates nested generic call returns" {
+    const s = try newSetup(
+        \\type LowInfer<T> = T & {};
+        \\type PartialAssigner<TContext, TKey extends keyof TContext> = (context: TContext) => TContext[TKey];
+        \\type PropertyAssigner<TContext> = { [K in keyof TContext]?: PartialAssigner<TContext, K> | TContext[K]; };
+        \\type Meta<TContext> = { action: (ctx: TContext) => void };
+        \\interface AssignAction<TContext> {
+        \\  type: "xstate.assign";
+        \\  exec: (arg: TContext, meta: Meta<TContext>) => void;
+        \\}
+        \\declare function assign<TContext>(assignment: PropertyAssigner<LowInfer<TContext>>): AssignAction<TContext>;
+        \\type Config<TContext> = { context: TContext; entry?: AssignAction<TContext>; };
+        \\declare function createMachine<TContext>(config: Config<TContext>): void;
+        \\createMachine<{ count: number }>({
+        \\  context: { count: 0 },
+        \\  entry: assign({ count: (ctx: { count: number }) => ++ctx.count }),
+        \\});
+    );
+    defer destroySetup(s);
+    s.checker.setStrictFlags(.{ .strict_null_checks = true, .no_implicit_any = true, .strict_function_types = true });
+    try s.checker.checkSourceFile(s.root);
+    try T.expectEqual(@as(usize, 0), s.checker.diagnostics.items.len);
+}
+
+test "checker: callable object property contextually instantiates nested generic call returns" {
+    const s = try newSetup(
+        \\type LowInfer<T> = T & {};
+        \\type PartialAssigner<TContext, TKey extends keyof TContext> = (context: TContext) => TContext[TKey];
+        \\type PropertyAssigner<TContext> = { [K in keyof TContext]?: PartialAssigner<TContext, K> | TContext[K]; };
+        \\type Meta<TContext> = { action: (ctx: TContext) => void };
+        \\interface AssignAction<TContext> {
+        \\  type: "xstate.assign";
+        \\  (arg: TContext, meta: Meta<TContext>): void;
+        \\}
+        \\declare function assign<TContext>(assignment: PropertyAssigner<LowInfer<TContext>>): AssignAction<TContext>;
+        \\type Config<TContext> = { context: TContext; entry?: AssignAction<TContext>; };
+        \\declare function createMachine<TContext>(config: Config<TContext>): void;
+        \\createMachine<{ count: number }>({
+        \\  context: { count: 0 },
+        \\  entry: assign({ count: (ctx: { count: number }) => ++ctx.count }),
+        \\});
+    );
+    defer destroySetup(s);
+    s.checker.setStrictFlags(.{ .strict_null_checks = true, .no_implicit_any = true, .strict_function_types = true });
+    try s.checker.checkSourceFile(s.root);
+    try T.expectEqual(@as(usize, 0), s.checker.diagnostics.items.len);
 }
 
 test "checker: object literal discriminant guides generic union inference" {
