@@ -771,10 +771,17 @@ pub const Printer = struct {
         switch (kind) {
             .if_stmt => try self.printIf(node),
             .while_stmt => try self.printWhile(node),
+            .do_while_stmt => try self.printDoWhile(node),
+            .for_stmt => try self.printFor(node),
+            .for_in_stmt, .for_of_stmt => try self.printForInOf(node),
+            .try_stmt => try self.printTry(node),
+            .switch_stmt => try self.printSwitch(node),
+            .block_stmt => try self.printBlock(node),
             .return_stmt => try self.printReturn(node),
             .break_stmt => try self.printBreakOrContinue(node, "break"),
             .continue_stmt => try self.printBreakOrContinue(node, "continue"),
             .throw_stmt => try self.printThrow(node),
+            .var_decl, .let_decl, .const_decl => try self.printVarDecl(node),
             else => {
                 try self.printExpression(node);
                 try self.writeSemi();
@@ -1178,17 +1185,22 @@ pub const Printer = struct {
     ///   * `yield_expr` (top-level expression-statement yield)
     ///   * `return_stmt`
     ///   * `var/let/const` decl whose initializer is either absent,
-    ///     a top-level `yield_expr`, or any other non-yield expression
-    ///     (§4.A.4.1 — yield-in-RHS resumes via `_a.sent()`; non-yield
-    ///     decls pass through as plain `var`)
+    ///     a top-level `yield_expr` (§4.A.4.1 — yield-in-RHS resumes
+    ///     via `_a.sent()`), or any non-yield-bearing expression
+    ///     (pass-through as plain `var`)
     ///   * `assignment` (plain `=`, not compound) whose `value` is a
-    ///     top-level `yield_expr` (§4.A.4.1)
-    ///   * any other expression statement that is *not* itself a
-    ///     structured statement carrying nested yields
-    /// v0 deliberately bails on `if`/`while`/`for`/`try`/`switch`,
-    /// compound-assignment-to-yield, and on expression statements
-    /// where a `yield` is a sub-expression but not the immediate RHS
-    /// (e.g. `console.log(yield E)`) — those are §4.A.4.2.
+    ///     top-level `yield_expr` (§4.A.4.1) — or any assignment
+    ///     whose subtree contains no yield (pass-through)
+    ///   * any structured statement (`if`/`while`/`do`/`for`/`for-in`/
+    ///     `for-of`/`try`/`switch`/`throw`) whose entire subtree
+    ///     contains no `yield` — these emit as plain JS inside the
+    ///     current `case` (§4.A.4.2 part 1)
+    ///   * any other expression statement whose subtree contains no
+    ///     yield
+    /// v0 still bails on: yields nested inside structured statements
+    /// (CFG lowering is §4.A.4.2 part 2), compound-assignment-to-yield,
+    /// destructuring decl targets, and `break`/`continue`/`fn_decl`/
+    /// `class_decl` at the body's top level.
     fn canLowerGeneratorBody(self: *const Printer, body: NodeId) bool {
         if (self.hir.kindOf(body) != .block_stmt) return false;
         const stmts = hir_mod.blockStmts(self.hir, body);
@@ -1198,24 +1210,49 @@ pub const Printer = struct {
                 .yield_expr, .return_stmt => continue,
                 .var_decl, .let_decl, .const_decl => {
                     const v = hir_mod.varDeclOf(self.hir, s);
-                    // Reject destructuring targets and named-only
-                    // patterns this v0 doesn't handle yet.
                     if (v.name == hir_mod.none_node_id) return false;
                     if (self.hir.kindOf(v.name) != .identifier) return false;
+                    if (v.init != hir_mod.none_node_id and self.hir.kindOf(v.init) != .yield_expr) {
+                        if (self.subtreeContainsYield(v.init)) return false;
+                    }
                 },
                 .assignment => {
                     const a = hir_mod.assignmentOf(self.hir, s);
-                    // Compound assignment to a yield isn't supported
-                    // yet — `x += yield E` would need to evaluate
-                    // `x` once before the yield, which v0 doesn't
-                    // do. Plain `=` is fine.
                     if (a.op != null and self.hir.kindOf(a.value) == .yield_expr) return false;
+                    if (self.hir.kindOf(a.value) != .yield_expr) {
+                        if (self.subtreeContainsYield(s)) return false;
+                    }
                 },
-                .if_stmt, .while_stmt, .do_while_stmt, .for_stmt, .for_in_stmt, .for_of_stmt, .try_stmt, .switch_stmt, .throw_stmt, .break_stmt, .continue_stmt, .fn_decl, .class_decl => return false,
-                else => continue,
+                .break_stmt, .continue_stmt, .fn_decl, .class_decl => return false,
+                else => {
+                    if (self.subtreeContainsYield(s)) return false;
+                },
             }
         }
         return true;
+    }
+
+    /// §4.A.4.2 — true iff any node in the subtree rooted at `root`
+    /// is a `yield_expr`. Uses a linear sweep over the HIR's flat
+    /// node array plus an ancestor-chain walk per yield candidate,
+    /// which is O(N × depth) — fine for the small generator bodies
+    /// this is called on.
+    fn subtreeContainsYield(self: *const Printer, root: NodeId) bool {
+        if (root == hir_mod.none_node_id) return false;
+        if (self.hir.kindOf(root) == .yield_expr) return true;
+        const total = self.hir.nodeCount();
+        var i: u32 = 0;
+        while (i < total) : (i += 1) {
+            if (self.hir.kindOf(i) != .yield_expr) continue;
+            var cur: NodeId = self.hir.parentOf(i);
+            while (cur != hir_mod.none_node_id) {
+                if (cur == root) return true;
+                const p = self.hir.parentOf(cur);
+                if (p == cur) break;
+                cur = p;
+            }
+        }
+        return false;
     }
 
     /// §4.A.4 v0 — emit the linear state-machine downlevel:
@@ -4224,6 +4261,67 @@ test "emit: generator with multiple yield bindings sequences cases correctly" {
     try T.expect(std.mem.indexOf(u8, out, "return [4, 2]") != null);
     try T.expect(std.mem.indexOf(u8, out, "case 2: var b = _a.sent();") != null);
     try T.expect(std.mem.indexOf(u8, out, "return [2, (a + b)]") != null);
+}
+
+test "emit: generator with non-yielding if lowers as inline if" {
+    // `if` whose subtree contains no yield is treated as a plain
+    // statement inside the current case — no CFG lowering needed.
+    const out = try emitWithOpts(
+        "function* g() { if (cond) console.log(1); yield 2; }",
+        .{ .es_target = .es5 },
+    );
+    defer T.allocator.free(out);
+    try T.expect(std.mem.indexOf(u8, out, "TODO: ES5 generator") == null);
+    try T.expect(std.mem.indexOf(u8, out, "__generator") != null);
+    try T.expect(std.mem.indexOf(u8, out, "if (cond)") != null);
+    try T.expect(std.mem.indexOf(u8, out, "return [4, 2]") != null);
+}
+
+test "emit: generator with non-yielding while lowers as inline while" {
+    const out = try emitWithOpts(
+        "function* g() { while (cond) doStuff(); yield 1; }",
+        .{ .es_target = .es5 },
+    );
+    defer T.allocator.free(out);
+    try T.expect(std.mem.indexOf(u8, out, "__generator") != null);
+    try T.expect(std.mem.indexOf(u8, out, "while (cond)") != null);
+    try T.expect(std.mem.indexOf(u8, out, "doStuff()") != null);
+    try T.expect(std.mem.indexOf(u8, out, "return [4, 1]") != null);
+}
+
+test "emit: generator with non-yielding for lowers as inline for" {
+    const out = try emitWithOpts(
+        "function* g() { for (let i = 0; i < 3; i++) acc(i); yield acc; }",
+        .{ .es_target = .es5 },
+    );
+    defer T.allocator.free(out);
+    try T.expect(std.mem.indexOf(u8, out, "__generator") != null);
+    try T.expect(std.mem.indexOf(u8, out, "for (") != null);
+    try T.expect(std.mem.indexOf(u8, out, "return [4, acc]") != null);
+}
+
+test "emit: generator with non-yielding try lowers as inline try" {
+    const out = try emitWithOpts(
+        "function* g() { try { risky(); } catch (e) { recover(); } yield done; }",
+        .{ .es_target = .es5 },
+    );
+    defer T.allocator.free(out);
+    try T.expect(std.mem.indexOf(u8, out, "__generator") != null);
+    try T.expect(std.mem.indexOf(u8, out, "try ") != null);
+    try T.expect(std.mem.indexOf(u8, out, "catch (e)") != null);
+    try T.expect(std.mem.indexOf(u8, out, "return [4, done]") != null);
+}
+
+test "emit: generator with sub-expr yield (console.log(yield E)) still bails" {
+    // Yield as a *sub-expression* — not as the immediate RHS of a
+    // decl/assignment — is still out of scope for v0.
+    const out = try emitWithOpts(
+        "function* g() { console.log(yield 1); }",
+        .{ .es_target = .es5 },
+    );
+    defer T.allocator.free(out);
+    try T.expect(std.mem.indexOf(u8, out, "TODO: ES5 generator") != null);
+    try T.expect(std.mem.indexOf(u8, out, "__generator") == null);
 }
 
 test "emit: generator with non-yield decl passes through as plain var" {
