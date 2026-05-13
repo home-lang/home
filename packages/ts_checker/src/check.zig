@@ -259,6 +259,11 @@ pub const GenericAliasInfo = struct {
     body_node: hir_mod.NodeId = hir_mod.none_node_id,
 };
 
+const ActiveGenericAlias = struct {
+    name: hir_mod.StringId,
+    first_arg: TypeId,
+};
+
 /// Subset of compiler-options flags the checker consults. Defaults
 /// match `tsc`'s no-flag baseline (everything off). The driver
 /// populates this from a parsed `tsconfig` before `checkSourceFile`.
@@ -521,10 +526,14 @@ pub const Checker = struct {
     /// Consulted by `lowererLowerWithTypeParams` to instantiate
     /// `Box<number>`-style references against the aliased body.
     generic_aliases: std.AutoHashMapUnmanaged(hir_mod.StringId, GenericAliasInfo),
-    /// Generic aliases currently being instantiated. Recursive mapped
-    /// aliases such as `type Circular<T> = { [K in keyof T]: Circular<T> }`
-    /// must defer instead of recursively materializing forever.
-    active_generic_aliases: std.AutoHashMapUnmanaged(hir_mod.StringId, void),
+    /// Generic alias instantiations currently being materialized.
+    /// Recursive mapped aliases such as
+    /// `type Circular<T> = { [K in keyof T]: Circular<T> }` must defer
+    /// when the same alias is re-entered with the same type argument,
+    /// but recursive transforms like `DeepReadonly<T[P]>` are allowed
+    /// to keep evaluating when the nested argument is a different
+    /// structural type.
+    active_generic_aliases: std.ArrayListUnmanaged(ActiveGenericAlias),
     /// Value names whose declared annotation is currently being lowered.
     /// `typeof` queries can legally participate in recursive value
     /// shapes; this guard keeps mutual annotations from re-entering
@@ -10015,6 +10024,16 @@ pub const Checker = struct {
         });
     }
 
+    fn activeGenericAliasShouldDefer(self: *Checker, name: hir_mod.StringId, first_arg: TypeId) bool {
+        var depth: usize = 0;
+        for (self.active_generic_aliases.items) |active| {
+            if (active.name != name) continue;
+            depth += 1;
+            if (active.first_arg == first_arg) return true;
+        }
+        return depth >= 32;
+    }
+
     fn reportTypeNotGeneric(self: *Checker, node: NodeId, name: hir_mod.StringId) CheckError!void {
         const raw = self.string_interner.get(name);
         const msg = try std.fmt.allocPrint(
@@ -10491,15 +10510,9 @@ pub const Checker = struct {
                         }
                     }
                     if (self.generic_aliases.get(r.name)) |info| {
-                        if (self.active_generic_aliases.contains(r.name)) {
-                            return info.body;
-                        }
                         if (self.genericAliasHasMissingRequiredArgs(info, r.args_len)) {
                             try self.reportGenericTypeRequiresArgs(type_node, r.name, info);
                         }
-                        try self.active_generic_aliases.put(self.gpa, r.name, {});
-                        defer _ = self.active_generic_aliases.remove(r.name);
-
                         const args = hir_mod.typeRefArgs(self.hir, type_node);
                         var subs: std.AutoHashMapUnmanaged(TypeId, TypeId) = .empty;
                         defer subs.deinit(self.gpa);
@@ -10522,6 +10535,16 @@ pub const Checker = struct {
                                 try subs.put(self.gpa, p, tp.default);
                             }
                         }
+                        const first_arg = if (info.params.len > 0)
+                            (subs.get(info.params[0]) orelse info.params[0])
+                        else
+                            types.Primitive.unknown;
+                        if (self.activeGenericAliasShouldDefer(r.name, first_arg)) {
+                            return info.body;
+                        }
+                        try self.active_generic_aliases.append(self.gpa, .{ .name = r.name, .first_arg = first_arg });
+                        defer _ = self.active_generic_aliases.pop();
+
                         // Homomorphic mapped-type alias: when the
                         // alias body is `{ [K in keyof T]: F<K> }`,
                         // the static `body_t` collapsed to `unknown`
@@ -12133,7 +12156,36 @@ pub const Checker = struct {
         defer literal_keys.deinit(self.gpa);
         const can_materialize = self.collectStringLiteralKeys(constraint_t, &literal_keys);
         if (!can_materialize or literal_keys.items.len == 0) {
-            // Defer with a plain lowering.
+            if (self.hir.kindOf(m.constraint) == .keyof_type) {
+                const k = hir_mod.keyofTypeOf(self.hir, m.constraint);
+                const operand = self.lowererLowerWithTypeParams(k.operand) catch types.Primitive.unknown;
+                const operand_flags = if (operand < self.interner.pool.typeCount())
+                    self.interner.pool.flagsOf(operand)
+                else
+                    std.mem.zeroes(types.TypeFlags);
+                if (operand != types.Primitive.unknown and
+                    operand != types.Primitive.any and
+                    !operand_flags.is_type_parameter and
+                    !operand_flags.is_indexed_access and
+                    !operand_flags.is_keyof)
+                {
+                    return operand;
+                }
+                if (operand_flags.is_type_parameter and self.mappedTypeHasIdentityTemplate(m)) {
+                    const payload = self.interner.pool.type_parameter_payloads.items[self.interner.pool.payloadOf(operand)];
+                    if (payload.constraint != types.Primitive.none and
+                        payload.constraint != types.Primitive.unknown and
+                        payload.constraint != types.Primitive.any and
+                        payload.constraint < self.interner.pool.typeCount() and
+                        self.interner.pool.flagsOf(payload.constraint).is_object_type and
+                        self.interner.objectNumberIndex(payload.constraint) != types.Primitive.none)
+                    {
+                        return operand;
+                    }
+                }
+            } else {
+                return self.lowerer.lower(node);
+            }
             return self.lowerer.lower(node);
         }
 
@@ -12150,14 +12202,19 @@ pub const Checker = struct {
             if (self.interner.pool.flagsOf(operand).is_object_type) break :blk operand;
             break :blk null;
         };
-        const value_template = try self.lowererLowerWithTypeParams(m.value);
         for (literal_keys.items) |key_name| {
-            // Substitute `K -> literal` in the value template.
             const key_lit = self.interner.internStringLiteral(key_name) catch continue;
-            var subs: std.AutoHashMapUnmanaged(TypeId, TypeId) = .empty;
-            defer subs.deinit(self.gpa);
-            try subs.put(self.gpa, tp_id, key_lit);
-            const value_t = self.substituteType(value_template, &subs) catch value_template;
+            // Lower the property value with the mapped key bound to
+            // the current literal. This is more faithful than lowering
+            // once and substituting afterward because recursive alias
+            // arguments like `DeepReadonly<T[P]>` need `T[P]` to be
+            // resolved before the nested alias instantiates.
+            const value_t = blk_value: {
+                try self.pushNarrowScope();
+                defer self.popNarrowScope();
+                try self.recordNarrow(tp.name, key_lit);
+                break :blk_value try self.lowererLowerWithTypeParams(m.value);
+            };
 
             // Resolve the per-key effective name. With an `as`
             // clause (TS 4.1+ key remapping), re-lower the remap
@@ -12223,6 +12280,33 @@ pub const Checker = struct {
             });
         }
         return self.interner.internObjectType(built.items) catch return error.OutOfMemory;
+    }
+
+    fn mappedTypeHasIdentityTemplate(self: *Checker, m: hir_mod.MappedTypePayload) bool {
+        if (m.constraint == hir_mod.none_node_id or m.value == hir_mod.none_node_id or m.type_param == hir_mod.none_node_id) return false;
+        if (self.hir.kindOf(m.constraint) != .keyof_type or self.hir.kindOf(m.value) != .indexed_access_type) return false;
+        const k = hir_mod.keyofTypeOf(self.hir, m.constraint);
+        const ia = hir_mod.indexedAccessTypeOf(self.hir, m.value);
+        const operand_name = self.bareTypeNodeName(k.operand) orelse return false;
+        const object_name = self.bareTypeNodeName(ia.object) orelse return false;
+        if (operand_name != object_name) return false;
+        const tp = hir_mod.typeParameterOf(self.hir, m.type_param);
+        const index_name = self.bareTypeNodeName(ia.index) orelse return false;
+        return index_name == tp.name;
+    }
+
+    fn bareTypeNodeName(self: *Checker, node: NodeId) ?hir_mod.StringId {
+        if (node == hir_mod.none_node_id) return null;
+        return switch (self.hir.kindOf(node)) {
+            .identifier => hir_mod.identifierOf(self.hir, node).name,
+            .type_parameter => hir_mod.typeParameterOf(self.hir, node).name,
+            .type_ref => blk: {
+                const r = hir_mod.typeRefOf(self.hir, node);
+                if (r.qualifier_len != 0 or r.args_len != 0) break :blk null;
+                break :blk r.name;
+            },
+            else => null,
+        };
     }
 
     /// Walk a type and accumulate the StringIds of every string-literal
@@ -29906,6 +29990,37 @@ test "checker: homomorphic Partial<T> preserves field types" {
     }
     try T.expect(saw_x_number);
     try T.expect(saw_y_string);
+}
+
+test "checker: recursive homomorphic mapped aliases preserve primitive leaves" {
+    const s = try newSetup(
+        \\type DeepReadonly<T> = { readonly [P in keyof T]: DeepReadonly<T[P]> };
+        \\type Foo = { x: number; y: { a: string; b: number }; z: boolean };
+        \\type DeepReadonlyFoo = { readonly x: number; readonly y: { readonly a: string; readonly b: number }; readonly z: boolean };
+        \\var x1: DeepReadonly<Foo>;
+        \\var x1: DeepReadonlyFoo;
+    );
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+    for (s.checker.diagnostics.items) |d| {
+        try T.expect(d.code != TsCodes.subsequent_var_type_mismatch);
+    }
+}
+
+test "checker: identity homomorphic mapped arrays preserve array-like source" {
+    const s = try newSetup(
+        \\type Mapped<T> = { [K in keyof T]: T[K] };
+        \\declare function acceptArray(arr: any[]): void;
+        \\declare function mapArray<T extends any[]>(arr: T): Mapped<T>;
+        \\function acceptMappedArray<T extends any[]>(arr: T) {
+        \\  acceptArray(mapArray(arr));
+        \\}
+    );
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+    for (s.checker.diagnostics.items) |d| {
+        try T.expect(d.code != TsCodes.argument_type_mismatch);
+    }
 }
 
 test "checker: mapped type `as` identity clause preserves key set" {
