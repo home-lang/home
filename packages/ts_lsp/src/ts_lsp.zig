@@ -1829,6 +1829,124 @@ pub const Service = struct {
             });
         }
 
+        // ---- Sort keys in top-level object literals ----------------------
+        // For each `let`/`const`/`var x = { … }` whose initializer is an
+        // object literal with 3+ sortable named properties, surface a
+        // quick-fix that rewrites the literal with its properties sorted
+        // alphabetically by key. Skips literals containing spreads or
+        // computed-key properties (we can't safely reorder around those —
+        // the rewrite preserves runtime semantics only when every entry
+        // is a static name). The rewrite replaces just the bytes between
+        // the literal's `{` and `}`, preserving the surrounding context
+        // (binding name, type annotation, etc).
+        for (stmts) |s| {
+            const sk = c.hir.kindOf(s);
+            if (sk != .let_decl and sk != .const_decl and sk != .var_decl) continue;
+            const v = hir_mod.varDeclOf(&c.hir, s);
+            if (v.name == hir_mod.none_node_id) continue;
+            if (v.init == hir_mod.none_node_id) continue;
+            if (c.hir.kindOf(v.init) != .object_literal) continue;
+            if (c.hir.kindOf(v.name) != .identifier) continue;
+            const props = hir_mod.objectLiteralProps(&c.hir, v.init);
+            if (props.len < 3) continue;
+            // Validate all props are sortable + compute keys.
+            const Keyed = struct {
+                key: []const u8,
+                node: hir_mod.NodeId,
+            };
+            var keyed: std.ArrayListUnmanaged(Keyed) = .empty;
+            defer keyed.deinit(gpa);
+            var sortable = true;
+            for (props) |p| {
+                if (c.hir.kindOf(p) != .object_property) {
+                    // Spread or unknown — bail.
+                    sortable = false;
+                    break;
+                }
+                const op = hir_mod.objectPropertyOf(&c.hir, p);
+                if (op.is_computed) {
+                    sortable = false;
+                    break;
+                }
+                const key_text: []const u8 = switch (c.hir.kindOf(op.key)) {
+                    .identifier => blk: {
+                        const id = hir_mod.identifierOf(&c.hir, op.key);
+                        break :blk c.interner.get(id.name);
+                    },
+                    .literal_string => blk: {
+                        const lit = hir_mod.literalStringOf(&c.hir, op.key);
+                        break :blk c.interner.get(lit.value);
+                    },
+                    else => "",
+                };
+                if (key_text.len == 0) {
+                    sortable = false;
+                    break;
+                }
+                try keyed.append(gpa, .{ .key = key_text, .node = p });
+            }
+            if (!sortable) continue;
+            // Skip if already sorted (no-op suggestion is noise).
+            var already_sorted = true;
+            var i: usize = 1;
+            while (i < keyed.items.len) : (i += 1) {
+                if (std.mem.lessThan(u8, keyed.items[i].key, keyed.items[i - 1].key)) {
+                    already_sorted = false;
+                    break;
+                }
+            }
+            if (already_sorted) continue;
+            // Sort by key.
+            const SortCtx = struct {
+                pub fn lessThan(_: void, a: Keyed, b: Keyed) bool {
+                    return std.mem.lessThan(u8, a.key, b.key);
+                }
+            };
+            std.mem.sort(Keyed, keyed.items, {}, SortCtx.lessThan);
+            // Build the replacement text: join each property's original
+            // source bytes with `, ` separators. The literal's `{` and
+            // `}` (and any surrounding whitespace) are preserved by
+            // anchoring the edit between them.
+            const literal_span = c.hir.spanOf(v.init);
+            const lit_src = f.source[literal_span.start..literal_span.end];
+            const open_rel = std.mem.indexOfScalar(u8, lit_src, '{') orelse continue;
+            const close_rel = std.mem.lastIndexOfScalar(u8, lit_src, '}') orelse continue;
+            if (close_rel <= open_rel) continue;
+            const replace_start: u32 = literal_span.start + @as(u32, @intCast(open_rel + 1));
+            const replace_end: u32 = literal_span.start + @as(u32, @intCast(close_rel));
+            var buf: std.ArrayListUnmanaged(u8) = .empty;
+            defer buf.deinit(gpa);
+            try buf.append(gpa, ' ');
+            for (keyed.items, 0..) |entry, idx| {
+                if (idx > 0) try buf.appendSlice(gpa, ", ");
+                const psp = c.hir.spanOf(entry.node);
+                try buf.appendSlice(gpa, f.source[psp.start..psp.end]);
+            }
+            try buf.append(gpa, ' ');
+            const new_text = try buf.toOwnedSlice(gpa);
+            errdefer gpa.free(new_text);
+            const sp = ts_diagnostics.positionToLineCol(f.source, replace_start);
+            const ep = ts_diagnostics.positionToLineCol(f.source, replace_end);
+            const var_name_id = hir_mod.identifierOf(&c.hir, v.name).name;
+            const var_name_str = c.interner.get(var_name_id);
+            const title = try std.fmt.allocPrint(gpa, "Sort keys in {s}", .{var_name_str});
+            errdefer gpa.free(title);
+            var sort_edits = try gpa.alloc(TextEdit, 1);
+            sort_edits[0] = .{
+                .file = f.path,
+                .start_line = if (sp.line > 0) sp.line - 1 else 0,
+                .start_col = if (sp.col > 0) sp.col - 1 else 0,
+                .end_line = if (ep.line > 0) ep.line - 1 else 0,
+                .end_col = if (ep.col > 0) ep.col - 1 else 0,
+                .new_text = new_text,
+            };
+            try actions.append(gpa, .{
+                .title = title,
+                .kind = .quick_fix,
+                .edits = sort_edits,
+            });
+        }
+
         // ---- Add explicit type annotation ---------------------------------
         // For each top-level let/const/var with no annotation but a
         // well-defined inferred type, surface a quick-fix that
@@ -6283,6 +6401,108 @@ test "Service: codeActions sorts top-level imports" {
     const a_pos = std.mem.indexOf(u8, nt, "\"./a\"") orelse return error.NotFound;
     const z_pos = std.mem.indexOf(u8, nt, "\"./z\"") orelse return error.NotFound;
     try T.expect(a_pos < z_pos);
+}
+
+test "Service: codeActions sorts top-level object-literal keys" {
+    // `let config = { z: 1, a: 2, m: 3 }` — 3+ named keys, not yet
+    // sorted, no spreads or computed names. The quick-fix should
+    // surface a `Sort keys in config` action that rewrites the
+    // properties in alphabetical order.
+    var vfs = ts_resolver.VirtualFs.init(T.allocator);
+    defer vfs.deinit();
+    var resolver = ts_resolver.Resolver.init(T.allocator, vfs.fs(), .{});
+    defer resolver.deinit();
+    var program = ts_program.Program.init(T.allocator, &resolver);
+    defer program.deinit();
+
+    const src = "let config = { z: 1, a: 2, m: 3 };";
+    _ = try program.add("/main.ts", src);
+    try program.compileAll(.{});
+
+    var svc = Service.init(T.allocator, &program);
+    const actions = try svc.codeActions(T.allocator, "/main.ts");
+    defer {
+        for (actions) |a| {
+            T.allocator.free(a.title);
+            for (a.edits) |e| T.allocator.free(e.new_text);
+            T.allocator.free(a.edits);
+        }
+        T.allocator.free(actions);
+    }
+    var found: ?CodeAction = null;
+    for (actions) |a| {
+        if (std.mem.startsWith(u8, a.title, "Sort keys in ")) {
+            found = a;
+            break;
+        }
+    }
+    try T.expect(found != null);
+    const a = found.?;
+    try T.expectEqualStrings("Sort keys in config", a.title);
+    try T.expectEqual(@as(usize, 1), a.edits.len);
+    // The rewritten text contains the keys in alphabetical order.
+    const nt = a.edits[0].new_text;
+    const a_pos = std.mem.indexOf(u8, nt, "a: 2") orelse return error.NotFound;
+    const m_pos = std.mem.indexOf(u8, nt, "m: 3") orelse return error.NotFound;
+    const z_pos = std.mem.indexOf(u8, nt, "z: 1") orelse return error.NotFound;
+    try T.expect(a_pos < m_pos);
+    try T.expect(m_pos < z_pos);
+}
+
+test "Service: codeActions skips sort-keys when literal is already sorted" {
+    // Already-sorted literal: no `Sort keys` action should fire (we
+    // don't want to spam the popup with no-op quick-fixes).
+    var vfs = ts_resolver.VirtualFs.init(T.allocator);
+    defer vfs.deinit();
+    var resolver = ts_resolver.Resolver.init(T.allocator, vfs.fs(), .{});
+    defer resolver.deinit();
+    var program = ts_program.Program.init(T.allocator, &resolver);
+    defer program.deinit();
+
+    _ = try program.add("/main.ts", "let config = { a: 1, b: 2, c: 3 };");
+    try program.compileAll(.{});
+
+    var svc = Service.init(T.allocator, &program);
+    const actions = try svc.codeActions(T.allocator, "/main.ts");
+    defer {
+        for (actions) |a| {
+            T.allocator.free(a.title);
+            for (a.edits) |e| T.allocator.free(e.new_text);
+            T.allocator.free(a.edits);
+        }
+        T.allocator.free(actions);
+    }
+    for (actions) |a| {
+        try T.expect(!std.mem.startsWith(u8, a.title, "Sort keys in "));
+    }
+}
+
+test "Service: codeActions skips sort-keys when literal has fewer than 3 properties" {
+    // 2 properties is below the threshold — sorting that small a
+    // set rarely improves readability and would create UI noise.
+    var vfs = ts_resolver.VirtualFs.init(T.allocator);
+    defer vfs.deinit();
+    var resolver = ts_resolver.Resolver.init(T.allocator, vfs.fs(), .{});
+    defer resolver.deinit();
+    var program = ts_program.Program.init(T.allocator, &resolver);
+    defer program.deinit();
+
+    _ = try program.add("/main.ts", "let pair = { z: 1, a: 2 };");
+    try program.compileAll(.{});
+
+    var svc = Service.init(T.allocator, &program);
+    const actions = try svc.codeActions(T.allocator, "/main.ts");
+    defer {
+        for (actions) |a| {
+            T.allocator.free(a.title);
+            for (a.edits) |e| T.allocator.free(e.new_text);
+            T.allocator.free(a.edits);
+        }
+        T.allocator.free(actions);
+    }
+    for (actions) |a| {
+        try T.expect(!std.mem.startsWith(u8, a.title, "Sort keys in "));
+    }
 }
 
 test "Service: semanticTokens classifies identifiers by declaring kind" {
