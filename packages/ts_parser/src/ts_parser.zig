@@ -3248,6 +3248,13 @@ pub const Parser = struct {
                 // `typeof` in a type position consumes a value
                 // expression. Keep the HIR compact by interning the
                 // qualified token span as an identifier-like ref.
+                if (self.peek().kind == .kw_import) {
+                    const import_t = try self.parseImportTypeReference();
+                    const operand = try self.parseArrayTypePostfix(import_t);
+                    const sp: Span = .{ .start = t.span.start, .end = self.hir.spanOf(operand).end };
+                    const typeof_t = try self.builder.addTypeofType(sp, operand);
+                    return try self.parseArrayTypePostfix(typeof_t);
+                }
                 const ref_start = switch (self.peek().kind) {
                     .identifier, .kw_undefined, .kw_super, .kw_this => self.advance(),
                     else => {
@@ -8268,6 +8275,17 @@ test "parser: type annotation — typeof accepts type arguments" {
     const top = hir_mod.blockStmts(&s.hir, root)[0];
     const v = hir_mod.varDeclOf(&s.hir, top);
     try T.expectEqual(hir_mod.NodeKind.typeof_type, s.hir.kindOf(v.type_annotation));
+}
+
+test "parser: type annotation — typeof import supports indexed access" {
+    var s = try newTestSetup("let x: typeof import(\"./mod\")[\"value\"] = null;");
+    defer destroyTestSetup(s);
+    const root = try s.parser.parseSourceFile();
+    const top = hir_mod.blockStmts(&s.hir, root)[0];
+    const v = hir_mod.varDeclOf(&s.hir, top);
+    try T.expectEqual(hir_mod.NodeKind.typeof_type, s.hir.kindOf(v.type_annotation));
+    const tt = hir_mod.typeofTypeOf(&s.hir, v.type_annotation);
+    try T.expectEqual(hir_mod.NodeKind.indexed_access_type, s.hir.kindOf(tt.operand));
 }
 
 test "parser: type annotation — typeof undefined accepts keyword operand" {
