@@ -1370,6 +1370,37 @@ pub const Printer = struct {
                         return false;
                     }
                 },
+                .for_in_stmt => {
+                    if (!self.subtreeContainsYield(s)) continue;
+                    // §4.A.4.8 cont. — `for (const k in obj) yield E;`.
+                    // Source must be yield-free; body is bare single yield
+                    // or multi-yield block. Keys are collected eagerly via
+                    // a synthesized `for (var _x in obj) _keys.push(_x);`
+                    // before entering the state-machine header.
+                    const fip = hir_mod.forInOf(self.hir, s);
+                    if (self.subtreeContainsYield(fip.source)) return false;
+                    if (self.singleYieldInThen(fip.body)) |ye| {
+                        const yp = hir_mod.yieldExprOf(self.hir, ye);
+                        if (yp.expr != hir_mod.none_node_id and self.subtreeContainsYield(yp.expr)) return false;
+                    } else if (self.splitLoopBody(fip.body, true)) |split| {
+                        const yp = hir_mod.yieldExprOf(self.hir, split.yield_node);
+                        if (yp.expr != hir_mod.none_node_id and self.subtreeContainsYield(yp.expr)) return false;
+                    } else if (self.multiYieldLoopBodyOk(fip.body, true)) {
+                        // multi-yield — emit handles it.
+                    } else {
+                        return false;
+                    }
+                    const tk = self.hir.kindOf(fip.target);
+                    if (tk == .identifier) {
+                        // ok
+                    } else if (tk == .var_decl or tk == .let_decl or tk == .const_decl) {
+                        const v = hir_mod.varDeclOf(self.hir, fip.target);
+                        if (v.name == hir_mod.none_node_id) return false;
+                        if (self.hir.kindOf(v.name) != .identifier) return false;
+                    } else {
+                        return false;
+                    }
+                },
                 .for_of_stmt => {
                     if (!self.subtreeContainsYield(s)) continue;
                     // §4.A.4.8 v0 — `for (const x of source) yield E;`
@@ -1962,6 +1993,136 @@ pub const Printer = struct {
                     try self.write(":");
                 }
                 state += 3;
+            } else if (k == .for_in_stmt and self.subtreeContainsYield(stmt)) {
+                // §4.A.4.8 cont. — `for (const k in source) yield E;`.
+                // Keys are collected eagerly into `_keys` (synthesized
+                // `for (var _x in source) _keys.push(_x);`) inside the
+                // current case, then iterated with an indexed-for
+                // state-machine. Same layout as for-of:
+                //   cur: var _keys = [], _i = 0; for (var _x in src) _keys.push(_x);
+                //   header: cond + binding + first yield
+                //   resumes + continue + exit
+                const prev_break = self.gen_break_label;
+                const prev_continue = self.gen_continue_label;
+                defer {
+                    self.gen_break_label = prev_break;
+                    self.gen_continue_label = prev_continue;
+                }
+                const fip = hir_mod.forInOf(self.hir, stmt);
+                var pre: []const NodeId = &[_]NodeId{};
+                var post: []const NodeId = &[_]NodeId{};
+                const ye_first: NodeId = if (self.singleYieldInThen(fip.body)) |single|
+                    single
+                else if (self.splitLoopBody(fip.body, true)) |split| blk: {
+                    pre = split.pre;
+                    post = split.post;
+                    break :blk split.yield_node;
+                } else hir_mod.none_node_id;
+                var n_yields: u32 = 1;
+                if (ye_first == hir_mod.none_node_id) {
+                    n_yields = 0;
+                    const body_stmts = hir_mod.blockStmts(self.hir, fip.body);
+                    for (body_stmts) |s| {
+                        if (self.hir.kindOf(s) == .yield_expr) n_yields += 1;
+                    }
+                }
+                const header = state + 1;
+                const continue_label = state + 1 + n_yields + 1;
+                const exit_label = continue_label + 1;
+                self.gen_break_label = exit_label;
+                self.gen_continue_label = continue_label;
+                // Eager key collection in the current case.
+                try self.write(" var _keys = [], _i = 0;");
+                try self.write(" for (var _x in ");
+                try self.printExpression(fip.source);
+                try self.write(") _keys.push(_x);");
+                const target_name: NodeId = blk: {
+                    const tk = self.hir.kindOf(fip.target);
+                    if (tk == .identifier) break :blk fip.target;
+                    const v = hir_mod.varDeclOf(self.hir, fip.target);
+                    break :blk v.name;
+                };
+                state += 1;
+                {
+                    const num_header = std.fmt.bufPrint(&buf, "{d}", .{header}) catch unreachable;
+                    try self.writeNewlineIndent();
+                    try self.write("case ");
+                    try self.write(num_header);
+                    try self.write(": if (!(_i < _keys.length)) return [3, ");
+                    var num_exit_buf: [16]u8 = undefined;
+                    try self.write(std.fmt.bufPrint(&num_exit_buf, "{d}", .{exit_label}) catch unreachable);
+                    try self.write("]; var ");
+                    try self.printExpression(target_name);
+                    try self.write(" = _keys[_i];");
+                }
+                if (ye_first != hir_mod.none_node_id) {
+                    for (pre) |ps| {
+                        try self.write(" ");
+                        try self.printNonIndentStatement(ps);
+                    }
+                    const yp = hir_mod.yieldExprOf(self.hir, ye_first);
+                    const op: []const u8 = if (yp.type_node != hir_mod.none_node_id) "5" else "4";
+                    try self.write(" return [");
+                    try self.write(op);
+                    if (yp.expr != hir_mod.none_node_id) {
+                        try self.write(", ");
+                        try self.printExpression(yp.expr);
+                    }
+                    try self.write("];");
+                    state += 1;
+                    const num_resume = std.fmt.bufPrint(&buf, "{d}", .{state}) catch unreachable;
+                    try self.writeNewlineIndent();
+                    try self.write("case ");
+                    try self.write(num_resume);
+                    try self.write(": _a.sent();");
+                    for (post) |ps| {
+                        try self.write(" ");
+                        try self.printNonIndentStatement(ps);
+                    }
+                } else {
+                    const body_stmts = hir_mod.blockStmts(self.hir, fip.body);
+                    for (body_stmts) |s| {
+                        if (self.hir.kindOf(s) == .yield_expr) {
+                            const yp = hir_mod.yieldExprOf(self.hir, s);
+                            const op: []const u8 = if (yp.type_node != hir_mod.none_node_id) "5" else "4";
+                            try self.write(" return [");
+                            try self.write(op);
+                            if (yp.expr != hir_mod.none_node_id) {
+                                try self.write(", ");
+                                try self.printExpression(yp.expr);
+                            }
+                            try self.write("];");
+                            state += 1;
+                            const num_resume = std.fmt.bufPrint(&buf, "{d}", .{state}) catch unreachable;
+                            try self.writeNewlineIndent();
+                            try self.write("case ");
+                            try self.write(num_resume);
+                            try self.write(": _a.sent();");
+                        } else {
+                            try self.write(" ");
+                            try self.printNonIndentStatement(s);
+                        }
+                    }
+                }
+                state += 1;
+                {
+                    const num_continue = std.fmt.bufPrint(&buf, "{d}", .{state}) catch unreachable;
+                    try self.writeNewlineIndent();
+                    try self.write("case ");
+                    try self.write(num_continue);
+                    try self.write(": _i++; return [3, ");
+                    var num_header_buf: [16]u8 = undefined;
+                    try self.write(std.fmt.bufPrint(&num_header_buf, "{d}", .{header}) catch unreachable);
+                    try self.write("];");
+                }
+                state += 1;
+                {
+                    const num_exit_open = std.fmt.bufPrint(&buf, "{d}", .{state}) catch unreachable;
+                    try self.writeNewlineIndent();
+                    try self.write("case ");
+                    try self.write(num_exit_open);
+                    try self.write(":");
+                }
             } else if (k == .for_of_stmt and self.subtreeContainsYield(stmt)) {
                 // §4.A.4.8 v0 — `for (const x of source) yield E;` at ES5.
                 // Lowers to the indexed-for state-machine shape (the same
@@ -6488,6 +6649,24 @@ test "emit: generator with for-of-yield + multi-stmt body lowers" {
     try T.expect(std.mem.indexOf(u8, out, "var x = _arr[_i]; pre(); return [4, x];") != null);
     // Resume case 2 includes post() (falls through).
     try T.expect(std.mem.indexOf(u8, out, "case 2: _a.sent(); post();") != null);
+    try T.expect(std.mem.indexOf(u8, out, "case 3: _i++; return [3, 1];") != null);
+    try T.expect(std.mem.indexOf(u8, out, "case 4:") != null);
+}
+
+test "emit: generator with for-in-yield lowers via eager keys collection" {
+    const out = try emitWithOpts(
+        "function* g() { for (const k in obj) yield k; }",
+        .{ .es_target = .es5 },
+    );
+    defer T.allocator.free(out);
+    try T.expect(std.mem.indexOf(u8, out, "__generator") != null);
+    try T.expect(std.mem.indexOf(u8, out, "TODO: ES5 generator") == null);
+    // Init in case 0: eager key collection.
+    try T.expect(std.mem.indexOf(u8, out, "var _keys = [], _i = 0;") != null);
+    try T.expect(std.mem.indexOf(u8, out, "for (var _x in obj) _keys.push(_x);") != null);
+    // Header case 1: cond + binding + yield. Exit = case 4.
+    try T.expect(std.mem.indexOf(u8, out, "case 1: if (!(_i < _keys.length)) return [3, 4]; var k = _keys[_i]; return [4, k];") != null);
+    // Continue case 3 increments _i and loops back to header.
     try T.expect(std.mem.indexOf(u8, out, "case 3: _i++; return [3, 1];") != null);
     try T.expect(std.mem.indexOf(u8, out, "case 4:") != null);
 }
