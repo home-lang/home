@@ -1358,7 +1358,7 @@ pub const Checker = struct {
                     }
                 },
                 else => switch (self.hir.kindOf(s)) {
-                    .call_expr => _ = try self.checkExpression(s),
+                    .call_expr, .new_expr => _ = try self.checkExpression(s),
                     .assignment => _ = try self.checkExpression(s),
                     .binary_op => {
                         const b = hir_mod.binopOf(self.hir, s);
@@ -2395,7 +2395,7 @@ pub const Checker = struct {
         if (!f.flags.is_method and !f.flags.is_constructor and f.name != hir_mod.none_node_id and self.hir.kindOf(f.name) == .identifier) {
             const fn_id = hir_mod.identifierOf(self.hir, f.name);
             const fn_t = self.hir.typeOf(node);
-            if (fn_t != types.Primitive.none) {
+            if (fn_t != types.Primitive.none and !self.type_names.contains(fn_id.name)) {
                 try self.recordNarrow(fn_id.name, fn_t);
             }
         }
@@ -3346,6 +3346,7 @@ pub const Checker = struct {
                 !(self.nodeHasAncestorKind(ref_node, .binary_op) and self.varDeclHasTypeAnnotation(decl_node)) and
                 !(self.nodeHasAncestorKind(ref_node, .logical_op) and self.varDeclHasTypeAnnotation(decl_node)) and
                 !(self.nodeHasAncestorKind(ref_node, .assignment) and self.varDeclHasTypeAnnotation(decl_node)) and
+                !(self.nodeHasAncestorKind(ref_node, .var_decl) and self.varDeclHasTypeAnnotation(decl_node)) and
                 !(self.nodeHasAncestorKind(ref_node, .call_expr) and self.varDeclHasTypeAnnotation(decl_node)) and
                 !(self.nodeHasAncestorKind(ref_node, .new_expr) and self.varDeclHasTypeAnnotation(decl_node)) and
                 !(self.nodeHasAncestorKind(ref_node, .decorator) and self.varDeclHasTypeAnnotation(decl_node)) and
@@ -3950,7 +3951,9 @@ pub const Checker = struct {
             }
             if (pp.default_value != hir_mod.none_node_id) {
                 _ = try self.checkExpression(pp.default_value);
-                try self.checkDefaultExprAgainstBodyVars(pp.default_value, &body_vars);
+                if (!self.sourceHasUseDefineForClassFieldsTrueDirective()) {
+                    try self.checkDefaultExprAgainstBodyVars(pp.default_value, &body_vars);
+                }
             }
             if (nk == .array_pattern and pp.default_value != hir_mod.none_node_id) {
                 const default_t = try self.checkExpression(pp.default_value);
@@ -8058,7 +8061,7 @@ pub const Checker = struct {
         defer inherited.deinit(self.gpa);
         for (parent_members) |pm| {
             if (child_by_name.get(pm.name)) |cm| {
-                if (!(self.heritageAssignable(cm.type, pm.type) catch false)) {
+                if (!(try self.heritageMemberAssignable(cm.type, pm.type))) {
                     const prop_str = self.string_interner.get(pm.name);
                     const msg = try std.fmt.allocPrint(
                         self.diag_arena.allocator(),
@@ -8230,6 +8233,23 @@ pub const Checker = struct {
         return self.engine.isAssignableTo(source, target);
     }
 
+    fn heritageMemberAssignable(self: *Checker, source: TypeId, target: TypeId) CheckError!bool {
+        if (self.heritageAssignable(source, target) catch false) return true;
+        if (try self.zeroArgSignatureReturnType(target)) |ret| {
+            if (self.heritageAssignable(source, ret) catch false) return true;
+        }
+        if (try self.zeroArgSignatureReturnType(source)) |ret| {
+            if (self.heritageAssignable(ret, target) catch false) return true;
+        }
+        return false;
+    }
+
+    fn zeroArgSignatureReturnType(self: *Checker, t: TypeId) CheckError!?TypeId {
+        if (!self.interner.isSignature(t)) return null;
+        if (self.interner.signatureParams(t).len != 0) return null;
+        return self.interner.signatureReturn(t) orelse types.Primitive.any;
+    }
+
     fn sourceMayAssignToFreeTargetDuringHeritage(self: *Checker, source: TypeId) bool {
         if (source == types.Primitive.any) return true;
         if (source >= self.interner.pool.typeCount()) return false;
@@ -8272,14 +8292,38 @@ pub const Checker = struct {
             .identifier => blk: {
                 const id = hir_mod.identifierOf(self.hir, extends_expr);
                 if (self.class_instance_types.get(id.name)) |t| break :blk t;
-                break :blk try self.resolveForwardClassInstanceType(extends_expr, id.name);
+                if (try self.resolveForwardClassInstanceType(extends_expr, id.name)) |t| break :blk t;
+                if (try self.heritageValueType(extends_expr, id.name)) |value_t| {
+                    if (try self.constructReturnType(value_t)) |instance_t| break :blk instance_t;
+                }
+                break :blk null;
             },
             .type_ref => blk: {
                 if (try self.reactComponentInstanceType(extends_expr)) |t| break :blk t;
                 break :blk try self.lowererLowerWithTypeParams(extends_expr);
             },
+            .class_decl, .class_expr => blk: {
+                try self.checkClassDecl(extends_expr);
+                if (self.class_static_type_by_node.get(extends_expr)) |static_t| {
+                    if (try self.constructReturnType(static_t)) |instance_t| break :blk instance_t;
+                }
+                break :blk self.hir.typeOf(extends_expr);
+            },
             else => null,
         };
+    }
+
+    fn constructReturnType(self: *Checker, t: TypeId) CheckError!?TypeId {
+        var construct_sigs: std.ArrayListUnmanaged(TypeId) = .empty;
+        defer construct_sigs.deinit(self.gpa);
+        try self.collectConstructSignatures(t, &construct_sigs);
+        if (construct_sigs.items.len == 0) return null;
+        return self.interner.signatureReturn(construct_sigs.items[0]) orelse types.Primitive.any;
+    }
+
+    fn heritageValueType(self: *Checker, at_node: NodeId, name: hir_mod.StringId) CheckError!?TypeId {
+        if (self.lookupNarrow(name)) |t| return t;
+        return try self.typeOfVisibleNameNoDiag(at_node, name);
     }
 
     fn reactComponentInstanceType(self: *Checker, type_ref_node: NodeId) CheckError!?TypeId {
@@ -8364,12 +8408,24 @@ pub const Checker = struct {
         return switch (self.hir.kindOf(extends_expr)) {
             .identifier => blk: {
                 const id = hir_mod.identifierOf(self.hir, extends_expr);
-                break :blk self.class_static_types.get(id.name);
+                if (self.class_static_types.get(id.name)) |t| break :blk t;
+                if (try self.heritageValueType(extends_expr, id.name)) |value_t| {
+                    const static_t = self.typeParameterConstraint(value_t) orelse value_t;
+                    if (try self.constructReturnType(static_t)) |_| break :blk static_t;
+                    if (static_t != value_t) {
+                        if (try self.constructReturnType(value_t)) |_| break :blk value_t;
+                    }
+                }
+                break :blk null;
             },
             .type_ref => blk: {
                 const r = hir_mod.typeRefOf(self.hir, extends_expr);
                 if (r.qualifier_len != 0) break :blk null;
                 break :blk self.class_static_types.get(r.name);
+            },
+            .class_decl, .class_expr => blk: {
+                try self.checkClassDecl(extends_expr);
+                break :blk self.class_static_type_by_node.get(extends_expr);
             },
             else => null,
         };
@@ -8808,7 +8864,10 @@ pub const Checker = struct {
             if (self.hir.kindOf(qualifiers[0]) != .identifier) return;
             break :blk hir_mod.identifierOf(self.hir, qualifiers[0]).name;
         } else r.name;
-        if (self.rootHasNonImportDeclarationNamed(root_name)) return;
+        if (self.rootHasNonImportDeclarationNamed(root_name)) {
+            try self.recordImportEqualsAbstractAlias(imp);
+            return;
+        }
         const root_text = self.string_interner.get(root_name);
         const msg = try std.fmt.allocPrint(
             self.diag_arena.allocator(),
@@ -8820,6 +8879,33 @@ pub const Checker = struct {
             .code = TsCodes.cannot_find_namespace,
             .message = msg,
         });
+    }
+
+    fn recordImportEqualsAbstractAlias(self: *Checker, imp: hir_mod.ImportPayload) CheckError!void {
+        if (imp.default_binding == hir_mod.none_node_id or self.hir.kindOf(imp.default_binding) != .identifier) return;
+        const target = self.importEqualsTargetDecl(imp.import_equals) orelse return;
+        if (self.hir.kindOf(target) != .class_decl and self.hir.kindOf(target) != .class_expr) return;
+        const c = hir_mod.classOf(self.hir, target);
+        if (!c.is_abstract) return;
+        const alias = hir_mod.identifierOf(self.hir, imp.default_binding);
+        try self.abstract_classes.put(self.gpa, alias.name, {});
+    }
+
+    fn importEqualsTargetDecl(self: *Checker, type_ref_node: NodeId) ?NodeId {
+        if (type_ref_node == hir_mod.none_node_id or self.hir.kindOf(type_ref_node) != .type_ref) return null;
+        const r = hir_mod.typeRefOf(self.hir, type_ref_node);
+        const qualifiers = hir_mod.typeRefQualifier(self.hir, type_ref_node);
+        if (qualifiers.len == 0) return null;
+        var path: std.ArrayListUnmanaged(hir_mod.StringId) = .empty;
+        defer path.deinit(self.gpa);
+        for (qualifiers) |q| {
+            if (self.hir.kindOf(q) != .identifier) return null;
+            path.append(self.gpa, hir_mod.identifierOf(self.hir, q).name) catch return null;
+        }
+        const root = self.rootBlockFor(type_ref_node);
+        if (root == hir_mod.none_node_id or self.hir.kindOf(root) != .block_stmt) return null;
+        const ns_node = self.findNamespaceByPath(hir_mod.blockStmts(self.hir, root), path.items) orelse return null;
+        return self.findNamedValueDeclInNamespace(ns_node, r.name) orelse self.findNamedTypeDeclInNamespace(ns_node, r.name);
     }
 
     fn checkNamedImportSpecifiers(self: *Checker, node: NodeId, imp: hir_mod.ImportPayload, spec: []const u8) CheckError!void {
@@ -9917,6 +10003,20 @@ pub const Checker = struct {
     ) CheckError!void {
         if (parent_t >= self.interner.pool.typeCount()) return;
         const flags = self.interner.pool.flagsOf(parent_t);
+        if (flags.is_signature and self.signatureIsConstruct(parent_t)) {
+            const construct_name = self.string_interner.intern("__construct") catch return error.OutOfMemory;
+            if (!child_names.contains(construct_name)) {
+                try inherited.append(self.gpa, .{
+                    .name = construct_name,
+                    .type = parent_t,
+                    .is_optional = false,
+                    .is_readonly = false,
+                    .is_method = true,
+                });
+                try child_names.put(self.gpa, construct_name, {});
+            }
+            return;
+        }
         if (flags.is_intersection) {
             for (self.interner.intersectionMembers(parent_t)) |member_t| {
                 try self.appendInheritedInterfaceMembers(member_t, child_names, inherited);
@@ -15730,11 +15830,9 @@ pub const Checker = struct {
             },
             .class_decl, .class_expr => blk: {
                 try self.checkClassDecl(node);
-                if (self.hir.kindOf(node) == .class_expr) {
-                    if (self.class_static_type_by_node.get(node)) |static_t| {
-                        self.hir.setType(node, static_t);
-                        break :blk static_t;
-                    }
+                if (self.class_static_type_by_node.get(node)) |static_t| {
+                    self.hir.setType(node, static_t);
+                    break :blk static_t;
                 }
                 break :blk self.hir.typeOf(node);
             },
@@ -25538,6 +25636,21 @@ test "checker: assignment rhs reads typed var for TS2454" {
     try T.expect(found);
 }
 
+test "checker: var initializer reads typed var for TS2454" {
+    const s = try newSetup(
+        \\class C {}
+        \\var c: C;
+        \\var o: {} = c;
+    );
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+    var found = false;
+    for (s.checker.diagnostics.items) |d| {
+        if (d.code == TsCodes.used_before_assignment) found = true;
+    }
+    try T.expect(found);
+}
+
 test "checker: computed property key does not trigger TS2454 for typed var" {
     const s = try newSetup(
         \\interface SymbolConstructor { foo: string; }
@@ -33912,6 +34025,126 @@ test "checker: static index signatures constrain only static class members" {
     }
 }
 
+test "checker: class expression static fields are visible on constructor side" {
+    const s = try newSetup(
+        \\// @strict: false
+        \\const x: number = class { static x = 1 }.x;
+        \\({ [class { static x = 1 }.x]: b = "" }) => {};
+    );
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+    for (s.checker.diagnostics.items) |d| {
+        try T.expect(d.code != TsCodes.property_does_not_exist);
+        try T.expect(d.code != TsCodes.type_not_assignable);
+    }
+}
+
+test "checker: same-named mixin factory does not shadow interface in implements clause" {
+    const s = try newSetup(
+        \\type Constructor<T = {}> = new (...args: any[]) => T;
+        \\class ApiItem {
+        \\  public get members(): ReadonlyArray<ApiItem> { return []; }
+        \\}
+        \\interface ApiItemContainerMixin extends ApiItem {
+        \\  readonly members: ReadonlyArray<ApiItem>;
+        \\}
+        \\function ApiItemContainerMixin<TBaseClass extends Constructor<ApiItem>>(
+        \\  baseClass: TBaseClass
+        \\): TBaseClass & (new (...args: any[]) => ApiItemContainerMixin) {
+        \\  abstract class MixedClass extends baseClass implements ApiItemContainerMixin {
+        \\    public get members(): ReadonlyArray<ApiItem> { return []; }
+        \\  }
+        \\  return MixedClass;
+        \\}
+    );
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+    for (s.checker.diagnostics.items) |d| {
+        try T.expect(d.code != TsCodes.class_incorrectly_implements_interface);
+    }
+}
+
+test "checker: constructor-constrained mixin bases allow constructor super calls" {
+    const s = try newSetup(
+        \\type Constructor<T = {}> = new (...args: any[]) => T;
+        \\class Base { x = 1; }
+        \\function mix<TBase extends Constructor<Base>>(base: TBase) {
+        \\  abstract class Mixed extends base {
+        \\    constructor(...args: any[]) {
+        \\      super(...args);
+        \\    }
+        \\  }
+        \\  return Mixed;
+        \\}
+    );
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+    for (s.checker.diagnostics.items) |d| {
+        try T.expect(d.code != TsCodes.super_not_derived);
+    }
+}
+
+test "checker: interface-extended constructor constraints allow mixin super calls" {
+    const s = try newSetup(
+        \\type Constructor<T = {}> = new (...args: any[]) => T;
+        \\class Base { x = 1; }
+        \\interface BaseConstructor extends Constructor<Base> {}
+        \\function mix<TBase extends BaseConstructor>(base: TBase) {
+        \\  abstract class Mixed extends base {
+        \\    constructor(...args: any[]) {
+        \\      super(...args);
+        \\    }
+        \\  }
+        \\  return Mixed;
+        \\}
+    );
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+    for (s.checker.diagnostics.items) |d| {
+        try T.expect(d.code != TsCodes.super_not_derived);
+    }
+}
+
+test "checker: nested class expression heritage preserves inherited fields" {
+    const s = try newSetup(
+        \\let C = class extends class extends class { a = 1 } { b = 2 } { c = 3 };
+        \\let c = new C();
+        \\c.a;
+        \\c.b;
+        \\c.c;
+    );
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+    for (s.checker.diagnostics.items) |d| {
+        try T.expect(d.code != TsCodes.property_does_not_exist);
+    }
+}
+
+test "checker: returned class expression preserves static index signatures" {
+    const s = try newSetup(
+        \\function foo() {
+        \\  return class<T> {
+        \\    static [s: string]: number;
+        \\    static [s: number]: 42;
+        \\    foo(v: T) { return v; }
+        \\  };
+        \\}
+        \\const C = foo();
+        \\C.a;
+        \\C.a = 1;
+        \\C[2];
+        \\C[2] = 42;
+        \\const c = new C<number>();
+        \\const n: number = c.foo(1);
+    );
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+    for (s.checker.diagnostics.items) |d| {
+        try T.expect(d.code != TsCodes.property_does_not_exist);
+        try T.expect(d.code != TsCodes.type_not_assignable);
+    }
+}
+
 test "checker: forward class references in recursive alias preserve readonly index signatures" {
     const s = try newSetup(
         \\type StringTree = string | StringTreeCollection;
@@ -34019,6 +34252,24 @@ test "checker: `new AbstractClass()` emits TS2511" {
         if (d.code == TsCodes.abstract_class_instantiation) found = true;
     }
     try T.expect(found);
+}
+
+test "checker: abstract class instantiation through namespace import equals emits TS2511" {
+    const s = try newSetup(
+        \\namespace M {
+        \\  export abstract class A {}
+        \\  new A;
+        \\}
+        \\import myA = M.A;
+        \\new myA;
+    );
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+    var found: usize = 0;
+    for (s.checker.diagnostics.items) |d| {
+        if (d.code == TsCodes.abstract_class_instantiation) found += 1;
+    }
+    try T.expectEqual(@as(usize, 2), found);
 }
 
 test "checker: `new ConcreteSubclass()` of an abstract class is allowed" {
@@ -35280,6 +35531,21 @@ test "checker: binding pattern defaults reject self and later references" {
     try T.expect(saw_var);
     try T.expect(saw_param_self);
     try T.expect(saw_param_later);
+}
+
+test "checker: useDefineForClassFields true skips later body var check for class field parameter default" {
+    const clean = try newSetup(
+        \\// @useDefineForClassFields: true
+        \\class C {}
+        \\((b = class extends C { static x = 1 }) => { var C; })();
+        \\const x = "";
+        \\((b = class extends C { static x = 1 }, d = x) => { var x; })();
+    );
+    defer destroySetup(clean);
+    try clean.checker.checkSourceFile(clean.root);
+    for (clean.checker.diagnostics.items) |d| {
+        try T.expect(d.code != TsCodes.parameter_cannot_reference_later);
+    }
 }
 
 test "checker: spread Map entries satisfy tuple rest parameter" {
