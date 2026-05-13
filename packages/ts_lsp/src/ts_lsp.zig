@@ -1829,6 +1829,103 @@ pub const Service = struct {
             });
         }
 
+        // ---- Generate JSDoc skeleton for top-level fn_decl ---------------
+        // Surface a quick-fix that inserts a `/** … */` block above a
+        // top-level function declaration that doesn't already have one.
+        // The skeleton carries one `@param <name>` line per parameter
+        // (skipping rest / unnamed slots) plus a trailing `@returns`
+        // line when the function has any explicit `return value` —
+        // void-returning fns get the @returns omitted to keep the
+        // skeleton terse. Indentation of the surrounding lines is
+        // preserved by copying the fn_decl's leading-whitespace span.
+        for (stmts) |s| {
+            if (c.hir.kindOf(s) != .fn_decl) continue;
+            const fn_payload = hir_mod.fnDeclOf(&c.hir, s);
+            if (fn_payload.flags.is_arrow) continue;
+            if (fn_payload.name == hir_mod.none_node_id) continue;
+            if (c.hir.kindOf(fn_payload.name) != .identifier) continue;
+            const fn_span = c.hir.spanOf(s);
+            // Already-prefixed JSDoc check: walk back from the fn's
+            // start span to the previous non-whitespace byte; if it's
+            // `/`, then `*`, … we're inside an existing JSDoc closer.
+            if (sourceLooksJsdocPrefixed(f.source, fn_span.start)) continue;
+            // Indentation = bytes between the previous newline (or
+            // file start) and the fn_decl's start.
+            var line_start: usize = fn_span.start;
+            while (line_start > 0 and f.source[line_start - 1] != '\n') : (line_start -= 1) {}
+            const indent_slice = f.source[line_start..fn_span.start];
+            // Trim to whitespace prefix only (the fn_decl could be
+            // preceded by other tokens on the same line, in which case
+            // we don't try to pretty-indent — bail).
+            var indent_ok = true;
+            for (indent_slice) |b| {
+                if (b != ' ' and b != '\t') {
+                    indent_ok = false;
+                    break;
+                }
+            }
+            if (!indent_ok) continue;
+
+            const params = hir_mod.fnParams(&c.hir, s);
+            const has_return_type = fn_payload.return_type != hir_mod.none_node_id;
+            // Build the JSDoc block. Caller frees `new_text`.
+            var buf: std.ArrayListUnmanaged(u8) = .empty;
+            defer buf.deinit(gpa);
+            try buf.appendSlice(gpa, "/**\n");
+            for (params) |p| {
+                if (c.hir.kindOf(p) != .parameter) continue;
+                const pp = hir_mod.parameterOf(&c.hir, p);
+                if (pp.name == hir_mod.none_node_id) continue;
+                if (c.hir.kindOf(pp.name) != .identifier) continue;
+                const pname_id = hir_mod.identifierOf(&c.hir, pp.name).name;
+                const pname = c.interner.get(pname_id);
+                if (pname.len == 0) continue;
+                try buf.appendSlice(gpa, indent_slice);
+                try buf.appendSlice(gpa, " * @param ");
+                try buf.appendSlice(gpa, pname);
+                try buf.append(gpa, '\n');
+            }
+            if (has_return_type) {
+                try buf.appendSlice(gpa, indent_slice);
+                try buf.appendSlice(gpa, " * @returns\n");
+            }
+            try buf.appendSlice(gpa, indent_slice);
+            try buf.appendSlice(gpa, " */\n");
+            try buf.appendSlice(gpa, indent_slice);
+            const new_text = try buf.toOwnedSlice(gpa);
+            errdefer gpa.free(new_text);
+            // Zero-width insertion at the line-start byte right before
+            // the fn_decl (so the JSDoc replaces the existing leading
+            // whitespace and our block ends with its own indent).
+            const ins_byte: u32 = @intCast(line_start);
+            const pos = ts_diagnostics.positionToLineCol(f.source, ins_byte);
+            const ln: u32 = if (pos.line > 0) pos.line - 1 else 0;
+            const co: u32 = if (pos.col > 0) pos.col - 1 else 0;
+            const fn_name_id = hir_mod.identifierOf(&c.hir, fn_payload.name).name;
+            const fn_name_str = c.interner.get(fn_name_id);
+            const title = try std.fmt.allocPrint(gpa, "Generate JSDoc for {s}", .{fn_name_str});
+            errdefer gpa.free(title);
+            // The replace range is exactly `indent_slice` — we'll
+            // re-emit the same indentation as part of `new_text`.
+            const end_pos = ts_diagnostics.positionToLineCol(f.source, fn_span.start);
+            const end_ln: u32 = if (end_pos.line > 0) end_pos.line - 1 else 0;
+            const end_co: u32 = if (end_pos.col > 0) end_pos.col - 1 else 0;
+            var jsdoc_edits = try gpa.alloc(TextEdit, 1);
+            jsdoc_edits[0] = .{
+                .file = f.path,
+                .start_line = ln,
+                .start_col = co,
+                .end_line = end_ln,
+                .end_col = end_co,
+                .new_text = new_text,
+            };
+            try actions.append(gpa, .{
+                .title = title,
+                .kind = .quick_fix,
+                .edits = jsdoc_edits,
+            });
+        }
+
         // ---- Convert `"x" + y + "z"` to template literal -----------------
         // When a `let`/`const`/`var x = …` initializer is a chain of `+`
         // operations with at least one string-literal leaf, surface a
@@ -4453,6 +4550,28 @@ fn isIdentChar(b: u8) bool {
     return std.ascii.isAlphanumeric(b) or b == '_' or b == '$';
 }
 
+/// True when the bytes immediately preceding `start` look like the
+/// closing `*/` of a JSDoc block comment — used by the "Generate
+/// JSDoc" quick-fix to skip functions that already carry doc text.
+/// Walks backward past whitespace + newlines; the first non-whitespace
+/// byte must be `/` followed by `*` for a JSDoc match. Anything else
+/// (including line comments) returns false so the quick-fix still
+/// fires.
+fn sourceLooksJsdocPrefixed(source: []const u8, start: u32) bool {
+    if (start == 0) return false;
+    var i: usize = start;
+    while (i > 0) {
+        const b = source[i - 1];
+        if (b == ' ' or b == '\t' or b == '\r' or b == '\n') {
+            i -= 1;
+            continue;
+        }
+        break;
+    }
+    if (i < 2) return false;
+    return source[i - 1] == '/' and source[i - 2] == '*';
+}
+
 /// Recursively flatten a left-associative `+` chain rooted at `node`
 /// into an in-order list of leaf NodeIds. Returns `false` (and leaves
 /// `out` in an indeterminate state — the caller drops it) when any
@@ -6606,6 +6725,122 @@ test "Service: codeActions skips sort-keys when literal is already sorted" {
     for (actions) |a| {
         try T.expect(!std.mem.startsWith(u8, a.title, "Sort keys in "));
     }
+}
+
+test "Service: codeActions generates JSDoc skeleton for top-level fn" {
+    // `function add(a: number, b: number): number { return a + b; }`
+    // gets a `Generate JSDoc for add` action that inserts a
+    // `/** … */` block with `@param a`, `@param b`, and `@returns`
+    // (because the function carries an explicit return-type
+    // annotation).
+    var vfs = ts_resolver.VirtualFs.init(T.allocator);
+    defer vfs.deinit();
+    var resolver = ts_resolver.Resolver.init(T.allocator, vfs.fs(), .{});
+    defer resolver.deinit();
+    var program = ts_program.Program.init(T.allocator, &resolver);
+    defer program.deinit();
+
+    _ = try program.add("/main.ts", "function add(a: number, b: number): number { return a + b; }");
+    try program.compileAll(.{});
+
+    var svc = Service.init(T.allocator, &program);
+    const actions = try svc.codeActions(T.allocator, "/main.ts");
+    defer {
+        for (actions) |a| {
+            T.allocator.free(a.title);
+            for (a.edits) |e| T.allocator.free(e.new_text);
+            T.allocator.free(a.edits);
+        }
+        T.allocator.free(actions);
+    }
+    var found: ?CodeAction = null;
+    for (actions) |a| {
+        if (std.mem.startsWith(u8, a.title, "Generate JSDoc for ")) {
+            found = a;
+            break;
+        }
+    }
+    try T.expect(found != null);
+    const a = found.?;
+    try T.expectEqualStrings("Generate JSDoc for add", a.title);
+    try T.expectEqual(@as(usize, 1), a.edits.len);
+    const nt = a.edits[0].new_text;
+    try T.expect(std.mem.indexOf(u8, nt, "/**") != null);
+    try T.expect(std.mem.indexOf(u8, nt, "@param a") != null);
+    try T.expect(std.mem.indexOf(u8, nt, "@param b") != null);
+    try T.expect(std.mem.indexOf(u8, nt, "@returns") != null);
+    try T.expect(std.mem.indexOf(u8, nt, "*/") != null);
+}
+
+test "Service: codeActions skips JSDoc when block already present" {
+    // A function that already carries a `/** … */` block above it
+    // should not get the action — preserves explicit doc comments
+    // and avoids spamming the popup with no-op suggestions.
+    var vfs = ts_resolver.VirtualFs.init(T.allocator);
+    defer vfs.deinit();
+    var resolver = ts_resolver.Resolver.init(T.allocator, vfs.fs(), .{});
+    defer resolver.deinit();
+    var program = ts_program.Program.init(T.allocator, &resolver);
+    defer program.deinit();
+
+    _ = try program.add(
+        "/main.ts",
+        \\/** Existing doc. */
+        \\function add(a: number, b: number): number { return a + b; }
+        ,
+    );
+    try program.compileAll(.{});
+
+    var svc = Service.init(T.allocator, &program);
+    const actions = try svc.codeActions(T.allocator, "/main.ts");
+    defer {
+        for (actions) |a| {
+            T.allocator.free(a.title);
+            for (a.edits) |e| T.allocator.free(e.new_text);
+            T.allocator.free(a.edits);
+        }
+        T.allocator.free(actions);
+    }
+    for (actions) |a| {
+        try T.expect(!std.mem.startsWith(u8, a.title, "Generate JSDoc for "));
+    }
+}
+
+test "Service: codeActions JSDoc skips return-tag when fn has no return-type annotation" {
+    // Without an explicit return-type annotation we treat the fn as
+    // potentially void-returning and omit `@returns` to keep the
+    // skeleton from carrying a meaningless tag the user must delete.
+    var vfs = ts_resolver.VirtualFs.init(T.allocator);
+    defer vfs.deinit();
+    var resolver = ts_resolver.Resolver.init(T.allocator, vfs.fs(), .{});
+    defer resolver.deinit();
+    var program = ts_program.Program.init(T.allocator, &resolver);
+    defer program.deinit();
+
+    _ = try program.add("/main.ts", "function log(msg: string) { /* no return */ }");
+    try program.compileAll(.{});
+
+    var svc = Service.init(T.allocator, &program);
+    const actions = try svc.codeActions(T.allocator, "/main.ts");
+    defer {
+        for (actions) |a| {
+            T.allocator.free(a.title);
+            for (a.edits) |e| T.allocator.free(e.new_text);
+            T.allocator.free(a.edits);
+        }
+        T.allocator.free(actions);
+    }
+    var found: ?CodeAction = null;
+    for (actions) |a| {
+        if (std.mem.startsWith(u8, a.title, "Generate JSDoc for ")) {
+            found = a;
+            break;
+        }
+    }
+    try T.expect(found != null);
+    const nt = found.?.edits[0].new_text;
+    try T.expect(std.mem.indexOf(u8, nt, "@param msg") != null);
+    try T.expect(std.mem.indexOf(u8, nt, "@returns") == null);
 }
 
 test "Service: codeActions converts string-concat init to template literal" {
