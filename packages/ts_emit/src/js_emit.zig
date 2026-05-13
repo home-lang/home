@@ -1347,11 +1347,15 @@ pub const Printer = struct {
     /// §4.A.4.3 — split a block-statement loop body into its
     /// pre-yield statements, the single yield node, and its
     /// post-yield statements. Returns `null` if the body isn't a
-    /// block with exactly one top-level yield and where every
-    /// non-yield statement is itself yield-free in its subtree.
-    /// Bare-yield bodies (no block, or a one-statement block whose
-    /// statement is the yield) are handled by `singleYieldInThen`
-    /// and intentionally return `null` here so callers stay on the
+    /// block with exactly one top-level yield, if any non-yield
+    /// statement's subtree contains a yield, or if any pre/post
+    /// statement contains a `break_stmt` or `continue_stmt` that
+    /// would target the lowered loop (those would emit as bare
+    /// `break;`/`continue;` inside the state machine's switch and
+    /// incorrectly exit the switch rather than the loop). Bare-yield
+    /// bodies (no block, or a one-statement block whose statement
+    /// is the yield) are handled by `singleYieldInThen` and
+    /// intentionally return `null` here so callers stay on the
     /// existing simpler emit path for that shape.
     fn splitLoopBody(self: *const Printer, body: NodeId) ?struct {
         pre: []const NodeId,
@@ -1369,6 +1373,7 @@ pub const Printer = struct {
                 yield_idx = i;
             } else {
                 if (self.subtreeContainsYield(s)) return null;
+                if (self.subtreeContainsBreakOrContinue(s)) return null;
             }
         }
         const idx = yield_idx orelse return null;
@@ -1377,6 +1382,55 @@ pub const Printer = struct {
             .yield_node = stmts[idx],
             .post = stmts[idx + 1 ..],
         };
+    }
+
+    /// True iff the subtree rooted at `root` contains a `break_stmt`
+    /// or `continue_stmt` whose target is *outside* the subtree —
+    /// i.e. a break/continue whose innermost enclosing
+    /// loop/switch within the subtree is the lowered loop itself
+    /// (not nested any deeper). State-machine lowering of such a
+    /// jump needs `[3, label]` rewriting; the existing pass-through
+    /// emit would write a bare `break;`/`continue;` inside the
+    /// switch case, which incorrectly exits the switch rather than
+    /// the loop. break/continue contained inside a nested
+    /// loop/switch within the subtree pass through fine.
+    fn subtreeContainsBreakOrContinue(self: *const Printer, root: NodeId) bool {
+        if (root == hir_mod.none_node_id) return false;
+        // If `root` itself is a loop/switch, all break/continue
+        // inside it target either `root` or something nested inside
+        // `root` — both stay inside the passed-through inline
+        // statement, so no rewriting is needed.
+        const root_kind = self.hir.kindOf(root);
+        switch (root_kind) {
+            .while_stmt, .do_while_stmt, .for_stmt, .for_in_stmt, .for_of_stmt, .switch_stmt => return false,
+            else => {},
+        }
+        const total = self.hir.nodeCount();
+        var i: u32 = 0;
+        while (i < total) : (i += 1) {
+            const k = self.hir.kindOf(i);
+            if (k != .break_stmt and k != .continue_stmt) continue;
+            // Walk ancestors until we either hit a nested
+            // loop/switch (fine — break/continue targets that)
+            // or hit `root` (target is outside, bail).
+            var cur: NodeId = self.hir.parentOf(i);
+            var nested: bool = false;
+            while (cur != hir_mod.none_node_id and cur != root) {
+                const pk = self.hir.kindOf(cur);
+                switch (pk) {
+                    .while_stmt, .do_while_stmt, .for_stmt, .for_in_stmt, .for_of_stmt, .switch_stmt => {
+                        nested = true;
+                        break;
+                    },
+                    else => {},
+                }
+                const p = self.hir.parentOf(cur);
+                if (p == cur) break;
+                cur = p;
+            }
+            if (cur == root and !nested) return true;
+        }
+        return false;
     }
 
     /// §4.A.4.2 — true iff any node in the subtree rooted at `root`
@@ -4904,6 +4958,35 @@ test "emit: generator with while-yield + trailing yield sequences correctly" {
     // After exit case 3, the trailing `yield 2` advances state to 4.
     try T.expect(std.mem.indexOf(u8, out, "return [4, 2]") != null);
     try T.expect(std.mem.indexOf(u8, out, "case 4: _a.sent();") != null);
+}
+
+test "emit: generator with break targeting lowered while still bails" {
+    // A top-level `break;` inside the loop body's pre/post would
+    // emit as bare `break;` inside the switch case and exit the
+    // *switch* rather than the loop. The predicate bails to the
+    // native function* fallback in this case.
+    const out = try emitWithOpts(
+        "function* g() { while (cond) { if (other) break; yield 1; } }",
+        .{ .es_target = .es5 },
+    );
+    defer T.allocator.free(out);
+    try T.expect(std.mem.indexOf(u8, out, "TODO: ES5 generator") != null);
+    try T.expect(std.mem.indexOf(u8, out, "__generator") == null);
+}
+
+test "emit: generator with break inside nested switch in loop body still lowers" {
+    // break inside a nested switch targets the switch (not the
+    // lowered loop), so the lowering is safe to proceed.
+    const out = try emitWithOpts(
+        "function* g() { while (cond) { switch (x) { case 1: break; } yield 1; } }",
+        .{ .es_target = .es5 },
+    );
+    defer T.allocator.free(out);
+    try T.expect(std.mem.indexOf(u8, out, "__generator") != null);
+    try T.expect(std.mem.indexOf(u8, out, "TODO: ES5 generator") == null);
+    // The inner switch + break pass through verbatim inside case 1.
+    try T.expect(std.mem.indexOf(u8, out, "switch (x)") != null);
+    try T.expect(std.mem.indexOf(u8, out, "return [4, 1]") != null);
 }
 
 test "emit: generator with multi-stmt while body splits pre/post stmts across cases" {
