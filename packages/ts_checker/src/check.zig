@@ -2648,6 +2648,7 @@ pub const Checker = struct {
         defer if (had_type_params) self.popNarrowScope();
         try self.checkUseStrictNonSimpleParameterList(node);
         try self.checkFnParameterDefaultReferences(node);
+        try self.checkFnParameterDuplicateNames(node);
         try self.walkFnBody(node);
         try self.checkFunctionOverloadCompatibilityAfterBody(node);
     }
@@ -4366,6 +4367,36 @@ pub const Checker = struct {
         node: NodeId,
     };
 
+    fn checkFnParameterDuplicateNames(self: *Checker, fn_node: NodeId) CheckError!void {
+        const params = hir_mod.fnParams(self.hir, fn_node);
+        if (params.len < 2) return;
+        var counts: std.AutoHashMapUnmanaged(hir_mod.StringId, u32) = .empty;
+        defer counts.deinit(self.gpa);
+        for (params) |param| {
+            if (self.hir.kindOf(param) != .parameter) continue;
+            const p = hir_mod.parameterOf(self.hir, param);
+            if (p.name == hir_mod.none_node_id) continue;
+            if (self.hir.kindOf(p.name) != .identifier) continue;
+            const id = hir_mod.identifierOf(self.hir, p.name);
+            const gop = try counts.getOrPut(self.gpa, id.name);
+            if (gop.found_existing) {
+                gop.value_ptr.* += 1;
+            } else {
+                gop.value_ptr.* = 1;
+            }
+        }
+        for (params) |param| {
+            if (self.hir.kindOf(param) != .parameter) continue;
+            const p = hir_mod.parameterOf(self.hir, param);
+            if (p.name == hir_mod.none_node_id) continue;
+            if (self.hir.kindOf(p.name) != .identifier) continue;
+            const id = hir_mod.identifierOf(self.hir, p.name);
+            if (counts.get(id.name)) |c| {
+                if (c > 1) try self.reportDuplicateIdentifier(param, id.name);
+            }
+        }
+    }
+
     fn checkFnParameterDefaultReferences(self: *Checker, fn_node: NodeId) CheckError!void {
         var body_vars: std.AutoHashMapUnmanaged(hir_mod.StringId, void) = .empty;
         defer body_vars.deinit(self.gpa);
@@ -5888,16 +5919,73 @@ pub const Checker = struct {
             self.string_interner.get(hir_mod.identifierOf(self.hir, f.name).name)
         else
             "<anonymous>";
+        // Upstream TS prints `implicitly has an '[any, …]' return type`
+        // for nullish-tuple returns where the inferred shape is a
+        // fixed-width tuple. Match that by rendering `[any]` × width.
+        const arena = self.diag_arena.allocator();
+        const tuple_width = self.firstNullishTupleReturnWidth(f.body);
+        var inferred_buf: std.ArrayListUnmanaged(u8) = .empty;
+        defer inferred_buf.deinit(arena);
+        if (tuple_width) |w| {
+            try inferred_buf.append(arena, '[');
+            var i: usize = 0;
+            while (i < w) : (i += 1) {
+                if (i > 0) try inferred_buf.appendSlice(arena, ", ");
+                try inferred_buf.appendSlice(arena, "any");
+            }
+            try inferred_buf.append(arena, ']');
+        } else {
+            try inferred_buf.appendSlice(arena, "any");
+        }
         const msg = try std.fmt.allocPrint(
-            self.diag_arena.allocator(),
-            "'{s}', which lacks return-type annotation, implicitly has an 'any' return type.",
-            .{raw},
+            arena,
+            "'{s}', which lacks return-type annotation, implicitly has an '{s}' return type.",
+            .{ raw, inferred_buf.items },
         );
         try self.diagnostics.append(self.gpa, .{
             .node = name_node,
             .code = TsCodes.function_return_implicitly_any,
             .message = msg,
         });
+    }
+
+    fn firstNullishTupleReturnWidth(self: *Checker, node: NodeId) ?usize {
+        if (node == hir_mod.none_node_id) return null;
+        switch (self.hir.kindOf(node)) {
+            .return_stmt => {
+                const r = hir_mod.returnOf(self.hir, node);
+                return self.nullishTupleLiteralWidth(r.value);
+            },
+            .block_stmt => {
+                const stmts = hir_mod.blockStmts(self.hir, node);
+                for (stmts) |s| {
+                    if (self.firstNullishTupleReturnWidth(s)) |w| return w;
+                }
+                return null;
+            },
+            .if_stmt => {
+                const i = hir_mod.ifOf(self.hir, node);
+                return self.firstNullishTupleReturnWidth(i.then_branch) orelse self.firstNullishTupleReturnWidth(i.else_branch);
+            },
+            .try_stmt => {
+                const t = hir_mod.tryOf(self.hir, node);
+                return self.firstNullishTupleReturnWidth(t.block) orelse
+                    self.firstNullishTupleReturnWidth(t.catch_block) orelse
+                    self.firstNullishTupleReturnWidth(t.finally_block);
+            },
+            .fn_decl, .fn_expr, .arrow_fn => return null,
+            else => return null,
+        }
+    }
+
+    fn nullishTupleLiteralWidth(self: *Checker, node: NodeId) ?usize {
+        if (node == hir_mod.none_node_id) return null;
+        if (self.hir.kindOf(node) == .assignment) {
+            return self.nullishTupleLiteralWidth(hir_mod.assignmentOf(self.hir, node).value);
+        }
+        if (self.hir.kindOf(node) != .array_literal) return null;
+        const elements = hir_mod.arrayLiteralElements(self.hir, node);
+        return elements.len;
     }
 
     fn functionHasContextualReturnType(self: *Checker, fn_node: NodeId) bool {
@@ -6838,7 +6926,7 @@ pub const Checker = struct {
             if (self.hir.kindOf(tp) != .type_parameter) continue;
             const tpp = hir_mod.typeParameterOf(self.hir, tp);
             if (local_type_names.contains(tpp.name)) {
-                try self.report(tp, TsCodes.duplicate_identifier, "Duplicate identifier.");
+                try self.reportDuplicateIdentifier(tp, tpp.name);
             }
         }
 
@@ -7561,7 +7649,7 @@ pub const Checker = struct {
                         }
                         if (already) {
                             if (fn_p.flags.is_getter and !setter_names.contains(member_name)) {
-                                try self.report(m, TsCodes.duplicate_identifier, "Duplicate identifier.");
+                                try self.reportDuplicateIdentifier(m, member_name);
                             }
                             continue;
                         }
@@ -11592,11 +11680,7 @@ pub const Checker = struct {
                 if (m.type == types.Primitive.any or string_idx == types.Primitive.any) continue;
                 if (try self.heritageAssignableDeep(m.type, string_idx)) continue;
                 const prop_str = self.string_interner.get(m.name);
-                const msg = try std.fmt.allocPrint(
-                    self.diag_arena.allocator(),
-                    "Property '{s}' is not assignable to string index type.",
-                    .{prop_str},
-                );
+                const msg = try self.formatPropertyNotAssignableToIndexType(prop_str, m.type, string_idx, "string");
                 try self.diagnostics.append(self.gpa, .{
                     .node = node,
                     .code = TsCodes.property_not_assignable_to_index_type,
@@ -11610,11 +11694,7 @@ pub const Checker = struct {
                 if (m.type == types.Primitive.any or number_idx == types.Primitive.any) continue;
                 if (try self.heritageAssignableDeep(m.type, number_idx)) continue;
                 const prop_str = self.string_interner.get(m.name);
-                const msg = try std.fmt.allocPrint(
-                    self.diag_arena.allocator(),
-                    "Property '{s}' is not assignable to number index type.",
-                    .{prop_str},
-                );
+                const msg = try self.formatPropertyNotAssignableToIndexType(prop_str, m.type, number_idx, "number");
                 try self.diagnostics.append(self.gpa, .{
                     .node = node,
                     .code = TsCodes.property_not_assignable_to_index_type,
@@ -11633,11 +11713,7 @@ pub const Checker = struct {
                 if (!self.isSymbolNamedMember(m.name)) continue;
                 if (try self.heritageAssignableDeep(m.type, symbol_idx)) continue;
                 const prop_str = self.string_interner.get(m.name);
-                const msg = try std.fmt.allocPrint(
-                    self.diag_arena.allocator(),
-                    "Property '{s}' is not assignable to symbol index type.",
-                    .{prop_str},
-                );
+                const msg = try self.formatPropertyNotAssignableToIndexType(prop_str, m.type, symbol_idx, "symbol");
                 try self.diagnostics.append(self.gpa, .{
                     .node = node,
                     .code = TsCodes.property_not_assignable_to_index_type,
@@ -11645,6 +11721,33 @@ pub const Checker = struct {
                 });
             }
         }
+    }
+
+    /// TS2411: render upstream's `Property 'X' of type 'P' is not
+    /// assignable to 'kind' index type 'I'.` shape when both type
+    /// names resolve. Otherwise fall back to the older terse form so
+    /// half-formatted output never escapes.
+    fn formatPropertyNotAssignableToIndexType(
+        self: *Checker,
+        prop_str: []const u8,
+        prop_type: TypeId,
+        index_type: TypeId,
+        index_kind: []const u8,
+    ) ![]const u8 {
+        if (try self.simpleDiagnosticTypeName(prop_type)) |prop_type_text| {
+            if (try self.simpleDiagnosticTypeName(index_type)) |index_type_text| {
+                return try std.fmt.allocPrint(
+                    self.diag_arena.allocator(),
+                    "Property '{s}' of type '{s}' is not assignable to '{s}' index type '{s}'.",
+                    .{ prop_str, prop_type_text, index_kind, index_type_text },
+                );
+            }
+        }
+        return try std.fmt.allocPrint(
+            self.diag_arena.allocator(),
+            "Property '{s}' is not assignable to {s} index type.",
+            .{ prop_str, index_kind },
+        );
     }
 
     fn checkObjectInterfaceStringIndexerCompatibility(
@@ -16656,11 +16759,7 @@ pub const Checker = struct {
             };
             if (!compatible) {
                 const name = self.string_interner.get(id.name);
-                const msg = try std.fmt.allocPrint(
-                    self.diag_arena.allocator(),
-                    "Subsequent variable declarations must have the same type. Variable '{s}' has a conflicting type.",
-                    .{name},
-                );
+                const msg = try self.formatSubsequentVarTypeMismatch(name, prior, final_type);
                 try self.diagnostics.append(self.gpa, .{
                     .node = v.name,
                     .code = TsCodes.subsequent_var_type_mismatch,
@@ -16683,6 +16782,29 @@ pub const Checker = struct {
         return hir_mod.typeRefOf(self.hir, type_annotation).qualifier_len != 0;
     }
 
+    /// TS2403: format the message body. When both `prior` and `current`
+    /// have a renderable simple type name (primitive, named class /
+    /// interface, enum nominal, or literal), match upstream tsc
+    /// verbatim — including the leading double-space after the period
+    /// (`type.  Variable`). Otherwise fall back to the shorter
+    /// conflicting-type form so we never half-render.
+    fn formatSubsequentVarTypeMismatch(self: *Checker, name: []const u8, prior: TypeId, current: TypeId) ![]const u8 {
+        if (try self.simpleDiagnosticTypeName(prior)) |prior_text| {
+            if (try self.simpleDiagnosticTypeName(current)) |current_text| {
+                return try std.fmt.allocPrint(
+                    self.diag_arena.allocator(),
+                    "Subsequent variable declarations must have the same type.  Variable '{s}' must be of type '{s}', but here has type '{s}'.",
+                    .{ name, prior_text, current_text },
+                );
+            }
+        }
+        return try std.fmt.allocPrint(
+            self.diag_arena.allocator(),
+            "Subsequent variable declarations must have the same type. Variable '{s}' has a conflicting type.",
+            .{name},
+        );
+    }
+
     fn checkRepeatedObjectRestVarBinding(
         self: *Checker,
         pattern_node: NodeId,
@@ -16697,11 +16819,7 @@ pub const Checker = struct {
         const prior = self.previousVarDeclTypeInScope(scope, decl, name) orelse return;
         if (self.repeatedVarTypesCompatible(prior, final_type)) return;
         const name_text = self.string_interner.get(name);
-        const msg = try std.fmt.allocPrint(
-            self.diag_arena.allocator(),
-            "Subsequent variable declarations must have the same type. Variable '{s}' has a conflicting type.",
-            .{name_text},
-        );
+        const msg = try self.formatSubsequentVarTypeMismatch(name_text, prior, final_type);
         try self.diagnostics.append(self.gpa, .{
             .node = name_node,
             .code = TsCodes.subsequent_var_type_mismatch,
@@ -18598,7 +18716,7 @@ pub const Checker = struct {
                     }
                     const vt = self.objectAccessorPropertyType(op.value, jsdoc_t orelse raw_vt);
                     if (op_is_method and self.objectLiteralHasDuplicateMethodWithLiteralParam(members.items, k.name, op.value)) {
-                        try self.report(p, TsCodes.duplicate_identifier, "Duplicate identifier.");
+                        try self.reportDuplicateIdentifier(p, k.name);
                     }
                     try explicit_props.put(self.gpa, k.name, p);
                     try upsert(self.gpa, &members, .{
@@ -22474,6 +22592,169 @@ pub const Checker = struct {
         return self.interner.internObjectType(members.items) catch return error.OutOfMemory;
     }
 
+    // -------------------------------------------------------------------
+    // Seeded structural shapes for common JS/Node/DOM globals.
+    //
+    // Each helper builds a small object type whose members cover the
+    // most-touched names from upstream conformance fixtures. Member
+    // signatures are deliberately loose (any-typed args/returns) so
+    // sharper inference doesn't accidentally introduce *new* baseline
+    // mismatches. The goal is purely to suppress spurious TS2339
+    // ("Property does not exist on type") emits when fixtures touch
+    // `Promise.resolve`, `JSON.stringify`, `Reflect.get`, etc.
+    // -------------------------------------------------------------------
+
+    fn seedAnySigVariadic(self: *Checker, return_t: TypeId) CheckError!TypeId {
+        const any_t = types.Primitive.any;
+        const any_arr = self.interner.internArrayType(self.string_interner, any_t) catch return error.OutOfMemory;
+        const sig = self.interner.internSignature(&[_]TypeId{any_arr}, return_t, false) catch return error.OutOfMemory;
+        try self.rest_signatures.put(self.gpa, sig, {});
+        return sig;
+    }
+
+    fn seedAnySig0(self: *Checker, return_t: TypeId) CheckError!TypeId {
+        return self.interner.internSignature(&[_]TypeId{}, return_t, false) catch return error.OutOfMemory;
+    }
+
+    fn seedAnySig1(self: *Checker, return_t: TypeId) CheckError!TypeId {
+        const any_t = types.Primitive.any;
+        return self.interner.internSignature(&[_]TypeId{any_t}, return_t, false) catch return error.OutOfMemory;
+    }
+
+    fn seedAnySig2(self: *Checker, return_t: TypeId) CheckError!TypeId {
+        const any_t = types.Primitive.any;
+        return self.interner.internSignature(&[_]TypeId{ any_t, any_t }, return_t, false) catch return error.OutOfMemory;
+    }
+
+    fn seedAnySig3(self: *Checker, return_t: TypeId) CheckError!TypeId {
+        const any_t = types.Primitive.any;
+        return self.interner.internSignature(&[_]TypeId{ any_t, any_t, any_t }, return_t, false) catch return error.OutOfMemory;
+    }
+
+    fn jsonGlobalType(self: *Checker) CheckError!TypeId {
+        const any_t = types.Primitive.any;
+        const string_t = types.Primitive.string_t;
+        const sig_parse = try self.seedAnySig1(any_t);
+        // `JSON.stringify` is variadic in lib.d.ts; model the most
+        // permissive 3-arg form returning string.
+        const sig_stringify = try self.seedAnySig3(string_t);
+        const m = [_]types.ObjectMember{
+            .{ .name = self.string_interner.intern("parse") catch return error.OutOfMemory, .type = sig_parse, .is_optional = false, .is_readonly = false, .is_method = true },
+            .{ .name = self.string_interner.intern("stringify") catch return error.OutOfMemory, .type = sig_stringify, .is_optional = false, .is_readonly = false, .is_method = true },
+        };
+        return self.interner.internObjectType(&m) catch return error.OutOfMemory;
+    }
+
+    fn promiseGlobalType(self: *Checker) CheckError!TypeId {
+        const any_t = types.Primitive.any;
+        // Mix of instance + static members (single shape until
+        // `Promise<T>` instantiation is wired). `then`/`catch`/
+        // `finally` plus statics `resolve`/`reject`/`all`/`race`/
+        // `allSettled`/`any`. No `__construct` member: the bare
+        // `Promise` identifier appears as a value mostly through
+        // `Promise.resolve(…)` / `Promise.all(…)`; `new Promise(...)`
+        // construction uses class typing handled elsewhere.
+        const sig_then = try self.seedAnySig2(any_t);
+        const sig_one = try self.seedAnySig1(any_t);
+        const m = [_]types.ObjectMember{
+            .{ .name = self.string_interner.intern("then") catch return error.OutOfMemory, .type = sig_then, .is_optional = false, .is_readonly = false, .is_method = true },
+            .{ .name = self.string_interner.intern("catch") catch return error.OutOfMemory, .type = sig_one, .is_optional = false, .is_readonly = false, .is_method = true },
+            .{ .name = self.string_interner.intern("finally") catch return error.OutOfMemory, .type = sig_one, .is_optional = false, .is_readonly = false, .is_method = true },
+            .{ .name = self.string_interner.intern("resolve") catch return error.OutOfMemory, .type = sig_one, .is_optional = false, .is_readonly = false, .is_method = true },
+            .{ .name = self.string_interner.intern("reject") catch return error.OutOfMemory, .type = sig_one, .is_optional = false, .is_readonly = false, .is_method = true },
+            .{ .name = self.string_interner.intern("all") catch return error.OutOfMemory, .type = sig_one, .is_optional = false, .is_readonly = false, .is_method = true },
+            .{ .name = self.string_interner.intern("allSettled") catch return error.OutOfMemory, .type = sig_one, .is_optional = false, .is_readonly = false, .is_method = true },
+            .{ .name = self.string_interner.intern("race") catch return error.OutOfMemory, .type = sig_one, .is_optional = false, .is_readonly = false, .is_method = true },
+            .{ .name = self.string_interner.intern("any") catch return error.OutOfMemory, .type = sig_one, .is_optional = false, .is_readonly = false, .is_method = true },
+        };
+        return self.interner.internObjectType(&m) catch return error.OutOfMemory;
+    }
+
+    fn reflectGlobalType(self: *Checker) CheckError!TypeId {
+        const any_t = types.Primitive.any;
+        const boolean_t = types.Primitive.boolean_t;
+        const string_arr = self.interner.internArrayType(self.string_interner, types.Primitive.string_t) catch return error.OutOfMemory;
+        const sig_get = try self.seedAnySig2(any_t);
+        const sig_set = try self.seedAnySig3(boolean_t);
+        const sig_has = try self.seedAnySig2(boolean_t);
+        const sig_delete = try self.seedAnySig2(boolean_t);
+        const sig_apply = try self.seedAnySig3(any_t);
+        const sig_construct = try self.seedAnySig2(any_t);
+        const sig_own_keys = self.interner.internSignature(&[_]TypeId{any_t}, string_arr, false) catch return error.OutOfMemory;
+        const sig_define_property = try self.seedAnySig3(boolean_t);
+        const sig_get_proto = try self.seedAnySig1(any_t);
+        const m = [_]types.ObjectMember{
+            .{ .name = self.string_interner.intern("get") catch return error.OutOfMemory, .type = sig_get, .is_optional = false, .is_readonly = false, .is_method = true },
+            .{ .name = self.string_interner.intern("set") catch return error.OutOfMemory, .type = sig_set, .is_optional = false, .is_readonly = false, .is_method = true },
+            .{ .name = self.string_interner.intern("has") catch return error.OutOfMemory, .type = sig_has, .is_optional = false, .is_readonly = false, .is_method = true },
+            .{ .name = self.string_interner.intern("deleteProperty") catch return error.OutOfMemory, .type = sig_delete, .is_optional = false, .is_readonly = false, .is_method = true },
+            .{ .name = self.string_interner.intern("apply") catch return error.OutOfMemory, .type = sig_apply, .is_optional = false, .is_readonly = false, .is_method = true },
+            .{ .name = self.string_interner.intern("construct") catch return error.OutOfMemory, .type = sig_construct, .is_optional = false, .is_readonly = false, .is_method = true },
+            .{ .name = self.string_interner.intern("ownKeys") catch return error.OutOfMemory, .type = sig_own_keys, .is_optional = false, .is_readonly = false, .is_method = true },
+            .{ .name = self.string_interner.intern("defineProperty") catch return error.OutOfMemory, .type = sig_define_property, .is_optional = false, .is_readonly = false, .is_method = true },
+            .{ .name = self.string_interner.intern("getPrototypeOf") catch return error.OutOfMemory, .type = sig_get_proto, .is_optional = false, .is_readonly = false, .is_method = true },
+            .{ .name = self.string_interner.intern("setPrototypeOf") catch return error.OutOfMemory, .type = sig_has, .is_optional = false, .is_readonly = false, .is_method = true },
+            .{ .name = self.string_interner.intern("getOwnPropertyDescriptor") catch return error.OutOfMemory, .type = sig_get, .is_optional = false, .is_readonly = false, .is_method = true },
+            .{ .name = self.string_interner.intern("isExtensible") catch return error.OutOfMemory, .type = sig_get_proto, .is_optional = false, .is_readonly = false, .is_method = true },
+            .{ .name = self.string_interner.intern("preventExtensions") catch return error.OutOfMemory, .type = sig_get_proto, .is_optional = false, .is_readonly = false, .is_method = true },
+        };
+        return self.interner.internObjectType(&m) catch return error.OutOfMemory;
+    }
+
+    fn proxyGlobalType(self: *Checker) CheckError!TypeId {
+        const any_t = types.Primitive.any;
+        const sig_revocable = try self.seedAnySig2(any_t);
+        const m = [_]types.ObjectMember{
+            .{ .name = self.string_interner.intern("revocable") catch return error.OutOfMemory, .type = sig_revocable, .is_optional = false, .is_readonly = false, .is_method = true },
+        };
+        return self.interner.internObjectType(&m) catch return error.OutOfMemory;
+    }
+
+    fn errorConstructorGlobalType(self: *Checker) CheckError!TypeId {
+        const any_t = types.Primitive.any;
+        const string_t = types.Primitive.string_t;
+        // `Error` carries both static identity (`name`, `prototype`)
+        // and a constructible signature. Conformance commonly probes
+        // `e.message`, `e.stack`, `e.name`. The `__construct` slot
+        // is omitted intentionally so existing `new Error(...)`
+        // constructor checks (which assume `Error` falls through to
+        // `any` via the bare-identifier fallback) keep working.
+        const m = [_]types.ObjectMember{
+            .{ .name = self.string_interner.intern("name") catch return error.OutOfMemory, .type = string_t, .is_optional = false, .is_readonly = false, .is_method = false },
+            .{ .name = self.string_interner.intern("message") catch return error.OutOfMemory, .type = string_t, .is_optional = false, .is_readonly = false, .is_method = false },
+            .{ .name = self.string_interner.intern("stack") catch return error.OutOfMemory, .type = string_t, .is_optional = true, .is_readonly = false, .is_method = false },
+            .{ .name = self.string_interner.intern("prototype") catch return error.OutOfMemory, .type = any_t, .is_optional = false, .is_readonly = false, .is_method = false },
+            .{ .name = self.string_interner.intern("captureStackTrace") catch return error.OutOfMemory, .type = try self.seedAnySig2(types.Primitive.void_t), .is_optional = true, .is_readonly = false, .is_method = true },
+        };
+        return self.interner.internObjectType(&m) catch return error.OutOfMemory;
+    }
+
+    fn processGlobalType(self: *Checker) CheckError!TypeId {
+        const any_t = types.Primitive.any;
+        const string_t = types.Primitive.string_t;
+        const string_arr = self.interner.internArrayType(self.string_interner, string_t) catch return error.OutOfMemory;
+        const sig_exit = try self.seedAnySig1(types.Primitive.void_t);
+        const sig_cwd = try self.seedAnySig0(string_t);
+        const sig_next_tick = try self.seedAnySigVariadic(types.Primitive.void_t);
+        const m = [_]types.ObjectMember{
+            .{ .name = self.string_interner.intern("argv") catch return error.OutOfMemory, .type = string_arr, .is_optional = false, .is_readonly = false, .is_method = false },
+            .{ .name = self.string_interner.intern("env") catch return error.OutOfMemory, .type = any_t, .is_optional = false, .is_readonly = false, .is_method = false },
+            .{ .name = self.string_interner.intern("platform") catch return error.OutOfMemory, .type = string_t, .is_optional = false, .is_readonly = true, .is_method = false },
+            .{ .name = self.string_interner.intern("version") catch return error.OutOfMemory, .type = string_t, .is_optional = false, .is_readonly = true, .is_method = false },
+            .{ .name = self.string_interner.intern("versions") catch return error.OutOfMemory, .type = any_t, .is_optional = false, .is_readonly = true, .is_method = false },
+            .{ .name = self.string_interner.intern("stdout") catch return error.OutOfMemory, .type = any_t, .is_optional = false, .is_readonly = false, .is_method = false },
+            .{ .name = self.string_interner.intern("stderr") catch return error.OutOfMemory, .type = any_t, .is_optional = false, .is_readonly = false, .is_method = false },
+            .{ .name = self.string_interner.intern("stdin") catch return error.OutOfMemory, .type = any_t, .is_optional = false, .is_readonly = false, .is_method = false },
+            .{ .name = self.string_interner.intern("exit") catch return error.OutOfMemory, .type = sig_exit, .is_optional = false, .is_readonly = false, .is_method = true },
+            .{ .name = self.string_interner.intern("cwd") catch return error.OutOfMemory, .type = sig_cwd, .is_optional = false, .is_readonly = false, .is_method = true },
+            .{ .name = self.string_interner.intern("nextTick") catch return error.OutOfMemory, .type = sig_next_tick, .is_optional = false, .is_readonly = false, .is_method = true },
+            .{ .name = self.string_interner.intern("on") catch return error.OutOfMemory, .type = try self.seedAnySig2(any_t), .is_optional = false, .is_readonly = false, .is_method = true },
+            .{ .name = self.string_interner.intern("off") catch return error.OutOfMemory, .type = try self.seedAnySig2(any_t), .is_optional = false, .is_readonly = false, .is_method = true },
+            .{ .name = self.string_interner.intern("emit") catch return error.OutOfMemory, .type = try self.seedAnySigVariadic(types.Primitive.boolean_t), .is_optional = false, .is_readonly = false, .is_method = true },
+        };
+        return self.interner.internObjectType(&m) catch return error.OutOfMemory;
+    }
+
     fn appendDeclaredInterfaceMembers(
         self: *Checker,
         members: *std.ArrayListUnmanaged(types.ObjectMember),
@@ -25908,11 +26189,7 @@ pub const Checker = struct {
             else
                 false;
             if (!ok and !contextual_ok) {
-                const msg = try std.fmt.allocPrint(
-                    self.diag_arena.allocator(),
-                    "Argument is not assignable to parameter at position {d}.",
-                    .{i},
-                );
+                const msg = try self.formatArgumentNotAssignable(arg_t, param_t, i);
                 try self.diagnostics.append(self.gpa, .{
                     .node = args[i],
                     .code = TsCodes.argument_type_mismatch,
@@ -25959,6 +26236,77 @@ pub const Checker = struct {
                 }
             }
         }
+    }
+
+    /// TS2345: render upstream's `Argument of type 'A' is not
+    /// assignable to parameter of type 'P'.` shape when both type
+    /// names resolve through `simpleDiagnosticTypeName`. Otherwise
+    /// fall back to the older positional summary so we never emit a
+    /// half-formatted diagnostic. The simple-name helper deliberately
+    /// covers only primitives + literals + named class/interface
+    /// references — complex object/tuple/instantiation types stay on
+    /// the fallback path so we don't emit noise like `[any, any]` or
+    /// recurse through arbitrary instances such as `new Map()`.
+    fn formatArgumentNotAssignable(self: *Checker, arg_t: TypeId, param_t: TypeId, position: usize) ![]const u8 {
+        if (try self.simpleDiagnosticTypeName(arg_t)) |arg_text| {
+            if (try self.simpleDiagnosticTypeName(param_t)) |param_text| {
+                return try std.fmt.allocPrint(
+                    self.diag_arena.allocator(),
+                    "Argument of type '{s}' is not assignable to parameter of type '{s}'.",
+                    .{ arg_text, param_text },
+                );
+            }
+        }
+        return try std.fmt.allocPrint(
+            self.diag_arena.allocator(),
+            "Argument is not assignable to parameter at position {d}.",
+            .{position},
+        );
+    }
+
+    /// Restricted variant of `allocSimpleTypeName` for diagnostic
+    /// envelopes — primitives, literals, named class/interface refs,
+    /// and enum nominal types only. Returns `null` for object types,
+    /// tuples, signatures, unions, intersections, instantiations, etc.
+    /// Callers fall back to a generic phrasing when this returns null
+    /// so we never half-render a complex type.
+    fn simpleDiagnosticTypeName(self: *Checker, t: TypeId) !?[]const u8 {
+        return switch (t) {
+            types.Primitive.any => "any",
+            types.Primitive.unknown => "unknown",
+            types.Primitive.never => "never",
+            types.Primitive.void_t => "void",
+            types.Primitive.null_t => "null",
+            types.Primitive.undefined_t => "undefined",
+            types.Primitive.string_t => "string",
+            types.Primitive.number_t => "number",
+            types.Primitive.boolean_t => "boolean",
+            types.Primitive.bigint_t => "bigint",
+            types.Primitive.symbol_t => "symbol",
+            types.Primitive.object_t => "object",
+            types.Primitive.true_lit => "true",
+            types.Primitive.false_lit => "false",
+            else => blk: {
+                if (self.enumNameFromNominal(t)) |enum_name| {
+                    break :blk self.string_interner.get(enum_name);
+                }
+                if (self.namedTypeForId(t)) |type_name| {
+                    break :blk self.string_interner.get(type_name);
+                }
+                if (t >= self.interner.pool.typeCount()) break :blk null;
+                const flags = self.interner.pool.flagsOf(t);
+                if (!flags.is_literal) break :blk null;
+                const payload_idx = self.interner.pool.payloadOf(t);
+                if (payload_idx >= self.interner.pool.literal_payloads.items.len) break :blk null;
+                const literal = self.interner.pool.literal_payloads.items[payload_idx];
+                break :blk switch (literal) {
+                    .string_lit => |sid| try std.fmt.allocPrint(self.diag_arena.allocator(), "\"{s}\"", .{self.string_interner.get(sid)}),
+                    .number_lit => |bits| try std.fmt.allocPrint(self.diag_arena.allocator(), "{d}", .{@as(f64, @bitCast(bits))}),
+                    .bigint_lit => |sid| try std.fmt.allocPrint(self.diag_arena.allocator(), "{s}", .{self.string_interner.get(sid)}),
+                    .boolean_lit => |b| if (b) "true" else "false",
+                };
+            },
+        };
     }
 
     fn scalarTypeParameterConstraint(self: *Checker, t: TypeId) ?TypeId {
@@ -26011,7 +26359,7 @@ pub const Checker = struct {
             if (self.hir.kindOf(tp_node) != .type_parameter) continue;
             const tp = hir_mod.typeParameterOf(self.hir, tp_node);
             if (seen.contains(tp.name)) {
-                try self.report(tp_node, TsCodes.duplicate_identifier, "Duplicate identifier.");
+                try self.reportDuplicateIdentifier(tp_node, tp.name);
             } else {
                 try seen.put(self.gpa, tp.name, {});
             }
@@ -26069,7 +26417,12 @@ pub const Checker = struct {
                 const op = hir_mod.objectPropertyOf(self.hir, member);
                 if (!op.is_static or op.type_annotation == hir_mod.none_node_id) return;
                 if (self.typeNodeReferencesTypeParams(op.type_annotation, class_type_params)) {
-                    try self.report(member, TsCodes.static_member_type_parameter, "Static members cannot reference class type parameters.");
+                    // Upstream TS pins the diagnostic to the offending
+                    // type-parameter reference inside the annotation,
+                    // not the property key. Match that so positions
+                    // line up with `.errors.txt` baselines.
+                    const ref_node = self.firstTypeParamRefIn(op.type_annotation, class_type_params) orelse op.type_annotation;
+                    try self.report(ref_node, TsCodes.static_member_type_parameter, "Static members cannot reference class type parameters.");
                 }
             },
             .fn_decl, .fn_expr, .arrow_fn => {
@@ -26107,6 +26460,50 @@ pub const Checker = struct {
                 }
             },
             else => {},
+        }
+    }
+
+    fn firstTypeParamRefIn(self: *Checker, node: NodeId, type_params: []const NodeId) ?NodeId {
+        if (node == hir_mod.none_node_id) return null;
+        switch (self.hir.kindOf(node)) {
+            .identifier => {
+                if (self.typeParamNameMatches(hir_mod.identifierOf(self.hir, node).name, type_params)) return node;
+                return null;
+            },
+            .type_ref => {
+                const r = hir_mod.typeRefOf(self.hir, node);
+                if (r.qualifier_len == 0 and self.typeParamNameMatches(r.name, type_params)) return node;
+                for (hir_mod.typeRefArgs(self.hir, node)) |arg| {
+                    if (self.firstTypeParamRefIn(arg, type_params)) |hit| return hit;
+                }
+                return null;
+            },
+            .union_type => {
+                for (hir_mod.unionTypeMembers(self.hir, node)) |m| {
+                    if (self.firstTypeParamRefIn(m, type_params)) |hit| return hit;
+                }
+                return null;
+            },
+            .intersection_type => {
+                for (hir_mod.intersectionTypeMembers(self.hir, node)) |m| {
+                    if (self.firstTypeParamRefIn(m, type_params)) |hit| return hit;
+                }
+                return null;
+            },
+            .array_type => return self.firstTypeParamRefIn(hir_mod.arrayTypeOf(self.hir, node).element, type_params),
+            .rest_type => return self.firstTypeParamRefIn(hir_mod.restTypeOf(self.hir, node).operand, type_params),
+            .tuple_type => {
+                for (hir_mod.tupleTypeElements(self.hir, node)) |elem| {
+                    if (self.firstTypeParamRefIn(elem, type_params)) |hit| return hit;
+                }
+                return null;
+            },
+            .indexed_access_type => {
+                const ia = hir_mod.indexedAccessTypeOf(self.hir, node);
+                return self.firstTypeParamRefIn(ia.object, type_params) orelse self.firstTypeParamRefIn(ia.index, type_params);
+            },
+            .keyof_type => return self.firstTypeParamRefIn(hir_mod.keyofTypeOf(self.hir, node).operand, type_params),
+            else => return null,
         }
     }
 
@@ -43841,4 +44238,69 @@ test "checker: missing property diagnostic renders receiver type" {
     }
     try T.expect(saw_empty);
     try T.expect(saw_never);
+}
+
+test "checker: subsequent var mismatch TS2403 renders prior and current type names" {
+    // tsc emits the upstream message body
+    //   Subsequent variable declarations must have the same type.  Variable 'v' must be of type 'number', but here has type 'string'.
+    // Note the doubled space after the period — `formatSubsequentVarTypeMismatch`
+    // mirrors that intentional spacing.
+    const s = try newSetup(
+        \\var v: number;
+        \\var v: string;
+    );
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+
+    var saw_2403 = false;
+    for (s.checker.diagnostics.items) |diag| {
+        if (diag.code == TsCodes.subsequent_var_type_mismatch) {
+            saw_2403 = true;
+            try T.expect(std.mem.indexOf(u8, diag.message, "Subsequent variable declarations must have the same type.  Variable 'v' must be of type 'number', but here has type 'string'.") != null);
+        }
+    }
+    try T.expect(saw_2403);
+}
+
+test "checker: TS2411 renders prop and index type names" {
+    // tsc baseline shape:
+    //   Property 's' of type 'string' is not assignable to 'string' index type 'number'.
+    const s = try newSetup(
+        \\interface I {
+        \\  [k: string]: number;
+        \\  s: string;
+        \\}
+    );
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+
+    var saw_2411 = false;
+    for (s.checker.diagnostics.items) |diag| {
+        if (diag.code == TsCodes.property_not_assignable_to_index_type) {
+            saw_2411 = true;
+            try T.expect(std.mem.indexOf(u8, diag.message, "Property 's' of type 'string' is not assignable to 'string' index type 'number'.") != null);
+        }
+    }
+    try T.expect(saw_2411);
+}
+
+test "checker: TS2345 renders argument and parameter type names" {
+    // tsc baseline shape:
+    //   Argument of type 'string' is not assignable to parameter of type 'number'.
+    const s = try newSetup(
+        \\declare function f(x: number): void;
+        \\let s: string = "hi";
+        \\f(s);
+    );
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+
+    var saw_2345 = false;
+    for (s.checker.diagnostics.items) |diag| {
+        if (diag.code == TsCodes.argument_type_mismatch) {
+            saw_2345 = true;
+            try T.expect(std.mem.indexOf(u8, diag.message, "Argument of type 'string' is not assignable to parameter of type 'number'.") != null);
+        }
+    }
+    try T.expect(saw_2345);
 }
