@@ -670,9 +670,10 @@ pub fn compileSource(
     const suppress_js_check_diagnostics = options.suppress_js_check_diagnostics or sourceIsUncheckedJs(source);
     for (checker.diagnostics.items) |d| {
         if (suppress_js_check_diagnostics and !checkerDiagnosticSurfacesInUncheckedJs(d.code)) continue;
+        const diag_pos = d.pos orelse c.hir.spanOf(d.node).start;
         try c.diagnostics.append(gpa, .{
             .phase = .bind,
-            .pos = c.hir.spanOf(d.node).start,
+            .pos = diag_pos,
             .line = 0,
             .code = d.code,
             .code_prefix = switch (d.code_prefix) {

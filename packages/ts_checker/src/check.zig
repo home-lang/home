@@ -45,6 +45,10 @@ pub const CheckError = error{
 
 pub const Diagnostic = struct {
     node: NodeId,
+    /// Optional absolute source byte offset for diagnostics that
+    /// belong to trivia rather than an HIR node, such as an unused
+    /// `// @ts-expect-error` directive.
+    pos: ?u32 = null,
     /// TypeScript-compatible code (e.g. 2322). 0 for uncategorized.
     code: u32 = 0,
     /// `TS` for tsc-compatible codes; `HM` for Home-only codes.
@@ -757,6 +761,10 @@ pub const Checker = struct {
     /// `scanDirectives`; lines that fail to suppress at least one
     /// diagnostic become a TS2578 in `applyDirectives`.
     ts_expect_error_lines: std.AutoHashMapUnmanaged(u32, void) = .empty,
+    /// Target source line -> directive source line for expect-error.
+    /// The target line is still used for suppression; the directive
+    /// line anchors unused TS2578 diagnostics.
+    ts_expect_error_directive_lines: std.AutoHashMapUnmanaged(u32, u32) = .empty,
     /// True when a `// @ts-nocheck` directive appears anywhere in the
     /// source. Populated by `scanDirectives`; consulted by
     /// `applyDirectives` to drop all diagnostics for this file.
@@ -931,6 +939,7 @@ pub const Checker = struct {
         self.virtual_section_start_cache.deinit(self.gpa);
         self.ts_ignore_lines.deinit(self.gpa);
         self.ts_expect_error_lines.deinit(self.gpa);
+        self.ts_expect_error_directive_lines.deinit(self.gpa);
         self.diag_arena.deinit();
     }
 
@@ -1038,17 +1047,21 @@ pub const Checker = struct {
     /// Scan the source for `// @ts-ignore` and `// @ts-expect-error`
     /// directives. A directive on line `N` suppresses diagnostics on
     /// the first non-blank, non-directive line strictly after `N`.
-    /// Block-comment forms (`/* @ts-ignore */`) are out of scope for
-    /// this v0 implementation.
+    /// Block-comment forms (`/* @ts-ignore */`) follow the same rule;
+    /// for multi-line blocks, the directive is anchored to the line
+    /// containing the directive text.
     fn scanDirectives(self: *Checker, src: []const u8) CheckError!void {
         self.ts_ignore_lines.clearRetainingCapacity();
         self.ts_expect_error_lines.clearRetainingCapacity();
+        self.ts_expect_error_directive_lines.clearRetainingCapacity();
         self.nocheck_file = false;
 
         var line: u32 = 0;
         var i: usize = 0;
         var pending_ignore: bool = false;
         var pending_expect: bool = false;
+        var pending_expect_line: u32 = 0;
+        var in_block_comment = false;
 
         while (true) {
             const line_start = i;
@@ -1062,22 +1075,29 @@ pub const Checker = struct {
             const trimmed = line_text[t..];
 
             const is_blank = trimmed.len == 0;
-            const is_ignore_directive = matchDirective(trimmed, "@ts-ignore");
-            const is_expect_directive = matchDirective(trimmed, "@ts-expect-error");
-            const is_nocheck_directive = matchDirective(trimmed, "@ts-nocheck");
+            const comment = directiveCommentText(trimmed, &in_block_comment);
+            const is_comment = comment != null;
+            const directive_text = comment orelse "";
+            const is_ignore_directive = matchDirectiveText(directive_text, "@ts-ignore");
+            const is_expect_directive = matchDirectiveText(directive_text, "@ts-expect-error");
+            const is_nocheck_directive = matchDirectiveText(directive_text, "@ts-nocheck");
             const is_directive = is_ignore_directive or is_expect_directive or is_nocheck_directive;
 
             if (is_ignore_directive) pending_ignore = true;
-            if (is_expect_directive) pending_expect = true;
+            if (is_expect_directive) {
+                pending_expect = true;
+                pending_expect_line = line;
+            }
             if (is_nocheck_directive) self.nocheck_file = true;
 
-            if (!is_blank and !is_directive) {
+            if (!is_blank and !is_comment and !is_directive) {
                 if (pending_ignore) {
                     try self.ts_ignore_lines.put(self.gpa, line, {});
                     pending_ignore = false;
                 }
                 if (pending_expect) {
                     try self.ts_expect_error_lines.put(self.gpa, line, {});
+                    try self.ts_expect_error_directive_lines.put(self.gpa, line, pending_expect_line);
                     pending_expect = false;
                 }
             }
@@ -1129,11 +1149,14 @@ pub const Checker = struct {
             if (used_expect.contains(line_ptr.*)) continue;
             try self.diagnostics.append(self.gpa, .{
                 .node = root,
+                .pos = byteOffsetOfLine(src, self.ts_expect_error_directive_lines.get(line_ptr.*) orelse line_ptr.*),
                 .code = TsCodes.unused_ts_expect_error,
                 .code_prefix = .TS,
                 .message = "Unused '@ts-expect-error' directive.",
             });
         }
+
+        self.sortDiagnosticsByPosition();
     }
 
     fn checkStatement(self: *Checker, node: NodeId) CheckError!void {
@@ -15879,7 +15902,8 @@ pub const Checker = struct {
             };
             if (!ok) {
                 if (!self.callExpressionHasAnyArgument(v.init)) {
-                    try self.report(node, TsCodes.type_not_assignable, "Type is not assignable to declared type.");
+                    const diag_node = if (v.name != hir_mod.none_node_id) v.name else node;
+                    try self.reportTypeNotAssignable(diag_node, init_type, declared_type, "Type is not assignable to declared type.");
                 }
             } else {
                 try self.checkRemappedMappedIndexedDecl(node, declared_type, v.init);
@@ -24312,7 +24336,7 @@ pub const Checker = struct {
                 if (!try self.typesHaveComparableOverlap(cmp_lhs, cmp_rhs) or
                     self.templateTypesHaveNoOverlap(cmp_lhs, cmp_rhs))
                 {
-                    try self.report(node, TsCodes.no_overlap_comparison, "This comparison appears to be unintentional because the types have no overlap.");
+                    try self.reportNoOverlapComparison(node, cmp_lhs, cmp_rhs);
                 }
                 break :blk types.Primitive.boolean_t;
             },
@@ -26106,6 +26130,23 @@ pub const Checker = struct {
         try self.report(node, code, message);
     }
 
+    fn sortDiagnosticsByPosition(self: *Checker) void {
+        var i: usize = 1;
+        while (i < self.diagnostics.items.len) : (i += 1) {
+            const current = self.diagnostics.items[i];
+            const current_pos = self.diagnosticStart(current);
+            var j = i;
+            while (j > 0 and self.diagnosticStart(self.diagnostics.items[j - 1]) > current_pos) : (j -= 1) {
+                self.diagnostics.items[j] = self.diagnostics.items[j - 1];
+            }
+            self.diagnostics.items[j] = current;
+        }
+    }
+
+    fn diagnosticStart(self: *Checker, diagnostic: Diagnostic) u32 {
+        return diagnostic.pos orelse self.hir.spanOf(diagnostic.node).start;
+    }
+
     fn callExpressionHasAnyArgument(self: *Checker, node: NodeId) bool {
         if (node == hir_mod.none_node_id or self.hir.kindOf(node) != .call_expr) return false;
         for (hir_mod.callArgs(self.hir, node)) |arg| {
@@ -27336,10 +27377,92 @@ pub const Checker = struct {
         };
     }
 
+    fn reportTypeNotAssignable(
+        self: *Checker,
+        node: NodeId,
+        source: TypeId,
+        target: TypeId,
+        fallback: []const u8,
+    ) !void {
+        if (try self.allocSimpleTypeName(source)) |source_name| {
+            if (try self.allocSimpleTypeName(target)) |target_name| {
+                const msg = try std.fmt.allocPrint(
+                    self.diag_arena.allocator(),
+                    "Type '{s}' is not assignable to type '{s}'.",
+                    .{ source_name, target_name },
+                );
+                try self.report(node, TsCodes.type_not_assignable, msg);
+                return;
+            }
+        }
+        try self.report(node, TsCodes.type_not_assignable, fallback);
+    }
+
+    fn reportNoOverlapComparison(self: *Checker, node: NodeId, lhs: TypeId, rhs: TypeId) !void {
+        const pos = self.adjustedComparisonDiagnosticPos(node);
+        if (try self.allocSimpleTypeName(lhs)) |lhs_name| {
+            if (try self.allocSimpleTypeName(rhs)) |rhs_name| {
+                const msg = try std.fmt.allocPrint(
+                    self.diag_arena.allocator(),
+                    "This comparison appears to be unintentional because the types '{s}' and '{s}' have no overlap.",
+                    .{ lhs_name, rhs_name },
+                );
+                try self.reportAt(node, pos, TsCodes.no_overlap_comparison, msg);
+                return;
+            }
+        }
+        try self.reportAt(node, pos, TsCodes.no_overlap_comparison, "This comparison appears to be unintentional because the types have no overlap.");
+    }
+
+    fn adjustedComparisonDiagnosticPos(self: *Checker, node: NodeId) ?u32 {
+        const src = self.source orelse return null;
+        const span = self.hir.spanOf(node);
+        if (span.start > 0 and span.start <= src.len and src[span.start - 1] == '(') {
+            return span.start - 1;
+        }
+        return span.start;
+    }
+
+    fn allocSimpleTypeName(self: *Checker, t: TypeId) !?[]const u8 {
+        return switch (t) {
+            types.Primitive.any => "any",
+            types.Primitive.unknown => "unknown",
+            types.Primitive.never => "never",
+            types.Primitive.void_t => "void",
+            types.Primitive.null_t => "null",
+            types.Primitive.undefined_t => "undefined",
+            types.Primitive.string_t => "string",
+            types.Primitive.number_t => "number",
+            types.Primitive.boolean_t => "boolean",
+            types.Primitive.bigint_t => "bigint",
+            types.Primitive.symbol_t => "symbol",
+            types.Primitive.object_t => "object",
+            types.Primitive.true_lit => "true",
+            types.Primitive.false_lit => "false",
+            else => blk: {
+                if (t >= self.interner.pool.typeCount()) break :blk null;
+                const flags = self.interner.pool.flagsOf(t);
+                if (!flags.is_literal) break :blk null;
+                const literal = self.interner.literalOf(t);
+                break :blk switch (literal) {
+                    .string_lit => |sid| try std.fmt.allocPrint(self.diag_arena.allocator(), "\"{s}\"", .{self.string_interner.get(sid)}),
+                    .number_lit => |bits| try std.fmt.allocPrint(self.diag_arena.allocator(), "{d}", .{@as(f64, @bitCast(bits))}),
+                    .bigint_lit => |sid| try std.fmt.allocPrint(self.diag_arena.allocator(), "{s}", .{self.string_interner.get(sid)}),
+                    .boolean_lit => |b| if (b) "true" else "false",
+                };
+            },
+        };
+    }
+
     fn report(self: *Checker, node: NodeId, code: u32, message: []const u8) !void {
+        try self.reportAt(node, null, code, message);
+    }
+
+    fn reportAt(self: *Checker, node: NodeId, pos: ?u32, code: u32, message: []const u8) !void {
         const msg = try self.diag_arena.allocator().dupe(u8, message);
         try self.diagnostics.append(self.gpa, .{
             .node = node,
+            .pos = pos,
             .code = code,
             .message = msg,
         });
@@ -28603,18 +28726,58 @@ fn isNarrowingGuard(hir: *const Hir, node: NodeId) bool {
 
 /// Test whether a whitespace-trimmed line is a `// <name>` comment.
 /// Accepts arbitrary trailing text after `<name>` (e.g. a colon and
-/// reason: `// @ts-ignore: legacy api`). Block-comment forms aren't
-/// matched here — they'd require a separate scan.
+/// reason: `// @ts-ignore: legacy api`).
 fn matchDirective(trimmed: []const u8, name: []const u8) bool {
     if (trimmed.len < 2 + name.len) return false;
     if (trimmed[0] != '/' or trimmed[1] != '/') return false;
     var j: usize = 2;
     while (j < trimmed.len and (trimmed[j] == ' ' or trimmed[j] == '\t')) : (j += 1) {}
-    if (trimmed.len - j < name.len) return false;
-    if (!std.mem.eql(u8, trimmed[j .. j + name.len], name)) return false;
-    if (j + name.len == trimmed.len) return true;
-    const c = trimmed[j + name.len];
+    return matchDirectiveText(trimmed[j..], name);
+}
+
+fn matchDirectiveText(text: []const u8, name: []const u8) bool {
+    var trimmed = std.mem.trim(u8, text, " \t\r");
+    if (std.mem.startsWith(u8, trimmed, "//")) {
+        trimmed = std.mem.trim(u8, trimmed[2..], " \t\r");
+    }
+    while (std.mem.startsWith(u8, trimmed, "*")) {
+        trimmed = std.mem.trim(u8, trimmed[1..], " \t\r");
+    }
+    if (trimmed.len < name.len) return false;
+    if (!std.mem.eql(u8, trimmed[0..name.len], name)) return false;
+    if (name.len == trimmed.len) return true;
+    const c = trimmed[name.len];
     return !(std.ascii.isAlphanumeric(c) or c == '_' or c == '-');
+}
+
+fn directiveCommentText(trimmed: []const u8, in_block_comment: *bool) ?[]const u8 {
+    if (in_block_comment.*) {
+        if (std.mem.indexOf(u8, trimmed, "*/")) |end| {
+            in_block_comment.* = false;
+            return trimmed[0..end];
+        }
+        return trimmed;
+    }
+    if (std.mem.startsWith(u8, trimmed, "//")) {
+        return std.mem.trim(u8, trimmed[2..], " \t\r");
+    }
+    if (std.mem.startsWith(u8, trimmed, "/*")) {
+        const body = trimmed[2..];
+        if (std.mem.indexOf(u8, body, "*/")) |end| {
+            return body[0..end];
+        }
+        in_block_comment.* = true;
+        return body;
+    }
+    if (std.mem.startsWith(u8, trimmed, "{/*")) {
+        const body = trimmed[3..];
+        if (std.mem.indexOf(u8, body, "*/")) |end| {
+            return body[0..end];
+        }
+        in_block_comment.* = true;
+        return body;
+    }
+    return null;
 }
 
 /// Convert a 0-based byte offset into a 0-based source-line number.
@@ -28626,6 +28789,19 @@ fn byteOffsetToLine(source: []const u8, byte_pos: u32) u32 {
         if (source[i] == '\n') line += 1;
     }
     return line;
+}
+
+/// Return the 0-based byte offset at the start of `target_line`.
+fn byteOffsetOfLine(source: []const u8, target_line: u32) u32 {
+    if (target_line == 0) return 0;
+    var line: u32 = 0;
+    var i: usize = 0;
+    while (i < source.len) : (i += 1) {
+        if (source[i] != '\n') continue;
+        line += 1;
+        if (line == target_line) return @intCast(@min(i + 1, source.len));
+    }
+    return @intCast(source.len);
 }
 
 fn typeOfTypeofString(s: []const u8) ?TypeId {
@@ -29206,15 +29382,66 @@ test "checker: @ts-expect-error suppresses next-line diagnostic" {
     try T.expectEqual(@as(usize, 0), s.checker.diagnostics.items.len);
 }
 
+test "checker: block @ts-expect-error suppresses next-line diagnostic" {
+    const s = try newSetup("/* @ts-expect-error */\nlet x: number = \"hi\";");
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+    try T.expectEqual(@as(usize, 0), s.checker.diagnostics.items.len);
+}
+
+test "checker: multiline block @ts-expect-error suppresses next-line diagnostic" {
+    const s = try newSetup("/*\n @ts-expect-error */\nlet x: number = \"hi\";");
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+    try T.expectEqual(@as(usize, 0), s.checker.diagnostics.items.len);
+}
+
+test "checker: JSX block @ts-expect-error suppresses next-line diagnostic" {
+    const s = try newTsxSetup(
+        \\{/*@ts-expect-error*/}
+        \\let x: number = "hi";
+    );
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+    try T.expectEqual(@as(usize, 0), s.checker.diagnostics.items.len);
+}
+
+test "checker: JSX multiline starred @ts-expect-error suppresses next-line diagnostic" {
+    const s = try newTsxSetup(
+        \\{/*
+        \\ * @ts-expect-error */}
+        \\let x: number = "hi";
+    );
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+    try T.expectEqual(@as(usize, 0), s.checker.diagnostics.items.len);
+}
+
 test "checker: unused @ts-expect-error emits TS2578" {
     const s = try newSetup("// @ts-expect-error\nlet x: number = 1;");
     defer destroySetup(s);
     try s.checker.checkSourceFile(s.root);
     var found = false;
     for (s.checker.diagnostics.items) |d| {
-        if (d.code == TsCodes.unused_ts_expect_error) found = true;
+        if (d.code == TsCodes.unused_ts_expect_error) {
+            found = true;
+            try T.expectEqual(@as(?u32, 0), d.pos);
+        }
     }
     try T.expect(found);
+}
+
+test "checker: unused @ts-expect-error diagnostics are position sorted" {
+    const s = try newSetup(
+        \\// @ts-expect-error
+        \\let a: number = 1;
+        \\// @ts-expect-error
+        \\let b: number = 2;
+    );
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+    try T.expectEqual(@as(usize, 2), s.checker.diagnostics.items.len);
+    try T.expect(s.checker.diagnostics.items[0].pos.? < s.checker.diagnostics.items[1].pos.?);
 }
 
 test "checker: @ts-nocheck disables all file diagnostics" {
@@ -30931,6 +31158,8 @@ test "checker: var-decl type mismatch emits TS2322" {
     try s.checker.checkSourceFile(s.root);
     try T.expectEqual(@as(usize, 1), s.checker.diagnostics.items.len);
     try T.expectEqual(TsCodes.type_not_assignable, s.checker.diagnostics.items[0].code);
+    try T.expectEqualStrings("Type 'string' is not assignable to type 'number'.", s.checker.diagnostics.items[0].message);
+    try T.expectEqual(@as(u32, 4), s.checker.hir.spanOf(s.checker.diagnostics.items[0].node).start);
 }
 
 test "checker: strictNullChecks controls null assignment" {
@@ -38785,6 +39014,24 @@ test "checker: incompatible string literal equality emits TS2367" {
     var found = false;
     for (s.checker.diagnostics.items) |d| {
         if (d.code == TsCodes.no_overlap_comparison) found = true;
+    }
+    try T.expect(found);
+}
+
+test "checker: literal equality TS2367 names disjoint literal types" {
+    const s = try newSetup("let b = (({ a: true } as const).a === false);");
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+    var found = false;
+    for (s.checker.diagnostics.items) |d| {
+        if (d.code == TsCodes.no_overlap_comparison) {
+            found = true;
+            try T.expectEqualStrings(
+                "This comparison appears to be unintentional because the types 'true' and 'false' have no overlap.",
+                d.message,
+            );
+            try T.expectEqual(@as(?u32, 9), d.pos);
+        }
     }
     try T.expect(found);
 }

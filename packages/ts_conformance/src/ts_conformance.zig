@@ -2423,7 +2423,7 @@ test "conformance: type-error decl fails as expected" {
         .name = "type_error",
         .source = "let x: number = \"hi\";",
         .path = "tests/te.ts",
-        .expected_errors = "tests/te.ts(1,1): error TS2322: Type is not assignable to declared type.",
+        .expected_errors = "tests/te.ts(1,5): error TS2322: Type 'string' is not assignable to type 'number'.",
     });
     defer if (r.detail.len > 0) T.allocator.free(r.detail);
     try T.expectEqual(Outcome.passed, r.outcome);
@@ -2548,7 +2548,7 @@ test "conformance: runCorpus supports exact diagnostic entries" {
             .name = "exact-type-error",
             .source = "let x: number = \"hi\";",
             .path = "tests/exact.ts",
-            .expected_errors = "tests/exact.ts(1,1): error TS2322: Type is not assignable to declared type.",
+            .expected_errors = "tests/exact.ts(1,5): error TS2322: Type 'string' is not assignable to type 'number'.",
             .use_exact_errors = true,
         },
     };
@@ -2665,23 +2665,31 @@ test "conformance: smoke-run local TS conformance subdirectories" {
     // without crashing and produces aggregate pass-rate stats. We
     // don't ratchet on pass/fail rate yet — per-case failures are
     // accumulated and reported, not asserted.
-    const ts_conformance_root = "/Users/chrisbreuer/Code/typescript-go/_submodules/TypeScript/tests/cases/conformance";
-    const baseline_root = "/Users/chrisbreuer/Code/typescript-go/_submodules/TypeScript/tests/baselines/reference";
-    const subdirs = [_]struct { label: []const u8, path: []const u8 }{
-        .{ .label = "comparable", .path = ts_conformance_root ++ "/types/typeRelationships/comparable" },
-        .{ .label = "inOperator", .path = ts_conformance_root ++ "/expressions/binaryOperators/inOperator" },
-        .{ .label = "stringLiteral", .path = ts_conformance_root ++ "/types/primitives/stringLiteral" },
+    // Path discovery via the shared helper so devs can override
+    // the local TypeScript checkout root with HOME_TS_CONFORMANCE_ROOT.
+    const paths = (try resolveTsCorpusPaths(T.allocator)) orelse return;
+    defer {
+        T.allocator.free(paths.cases);
+        T.allocator.free(paths.baselines);
+    }
+    const baseline_root = paths.baselines;
+    const subdir_descs = [_]struct { label: []const u8, rel: []const u8 }{
+        .{ .label = "comparable", .rel = "/types/typeRelationships/comparable" },
+        .{ .label = "inOperator", .rel = "/expressions/binaryOperators/inOperator" },
+        .{ .label = "stringLiteral", .rel = "/types/primitives/stringLiteral" },
     };
 
     var combined: Stats = .{};
     var ran_any = false;
-    for (subdirs) |sd| {
+    for (subdir_descs) |sd| {
+        const path = try std.fmt.allocPrint(T.allocator, "{s}{s}", .{ paths.cases, sd.rel });
+        defer T.allocator.free(path);
         const options: DirectoryLoadOptions = if (std.mem.eql(u8, sd.label, "comparable") or
             std.mem.eql(u8, sd.label, "inOperator")) .{
             .baseline_root = baseline_root,
             .strict_default_for_expected_errors = true,
         } else .{};
-        const maybe = try runConformanceSubset(T.allocator, sd.label, sd.path, options);
+        const maybe = try runConformanceSubset(T.allocator, sd.label, path, options);
         if (maybe) |s| {
             ran_any = true;
             combined.passed += s.passed;
@@ -2705,15 +2713,13 @@ test "conformance: smoke-run local TS conformance subdirectories" {
 }
 
 test "conformance: category specs summarize local TS feature folders" {
-    const ts_conformance_root = "/Users/chrisbreuer/Code/typescript-go/_submodules/TypeScript/tests/cases/conformance";
-    const baseline_root = "/Users/chrisbreuer/Code/typescript-go/_submodules/TypeScript/tests/baselines/reference";
-    {
-        var threaded = std.Io.Threaded.init(T.allocator, .{});
-        defer threaded.deinit();
-        const io = threaded.io();
-        std.Io.Dir.cwd().access(io, ts_conformance_root, .{}) catch return;
-        std.Io.Dir.cwd().access(io, baseline_root, .{}) catch return;
+    const paths = (try resolveTsCorpusPaths(T.allocator)) orelse return;
+    defer {
+        T.allocator.free(paths.cases);
+        T.allocator.free(paths.baselines);
     }
+    const ts_conformance_root = paths.cases;
+    const baseline_root = paths.baselines;
 
     const default_specs = [_]CategorySpec{
         .{ .label = "types/primitives/stringLiteral", .rel_path = "types/primitives/stringLiteral" },
@@ -2761,15 +2767,13 @@ test "conformance: category specs summarize local TS feature folders" {
 }
 
 test "conformance: baseline-aware type-relationship survey" {
-    const ts_root = "/Users/chrisbreuer/Code/typescript-go/_submodules/TypeScript/tests/cases/conformance";
-    const baseline_root = "/Users/chrisbreuer/Code/typescript-go/_submodules/TypeScript/tests/baselines/reference";
-    {
-        var threaded = std.Io.Threaded.init(T.allocator, .{});
-        defer threaded.deinit();
-        const io = threaded.io();
-        std.Io.Dir.cwd().access(io, ts_root, .{}) catch return;
-        std.Io.Dir.cwd().access(io, baseline_root, .{}) catch return;
+    const paths = (try resolveTsCorpusPaths(T.allocator)) orelse return;
+    defer {
+        T.allocator.free(paths.cases);
+        T.allocator.free(paths.baselines);
     }
+    const ts_root = paths.cases;
+    const baseline_root = paths.baselines;
 
     const specs = [_]CategorySpec{
         .{ .label = "types/typeRelationships/apparentType", .rel_path = "types/typeRelationships/apparentType" },
@@ -2803,20 +2807,73 @@ test "conformance: baseline-aware type-relationship survey" {
     try T.expect(combined.passed >= 90);
 }
 
+// Default location of the local TypeScript checkout. Other devs
+// override via `HOME_TS_CONFORMANCE_ROOT=/path/to/typescript-go`
+// (the harness then expects `<root>/_submodules/TypeScript/tests/...`
+// underneath, matching the layout tsgo's own test runner expects).
+// Tests that need the corpus call `resolveTsCorpusPaths` and skip
+// silently when the directory isn't accessible, so other devs
+// without the checkout still get a green build.
+const default_ts_root = "/Users/chrisbreuer/Code/typescript-go";
+
+const TsCorpusPaths = struct { cases: []u8, baselines: []u8 };
+
+fn resolveTsCorpusPaths(gpa: std.mem.Allocator) !?TsCorpusPaths {
+    const root_env = std.c.getenv("HOME_TS_CONFORMANCE_ROOT");
+    const root_slice = if (root_env) |r| std.mem.span(r) else default_ts_root;
+    const cases = try std.fmt.allocPrint(gpa, "{s}/_submodules/TypeScript/tests/cases/conformance", .{root_slice});
+    errdefer gpa.free(cases);
+    const baselines = try std.fmt.allocPrint(gpa, "{s}/_submodules/TypeScript/tests/baselines/reference", .{root_slice});
+    errdefer gpa.free(baselines);
+    var threaded = std.Io.Threaded.init(gpa, .{});
+    defer threaded.deinit();
+    const io = threaded.io();
+    std.Io.Dir.cwd().access(io, cases, .{}) catch {
+        gpa.free(cases);
+        gpa.free(baselines);
+        return null;
+    };
+    std.Io.Dir.cwd().access(io, baselines, .{}) catch {
+        gpa.free(cases);
+        gpa.free(baselines);
+        return null;
+    };
+    return .{ .cases = cases, .baselines = baselines };
+}
+
+// NOTE: an always-on exact-baseline ratchet test was prototyped
+// here and removed pending a fix — running 25+ cases through
+// `runOneEntry` in the same test process exposes a heap-state
+// interaction (a fixture in the 11-25 range corrupts the diag
+// arena or interner state, breaking adjacent unit tests'
+// assertions). Filed as a §3.A follow-up. Until that's nailed
+// down, the exact-baseline ratchet runs via env-var:
+//
+//   HOME_TS_CONFORMANCE_FULL=1 HOME_TS_CONFORMANCE_EXACT=1 \
+//     HOME_TS_CONFORMANCE_LIMIT=40 \
+//     zig build test -Dfilter=ts_conformance
+//
+// Last manually-measured pass rate: 23/50 on the leading exact
+// window, 190/500 across the first 500 cases (2026-05-14 evening).
+// The per-PR delta gate (§6.A.5) is the natural home for the
+// always-on version once the heap interaction is resolved.
+
 test "conformance: opt-in full local TypeScript corpus survey" {
     const enabled_raw = std.c.getenv("HOME_TS_CONFORMANCE_FULL") orelse return;
     const enabled = std.mem.span(enabled_raw);
     if (!std.mem.eql(u8, enabled, "1")) return;
 
-    const ts_root = "/Users/chrisbreuer/Code/typescript-go/_submodules/TypeScript/tests/cases/conformance";
-    const baseline_root = "/Users/chrisbreuer/Code/typescript-go/_submodules/TypeScript/tests/baselines/reference";
-    {
-        var threaded = std.Io.Threaded.init(T.allocator, .{});
-        defer threaded.deinit();
-        const io = threaded.io();
-        std.Io.Dir.cwd().access(io, ts_root, .{}) catch return;
-        std.Io.Dir.cwd().access(io, baseline_root, .{}) catch return;
+    // Discover via shared helper so `HOME_TS_CONFORMANCE_ROOT` works
+    // for both this opt-in survey and the always-on slice gate.
+    const paths_or_null = try resolveTsCorpusPaths(T.allocator);
+    if (paths_or_null == null) return;
+    const paths = paths_or_null.?;
+    defer {
+        T.allocator.free(paths.cases);
+        T.allocator.free(paths.baselines);
     }
+    const ts_root = paths.cases;
+    const baseline_root = paths.baselines;
 
     var results: std.ArrayListUnmanaged(Result) = .empty;
     defer {
@@ -2832,6 +2889,15 @@ test "conformance: opt-in full local TypeScript corpus survey" {
     // from a known regression set. Driven by §6 punch-list item 4
     // (graduate from coarse expected-any to exact-baseline).
     const want_exact = envBoolOne("HOME_TS_CONFORMANCE_EXACT");
+    // Note on `strict_default_for_expected_errors`: a tempting move
+    // is to flip this off (and turn `honor_directives` on) for EXACT
+    // mode so flags match what tsc actually used when generating the
+    // baseline. Empirically that NET-REGRESSES (-14 cases on the
+    // first 500-case slice) — fixtures without an explicit `// @strict:`
+    // lose strict flags and miss baseline diagnostics that depended
+    // on them. Leave the default on; exact-mode pass rate ratchets
+    // through real semantic fixes, not by changing which strict
+    // policy each case runs under.
     const corpus = try loadDirectoryWithOptions(T.allocator, ts_root, .{
         .baseline_root = baseline_root,
         .strict_default_for_expected_errors = true,

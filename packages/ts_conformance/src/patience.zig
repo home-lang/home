@@ -223,47 +223,43 @@ fn findAnchors(gpa: std.mem.Allocator, a: []const []const u8, b: []const []const
 /// longest increasing subsequence by `b_idx`.
 fn patienceLis(gpa: std.mem.Allocator, pairs: []const Anchor) ![]Anchor {
     if (pairs.len == 0) return gpa.alloc(Anchor, 0);
-    const Card = struct { a_idx: usize, b_idx: usize, prev: ?usize };
-    // Standard patience-sort piles.
-    var piles: std.ArrayListUnmanaged(std.ArrayListUnmanaged(Card)) = .empty;
-    defer {
-        for (piles.items) |*p| p.deinit(gpa);
-        piles.deinit(gpa);
-    }
-    for (pairs) |pair| {
-        // Binary search for the leftmost pile whose top's b_idx > pair.b_idx.
-        var lo: usize = 0;
-        var hi: usize = piles.items.len;
-        while (lo < hi) {
-            const mid = (lo + hi) / 2;
-            if (piles.items[mid].items[piles.items[mid].items.len - 1].b_idx < pair.b_idx) {
-                lo = mid + 1;
-            } else hi = mid;
+
+    // The inputs here are small diagnostic-baseline line lists, so use
+    // the straightforward dynamic-programming LIS. This keeps the anchor
+    // chain explicitly tied to predecessor pair indexes and guarantees
+    // the result is monotonic in both files.
+    const lens = try gpa.alloc(usize, pairs.len);
+    defer gpa.free(lens);
+    const prev = try gpa.alloc(?usize, pairs.len);
+    defer gpa.free(prev);
+
+    var best_idx: usize = 0;
+    var best_len: usize = 0;
+    for (pairs, 0..) |pair, i| {
+        lens[i] = 1;
+        prev[i] = null;
+        var j: usize = 0;
+        while (j < i) : (j += 1) {
+            if (pairs[j].b_idx < pair.b_idx and lens[j] + 1 > lens[i]) {
+                lens[i] = lens[j] + 1;
+                prev[i] = j;
+            }
         }
-        if (lo == piles.items.len) {
-            try piles.append(gpa, .empty);
+        if (lens[i] > best_len) {
+            best_len = lens[i];
+            best_idx = i;
         }
-        const prev_idx: ?usize = if (lo > 0) piles.items[lo - 1].items.len - 1 else null;
-        _ = prev_idx;
-        try piles.items[lo].append(gpa, .{ .a_idx = pair.a_idx, .b_idx = pair.b_idx, .prev = if (lo > 0) lo - 1 else null });
     }
-    // Reconstruct by walking the rightmost pile back.
-    var lis: std.ArrayListUnmanaged(Anchor) = .empty;
-    errdefer lis.deinit(gpa);
-    if (piles.items.len == 0) return lis.toOwnedSlice(gpa);
-    var pile_idx: usize = piles.items.len - 1;
-    var card_idx: usize = piles.items[pile_idx].items.len - 1;
-    while (true) {
-        const card = piles.items[pile_idx].items[card_idx];
-        try lis.append(gpa, .{ .a_idx = card.a_idx, .b_idx = card.b_idx });
-        if (card.prev) |p| {
-            pile_idx = p;
-            card_idx = piles.items[pile_idx].items.len - 1;
-        } else break;
+
+    const out = try gpa.alloc(Anchor, best_len);
+    var write_idx = best_len;
+    var cursor: ?usize = best_idx;
+    while (cursor) |idx| {
+        write_idx -= 1;
+        out[write_idx] = pairs[idx];
+        cursor = prev[idx];
     }
-    // Reverse — we walked back-to-front.
-    std.mem.reverse(Anchor, lis.items);
-    return lis.toOwnedSlice(gpa);
+    return out;
 }
 
 const T = std.testing;
@@ -311,4 +307,23 @@ test "patience: anchored region with replacement" {
     try T.expectEqual(@as(usize, 2), keeps);
     try T.expectEqual(@as(usize, 2), adds);
     try T.expectEqual(@as(usize, 1), removes);
+}
+
+test "patience: LIS anchors are monotonic" {
+    const pairs = [_]Anchor{
+        .{ .a_idx = 0, .b_idx = 1 },
+        .{ .a_idx = 1, .b_idx = 5 },
+        .{ .a_idx = 2, .b_idx = 2 },
+        .{ .a_idx = 3, .b_idx = 6 },
+        .{ .a_idx = 4, .b_idx = 3 },
+        .{ .a_idx = 5, .b_idx = 4 },
+    };
+    const anchors = try patienceLis(T.allocator, &pairs);
+    defer T.allocator.free(anchors);
+
+    try T.expectEqual(@as(usize, 4), anchors.len);
+    for (anchors[1..], 1..) |anchor, i| {
+        try T.expect(anchor.a_idx > anchors[i - 1].a_idx);
+        try T.expect(anchor.b_idx > anchors[i - 1].b_idx);
+    }
 }
