@@ -1,0 +1,60 @@
+{
+  "baseline-aware": {
+    "types/typeRelationships/apparentType": {
+      "passed": 2,
+      "total": 2
+    },
+    "types/typeRelationships/bestCommonType": {
+      "passed": 8,
+      "total": 8
+    },
+    "types/typeRelationships/recursiveTypes": {
+      "passed": 13,
+      "total": 13
+    },
+    "types/typeRelationships/subtypesAndSuperTypes": {
+      "passed": 52,
+      "total": 52
+    },
+    "types/typeRelationships/typeAndMemberIdentity": {
+      "passed": 48,
+      "total": 48
+    },
+    "types/typeRelationships/typeInference": {
+      "passed": 52,
+      "total": 52
+    }
+  },
+  "category": {
+    "expressions/binaryOperators/inOperator": {
+      "passed": 2,
+      "total": 2
+    },
+    "types/primitives/stringLiteral": {
+      "passed": 1,
+      "total": 1
+    },
+    "types/typeRelationships/assignmentCompatibility": {
+      "passed": 70,
+      "total": 70
+    },
+    "types/typeRelationships/comparable": {
+      "passed": 13,
+      "total": 13
+    }
+  },
+  "smoke": {
+    "comparable": {
+      "passed": 13,
+      "total": 13
+    },
+    "inOperator": {
+      "passed": 2,
+      "total": 2
+    },
+    "stringLiteral": {
+      "passed": 1,
+      "total": 1
+    }
+  }
+}
