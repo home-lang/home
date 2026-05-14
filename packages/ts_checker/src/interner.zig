@@ -5,9 +5,17 @@
 //! becomes `id_a == id_b`, the foundation for the relation cache
 //! key (§5.4).
 //!
-//! Phase 3 ships a *single-threaded* implementation. Phase 5 will add
-//! 64-shard lock striping and the seqlock-based read fast path on top
-//! of this same Pool layout — the public API does not change.
+//! Phase 5.A.7 introduces 64-shard lock striping for the dedup
+//! tables. Each shard owns its own `TypeKey → TypeId` map, key arena,
+//! and atomic-based RwLock; shard selection is `Wyhash(key) & 0x3F`.
+//! The shared `Pool` backing storage stays single — payload appends
+//! are serialized through `pool_mu`, but reads remain lock-free
+//! once a writer publishes a header (we pre-reserve generous Pool
+//! capacities at init so reads never observe a half-published append).
+//! `TypeId` itself stays a flat 32-bit index — sharding is purely an
+//! internal dedup-table partitioning, so `Primitive.*` constants
+//! retain their numeric ids and every existing `pool.headers.items[id]`
+//! call site keeps working unchanged.
 //!
 //! Verified architectural advantage: tsgo has no global type interner
 //! (Appendix D.2). Identity comparisons in tsgo require structural
@@ -20,6 +28,73 @@ pub const TypeId = types.TypeId;
 pub const StringId = types.StringId;
 pub const Pool = types.Pool;
 pub const Primitive = types.Primitive;
+
+/// Number of dedup-table shards. 64 keeps single-shard contention near
+/// zero even with 16+ checker workers and matches the string interner
+/// (`packages/string_interner`) for cache-line and analysis simplicity.
+pub const N_SHARDS: u32 = 64;
+const SHARD_MASK: u32 = N_SHARDS - 1; // 0x3F
+
+/// Pre-reserved Pool header capacity. Picked to comfortably cover any
+/// realistic TS program (Prisma generated `client.d.ts` is ~ 200 K
+/// types; VS Code's full `tsc` is ~ 600 K). With this many slots
+/// reserved up front, `headers.append` never reallocates during
+/// checking, so concurrent readers of `pool.headers.items[id]` never
+/// observe a torn slice header. If we ever exceed this, growth still
+/// works correctly under `pool_mu`, just with a one-shot reallocation.
+pub const POOL_INITIAL_CAPACITY: u32 = 1 << 20; // 1 Mi types
+
+/// Minimal atomics-based RwLock — same shape as the one in
+/// `string_interner`, kept local so the two interners can evolve
+/// independently. Reader-preferred; under contention readers spin
+/// briefly, writers wait for active readers to drain. Adequate for
+/// the per-shard hot path (one map lookup or one append).
+pub const RwLock = struct {
+    state: std.atomic.Value(u32),
+
+    const WRITER_BIT: u32 = 1 << 31;
+
+    pub fn init() RwLock {
+        return .{ .state = std.atomic.Value(u32).init(0) };
+    }
+
+    pub fn lockShared(self: *RwLock) void {
+        while (true) {
+            const s = self.state.load(.acquire);
+            if ((s & WRITER_BIT) == 0) {
+                if (self.state.cmpxchgWeak(s, s + 1, .acquire, .monotonic) == null) {
+                    return;
+                }
+            }
+            std.atomic.spinLoopHint();
+        }
+    }
+
+    pub fn unlockShared(self: *RwLock) void {
+        _ = self.state.fetchSub(1, .release);
+    }
+
+    pub fn lock(self: *RwLock) void {
+        // Acquire the writer bit (excludes other writers).
+        while (true) {
+            const s = self.state.load(.acquire);
+            if ((s & WRITER_BIT) == 0) {
+                if (self.state.cmpxchgWeak(s, s | WRITER_BIT, .acquire, .monotonic) == null) {
+                    break;
+                }
+            }
+            std.atomic.spinLoopHint();
+        }
+        // Wait for any active readers to drain.
+        while ((self.state.load(.acquire) & ~WRITER_BIT) != 0) {
+            std.atomic.spinLoopHint();
+        }
+    }
+
+    pub fn unlock(self: *RwLock) void {
+        _ = self.state.fetchAnd(~WRITER_BIT, .release);
+    }
+};
 
 /// Structural key. The interner hashes + compares these to dedup.
 ///
@@ -223,29 +298,84 @@ const KeyHashCtx = struct {
     }
 };
 
-pub const Interner = struct {
-    gpa: std.mem.Allocator,
-    pool: Pool,
+fn shardIndexFor(key_hash: u64) u32 {
+    return @as(u32, @truncate(key_hash)) & SHARD_MASK;
+}
+
+/// Per-shard dedup state. Each shard owns its own hash table + key
+/// arena, guarded by an RwLock. Shard selection is `wyhash(key) & 63`.
+const Shard = struct {
+    mu: RwLock align(64) = RwLock.init(),
     /// `TypeKey` → `TypeId`. Keys store *owned* slices when the key is
-    /// list-shaped (union/intersection/tuple/instantiation); the interner
-    /// arena owns those slices.
-    table: std.HashMapUnmanaged(TypeKey, TypeId, KeyHashCtx, std.hash_map.default_max_load_percentage),
-    /// Arena backing all key-owned slices.
+    /// list-shaped (union/intersection/tuple/instantiation); the
+    /// per-shard arena owns those slices.
+    table: std.HashMapUnmanaged(TypeKey, TypeId, KeyHashCtx, std.hash_map.default_max_load_percentage) = .empty,
+    /// Arena backing key-owned slices that hash into this shard.
     key_arena: std.heap.ArenaAllocator,
 
-    pub fn init(gpa: std.mem.Allocator) !Interner {
+    fn init(gpa: std.mem.Allocator) Shard {
         return .{
-            .gpa = gpa,
-            .pool = try Pool.init(gpa),
-            .table = .empty,
             .key_arena = std.heap.ArenaAllocator.init(gpa),
         };
     }
 
-    pub fn deinit(self: *Interner) void {
-        self.table.deinit(self.gpa);
-        self.pool.deinit();
+    fn deinit(self: *Shard, gpa: std.mem.Allocator) void {
+        self.table.deinit(gpa);
         self.key_arena.deinit();
+    }
+};
+
+/// Tiny atomic spin mutex — std.Thread.Mutex isn't available on the
+/// Zig version we target, and the L2 cache in `relation.zig` already
+/// uses the same pattern. The pool write path is short (a few
+/// `ArrayList.append` calls) so spinning is fine.
+pub const SpinMutex = struct {
+    state: std.atomic.Value(bool) = std.atomic.Value(bool).init(false),
+
+    pub fn lock(self: *SpinMutex) void {
+        while (self.state.cmpxchgWeak(false, true, .acquire, .monotonic) != null) {
+            std.atomic.spinLoopHint();
+        }
+    }
+
+    pub fn unlock(self: *SpinMutex) void {
+        self.state.store(false, .release);
+    }
+};
+
+pub const Interner = struct {
+    gpa: std.mem.Allocator,
+    pool: Pool,
+    /// 64 dedup shards, addressed by `wyhash(TypeKey) & 0x3F`.
+    shards: [N_SHARDS]Shard,
+    /// Single mutex serializing writes to `pool` (header + payload
+    /// appends). Reads of `pool.headers.items[id]` etc. are lock-free
+    /// because `Pool.init` pre-reserves enough capacity that growth
+    /// never reallocates during normal operation.
+    pool_mu: SpinMutex = .{},
+
+    pub fn init(gpa: std.mem.Allocator) !Interner {
+        var self: Interner = .{
+            .gpa = gpa,
+            .pool = try Pool.init(gpa),
+            .shards = undefined,
+        };
+        // Pre-reserve generous header capacity so concurrent readers
+        // never observe a reallocation in flight.
+        try self.pool.headers.ensureTotalCapacity(gpa, POOL_INITIAL_CAPACITY);
+        var i: u32 = 0;
+        while (i < N_SHARDS) : (i += 1) {
+            self.shards[i] = Shard.init(gpa);
+        }
+        return self;
+    }
+
+    pub fn deinit(self: *Interner) void {
+        var i: u32 = 0;
+        while (i < N_SHARDS) : (i += 1) {
+            self.shards[i].deinit(self.gpa);
+        }
+        self.pool.deinit();
     }
 
     /// Intern a string literal type. Returns a stable `TypeId`.
@@ -277,22 +407,23 @@ pub const Interner = struct {
         if (members.len == 0) return Primitive.never;
         if (members.len == 1) return members[0];
 
-        // Sort + dedup into a fresh slice owned by the key arena so
-        // the lookup is canonical.
-        const sorted = try self.key_arena.allocator().dupe(TypeId, members);
-        std.mem.sort(TypeId, sorted, {}, std.sort.asc(TypeId));
+        // Sort + dedup into a temporary buffer (gpa). After
+        // canonicalization we hash to determine the owning shard,
+        // then dupe into that shard's arena before the dedup lookup.
+        const scratch = try self.gpa.dupe(TypeId, members);
+        defer self.gpa.free(scratch);
+        std.mem.sort(TypeId, scratch, {}, std.sort.asc(TypeId));
         var write: usize = 1;
         var i: usize = 1;
-        while (i < sorted.len) : (i += 1) {
-            if (sorted[i] != sorted[i - 1]) {
-                sorted[write] = sorted[i];
+        while (i < scratch.len) : (i += 1) {
+            if (scratch[i] != scratch[i - 1]) {
+                scratch[write] = scratch[i];
                 write += 1;
             }
         }
-        const canonical = sorted[0..write];
+        const canonical = scratch[0..write];
         if (canonical.len == 1) return canonical[0];
 
-        const key: TypeKey = .{ .union_t = canonical };
         // Compute the union's flags: OR of constituent flags but
         // mark `is_union`.
         var flags: types.TypeFlags = .{ .is_union = true };
@@ -303,28 +434,28 @@ pub const Interner = struct {
             flags = @bitCast(a | b);
         }
         flags.is_union = true;
-        return try self.internKey(key, flags);
+        return try self.internKeyWithSlice(.union_t, canonical, flags);
     }
 
     /// Intern an intersection. Single-member intersection collapses.
     pub fn internIntersection(self: *Interner, members: []const TypeId) !TypeId {
         if (members.len == 0) return Primitive.unknown;
         if (members.len == 1) return members[0];
-        const sorted = try self.key_arena.allocator().dupe(TypeId, members);
-        std.mem.sort(TypeId, sorted, {}, std.sort.asc(TypeId));
+        const scratch = try self.gpa.dupe(TypeId, members);
+        defer self.gpa.free(scratch);
+        std.mem.sort(TypeId, scratch, {}, std.sort.asc(TypeId));
         var write: usize = 1;
         var i: usize = 1;
-        while (i < sorted.len) : (i += 1) {
-            if (sorted[i] != sorted[i - 1]) {
-                sorted[write] = sorted[i];
+        while (i < scratch.len) : (i += 1) {
+            if (scratch[i] != scratch[i - 1]) {
+                scratch[write] = scratch[i];
                 write += 1;
             }
         }
-        const canonical = sorted[0..write];
+        const canonical = scratch[0..write];
         if (canonical.len == 1) return canonical[0];
 
-        const key: TypeKey = .{ .intersection = canonical };
-        return try self.internKey(key, .{ .is_intersection = true });
+        return try self.internKeyWithSlice(.intersection, canonical, .{ .is_intersection = true });
     }
 
     pub fn internKeyof(self: *Interner, operand: TypeId) !TypeId {
@@ -333,10 +464,30 @@ pub const Interner = struct {
     }
 
     pub fn internTemplateLiteral(self: *Interner, texts: []const StringId, type_parts: []const TypeId) !TypeId {
-        const key_texts = try self.key_arena.allocator().dupe(StringId, texts);
-        const key_types = try self.key_arena.allocator().dupe(TypeId, type_parts);
-        const key: TypeKey = .{ .template_literal = .{ .texts = key_texts, .types = key_types } };
-        return try self.internKey(key, .{ .is_string = true, .is_template_literal = true });
+        // Probe with the caller's slices first; on a hit no allocation
+        // is needed. On a miss we dupe into the chosen shard arena
+        // before publishing so the table key has stable storage.
+        const probe: TypeKey = .{ .template_literal = .{ .texts = texts, .types = type_parts } };
+        const h = probe.hash();
+        const shard_idx = shardIndexFor(h);
+        const shard = &self.shards[shard_idx];
+
+        shard.mu.lockShared();
+        if (shard.table.getContext(probe, KeyHashCtx{})) |found| {
+            shard.mu.unlockShared();
+            return found;
+        }
+        shard.mu.unlockShared();
+
+        shard.mu.lock();
+        defer shard.mu.unlock();
+        if (shard.table.getContext(probe, KeyHashCtx{})) |found| return found;
+
+        const ka = shard.key_arena.allocator();
+        const owned_texts = try ka.dupe(StringId, texts);
+        const owned_types = try ka.dupe(TypeId, type_parts);
+        const owned_key: TypeKey = .{ .template_literal = .{ .texts = owned_texts, .types = owned_types } };
+        return try self.publishKeyLocked(shard, owned_key, .{ .is_string = true, .is_template_literal = true });
     }
 
     pub fn internStringMapping(self: *Interner, kind: types.StringMappingKind, inner: TypeId) !TypeId {
@@ -428,6 +579,9 @@ pub const Interner = struct {
         variance: types.Variance,
         is_const: bool,
     ) !TypeId {
+        self.pool_mu.lock();
+        defer self.pool_mu.unlock();
+
         const payload_idx: u32 = @intCast(self.pool.type_parameter_payloads.items.len);
         try self.pool.type_parameter_payloads.append(self.gpa, .{
             .name = name,
@@ -489,13 +643,33 @@ pub const Interner = struct {
     /// `param_types` is consumed via dupe; caller may free its
     /// original copy.
     pub fn internSignature(self: *Interner, param_types: []const TypeId, return_type: TypeId, is_construct: bool) !TypeId {
-        const dup = try self.key_arena.allocator().dupe(TypeId, param_types);
-        const key: TypeKey = .{ .signature = .{
-            .params = dup,
+        const probe: TypeKey = .{ .signature = .{
+            .params = param_types,
             .return_type = return_type,
             .is_construct = is_construct,
         } };
-        return try self.internKey(key, .{ .is_signature = true });
+        const h = probe.hash();
+        const shard_idx = shardIndexFor(h);
+        const shard = &self.shards[shard_idx];
+
+        shard.mu.lockShared();
+        if (shard.table.getContext(probe, KeyHashCtx{})) |found| {
+            shard.mu.unlockShared();
+            return found;
+        }
+        shard.mu.unlockShared();
+
+        shard.mu.lock();
+        defer shard.mu.unlock();
+        if (shard.table.getContext(probe, KeyHashCtx{})) |found| return found;
+
+        const owned = try shard.key_arena.allocator().dupe(TypeId, param_types);
+        const owned_key: TypeKey = .{ .signature = .{
+            .params = owned,
+            .return_type = return_type,
+            .is_construct = is_construct,
+        } };
+        return try self.publishKeyLocked(shard, owned_key, .{ .is_signature = true });
     }
 
     /// Look up the return type of a signature TypeId. Returns null
@@ -553,8 +727,15 @@ pub const Interner = struct {
         number_index_type: TypeId,
         symbol_index_type: TypeId,
     ) !TypeId {
-        const dup = try self.key_arena.allocator().dupe(types.ObjectMember, members);
+        // Object types bypass dedup (every declaration site gets a
+        // distinct id), so we just need to serialize the Pool append.
+        const dup = try self.gpa.dupe(types.ObjectMember, members);
+        defer self.gpa.free(dup);
         std.mem.sort(types.ObjectMember, dup, {}, objectMemberLessThan);
+
+        self.pool_mu.lock();
+        defer self.pool_mu.unlock();
+
         const member_start: u32 = @intCast(self.pool.object_member_pool.items.len);
         try self.pool.object_member_pool.appendSlice(self.gpa, dup);
         const payload_idx: u32 = @intCast(self.pool.object_type_payloads.items.len);
@@ -666,12 +847,92 @@ pub const Interner = struct {
         return self.pool.object_member_pool.items[payload.members_start .. payload.members_start + payload.members_len];
     }
 
-    /// Insert a key+flags pair, allocating the side payload as needed.
-    /// Returns existing TypeId on a duplicate.
+    /// Sharded intern entry point. Hashes the key once, picks the
+    /// owning shard, takes the read lock for an optimistic dedup
+    /// probe, and falls through to the write lock + Pool append on a
+    /// miss. For keys whose payload contains caller-owned slices
+    /// (union, intersection, template_literal, signature), prefer the
+    /// dedicated `internUnion` / `internIntersection` /
+    /// `internTemplateLiteral` / `internSignature` entry points which
+    /// dupe the slice into the shard arena before publishing.
     fn internKey(self: *Interner, key: TypeKey, flags: types.TypeFlags) !TypeId {
-        const gop = try self.table.getOrPut(self.gpa, key);
-        if (gop.found_existing) return gop.value_ptr.*;
-        // Allocate the side payload first, then the header.
+        const h = key.hash();
+        const shard_idx = shardIndexFor(h);
+        const shard = &self.shards[shard_idx];
+
+        // Read fast path.
+        shard.mu.lockShared();
+        if (shard.table.getContext(key, KeyHashCtx{})) |found| {
+            shard.mu.unlockShared();
+            return found;
+        }
+        shard.mu.unlockShared();
+
+        // Write path: take exclusive lock, double-check, then publish.
+        shard.mu.lock();
+        defer shard.mu.unlock();
+        if (shard.table.getContext(key, KeyHashCtx{})) |found| return found;
+        return try self.publishKeyLocked(shard, key, flags);
+    }
+
+    /// Sharded intern for keys whose `key` field is a canonical slice
+    /// computed by the caller (e.g. sorted+deduped union members).
+    /// The slice is in temporary storage; we dupe it into the chosen
+    /// shard's arena under the write lock so the table entry holds a
+    /// stable, shard-owned pointer.
+    fn internKeyWithSlice(
+        self: *Interner,
+        comptime tag: TypeKey.Kind,
+        canonical: []const TypeId,
+        flags: types.TypeFlags,
+    ) !TypeId {
+        const probe: TypeKey = switch (tag) {
+            .union_t => .{ .union_t = canonical },
+            .intersection => .{ .intersection = canonical },
+            else => @compileError("internKeyWithSlice: unsupported tag"),
+        };
+        const h = probe.hash();
+        const shard_idx = shardIndexFor(h);
+        const shard = &self.shards[shard_idx];
+
+        // Read fast path with the temporary slice. `KeyHashCtx.eql`
+        // does a content compare, so the lookup is correct even
+        // though the slice pointer doesn't match the shard-arena slice.
+        shard.mu.lockShared();
+        if (shard.table.getContext(probe, KeyHashCtx{})) |found| {
+            shard.mu.unlockShared();
+            return found;
+        }
+        shard.mu.unlockShared();
+
+        shard.mu.lock();
+        defer shard.mu.unlock();
+        if (shard.table.getContext(probe, KeyHashCtx{})) |found| return found;
+
+        // Dupe the canonical slice into the shard arena so the table
+        // key holds stable storage.
+        const owned = try shard.key_arena.allocator().dupe(TypeId, canonical);
+        const owned_key: TypeKey = switch (tag) {
+            .union_t => .{ .union_t = owned },
+            .intersection => .{ .intersection = owned },
+            else => unreachable,
+        };
+        return try self.publishKeyLocked(shard, owned_key, flags);
+    }
+
+    /// Allocate the side payload + header for a freshly-keyed type.
+    /// Caller must hold `shard.mu` exclusive AND have already
+    /// double-checked that the key is absent from `shard.table`. We
+    /// acquire `pool_mu` internally to serialize Pool growth.
+    fn publishKeyLocked(
+        self: *Interner,
+        shard: *Shard,
+        key: TypeKey,
+        flags: types.TypeFlags,
+    ) !TypeId {
+        self.pool_mu.lock();
+        defer self.pool_mu.unlock();
+
         const payload_idx: u32 = switch (key) {
             .string_lit => |sid| blk: {
                 const idx: u32 = @intCast(self.pool.literal_payloads.items.len);
@@ -800,7 +1061,7 @@ pub const Interner = struct {
             .symbol = 0,
             .payload = payload_idx,
         });
-        gop.value_ptr.* = id;
+        try shard.table.putNoClobberContext(self.gpa, key, id, KeyHashCtx{});
         return id;
     }
 
@@ -1069,4 +1330,71 @@ test "Variance: HIR bit encoding round-trip" {
     try T.expectEqual(types.Variance.invariant, types.Variance.fromHirBits(3));
     // Out-of-range falls back to bivariant.
     try T.expectEqual(types.Variance.bivariant, types.Variance.fromHirBits(255));
+}
+
+test "Interner: distinct keys land on multiple shards" {
+    var i = try Interner.init(T.allocator);
+    defer i.deinit();
+
+    // Intern a wide range of distinct number literals; with 64 shards
+    // and a good Wyhash mix, the population should spread across
+    // many shards (not all into a single one).
+    var k: u32 = 0;
+    while (k < 4096) : (k += 1) {
+        _ = try i.internNumberLiteral(@floatFromInt(k));
+    }
+
+    var nonempty: u32 = 0;
+    var s_idx: u32 = 0;
+    while (s_idx < N_SHARDS) : (s_idx += 1) {
+        if (i.shards[s_idx].table.count() > 0) nonempty += 1;
+    }
+    // 4096 keys / 64 shards = 64 expected per shard; the chance of
+    // any single shard being empty is vanishingly small. Assert at
+    // least 56 shards used as a generous lower bound.
+    try T.expect(nonempty >= 56);
+}
+
+test "Interner: parallel intern stress — primitives + literals" {
+    var i = try Interner.init(T.allocator);
+    defer i.deinit();
+
+    const Worker = struct {
+        interner: *Interner,
+        thread_id: usize,
+
+        fn run(ctx: @This()) void {
+            var k: u32 = 0;
+            while (k < 200) : (k += 1) {
+                // Mix shared (collision-prone) and per-thread (unique)
+                // keys to exercise both the hit and miss code paths.
+                const shared = @as(f64, @floatFromInt(k));
+                _ = ctx.interner.internNumberLiteral(shared) catch unreachable;
+                const per_thread = @as(f64, @floatFromInt(ctx.thread_id * 1000 + k));
+                _ = ctx.interner.internNumberLiteral(per_thread) catch unreachable;
+            }
+        }
+    };
+
+    var threads: [4]std.Thread = undefined;
+    for (0..4) |idx| {
+        threads[idx] = try std.Thread.spawn(.{}, Worker.run, .{Worker{
+            .interner = &i,
+            .thread_id = idx,
+        }});
+    }
+    for (threads) |th| th.join();
+
+    // Re-intern some shared keys serially; they must dedup back to
+    // the same TypeIds the workers produced.
+    const a = try i.internNumberLiteral(0);
+    const b = try i.internNumberLiteral(0);
+    try T.expectEqual(a, b);
+
+    // Total number of dynamic types: 200 shared + 4 threads × 200
+    // unique = 1000. Allow some slack in case the test framework
+    // recycles thread IDs in unexpected ways.
+    const dynamic_count = i.pool.typeCount() - Primitive.first_dynamic;
+    try T.expect(dynamic_count >= 800);
+    try T.expect(dynamic_count <= 1200);
 }
