@@ -465,6 +465,27 @@ pub const Printer = struct {
                     continue;
                 }
             }
+            // §4.A.9 v13b — member-only-decorated classes (no class-
+            // level decorator preamble, but at least one member is
+            // preceded by `.decorator` siblings inside the body). Under
+            // Stage 3, these also route through the IIFE wrapper (with
+            // an empty class-decorators slice → no static block) so the
+            // per-class `_<Name>_metadata` / `_<Name>_instanceExtra` /
+            // `_<Name>_<field>_init` vars stay scoped to the IIFE.
+            // Anonymous class_decls (none_node_id name) fall through to
+            // the flat path — the IIFE needs a name for its outer let.
+            if (!self.options.experimental_decorators and
+                self.hir.kindOf(stmt) == .class_decl)
+            {
+                const c = hir_mod.classOf(self.hir, stmt);
+                if (c.name != hir_mod.none_node_id and self.classHasAnyMemberDecorator(stmt)) {
+                    if (i > 0) try self.write(self.options.newline);
+                    try self.emitLeadingJsDoc(stmt);
+                    const empty: []const NodeId = &[_]NodeId{};
+                    try self.emitStage3IIFEClass(empty, stmt);
+                    continue;
+                }
+            }
             if (i > 0) try self.write(self.options.newline);
             try self.emitLeadingJsDoc(stmt);
             try self.printStatement(stmt);
@@ -738,6 +759,20 @@ pub const Printer = struct {
             const id = hir_mod.identifierOf(self.hir, name_node);
             try self.write(self.interner.get(id.name));
         }
+    }
+
+    /// §4.A.9 v13b — true if any class member is preceded by at least
+    /// one `.decorator` sibling. Doesn't distinguish static / instance
+    /// or member kind — any kind of member decorator presence is enough
+    /// to warrant IIFE-wrapping the whole class so per-class
+    /// metadata / extras / init vars stay scoped to the IIFE rather
+    /// than leaking to module scope.
+    fn classHasAnyMemberDecorator(self: *const Printer, class_node: NodeId) bool {
+        const members = hir_mod.classMembers(self.hir, class_node);
+        for (members) |m| {
+            if (self.hir.kindOf(m) == .decorator) return true;
+        }
+        return false;
     }
 
     /// §4.A.9 v7 — true if any class member is preceded by decorators
@@ -4056,26 +4091,31 @@ pub const Printer = struct {
         }
         try self.write(" {");
         // §4.A.9 v13 — IIFE wrap: when `stage3_iife_class_decorators`
-        // is set, inject a `static { ... }` block at the top of the
-        // class body running the class decorate chain. The static
-        // block rebinds the IIFE-scope `<Name>` binding to the
-        // post-decorator class identity, so any subsequent static
+        // is set AND non-empty, inject a `static { ... }` block at
+        // the top of the class body running the class decorate chain.
+        // The static block rebinds the IIFE-scope `<Name>` binding to
+        // the post-decorator class identity, so any subsequent static
         // block / static field initializer in the same body sees the
-        // wrapped class. This closes the captured-reference caveat
-        // that the flat post-class emit couldn't address.
+        // wrapped class. Closes the captured-reference caveat.
+        //
+        // §4.A.9 v13b — for member-only-decorated classes the wrap is
+        // still active (so the per-class metadata + extras vars stay
+        // scoped to the IIFE) but no static block is needed since
+        // there's no class-level decorate chain to run during init.
         const iife_decs: ?[]const NodeId = if (c.name != hir_mod.none_node_id)
             self.stage3_iife_class_decorators
         else
             null;
-        if (iife_decs) |decs| {
+        const has_static_block = iife_decs != null and iife_decs.?.len > 0;
+        if (has_static_block) {
             self.depth += 1;
             try self.write(self.options.newline);
             try self.indent();
-            try self.emitStage3IIFEClassStaticBlock(c.name, decs);
+            try self.emitStage3IIFEClassStaticBlock(c.name, iife_decs.?);
             self.depth -= 1;
         }
         if (members.len == 0) {
-            if (iife_decs != null) {
+            if (has_static_block) {
                 try self.write(self.options.newline);
                 try self.indent();
             }
@@ -8859,6 +8899,54 @@ test "emit: stage 3 v14 instance method decorator passes class as ctor arg" {
     , .{ .experimental_decorators = false });
     defer T.allocator.free(out);
     try T.expect(std.mem.indexOf(u8, out, "__esDecorate(Foo, null, [log], { kind: \"method\", name: \"greet\", static: false,") != null);
+}
+
+test "emit: stage 3 v13b member-only-decorated class is IIFE-wrapped" {
+    // §4.A.9 v13b — even when a class has no class-level decorator,
+    // the presence of any member decorator under Stage 3 triggers
+    // the IIFE wrap so the per-class metadata + extras + init vars
+    // stay scoped to the IIFE instead of leaking to module scope.
+    // The captured-reference caveat doesn't apply here (class
+    // identity doesn't change), so no static block is injected at
+    // the top of the class body.
+    const out = try emitWithOpts(
+        \\class Foo {
+        \\  @observe
+        \\  count = 0;
+        \\}
+    , .{ .experimental_decorators = false });
+    defer T.allocator.free(out);
+    // IIFE preamble + return + close.
+    try T.expect(std.mem.indexOf(u8, out, "let Foo = (() => {") != null);
+    try T.expect(std.mem.indexOf(u8, out, "return Foo;") != null);
+    try T.expect(std.mem.indexOf(u8, out, "})();") != null);
+    // Per-class metadata var is hoisted to IIFE scope (declared
+    // before the class) — referenced by the post-class member
+    // decorate chain.
+    try T.expect(std.mem.indexOf(u8, out, "var _Foo_metadata = typeof Symbol === \"function\" && Symbol.metadata ? Object.create(null) : void 0;") != null);
+    // The class body itself does NOT receive a static block (no
+    // class-level decorator chain to run). Verify by checking that
+    // the only `static {` substring, if any, is the user's own.
+    // For this fixture (no user static blocks), `static {` should
+    // be absent entirely.
+    try T.expect(std.mem.indexOf(u8, out, "static {") == null);
+    // Member decorate chain still runs flat, inside the IIFE.
+    try T.expect(std.mem.indexOf(u8, out, "__esDecorate(null, null, [observe], { kind: \"field\"") != null);
+}
+
+test "emit: stage 3 v13b undecorated class is NOT IIFE-wrapped" {
+    // §4.A.9 v13b — gating check: a class with no decorators (class
+    // or member) stays as a plain `class Foo {}` declaration. No
+    // IIFE, no metadata var.
+    const out = try emitWithOpts(
+        \\class Foo {
+        \\  count = 0;
+        \\}
+    , .{ .experimental_decorators = false });
+    defer T.allocator.free(out);
+    try T.expect(std.mem.indexOf(u8, out, "let Foo = (() => {") == null);
+    try T.expect(std.mem.indexOf(u8, out, "_Foo_metadata") == null);
+    try T.expect(std.mem.indexOf(u8, out, "class Foo") != null);
 }
 
 test "emit: stage 3 v14 instance field decorator still passes null as ctor arg" {
