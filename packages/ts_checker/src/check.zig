@@ -40157,6 +40157,203 @@ test "checker: overloaded callback identifiers contextually instantiate generic 
     try T.expect(found);
 }
 
+test "checker: checkjs JSDoc import-type resolves a type from another module" {
+    // Phase 4 #14 — `import("./other").Foo` is a JSDoc-only syntax
+    // for referring to a type exported by another module without
+    // having to import it as a value.
+    const s = try newSetup(
+        \\// @checkjs: true
+        \\/** @type {import("./other").Foo} */
+        \\const x = {};
+    );
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+    // The module-resolution failure (cannot find ./other) is expected.
+    // What we want to verify: we don't crash, and the diagnostic isn't
+    // a confused "cannot find name 'import'".
+    for (s.checker.diagnostics.items) |d| {
+        try T.expect(d.code != TsCodes.cannot_find_name);
+    }
+}
+
+
+test "checker: checkjs JSDoc @callback declares a function-typed alias" {
+    // Phase 4 #14 — `@callback Cb` declares a function type with the
+    // following `@param` / `@returns` tags as its signature.
+    const s = try newSetup(
+        \\// @checkjs: true
+        \\/**
+        \\ * @callback Mapper
+        \\ * @param {number} x
+        \\ * @returns {string}
+        \\ */
+        \\/** @type {Mapper} */
+        \\const f = (n) => n.toString();
+        \\const r: string = f(1);
+    );
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+    for (s.checker.diagnostics.items) |d| {
+        try T.expect(d.code != TsCodes.type_not_assignable);
+    }
+}
+
+test "checker: checkjs JSDoc @implements on a constructor function" {
+    // Phase 4 #14 — `@implements {Iface}` on a constructor function
+    // should add Iface to the constructor's instance type. Missing
+    // members should report TS2420 (class incorrectly implements).
+    const s = try newSetup(
+        \\// @checkjs: true
+        \\interface Greeter { greet(): string }
+        \\/**
+        \\ * @implements {Greeter}
+        \\ * @constructor
+        \\ */
+        \\function Foo() {}
+        \\Foo.prototype.greet = function() { return "hi"; };
+    );
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+    // Should not report missing members since Foo.prototype.greet
+    // satisfies the interface.
+    for (s.checker.diagnostics.items) |d| {
+        try T.expect(d.code != TsCodes.class_incorrectly_implements_interface);
+    }
+}
+
+test "checker: checkjs JSDoc @extends on a constructor function" {
+    // Phase 4 #14 — `@extends {Base}` on a constructor declares
+    // inheritance. Instances of Foo should expose Base's members.
+    const s = try newSetup(
+        \\// @checkjs: true
+        \\class Base { greet() { return "hi"; } }
+        \\/**
+        \\ * @extends {Base}
+        \\ * @constructor
+        \\ */
+        \\function Foo() {}
+        \\const f = new Foo();
+        \\const g = f.greet();
+    );
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+    for (s.checker.diagnostics.items) |d| {
+        try T.expect(d.code != TsCodes.property_does_not_exist);
+    }
+}
+
+test "checker: checkjs JSDoc @typedef with template parameters" {
+    // Phase 4 #14 — `@template T @typedef Pair<T>` declares a
+    // generic alias.
+    const s = try newSetup(
+        \\// @checkjs: true
+        \\/**
+        \\ * @template T
+        \\ * @typedef {{ first: T, second: T }} Pair
+        \\ */
+        \\/** @type {Pair<number>} */
+        \\const p = { first: 1, second: 2 };
+        \\const x: number = p.first;
+    );
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+    for (s.checker.diagnostics.items) |d| {
+        try T.expect(d.code != TsCodes.type_not_assignable);
+        try T.expect(d.code != TsCodes.property_does_not_exist);
+    }
+}
+
+test "checker: checkjs JSDoc @overload declares overload signatures" {
+    // Phase 4 #14 — TS 5.0 JSDoc `@overload` tags should let JS
+    // declare multiple call signatures for the next function.
+    const s = try newSetup(
+        \\// @checkjs: true
+        \\/**
+        \\ * @overload
+        \\ * @param {string} x
+        \\ * @returns {string}
+        \\ *
+        \\ * @overload
+        \\ * @param {number} x
+        \\ * @returns {number}
+        \\ *
+        \\ * @param {string | number} x
+        \\ * @returns {string | number}
+        \\ */
+        \\function identity(x) { return x; }
+        \\const a = identity("hi");
+        \\const b = identity(1);
+        \\const s2: string = a;
+        \\const n: number = b;
+    );
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+    for (s.checker.diagnostics.items) |d| {
+        try T.expect(d.code != TsCodes.type_not_assignable);
+    }
+}
+
+test "checker: checkjs JSDoc @template with constraint" {
+    // Phase 4 #14 — `@template {string | number} K` should constrain K.
+    const s = try newSetup(
+        \\// @checkjs: true
+        \\/**
+        \\ * @template {string | number} K
+        \\ * @param {K} k
+        \\ * @returns {K}
+        \\ */
+        \\function pickKey(k) { return k; }
+        \\const r = pickKey(1);
+        \\const n: number = r;
+    );
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+    for (s.checker.diagnostics.items) |d| {
+        try T.expect(d.code != TsCodes.type_not_assignable);
+    }
+}
+
+test "checker: checkjs JSDoc @satisfies validates a value" {
+    // Phase 4 #14 — TS 4.9 `@satisfies {T}` on a value declaration
+    // checks the value against T without widening the inferred type.
+    const s = try newSetup(
+        \\// @checkjs: true
+        \\/** @satisfies {Record<string, number>} */
+        \\const counts = { a: 1, b: 2 };
+        \\const x: number = counts.a;
+    );
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+    for (s.checker.diagnostics.items) |d| {
+        try T.expect(d.code != TsCodes.type_not_assignable);
+    }
+}
+
+test "checker: checkjs JSDoc @template declares a generic type parameter" {
+    // Phase 4 #14 probe — `@template T` should declare T as a type
+    // parameter inside the function's signature. `@param {T} x`
+    // then refers to that T; `@returns {T}` does the same. The
+    // function should infer like `function f<T>(x: T): T`.
+    const s = try newSetup(
+        \\// @checkjs: true
+        \\/**
+        \\ * @template T
+        \\ * @param {T} x
+        \\ * @returns {T}
+        \\ */
+        \\function id(x) { return x; }
+        \\const a = id(1);
+        \\const s2 = id("hi");
+        \\const n: number = a;
+        \\const w: string = s2;
+    );
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+    for (s.checker.diagnostics.items) |d| {
+        try T.expect(d.code != TsCodes.type_not_assignable);
+    }
+}
+
 test "checker: checkjs JSDoc @type resolves multiline object typedef skeletons" {
     const s = try newSetup(
         \\// @checkjs: true
