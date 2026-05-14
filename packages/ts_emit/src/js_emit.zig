@@ -3877,14 +3877,53 @@ pub const Printer = struct {
                 },
                 .object_property => {
                     const op = hir_mod.objectPropertyOf(self.hir, m);
-                    if (op.is_static) try self.write("static ");
-                    if (op.is_accessor) try self.write("accessor ");
-                    try self.printExpression(op.key);
-                    if (op.value != hir_mod.none_node_id) {
-                        try self.write(" = ");
-                        try self.printExpression(op.value);
+                    if (op.is_accessor and self.hir.kindOf(op.key) == .identifier) {
+                        // §4.A.9 v9 — auto-accessor lowering. Expand
+                        //   accessor <key> = <value>;
+                        // into a `_<key>` storage field + paired
+                        // getter/setter. `_<key>` is convention-private
+                        // (underscore prefix); strict-private spec
+                        // semantics would use a native `#` slot which
+                        // requires private-field downlevel hand-off
+                        // we don't yet plumb through synthesized HIR.
+                        const id = hir_mod.identifierOf(self.hir, op.key);
+                        const key_name = self.interner.get(id.name);
+                        // Storage field with initializer.
+                        if (op.is_static) try self.write("static ");
+                        try self.write("_");
+                        try self.write(key_name);
+                        if (op.value != hir_mod.none_node_id) {
+                            try self.write(" = ");
+                            try self.printExpression(op.value);
+                        }
+                        try self.write(";");
+                        // Getter.
+                        try self.write(self.options.newline);
+                        try self.indent();
+                        if (op.is_static) try self.write("static ");
+                        try self.write("get ");
+                        try self.write(key_name);
+                        try self.write("() { return this._");
+                        try self.write(key_name);
+                        try self.write("; }");
+                        // Setter.
+                        try self.write(self.options.newline);
+                        try self.indent();
+                        if (op.is_static) try self.write("static ");
+                        try self.write("set ");
+                        try self.write(key_name);
+                        try self.write("(value) { this._");
+                        try self.write(key_name);
+                        try self.write(" = value; }");
+                    } else {
+                        if (op.is_static) try self.write("static ");
+                        try self.printExpression(op.key);
+                        if (op.value != hir_mod.none_node_id) {
+                            try self.write(" = ");
+                            try self.printExpression(op.value);
+                        }
+                        try self.writeSemi();
                     }
-                    try self.writeSemi();
                 },
                 .block_stmt => {
                     // Stage 3 class static-initialization block. Emit
@@ -8299,7 +8338,7 @@ test "emit: stage 3 static member decorators mark static context" {
     try T.expect(std.mem.indexOf(u8, out, "static: false") == null);
 }
 
-test "emit: class accessor field is preserved + Stage 3 emits kind: \"accessor\"" {
+test "emit: class accessor field lowers to storage + paired get/set + Stage 3 kind" {
     const out = try emitWithOpts(
         \\class Foo {
         \\  @validated
@@ -8307,12 +8346,27 @@ test "emit: class accessor field is preserved + Stage 3 emits kind: \"accessor\"
         \\}
     , .{ .experimental_decorators = false });
     defer T.allocator.free(out);
-    // §4.A.9 v8 — `accessor` modifier preserved in class body.
-    try T.expect(std.mem.indexOf(u8, out, "accessor count = 0;") != null);
-    // Stage 3 decorator receives `kind: "accessor"` in its context.
+    // §4.A.9 v9 — `accessor` auto-lowers to a paired get/set + `_count`
+    // storage field with the initializer.
+    try T.expect(std.mem.indexOf(u8, out, "_count = 0;") != null);
+    try T.expect(std.mem.indexOf(u8, out, "get count() { return this._count; }") != null);
+    try T.expect(std.mem.indexOf(u8, out, "set count(value) { this._count = value; }") != null);
+    // Native `accessor` keyword is gone (we always lower in v0).
+    try T.expect(std.mem.indexOf(u8, out, "accessor count") == null);
+    // Stage 3 decorator still receives `kind: "accessor"` in its context.
     try T.expect(std.mem.indexOf(u8, out, "kind: \"accessor\", name: \"count\"") != null);
-    // Access descriptor mirrors the field shape (has + get + set).
-    try T.expect(std.mem.indexOf(u8, out, "set: function (obj, value) { obj.count = value; }") != null);
+}
+
+test "emit: static accessor field lowers with static-prefixed storage + get/set" {
+    const out = try emit(
+        \\class Foo {
+        \\  static accessor shared = 1;
+        \\}
+    );
+    defer T.allocator.free(out);
+    try T.expect(std.mem.indexOf(u8, out, "static _shared = 1;") != null);
+    try T.expect(std.mem.indexOf(u8, out, "static get shared()") != null);
+    try T.expect(std.mem.indexOf(u8, out, "static set shared(value)") != null);
 }
 
 test "emit: class with static initialization block emits `static { ... }` on one line" {
