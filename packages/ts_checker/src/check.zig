@@ -22275,6 +22275,41 @@ pub const Checker = struct {
         if (std.mem.eql(u8, name_str, "Symbol")) {
             return self.symbolGlobalType() catch types.Primitive.any;
         }
+        // Conservative seeded shapes for common JS/Node/DOM globals.
+        // Each helper returns an object type whose members are typed
+        // loosely (any-typed args/returns) — the goal is to suppress
+        // spurious TS2339 ("Property does not exist on type") emits
+        // when fixtures touch members like `Promise.resolve`,
+        // `JSON.stringify`, `Reflect.get`, `e.message`, etc.
+        // `Map` / `Set` / `WeakMap` / `WeakSet` are intentionally
+        // NOT routed here — checker tests exercise `new Map([…])`
+        // element-type inference whose semantics assume the bare
+        // identifier falls through to `any`.
+        if (std.mem.eql(u8, name_str, "JSON")) {
+            return self.jsonGlobalType() catch types.Primitive.any;
+        }
+        if (std.mem.eql(u8, name_str, "Promise")) {
+            return self.promiseGlobalType() catch types.Primitive.any;
+        }
+        if (std.mem.eql(u8, name_str, "Reflect")) {
+            return self.reflectGlobalType() catch types.Primitive.any;
+        }
+        if (std.mem.eql(u8, name_str, "Proxy")) {
+            return self.proxyGlobalType() catch types.Primitive.any;
+        }
+        if (std.mem.eql(u8, name_str, "Error") or
+            std.mem.eql(u8, name_str, "TypeError") or
+            std.mem.eql(u8, name_str, "RangeError") or
+            std.mem.eql(u8, name_str, "SyntaxError") or
+            std.mem.eql(u8, name_str, "ReferenceError") or
+            std.mem.eql(u8, name_str, "EvalError") or
+            std.mem.eql(u8, name_str, "URIError"))
+        {
+            return self.errorConstructorGlobalType() catch types.Primitive.any;
+        }
+        if (std.mem.eql(u8, name_str, "process")) {
+            return self.processGlobalType() catch types.Primitive.any;
+        }
         if (std.mem.eql(u8, name_str, "NaN") or std.mem.eql(u8, name_str, "Infinity")) {
             return types.Primitive.number_t;
         }
