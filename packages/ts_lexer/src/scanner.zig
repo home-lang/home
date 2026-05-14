@@ -249,6 +249,12 @@ pub const Scanner = struct {
         return (c >= '0' and c <= '9') or (c >= 'a' and c <= 'f') or (c >= 'A' and c <= 'F');
     }
 
+    fn hexValue(c: u8) u32 {
+        if (c >= '0' and c <= '9') return c - '0';
+        if (c >= 'a' and c <= 'f') return 10 + c - 'a';
+        return 10 + c - 'A';
+    }
+
     fn scanIdentifierOrKeyword(self: *Scanner, start: u32, line: u32, flags: TokenFlags) Token {
         while (!self.isAtEnd() and isIdentCont(self.source[self.pos])) {
             self.pos += 1;
@@ -441,6 +447,33 @@ pub const Scanner = struct {
                 const esc = self.source[self.pos];
                 self.pos += 1;
                 if (esc == 'u') {
+                    if (!self.isAtEnd() and self.source[self.pos] == '{') {
+                        self.pos += 1;
+                        var digits: usize = 0;
+                        var value: u32 = 0;
+                        while (!self.isAtEnd() and self.source[self.pos] != '}') {
+                            const h = self.source[self.pos];
+                            if (!isHexDigit(h)) {
+                                self.report(gpa, "Hexadecimal digit expected.");
+                                return error.InvalidEscapeSequence;
+                            }
+                            digits += 1;
+                            if (value <= 0x10FFFF) {
+                                value = value * 16 + hexValue(h);
+                            }
+                            self.pos += 1;
+                        }
+                        if (digits == 0 or self.isAtEnd() or self.source[self.pos] != '}') {
+                            self.report(gpa, "Hexadecimal digit expected.");
+                            return error.InvalidEscapeSequence;
+                        }
+                        self.pos += 1;
+                        if (value > 0x10FFFF) {
+                            self.report(gpa, "Hexadecimal digit expected.");
+                            return error.InvalidEscapeSequence;
+                        }
+                        continue;
+                    }
                     if (self.pos + 4 > self.source.len) {
                         self.pos = esc_pos + 1;
                         self.report(gpa, "Hexadecimal digit expected.");
@@ -917,6 +950,14 @@ test "Scanner: invalid unicode escape in string reports diagnostic" {
     defer s.deinit(t.allocator);
     try t.expectError(error.InvalidEscapeSequence, s.next(t.allocator));
     try t.expect(s.diagnostics.items.len > 0);
+}
+
+test "Scanner: braced unicode escapes in strings are accepted" {
+    var s = Scanner.init(t.allocator, "\"\\u{65}\\u{00000000000067}\"");
+    defer s.deinit(t.allocator);
+    const tok = try s.next(t.allocator);
+    try t.expectEqual(TokenKind.string_literal, tok.kind);
+    try t.expectEqual(@as(usize, 0), s.diagnostics.items.len);
 }
 
 test "Scanner: unterminated block comment reports diagnostic" {
