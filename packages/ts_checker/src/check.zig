@@ -4705,7 +4705,7 @@ pub const Checker = struct {
         if (container_t == types.Primitive.any or container_t == types.Primitive.unknown) return;
         if (container_t >= self.interner.pool.typeCount()) return;
         if (container_t == types.Primitive.object_t) {
-            try self.checkObjectBindingPatternAgainstBroadObject(pattern_node);
+            try self.checkObjectBindingPatternAgainstBroadObject(pattern_node, container_t);
             return;
         }
         const flags = self.interner.pool.flagsOf(container_t);
@@ -4750,11 +4750,18 @@ pub const Checker = struct {
             if (self.interner.objectNumberIndex(container_t) != types.Primitive.none and self.isNumericStringId(key_name)) continue;
             if (ep.default_value != hir_mod.none_node_id) continue;
             const name_str = self.string_interner.get(key_name);
-            const msg = try std.fmt.allocPrint(
-                self.diag_arena.allocator(),
-                "Property '{s}' does not exist on type.",
-                .{name_str},
-            );
+            const msg = if (try self.allocPropertyMissingTargetTypeName(container_t)) |target_text|
+                try std.fmt.allocPrint(
+                    self.diag_arena.allocator(),
+                    "Property '{s}' does not exist on type '{s}'.",
+                    .{ name_str, target_text },
+                )
+            else
+                try std.fmt.allocPrint(
+                    self.diag_arena.allocator(),
+                    "Property '{s}' does not exist on type.",
+                    .{name_str},
+                );
             try self.diagnostics.append(self.gpa, .{
                 .node = ep.name,
                 .code = TsCodes.property_does_not_exist,
@@ -4852,7 +4859,7 @@ pub const Checker = struct {
         return null;
     }
 
-    fn checkObjectBindingPatternAgainstBroadObject(self: *Checker, pattern_node: NodeId) CheckError!void {
+    fn checkObjectBindingPatternAgainstBroadObject(self: *Checker, pattern_node: NodeId, container_t: TypeId) CheckError!void {
         for (hir_mod.patternElements(self.hir, pattern_node)) |e| {
             if (self.hir.kindOf(e) != .parameter) continue;
             const ep = hir_mod.parameterOf(self.hir, e);
@@ -4861,11 +4868,18 @@ pub const Checker = struct {
             if (!self.objectBindingElementUsesImplicitKey(e, ep.name)) continue;
             const id = hir_mod.identifierOf(self.hir, ep.name);
             const name_str = self.string_interner.get(id.name);
-            const msg = try std.fmt.allocPrint(
-                self.diag_arena.allocator(),
-                "Property '{s}' does not exist on type.",
-                .{name_str},
-            );
+            const msg = if (try self.allocPropertyMissingTargetTypeName(container_t)) |target_text|
+                try std.fmt.allocPrint(
+                    self.diag_arena.allocator(),
+                    "Property '{s}' does not exist on type '{s}'.",
+                    .{ name_str, target_text },
+                )
+            else
+                try std.fmt.allocPrint(
+                    self.diag_arena.allocator(),
+                    "Property '{s}' does not exist on type.",
+                    .{name_str},
+                );
             try self.diagnostics.append(self.gpa, .{
                 .node = ep.name,
                 .code = TsCodes.property_does_not_exist,
@@ -15604,11 +15618,18 @@ pub const Checker = struct {
                     self.propertyNameFromKeyNode(op.key);
                 if (prop_name) |name| {
                     const name_str = self.string_interner.get(name);
-                    const msg = try std.fmt.allocPrint(
-                        self.diag_arena.allocator(),
-                        "Property '{s}' does not exist on type.",
-                        .{name_str},
-                    );
+                    const msg = if (try self.allocPropertyMissingTargetTypeName(source_t)) |target_text|
+                        try std.fmt.allocPrint(
+                            self.diag_arena.allocator(),
+                            "Property '{s}' does not exist on type '{s}'.",
+                            .{ name_str, target_text },
+                        )
+                    else
+                        try std.fmt.allocPrint(
+                            self.diag_arena.allocator(),
+                            "Property '{s}' does not exist on type.",
+                            .{name_str},
+                        );
                     try self.diagnostics.append(self.gpa, .{
                         .node = op.key,
                         .code = TsCodes.property_does_not_exist,
