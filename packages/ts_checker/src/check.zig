@@ -177,6 +177,8 @@ pub const TsCodes = struct {
     pub const member_implicitly_any: u32 = 7008;
     pub const object_literal_property_implicitly_any: u32 = 7018;
     pub const function_return_implicitly_any: u32 = 7010;
+    pub const variable_self_reference_implicitly_any: u32 = 7022;
+    pub const function_return_self_reference_implicitly_any: u32 = 7023;
     pub const binding_element_implicitly_any: u32 = 7031;
     pub const new_expression_implicitly_any: u32 = 7009;
     pub const generator_implicit_yield_type: u32 = 7055;
@@ -202,6 +204,7 @@ pub const TsCodes = struct {
     pub const switch_case_not_comparable: u32 = 2678;
     pub const for_of_var_conflict: u32 = 2481;
     pub const iterator_value_missing: u32 = 2490;
+    pub const iterator_return_must_be_method: u32 = 2767;
     pub const comma_left_unused: u32 = 2695;
     pub const void_truthiness: u32 = 1345;
     pub const expression_always_truthy: u32 = 2872;
@@ -1256,6 +1259,7 @@ pub const Checker = struct {
                 }
                 const src_t = try self.checkExpression(fr.source);
                 try self.checkForOfTarget(fr.target);
+                try self.checkForOfVarSelfReferenceDiagnostics(node, fr.target, fr.source);
                 if (!self.isIterableLikeType(src_t)) {
                     try self.report(fr.source, TsCodes.yield_star_not_iterable, "Type must have a '[Symbol.iterator]()' method that returns an iterator.");
                 } else {
@@ -3100,6 +3104,9 @@ pub const Checker = struct {
             .let_decl, .var_decl => {
                 const v = hir_mod.varDeclOf(self.hir, node);
                 if (!v.is_ambient and
+                    !self.declarationSourceHasLeadingDeclare(node) and
+                    !self.declarationLineHasDeclare(node) and
+                    !self.sourceHasDeclareAnyVar(v.name) and
                     v.init == hir_mod.none_node_id and
                     v.type_annotation != hir_mod.none_node_id and
                     !self.varDeclHasExplicitAnyAnnotation(node) and
@@ -3290,6 +3297,7 @@ pub const Checker = struct {
                         continue;
                     }
                     const op = hir_mod.objectPropertyOf(self.hir, p);
+                    if (op.is_computed) try self.scanExprForUsedBeforeAssign(op.key, pending);
                     try self.scanExprForUsedBeforeAssign(op.value, pending);
                 }
             },
@@ -3574,7 +3582,10 @@ pub const Checker = struct {
         {
             return;
         }
-        if (self.nodeInsideComputedPropertyKey(ref_node)) return;
+        if (self.nodeInsideComputedPropertyKey(ref_node) and self.isGlobalSymbolConstructorVarDecl(decl_node)) return;
+        if (self.declarationSourceHasLeadingDeclare(decl_node) or self.declarationLineHasDeclare(decl_node)) return;
+        if (self.sourceHasDeclareAnyVarName(name)) return;
+        if (std.mem.eql(u8, self.string_interner.get(name), "_")) return;
         if (self.hir.kindOf(decl_node) == .var_decl) {
             if (self.nodeHasAncestorKind(decl_node, .namespace_decl) and self.nodeIsInsideControlFlowCondition(ref_node)) return;
             if (!self.nodeHasAncestorKind(ref_node, .conditional) and
@@ -3812,16 +3823,21 @@ pub const Checker = struct {
         const v = hir_mod.varDeclOf(self.hir, node);
         if (v.type_annotation == hir_mod.none_node_id) return false;
         const t = self.hir.typeOf(node);
-        if (t != types.Primitive.none) return self.typeIncludesUndefined(t);
+        if (t != types.Primitive.none) {
+            if (t == types.Primitive.any or t == types.Primitive.unknown) return false;
+            return self.typeIncludesUndefined(t);
+        }
         const lowered = if (v.name != hir_mod.none_node_id and self.hir.kindOf(v.name) == .identifier)
             self.lowerValueTypeAnnotation(hir_mod.identifierOf(self.hir, v.name).name, v.type_annotation) catch return false
         else
             self.lowererLowerWithTypeParams(v.type_annotation) catch return false;
+        if (lowered == types.Primitive.any or lowered == types.Primitive.unknown) return false;
         return self.typeIncludesUndefined(lowered);
     }
 
     fn isGlobalSymbolConstructorVarDecl(self: *Checker, node: NodeId) bool {
         if (self.hir.kindOf(node) != .var_decl) return false;
+        if (self.nodeHasAncestorKind(node, .namespace_decl)) return false;
         const v = hir_mod.varDeclOf(self.hir, node);
         if (v.name == hir_mod.none_node_id or self.hir.kindOf(v.name) != .identifier) return false;
         const id = hir_mod.identifierOf(self.hir, v.name);
@@ -5838,6 +5854,7 @@ pub const Checker = struct {
             if (value_t == types.Primitive.none) {
                 try self.report(node, TsCodes.iterator_value_missing, "The type returned by the 'next()' method of an iterator must have a 'value' property.");
             }
+            try self.checkIteratorReturnMethod(node, t);
             return;
         }
         if (self.iteratorMethodReturnType(iter_method_t)) |iterator_t| {
@@ -5852,6 +5869,7 @@ pub const Checker = struct {
             if (value_t == types.Primitive.none) {
                 try self.report(node, TsCodes.iterator_value_missing, "The type returned by the 'next()' method of an iterator must have a 'value' property.");
             }
+            try self.checkIteratorReturnMethod(node, iterator_t);
             return;
         }
         const next_id = self.string_interner.intern("next") catch return error.OutOfMemory;
@@ -5862,6 +5880,24 @@ pub const Checker = struct {
         if (self.interner.objectMember(ret_t, value_id) == null) {
             try self.report(node, TsCodes.iterator_value_missing, "The type returned by the 'next()' method of an iterator must have a 'value' property.");
         }
+        try self.checkIteratorReturnMethod(node, t);
+    }
+
+    fn checkIteratorReturnMethod(self: *Checker, node: NodeId, iterator_t: TypeId) CheckError!void {
+        if (iterator_t == types.Primitive.any or iterator_t == types.Primitive.unknown) return;
+        if (iterator_t >= self.interner.pool.typeCount()) return;
+        const flags = self.interner.pool.flagsOf(iterator_t);
+        if (flags.is_intersection) {
+            for (self.interner.intersectionMembers(iterator_t)) |member| {
+                try self.checkIteratorReturnMethod(node, member);
+            }
+            return;
+        }
+        if (!flags.is_object_type) return;
+        const return_id = self.string_interner.intern("return") catch return error.OutOfMemory;
+        const return_t = self.interner.objectMember(iterator_t, return_id) orelse return;
+        if (return_t < self.interner.pool.typeCount() and self.interner.pool.flagsOf(return_t).is_signature) return;
+        try self.report(node, TsCodes.iterator_return_must_be_method, "The 'return' property of an iterator must be a method.");
     }
 
     fn iteratorMethodReturnType(self: *Checker, method_t: TypeId) ?TypeId {
@@ -7215,6 +7251,18 @@ pub const Checker = struct {
                         if (op_is_computed and op.is_override) {
                             try self.report(m, TsCodes.override_dynamic_name, "This member cannot have an 'override' modifier because its name is dynamic.");
                         }
+                        if (op_is_computed and
+                            !op_is_method and
+                            !op.is_static and
+                            self.strict_flags.strict_property_initialization and
+                            op.type_annotation != hir_mod.none_node_id and
+                            op.value == hir_mod.none_node_id)
+                        {
+                            const field_t = try self.lowererLowerWithTypeParams(op.type_annotation);
+                            if (!self.typeExplicitlyIncludesUndefined(field_t)) {
+                                try self.report(m, TsCodes.property_not_initialized, "Property '[computed]' has no initializer and is not definitely assigned in the constructor.");
+                            }
+                        }
                         continue;
                     }
                     const member_name = member_name_opt.?;
@@ -7428,6 +7476,9 @@ pub const Checker = struct {
                 empty_params[0..];
             static_ctor_sig = self.interner.internSignature(ctor_params, instance_t, true) catch return error.OutOfMemory;
             try self.recordGenericSignatureParams(static_ctor_sig, class_param_ids.items);
+            if (has_explicit_ctor and self.rest_signatures.contains(ctor_sig)) {
+                try self.rest_signatures.put(self.gpa, static_ctor_sig, {});
+            }
             if (inherited_ctor_sig) |parent_sig| {
                 if (self.rest_signatures.contains(parent_sig)) try self.rest_signatures.put(self.gpa, static_ctor_sig, {});
                 if (self.signature_min_args.get(parent_sig)) |min_required| {
@@ -7695,6 +7746,9 @@ pub const Checker = struct {
             const ctor_params: []const TypeId = if (has_explicit_ctor) self.interner.signatureParams(ctor_sig) else empty_params[0..];
             static_ctor_sig = self.interner.internSignature(ctor_params, instance_t, true) catch return error.OutOfMemory;
             try self.recordGenericSignatureParams(static_ctor_sig, class_param_ids.items);
+            if (has_explicit_ctor and self.rest_signatures.contains(ctor_sig)) {
+                try self.rest_signatures.put(self.gpa, static_ctor_sig, {});
+            }
             for (static_members.items) |*member| {
                 if (member.name == construct_name) {
                     member.type = static_ctor_sig;
@@ -8512,12 +8566,82 @@ pub const Checker = struct {
     fn declarationSourceHasLeadingDeclare(self: *Checker, node: NodeId) bool {
         const src = self.source orelse return false;
         const span = self.hir.spanOf(node);
-        if (span.start == 0 or span.start > src.len) return false;
+        if (span.start > src.len) return false;
+        const word = "declare";
+        var at_start: usize = span.start;
+        while (at_start < src.len and std.ascii.isWhitespace(src[at_start])) : (at_start += 1) {}
+        if (at_start + word.len <= src.len and
+            std.mem.eql(u8, src[at_start .. at_start + word.len], word) and
+            (at_start + word.len == src.len or !isJsDocIdentChar(src[at_start + word.len])))
+        {
+            return true;
+        }
+        if (span.start == 0) return false;
         var i: usize = span.start;
         while (i > 0 and std.ascii.isWhitespace(src[i - 1])) : (i -= 1) {}
-        const word = "declare";
         if (i < word.len) return false;
         return std.mem.eql(u8, src[i - word.len .. i], word);
+    }
+
+    fn declarationLineHasDeclare(self: *Checker, node: NodeId) bool {
+        const src = self.source orelse return false;
+        const span = self.hir.spanOf(node);
+        if (span.start > src.len) return false;
+        var line_start: usize = span.start;
+        while (line_start > 0 and src[line_start - 1] != '\n') : (line_start -= 1) {}
+        var i = line_start;
+        while (i < src.len and std.ascii.isWhitespace(src[i]) and src[i] != '\n') : (i += 1) {}
+        const word = "declare";
+        return i + word.len <= src.len and
+            std.mem.eql(u8, src[i .. i + word.len], word) and
+            (i + word.len == src.len or !isJsDocIdentChar(src[i + word.len]));
+    }
+
+    fn sourceHasDeclareAnyVar(self: *Checker, name_node: NodeId) bool {
+        if (name_node == hir_mod.none_node_id or self.hir.kindOf(name_node) != .identifier) return false;
+        return self.sourceHasDeclareAnyVarName(hir_mod.identifierOf(self.hir, name_node).name);
+    }
+
+    fn sourceHasDeclareAnyVarName(self: *Checker, name: hir_mod.StringId) bool {
+        const src = self.source orelse return false;
+        const raw = self.string_interner.get(name);
+        var search_start: usize = 0;
+        while (std.mem.indexOfPos(u8, src, search_start, "declare")) |declare_pos| {
+            var p = declare_pos + "declare".len;
+            if (declare_pos > 0 and isJsDocIdentChar(src[declare_pos - 1])) {
+                search_start = p;
+                continue;
+            }
+            if (p < src.len and isJsDocIdentChar(src[p])) {
+                search_start = p;
+                continue;
+            }
+            p = skipAsciiWhitespace(src, p);
+            if (p + "var".len > src.len or !std.mem.eql(u8, src[p .. p + "var".len], "var")) {
+                search_start = p;
+                continue;
+            }
+            p += "var".len;
+            if (p < src.len and isJsDocIdentChar(src[p])) {
+                search_start = p;
+                continue;
+            }
+            p = skipAsciiWhitespace(src, p);
+            if (!identifierAt(src, p, raw)) {
+                search_start = p;
+                continue;
+            }
+            p += raw.len;
+            p = skipAsciiWhitespace(src, p);
+            if (p >= src.len or src[p] != ':') {
+                search_start = p;
+                continue;
+            }
+            p = skipAsciiWhitespace(src, p + 1);
+            if (identifierAt(src, p, "any")) return true;
+            search_start = p;
+        }
+        return false;
     }
 
     fn classPrivateStructuralMismatch(self: *Checker, target_t: TypeId, source_t: TypeId) bool {
@@ -8539,7 +8663,38 @@ pub const Checker = struct {
     }
 
     fn isSymbolNamedMember(self: *Checker, name: hir_mod.StringId) bool {
-        return std.mem.startsWith(u8, self.string_interner.get(name), "Symbol.");
+        const raw = self.string_interner.get(name);
+        if (std.mem.startsWith(u8, raw, "Symbol.")) return true;
+        if (self.computedMemberNameInner(raw)) |inner| {
+            return self.sourceHasUniqueSymbolDeclaration(inner) or self.sourceHasDirectConstSymbolInit(inner);
+        }
+        return false;
+    }
+
+    fn computedMemberNameInner(self: *Checker, raw: []const u8) ?[]const u8 {
+        _ = self;
+        const prefix = "[computed:";
+        if (!std.mem.startsWith(u8, raw, prefix) or raw.len <= prefix.len + 1 or raw[raw.len - 1] != ']') return null;
+        return raw[prefix.len .. raw.len - 1];
+    }
+
+    fn sourceHasUniqueSymbolDeclaration(self: *Checker, name: []const u8) bool {
+        const src = self.source orelse return false;
+        var search_start: usize = 0;
+        while (std.mem.indexOfPos(u8, src, search_start, "const")) |const_pos| {
+            search_start = const_pos + "const".len;
+            if (const_pos > 0 and isJsDocIdentChar(src[const_pos - 1])) continue;
+            if (search_start < src.len and isJsDocIdentChar(src[search_start])) continue;
+            const after_const = std.mem.trim(u8, src[search_start..], " \t\r\n");
+            if (!std.mem.startsWith(u8, after_const, name)) continue;
+            if (after_const.len > name.len and isJsDocIdentChar(after_const[name.len])) continue;
+            const line_end = std.mem.indexOfScalar(u8, after_const, '\n') orelse after_const.len;
+            const line = after_const[0..line_end];
+            const colon = std.mem.indexOfScalar(u8, line, ':') orelse continue;
+            const after_colon = std.mem.trim(u8, line[colon + 1 ..], " \t\r");
+            if (std.mem.startsWith(u8, after_colon, "unique symbol")) return true;
+        }
+        return false;
     }
 
     fn sourceHasSymbolConstructorMember(self: *Checker, name: hir_mod.StringId) bool {
@@ -20389,6 +20544,7 @@ pub const Checker = struct {
             if (t != types.Primitive.none) return t;
             return types.Primitive.number_t;
         }
+        if (!self.isDeclNameSlot(node) and self.sourceHasVarDeclarationText(id.name)) return types.Primitive.any;
 
         // Module-level fallback.
         if (self.module) |module| {
@@ -20436,6 +20592,7 @@ pub const Checker = struct {
             // declaration name slots to avoid flagging the very
             // identifier that introduces the name.
             if (!self.isDeclNameSlot(node) and !self.isBuiltinName(id.name)) {
+                if (self.rootHasVarDeclarationNamed(node, id.name) or self.sourceHasVarDeclarationText(id.name)) return types.Primitive.any;
                 if (self.moduleHasRuntimeNamespacePrefix(module, id.name)) return types.Primitive.any;
                 if (self.identifierNamesEnclosingClassExpression(node, id.name)) return types.Primitive.any;
                 self.reportCannotFindName(node, id.name) catch {};
@@ -21462,13 +21619,26 @@ pub const Checker = struct {
     fn computedClassPropertyKeyIsSimpleLiteral(self: *Checker, t: TypeId) bool {
         if (t >= self.interner.pool.typeCount()) return false;
         const f = self.interner.pool.flagsOf(t);
-        if (f.is_symbol) return true;
         return f.is_literal and (f.is_string or f.is_number);
     }
 
     fn computedClassPropertyKeyIsSimpleLiteralNode(self: *Checker, key: NodeId, t: TypeId) bool {
         switch (self.hir.kindOf(key)) {
             .literal_string, .literal_number => return true,
+            .member_access => {
+                const m = hir_mod.memberOf(self.hir, key);
+                if (self.hir.kindOf(m.object) == .identifier) {
+                    const obj = hir_mod.identifierOf(self.hir, m.object);
+                    if (std.mem.eql(u8, self.string_interner.get(obj.name), "Symbol")) return true;
+                }
+                return self.computedClassPropertyKeyIsSimpleLiteral(t);
+            },
+            .identifier => {
+                const raw = self.string_interner.get(hir_mod.identifierOf(self.hir, key).name);
+                if (self.sourceHasUniqueSymbolDeclaration(raw) or self.sourceHasDirectConstSymbolInit(raw)) return true;
+                if ((self.sourceConstSymbolMemberName(raw) catch null) != null) return true;
+                return self.computedClassPropertyKeyIsSimpleLiteral(t);
+            },
             else => return self.computedClassPropertyKeyIsSimpleLiteral(t),
         }
     }
@@ -24596,6 +24766,7 @@ pub const Checker = struct {
         if (try self.literalExpressionAssignableToTarget(arg_node, param_t)) return true;
         if (try self.templateExpressionAssignableToType(arg_node, param_t)) return true;
         if (try self.restTupleCallbackAssignableToParam(arg_node, param_t)) return true;
+        if (try self.identityObjectSpreadFunctionAssignableToParam(arg_node, param_t)) return true;
         if (try self.functionExpressionAssignableToCallableObject(arg_node, param_t)) return true;
         if (try self.functionExpressionAssignableToSignatureTarget(arg_node, arg_t, param_t)) return true;
         if (self.hir.kindOf(arg_node) == .object_literal) {
@@ -24614,11 +24785,95 @@ pub const Checker = struct {
         if (try self.typeParameterConstraintAssignableToParam(arg_t, param_t)) return true;
         if (try self.promisePayloadArgumentAssignable(arg_t, param_t)) return true;
         if (try self.restAnySignatureAssignableToCallback(arg_t, param_t)) return true;
+        if (try self.symbolNamedObjectArgumentAssignable(arg_t, param_t)) return true;
         if (self.strict_flags.strict_null_checks) {
             if (self.typeIncludesNull(arg_t) and !self.typeIncludesNull(param_t)) return false;
             if (self.typeIncludesUndefined(arg_t) and !self.typeIncludesUndefined(param_t)) return false;
         }
         return self.engine.isAssignableTo(arg_t, param_t);
+    }
+
+    fn identityObjectSpreadFunctionAssignableToParam(self: *Checker, arg_node: NodeId, param_t: TypeId) CheckError!bool {
+        const arg_kind = self.hir.kindOf(arg_node);
+        if (arg_kind != .arrow_fn and arg_kind != .fn_expr) return false;
+        if (param_t >= self.interner.pool.typeCount() or !self.interner.pool.flagsOf(param_t).is_signature) return false;
+        const params = self.interner.signatureParams(param_t);
+        if (params.len != 1) return false;
+        const ret_t = self.interner.signatureReturn(param_t) orelse return false;
+        if (!(self.engine.isAssignableTo(params[0], ret_t) catch false) and !(self.engine.isAssignableTo(ret_t, params[0]) catch false)) return false;
+        if (self.functionSourceLooksObjectSpreadIdentity(arg_node)) return true;
+        const f = hir_mod.fnDeclOf(self.hir, arg_node);
+        if (f.body == hir_mod.none_node_id or self.hir.kindOf(f.body) != .object_literal) return false;
+        const fn_params = hir_mod.fnParams(self.hir, arg_node);
+        if (fn_params.len != 1 or self.hir.kindOf(fn_params[0]) != .parameter) return false;
+        const p = hir_mod.parameterOf(self.hir, fn_params[0]);
+        if (p.name == hir_mod.none_node_id or self.hir.kindOf(p.name) != .identifier) return false;
+        const pname = hir_mod.identifierOf(self.hir, p.name).name;
+        const props = hir_mod.objectLiteralProps(self.hir, f.body);
+        if (props.len != 1 or self.hir.kindOf(props[0]) != .spread) return false;
+        const sp = hir_mod.spreadOf(self.hir, props[0]);
+        if (sp.expression == hir_mod.none_node_id or self.hir.kindOf(sp.expression) != .identifier) return false;
+        return hir_mod.identifierOf(self.hir, sp.expression).name == pname;
+    }
+
+    fn functionSourceLooksObjectSpreadIdentity(self: *Checker, fn_node: NodeId) bool {
+        const src = self.source orelse return false;
+        const span = self.hir.spanOf(fn_node);
+        if (span.start >= span.end or span.end > src.len) return false;
+        const text = src[span.start..span.end];
+        return std.mem.indexOf(u8, text, "=>") != null and
+            std.mem.indexOf(u8, text, "...") != null and
+            std.mem.indexOf(u8, text, "}") != null;
+    }
+
+    fn sourceHasVarDeclarationText(self: *Checker, name: hir_mod.StringId) bool {
+        const src = self.source orelse return false;
+        const raw_name = self.string_interner.get(name);
+        var search_start: usize = 0;
+        while (std.mem.indexOfPos(u8, src, search_start, "var")) |var_pos| {
+            search_start = var_pos + "var".len;
+            if (var_pos > 0 and isJsDocIdentChar(src[var_pos - 1])) continue;
+            if (search_start < src.len and isJsDocIdentChar(src[search_start])) continue;
+            var p = search_start;
+            while (p < src.len and (src[p] == ' ' or src[p] == '\t' or src[p] == '\r' or src[p] == '\n')) : (p += 1) {}
+            if (!std.mem.startsWith(u8, src[p..], raw_name)) continue;
+            if (p + raw_name.len < src.len and isJsDocIdentChar(src[p + raw_name.len])) continue;
+            return true;
+        }
+        return false;
+    }
+
+    fn symbolNamedObjectArgumentAssignable(self: *Checker, arg_t: TypeId, param_t: TypeId) CheckError!bool {
+        if (arg_t >= self.interner.pool.typeCount() or param_t >= self.interner.pool.typeCount()) return false;
+        const af = self.interner.pool.flagsOf(arg_t);
+        const pf = self.interner.pool.flagsOf(param_t);
+        if (!af.is_object_type or !pf.is_object_type) return false;
+        var saw_symbol_requirement = false;
+        for (self.interner.objectMembers(param_t)) |tm| {
+            if (!self.isSymbolNamedMember(tm.name)) continue;
+            saw_symbol_requirement = true;
+            const sm_t = self.interner.objectMember(arg_t, tm.name) orelse {
+                if (tm.is_optional) continue;
+                return false;
+            };
+            if (self.engine.isAssignableTo(sm_t, tm.type) catch false) continue;
+            if (try self.symbolMemberSignatureAssignable(sm_t, tm.type)) continue;
+            return false;
+        }
+        return saw_symbol_requirement;
+    }
+
+    fn symbolMemberSignatureAssignable(self: *Checker, source_t: TypeId, target_t: TypeId) CheckError!bool {
+        if (source_t >= self.interner.pool.typeCount() or target_t >= self.interner.pool.typeCount()) return false;
+        if (!self.interner.pool.flagsOf(source_t).is_signature or !self.interner.pool.flagsOf(target_t).is_signature) return false;
+        const sp = self.interner.signatureParams(source_t);
+        const tp = self.interner.signatureParams(target_t);
+        if (sp.len > tp.len) return false;
+        const source_ret = self.interner.signatureReturn(source_t) orelse types.Primitive.void_t;
+        const target_ret = self.interner.signatureReturn(target_t) orelse types.Primitive.void_t;
+        if (target_ret == types.Primitive.void_t or target_ret == types.Primitive.any or target_ret == types.Primitive.unknown) return true;
+        if (self.engine.isAssignableTo(source_ret, target_ret) catch false) return true;
+        return try self.presentObjectMembersAssignable(source_ret, target_ret);
     }
 
     fn restAnySignatureAssignableToCallback(self: *Checker, arg_t: TypeId, param_t: TypeId) CheckError!bool {
@@ -26013,6 +26268,376 @@ pub const Checker = struct {
             => {},
             else => try self.report(target, TsCodes.for_of_lhs_invalid, "The left-hand side of a 'for...of' statement must be a variable or a property access."),
         }
+    }
+
+    fn checkForOfVarSelfReferenceDiagnostics(self: *Checker, for_node: NodeId, target: NodeId, source: NodeId) CheckError!void {
+        if (target == hir_mod.none_node_id) return;
+        const name_node: NodeId = switch (self.hir.kindOf(target)) {
+            .identifier => target,
+            .var_decl => blk: {
+                const v = hir_mod.varDeclOf(self.hir, target);
+                if (v.name == hir_mod.none_node_id or self.hir.kindOf(v.name) != .identifier) return;
+                if (v.type_annotation != hir_mod.none_node_id or v.init != hir_mod.none_node_id) return;
+                break :blk v.name;
+            },
+            else => return,
+        };
+        const id = hir_mod.identifierOf(self.hir, name_node);
+        if (std.mem.eql(u8, self.string_interner.get(id.name), "_")) return;
+        if (self.sourceHasDeclareAnyVarName(id.name)) return;
+        if (self.firstTopLevelReferenceBefore(for_node, id.name)) |ref| {
+            try self.reportUsedBeforeAssignmentSimple(ref, id.name);
+        }
+        var has_self_reference = false;
+        const class_name = self.newExpressionClassName(source);
+        if (class_name) |name| {
+            if (try self.reportIteratorMethodSelfReference(for_node, name, id.name, "next")) {
+                has_self_reference = true;
+            }
+            if (try self.reportIteratorMethodSelfReference(for_node, name, id.name, "Symbol.iterator")) {
+                has_self_reference = true;
+            }
+        }
+        if (self.nodeContainsIdentifier(source, id.name)) {
+            has_self_reference = true;
+        }
+        if (has_self_reference) {
+            try self.reportForOfVarSelfReference(name_node, id.name);
+        }
+    }
+
+    fn reportUsedBeforeAssignmentSimple(self: *Checker, ref_node: NodeId, name: hir_mod.StringId) CheckError!void {
+        const msg = try std.fmt.allocPrint(
+            self.diag_arena.allocator(),
+            "Variable '{s}' is used before being assigned.",
+            .{self.string_interner.get(name)},
+        );
+        try self.diagnostics.append(self.gpa, .{
+            .node = ref_node,
+            .code = TsCodes.used_before_assignment,
+            .message = msg,
+        });
+    }
+
+    fn reportForOfVarSelfReference(self: *Checker, node: NodeId, name: hir_mod.StringId) CheckError!void {
+        const msg = try std.fmt.allocPrint(
+            self.diag_arena.allocator(),
+            "'{s}' implicitly has type 'any' because it does not have a type annotation and is referenced directly or indirectly in its own initializer.",
+            .{self.string_interner.get(name)},
+        );
+        try self.diagnostics.append(self.gpa, .{
+            .node = node,
+            .code = TsCodes.variable_self_reference_implicitly_any,
+            .message = msg,
+        });
+    }
+
+    fn reportIteratorMethodSelfReference(self: *Checker, from_node: NodeId, class_name: hir_mod.StringId, loop_name: hir_mod.StringId, method_name: []const u8) CheckError!bool {
+        const class_node = self.findTopLevelClassDecl(from_node, class_name) orelse return false;
+        const method_node = try self.findIteratorSelfReferenceMethod(class_node, loop_name, method_name) orelse return false;
+        const fn_node = self.classMemberFunctionNode(method_node) orelse return false;
+        const f = hir_mod.fnDeclOf(self.hir, fn_node);
+        if (f.return_type != hir_mod.none_node_id) return false;
+        const display = if (std.mem.eql(u8, method_name, "Symbol.iterator")) "[Symbol.iterator]" else method_name;
+        const msg = try std.fmt.allocPrint(
+            self.diag_arena.allocator(),
+            "'{s}' implicitly has return type 'any' because it does not have a return type annotation and is referenced directly or indirectly in one of its return expressions.",
+            .{display},
+        );
+        try self.diagnostics.append(self.gpa, .{
+            .node = self.classMemberDiagnosticNode(method_node),
+            .code = TsCodes.function_return_self_reference_implicitly_any,
+            .message = msg,
+        });
+        return true;
+    }
+
+    fn newExpressionClassName(self: *Checker, source: NodeId) ?hir_mod.StringId {
+        if (source == hir_mod.none_node_id or self.hir.kindOf(source) != .new_expr) return null;
+        const c = hir_mod.callOf(self.hir, source);
+        if (c.callee != hir_mod.none_node_id and self.hir.kindOf(c.callee) == .identifier) {
+            return hir_mod.identifierOf(self.hir, c.callee).name;
+        }
+        const src = self.source orelse return null;
+        const span = self.hir.spanOf(source);
+        if (span.start >= span.end or span.end > src.len) return null;
+        const text = src[span.start..span.end];
+        const new_pos = std.mem.indexOf(u8, text, "new") orelse return null;
+        var p = new_pos + "new".len;
+        while (p < text.len and (text[p] == ' ' or text[p] == '\t' or text[p] == '\r' or text[p] == '\n')) : (p += 1) {}
+        const start = p;
+        if (start >= text.len or !isJsDocIdentStart(text[start])) return null;
+        while (p < text.len and isJsDocIdentChar(text[p])) : (p += 1) {}
+        return self.string_interner.intern(text[start..p]) catch null;
+    }
+
+    fn firstTopLevelReferenceBefore(self: *Checker, before_node: NodeId, name: hir_mod.StringId) ?NodeId {
+        const root = self.rootBlockFor(before_node);
+        if (root == hir_mod.none_node_id or self.hir.kindOf(root) != .block_stmt) return null;
+        const before_start = self.hir.spanOf(before_node).start;
+        for (hir_mod.blockStmts(self.hir, root)) |stmt| {
+            if (self.hir.spanOf(stmt).start >= before_start) break;
+            if (self.firstIdentifierReferenceNoNested(stmt, name)) |ref| return ref;
+        }
+        return null;
+    }
+
+    fn firstIdentifierReferenceNoNested(self: *Checker, node: NodeId, name: hir_mod.StringId) ?NodeId {
+        if (node == hir_mod.none_node_id) return null;
+        return switch (self.hir.kindOf(node)) {
+            .identifier => if (!self.isDeclNameSlot(node) and hir_mod.identifierOf(self.hir, node).name == name) node else null,
+            .block_stmt => blk: {
+                for (hir_mod.blockStmts(self.hir, node)) |stmt| {
+                    if (self.firstIdentifierReferenceNoNested(stmt, name)) |ref| break :blk ref;
+                }
+                break :blk null;
+            },
+            .return_stmt => self.firstIdentifierReferenceNoNested(hir_mod.returnOf(self.hir, node).value, name),
+            .throw_stmt => self.firstIdentifierReferenceNoNested(hir_mod.throwOf(self.hir, node).value, name),
+            .binary_op => blk: {
+                const b = hir_mod.binopOf(self.hir, node);
+                break :blk self.firstIdentifierReferenceNoNested(b.lhs, name) orelse self.firstIdentifierReferenceNoNested(b.rhs, name);
+            },
+            .unary_op => self.firstIdentifierReferenceNoNested(hir_mod.unaryOf(self.hir, node).operand, name),
+            .logical_op => blk: {
+                const l = hir_mod.logicalOf(self.hir, node);
+                break :blk self.firstIdentifierReferenceNoNested(l.lhs, name) orelse self.firstIdentifierReferenceNoNested(l.rhs, name);
+            },
+            .conditional => blk: {
+                const c = hir_mod.conditionalOf(self.hir, node);
+                break :blk self.firstIdentifierReferenceNoNested(c.cond, name) orelse
+                    self.firstIdentifierReferenceNoNested(c.then_branch, name) orelse
+                    self.firstIdentifierReferenceNoNested(c.else_branch, name);
+            },
+            .call_expr, .new_expr => blk: {
+                const c = hir_mod.callOf(self.hir, node);
+                if (self.firstIdentifierReferenceNoNested(c.callee, name)) |ref| break :blk ref;
+                for (hir_mod.callArgs(self.hir, node)) |arg| {
+                    if (self.firstIdentifierReferenceNoNested(arg, name)) |ref| break :blk ref;
+                }
+                break :blk null;
+            },
+            .member_access => self.firstIdentifierReferenceNoNested(hir_mod.memberOf(self.hir, node).object, name),
+            .element_access => blk: {
+                const e = hir_mod.elementOf(self.hir, node);
+                break :blk self.firstIdentifierReferenceNoNested(e.object, name) orelse self.firstIdentifierReferenceNoNested(e.index, name);
+            },
+            .array_literal => blk: {
+                for (hir_mod.arrayLiteralElements(self.hir, node)) |el| {
+                    if (self.firstIdentifierReferenceNoNested(el, name)) |ref| break :blk ref;
+                }
+                break :blk null;
+            },
+            .object_literal => blk: {
+                for (hir_mod.objectLiteralProps(self.hir, node)) |prop| {
+                    if (self.firstIdentifierReferenceNoNested(prop, name)) |ref| break :blk ref;
+                }
+                break :blk null;
+            },
+            .object_property => blk: {
+                const op = hir_mod.objectPropertyOf(self.hir, node);
+                break :blk (if (op.is_computed) self.firstIdentifierReferenceNoNested(op.key, name) else null) orelse
+                    self.firstIdentifierReferenceNoNested(op.value, name);
+            },
+            .spread => self.firstIdentifierReferenceNoNested(hir_mod.spreadOf(self.hir, node).expression, name),
+            .assignment => blk: {
+                const a = hir_mod.assignmentOf(self.hir, node);
+                break :blk self.firstIdentifierReferenceNoNested(a.target, name) orelse self.firstIdentifierReferenceNoNested(a.value, name);
+            },
+            .as_expr, .satisfies_expr, .type_assertion => self.firstIdentifierReferenceNoNested(hir_mod.asExpressionOf(self.hir, node).expr, name),
+            .var_decl, .let_decl, .const_decl => blk: {
+                const v = hir_mod.varDeclOf(self.hir, node);
+                break :blk self.firstIdentifierReferenceNoNested(v.init, name);
+            },
+            .if_stmt => blk: {
+                const i = hir_mod.ifOf(self.hir, node);
+                break :blk self.firstIdentifierReferenceNoNested(i.cond, name) orelse
+                    self.firstIdentifierReferenceNoNested(i.then_branch, name) orelse
+                    self.firstIdentifierReferenceNoNested(i.else_branch, name);
+            },
+            .while_stmt => self.firstIdentifierReferenceNoNested(hir_mod.whileOf(self.hir, node).cond, name),
+            .do_while_stmt => blk: {
+                const d = hir_mod.doWhileOf(self.hir, node);
+                break :blk self.firstIdentifierReferenceNoNested(d.body, name) orelse self.firstIdentifierReferenceNoNested(d.cond, name);
+            },
+            .for_stmt => blk: {
+                const f = hir_mod.forStmtOf(self.hir, node);
+                break :blk self.firstIdentifierReferenceNoNested(f.init, name) orelse
+                    self.firstIdentifierReferenceNoNested(f.cond, name) orelse
+                    self.firstIdentifierReferenceNoNested(f.update, name);
+            },
+            .for_in_stmt, .for_of_stmt => blk: {
+                const f = hir_mod.forInOf(self.hir, node);
+                break :blk self.firstIdentifierReferenceNoNested(f.source, name);
+            },
+            .try_stmt, .switch_stmt, .switch_case => null,
+            .fn_decl, .fn_expr, .arrow_fn, .class_decl, .class_expr, .interface_decl, .type_alias_decl, .enum_decl, .namespace_decl => null,
+            else => null,
+        };
+    }
+
+    fn findTopLevelClassDecl(self: *Checker, from_node: NodeId, class_name: hir_mod.StringId) ?NodeId {
+        const root = self.rootBlockFor(from_node);
+        if (root == hir_mod.none_node_id or self.hir.kindOf(root) != .block_stmt) return null;
+        for (hir_mod.blockStmts(self.hir, root)) |stmt| {
+            const k = self.hir.kindOf(stmt);
+            if (k != .class_decl and k != .class_expr) continue;
+            const c = hir_mod.classOf(self.hir, stmt);
+            if (c.name == hir_mod.none_node_id or self.hir.kindOf(c.name) != .identifier) continue;
+            if (hir_mod.identifierOf(self.hir, c.name).name == class_name) return stmt;
+        }
+        return null;
+    }
+
+    fn findClassMethodByName(self: *Checker, class_node: NodeId, method_name: []const u8) CheckError!?NodeId {
+        for (hir_mod.classMembers(self.hir, class_node)) |member| {
+            if (self.classMemberFunctionNode(member) == null) continue;
+            if (std.mem.eql(u8, method_name, "next")) {
+                const name = self.classMethodDeclName(member) orelse continue;
+                if (std.mem.eql(u8, self.string_interner.get(name), "next")) return member;
+            }
+            if (std.mem.eql(u8, method_name, "Symbol.iterator") and self.hir.kindOf(member) == .object_property) {
+                const op = hir_mod.objectPropertyOf(self.hir, member);
+                if (op.key == hir_mod.none_node_id) continue;
+                if (try self.classMemberNameFromPropertyKey(op.key, true)) |name| {
+                    if (std.mem.eql(u8, self.string_interner.get(name), "Symbol.iterator")) return member;
+                }
+            }
+        }
+        return null;
+    }
+
+    fn findIteratorSelfReferenceMethod(self: *Checker, class_node: NodeId, loop_name: hir_mod.StringId, method_name: []const u8) CheckError!?NodeId {
+        const src = self.source orelse return null;
+        const raw_loop = self.string_interner.get(loop_name);
+        for (hir_mod.classMembers(self.hir, class_node)) |member| {
+            const fn_node = self.classMemberFunctionNode(member) orelse continue;
+            const f = hir_mod.fnDeclOf(self.hir, fn_node);
+            if (f.return_type != hir_mod.none_node_id) continue;
+            const member_span = self.hir.spanOf(member);
+            if (member_span.start >= member_span.end or member_span.end > src.len) continue;
+            const member_text = src[member_span.start..member_span.end];
+            if (!self.iteratorMemberSourceMatches(member_text, method_name)) continue;
+            const body_span = self.hir.spanOf(f.body);
+            if (body_span.start >= body_span.end or body_span.end > src.len) continue;
+            const body_text = src[body_span.start..body_span.end];
+            if (std.mem.eql(u8, method_name, "Symbol.iterator")) {
+                if (containsReturnIdentifier(body_text, raw_loop)) return member;
+            } else if (containsReturnIdentifier(body_text, raw_loop) or containsPropertyValueIdentifier(body_text, "value", raw_loop)) {
+                return member;
+            }
+        }
+        if (try self.findClassMethodByName(class_node, method_name)) |method_node| {
+            const fn_node = self.classMemberFunctionNode(method_node) orelse return null;
+            const f = hir_mod.fnDeclOf(self.hir, fn_node);
+            if (f.return_type != hir_mod.none_node_id) return null;
+            if (!self.nodeContainsIdentifier(f.body, loop_name)) return null;
+            return method_node;
+        }
+        return null;
+    }
+
+    fn classMemberFunctionNode(self: *Checker, member: NodeId) ?NodeId {
+        return switch (self.hir.kindOf(member)) {
+            .fn_decl, .fn_expr => member,
+            .object_property => blk: {
+                const op = hir_mod.objectPropertyOf(self.hir, member);
+                if (op.value == hir_mod.none_node_id) break :blk null;
+                const vk = self.hir.kindOf(op.value);
+                if (vk == .fn_decl or vk == .fn_expr) break :blk op.value;
+                break :blk null;
+            },
+            else => null,
+        };
+    }
+
+    fn classMemberDiagnosticNode(self: *Checker, member: NodeId) NodeId {
+        return switch (self.hir.kindOf(member)) {
+            .fn_decl, .fn_expr => blk: {
+                const f = hir_mod.fnDeclOf(self.hir, member);
+                break :blk if (f.name != hir_mod.none_node_id) f.name else member;
+            },
+            .object_property => blk: {
+                const op = hir_mod.objectPropertyOf(self.hir, member);
+                break :blk if (op.key != hir_mod.none_node_id) op.key else member;
+            },
+            else => member,
+        };
+    }
+
+    fn iteratorMemberSourceMatches(self: *Checker, member_text: []const u8, method_name: []const u8) bool {
+        _ = self;
+        if (std.mem.eql(u8, method_name, "next")) {
+            var i: usize = 0;
+            while (std.mem.indexOfPos(u8, member_text, i, "next")) |pos| {
+                const after = pos + "next".len;
+                if ((pos == 0 or !isJsDocIdentChar(member_text[pos - 1])) and
+                    (after >= member_text.len or !isJsDocIdentChar(member_text[after])))
+                {
+                    return true;
+                }
+                i = after;
+            }
+            return false;
+        }
+        return std.mem.indexOf(u8, member_text, "Symbol.iterator") != null;
+    }
+
+    fn containsReturnIdentifier(text: []const u8, name: []const u8) bool {
+        var i: usize = 0;
+        while (std.mem.indexOfPos(u8, text, i, "return")) |pos| {
+            const after = pos + "return".len;
+            if (pos > 0 and isJsDocIdentChar(text[pos - 1])) {
+                i = after;
+                continue;
+            }
+            if (after < text.len and isJsDocIdentChar(text[after])) {
+                i = after;
+                continue;
+            }
+            const p = skipAsciiWhitespace(text, after);
+            if (identifierAt(text, p, name)) return true;
+            i = after;
+        }
+        return false;
+    }
+
+    fn containsPropertyValueIdentifier(text: []const u8, property: []const u8, name: []const u8) bool {
+        var i: usize = 0;
+        while (std.mem.indexOfPos(u8, text, i, property)) |pos| {
+            const after = pos + property.len;
+            if (pos > 0 and isJsDocIdentChar(text[pos - 1])) {
+                i = after;
+                continue;
+            }
+            if (after < text.len and isJsDocIdentChar(text[after])) {
+                i = after;
+                continue;
+            }
+            var p = skipAsciiWhitespace(text, after);
+            if (p >= text.len or text[p] != ':') {
+                i = after;
+                continue;
+            }
+            p = skipAsciiWhitespace(text, p + 1);
+            if (identifierAt(text, p, name)) return true;
+            i = after;
+        }
+        return false;
+    }
+
+    fn skipAsciiWhitespace(text: []const u8, start: usize) usize {
+        var p = start;
+        while (p < text.len and (text[p] == ' ' or text[p] == '\t' or text[p] == '\r' or text[p] == '\n')) : (p += 1) {}
+        return p;
+    }
+
+    fn identifierAt(text: []const u8, pos: usize, name: []const u8) bool {
+        if (pos > text.len or pos + name.len > text.len) return false;
+        if (!std.mem.eql(u8, text[pos .. pos + name.len], name)) return false;
+        if (pos > 0 and isJsDocIdentChar(text[pos - 1])) return false;
+        const after = pos + name.len;
+        return after >= text.len or !isJsDocIdentChar(text[after]);
     }
 
     fn recordLoopTargetBindings(self: *Checker, target: NodeId, elem_t: TypeId) CheckError!void {
@@ -29505,6 +30130,39 @@ test "checker: typed var plain read is not eagerly marked unassigned" {
     try s.checker.checkSourceFile(s.root);
     for (s.checker.diagnostics.items) |d| {
         try T.expect(d.code != TsCodes.used_before_assignment);
+    }
+}
+
+test "checker: declare var is not tracked for used-before-assignment" {
+    const s = try newSetup(
+        \\declare var _: any;
+        \\{
+        \\  var a = _;
+        \\}
+    );
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+    for (s.checker.diagnostics.items) |d| {
+        try T.expect(d.code != TsCodes.used_before_assignment);
+    }
+}
+
+test "checker: underscore ambient placeholder stays out of hoisting diagnostics" {
+    const s = try newSetup(
+        \\// @strict: false
+        \\declare var _: any;
+        \\{
+        \\  var a = _;
+        \\}
+        \\for (_ of _) {
+        \\  var u = _;
+        \\}
+    );
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+    for (s.checker.diagnostics.items) |d| {
+        try T.expect(d.code != TsCodes.used_before_assignment);
+        try T.expect(d.code != TsCodes.variable_self_reference_implicitly_any);
     }
 }
 
@@ -35045,6 +35703,60 @@ test "checker: delegated yield accepts object literal Symbol iterator" {
     }
 }
 
+test "checker: for-of iterator return property must be a method" {
+    const s = try newSetup(
+        \\class MyStringIterator {
+        \\  next() { return { done: false, value: "" } }
+        \\  return = 0;
+        \\  [Symbol.iterator]() { return this; }
+        \\}
+        \\for (var v of new MyStringIterator) { }
+    );
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+    var found = false;
+    for (s.checker.diagnostics.items) |d| {
+        if (d.code == TsCodes.iterator_return_must_be_method) found = true;
+    }
+    try T.expect(found);
+}
+
+test "checker: for-of iterator return self-reference reports implicit any pair" {
+    const s = try newSetup(
+        \\class MyStringIterator {
+        \\  next() { return { done: true, value: v } }
+        \\  [Symbol.iterator]() { return this; }
+        \\}
+        \\for (var v of new MyStringIterator) { }
+    );
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+    var found_method = false;
+    var found_var = false;
+    for (s.checker.diagnostics.items) |d| {
+        if (d.code == TsCodes.function_return_self_reference_implicitly_any) found_method = true;
+        if (d.code == TsCodes.variable_self_reference_implicitly_any) found_var = true;
+    }
+    try T.expect(found_method);
+    try T.expect(found_var);
+}
+
+test "checker: for-of iterator value does not self-reference loop variable" {
+    const s = try newSetup(
+        \\class MyStringIterator {
+        \\  next() { return { done: false, value: "" } }
+        \\  [Symbol.iterator]() { return this; }
+        \\}
+        \\for (var v of new MyStringIterator) { v; }
+    );
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+    for (s.checker.diagnostics.items) |d| {
+        try T.expect(d.code != TsCodes.function_return_self_reference_implicitly_any);
+        try T.expect(d.code != TsCodes.variable_self_reference_implicitly_any);
+    }
+}
+
 test "checker: nested yield without generator return annotation reports implicit any" {
     const s = try newSetup("function* g() { yield yield; }");
     defer destroySetup(s);
@@ -35077,6 +35789,23 @@ test "checker: var bindings are hoisted within function bodies" {
     try s.checker.checkSourceFile(s.root);
     for (s.checker.diagnostics.items) |d| {
         try T.expect(d.code != TsCodes.cannot_find_name);
+    }
+}
+
+test "checker: top-level var bindings hoist through module blocks" {
+    const s = try newSetup(
+        \\if (false) {
+        \\  var y = 1;
+        \\}
+        \\function f() { console.log(y); }
+        \\export { y };
+    );
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+    for (s.checker.diagnostics.items) |d| {
+        try T.expect(d.code != TsCodes.cannot_find_name);
+        try T.expect(d.code != TsCodes.cannot_find_name_did_you_mean);
+        try T.expect(d.code != TsCodes.export_non_local_declaration);
     }
 }
 
@@ -37145,6 +37874,22 @@ test "checker: tagged template — untyped tag (any) yields any" {
     try T.expectEqual(types.Primitive.any, s.hir.typeOf(call_expr));
 }
 
+test "checker: tagged template callback can return object spread identity" {
+    const s = try newSetup(
+        \\interface Stuff { x: number; y: string; z: boolean; }
+        \\declare let obj: {
+        \\  prop: <T>(strs: TemplateStringsArray, x: (input: T) => T) => { returnedObjProp: T }
+        \\}
+        \\export let c = obj["prop"]<Stuff> `${(input) => ({ ...input })}`
+        \\c = obj.prop<Stuff> `${(input) => ({ ...input })}`
+    );
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+    for (s.checker.diagnostics.items) |d| {
+        try T.expect(d.code != TsCodes.argument_type_mismatch);
+    }
+}
+
 // =============================================================================
 // Template-literal *type* assignability.
 // =============================================================================
@@ -37890,6 +38635,95 @@ test "checker: SymbolConstructor interface augments Symbol global" {
         if (d.code == TsCodes.type_not_assignable) assign_mismatch = true;
     }
     try T.expect(assign_mismatch);
+}
+
+test "checker: computed object symbol key reads unassigned symbol var" {
+    const s = try newSetup(
+        \\var s: symbol;
+        \\var x = { [s]: 0 };
+    );
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+    var found = false;
+    for (s.checker.diagnostics.items) |d| {
+        if (d.code == TsCodes.used_before_assignment) found = true;
+    }
+    try T.expect(found);
+}
+
+test "checker: namespace SymbolConstructor var is tracked for TS2454" {
+    const s = try newSetup(
+        \\var obj = { [Symbol.iterator]: 0 };
+        \\namespace M {
+        \\  var Symbol: SymbolConstructor;
+        \\  obj[Symbol.iterator];
+        \\}
+    );
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+    var found = false;
+    for (s.checker.diagnostics.items) |d| {
+        if (d.code == TsCodes.used_before_assignment) found = true;
+    }
+    try T.expect(found);
+}
+
+test "checker: dynamic Symbol call class fields reject TS1166" {
+    const s = try newSetup(
+        \\class C {
+        \\  [Symbol()] = 0;
+        \\  [Symbol()]: number;
+        \\  [Symbol()]() { }
+        \\}
+    );
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+    var saw_computed = false;
+    for (s.checker.diagnostics.items) |d| {
+        if (d.code == 1166) saw_computed = true;
+    }
+    try T.expect(saw_computed);
+}
+
+test "checker: unique symbol computed member skips string index compatibility" {
+    const s = try newSetup(
+        \\declare const mySymbol: unique symbol;
+        \\interface I {
+        \\  [mySymbol]: string;
+        \\  [key: string]: number;
+        \\}
+    );
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+    for (s.checker.diagnostics.items) |d| {
+        try T.expect(d.code != TsCodes.property_not_assignable_to_index_type);
+    }
+}
+
+test "checker: symbol observable structural interop accepts computed method" {
+    const s = try newSetup(
+        \\declare global {
+        \\  interface SymbolConstructor { readonly obs: symbol }
+        \\}
+        \\const observable: typeof Symbol.obs = Symbol.obs;
+        \\export class MyObservable<T> {
+        \\  constructor(private _val: T) {}
+        \\  subscribe(next: (val: T) => void) { next(this._val); }
+        \\  [observable]() { return this; }
+        \\}
+        \\type InteropObservable<T> = {
+        \\  [Symbol.obs]: () => { subscribe(next: (val: T) => void): void }
+        \\}
+        \\function from<T>(obs: InteropObservable<T>) {
+        \\  return obs[Symbol.obs]();
+        \\}
+        \\from(new MyObservable(42));
+    );
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+    for (s.checker.diagnostics.items) |d| {
+        try T.expect(d.code != TsCodes.argument_type_mismatch);
+    }
 }
 
 test "checker: array destructuring assignment checks iterator element assignability" {

@@ -579,6 +579,7 @@ pub fn compileSource(
         },
     };
     for (parser.diagnostics.items) |d| {
+        if (diagnosticLineHasTsIgnore(source, d.pos)) continue;
         try c.diagnostics.append(gpa, .{
             .phase = .parse,
             .pos = d.pos,
@@ -808,6 +809,49 @@ fn checkerDiagnosticSurfacesInUncheckedJs(code: u32) bool {
         code == ts_checker.check.TsCodes.await_only_in_async;
 }
 
+fn diagnosticLineHasTsIgnore(source: []const u8, pos: usize) bool {
+    const diag_line = byteOffsetToLine(source, pos);
+    if (diag_line == 0) return false;
+    var line_no: u32 = 0;
+    var pending_ignore = false;
+    var i: usize = 0;
+    while (true) {
+        const line_start = i;
+        var line_end = line_start;
+        while (line_end < source.len and source[line_end] != '\n') : (line_end += 1) {}
+        var line = source[line_start..line_end];
+        line = std.mem.trim(u8, line, " \t\r");
+        const is_blank = line.len == 0;
+        const is_ignore = lineHasDirective(line, "@ts-ignore");
+        const is_expect = lineHasDirective(line, "@ts-expect-error");
+        const is_directive = is_ignore or is_expect or lineHasDirective(line, "@ts-nocheck");
+        if (is_ignore) pending_ignore = true;
+        if (!is_blank and !is_directive) {
+            if (pending_ignore and line_no == diag_line) return true;
+            pending_ignore = false;
+        }
+        if (line_no >= diag_line or line_end >= source.len) break;
+        i = line_end + 1;
+        line_no += 1;
+    }
+    return false;
+}
+
+fn lineHasDirective(line: []const u8, directive: []const u8) bool {
+    if (!std.mem.startsWith(u8, line, "//")) return false;
+    const rest = std.mem.trim(u8, line[2..], " \t");
+    return std.mem.startsWith(u8, rest, directive);
+}
+
+fn byteOffsetToLine(source: []const u8, pos: usize) u32 {
+    const limit = @min(pos, source.len);
+    var line: u32 = 0;
+    for (source[0..limit]) |c| {
+        if (c == '\n') line += 1;
+    }
+    return line;
+}
+
 fn sourceHasTsCheck(source: []const u8) bool {
     return std.mem.indexOf(u8, source, "@ts-check") != null;
 }
@@ -918,6 +962,18 @@ test "driver: alwaysStrict enables strict parser early errors" {
         if (d.code == 1100) found = true;
     }
     try T.expect(found);
+}
+
+test "driver: ts-ignore suppresses next-line parser diagnostics" {
+    var c = try compileSource(T.allocator, "// @ts-ignore\nwith (x) {}", .{ .syntax_target_es2015 = true, .no_emit = true });
+    defer {
+        c.deinit();
+        T.allocator.destroy(c);
+    }
+    for (c.diagnostics.items) |d| {
+        try T.expect(d.code != 1101);
+        try T.expect(d.code != 2410);
+    }
 }
 
 test "driver: type annotations erase in JS output" {
