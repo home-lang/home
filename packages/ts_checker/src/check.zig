@@ -35897,6 +35897,145 @@ test "checker: contextual generic callback instantiation rejects conflicting par
     try T.expect(s.checker.diagnostics.items.len > 0);
 }
 
+test "checker: higher-order generic single-arg apply works end-to-end (sanity)" {
+    // Single-arg version of apply — control test against the variadic
+    // case to isolate where inference breaks.
+    const s = try newSetup(
+        \\declare function apply<T, R>(f: (x: T) => R, x: T): R;
+        \\const r = apply((n: number) => n.toString(), 1);
+        \\const out: string = r;
+    );
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+    for (s.checker.diagnostics.items) |d| {
+        try T.expect(d.code != TsCodes.type_not_assignable);
+        try T.expect(d.code != TsCodes.argument_type_mismatch);
+    }
+}
+
+test "checker: higher-order generic memoize preserves callable signature identity" {
+    // The classic `memoize<T extends Fn>(f: T): T` pattern. T binds
+    // to the input function's full signature; the result is callable
+    // with the original arg types and returns the original return type.
+    const s = try newSetup(
+        \\declare function memoize<T extends (...args: any[]) => any>(f: T): T;
+        \\const f = (x: number) => x.toString();
+        \\const m = memoize(f);
+        \\const r: string = m(42);
+    );
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+    for (s.checker.diagnostics.items) |d| {
+        try T.expect(d.code != TsCodes.type_not_assignable);
+        try T.expect(d.code != TsCodes.argument_type_mismatch);
+    }
+}
+
+test "checker: higher-order generic apply via variadic tuple rest args (known gap)" {
+    // Variadic-tuple-style application — `apply(f, [a, b])` SHOULD
+    // infer T as the tuple of f's params and R as f's return, then
+    // require `[1, "x"]` to match T. This requires TS 4.0 variadic
+    // tuple type inference: treating f's positional params as a
+    // tuple bound to `T extends any[]` when T appears in a rest
+    // position. Today the inference doesn't bridge from f's
+    // positional signature to T, so we report TS2345 on the second
+    // arg. Pinning current behavior; flip to no-diagnostic when
+    // variadic-tuple inference lands (Phase 4 #12 follow-up).
+    const s = try newSetup(
+        \\declare function apply<T extends any[], R>(f: (...args: T) => R, args: T): R;
+        \\const f = (a: number, b: string) => a + b.length;
+        \\const r = apply(f, [1, "x"]);
+    );
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+    var found_argtype_mismatch = false;
+    for (s.checker.diagnostics.items) |d| {
+        if (d.code == TsCodes.argument_type_mismatch) found_argtype_mismatch = true;
+    }
+    try T.expect(found_argtype_mismatch);
+}
+
+test "checker: higher-order generic curry threads param types through chained returns" {
+    // The classic curry pattern — a 2-arg function becomes a chain of
+    // 1-arg functions. Each closure should preserve the type parameters.
+    const s = try newSetup(
+        \\declare function curry<A, B, C>(f: (a: A, b: B) => C): (a: A) => (b: B) => C;
+        \\const c = curry((a: number, b: string) => a + b.length);
+        \\const g = c(1);
+        \\const r: number = g("hi");
+    );
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+    for (s.checker.diagnostics.items) |d| {
+        try T.expect(d.code != TsCodes.type_not_assignable);
+        try T.expect(d.code != TsCodes.argument_type_mismatch);
+    }
+}
+
+test "checker: higher-order generic constrained-callback infers element type" {
+    // The callback's return is constrained. The element type T should
+    // still infer from the array; U infers from the callback's return.
+    const s = try newSetup(
+        \\declare function mapStrings<T, U extends string>(arr: T[], fn: (x: T) => U): U[];
+        \\const r = mapStrings([1, 2, 3], (x) => x.toString());
+        \\const first: string = r[0];
+    );
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+    for (s.checker.diagnostics.items) |d| {
+        try T.expect(d.code != TsCodes.type_not_assignable);
+        try T.expect(d.code != TsCodes.argument_type_mismatch);
+    }
+}
+
+test "checker: higher-order generic map infers callback element + return" {
+    // TS issue #9366 probe — `map(arr, fn)` should infer T from `arr`
+    // (element type) and U from fn's return; the result types as U[].
+    const s = try newSetup(
+        \\declare function map<T, U>(arr: T[], fn: (x: T) => U): U[];
+        \\const r = map([1, 2, 3], (x) => x.toString());
+        \\const first: string = r[0];
+    );
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+    for (s.checker.diagnostics.items) |d| {
+        try T.expect(d.code != TsCodes.type_not_assignable);
+        try T.expect(d.code != TsCodes.argument_type_mismatch);
+    }
+}
+
+test "checker: higher-order generic reduce infers acc type from init" {
+    // The accumulator's type should infer from the initial value so
+    // the callback's `acc` parameter sees the right type.
+    const s = try newSetup(
+        \\declare function reduce<T, U>(arr: T[], fn: (acc: U, x: T) => U, init: U): U;
+        \\const r = reduce([1, 2, 3], (a, x) => a + x, 0);
+        \\const sum: number = r;
+    );
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+    for (s.checker.diagnostics.items) |d| {
+        try T.expect(d.code != TsCodes.type_not_assignable);
+        try T.expect(d.code != TsCodes.argument_type_mismatch);
+    }
+}
+
+test "checker: higher-order generic pipe threads value through chained callbacks" {
+    // `pipe(value, f, g)` — A inferred from value, B from f's return
+    // (which is g's input), C from g's return.
+    const s = try newSetup(
+        \\declare function pipe<A, B, C>(v: A, f: (a: A) => B, g: (b: B) => C): C;
+        \\const r = pipe(42, (n) => n.toString(), (s) => s.length);
+        \\const out: number = r;
+    );
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+    for (s.checker.diagnostics.items) |d| {
+        try T.expect(d.code != TsCodes.type_not_assignable);
+        try T.expect(d.code != TsCodes.argument_type_mismatch);
+    }
+}
+
 test "checker: higher-order generic compose instantiates callback returns" {
     const s = try newSetup(
         \\type Box<T> = { value: T };
