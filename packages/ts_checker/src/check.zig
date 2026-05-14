@@ -5878,7 +5878,18 @@ pub const Checker = struct {
 
     fn generatorReturnAnnotationRequiresMissingGeneratorMembers(self: *Checker, ret_t: TypeId) bool {
         if (ret_t >= self.interner.pool.typeCount()) return false;
-        if (!self.interner.pool.flagsOf(ret_t).is_object_type) return false;
+        const flags = self.interner.pool.flagsOf(ret_t);
+        if (flags.is_union) {
+            for (self.interner.unionMembers(ret_t)) |member| {
+                if (!self.generatorReturnAnnotationDefinitelyInvalid(member) and
+                    !self.generatorReturnAnnotationRequiresMissingGeneratorMembers(member))
+                {
+                    return false;
+                }
+            }
+            return true;
+        }
+        if (!flags.is_object_type) return false;
         for (self.interner.objectMembers(ret_t)) |member| {
             if (member.is_optional) continue;
             const name = self.string_interner.get(member.name);
@@ -36174,6 +36185,23 @@ test "checker: explicit Generator yield return and next slots are enforced" {
         if (d.code == TsCodes.type_not_assignable) found_2322 += 1;
     }
     try T.expect(found_2322 >= 5);
+}
+
+test "checker: generator return annotation accepts Generator or AsyncGenerator union" {
+    const s = try newSetup(
+        \\type StepResultGenerator<T> =
+        \\  | Generator<number, T, any | undefined>
+        \\  | AsyncGenerator<number, T, any | undefined>;
+        \\function* showStep(): StepResultGenerator<string> {
+        \\  yield 1;
+        \\  return "";
+        \\}
+    );
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+    for (s.checker.diagnostics.items) |d| {
+        try T.expect(d.code != TsCodes.type_not_assignable);
+    }
 }
 
 test "checker: typeof qualified namespace value resolves exported const" {
