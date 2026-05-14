@@ -17945,7 +17945,7 @@ pub const Checker = struct {
                     self.hir.kindOf(m.object) == .identifier and
                     std.mem.eql(u8, self.string_interner.get(m.name), "toString"))
                 {
-                    try self.reportPropertyDoesNotExist(node, m.name);
+                    try self.reportPropertyDoesNotExistOnType(node, m.name, obj_t);
                     break :blk types.Primitive.any;
                 }
                 if (self.sourceHasCheckJsDirective() and
@@ -18000,7 +18000,7 @@ pub const Checker = struct {
                         break :blk try self.optionalChainResult(types.Primitive.any, member_is_optional_chain);
                     }
                     if (self.const_enums.contains(obj_id.name)) {
-                        try self.reportPropertyDoesNotExist(node, m.name);
+                        try self.reportPropertyDoesNotExistOnType(node, m.name, access_obj_t);
                         break :blk types.Primitive.any;
                     }
                     if (try self.constructorPrototypeAccess(obj_id.name, m.name)) |proto_t| {
@@ -18042,7 +18042,7 @@ pub const Checker = struct {
                     if (try self.broadObjectPrototypeMember(m.name)) |t| {
                         break :blk try self.optionalChainResult(t, member_is_optional_chain);
                     }
-                    try self.reportPropertyDoesNotExist(node, m.name);
+                    try self.reportPropertyDoesNotExistOnType(node, m.name, access_obj_t);
                     break :blk types.Primitive.any;
                 }
                 // Lib lookup: primitive receivers consult the
@@ -18053,7 +18053,7 @@ pub const Checker = struct {
                         if (try self.primitivePrototypeMember(access_obj_t, m.name)) |t| {
                             break :blk try self.optionalChainResult(t, member_is_optional_chain);
                         }
-                        try self.reportPropertyDoesNotExist(node, m.name);
+                        try self.reportPropertyDoesNotExistOnType(node, m.name, access_obj_t);
                         break :blk types.Primitive.any;
                     }
                 }
@@ -18109,7 +18109,7 @@ pub const Checker = struct {
                     {
                         break :blk types.Primitive.any;
                     }
-                    try self.reportPropertyDoesNotExist(node, m.name);
+                    try self.reportPropertyDoesNotExistOnType(node, m.name, access_obj_t);
                 }
                 break :blk types.Primitive.any;
             },
@@ -24092,9 +24092,57 @@ pub const Checker = struct {
         );
         try self.diagnostics.append(self.gpa, .{
             .node = node,
+            .pos = self.memberAccessNamePos(node),
             .code = TsCodes.property_does_not_exist,
             .message = msg,
         });
+    }
+
+    fn reportPropertyDoesNotExistOnType(self: *Checker, node: NodeId, name: hir_mod.StringId, target_t: TypeId) CheckError!void {
+        const name_str = self.string_interner.get(name);
+        if (try self.allocPropertyMissingTargetTypeName(target_t)) |target_text| {
+            const msg = try std.fmt.allocPrint(
+                self.diag_arena.allocator(),
+                "Property '{s}' does not exist on type '{s}'.",
+                .{ name_str, target_text },
+            );
+            try self.diagnostics.append(self.gpa, .{
+                .node = node,
+                .pos = self.memberAccessNamePos(node),
+                .code = TsCodes.property_does_not_exist,
+                .message = msg,
+            });
+            return;
+        }
+        try self.reportPropertyDoesNotExist(node, name);
+    }
+
+    fn memberAccessNamePos(self: *Checker, node: NodeId) ?u32 {
+        if (self.source == null or self.hir.kindOf(node) != .member_access) return null;
+        const src = self.source.?;
+        const span = self.hir.spanOf(node);
+        if (span.end > src.len or span.start >= span.end) return null;
+        const text = src[span.start..span.end];
+        var i = text.len;
+        while (i > 0) {
+            i -= 1;
+            if (text[i] == '.') return span.start + @as(u32, @intCast(i + 1));
+        }
+        return null;
+    }
+
+    fn allocPropertyMissingTargetTypeName(self: *Checker, target_t: TypeId) !?[]const u8 {
+        if (try self.allocSimpleTypeName(target_t)) |name| return name;
+        if (target_t >= self.interner.pool.typeCount()) return null;
+        const flags = self.interner.pool.flagsOf(target_t);
+        if (flags.is_object_type and
+            self.interner.objectMembers(target_t).len == 0 and
+            self.interner.objectStringIndex(target_t) == types.Primitive.none and
+            self.interner.objectNumberIndex(target_t) == types.Primitive.none)
+        {
+            return "{}";
+        }
+        return null;
     }
 
     fn typeIsDefinitelyNonConstructable(self: *Checker, t: TypeId) bool {
@@ -43601,4 +43649,29 @@ test "checker: tuple out-of-bounds diagnostic renders tuple display" {
         }
     }
     try T.expect(saw_2493);
+}
+
+test "checker: missing property diagnostic renders receiver type" {
+    const s = try newSetup(
+        \\let empty: {};
+        \\empty.missing;
+        \\let n: never;
+        \\n.toString;
+    );
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+
+    var saw_empty = false;
+    var saw_never = false;
+    for (s.checker.diagnostics.items) |diag| {
+        if (diag.code != TsCodes.property_does_not_exist) continue;
+        if (std.mem.indexOf(u8, diag.message, "Property 'missing' does not exist on type '{}'.") != null) {
+            saw_empty = true;
+        }
+        if (std.mem.indexOf(u8, diag.message, "Property 'toString' does not exist on type 'never'.") != null) {
+            saw_never = true;
+        }
+    }
+    try T.expect(saw_empty);
+    try T.expect(saw_never);
 }
