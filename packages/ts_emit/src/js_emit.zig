@@ -1880,11 +1880,15 @@ pub const Printer = struct {
                     //   * cond + each yielded expression has no nested yield
                     const ip = hir_mod.ifOf(self.hir, s);
                     if (self.subtreeContainsYield(ip.cond)) return false;
-                    // Validate then-branch shape.
+                    // Validate then-branch shape. §4.A.4.5 v2 — accept
+                    // 1+ yields with arbitrary yield-free pre/post
+                    // statements (`yieldBlockOkInIfBranch`) in addition
+                    // to the bare-single-yield shape. The emit walker
+                    // already handles per-statement dispatch.
                     if (self.singleYieldInThen(ip.then_branch)) |ye_then| {
                         const yp_then = hir_mod.yieldExprOf(self.hir, ye_then);
                         if (yp_then.expr != hir_mod.none_node_id and self.subtreeContainsYield(yp_then.expr)) return false;
-                    } else if (!self.multiYieldLoopBodyOk(ip.then_branch, false)) {
+                    } else if (!self.yieldBlockOkInIfBranch(ip.then_branch)) {
                         return false;
                     }
                     // Validate else-branch (if present).
@@ -1893,7 +1897,7 @@ pub const Printer = struct {
                             if (self.singleYieldInThen(ip.else_branch)) |ye_else| {
                                 const yp_else = hir_mod.yieldExprOf(self.hir, ye_else);
                                 if (yp_else.expr != hir_mod.none_node_id and self.subtreeContainsYield(yp_else.expr)) return false;
-                            } else if (!self.multiYieldLoopBodyOk(ip.else_branch, false)) {
+                            } else if (!self.yieldBlockOkInIfBranch(ip.else_branch)) {
                                 return false;
                             }
                         }
@@ -2035,6 +2039,32 @@ pub const Printer = struct {
             }
         }
         return yield_count >= 2;
+    }
+
+    /// §4.A.4.5 v2 — like `multiYieldLoopBodyOk` but accepts blocks
+    /// with **one or more** top-level yields. Used by the if-then-yield
+    /// emit path which walks the body inline regardless of whether
+    /// the yield count is 1 or 2+. The single-pure-yield single-stmt
+    /// case stays handled by `singleYieldInThen`; this helper catches
+    /// the "pre-stmts + yield + post-stmts" split shape and the
+    /// multi-yield-with-interspersed-stmts shape. Non-yield stmts must
+    /// be yield-free and have no unhandleable break/continue.
+    fn yieldBlockOkInIfBranch(self: *const Printer, body: NodeId) bool {
+        if (body == hir_mod.none_node_id) return false;
+        if (self.hir.kindOf(body) != .block_stmt) return false;
+        const stmts = hir_mod.blockStmts(self.hir, body);
+        var yield_count: usize = 0;
+        for (stmts) |s| {
+            if (self.hir.kindOf(s) == .yield_expr) {
+                const yp = hir_mod.yieldExprOf(self.hir, s);
+                if (yp.expr != hir_mod.none_node_id and self.subtreeContainsYield(yp.expr)) return false;
+                yield_count += 1;
+            } else {
+                if (self.subtreeContainsYield(s)) return false;
+                if (self.classifyBreakContinueImpl(s, false) == .unhandleable) return false;
+            }
+        }
+        return yield_count >= 1;
     }
 
     /// §4.A.4.3 — split a block-statement loop body into its
@@ -7915,16 +7945,49 @@ test "emit: generator with single-yield then + multi-yield else lowers" {
     try T.expect(std.mem.indexOf(u8, out, "case 5:") != null);
 }
 
-test "emit: generator with if-then-yield containing multi-stmt body still bails" {
-    // Multi-statement then-branch (even single non-yield statement
-    // before the yield) is outside v0 — bail to native function*.
+test "emit: generator with if-then-yield containing pre-yield stmt lowers via state machine" {
+    // §4.A.4.5 v2 — `if (cond) { f(); yield 1; }` (1+ pre-yield
+    // statements + 1 yield) now lowers through the state machine.
+    // The cur case emits the cond skip, the pre-stmts, then the
+    // yield; case state+1 resumes with `_a.sent();`.
     const out = try emitWithOpts(
         "function* g() { if (cond) { f(); yield 1; } }",
         .{ .es_target = .es5 },
     );
     defer T.allocator.free(out);
-    try T.expect(std.mem.indexOf(u8, out, "TODO: ES5 generator") != null);
-    try T.expect(std.mem.indexOf(u8, out, "__generator") == null);
+    try T.expect(std.mem.indexOf(u8, out, "__generator") != null);
+    try T.expect(std.mem.indexOf(u8, out, "TODO: ES5 generator") == null);
+    try T.expect(std.mem.indexOf(u8, out, "if (!(cond)) return [3,") != null);
+    try T.expect(std.mem.indexOf(u8, out, "f();") != null);
+    try T.expect(std.mem.indexOf(u8, out, "return [4, 1]") != null);
+}
+
+test "emit: generator with if-then-yield containing post-yield stmt lowers via state machine" {
+    // §4.A.4.5 v2 — `if (cond) { yield 1; cleanup(); }` (yield
+    // followed by cleanup stmts). After the yield's resumption
+    // case sets up `_a.sent()`, the post-stmts emit inline.
+    const out = try emitWithOpts(
+        "function* g() { if (cond) { yield 1; cleanup(); } }",
+        .{ .es_target = .es5 },
+    );
+    defer T.allocator.free(out);
+    try T.expect(std.mem.indexOf(u8, out, "__generator") != null);
+    try T.expect(std.mem.indexOf(u8, out, "TODO: ES5 generator") == null);
+    try T.expect(std.mem.indexOf(u8, out, "return [4, 1]") != null);
+    try T.expect(std.mem.indexOf(u8, out, "cleanup();") != null);
+}
+
+test "emit: generator with if-then-yield containing pre+post stmt lowers via state machine" {
+    // §4.A.4.5 v2 — full split shape: pre-stmt, yield, post-stmt.
+    const out = try emitWithOpts(
+        "function* g() { if (cond) { init(); yield 1; cleanup(); } }",
+        .{ .es_target = .es5 },
+    );
+    defer T.allocator.free(out);
+    try T.expect(std.mem.indexOf(u8, out, "__generator") != null);
+    try T.expect(std.mem.indexOf(u8, out, "init();") != null);
+    try T.expect(std.mem.indexOf(u8, out, "return [4, 1]") != null);
+    try T.expect(std.mem.indexOf(u8, out, "cleanup();") != null);
 }
 
 test "emit: generator with try-finally + yield lowers via __generator trys protocol" {
