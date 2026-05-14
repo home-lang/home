@@ -391,7 +391,7 @@ pub const Printer = struct {
         // before any user-level statement so the helpers are in
         // scope for the lowered code below.
         if (self.options.import_helpers) {
-            try self.write("import { __asyncDelegator, __asyncGenerator, __asyncValues, __await, __awaiter, __decorate, __esDecorate, __extends, __generator, __metadata, __param, __importDefault, __importStar, __values } from \"tslib\";");
+            try self.write("import { __asyncDelegator, __asyncGenerator, __asyncValues, __await, __awaiter, __decorate, __esDecorate, __extends, __generator, __metadata, __param, __importDefault, __importStar, __runInitializers, __values } from \"tslib\";");
             try self.write(self.options.newline);
         }
         // §4.A.10 — auto-import the runtime helpers when the file
@@ -489,20 +489,23 @@ pub const Printer = struct {
             try self.printExpression(c.name);
             try self.write(");");
         } else {
-            // §4.A.9 v3 — Stage 3 class decorator with class-replacement
-            // support. Emit the descriptor + __esDecorate + reassignment
-            // chain so decorators that return a new class can swap
-            // the binding. Without the IIFE wrap tsc uses at full spec,
-            // this still produces the observable replacement behaviour
-            // (the variable rebinds; existing references to the class
-            // captured before the decorator chain ran would still see
-            // the original — same caveat as tsc's flat emit when
-            // `useDefineForClassFields` is on).
+            // §4.A.9 v3/v4 — Stage 3 class decorator chain. Emits:
+            //   var _<N>_d = { value: <N> };
+            //   var _<N>_extra = [];
+            //   __esDecorate(null, _<N>_d, [decs], { kind: "class", name: "<N>" }, null, _<N>_extra);
+            //   <N> = _<N>_d.value;
+            //   __runInitializers(<N>, _<N>_extra);
+            // The descriptor object supports class replacement; the
+            // extra-initializers array carries any `addInitializer`
+            // callbacks the decorators registered; `__runInitializers`
+            // runs them against the (possibly replaced) class.
             try self.write("var _");
             try self.writeClassNameSuffix(c.name);
             try self.write("_d = { value: ");
             try self.printExpression(c.name);
-            try self.write(" };");
+            try self.write(" }, _");
+            try self.writeClassNameSuffix(c.name);
+            try self.write("_extra = [];");
             try self.write(self.options.newline);
             try self.write("__esDecorate(null, _");
             try self.writeClassNameSuffix(c.name);
@@ -514,12 +517,20 @@ pub const Printer = struct {
             }
             try self.write("], { kind: \"class\", name: \"");
             try self.printExpression(c.name);
-            try self.write("\" }, null, []);");
+            try self.write("\" }, null, _");
+            try self.writeClassNameSuffix(c.name);
+            try self.write("_extra);");
             try self.write(self.options.newline);
             try self.printExpression(c.name);
             try self.write(" = _");
             try self.writeClassNameSuffix(c.name);
             try self.write("_d.value;");
+            try self.write(self.options.newline);
+            try self.write("__runInitializers(");
+            try self.printExpression(c.name);
+            try self.write(", _");
+            try self.writeClassNameSuffix(c.name);
+            try self.write("_extra);");
         }
     }
 
@@ -6341,7 +6352,7 @@ test "emit: importHelpers prepends tslib import when async lowers at es2015" {
         .{ .es_target = .es2015, .import_helpers = true },
     );
     defer T.allocator.free(out);
-    try T.expect(std.mem.indexOf(u8, out, "import { __asyncDelegator, __asyncGenerator, __asyncValues, __await, __awaiter, __decorate, __esDecorate, __extends, __generator, __metadata, __param, __importDefault, __importStar, __values } from \"tslib\";") != null);
+    try T.expect(std.mem.indexOf(u8, out, "import { __asyncDelegator, __asyncGenerator, __asyncValues, __await, __awaiter, __decorate, __esDecorate, __extends, __generator, __metadata, __param, __importDefault, __importStar, __runInitializers, __values } from \"tslib\";") != null);
     // Helper still gets referenced from user code.
     try T.expect(std.mem.indexOf(u8, out, "__awaiter(this, void 0, void 0, function* ()") != null);
 }
@@ -8043,12 +8054,11 @@ test "emit: stage 3 class decorator emits descriptor + class-replacement chain" 
     const out = try emitWithOpts("@logged class Foo {}", .{ .experimental_decorators = false });
     defer T.allocator.free(out);
     try T.expect(std.mem.indexOf(u8, out, "class Foo") != null);
-    // §4.A.9 v3 — descriptor object holding the class.
-    try T.expect(std.mem.indexOf(u8, out, "var _Foo_d = { value: Foo };") != null);
-    // __esDecorate now receives the descriptor (2nd arg) instead of null.
-    try T.expect(std.mem.indexOf(u8, out, "__esDecorate(null, _Foo_d, [logged], { kind: \"class\", name: \"Foo\" }, null, []);") != null);
-    // Rebind to descriptor.value so decorator-returned classes replace Foo.
+    // §4.A.9 v3/v4 — descriptor + initializer-array + __esDecorate + rebind + __runInitializers.
+    try T.expect(std.mem.indexOf(u8, out, "var _Foo_d = { value: Foo }, _Foo_extra = [];") != null);
+    try T.expect(std.mem.indexOf(u8, out, "__esDecorate(null, _Foo_d, [logged], { kind: \"class\", name: \"Foo\" }, null, _Foo_extra);") != null);
     try T.expect(std.mem.indexOf(u8, out, "Foo = _Foo_d.value;") != null);
+    try T.expect(std.mem.indexOf(u8, out, "__runInitializers(Foo, _Foo_extra);") != null);
     // Stage 3 must NOT emit the legacy `__decorate` form.
     try T.expect(std.mem.indexOf(u8, out, "= __decorate(") == null);
 }
@@ -8056,16 +8066,17 @@ test "emit: stage 3 class decorator emits descriptor + class-replacement chain" 
 test "emit: stage 3 multiple class decorators preserve order" {
     const out = try emitWithOpts("@a @b @c class Bar {}", .{ .experimental_decorators = false });
     defer T.allocator.free(out);
-    try T.expect(std.mem.indexOf(u8, out, "var _Bar_d = { value: Bar };") != null);
-    try T.expect(std.mem.indexOf(u8, out, "__esDecorate(null, _Bar_d, [a, b, c], { kind: \"class\", name: \"Bar\" }, null, []);") != null);
+    try T.expect(std.mem.indexOf(u8, out, "var _Bar_d = { value: Bar }, _Bar_extra = [];") != null);
+    try T.expect(std.mem.indexOf(u8, out, "__esDecorate(null, _Bar_d, [a, b, c], { kind: \"class\", name: \"Bar\" }, null, _Bar_extra);") != null);
     try T.expect(std.mem.indexOf(u8, out, "Bar = _Bar_d.value;") != null);
+    try T.expect(std.mem.indexOf(u8, out, "__runInitializers(Bar, _Bar_extra);") != null);
 }
 
 test "emit: stage 3 class decorator with call expression preserves arguments" {
     const out = try emitWithOpts("@inject(Foo) class Bar {}", .{ .experimental_decorators = false });
     defer T.allocator.free(out);
     try T.expect(std.mem.indexOf(u8, out, "class Bar") != null);
-    try T.expect(std.mem.indexOf(u8, out, "__esDecorate(null, _Bar_d, [inject(Foo)], { kind: \"class\", name: \"Bar\" }, null, []);") != null);
+    try T.expect(std.mem.indexOf(u8, out, "__esDecorate(null, _Bar_d, [inject(Foo)], { kind: \"class\", name: \"Bar\" }, null, _Bar_extra);") != null);
     try T.expect(std.mem.indexOf(u8, out, "Bar = _Bar_d.value;") != null);
     // Legacy form must NOT appear under stage 3.
     try T.expect(std.mem.indexOf(u8, out, "Bar = __decorate(") == null);
@@ -8080,8 +8091,9 @@ test "emit: stage 3 method decorator on class method emits per-member decorate" 
     , .{ .experimental_decorators = false });
     defer T.allocator.free(out);
     // Class-level decorator uses the Stage 3 descriptor + replacement chain.
-    try T.expect(std.mem.indexOf(u8, out, "__esDecorate(null, _Foo_d, [logged], { kind: \"class\", name: \"Foo\" }, null, []);") != null);
+    try T.expect(std.mem.indexOf(u8, out, "__esDecorate(null, _Foo_d, [logged], { kind: \"class\", name: \"Foo\" }, null, _Foo_extra);") != null);
     try T.expect(std.mem.indexOf(u8, out, "Foo = _Foo_d.value;") != null);
+    try T.expect(std.mem.indexOf(u8, out, "__runInitializers(Foo, _Foo_extra);") != null);
     // Per-member decorators also use the Stage 3 helper in v1.
     try T.expect(std.mem.indexOf(u8, out, "__esDecorate(null, null, [traced], { kind: \"method\", name: \"greet\", static: false, private: false, access: { has: function (obj) { return \"greet\" in obj; }, get: function (obj) { return obj.greet; } } }, null, []);") != null);
     try T.expect(std.mem.indexOf(u8, out, "__decorate([traced]") == null);
@@ -8157,10 +8169,11 @@ test "emit: stage 3 class-only decorator does not produce legacy class assignmen
     defer T.allocator.free(out);
     // The class declaration is preserved.
     try T.expect(std.mem.indexOf(u8, out, "class Baz") != null);
-    // Stage 3 descriptor + helper + rebind chain.
-    try T.expect(std.mem.indexOf(u8, out, "var _Baz_d = { value: Baz };") != null);
-    try T.expect(std.mem.indexOf(u8, out, "__esDecorate(null, _Baz_d, [a, b], { kind: \"class\", name: \"Baz\" }, null, []);") != null);
+    // Stage 3 descriptor + helper + rebind + runInitializers chain.
+    try T.expect(std.mem.indexOf(u8, out, "var _Baz_d = { value: Baz }, _Baz_extra = [];") != null);
+    try T.expect(std.mem.indexOf(u8, out, "__esDecorate(null, _Baz_d, [a, b], { kind: \"class\", name: \"Baz\" }, null, _Baz_extra);") != null);
     try T.expect(std.mem.indexOf(u8, out, "Baz = _Baz_d.value;") != null);
+    try T.expect(std.mem.indexOf(u8, out, "__runInitializers(Baz, _Baz_extra);") != null);
     // No legacy `Name = __decorate(...)` rewiring under Stage 3.
     try T.expect(std.mem.indexOf(u8, out, "Baz = __decorate(") == null);
 }
