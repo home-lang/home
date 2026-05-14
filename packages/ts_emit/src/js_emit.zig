@@ -3181,10 +3181,14 @@ pub const Printer = struct {
                 },
                 .assignment => {
                     const a = hir_mod.assignmentOf(self.hir, s);
-                    if (a.op != null and self.hir.kindOf(a.value) == .await_expr) return false;
+                    if (a.op != null and (self.hir.kindOf(a.value) == .await_expr or self.hir.kindOf(a.value) == .yield_expr)) return false;
                     if (self.hir.kindOf(a.value) == .await_expr) {
                         const ap = hir_mod.awaitExprOf(self.hir, a.value);
                         if (ap.expr != hir_mod.none_node_id and (self.subtreeContainsYield(ap.expr) or self.subtreeContainsAwait(ap.expr))) return false;
+                    } else if (self.hir.kindOf(a.value) == .yield_expr) {
+                        const yp = hir_mod.yieldExprOf(self.hir, a.value);
+                        if (yp.type_node != hir_mod.none_node_id) return false;
+                        if (yp.expr != hir_mod.none_node_id and (self.subtreeContainsYield(yp.expr) or self.subtreeContainsAwait(yp.expr))) return false;
                     } else {
                         if (self.subtreeContainsYield(s) or self.subtreeContainsAwait(s)) return false;
                     }
@@ -3413,6 +3417,34 @@ pub const Printer = struct {
                     try self.write(": ");
                     try self.printExpression(a.target);
                     try self.write(" = _a.sent();");
+                } else if (a.op == null and self.hir.kindOf(a.value) == .yield_expr) {
+                    // `x = yield E;` — double-yield, bind second sent to target.
+                    const yp = hir_mod.yieldExprOf(self.hir, a.value);
+                    try self.write(" return [4, __await(");
+                    if (yp.expr != hir_mod.none_node_id) {
+                        try self.printExpression(yp.expr);
+                    } else {
+                        try self.write("void 0");
+                    }
+                    try self.write(")];");
+                    state += 1;
+                    {
+                        const num = std.fmt.bufPrint(&buf, "{d}", .{state}) catch unreachable;
+                        try self.writeNewlineIndent();
+                        try self.write("case ");
+                        try self.write(num);
+                        try self.write(": _a.sent(); return [4];");
+                    }
+                    state += 1;
+                    {
+                        const num = std.fmt.bufPrint(&buf, "{d}", .{state}) catch unreachable;
+                        try self.writeNewlineIndent();
+                        try self.write("case ");
+                        try self.write(num);
+                        try self.write(": ");
+                        try self.printExpression(a.target);
+                        try self.write(" = _a.sent();");
+                    }
                 } else {
                     try self.write(" ");
                     try self.printNonIndentStatement(stmt);
@@ -7344,6 +7376,20 @@ test "emit: async generator with let x = await E binds via _a.sent()" {
     try T.expect(std.mem.indexOf(u8, out, "case 1: var x = _a.sent();") != null);
     // case 2 yields __await(x) (the user yield).
     try T.expect(std.mem.indexOf(u8, out, "return [4, __await(x)]") != null);
+}
+
+test "emit: async generator with x = yield E (pre-declared) uses no var prefix" {
+    const out = try emitWithOpts(
+        "async function* g() { var x; x = yield 1; }",
+        .{ .es_target = .es2017 },
+    );
+    defer T.allocator.free(out);
+    try T.expect(std.mem.indexOf(u8, out, "__asyncGenerator") != null);
+    try T.expect(std.mem.indexOf(u8, out, "return [4, __await(1)]") != null);
+    try T.expect(std.mem.indexOf(u8, out, "case 1: _a.sent(); return [4];") != null);
+    // Bind without `var` prefix (target is already declared).
+    try T.expect(std.mem.indexOf(u8, out, "case 2: x = _a.sent();") != null);
+    try T.expect(std.mem.indexOf(u8, out, "case 2: var x = _a.sent();") == null);
 }
 
 test "emit: async generator with let x = yield E binds via second _a.sent()" {
