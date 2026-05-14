@@ -333,6 +333,15 @@ pub fn build(b: *std.Build) void {
     // build. Once the Tier 0 + Tier 1 files compile against a
     // bun_compat shim, individual files will be added back to a
     // dedicated `ts_bundler_bun_pkg` module.
+    //
+    // The matching upstream test corpus (~145 files, 2.9 MB) lives at
+    // packages/ts_bundler/test/bun/. It stays as raw TypeScript on disk
+    // — there is no JS test runner wired into `zig build` yet. Once
+    // `home bundle` works, a Zig-side runner (planned at
+    // packages/ts_bundler/test/run_bun_corpus.zig) will diff its output
+    // against the golden snapshots there. See
+    // packages/ts_bundler/test/bun/PORTING_STATUS.md for the activation
+    // plan and pass-rate ratchet.
 
     // ====================================================================
     // TS-parity binaries: `home-tsc` (compiler driver) + `home-lsp`
