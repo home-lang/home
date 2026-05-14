@@ -64,6 +64,7 @@ pub const Diagnostic = struct {
 pub const TsCodes = struct {
     pub const type_only_import_used_as_value: u32 = 1361;
     pub const cannot_find_name: u32 = 2304;
+    pub const cannot_find_node_name: u32 = 2591;
     /// Emitted when the unresolved identifier closely resembles an
     /// in-scope name (Levenshtein distance ≤ threshold). Same as
     /// 2304 plus a `Did you mean 'X'?` suggestion.
@@ -20768,6 +20769,14 @@ pub const Checker = struct {
     fn identifierHasNarrowableValueBinding(self: *Checker, node: NodeId) bool {
         if (node == hir_mod.none_node_id or self.hir.kindOf(node) != .identifier) return false;
         const id = hir_mod.identifierOf(self.hir, node);
+        if (self.isNodeCommonJsGlobalName(id.name)) {
+            if (self.sourceHasVarDeclarationText(id.name)) return true;
+            if (self.globalAugmentedValueType(id.name, node) catch null != null) return true;
+            if (self.module) |module| {
+                if (module.root.lookup(id.name) != null) return true;
+            }
+            return false;
+        }
         if (self.isBuiltinName(id.name)) return true;
         if (self.sourceHasVarDeclarationText(id.name)) return true;
         if (self.globalAugmentedValueType(id.name, node) catch null != null) return true;
@@ -22283,6 +22292,13 @@ pub const Checker = struct {
             // `console`, `undefined`, global constructors). Skip
             // declaration name slots to avoid flagging the very
             // identifier that introduces the name.
+            if (!self.isDeclNameSlot(node) and self.isNodeCommonJsGlobalName(id.name)) {
+                if (self.rootHasVarDeclarationNamed(node, id.name) or self.sourceHasVarDeclarationText(id.name)) return types.Primitive.any;
+                if (self.moduleHasRuntimeNamespacePrefix(module, id.name)) return types.Primitive.any;
+                if (self.identifierNamesEnclosingClassExpression(node, id.name)) return types.Primitive.any;
+                self.reportCannotFindNodeName(node, id.name) catch {};
+                return types.Primitive.any;
+            }
             if (!self.isDeclNameSlot(node) and !self.isBuiltinName(id.name)) {
                 if (self.rootHasVarDeclarationNamed(node, id.name) or self.sourceHasVarDeclarationText(id.name)) return types.Primitive.any;
                 if (self.moduleHasRuntimeNamespacePrefix(module, id.name)) return types.Primitive.any;
@@ -22420,6 +22436,12 @@ pub const Checker = struct {
             )) |sig| {
                 return sig;
             } else |_| {}
+        }
+        if (self.module == null and !self.isDeclNameSlot(node) and self.isNodeCommonJsGlobalName(id.name)) {
+            if (!self.identifierNamesEnclosingClassExpression(node, id.name)) {
+                self.reportCannotFindNodeName(node, id.name) catch {};
+            }
+            return types.Primitive.any;
         }
         if (self.module == null and !self.isDeclNameSlot(node) and !self.isBuiltinName(id.name)) {
             if (!self.identifierNamesEnclosingClassExpression(node, id.name)) {
@@ -22591,6 +22613,18 @@ pub const Checker = struct {
         };
         for (builtins) |b| {
             if (std.mem.eql(u8, s, b)) return true;
+        }
+        return false;
+    }
+
+    fn isNodeCommonJsGlobalName(self: *const Checker, name: hir_mod.StringId) bool {
+        const s = self.string_interner.get(name);
+        const names = [_][]const u8{
+            "module",
+            "require",
+        };
+        for (names) |n| {
+            if (std.mem.eql(u8, s, n)) return true;
         }
         return false;
     }
@@ -23140,6 +23174,19 @@ pub const Checker = struct {
         try self.diagnostics.append(self.gpa, .{
             .node = node,
             .code = TsCodes.cannot_find_name,
+            .message = msg,
+        });
+    }
+
+    fn reportCannotFindNodeName(self: *Checker, node: NodeId, name: hir_mod.StringId) !void {
+        const msg = try std.fmt.allocPrint(
+            self.diag_arena.allocator(),
+            "Cannot find name '{s}'. Do you need to install type definitions for node? Try `npm i --save-dev @types/node` and then add 'node' to the types field in your tsconfig.",
+            .{self.string_interner.get(name)},
+        );
+        try self.diagnostics.append(self.gpa, .{
+            .node = node,
+            .code = TsCodes.cannot_find_node_name,
             .message = msg,
         });
     }
@@ -39614,6 +39661,22 @@ test "checker: typeof undeclared name does not narrow later member access" {
         try T.expect(d.code != TsCodes.property_does_not_exist);
     }
     try T.expect(missing_name_count >= 2);
+}
+
+test "checker: missing CommonJS module global reports TS2591" {
+    const b = try newBoundSetup(
+        \\if (typeof module !== "undefined" && module.exports) {
+        \\  module.exports = {};
+        \\}
+    );
+    defer destroyBoundSetup(b);
+    try b.base.checker.checkSourceFile(b.base.root);
+    var node_missing_count: usize = 0;
+    for (b.base.checker.diagnostics.items) |d| {
+        if (d.code == TsCodes.cannot_find_node_name) node_missing_count += 1;
+        try T.expect(d.code != TsCodes.cannot_find_name);
+    }
+    try T.expect(node_missing_count >= 3);
 }
 
 test "checker: switch on x.kind narrows x per case body" {
