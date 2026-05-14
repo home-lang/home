@@ -1563,6 +1563,21 @@ pub const Printer = struct {
                     if (tp.catch_block == hir_mod.none_node_id and tp.finally_block == hir_mod.none_node_id) return false;
                 },
                 .break_stmt, .continue_stmt, .fn_decl, .class_decl => return false,
+                .call_expr => {
+                    // `f(yield E);` as a top-level expression — call
+                    // with exactly one arg that's a yield_expr,
+                    // callee yield-free.
+                    const cp = hir_mod.callOf(self.hir, s);
+                    const args = hir_mod.callArgs(self.hir, s);
+                    if (args.len == 1 and self.hir.kindOf(args[0]) == .yield_expr) {
+                        if (self.subtreeContainsYield(cp.callee)) return false;
+                        const yp = hir_mod.yieldExprOf(self.hir, args[0]);
+                        if (yp.type_node != hir_mod.none_node_id) return false; // bail on yield*
+                        if (yp.expr != hir_mod.none_node_id and self.subtreeContainsYield(yp.expr)) return false;
+                    } else {
+                        if (self.subtreeContainsYield(s)) return false;
+                    }
+                },
                 else => {
                     if (self.subtreeContainsYield(s)) return false;
                 },
@@ -1852,6 +1867,31 @@ pub const Printer = struct {
                 // `x = _a.sent();` after the yield transition.
                 if (a.op == null and self.hir.kindOf(a.value) == .yield_expr) {
                     try self.emitGenYieldTransition(a.value, &state, &buf, a.target, .assignment);
+                } else {
+                    try self.write(" ");
+                    try self.printNonIndentStatement(stmt);
+                }
+            } else if (k == .call_expr) {
+                // `f(yield E);` — close current case with the yield's
+                // `return [4, E];`, then open `case +1: f(_a.sent());`.
+                const cp = hir_mod.callOf(self.hir, stmt);
+                const args = hir_mod.callArgs(self.hir, stmt);
+                if (args.len == 1 and self.hir.kindOf(args[0]) == .yield_expr) {
+                    const yp = hir_mod.yieldExprOf(self.hir, args[0]);
+                    try self.write(" return [4");
+                    if (yp.expr != hir_mod.none_node_id) {
+                        try self.write(", ");
+                        try self.printExpression(yp.expr);
+                    }
+                    try self.write("];");
+                    state += 1;
+                    const num = std.fmt.bufPrint(&buf, "{d}", .{state}) catch unreachable;
+                    try self.writeNewlineIndent();
+                    try self.write("case ");
+                    try self.write(num);
+                    try self.write(": ");
+                    try self.printExpression(cp.callee);
+                    try self.write("(_a.sent());");
                 } else {
                     try self.write(" ");
                     try self.printNonIndentStatement(stmt);
@@ -7400,16 +7440,18 @@ test "emit: generator with bare try (no catch/finally) bails — handled by yiel
     try T.expect(std.mem.indexOf(u8, out, "__generator") != null);
 }
 
-test "emit: generator with sub-expr yield (console.log(yield E)) still bails" {
-    // Yield as a *sub-expression* — not as the immediate RHS of a
-    // decl/assignment — is still out of scope for v0.
+test "emit: generator with f(yield E) at top-level lowers to yield + call(_a.sent())" {
+    // `f(yield E);` at statement position now lowers cleanly: cur case
+    // closes with `return [4, E];`, next case calls `f(_a.sent())`.
     const out = try emitWithOpts(
         "function* g() { console.log(yield 1); }",
         .{ .es_target = .es5 },
     );
     defer T.allocator.free(out);
-    try T.expect(std.mem.indexOf(u8, out, "TODO: ES5 generator") != null);
-    try T.expect(std.mem.indexOf(u8, out, "__generator") == null);
+    try T.expect(std.mem.indexOf(u8, out, "__generator") != null);
+    try T.expect(std.mem.indexOf(u8, out, "TODO: ES5 generator") == null);
+    try T.expect(std.mem.indexOf(u8, out, "return [4, 1]") != null);
+    try T.expect(std.mem.indexOf(u8, out, "case 1: console.log(_a.sent());") != null);
 }
 
 test "emit: generator with non-yield decl passes through as plain var" {
