@@ -3881,7 +3881,52 @@ pub const Printer = struct {
         try self.write(if (self.isStaticMember(target)) "true" else "false");
         try self.write(", private: ");
         try self.write(if (self.privateFieldName(name_node) != null) "true" else "false");
+        // Stage 3 access descriptor — only emitted for public members
+        // (private members would need `#name in obj` syntax which v0 skips).
+        if (self.privateFieldName(name_node) == null) {
+            try self.write(", ");
+            try self.emitStage3AccessDescriptor(target, name_node);
+        }
         try self.write(" }, null, []);");
+    }
+
+    /// Emit the Stage 3 `access: { has, get?, set? }` descriptor for a
+    /// member decorator's context. Methods + getters provide `has`+`get`;
+    /// fields provide `has`+`get`+`set`; setters provide `has`+`set`.
+    /// `function (obj)` form is used (not arrow) so the output remains
+    /// valid at any es_target without depending on arrow→function
+    /// downlevel running on synthetic emit text.
+    fn emitStage3AccessDescriptor(self: *Printer, target: NodeId, name_node: NodeId) anyerror!void {
+        var name_slice: []const u8 = "";
+        if (self.hir.kindOf(name_node) == .identifier) {
+            const id = hir_mod.identifierOf(self.hir, name_node);
+            name_slice = self.interner.get(id.name);
+        }
+        const tk = self.hir.kindOf(target);
+        var is_getter = false;
+        var is_setter = false;
+        if (tk == .fn_decl or tk == .fn_expr) {
+            const fd = hir_mod.fnDeclOf(self.hir, target);
+            is_getter = fd.flags.is_getter;
+            is_setter = fd.flags.is_setter;
+        }
+        const is_field = tk == .object_property;
+        const include_get = !is_setter;
+        const include_set = is_field or is_setter;
+        try self.write("access: { has: function (obj) { return \"");
+        try self.write(name_slice);
+        try self.write("\" in obj; }");
+        if (include_get) {
+            try self.write(", get: function (obj) { return obj.");
+            try self.write(name_slice);
+            try self.write("; }");
+        }
+        if (include_set) {
+            try self.write(", set: function (obj, value) { obj.");
+            try self.write(name_slice);
+            try self.write(" = value; }");
+        }
+        try self.write(" }");
     }
 
     fn isStaticMember(self: *Printer, target: NodeId) bool {
@@ -7796,7 +7841,7 @@ test "emit: stage 3 method decorator on class method emits per-member decorate" 
     // Class-level decorator uses the Stage 3 helper.
     try T.expect(std.mem.indexOf(u8, out, "__esDecorate(null, null, [logged], { kind: \"class\", name: \"Foo\" }, null, []);") != null);
     // Per-member decorators also use the Stage 3 helper in v1.
-    try T.expect(std.mem.indexOf(u8, out, "__esDecorate(null, null, [traced], { kind: \"method\", name: \"greet\", static: false, private: false }, null, []);") != null);
+    try T.expect(std.mem.indexOf(u8, out, "__esDecorate(null, null, [traced], { kind: \"method\", name: \"greet\", static: false, private: false, access: { has: function (obj) { return \"greet\" in obj; }, get: function (obj) { return obj.greet; } } }, null, []);") != null);
     try T.expect(std.mem.indexOf(u8, out, "__decorate([traced]") == null);
 }
 
@@ -7810,8 +7855,8 @@ test "emit: stage 3 field/accessor decorators emit member contexts" {
         \\}
     , .{ .experimental_decorators = false });
     defer T.allocator.free(out);
-    try T.expect(std.mem.indexOf(u8, out, "__esDecorate(null, null, [observe], { kind: \"field\", name: \"count\", static: false, private: false }, null, []);") != null);
-    try T.expect(std.mem.indexOf(u8, out, "__esDecorate(null, null, [memo], { kind: \"getter\", name: \"value\", static: false, private: false }, null, []);") != null);
+    try T.expect(std.mem.indexOf(u8, out, "__esDecorate(null, null, [observe], { kind: \"field\", name: \"count\", static: false, private: false, access: { has: function (obj) { return \"count\" in obj; }, get: function (obj) { return obj.count; }, set: function (obj, value) { obj.count = value; } } }, null, []);") != null);
+    try T.expect(std.mem.indexOf(u8, out, "__esDecorate(null, null, [memo], { kind: \"getter\", name: \"value\", static: false, private: false, access: { has: function (obj) { return \"value\" in obj; }, get: function (obj) { return obj.value; } } }, null, []);") != null);
     try T.expect(std.mem.indexOf(u8, out, "__decorate([observe]") == null);
 }
 
@@ -7826,9 +7871,24 @@ test "emit: stage 3 static member decorators mark static context" {
     , .{ .experimental_decorators = false });
     defer T.allocator.free(out);
 
-    try T.expect(std.mem.indexOf(u8, out, "__esDecorate(null, null, [logged], { kind: \"method\", name: \"greet\", static: true, private: false }, null, []);") != null);
-    try T.expect(std.mem.indexOf(u8, out, "__esDecorate(null, null, [observe], { kind: \"field\", name: \"count\", static: true, private: false }, null, []);") != null);
+    try T.expect(std.mem.indexOf(u8, out, "__esDecorate(null, null, [logged], { kind: \"method\", name: \"greet\", static: true, private: false, access: { has: function (obj) { return \"greet\" in obj; }, get: function (obj) { return obj.greet; } } }, null, []);") != null);
+    try T.expect(std.mem.indexOf(u8, out, "__esDecorate(null, null, [observe], { kind: \"field\", name: \"count\", static: true, private: false, access: { has: function (obj) { return \"count\" in obj; }, get: function (obj) { return obj.count; }, set: function (obj, value) { obj.count = value; } } }, null, []);") != null);
     try T.expect(std.mem.indexOf(u8, out, "static: false") == null);
+}
+
+test "emit: stage 3 setter decorator includes set in access descriptor (no get)" {
+    const out = try emitWithOpts(
+        \\class Foo {
+        \\  @validated
+        \\  set name(v: string) { this._name = v; }
+        \\}
+    , .{ .experimental_decorators = false });
+    defer T.allocator.free(out);
+    // Setter access: has + set only (no get).
+    try T.expect(std.mem.indexOf(u8, out, "kind: \"setter\", name: \"name\"") != null);
+    try T.expect(std.mem.indexOf(u8, out, "set: function (obj, value) { obj.name = value; }") != null);
+    // Setter has no `get`.
+    try T.expect(std.mem.indexOf(u8, out, "get: function (obj) { return obj.name;") == null);
 }
 
 test "emit: stage 3 class-only decorator does not produce legacy class assignment" {
