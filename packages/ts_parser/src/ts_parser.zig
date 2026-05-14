@@ -89,6 +89,7 @@ pub const Parser = struct {
     target_es2015_or_later: bool,
     suppress_strict_param_names: bool,
     top_level_external_module_indicator: bool,
+    top_level_export_indicator: bool,
     in_top_level_module_binding_decl: bool,
     /// True for `.tsx` files. Enables JSX parsing in expression
     /// position; the parser disambiguates `<T>x` (generic type
@@ -137,6 +138,7 @@ pub const Parser = struct {
             .target_es2015_or_later = false,
             .suppress_strict_param_names = false,
             .top_level_external_module_indicator = false,
+            .top_level_export_indicator = false,
             .in_top_level_module_binding_decl = false,
             .is_tsx = false,
             .is_declaration_file = false,
@@ -2406,7 +2408,7 @@ pub const Parser = struct {
             try self.reportCodeAt(self.peek().span.start, self.peek().line, 18059, "Named imports are not allowed in a deferred import.");
         }
 
-        if ((self.peek().kind == .identifier or self.peek().kind.isContextualKeyword()) and
+        if ((self.peek().kind == .identifier or self.peek().kind == .kw_await or self.peek().kind.isContextualKeyword()) and
             self.peekAt(1).kind == .equal)
         {
             const alias_tok = self.peek();
@@ -2418,7 +2420,7 @@ pub const Parser = struct {
                     "An import alias cannot use 'import type'.",
                 );
             }
-            if (alias_tok.kind == .kw_await and self.peekAt(2).kind == .kw_require) {
+            if (alias_tok.kind == .kw_await and (self.peekAt(2).kind == .kw_require or self.top_level_export_indicator)) {
                 try self.reportCodeAt(
                     alias_tok.span.start,
                     alias_tok.line,
@@ -2483,6 +2485,14 @@ pub const Parser = struct {
         // Default binding?
         if (self.peek().kind == .identifier or self.peek().kind.isContextualKeyword()) {
             const name_tok = self.advance();
+            if (name_tok.kind == .kw_await and self.top_level_external_module_indicator) {
+                try self.reportCodeAt(
+                    name_tok.span.start,
+                    name_tok.line,
+                    1262,
+                    "Identifier expected. 'await' is a reserved word at the top-level of a module.",
+                );
+            }
             const id = try self.internToken(name_tok);
             default_binding = try self.builder.addIdentifier(tokenSpan(name_tok), id);
             if (!self.match(.comma)) {
@@ -2494,6 +2504,14 @@ pub const Parser = struct {
         if (self.match(.asterisk)) {
             _ = try self.expect(.kw_as, "'as' in namespace import");
             const name_tok = try self.expectIdentifierLike();
+            if (name_tok.kind == .kw_await and self.top_level_external_module_indicator) {
+                try self.reportCodeAt(
+                    name_tok.span.start,
+                    name_tok.line,
+                    1262,
+                    "Identifier expected. 'await' is a reserved word at the top-level of a module.",
+                );
+            }
             const id = try self.internToken(name_tok);
             namespace_binding = try self.builder.addIdentifier(tokenSpan(name_tok), id);
         }
@@ -2679,6 +2697,7 @@ pub const Parser = struct {
         const start = self.advance(); // export
         if (self.block_depth == 0 and self.namespace_depth == 0 and self.ambient_depth == 0) {
             self.top_level_external_module_indicator = true;
+            self.top_level_export_indicator = true;
         }
         if (self.peek().kind == .kw_export) {
             const dup = self.advance();
@@ -7920,6 +7939,32 @@ test "parser: import namespace" {
     const top = hir_mod.blockStmts(&s.hir, root)[0];
     const imp = hir_mod.importOf(&s.hir, top);
     try T.expect(imp.namespace_binding != hir_mod.none_node_id);
+}
+
+test "parser: top-level module imports cannot bind await" {
+    var s = try newTestSetup(
+        \\import await from "./mod";
+        \\import * as await from "./other";
+        \\import await = require("./third");
+    );
+    defer destroyTestSetup(s);
+
+    _ = try s.parser.parseSourceFile();
+    var found: usize = 0;
+    for (s.parser.diagnostics.items) |d| {
+        if (d.code == 1262) found += 1;
+    }
+    try T.expectEqual(@as(usize, 3), found);
+}
+
+test "parser: internal import-alias may bind await in scripts" {
+    var s = try newTestSetup("import await = foo.await;");
+    defer destroyTestSetup(s);
+
+    _ = try s.parser.parseSourceFile();
+    for (s.parser.diagnostics.items) |d| {
+        try T.expect(d.code != 1262);
+    }
 }
 
 test "parser: import type-only" {

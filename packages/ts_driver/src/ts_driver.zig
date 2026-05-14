@@ -190,7 +190,7 @@ fn reportMissingReferencePathDiagnostics(
         if (idx >= line.len) continue;
         const path = line[path_start..idx];
         if (path.len == 0) continue;
-        if (isHarnessProvidedReferencePath(path)) continue;
+        if (isHarnessProvidedReferencePath(path) or virtualReferencePathExists(source, path)) continue;
 
         std.Io.Dir.cwd().access(io, path, .{}) catch {
             const message = try std.fmt.allocPrint(gpa, "File '{s}' not found.", .{path});
@@ -208,6 +208,31 @@ fn reportMissingReferencePathDiagnostics(
 
 fn isHarnessProvidedReferencePath(path: []const u8) bool {
     return std.mem.startsWith(u8, path, "/.lib/");
+}
+
+fn virtualReferencePathExists(source: []const u8, path: []const u8) bool {
+    if (std.mem.indexOf(u8, source, "@filename:") == null and
+        std.mem.indexOf(u8, source, "@Filename:") == null)
+    {
+        return false;
+    }
+    var normalized_path = path;
+    while (std.mem.startsWith(u8, normalized_path, "./")) normalized_path = normalized_path[2..];
+    while (std.mem.startsWith(u8, normalized_path, "/")) normalized_path = normalized_path[1..];
+    var lines = std.mem.splitScalar(u8, source, '\n');
+    while (lines.next()) |raw| {
+        const line = std.mem.trim(u8, raw, " \t\r");
+        const marker = std.mem.indexOf(u8, line, "@filename:") orelse
+            (std.mem.indexOf(u8, line, "@Filename:") orelse continue);
+        var virtual_path = std.mem.trim(u8, line[marker + "@filename:".len ..], " \t\r");
+        while (std.mem.startsWith(u8, virtual_path, "./")) virtual_path = virtual_path[2..];
+        while (std.mem.startsWith(u8, virtual_path, "/")) virtual_path = virtual_path[1..];
+        if (std.mem.eql(u8, virtual_path, normalized_path)) return true;
+        if (std.mem.lastIndexOfScalar(u8, virtual_path, '/')) |slash| {
+            if (std.mem.eql(u8, virtual_path[slash + 1 ..], normalized_path)) return true;
+        }
+    }
+    return false;
 }
 
 fn directiveValue(source: []const u8, name: []const u8) ?[]const u8 {
@@ -1796,6 +1821,23 @@ test "driver: classic for initializer binding pattern is visible in condition up
 
 test "driver: harness lib triple-slash path reference is provided externally" {
     var c = try compileSource(T.allocator, "/// <reference path=\"/.lib/react16.d.ts\" />\nlet x = 1;", .{ .no_emit = true });
+    defer {
+        c.deinit();
+        T.allocator.destroy(c);
+    }
+    for (c.diagnostics.items) |d| {
+        try T.expect(d.code != 6053);
+    }
+}
+
+test "driver: virtual triple-slash path reference is satisfied by filename section" {
+    var c = try compileSource(T.allocator,
+        \\// @filename: main.ts
+        \\/// <reference path="./commonjs.d.ts" />
+        \\let x = 1;
+        \\// @filename: commonjs.d.ts
+        \\declare const y: number;
+    , .{ .no_emit = true });
     defer {
         c.deinit();
         T.allocator.destroy(c);

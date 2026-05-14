@@ -123,6 +123,8 @@ pub const TsCodes = struct {
     pub const spread_argument_requires_tuple_or_rest: u32 = 2556;
     pub const expected_n_type_arguments: u32 = 2558;
     pub const no_default_export: u32 = 1192;
+    pub const import_assignment_es_module: u32 = 1202;
+    pub const await_reserved_top_level_module: u32 = 1262;
     pub const multiple_default_exports: u32 = 2528;
     pub const default_export_merge: u32 = 2652;
     pub const infer_constraints_not_identical: u32 = 2838;
@@ -201,6 +203,7 @@ pub const TsCodes = struct {
     pub const void_truthiness: u32 = 1345;
     pub const expression_always_truthy: u32 = 2872;
     pub const expression_always_falsy: u32 = 2873;
+    pub const unsafe_rewrite_relative_import: u32 = 2876;
     pub const nullish_rhs_unreachable: u32 = 2869;
     pub const unknown_catch_variable: u32 = 18046;
     pub const object_possibly_nullish: u32 = 18049;
@@ -271,6 +274,7 @@ pub const TsCodes = struct {
     /// auto-increment is only valid after a numeric predecessor.
     pub const enum_computed_after_string: u32 = 2553;
     pub const const_enum_initializer_must_be_constant: u32 = 2474;
+    pub const jsdoc_function_type_mismatch: u32 = 8030;
 };
 
 /// Per-alias generic info: the type-parameter TypeIds in
@@ -1498,6 +1502,7 @@ pub const Checker = struct {
             const stmt = self.unwrapExportDecl(raw);
             const k = self.hir.kindOf(stmt);
             if (k == .interface_decl or k == .type_alias_decl) continue;
+            if (k == .import_decl and self.importDeclBindsLocal(stmt, name)) return true;
             if (self.declarationName(stmt)) |decl_name| {
                 if (decl_name == name) return true;
             }
@@ -1961,6 +1966,25 @@ pub const Checker = struct {
             const marker = std.mem.indexOf(u8, line, "@module:") orelse continue;
             const value = std.mem.trim(u8, line[marker + "@module:".len ..], " \t\r");
             return std.ascii.eqlIgnoreCase(value, module_name);
+        }
+        return false;
+    }
+
+    fn sourceDirectiveValueMentions(self: *Checker, directive_name: []const u8, wanted: []const u8) bool {
+        const src = self.source orelse return false;
+        var lines = std.mem.splitScalar(u8, src, '\n');
+        while (lines.next()) |raw| {
+            const line = std.mem.trim(u8, raw, " \t\r");
+            if (line.len == 0) continue;
+            if (!std.mem.startsWith(u8, line, "//")) break;
+            const at = std.mem.indexOfScalar(u8, line, '@') orelse continue;
+            var rest = line[at + 1 ..];
+            if (!std.mem.startsWith(u8, rest, directive_name)) continue;
+            rest = std.mem.trim(u8, rest[directive_name.len..], " \t\r:");
+            var parts = std.mem.splitScalar(u8, rest, ',');
+            while (parts.next()) |part| {
+                if (std.ascii.eqlIgnoreCase(std.mem.trim(u8, part, " \t\r"), wanted)) return true;
+            }
         }
         return false;
     }
@@ -2494,6 +2518,7 @@ pub const Checker = struct {
     fn checkFnDecl(self: *Checker, node: NodeId) CheckError!void {
         const had_type_params = hir_mod.fnTypeParams(self.hir, node).len > 0;
         _ = try self.checkFnSignatureOnly(node);
+        try self.checkJsDocFunctionTypeTag(node);
         const contextual_return = if (hir_mod.fnDeclOf(self.hir, node).return_type == hir_mod.none_node_id)
             self.contextualReturnTypeForFunction(node)
         else
@@ -2504,6 +2529,28 @@ pub const Checker = struct {
         try self.checkFnParameterDefaultReferences(node);
         try self.walkFnBody(node);
         try self.checkFunctionOverloadCompatibilityAfterBody(node);
+    }
+
+    fn checkJsDocFunctionTypeTag(self: *Checker, node: NodeId) CheckError!void {
+        if (!self.sourceHasCheckJsDirective()) return;
+        const f = hir_mod.fnDeclOf(self.hir, node);
+        if (f.name == hir_mod.none_node_id or self.hir.kindOf(f.name) != .identifier) return;
+        const src = self.source orelse return;
+        const span = self.hir.spanOf(node);
+        const body = self.leadingJsDocBody(src, span.start) orelse return;
+        const tags = ts_parser.jsdoc.parse(self.gpa, body) catch return;
+        defer self.gpa.free(tags);
+        for (tags) |tag| {
+            if (tag.kind != .type_tag) continue;
+            const type_text = std.mem.trim(u8, tag.type_text, " \t\r\n");
+            if (std.mem.startsWith(u8, type_text, "function(")) return;
+            const fn_name = self.string_interner.get(hir_mod.identifierOf(self.hir, f.name).name);
+            const base = jsDocTypeBaseName(type_text);
+            if (base.len == fn_name.len and std.mem.eql(u8, base, fn_name)) {
+                try self.report(f.name, TsCodes.jsdoc_function_type_mismatch, "The type of a function declaration must match the function's signature.");
+                return;
+            }
+        }
     }
 
     fn checkFnDeclWithFlowBoundary(self: *Checker, node: NodeId) CheckError!void {
@@ -4756,7 +4803,9 @@ pub const Checker = struct {
         const parent = self.hir.parentOf(decl);
         if (parent == hir_mod.none_node_id or self.hir.kindOf(parent) != .import_decl) return null;
         const imp = hir_mod.importOf(self.hir, parent);
-        if (imp.namespace_binding != decl) return null;
+        const spec = self.string_interner.get(imp.module);
+        if (imp.namespace_binding != decl and
+            !(imp.default_binding == decl and std.mem.startsWith(u8, spec, ".") and self.importDeclIsRequireAssignment(parent))) return null;
         return try self.moduleNamespaceTypeForSpecifier(imp.module, parent);
     }
 
@@ -4766,8 +4815,15 @@ pub const Checker = struct {
         for (hir_mod.blockStmts(self.hir, root)) |stmt| {
             if (self.hir.kindOf(stmt) != .import_decl) continue;
             const imp = hir_mod.importOf(self.hir, stmt);
-            if (imp.namespace_binding == hir_mod.none_node_id or self.hir.kindOf(imp.namespace_binding) != .identifier) continue;
-            const id = hir_mod.identifierOf(self.hir, imp.namespace_binding);
+            const spec = self.string_interner.get(imp.module);
+            const binding = if (imp.namespace_binding != hir_mod.none_node_id)
+                imp.namespace_binding
+            else if (imp.default_binding != hir_mod.none_node_id and std.mem.startsWith(u8, spec, ".") and self.importDeclIsRequireAssignment(stmt))
+                imp.default_binding
+            else
+                hir_mod.none_node_id;
+            if (binding == hir_mod.none_node_id or self.hir.kindOf(binding) != .identifier) continue;
+            const id = hir_mod.identifierOf(self.hir, binding);
             if (id.name != name) continue;
             return try self.moduleNamespaceTypeForSpecifier(imp.module, stmt);
         }
@@ -4806,8 +4862,35 @@ pub const Checker = struct {
         if (self.hir.kindOf(decl) == .class_decl or self.hir.kindOf(decl) == .class_expr) {
             if (self.class_static_types.get(name)) |static_t| return static_t;
         }
+        if (self.hir.kindOf(decl) == .enum_decl) {
+            return try self.enumNamespaceValueType(decl, name);
+        }
         const t = self.hir.typeOf(decl);
         return if (t != types.Primitive.none) t else types.Primitive.any;
+    }
+
+    fn enumNamespaceValueType(self: *Checker, decl: NodeId, enum_name: hir_mod.StringId) CheckError!TypeId {
+        var members: std.ArrayListUnmanaged(types.ObjectMember) = .empty;
+        defer members.deinit(self.gpa);
+        const enum_t = try self.enumNominalType(enum_name);
+        for (hir_mod.enumMembers(self.hir, decl)) |member| {
+            if (self.hir.kindOf(member) != .object_property) continue;
+            const prop = hir_mod.objectPropertyOf(self.hir, member);
+            const member_name: ?hir_mod.StringId = switch (self.hir.kindOf(prop.key)) {
+                .identifier => hir_mod.identifierOf(self.hir, prop.key).name,
+                .literal_string => hir_mod.literalStringOf(self.hir, prop.key).value,
+                else => null,
+            };
+            if (member_name == null) continue;
+            try members.append(self.gpa, .{
+                .name = member_name.?,
+                .type = enum_t,
+                .is_optional = false,
+                .is_readonly = true,
+                .is_method = false,
+            });
+        }
+        return self.interner.internObjectType(members.items) catch return error.OutOfMemory;
     }
 
     fn virtualSectionMatchesSpecifier(self: *Checker, src: []const u8, node: NodeId, spec: []const u8) bool {
@@ -9043,6 +9126,14 @@ pub const Checker = struct {
             try self.checkImportEqualsEntity(node, imp);
             return;
         }
+        if (self.importDeclIsRequireAssignment(node) and self.sourceDirectiveValueMentions("module", "esnext")) {
+            try self.report(node, TsCodes.import_assignment_es_module, "Import assignment cannot be used when targeting ECMAScript modules.");
+        }
+        if (self.importDeclIsRequireAssignment(node) and self.sourceDirectiveValueMentions("rewriteRelativeImportExtensions", "true") and
+            std.mem.startsWith(u8, spec, ".") and try self.virtualRelativeImportResolvesToIndexUnderExtensionPath(node, spec))
+        {
+            try self.report(node, TsCodes.unsafe_rewrite_relative_import, "This relative import path is unsafe to rewrite because it looks like a file name, but actually resolves to an index file.");
+        }
         if (std.mem.endsWith(u8, spec, ".json")) {
             if (self.strict_flags.resolve_json_module or
                 self.nodeSourceContainsImportAttributes(node) or
@@ -9085,6 +9176,7 @@ pub const Checker = struct {
             try self.checkNamedImportSpecifiers(node, imp, spec);
             return;
         }
+        if (try self.virtualClassicBareModuleExists(node, spec)) return;
         if (self.referenceLibProvidesBareModule(spec)) return;
         if (try self.isKnownAmbientModuleName(node, spec)) return;
         const msg = try std.fmt.allocPrint(
@@ -9180,6 +9272,45 @@ pub const Checker = struct {
         }
     }
 
+    fn importDeclIsRequireAssignment(self: *Checker, node: NodeId) bool {
+        const src = self.source orelse return false;
+        const sp = self.hir.spanOf(node);
+        if (sp.start >= sp.end or sp.end > src.len) return false;
+        const text = src[sp.start..sp.end];
+        return std.mem.indexOf(u8, text, " = require") != null;
+    }
+
+    fn checkRewriteRelativeImportCall(self: *Checker, node: NodeId, callee: NodeId, args: []const NodeId) CheckError!void {
+        if (!self.sourceDirectiveValueMentions("rewriteRelativeImportExtensions", "true")) return;
+        if (args.len == 0 or self.hir.kindOf(args[0]) != .literal_string) return;
+        const is_loader = if (self.isDynamicImportCallee(callee))
+            true
+        else blk: {
+            if (self.hir.kindOf(callee) != .identifier) break :blk false;
+            const id = hir_mod.identifierOf(self.hir, callee);
+            break :blk std.mem.eql(u8, self.string_interner.get(id.name), "require");
+        };
+        if (!is_loader) return;
+        const lit = hir_mod.literalStringOf(self.hir, args[0]);
+        const spec = self.string_interner.get(lit.value);
+        if (!std.mem.startsWith(u8, spec, ".")) return;
+        if (!(std.mem.endsWith(u8, spec, ".ts") or
+            std.mem.endsWith(u8, spec, ".tsx") or
+            std.mem.endsWith(u8, spec, ".mts") or
+            std.mem.endsWith(u8, spec, ".cts"))) return;
+        if ((try self.resolveVirtualRelativeModule(node, spec)) != .none) return;
+        const msg = try std.fmt.allocPrint(
+            self.diag_arena.allocator(),
+            "Cannot find module '{s}' or its corresponding type declarations.",
+            .{spec},
+        );
+        try self.diagnostics.append(self.gpa, .{
+            .node = args[0],
+            .code = TsCodes.cannot_find_module,
+            .message = msg,
+        });
+    }
+
     fn checkVirtualBareModuleImport(self: *Checker, node: NodeId, spec: []const u8) CheckError!bool {
         if (!self.sourceHasVirtualFilenameSections()) return false;
         const resolution = try self.resolveVirtualBareModule(spec);
@@ -9204,6 +9335,24 @@ pub const Checker = struct {
         }
     }
 
+    fn virtualClassicBareModuleExists(self: *Checker, node: NodeId, spec: []const u8) CheckError!bool {
+        if (!self.sourceHasVirtualFilenameSections()) return false;
+        if (!(self.sourceDirectiveValueMentions("ModuleResolution", "classic") or
+            self.sourceDirectiveValueMentions("moduleResolution", "classic"))) return false;
+        if (std.mem.indexOfScalar(u8, spec, '/') != null) return false;
+        const from = self.virtualSectionFilenameForNode(node) orelse return false;
+        var from_path = from;
+        while (std.mem.startsWith(u8, from_path, "/")) from_path = from_path[1..];
+        const dir = if (std.mem.lastIndexOfScalar(u8, from_path, '/')) |slash| from_path[0..slash] else "";
+        const local_base = if (dir.len > 0)
+            try std.fmt.allocPrint(self.gpa, "{s}/{s}", .{ dir, spec })
+        else
+            try self.gpa.dupe(u8, spec);
+        defer self.gpa.free(local_base);
+        if (self.virtualSourceHasFilenameWithExtOrIndex(local_base, ".d.ts")) return true;
+        return self.virtualSourceHasFilenameWithExtOrIndex(spec, ".d.ts");
+    }
+
     fn resolveVirtualRelativeModule(self: *Checker, node: NodeId, spec: []const u8) CheckError!VirtualModuleResolution {
         const from = self.virtualSectionFilenameForNode(node) orelse return .none;
         const resolved = try self.resolveVirtualRelativePath(from, spec);
@@ -9224,6 +9373,23 @@ pub const Checker = struct {
         return .none;
     }
 
+    fn virtualRelativeImportResolvesToIndexUnderExtensionPath(self: *Checker, node: NodeId, spec: []const u8) CheckError!bool {
+        if (!self.sourceHasVirtualFilenameSections()) return false;
+        const dot = std.mem.lastIndexOfScalar(u8, spec, '.') orelse return false;
+        const slash = std.mem.lastIndexOfScalar(u8, spec, '/');
+        if (slash != null and dot < slash.?) return false;
+        const from = self.virtualSectionFilenameForNode(node) orelse return false;
+        const resolved = try self.resolveVirtualRelativePath(from, spec);
+        defer self.gpa.free(resolved);
+        const exts = [_][]const u8{ ".d.ts", ".ts", ".tsx", ".mts", ".cts", ".js", ".jsx", ".mjs", ".cjs" };
+        for (exts) |ext| {
+            const index = std.fmt.allocPrint(self.gpa, "{s}/index{s}", .{ resolved, ext }) catch return error.OutOfMemory;
+            defer self.gpa.free(index);
+            if (self.virtualSourceHasFilename(index)) return true;
+        }
+        return false;
+    }
+
     fn resolveVirtualBareModule(self: *Checker, spec: []const u8) CheckError!VirtualModuleResolution {
         if (std.mem.startsWith(u8, spec, ".")) return .none;
         const slash = packageNameEnd(spec);
@@ -9233,6 +9399,9 @@ pub const Checker = struct {
         if (try self.virtualBareModuleDeclarationFilename(spec)) |path| {
             self.gpa.free(path);
             return .declaration;
+        }
+        if (self.sourceDirectiveValueMentions("ModuleResolution", "classic") or self.sourceDirectiveValueMentions("moduleResolution", "classic")) {
+            if (self.virtualSourceHasFilenameWithExtOrIndex(spec, ".d.ts")) return .declaration;
         }
 
         if (try self.virtualPackageHasImplementation("node_modules", package_name, subpath)) return .implementation;
@@ -9513,6 +9682,13 @@ pub const Checker = struct {
         const direct = std.fmt.allocPrint(self.gpa, "{s}{s}", .{ base, ext }) catch return false;
         defer self.gpa.free(direct);
         if (self.virtualSourceHasFilename(direct)) return true;
+        if (std.mem.eql(u8, ext, ".ts") or std.mem.eql(u8, ext, ".d.ts")) {
+            if (std.mem.lastIndexOfScalar(u8, base, '.')) |dot| {
+                const arbitrary_decl = std.fmt.allocPrint(self.gpa, "{s}.d{s}.ts", .{ base[0..dot], base[dot..] }) catch return false;
+                defer self.gpa.free(arbitrary_decl);
+                if (self.virtualSourceHasFilename(arbitrary_decl)) return true;
+            }
+        }
         const index = std.fmt.allocPrint(self.gpa, "{s}/index{s}", .{ base, ext }) catch return false;
         defer self.gpa.free(index);
         return self.virtualSourceHasFilename(index);
@@ -9657,6 +9833,11 @@ pub const Checker = struct {
             if (!self.virtualSectionMatchesResolvedModule(raw, resolved, spec)) continue;
             found_module = true;
             if (self.hir.kindOf(raw) != .export_decl) continue;
+            for (hir_mod.exportNamed(self.hir, raw)) |export_spec| {
+                if (self.hir.kindOf(export_spec) != .import_specifier) continue;
+                const sp = hir_mod.importSpecifierOf(self.hir, export_spec);
+                if (sp.local == name or sp.imported == name) return true;
+            }
             const decl = self.unwrapExportDecl(raw);
             const decl_name = self.declarationName(decl) orelse continue;
             if (decl_name == name) return true;
@@ -9776,6 +9957,27 @@ pub const Checker = struct {
         return null;
     }
 
+    fn memberAccessOnVirtualJsDefaultImport(self: *Checker, object_node: NodeId, member_name: hir_mod.StringId) CheckError!bool {
+        if (!self.sourceHasAllowJsDirective() or !self.sourceHasVirtualFilenameSections()) return false;
+        if (self.hir.kindOf(object_node) != .identifier) return false;
+        if (std.mem.eql(u8, self.string_interner.get(member_name), "default")) return false;
+        const local_name = hir_mod.identifierOf(self.hir, object_node).name;
+        const root = self.rootBlockFor(object_node);
+        if (root == hir_mod.none_node_id or self.hir.kindOf(root) != .block_stmt) return false;
+        const anchor_section = self.virtualSectionStartForNode(object_node);
+        for (hir_mod.blockStmts(self.hir, root)) |stmt| {
+            if (self.hir.kindOf(stmt) != .import_decl) continue;
+            if (self.virtualSectionStartForNode(stmt) != anchor_section) continue;
+            const imp = hir_mod.importOf(self.hir, stmt);
+            if (imp.default_binding == hir_mod.none_node_id or self.hir.kindOf(imp.default_binding) != .identifier) continue;
+            if (hir_mod.identifierOf(self.hir, imp.default_binding).name != local_name) continue;
+            const spec_text = self.string_interner.get(imp.module);
+            if (std.mem.startsWith(u8, spec_text, ".")) return false;
+            return (try self.resolveVirtualBareModule(spec_text)) == .implementation;
+        }
+        return false;
+    }
+
     fn typeOnlyImportLocal(self: *Checker, local_name: hir_mod.StringId, anchor: NodeId) bool {
         const root = self.rootBlockFor(anchor);
         if (root == hir_mod.none_node_id or self.hir.kindOf(root) != .block_stmt) return false;
@@ -9796,6 +9998,20 @@ pub const Checker = struct {
                 const sp = hir_mod.importSpecifierOf(self.hir, spec_node);
                 if (sp.local == local_name) return true;
             }
+        }
+        return false;
+    }
+
+    fn importDeclBindsLocal(self: *Checker, import_node: NodeId, local_name: hir_mod.StringId) bool {
+        if (import_node == hir_mod.none_node_id or self.hir.kindOf(import_node) != .import_decl) return false;
+        const imp = hir_mod.importOf(self.hir, import_node);
+        if (imp.default_binding != hir_mod.none_node_id and self.hir.kindOf(imp.default_binding) == .identifier and
+            hir_mod.identifierOf(self.hir, imp.default_binding).name == local_name) return true;
+        if (imp.namespace_binding != hir_mod.none_node_id and self.hir.kindOf(imp.namespace_binding) == .identifier and
+            hir_mod.identifierOf(self.hir, imp.namespace_binding).name == local_name) return true;
+        for (hir_mod.importNamed(self.hir, import_node)) |spec_node| {
+            if (self.hir.kindOf(spec_node) != .import_specifier) continue;
+            if (hir_mod.importSpecifierOf(self.hir, spec_node).local == local_name) return true;
         }
         return false;
     }
@@ -14411,6 +14627,7 @@ pub const Checker = struct {
                 if (try self.awaitedExpressionAssignableToTarget(v.init, init_type, declared_type)) break :blk true;
                 if (try self.literalExpressionAssignableToTarget(v.init, declared_type)) break :blk true;
                 if (try self.templateExpressionAssignableToType(v.init, declared_type)) break :blk true;
+                if (self.dynamicImportDefinitelyMismatchesTypeofNamespace(v.init, v.type_annotation)) break :blk false;
                 break :blk self.engine.isAssignableTo(init_type, declared_type) catch return error.OutOfMemory;
             };
             if (!ok) {
@@ -14606,6 +14823,53 @@ pub const Checker = struct {
     fn jsDocTypeForVarDecl(self: *Checker, node: NodeId) CheckError!?TypeId {
         if (!self.sourceHasCheckJsDirective()) return null;
         return try self.jsDocTypeForLeadingNode(node);
+    }
+
+    fn dynamicImportDefinitelyMismatchesTypeofNamespace(self: *Checker, init_node: NodeId, type_annotation: NodeId) bool {
+        if (init_node == hir_mod.none_node_id or type_annotation == hir_mod.none_node_id) return false;
+        if (self.hir.kindOf(init_node) != .call_expr) return false;
+        const c = hir_mod.callOf(self.hir, init_node);
+        if (!self.isDynamicImportCallee(c.callee)) return false;
+        const args = hir_mod.callArgs(self.hir, init_node);
+        if (args.len == 0 or self.hir.kindOf(args[0]) != .literal_string) return false;
+        const src = self.source orelse return false;
+        const anno_span = self.hir.spanOf(type_annotation);
+        if (anno_span.start >= anno_span.end or anno_span.end > src.len) return false;
+        const anno_text = src[anno_span.start..anno_span.end];
+        const typeof_pos = std.mem.indexOf(u8, anno_text, "typeof") orelse return false;
+        var rest = std.mem.trim(u8, anno_text[typeof_pos + "typeof".len ..], " \t\r\n<>(),");
+        var name_len: usize = 0;
+        while (name_len < rest.len and isJsDocIdentChar(rest[name_len])) : (name_len += 1) {}
+        if (name_len == 0) return false;
+        rest = rest[0..name_len];
+        const namespace_id = self.string_interner.intern(rest) catch return false;
+        const expected_spec = self.namespaceImportSpecifierForLocal(namespace_id, init_node) orelse return false;
+        const lit = hir_mod.literalStringOf(self.hir, args[0]);
+        const actual_spec = self.string_interner.get(lit.value);
+        return !moduleSpecifiersEquivalent(expected_spec, actual_spec);
+    }
+
+    fn namespaceImportSpecifierForLocal(self: *Checker, local_name: hir_mod.StringId, anchor: NodeId) ?[]const u8 {
+        const root = self.rootBlockFor(anchor);
+        if (root == hir_mod.none_node_id or self.hir.kindOf(root) != .block_stmt) return null;
+        const anchor_section = if (self.sourceHasVirtualFilenameSections()) self.virtualSectionStartForNode(anchor) else 0;
+        for (hir_mod.blockStmts(self.hir, root)) |stmt| {
+            if (self.hir.kindOf(stmt) != .import_decl) continue;
+            if (self.sourceHasVirtualFilenameSections() and self.virtualSectionStartForNode(stmt) != anchor_section) continue;
+            const imp = hir_mod.importOf(self.hir, stmt);
+            if (imp.namespace_binding == hir_mod.none_node_id or self.hir.kindOf(imp.namespace_binding) != .identifier) continue;
+            if (hir_mod.identifierOf(self.hir, imp.namespace_binding).name != local_name) continue;
+            return self.string_interner.get(imp.module);
+        }
+        return null;
+    }
+
+    fn moduleSpecifiersEquivalent(a_raw: []const u8, b_raw: []const u8) bool {
+        var a = a_raw;
+        var b = b_raw;
+        while (std.mem.startsWith(u8, a, "./")) a = a[2..];
+        while (std.mem.startsWith(u8, b, "./")) b = b[2..];
+        return std.mem.eql(u8, a, b);
     }
 
     fn jsDocTypeForLeadingNode(self: *Checker, node: NodeId) CheckError!?TypeId {
@@ -15902,6 +16166,7 @@ pub const Checker = struct {
                     const t = try self.checkExpression(arg);
                     try arg_types.append(self.gpa, t);
                 }
+                try self.checkRewriteRelativeImportCall(node, c.callee, args);
                 if (self.hir.kindOf(c.callee) == .member_access) {
                     try self.checkMethodThisCompatibility(node, c.callee, callee_t);
                 } else if (!self.callCalleeHasSyntacticThisReceiver(c.callee)) {
@@ -16180,6 +16445,10 @@ pub const Checker = struct {
                     self.nodeIsThisReference(m.object) and
                     self.thisInsideCheckJsConstructorFunction(m.object))
                 {
+                    break :blk types.Primitive.any;
+                }
+                if (try self.memberAccessOnVirtualJsDefaultImport(m.object, m.name)) {
+                    try self.reportPropertyDoesNotExist(node, m.name);
                     break :blk types.Primitive.any;
                 }
                 // TS2341: legacy `private` member access from
@@ -16729,6 +16998,10 @@ pub const Checker = struct {
                             });
                         } else if (try self.computedPropertyKeyTypeIsSymbolLike(key_t)) {
                             try computed_symbol_value_types.append(self.gpa, vt);
+                        } else if (self.sourceHasCheckJsDirective() and self.hir.kindOf(op.key) == .binary_op) {
+                            // tsc does not use non-literal JS computed
+                            // property expressions like `['b' + 'ar1']`
+                            // to constrain later dot assignments.
                         } else {
                             try computed_string_value_types.append(self.gpa, vt);
                         }
@@ -19359,6 +19632,8 @@ pub const Checker = struct {
             if (self.isDeclNameSlot(node) or self.nodeIsThisParameterName(node) or self.thisInsideDecoratorInitializerCallback(node)) return types.Primitive.any;
             if (self.nodeHasAncestorKind(node, .decorator)) return types.Primitive.any;
             if (self.thisInsideCheckJsConstructorFunction(node)) return types.Primitive.any;
+            if (self.thisInsideCheckJsPrototypeAssignmentFunction(node)) return types.Primitive.any;
+            if (self.thisInsideCheckJsFunctionWithThisTag(node)) return types.Primitive.any;
             if (self.thisInsideCheckJsCallbackWithThis(node)) return types.Primitive.any;
             if (!self.sourceHasStrictFalseDirective() and
                 !self.identifierThisIsArrowCaptured(node) and
@@ -19507,6 +19782,8 @@ pub const Checker = struct {
                                 if (t != types.Primitive.none) return t;
                             }
                         }
+                    } else if (sk == .import_decl) {
+                        if (self.importDeclBindsLocal(s, id.name)) return types.Primitive.any;
                     }
                 }
             }
@@ -19550,6 +19827,8 @@ pub const Checker = struct {
                                 if (t != types.Primitive.none) return t;
                             }
                         }
+                    } else if (sk == .import_decl) {
+                        if (self.importDeclBindsLocal(s, id.name)) return types.Primitive.any;
                     }
                 }
             }
@@ -21083,6 +21362,8 @@ pub const Checker = struct {
         if (self.thisInsideDecoratorInitializerCallback(node)) return types.Primitive.any;
         if (self.sourceHasStrictFalseDirective() and self.thisInsideNonArrowPlainFunction(node)) return types.Primitive.any;
         if (self.thisInsideCheckJsConstructorFunction(node)) return types.Primitive.any;
+        if (self.thisInsideCheckJsPrototypeAssignmentFunction(node)) return types.Primitive.any;
+        if (self.thisInsideCheckJsFunctionWithThisTag(node)) return types.Primitive.any;
         if (self.thisInsideCheckJsCallbackWithThis(node)) return types.Primitive.any;
         if (self.currentThisType()) |this_t| return this_t;
         if (self.nodeHasAncestorKind(node, .decorator)) return types.Primitive.any;
@@ -21135,6 +21416,55 @@ pub const Checker = struct {
             const f = hir_mod.fnDeclOf(self.hir, cur);
             if (f.flags.is_method or f.flags.is_constructor) return false;
             return self.fnLooksLikeCheckJsConstructor(cur);
+        }
+        return false;
+    }
+
+    fn thisInsideCheckJsPrototypeAssignmentFunction(self: *Checker, node: NodeId) bool {
+        if (!self.sourceHasCheckJsDirective()) return false;
+        const src = self.source orelse return false;
+        var fn_node = hir_mod.none_node_id;
+        var cur = self.hir.parentOf(node);
+        while (cur != hir_mod.none_node_id) : (cur = self.hir.parentOf(cur)) {
+            const k = self.hir.kindOf(cur);
+            if (k == .arrow_fn) return false;
+            if (k == .fn_expr or k == .fn_decl) {
+                fn_node = cur;
+                break;
+            }
+        }
+        if (fn_node == hir_mod.none_node_id) return false;
+        const fn_span = self.hir.spanOf(fn_node);
+        cur = self.hir.parentOf(fn_node);
+        while (cur != hir_mod.none_node_id) : (cur = self.hir.parentOf(cur)) {
+            const k = self.hir.kindOf(cur);
+            if (k == .block_stmt) break;
+            const sp = self.hir.spanOf(cur);
+            if (sp.start >= fn_span.start or fn_span.start > src.len) continue;
+            const prefix = src[sp.start..fn_span.start];
+            if (std.mem.indexOf(u8, prefix, ".prototype.") != null) return true;
+        }
+        return false;
+    }
+
+    fn thisInsideCheckJsFunctionWithThisTag(self: *Checker, node: NodeId) bool {
+        if (!self.sourceHasCheckJsDirective()) return false;
+        const src = self.source orelse return false;
+        var cur = self.hir.parentOf(node);
+        while (cur != hir_mod.none_node_id) : (cur = self.hir.parentOf(cur)) {
+            const k = self.hir.kindOf(cur);
+            if (k == .arrow_fn) return false;
+            if (k != .fn_decl and k != .fn_expr) continue;
+
+            var owner = cur;
+            while (owner != hir_mod.none_node_id) : (owner = self.hir.parentOf(owner)) {
+                const owner_kind = self.hir.kindOf(owner);
+                if (owner_kind == .block_stmt or owner_kind == .class_decl or owner_kind == .class_expr) break;
+                const span = self.hir.spanOf(owner);
+                const body = self.leadingJsDocBody(src, span.start) orelse continue;
+                if (std.mem.indexOf(u8, body, "@this") != null) return true;
+            }
+            return false;
         }
         return false;
     }
@@ -24329,10 +24659,17 @@ pub const Checker = struct {
         const target_params = self.interner.signatureParams(target_t);
         if (source_params.len != target_params.len) return false;
         const f = hir_mod.fnDeclOf(self.hir, fn_node);
-        if (f.body == hir_mod.none_node_id or self.hir.kindOf(f.body) == .block_stmt) return false;
+        if (f.body == hir_mod.none_node_id) return false;
         const target_ret = self.interner.signatureReturn(target_t) orelse return false;
-        if (self.hir.kindOf(f.body) == .identifier) {
-            const body_id = hir_mod.identifierOf(self.hir, f.body);
+        const body_expr = if (self.hir.kindOf(f.body) == .block_stmt) blk: {
+            const stmts = hir_mod.blockStmts(self.hir, f.body);
+            if (stmts.len != 1 or self.hir.kindOf(stmts[0]) != .return_stmt) return false;
+            const ret = hir_mod.returnOf(self.hir, stmts[0]);
+            if (ret.value == hir_mod.none_node_id) return target_ret == types.Primitive.void_t;
+            break :blk ret.value;
+        } else f.body;
+        if (self.hir.kindOf(body_expr) == .identifier) {
+            const body_id = hir_mod.identifierOf(self.hir, body_expr);
             for (hir_mod.fnParams(self.hir, fn_node), 0..) |param, i| {
                 if (self.hir.kindOf(param) != .parameter) continue;
                 const p = hir_mod.parameterOf(self.hir, param);
@@ -24341,8 +24678,8 @@ pub const Checker = struct {
                 if (i < target_params.len and (self.engine.isAssignableTo(target_params[i], target_ret) catch false)) return true;
             }
         }
-        if (self.hir.kindOf(f.body) == .call_expr) {
-            const call = hir_mod.callOf(self.hir, f.body);
+        if (self.hir.kindOf(body_expr) == .call_expr) {
+            const call = hir_mod.callOf(self.hir, body_expr);
             if (call.callee != hir_mod.none_node_id and self.hir.kindOf(call.callee) == .identifier) {
                 const callee_id = hir_mod.identifierOf(self.hir, call.callee);
                 for (hir_mod.fnParams(self.hir, fn_node), 0..) |param, i| {
@@ -24357,7 +24694,7 @@ pub const Checker = struct {
                     const callee_ret = self.interner.signatureReturn(callee_target) orelse types.Primitive.any;
                     if (!(self.engine.isAssignableTo(callee_ret, target_ret) catch false)) break;
                     const callee_params = self.interner.signatureParams(callee_target);
-                    const args = hir_mod.callArgs(self.hir, f.body);
+                    const args = hir_mod.callArgs(self.hir, body_expr);
                     if (args.len > callee_params.len) break;
                     var ok = true;
                     for (args, 0..) |arg, arg_i| {
@@ -24387,7 +24724,10 @@ pub const Checker = struct {
                 }
             }
         }
-        return try self.literalExpressionAssignableToTarget(f.body, target_ret);
+        const body_t = self.hir.typeOf(body_expr);
+        const checked_body_t = if (body_t != types.Primitive.none) body_t else try self.checkExpression(body_expr);
+        if (self.engine.isAssignableTo(checked_body_t, target_ret) catch false) return true;
+        return try self.literalExpressionAssignableToTarget(body_expr, target_ret);
     }
 
     fn objectLiteralAssignableToTarget(self: *Checker, arg_node: NodeId, arg_t: TypeId, target_t: TypeId) anyerror!bool {
@@ -26074,6 +26414,24 @@ test "checker: ambient module export assignment accepts local value target" {
         \\declare module "M" {
         \\  const A: number;
         \\  export = A;
+        \\}
+    );
+    defer destroyBoundSetup(b);
+    try b.base.checker.checkSourceFile(b.base.root);
+    for (b.base.checker.diagnostics.items) |d| {
+        try T.expect(d.code != TsCodes.cannot_find_name);
+    }
+}
+
+test "checker: ambient module export assignment accepts imported value target" {
+    const b = try newBoundSetup(
+        \\declare module "b" {
+        \\  export function a(): void;
+        \\  export default a;
+        \\}
+        \\declare module "a" {
+        \\  import { a } from "b";
+        \\  export = a;
         \\}
     );
     defer destroyBoundSetup(b);
@@ -37433,6 +37791,37 @@ test "checker: checkjs JSDoc callback @this suppresses implicit this" {
     }
 }
 
+test "checker: checkjs function JSDoc @this tag suppresses implicit this" {
+    const s = try newSetup(
+        \\// @checkJs: true
+        \\// @strict: true
+        \\/** @this {{ value: number }} */
+        \\function f() {
+        \\  return this.value;
+        \\}
+    );
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+    for (s.checker.diagnostics.items) |d| {
+        try T.expect(d.code != TsCodes.this_implicitly_any);
+    }
+}
+
+test "checker: checkjs prototype compound assignment function suppresses implicit this" {
+    const s = try newSetup(
+        \\// @checkJs: true
+        \\function Element() {}
+        \\Element.prototype.remove ??= function () {
+        \\  this.remove();
+        \\};
+    );
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+    for (s.checker.diagnostics.items) |d| {
+        try T.expect(d.code != TsCodes.this_implicitly_any);
+    }
+}
+
 test "checker: checkjs JSDoc readonly class field emits TS2540 outside constructor" {
     const s = try newSetup(
         \\// @checkJs: true
@@ -37454,6 +37843,21 @@ test "checker: checkjs JSDoc readonly class field emits TS2540 outside construct
     try T.expect(found);
 }
 
+test "checker: checkjs self-referential JSDoc type on function emits TS8030" {
+    const s = try newSetup(
+        \\// @checkJs: true
+        \\/** @type {MyClass} */
+        \\function MyClass() {}
+    );
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+    var found = false;
+    for (s.checker.diagnostics.items) |d| {
+        if (d.code == TsCodes.jsdoc_function_type_mismatch) found = true;
+    }
+    try T.expect(found);
+}
+
 test "checker: checkjs object property @type validates initializer" {
     const s = try newSetup(
         \\// @ts-check
@@ -37469,6 +37873,22 @@ test "checker: checkjs object property @type validates initializer" {
         if (d.code == TsCodes.type_not_assignable) found = true;
     }
     try T.expect(found);
+}
+
+test "checker: checkjs computed binary property type does not constrain dot assignment" {
+    const s = try newSetup(
+        \\// @ts-check
+        \\const obj = {
+        \\  /** @type {number} */
+        \\  ['b' + 'ar1']: 0,
+        \\};
+        \\obj.bar1 = "42";
+    );
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+    for (s.checker.diagnostics.items) |d| {
+        try T.expect(d.code != TsCodes.type_not_assignable);
+    }
 }
 
 test "checker: checkjs higher-order JSDoc function type validates expression body" {
@@ -37934,6 +38354,21 @@ test "checker: enum namespace merge exposes exported class value" {
     }
 }
 
+test "checker: import equals relative namespace exposes exported enum members" {
+    const b = try newBoundSetup(
+        \\// @filename: enumdule.ts
+        \\export enum E { A, B }
+        \\// @filename: main.ts
+        \\import enumdule = require("./enumdule");
+        \\let value = enumdule.E.A;
+    );
+    defer destroyBoundSetup(b);
+    try b.base.checker.checkSourceFile(b.base.root);
+    for (b.base.checker.diagnostics.items) |d| {
+        try T.expect(d.code != TsCodes.property_does_not_exist);
+    }
+}
+
 test "checker: ambient namespace can be used as a value" {
     const b = try newBoundSetup(
         \\declare namespace mod2 {
@@ -38086,6 +38521,38 @@ test "checker: dynamic import namespace promise is assignable to Promise<any> pa
     for (s.checker.diagnostics.items) |d| {
         try T.expect(d.code != TsCodes.argument_type_mismatch);
     }
+}
+
+test "checker: rewriteRelativeImportExtensions reports unresolved loader specifier" {
+    const s = try newSetup(
+        \\// @rewriteRelativeImportExtensions: true
+        \\require("./missing.ts");
+        \\import("./also-missing.ts");
+    );
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+    var found: usize = 0;
+    for (s.checker.diagnostics.items) |d| {
+        if (d.code == TsCodes.cannot_find_module) found += 1;
+    }
+    try T.expectEqual(@as(usize, 2), found);
+}
+
+test "checker: rewriteRelativeImportExtensions rejects index resolution for import equals" {
+    const s = try newSetup(
+        \\// @rewriteRelativeImportExtensions: true
+        \\// @filename: main.ts
+        \\import foo = require("./foo.ts");
+        \\// @filename: foo.ts/index.ts
+        \\export const value = 1;
+    );
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+    var found = false;
+    for (s.checker.diagnostics.items) |d| {
+        if (d.code == TsCodes.unsafe_rewrite_relative_import) found = true;
+    }
+    try T.expect(found);
 }
 
 test "checker: structural Promise.then accepts rejection callback" {
