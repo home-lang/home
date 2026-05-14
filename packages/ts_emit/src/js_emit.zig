@@ -3616,26 +3616,37 @@ pub const Printer = struct {
                     }
                 },
                 .call_expr => {
-                    // §4.A.4.7 (cont.2) — accept `f(await E);` shape:
-                    // call with first arg as an await_expr, callee +
-                    // await-target are yield/await-free, AND every
-                    // subsequent arg is yield/await-free. Subsequent
-                    // args evaluate at resumption time (after the
-                    // yield+await), so they're emitted verbatim into
-                    // the call after `_a.sent()`. This generalises the
-                    // single-arg `f(await E)` case to multi-arg
-                    // `f(await E, x, y)`.
+                    // §4.A.4.7 (cont.2/5/6) — accept call_expr where
+                    // at least one arg is an await_expr (anywhere in
+                    // the arg list), every other arg is yield/await-
+                    // free, and the await targets have yield/await-
+                    // free sub-trees. Examples:
+                    //   - `f(await E);`              (cont.2 v0)
+                    //   - `f(await E, x, y);`        (cont.5)
+                    //   - `f(x, await E);`           (cont.6 — await not at 0)
+                    //   - `f(await A, await B);`     (cont.6 — multi-await)
+                    //   - `f(await A, x, await B);`  (cont.6 — interleaved)
                     const cp = hir_mod.callOf(self.hir, s);
                     const args = hir_mod.callArgs(self.hir, s);
-                    if (args.len >= 1 and self.hir.kindOf(args[0]) == .await_expr) {
-                        if (self.subtreeContainsYield(cp.callee) or self.subtreeContainsAwait(cp.callee)) return false;
-                        const ap = hir_mod.awaitExprOf(self.hir, args[0]);
-                        if (ap.expr != hir_mod.none_node_id and (self.subtreeContainsYield(ap.expr) or self.subtreeContainsAwait(ap.expr))) return false;
-                        // Subsequent args must be yield/await-free.
-                        var i: usize = 1;
-                        while (i < args.len) : (i += 1) {
-                            if (self.subtreeContainsYield(args[i]) or self.subtreeContainsAwait(args[i])) return false;
+                    var has_await_arg = false;
+                    var ok_multi_await = true;
+                    for (args) |a| {
+                        if (self.hir.kindOf(a) == .await_expr) {
+                            has_await_arg = true;
+                            const ap = hir_mod.awaitExprOf(self.hir, a);
+                            if (ap.expr != hir_mod.none_node_id and (self.subtreeContainsYield(ap.expr) or self.subtreeContainsAwait(ap.expr))) {
+                                ok_multi_await = false;
+                                break;
+                            }
+                        } else {
+                            if (self.subtreeContainsYield(a) or self.subtreeContainsAwait(a)) {
+                                ok_multi_await = false;
+                                break;
+                            }
                         }
+                    }
+                    if (has_await_arg and ok_multi_await) {
+                        if (self.subtreeContainsYield(cp.callee) or self.subtreeContainsAwait(cp.callee)) return false;
                     } else {
                         if (self.subtreeContainsYield(s) or self.subtreeContainsAwait(s)) return false;
                     }
@@ -3883,15 +3894,36 @@ pub const Printer = struct {
                     try self.printNonIndentStatement(stmt);
                 }
             } else if (k == .call_expr) {
-                // §4.A.4.7 (cont.2) — `f(await E[, x, y]);`: yield the
-                // await, then at resumption apply the call with
-                // `_a.sent()` as the first arg + the remaining args
-                // verbatim. The remaining args were predicate-checked
-                // to be yield/await-free, so they evaluate at resume
-                // time without further state-machine sequencing.
+                // §4.A.4.7 — call with one or more await args. The
+                // predicate already verified at least one arg is an
+                // await_expr and every non-await arg is yield/await-
+                // free. Two emit shapes:
+                //
+                //   1) Single await in position 0, no other awaits —
+                //      use the existing simple shape:
+                //        return [4, __await(arg0.target)];
+                //        case S+1: f(_a.sent(), <other args verbatim>);
+                //
+                //   2) Otherwise (await elsewhere or multi-await) —
+                //      yield each await in source order, binding all
+                //      but the last to `var _b<i> = _a.sent();`
+                //      temps; the last await's `_a.sent()` lands
+                //      inline in the final assembled call. Non-await
+                //      args evaluate verbatim at the call site at
+                //      resumption time (predicate-checked safe).
                 const cp = hir_mod.callOf(self.hir, stmt);
                 const args = hir_mod.callArgs(self.hir, stmt);
-                if (args.len >= 1 and self.hir.kindOf(args[0]) == .await_expr) {
+                var await_count: usize = 0;
+                var last_await_idx: usize = 0;
+                for (args, 0..) |a, idx| {
+                    if (self.hir.kindOf(a) == .await_expr) {
+                        await_count += 1;
+                        last_await_idx = idx;
+                    }
+                }
+                const simple_single_await =
+                    await_count == 1 and args.len >= 1 and self.hir.kindOf(args[0]) == .await_expr;
+                if (simple_single_await) {
                     const ap = hir_mod.awaitExprOf(self.hir, args[0]);
                     try self.write(" return [4, __await(");
                     if (ap.expr != hir_mod.none_node_id) try self.printExpression(ap.expr);
@@ -3910,6 +3942,56 @@ pub const Printer = struct {
                         try self.printExpression(args[i]);
                     }
                     try self.write(");");
+                } else if (await_count >= 1) {
+                    // Multi-await (or await not in position 0) path.
+                    var seen_awaits: usize = 0;
+                    for (args, 0..) |a, idx| {
+                        if (self.hir.kindOf(a) != .await_expr) continue;
+                        const ap = hir_mod.awaitExprOf(self.hir, a);
+                        try self.write(" return [4, __await(");
+                        if (ap.expr != hir_mod.none_node_id) try self.printExpression(ap.expr);
+                        try self.write(")];");
+                        state += 1;
+                        const num = std.fmt.bufPrint(&buf, "{d}", .{state}) catch unreachable;
+                        try self.writeNewlineIndent();
+                        try self.write("case ");
+                        try self.write(num);
+                        try self.write(": ");
+                        if (idx == last_await_idx) {
+                            // Final await: inline `_a.sent()` into the
+                            // assembled call alongside the prior temps
+                            // and the verbatim non-await args.
+                            try self.printExpression(cp.callee);
+                            try self.write("(");
+                            var prev_await_seen: usize = 0;
+                            for (args, 0..) |ca, ci| {
+                                if (ci > 0) try self.write(", ");
+                                if (self.hir.kindOf(ca) == .await_expr) {
+                                    if (ci == last_await_idx) {
+                                        try self.write("_a.sent()");
+                                    } else {
+                                        var tbuf: [16]u8 = undefined;
+                                        const tnum = std.fmt.bufPrint(&tbuf, "{d}", .{prev_await_seen}) catch unreachable;
+                                        try self.write("_b");
+                                        try self.write(tnum);
+                                        prev_await_seen += 1;
+                                    }
+                                } else {
+                                    try self.printExpression(ca);
+                                }
+                            }
+                            try self.write(");");
+                        } else {
+                            // Intermediate await: bind to `_b<n>` temp
+                            // so the assembled call can read it later.
+                            var tbuf: [16]u8 = undefined;
+                            const tnum = std.fmt.bufPrint(&tbuf, "{d}", .{seen_awaits}) catch unreachable;
+                            try self.write("var _b");
+                            try self.write(tnum);
+                            try self.write(" = _a.sent();");
+                            seen_awaits += 1;
+                        }
+                    }
                 } else {
                     try self.write(" ");
                     try self.printNonIndentStatement(stmt);
@@ -8292,18 +8374,50 @@ test "emit: async generator with f(await E, x, y) threads multiple trailing args
     try T.expect(std.mem.indexOf(u8, out, "log(_a.sent(), x, y)") != null);
 }
 
-test "emit: async generator with f(await E, await F) (both awaits) still bails" {
-    // Two awaits as args isn't supported by this slice — would need
-    // sequential yielding for both. The predicate rejects when any
-    // trailing arg contains an await; the call falls through to the
-    // generic walker (which can't handle stmt-level await), so the
-    // whole body bails to native `async function*`.
+test "emit: async generator with f(await A, await B) lowers via sequential yields + temp" {
+    // §4.A.4.7 (cont.6) — two awaits in call args. Yields each in
+    // source order; the first await's `_a.sent()` is bound to
+    // `var _b0 = ...`; the second await's `_a.sent()` lands inline
+    // in the final assembled call `f(_b0, _a.sent());`.
     const out = try emitWithOpts(
         "async function* g() { log(await fetch(), await other()); }",
         .{ .es_target = .es2017 },
     );
     defer T.allocator.free(out);
-    try T.expect(std.mem.indexOf(u8, out, "async function* g(") != null);
+    try T.expect(std.mem.indexOf(u8, out, "__asyncGenerator") != null);
+    try T.expect(std.mem.indexOf(u8, out, "return [4, __await(fetch())]") != null);
+    try T.expect(std.mem.indexOf(u8, out, "var _b0 = _a.sent();") != null);
+    try T.expect(std.mem.indexOf(u8, out, "return [4, __await(other())]") != null);
+    try T.expect(std.mem.indexOf(u8, out, "log(_b0, _a.sent())") != null);
+}
+
+test "emit: async generator with f(x, await E) lowers (await not at position 0)" {
+    // §4.A.4.7 (cont.6) — when the only await is at a non-zero
+    // position, the multi-await path fires with await_count=1 but
+    // the simple-single-await fast path doesn't (only triggers when
+    // args[0] is await).
+    const out = try emitWithOpts(
+        "async function* g() { log(x, await fetch()); }",
+        .{ .es_target = .es2017 },
+    );
+    defer T.allocator.free(out);
+    try T.expect(std.mem.indexOf(u8, out, "return [4, __await(fetch())]") != null);
+    try T.expect(std.mem.indexOf(u8, out, "log(x, _a.sent())") != null);
+}
+
+test "emit: async generator with f(await A, x, await B) interleaves awaits + verbatim args" {
+    // §4.A.4.7 (cont.6) — mixed shape: await + non-await + await.
+    // Each await yields in source order; non-await arg `x`
+    // evaluates inline in the final call.
+    const out = try emitWithOpts(
+        "async function* g() { log(await A(), x, await B()); }",
+        .{ .es_target = .es2017 },
+    );
+    defer T.allocator.free(out);
+    try T.expect(std.mem.indexOf(u8, out, "return [4, __await(A())]") != null);
+    try T.expect(std.mem.indexOf(u8, out, "var _b0 = _a.sent();") != null);
+    try T.expect(std.mem.indexOf(u8, out, "return [4, __await(B())]") != null);
+    try T.expect(std.mem.indexOf(u8, out, "log(_b0, x, _a.sent())") != null);
 }
 
 test "emit: async generator with yield* lowers via __asyncDelegator + [5] opcode" {
