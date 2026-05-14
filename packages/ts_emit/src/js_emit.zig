@@ -3878,6 +3878,7 @@ pub const Printer = struct {
                 .object_property => {
                     const op = hir_mod.objectPropertyOf(self.hir, m);
                     if (op.is_static) try self.write("static ");
+                    if (op.is_accessor) try self.write("accessor ");
                     try self.printExpression(op.key);
                     if (op.value != hir_mod.none_node_id) {
                         try self.write(" = ");
@@ -4301,6 +4302,13 @@ pub const Printer = struct {
                 try self.write("method");
             }
             return;
+        }
+        if (tk == .object_property) {
+            const op = hir_mod.objectPropertyOf(self.hir, target);
+            if (op.is_accessor) {
+                try self.write("accessor");
+                return;
+            }
         }
         try self.write("field");
     }
@@ -8289,6 +8297,22 @@ test "emit: stage 3 static member decorators mark static context" {
     try T.expect(std.mem.indexOf(u8, out, "__esDecorate(Foo, null, [observe], { kind: \"field\", name: \"count\", static: true, private: false, access: { has: function (obj) { return \"count\" in obj; }, get: function (obj) { return obj.count; }, set: function (obj, value) { obj.count = value; } }, metadata: void 0 }, null, _Foo_staticExtra);") != null);
     try T.expect(std.mem.indexOf(u8, out, "__runInitializers(Foo, _Foo_staticExtra);") != null);
     try T.expect(std.mem.indexOf(u8, out, "static: false") == null);
+}
+
+test "emit: class accessor field is preserved + Stage 3 emits kind: \"accessor\"" {
+    const out = try emitWithOpts(
+        \\class Foo {
+        \\  @validated
+        \\  accessor count = 0;
+        \\}
+    , .{ .experimental_decorators = false });
+    defer T.allocator.free(out);
+    // §4.A.9 v8 — `accessor` modifier preserved in class body.
+    try T.expect(std.mem.indexOf(u8, out, "accessor count = 0;") != null);
+    // Stage 3 decorator receives `kind: "accessor"` in its context.
+    try T.expect(std.mem.indexOf(u8, out, "kind: \"accessor\", name: \"count\"") != null);
+    // Access descriptor mirrors the field shape (has + get + set).
+    try T.expect(std.mem.indexOf(u8, out, "set: function (obj, value) { obj.count = value; }") != null);
 }
 
 test "emit: class with static initialization block emits `static { ... }` on one line" {

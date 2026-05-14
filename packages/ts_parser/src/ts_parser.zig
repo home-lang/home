@@ -1827,7 +1827,7 @@ pub const Parser = struct {
                 try self.consumeStatementTerminator();
                 const name_id = try self.internPropertyName(name_tok, name_span);
                 const name_node = try self.builder.addIdentifier(name_span, name_id);
-                const prop = try self.builder.addObjectPropertyFull(
+                const prop = try self.builder.addObjectPropertyFullEx(
                     .{ .start = member_start.span.start, .end = self.tokens[self.cursor - 1].span.end },
                     name_node,
                     default_value,
@@ -1838,6 +1838,7 @@ pub const Parser = struct {
                     mods.is_static,
                     mods.visibility,
                     mods.is_override,
+                    mods.is_accessor,
                 );
                 try members.append(self.gpa, prop);
                 continue;
@@ -1890,10 +1891,10 @@ pub const Parser = struct {
 
     /// Tracks the TS access-modifier keywords the member-parsing
     /// loop has consumed before the member name. Other modifiers
-    /// (`readonly`, `async`, `abstract`, `accessor`,
-    /// `override`, `declare`, `out`, `in`) are parsed but discarded
-    /// — access modifiers and `static` need to flow into HIR for
-    /// decorator and class-member emit.
+    /// (`override`, `declare`, `out`, `in`) are parsed but discarded
+    /// — access modifiers, `static`, `accessor`, `readonly`,
+    /// `async`, `abstract` flow into HIR for decorator and class-
+    /// member emit.
     const ClassModifiers = struct {
         visibility: hir_mod.Visibility = .public,
         has_accessibility: bool = false,
@@ -1902,6 +1903,7 @@ pub const Parser = struct {
         is_override: bool = false,
         is_abstract: bool = false,
         is_readonly: bool = false,
+        is_accessor: bool = false,
     };
 
     fn skipClassModifiers(self: *Parser) ParseError!ClassModifiers {
@@ -1957,6 +1959,20 @@ pub const Parser = struct {
                     .kw_override => mods.is_override = true,
                     .kw_abstract => mods.is_abstract = true,
                     .kw_readonly => mods.is_readonly = true,
+                    .kw_accessor => {
+                        // `accessor x = …` modifier (TS 4.9 / Stage 3).
+                        // Only valid in front of a field name — if the
+                        // next token starts a member name, consume the
+                        // keyword and set the flag. Otherwise fall
+                        // through (the trailing parser handles e.g.
+                        // `accessor` as a plain identifier).
+                        const next = self.peekAt(1).kind;
+                        if (isClassMemberNameStart(next) or next == .open_bracket) {
+                            mods.is_accessor = true;
+                        } else {
+                            return mods;
+                        }
+                    },
                     else => {},
                 }
                 _ = self.advance();

@@ -705,6 +705,11 @@ pub const ObjectPropertyPayload = struct {
     visibility: Visibility = .public,
     /// TS 4.3 `override` modifier on a class field/accessor property.
     is_override: bool = false,
+    /// TS 4.9 / Stage 3 `accessor` modifier on a class field. The
+    /// field becomes an auto-generated paired getter/setter backed
+    /// by a private storage slot; Stage 3 decorators receive
+    /// `kind: "accessor"` in their context object.
+    is_accessor: bool = false,
 };
 
 // ============================================================================
@@ -2202,6 +2207,27 @@ pub const Builder = struct {
         visibility: Visibility,
         is_override: bool,
     ) !NodeId {
+        return self.addObjectPropertyFullEx(span, key, value, type_annotation, is_computed, is_shorthand, is_method, is_static, visibility, is_override, false);
+    }
+
+    /// Extended variant that also records the TS 4.9 `accessor` field
+    /// modifier. Callers that need to mark a field as an auto-accessor
+    /// (paired getter/setter backed by private storage) go through this
+    /// path so the emit + Stage 3 decorator emitter can detect it.
+    pub fn addObjectPropertyFullEx(
+        self: *Builder,
+        span: Span,
+        key: NodeId,
+        value: NodeId,
+        type_annotation: NodeId,
+        is_computed: bool,
+        is_shorthand: bool,
+        is_method: bool,
+        is_static: bool,
+        visibility: Visibility,
+        is_override: bool,
+        is_accessor: bool,
+    ) !NodeId {
         const payload_idx: u32 = @intCast(self.hir.object_property_payloads.items.len);
         try self.hir.object_property_payloads.append(self.hir.gpa, .{
             .key = key,
@@ -2213,6 +2239,7 @@ pub const Builder = struct {
             .is_static = is_static,
             .visibility = visibility,
             .is_override = is_override,
+            .is_accessor = is_accessor,
         });
         const id = try self.newNode(.object_property, span, payload_idx);
         self.hir.setParent(key, id);
