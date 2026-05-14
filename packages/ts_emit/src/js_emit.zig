@@ -3617,14 +3617,25 @@ pub const Printer = struct {
                 },
                 .call_expr => {
                     // §4.A.4.7 (cont.2) — accept `f(await E);` shape:
-                    // call with exactly one arg that's an await_expr,
-                    // callee + arg's await-target are yield/await-free.
+                    // call with first arg as an await_expr, callee +
+                    // await-target are yield/await-free, AND every
+                    // subsequent arg is yield/await-free. Subsequent
+                    // args evaluate at resumption time (after the
+                    // yield+await), so they're emitted verbatim into
+                    // the call after `_a.sent()`. This generalises the
+                    // single-arg `f(await E)` case to multi-arg
+                    // `f(await E, x, y)`.
                     const cp = hir_mod.callOf(self.hir, s);
                     const args = hir_mod.callArgs(self.hir, s);
-                    if (args.len == 1 and self.hir.kindOf(args[0]) == .await_expr) {
+                    if (args.len >= 1 and self.hir.kindOf(args[0]) == .await_expr) {
                         if (self.subtreeContainsYield(cp.callee) or self.subtreeContainsAwait(cp.callee)) return false;
                         const ap = hir_mod.awaitExprOf(self.hir, args[0]);
                         if (ap.expr != hir_mod.none_node_id and (self.subtreeContainsYield(ap.expr) or self.subtreeContainsAwait(ap.expr))) return false;
+                        // Subsequent args must be yield/await-free.
+                        var i: usize = 1;
+                        while (i < args.len) : (i += 1) {
+                            if (self.subtreeContainsYield(args[i]) or self.subtreeContainsAwait(args[i])) return false;
+                        }
                     } else {
                         if (self.subtreeContainsYield(s) or self.subtreeContainsAwait(s)) return false;
                     }
@@ -3872,10 +3883,15 @@ pub const Printer = struct {
                     try self.printNonIndentStatement(stmt);
                 }
             } else if (k == .call_expr) {
-                // §4.A.4.7 (cont.2) — `f(await E);`: yield + apply call to sent.
+                // §4.A.4.7 (cont.2) — `f(await E[, x, y]);`: yield the
+                // await, then at resumption apply the call with
+                // `_a.sent()` as the first arg + the remaining args
+                // verbatim. The remaining args were predicate-checked
+                // to be yield/await-free, so they evaluate at resume
+                // time without further state-machine sequencing.
                 const cp = hir_mod.callOf(self.hir, stmt);
                 const args = hir_mod.callArgs(self.hir, stmt);
-                if (args.len == 1 and self.hir.kindOf(args[0]) == .await_expr) {
+                if (args.len >= 1 and self.hir.kindOf(args[0]) == .await_expr) {
                     const ap = hir_mod.awaitExprOf(self.hir, args[0]);
                     try self.write(" return [4, __await(");
                     if (ap.expr != hir_mod.none_node_id) try self.printExpression(ap.expr);
@@ -3887,7 +3903,13 @@ pub const Printer = struct {
                     try self.write(num);
                     try self.write(": ");
                     try self.printExpression(cp.callee);
-                    try self.write("(_a.sent());");
+                    try self.write("(_a.sent()");
+                    var i: usize = 1;
+                    while (i < args.len) : (i += 1) {
+                        try self.write(", ");
+                        try self.printExpression(args[i]);
+                    }
+                    try self.write(");");
                 } else {
                     try self.write(" ");
                     try self.printNonIndentStatement(stmt);
@@ -8246,17 +8268,42 @@ test "emit: async generator with yield await E unwraps to single __await" {
     try T.expect(std.mem.indexOf(u8, out, "case 2: _a.sent();") != null);
 }
 
-test "emit: async generator with f(await E, other) (multi-arg) still bails" {
-    // v0 only handles call_expr with exactly one arg that's an await.
+test "emit: async generator with f(await E, other) (multi-arg) lowers to yield + call(_a.sent(), …)" {
+    // §4.A.4.7 (cont.2) extension — multi-arg call with await in
+    // position 0 now lowers through the state machine. The trailing
+    // args evaluate at resumption time and are passed verbatim into
+    // the call after `_a.sent()`.
     const out = try emitWithOpts(
         "async function* g() { log(await fetch(), 2); }",
         .{ .es_target = .es2017 },
     );
     defer T.allocator.free(out);
-    // The await as a sub-expression in a multi-arg call isn't supported,
-    // so the lowering bails to native `async function*`.
+    try T.expect(std.mem.indexOf(u8, out, "__asyncGenerator") != null);
+    try T.expect(std.mem.indexOf(u8, out, "return [4, __await(fetch())]") != null);
+    try T.expect(std.mem.indexOf(u8, out, "log(_a.sent(), 2)") != null);
+}
+
+test "emit: async generator with f(await E, x, y) threads multiple trailing args" {
+    const out = try emitWithOpts(
+        "async function* g() { log(await fetch(), x, y); }",
+        .{ .es_target = .es2017 },
+    );
+    defer T.allocator.free(out);
+    try T.expect(std.mem.indexOf(u8, out, "log(_a.sent(), x, y)") != null);
+}
+
+test "emit: async generator with f(await E, await F) (both awaits) still bails" {
+    // Two awaits as args isn't supported by this slice — would need
+    // sequential yielding for both. The predicate rejects when any
+    // trailing arg contains an await; the call falls through to the
+    // generic walker (which can't handle stmt-level await), so the
+    // whole body bails to native `async function*`.
+    const out = try emitWithOpts(
+        "async function* g() { log(await fetch(), await other()); }",
+        .{ .es_target = .es2017 },
+    );
+    defer T.allocator.free(out);
     try T.expect(std.mem.indexOf(u8, out, "async function* g(") != null);
-    try T.expect(std.mem.indexOf(u8, out, "__asyncGenerator") == null);
 }
 
 test "emit: async generator with yield* lowers via __asyncDelegator + [5] opcode" {
