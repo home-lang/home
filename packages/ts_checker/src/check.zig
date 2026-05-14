@@ -221,6 +221,8 @@ pub const TsCodes = struct {
     pub const option_removed: u32 = 5102;
     pub const nullish_rhs_unreachable: u32 = 2869;
     pub const unknown_catch_variable: u32 = 18046;
+    pub const object_possibly_null: u32 = 18047;
+    pub const object_possibly_undefined_18048: u32 = 18048;
     pub const object_possibly_nullish: u32 = 18049;
     pub const nullish_relational_operand: u32 = 18050;
     /// Emitted when `// @ts-expect-error` was placed above a line
@@ -5406,6 +5408,80 @@ pub const Checker = struct {
         return null;
     }
 
+    /// Conservative gate for the TS7006 implicit-any diagnostic on a
+    /// parameter without an annotation. Returns `true` when the
+    /// enclosing function/arrow appears in a position where TypeScript
+    /// would supply a contextual signature (and therefore no
+    /// implicit-any would surface). The gate is intentionally
+    /// conservative — false positives here just leave the diagnostic
+    /// firing, matching the previous behavior.
+    ///
+    /// Cases covered:
+    ///   1. `set x(v) {…}` accessors — tsc pulls the parameter type
+    ///      from the matching `get`'s return type, or treats it as
+    ///      `unknown` when no getter exists.
+    ///   2. The fn/arrow is an argument to a call/new expression. tsc
+    ///      contextually types fn arguments from the callee
+    ///      signature; even when the callee is generic, the param
+    ///      type is supplied at the call site, not by implicit-any.
+    ///   3. The fn/arrow is the value of a property in an object
+    ///      literal that itself appears as a call argument or the
+    ///      init of a typed `let`/`const`/`var` (recursively through
+    ///      nested object/array literal hosts).
+    ///   4. The fn/arrow is the rhs of an assignment or the init of
+    ///      a typed variable declaration — tsc seeds parameters from
+    ///      the lhs/declared type.
+    fn parameterHasContextualType(self: *Checker, fn_node: NodeId, _: NodeId) bool {
+        if (self.functionIsAccessorSetter(fn_node)) return true;
+        var cur = self.hir.parentOf(fn_node);
+        var prev = fn_node;
+        while (cur != hir_mod.none_node_id) : ({
+            prev = cur;
+            cur = self.hir.parentOf(cur);
+        }) {
+            switch (self.hir.kindOf(cur)) {
+                .call_expr, .new_expr => {
+                    const c = hir_mod.callOf(self.hir, cur);
+                    if (c.callee == prev) return false;
+                    return true;
+                },
+                .var_decl, .let_decl, .const_decl => {
+                    const v = hir_mod.varDeclOf(self.hir, cur);
+                    if (v.init != prev) return false;
+                    return v.type_annotation != hir_mod.none_node_id;
+                },
+                .assignment => {
+                    const a = hir_mod.assignmentOf(self.hir, cur);
+                    if (a.value != prev or a.target == hir_mod.none_node_id) return false;
+                    return true;
+                },
+                .return_stmt => return true,
+                .object_property,
+                .object_literal,
+                .array_literal,
+                .as_expr,
+                .satisfies_expr,
+                => continue,
+                else => return false,
+            }
+        }
+        return false;
+    }
+
+    /// True when `fn_node` is a `set x(v) {…}` accessor (either as a
+    /// class member or as an object-literal property). tsc
+    /// contextually types the setter's parameter from the matching
+    /// getter's return type when one is present, and treats the
+    /// parameter as `unknown` when no getter exists — either way the
+    /// implicit-any rule never fires on the setter parameter, so we
+    /// suppress TS7006 here too.
+    fn functionIsAccessorSetter(self: *Checker, fn_node: NodeId) bool {
+        const k = self.hir.kindOf(fn_node);
+        if (k != .fn_decl and k != .fn_expr and k != .arrow_fn) return false;
+        const f = hir_mod.fnDeclOf(self.hir, fn_node);
+        return f.flags.is_setter;
+    }
+
     fn returnStatementViolatesGenericRestTuple(self: *Checker, return_node: NodeId, ret_t: TypeId) bool {
         const fn_node = self.enclosingFunctionForReturn(return_node) orelse return false;
         if (!self.functionHasGenericRestTupleReturn(fn_node)) return false;
@@ -6552,6 +6628,13 @@ pub const Checker = struct {
             }
             if (pp.flags.is_rest and !is_this_param) has_rest_param = true;
             const has_anno = pp.type_annotation != hir_mod.none_node_id;
+            // `f(x = literal)` — when no annotation is present, the
+            // default value's widened type seeds the parameter (tsc
+            // does the same). Used by both the parameter typing pass
+            // and the TS7006 implicit-any gate below; concrete types
+            // (`number`, `string`, …) suppress the diagnostic, but an
+            // `any` default still falls through and reports.
+            var inferred_from_default = false;
             var t: TypeId = if (has_anno)
                 try self.lowererLowerWithTypeParams(pp.type_annotation)
             else if (pp.default_value != hir_mod.none_node_id and
@@ -6562,7 +6645,15 @@ pub const Checker = struct {
                 self.hir.kindOf(pp.name) == .array_pattern and
                 (pp.flags.is_rest or self.arrayBindingPatternHasRest(pp.name) or pp.default_value == hir_mod.none_node_id))
                 try self.arrayBindingPatternParameterType(pp.name)
-            else
+            else if (pp.default_value != hir_mod.none_node_id and !is_this_param) blk_default: {
+                const default_t = try self.checkExpression(pp.default_value);
+                const widened = self.widenForInference(default_t);
+                if (!self.typeIsAnyLike(widened) and widened != types.Primitive.none) {
+                    inferred_from_default = true;
+                    break :blk_default widened;
+                }
+                break :blk_default types.Primitive.any;
+            } else
                 types.Primitive.any;
             const declared_param_t = t;
             if (has_anno and pp.default_value != hir_mod.none_node_id) {
@@ -6596,7 +6687,9 @@ pub const Checker = struct {
                 try param_predicates.append(self.gpa, .{ .param_index = value_param_index, .pred = param_pred });
             }
             value_param_index += 1;
-            if (!has_anno and self.strict_flags.no_implicit_any) {
+            if (!has_anno and !inferred_from_default and self.strict_flags.no_implicit_any and
+                !self.parameterHasContextualType(node, p))
+            {
                 const param_name: []const u8 = if (pp.name != hir_mod.none_node_id and self.hir.kindOf(pp.name) == .identifier)
                     self.string_interner.get(hir_mod.identifierOf(self.hir, pp.name).name)
                 else
@@ -17773,8 +17866,8 @@ pub const Checker = struct {
                     obj_t = try self.checkExpression(m.object);
                 }
                 const member_is_optional_chain = m.optional or self.expressionIsOptionalChain(m.object);
-                if (!member_is_optional_chain and self.strict_flags.strict_null_checks and self.typeIsPossiblyNullish(obj_t)) {
-                    try self.report(m.object, TsCodes.object_possibly_nullish, "Object is possibly 'null' or 'undefined'.");
+                if (!member_is_optional_chain and self.strict_flags.strict_null_checks and self.typeIsPossiblyNullishStrict(obj_t)) {
+                    try self.reportPossiblyNullishMember(m.object, obj_t);
                     obj_t = self.subtractNullUndefined(obj_t) catch obj_t;
                 } else if (member_is_optional_chain) {
                     obj_t = self.subtractNullUndefined(obj_t) catch obj_t;
@@ -28311,6 +28404,98 @@ pub const Checker = struct {
 
     fn typeIsPossiblyNullish(self: *Checker, t: TypeId) bool {
         return self.typeIncludesNull(t) or self.typeIncludesUndefined(t);
+    }
+
+    /// Strict variant of `typeIsPossiblyNullish` for the
+    /// TS18047/8/9 member-access diagnostic. Differs from the loose
+    /// check by excluding `any` and `unknown`: tsc fires no nullish
+    /// diagnostic on those, even though the underlying type
+    /// technically subsumes `null` and `undefined`. The loose check
+    /// is still appropriate for callers that want a "may be null in
+    /// any way" signal (the non-null-assertion overlap test, etc).
+    fn typeIsPossiblyNullishStrict(self: *Checker, t: TypeId) bool {
+        if (t >= self.interner.pool.typeCount()) return false;
+        const f = self.interner.pool.flagsOf(t);
+        if (f.is_any or f.is_unknown) return false;
+        if (f.is_null or f.is_undefined) return true;
+        if (t == types.Primitive.void_t) return true;
+        if (!f.is_union) return false;
+        if (self.interner.pool.payloadOf(t) >= self.interner.pool.union_payloads.items.len) return false;
+        for (self.interner.unionMembers(t)) |m| {
+            if (m >= self.interner.pool.typeCount()) continue;
+            const mf = self.interner.pool.flagsOf(m);
+            if (mf.is_null or mf.is_undefined) return true;
+        }
+        return false;
+    }
+
+    /// Classification of which nullish constituents a possibly-nullish
+    /// type contains. Used to pick TS18047 vs TS18048 vs TS18049 for
+    /// member-access diagnostics. Caller must have already filtered
+    /// out `any`/`unknown` via `typeIsPossiblyNullishStrict`.
+    const NullishKind = enum { only_null, only_undefined, both };
+
+    fn nullishKindOf(self: *Checker, t: TypeId) NullishKind {
+        // Use the existing typeIncludesNull/typeIncludesUndefined
+        // helpers, but with the any/unknown gate the strict caller
+        // already performed, so they're safe to combine here. They
+        // already walk one level of union nesting and treat `void`
+        // as undefined, which matches tsc's classification.
+        const has_null = self.typeIncludesNull(t);
+        const has_undef = self.typeIncludesUndefined(t);
+        if (has_null and has_undef) return .both;
+        if (has_null) return .only_null;
+        if (has_undef) return .only_undefined;
+        // Fallback: caller already ensured the type is possibly
+        // nullish, so at least one branch must hold. If both
+        // helpers return false (eg degenerate type metadata) fall
+        // back to the umbrella message.
+        return .both;
+    }
+
+    /// Emit the appropriate TS18047/TS18048/TS18049 diagnostic for a
+    /// possibly-nullish member-access object. When the object is a
+    /// bare identifier, format the message with the variable name
+    /// (`'x' is possibly 'null'.`); otherwise fall back to the
+    /// `Object is possibly …` form. Mirrors tsc's exact messages so
+    /// `.errors.txt` baselines line up.
+    fn reportPossiblyNullishMember(self: *Checker, obj_node: NodeId, obj_t: TypeId) !void {
+        const kind = self.nullishKindOf(obj_t);
+        const code: u32 = switch (kind) {
+            .only_null => TsCodes.object_possibly_null,
+            .only_undefined => TsCodes.object_possibly_undefined_18048,
+            .both => TsCodes.object_possibly_nullish,
+        };
+        const suffix: []const u8 = switch (kind) {
+            .only_null => "'null'",
+            .only_undefined => "'undefined'",
+            .both => "'null' or 'undefined'",
+        };
+        if (self.hir.kindOf(obj_node) == .identifier) {
+            const id = hir_mod.identifierOf(self.hir, obj_node);
+            const name = self.string_interner.get(id.name);
+            const msg = try std.fmt.allocPrint(
+                self.diag_arena.allocator(),
+                "'{s}' is possibly {s}.",
+                .{ name, suffix },
+            );
+            try self.diagnostics.append(self.gpa, .{
+                .node = obj_node,
+                .code = code,
+                .message = msg,
+            });
+            return;
+        }
+        const msg = try std.fmt.allocPrint(
+            self.diag_arena.allocator(),
+            "Object is possibly {s}.",
+            .{suffix},
+        );
+        try self.diagnostics.append(self.gpa, .{
+            .node = obj_node,
+            .code = code,
+            .message = msg,
+        });
     }
 
     fn checkTypeAssertionOverlap(self: *Checker, node: NodeId, source_t: TypeId, target_t: TypeId) CheckError!void {
@@ -43098,4 +43283,162 @@ test "checker: array rest binding from object rest keeps array target type" {
     for (s.checker.diagnostics.items) |d| {
         try T.expect(d.code != TsCodes.type_not_assignable);
     }
+}
+
+test "checker: nullish member access on `T | null` reports TS18047 with name" {
+    // `'d' is possibly 'null'.` — TS18047, not the umbrella TS18049.
+    // Mirrors tsc's `nonPrimitiveStrictNull.ts` baseline at line 38.
+    const s = try newSetup(
+        \\declare let d: object | null;
+        \\d.toString();
+    );
+    defer destroySetup(s);
+    s.checker.setStrictFlags(.{ .strict_null_checks = true });
+    try s.checker.checkSourceFile(s.root);
+    var saw_18047 = false;
+    for (s.checker.diagnostics.items) |diag| {
+        try T.expect(diag.code != TsCodes.object_possibly_nullish);
+        try T.expect(diag.code != TsCodes.object_possibly_undefined_18048);
+        if (diag.code == TsCodes.object_possibly_null) {
+            saw_18047 = true;
+            try T.expect(std.mem.indexOf(u8, diag.message, "'d'") != null);
+            try T.expect(std.mem.indexOf(u8, diag.message, "'null'") != null);
+            try T.expect(std.mem.indexOf(u8, diag.message, "undefined") == null);
+        }
+    }
+    try T.expect(saw_18047);
+}
+
+test "checker: nullish member access on `T | undefined` reports TS18048 with name" {
+    const s = try newSetup(
+        \\declare let d: object | undefined;
+        \\d.toString();
+    );
+    defer destroySetup(s);
+    s.checker.setStrictFlags(.{ .strict_null_checks = true });
+    try s.checker.checkSourceFile(s.root);
+    var saw_18048 = false;
+    for (s.checker.diagnostics.items) |diag| {
+        try T.expect(diag.code != TsCodes.object_possibly_nullish);
+        try T.expect(diag.code != TsCodes.object_possibly_null);
+        if (diag.code == TsCodes.object_possibly_undefined_18048) {
+            saw_18048 = true;
+            try T.expect(std.mem.indexOf(u8, diag.message, "'d'") != null);
+            try T.expect(std.mem.indexOf(u8, diag.message, "'undefined'") != null);
+            try T.expect(std.mem.indexOf(u8, diag.message, "null") == null);
+        }
+    }
+    try T.expect(saw_18048);
+}
+
+test "checker: nullish member access on `T | null | undefined` reports TS18049 with name" {
+    const s = try newSetup(
+        \\declare let d: object | null | undefined;
+        \\d.toString();
+    );
+    defer destroySetup(s);
+    s.checker.setStrictFlags(.{ .strict_null_checks = true });
+    try s.checker.checkSourceFile(s.root);
+    var saw_18049 = false;
+    for (s.checker.diagnostics.items) |diag| {
+        try T.expect(diag.code != TsCodes.object_possibly_null);
+        try T.expect(diag.code != TsCodes.object_possibly_undefined_18048);
+        if (diag.code == TsCodes.object_possibly_nullish) {
+            saw_18049 = true;
+            try T.expect(std.mem.indexOf(u8, diag.message, "'d'") != null);
+            try T.expect(std.mem.indexOf(u8, diag.message, "'null' or 'undefined'") != null);
+        }
+    }
+    try T.expect(saw_18049);
+}
+
+test "checker: nullish diagnostic suppressed for `any`-typed object" {
+    // tsc fires no nullish diagnostic on `any` member access — the
+    // type system absorbs `null`/`undefined` without surfacing a
+    // narrowing error. Previously we treated `any` as
+    // possibly-nullish and over-emitted TS18049 here.
+    const s = try newSetup(
+        \\declare let a: any;
+        \\a.toString();
+    );
+    defer destroySetup(s);
+    s.checker.setStrictFlags(.{ .strict_null_checks = true });
+    try s.checker.checkSourceFile(s.root);
+    for (s.checker.diagnostics.items) |diag| {
+        try T.expect(diag.code != TsCodes.object_possibly_null);
+        try T.expect(diag.code != TsCodes.object_possibly_undefined_18048);
+        try T.expect(diag.code != TsCodes.object_possibly_nullish);
+    }
+}
+
+test "checker: parameter with literal default infers concrete type, no TS7006" {
+    // `constructor(readonly widen = 2)` — no annotation, but the
+    // `= 2` initializer widens to `number`, so tsc never fires the
+    // implicit-any TS7006 here. Mirrors
+    // `literalTypesWidenInParameterPosition.ts` baseline.
+    const s = try newSetup(
+        \\class D {
+        \\    readonly noWiden = 1;
+        \\    constructor(readonly widen = 2) {}
+        \\}
+    );
+    defer destroySetup(s);
+    s.checker.setStrictFlags(.{ .no_implicit_any = true });
+    try s.checker.checkSourceFile(s.root);
+    for (s.checker.diagnostics.items) |diag| {
+        try T.expect(diag.code != TsCodes.parameter_implicitly_any);
+    }
+}
+
+test "checker: arrow fn parameter in call argument suppresses TS7006" {
+    // `f(x => x.length)` — tsc supplies a contextual signature from
+    // the callee, so the arrow's `x` parameter never trips the
+    // implicit-any rule even without an annotation.
+    const s = try newSetup(
+        \\declare function f(g: (x: string) => number): void;
+        \\f(x => x.length);
+    );
+    defer destroySetup(s);
+    s.checker.setStrictFlags(.{ .no_implicit_any = true });
+    try s.checker.checkSourceFile(s.root);
+    for (s.checker.diagnostics.items) |diag| {
+        try T.expect(diag.code != TsCodes.parameter_implicitly_any);
+    }
+}
+
+test "checker: setter parameter without annotation suppresses TS7006" {
+    // tsc contextually types the setter from the matching getter's
+    // return type and never reports implicit-any on the setter
+    // parameter itself. Mirrors `thisTypeInAccessors.ts` lines
+    // 14-17 (`set x(n) { … }`).
+    const s = try newSetup(
+        \\class C {
+        \\    get x(): number { return 1; }
+        \\    set x(n) {}
+        \\}
+    );
+    defer destroySetup(s);
+    s.checker.setStrictFlags(.{ .no_implicit_any = true });
+    try s.checker.checkSourceFile(s.root);
+    for (s.checker.diagnostics.items) |diag| {
+        try T.expect(diag.code != TsCodes.parameter_implicitly_any);
+    }
+}
+
+test "checker: bare arrow with unannotated param still fires TS7006" {
+    // Sanity check — when no contextual host applies, the
+    // implicit-any rule still fires. Guards against the contextual
+    // gate getting too aggressive.
+    const s = try newSetup(
+        \\let g = (x) => x;
+        \\g(1);
+    );
+    defer destroySetup(s);
+    s.checker.setStrictFlags(.{ .no_implicit_any = true });
+    try s.checker.checkSourceFile(s.root);
+    var saw_7006 = false;
+    for (s.checker.diagnostics.items) |diag| {
+        if (diag.code == TsCodes.parameter_implicitly_any) saw_7006 = true;
+    }
+    try T.expect(saw_7006);
 }
