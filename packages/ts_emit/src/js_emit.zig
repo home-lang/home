@@ -280,6 +280,14 @@ pub const Printer = struct {
     /// switch). Only set while emitting pre/post statements of a
     /// lowered loop body via `emitGenInloopStmt`.
     gen_break_label: ?u32,
+    /// §4.A.9 v7 — when non-null, the enclosing class has at least
+    /// one decorated instance member under Stage 3 lowering, so every
+    /// ctor-emit path inside the class body should append a
+    /// `__runInitializers(this, _<Class>_instanceExtra);` call before
+    /// the closing `}`. The value is the class's `name` HIR node so
+    /// the emit can synthesize the correct `_<Class>_instanceExtra`
+    /// identifier. Save+cleared on entry to nested classes/functions.
+    stage3_instance_extra_class: ?NodeId,
     /// §4.A.4.4 part 2 — when non-null, top-level `continue;`
     /// statements rewrite to `return [3, gen_continue_label];` so
     /// the continue restarts the lowered loop's iteration. Set only
@@ -312,6 +320,7 @@ pub const Printer = struct {
             .fn_depth = 0,
             .gen_break_label = null,
             .gen_continue_label = null,
+            .stage3_instance_extra_class = null,
         };
     }
 
@@ -542,6 +551,45 @@ pub const Printer = struct {
             const id = hir_mod.identifierOf(self.hir, name_node);
             try self.write(self.interner.get(id.name));
         }
+    }
+
+    /// §4.A.9 v7 — true if any class member is preceded by decorators
+    /// AND the decorated target is a non-constructor *instance* member.
+    /// Used by the ctor-emit paths to know whether to append the
+    /// trailing `__runInitializers(this, _<Class>_instanceExtra);` call.
+    fn classHasDecoratedInstanceMember(self: *const Printer, class_node: NodeId) bool {
+        const members = hir_mod.classMembers(self.hir, class_node);
+        var i: usize = 0;
+        while (i < members.len) : (i += 1) {
+            if (self.hir.kindOf(members[i]) != .decorator) continue;
+            var j = i;
+            while (j < members.len and self.hir.kindOf(members[j]) == .decorator) j += 1;
+            if (j >= members.len) break;
+            const target = members[j];
+            const tk = self.hir.kindOf(target);
+            if (tk == .fn_decl or tk == .fn_expr) {
+                const fd = hir_mod.fnDeclOf(self.hir, target);
+                if (!fd.flags.is_constructor and !fd.flags.is_static) return true;
+            } else if (tk == .object_property) {
+                const op = hir_mod.objectPropertyOf(self.hir, target);
+                if (!op.is_static) return true;
+            }
+            i = j;
+        }
+        return false;
+    }
+
+    /// §4.A.9 v7 — emit a single-line
+    /// `__runInitializers(this, _<Class>_instanceExtra);` trailer when
+    /// the active class has decorated instance members under Stage 3.
+    /// No-op outside that context. Call this at the end of every ctor
+    /// body so the (possibly synthesized) constructor runs the extras
+    /// for each instance.
+    fn emitStage3InstanceExtraTrailer(self: *Printer) anyerror!void {
+        const cn = self.stage3_instance_extra_class orelse return;
+        try self.write(" __runInitializers(this, _");
+        try self.writeClassNameSuffix(cn);
+        try self.write("_instanceExtra);");
     }
 
     fn printStatement(self: *Printer, node: NodeId) anyerror!void {
@@ -3702,6 +3750,23 @@ pub const Printer = struct {
         }
         const c = hir_mod.classOf(self.hir, node);
         const members = hir_mod.classMembers(self.hir, node);
+        // §4.A.9 v7 — Stage 3 pre-scan: if the class has any decorated
+        // instance member, set `stage3_instance_extra_class` so every
+        // ctor-emit path inside the class body appends the
+        // `__runInitializers(this, _<Class>_instanceExtra);` trailer.
+        // Save and restore around the class body so nested classes
+        // don't leak the parent's context.
+        const prev_instance_extra = self.stage3_instance_extra_class;
+        defer self.stage3_instance_extra_class = prev_instance_extra;
+        if (!self.options.experimental_decorators and c.name != hir_mod.none_node_id) {
+            if (self.classHasDecoratedInstanceMember(node)) {
+                self.stage3_instance_extra_class = c.name;
+            } else {
+                self.stage3_instance_extra_class = null;
+            }
+        } else {
+            self.stage3_instance_extra_class = null;
+        }
         // §4.A.7 — at targets below ES2022, lower `#field` to a
         // per-class `WeakMap`. Emit the `var _<Class>_<field> = new
         // WeakMap();` declarations *before* the class statement.
@@ -3747,11 +3812,13 @@ pub const Printer = struct {
         if (downlevel_private) self.current_class_name = hir_mod.identifierOf(self.hir, c.name).name;
         defer self.current_class_name = prev_class;
         self.depth += 1;
-        // Locate an explicit constructor (if any) for downlevel
-        // field hoisting. If none exists and we have fields to hoist,
-        // synthesize one as the first emitted member.
+        // Locate an explicit constructor (if any). We need it for
+        // downlevel field hoisting (§4.A.9) and Stage 3 instance-extras
+        // ctor trailer (§4.A.9 v7). If neither concern applies we still
+        // scan but don't emit a synthesized ctor.
+        const stage3_instance = self.stage3_instance_extra_class != null;
         var ctor_idx: ?usize = null;
-        if (downlevel_fields) {
+        if (downlevel_fields or stage3_instance) {
             for (members, 0..) |m, idx| {
                 const k = self.hir.kindOf(m);
                 if (k != .fn_decl and k != .fn_expr) continue;
@@ -3800,7 +3867,9 @@ pub const Printer = struct {
             try self.indent();
             switch (self.hir.kindOf(m)) {
                 .fn_decl, .fn_expr, .arrow_fn => {
-                    if (downlevel_fields and ctor_idx != null and ctor_idx.? == i) {
+                    const is_decorated_ctor = ctor_idx != null and ctor_idx.? == i;
+                    const needs_synthetic_trailer = is_decorated_ctor and (downlevel_fields or stage3_instance);
+                    if (needs_synthetic_trailer) {
                         try self.printCtorWithHoistedFields(node, m);
                     } else {
                         try self.printFnDecl(m);
@@ -3879,6 +3948,7 @@ pub const Printer = struct {
             try self.write("constructor() { ");
         }
         try self.writeHoistedFieldInits(class_node);
+        try self.emitStage3InstanceExtraTrailer();
         try self.write("}");
     }
 
@@ -3906,6 +3976,7 @@ pub const Printer = struct {
             }
         }
         if (has_extends) try self.writeHoistedFieldInits(class_node);
+        try self.emitStage3InstanceExtraTrailer();
         try self.write("}");
     }
 
@@ -3956,6 +4027,7 @@ pub const Printer = struct {
         // `__runInitializers(<Class>, _<Class>_staticExtra);` after all
         // member decorate calls so any addInitializer callbacks run.
         var any_decorated_static = false;
+        var any_decorated_instance = false;
         if (!self.options.experimental_decorators) {
             var s_i: usize = 0;
             while (s_i < members.len) : (s_i += 1) {
@@ -3963,9 +4035,20 @@ pub const Printer = struct {
                 var s_j = s_i;
                 while (s_j < members.len and self.hir.kindOf(members[s_j]) == .decorator) s_j += 1;
                 if (s_j >= members.len) break;
-                if (self.isStaticMember(members[s_j])) {
-                    any_decorated_static = true;
-                    break;
+                const target = members[s_j];
+                const tk = self.hir.kindOf(target);
+                // Skip constructor decorators (not legal in Stage 3 but
+                // current emit also skips them).
+                var is_ctor = false;
+                if (tk == .fn_decl or tk == .fn_expr) {
+                    is_ctor = hir_mod.fnDeclOf(self.hir, target).flags.is_constructor;
+                }
+                if (!is_ctor) {
+                    if (self.isStaticMember(target)) {
+                        any_decorated_static = true;
+                    } else {
+                        any_decorated_instance = true;
+                    }
                 }
                 s_i = s_j;
             }
@@ -3974,6 +4057,12 @@ pub const Printer = struct {
                 try self.write("var _");
                 try self.writeClassNameSuffix(c.name);
                 try self.write("_staticExtra = [];");
+            }
+            if (any_decorated_instance) {
+                try self.write(self.options.newline);
+                try self.write("var _");
+                try self.writeClassNameSuffix(c.name);
+                try self.write("_instanceExtra = [];");
             }
         }
         var i: usize = 0;
@@ -4011,7 +4100,7 @@ pub const Printer = struct {
                 continue;
             };
             if (!self.options.experimental_decorators) {
-                try self.emitStage3MemberDecorateCall(decorators, target, name_node, c.name, any_decorated_static);
+                try self.emitStage3MemberDecorateCall(decorators, target, name_node, c.name, any_decorated_static, any_decorated_instance);
                 i = j;
                 continue;
             }
@@ -4095,6 +4184,7 @@ pub const Printer = struct {
         name_node: NodeId,
         class_name: NodeId,
         has_static_extras: bool,
+        has_instance_extras: bool,
     ) anyerror!void {
         try self.write(self.options.newline);
         // Stage 3 `__esDecorate` first arg = class for static members,
@@ -4135,10 +4225,15 @@ pub const Printer = struct {
         // addInitializer callbacks survive to `__runInitializers`.
         // Instance members still pass `[]` until the ctor-synthesis
         // integration for instance initializers lands.
-        if (has_static_extras and self.isStaticMember(target) and class_name != hir_mod.none_node_id) {
+        const is_static = self.isStaticMember(target);
+        if (is_static and has_static_extras and class_name != hir_mod.none_node_id) {
             try self.write(", metadata: void 0 }, null, _");
             try self.writeClassNameSuffix(class_name);
             try self.write("_staticExtra);");
+        } else if (!is_static and has_instance_extras and class_name != hir_mod.none_node_id) {
+            try self.write(", metadata: void 0 }, null, _");
+            try self.writeClassNameSuffix(class_name);
+            try self.write("_instanceExtra);");
         } else {
             try self.write(", metadata: void 0 }, null, []);");
         }
@@ -8147,8 +8242,12 @@ test "emit: stage 3 method decorator on class method emits per-member decorate" 
     try T.expect(std.mem.indexOf(u8, out, "__esDecorate(null, _Foo_d, [logged], { kind: \"class\", name: \"Foo\", metadata: void 0 }, null, _Foo_extra);") != null);
     try T.expect(std.mem.indexOf(u8, out, "Foo = _Foo_d.value;") != null);
     try T.expect(std.mem.indexOf(u8, out, "__runInitializers(Foo, _Foo_extra);") != null);
-    // Per-member decorators also use the Stage 3 helper in v1.
-    try T.expect(std.mem.indexOf(u8, out, "__esDecorate(null, null, [traced], { kind: \"method\", name: \"greet\", static: false, private: false, access: { has: function (obj) { return \"greet\" in obj; }, get: function (obj) { return obj.greet; } }, metadata: void 0 }, null, []);") != null);
+    // §4.A.9 v7 — instance-decorator chain now declares
+    // `_Foo_instanceExtra = []` and passes it to instance __esDecorate
+    // calls; the ctor synthesizes a `__runInitializers(this, ...)` trailer.
+    try T.expect(std.mem.indexOf(u8, out, "var _Foo_instanceExtra = [];") != null);
+    try T.expect(std.mem.indexOf(u8, out, "__esDecorate(null, null, [traced], { kind: \"method\", name: \"greet\", static: false, private: false, access: { has: function (obj) { return \"greet\" in obj; }, get: function (obj) { return obj.greet; } }, metadata: void 0 }, null, _Foo_instanceExtra);") != null);
+    try T.expect(std.mem.indexOf(u8, out, "__runInitializers(this, _Foo_instanceExtra);") != null);
     try T.expect(std.mem.indexOf(u8, out, "__decorate([traced]") == null);
 }
 
@@ -8162,8 +8261,11 @@ test "emit: stage 3 field/accessor decorators emit member contexts" {
         \\}
     , .{ .experimental_decorators = false });
     defer T.allocator.free(out);
-    try T.expect(std.mem.indexOf(u8, out, "__esDecorate(null, null, [observe], { kind: \"field\", name: \"count\", static: false, private: false, access: { has: function (obj) { return \"count\" in obj; }, get: function (obj) { return obj.count; }, set: function (obj, value) { obj.count = value; } }, metadata: void 0 }, null, []);") != null);
-    try T.expect(std.mem.indexOf(u8, out, "__esDecorate(null, null, [memo], { kind: \"getter\", name: \"value\", static: false, private: false, access: { has: function (obj) { return \"value\" in obj; }, get: function (obj) { return obj.value; } }, metadata: void 0 }, null, []);") != null);
+    // §4.A.9 v7 — instance-extras array + runInitializers trailer.
+    try T.expect(std.mem.indexOf(u8, out, "var _Foo_instanceExtra = [];") != null);
+    try T.expect(std.mem.indexOf(u8, out, "__esDecorate(null, null, [observe], { kind: \"field\", name: \"count\", static: false, private: false, access: { has: function (obj) { return \"count\" in obj; }, get: function (obj) { return obj.count; }, set: function (obj, value) { obj.count = value; } }, metadata: void 0 }, null, _Foo_instanceExtra);") != null);
+    try T.expect(std.mem.indexOf(u8, out, "__esDecorate(null, null, [memo], { kind: \"getter\", name: \"value\", static: false, private: false, access: { has: function (obj) { return \"value\" in obj; }, get: function (obj) { return obj.value; } }, metadata: void 0 }, null, _Foo_instanceExtra);") != null);
+    try T.expect(std.mem.indexOf(u8, out, "__runInitializers(this, _Foo_instanceExtra);") != null);
     try T.expect(std.mem.indexOf(u8, out, "__decorate([observe]") == null);
 }
 
