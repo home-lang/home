@@ -237,6 +237,13 @@ pub fn build(b: *std.Build) void {
     ts_emit_pkg.addImport("ts_checker", ts_checker_pkg);
 
     const d_hm_pkg = createPackage(b, "packages/d_hm/src/d_hm.zig", target, optimize, zig_test_framework);
+    d_hm_pkg.addImport("hir", hir_pkg);
+    d_hm_pkg.addImport("string_interner", string_interner_pkg);
+    // Tests inside d_hm parse TypeScript surface syntax into HIR (the
+    // shared substrate) and verify the .d.hm re-printer renders Home
+    // syntax. The ts_lexer/ts_parser deps are test-only.
+    d_hm_pkg.addImport("ts_lexer", ts_lexer_pkg);
+    d_hm_pkg.addImport("ts_parser", ts_parser_pkg);
 
     // TS-parity Phase 4.5 — driver wiring lex → parse → bind → emit.
     const ts_driver_pkg = createPackage(b, "packages/ts_driver/src/ts_driver.zig", target, optimize, zig_test_framework);

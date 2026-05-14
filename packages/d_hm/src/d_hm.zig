@@ -29,6 +29,11 @@
 //!   - Pantry manifest integration.
 
 const std = @import("std");
+const hir_mod = @import("hir");
+const string_interner = @import("string_interner");
+
+pub const NodeId = hir_mod.NodeId;
+pub const Hir = hir_mod.Hir;
 
 /// What kind of declaration a `.d.hm` file can contain. Strict subset
 /// of Home's full grammar.
@@ -393,6 +398,511 @@ pub const Emitter = struct {
 };
 
 // =============================================================================
+// HIR-driven re-printer — Home declaration emitter.
+// =============================================================================
+//
+// Symmetric to `packages/ts_emit/src/d_ts_emit.zig` but emits Home
+// `.d.hm` syntax. Walks a HIR module root, strips function bodies and
+// initializers, and re-prints the public type surface using Home's
+// declaration grammar (`pub fn`, `pub struct`, `pub trait`, `pub type`,
+// `pub enum`, `pub const`, `extern fn`).
+//
+// HIR is the shared substrate between the TypeScript and Home parsers
+// (per TS_PARITY_PLAN Phase 4 §4.A.13), so the re-printer works
+// uniformly: when fed a TS-parsed source it surfaces Home-renamed
+// primitives (`number → f64`, `string → str`, etc.); when fed Home
+// HIR directly the names already line up. The only frontend-specific
+// piece is `pub` visibility, which the binder eventually annotates;
+// for now we emit `pub` for every declaration that reaches the
+// re-printer (matching the assumption that `.d.hm` *is* the public
+// surface — anything internal is filtered upstream).
+//
+// Phase 4 §4.A.13 coverage today:
+//   - `fn name(p: T) -> U;` (body stripped)
+//   - `struct Name { f: T, g: U }`
+//   - `trait Name { fn m(p: T) -> U; }`
+//   - `type Alias = T;`
+//   - `enum Name { V1, V2(T) }`
+//   - `const NAME: T;` (initializer dropped)
+//
+// Type-printer recurses into:
+//   - Type refs (`Foo`, `Vec<T>`, `Option<T>`)
+//   - Tuple types (`(T, U)`)
+//   - Array types (`Vec<T>`)
+//   - Function types (`fn(T) -> U`)
+//   - Union / intersection types (`T | U`, `T & U`)
+//   - Literal types (`"hello"`, `42`, `true`)
+//   - Object type literals (`{ f: T }`)
+//
+// Follow-ups (not blocking):
+//   - Visibility honoring once Home's binder annotates `pub`/`pub(crate)`.
+//   - `extern fn` once HIR carries an `is_extern` flag on `fn_decl`.
+//   - `declare module "name" { ... }` walking once Home parses module
+//     ambient blocks into HIR.
+//   - Generic type parameter lists on `fn`, `struct`, `trait`, `type`.
+//   - Position-preserving source-map entries (currently the parallel
+//     `.d.hm.map` ships with empty mappings).
+
+pub const HirEmitOptions = struct {
+    indent: []const u8 = "    ",
+    newline: []const u8 = "\n",
+    /// When true, the standard auto-gen banner is written before the
+    /// first declaration (matching `Emitter`'s default).
+    write_header: bool = true,
+};
+
+pub const HirEmitError = error{
+    OutOfMemory,
+};
+
+/// HIR-driven `.d.hm` re-printer.
+///
+/// Lifetime mirrors `Emitter`: caller owns `Hir` + `Interner`; the
+/// emitter borrows them. Output bytes are owned by the emitter until
+/// `toOwnedSlice` succeeds.
+pub const HirEmitter = struct {
+    gpa: std.mem.Allocator,
+    hir: *const Hir,
+    interner: *const string_interner.Interner,
+    out: std.ArrayListUnmanaged(u8),
+    options: HirEmitOptions,
+    depth: u32,
+    header_written: bool,
+
+    pub fn init(
+        gpa: std.mem.Allocator,
+        hir: *const Hir,
+        interner: *const string_interner.Interner,
+        options: HirEmitOptions,
+    ) HirEmitter {
+        return .{
+            .gpa = gpa,
+            .hir = hir,
+            .interner = interner,
+            .out = .empty,
+            .options = options,
+            .depth = 0,
+            .header_written = false,
+        };
+    }
+
+    pub fn deinit(self: *HirEmitter) void {
+        self.out.deinit(self.gpa);
+    }
+
+    pub fn toOwnedSlice(self: *HirEmitter) ![]u8 {
+        return self.out.toOwnedSlice(self.gpa);
+    }
+
+    fn write(self: *HirEmitter, s: []const u8) !void {
+        try self.out.appendSlice(self.gpa, s);
+    }
+
+    fn indent(self: *HirEmitter) !void {
+        var i: u32 = 0;
+        while (i < self.depth) : (i += 1) try self.write(self.options.indent);
+    }
+
+    fn ensureHeader(self: *HirEmitter) !void {
+        if (!self.options.write_header) return;
+        if (self.header_written) return;
+        try self.write(HEADER);
+        try self.write(self.options.newline);
+        self.header_written = true;
+    }
+
+    /// Walk the source-file root, emitting one declaration per
+    /// supported HIR statement. Unsupported kinds (statements, expr
+    /// statements, etc.) are silently skipped — they aren't valid
+    /// inside a `.d.hm` anyway.
+    pub fn emitSourceFile(self: *HirEmitter, root: NodeId) !void {
+        try self.ensureHeader();
+        const stmts = hir_mod.blockStmts(self.hir, root);
+        for (stmts) |s| {
+            if (!self.shouldEmit(s)) continue;
+            try self.emitDeclaration(s);
+        }
+    }
+
+    fn shouldEmit(self: *const HirEmitter, node: NodeId) bool {
+        return switch (self.hir.kindOf(node)) {
+            .fn_decl,
+            .class_decl,
+            .interface_decl,
+            .type_alias_decl,
+            .enum_decl,
+            .const_decl,
+            .let_decl,
+            .var_decl,
+            .namespace_decl,
+            .module_decl,
+            .export_decl,
+            => true,
+            else => false,
+        };
+    }
+
+    fn emitDeclaration(self: *HirEmitter, node: NodeId) anyerror!void {
+        try self.indent();
+        switch (self.hir.kindOf(node)) {
+            .fn_decl => try self.emitFn(node),
+            // A TS `class` translates to Home `struct`. Methods on a
+            // class don't have a direct Home struct equivalent, so we
+            // re-print only the field surface — methods fall through
+            // to the trait re-printer when callers wire that route.
+            .class_decl => try self.emitClassAsStruct(node),
+            // A TS `interface` translates to Home `trait` (closest
+            // structural equivalent).
+            .interface_decl => try self.emitInterfaceAsTrait(node),
+            .type_alias_decl => try self.emitTypeAlias(node),
+            .enum_decl => try self.emitEnumDecl(node),
+            .const_decl, .let_decl, .var_decl => try self.emitConstDecl(node),
+            .namespace_decl, .module_decl => try self.emitNamespaceAsModule(node),
+            .export_decl => try self.emitExport(node),
+            else => {},
+        }
+    }
+
+    fn emitFn(self: *HirEmitter, node: NodeId) !void {
+        const f = hir_mod.fnDeclOf(self.hir, node);
+        try self.write("pub fn ");
+        if (f.name != hir_mod.none_node_id) try self.emitIdentifier(f.name);
+        try self.write("(");
+        const params = hir_mod.fnParams(self.hir, node);
+        var emitted: u32 = 0;
+        for (params) |p| {
+            if (self.hir.kindOf(p) != .parameter) continue;
+            const pp = hir_mod.parameterOf(self.hir, p);
+            if (pp.flags.is_computed_binding_key) continue;
+            if (emitted > 0) try self.write(", ");
+            if (pp.flags.is_rest) try self.write("...");
+            if (pp.name != hir_mod.none_node_id) try self.emitIdentifier(pp.name);
+            if (pp.flags.is_optional) try self.write("?");
+            if (pp.type_annotation != hir_mod.none_node_id) {
+                try self.write(": ");
+                try self.emitTypeNode(pp.type_annotation);
+            }
+            emitted += 1;
+        }
+        try self.write(") -> ");
+        if (f.return_type != hir_mod.none_node_id) {
+            try self.emitTypeNode(f.return_type);
+        } else {
+            try self.write("void");
+        }
+        try self.write(";");
+        try self.write(self.options.newline);
+    }
+
+    fn emitClassAsStruct(self: *HirEmitter, node: NodeId) !void {
+        const c = hir_mod.classOf(self.hir, node);
+        try self.write("pub struct ");
+        if (c.name != hir_mod.none_node_id) try self.emitIdentifier(c.name);
+        try self.write(" {");
+        const members = hir_mod.classMembers(self.hir, node);
+        // Collect just the data-bearing properties; methods belong on
+        // an `impl Name` block which is implementation, not declaration.
+        var any = false;
+        for (members) |m| {
+            if (self.hir.kindOf(m) != .object_property) continue;
+            const op = hir_mod.objectPropertyOf(self.hir, m);
+            if (op.type_annotation == hir_mod.none_node_id) continue;
+            if (!any) {
+                try self.write(" ");
+                any = true;
+            } else {
+                try self.write(", ");
+            }
+            try self.emitIdentifier(op.key);
+            try self.write(": ");
+            try self.emitTypeNode(op.type_annotation);
+        }
+        if (any) try self.write(" }") else try self.write("}");
+        try self.write(self.options.newline);
+    }
+
+    fn emitInterfaceAsTrait(self: *HirEmitter, node: NodeId) !void {
+        const i = hir_mod.interfaceOf(self.hir, node);
+        try self.write("pub trait ");
+        try self.emitIdentifier(i.name);
+        try self.write(" {");
+        const members = hir_mod.interfaceMembers(self.hir, node);
+        if (members.len == 0) {
+            try self.write("}");
+            try self.write(self.options.newline);
+            return;
+        }
+        try self.write(self.options.newline);
+        self.depth += 1;
+        for (members) |m| {
+            if (self.hir.kindOf(m) != .interface_member) continue;
+            const im = hir_mod.interfaceMemberOf(self.hir, m);
+            try self.indent();
+            try self.write("fn ");
+            try self.write(self.interner.get(im.name));
+            try self.write("()");
+            try self.write(" -> ");
+            if (im.type_node != hir_mod.none_node_id) {
+                try self.emitTypeNode(im.type_node);
+            } else {
+                try self.write("void");
+            }
+            try self.write(";");
+            try self.write(self.options.newline);
+        }
+        self.depth -= 1;
+        try self.indent();
+        try self.write("}");
+        try self.write(self.options.newline);
+    }
+
+    fn emitTypeAlias(self: *HirEmitter, node: NodeId) !void {
+        const t = hir_mod.typeAliasOf(self.hir, node);
+        try self.write("pub type ");
+        try self.emitIdentifier(t.name);
+        try self.write(" = ");
+        if (t.aliased != hir_mod.none_node_id) {
+            try self.emitTypeNode(t.aliased);
+        } else {
+            try self.write("unknown");
+        }
+        try self.write(";");
+        try self.write(self.options.newline);
+    }
+
+    fn emitEnumDecl(self: *HirEmitter, node: NodeId) !void {
+        const e = hir_mod.enumOf(self.hir, node);
+        try self.write("pub enum ");
+        try self.emitIdentifier(e.name);
+        try self.write(" {");
+        const members = hir_mod.enumMembers(self.hir, node);
+        if (members.len == 0) {
+            try self.write("}");
+            try self.write(self.options.newline);
+            return;
+        }
+        try self.write(" ");
+        var first = true;
+        for (members) |m| {
+            if (self.hir.kindOf(m) != .object_property) continue;
+            const op = hir_mod.objectPropertyOf(self.hir, m);
+            if (!first) try self.write(", ");
+            first = false;
+            try self.emitIdentifier(op.key);
+        }
+        try self.write(" }");
+        try self.write(self.options.newline);
+    }
+
+    fn emitConstDecl(self: *HirEmitter, node: NodeId) !void {
+        const v = hir_mod.varDeclOf(self.hir, node);
+        try self.write("pub const ");
+        if (v.name != hir_mod.none_node_id) try self.emitIdentifier(v.name);
+        if (v.type_annotation != hir_mod.none_node_id) {
+            try self.write(": ");
+            try self.emitTypeNode(v.type_annotation);
+        }
+        try self.write(";");
+        try self.write(self.options.newline);
+    }
+
+    fn emitNamespaceAsModule(self: *HirEmitter, node: NodeId) !void {
+        const n = hir_mod.namespaceOf(self.hir, node);
+        try self.write("declare module \"");
+        try self.write(self.interner.get(hir_mod.identifierOf(self.hir, n.name).name));
+        try self.write("\" {");
+        const body = hir_mod.namespaceBody(self.hir, node);
+        if (body.len == 0) {
+            try self.write("}");
+            try self.write(self.options.newline);
+            return;
+        }
+        try self.write(self.options.newline);
+        self.depth += 1;
+        for (body) |s| {
+            if (!self.shouldEmit(s)) continue;
+            try self.emitDeclaration(s);
+        }
+        self.depth -= 1;
+        try self.write("}");
+        try self.write(self.options.newline);
+    }
+
+    fn emitExport(self: *HirEmitter, node: NodeId) !void {
+        const ex = hir_mod.exportOf(self.hir, node);
+        if (ex.decl != hir_mod.none_node_id) {
+            // `export <decl>` — re-print the inner decl with `pub` (the
+            // existing emitDeclaration path already prefixes it).
+            switch (self.hir.kindOf(ex.decl)) {
+                .fn_decl => try self.emitFn(ex.decl),
+                .class_decl => try self.emitClassAsStruct(ex.decl),
+                .interface_decl => try self.emitInterfaceAsTrait(ex.decl),
+                .type_alias_decl => try self.emitTypeAlias(ex.decl),
+                .enum_decl => try self.emitEnumDecl(ex.decl),
+                .const_decl, .let_decl, .var_decl => try self.emitConstDecl(ex.decl),
+                else => {},
+            }
+        }
+    }
+
+    fn emitIdentifier(self: *HirEmitter, node: NodeId) !void {
+        if (self.hir.kindOf(node) != .identifier) return;
+        const id = hir_mod.identifierOf(self.hir, node);
+        try self.write(self.interner.get(id.name));
+    }
+
+    /// Re-print an HIR type-node id as Home type syntax. Recurses
+    /// through the type-node tree, mapping TS canonical primitive
+    /// names to Home counterparts (`number → f64`, `string → str`,
+    /// `boolean → bool`, `bigint → i64`).
+    fn emitTypeNode(self: *HirEmitter, node: NodeId) anyerror!void {
+        switch (self.hir.kindOf(node)) {
+            .type_ref => {
+                const r = hir_mod.typeRefOf(self.hir, node);
+                const qualifier = hir_mod.typeRefQualifier(self.hir, node);
+                for (qualifier) |q| {
+                    try self.emitIdentifier(q);
+                    try self.write(".");
+                }
+                const name = self.interner.get(r.name);
+                try self.write(mapPrimitive(name));
+                const args = hir_mod.typeRefArgs(self.hir, node);
+                if (args.len > 0) {
+                    try self.write("<");
+                    for (args, 0..) |a, i| {
+                        if (i > 0) try self.write(", ");
+                        try self.emitTypeNode(a);
+                    }
+                    try self.write(">");
+                }
+            },
+            .union_type => {
+                const members = hir_mod.unionTypeMembers(self.hir, node);
+                for (members, 0..) |m, i| {
+                    if (i > 0) try self.write(" | ");
+                    try self.emitTypeNode(m);
+                }
+            },
+            .intersection_type => {
+                const members = hir_mod.intersectionTypeMembers(self.hir, node);
+                for (members, 0..) |m, i| {
+                    if (i > 0) try self.write(" & ");
+                    try self.emitTypeNode(m);
+                }
+            },
+            .array_type => {
+                // `T[]` round-trips as Home's `Vec<T>`.
+                const a = hir_mod.arrayTypeOf(self.hir, node);
+                try self.write("Vec<");
+                try self.emitTypeNode(a.element);
+                try self.write(">");
+            },
+            .tuple_type => {
+                // `[T, U]` round-trips as Home's `(T, U)` tuple.
+                const elems = hir_mod.tupleTypeElements(self.hir, node);
+                try self.write("(");
+                for (elems, 0..) |e, i| {
+                    if (i > 0) try self.write(", ");
+                    try self.emitTypeNode(e);
+                }
+                try self.write(")");
+            },
+            .fn_type, .constructor_type => {
+                const ft = hir_mod.fnTypeOf(self.hir, node);
+                try self.write("fn(");
+                const params_start = ft.params_start;
+                const params_len = ft.params_len;
+                var i: u32 = 0;
+                while (i < params_len) : (i += 1) {
+                    if (i > 0) try self.write(", ");
+                    const p = self.hir.child_pool.items[params_start + i];
+                    if (self.hir.kindOf(p) != .parameter) continue;
+                    const pp = hir_mod.parameterOf(self.hir, p);
+                    if (pp.name != hir_mod.none_node_id) {
+                        try self.emitIdentifier(pp.name);
+                        try self.write(": ");
+                    }
+                    if (pp.type_annotation != hir_mod.none_node_id) {
+                        try self.emitTypeNode(pp.type_annotation);
+                    } else {
+                        try self.write("unknown");
+                    }
+                }
+                try self.write(") -> ");
+                if (ft.return_type != hir_mod.none_node_id) {
+                    try self.emitTypeNode(ft.return_type);
+                } else {
+                    try self.write("void");
+                }
+            },
+            .object_type => {
+                const members = hir_mod.objectTypeMembers(self.hir, node);
+                try self.write("{");
+                if (members.len > 0) {
+                    try self.write(" ");
+                    for (members, 0..) |m, i| {
+                        if (i > 0) try self.write(", ");
+                        if (self.hir.kindOf(m) != .interface_member) continue;
+                        const im = hir_mod.interfaceMemberOf(self.hir, m);
+                        try self.write(self.interner.get(im.name));
+                        if (im.type_node != hir_mod.none_node_id) {
+                            try self.write(": ");
+                            try self.emitTypeNode(im.type_node);
+                        }
+                    }
+                    try self.write(" ");
+                }
+                try self.write("}");
+            },
+            .type_literal => {
+                const lt = hir_mod.literalTypeOf(self.hir, node);
+                if (lt.negative) try self.write("-");
+                switch (self.hir.kindOf(lt.literal)) {
+                    .literal_string => {
+                        const s = hir_mod.literalStringOf(self.hir, lt.literal);
+                        try self.write("\"");
+                        try self.write(self.interner.get(s.value));
+                        try self.write("\"");
+                    },
+                    .literal_number => {
+                        var nbuf: [32]u8 = undefined;
+                        const v = hir_mod.literalNumberOf(self.hir, lt.literal);
+                        try self.write(try std.fmt.bufPrint(&nbuf, "{d}", .{v}));
+                    },
+                    .literal_bool => {
+                        const v = hir_mod.literalBoolOf(self.hir, lt.literal);
+                        try self.write(if (v) "true" else "false");
+                    },
+                    else => try self.write("unknown"),
+                }
+            },
+            .keyof_type => {
+                // Home doesn't have `keyof` natively; round-trip the TS
+                // form as a comment-style placeholder so downstream
+                // tools can spot it. Follow-up: design Home equivalent.
+                const k = hir_mod.keyofTypeOf(self.hir, node);
+                try self.write("keyof ");
+                try self.emitTypeNode(k.operand);
+            },
+            else => try self.write("unknown"),
+        }
+    }
+};
+
+/// Map a TS canonical primitive name to its Home counterpart. Names
+/// that aren't recognized pass through unchanged so user-defined
+/// types (`Vec`, `Option`, `MyStruct`) survive untouched.
+fn mapPrimitive(name: []const u8) []const u8 {
+    if (std.mem.eql(u8, name, "number")) return "f64";
+    if (std.mem.eql(u8, name, "string")) return "str";
+    if (std.mem.eql(u8, name, "boolean")) return "bool";
+    if (std.mem.eql(u8, name, "bigint")) return "i64";
+    if (std.mem.eql(u8, name, "symbol")) return "Symbol";
+    if (std.mem.eql(u8, name, "object")) return "Object";
+    return name;
+}
+
+// =============================================================================
 // Declaration source map (`.d.hm.map`).
 // =============================================================================
 //
@@ -722,4 +1232,183 @@ test "DeclKind: enum is exhaustive" {
         .declare_module,
     };
     try T.expectEqual(@as(usize, 8), all.len);
+}
+
+// =============================================================================
+// HirEmitter tests — parse TypeScript surface syntax (which targets the
+// shared HIR substrate), then re-print as Home `.d.hm`. This exercises
+// the same code path the eventual Home parser will take once it lowers
+// to HIR; today's coverage pins the type-printer output for the common
+// declaration shapes.
+// =============================================================================
+
+const ts_lexer = @import("ts_lexer");
+const ts_parser = @import("ts_parser");
+
+const HirTestSetup = struct {
+    sint: string_interner.Interner,
+    hir: Hir,
+    scanner: ts_lexer.Scanner,
+    tokens: std.ArrayList(ts_lexer.Token),
+    parser: ts_parser.Parser,
+    root: NodeId,
+};
+
+fn newHirSetup(source: []const u8) !*HirTestSetup {
+    const s = try T.allocator.create(HirTestSetup);
+    errdefer T.allocator.destroy(s);
+    s.sint = try string_interner.Interner.init(T.allocator);
+    errdefer s.sint.deinit();
+    s.hir = try Hir.init(T.allocator);
+    errdefer s.hir.deinit();
+    s.scanner = ts_lexer.Scanner.init(T.allocator, source);
+    errdefer s.scanner.deinit(T.allocator);
+    s.tokens = try s.scanner.tokenize(T.allocator);
+    errdefer s.tokens.deinit(T.allocator);
+    s.parser = ts_parser.Parser.init(T.allocator, &s.hir, &s.sint, source, s.tokens.items);
+    errdefer s.parser.deinit();
+    s.root = try s.parser.parseSourceFile();
+    return s;
+}
+
+fn destroyHirSetup(s: *HirTestSetup) void {
+    s.parser.deinit();
+    s.tokens.deinit(T.allocator);
+    s.scanner.deinit(T.allocator);
+    s.hir.deinit();
+    s.sint.deinit();
+    T.allocator.destroy(s);
+}
+
+fn emitHmTest(source: []const u8) ![]u8 {
+    const s = try newHirSetup(source);
+    defer destroyHirSetup(s);
+    var em = HirEmitter.init(T.allocator, &s.hir, &s.sint, .{ .write_header = false });
+    defer em.deinit();
+    try em.emitSourceFile(s.root);
+    return T.allocator.dupe(u8, em.out.items);
+}
+
+test "HirEmitter: fn body is stripped and signature kept" {
+    const out = try emitHmTest("function add(a: number, b: number): number { return a + b; }");
+    defer T.allocator.free(out);
+    try T.expect(std.mem.indexOf(u8, out, "pub fn add(a: f64, b: f64) -> f64;") != null);
+    // Body must not leak.
+    try T.expect(std.mem.indexOf(u8, out, "return") == null);
+    try T.expect(std.mem.indexOf(u8, out, "{") == null);
+}
+
+test "HirEmitter: struct (TS class) re-printed with field types" {
+    const out = try emitHmTest("class Point { x: number = 0; y: number = 0; }");
+    defer T.allocator.free(out);
+    try T.expect(std.mem.indexOf(u8, out, "pub struct Point { x: f64, y: f64 }") != null);
+    // Initializer must not leak.
+    try T.expect(std.mem.indexOf(u8, out, "= 0") == null);
+}
+
+test "HirEmitter: trait (TS interface) re-prints method signatures" {
+    const out = try emitHmTest("interface Reader { read: number; close: void; }");
+    defer T.allocator.free(out);
+    try T.expect(std.mem.indexOf(u8, out, "pub trait Reader {") != null);
+    try T.expect(std.mem.indexOf(u8, out, "fn read() -> f64;") != null);
+    try T.expect(std.mem.indexOf(u8, out, "fn close() -> void;") != null);
+}
+
+test "HirEmitter: type alias and primitive remap" {
+    const out = try emitHmTest("type Id = string;");
+    defer T.allocator.free(out);
+    try T.expect(std.mem.indexOf(u8, out, "pub type Id = str;") != null);
+}
+
+test "HirEmitter: type alias union" {
+    const out = try emitHmTest("type Mix = string | number | boolean;");
+    defer T.allocator.free(out);
+    try T.expect(std.mem.indexOf(u8, out, "pub type Mix = str | f64 | bool;") != null);
+}
+
+test "HirEmitter: tuple type round-trips as Home tuple" {
+    const out = try emitHmTest("type Pair = [number, string];");
+    defer T.allocator.free(out);
+    try T.expect(std.mem.indexOf(u8, out, "pub type Pair = (f64, str);") != null);
+}
+
+test "HirEmitter: array type maps to Vec<T>" {
+    const out = try emitHmTest("type Names = string[];");
+    defer T.allocator.free(out);
+    try T.expect(std.mem.indexOf(u8, out, "pub type Names = Vec<str>;") != null);
+}
+
+test "HirEmitter: generic ref preserves type arguments" {
+    const out = try emitHmTest("type Maybe = Option<string>;");
+    defer T.allocator.free(out);
+    try T.expect(std.mem.indexOf(u8, out, "pub type Maybe = Option<str>;") != null);
+}
+
+test "HirEmitter: const decl drops initializer, keeps annotation" {
+    const out = try emitHmTest("const PI: number = 3.14;");
+    defer T.allocator.free(out);
+    try T.expect(std.mem.indexOf(u8, out, "pub const PI: f64;") != null);
+    try T.expect(std.mem.indexOf(u8, out, "= 3.14") == null);
+}
+
+test "HirEmitter: enum variants" {
+    const out = try emitHmTest("enum Color { Red, Green, Blue }");
+    defer T.allocator.free(out);
+    try T.expect(std.mem.indexOf(u8, out, "pub enum Color { Red, Green, Blue }") != null);
+}
+
+test "HirEmitter: function type prints as Home fn(...)→T" {
+    const out = try emitHmTest("type Cb = (x: number) => string;");
+    defer T.allocator.free(out);
+    try T.expect(std.mem.indexOf(u8, out, "pub type Cb = fn(x: f64) -> str;") != null);
+}
+
+test "HirEmitter: header is emitted once when enabled" {
+    const s = try newHirSetup("type X = number;");
+    defer destroyHirSetup(s);
+    var em = HirEmitter.init(T.allocator, &s.hir, &s.sint, .{});
+    defer em.deinit();
+    try em.emitSourceFile(s.root);
+    const out = try em.toOwnedSlice();
+    defer T.allocator.free(out);
+    try T.expect(std.mem.startsWith(u8, out, HEADER));
+    try T.expect(std.mem.indexOf(u8, out, "pub type X = f64;") != null);
+    // Header appears exactly once.
+    const first = std.mem.indexOf(u8, out, HEADER).?;
+    const second = std.mem.indexOfPos(u8, out, first + 1, HEADER);
+    try T.expect(second == null);
+}
+
+test "HirEmitter: export declaration unwraps to pub form" {
+    const out = try emitHmTest("export function id(x: number): number { return x; }");
+    defer T.allocator.free(out);
+    try T.expect(std.mem.indexOf(u8, out, "pub fn id(x: f64) -> f64;") != null);
+}
+
+test "HirEmitter: void return when annotation omitted" {
+    const out = try emitHmTest("function noop() {}");
+    defer T.allocator.free(out);
+    try T.expect(std.mem.indexOf(u8, out, "pub fn noop() -> void;") != null);
+}
+
+test "HirEmitter: empty trait compacts to {}" {
+    const out = try emitHmTest("interface Marker {}");
+    defer T.allocator.free(out);
+    try T.expect(std.mem.indexOf(u8, out, "pub trait Marker {}") != null);
+}
+
+test "HirEmitter: empty struct compacts to {}" {
+    const out = try emitHmTest("class Empty {}");
+    defer T.allocator.free(out);
+    try T.expect(std.mem.indexOf(u8, out, "pub struct Empty {}") != null);
+}
+
+test "mapPrimitive: known mappings + passthrough" {
+    try T.expectEqualStrings("f64", mapPrimitive("number"));
+    try T.expectEqualStrings("str", mapPrimitive("string"));
+    try T.expectEqualStrings("bool", mapPrimitive("boolean"));
+    try T.expectEqualStrings("i64", mapPrimitive("bigint"));
+    // Unknown names pass through unchanged.
+    try T.expectEqualStrings("Vec", mapPrimitive("Vec"));
+    try T.expectEqualStrings("MyStruct", mapPrimitive("MyStruct"));
 }

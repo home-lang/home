@@ -79,3 +79,4 @@ pantry
 # Test pass-count gate artifacts (scripts/check-test-count.sh)
 /test-summary.log
 /test-count.txt
+/.claude/worktrees
