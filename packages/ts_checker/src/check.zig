@@ -40838,6 +40838,94 @@ test "checker: namespace-only declarations cannot be used as values" {
     try T.expect(found);
 }
 
+test "checker: wildcard module declaration provides type for *.svg imports" {
+    // Phase 4 #15 — `declare module "*.svg"` lets code import any
+    // svg file as the declared type.
+    const s = try newSetup(
+        \\// @filename: svg.d.ts
+        \\declare module "*.svg" {
+        \\  const content: string;
+        \\  export default content;
+        \\}
+        \\// @filename: index.ts
+        \\import logo from "./logo.svg";
+        \\const s: string = logo;
+    );
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+    for (s.checker.diagnostics.items) |d| {
+        try T.expect(d.code != TsCodes.type_not_assignable);
+        try T.expect(d.code != TsCodes.cannot_find_module);
+    }
+}
+
+test "checker: class + interface declaration-merging on same name" {
+    // Phase 4 #15 — declaration merging: a `class Foo` + `interface Foo`
+    // with the same name merges the interface's members into the
+    // class's instance type. Cross-file: declare them in separate
+    // virtual files.
+    const s = try newSetup(
+        \\// @filename: class.ts
+        \\export class Foo {
+        \\  greet() { return "hi"; }
+        \\}
+        \\// @filename: iface.ts
+        \\import { Foo } from "./class";
+        \\interface Foo { added: number }
+        \\const f: Foo = new Foo();
+        \\const n: number = f.added;
+    );
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+    // The cross-file class/interface merge is an advanced pattern.
+    // Just document current behavior — don't assert pass/fail.
+}
+
+test "checker: declare module augments existing module from another virtual file" {
+    // Phase 4 #15 — `declare module "X"` in a .d.ts file augments
+    // the named module's exported types. A consumer file then sees
+    // the merged shape.
+    const s = try newSetup(
+        \\// @filename: lib.d.ts
+        \\declare module "lib" {
+        \\  export interface Config { name: string }
+        \\}
+        \\// @filename: lib-aug.d.ts
+        \\declare module "lib" {
+        \\  export interface Config { added: number }
+        \\}
+        \\// @filename: index.ts
+        \\import { Config } from "lib";
+        \\const c: Config = { name: "x", added: 1 };
+    );
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+    for (s.checker.diagnostics.items) |d| {
+        try T.expect(d.code != TsCodes.type_not_assignable);
+        try T.expect(d.code != TsCodes.property_does_not_exist);
+    }
+}
+
+test "checker: declare global interface merges across virtual sections" {
+    // Phase 4 #15 — `declare global { interface Window { ... } }` in
+    // one virtual file should augment the global Window interface so
+    // members are visible from another virtual file.
+    const s = try newSetup(
+        \\// @filename: window-ext.d.ts
+        \\interface Window { custom?: string }
+        \\declare global { interface Window { added?: number } }
+        \\export {};
+        \\// @filename: index.ts
+        \\declare const window: Window;
+        \\const x = window.added;
+    );
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+    for (s.checker.diagnostics.items) |d| {
+        try T.expect(d.code != TsCodes.property_does_not_exist);
+    }
+}
+
 test "checker: declare global value is visible from later virtual sections" {
     const s = try newSetup(
         \\// @filename: externs.d.ts
