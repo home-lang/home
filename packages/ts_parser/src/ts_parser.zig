@@ -2542,6 +2542,14 @@ pub const Parser = struct {
                         "Identifier expected. 'await' is a reserved word at the top-level of a module.",
                     );
                 }
+                if (has_alias and local_tok_for_diag.kind == .kw_await and self.top_level_external_module_indicator) {
+                    try self.reportCodeAt(
+                        local_tok_for_diag.span.start,
+                        local_tok_for_diag.line,
+                        1262,
+                        "Identifier expected. 'await' is a reserved word at the top-level of a module.",
+                    );
+                }
                 if (self.tokenTextEquals(local_tok_for_diag, "yield") and self.top_level_external_module_indicator) {
                     try self.reportCodeAt(
                         local_tok_for_diag.span.start,
