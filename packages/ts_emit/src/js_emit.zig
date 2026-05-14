@@ -3170,6 +3170,10 @@ pub const Printer = struct {
                         if (init_kind == .await_expr) {
                             const ap = hir_mod.awaitExprOf(self.hir, v.init);
                             if (ap.expr != hir_mod.none_node_id and (self.subtreeContainsYield(ap.expr) or self.subtreeContainsAwait(ap.expr))) return false;
+                        } else if (init_kind == .yield_expr) {
+                            const yp = hir_mod.yieldExprOf(self.hir, v.init);
+                            if (yp.type_node != hir_mod.none_node_id) return false; // bail on yield*
+                            if (yp.expr != hir_mod.none_node_id and (self.subtreeContainsYield(yp.expr) or self.subtreeContainsAwait(yp.expr))) return false;
                         } else {
                             if (self.subtreeContainsYield(v.init) or self.subtreeContainsAwait(v.init)) return false;
                         }
@@ -3356,6 +3360,35 @@ pub const Printer = struct {
                     try self.write(": var ");
                     if (v.name != hir_mod.none_node_id) try self.printExpression(v.name);
                     try self.write(" = _a.sent();");
+                } else if (v.init != hir_mod.none_node_id and self.hir.kindOf(v.init) == .yield_expr) {
+                    // `let x = yield E;` — double-yield + bind to second _a.sent()
+                    // (consumer-provided value).
+                    const yp = hir_mod.yieldExprOf(self.hir, v.init);
+                    try self.write(" return [4, __await(");
+                    if (yp.expr != hir_mod.none_node_id) {
+                        try self.printExpression(yp.expr);
+                    } else {
+                        try self.write("void 0");
+                    }
+                    try self.write(")];");
+                    state += 1;
+                    {
+                        const num = std.fmt.bufPrint(&buf, "{d}", .{state}) catch unreachable;
+                        try self.writeNewlineIndent();
+                        try self.write("case ");
+                        try self.write(num);
+                        try self.write(": _a.sent(); return [4];");
+                    }
+                    state += 1;
+                    {
+                        const num = std.fmt.bufPrint(&buf, "{d}", .{state}) catch unreachable;
+                        try self.writeNewlineIndent();
+                        try self.write("case ");
+                        try self.write(num);
+                        try self.write(": var ");
+                        if (v.name != hir_mod.none_node_id) try self.printExpression(v.name);
+                        try self.write(" = _a.sent();");
+                    }
                 } else {
                     try self.write(" var ");
                     if (v.name != hir_mod.none_node_id) try self.printExpression(v.name);
@@ -7311,6 +7344,23 @@ test "emit: async generator with let x = await E binds via _a.sent()" {
     try T.expect(std.mem.indexOf(u8, out, "case 1: var x = _a.sent();") != null);
     // case 2 yields __await(x) (the user yield).
     try T.expect(std.mem.indexOf(u8, out, "return [4, __await(x)]") != null);
+}
+
+test "emit: async generator with let x = yield E binds via second _a.sent()" {
+    // `let x = yield E;` in async gen: double-yield, then bind the
+    // consumer-provided value (the second _a.sent()) to x.
+    const out = try emitWithOpts(
+        "async function* g() { let x = yield 1; }",
+        .{ .es_target = .es2017 },
+    );
+    defer T.allocator.free(out);
+    try T.expect(std.mem.indexOf(u8, out, "__asyncGenerator") != null);
+    // case 0 yields __await(1).
+    try T.expect(std.mem.indexOf(u8, out, "return [4, __await(1)]") != null);
+    // case 1: sent + emit-done re-yield.
+    try T.expect(std.mem.indexOf(u8, out, "case 1: _a.sent(); return [4];") != null);
+    // case 2: bind via var x = _a.sent().
+    try T.expect(std.mem.indexOf(u8, out, "case 2: var x = _a.sent();") != null);
 }
 
 test "emit: async generator with x = await E (pre-declared) uses no var prefix" {
