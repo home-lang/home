@@ -343,6 +343,28 @@ pub fn build(b: *std.Build) void {
     // packages/ts_bundler/test/bun/PORTING_STATUS.md for the activation
     // plan and pass-rate ratchet.
 
+    // TS-parity Phase 4.5+ — `home_test` (Bun's `bun:test` Zig source).
+    // Vendored copy of upstream `bun/src/runtime/test_runner/*.zig`
+    // (93 files) plus `bun/src/runtime/cli/test_command.zig` and the
+    // `jest.classes.ts` bridge. MIT — see
+    // packages/home_test/src/LICENSE.bun.md. Bun is shifting its core
+    // to Rust; we own the Zig fork from here.
+    //
+    // The vendored sources under packages/home_test/src/bun/ do NOT
+    // compile yet — they reference Bun's stdlib aggregator via
+    // `@import("bun")` (same blocker as the bundler port; the same
+    // `bun_compat` shim will unblock Tier 0/1). See
+    // packages/home_test/src/PORTING_STATUS.md for the file-by-file
+    // status, top external `bun.X` dependency list, and tier-ordered
+    // build plan.
+    //
+    // For now we expose only the public facade
+    // (packages/home_test/src/home_test.zig) as a buildable test
+    // artifact; the `bun/` subdirectory is intentionally NOT wired
+    // into any test step until the shim lands and individual files
+    // can compile against Home's stdlib.
+    const home_test_pkg = createPackage(b, "packages/home_test/src/home_test.zig", target, optimize, zig_test_framework);
+
     // ====================================================================
     // TS-parity binaries: `home-tsc` (compiler driver) + `home-lsp`
     // (Language Server Protocol stdio loop). Both consume the
@@ -1068,6 +1090,12 @@ pub fn build(b: *std.Build) void {
     const ts_bundler_tests = b.addTest(.{ .root_module = ts_bundler_pkg });
     const run_ts_bundler_tests = b.addRunArtifact(ts_bundler_tests);
     dependOnTest(test_step, &run_ts_bundler_tests.step, test_filter, "ts_bundler");
+
+    // home_test: only the public facade is wired in (the vendored
+    // src/bun/ tree is deferred until the bun_compat shim lands).
+    const home_test_tests = b.addTest(.{ .root_module = home_test_pkg });
+    const run_home_test_tests = b.addRunArtifact(home_test_tests);
+    dependOnTest(test_step, &run_home_test_tests.step, test_filter, "home_test");
 
     // Volatile operations tests
     const volatile_tests = b.addTest(.{ .root_module = volatile_pkg });
