@@ -281,6 +281,28 @@ pub const Parser = struct {
         });
     }
 
+    /// Emit a TS2300 `Duplicate identifier 'X'.` diagnostic, matching tsc's
+    /// named-form output. Falls back to the bare form if the interned
+    /// name is empty (synthetic placeholders, etc.).
+    fn reportDuplicateIdentifierNamed(self: *Parser, pos: u32, line: u32, name_id: hir_mod.StringId) ParseError!void {
+        const raw = self.interner.get(name_id);
+        if (raw.len == 0) {
+            try self.reportCodeAt(pos, line, 2300, "Duplicate identifier.");
+            return;
+        }
+        const msg = try std.fmt.allocPrint(
+            self.diag_arena.allocator(),
+            "Duplicate identifier '{s}'.",
+            .{raw},
+        );
+        try self.diagnostics.append(self.gpa, .{
+            .pos = pos,
+            .line = line,
+            .code = 2300,
+            .message = msg,
+        });
+    }
+
     fn lineAt(self: *const Parser, pos: u32) u32 {
         const end = @min(@as(usize, @intCast(pos)), self.source.len);
         var line: u32 = 1;
@@ -1347,8 +1369,8 @@ pub const Parser = struct {
                     const id = hir_mod.identifierOf(self.hir, name_node);
                     const name_span = self.hir.spanOf(name_node);
                     if (seen_names.get(id.name)) |prev| {
-                        try self.reportCodeAt(prev.start, self.lineAt(prev.start), 2300, "Duplicate identifier.");
-                        try self.reportCodeAt(name_span.start, self.lineAt(name_span.start), 2300, "Duplicate identifier.");
+                        try self.reportDuplicateIdentifierNamed(prev.start, self.lineAt(prev.start), id.name);
+                        try self.reportDuplicateIdentifierNamed(name_span.start, self.lineAt(name_span.start), id.name);
                     } else {
                         try seen_names.put(self.gpa, id.name, name_span);
                     }
@@ -1461,7 +1483,7 @@ pub const Parser = struct {
                 if (self.hir.kindOf(name_node) == .identifier) {
                     const id = hir_mod.identifierOf(self.hir, name_node);
                     if (seen_names.contains(id.name)) {
-                        try self.reportCodeAt(self.hir.spanOf(name_node).start, elem_start.line, 2300, "Duplicate identifier.");
+                        try self.reportDuplicateIdentifierNamed(self.hir.spanOf(name_node).start, elem_start.line, id.name);
                     } else {
                         try seen_names.put(self.gpa, id.name, {});
                     }
@@ -3685,8 +3707,8 @@ pub const Parser = struct {
                     flags,
                 );
                 if (seen_names.get(name_id)) |prev| {
-                    try self.reportCodeAt(prev.start, self.lineAt(prev.start), 2300, "Duplicate identifier.");
-                    try self.reportCodeAt(name_span.start, self.lineAt(name_span.start), 2300, "Duplicate identifier.");
+                    try self.reportDuplicateIdentifierNamed(prev.start, self.lineAt(prev.start), name_id);
+                    try self.reportDuplicateIdentifierNamed(name_span.start, self.lineAt(name_span.start), name_id);
                 } else {
                     try seen_names.put(self.gpa, name_id, name_span);
                 }
@@ -4000,14 +4022,14 @@ pub const Parser = struct {
                 var pair = accessor_pairs.get(name_id) orelse AccessorPair{};
                 if (is_getter) {
                     if (pair.getter) |prev| {
-                        try self.reportCodeAt(prev.start, self.lineAt(prev.start), 2300, "Duplicate identifier.");
-                        try self.reportCodeAt(name_span.start, name_tok.line, 2300, "Duplicate identifier.");
+                        try self.reportDuplicateIdentifierNamed(prev.start, self.lineAt(prev.start), name_id);
+                        try self.reportDuplicateIdentifierNamed(name_span.start, name_tok.line, name_id);
                     }
                     pair.getter = name_span;
                 } else {
                     if (pair.setter) |prev| {
-                        try self.reportCodeAt(prev.start, self.lineAt(prev.start), 2300, "Duplicate identifier.");
-                        try self.reportCodeAt(name_span.start, name_tok.line, 2300, "Duplicate identifier.");
+                        try self.reportDuplicateIdentifierNamed(prev.start, self.lineAt(prev.start), name_id);
+                        try self.reportDuplicateIdentifierNamed(name_span.start, name_tok.line, name_id);
                     }
                     pair.setter = name_span;
                 }
@@ -4102,8 +4124,8 @@ pub const Parser = struct {
                 is_override,
             );
             if (seen.get(name_id)) |prev| {
-                try self.reportCodeAt(prev.start, self.lineAt(prev.start), 2300, "Duplicate identifier.");
-                try self.reportCodeAt(name_span.start, self.lineAt(name_span.start), 2300, "Duplicate identifier.");
+                try self.reportDuplicateIdentifierNamed(prev.start, self.lineAt(prev.start), name_id);
+                try self.reportDuplicateIdentifierNamed(name_span.start, self.lineAt(name_span.start), name_id);
             } else {
                 try seen.put(self.gpa, name_id, name_span);
             }
@@ -7621,6 +7643,37 @@ test "parser: duplicate parameter names report TS2300" {
         if (d.code == 2300) count += 1;
     }
     try T.expectEqual(@as(usize, 6), count);
+}
+
+test "parser: TS2300 duplicate identifier emits include the name" {
+    // Covers all four parser-side TS2300 emit sites: function params,
+    // binding patterns, fn-type params, and interface call signatures.
+    var s = try newTestSetup(
+        \\function f(x, x) {}
+        \\let { foo, bar: foo } = value;
+        \\type T = (a: string, a: number) => void;
+        \\interface I { (p: string, p: number): void; }
+    );
+    defer destroyTestSetup(s);
+    _ = try s.parser.parseSourceFile();
+    var x_named: usize = 0;
+    var foo_named: usize = 0;
+    var a_named: usize = 0;
+    var p_named: usize = 0;
+    var bare: usize = 0;
+    for (s.parser.diagnostics.items) |d| {
+        if (d.code != 2300) continue;
+        if (std.mem.eql(u8, d.message, "Duplicate identifier 'x'.")) x_named += 1;
+        if (std.mem.eql(u8, d.message, "Duplicate identifier 'foo'.")) foo_named += 1;
+        if (std.mem.eql(u8, d.message, "Duplicate identifier 'a'.")) a_named += 1;
+        if (std.mem.eql(u8, d.message, "Duplicate identifier 'p'.")) p_named += 1;
+        if (std.mem.eql(u8, d.message, "Duplicate identifier.")) bare += 1;
+    }
+    try T.expectEqual(@as(usize, 0), bare);
+    try T.expectEqual(@as(usize, 2), x_named);
+    try T.expectEqual(@as(usize, 1), foo_named);
+    try T.expectEqual(@as(usize, 2), a_named);
+    try T.expectEqual(@as(usize, 2), p_named);
 }
 
 test "parser: same-line object type members require separator" {
