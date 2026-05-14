@@ -6653,8 +6653,7 @@ pub const Checker = struct {
                     break :blk_default widened;
                 }
                 break :blk_default types.Primitive.any;
-            } else
-                types.Primitive.any;
+            } else types.Primitive.any;
             const declared_param_t = t;
             if (has_anno and pp.default_value != hir_mod.none_node_id) {
                 const default_t = try self.checkExpression(pp.default_value);
@@ -15613,6 +15612,41 @@ pub const Checker = struct {
         return false;
     }
 
+    fn recordUntypedUninitializedVarAssignment(self: *Checker, node: NodeId, value_t: TypeId) CheckError!void {
+        const decl = self.previousUntypedUninitializedVarDeclInNearestScope(node) orelse return;
+        const v = hir_mod.varDeclOf(self.hir, decl);
+        self.hir.setType(decl, value_t);
+        if (v.name != hir_mod.none_node_id) self.hir.setType(v.name, value_t);
+    }
+
+    fn previousUntypedUninitializedVarDeclInNearestScope(self: *Checker, node: NodeId) ?NodeId {
+        if (node == hir_mod.none_node_id or self.hir.kindOf(node) != .identifier) return null;
+        const id = hir_mod.identifierOf(self.hir, node);
+        const use_start = self.hir.spanOf(node).start;
+        var cur = self.hir.parentOf(node);
+        while (cur != hir_mod.none_node_id) : (cur = self.hir.parentOf(cur)) {
+            const stmts: []const NodeId = switch (self.hir.kindOf(cur)) {
+                .block_stmt => hir_mod.blockStmts(self.hir, cur),
+                .namespace_decl => hir_mod.namespaceBody(self.hir, cur),
+                else => continue,
+            };
+            for (stmts) |stmt| {
+                if (self.hir.spanOf(stmt).start >= use_start) break;
+                const decl = if (self.hir.kindOf(stmt) == .export_decl) hir_mod.exportOf(self.hir, stmt).decl else stmt;
+                if (decl == hir_mod.none_node_id) continue;
+                const dk = self.hir.kindOf(decl);
+                if (dk != .var_decl and dk != .let_decl and dk != .const_decl) continue;
+                const v = hir_mod.varDeclOf(self.hir, decl);
+                if (v.name == hir_mod.none_node_id or self.hir.kindOf(v.name) != .identifier) continue;
+                if (hir_mod.identifierOf(self.hir, v.name).name != id.name) continue;
+                if (v.type_annotation != hir_mod.none_node_id or v.init != hir_mod.none_node_id) return null;
+                return decl;
+            }
+            return null;
+        }
+        return null;
+    }
+
     fn destructuringSourceWithDefault(self: *Checker, source_t: TypeId, default_t: TypeId) !TypeId {
         if (source_t == types.Primitive.any or source_t == types.Primitive.unknown) return source_t;
         if (default_t == types.Primitive.any or default_t == types.Primitive.unknown) return default_t;
@@ -17411,7 +17445,7 @@ pub const Checker = struct {
                         self.lookupNarrow(hir_mod.identifierOf(self.hir, a.target).name) != null
                     else
                         false;
-                    if ((!self.nodeIsInsideFunctionLike(node) or has_active_target_narrow) and
+                    if ((!self.nodeIsInsideFunctionLike(node) or has_active_target_narrow or target_is_untyped_uninitialized_var) and
                         !self.nodeIsInsideLoop(node) and
                         self.hir.kindOf(a.target) == .identifier and
                         assignment_result_t != types.Primitive.none and
@@ -17419,11 +17453,18 @@ pub const Checker = struct {
                         assignment_result_t != types.Primitive.unknown and
                         target_t != types.Primitive.any and
                         target_t != types.Primitive.unknown and
-                        ((try self.literalExpressionAssignableToTarget(a.value, target_t)) or
+                        (target_is_untyped_uninitialized_var or
+                            (try self.literalExpressionAssignableToTarget(a.value, target_t)) or
                             (self.engine.isAssignableTo(assignment_result_t, target_t) catch true)))
                     {
                         const target_id = hir_mod.identifierOf(self.hir, a.target);
                         try self.recordNarrow(target_id.name, assignment_result_t);
+                    }
+                    if (target_is_untyped_uninitialized_var and
+                        assignment_result_t != types.Primitive.none and
+                        assignment_result_t != types.Primitive.unknown)
+                    {
+                        try self.recordUntypedUninitializedVarAssignment(a.target, assignment_result_t);
                     }
                 }
                 if (a.op) |op| {
@@ -21990,6 +22031,11 @@ pub const Checker = struct {
         if (std.mem.eql(u8, name_str, "Object")) {
             if (lib.objectGlobal(&self.lib_cache, self.interner, self.string_interner)) |og| {
                 return og;
+            } else |_| {}
+        }
+        if (std.mem.eql(u8, name_str, "Array")) {
+            if (lib.arrayGlobal(&self.lib_cache, self.interner, self.string_interner)) |ag| {
+                return ag;
             } else |_| {}
         }
         if (std.mem.eql(u8, name_str, "Math")) {
@@ -39662,6 +39708,35 @@ test "checker: lib — Object.assign accepts multiple sources" {
     for (b.base.checker.diagnostics.items) |d| {
         try T.expect(d.code != TsCodes.expected_n_arguments);
         try T.expect(d.code != TsCodes.not_callable);
+    }
+}
+
+test "checker: lib — Object.prototype helpers and Array.isArray are reachable" {
+    const b = try newBoundSetup(
+        \\var hasOwn = Object.prototype.hasOwnProperty, isArray;
+        \\let ok: boolean = hasOwn.call({}, "x");
+        \\isArray = Array.isArray;
+        \\let arrCheck: boolean = isArray([]);
+        \\function prepare(version: string) {
+        \\  var numbers;
+        \\  numbers = version.split(/[._]/);
+        \\  numbers.join("");
+        \\}
+        \\let impl: any;
+        \\impl.prepareVersionNo = function (version: string) {
+        \\  var numbers;
+        \\  numbers = version.split(/[._]/);
+        \\  numbers.join("");
+        \\  return Number(version);
+        \\};
+    );
+    defer destroyBoundSetup(b);
+    try b.base.checker.checkSourceFile(b.base.root);
+    for (b.base.checker.diagnostics.items) |d| {
+        try T.expect(d.code != TsCodes.cannot_find_name);
+        try T.expect(d.code != TsCodes.property_does_not_exist);
+        try T.expect(d.code != TsCodes.not_callable);
+        try T.expect(d.code != TsCodes.type_not_assignable);
     }
 }
 

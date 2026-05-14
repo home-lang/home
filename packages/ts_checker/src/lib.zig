@@ -38,6 +38,8 @@ pub const LibCache = struct {
     /// `Object` global — `keys / values / entries / assign`. Built
     /// once on first access.
     object_global: TypeId = types.Primitive.none,
+    /// `Array` global — static helpers such as `isArray`.
+    array_global: TypeId = types.Primitive.none,
     /// `Math` global — `PI`, `E`, `abs`, `floor`, etc. Built once on
     /// first access.
     math_global: TypeId = types.Primitive.none,
@@ -240,7 +242,9 @@ pub fn arrayProto(
 }
 
 /// Build (or fetch from cache) the `Object` global — the namespace
-/// shape carrying `keys / values / entries / assign`.
+/// shape carrying `keys / values / entries / assign` plus
+/// `Object.prototype` for common borrowed-method patterns such as
+/// `Object.prototype.hasOwnProperty.call(...)`.
 pub fn objectGlobal(
     cache: *LibCache,
     ti: *interner_mod.Interner,
@@ -250,6 +254,7 @@ pub fn objectGlobal(
 
     const string_t = types.Primitive.string_t;
     const any_t = types.Primitive.any;
+    const boolean_t = types.Primitive.boolean_t;
 
     const string_arr = try ti.internArrayType(sint, string_t);
     const any_arr = try ti.internArrayType(sint, any_t);
@@ -270,8 +275,16 @@ pub fn objectGlobal(
     const sig_assign = try ti.internIntersection(&[_]TypeId{ sig_assign2, sig_assign3, sig_assign4 });
     // `Object.defineProperty(o, key, descriptor): any`.
     const sig_define_property = try ti.internSignature(&[_]TypeId{ any_t, any_t, any_t }, any_t, false);
+    const sig_has_own_property = try ti.internSignature(&[_]TypeId{any_t}, boolean_t, false);
+    const sig_to_string = try ti.internSignature(&[_]TypeId{}, string_t, false);
+    const prototype_members = [_]types.ObjectMember{
+        .{ .name = try sint.intern("hasOwnProperty"), .type = sig_has_own_property, .is_optional = false, .is_readonly = false, .is_method = true },
+        .{ .name = try sint.intern("toString"), .type = sig_to_string, .is_optional = false, .is_readonly = false, .is_method = true },
+    };
+    const prototype_t = try ti.internObjectType(&prototype_members);
 
     const m = [_]types.ObjectMember{
+        .{ .name = try sint.intern("prototype"), .type = prototype_t, .is_optional = false, .is_readonly = false, .is_method = false },
         .{ .name = try sint.intern("keys"), .type = sig_keys, .is_optional = false, .is_readonly = false, .is_method = true },
         .{ .name = try sint.intern("values"), .type = sig_values, .is_optional = false, .is_readonly = false, .is_method = true },
         .{ .name = try sint.intern("entries"), .type = sig_entries, .is_optional = false, .is_readonly = false, .is_method = true },
@@ -280,6 +293,28 @@ pub fn objectGlobal(
     };
     cache.object_global = try ti.internObjectType(&m);
     return cache.object_global;
+}
+
+/// Build (or fetch from cache) the `Array` global — currently the
+/// static `isArray` predicate used by both expression checking and
+/// control-flow narrowing.
+pub fn arrayGlobal(
+    cache: *LibCache,
+    ti: *interner_mod.Interner,
+    sint: *string_interner.Interner,
+) !TypeId {
+    if (cache.array_global != types.Primitive.none) return cache.array_global;
+
+    const any_t = types.Primitive.any;
+    const boolean_t = types.Primitive.boolean_t;
+    const sig_is_array = try ti.internSignature(&[_]TypeId{any_t}, boolean_t, false);
+    const any_arr = try ti.internArrayType(sint, any_t);
+    const m = [_]types.ObjectMember{
+        .{ .name = try sint.intern("isArray"), .type = sig_is_array, .is_optional = false, .is_readonly = false, .is_method = true },
+        .{ .name = try sint.intern("prototype"), .type = any_arr, .is_optional = false, .is_readonly = false, .is_method = false },
+    };
+    cache.array_global = try ti.internObjectType(&m);
+    return cache.array_global;
 }
 
 /// Build (or fetch from cache) the `Math` global — the namespace
@@ -378,8 +413,13 @@ pub fn numberGlobal(
 
     // `(x: any): boolean`
     const sig_any_bool = try ti.internSignature(&[_]TypeId{any_t}, boolean_t, false);
+    // `Number(value): number` (call/construct modeled loosely).
+    const sig_number_call = try ti.internSignature(&[_]TypeId{any_t}, number_t, false);
+    const sig_number_construct = try ti.internSignature(&[_]TypeId{any_t}, number_t, true);
 
     const m = [_]types.ObjectMember{
+        .{ .name = try sint.intern("__call"), .type = sig_number_call, .is_optional = false, .is_readonly = false, .is_method = true },
+        .{ .name = try sint.intern("__construct"), .type = sig_number_construct, .is_optional = false, .is_readonly = false, .is_method = true },
         .{ .name = try sint.intern("MAX_VALUE"), .type = number_t, .is_optional = false, .is_readonly = true, .is_method = false },
         .{ .name = try sint.intern("MIN_VALUE"), .type = number_t, .is_optional = false, .is_readonly = true, .is_method = false },
         .{ .name = try sint.intern("MAX_SAFE_INTEGER"), .type = number_t, .is_optional = false, .is_readonly = true, .is_method = false },
@@ -477,6 +517,33 @@ test "lib: objectGlobal exposes keys/values/entries/assign" {
     try T.expect(ti.objectMember(og, try sint.intern("assign")) != null);
 }
 
+test "lib: objectGlobal exposes prototype helpers" {
+    var sint = try string_interner.Interner.init(T.allocator);
+    defer sint.deinit();
+    var ti = try interner_mod.Interner.init(T.allocator);
+    defer ti.deinit();
+    var cache: LibCache = .{};
+    defer cache.deinit(T.allocator);
+
+    const og = try objectGlobal(&cache, &ti, &sint);
+    const proto = ti.objectMember(og, try sint.intern("prototype")).?;
+    try T.expect(ti.objectMember(proto, try sint.intern("hasOwnProperty")) != null);
+    try T.expect(ti.objectMember(proto, try sint.intern("toString")) != null);
+}
+
+test "lib: arrayGlobal exposes isArray" {
+    var sint = try string_interner.Interner.init(T.allocator);
+    defer sint.deinit();
+    var ti = try interner_mod.Interner.init(T.allocator);
+    defer ti.deinit();
+    var cache: LibCache = .{};
+    defer cache.deinit(T.allocator);
+
+    const ag = try arrayGlobal(&cache, &ti, &sint);
+    try T.expect(ti.objectMember(ag, try sint.intern("isArray")) != null);
+    try T.expect(ti.objectMember(ag, try sint.intern("prototype")) != null);
+}
+
 test "lib: mathGlobal exposes PI/floor/max" {
     var sint = try string_interner.Interner.init(T.allocator);
     defer sint.deinit();
@@ -526,6 +593,8 @@ test "lib: numberGlobal exposes MAX_VALUE/isInteger" {
     defer cache.deinit(T.allocator);
 
     const ng = try numberGlobal(&cache, &ti, &sint);
+    try T.expect(ti.objectMember(ng, try sint.intern("__call")) != null);
+    try T.expect(ti.objectMember(ng, try sint.intern("__construct")) != null);
     try T.expectEqual(types.Primitive.number_t, ti.objectMember(ng, try sint.intern("MAX_VALUE")).?);
     try T.expectEqual(types.Primitive.number_t, ti.objectMember(ng, try sint.intern("MAX_SAFE_INTEGER")).?);
     try T.expect(ti.objectMember(ng, try sint.intern("isInteger")) != null);
