@@ -3950,6 +3950,32 @@ pub const Printer = struct {
         const c = hir_mod.classOf(self.hir, class_node);
         if (c.name == hir_mod.none_node_id) return;
         const members = hir_mod.classMembers(self.hir, class_node);
+        // §4.A.9 v6 — pre-scan to detect any decorated static member.
+        // If found, declare a shared `_<Class>_staticExtra = []` array
+        // once and pass it to each static __esDecorate call; then call
+        // `__runInitializers(<Class>, _<Class>_staticExtra);` after all
+        // member decorate calls so any addInitializer callbacks run.
+        var any_decorated_static = false;
+        if (!self.options.experimental_decorators) {
+            var s_i: usize = 0;
+            while (s_i < members.len) : (s_i += 1) {
+                if (self.hir.kindOf(members[s_i]) != .decorator) continue;
+                var s_j = s_i;
+                while (s_j < members.len and self.hir.kindOf(members[s_j]) == .decorator) s_j += 1;
+                if (s_j >= members.len) break;
+                if (self.isStaticMember(members[s_j])) {
+                    any_decorated_static = true;
+                    break;
+                }
+                s_i = s_j;
+            }
+            if (any_decorated_static) {
+                try self.write(self.options.newline);
+                try self.write("var _");
+                try self.writeClassNameSuffix(c.name);
+                try self.write("_staticExtra = [];");
+            }
+        }
         var i: usize = 0;
         while (i < members.len) : (i += 1) {
             const m = members[i];
@@ -3985,7 +4011,7 @@ pub const Printer = struct {
                 continue;
             };
             if (!self.options.experimental_decorators) {
-                try self.emitStage3MemberDecorateCall(decorators, target, name_node, c.name);
+                try self.emitStage3MemberDecorateCall(decorators, target, name_node, c.name, any_decorated_static);
                 i = j;
                 continue;
             }
@@ -4043,6 +4069,18 @@ pub const Printer = struct {
             }
             i = j;
         }
+        // §4.A.9 v6 — after all member decorate calls, run any
+        // `addInitializer` callbacks the static-member decorators
+        // registered. Instance initializers still need ctor-synthesis
+        // wiring (Phase 4 §4.A.9 follow-up).
+        if (any_decorated_static and !self.options.experimental_decorators) {
+            try self.write(self.options.newline);
+            try self.write("__runInitializers(");
+            try self.printExpression(c.name);
+            try self.write(", _");
+            try self.writeClassNameSuffix(c.name);
+            try self.write("_staticExtra);");
+        }
     }
 
     /// Simplified Stage 3 member decorator lowering. A spec-complete
@@ -4056,6 +4094,7 @@ pub const Printer = struct {
         target: NodeId,
         name_node: NodeId,
         class_name: NodeId,
+        has_static_extras: bool,
     ) anyerror!void {
         try self.write(self.options.newline);
         // Stage 3 `__esDecorate` first arg = class for static members,
@@ -4091,7 +4130,18 @@ pub const Printer = struct {
         // §4.A.9 v5 — metadata field. Without IIFE-static-block setup
         // we emit `void 0`; decorators that introspect `context.metadata`
         // see undefined (matches tsc's intent in the same flat shape).
-        try self.write(", metadata: void 0 }, null, []);");
+        // §4.A.9 v6 — static-member decorators pass the per-class
+        // `_<Class>_staticExtra` array (declared by the caller) so
+        // addInitializer callbacks survive to `__runInitializers`.
+        // Instance members still pass `[]` until the ctor-synthesis
+        // integration for instance initializers lands.
+        if (has_static_extras and self.isStaticMember(target) and class_name != hir_mod.none_node_id) {
+            try self.write(", metadata: void 0 }, null, _");
+            try self.writeClassNameSuffix(class_name);
+            try self.write("_staticExtra);");
+        } else {
+            try self.write(", metadata: void 0 }, null, []);");
+        }
     }
 
     /// Emit the Stage 3 `access: { has, get?, set? }` descriptor for a
@@ -8128,11 +8178,14 @@ test "emit: stage 3 static member decorators mark static context" {
     , .{ .experimental_decorators = false });
     defer T.allocator.free(out);
 
-    // Static-member decorators now pass the class identifier as
-    // the first `__esDecorate` arg (instead of `null`) so the helper
-    // knows which constructor to act on for `static: true` members.
-    try T.expect(std.mem.indexOf(u8, out, "__esDecorate(Foo, null, [logged], { kind: \"method\", name: \"greet\", static: true, private: false, access: { has: function (obj) { return \"greet\" in obj; }, get: function (obj) { return obj.greet; } }, metadata: void 0 }, null, []);") != null);
-    try T.expect(std.mem.indexOf(u8, out, "__esDecorate(Foo, null, [observe], { kind: \"field\", name: \"count\", static: true, private: false, access: { has: function (obj) { return \"count\" in obj; }, get: function (obj) { return obj.count; }, set: function (obj, value) { obj.count = value; } }, metadata: void 0 }, null, []);") != null);
+    // §4.A.9 v6 — when there's any decorated static member, the
+    // emit declares `var _Foo_staticExtra = [];` once and passes it
+    // as the 6th arg of each static __esDecorate call, then calls
+    // `__runInitializers(Foo, _Foo_staticExtra);` after the chain.
+    try T.expect(std.mem.indexOf(u8, out, "var _Foo_staticExtra = [];") != null);
+    try T.expect(std.mem.indexOf(u8, out, "__esDecorate(Foo, null, [logged], { kind: \"method\", name: \"greet\", static: true, private: false, access: { has: function (obj) { return \"greet\" in obj; }, get: function (obj) { return obj.greet; } }, metadata: void 0 }, null, _Foo_staticExtra);") != null);
+    try T.expect(std.mem.indexOf(u8, out, "__esDecorate(Foo, null, [observe], { kind: \"field\", name: \"count\", static: true, private: false, access: { has: function (obj) { return \"count\" in obj; }, get: function (obj) { return obj.count; }, set: function (obj, value) { obj.count = value; } }, metadata: void 0 }, null, _Foo_staticExtra);") != null);
+    try T.expect(std.mem.indexOf(u8, out, "__runInitializers(Foo, _Foo_staticExtra);") != null);
     try T.expect(std.mem.indexOf(u8, out, "static: false") == null);
 }
 
