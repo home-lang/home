@@ -2418,6 +2418,80 @@ test "conformance: type-correct decl passes" {
     try T.expectEqual(Outcome.passed, r.outcome);
 }
 
+// BISECTION HARNESS — re-added by the §3.A heap-leak investigation
+// (see `docs/TS_PARITY_PLAN_HEAP_LEAK.md`). Placed BEFORE the adjacent
+// unit tests it was expected to corrupt — Zig executes tests in
+// declaration order, so only a leading bisect can affect later tests.
+// The test never asserts pass-counts; it loads + runs a slice of the
+// local TS corpus through `runOneEntry` in EXACT mode. Opt-in via
+// `HOME_TS_CONFORMANCE_BISECT=1`. Tune the slice with
+// `HOME_TS_CONFORMANCE_BISECT_{START,LIMIT}`.
+//
+// Bisection finding (2026-05-14): the documented heap leak DID NOT
+// reproduce at LIMIT={25,50,100,200,500,1000,2000} cases — all
+// adjacent unit tests stayed green. Suspected fix: the `f84d9ad0
+// fix(ts-parity): close conformance tail crashes` commit added
+// `resolving_exported_type_decls` reentrancy guards in the checker,
+// which was likely the source of the cross-test corruption. Leave
+// this opt-in harness wired up for the next regression sighting.
+test "conformance: bisect exact-baseline heap leak" {
+    if (!envBoolOne("HOME_TS_CONFORMANCE_BISECT")) return;
+
+    const paths_or_null = try resolveTsCorpusPaths(T.allocator);
+    if (paths_or_null == null) return;
+    const paths = paths_or_null.?;
+    defer {
+        T.allocator.free(paths.cases);
+        T.allocator.free(paths.baselines);
+    }
+
+    const start = envUsize("HOME_TS_CONFORMANCE_BISECT_START", 0);
+    const limit = envUsize("HOME_TS_CONFORMANCE_BISECT_LIMIT", 25);
+
+    const corpus = try loadDirectoryWithOptions(T.allocator, paths.cases, .{
+        .baseline_root = paths.baselines,
+        .strict_default_for_expected_errors = true,
+        .exact_error_headers = true,
+        .load_start = start,
+        .load_limit = limit,
+    });
+    defer {
+        for (corpus) |entry| {
+            T.allocator.free(entry.name);
+            T.allocator.free(entry.source);
+            if (entry.path.len > 0) T.allocator.free(entry.path);
+            if (entry.expected_errors.len > 0) T.allocator.free(entry.expected_errors);
+        }
+        T.allocator.free(corpus);
+    }
+
+    var results: std.ArrayListUnmanaged(Result) = .empty;
+    defer {
+        freeResults(T.allocator, results.items);
+        results.deinit(T.allocator);
+    }
+
+    for (corpus, start..) |entry, idx| {
+        std.debug.print("[bisect] RUN {d} {s}\n", .{ idx, entry.name });
+        const r = try runOneEntry(T.allocator, .{
+            .name = entry.name,
+            .source = entry.source,
+            .path = entry.path,
+            .expects_error = entry.expects_error,
+            .expected_errors = entry.expected_errors,
+            .use_exact_errors = entry.use_exact_errors,
+            .is_tsx = entry.is_tsx,
+            .is_declaration_file = entry.is_declaration_file,
+            .strict_flags = entry.strict_flags,
+            .always_strict = entry.always_strict,
+            .syntax_target_es2015 = entry.syntax_target_es2015,
+            .suppress_js_check_diagnostics = entry.suppress_js_check_diagnostics,
+        });
+        try results.append(T.allocator, r);
+    }
+    std.debug.print("[bisect] DONE total={d}\n", .{results.items.len});
+}
+
 test "conformance: type-error decl fails as expected" {
     const r = try run(T.allocator, .{
         .name = "type_error",
