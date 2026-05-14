@@ -1464,7 +1464,11 @@ pub const Checker = struct {
                     if (self.isExportAssignmentDecl(s)) {
                         if (decl_kind == .identifier) {
                             const id = hir_mod.identifierOf(self.hir, ex.decl);
-                            if (!self.isBuiltinName(id.name) and !self.namespaceBodyDeclaresValueName(hir_mod.namespaceBody(self.hir, node), id.name)) {
+                            if (!self.isBuiltinName(id.name) and
+                                !self.namespaceBodyDeclaresValueName(hir_mod.namespaceBody(self.hir, node), id.name) and
+                                !self.rootHasNonImportDeclarationNamed(id.name) and
+                                !self.rootHasExportedName(id.name))
+                            {
                                 try self.reportCannotFindNamePlain(ex.decl, id.name);
                             } else {
                                 _ = try self.checkExpression(ex.decl);
@@ -18093,7 +18097,7 @@ pub const Checker = struct {
         if (props_t == null and self.jsxTagIsIntrinsic(el.tag)) {
             if (try self.jsxHasIntrinsicElementsDecl(el.tag)) {
                 try self.report(el.tag, TsCodes.property_does_not_exist, "Property does not exist on type 'JSX.IntrinsicElements'.");
-            } else if (!self.sourceHasReactJsxReference()) {
+            } else if (self.strict_flags.no_implicit_any and !self.sourceHasReactJsxReference()) {
                 try self.report(el.tag, TsCodes.jsx_element_implicit_any_no_intrinsic, "JSX element implicitly has type 'any' because no interface 'JSX.IntrinsicElements' exists.");
             }
         }
@@ -18102,7 +18106,7 @@ pub const Checker = struct {
             if ((try self.propertyNameFromLiteralType(tag_t)) != null) {
                 if (try self.jsxHasIntrinsicElementsDecl(el.tag)) {
                     try self.report(el.tag, TsCodes.property_does_not_exist, "Property does not exist on type 'JSX.IntrinsicElements'.");
-                } else if (!self.sourceHasReactJsxReference()) {
+                } else if (self.strict_flags.no_implicit_any and !self.sourceHasReactJsxReference()) {
                     try self.report(el.tag, TsCodes.jsx_element_implicit_any_no_intrinsic, "JSX element implicitly has type 'any' because no interface 'JSX.IntrinsicElements' exists.");
                 }
             }
@@ -18745,8 +18749,16 @@ pub const Checker = struct {
         }
         if (self.hir.kindOf(node) != .identifier) return;
         const id = hir_mod.identifierOf(self.hir, node);
-        const props_t = (try self.jsxNamedFunctionPropsType(anchor, id.name)) orelse return;
+        const props_t = (try self.jsxNamedFunctionPropsType(anchor, id.name)) orelse
+            self.jsxClassPropsTypeForName(id.name) orelse
+            return;
         try out.append(self.gpa, props_t);
+    }
+
+    fn jsxClassPropsTypeForName(self: *Checker, tag_name: hir_mod.StringId) ?TypeId {
+        const instance_t = self.class_instance_types.get(tag_name) orelse return null;
+        const props_name = self.string_interner.intern("props") catch return null;
+        return self.lookupObjectMember(instance_t, props_name) catch null;
     }
 
     fn ensureTypeRefDeclChecked(self: *Checker, type_node: NodeId, root: NodeId) CheckError!void {
@@ -29051,6 +29063,7 @@ test "checker: ambient module export target does not conflict with import equals
         \\}
         \\import ReactRouter = require("react-router");
         \\import Route = ReactRouter.Route;
+        \\const route: any = Route;
     );
     defer destroySetup(s);
     try s.checker.checkSourceFile(s.root);
@@ -29058,6 +29071,7 @@ test "checker: ambient module export target does not conflict with import equals
     for (s.checker.diagnostics.items) |d| {
         try T.expect(d.code != TsCodes.import_conflicts_with_local);
         try T.expect(d.code != TsCodes.cannot_find_module);
+        try T.expect(d.code != TsCodes.cannot_find_name);
     }
 }
 
@@ -29494,6 +29508,7 @@ test "checker: JSX intrinsic without IntrinsicElements reports TS7026" {
         \\<div n="x" />;
     );
     defer destroySetup(s);
+    s.checker.setStrictFlags(.{ .no_implicit_any = true });
     try s.checker.checkSourceFile(s.root);
 
     var found = false;
@@ -29501,6 +29516,21 @@ test "checker: JSX intrinsic without IntrinsicElements reports TS7026" {
         if (d.code == TsCodes.jsx_element_implicit_any_no_intrinsic) found = true;
     }
     try T.expect(found);
+}
+
+test "checker: JSX intrinsic without IntrinsicElements is allowed when noImplicitAny is off" {
+    const s = try newTsxSetup(
+        \\declare namespace JSX { interface Element {} }
+        \\const loose = <div n="x" />;
+        \\const tag: "div" = "div";
+        \\const dynamic = <tag />;
+    );
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+
+    for (s.checker.diagnostics.items) |d| {
+        try T.expect(d.code != TsCodes.jsx_element_implicit_any_no_intrinsic);
+    }
 }
 
 test "checker: JSX intrinsic string index signature supplies props" {
@@ -29805,6 +29835,25 @@ test "checker: JSX logical union components require every arm's props" {
         if (d.code == TsCodes.type_not_assignable or d.code == TsCodes.object_literal_excess_property) count += 1;
     }
     try T.expect(count >= 3);
+}
+
+test "checker: JSX logical class component unions use class props" {
+    const s = try newTsxSetup(
+        \\/// <reference path="/.lib/react.d.ts" />
+        \\declare namespace React { class Component<P, S> {} }
+        \\class RC1 extends React.Component<{ x: number }, {}> { render() { return null; } }
+        \\class RC2 extends React.Component<{ x: string }, {}> { render() { return null; } }
+        \\var RCComp = RC1 || RC2;
+        \\let a = <RCComp x />;
+    );
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+
+    var found = false;
+    for (s.checker.diagnostics.items) |d| {
+        if (d.code == TsCodes.type_not_assignable) found = true;
+    }
+    try T.expect(found);
 }
 
 test "checker: JSX union props keep literal discriminants in attr bag" {
@@ -40239,7 +40288,6 @@ test "checker: checkjs JSDoc import-type resolves a type from another module" {
         try T.expect(d.code != TsCodes.cannot_find_name);
     }
 }
-
 
 test "checker: checkjs JSDoc @callback declares a function-typed alias" {
     // Phase 4 #14 — `@callback Cb` declares a function type with the
