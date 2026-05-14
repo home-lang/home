@@ -3877,7 +3877,7 @@ pub const Printer = struct {
                 continue;
             };
             if (!self.options.experimental_decorators) {
-                try self.emitStage3MemberDecorateCall(decorators, target, name_node);
+                try self.emitStage3MemberDecorateCall(decorators, target, name_node, c.name);
                 i = j;
                 continue;
             }
@@ -3947,9 +3947,20 @@ pub const Printer = struct {
         decorators: []const NodeId,
         target: NodeId,
         name_node: NodeId,
+        class_name: NodeId,
     ) anyerror!void {
         try self.write(self.options.newline);
-        try self.write("__esDecorate(null, null, [");
+        // Stage 3 `__esDecorate` first arg = class for static members,
+        // null for instance members. tsc uses `this` inside its static
+        // init block; without the IIFE/static-block wrap we pass the
+        // class identifier directly since it's already declared.
+        try self.write("__esDecorate(");
+        if (self.isStaticMember(target) and class_name != hir_mod.none_node_id) {
+            try self.printExpression(class_name);
+        } else {
+            try self.write("null");
+        }
+        try self.write(", null, [");
         for (decorators, 0..) |d, k| {
             if (k > 0) try self.write(", ");
             const dp = hir_mod.decoratorOf(self.hir, d);
@@ -7965,8 +7976,11 @@ test "emit: stage 3 static member decorators mark static context" {
     , .{ .experimental_decorators = false });
     defer T.allocator.free(out);
 
-    try T.expect(std.mem.indexOf(u8, out, "__esDecorate(null, null, [logged], { kind: \"method\", name: \"greet\", static: true, private: false, access: { has: function (obj) { return \"greet\" in obj; }, get: function (obj) { return obj.greet; } } }, null, []);") != null);
-    try T.expect(std.mem.indexOf(u8, out, "__esDecorate(null, null, [observe], { kind: \"field\", name: \"count\", static: true, private: false, access: { has: function (obj) { return \"count\" in obj; }, get: function (obj) { return obj.count; }, set: function (obj, value) { obj.count = value; } } }, null, []);") != null);
+    // Static-member decorators now pass the class identifier as
+    // the first `__esDecorate` arg (instead of `null`) so the helper
+    // knows which constructor to act on for `static: true` members.
+    try T.expect(std.mem.indexOf(u8, out, "__esDecorate(Foo, null, [logged], { kind: \"method\", name: \"greet\", static: true, private: false, access: { has: function (obj) { return \"greet\" in obj; }, get: function (obj) { return obj.greet; } } }, null, []);") != null);
+    try T.expect(std.mem.indexOf(u8, out, "__esDecorate(Foo, null, [observe], { kind: \"field\", name: \"count\", static: true, private: false, access: { has: function (obj) { return \"count\" in obj; }, get: function (obj) { return obj.count; }, set: function (obj, value) { obj.count = value; } } }, null, []);") != null);
     try T.expect(std.mem.indexOf(u8, out, "static: false") == null);
 }
 
