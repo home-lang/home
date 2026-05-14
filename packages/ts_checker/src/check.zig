@@ -14548,6 +14548,29 @@ pub const Checker = struct {
             };
             return self.interner.internObjectType(&members) catch types.Primitive.unknown;
         }
+        if (std.mem.eql(u8, name, "RegExp")) {
+            const sig_string_boolean = self.interner.internSignature(&[_]TypeId{types.Primitive.string_t}, types.Primitive.boolean_t, false) catch
+                return types.Primitive.unknown;
+            const sig_string_any = self.interner.internSignature(&[_]TypeId{types.Primitive.string_t}, types.Primitive.any, false) catch
+                return types.Primitive.unknown;
+            const members = [_]types.ObjectMember{
+                .{
+                    .name = self.string_interner.intern("test") catch return types.Primitive.unknown,
+                    .type = sig_string_boolean,
+                    .is_optional = false,
+                    .is_readonly = false,
+                    .is_method = true,
+                },
+                .{
+                    .name = self.string_interner.intern("exec") catch return types.Primitive.unknown,
+                    .type = sig_string_any,
+                    .is_optional = false,
+                    .is_readonly = false,
+                    .is_method = true,
+                },
+            };
+            return self.interner.internObjectType(&members) catch types.Primitive.unknown;
+        }
         if (std.mem.eql(u8, name, "Node")) {
             const node_t = self.interner.internObjectType(&.{}) catch return types.Primitive.unknown;
             const sig_remove_child = self.interner.internSignature(&[_]TypeId{node_t}, node_t, false) catch
@@ -16679,7 +16702,7 @@ pub const Checker = struct {
             .literal_bool => types.Primitive.boolean_t,
             .literal_null => types.Primitive.null_t,
             .literal_undefined => types.Primitive.undefined_t,
-            .literal_regex => types.Primitive.object_t,
+            .literal_regex => self.lowerBuiltinObjectType("RegExp") orelse types.Primitive.object_t,
             .identifier => self.typeOfIdentifier(node),
             .this_expr => try self.checkThisExpression(node),
             .spread => blk: {
@@ -21037,6 +21060,31 @@ pub const Checker = struct {
             if (lib.numberGlobal(&self.lib_cache, self.interner, self.string_interner)) |ng| {
                 return ng;
             } else |_| {}
+        }
+        if (std.mem.eql(u8, name_str, "RegExp")) {
+            const regexp_t = self.lowerBuiltinObjectType("RegExp") orelse types.Primitive.any;
+            const escape_sig = self.interner.internSignature(&[_]TypeId{types.Primitive.string_t}, types.Primitive.string_t, false) catch
+                return types.Primitive.any;
+            const construct_sig = self.interner.internSignature(&[_]TypeId{ types.Primitive.any, types.Primitive.string_t }, regexp_t, true) catch
+                return types.Primitive.any;
+            self.recordSignatureMinArgs(construct_sig, &.{ true, true }) catch return types.Primitive.any;
+            const members = [_]types.ObjectMember{
+                .{
+                    .name = self.string_interner.intern("escape") catch return types.Primitive.any,
+                    .type = escape_sig,
+                    .is_optional = false,
+                    .is_readonly = false,
+                    .is_method = true,
+                },
+                .{
+                    .name = self.string_interner.intern("__construct") catch return types.Primitive.any,
+                    .type = construct_sig,
+                    .is_optional = false,
+                    .is_readonly = false,
+                    .is_method = true,
+                },
+            };
+            return self.interner.internObjectType(&members) catch types.Primitive.any;
         }
         if (std.mem.eql(u8, name_str, "Symbol")) {
             return self.symbolGlobalType() catch types.Primitive.any;
@@ -36570,6 +36618,22 @@ test "checker: generator return annotation accepts Generator or AsyncGenerator u
     defer destroySetup(s);
     try s.checker.checkSourceFile(s.root);
     for (s.checker.diagnostics.items) |d| {
+        try T.expect(d.code != TsCodes.type_not_assignable);
+    }
+}
+
+test "checker: RegExp constructor and literals expose test method" {
+    const s = try newSetup(
+        \\const regExp = new RegExp(RegExp.escape("foo.bar"));
+        \\const ok: boolean = regExp.test("foo.bar");
+        \\const okWithFlags: boolean = new RegExp("foo", "g").test("foo");
+        \\const okWithoutPattern: boolean = new RegExp().test("");
+        \\const ok2: boolean = /foo/.test("foo");
+    );
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+    for (s.checker.diagnostics.items) |d| {
+        try T.expect(d.code != TsCodes.property_does_not_exist);
         try T.expect(d.code != TsCodes.type_not_assignable);
     }
 }
