@@ -3926,6 +3926,7 @@ pub const Checker = struct {
             while (it.next()) |name_ptr| {
                 const name = name_ptr.*;
                 if (!class_names.contains(name) or declared.contains(name) or reported.contains(name)) continue;
+                if (self.sourceHasCheckJsDirective() and self.virtualSectionIsJsLike(s)) continue;
                 const name_str = self.string_interner.get(name);
                 const msg = try std.fmt.allocPrint(
                     self.diag_arena.allocator(),
@@ -7146,7 +7147,8 @@ pub const Checker = struct {
                         .name = member_name,
                         .type = field_t,
                         .is_optional = false,
-                        .is_readonly = self.classMemberSourceHasLeadingKeyword(m, "readonly"),
+                        .is_readonly = self.classMemberSourceHasLeadingKeyword(m, "readonly") or
+                            self.leadingJsDocHasReadonly(m),
                         .is_method = false,
                     };
                     if (op.is_static) {
@@ -7935,7 +7937,8 @@ pub const Checker = struct {
                 .object_property => {
                     const op = hir_mod.objectPropertyOf(self.hir, member);
                     const name = (self.classMemberNameFromPropertyKey(op.key, op.is_computed) catch null) orelse continue;
-                    if (name == member_name and self.classMemberSourceHasLeadingKeyword(member, "readonly")) return true;
+                    if (name == member_name and
+                        (self.classMemberSourceHasLeadingKeyword(member, "readonly") or self.leadingJsDocHasReadonly(member))) return true;
                 },
                 .fn_decl, .fn_expr, .arrow_fn => {
                     const fn_p = hir_mod.fnDeclOf(self.hir, member);
@@ -8350,6 +8353,13 @@ pub const Checker = struct {
         const span = self.hir.spanOf(node);
         const body = self.leadingJsDocBody(src, span.start) orelse return false;
         return std.mem.indexOf(u8, body, "@override") != null;
+    }
+
+    fn leadingJsDocHasReadonly(self: *Checker, node: NodeId) bool {
+        const src = self.source orelse return false;
+        const span = self.hir.spanOf(node);
+        const body = self.leadingJsDocBody(src, span.start) orelse return false;
+        return std.mem.indexOf(u8, body, "@readonly") != null;
     }
 
     fn sourceHasCheckJsDirective(self: *Checker) bool {
@@ -8881,6 +8891,7 @@ pub const Checker = struct {
                 const id = hir_mod.identifierOf(self.hir, extends_expr);
                 if (self.class_instance_types.get(id.name)) |t| break :blk t;
                 if (try self.resolveForwardClassInstanceType(extends_expr, id.name)) |t| break :blk t;
+                if (self.lowerBuiltinObjectType(self.string_interner.get(id.name))) |t| break :blk t;
                 if (try self.heritageValueType(extends_expr, id.name)) |value_t| {
                     if (try self.constructReturnType(value_t)) |instance_t| break :blk instance_t;
                 }
@@ -9074,6 +9085,7 @@ pub const Checker = struct {
             try self.checkNamedImportSpecifiers(node, imp, spec);
             return;
         }
+        if (self.referenceLibProvidesBareModule(spec)) return;
         if (try self.isKnownAmbientModuleName(node, spec)) return;
         const msg = try std.fmt.allocPrint(
             self.diag_arena.allocator(),
@@ -9105,6 +9117,13 @@ pub const Checker = struct {
             const tail = src[search_start..@min(end, src.len)];
             if (std.mem.indexOf(u8, tail, "with") != null or std.mem.indexOf(u8, tail, "assert") != null) return true;
         }
+        return false;
+    }
+
+    fn referenceLibProvidesBareModule(self: *Checker, spec: []const u8) bool {
+        const src = self.source orelse return false;
+        if (std.mem.eql(u8, spec, "react") and std.mem.indexOf(u8, src, "/.lib/react16.d.ts") != null) return true;
+        if (std.mem.eql(u8, spec, "prop-types") and std.mem.indexOf(u8, src, "/.lib/react16.d.ts") != null) return true;
         return false;
     }
 
@@ -13658,6 +13677,10 @@ pub const Checker = struct {
         const builtins = [_][]const u8{
             "Object",
             "RegExp",
+            "Error",
+            "TypeError",
+            "RangeError",
+            "SyntaxError",
             "Function",
             "PromiseLike",
             "Iterator",
@@ -14581,8 +14604,13 @@ pub const Checker = struct {
     }
 
     fn jsDocTypeForVarDecl(self: *Checker, node: NodeId) CheckError!?TypeId {
+        if (!self.sourceHasCheckJsDirective()) return null;
+        return try self.jsDocTypeForLeadingNode(node);
+    }
+
+    fn jsDocTypeForLeadingNode(self: *Checker, node: NodeId) CheckError!?TypeId {
         const src = self.source orelse return null;
-        if (std.mem.indexOf(u8, src, "@checkjs: true") == null) return null;
+        if (!self.sourceHasCheckJsDirective()) return null;
         const span = self.hir.spanOf(node);
         const body = self.leadingJsDocBody(src, span.start) orelse return null;
         const tags = ts_parser.jsdoc.parse(self.gpa, body) catch return null;
@@ -14590,9 +14618,126 @@ pub const Checker = struct {
 
         for (tags) |tag| {
             if (tag.kind != .type_tag) continue;
-            const base = jsDocTypeBaseName(tag.type_text);
-            if (base.len == 0) continue;
-            if (try self.jsDocTypedefObjectSkeleton(src, base)) |t| return t;
+            if (try self.jsDocTypeTextToType(src, tag.type_text)) |t| return t;
+        }
+        return null;
+    }
+
+    fn jsDocTypeTextToType(self: *Checker, src: []const u8, type_text: []const u8) CheckError!?TypeId {
+        const trimmed = std.mem.trim(u8, type_text, " \t\r\n");
+        if (trimmed.len == 0) return null;
+        if (std.mem.indexOfScalar(u8, trimmed, '|')) |_| {
+            var parts = std.mem.splitScalar(u8, trimmed, '|');
+            var items: std.ArrayListUnmanaged(TypeId) = .empty;
+            defer items.deinit(self.gpa);
+            while (parts.next()) |part| {
+                if (try self.jsDocTypeTextToType(src, part)) |member_t| {
+                    try items.append(self.gpa, member_t);
+                }
+            }
+            if (items.items.len == 0) return null;
+            if (items.items.len == 1) return items.items[0];
+            return self.interner.internUnion(items.items) catch return error.OutOfMemory;
+        }
+        if (try self.jsDocFunctionType(trimmed)) |sig| return sig;
+        if (try self.jsDocPrimitiveType(trimmed)) |prim| return prim;
+        if (try self.jsDocObjectSkeletonFromTypeText(trimmed)) |obj| return obj;
+        const base = jsDocTypeBaseName(trimmed);
+        if (base.len == 0) return null;
+        if (try self.jsDocCallbackSignature(src, base)) |sig| return sig;
+        if (try self.jsDocTypedefObjectSkeleton(src, base)) |t| return t;
+        return null;
+    }
+
+    fn jsDocPrimitiveType(self: *Checker, type_text: []const u8) CheckError!?TypeId {
+        _ = self;
+        var t = std.mem.trim(u8, type_text, " \t\r\n");
+        while (t.len >= 2 and t[0] == '(' and t[t.len - 1] == ')') {
+            t = std.mem.trim(u8, t[1 .. t.len - 1], " \t\r\n");
+        }
+        if (std.mem.eql(u8, t, "string")) return types.Primitive.string_t;
+        if (std.mem.eql(u8, t, "number")) return types.Primitive.number_t;
+        if (std.mem.eql(u8, t, "boolean")) return types.Primitive.boolean_t;
+        if (std.mem.eql(u8, t, "undefined")) return types.Primitive.undefined_t;
+        if (std.mem.eql(u8, t, "null")) return types.Primitive.null_t;
+        if (std.mem.eql(u8, t, "void")) return types.Primitive.void_t;
+        if (std.mem.eql(u8, t, "any") or std.mem.eql(u8, t, "*")) return types.Primitive.any;
+        if (std.mem.eql(u8, t, "Object") or std.mem.eql(u8, t, "object")) return types.Primitive.object_t;
+        return null;
+    }
+
+    fn jsDocFunctionType(self: *Checker, type_text: []const u8) CheckError!?TypeId {
+        const prefix = "function(";
+        if (!std.mem.startsWith(u8, type_text, prefix)) return null;
+        const close = jsDocMatchingParen(type_text, "function".len) orelse return null;
+        var params: std.ArrayListUnmanaged(TypeId) = .empty;
+        defer params.deinit(self.gpa);
+        const params_text = type_text[prefix.len..close];
+        var param_start: usize = 0;
+        var depth: i32 = 0;
+        var idx: usize = 0;
+        while (idx <= params_text.len) : (idx += 1) {
+            const at_end = idx == params_text.len;
+            if (!at_end) {
+                if (params_text[idx] == '(') depth += 1;
+                if (params_text[idx] == ')') depth -= 1;
+                if (params_text[idx] != ',' or depth != 0) continue;
+            }
+            const param = std.mem.trim(u8, params_text[param_start..idx], " \t\r\n");
+            param_start = idx + 1;
+            if (param.len == 0) continue;
+            const param_t = (try self.jsDocFunctionType(param)) orelse
+                (try self.jsDocPrimitiveType(param)) orelse
+                types.Primitive.any;
+            try params.append(self.gpa, param_t);
+        }
+        var ret_t: TypeId = types.Primitive.any;
+        const rest = std.mem.trim(u8, type_text[close + 1 ..], " \t\r\n");
+        if (std.mem.startsWith(u8, rest, ":")) {
+            const ret_text = std.mem.trim(u8, rest[1..], " \t\r\n");
+            ret_t = (try self.jsDocFunctionType(ret_text)) orelse
+                (try self.jsDocPrimitiveType(ret_text)) orelse
+                types.Primitive.any;
+        }
+        return self.interner.internSignature(params.items, ret_t, false) catch return error.OutOfMemory;
+    }
+
+    fn jsDocMatchingParen(text: []const u8, open_idx: usize) ?usize {
+        if (open_idx >= text.len or text[open_idx] != '(') return null;
+        var depth: i32 = 1;
+        var i: usize = open_idx + 1;
+        while (i < text.len) : (i += 1) {
+            if (text[i] == '(') depth += 1;
+            if (text[i] == ')') {
+                depth -= 1;
+                if (depth == 0) return i;
+            }
+        }
+        return null;
+    }
+
+    fn jsDocCallbackSignature(self: *Checker, src: []const u8, wanted_name: []const u8) CheckError!?TypeId {
+        var search_start: usize = 0;
+        while (std.mem.indexOfPos(u8, src, search_start, "/**")) |start| {
+            const body_start = start + 3;
+            const end = std.mem.indexOfPos(u8, src, body_start, "*/") orelse return null;
+            defer search_start = end + 2;
+            const body = src[body_start..end];
+            if (!jsDocBlockHasNamedTag(body, "@callback", wanted_name)) continue;
+            const tags = ts_parser.jsdoc.parse(self.gpa, body) catch continue;
+            defer self.gpa.free(tags);
+            var params: std.ArrayListUnmanaged(TypeId) = .empty;
+            defer params.deinit(self.gpa);
+            var ret_t: TypeId = types.Primitive.any;
+            for (tags) |tag| {
+                if (tag.kind == .param_tag) {
+                    const param_t = (try self.jsDocTypeTextToType(src, tag.type_text)) orelse types.Primitive.any;
+                    try params.append(self.gpa, param_t);
+                } else if (tag.kind == .returns_tag) {
+                    ret_t = (try self.jsDocTypeTextToType(src, tag.type_text)) orelse types.Primitive.any;
+                }
+            }
+            return self.interner.internSignature(params.items, ret_t, false) catch return error.OutOfMemory;
         }
         return null;
     }
@@ -14651,6 +14796,29 @@ pub const Checker = struct {
         while (name_end < trailing.len and isJsDocIdentChar(trailing[name_end])) : (name_end += 1) {}
         if (!std.mem.eql(u8, trailing[0..name_end], wanted_name)) return null;
         return rest[brace_pos + 1 .. brace_pos + type_len - 1];
+    }
+
+    fn jsDocBlockHasNamedTag(body: []const u8, tag: []const u8, wanted_name: []const u8) bool {
+        var line_start: usize = 0;
+        var i: usize = 0;
+        while (i <= body.len) : (i += 1) {
+            const at_end = i == body.len;
+            if (!at_end and body[i] != '\n') continue;
+            var line = std.mem.trim(u8, body[line_start..i], " \t\r");
+            line_start = i + 1;
+            if (line.len > 0 and line[0] == '*') line = std.mem.trim(u8, line[1..], " \t\r");
+            if (!std.mem.startsWith(u8, line, tag)) continue;
+            var rest = std.mem.trim(u8, line[tag.len..], " \t\r");
+            if (rest.len > 0 and rest[0] == '{') {
+                const type_len = jsDocBalancedBraceLen(rest);
+                if (type_len == 0) continue;
+                rest = std.mem.trim(u8, rest[type_len..], " \t\r");
+            }
+            var name_end: usize = 0;
+            while (name_end < rest.len and isJsDocIdentChar(rest[name_end])) : (name_end += 1) {}
+            if (name_end == wanted_name.len and std.mem.eql(u8, rest[0..name_end], wanted_name)) return true;
+        }
+        return false;
     }
 
     fn jsDocBalancedBraceLen(s: []const u8) usize {
@@ -16008,6 +16176,12 @@ pub const Checker = struct {
                     try self.reportUnknownReference(m.object);
                     break :blk types.Primitive.any;
                 }
+                if (self.sourceHasCheckJsDirective() and
+                    self.nodeIsThisReference(m.object) and
+                    self.thisInsideCheckJsConstructorFunction(m.object))
+                {
+                    break :blk types.Primitive.any;
+                }
                 // TS2341: legacy `private` member access from
                 // outside the declaring class body. Runs before
                 // narrowing/index lookups so the diagnostic fires
@@ -16530,7 +16704,18 @@ pub const Checker = struct {
                             ((value_kind == .fn_decl or value_kind == .fn_expr or value_kind == .arrow_fn) and
                                 self.memberSourceLooksMethod(p));
                         const raw_vt = try self.checkExpression(op.value);
-                        const vt = self.objectAccessorPropertyType(op.value, raw_vt);
+                        const jsdoc_t = try self.jsDocTypeForLeadingNode(p);
+                        if (jsdoc_t) |target_t| {
+                            const jsdoc_ok = if (value_kind == .fn_decl or value_kind == .fn_expr or value_kind == .arrow_fn)
+                                try self.functionExpressionAssignableToTarget(op.value, target_t)
+                            else
+                                (try self.literalExpressionAssignableToTarget(op.value, target_t)) or
+                                    (self.engine.isAssignableTo(raw_vt, target_t) catch true);
+                            if (!jsdoc_ok) {
+                                try self.report(p, TsCodes.type_not_assignable, "Type is not assignable to declared type.");
+                            }
+                        }
+                        const vt = self.objectAccessorPropertyType(op.value, jsdoc_t orelse raw_vt);
                         if (try self.classMemberNameFromPropertyKey(op.key, true)) |member_name| {
                             if (!op_is_method and objectMemberListContains(members.items, member_name)) {
                                 try self.report(p, TsCodes.object_literal_duplicate_property, "An object literal cannot have multiple properties with the same name.");
@@ -16557,7 +16742,18 @@ pub const Checker = struct {
                         ((value_kind == .fn_decl or value_kind == .fn_expr or value_kind == .arrow_fn) and
                             self.memberSourceLooksMethod(p));
                     const raw_vt = try self.checkExpression(op.value);
-                    const vt = self.objectAccessorPropertyType(op.value, raw_vt);
+                    const jsdoc_t = try self.jsDocTypeForLeadingNode(p);
+                    if (jsdoc_t) |target_t| {
+                        const jsdoc_ok = if (value_kind == .fn_decl or value_kind == .fn_expr or value_kind == .arrow_fn)
+                            try self.functionExpressionAssignableToTarget(op.value, target_t)
+                        else
+                            (try self.literalExpressionAssignableToTarget(op.value, target_t)) or
+                                (self.engine.isAssignableTo(raw_vt, target_t) catch true);
+                        if (!jsdoc_ok) {
+                            try self.report(p, TsCodes.type_not_assignable, "Type is not assignable to declared type.");
+                        }
+                    }
+                    const vt = self.objectAccessorPropertyType(op.value, jsdoc_t orelse raw_vt);
                     if (op_is_method and self.objectLiteralHasDuplicateMethodWithLiteralParam(members.items, k.name, op.value)) {
                         try self.report(p, TsCodes.duplicate_identifier, "Duplicate identifier.");
                     }
@@ -19163,6 +19359,7 @@ pub const Checker = struct {
             if (self.isDeclNameSlot(node) or self.nodeIsThisParameterName(node) or self.thisInsideDecoratorInitializerCallback(node)) return types.Primitive.any;
             if (self.nodeHasAncestorKind(node, .decorator)) return types.Primitive.any;
             if (self.thisInsideCheckJsConstructorFunction(node)) return types.Primitive.any;
+            if (self.thisInsideCheckJsCallbackWithThis(node)) return types.Primitive.any;
             if (!self.sourceHasStrictFalseDirective() and
                 !self.identifierThisIsArrowCaptured(node) and
                 !self.thisInsideObjectLiteralMethod(node))
@@ -20886,6 +21083,7 @@ pub const Checker = struct {
         if (self.thisInsideDecoratorInitializerCallback(node)) return types.Primitive.any;
         if (self.sourceHasStrictFalseDirective() and self.thisInsideNonArrowPlainFunction(node)) return types.Primitive.any;
         if (self.thisInsideCheckJsConstructorFunction(node)) return types.Primitive.any;
+        if (self.thisInsideCheckJsCallbackWithThis(node)) return types.Primitive.any;
         if (self.currentThisType()) |this_t| return this_t;
         if (self.nodeHasAncestorKind(node, .decorator)) return types.Primitive.any;
         if (!self.sourceHasStrictFalseDirective() and !self.thisInsideObjectLiteralMethod(node)) {
@@ -20937,6 +21135,49 @@ pub const Checker = struct {
             const f = hir_mod.fnDeclOf(self.hir, cur);
             if (f.flags.is_method or f.flags.is_constructor) return false;
             return self.fnLooksLikeCheckJsConstructor(cur);
+        }
+        return false;
+    }
+
+    fn thisInsideCheckJsCallbackWithThis(self: *Checker, node: NodeId) bool {
+        if (!self.sourceHasCheckJsDirective()) return false;
+        const src = self.source orelse return false;
+        var cur = self.hir.parentOf(node);
+        while (cur != hir_mod.none_node_id) : (cur = self.hir.parentOf(cur)) {
+            const k = self.hir.kindOf(cur);
+            if (k == .arrow_fn) return false;
+            if (k != .fn_expr and k != .fn_decl) continue;
+            const parent = self.hir.parentOf(cur);
+            if (parent == hir_mod.none_node_id) return false;
+            const pk = self.hir.kindOf(parent);
+            if (pk != .var_decl and pk != .let_decl and pk != .const_decl) return false;
+            const v = hir_mod.varDeclOf(self.hir, parent);
+            if (v.init != cur) return false;
+            const span = self.hir.spanOf(parent);
+            const body = self.leadingJsDocBody(src, span.start) orelse return false;
+            const tags = ts_parser.jsdoc.parse(self.gpa, body) catch return false;
+            defer self.gpa.free(tags);
+            for (tags) |tag| {
+                if (tag.kind != .type_tag) continue;
+                const base = jsDocTypeBaseName(tag.type_text);
+                if (base.len == 0) continue;
+                if (self.jsDocCallbackHasThis(src, base)) return true;
+            }
+            return false;
+        }
+        return false;
+    }
+
+    fn jsDocCallbackHasThis(self: *Checker, src: []const u8, wanted_name: []const u8) bool {
+        _ = self;
+        var search_start: usize = 0;
+        while (std.mem.indexOfPos(u8, src, search_start, "/**")) |start| {
+            const body_start = start + 3;
+            const end = std.mem.indexOfPos(u8, src, body_start, "*/") orelse return false;
+            defer search_start = end + 2;
+            const body = src[body_start..end];
+            if (!jsDocBlockHasNamedTag(body, "@callback", wanted_name)) continue;
+            if (std.mem.indexOf(u8, body, "@this") != null) return true;
         }
         return false;
     }
@@ -24098,6 +24339,52 @@ pub const Checker = struct {
                 if (p.name == hir_mod.none_node_id or self.hir.kindOf(p.name) != .identifier) continue;
                 if (hir_mod.identifierOf(self.hir, p.name).name != body_id.name) continue;
                 if (i < target_params.len and (self.engine.isAssignableTo(target_params[i], target_ret) catch false)) return true;
+            }
+        }
+        if (self.hir.kindOf(f.body) == .call_expr) {
+            const call = hir_mod.callOf(self.hir, f.body);
+            if (call.callee != hir_mod.none_node_id and self.hir.kindOf(call.callee) == .identifier) {
+                const callee_id = hir_mod.identifierOf(self.hir, call.callee);
+                for (hir_mod.fnParams(self.hir, fn_node), 0..) |param, i| {
+                    if (i >= target_params.len) break;
+                    if (self.hir.kindOf(param) != .parameter) continue;
+                    const p = hir_mod.parameterOf(self.hir, param);
+                    if (p.name == hir_mod.none_node_id or self.hir.kindOf(p.name) != .identifier) continue;
+                    if (hir_mod.identifierOf(self.hir, p.name).name != callee_id.name) continue;
+                    const callee_target = target_params[i];
+                    if (callee_target >= self.interner.pool.typeCount() or
+                        !self.interner.pool.flagsOf(callee_target).is_signature) break;
+                    const callee_ret = self.interner.signatureReturn(callee_target) orelse types.Primitive.any;
+                    if (!(self.engine.isAssignableTo(callee_ret, target_ret) catch false)) break;
+                    const callee_params = self.interner.signatureParams(callee_target);
+                    const args = hir_mod.callArgs(self.hir, f.body);
+                    if (args.len > callee_params.len) break;
+                    var ok = true;
+                    for (args, 0..) |arg, arg_i| {
+                        var arg_t: TypeId = types.Primitive.any;
+                        if (self.hir.kindOf(arg) == .identifier) {
+                            const arg_id = hir_mod.identifierOf(self.hir, arg);
+                            for (hir_mod.fnParams(self.hir, fn_node), 0..) |src_param, src_i| {
+                                if (src_i >= target_params.len) break;
+                                if (self.hir.kindOf(src_param) != .parameter) continue;
+                                const sp = hir_mod.parameterOf(self.hir, src_param);
+                                if (sp.name == hir_mod.none_node_id or self.hir.kindOf(sp.name) != .identifier) continue;
+                                if (hir_mod.identifierOf(self.hir, sp.name).name == arg_id.name) {
+                                    arg_t = target_params[src_i];
+                                    break;
+                                }
+                            }
+                        } else {
+                            arg_t = self.hir.typeOf(arg);
+                            if (arg_t == types.Primitive.none) arg_t = try self.checkExpression(arg);
+                        }
+                        if (!(self.engine.isAssignableTo(arg_t, callee_params[arg_i]) catch false)) {
+                            ok = false;
+                            break;
+                        }
+                    }
+                    if (ok) return true;
+                }
             }
         }
         return try self.literalExpressionAssignableToTarget(f.body, target_ret);
@@ -37120,6 +37407,107 @@ test "checker: checkjs JSDoc Object string map exposes string indexer" {
     try s.checker.checkSourceFile(s.root);
     for (s.checker.diagnostics.items) |d| {
         try T.expect(d.code != TsCodes.property_does_not_exist);
+    }
+}
+
+test "checker: checkjs JSDoc callback @this suppresses implicit this" {
+    const s = try newSetup(
+        \\// @checkJs: true
+        \\// @strict: true
+        \\/**
+        \\ * @callback Cb
+        \\ * @this {{ value: number }}
+        \\ * @param {number} n
+        \\ * @returns {boolean}
+        \\ */
+        \\/** @type {Cb} */
+        \\const cb = function (n) {
+        \\  this;
+        \\  return true;
+        \\};
+    );
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+    for (s.checker.diagnostics.items) |d| {
+        try T.expect(d.code != TsCodes.this_implicitly_any);
+    }
+}
+
+test "checker: checkjs JSDoc readonly class field emits TS2540 outside constructor" {
+    const s = try newSetup(
+        \\// @checkJs: true
+        \\class Box {
+        \\  /** @readonly */
+        \\  value = 1;
+        \\  constructor() {
+        \\    this.value = 2;
+        \\  }
+        \\}
+        \\new Box().value = 3;
+    );
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+    var found = false;
+    for (s.checker.diagnostics.items) |d| {
+        if (d.code == TsCodes.readonly_property) found = true;
+    }
+    try T.expect(found);
+}
+
+test "checker: checkjs object property @type validates initializer" {
+    const s = try newSetup(
+        \\// @ts-check
+        \\const obj = {
+        \\  /** @type {string|undefined} */
+        \\  value: 42,
+        \\};
+    );
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+    var found = false;
+    for (s.checker.diagnostics.items) |d| {
+        if (d.code == TsCodes.type_not_assignable) found = true;
+    }
+    try T.expect(found);
+}
+
+test "checker: checkjs higher-order JSDoc function type validates expression body" {
+    const s = try newSetup(
+        \\// @checkJs: true
+        \\/** @type {function((string), function((string)): string): string} */
+        \\var x = (s, id) => id(s);
+    );
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+    for (s.checker.diagnostics.items) |d| {
+        try T.expect(d.code != TsCodes.type_not_assignable);
+    }
+}
+
+test "checker: checkjs declaration fixtures allow JS constructor and class-field patterns" {
+    const s = try newSetup(
+        \\// @allowJs: true
+        \\// @checkJs: true
+        \\// @declaration: true
+        \\// @filename: index.js
+        \\function Context(input) {
+        \\  this.state = this.construct(input);
+        \\}
+        \\Context.prototype = {
+        \\  construct(input) {
+        \\    return input;
+        \\  }
+        \\};
+        \\class A {
+        \\  member = new Q();
+        \\}
+        \\class Q {}
+    );
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+    for (s.checker.diagnostics.items) |d| {
+        try T.expect(d.code != TsCodes.property_does_not_exist);
+        try T.expect(d.code != TsCodes.class_used_before_declaration);
     }
 }
 
