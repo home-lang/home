@@ -3180,6 +3180,7 @@ pub const Checker = struct {
                 defer body_pending.deinit(self.gpa);
                 try self.clonePendingAssignments(pending, &body_pending);
                 self.removeForLoopTargetFromPending(fr.target, &body_pending);
+                try self.removeAssignedTargetFromPending(fr.target, &body_pending);
                 try self.scanForUsedBeforeAssign(fr.body, &body_pending);
             },
             .if_stmt => {
@@ -3199,7 +3200,7 @@ pub const Checker = struct {
                 const sw = hir_mod.switchOf(self.hir, node);
                 if (self.hir.kindOf(sw.discriminant) == .identifier) {
                     const id = hir_mod.identifierOf(self.hir, sw.discriminant);
-                    if (pending.contains(id.name)) {
+                    if (pending.contains(id.name) and !self.sourceHasStrictFalseDirective()) {
                         try self.reportUsedBeforeAssignment(sw.discriminant, id.name, pending);
                     }
                 } else {
@@ -29341,6 +29342,37 @@ test "checker: strict false directive suppresses typed let TS2454" {
         \\// @strict: false
         \\let complex: { x: { ka: any, ki: any }, y: number };
         \\let y = complex;
+    );
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+    for (s.checker.diagnostics.items) |d| {
+        try T.expect(d.code != TsCodes.used_before_assignment);
+    }
+}
+
+test "checker: strict false directive suppresses switch discriminant TS2454" {
+    const s = try newSetup(
+        \\// @strict: false
+        \\var y: string;
+        \\switch (y) {
+        \\  case "a": throw y;
+        \\  default: throw y;
+        \\}
+    );
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+    for (s.checker.diagnostics.items) |d| {
+        try T.expect(d.code != TsCodes.used_before_assignment);
+    }
+}
+
+test "checker: for-of destructuring assignment target satisfies outer pending vars" {
+    const s = try newSetup(
+        \\var a: string, b: number;
+        \\for ({ a: b = 1, b: a = "" } of []) {
+        \\  a;
+        \\  b;
+        \\}
     );
     defer destroySetup(s);
     try s.checker.checkSourceFile(s.root);
