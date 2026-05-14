@@ -15863,17 +15863,48 @@ pub const Checker = struct {
         }
     }
 
-    fn reportTupleIndexOutOfBounds(self: *Checker, index_node: NodeId, index: u64, length: u64) CheckError!void {
-        const msg = try std.fmt.allocPrint(
-            self.diag_arena.allocator(),
-            "Tuple type of length '{d}' has no element at index '{d}'.",
-            .{ length, index },
-        );
+    fn reportTupleIndexOutOfBounds(self: *Checker, index_node: NodeId, target: TypeId, index: u64, length: u64) CheckError!void {
+        const arena = self.diag_arena.allocator();
+        var display_buf: std.ArrayListUnmanaged(u8) = .empty;
+        defer display_buf.deinit(arena);
+        const has_display = self.renderTupleDisplay(&display_buf, target) catch false;
+        const msg = if (has_display)
+            try std.fmt.allocPrint(
+                arena,
+                "Tuple type '{s}' of length '{d}' has no element at index '{d}'.",
+                .{ display_buf.items, length, index },
+            )
+        else
+            try std.fmt.allocPrint(
+                arena,
+                "Tuple type of length '{d}' has no element at index '{d}'.",
+                .{ length, index },
+            );
         try self.diagnostics.append(self.gpa, .{
             .node = index_node,
             .code = TsCodes.tuple_index_out_of_bounds,
             .message = msg,
         });
+    }
+
+    fn renderTupleDisplay(self: *Checker, buf: *std.ArrayListUnmanaged(u8), target: TypeId) !bool {
+        if (target >= self.interner.pool.typeCount()) return false;
+        if (!self.interner.pool.flagsOf(target).is_object_type) return false;
+        const length = self.fixedTupleLength(target) orelse return false;
+        const arena = self.diag_arena.allocator();
+        try buf.append(arena, '[');
+        var i: u64 = 0;
+        while (i < length) : (i += 1) {
+            if (i > 0) try buf.appendSlice(arena, ", ");
+            const elem_t = self.tupleElementType(target, @intCast(i));
+            if (try self.allocSimpleTypeName(elem_t)) |name| {
+                try buf.appendSlice(arena, name);
+            } else {
+                try buf.appendSlice(arena, "any");
+            }
+        }
+        try buf.append(arena, ']');
+        return true;
     }
 
     fn checkVarDecl(self: *Checker, node: NodeId) CheckError!void {
@@ -18173,7 +18204,7 @@ pub const Checker = struct {
                             }
                             if (self.fixedTupleLength(obj_t)) |length| {
                                 if (index >= length) {
-                                    try self.reportTupleIndexOutOfBounds(e.index, index, length);
+                                    try self.reportTupleIndexOutOfBounds(e.index, obj_t, index, length);
                                     const v_idx = self.interner.objectNumberIndex(obj_t);
                                     if (v_idx != types.Primitive.none) break :blk v_idx;
                                     break :blk types.Primitive.any;
@@ -43552,4 +43583,22 @@ test "checker: bare arrow with unannotated param still fires TS7006" {
         if (diag.code == TsCodes.parameter_implicitly_any) saw_7006 = true;
     }
     try T.expect(saw_7006);
+}
+
+test "checker: tuple out-of-bounds diagnostic renders tuple display" {
+    const s = try newSetup(
+        \\let t: [string, number];
+        \\t[2];
+    );
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+
+    var saw_2493 = false;
+    for (s.checker.diagnostics.items) |diag| {
+        if (diag.code == TsCodes.tuple_index_out_of_bounds) {
+            saw_2493 = true;
+            try T.expect(std.mem.indexOf(u8, diag.message, "Tuple type '[string, number]' of length '2' has no element at index '2'.") != null);
+        }
+    }
+    try T.expect(saw_2493);
 }
