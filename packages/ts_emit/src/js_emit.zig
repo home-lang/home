@@ -621,6 +621,67 @@ pub const Printer = struct {
         try self.write("_instanceExtra);");
     }
 
+    /// §4.A.9 v12 — true when the `object_property` member at `member_id`
+    /// inside `class_node` has at least one preceding `.decorator`
+    /// sibling. Used by the field-init-wrap path to decide whether to
+    /// wrap the field's initializer with `__runInitializers`.
+    fn memberHasDecorators(self: *const Printer, class_node: NodeId, member_id: NodeId) bool {
+        const members = hir_mod.classMembers(self.hir, class_node);
+        var i: usize = 0;
+        while (i < members.len) : (i += 1) {
+            if (members[i] != member_id) continue;
+            if (i == 0) return false;
+            return self.hir.kindOf(members[i - 1]) == .decorator;
+        }
+        return false;
+    }
+
+    /// §4.A.9 v12 — when a field with identifier `key` belongs to a
+    /// named class under Stage 3 AND has decorators, write the
+    /// `__runInitializers(<host>, _<Class>_<field>_init, ` prefix and
+    /// return `true`; the caller is responsible for emitting the
+    /// original value expression followed by `)`. Returns `false` when
+    /// no wrap should happen (legacy mode, anonymous class, computed
+    /// key, no decorators) — the caller emits the value plainly.
+    /// `host_is_this` selects `this` vs the class identifier for the
+    /// __runInitializers receiver (instance fields → `this`, static
+    /// fields → class).
+    fn beginFieldInitWrap(
+        self: *Printer,
+        class_node: NodeId,
+        member_id: NodeId,
+        host_is_this: bool,
+    ) anyerror!bool {
+        if (self.options.experimental_decorators) return false;
+        const c = hir_mod.classOf(self.hir, class_node);
+        if (c.name == hir_mod.none_node_id) return false;
+        const op = hir_mod.objectPropertyOf(self.hir, member_id);
+        if (self.hir.kindOf(op.key) != .identifier) return false;
+        if (self.privateFieldName(op.key) != null) return false;
+        if (!self.memberHasDecorators(class_node, member_id)) return false;
+        const id = hir_mod.identifierOf(self.hir, op.key);
+        const key_name = self.interner.get(id.name);
+        try self.write("__runInitializers(");
+        if (host_is_this) {
+            try self.write("this");
+        } else {
+            try self.printExpression(c.name);
+        }
+        try self.write(", _");
+        try self.writeClassNameSuffix(c.name);
+        try self.write("_");
+        try self.write(key_name);
+        try self.write("_init, ");
+        return true;
+    }
+
+    /// §4.A.9 v12 — close the `__runInitializers(...)` wrapper opened
+    /// by `beginFieldInitWrap`. Caller passes whatever `true`/`false`
+    /// they got back.
+    fn endFieldInitWrap(self: *Printer, did_wrap: bool) anyerror!void {
+        if (did_wrap) try self.write(")");
+    }
+
     fn printStatement(self: *Printer, node: NodeId) anyerror!void {
         try self.indent();
         const span = self.hir.spanOf(node);
@@ -3942,7 +4003,16 @@ pub const Printer = struct {
                             try self.write(storage_suffix);
                             if (op.value != hir_mod.none_node_id) {
                                 try self.write(" = ");
+                                // §4.A.9 v12 — wrap decorator-returned
+                                // init wrappers around the accessor's
+                                // private-slot value at ES2022+. `this`
+                                // inside a static field init points at
+                                // the class itself, so a single `this`
+                                // host works for both static + instance
+                                // forms.
+                                const did_wrap = try self.beginFieldInitWrap(node, m, true);
                                 try self.printExpression(op.value);
+                                try self.endFieldInitWrap(did_wrap);
                             }
                             try self.write(";");
                             try self.write(self.options.newline);
@@ -3973,7 +4043,15 @@ pub const Printer = struct {
                         try self.printExpression(op.key);
                         if (op.value != hir_mod.none_node_id) {
                             try self.write(" = ");
+                            // §4.A.9 v12 — wrap decorated field's
+                            // initializer with `__runInitializers` so
+                            // decorator-returned init wrappers run.
+                            // `this` inside a static field init points
+                            // at the class, so a single `this` host
+                            // covers static + instance.
+                            const did_wrap = try self.beginFieldInitWrap(node, m, true);
                             try self.printExpression(op.value);
+                            try self.endFieldInitWrap(did_wrap);
                         }
                         try self.writeSemi();
                     }
@@ -4035,14 +4113,24 @@ pub const Printer = struct {
                 try self.write("this._");
                 try self.write(key_name);
                 try self.write(" = ");
+                // §4.A.9 v12 — wrap the accessor's storage initializer
+                // with `__runInitializers` so decorator-returned init
+                // wrappers actually run for `@dec accessor x = v;`.
+                const did_wrap = try self.beginFieldInitWrap(class_node, m, true);
                 try self.printExpression(op.value);
+                try self.endFieldInitWrap(did_wrap);
                 try self.write("; ");
                 continue;
             }
             try self.write("this.");
             try self.printExpression(op.key);
             try self.write(" = ");
+            // §4.A.9 v12 — wrap decorated public-field initializers
+            // with `__runInitializers` so decorator-returned init
+            // wrappers actually run. No-op for undecorated fields.
+            const did_wrap = try self.beginFieldInitWrap(class_node, m, true);
             try self.printExpression(op.value);
+            try self.endFieldInitWrap(did_wrap);
             try self.write("; ");
         }
     }
@@ -4301,6 +4389,27 @@ pub const Printer = struct {
         has_static_extras: bool,
         has_instance_extras: bool,
     ) anyerror!void {
+        // §4.A.9 v12 — decorated fields (incl. auto-accessor storage)
+        // need a per-field `_<Class>_<field>_init = []` array passed as
+        // __esDecorate's 5th `initializers` arg. The class-body / ctor
+        // emit then wraps the field's value with
+        //   __runInitializers(this, _<Class>_<field>_init, <orig>)
+        // so any initializer-wrapping decorators take effect. The pre-
+        // declaration must precede the __esDecorate line.
+        const wants_field_init_var = !self.options.experimental_decorators and
+            class_name != hir_mod.none_node_id and
+            self.hir.kindOf(target) == .object_property and
+            self.hir.kindOf(name_node) == .identifier and
+            self.privateFieldName(name_node) == null;
+        if (wants_field_init_var) {
+            try self.write(self.options.newline);
+            try self.write("var _");
+            try self.writeClassNameSuffix(class_name);
+            try self.write("_");
+            const id = hir_mod.identifierOf(self.hir, name_node);
+            try self.write(self.interner.get(id.name));
+            try self.write("_init = [];");
+        }
         try self.write(self.options.newline);
         // Stage 3 `__esDecorate` first arg = class for static members,
         // null for instance members. tsc uses `this` inside its static
@@ -4352,16 +4461,32 @@ pub const Printer = struct {
             try self.write("void 0");
         }
         const is_static = self.isStaticMember(target);
+        // §4.A.9 v12 — slot 5 (`initializers`) of __esDecorate. For
+        // decorated fields we pass the per-field `_<Class>_<field>_init`
+        // array; for non-field targets (methods/getters/setters) it
+        // stays `null` since they don't have initializer-position
+        // semantics.
+        try self.write(" }, ");
+        if (wants_field_init_var) {
+            try self.write("_");
+            try self.writeClassNameSuffix(class_name);
+            try self.write("_");
+            const id = hir_mod.identifierOf(self.hir, name_node);
+            try self.write(self.interner.get(id.name));
+            try self.write("_init");
+        } else {
+            try self.write("null");
+        }
         if (is_static and has_static_extras and class_name != hir_mod.none_node_id) {
-            try self.write(" }, null, _");
+            try self.write(", _");
             try self.writeClassNameSuffix(class_name);
             try self.write("_staticExtra);");
         } else if (!is_static and has_instance_extras and class_name != hir_mod.none_node_id) {
-            try self.write(" }, null, _");
+            try self.write(", _");
             try self.writeClassNameSuffix(class_name);
             try self.write("_instanceExtra);");
         } else {
-            try self.write(" }, null, []);");
+            try self.write(", []);");
         }
     }
 
@@ -8402,8 +8527,15 @@ test "emit: stage 3 field/accessor decorators emit member contexts" {
     // §4.A.9 v7 — instance-extras array + runInitializers trailer.
     try T.expect(std.mem.indexOf(u8, out, "var _Foo_instanceExtra = [];") != null);
     try T.expect(std.mem.indexOf(u8, out, "var _Foo_metadata = typeof Symbol === \"function\" && Symbol.metadata ? Object.create(null) : void 0;") != null);
-    try T.expect(std.mem.indexOf(u8, out, "__esDecorate(null, null, [observe], { kind: \"field\", name: \"count\", static: false, private: false, access: { has: function (obj) { return \"count\" in obj; }, get: function (obj) { return obj.count; }, set: function (obj, value) { obj.count = value; } }, metadata: _Foo_metadata }, null, _Foo_instanceExtra);") != null);
+    // §4.A.9 v12 — decorated field gets a per-field init array passed
+    // as slot 5 (`initializers`) of __esDecorate; the ctor wraps the
+    // field's value with `__runInitializers(this, _Foo_count_init, ...)`.
+    // Getters/setters/methods don't carry initializer wrapping, so
+    // slot 5 stays `null` for the `@memo get value()` line.
+    try T.expect(std.mem.indexOf(u8, out, "var _Foo_count_init = [];") != null);
+    try T.expect(std.mem.indexOf(u8, out, "__esDecorate(null, null, [observe], { kind: \"field\", name: \"count\", static: false, private: false, access: { has: function (obj) { return \"count\" in obj; }, get: function (obj) { return obj.count; }, set: function (obj, value) { obj.count = value; } }, metadata: _Foo_metadata }, _Foo_count_init, _Foo_instanceExtra);") != null);
     try T.expect(std.mem.indexOf(u8, out, "__esDecorate(null, null, [memo], { kind: \"getter\", name: \"value\", static: false, private: false, access: { has: function (obj) { return \"value\" in obj; }, get: function (obj) { return obj.value; } }, metadata: _Foo_metadata }, null, _Foo_instanceExtra);") != null);
+    try T.expect(std.mem.indexOf(u8, out, "count = __runInitializers(this, _Foo_count_init, 0);") != null);
     try T.expect(std.mem.indexOf(u8, out, "__runInitializers(this, _Foo_instanceExtra);") != null);
     try T.expect(std.mem.indexOf(u8, out, "__decorate([observe]") == null);
 }
@@ -8425,8 +8557,14 @@ test "emit: stage 3 static member decorators mark static context" {
     // `__runInitializers(Foo, _Foo_staticExtra);` after the chain.
     try T.expect(std.mem.indexOf(u8, out, "var _Foo_staticExtra = [];") != null);
     try T.expect(std.mem.indexOf(u8, out, "var _Foo_metadata = typeof Symbol === \"function\" && Symbol.metadata ? Object.create(null) : void 0;") != null);
+    // §4.A.9 v12 — decorated static field gets its per-field init
+    // array; the class-body static-field emit wraps the literal `0`
+    // with `__runInitializers(this, _Foo_count_init, 0)` where `this`
+    // refers to the class inside a static field initializer.
+    try T.expect(std.mem.indexOf(u8, out, "var _Foo_count_init = [];") != null);
     try T.expect(std.mem.indexOf(u8, out, "__esDecorate(Foo, null, [logged], { kind: \"method\", name: \"greet\", static: true, private: false, access: { has: function (obj) { return \"greet\" in obj; }, get: function (obj) { return obj.greet; } }, metadata: _Foo_metadata }, null, _Foo_staticExtra);") != null);
-    try T.expect(std.mem.indexOf(u8, out, "__esDecorate(Foo, null, [observe], { kind: \"field\", name: \"count\", static: true, private: false, access: { has: function (obj) { return \"count\" in obj; }, get: function (obj) { return obj.count; }, set: function (obj, value) { obj.count = value; } }, metadata: _Foo_metadata }, null, _Foo_staticExtra);") != null);
+    try T.expect(std.mem.indexOf(u8, out, "__esDecorate(Foo, null, [observe], { kind: \"field\", name: \"count\", static: true, private: false, access: { has: function (obj) { return \"count\" in obj; }, get: function (obj) { return obj.count; }, set: function (obj, value) { obj.count = value; } }, metadata: _Foo_metadata }, _Foo_count_init, _Foo_staticExtra);") != null);
+    try T.expect(std.mem.indexOf(u8, out, "static count = __runInitializers(this, _Foo_count_init, 0);") != null);
     try T.expect(std.mem.indexOf(u8, out, "__runInitializers(Foo, _Foo_staticExtra);") != null);
     try T.expect(std.mem.indexOf(u8, out, "static: false") == null);
 }
@@ -8441,13 +8579,61 @@ test "emit: class accessor field lowers via #-private storage at ES2022+ default
         \\}
     , .{ .experimental_decorators = false });
     defer T.allocator.free(out);
-    // True-private backing slot via `#`.
-    try T.expect(std.mem.indexOf(u8, out, "#count_accessor = 0;") != null);
+    // §4.A.9 v12 — decorated auto-accessor wraps the storage-slot
+    // initializer with `__runInitializers(this, _Foo_count_init, 0)`
+    // so Stage 3 accessor decorators returning `{ init: ... }` actually
+    // wrap the initial value. Without a decorator the slot would still
+    // emit `#count_accessor = 0;` plainly.
+    try T.expect(std.mem.indexOf(u8, out, "var _Foo_count_init = [];") != null);
+    try T.expect(std.mem.indexOf(u8, out, "#count_accessor = __runInitializers(this, _Foo_count_init, 0);") != null);
     try T.expect(std.mem.indexOf(u8, out, "get count() { return this.#count_accessor; }") != null);
     try T.expect(std.mem.indexOf(u8, out, "set count(value) { this.#count_accessor = value; }") != null);
     // Native `accessor` keyword is gone (we always lower).
     try T.expect(std.mem.indexOf(u8, out, "accessor count") == null);
     try T.expect(std.mem.indexOf(u8, out, "kind: \"accessor\", name: \"count\"") != null);
+}
+
+test "emit: stage 3 decorated field at ES2021 wraps hoisted init via __runInitializers" {
+    // §4.A.9 v12 — at sub-ES2022 the public field is hoisted into
+    // the (synthesized or explicit) ctor as `this.X = value;`. When
+    // the field has a Stage 3 decorator the value is wrapped with
+    // `__runInitializers(this, _<Class>_<field>_init, value)` so any
+    // initializer-wrapping behavior the decorator returns actually
+    // runs. This test exercises the hoisted-ctor path explicitly.
+    const out = try emitWithOpts(
+        \\class Foo {
+        \\  @observe
+        \\  count = 0;
+        \\}
+    , .{ .experimental_decorators = false, .es_target = .es2021 });
+    defer T.allocator.free(out);
+    // Per-field init array declared with the rest of the v6/v7/v11 vars.
+    try T.expect(std.mem.indexOf(u8, out, "var _Foo_count_init = [];") != null);
+    // __esDecorate passes the per-field init array as slot 5.
+    try T.expect(std.mem.indexOf(u8, out, ", _Foo_count_init, _Foo_instanceExtra);") != null);
+    // The hoisted ctor wraps the original literal `0` with __runInitializers.
+    try T.expect(std.mem.indexOf(u8, out, "this.count = __runInitializers(this, _Foo_count_init, 0);") != null);
+    // The plain literal-assignment form (no wrap) must NOT appear.
+    try T.expect(std.mem.indexOf(u8, out, "this.count = 0;") == null);
+}
+
+test "emit: stage 3 undecorated field does NOT receive __runInitializers wrap" {
+    // §4.A.9 v12 — wrap is gated on the field having decorators.
+    // An undecorated field next to a decorated one must still emit
+    // its plain initializer form (no per-field init array, no wrap).
+    const out = try emitWithOpts(
+        \\class Foo {
+        \\  @observe
+        \\  count = 0;
+        \\  plain = 1;
+        \\}
+    , .{ .experimental_decorators = false, .es_target = .es2021 });
+    defer T.allocator.free(out);
+    // Decorated `count` is wrapped.
+    try T.expect(std.mem.indexOf(u8, out, "this.count = __runInitializers(this, _Foo_count_init, 0);") != null);
+    // Undecorated `plain` stays plain — no per-field init array.
+    try T.expect(std.mem.indexOf(u8, out, "this.plain = 1;") != null);
+    try T.expect(std.mem.indexOf(u8, out, "_Foo_plain_init") == null);
 }
 
 test "emit: accessor field falls back to underscore storage below ES2022" {
