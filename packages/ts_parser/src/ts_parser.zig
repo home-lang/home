@@ -1475,7 +1475,15 @@ pub const Parser = struct {
                 );
                 try elements.append(self.gpa, elem);
                 if (!self.match(.comma)) break;
-                if (flags.is_rest and self.peek().kind != close_kind) {
+                if (flags.is_rest and self.peek().kind == close_kind) {
+                    const comma_tok = self.tokens[self.cursor - 1];
+                    try self.reportCodeAt(
+                        comma_tok.span.start,
+                        comma_tok.line,
+                        1013,
+                        "A rest parameter or binding pattern may not have a trailing comma.",
+                    );
+                } else if (flags.is_rest and self.peek().kind != close_kind) {
                     try self.reportCodeAt(
                         self.hir.spanOf(name_node).start,
                         elem_start.line,
