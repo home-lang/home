@@ -175,6 +175,7 @@ pub const TsCodes = struct {
     pub const untyped_function_type_args: u32 = 2347;
     pub const operator_cannot_be_applied: u32 = 2365;
     pub const not_callable: u32 = 2349;
+    pub const value_only_constructable: u32 = 2348;
     pub const this_implicitly_any: u32 = 2683;
     pub const parameter_implicitly_any: u32 = 7006;
     pub const variable_implicitly_any: u32 = 7005;
@@ -2522,7 +2523,7 @@ pub const Checker = struct {
                 }
                 if (!self.switchCaseStatementsDefinitelyExit(stmts)) all_value_cases_exit = false;
                 if (!try self.typesHaveComparableOverlap(discriminant_t, case_t)) {
-                    try self.report(case_p.value, TsCodes.switch_case_not_comparable, "Type is not comparable to switch expression type.");
+                    try self.reportSwitchCaseNotComparable(case_p.value, case_t, discriminant_t);
                 }
                 if (is_disc_narrowable) {
                     try self.applyDiscriminatedNarrow(sw.discriminant, case_p.value, true);
@@ -17111,6 +17112,30 @@ pub const Checker = struct {
         return false;
     }
 
+    /// True when the callable shape exposes only construct signatures
+    /// (e.g. `new () => string` or `{ new (): T }`) and no callable
+    /// signatures. Mirrors upstream TS so TS2348 (with the
+    /// "Did you mean to include 'new'?" hint) fires in place of the
+    /// generic TS2349.
+    fn callableObjectHasOnlyConstructSignatures(self: *Checker, obj_t: TypeId) bool {
+        if (obj_t >= self.interner.pool.typeCount()) return false;
+        const flags = self.interner.pool.flagsOf(obj_t);
+        if (flags.is_signature and self.interner.isSignature(obj_t)) {
+            const sig_payload_idx = self.interner.pool.payloadOf(obj_t);
+            if (sig_payload_idx >= self.interner.pool.signature_payloads.items.len) return false;
+            return self.interner.pool.signature_payloads.items[sig_payload_idx].is_construct;
+        }
+        if (!flags.is_object_type) return false;
+        const call_id = self.string_interner.intern("__call") catch return false;
+        const construct_id = self.string_interner.intern("__construct") catch return false;
+        var saw_construct = false;
+        for (self.interner.objectMembers(obj_t)) |member| {
+            if (member.name == call_id and self.interner.isSignature(member.type)) return false;
+            if (member.name == construct_id and self.interner.isSignature(member.type)) saw_construct = true;
+        }
+        return saw_construct;
+    }
+
     fn functionInterfaceMemberForCallableObject(self: *Checker, obj_t: TypeId, name: hir_mod.StringId) CheckError!?TypeId {
         if (!self.objectHasCallOrConstructSignature(obj_t)) return null;
         const function_name = self.string_interner.intern("Function") catch return error.OutOfMemory;
@@ -18071,7 +18096,20 @@ pub const Checker = struct {
                     break :blk try self.optionalChainResult(this_ret, call_is_optional_chain);
                 }
                 if (callee_t != types.Primitive.any and callee_t != types.Primitive.unknown) {
-                    try self.report(c.callee, TsCodes.not_callable, "This expression is not callable.");
+                    if (self.callableObjectHasOnlyConstructSignatures(callee_t)) {
+                        if (try self.allocSimpleTypeName(callee_t)) |name| {
+                            const msg = try std.fmt.allocPrint(
+                                self.diag_arena.allocator(),
+                                "Value of type '{s}' is not callable. Did you mean to include 'new'?",
+                                .{name},
+                            );
+                            try self.report(c.callee, TsCodes.value_only_constructable, msg);
+                        } else {
+                            try self.report(c.callee, TsCodes.value_only_constructable, "Value of type is not callable. Did you mean to include 'new'?");
+                        }
+                    } else {
+                        try self.report(c.callee, TsCodes.not_callable, "This expression is not callable.");
+                    }
                 }
                 break :blk try self.optionalChainResult(types.Primitive.any, call_is_optional_chain);
             },
@@ -28165,6 +28203,21 @@ pub const Checker = struct {
         try self.report(node, TsCodes.type_not_assignable, fallback);
     }
 
+    fn reportSwitchCaseNotComparable(self: *Checker, node: NodeId, case_t: TypeId, disc_t: TypeId) !void {
+        if (try self.allocSimpleTypeName(case_t)) |case_name| {
+            if (try self.allocSimpleTypeName(disc_t)) |disc_name| {
+                const msg = try std.fmt.allocPrint(
+                    self.diag_arena.allocator(),
+                    "Type '{s}' is not comparable to type '{s}'.",
+                    .{ case_name, disc_name },
+                );
+                try self.report(node, TsCodes.switch_case_not_comparable, msg);
+                return;
+            }
+        }
+        try self.report(node, TsCodes.switch_case_not_comparable, "Type is not comparable to switch expression type.");
+    }
+
     fn reportNoOverlapComparison(self: *Checker, node: NodeId, lhs: TypeId, rhs: TypeId) !void {
         const pos = self.adjustedComparisonDiagnosticPos(node);
         if (try self.allocSimpleTypeName(lhs)) |lhs_name| {
@@ -28215,6 +28268,36 @@ pub const Checker = struct {
                 }
                 if (t >= self.interner.pool.typeCount()) break :blk null;
                 const flags = self.interner.pool.flagsOf(t);
+                // Render bare signatures (`new () => string`, `() => T`)
+                // so diagnostics like TS2348 can include the type.
+                if (self.interner.isSignature(t)) {
+                    const sig_payload_idx = self.interner.pool.payloadOf(t);
+                    if (sig_payload_idx >= self.interner.pool.signature_payloads.items.len) break :blk null;
+                    const sig = self.interner.pool.signature_payloads.items[sig_payload_idx];
+                    var sig_buf: std.ArrayListUnmanaged(u8) = .empty;
+                    const arena = self.diag_arena.allocator();
+                    if (sig.is_construct) try sig_buf.appendSlice(arena, "new ");
+                    try sig_buf.append(arena, '(');
+                    const params = self.interner.signatureParams(t);
+                    for (params, 0..) |p, i| {
+                        if (i > 0) try sig_buf.appendSlice(arena, ", ");
+                        const idx_text = try std.fmt.allocPrint(arena, "x{d}: ", .{i});
+                        try sig_buf.appendSlice(arena, idx_text);
+                        if (try self.allocSimpleTypeName(p)) |pn| {
+                            try sig_buf.appendSlice(arena, pn);
+                        } else {
+                            try sig_buf.appendSlice(arena, "any");
+                        }
+                    }
+                    try sig_buf.appendSlice(arena, ") => ");
+                    const ret = self.interner.signatureReturn(t) orelse types.Primitive.any;
+                    if (try self.allocSimpleTypeName(ret)) |rn| {
+                        try sig_buf.appendSlice(arena, rn);
+                    } else {
+                        try sig_buf.appendSlice(arena, "any");
+                    }
+                    break :blk sig_buf.items;
+                }
                 if (!flags.is_literal) break :blk null;
                 // Some non-literal types share a flag bit; guard against payload OOB.
                 const payload_idx = self.interner.pool.payloadOf(t);

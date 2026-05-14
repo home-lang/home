@@ -1222,9 +1222,14 @@ test "driver: TS2345 argument type mismatch" {
         c.deinit();
         T.allocator.destroy(c);
     }
+    // The checker now emits the upstream-shaped envelope
+    //   `Argument of type '…' is not assignable to parameter of type '…'.`
+    // when both arg and param render through `simpleDiagnosticTypeName`,
+    // so test for the stable `is not assignable to parameter` substring
+    // shared by both the rich and fallback forms.
     var saw_2345 = false;
     for (c.diagnostics.items) |d| {
-        if (std.mem.indexOf(u8, d.message, "Argument is not assignable") != null) {
+        if (std.mem.indexOf(u8, d.message, "is not assignable to parameter") != null) {
             saw_2345 = true;
             break;
         }
