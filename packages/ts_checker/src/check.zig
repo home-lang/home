@@ -4941,7 +4941,7 @@ pub const Checker = struct {
         if (self.hir.kindOf(elem_node) == .parameter) {
             const p = hir_mod.parameterOf(self.hir, elem_node);
             if (p.flags.is_computed_binding_key and p.default_value != hir_mod.none_node_id) {
-                return try self.propertyNameFromComputedKeyNode(p.default_value);
+                return try self.propertyNameFromComputedBindingKeyNode(p.default_value);
             }
         }
         if (self.hir.kindOf(name_node) == .identifier and self.objectBindingElementUsesImplicitKey(elem_node, name_node)) {
@@ -4956,12 +4956,21 @@ pub const Checker = struct {
         var raw = std.mem.trim(u8, prefix[0..colon], " \t\r\n");
         if (raw.len >= 2 and raw[0] == '[' and raw[raw.len - 1] == ']') {
             if (self.propertyNameFromRawComputedKeyText(raw[1 .. raw.len - 1])) |name| return name;
+            return null;
         }
         if (raw.len >= 2 and ((raw[0] == '"' and raw[raw.len - 1] == '"') or (raw[0] == '\'' and raw[raw.len - 1] == '\''))) {
             raw = raw[1 .. raw.len - 1];
         }
         if (raw.len == 0) return null;
         return self.string_interner.intern(raw) catch return error.OutOfMemory;
+    }
+
+    fn propertyNameFromComputedBindingKeyNode(self: *Checker, key_node: NodeId) CheckError!?hir_mod.StringId {
+        const key_t = try self.checkExpression(key_node);
+        if (try self.propertyNameFromLiteralType(key_t)) |name| return name;
+        if (try self.propertyNameFromConstReturningIife(key_node)) |name| return name;
+        if (self.propertyNameFromComputedKeySourceReturn(key_node)) |name| return name;
+        return null;
     }
 
     fn objectPropertyTypeFromBindingElementSource(self: *Checker, source_t: TypeId, elem_node: NodeId, name_node: NodeId) CheckError!?TypeId {
@@ -15221,7 +15230,7 @@ pub const Checker = struct {
             const maybe_prop_t = try self.objectPropertyTypeForDestructuring(source_t, op.key, op.is_computed);
             if (maybe_prop_t == null and self.hir.kindOf(op.value) != .assignment) {
                 const prop_name = if (op.is_computed)
-                    try self.propertyNameFromComputedKeyNode(op.key)
+                    try self.propertyNameFromComputedBindingKeyNode(op.key)
                 else
                     self.propertyNameFromKeyNode(op.key);
                 if (prop_name) |name| {
@@ -15312,7 +15321,7 @@ pub const Checker = struct {
                 const op = hir_mod.objectPropertyOf(self.hir, elem);
                 if (op.value == hir_mod.none_node_id) continue;
                 const key_name = if (op.is_computed)
-                    try self.propertyNameFromComputedKeyNode(op.key)
+                    try self.propertyNameFromComputedBindingKeyNode(op.key)
                 else
                     self.propertyNameFromKeyNode(op.key);
                 const name = key_name orelse continue;
@@ -15389,7 +15398,7 @@ pub const Checker = struct {
             if (try self.objectPropertyTypeForComputedKeyNode(source_t, key_node)) |t| return t;
         }
         const key_name = if (is_computed)
-            try self.propertyNameFromComputedKeyNode(key_node)
+            try self.propertyNameFromComputedBindingKeyNode(key_node)
         else
             self.propertyNameFromKeyNode(key_node);
         const name = key_name orelse return null;
@@ -21104,6 +21113,18 @@ pub const Checker = struct {
         return null;
     }
 
+    fn widenNullishBindingElementType(self: *Checker, source_node: NodeId, elem_t: TypeId) TypeId {
+        if (self.strict_flags.strict_null_checks) return elem_t;
+        if (source_node != hir_mod.none_node_id) {
+            const k = self.hir.kindOf(source_node);
+            if (k == .literal_null or k == .literal_undefined) return types.Primitive.any;
+        }
+        if (elem_t == types.Primitive.null_t or elem_t == types.Primitive.undefined_t) {
+            return types.Primitive.any;
+        }
+        return elem_t;
+    }
+
     fn typeOfPatternBindingFromSource(
         self: *Checker,
         pattern_node: NodeId,
@@ -21145,6 +21166,10 @@ pub const Checker = struct {
                         const tuple_t = self.tupleElementType(source_t, i);
                         elem_t = if (tuple_t != types.Primitive.none) tuple_t else fallback_elem_t;
                     }
+                    if (p.flags.is_rest) {
+                        elem_t = try self.arrayRestSourceType(source_node, i, elem_t);
+                    }
+                    elem_t = self.widenNullishBindingElementType(elem_node, elem_t);
                     if (elem_t == types.Primitive.none or elem_t == types.Primitive.any or elem_t == types.Primitive.unknown) continue;
                     switch (self.hir.kindOf(p.name)) {
                         .identifier => if (hir_mod.identifierOf(self.hir, p.name).name == target_name) break :blk elem_t,
@@ -21183,6 +21208,7 @@ pub const Checker = struct {
                         const tuple_t = self.tupleElementType(source_t, i);
                         elem_t = if (tuple_t != types.Primitive.none) tuple_t else fallback_elem_t;
                     }
+                    elem_t = self.widenNullishBindingElementType(elem_node, elem_t);
                     if (elem_t == types.Primitive.none or elem_t == types.Primitive.any or elem_t == types.Primitive.unknown) continue;
                     switch (self.hir.kindOf(target)) {
                         .identifier => if (hir_mod.identifierOf(self.hir, target).name == target_name) break :blk elem_t,
@@ -33859,6 +33885,20 @@ test "checker: noImplicitAny reports nullish array binding elements" {
     try T.expectEqual(@as(usize, 2), count);
 }
 
+test "checker: loose-null array binding elements widen for later assignment" {
+    const s = try newSetup(
+        \\var [a, b] = [undefined, null];
+        \\a = "";
+        \\b = "";
+    );
+    defer destroySetup(s);
+    s.checker.setStrictFlags(.{ .strict_null_checks = false });
+    try s.checker.checkSourceFile(s.root);
+    for (s.checker.diagnostics.items) |d| {
+        try T.expect(d.code != TsCodes.type_not_assignable);
+    }
+}
+
 test "checker: noImplicitAny reports inferred nullish tuple return" {
     const s = try newSetup(
         \\var foo = function bar() {
@@ -42666,4 +42706,35 @@ test "checker: noImplicitAny reports object literal null properties in loose nul
         if (d.code == TsCodes.object_literal_property_implicitly_any) found = true;
     }
     try T.expect(found);
+}
+
+test "checker: generic computed object rest keys are not literal property names" {
+    const s = try newSetup(
+        \\// @strict: true
+        \\type Item = { a: string, b: number, c: boolean };
+        \\function f<K1 extends keyof Item, K2 extends keyof Item>(obj: Item, k1: K1, k2: K2) {
+        \\  let { [k1]: a1, [k2]: a2, ...r1 } = obj;
+        \\}
+    );
+    defer destroySetup(s);
+    s.checker.setStrictFlags(.{ .strict_null_checks = true, .no_implicit_any = true, .strict_function_types = true });
+    try s.checker.checkSourceFile(s.root);
+    for (s.checker.diagnostics.items) |d| {
+        try T.expect(d.code != TsCodes.property_does_not_exist);
+    }
+}
+
+test "checker: array rest binding from object rest keeps array target type" {
+    const s = try newSetup(
+        \\// @strict: false
+        \\let overEmit: { a: { ka: string, x: string }[] };
+        \\var { a: [{ ...nested2 }, ...y] } = overEmit;
+        \\({ a: [{ ...nested2 }, ...y] } = overEmit);
+    );
+    defer destroySetup(s);
+    s.checker.setStrictFlags(.{ .strict_null_checks = false });
+    try s.checker.checkSourceFile(s.root);
+    for (s.checker.diagnostics.items) |d| {
+        try T.expect(d.code != TsCodes.type_not_assignable);
+    }
 }

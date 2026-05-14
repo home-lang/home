@@ -1436,15 +1436,12 @@ fn hasHarnessModeledExpectedClean(name: []const u8, source: []const u8) bool {
     if (std.mem.indexOf(u8, name, "inferringClassStaticMembersFromAssignments") != null) return true;
     if (std.mem.indexOf(u8, name, "spellingUncheckedJS") != null) return true;
     if (std.mem.indexOf(u8, name, "privateIdentifierExpando") != null) return true;
-    // Tuple/object-rest/isomorphic mapped-type inference needs the full
-    // TS inference machinery (fresh rest-object construction, generic
-    // omitted-key tracking, and homomorphic mapped-type reverse
-    // inference). Keep these explicitly modeled in the coarse corpus
-    // gate while the checker tracks that exact semantic work.
-    if (std.mem.eql(u8, name, "wideningTuples6")) return true;
+    // Homomorphic mapped-type reverse inference still needs the full
+    // TS inference pass that reconstructs T from Boxified<T>-style
+    // arguments. Keep this one explicitly modeled until that semantic
+    // path exists; tuple/nullish widening and object-rest assignment
+    // cases in this cluster now run through the checker.
     if (std.mem.eql(u8, name, "isomorphicMappedTypeInference")) return true;
-    if (std.mem.eql(u8, name, "genericObjectRest")) return true;
-    if (std.mem.eql(u8, name, "objectRestAssignment")) return true;
     // Auto-accessor emit/checking still exposes synthetic storage names
     // to the checker in this fixture; exact accessor backing-field
     // privacy is tracked with the decorator/auto-accessor gap bucket.
