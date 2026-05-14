@@ -44339,3 +44339,108 @@ test "checker: TS2345 renders argument and parameter type names" {
     }
     try T.expect(saw_2345);
 }
+
+test "checker: seeded JSON global resolves stringify and parse" {
+    const s = try newSetup(
+        \\const j: string = JSON.stringify({});
+        \\const p = JSON.parse("");
+    );
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+    for (s.checker.diagnostics.items) |d| {
+        try T.expect(d.code != TsCodes.cannot_find_name);
+        try T.expect(d.code != TsCodes.property_does_not_exist);
+    }
+}
+
+test "checker: seeded Promise global resolves then/resolve/reject" {
+    const s = try newSetup(
+        \\const p = Promise.resolve(1);
+        \\Promise.reject("e");
+        \\Promise.all([p]);
+        \\Promise.allSettled([p]);
+        \\Promise.race([p]);
+    );
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+    for (s.checker.diagnostics.items) |d| {
+        try T.expect(d.code != TsCodes.cannot_find_name);
+        try T.expect(d.code != TsCodes.property_does_not_exist);
+    }
+}
+
+test "checker: seeded Reflect global resolves get/set/has" {
+    const s = try newSetup(
+        \\const target: any = {};
+        \\Reflect.get(target, "x");
+        \\Reflect.set(target, "x", 1);
+        \\Reflect.has(target, "x");
+        \\Reflect.deleteProperty(target, "x");
+        \\Reflect.ownKeys(target);
+    );
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+    for (s.checker.diagnostics.items) |d| {
+        try T.expect(d.code != TsCodes.cannot_find_name);
+        try T.expect(d.code != TsCodes.property_does_not_exist);
+    }
+}
+
+test "checker: seeded Error global exposes message/name/stack" {
+    const s = try newSetup(
+        \\const e: any = Error;
+        \\const m: string = e.message;
+        \\const n: string = e.name;
+    );
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+    for (s.checker.diagnostics.items) |d| {
+        try T.expect(d.code != TsCodes.cannot_find_name);
+    }
+}
+
+test "checker: seeded TypeError/RangeError/SyntaxError share Error shape" {
+    const s = try newSetup(
+        \\TypeError.message;
+        \\RangeError.message;
+        \\SyntaxError.message;
+        \\ReferenceError.message;
+    );
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+    for (s.checker.diagnostics.items) |d| {
+        try T.expect(d.code != TsCodes.cannot_find_name);
+        try T.expect(d.code != TsCodes.property_does_not_exist);
+    }
+}
+
+test "checker: seeded process global exposes argv/env/exit/cwd" {
+    const s = try newSetup(
+        \\process.argv;
+        \\process.env;
+        \\process.exit(0);
+        \\process.cwd();
+        \\process.platform;
+        \\process.version;
+    );
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+    for (s.checker.diagnostics.items) |d| {
+        try T.expect(d.code != TsCodes.cannot_find_name);
+        try T.expect(d.code != TsCodes.property_does_not_exist);
+    }
+}
+
+test "checker: seeded Proxy global exposes revocable" {
+    const s = try newSetup(
+        \\const target: any = {};
+        \\const handler: any = {};
+        \\const r = Proxy.revocable(target, handler);
+    );
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+    for (s.checker.diagnostics.items) |d| {
+        try T.expect(d.code != TsCodes.cannot_find_name);
+        try T.expect(d.code != TsCodes.property_does_not_exist);
+    }
+}
