@@ -3669,8 +3669,11 @@ pub const Printer = struct {
                     try self.writeSemi();
                 },
                 .block_stmt => {
+                    // Stage 3 class static-initialization block. Emit
+                    // `static { ... }` on a single line — `printBlock`
+                    // doesn't re-indent, unlike `printStatement`.
                     try self.write("static ");
-                    try self.printStatement(m);
+                    try self.printBlock(m);
                 },
                 else => {},
             }
@@ -7923,6 +7926,22 @@ test "emit: stage 3 static member decorators mark static context" {
     try T.expect(std.mem.indexOf(u8, out, "__esDecorate(null, null, [logged], { kind: \"method\", name: \"greet\", static: true, private: false, access: { has: function (obj) { return \"greet\" in obj; }, get: function (obj) { return obj.greet; } } }, null, []);") != null);
     try T.expect(std.mem.indexOf(u8, out, "__esDecorate(null, null, [observe], { kind: \"field\", name: \"count\", static: true, private: false, access: { has: function (obj) { return \"count\" in obj; }, get: function (obj) { return obj.count; }, set: function (obj, value) { obj.count = value; } } }, null, []);") != null);
     try T.expect(std.mem.indexOf(u8, out, "static: false") == null);
+}
+
+test "emit: class with static initialization block emits `static { ... }` on one line" {
+    const out = try emit(
+        \\class Foo {
+        \\  static {
+        \\    Foo.value = 1;
+        \\  }
+        \\}
+    );
+    defer T.allocator.free(out);
+    try T.expect(std.mem.indexOf(u8, out, "static {") != null);
+    try T.expect(std.mem.indexOf(u8, out, "Foo.value = 1;") != null);
+    // No double-indent — `static` and `{` must be on the same line.
+    try T.expect(std.mem.indexOf(u8, out, "static\n") == null);
+    try T.expect(std.mem.indexOf(u8, out, "static  {") == null);
 }
 
 test "emit: stage 3 setter decorator includes set in access descriptor (no get)" {
