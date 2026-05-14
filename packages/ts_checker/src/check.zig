@@ -930,6 +930,11 @@ pub const Checker = struct {
     /// Check a complete source file. The HIR root must be a
     /// block_stmt of top-level statements.
     pub fn checkSourceFile(self: *Checker, root: NodeId) CheckError!void {
+        // §4.A.X TS 4.0 — give the relation engine a live reference
+        // to `rest_signatures` so signature assignability can expand
+        // a tuple-typed rest param into positional params when
+        // comparing against a regular (non-rest) signature.
+        self.engine.setRestSignatures(&self.rest_signatures);
         if (self.source) |src| try self.scanDirectives(src);
         try self.checkRemovedCompilerOptionDirectives(root);
         const stmts = hir_mod.blockStmts(self.hir, root);
@@ -24099,7 +24104,20 @@ pub const Checker = struct {
             const fixed_count: usize = param_ts.len - 1;
             const n = @min(fixed_count, arg_types.len);
             for (0..n) |i| {
-                if (self.interner.pool.flagsOf(param_ts[i]).is_signature) continue;
+                // §4.A.X TS 4.0 — signature-typed params still need
+                // inference so a bare rest type-param `T extends any[]`
+                // in `(...args: T) => R` binds T to the argument
+                // signature's positional params as a tuple (handled
+                // via inferRestTupleFromSignatureParams inside
+                // inferFromPair). Previously this branch skipped
+                // signature-typed params entirely, losing the higher-
+                // order rest-tuple inference.
+                if (self.interner.pool.flagsOf(param_ts[i]).is_signature) {
+                    if (self.interner.pool.flagsOf(arg_types[i]).is_signature) {
+                        try self.inferFromPair(param_ts[i], arg_types[i], subs);
+                    }
+                    continue;
+                }
                 try self.inferFromArgument(param_ts[i], arg_types[i], args[i], subs);
             }
             const rest_arr_t = param_ts[param_ts.len - 1];
@@ -24121,7 +24139,15 @@ pub const Checker = struct {
         } else {
             const n = @min(param_ts.len, arg_types.len);
             for (0..n) |i| {
-                if (self.interner.pool.flagsOf(param_ts[i]).is_signature) continue;
+                // §4.A.X TS 4.0 — signature-vs-signature inference for
+                // variadic rest type-params. See the rest-signature
+                // branch above for the rationale.
+                if (self.interner.pool.flagsOf(param_ts[i]).is_signature) {
+                    if (self.interner.pool.flagsOf(arg_types[i]).is_signature) {
+                        try self.inferFromPair(param_ts[i], arg_types[i], subs);
+                    }
+                    continue;
+                }
                 try self.inferFromArgument(param_ts[i], arg_types[i], args[i], subs);
             }
         }
@@ -35931,28 +35957,63 @@ test "checker: higher-order generic memoize preserves callable signature identit
     }
 }
 
-test "checker: higher-order generic apply via variadic tuple rest args (known gap)" {
-    // Variadic-tuple-style application — `apply(f, [a, b])` SHOULD
-    // infer T as the tuple of f's params and R as f's return, then
-    // require `[1, "x"]` to match T. This requires TS 4.0 variadic
-    // tuple type inference: treating f's positional params as a
-    // tuple bound to `T extends any[]` when T appears in a rest
-    // position. Today the inference doesn't bridge from f's
-    // positional signature to T, so we report TS2345 on the second
-    // arg. Pinning current behavior; flip to no-diagnostic when
-    // variadic-tuple inference lands (Phase 4 #12 follow-up).
+test "checker: variadic tuple inference handles empty rest" {
+    // TS 4.0 — when f takes no args, T should infer to `[]` (empty
+    // tuple) and the second arg `[]` should match.
+    const s = try newSetup(
+        \\declare function apply<T extends any[], R>(f: (...args: T) => R, args: T): R;
+        \\const r = apply(() => 42, []);
+        \\const out: number = r;
+    );
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+    for (s.checker.diagnostics.items) |d| {
+        try T.expect(d.code != TsCodes.type_not_assignable);
+        try T.expect(d.code != TsCodes.argument_type_mismatch);
+    }
+}
+
+test "checker: variadic tuple inference single-element tuple" {
+    // TS 4.0 — single-arg f infers T = [string].
+    const s = try newSetup(
+        \\declare function apply<T extends any[], R>(f: (...args: T) => R, args: T): R;
+        \\const r = apply((s: string) => s.length, ["hi"]);
+        \\const out: number = r;
+    );
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+    for (s.checker.diagnostics.items) |d| {
+        try T.expect(d.code != TsCodes.type_not_assignable);
+        try T.expect(d.code != TsCodes.argument_type_mismatch);
+    }
+}
+
+test "checker: higher-order generic apply uses tuple-typed rest args" {
+    // TS 4.0 variadic tuple inference — `apply(f, [a, b])` infers T
+    // as the tuple of f's positional params and R as f's return.
+    // The argument `[1, "x"]` matches the inferred T = [number, string],
+    // and the call's return type is R = number.
+    //
+    // Inference flow: signature-vs-signature inference for the f
+    // parameter (`(...args: T) => R` vs `(a: number, b: string) => number`)
+    // dispatches to `inferRestTupleFromSignatureParams`, which detects
+    // the bare-type-param-as-rest pattern and binds T to a synthesized
+    // tuple via `internTupleFromTypes`. The substituted parameter
+    // signature then needs the relation engine to expand its rest-of-tuple
+    // back into positional params when checking assignability against
+    // the original function arg.
     const s = try newSetup(
         \\declare function apply<T extends any[], R>(f: (...args: T) => R, args: T): R;
         \\const f = (a: number, b: string) => a + b.length;
         \\const r = apply(f, [1, "x"]);
+        \\const out: number = r;
     );
     defer destroySetup(s);
     try s.checker.checkSourceFile(s.root);
-    var found_argtype_mismatch = false;
     for (s.checker.diagnostics.items) |d| {
-        if (d.code == TsCodes.argument_type_mismatch) found_argtype_mismatch = true;
+        try T.expect(d.code != TsCodes.type_not_assignable);
+        try T.expect(d.code != TsCodes.argument_type_mismatch);
     }
-    try T.expect(found_argtype_mismatch);
 }
 
 test "checker: higher-order generic curry threads param types through chained returns" {

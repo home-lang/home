@@ -307,6 +307,16 @@ pub const Engine = struct {
     /// handling (e.g. resolving numeric "0", "1", … keys via the
     /// source's number-key indexer for tuple-vs-array comparisons).
     string_interner: ?*const string_interner.Interner = null,
+    /// Optional rest-signatures set. When a signature TypeId is in
+    /// this set, the relation engine treats its last parameter as a
+    /// rest param. When that rest param's type is a tuple (or a
+    /// tuple after substitution), the engine expands its element
+    /// types into positional params before comparing, which lets
+    /// `(...args: [number, string]) => R` accept `(a: number, b: string) => R`
+    /// (and the converse, under variance rules). Set by the checker
+    /// to a reference of `Checker.rest_signatures` so the engine sees
+    /// real-time updates.
+    rest_signatures: ?*const std.AutoHashMapUnmanaged(TypeId, void) = null,
 
     pub fn init(gpa: std.mem.Allocator, ti: *Interner) !Engine {
         return .{
@@ -326,6 +336,69 @@ pub const Engine = struct {
 
     pub fn setStringInterner(self: *Engine, si: *const string_interner.Interner) void {
         self.string_interner = si;
+    }
+
+    pub fn setRestSignatures(self: *Engine, rs: *const std.AutoHashMapUnmanaged(TypeId, void)) void {
+        self.rest_signatures = rs;
+    }
+
+    /// §4.A.X TS 4.0 — when `sig`'s last param is a tuple (or a
+    /// tuple-shaped object type) and the signature is marked as a
+    /// rest signature, return the expanded param list (positional
+    /// fixed params + tuple element types). Returns `null` if no
+    /// expansion applies.
+    fn expandRestTupleParams(
+        self: *Engine,
+        sig: TypeId,
+        params: []const TypeId,
+        out: *std.ArrayListUnmanaged(TypeId),
+    ) anyerror!bool {
+        const rs = self.rest_signatures orelse return false;
+        if (!rs.contains(sig)) return false;
+        if (params.len == 0) return false;
+        const rest_t = params[params.len - 1];
+        if (rest_t >= self.pool().typeCount()) return false;
+        if (!self.pool().flagsOf(rest_t).is_object_type) return false;
+        // Detect tuple shape by walking members and finding `length`
+        // (number-literal-typed) + positional `"0"`, `"1"`, … by
+        // name-string comparison through the string interner.
+        const si = self.string_interner orelse return false;
+        const members = self.interner.objectMembers(rest_t);
+        var elem_count: ?usize = null;
+        for (members) |m| {
+            const name = si.get(m.name);
+            if (std.mem.eql(u8, name, "length")) {
+                const f = self.pool().flagsOf(m.type);
+                if (!f.is_literal or !f.is_number) return false;
+                const lit = self.interner.literalOf(m.type);
+                switch (lit) {
+                    .number_lit => |bits| {
+                        const fv: f64 = @bitCast(bits);
+                        if (fv < 0 or fv != @floor(fv) or fv > 1024) return false;
+                        elem_count = @intFromFloat(fv);
+                    },
+                    else => return false,
+                }
+                break;
+            }
+        }
+        const n = elem_count orelse return false;
+        try out.appendSlice(self.gpa, params[0 .. params.len - 1]);
+        var nbuf: [12]u8 = undefined;
+        var i: usize = 0;
+        while (i < n) : (i += 1) {
+            const want = std.fmt.bufPrint(&nbuf, "{d}", .{i}) catch return false;
+            var found: ?TypeId = null;
+            for (members) |m| {
+                const name = si.get(m.name);
+                if (std.mem.eql(u8, name, want)) {
+                    found = m.type;
+                    break;
+                }
+            }
+            try out.append(self.gpa, found orelse return false);
+        }
+        return true;
     }
 
     pub fn deinit(self: *Engine) void {
@@ -836,8 +909,25 @@ pub const Engine = struct {
         target: TypeId,
         force_strict_params: bool,
     ) anyerror!bool {
-        const sp = self.interner.signatureParams(source);
-        const tp = self.interner.signatureParams(target);
+        const sp_raw = self.interner.signatureParams(source);
+        const tp_raw = self.interner.signatureParams(target);
+        // §4.A.X TS 4.0 — when either signature is a rest signature
+        // whose rest type is a known tuple, expand the tuple into
+        // positional params so a variadic `(...args: [number, string]) => R`
+        // matches a regular `(a: number, b: string) => R` (and vice
+        // versa, under variance rules).
+        var sp_expanded: std.ArrayListUnmanaged(TypeId) = .empty;
+        defer sp_expanded.deinit(self.gpa);
+        var tp_expanded: std.ArrayListUnmanaged(TypeId) = .empty;
+        defer tp_expanded.deinit(self.gpa);
+        const sp: []const TypeId = if (try self.expandRestTupleParams(source, sp_raw, &sp_expanded))
+            sp_expanded.items
+        else
+            sp_raw;
+        const tp: []const TypeId = if (try self.expandRestTupleParams(target, tp_raw, &tp_expanded))
+            tp_expanded.items
+        else
+            tp_raw;
         var source_required: usize = sp.len;
         while (source_required > 0) {
             if (!self.typeIncludesUndefined(sp[source_required - 1]) and
