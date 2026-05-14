@@ -2183,21 +2183,37 @@ pub const Printer = struct {
                         if (self.hir.kindOf(s) == .yield_expr) n_yields += 1;
                     }
                 }
-                const header = state + 1;
-                const continue_label = state + 1 + n_yields + 1;
-                const exit_label = continue_label + 1;
-                self.gen_break_label = exit_label;
-                self.gen_continue_label = continue_label;
-                // §4.A.4.8 cont.2 — pick the iteration shape:
+                // §4.A.4.8 — pick the iteration shape:
                 //   * `downlevel_iteration=true`: iterator protocol via
                 //     `__values` + `.next()` (works for Map/Set/custom
-                //     iterables). v0 omits the `.return()` cleanup —
-                //     abrupt-completion safety is a follow-up.
+                //     iterables). When set, also wrap the loop in a
+                //     try/catch/finally that runs the iterator's
+                //     `.return()` on abrupt completion (§4.A.4.8 cont.3).
                 //   * default: cheaper indexed-for (assumes array-shape).
                 const use_iter_protocol = self.options.downlevel_iteration;
+                const use_cleanup = use_iter_protocol;
+                // Label layout (with cleanup, +3 cases past `continue`):
+                //   header / N resumes / continue / catchStart / finallyStart / endLabel
+                const header = state + 1;
+                const continue_label = state + 1 + n_yields + 1;
+                const catch_label: u32 = if (use_cleanup) continue_label + 1 else 0;
+                const finally_label: u32 = if (use_cleanup) continue_label + 2 else 0;
+                const exit_label = if (use_cleanup) continue_label + 3 else continue_label + 1;
+                self.gen_break_label = exit_label;
+                self.gen_continue_label = continue_label;
                 // Init in current case.
                 if (use_iter_protocol) {
-                    try self.write(" var _b = __values(");
+                    try self.write(" var e_1, _r;");
+                    var nbuf: [16]u8 = undefined;
+                    try self.write(" _a.trys.push([");
+                    try self.write(std.fmt.bufPrint(&nbuf, "{d}", .{state}) catch unreachable);
+                    try self.write(", ");
+                    try self.write(std.fmt.bufPrint(&nbuf, "{d}", .{catch_label}) catch unreachable);
+                    try self.write(", ");
+                    try self.write(std.fmt.bufPrint(&nbuf, "{d}", .{finally_label}) catch unreachable);
+                    try self.write(", ");
+                    try self.write(std.fmt.bufPrint(&nbuf, "{d}", .{exit_label}) catch unreachable);
+                    try self.write("]); var _b = __values(");
                     try self.printExpression(fop.source);
                     try self.write("), _c = _b.next();");
                 } else {
@@ -2303,6 +2319,29 @@ pub const Printer = struct {
                     var num_header_buf: [16]u8 = undefined;
                     try self.write(std.fmt.bufPrint(&num_header_buf, "{d}", .{header}) catch unreachable);
                     try self.write("];");
+                }
+                if (use_cleanup) {
+                    // §4.A.4.8 cont.3 — catch + finally cleanup wrap.
+                    // catch captures any thrown error into `e_1`; finally
+                    // runs the iterator's `.return()` if available and
+                    // rethrows the captured error (if any).
+                    state += 1;
+                    var nbuf: [16]u8 = undefined;
+                    {
+                        try self.writeNewlineIndent();
+                        try self.write("case ");
+                        try self.write(std.fmt.bufPrint(&nbuf, "{d}", .{state}) catch unreachable);
+                        try self.write(": e_1 = { error: _a.sent() }; return [3, ");
+                        try self.write(std.fmt.bufPrint(&nbuf, "{d}", .{finally_label}) catch unreachable);
+                        try self.write("];");
+                    }
+                    state += 1;
+                    {
+                        try self.writeNewlineIndent();
+                        try self.write("case ");
+                        try self.write(std.fmt.bufPrint(&nbuf, "{d}", .{state}) catch unreachable);
+                        try self.write(": if (_c && !_c.done && (_r = _b.return)) _r.call(_b); if (e_1) throw e_1.error; return [7];");
+                    }
                 }
                 // Open exit case.
                 state += 1;
@@ -6839,7 +6878,7 @@ test "emit: generator with for-of-yield lowers to indexed-for state machine" {
     try T.expect(std.mem.indexOf(u8, out, "case 4:") != null);
 }
 
-test "emit: generator with for-of-yield + downlevel_iteration uses __values + .next()" {
+test "emit: generator with for-of-yield + downlevel_iteration uses __values + .next() + cleanup wrap" {
     const out = try emitWithOpts(
         "function* g() { for (const x of items) yield x; }",
         .{ .es_target = .es5, .downlevel_iteration = true },
@@ -6847,14 +6886,24 @@ test "emit: generator with for-of-yield + downlevel_iteration uses __values + .n
     defer T.allocator.free(out);
     try T.expect(std.mem.indexOf(u8, out, "__generator") != null);
     try T.expect(std.mem.indexOf(u8, out, "TODO: ES5 generator") == null);
-    // Iterator-protocol init: __values + first .next().
+    // §4.A.4.8 cont.3 — trys frame for .return() cleanup.
+    try T.expect(std.mem.indexOf(u8, out, "var e_1, _r;") != null);
+    // tryStart=0, catchStart=4, finallyStart=5, endLabel=6.
+    try T.expect(std.mem.indexOf(u8, out, "_a.trys.push([0, 4, 5, 6]);") != null);
+    // Iterator-protocol init.
     try T.expect(std.mem.indexOf(u8, out, "var _b = __values(items), _c = _b.next();") != null);
-    // Header case 1: done-check + binding + yield.
-    try T.expect(std.mem.indexOf(u8, out, "case 1: if (_c.done) return [3, 4]; var x = _c.value; return [4, x];") != null);
-    // Continue case 3 advances via _b.next().
+    // Header case 1 (exit jump now goes to case 6 — the runtime routes through finally).
+    try T.expect(std.mem.indexOf(u8, out, "case 1: if (_c.done) return [3, 6]; var x = _c.value; return [4, x];") != null);
+    // Resumption case 2 + continue case 3.
+    try T.expect(std.mem.indexOf(u8, out, "case 2: _a.sent();") != null);
     try T.expect(std.mem.indexOf(u8, out, "case 3: _c = _b.next(); return [3, 1];") != null);
-    try T.expect(std.mem.indexOf(u8, out, "case 4:") != null);
-    // The indexed-for forms (`_arr` / `_i++`) must NOT appear.
+    // Catch case 4 captures error into e_1.
+    try T.expect(std.mem.indexOf(u8, out, "case 4: e_1 = { error: _a.sent() }; return [3, 5];") != null);
+    // Finally case 5 runs .return() + rethrow if needed.
+    try T.expect(std.mem.indexOf(u8, out, "case 5: if (_c && !_c.done && (_r = _b.return)) _r.call(_b); if (e_1) throw e_1.error; return [7];") != null);
+    // Exit case 6.
+    try T.expect(std.mem.indexOf(u8, out, "case 6:") != null);
+    // Indexed-for forms must NOT appear.
     try T.expect(std.mem.indexOf(u8, out, "_arr") == null);
     try T.expect(std.mem.indexOf(u8, out, "_i++") == null);
 }
