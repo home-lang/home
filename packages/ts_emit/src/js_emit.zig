@@ -303,6 +303,13 @@ pub const Printer = struct {
     /// `for` still bail on continue until a dedicated continue case
     /// runs the cond-test or update step.
     gen_continue_label: ?u32,
+    /// §4.A.9 v13 — when non-null, the next `printClassDecl` is being
+    /// emitted inside an IIFE wrapper (see `emitStage3IIFEClass`) and
+    /// should inject a `static { ... }` block at the top of the class
+    /// body containing the class-decorate chain. The slice carries the
+    /// class-level decorator NodeIds in source order. Cleared by the
+    /// IIFE emitter after `printStatement` returns.
+    stage3_iife_class_decorators: ?[]const NodeId,
 
     pub fn init(
         gpa: std.mem.Allocator,
@@ -329,6 +336,7 @@ pub const Printer = struct {
             .gen_continue_label = null,
             .stage3_instance_extra_class = null,
             .stage3_metadata_declared_for = null,
+            .stage3_iife_class_decorators = null,
         };
     }
 
@@ -439,9 +447,20 @@ pub const Printer = struct {
                     if (i > 0) try self.write(self.options.newline);
                     // JSDoc anchored on the run-leading decorator.
                     try self.emitLeadingJsDoc(stmts[i]);
-                    try self.printStatement(stmts[j]);
-                    try self.write(self.options.newline);
-                    try self.emitClassDecorateCall(stmts[i..j], stmts[j]);
+                    // §4.A.9 v13 — Stage 3 (non-legacy) class decorator
+                    // runs route through the IIFE wrapper so the static
+                    // block at the top of the class body rebinds the
+                    // class identity to the post-decorator value before
+                    // any subsequent static-field / static-block in the
+                    // same body evaluates. Legacy `__decorate` keeps the
+                    // existing flat `class Foo {}; Foo = __decorate([..], Foo);` shape.
+                    if (!self.options.experimental_decorators) {
+                        try self.emitStage3IIFEClass(stmts[i..j], stmts[j]);
+                    } else {
+                        try self.printStatement(stmts[j]);
+                        try self.write(self.options.newline);
+                        try self.emitClassDecorateCall(stmts[i..j], stmts[j]);
+                    }
                     i = j;
                     continue;
                 }
@@ -553,6 +572,145 @@ pub const Printer = struct {
             try self.writeClassNameSuffix(c.name);
             try self.write("_extra);");
         }
+    }
+
+    /// §4.A.9 v13 — Stage 3 class-decorator IIFE wrap. Emits:
+    ///
+    ///   let Foo = (() => {
+    ///     var _Foo_metadata = typeof Symbol === "function" && Symbol.metadata ? Object.create(null) : void 0;
+    ///     class Foo {
+    ///       static {
+    ///         var _Foo_d = { value: this };
+    ///         var _Foo_extra = [];
+    ///         __esDecorate(null, _Foo_d, [decs], { kind: "class", name: "Foo", metadata: _Foo_metadata }, null, _Foo_extra);
+    ///         Foo = _Foo_d.value;
+    ///         __runInitializers(Foo, _Foo_extra);
+    ///       }
+    ///       // ...members...
+    ///     }
+    ///     // ...member decorate chain (existing flat emit, inside IIFE)...
+    ///     return Foo;
+    ///   })();
+    ///
+    /// The static block runs DURING class init (before any subsequent
+    /// static-field / static-block in the same body), so module-scope
+    /// AND class-body references to `Foo` after the static block see
+    /// the post-decorator class identity.
+    ///
+    /// Anonymous classes fall back to the flat emit since the IIFE
+    /// needs a name to declare/return. The hoisted `_<Name>_metadata`
+    /// declaration is suppressed from re-emission downstream by
+    /// `ensureStage3Metadata` consulting `stage3_metadata_declared_for`.
+    fn emitStage3IIFEClass(
+        self: *Printer,
+        class_decorators: []const NodeId,
+        class_node: NodeId,
+    ) anyerror!void {
+        const c = hir_mod.classOf(self.hir, class_node);
+        if (c.name == hir_mod.none_node_id) {
+            try self.printStatement(class_node);
+            try self.write(self.options.newline);
+            try self.emitClassDecorateCall(class_decorators, class_node);
+            return;
+        }
+        // 1. IIFE preamble.
+        try self.write("let ");
+        try self.printExpression(c.name);
+        try self.write(" = (() => {");
+        self.depth += 1;
+        // 2. Hoisted per-class metadata var. Must live in the IIFE
+        // scope so both the static block and any post-class member
+        // decorate chain reference the same identity.
+        try self.write(self.options.newline);
+        try self.indent();
+        try self.write("var _");
+        try self.writeClassNameSuffix(c.name);
+        try self.write("_metadata = typeof Symbol === \"function\" && Symbol.metadata ? Object.create(null) : void 0;");
+        self.stage3_metadata_declared_for = c.name;
+        // 3. Set IIFE flag, emit class (printClassDecl injects the
+        // static block at the top of the body when this is set), clear.
+        self.stage3_iife_class_decorators = class_decorators;
+        try self.write(self.options.newline);
+        try self.indent();
+        try self.printStatement(class_node);
+        self.stage3_iife_class_decorators = null;
+        // 4. IIFE return — the static block has already rebound the
+        // local `<Name>` to the post-decorator class.
+        try self.write(self.options.newline);
+        try self.indent();
+        try self.write("return ");
+        try self.printExpression(c.name);
+        try self.write(";");
+        // 5. Close IIFE.
+        self.depth -= 1;
+        try self.write(self.options.newline);
+        try self.indent();
+        try self.write("})();");
+    }
+
+    /// §4.A.9 v13 — emit the `static { ... }` block injected at the top
+    /// of an IIFE-wrapped class body. Contains the Stage 3 class-decorate
+    /// chain (descriptor + __esDecorate + rebind + __runInitializers).
+    /// Caller is responsible for indentation of the opening `static`
+    /// keyword. References `_<Name>_metadata` declared by the IIFE
+    /// preamble (`emitStage3IIFEClass`).
+    fn emitStage3IIFEClassStaticBlock(
+        self: *Printer,
+        class_name: NodeId,
+        class_decorators: []const NodeId,
+    ) anyerror!void {
+        try self.write("static {");
+        self.depth += 1;
+        // Descriptor + extras locals, scoped to the static block.
+        try self.write(self.options.newline);
+        try self.indent();
+        try self.write("var _");
+        try self.writeClassNameSuffix(class_name);
+        try self.write("_d = { value: this };");
+        try self.write(self.options.newline);
+        try self.indent();
+        try self.write("var _");
+        try self.writeClassNameSuffix(class_name);
+        try self.write("_extra = [];");
+        // The decorate call.
+        try self.write(self.options.newline);
+        try self.indent();
+        try self.write("__esDecorate(null, _");
+        try self.writeClassNameSuffix(class_name);
+        try self.write("_d, [");
+        for (class_decorators, 0..) |d, i| {
+            if (i > 0) try self.write(", ");
+            const dp = hir_mod.decoratorOf(self.hir, d);
+            try self.printExpression(dp.expression);
+        }
+        try self.write("], { kind: \"class\", name: \"");
+        try self.writeClassNameSuffix(class_name);
+        try self.write("\", metadata: _");
+        try self.writeClassNameSuffix(class_name);
+        try self.write("_metadata }, null, _");
+        try self.writeClassNameSuffix(class_name);
+        try self.write("_extra);");
+        // Rebind the IIFE-scope class binding to the (possibly
+        // replaced) class. `this` here is the original class — the
+        // descriptor's `.value` is what the chain returns.
+        try self.write(self.options.newline);
+        try self.indent();
+        try self.printExpression(class_name);
+        try self.write(" = _");
+        try self.writeClassNameSuffix(class_name);
+        try self.write("_d.value;");
+        // Run class-level extras against the (rebound) class.
+        try self.write(self.options.newline);
+        try self.indent();
+        try self.write("__runInitializers(");
+        try self.printExpression(class_name);
+        try self.write(", _");
+        try self.writeClassNameSuffix(class_name);
+        try self.write("_extra);");
+        self.depth -= 1;
+        try self.write(self.options.newline);
+        try self.indent();
+        try self.write("}");
     }
 
     /// §4.A.9 v11 — emit `var _<Class>_metadata = typeof Symbol === "function"
@@ -3897,7 +4055,30 @@ pub const Printer = struct {
             try self.printHeritageExpression(c.extends);
         }
         try self.write(" {");
+        // §4.A.9 v13 — IIFE wrap: when `stage3_iife_class_decorators`
+        // is set, inject a `static { ... }` block at the top of the
+        // class body running the class decorate chain. The static
+        // block rebinds the IIFE-scope `<Name>` binding to the
+        // post-decorator class identity, so any subsequent static
+        // block / static field initializer in the same body sees the
+        // wrapped class. This closes the captured-reference caveat
+        // that the flat post-class emit couldn't address.
+        const iife_decs: ?[]const NodeId = if (c.name != hir_mod.none_node_id)
+            self.stage3_iife_class_decorators
+        else
+            null;
+        if (iife_decs) |decs| {
+            self.depth += 1;
+            try self.write(self.options.newline);
+            try self.indent();
+            try self.emitStage3IIFEClassStaticBlock(c.name, decs);
+            self.depth -= 1;
+        }
         if (members.len == 0) {
+            if (iife_decs != null) {
+                try self.write(self.options.newline);
+                try self.indent();
+            }
             try self.write("}");
             return;
         }
@@ -8459,14 +8640,27 @@ test "emit: class with decorator-call expression" {
 test "emit: stage 3 class decorator emits descriptor + class-replacement chain" {
     const out = try emitWithOpts("@logged class Foo {}", .{ .experimental_decorators = false });
     defer T.allocator.free(out);
+    // §4.A.9 v13 — Stage 3 class decorators now lower into an IIFE
+    // with a static block at the top of the class body. The static
+    // block runs the descriptor + __esDecorate + rebind + extras
+    // chain DURING class init so any subsequent static-block /
+    // static-field initializer in the same body sees the post-
+    // decorator class identity. The IIFE returns the (rebound)
+    // class to the outer `let` binding.
+    try T.expect(std.mem.indexOf(u8, out, "let Foo = (() => {") != null);
+    try T.expect(std.mem.indexOf(u8, out, "var _Foo_metadata = typeof Symbol === \"function\" && Symbol.metadata ? Object.create(null) : void 0;") != null);
     try T.expect(std.mem.indexOf(u8, out, "class Foo") != null);
-    // §4.A.9 v3/v4 — descriptor + initializer-array + __esDecorate + rebind + __runInitializers.
-    try T.expect(std.mem.indexOf(u8, out, "var _Foo_d = { value: Foo }, _Foo_extra = [];") != null);
+    try T.expect(std.mem.indexOf(u8, out, "static {") != null);
+    // Inside the static block: descriptor + extras as separate
+    // statements (no comma-fold), referencing `this` (the original
+    // class). Rebind targets the IIFE-scope `Foo` binding.
+    try T.expect(std.mem.indexOf(u8, out, "var _Foo_d = { value: this };") != null);
+    try T.expect(std.mem.indexOf(u8, out, "var _Foo_extra = [];") != null);
     try T.expect(std.mem.indexOf(u8, out, "__esDecorate(null, _Foo_d, [logged], { kind: \"class\", name: \"Foo\", metadata: _Foo_metadata }, null, _Foo_extra);") != null);
     try T.expect(std.mem.indexOf(u8, out, "Foo = _Foo_d.value;") != null);
     try T.expect(std.mem.indexOf(u8, out, "__runInitializers(Foo, _Foo_extra);") != null);
-    // §4.A.9 v11 — per-class metadata var declared once and reused.
-    try T.expect(std.mem.indexOf(u8, out, "var _Foo_metadata = typeof Symbol === \"function\" && Symbol.metadata ? Object.create(null) : void 0;") != null);
+    try T.expect(std.mem.indexOf(u8, out, "return Foo;") != null);
+    try T.expect(std.mem.indexOf(u8, out, "})();") != null);
     // Stage 3 must NOT emit the legacy `__decorate` form.
     try T.expect(std.mem.indexOf(u8, out, "= __decorate(") == null);
 }
@@ -8474,10 +8668,15 @@ test "emit: stage 3 class decorator emits descriptor + class-replacement chain" 
 test "emit: stage 3 multiple class decorators preserve order" {
     const out = try emitWithOpts("@a @b @c class Bar {}", .{ .experimental_decorators = false });
     defer T.allocator.free(out);
-    try T.expect(std.mem.indexOf(u8, out, "var _Bar_d = { value: Bar }, _Bar_extra = [];") != null);
+    // §4.A.9 v13 — same IIFE+static-block shape as the single-decorator
+    // case; the decorator list is preserved in source order.
+    try T.expect(std.mem.indexOf(u8, out, "let Bar = (() => {") != null);
+    try T.expect(std.mem.indexOf(u8, out, "var _Bar_d = { value: this };") != null);
+    try T.expect(std.mem.indexOf(u8, out, "var _Bar_extra = [];") != null);
     try T.expect(std.mem.indexOf(u8, out, "__esDecorate(null, _Bar_d, [a, b, c], { kind: \"class\", name: \"Bar\", metadata: _Bar_metadata }, null, _Bar_extra);") != null);
     try T.expect(std.mem.indexOf(u8, out, "Bar = _Bar_d.value;") != null);
     try T.expect(std.mem.indexOf(u8, out, "__runInitializers(Bar, _Bar_extra);") != null);
+    try T.expect(std.mem.indexOf(u8, out, "return Bar;") != null);
 }
 
 test "emit: stage 3 class decorator with call expression preserves arguments" {
@@ -8700,17 +8899,65 @@ test "emit: stage 3 setter decorator includes set in access descriptor (no get)"
     try T.expect(std.mem.indexOf(u8, out, "get: function (obj) { return obj.name;") == null);
 }
 
+test "emit: stage 3 v13 IIFE static block runs class decorate before class-body member initializers" {
+    // §4.A.9 v13 — the captured-reference caveat. The class
+    // body has BOTH a class-level decorator AND a static block /
+    // static field that references the class identifier. Inside
+    // the IIFE-wrapped emit, the injected static block (which
+    // runs the class decorate chain) is emitted BEFORE the user's
+    // own static block, so by the time the user's static block
+    // executes, the class binding already points at the post-
+    // decorator value.
+    const out = try emitWithOpts(
+        \\@logged class Foo {
+        \\  static {
+        \\    Foo.tag = "after-decorate";
+        \\  }
+        \\}
+    , .{ .experimental_decorators = false });
+    defer T.allocator.free(out);
+    // Find the index of our injected static block and the user's
+    // static block; the injected one (containing `_Foo_d`) must
+    // appear strictly before the user's `Foo.tag = ...` block.
+    const injected_idx = std.mem.indexOf(u8, out, "var _Foo_d = { value: this };").?;
+    const user_idx = std.mem.indexOf(u8, out, "Foo.tag = \"after-decorate\";").?;
+    try T.expect(injected_idx < user_idx);
+    // The class is IIFE-wrapped; the `return Foo;` returns the
+    // (rebound) class binding to the outer `let Foo`.
+    try T.expect(std.mem.indexOf(u8, out, "let Foo = (() => {") != null);
+    try T.expect(std.mem.indexOf(u8, out, "return Foo;") != null);
+}
+
+test "emit: stage 3 v13 IIFE round-trips a class with no class-body members" {
+    // Empty class with a class decorator under Stage 3 — the IIFE
+    // wraps it, the static block lives alone inside the class, and
+    // the closing `}` is reachable cleanly.
+    const out = try emitWithOpts("@logged class Empty {}", .{ .experimental_decorators = false });
+    defer T.allocator.free(out);
+    try T.expect(std.mem.indexOf(u8, out, "let Empty = (() => {") != null);
+    try T.expect(std.mem.indexOf(u8, out, "class Empty {") != null);
+    try T.expect(std.mem.indexOf(u8, out, "static {") != null);
+    try T.expect(std.mem.indexOf(u8, out, "__esDecorate(null, _Empty_d, [logged]") != null);
+    try T.expect(std.mem.indexOf(u8, out, "return Empty;") != null);
+    try T.expect(std.mem.indexOf(u8, out, "})();") != null);
+}
+
 test "emit: stage 3 class-only decorator does not produce legacy class assignment" {
     const out = try emitWithOpts("@a @b class Baz {}", .{ .experimental_decorators = false });
     defer T.allocator.free(out);
-    // The class declaration is preserved.
+    // §4.A.9 v13 — IIFE-wrapped class with the descriptor + helper +
+    // rebind + runInitializers chain inside a static block at the top
+    // of the class body.
+    try T.expect(std.mem.indexOf(u8, out, "let Baz = (() => {") != null);
     try T.expect(std.mem.indexOf(u8, out, "class Baz") != null);
-    // Stage 3 descriptor + helper + rebind + runInitializers chain.
-    try T.expect(std.mem.indexOf(u8, out, "var _Baz_d = { value: Baz }, _Baz_extra = [];") != null);
+    try T.expect(std.mem.indexOf(u8, out, "static {") != null);
+    try T.expect(std.mem.indexOf(u8, out, "var _Baz_d = { value: this };") != null);
+    try T.expect(std.mem.indexOf(u8, out, "var _Baz_extra = [];") != null);
     try T.expect(std.mem.indexOf(u8, out, "var _Baz_metadata = typeof Symbol === \"function\" && Symbol.metadata ? Object.create(null) : void 0;") != null);
     try T.expect(std.mem.indexOf(u8, out, "__esDecorate(null, _Baz_d, [a, b], { kind: \"class\", name: \"Baz\", metadata: _Baz_metadata }, null, _Baz_extra);") != null);
     try T.expect(std.mem.indexOf(u8, out, "Baz = _Baz_d.value;") != null);
     try T.expect(std.mem.indexOf(u8, out, "__runInitializers(Baz, _Baz_extra);") != null);
+    try T.expect(std.mem.indexOf(u8, out, "return Baz;") != null);
     // No legacy `Name = __decorate(...)` rewiring under Stage 3.
     try T.expect(std.mem.indexOf(u8, out, "Baz = __decorate(") == null);
 }
