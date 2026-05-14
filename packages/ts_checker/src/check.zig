@@ -746,6 +746,8 @@ pub const Checker = struct {
     /// `// @ts-expect-error`). Optional — when null, no directive
     /// post-processing runs and the diagnostics list is left as-is.
     source: ?[]const u8 = null,
+    source_has_virtual_sections: bool = false,
+    virtual_section_start_cache: std.AutoHashMapUnmanaged(NodeId, usize) = .empty,
     /// 0-based source lines on which a `// @ts-ignore` directive
     /// suppresses diagnostics. Populated by `scanDirectives` before
     /// statement checking; consulted in `applyDirectives` after.
@@ -849,6 +851,10 @@ pub const Checker = struct {
     /// The slice must outlive the checker; we don't copy it.
     pub fn setSource(self: *Checker, source: []const u8) void {
         self.source = source;
+        self.source_has_virtual_sections =
+            std.mem.indexOf(u8, source, "@filename:") != null or
+            std.mem.indexOf(u8, source, "@Filename:") != null;
+        self.virtual_section_start_cache.clearRetainingCapacity();
     }
 
     pub fn deinit(self: *Checker) void {
@@ -922,6 +928,7 @@ pub const Checker = struct {
         self.generator_type_info.deinit(self.gpa);
         self.lib_cache.deinit(self.gpa);
         self.diagnostics.deinit(self.gpa);
+        self.virtual_section_start_cache.deinit(self.gpa);
         self.ts_ignore_lines.deinit(self.gpa);
         self.ts_expect_error_lines.deinit(self.gpa);
         self.diag_arena.deinit();
@@ -1864,6 +1871,7 @@ pub const Checker = struct {
     fn virtualSectionStartForNode(self: *Checker, node: NodeId) usize {
         const src = self.source orelse return 0;
         if (!self.sourceHasVirtualFilenameSections()) return 0;
+        if (self.virtual_section_start_cache.get(node)) |cached| return cached;
         const span = self.hir.spanOf(node);
         const limit = @min(span.start, src.len);
         var last: usize = 0;
@@ -1879,6 +1887,7 @@ pub const Checker = struct {
             if (line_end >= limit or line_end == src.len) break;
             line_start = line_end + 1;
         }
+        self.virtual_section_start_cache.put(self.gpa, node, last) catch {};
         return last;
     }
 
@@ -2128,9 +2137,7 @@ pub const Checker = struct {
     }
 
     fn sourceHasVirtualFilenameSections(self: *Checker) bool {
-        const src = self.source orelse return false;
-        return std.mem.indexOf(u8, src, "@filename:") != null or
-            std.mem.indexOf(u8, src, "@Filename:") != null;
+        return self.source != null and self.source_has_virtual_sections;
     }
 
     fn checkExportAssignmentExclusivity(self: *Checker, stmts: []const NodeId) CheckError!void {
@@ -10798,23 +10805,34 @@ pub const Checker = struct {
         if (virtualRelativeSpecifierPrefersIndex(spec)) {
             const index_exts = [_][]const u8{ ".d.ts", ".ts", ".tsx", ".mts", ".cts", ".js", ".jsx", ".mjs", ".cjs" };
             for (index_exts) |ext| {
-                const index = std.fmt.allocPrint(self.gpa, "{s}/index{s}", .{ resolved, ext }) catch return false;
-                defer self.gpa.free(index);
-                if (virtualPathEquals(filename, index)) return true;
+                if (virtualPathEqualsWithSuffix(filename, resolved, "/index", ext)) return true;
             }
             return false;
         }
         if (virtualPathEquals(filename, resolved)) return true;
         const exts = [_][]const u8{ ".d.ts", ".ts", ".tsx", ".mts", ".cts", ".js", ".jsx", ".mjs", ".cjs" };
         for (exts) |ext| {
-            const direct = std.fmt.allocPrint(self.gpa, "{s}{s}", .{ resolved, ext }) catch return false;
-            defer self.gpa.free(direct);
-            if (virtualPathEquals(filename, direct)) return true;
-            const index = std.fmt.allocPrint(self.gpa, "{s}/index{s}", .{ resolved, ext }) catch return false;
-            defer self.gpa.free(index);
-            if (virtualPathEquals(filename, index)) return true;
+            if (virtualPathEqualsWithSuffix(filename, resolved, "", ext)) return true;
+            if (virtualPathEqualsWithSuffix(filename, resolved, "/index", ext)) return true;
         }
         return false;
+    }
+
+    fn virtualPathTrimPrefix(path: []const u8) []const u8 {
+        var out = path;
+        while (std.mem.startsWith(u8, out, "/")) out = out[1..];
+        while (std.mem.startsWith(u8, out, "./")) out = out[2..];
+        return out;
+    }
+
+    fn virtualPathEqualsWithSuffix(path: []const u8, base: []const u8, infix: []const u8, suffix: []const u8) bool {
+        const a = virtualPathTrimPrefix(path);
+        const b = virtualPathTrimPrefix(base);
+        const expected_len = b.len + infix.len + suffix.len;
+        if (a.len != expected_len) return false;
+        if (!std.mem.eql(u8, a[0..b.len], b)) return false;
+        if (!std.mem.eql(u8, a[b.len .. b.len + infix.len], infix)) return false;
+        return std.mem.eql(u8, a[b.len + infix.len ..], suffix);
     }
 
     fn virtualRelativeSpecifierPrefersIndex(spec: []const u8) bool {
