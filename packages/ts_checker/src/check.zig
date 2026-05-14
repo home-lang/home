@@ -212,6 +212,8 @@ pub const TsCodes = struct {
     pub const unsafe_rewrite_relative_import: u32 = 2876;
     pub const declaration_file_import_requires_import_type: u32 = 2846;
     pub const import_path_ts_extension: u32 = 5097;
+    pub const dynamic_import_bad_module: u32 = 1323;
+    pub const invalid_import_call: u32 = 1326;
     pub const option_removed: u32 = 5102;
     pub const nullish_rhs_unreachable: u32 = 2869;
     pub const unknown_catch_variable: u32 = 18046;
@@ -605,6 +607,12 @@ pub const Checker = struct {
     /// shapes; this guard keeps mutual annotations from re-entering
     /// `typeOfIdentifier` until the stack overflows.
     resolving_value_types: std.AutoHashMapUnmanaged(hir_mod.StringId, void),
+    /// Exported type declarations currently being materialized through
+    /// virtual relative-module lookup. Circular module references can
+    /// legally mention the exported class/interface before its full body
+    /// is available; nested lookups fall back to `any` instead of
+    /// recursively rechecking the same declaration.
+    resolving_exported_type_decls: std.AutoHashMapUnmanaged(NodeId, void),
     /// Generic function name → owned `[]TypeId` of TypeParameter ids
     /// (in declaration order). Populated by `checkFnSignatureOnly`.
     /// Consulted by call-expression typing when explicit type args
@@ -794,6 +802,7 @@ pub const Checker = struct {
             .generic_aliases = .empty,
             .active_generic_aliases = .empty,
             .resolving_value_types = .empty,
+            .resolving_exported_type_decls = .empty,
             .generic_fns = .empty,
             .generic_signature_params = .empty,
             .signature_this_params = .empty,
@@ -883,6 +892,7 @@ pub const Checker = struct {
         self.generic_aliases.deinit(self.gpa);
         self.active_generic_aliases.deinit(self.gpa);
         self.resolving_value_types.deinit(self.gpa);
+        self.resolving_exported_type_decls.deinit(self.gpa);
         var gf_it = self.generic_fns.valueIterator();
         while (gf_it.next()) |params| self.gpa.free(params.*);
         self.generic_fns.deinit(self.gpa);
@@ -4795,6 +4805,83 @@ pub const Checker = struct {
         }
     }
 
+    fn recordBindingPatternFlowFromSource(self: *Checker, pattern_node: NodeId, source_node: NodeId, source_t: TypeId) CheckError!void {
+        if (pattern_node == hir_mod.none_node_id) return;
+        switch (self.hir.kindOf(pattern_node)) {
+            .array_pattern => {
+                const source_elements: []const NodeId = if (source_node != hir_mod.none_node_id and self.hir.kindOf(source_node) == .array_literal)
+                    hir_mod.arrayLiteralElements(self.hir, source_node)
+                else
+                    &.{};
+                const fallback_elem_t = try self.iterableElementType(source_t);
+                for (hir_mod.patternElements(self.hir, pattern_node), 0..) |elem, i| {
+                    if (self.hir.kindOf(elem) != .parameter) continue;
+                    const p = hir_mod.parameterOf(self.hir, elem);
+                    if (p.name == hir_mod.none_node_id) continue;
+                    var elem_node: NodeId = hir_mod.none_node_id;
+                    var elem_t: TypeId = types.Primitive.any;
+                    if (i < source_elements.len and source_elements[i] != hir_mod.none_node_id) {
+                        elem_node = source_elements[i];
+                        elem_t = self.hir.typeOf(elem_node);
+                    } else if (p.default_value != hir_mod.none_node_id) {
+                        elem_node = p.default_value;
+                        elem_t = self.hir.typeOf(elem_node);
+                    } else {
+                        const tuple_t = self.tupleElementType(source_t, i);
+                        elem_t = if (tuple_t != types.Primitive.none) tuple_t else fallback_elem_t;
+                    }
+                    if (elem_t == types.Primitive.none and elem_node != hir_mod.none_node_id and self.hir.kindOf(elem_node) != .identifier) {
+                        elem_t = try self.checkExpression(elem_node);
+                    }
+                    if (elem_t == types.Primitive.none) elem_t = types.Primitive.any;
+                    try self.recordBindingTargetFlow(p.name, elem_node, elem_t);
+                }
+            },
+            .object_pattern => {
+                for (hir_mod.patternElements(self.hir, pattern_node)) |elem| {
+                    if (self.hir.kindOf(elem) != .parameter) continue;
+                    const p = hir_mod.parameterOf(self.hir, elem);
+                    if (p.name == hir_mod.none_node_id or p.flags.is_rest) continue;
+                    var prop_t: TypeId = types.Primitive.any;
+                    if (p.flags.is_computed_binding_key and p.default_value != hir_mod.none_node_id) {
+                        prop_t = (try self.objectPropertyTypeForComputedKeyNode(source_t, p.default_value)) orelse types.Primitive.any;
+                    } else if (try self.objectPropertyTypeFromBindingElementSource(source_t, elem, p.name)) |source_prop_t| {
+                        prop_t = source_prop_t;
+                    } else if (try self.objectBindingElementKeyName(elem, p.name)) |key_name| {
+                        prop_t = self.objectPropertyTypeByName(source_t, key_name) orelse types.Primitive.any;
+                    }
+                    try self.recordBindingTargetFlow(p.name, hir_mod.none_node_id, prop_t);
+                }
+            },
+            else => {},
+        }
+    }
+
+    fn recordBindingTargetFlow(self: *Checker, target_node: NodeId, source_node: NodeId, source_t: TypeId) CheckError!void {
+        if (target_node == hir_mod.none_node_id) return;
+        switch (self.hir.kindOf(target_node)) {
+            .identifier => {
+                if (source_t == types.Primitive.none or source_t == types.Primitive.any or source_t == types.Primitive.unknown) return;
+                const id = hir_mod.identifierOf(self.hir, target_node);
+                try self.recordNarrow(id.name, source_t);
+            },
+            .array_pattern, .object_pattern => {
+                try self.recordBindingPatternFlowFromSource(target_node, source_node, source_t);
+            },
+            .assignment => {
+                const a = hir_mod.assignmentOf(self.hir, target_node);
+                var default_t = self.hir.typeOf(a.value);
+                if (default_t == types.Primitive.none and self.hir.kindOf(a.value) != .identifier) {
+                    default_t = try self.checkExpression(a.value);
+                }
+                if (default_t == types.Primitive.none) default_t = types.Primitive.any;
+                const effective_t = try self.destructuringSourceWithDefault(source_t, default_t);
+                try self.recordBindingTargetFlow(a.target, a.value, effective_t);
+            },
+            else => {},
+        }
+    }
+
     fn reportImplicitAnyNullishArrayBinding(self: *Checker, pattern_node: NodeId, init_node: NodeId) CheckError!void {
         if (!self.strict_flags.no_implicit_any) return;
         if (self.hir.kindOf(pattern_node) != .array_pattern or self.hir.kindOf(init_node) != .array_literal) return;
@@ -4868,6 +4955,33 @@ pub const Checker = struct {
         }
         if (raw.len == 0) return null;
         return self.string_interner.intern(raw) catch return error.OutOfMemory;
+    }
+
+    fn objectPropertyTypeFromBindingElementSource(self: *Checker, source_t: TypeId, elem_node: NodeId, name_node: NodeId) CheckError!?TypeId {
+        const src = self.source orelse return null;
+        const elem_span = self.hir.spanOf(elem_node);
+        const name_span = self.hir.spanOf(name_node);
+        if (elem_span.start >= src.len or name_span.start > src.len or name_span.start <= elem_span.start) return null;
+        const prefix = src[elem_span.start..name_span.start];
+        const colon = std.mem.indexOfScalar(u8, prefix, ':') orelse return null;
+        const raw = std.mem.trim(u8, prefix[0..colon], " \t\r\n");
+        if (raw.len < 3 or raw[0] != '[' or raw[raw.len - 1] != ']') return null;
+        const inner = std.mem.trim(u8, raw[1 .. raw.len - 1], " \t\r\n");
+        if (inner.len == 0) return null;
+        if (!isAsciiIdentifierText(inner)) return null;
+        const key_name = self.string_interner.intern(inner) catch return error.OutOfMemory;
+        const key_t = (try self.typeOfVisibleNameNoDiag(elem_node, key_name)) orelse return null;
+        return try self.objectPropertyTypeForComputedKeyType(source_t, key_t);
+    }
+
+    fn isAsciiIdentifierText(text: []const u8) bool {
+        if (text.len == 0) return false;
+        const first = text[0];
+        if (!((first >= 'A' and first <= 'Z') or (first >= 'a' and first <= 'z') or first == '_' or first == '$')) return false;
+        for (text[1..]) |ch| {
+            if (!((ch >= 'A' and ch <= 'Z') or (ch >= 'a' and ch <= 'z') or (ch >= '0' and ch <= '9') or ch == '_' or ch == '$')) return false;
+        }
+        return true;
     }
 
     fn propertyNameFromRawComputedKeyText(self: *Checker, raw: []const u8) ?hir_mod.StringId {
@@ -8110,6 +8224,10 @@ pub const Checker = struct {
                 const member_node = self.unwrapExportDecl(member_raw);
                 const decl_name = self.declarationName(member_node) orelse continue;
                 if (decl_name != member_name) continue;
+                if (self.nodeHasAncestor(anchor, member_node)) {
+                    const existing_t = self.hir.typeOf(member_node);
+                    return if (existing_t != types.Primitive.none) existing_t else types.Primitive.any;
+                }
                 switch (self.hir.kindOf(member_node)) {
                     .class_decl, .class_expr => {
                         try self.checkClassDecl(member_node);
@@ -13454,6 +13572,12 @@ pub const Checker = struct {
     fn typeOfExportedTypeDecl(self: *Checker, decl: NodeId, name: hir_mod.StringId) CheckError!?TypeId {
         const t = self.hir.typeOf(decl);
         if (t != types.Primitive.none and t != types.Primitive.unknown) return t;
+        if (self.resolving_exported_type_decls.contains(decl)) {
+            if (self.class_instance_types.get(name)) |ct| return ct;
+            return types.Primitive.any;
+        }
+        try self.resolving_exported_type_decls.put(self.gpa, decl, {});
+        defer _ = self.resolving_exported_type_decls.remove(decl);
         return switch (self.hir.kindOf(decl)) {
             .interface_decl => blk: {
                 try self.checkInterfaceDecl(decl);
@@ -15243,12 +15367,54 @@ pub const Checker = struct {
     }
 
     fn objectPropertyTypeForDestructuring(self: *Checker, source_t: TypeId, key_node: NodeId, is_computed: bool) CheckError!?TypeId {
+        if (is_computed) {
+            if (try self.objectPropertyTypeForComputedKeyNode(source_t, key_node)) |t| return t;
+        }
         const key_name = if (is_computed)
             try self.propertyNameFromComputedKeyNode(key_node)
         else
             self.propertyNameFromKeyNode(key_node);
         const name = key_name orelse return null;
         return self.objectPropertyTypeByName(source_t, name);
+    }
+
+    fn objectPropertyTypeForComputedKeyNode(self: *Checker, source_t: TypeId, key_node: NodeId) CheckError!?TypeId {
+        if (key_node == hir_mod.none_node_id) return null;
+        const key_t = try self.checkExpression(key_node);
+        return try self.objectPropertyTypeForComputedKeyType(source_t, key_t);
+    }
+
+    fn objectPropertyTypeForComputedKeyType(self: *Checker, source_t: TypeId, key_t: TypeId) CheckError!?TypeId {
+        if (try self.propertyNameFromLiteralType(key_t)) |name| {
+            return self.objectPropertyTypeByName(source_t, name);
+        }
+        if (key_t >= self.interner.pool.typeCount()) return null;
+        const flags = self.interner.pool.flagsOf(key_t);
+        if (flags.is_union) {
+            var vals: std.ArrayListUnmanaged(TypeId) = .empty;
+            defer vals.deinit(self.gpa);
+            for (self.interner.unionMembers(key_t)) |member| {
+                if (try self.objectPropertyTypeForComputedKeyType(source_t, member)) |t| {
+                    try vals.append(self.gpa, t);
+                }
+            }
+            if (vals.items.len == 0) return null;
+            if (vals.items.len == 1) return vals.items[0];
+            return self.interner.internUnion(vals.items) catch return error.OutOfMemory;
+        }
+        if (flags.is_number) {
+            if (source_t < self.interner.pool.typeCount()) {
+                const number_idx = self.interner.objectNumberIndex(source_t);
+                if (number_idx != types.Primitive.none) return number_idx;
+            }
+        }
+        if (flags.is_string) {
+            if (source_t < self.interner.pool.typeCount()) {
+                const string_idx = self.interner.objectStringIndex(source_t);
+                if (string_idx != types.Primitive.none) return string_idx;
+            }
+        }
+        return null;
     }
 
     fn objectPropertyTypeByName(self: *Checker, source_t: TypeId, key_name: hir_mod.StringId) ?TypeId {
@@ -15628,6 +15794,9 @@ pub const Checker = struct {
             } else if (nk == .array_pattern and v.init != hir_mod.none_node_id) {
                 try self.checkArrayBindingPatternAgainstType(v.name, final_type);
                 try self.reportImplicitAnyNullishArrayBinding(v.name, v.init);
+            }
+            if ((nk == .object_pattern or nk == .array_pattern) and v.init != hir_mod.none_node_id) {
+                try self.recordBindingPatternFlowFromSource(v.name, v.init, final_type);
             }
         }
         try self.checkRepeatedVarDeclaration(node, final_type);
@@ -17175,6 +17344,12 @@ pub const Checker = struct {
                     try self.checkBareCallThisCompatibility(node, callee_t, args, arg_types.items);
                 }
                 if (self.isDynamicImportCallee(c.callee)) {
+                    if (self.dynamicImportCallHasTypeArgumentSyntax(node, c.callee)) {
+                        try self.report(node, TsCodes.invalid_import_call, "This use of 'import' is invalid. 'import()' calls can be written, but they must have parentheses and cannot have type arguments.");
+                    }
+                    if (self.dynamicImportModuleKindDisallowsImportCall()) {
+                        try self.report(node, TsCodes.dynamic_import_bad_module, "Dynamic imports are only supported when the '--module' flag is set to a dynamic-import-capable module kind.");
+                    }
                     if (args.len == 0) {
                         const msg = try std.fmt.allocPrint(
                             self.diag_arena.allocator(),
@@ -18220,6 +18395,22 @@ pub const Checker = struct {
         if (callee == hir_mod.none_node_id or self.hir.kindOf(callee) != .identifier) return false;
         const id = hir_mod.identifierOf(self.hir, callee);
         return std.mem.eql(u8, self.string_interner.get(id.name), "import");
+    }
+
+    fn dynamicImportModuleKindDisallowsImportCall(self: *Checker) bool {
+        return self.sourceDirectiveValueMentions("module", "es2015") or
+            self.sourceDirectiveValueMentions("module", "es6");
+    }
+
+    fn dynamicImportCallHasTypeArgumentSyntax(self: *Checker, call_node: NodeId, callee: NodeId) bool {
+        if (hir_mod.callTypeArgs(self.hir, call_node).len > 0) return true;
+        const src = self.source orelse return false;
+        const callee_span = self.hir.spanOf(callee);
+        const call_span = self.hir.spanOf(call_node);
+        if (callee_span.end >= src.len or call_span.end > src.len or callee_span.end >= call_span.end) return false;
+        const between = src[callee_span.end..call_span.end];
+        const open_paren = std.mem.indexOfScalar(u8, between, '(') orelse return false;
+        return std.mem.indexOfScalar(u8, between[0..open_paren], '<') != null;
     }
 
     fn checkJsxElement(self: *Checker, node: NodeId) CheckError!TypeId {
@@ -20796,7 +20987,9 @@ pub const Checker = struct {
                     // union with `undefined` to reflect callers passing
                     // `{}`.
                     var member_t: TypeId = types.Primitive.any;
-                    if (self.interner.objectMemberInfo(container_t, eid.name)) |info| {
+                    if (ep.flags.is_computed_binding_key and ep.default_value != hir_mod.none_node_id) {
+                        member_t = (self.objectPropertyTypeForComputedKeyNode(container_t, ep.default_value) catch null) orelse types.Primitive.any;
+                    } else if (self.interner.objectMemberInfo(container_t, eid.name)) |info| {
                         member_t = info.type;
                         if (info.is_optional) {
                             member_t = self.unionWithUndefined(member_t) catch member_t;
@@ -20842,7 +21035,10 @@ pub const Checker = struct {
                         }
                     }
                     if (ep.default_value != hir_mod.none_node_id) {
-                        const default_t = self.checkExpression(ep.default_value) catch types.Primitive.any;
+                        const default_t = if (self.nodeContainsIdentifier(ep.default_value, target_name))
+                            types.Primitive.any
+                        else
+                            self.checkExpression(ep.default_value) catch types.Primitive.any;
                         elem_container_t = if (elem_container_t == types.Primitive.any)
                             default_t
                         else
@@ -20877,7 +21073,10 @@ pub const Checker = struct {
                     }
                 }
                 if (ep.default_value != hir_mod.none_node_id) {
-                    const default_t = self.checkExpression(ep.default_value) catch types.Primitive.any;
+                    const default_t = if (self.nodeContainsIdentifier(ep.default_value, target_name))
+                        types.Primitive.any
+                    else
+                        self.checkExpression(ep.default_value) catch types.Primitive.any;
                     elem_t = self.destructuringSourceWithDefault(elem_t, default_t) catch elem_t;
                 }
                 return elem_t;
@@ -20885,6 +21084,169 @@ pub const Checker = struct {
             return null;
         }
         return null;
+    }
+
+    fn typeOfPatternBindingFromSource(
+        self: *Checker,
+        pattern_node: NodeId,
+        source_node: NodeId,
+        source_t: TypeId,
+        target_name: hir_mod.StringId,
+    ) CheckError!?TypeId {
+        if (pattern_node == hir_mod.none_node_id) return null;
+        return switch (self.hir.kindOf(pattern_node)) {
+            .array_pattern => blk: {
+                const source_elements: []const NodeId = if (source_node != hir_mod.none_node_id and self.hir.kindOf(source_node) == .array_literal)
+                    hir_mod.arrayLiteralElements(self.hir, source_node)
+                else
+                    &.{};
+                const fallback_elem_t = try self.iterableElementType(source_t);
+                for (hir_mod.patternElements(self.hir, pattern_node), 0..) |elem, i| {
+                    if (self.hir.kindOf(elem) != .parameter) continue;
+                    const p = hir_mod.parameterOf(self.hir, elem);
+                    if (p.name == hir_mod.none_node_id) continue;
+                    var elem_node: NodeId = hir_mod.none_node_id;
+                    var elem_t: TypeId = types.Primitive.any;
+                    if (i < source_elements.len and source_elements[i] != hir_mod.none_node_id) {
+                        elem_node = source_elements[i];
+                        elem_t = self.hir.typeOf(elem_node);
+                        if (elem_t == types.Primitive.none and self.nodeContainsIdentifier(elem_node, target_name)) {
+                            elem_t = types.Primitive.any;
+                        } else if (elem_t == types.Primitive.none and self.hir.kindOf(elem_node) != .identifier) {
+                            elem_t = try self.checkExpression(elem_node);
+                        }
+                    } else if (p.default_value != hir_mod.none_node_id) {
+                        elem_node = p.default_value;
+                        elem_t = self.hir.typeOf(elem_node);
+                        if (elem_t == types.Primitive.none and self.nodeContainsIdentifier(elem_node, target_name)) {
+                            elem_t = types.Primitive.any;
+                        } else if (elem_t == types.Primitive.none and self.hir.kindOf(elem_node) != .identifier) {
+                            elem_t = try self.checkExpression(elem_node);
+                        }
+                    } else {
+                        const tuple_t = self.tupleElementType(source_t, i);
+                        elem_t = if (tuple_t != types.Primitive.none) tuple_t else fallback_elem_t;
+                    }
+                    if (elem_t == types.Primitive.none or elem_t == types.Primitive.any or elem_t == types.Primitive.unknown) continue;
+                    switch (self.hir.kindOf(p.name)) {
+                        .identifier => if (hir_mod.identifierOf(self.hir, p.name).name == target_name) break :blk elem_t,
+                        .array_pattern, .object_pattern => {
+                            if (try self.typeOfPatternBindingFromSource(p.name, elem_node, elem_t, target_name)) |bt| break :blk bt;
+                        },
+                        .assignment => {
+                            const a = hir_mod.assignmentOf(self.hir, p.name);
+                            if (try self.typeOfPatternBindingFromSource(a.target, elem_node, elem_t, target_name)) |bt| break :blk bt;
+                        },
+                        else => {},
+                    }
+                }
+                break :blk null;
+            },
+            .array_literal => blk: {
+                const target_elements = hir_mod.arrayLiteralElements(self.hir, pattern_node);
+                const source_elements: []const NodeId = if (source_node != hir_mod.none_node_id and self.hir.kindOf(source_node) == .array_literal)
+                    hir_mod.arrayLiteralElements(self.hir, source_node)
+                else
+                    &.{};
+                const fallback_elem_t = try self.iterableElementType(source_t);
+                for (target_elements, 0..) |target, i| {
+                    if (target == hir_mod.none_node_id) continue;
+                    var elem_node: NodeId = hir_mod.none_node_id;
+                    var elem_t: TypeId = types.Primitive.any;
+                    if (i < source_elements.len and source_elements[i] != hir_mod.none_node_id) {
+                        elem_node = source_elements[i];
+                        elem_t = self.hir.typeOf(elem_node);
+                        if (elem_t == types.Primitive.none and self.nodeContainsIdentifier(elem_node, target_name)) {
+                            elem_t = types.Primitive.any;
+                        } else if (elem_t == types.Primitive.none and self.hir.kindOf(elem_node) != .identifier) {
+                            elem_t = try self.checkExpression(elem_node);
+                        }
+                    } else {
+                        const tuple_t = self.tupleElementType(source_t, i);
+                        elem_t = if (tuple_t != types.Primitive.none) tuple_t else fallback_elem_t;
+                    }
+                    if (elem_t == types.Primitive.none or elem_t == types.Primitive.any or elem_t == types.Primitive.unknown) continue;
+                    switch (self.hir.kindOf(target)) {
+                        .identifier => if (hir_mod.identifierOf(self.hir, target).name == target_name) break :blk elem_t,
+                        .array_literal, .object_literal, .array_pattern, .object_pattern => {
+                            if (try self.typeOfPatternBindingFromSource(target, elem_node, elem_t, target_name)) |bt| break :blk bt;
+                        },
+                        .assignment => {
+                            const a = hir_mod.assignmentOf(self.hir, target);
+                            var default_t = self.hir.typeOf(a.value);
+                            if (default_t == types.Primitive.none and self.nodeContainsIdentifier(a.value, target_name)) {
+                                default_t = types.Primitive.any;
+                            } else if (default_t == types.Primitive.none and self.hir.kindOf(a.value) != .identifier) {
+                                default_t = try self.checkExpression(a.value);
+                            }
+                            if (default_t == types.Primitive.none) default_t = types.Primitive.any;
+                            const effective_t = try self.destructuringSourceWithDefault(elem_t, default_t);
+                            if (try self.typeOfPatternBindingFromSource(a.target, a.value, effective_t, target_name)) |bt| break :blk bt;
+                        },
+                        else => {},
+                    }
+                }
+                break :blk null;
+            },
+            .object_pattern => blk: {
+                for (hir_mod.patternElements(self.hir, pattern_node)) |elem| {
+                    if (self.hir.kindOf(elem) != .parameter) continue;
+                    const p = hir_mod.parameterOf(self.hir, elem);
+                    if (p.name == hir_mod.none_node_id or p.flags.is_rest) continue;
+                    var prop_t: TypeId = types.Primitive.any;
+                    if (p.flags.is_computed_binding_key and p.default_value != hir_mod.none_node_id) {
+                        prop_t = (try self.objectPropertyTypeForComputedKeyNode(source_t, p.default_value)) orelse types.Primitive.any;
+                    } else if (try self.objectBindingElementKeyName(elem, p.name)) |key_name| {
+                        prop_t = self.objectPropertyTypeByName(source_t, key_name) orelse types.Primitive.any;
+                    }
+                    if (prop_t == types.Primitive.any or prop_t == types.Primitive.unknown or prop_t == types.Primitive.none) continue;
+                    switch (self.hir.kindOf(p.name)) {
+                        .identifier => if (hir_mod.identifierOf(self.hir, p.name).name == target_name) break :blk prop_t,
+                        .array_pattern, .object_pattern => {
+                            if (try self.typeOfPatternBindingFromSource(p.name, hir_mod.none_node_id, prop_t, target_name)) |bt| break :blk bt;
+                        },
+                        .assignment => {
+                            const a = hir_mod.assignmentOf(self.hir, p.name);
+                            if (try self.typeOfPatternBindingFromSource(a.target, hir_mod.none_node_id, prop_t, target_name)) |bt| break :blk bt;
+                        },
+                        else => {},
+                    }
+                }
+                break :blk null;
+            },
+            .object_literal => blk: {
+                for (hir_mod.objectLiteralProps(self.hir, pattern_node)) |prop_node| {
+                    if (self.hir.kindOf(prop_node) != .object_property) continue;
+                    const op = hir_mod.objectPropertyOf(self.hir, prop_node);
+                    if (op.value == hir_mod.none_node_id) continue;
+                    var prop_t: TypeId = types.Primitive.any;
+                    if (op.is_computed) {
+                        prop_t = (try self.objectPropertyTypeForComputedKeyNode(source_t, op.key)) orelse types.Primitive.any;
+                    } else if (self.propertyNameFromKeyNode(op.key)) |key_name| {
+                        prop_t = self.objectPropertyTypeByName(source_t, key_name) orelse types.Primitive.any;
+                    }
+                    if (prop_t == types.Primitive.any or prop_t == types.Primitive.unknown or prop_t == types.Primitive.none) continue;
+                    switch (self.hir.kindOf(op.value)) {
+                        .identifier => if (hir_mod.identifierOf(self.hir, op.value).name == target_name) break :blk prop_t,
+                        .array_literal, .object_literal, .array_pattern, .object_pattern => {
+                            if (try self.typeOfPatternBindingFromSource(op.value, hir_mod.none_node_id, prop_t, target_name)) |bt| break :blk bt;
+                        },
+                        .assignment => {
+                            const a = hir_mod.assignmentOf(self.hir, op.value);
+                            if (try self.typeOfPatternBindingFromSource(a.target, hir_mod.none_node_id, prop_t, target_name)) |bt| break :blk bt;
+                        },
+                        else => {},
+                    }
+                }
+                break :blk null;
+            },
+            .identifier => if (hir_mod.identifierOf(self.hir, pattern_node).name == target_name) source_t else null,
+            .assignment => blk: {
+                const a = hir_mod.assignmentOf(self.hir, pattern_node);
+                break :blk try self.typeOfPatternBindingFromSource(a.target, source_node, source_t, target_name);
+            },
+            else => null,
+        };
     }
 
     /// Resolve an identifier reference's type. Walks up the HIR
@@ -21045,11 +21407,16 @@ pub const Checker = struct {
                             }
                         } else if (v.name != hir_mod.none_node_id) {
                             const vk = self.hir.kindOf(v.name);
-                            if (vk == .object_pattern or vk == .array_pattern) {
+                            if (vk == .object_pattern or vk == .array_pattern or vk == .object_literal or vk == .array_literal) {
                                 const container_t = if (self.hir.typeOf(s) != types.Primitive.none)
                                     self.hir.typeOf(s)
                                 else
                                     types.Primitive.any;
+                                if (v.init != hir_mod.none_node_id) {
+                                    if (self.typeOfPatternBindingFromSource(v.name, v.init, container_t, id.name) catch null) |bt| {
+                                        return bt;
+                                    }
+                                }
                                 if (self.typeOfPatternBinding(v.name, container_t, id.name)) |bt| {
                                     return bt;
                                 }
@@ -27528,6 +27895,14 @@ pub const Checker = struct {
                 const p = hir_mod.objectPropertyOf(self.hir, node);
                 return self.nodeContainsIdentifier(p.key, name) or self.nodeContainsIdentifier(p.value, name);
             },
+            .class_decl, .class_expr => {
+                const c = hir_mod.classOf(self.hir, node);
+                if (self.nodeContainsIdentifier(c.name, name)) return true;
+                if (self.nodeContainsIdentifier(c.extends, name)) return true;
+                for (hir_mod.classMembers(self.hir, node)) |member| if (self.nodeContainsIdentifier(member, name)) return true;
+                return false;
+            },
+            .decorator => return self.nodeContainsIdentifier(hir_mod.decoratorOf(self.hir, node).expression, name),
             .binary_op => {
                 const b = hir_mod.binopOf(self.hir, node);
                 return self.nodeContainsIdentifier(b.lhs, name) or self.nodeContainsIdentifier(b.rhs, name);
@@ -40230,6 +40605,23 @@ test "checker: destructuring assignment records default and computed-key flow" {
     }
 }
 
+test "checker: computed binding pattern order preserves tuple property type" {
+    const s = try newSetup(
+        \\{
+        \\  let a: 0 | 1 = 1;
+        \\  const [{ [a]: b } = [a = 0, 9] as const] = [[8, 9] as const];
+        \\  const bb: 0 | 8 = b;
+        \\}
+    );
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+    var found = false;
+    for (s.checker.diagnostics.items) |d| {
+        if (d.code == TsCodes.type_not_assignable) found = true;
+    }
+    try T.expect(found);
+}
+
 test "checker: object rest with dynamic computed keys checks index signatures and rest target" {
     const s = try newSetup(
         \\var o = { a: 1, b: "no" };
@@ -41585,6 +41977,74 @@ test "checker: dynamic import returns Promise<any> and validates specifier" {
         try T.expect(d.code != TsCodes.subsequent_var_type_mismatch);
     }
     try T.expect(found_bad_specifier);
+}
+
+test "checker: dynamic import rejects unsupported module target" {
+    const s = try newSetup(
+        \\// @module: es2015
+        \\// @target: es6
+        \\// @filename: foo.ts
+        \\export default "./foo";
+        \\// @filename: index.ts
+        \\async function foo() {
+        \\  return await import((await import("./foo")).default);
+        \\}
+    );
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+    var count: usize = 0;
+    for (s.checker.diagnostics.items) |d| {
+        if (d.code == TsCodes.dynamic_import_bad_module) count += 1;
+    }
+    try T.expectEqual(@as(usize, 2), count);
+}
+
+test "checker: dynamic import rejects type argument syntax" {
+    const s = try newSetup(
+        \\// @module: commonjs
+        \\// @target: es6
+        \\export function foo() { return "foo"; }
+        \\var p1 = import<Promise<any>>("./0");
+        \\var p2 = import<>("./0");
+    );
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+    var count: usize = 0;
+    for (s.checker.diagnostics.items) |d| {
+        if (d.code == TsCodes.invalid_import_call) count += 1;
+    }
+    try T.expectEqual(@as(usize, 2), count);
+}
+
+test "checker: namespace value self-reference through member access does not recurse" {
+    const s = try newSetup(
+        \\// @strict: false
+        \\namespace M2 {
+        \\  export var x = M2.x;
+        \\  var y = x;
+        \\  var y: any;
+        \\}
+    );
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+    for (s.checker.diagnostics.items) |d| {
+        try T.expect(d.code != TsCodes.subsequent_var_type_mismatch);
+    }
+}
+
+test "checker: destructuring default self-reference in var shadow lookup does not recurse" {
+    const s = try newSetup(
+        \\// @strict: false
+        \\declare const y: any;
+        \\async function fn(x) {
+        \\  var [x = x] = y;
+        \\}
+    );
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+    for (s.checker.diagnostics.items) |d| {
+        try T.expect(d.code != TsCodes.subsequent_var_type_mismatch);
+    }
 }
 
 test "checker: dynamic import literal uses virtual module namespace shape" {
