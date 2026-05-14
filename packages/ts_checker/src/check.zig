@@ -15986,6 +15986,9 @@ pub const Checker = struct {
                 {
                     break :blk true;
                 }
+                if (self.enumNameFromNominal(init_type)) |enum_name| {
+                    if (!self.enumValueAssignableToTarget(enum_name, declared_type)) break :blk false;
+                }
                 if (try self.logicalExpressionAssignableToTarget(v.init, declared_type)) break :blk true;
                 if (try self.awaitedExpressionAssignableToTarget(v.init, init_type, declared_type)) break :blk true;
                 if (try self.literalExpressionAssignableToTarget(v.init, declared_type)) break :blk true;
@@ -16713,6 +16716,33 @@ pub const Checker = struct {
         return if (saw_number) enum_name else null;
     }
 
+    fn enumValueAssignableToTarget(self: *Checker, enum_name: hir_mod.StringId, target_t: TypeId) bool {
+        if (target_t == types.Primitive.any or
+            target_t == types.Primitive.unknown or
+            target_t == types.Primitive.number_t or
+            target_t == types.Primitive.object_t)
+        {
+            return true;
+        }
+        if (self.enumNameFromNominal(target_t)) |target_enum| {
+            return target_enum == enum_name;
+        }
+        if (self.namedTypeForId(target_t)) |target_name| {
+            const raw = self.string_interner.get(target_name);
+            if (std.mem.eql(u8, raw, "Object") or std.mem.eql(u8, raw, "Number")) return true;
+        }
+        if (target_t >= types.Primitive.first_dynamic and target_t < self.interner.pool.typeCount()) {
+            const flags = self.interner.pool.flagsOf(target_t);
+            if (flags.is_object_type and self.interner.objectMembers(target_t).len == 0 and
+                self.interner.objectStringIndex(target_t) == types.Primitive.none and
+                self.interner.objectNumberIndex(target_t) == types.Primitive.none)
+            {
+                return true;
+            }
+        }
+        return false;
+    }
+
     fn appendNumericEnumRecordMembers(
         self: *Checker,
         enum_name: hir_mod.StringId,
@@ -17413,26 +17443,30 @@ pub const Checker = struct {
                     // so the assignment-expression checker pins this
                     // case directly.
                     if (self.unrelatedTypeParameterAssignment(assignment_check_value_t, target_t)) {
-                        try self.report(node, TsCodes.type_not_assignable, "Type is not assignable to target type.");
+                        try self.reportTypeNotAssignable(node, assignment_check_value_t, target_t, "Type is not assignable to target type.");
                     } else {
-                        const ok = (try self.literalExpressionAssignableToTarget(a.value, target_t)) or
-                            (self.hir.kindOf(a.value) == .array_literal and
-                                self.isTupleShapedTarget(target_t) and
-                                (try self.checkArrayLiteralAgainstTuple(a.value, target_t))) or
-                            (try self.loweredLogicalAssignmentAssignableToTarget(a.target, a.value, target_t)) or
-                            (try self.logicalExpressionAssignableToTarget(a.value, target_t)) or
-                            (try self.conditionalExpressionAssignableToTarget(a.value, target_t)) or
-                            (try self.templateExpressionAssignableToType(a.value, target_t)) or
-                            (self.hir.kindOf(a.value) == .object_literal and
-                                (self.objectLiteralAssignableToTarget(a.value, value_t, target_t) catch false)) or
-                            (self.hir.kindOf(a.value) == .identifier and
-                                self.lookupNarrow(hir_mod.identifierOf(self.hir, a.value).name) != null and
-                                self.interner.isSignature(target_t) and
-                                self.objectHasCallOrConstructSignature(value_t)) or
-                            self.genericSignatureAssignmentAssignable(assignment_check_value_t, target_t) or
-                            (self.engine.isAssignableTo(assignment_check_value_t, target_t) catch true);
+                        const ok = if (self.enumNameFromNominal(target_t) != null and self.expressionIsNumericLiteral(a.value))
+                            false
+                        else
+                            (try self.literalExpressionAssignableToTarget(a.value, target_t)) or
+                                (self.hir.kindOf(a.value) == .array_literal and
+                                    self.isTupleShapedTarget(target_t) and
+                                    (try self.checkArrayLiteralAgainstTuple(a.value, target_t))) or
+                                (try self.loweredLogicalAssignmentAssignableToTarget(a.target, a.value, target_t)) or
+                                (try self.logicalExpressionAssignableToTarget(a.value, target_t)) or
+                                (try self.conditionalExpressionAssignableToTarget(a.value, target_t)) or
+                                (try self.templateExpressionAssignableToType(a.value, target_t)) or
+                                (self.hir.kindOf(a.value) == .object_literal and
+                                    (self.objectLiteralAssignableToTarget(a.value, value_t, target_t) catch false)) or
+                                (self.hir.kindOf(a.value) == .identifier and
+                                    self.lookupNarrow(hir_mod.identifierOf(self.hir, a.value).name) != null and
+                                    self.interner.isSignature(target_t) and
+                                    self.objectHasCallOrConstructSignature(value_t)) or
+                                self.genericSignatureAssignmentAssignable(assignment_check_value_t, target_t) or
+                                (self.engine.isAssignableTo(assignment_check_value_t, target_t) catch true);
                         if (!ok) {
-                            try self.report(node, TsCodes.type_not_assignable, "Type is not assignable to target type.");
+                            const source_for_report = try self.expressionLiteralType(a.value, assignment_check_value_t);
+                            try self.reportTypeNotAssignable(node, source_for_report, target_t, "Type is not assignable to target type.");
                         }
                     }
                 }
@@ -27443,6 +27477,13 @@ pub const Checker = struct {
         };
     }
 
+    fn expressionIsNumericLiteral(self: *Checker, node: NodeId) bool {
+        if (self.hir.kindOf(node) == .literal_number) return true;
+        if (self.hir.kindOf(node) != .unary_op) return false;
+        const u = hir_mod.unaryOf(self.hir, node);
+        return (u.op == .neg or u.op == .plus) and self.hir.kindOf(u.operand) == .literal_number;
+    }
+
     fn expressionLiteralType(self: *Checker, value_node: NodeId, fallback: TypeId) !TypeId {
         return switch (self.hir.kindOf(value_node)) {
             .literal_string => blk: {
@@ -27533,10 +27574,19 @@ pub const Checker = struct {
             types.Primitive.true_lit => "true",
             types.Primitive.false_lit => "false",
             else => blk: {
+                if (self.enumNameFromNominal(t)) |enum_name| {
+                    break :blk self.string_interner.get(enum_name);
+                }
+                if (self.namedTypeForId(t)) |type_name| {
+                    break :blk self.string_interner.get(type_name);
+                }
                 if (t >= self.interner.pool.typeCount()) break :blk null;
                 const flags = self.interner.pool.flagsOf(t);
                 if (!flags.is_literal) break :blk null;
-                const literal = self.interner.literalOf(t);
+                // Some non-literal types share a flag bit; guard against payload OOB.
+                const payload_idx = self.interner.pool.payloadOf(t);
+                if (payload_idx >= self.interner.pool.literal_payloads.items.len) break :blk null;
+                const literal = self.interner.pool.literal_payloads.items[payload_idx];
                 break :blk switch (literal) {
                     .string_lit => |sid| try std.fmt.allocPrint(self.diag_arena.allocator(), "\"{s}\"", .{self.string_interner.get(sid)}),
                     .number_lit => |bits| try std.fmt.allocPrint(self.diag_arena.allocator(), "{d}", .{@as(f64, @bitCast(bits))}),
@@ -27545,6 +27595,14 @@ pub const Checker = struct {
                 };
             },
         };
+    }
+
+    fn namedTypeForId(self: *Checker, t: TypeId) ?hir_mod.StringId {
+        var it = self.type_names.iterator();
+        while (it.next()) |entry| {
+            if (entry.value_ptr.* == t) return entry.key_ptr.*;
+        }
+        return null;
     }
 
     fn report(self: *Checker, node: NodeId, code: u32, message: []const u8) !void {
@@ -31345,6 +31403,59 @@ test "checker: var-decl type mismatch emits TS2322" {
     try T.expectEqual(TsCodes.type_not_assignable, s.checker.diagnostics.items[0].code);
     try T.expectEqualStrings("Type 'string' is not assignable to type 'number'.", s.checker.diagnostics.items[0].message);
     try T.expectEqual(@as(u32, 4), s.checker.hir.spanOf(s.checker.diagnostics.items[0].node).start);
+}
+
+test "checker: enum assignment TS2322 renders enum names" {
+    const s = try newSetup(
+        \\enum E { A }
+        \\enum F { B }
+        \\var e = E.A;
+        \\var f = F.B;
+        \\e = f;
+        \\f = e;
+        \\e = 1;
+    );
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+
+    var saw_e = false;
+    var saw_f = false;
+    var saw_number = false;
+    for (s.checker.diagnostics.items) |d| {
+        if (d.code != TsCodes.type_not_assignable) continue;
+        if (std.mem.eql(u8, d.message, "Type 'F' is not assignable to type 'E'.")) saw_e = true;
+        if (std.mem.eql(u8, d.message, "Type 'E' is not assignable to type 'F'.")) saw_f = true;
+        if (std.mem.eql(u8, d.message, "Type '1' is not assignable to type 'E'.")) saw_number = true;
+    }
+    try T.expect(saw_e);
+    try T.expect(saw_f);
+    try T.expect(saw_number);
+}
+
+test "checker: enum var-decl assignment rejects non-number targets" {
+    const s = try newSetup(
+        \\enum E { A }
+        \\var e = E.A;
+        \\var n: number = e;
+        \\var o: Object = e;
+        \\var empty: {} = e;
+        \\var s1: string = e;
+        \\var b1: boolean = e;
+    );
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+
+    var saw_string = false;
+    var saw_boolean = false;
+    for (s.checker.diagnostics.items) |d| {
+        if (d.code != TsCodes.type_not_assignable) continue;
+        if (std.mem.eql(u8, d.message, "Type 'E' is not assignable to type 'string'.")) saw_string = true;
+        if (std.mem.eql(u8, d.message, "Type 'E' is not assignable to type 'boolean'.")) saw_boolean = true;
+        try T.expect(!std.mem.eql(u8, d.message, "Type 'E' is not assignable to type 'number'."));
+        try T.expect(!std.mem.eql(u8, d.message, "Type 'E' is not assignable to type 'Object'."));
+    }
+    try T.expect(saw_string);
+    try T.expect(saw_boolean);
 }
 
 test "checker: strictNullChecks controls null assignment" {
