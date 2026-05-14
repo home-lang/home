@@ -280,6 +280,13 @@ pub const Printer = struct {
     /// switch). Only set while emitting pre/post statements of a
     /// lowered loop body via `emitGenInloopStmt`.
     gen_break_label: ?u32,
+    /// §4.A.9 v11 — class name node for which the per-class
+    /// `_<Class>_metadata` var has already been declared this
+    /// printClassDecl invocation. Both `emitMethodDecorateCalls`
+    /// (member chain) and `emitClassDecorateCall` (class chain)
+    /// consult this so the metadata object is created exactly once
+    /// per decorated class and both chains see the same instance.
+    stage3_metadata_declared_for: ?NodeId,
     /// §4.A.9 v7 — when non-null, the enclosing class has at least
     /// one decorated instance member under Stage 3 lowering, so every
     /// ctor-emit path inside the class body should append a
@@ -321,6 +328,7 @@ pub const Printer = struct {
             .gen_break_label = null,
             .gen_continue_label = null,
             .stage3_instance_extra_class = null,
+            .stage3_metadata_declared_for = null,
         };
     }
 
@@ -508,6 +516,8 @@ pub const Printer = struct {
             // extra-initializers array carries any `addInitializer`
             // callbacks the decorators registered; `__runInitializers`
             // runs them against the (possibly replaced) class.
+            try self.ensureStage3Metadata(c.name);
+            try self.write(self.options.newline);
             try self.write("var _");
             try self.writeClassNameSuffix(c.name);
             try self.write("_d = { value: ");
@@ -526,7 +536,9 @@ pub const Printer = struct {
             }
             try self.write("], { kind: \"class\", name: \"");
             try self.printExpression(c.name);
-            try self.write("\", metadata: void 0 }, null, _");
+            try self.write("\", metadata: _");
+            try self.writeClassNameSuffix(c.name);
+            try self.write("_metadata }, null, _");
             try self.writeClassNameSuffix(c.name);
             try self.write("_extra);");
             try self.write(self.options.newline);
@@ -541,6 +553,23 @@ pub const Printer = struct {
             try self.writeClassNameSuffix(c.name);
             try self.write("_extra);");
         }
+    }
+
+    /// §4.A.9 v11 — emit `var _<Class>_metadata = typeof Symbol === "function"
+    /// && Symbol.metadata ? Object.create(null) : void 0;` exactly once
+    /// per decorated class. Both the member and class decorator chains
+    /// call this so the metadata object is shared. Subsequent calls
+    /// for the same class are no-ops.
+    fn ensureStage3Metadata(self: *Printer, class_name: NodeId) anyerror!void {
+        if (class_name == hir_mod.none_node_id) return;
+        if (self.stage3_metadata_declared_for) |prev| {
+            if (prev == class_name) return;
+        }
+        self.stage3_metadata_declared_for = class_name;
+        try self.write(self.options.newline);
+        try self.write("var _");
+        try self.writeClassNameSuffix(class_name);
+        try self.write("_metadata = typeof Symbol === \"function\" && Symbol.metadata ? Object.create(null) : void 0;");
     }
 
     /// Emit the class name as a bare identifier (no quoting). Used to
@@ -3757,7 +3786,12 @@ pub const Printer = struct {
         // Save and restore around the class body so nested classes
         // don't leak the parent's context.
         const prev_instance_extra = self.stage3_instance_extra_class;
-        defer self.stage3_instance_extra_class = prev_instance_extra;
+        const prev_metadata_decl = self.stage3_metadata_declared_for;
+        defer {
+            self.stage3_instance_extra_class = prev_instance_extra;
+            self.stage3_metadata_declared_for = prev_metadata_decl;
+        }
+        self.stage3_metadata_declared_for = null;
         if (!self.options.experimental_decorators and c.name != hir_mod.none_node_id) {
             if (self.classHasDecoratedInstanceMember(node)) {
                 self.stage3_instance_extra_class = c.name;
@@ -4128,6 +4162,11 @@ pub const Printer = struct {
                 }
                 s_i = s_j;
             }
+            if (any_decorated_static or any_decorated_instance) {
+                // §4.A.9 v11 — declare per-class metadata once, shared
+                // with the class-decorator chain (which runs after).
+                try self.ensureStage3Metadata(c.name);
+            }
             if (any_decorated_static) {
                 try self.write(self.options.newline);
                 try self.write("var _");
@@ -4293,25 +4332,36 @@ pub const Printer = struct {
             try self.write(", ");
             try self.emitStage3AccessDescriptor(target, name_node);
         }
-        // §4.A.9 v5 — metadata field. Without IIFE-static-block setup
-        // we emit `void 0`; decorators that introspect `context.metadata`
-        // see undefined (matches tsc's intent in the same flat shape).
+        // §4.A.9 v11 — metadata field references the per-class shared
+        // `_<Class>_metadata` object that was declared once at the top
+        // of the decorate chain (see `ensureStage3Metadata`). Decorators
+        // that introspect `context.metadata` now see the same identity
+        // across the class + all its members. When the class has no
+        // declared name we fall back to `void 0` (anonymous expression).
         // §4.A.9 v6 — static-member decorators pass the per-class
         // `_<Class>_staticExtra` array (declared by the caller) so
         // addInitializer callbacks survive to `__runInitializers`.
-        // Instance members still pass `[]` until the ctor-synthesis
-        // integration for instance initializers lands.
+        // §4.A.9 v7 — instance members pass `_<Class>_instanceExtra`
+        // so the ctor trailer can run member-level extra initializers.
+        try self.write(", metadata: ");
+        if (class_name != hir_mod.none_node_id) {
+            try self.write("_");
+            try self.writeClassNameSuffix(class_name);
+            try self.write("_metadata");
+        } else {
+            try self.write("void 0");
+        }
         const is_static = self.isStaticMember(target);
         if (is_static and has_static_extras and class_name != hir_mod.none_node_id) {
-            try self.write(", metadata: void 0 }, null, _");
+            try self.write(" }, null, _");
             try self.writeClassNameSuffix(class_name);
             try self.write("_staticExtra);");
         } else if (!is_static and has_instance_extras and class_name != hir_mod.none_node_id) {
-            try self.write(", metadata: void 0 }, null, _");
+            try self.write(" }, null, _");
             try self.writeClassNameSuffix(class_name);
             try self.write("_instanceExtra);");
         } else {
-            try self.write(", metadata: void 0 }, null, []);");
+            try self.write(" }, null, []);");
         }
     }
 
@@ -8287,9 +8337,11 @@ test "emit: stage 3 class decorator emits descriptor + class-replacement chain" 
     try T.expect(std.mem.indexOf(u8, out, "class Foo") != null);
     // §4.A.9 v3/v4 — descriptor + initializer-array + __esDecorate + rebind + __runInitializers.
     try T.expect(std.mem.indexOf(u8, out, "var _Foo_d = { value: Foo }, _Foo_extra = [];") != null);
-    try T.expect(std.mem.indexOf(u8, out, "__esDecorate(null, _Foo_d, [logged], { kind: \"class\", name: \"Foo\", metadata: void 0 }, null, _Foo_extra);") != null);
+    try T.expect(std.mem.indexOf(u8, out, "__esDecorate(null, _Foo_d, [logged], { kind: \"class\", name: \"Foo\", metadata: _Foo_metadata }, null, _Foo_extra);") != null);
     try T.expect(std.mem.indexOf(u8, out, "Foo = _Foo_d.value;") != null);
     try T.expect(std.mem.indexOf(u8, out, "__runInitializers(Foo, _Foo_extra);") != null);
+    // §4.A.9 v11 — per-class metadata var declared once and reused.
+    try T.expect(std.mem.indexOf(u8, out, "var _Foo_metadata = typeof Symbol === \"function\" && Symbol.metadata ? Object.create(null) : void 0;") != null);
     // Stage 3 must NOT emit the legacy `__decorate` form.
     try T.expect(std.mem.indexOf(u8, out, "= __decorate(") == null);
 }
@@ -8298,7 +8350,7 @@ test "emit: stage 3 multiple class decorators preserve order" {
     const out = try emitWithOpts("@a @b @c class Bar {}", .{ .experimental_decorators = false });
     defer T.allocator.free(out);
     try T.expect(std.mem.indexOf(u8, out, "var _Bar_d = { value: Bar }, _Bar_extra = [];") != null);
-    try T.expect(std.mem.indexOf(u8, out, "__esDecorate(null, _Bar_d, [a, b, c], { kind: \"class\", name: \"Bar\", metadata: void 0 }, null, _Bar_extra);") != null);
+    try T.expect(std.mem.indexOf(u8, out, "__esDecorate(null, _Bar_d, [a, b, c], { kind: \"class\", name: \"Bar\", metadata: _Bar_metadata }, null, _Bar_extra);") != null);
     try T.expect(std.mem.indexOf(u8, out, "Bar = _Bar_d.value;") != null);
     try T.expect(std.mem.indexOf(u8, out, "__runInitializers(Bar, _Bar_extra);") != null);
 }
@@ -8307,7 +8359,7 @@ test "emit: stage 3 class decorator with call expression preserves arguments" {
     const out = try emitWithOpts("@inject(Foo) class Bar {}", .{ .experimental_decorators = false });
     defer T.allocator.free(out);
     try T.expect(std.mem.indexOf(u8, out, "class Bar") != null);
-    try T.expect(std.mem.indexOf(u8, out, "__esDecorate(null, _Bar_d, [inject(Foo)], { kind: \"class\", name: \"Bar\", metadata: void 0 }, null, _Bar_extra);") != null);
+    try T.expect(std.mem.indexOf(u8, out, "__esDecorate(null, _Bar_d, [inject(Foo)], { kind: \"class\", name: \"Bar\", metadata: _Bar_metadata }, null, _Bar_extra);") != null);
     try T.expect(std.mem.indexOf(u8, out, "Bar = _Bar_d.value;") != null);
     // Legacy form must NOT appear under stage 3.
     try T.expect(std.mem.indexOf(u8, out, "Bar = __decorate(") == null);
@@ -8322,14 +8374,17 @@ test "emit: stage 3 method decorator on class method emits per-member decorate" 
     , .{ .experimental_decorators = false });
     defer T.allocator.free(out);
     // Class-level decorator uses the Stage 3 descriptor + replacement chain.
-    try T.expect(std.mem.indexOf(u8, out, "__esDecorate(null, _Foo_d, [logged], { kind: \"class\", name: \"Foo\", metadata: void 0 }, null, _Foo_extra);") != null);
+    try T.expect(std.mem.indexOf(u8, out, "__esDecorate(null, _Foo_d, [logged], { kind: \"class\", name: \"Foo\", metadata: _Foo_metadata }, null, _Foo_extra);") != null);
     try T.expect(std.mem.indexOf(u8, out, "Foo = _Foo_d.value;") != null);
     try T.expect(std.mem.indexOf(u8, out, "__runInitializers(Foo, _Foo_extra);") != null);
     // §4.A.9 v7 — instance-decorator chain now declares
     // `_Foo_instanceExtra = []` and passes it to instance __esDecorate
     // calls; the ctor synthesizes a `__runInitializers(this, ...)` trailer.
     try T.expect(std.mem.indexOf(u8, out, "var _Foo_instanceExtra = [];") != null);
-    try T.expect(std.mem.indexOf(u8, out, "__esDecorate(null, null, [traced], { kind: \"method\", name: \"greet\", static: false, private: false, access: { has: function (obj) { return \"greet\" in obj; }, get: function (obj) { return obj.greet; } }, metadata: void 0 }, null, _Foo_instanceExtra);") != null);
+    // §4.A.9 v11 — metadata var declared once before the chain and
+    // shared by the class decorator + every member decorator.
+    try T.expect(std.mem.indexOf(u8, out, "var _Foo_metadata = typeof Symbol === \"function\" && Symbol.metadata ? Object.create(null) : void 0;") != null);
+    try T.expect(std.mem.indexOf(u8, out, "__esDecorate(null, null, [traced], { kind: \"method\", name: \"greet\", static: false, private: false, access: { has: function (obj) { return \"greet\" in obj; }, get: function (obj) { return obj.greet; } }, metadata: _Foo_metadata }, null, _Foo_instanceExtra);") != null);
     try T.expect(std.mem.indexOf(u8, out, "__runInitializers(this, _Foo_instanceExtra);") != null);
     try T.expect(std.mem.indexOf(u8, out, "__decorate([traced]") == null);
 }
@@ -8346,8 +8401,9 @@ test "emit: stage 3 field/accessor decorators emit member contexts" {
     defer T.allocator.free(out);
     // §4.A.9 v7 — instance-extras array + runInitializers trailer.
     try T.expect(std.mem.indexOf(u8, out, "var _Foo_instanceExtra = [];") != null);
-    try T.expect(std.mem.indexOf(u8, out, "__esDecorate(null, null, [observe], { kind: \"field\", name: \"count\", static: false, private: false, access: { has: function (obj) { return \"count\" in obj; }, get: function (obj) { return obj.count; }, set: function (obj, value) { obj.count = value; } }, metadata: void 0 }, null, _Foo_instanceExtra);") != null);
-    try T.expect(std.mem.indexOf(u8, out, "__esDecorate(null, null, [memo], { kind: \"getter\", name: \"value\", static: false, private: false, access: { has: function (obj) { return \"value\" in obj; }, get: function (obj) { return obj.value; } }, metadata: void 0 }, null, _Foo_instanceExtra);") != null);
+    try T.expect(std.mem.indexOf(u8, out, "var _Foo_metadata = typeof Symbol === \"function\" && Symbol.metadata ? Object.create(null) : void 0;") != null);
+    try T.expect(std.mem.indexOf(u8, out, "__esDecorate(null, null, [observe], { kind: \"field\", name: \"count\", static: false, private: false, access: { has: function (obj) { return \"count\" in obj; }, get: function (obj) { return obj.count; }, set: function (obj, value) { obj.count = value; } }, metadata: _Foo_metadata }, null, _Foo_instanceExtra);") != null);
+    try T.expect(std.mem.indexOf(u8, out, "__esDecorate(null, null, [memo], { kind: \"getter\", name: \"value\", static: false, private: false, access: { has: function (obj) { return \"value\" in obj; }, get: function (obj) { return obj.value; } }, metadata: _Foo_metadata }, null, _Foo_instanceExtra);") != null);
     try T.expect(std.mem.indexOf(u8, out, "__runInitializers(this, _Foo_instanceExtra);") != null);
     try T.expect(std.mem.indexOf(u8, out, "__decorate([observe]") == null);
 }
@@ -8368,8 +8424,9 @@ test "emit: stage 3 static member decorators mark static context" {
     // as the 6th arg of each static __esDecorate call, then calls
     // `__runInitializers(Foo, _Foo_staticExtra);` after the chain.
     try T.expect(std.mem.indexOf(u8, out, "var _Foo_staticExtra = [];") != null);
-    try T.expect(std.mem.indexOf(u8, out, "__esDecorate(Foo, null, [logged], { kind: \"method\", name: \"greet\", static: true, private: false, access: { has: function (obj) { return \"greet\" in obj; }, get: function (obj) { return obj.greet; } }, metadata: void 0 }, null, _Foo_staticExtra);") != null);
-    try T.expect(std.mem.indexOf(u8, out, "__esDecorate(Foo, null, [observe], { kind: \"field\", name: \"count\", static: true, private: false, access: { has: function (obj) { return \"count\" in obj; }, get: function (obj) { return obj.count; }, set: function (obj, value) { obj.count = value; } }, metadata: void 0 }, null, _Foo_staticExtra);") != null);
+    try T.expect(std.mem.indexOf(u8, out, "var _Foo_metadata = typeof Symbol === \"function\" && Symbol.metadata ? Object.create(null) : void 0;") != null);
+    try T.expect(std.mem.indexOf(u8, out, "__esDecorate(Foo, null, [logged], { kind: \"method\", name: \"greet\", static: true, private: false, access: { has: function (obj) { return \"greet\" in obj; }, get: function (obj) { return obj.greet; } }, metadata: _Foo_metadata }, null, _Foo_staticExtra);") != null);
+    try T.expect(std.mem.indexOf(u8, out, "__esDecorate(Foo, null, [observe], { kind: \"field\", name: \"count\", static: true, private: false, access: { has: function (obj) { return \"count\" in obj; }, get: function (obj) { return obj.count; }, set: function (obj, value) { obj.count = value; } }, metadata: _Foo_metadata }, null, _Foo_staticExtra);") != null);
     try T.expect(std.mem.indexOf(u8, out, "__runInitializers(Foo, _Foo_staticExtra);") != null);
     try T.expect(std.mem.indexOf(u8, out, "static: false") == null);
 }
@@ -8464,7 +8521,8 @@ test "emit: stage 3 class-only decorator does not produce legacy class assignmen
     try T.expect(std.mem.indexOf(u8, out, "class Baz") != null);
     // Stage 3 descriptor + helper + rebind + runInitializers chain.
     try T.expect(std.mem.indexOf(u8, out, "var _Baz_d = { value: Baz }, _Baz_extra = [];") != null);
-    try T.expect(std.mem.indexOf(u8, out, "__esDecorate(null, _Baz_d, [a, b], { kind: \"class\", name: \"Baz\", metadata: void 0 }, null, _Baz_extra);") != null);
+    try T.expect(std.mem.indexOf(u8, out, "var _Baz_metadata = typeof Symbol === \"function\" && Symbol.metadata ? Object.create(null) : void 0;") != null);
+    try T.expect(std.mem.indexOf(u8, out, "__esDecorate(null, _Baz_d, [a, b], { kind: \"class\", name: \"Baz\", metadata: _Baz_metadata }, null, _Baz_extra);") != null);
     try T.expect(std.mem.indexOf(u8, out, "Baz = _Baz_d.value;") != null);
     try T.expect(std.mem.indexOf(u8, out, "__runInitializers(Baz, _Baz_extra);") != null);
     // No legacy `Name = __decorate(...)` rewiring under Stage 3.
