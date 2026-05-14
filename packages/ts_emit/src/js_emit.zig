@@ -3855,10 +3855,14 @@ pub const Printer = struct {
             }
             // Public field with an initializer at sub-ES2022 — has
             // already been hoisted into the (real or synthesized) ctor.
+            // Auto-accessors (`is_accessor`) bypass this skip: their
+            // class-body lowering emits a storage slot + paired get/set
+            // that mustn't be hoisted away.
             if (downlevel_fields and self.hir.kindOf(m) == .object_property) {
                 const op = hir_mod.objectPropertyOf(self.hir, m);
                 if (op.value != hir_mod.none_node_id and
-                    self.privateFieldName(op.key) == null)
+                    self.privateFieldName(op.key) == null and
+                    !op.is_accessor)
                 {
                     continue;
                 }
@@ -3878,33 +3882,46 @@ pub const Printer = struct {
                 .object_property => {
                     const op = hir_mod.objectPropertyOf(self.hir, m);
                     if (op.is_accessor and self.hir.kindOf(op.key) == .identifier) {
-                        // §4.A.9 v9 — auto-accessor lowering. Expand
-                        //   accessor <key> = <value>;
-                        // into a `_<key>` storage field + paired
-                        // getter/setter. `_<key>` is convention-private
-                        // (underscore prefix); strict-private spec
-                        // semantics would use a native `#` slot which
-                        // requires private-field downlevel hand-off
-                        // we don't yet plumb through synthesized HIR.
+                        // §4.A.9 v9/v10 — auto-accessor lowering.
+                        // Expand `accessor <key> = <value>;` into a
+                        // backing storage field + paired getter/setter.
+                        // At ES2022+ (native private fields), the storage
+                        // is a true-private `#<key>_accessor` slot emitted
+                        // here in the class body. Below ES2022, the
+                        // initializer flows through `writeHoistedFieldInits`
+                        // into the (synthesized or explicit) ctor as
+                        // `this._<key> = <value>;` and we only emit the
+                        // get/set pair here.
                         const id = hir_mod.identifierOf(self.hir, op.key);
                         const key_name = self.interner.get(id.name);
-                        // Storage field with initializer.
-                        if (op.is_static) try self.write("static ");
-                        try self.write("_");
-                        try self.write(key_name);
-                        if (op.value != hir_mod.none_node_id) {
-                            try self.write(" = ");
-                            try self.printExpression(op.value);
+                        const use_private = self.options.es_target.supportsNativePrivateFields();
+                        const storage_prefix: []const u8 = if (use_private) "#" else "_";
+                        const storage_suffix: []const u8 = if (use_private) "_accessor" else "";
+                        // Storage field — emitted in the class body only
+                        // at ES2022+ (where public/private class fields
+                        // are native). At older targets the initializer
+                        // is hoisted into the ctor.
+                        if (use_private) {
+                            if (op.is_static) try self.write("static ");
+                            try self.write(storage_prefix);
+                            try self.write(key_name);
+                            try self.write(storage_suffix);
+                            if (op.value != hir_mod.none_node_id) {
+                                try self.write(" = ");
+                                try self.printExpression(op.value);
+                            }
+                            try self.write(";");
+                            try self.write(self.options.newline);
+                            try self.indent();
                         }
-                        try self.write(";");
                         // Getter.
-                        try self.write(self.options.newline);
-                        try self.indent();
                         if (op.is_static) try self.write("static ");
                         try self.write("get ");
                         try self.write(key_name);
-                        try self.write("() { return this._");
+                        try self.write("() { return this.");
+                        try self.write(storage_prefix);
                         try self.write(key_name);
+                        try self.write(storage_suffix);
                         try self.write("; }");
                         // Setter.
                         try self.write(self.options.newline);
@@ -3912,8 +3929,10 @@ pub const Printer = struct {
                         if (op.is_static) try self.write("static ");
                         try self.write("set ");
                         try self.write(key_name);
-                        try self.write("(value) { this._");
+                        try self.write("(value) { this.");
+                        try self.write(storage_prefix);
                         try self.write(key_name);
+                        try self.write(storage_suffix);
                         try self.write(" = value; }");
                     } else {
                         if (op.is_static) try self.write("static ");
@@ -3969,6 +3988,23 @@ pub const Printer = struct {
             if (op.is_static) continue;
             if (op.value == hir_mod.none_node_id) continue;
             if (self.privateFieldName(op.key) != null) continue;
+            // Auto-accessor: hoist its `_<key>` storage assignment
+            // into the ctor (not the public-facing `<key>` name —
+            // that's the getter/setter pair). At ES2022+ the storage
+            // field is emitted natively in the class body via the
+            // `#<key>_accessor` private slot, so no hoist needed.
+            if (op.is_accessor) {
+                if (self.options.es_target.supportsNativePrivateFields()) continue;
+                if (self.hir.kindOf(op.key) != .identifier) continue;
+                const id = hir_mod.identifierOf(self.hir, op.key);
+                const key_name = self.interner.get(id.name);
+                try self.write("this._");
+                try self.write(key_name);
+                try self.write(" = ");
+                try self.printExpression(op.value);
+                try self.write("; ");
+                continue;
+            }
             try self.write("this.");
             try self.printExpression(op.key);
             try self.write(" = ");
@@ -8338,7 +8374,9 @@ test "emit: stage 3 static member decorators mark static context" {
     try T.expect(std.mem.indexOf(u8, out, "static: false") == null);
 }
 
-test "emit: class accessor field lowers to storage + paired get/set + Stage 3 kind" {
+test "emit: class accessor field lowers via #-private storage at ES2022+ default" {
+    // §4.A.9 v9/v10 — at esnext (default), use native `#<key>_accessor`
+    // private slot. Below ES2022 the emit uses underscore-prefix.
     const out = try emitWithOpts(
         \\class Foo {
         \\  @validated
@@ -8346,15 +8384,33 @@ test "emit: class accessor field lowers to storage + paired get/set + Stage 3 ki
         \\}
     , .{ .experimental_decorators = false });
     defer T.allocator.free(out);
-    // §4.A.9 v9 — `accessor` auto-lowers to a paired get/set + `_count`
-    // storage field with the initializer.
-    try T.expect(std.mem.indexOf(u8, out, "_count = 0;") != null);
+    // True-private backing slot via `#`.
+    try T.expect(std.mem.indexOf(u8, out, "#count_accessor = 0;") != null);
+    try T.expect(std.mem.indexOf(u8, out, "get count() { return this.#count_accessor; }") != null);
+    try T.expect(std.mem.indexOf(u8, out, "set count(value) { this.#count_accessor = value; }") != null);
+    // Native `accessor` keyword is gone (we always lower).
+    try T.expect(std.mem.indexOf(u8, out, "accessor count") == null);
+    try T.expect(std.mem.indexOf(u8, out, "kind: \"accessor\", name: \"count\"") != null);
+}
+
+test "emit: accessor field falls back to underscore storage below ES2022" {
+    // At ES2021 (no native private fields), the lowering uses the
+    // underscore-prefix convention so the output stays runnable. The
+    // storage's initializer is hoisted into the ctor by the existing
+    // public-field downlevel (`useDefineForClassFields: false`-like
+    // path), so we look for `this._count = 0;` instead of a literal
+    // `_count = 0;` class-body member.
+    const out = try emitWithOpts(
+        \\class Foo {
+        \\  accessor count = 0;
+        \\}
+    , .{ .es_target = .es2021 });
+    defer T.allocator.free(out);
+    // Storage uses underscore-prefix (no `#`), hoisted into the ctor.
+    try T.expect(std.mem.indexOf(u8, out, "this._count = 0;") != null);
     try T.expect(std.mem.indexOf(u8, out, "get count() { return this._count; }") != null);
     try T.expect(std.mem.indexOf(u8, out, "set count(value) { this._count = value; }") != null);
-    // Native `accessor` keyword is gone (we always lower in v0).
-    try T.expect(std.mem.indexOf(u8, out, "accessor count") == null);
-    // Stage 3 decorator still receives `kind: "accessor"` in its context.
-    try T.expect(std.mem.indexOf(u8, out, "kind: \"accessor\", name: \"count\"") != null);
+    try T.expect(std.mem.indexOf(u8, out, "#count_accessor") == null);
 }
 
 test "emit: static accessor field lowers with static-prefixed storage + get/set" {
@@ -8364,7 +8420,8 @@ test "emit: static accessor field lowers with static-prefixed storage + get/set"
         \\}
     );
     defer T.allocator.free(out);
-    try T.expect(std.mem.indexOf(u8, out, "static _shared = 1;") != null);
+    // At esnext, true-private `#`.
+    try T.expect(std.mem.indexOf(u8, out, "static #shared_accessor = 1;") != null);
     try T.expect(std.mem.indexOf(u8, out, "static get shared()") != null);
     try T.expect(std.mem.indexOf(u8, out, "static set shared(value)") != null);
 }
