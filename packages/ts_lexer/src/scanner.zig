@@ -29,8 +29,16 @@
 //!
 //! Out of scope for Phase 1.B (deferred):
 //!
-//!   - Regex literal scanning (parser-driven via `rescanSlashAsRegex`).
-//!     Stub emits `regex_literal` from a future re-scan call site.
+//!   - Regex literal scanning is done eagerly: when `/` (or `/=`) is
+//!     encountered after a token that leaves the parser in an
+//!     "expression-allowed" position (operator, `=`, `(`, `,`, `;`,
+//!     `return`, `if`, `=>`, etc., or start-of-file), the scanner
+//!     consumes the regex body + flags as a single `regex_literal`
+//!     token. Otherwise it emits arithmetic `slash` / `slash_equal`.
+//!     The parser still accepts `.slash` as a regex re-scan trigger
+//!     for any leftover ambiguity (e.g. expression-position recovery
+//!     after a parse error). See `slashStartsRegex` and
+//!     `scanRegexLiteral` below.
 //!   - JSX child-text scanning. The TSX parser drives a `rescanJsx`
 //!     entry point that consumes `<` / `</` / `{` boundaries and emits
 //!     `jsx_text`. Wired but unused until Phase 1.D's parser starts
@@ -82,6 +90,15 @@ pub const Scanner = struct {
     /// resume scanning the template body (emitting `template_middle`
     /// or `template_tail`) instead of producing a `close_brace`.
     template_brace_stack: std.ArrayListUnmanaged(u32),
+    /// Kind of the most recently emitted significant token. Used to
+    /// disambiguate `/` between division and regex-literal start —
+    /// `/` is a regex when the preceding token leaves the parser in
+    /// an "expression-allowed" position (operator, `=`, `(`, `,`,
+    /// `;`, `return`, `if`, `=>`, …) and a divide otherwise (after
+    /// an identifier, number, `)`, `]`, `}`, etc.). Initialized to
+    /// `.eof` so the first token in a file is treated as
+    /// expression-allowed.
+    last_significant_kind: TokenKind,
 
     pub fn init(gpa: std.mem.Allocator, source: []const u8) Scanner {
         return .{
@@ -94,6 +111,7 @@ pub const Scanner = struct {
             .diagnostics = .empty,
             .diag_arena = std.heap.ArenaAllocator.init(gpa),
             .template_brace_stack = .empty,
+            .last_significant_kind = .eof,
         };
     }
 
@@ -584,8 +602,20 @@ pub const Scanner = struct {
     }
 
     /// Scan a single significant token. Whitespace and comments are
-    /// silently consumed.
+    /// silently consumed. Records the emitted token's kind in
+    /// `last_significant_kind` so the next call can resolve `/`
+    /// ambiguity (regex vs. divide) without parser feedback.
     pub fn next(self: *Scanner, gpa: std.mem.Allocator) ScanError!Token {
+        const tok_ = try self.nextRaw(gpa);
+        // Don't overwrite the last-kind tracker on EOF — that would
+        // hide whatever produced the final-significant-token state if
+        // a caller peeks past EOF. EOF carries no expression-position
+        // information of its own.
+        if (tok_.kind != .eof) self.last_significant_kind = tok_.kind;
+        return tok_;
+    }
+
+    fn nextRaw(self: *Scanner, gpa: std.mem.Allocator) ScanError!Token {
         try self.skipTrivia(gpa);
         const start = self.pos;
         const line = self.line;
@@ -744,11 +774,17 @@ pub const Scanner = struct {
                 return self.tok(start, .asterisk, flags, line);
             },
             '/' => {
-                // Note: `/` is ambiguous with regex; the regex case is
-                // driven by the parser's `rescanSlashAsRegex`. The
-                // base scanner always emits arithmetic division; the
-                // parser re-scans for regex when it knows the position
-                // permits it.
+                // `/` is ambiguous: it starts a regex literal in
+                // expression-allowed position (after operators, `=`,
+                // `(`, `,`, `;`, `return`, `=>`, etc., or at start of
+                // file), and starts arithmetic division otherwise
+                // (after an identifier, number, `)`, `]`, etc.). We
+                // dispatch on `last_significant_kind` per ES Annex B.
+                if (slashStartsRegex(self.last_significant_kind)) {
+                    if (self.scanRegexLiteral(start, line, flags)) |tok_| return tok_;
+                    // Fall through to division if the body looks
+                    // structurally invalid (no terminating `/`).
+                }
                 if (self.match('=')) return self.tok(start, .slash_equal, flags, line);
                 return self.tok(start, .slash, flags, line);
             },
@@ -798,6 +834,235 @@ pub const Scanner = struct {
             .flags = flags,
             .line = line,
         };
+    }
+
+    /// Decide whether a `/` encountered after a token of `prev` kind
+    /// should be parsed as the start of a regex literal (true) or as
+    /// arithmetic division (false). Mirrors tsgo's
+    /// `reScanSlashToken` precondition matrix and the V8/SpiderMonkey
+    /// rule of thumb: `/` is a regex after operators, keywords that
+    /// end an expression-statement or that introduce one (`return`,
+    /// `typeof`, `case`, `do`, …), `(`, `[`, `{`, `,`, `;`, `=>`,
+    /// `:`, `?`, and at start-of-file (which we model with `.eof`
+    /// since the scanner field starts at `.eof`).
+    pub fn slashStartsRegex(prev: TokenKind) bool {
+        return switch (prev) {
+            // Start of file / start of a fresh statement after an EOF
+            // sentinel reset.
+            .eof,
+            .invalid,
+            // Punctuation that opens an expression or sub-expression.
+            .open_paren,
+            .open_bracket,
+            .open_brace,
+            .close_brace,
+            .semicolon,
+            .comma,
+            .colon,
+            .question,
+            .question_dot,
+            .question_question,
+            .arrow,
+            .dot_dot_dot,
+            .at,
+            .tilde,
+            .bang,
+            // All assignment operators.
+            .equal,
+            .plus_equal,
+            .minus_equal,
+            .asterisk_equal,
+            .slash_equal,
+            .percent_equal,
+            .asterisk_asterisk_equal,
+            .less_less_equal,
+            .greater_greater_equal,
+            .greater_greater_greater_equal,
+            .ampersand_equal,
+            .pipe_equal,
+            .caret_equal,
+            .ampersand_ampersand_equal,
+            .pipe_pipe_equal,
+            .question_question_equal,
+            // Equality / comparison.
+            .equal_equal,
+            .equal_equal_equal,
+            .bang_equal,
+            .bang_equal_equal,
+            .less_than_equal,
+            .greater_than_equal,
+            // `.less_than` and `.greater_than` are deliberately NOT
+            // included here. In TSX a `</…>` close-tag follows a
+            // `<` directly with a `/`, and naïvely treating `/`
+            // there as a regex would consume the rest of the close
+            // tag (`/div></Tag>` would scan as a regex body and
+            // flags). The cost is that the rare `a < /pattern/.test(b)`
+            // pattern in plain TS will fall back to `.slash` —
+            // which the parser still recovers as a regex via
+            // `parseRegexLiteralExpression`. Same logic applies to
+            // `>` (e.g. after a generic argument list); the parser
+            // already drives `rescanGreater` for those positions.
+            // Arithmetic, bitwise, logical (but NOT `/` itself —
+            // a literal `// …` is comment trivia and never reaches
+            // here).
+            .plus,
+            .minus,
+            .asterisk,
+            .slash,
+            .percent,
+            .asterisk_asterisk,
+            .ampersand,
+            .pipe,
+            .caret,
+            .less_less,
+            .greater_greater,
+            .greater_greater_greater,
+            .ampersand_ampersand,
+            .pipe_pipe,
+            // Keywords that introduce or follow an expression
+            // position. The list mirrors tsgo's
+            // `tokenIsExpressionStart` plus the "value-introducer"
+            // keywords (return, typeof, …) — these are all positions
+            // where the next token should be the start of an
+            // expression, so `/` must be a regex.
+            .kw_return,
+            .kw_throw,
+            .kw_typeof,
+            .kw_void,
+            .kw_delete,
+            .kw_new,
+            .kw_in,
+            .kw_of,
+            .kw_instanceof,
+            .kw_yield,
+            .kw_await,
+            .kw_case,
+            .kw_do,
+            .kw_else,
+            .kw_extends,
+            .kw_if,
+            .kw_while,
+            .kw_for,
+            .kw_switch,
+            .kw_with,
+            .kw_var,
+            .kw_let,
+            .kw_const,
+            .kw_default,
+            .kw_export,
+            // `as`/`satisfies` introduce a type, not an expression,
+            // but the only thing that can follow them in expression
+            // position is a type — and `/` would be invalid syntax
+            // there anyway. Treat them as expression-allowed so
+            // recovery doesn't blow up scanning regex bodies that
+            // happen to follow a malformed `as`.
+            .kw_as,
+            .kw_satisfies,
+            => true,
+
+            // Tokens that produce a value — `/` is division.
+            .identifier,
+            .private_identifier,
+            .number_literal,
+            .bigint_literal,
+            .string_literal,
+            .regex_literal,
+            .no_substitution_template,
+            .template_tail,
+            .close_paren,
+            .close_bracket,
+            .plus_plus,
+            .minus_minus,
+            .kw_this,
+            .kw_super,
+            .kw_true,
+            .kw_false,
+            .kw_null,
+            .kw_undefined,
+            // See the comment in the equality/comparison block above:
+            // bare `<` / `>` get the divide treatment so TSX
+            // close-tags and generic-arg lists scan correctly. The
+            // parser handles the rare comparison-with-regex case
+            // (`a < /x/.test(b)`) via re-scan on `.slash`.
+            .less_than,
+            .greater_than,
+            => false,
+
+            // Anything not classified above (most TS-only keywords,
+            // declaration keywords like `class`, `function`,
+            // `interface`, …) — treat as expression-allowed. After
+            // `function` / `class` a `/` cannot legally start a
+            // regex (the next significant token must be a name or
+            // `(`/`{`), so the choice doesn't matter; we err on
+            // "regex" so a stray `/` in malformed source doesn't
+            // produce dozens of byte-level lex errors.
+            else => true,
+        };
+    }
+
+    /// Scan the body and flags of a regex literal whose leading `/`
+    /// has just been consumed (so `self.pos` points to the first
+    /// body byte). On success, returns a `regex_literal` token
+    /// spanning `start..self.pos`. On failure (no terminating `/`,
+    /// or a newline before the closer) restores `self.pos` to the
+    /// position right after the opening `/` and returns null so
+    /// the caller can fall back to division.
+    fn scanRegexLiteral(self: *Scanner, start: u32, line: u32, flags: TokenFlags) ?Token {
+        const body_start = self.pos;
+        var p: u32 = body_start;
+        var in_escape = false;
+        var in_class = false;
+        const end_total: u32 = @intCast(self.source.len);
+        while (p < end_total) : (p += 1) {
+            const ch = self.source[p];
+            if (ch == '\n' or ch == '\r') {
+                // Unterminated regex within a single line — back off
+                // and emit `slash` so the parser sees what was
+                // there. This matches tsgo's "no implicit
+                // multi-line regex" behaviour.
+                self.pos = body_start;
+                return null;
+            }
+            if (in_escape) {
+                in_escape = false;
+                continue;
+            }
+            if (ch == '\\') {
+                in_escape = true;
+                continue;
+            }
+            if (ch == '[') {
+                in_class = true;
+                continue;
+            }
+            if (ch == ']' and in_class) {
+                in_class = false;
+                continue;
+            }
+            if (ch == '/' and !in_class) {
+                // Found the closer — consume it and any trailing flags.
+                p += 1;
+                while (p < end_total) : (p += 1) {
+                    const f = self.source[p];
+                    const is_flag = (f >= 'a' and f <= 'z') or
+                        (f >= 'A' and f <= 'Z') or
+                        (f >= '0' and f <= '9') or
+                        f == '_' or
+                        f == '$';
+                    if (!is_flag) break;
+                }
+                self.pos = p;
+                return .{
+                    .span = .{ .start = start, .end = p },
+                    .kind = .regex_literal,
+                    .flags = flags,
+                    .line = line,
+                };
+            }
+        }
+        // EOF before closer — fall back to division.
+        self.pos = body_start;
+        return null;
     }
 
     /// Tokenize the entire source into a list. Convenience for tests
@@ -1104,4 +1369,205 @@ test "Scanner: punctuation — full ASCII set" {
     };
     try t.expectEqual(expected.len, toks.items.len);
     for (expected, 0..) |e, i| try t.expectEqual(e, toks.items[i].kind);
+}
+
+// =============================================================================
+// Regex / divide disambiguation
+// =============================================================================
+//
+// `/` is the most context-sensitive character in the ES grammar: it
+// starts a regex literal when the parser would accept an expression
+// at that position, and a division operator when the previous token
+// produced a value. We dispatch on `last_significant_kind` per
+// ES Annex B; the cases below cover the canonical patterns that
+// the §6 conformance ratchet exercises (e.g. `fixSignatureCaching`).
+
+test "Scanner: regex literal — `let r = /foo/g;`" {
+    var s = Scanner.init(t.allocator, "let r = /foo/g;");
+    defer s.deinit(t.allocator);
+    var toks = try s.tokenize(t.allocator);
+    defer toks.deinit(t.allocator);
+    try t.expectEqual(TokenKind.kw_let, toks.items[0].kind);
+    try t.expectEqual(TokenKind.identifier, toks.items[1].kind);
+    try t.expectEqual(TokenKind.equal, toks.items[2].kind);
+    try t.expectEqual(TokenKind.regex_literal, toks.items[3].kind);
+    try t.expectEqualStrings("/foo/g", toks.items[3].bytes(s.source));
+    try t.expectEqual(TokenKind.semicolon, toks.items[4].kind);
+}
+
+test "Scanner: divide — `a / b` is arithmetic division" {
+    var s = Scanner.init(t.allocator, "a / b");
+    defer s.deinit(t.allocator);
+    var toks = try s.tokenize(t.allocator);
+    defer toks.deinit(t.allocator);
+    try t.expectEqual(TokenKind.identifier, toks.items[0].kind);
+    try t.expectEqual(TokenKind.slash, toks.items[1].kind);
+    try t.expectEqual(TokenKind.identifier, toks.items[2].kind);
+}
+
+test "Scanner: regex inside parens — `(/foo/)`" {
+    var s = Scanner.init(t.allocator, "(/foo/)");
+    defer s.deinit(t.allocator);
+    var toks = try s.tokenize(t.allocator);
+    defer toks.deinit(t.allocator);
+    try t.expectEqual(TokenKind.open_paren, toks.items[0].kind);
+    try t.expectEqual(TokenKind.regex_literal, toks.items[1].kind);
+    try t.expectEqualStrings("/foo/", toks.items[1].bytes(s.source));
+    try t.expectEqual(TokenKind.close_paren, toks.items[2].kind);
+}
+
+test "Scanner: divide after call — `f() /b/g` is division (TS rule)" {
+    // TS treats `)` as value-producing; the second `/` is therefore
+    // division too, giving `f()` `/` `b` `/` `g`.
+    var s = Scanner.init(t.allocator, "f() /b/g");
+    defer s.deinit(t.allocator);
+    var toks = try s.tokenize(t.allocator);
+    defer toks.deinit(t.allocator);
+    try t.expectEqual(TokenKind.identifier, toks.items[0].kind);
+    try t.expectEqual(TokenKind.open_paren, toks.items[1].kind);
+    try t.expectEqual(TokenKind.close_paren, toks.items[2].kind);
+    try t.expectEqual(TokenKind.slash, toks.items[3].kind);
+    try t.expectEqual(TokenKind.identifier, toks.items[4].kind);
+    try t.expectEqual(TokenKind.slash, toks.items[5].kind);
+    try t.expectEqual(TokenKind.identifier, toks.items[6].kind);
+}
+
+test "Scanner: regex after `return` — `return /foo/;`" {
+    var s = Scanner.init(t.allocator, "return /foo/;");
+    defer s.deinit(t.allocator);
+    var toks = try s.tokenize(t.allocator);
+    defer toks.deinit(t.allocator);
+    try t.expectEqual(TokenKind.kw_return, toks.items[0].kind);
+    try t.expectEqual(TokenKind.regex_literal, toks.items[1].kind);
+    try t.expectEqualStrings("/foo/", toks.items[1].bytes(s.source));
+    try t.expectEqual(TokenKind.semicolon, toks.items[2].kind);
+}
+
+test "Scanner: regex with escape + character class — `/a\\/b[a/]+/g`" {
+    // Backslashes escape any byte (including `/`), and a `/` inside a
+    // `[…]` character class is part of the body, not the closer.
+    var s = Scanner.init(t.allocator, "x = /a\\/b[a/]+/g;");
+    defer s.deinit(t.allocator);
+    var toks = try s.tokenize(t.allocator);
+    defer toks.deinit(t.allocator);
+    try t.expectEqual(TokenKind.identifier, toks.items[0].kind);
+    try t.expectEqual(TokenKind.equal, toks.items[1].kind);
+    try t.expectEqual(TokenKind.regex_literal, toks.items[2].kind);
+    try t.expectEqualStrings("/a\\/b[a/]+/g", toks.items[2].bytes(s.source));
+    try t.expectEqual(@as(usize, 0), s.diagnostics.items.len);
+}
+
+test "Scanner: regex never spans a newline — fall back to divide" {
+    // `a = /foo` with no terminating `/` on the same line should
+    // emit `slash` + `identifier`, NOT a multi-line regex. This
+    // matches V8 / SpiderMonkey / tsgo behaviour: regex literals are
+    // single-line by definition.
+    var s = Scanner.init(t.allocator, "a = /foo\nbar/");
+    defer s.deinit(t.allocator);
+    var toks = try s.tokenize(t.allocator);
+    defer toks.deinit(t.allocator);
+    try t.expectEqual(TokenKind.identifier, toks.items[0].kind);
+    try t.expectEqual(TokenKind.equal, toks.items[1].kind);
+    try t.expectEqual(TokenKind.slash, toks.items[2].kind);
+    try t.expectEqual(TokenKind.identifier, toks.items[3].kind);
+}
+
+test "Scanner: regex at start-of-file — `/foo/`" {
+    // The very first token of a file: `last_significant_kind` is
+    // `.eof` (sentinel), which is expression-allowed.
+    var s = Scanner.init(t.allocator, "/foo/.test(x)");
+    defer s.deinit(t.allocator);
+    var toks = try s.tokenize(t.allocator);
+    defer toks.deinit(t.allocator);
+    try t.expectEqual(TokenKind.regex_literal, toks.items[0].kind);
+    try t.expectEqualStrings("/foo/", toks.items[0].bytes(s.source));
+    try t.expectEqual(TokenKind.dot, toks.items[1].kind);
+    try t.expectEqual(TokenKind.identifier, toks.items[2].kind);
+}
+
+test "Scanner: regex containing `=` body — `/= 5/` after `,`" {
+    // `/=` is `slash_equal` in operand position but a regex in
+    // expression-allowed position. After `,` we expect a regex.
+    var s = Scanner.init(t.allocator, "[1, /= 5/g]");
+    defer s.deinit(t.allocator);
+    var toks = try s.tokenize(t.allocator);
+    defer toks.deinit(t.allocator);
+    try t.expectEqual(TokenKind.open_bracket, toks.items[0].kind);
+    try t.expectEqual(TokenKind.number_literal, toks.items[1].kind);
+    try t.expectEqual(TokenKind.comma, toks.items[2].kind);
+    try t.expectEqual(TokenKind.regex_literal, toks.items[3].kind);
+    try t.expectEqualStrings("/= 5/g", toks.items[3].bytes(s.source));
+}
+
+test "Scanner: divide after `++` postfix — `i++ / j`" {
+    // `++` produces a value when in postfix position. Per our
+    // table that makes `/` division.
+    var s = Scanner.init(t.allocator, "i++ / j");
+    defer s.deinit(t.allocator);
+    var toks = try s.tokenize(t.allocator);
+    defer toks.deinit(t.allocator);
+    try t.expectEqual(TokenKind.identifier, toks.items[0].kind);
+    try t.expectEqual(TokenKind.plus_plus, toks.items[1].kind);
+    try t.expectEqual(TokenKind.slash, toks.items[2].kind);
+    try t.expectEqual(TokenKind.identifier, toks.items[3].kind);
+}
+
+test "Scanner: regex after `=>` arrow body — `() => /x/.test`" {
+    var s = Scanner.init(t.allocator, "() => /x/.test");
+    defer s.deinit(t.allocator);
+    var toks = try s.tokenize(t.allocator);
+    defer toks.deinit(t.allocator);
+    try t.expectEqual(TokenKind.open_paren, toks.items[0].kind);
+    try t.expectEqual(TokenKind.close_paren, toks.items[1].kind);
+    try t.expectEqual(TokenKind.arrow, toks.items[2].kind);
+    try t.expectEqual(TokenKind.regex_literal, toks.items[3].kind);
+    try t.expectEqualStrings("/x/", toks.items[3].bytes(s.source));
+}
+
+test "Scanner: regex with backslash escapes — `fixSignatureCaching` pattern" {
+    // Lifted from the real-world conformance fixture
+    // `fixSignatureCaching.ts` line 287. Before this fix the
+    // backslash-bearing body produced ~75 spurious TS1109 lex
+    // errors on a single fixture.
+    const src = "x = /(android|bb\\d+|meego).+mobile|ip(hone|od)|kindle|maemo|midp|mmp|series(4|6)0|xiino/i;";
+    var s = Scanner.init(t.allocator, src);
+    defer s.deinit(t.allocator);
+    var toks = try s.tokenize(t.allocator);
+    defer toks.deinit(t.allocator);
+    try t.expectEqual(TokenKind.identifier, toks.items[0].kind);
+    try t.expectEqual(TokenKind.equal, toks.items[1].kind);
+    try t.expectEqual(TokenKind.regex_literal, toks.items[2].kind);
+    // The full body is preserved verbatim, including escapes.
+    try t.expect(std.mem.startsWith(u8, toks.items[2].bytes(s.source), "/(android"));
+    try t.expect(std.mem.endsWith(u8, toks.items[2].bytes(s.source), "/i"));
+    try t.expectEqual(@as(usize, 0), s.diagnostics.items.len);
+}
+
+test "Scanner: slashStartsRegex truth table — sample of operand vs allowed" {
+    // Operand-producing kinds: divide.
+    try t.expect(!Scanner.slashStartsRegex(.identifier));
+    try t.expect(!Scanner.slashStartsRegex(.number_literal));
+    try t.expect(!Scanner.slashStartsRegex(.close_paren));
+    try t.expect(!Scanner.slashStartsRegex(.close_bracket));
+    try t.expect(!Scanner.slashStartsRegex(.plus_plus));
+    try t.expect(!Scanner.slashStartsRegex(.kw_this));
+    try t.expect(!Scanner.slashStartsRegex(.kw_true));
+    try t.expect(!Scanner.slashStartsRegex(.regex_literal));
+    // `<` and `>` deliberately fall through to divide so TSX
+    // close-tags (`</div>`) and generic-arg lists don't get
+    // re-scanned as regex bodies. The parser still recovers `/foo/`
+    // in `a < /foo/.test(b)` via `parseRegexLiteralExpression`.
+    try t.expect(!Scanner.slashStartsRegex(.less_than));
+    try t.expect(!Scanner.slashStartsRegex(.greater_than));
+    // Expression-allowed kinds: regex.
+    try t.expect(Scanner.slashStartsRegex(.eof));
+    try t.expect(Scanner.slashStartsRegex(.equal));
+    try t.expect(Scanner.slashStartsRegex(.open_paren));
+    try t.expect(Scanner.slashStartsRegex(.comma));
+    try t.expect(Scanner.slashStartsRegex(.semicolon));
+    try t.expect(Scanner.slashStartsRegex(.arrow));
+    try t.expect(Scanner.slashStartsRegex(.kw_return));
+    try t.expect(Scanner.slashStartsRegex(.kw_typeof));
+    try t.expect(Scanner.slashStartsRegex(.bang));
+    try t.expect(Scanner.slashStartsRegex(.plus));
 }
