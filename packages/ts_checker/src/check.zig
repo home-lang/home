@@ -20573,6 +20573,81 @@ pub const Checker = struct {
         return fallback;
     }
 
+    fn identifierHasNarrowableValueBinding(self: *Checker, node: NodeId) bool {
+        if (node == hir_mod.none_node_id or self.hir.kindOf(node) != .identifier) return false;
+        const id = hir_mod.identifierOf(self.hir, node);
+        if (self.isBuiltinName(id.name)) return true;
+        if (self.sourceHasVarDeclarationText(id.name)) return true;
+        if (self.globalAugmentedValueType(id.name, node) catch null != null) return true;
+        if (self.module) |module| {
+            if (module.root.lookup(id.name) != null) return true;
+        }
+
+        const use_start = self.hir.spanOf(node).start;
+        var cur = self.hir.parentOf(node);
+        while (cur != hir_mod.none_node_id) : (cur = self.hir.parentOf(cur)) {
+            const kind = self.hir.kindOf(cur);
+            if (kind == .fn_decl or kind == .fn_expr or kind == .arrow_fn) {
+                for (hir_mod.fnParams(self.hir, cur)) |p| {
+                    if (self.hir.kindOf(p) != .parameter) continue;
+                    const pp = hir_mod.parameterOf(self.hir, p);
+                    if (pp.name == hir_mod.none_node_id or self.hir.kindOf(pp.name) != .identifier) continue;
+                    if (hir_mod.identifierOf(self.hir, pp.name).name == id.name) return true;
+                }
+            } else if (kind == .try_stmt) {
+                const ts = hir_mod.tryOf(self.hir, cur);
+                if (ts.catch_param != hir_mod.none_node_id and self.hir.kindOf(ts.catch_param) == .identifier) {
+                    if (hir_mod.identifierOf(self.hir, ts.catch_param).name == id.name) return true;
+                }
+            }
+
+            const stmts: ?[]const NodeId = switch (kind) {
+                .block_stmt => hir_mod.blockStmts(self.hir, cur),
+                .namespace_decl => hir_mod.namespaceBody(self.hir, cur),
+                else => null,
+            };
+            if (stmts) |items| {
+                for (items) |stmt| {
+                    if (self.hir.spanOf(stmt).start >= use_start) break;
+                    const decl = if (self.hir.kindOf(stmt) == .export_decl) hir_mod.exportOf(self.hir, stmt).decl else stmt;
+                    if (decl == hir_mod.none_node_id) continue;
+                    switch (self.hir.kindOf(decl)) {
+                        .var_decl, .let_decl, .const_decl => {
+                            const v = hir_mod.varDeclOf(self.hir, decl);
+                            if (v.name != hir_mod.none_node_id and
+                                self.hir.kindOf(v.name) == .identifier and
+                                hir_mod.identifierOf(self.hir, v.name).name == id.name)
+                            {
+                                return true;
+                            }
+                        },
+                        .fn_decl, .fn_expr => {
+                            const f = hir_mod.fnDeclOf(self.hir, decl);
+                            if (f.name != hir_mod.none_node_id and
+                                self.hir.kindOf(f.name) == .identifier and
+                                hir_mod.identifierOf(self.hir, f.name).name == id.name)
+                            {
+                                return true;
+                            }
+                        },
+                        .class_decl, .class_expr => {
+                            const c = hir_mod.classOf(self.hir, decl);
+                            if (c.name != hir_mod.none_node_id and
+                                self.hir.kindOf(c.name) == .identifier and
+                                hir_mod.identifierOf(self.hir, c.name).name == id.name)
+                            {
+                                return true;
+                            }
+                        },
+                        .import_decl => if (self.importDeclBindsLocal(decl, id.name)) return true,
+                        else => {},
+                    }
+                }
+            }
+        }
+        return false;
+    }
+
     fn typeofComparison(self: *Checker, node: NodeId) CheckError!?TypeofComparison {
         if (self.hir.kindOf(node) != .binary_op) return null;
         const b = hir_mod.binopOf(self.hir, node);
@@ -20911,6 +20986,7 @@ pub const Checker = struct {
                 const lit_str = self.string_interner.get(type_name);
                 if (typeOfTypeofString(lit_str)) |narrowed| {
                     const target = try self.typeofNarrowType(lit_str, narrowed);
+                    if (!self.identifierHasNarrowableValueBinding(u.operand)) return;
                     if (positive) {
                         const current = self.lookupNarrow(id.name) orelse self.typeOfIdentifier(u.operand);
                         const next = if (std.mem.eql(u8, lit_str, "object") and self.typeIncludesNull(current))
@@ -38932,6 +39008,22 @@ test "checker: typeof x === \"function\" narrows x in then-branch" {
     const v_decl = then_stmts[0];
     const v_init = hir_mod.varDeclOf(&s.hir, v_decl).init;
     try T.expect(s.checker.objectHasCallOrConstructSignature(s.hir.typeOf(v_init)));
+}
+
+test "checker: typeof undeclared name does not narrow later member access" {
+    const b = try newBoundSetup(
+        \\if (typeof define === "function" && define.amd) {
+        \\  define;
+        \\}
+    );
+    defer destroyBoundSetup(b);
+    try b.base.checker.checkSourceFile(b.base.root);
+    var missing_name_count: usize = 0;
+    for (b.base.checker.diagnostics.items) |d| {
+        if (d.code == TsCodes.cannot_find_name) missing_name_count += 1;
+        try T.expect(d.code != TsCodes.property_does_not_exist);
+    }
+    try T.expect(missing_name_count >= 2);
 }
 
 test "checker: switch on x.kind narrows x per case body" {
