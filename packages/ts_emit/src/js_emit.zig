@@ -4592,12 +4592,34 @@ pub const Printer = struct {
             try self.write("_init = [];");
         }
         try self.write(self.options.newline);
-        // Stage 3 `__esDecorate` first arg = class for static members,
-        // null for instance members. tsc uses `this` inside its static
-        // init block; without the IIFE/static-block wrap we pass the
-        // class identifier directly since it's already declared.
+        // Stage 3 `__esDecorate` first arg (`ctor`) drives tslib's
+        // `Object.defineProperty(target, name, descriptor)` path. When
+        // non-null, tslib reads the current descriptor from the proto
+        // (instance) or the class itself (static), lets decorators
+        // mutate `descriptor.value` / `descriptor.get` / `descriptor.set`,
+        // and applies the (possibly replaced) descriptor.
+        //
+        // §4.A.9 v2 — static members pass the class identifier.
+        // §4.A.9 v14 — instance accessor/method/getter/setter decorators
+        // now also pass the class so that decorator-returned
+        // replacements actually take effect (the v12 wrap path covered
+        // `init` only — `get`/`set`/`value` replacement requires the
+        // defineProperty pass).
+        //
+        // Instance fields keep `null` because field-decorator returns
+        // are initializer wrappers (slot 5), not descriptor values; the
+        // defineProperty pass would redefine the prototype with an
+        // unrelated descriptor.
+        const tk_for_ctor = self.hir.kindOf(target);
+        const is_static_for_ctor = self.isStaticMember(target);
+        var is_instance_field = false;
+        if (!is_static_for_ctor and tk_for_ctor == .object_property) {
+            const op_for_ctor = hir_mod.objectPropertyOf(self.hir, target);
+            is_instance_field = !op_for_ctor.is_accessor;
+        }
+        const pass_class_as_ctor = class_name != hir_mod.none_node_id and !is_instance_field;
         try self.write("__esDecorate(");
-        if (self.isStaticMember(target) and class_name != hir_mod.none_node_id) {
+        if (pass_class_as_ctor) {
             try self.printExpression(class_name);
         } else {
             try self.write("null");
@@ -8708,7 +8730,11 @@ test "emit: stage 3 method decorator on class method emits per-member decorate" 
     // §4.A.9 v11 — metadata var declared once before the chain and
     // shared by the class decorator + every member decorator.
     try T.expect(std.mem.indexOf(u8, out, "var _Foo_metadata = typeof Symbol === \"function\" && Symbol.metadata ? Object.create(null) : void 0;") != null);
-    try T.expect(std.mem.indexOf(u8, out, "__esDecorate(null, null, [traced], { kind: \"method\", name: \"greet\", static: false, private: false, access: { has: function (obj) { return \"greet\" in obj; }, get: function (obj) { return obj.greet; } }, metadata: _Foo_metadata }, null, _Foo_instanceExtra);") != null);
+    // §4.A.9 v14 — instance non-field decorators (method/getter/
+    // setter/accessor) now pass the class identifier as slot 1 so
+    // tslib's `Object.defineProperty(target, name, descriptor)` path
+    // applies decorator-returned `value`/`get`/`set` replacements.
+    try T.expect(std.mem.indexOf(u8, out, "__esDecorate(Foo, null, [traced], { kind: \"method\", name: \"greet\", static: false, private: false, access: { has: function (obj) { return \"greet\" in obj; }, get: function (obj) { return obj.greet; } }, metadata: _Foo_metadata }, null, _Foo_instanceExtra);") != null);
     try T.expect(std.mem.indexOf(u8, out, "__runInitializers(this, _Foo_instanceExtra);") != null);
     try T.expect(std.mem.indexOf(u8, out, "__decorate([traced]") == null);
 }
@@ -8732,8 +8758,13 @@ test "emit: stage 3 field/accessor decorators emit member contexts" {
     // Getters/setters/methods don't carry initializer wrapping, so
     // slot 5 stays `null` for the `@memo get value()` line.
     try T.expect(std.mem.indexOf(u8, out, "var _Foo_count_init = [];") != null);
+    // Field decorator still passes `null` as slot 1 — field-decorator
+    // return values are initializer wrappers (slot 5), not descriptor
+    // values, so tslib's defineProperty pass would do the wrong thing.
     try T.expect(std.mem.indexOf(u8, out, "__esDecorate(null, null, [observe], { kind: \"field\", name: \"count\", static: false, private: false, access: { has: function (obj) { return \"count\" in obj; }, get: function (obj) { return obj.count; }, set: function (obj, value) { obj.count = value; } }, metadata: _Foo_metadata }, _Foo_count_init, _Foo_instanceExtra);") != null);
-    try T.expect(std.mem.indexOf(u8, out, "__esDecorate(null, null, [memo], { kind: \"getter\", name: \"value\", static: false, private: false, access: { has: function (obj) { return \"value\" in obj; }, get: function (obj) { return obj.value; } }, metadata: _Foo_metadata }, null, _Foo_instanceExtra);") != null);
+    // §4.A.9 v14 — instance getter decorator now passes `Foo` so tslib
+    // can apply a decorator-returned `get` replacement via defineProperty.
+    try T.expect(std.mem.indexOf(u8, out, "__esDecorate(Foo, null, [memo], { kind: \"getter\", name: \"value\", static: false, private: false, access: { has: function (obj) { return \"value\" in obj; }, get: function (obj) { return obj.value; } }, metadata: _Foo_metadata }, null, _Foo_instanceExtra);") != null);
     try T.expect(std.mem.indexOf(u8, out, "count = __runInitializers(this, _Foo_count_init, 0);") != null);
     try T.expect(std.mem.indexOf(u8, out, "__runInitializers(this, _Foo_instanceExtra);") != null);
     try T.expect(std.mem.indexOf(u8, out, "__decorate([observe]") == null);
@@ -8790,6 +8821,60 @@ test "emit: class accessor field lowers via #-private storage at ES2022+ default
     // Native `accessor` keyword is gone (we always lower).
     try T.expect(std.mem.indexOf(u8, out, "accessor count") == null);
     try T.expect(std.mem.indexOf(u8, out, "kind: \"accessor\", name: \"count\"") != null);
+}
+
+test "emit: stage 3 v14 accessor decorator passes class as __esDecorate ctor arg" {
+    // §4.A.9 v14 — instance accessor decorators must pass the class
+    // identifier as slot 1 of __esDecorate so tslib's helper can
+    // (a) read the current accessor's `{ get, set }` descriptor from
+    // the prototype, (b) let the decorator return a `{ get, set, init }`
+    // replacement, and (c) apply the (possibly replaced) descriptor
+    // via `Object.defineProperty(Class.prototype, name, descriptor)`.
+    // Without the class as slot 1, tslib's `target` resolves to `null`
+    // and the defineProperty pass is skipped — `get`/`set` replacement
+    // silently no-ops.
+    const out = try emitWithOpts(
+        \\class Foo {
+        \\  @validated
+        \\  accessor count = 0;
+        \\}
+    , .{ .experimental_decorators = false });
+    defer T.allocator.free(out);
+    // The accessor decorator emits with `Foo` as slot 1 — not `null`.
+    try T.expect(std.mem.indexOf(u8, out, "__esDecorate(Foo, null, [validated], { kind: \"accessor\"") != null);
+    // The init array is still passed as slot 5 (v12) so init
+    // wrappers from the same decorator still work.
+    try T.expect(std.mem.indexOf(u8, out, ", _Foo_count_init, _Foo_instanceExtra);") != null);
+}
+
+test "emit: stage 3 v14 instance method decorator passes class as ctor arg" {
+    // §4.A.9 v14 — instance method/getter/setter decorators get the
+    // class as slot 1 (was `null` pre-v14) so decorator-returned
+    // method/getter/setter replacements actually take effect.
+    const out = try emitWithOpts(
+        \\class Foo {
+        \\  @log
+        \\  greet() { return 1; }
+        \\}
+    , .{ .experimental_decorators = false });
+    defer T.allocator.free(out);
+    try T.expect(std.mem.indexOf(u8, out, "__esDecorate(Foo, null, [log], { kind: \"method\", name: \"greet\", static: false,") != null);
+}
+
+test "emit: stage 3 v14 instance field decorator still passes null as ctor arg" {
+    // §4.A.9 v14 — field decorators keep `null` as slot 1 because
+    // their return value is an initializer wrapper (slot 5), not a
+    // descriptor `value`. Passing the class would trigger tslib's
+    // defineProperty pass which would redefine the prototype with the
+    // wrong shape for fields.
+    const out = try emitWithOpts(
+        \\class Foo {
+        \\  @observe
+        \\  count = 0;
+        \\}
+    , .{ .experimental_decorators = false });
+    defer T.allocator.free(out);
+    try T.expect(std.mem.indexOf(u8, out, "__esDecorate(null, null, [observe], { kind: \"field\", name: \"count\", static: false,") != null);
 }
 
 test "emit: stage 3 decorated field at ES2021 wraps hoisted init via __runInitializers" {
