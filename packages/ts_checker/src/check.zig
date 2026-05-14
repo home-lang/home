@@ -12551,16 +12551,120 @@ pub const Checker = struct {
 
     fn reportGenericTypeRequiresArgs(self: *Checker, node: NodeId, name: hir_mod.StringId, info: GenericAliasInfo) CheckError!void {
         const raw = self.string_interner.get(name);
+        // Match upstream TS's diagnostic shape: include the
+        // declared type-parameter list after the name —
+        //   `Generic type 'Foo<T>' requires 1 type argument(s).`
+        // — instead of the bare `Foo`. Tools and editors scrape
+        // this verbatim, and the upstream `.errors.txt` baseline
+        // ratchet relies on byte-identical text.
+        var name_buf: std.ArrayListUnmanaged(u8) = .empty;
+        defer name_buf.deinit(self.gpa);
+        try name_buf.appendSlice(self.gpa, raw);
+        try self.appendTypeParameterListLabel(&name_buf, info.params);
         const msg = try std.fmt.allocPrint(
             self.diag_arena.allocator(),
             "Generic type '{s}' requires {d} type argument(s).",
-            .{ raw, info.params.len },
+            .{ name_buf.items, info.params.len },
         );
         try self.diagnostics.append(self.gpa, .{
             .node = node,
             .code = TsCodes.generic_type_requires_args,
             .message = msg,
         });
+    }
+
+    /// Append `<T, U, ...>` (or nothing when the param list is
+    /// empty) to `buf`, using the type-parameter names captured at
+    /// declaration time. Used by TS2314-style diagnostics so the
+    /// rendered name matches upstream `.errors.txt` baselines.
+    /// Defensive: a TypeId in `params` whose payload index is out of
+    /// bounds (corrupted post-bind state) falls back to `T` rather
+    /// than crashing — the diagnostic is still emitted with a sensible
+    /// shape and the underlying corruption is tracked separately as a
+    /// §3.A follow-up. Without this guard a single stale TypeId would
+    /// regress every TS2314 site to a panic.
+    fn appendTypeParameterListLabel(
+        self: *Checker,
+        buf: *std.ArrayListUnmanaged(u8),
+        params: []const TypeId,
+    ) CheckError!void {
+        if (params.len == 0) return;
+        try buf.append(self.gpa, '<');
+        const tp_table_len = self.interner.pool.type_parameter_payloads.items.len;
+        for (params, 0..) |p, i| {
+            if (i != 0) try buf.appendSlice(self.gpa, ", ");
+            var wrote = false;
+            if (p < self.interner.pool.headers.items.len and
+                self.interner.pool.flagsOf(p).is_type_parameter)
+            {
+                const payload_idx = self.interner.pool.payloadOf(p);
+                if (payload_idx < tp_table_len) {
+                    const tp = self.interner.pool.type_parameter_payloads.items[payload_idx];
+                    try buf.appendSlice(self.gpa, self.string_interner.get(tp.name));
+                    wrote = true;
+                }
+            }
+            if (!wrote) try buf.append(self.gpa, 'T');
+        }
+        try buf.append(self.gpa, '>');
+    }
+
+    /// Same shape as appendTypeParameterListLabel, but reads names
+    /// from HIR `type_parameter` nodes attached to a declaration that
+    /// hasn't been lowered into the type interner yet (e.g. a
+    /// qualified namespace member that's only known by HIR decl id).
+    /// Defensive: garbage node ids in the param slice fall back to
+    /// `T` rather than panicking — same rationale as the sibling
+    /// `appendTypeParameterListLabel`.
+    fn appendDeclTypeParameterListLabel(
+        self: *Checker,
+        buf: *std.ArrayListUnmanaged(u8),
+        params: []const NodeId,
+    ) CheckError!void {
+        if (params.len == 0) return;
+        try buf.append(self.gpa, '<');
+        const node_count: NodeId = @intCast(self.hir.kinds.items.len);
+        for (params, 0..) |p, i| {
+            if (i != 0) try buf.appendSlice(self.gpa, ", ");
+            var wrote = false;
+            if (p != hir_mod.none_node_id and p < node_count and
+                self.hir.kindOf(p) == .type_parameter)
+            {
+                const tp = hir_mod.typeParameterOf(self.hir, p);
+                if (tp.name != hir_mod.none_node_id and tp.name < node_count and
+                    self.hir.kindOf(tp.name) == .identifier)
+                {
+                    const id = hir_mod.identifierOf(self.hir, tp.name).name;
+                    try buf.appendSlice(self.gpa, self.string_interner.get(id));
+                    wrote = true;
+                }
+            }
+            if (!wrote) try buf.append(self.gpa, 'T');
+        }
+        try buf.append(self.gpa, '>');
+    }
+
+    /// Returns the slice of HIR `type_parameter` nodes declared on a
+    /// class / interface / type-alias node, or an empty slice for any
+    /// other kind. Mirrors the dispatch inside
+    /// `qualifiedDeclHasMissingRequiredTypeArgs` so callers can render
+    /// a matching parameter-list label.
+    fn typeParamNodesOfDecl(self: *Checker, decl: NodeId) []const NodeId {
+        return switch (self.hir.kindOf(decl)) {
+            .class_decl, .class_expr => blk: {
+                const c = hir_mod.classOf(self.hir, decl);
+                break :blk self.hir.childSlice(c.type_params_start, c.type_params_len);
+            },
+            .interface_decl => blk: {
+                const i = hir_mod.interfaceOf(self.hir, decl);
+                break :blk self.hir.childSlice(i.type_params_start, i.type_params_len);
+            },
+            .type_alias_decl => blk: {
+                const t = hir_mod.typeAliasOf(self.hir, decl);
+                break :blk self.hir.childSlice(t.type_params_start, t.type_params_len);
+            },
+            else => &[_]NodeId{},
+        };
     }
 
     fn activeGenericAliasShouldDefer(self: *Checker, name: hir_mod.StringId, first_arg: TypeId) bool {
@@ -13441,10 +13545,20 @@ pub const Checker = struct {
         const ns_node = self.findNamespaceByPath(root_stmts, path.items) orelse return null;
         const decl = self.findNamedTypeDeclInNamespace(ns_node, r.name) orelse return null;
         if (self.qualifiedDeclHasMissingRequiredTypeArgs(decl, r.args_len)) {
+            // Match upstream TS shape — `Generic type 'Foo<T>' requires N
+            // type argument(s).` — by rendering the param list and the
+            // declared param count instead of the bare name + the count
+            // suffix-only "type argument(s)" placeholder this branch
+            // historically used. Source: §6.A exact-baseline ratchet.
+            const params = self.typeParamNodesOfDecl(decl);
+            var name_buf: std.ArrayListUnmanaged(u8) = .empty;
+            defer name_buf.deinit(self.gpa);
+            try name_buf.appendSlice(self.gpa, self.string_interner.get(r.name));
+            try self.appendDeclTypeParameterListLabel(&name_buf, params);
             const msg = try std.fmt.allocPrint(
                 self.diag_arena.allocator(),
-                "Generic type '{s}' requires type argument(s).",
-                .{self.string_interner.get(r.name)},
+                "Generic type '{s}' requires {d} type argument(s).",
+                .{ name_buf.items, params.len },
             );
             try self.diagnostics.append(self.gpa, .{
                 .node = type_node,

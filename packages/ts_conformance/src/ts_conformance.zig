@@ -73,6 +73,65 @@ pub const Case = struct {
     suppress_js_check_diagnostics: bool = false,
 };
 
+/// Count the contiguous block of leading lines that the TypeScript
+/// test runner strips from line counting in `.errors.txt`
+/// baselines. The block consists of:
+///   - `// @key: value` directive comment lines at the top of the
+///     file (e.g. `// @target: es2015`, `// @strict: true`), AND
+///   - blank lines that immediately follow the directive block.
+///
+/// Walking stops at the first content-bearing line. `// @ts-nocheck`
+/// and `// @ts-ignore` are pragma comments handled inline by the
+/// checker, not test-runner directives; they should NOT be stripped
+/// (and break the directive-block continuity).
+///
+/// Empirical reference: the line numbers in upstream `.errors.txt`
+/// baselines match `source_line - countLeadingDirectiveLines(source)`
+/// for every single-file fixture inspected during the §6 exact-baseline
+/// ratchet. Verified against `nonGenericTypeReferenceWithTypeArguments`
+/// (1 directive, 0 trailing blank — strip 1) and
+/// `controlFlowAliasingCatchVariables` (2 directives + 1 trailing
+/// blank — strip 3).
+pub fn countLeadingDirectiveLines(source: []const u8) u32 {
+    var count: u32 = 0;
+    var directive_seen = false;
+    var pending_blanks: u32 = 0;
+    var lines = std.mem.splitScalar(u8, source, '\n');
+    while (lines.next()) |raw_line| {
+        const trimmed = std.mem.trim(u8, raw_line, " \t\r");
+        if (trimmed.len == 0) {
+            // Blank lines are stripped only when they sit between or
+            // after directive lines. A blank line that appears before
+            // any directive is content (e.g. a fixture that starts
+            // with a blank).
+            if (directive_seen) pending_blanks += 1 else break;
+            continue;
+        }
+        if (!std.mem.startsWith(u8, trimmed, "//")) break;
+        const after_slashes = std.mem.trim(u8, trimmed[2..], " \t");
+        if (!std.mem.startsWith(u8, after_slashes, "@")) break;
+        const body = after_slashes[1..];
+        var name_end: usize = 0;
+        while (name_end < body.len and (std.ascii.isAlphanumeric(body[name_end]) or
+            body[name_end] == '_' or body[name_end] == '-')) : (name_end += 1)
+        {}
+        if (name_end == 0) break;
+        const key = body[0..name_end];
+        if (std.mem.startsWith(u8, key, "ts-")) break;
+        const rest = body[name_end..];
+        if (rest.len > 0 and rest[0] != ':' and !std.ascii.isWhitespace(rest[0])) break;
+        // Promote any pending blank lines into the strip count once we
+        // confirm another directive line followed them; this matches
+        // upstream's "directive block + trailing blanks" behavior.
+        count += pending_blanks + 1;
+        pending_blanks = 0;
+        directive_seen = true;
+    }
+    // Trailing blanks immediately after the last directive also strip.
+    count += pending_blanks;
+    return count;
+}
+
 /// Run a single conformance case. Returns the outcome and writes
 /// human-readable detail when the case fails.
 pub fn run(gpa: std.mem.Allocator, c: Case) !Result {
@@ -98,6 +157,32 @@ pub fn run(gpa: std.mem.Allocator, c: Case) !Result {
         gpa.destroy(compilation);
     }
 
+    // For exact baseline comparison, two harness-layer normalizations
+    // bring our output in line with how upstream TS renders baselines:
+    //
+    // 1. `// @key: value` directive comments at the file head are
+    //    stripped from line counting. We subtract that count from each
+    //    diagnostic's line number when comparing.
+    // 2. The same `(line, col, code, message)` tuple may fire from
+    //    multiple checker visits (e.g. once per binding-element walk
+    //    when the same generic name is referenced N times). Upstream
+    //    de-duplicates structurally identical diagnostics; we mirror
+    //    that here so the baseline comparison ratchets accurately.
+    //
+    // Both apply unconditionally — coarse-mode runs ignore the
+    // formatted-diagnostic buffer, so this is harmless there. The
+    // true source of duplicate diagnostics belongs in the checker
+    // and is tracked as a §3.A follow-up; harness-side dedup is the
+    // safe first cut.
+    const exact_mode = c.expected_errors.len > 0;
+    const directive_offset: u32 = if (exact_mode) countLeadingDirectiveLines(c.source) else 0;
+    var seen_keys: std.StringHashMapUnmanaged(void) = .empty;
+    defer {
+        var it = seen_keys.iterator();
+        while (it.next()) |entry| gpa.free(entry.key_ptr.*);
+        seen_keys.deinit(gpa);
+    }
+
     // Render the actual diagnostics in tsc-default format and
     // compare against the expected baseline.
     var actual: std.ArrayListUnmanaged(u8) = .empty;
@@ -105,6 +190,10 @@ pub fn run(gpa: std.mem.Allocator, c: Case) !Result {
     var actual_count: u32 = 0;
     for (compilation.diagnostics.items) |d| {
         const pos = ts_diagnostics.positionToLineCol(c.source, d.pos);
+        const adjusted_line = if (pos.line > directive_offset)
+            pos.line - directive_offset
+        else
+            pos.line;
         const code = if (d.code != 0) d.code else mapPhaseToCode(d.phase);
         const prefix: ts_diagnostics.Diagnostic.CodePrefix = switch (d.code_prefix) {
             .TS => .TS,
@@ -112,7 +201,7 @@ pub fn run(gpa: std.mem.Allocator, c: Case) !Result {
         };
         const fdiag: ts_diagnostics.Diagnostic = .{
             .file = c.path,
-            .line = pos.line,
+            .line = adjusted_line,
             .col = pos.col,
             .code = code,
             .code_prefix = prefix,
@@ -122,6 +211,11 @@ pub fn run(gpa: std.mem.Allocator, c: Case) !Result {
         };
         const formatted = try ts_diagnostics.formatDefault(gpa, fdiag);
         defer gpa.free(formatted);
+        if (exact_mode) {
+            const gop = try seen_keys.getOrPut(gpa, formatted);
+            if (gop.found_existing) continue;
+            gop.key_ptr.* = try gpa.dupe(u8, formatted);
+        }
         try actual.appendSlice(gpa, formatted);
         try actual.append(gpa, '\n');
         actual_count += 1;
@@ -753,6 +847,16 @@ fn envUsizeOpt(name: [*:0]const u8) ?usize {
     const raw = std.c.getenv(name) orelse return null;
     const value = std.mem.span(raw);
     return std.fmt.parseInt(usize, value, 10) catch null;
+}
+
+/// Returns true when the env var is set to "1". Used by the
+/// opt-in conformance toggles where any other value (including
+/// "0", "true", or empty) is treated as off so the default
+/// stays behavioural-stable.
+fn envBoolOne(name: [*:0]const u8) bool {
+    const raw = std.c.getenv(name) orelse return false;
+    const value = std.mem.span(raw);
+    return std.mem.eql(u8, value, "1");
 }
 
 fn hasNoLibReferenceLib(source: []const u8) bool {
@@ -2158,7 +2262,10 @@ test "conformance: catch-variable alias fixture matches TS18046 baseline" {
         \\}
         ,
         .expects_error = true,
-        .expected_errors = "controlFlowAliasingCatchVariables.ts(23,9): error TS18046: 'e' is of type 'unknown'.",
+        // Upstream strips 2 directive lines + 1 trailing blank from
+        // line counting, so source line 23 (the second
+        // `e.toUpperCase()`) becomes baseline line 20.
+        .expected_errors = "controlFlowAliasingCatchVariables.ts(20,9): error TS18046: 'e' is of type 'unknown'.",
         .use_exact_errors = true,
         .strict_flags = .{ .use_unknown_in_catch_variables = true },
         .syntax_target_es2015 = true,
@@ -2719,9 +2826,16 @@ test "conformance: opt-in full local TypeScript corpus survey" {
 
     const requested_start = envUsize("HOME_TS_CONFORMANCE_START", 0);
     const requested_limit = envUsizeOpt("HOME_TS_CONFORMANCE_LIMIT");
+    // Opt-in exact `.errors.txt` baseline comparison. Default off so
+    // the long-running coarse `HOME_TS_CONFORMANCE_FULL=1` gate keeps
+    // its 5907/5907 saturation while the exact-mode ratchet starts
+    // from a known regression set. Driven by §6 punch-list item 4
+    // (graduate from coarse expected-any to exact-baseline).
+    const want_exact = envBoolOne("HOME_TS_CONFORMANCE_EXACT");
     const corpus = try loadDirectoryWithOptions(T.allocator, ts_root, .{
         .baseline_root = baseline_root,
         .strict_default_for_expected_errors = true,
+        .exact_error_headers = want_exact,
         .load_start = requested_start,
         .load_limit = requested_limit,
     });
@@ -2769,10 +2883,15 @@ test "conformance: opt-in full local TypeScript corpus survey" {
         .{ stats.total(), stats.passed, stats.failed, stats.skipped, stats.passRate() },
     );
 
+    // 20 is fine for the coarse gate (which usually has 0 failures
+    // once a slice ratchets clean), but 200 gives the exact-baseline
+    // ratchet enough surface to pattern-match across categories
+    // without re-running the whole slice for each new fail bucket.
+    const fail_cap: u32 = if (want_exact) 200 else 20;
     var printed: u32 = 0;
     for (results.items) |r| {
         if (r.outcome != .failed) continue;
-        if (printed >= 20) break;
+        if (printed >= fail_cap) break;
         printed += 1;
         std.debug.print("  FAIL  {s}: {s}\n", .{ r.name, r.detail });
     }
@@ -2815,6 +2934,54 @@ test "conformance: runOwnedCorpus matches runCorpus on equal inputs" {
     }
     const stats = try runOwnedCorpus(T.allocator, owned, &results);
     try T.expectEqual(@as(u32, 2), stats.passed);
+}
+
+test "conformance: countLeadingDirectiveLines mirrors upstream baseline strip" {
+    // Empirical case 1: one directive, no trailing blank.
+    try T.expectEqual(@as(u32, 1), countLeadingDirectiveLines(
+        \\// @target: es2015
+        \\class C {}
+    ));
+    // Empirical case 2: two directives + one trailing blank.
+    try T.expectEqual(@as(u32, 3), countLeadingDirectiveLines(
+        \\// @target: es2015
+        \\// @useUnknownInCatchVariables: true,false
+        \\
+        \\try {} catch (e) {}
+    ));
+    // No directives at all → no strip (the leading blank is content).
+    try T.expectEqual(@as(u32, 0), countLeadingDirectiveLines(
+        \\
+        \\const x = 1;
+    ));
+    // Non-directive comment terminates the block; the blank after the
+    // single directive does NOT strip because the comment kept it
+    // separated.
+    try T.expectEqual(@as(u32, 1), countLeadingDirectiveLines(
+        \\// @target: es2015
+        \\// Check that errors are reported for non-generic types
+        \\
+        \\class C {}
+    ));
+    // `// @ts-nocheck` is a pragma, not a runner directive.
+    try T.expectEqual(@as(u32, 0), countLeadingDirectiveLines(
+        \\// @ts-nocheck
+        \\const x = 1;
+    ));
+    // Multiple directives without trailing blank.
+    try T.expectEqual(@as(u32, 2), countLeadingDirectiveLines(
+        \\// @target: es2020
+        \\// @strict: true
+        \\const x = 1;
+    ));
+    // Blank line between directives still strips (each blank is
+    // promoted into the count when the next directive line is seen).
+    try T.expectEqual(@as(u32, 3), countLeadingDirectiveLines(
+        \\// @target: es2020
+        \\
+        \\// @strict: true
+        \\const x = 1;
+    ));
 }
 
 test "conformance: directiveTargetDeprecated detects es3 / es5 targets" {
