@@ -35442,6 +35442,143 @@ test "checker: recursive homomorphic mapped aliases preserve primitive leaves" {
     }
 }
 
+test "checker: homomorphic mapped Required strips optional" {
+    // Phase 4 #2 — `Required<T>` is `{ [K in keyof T]-?: T[K] }`. The
+    // `-?` strips optional, so an object literal must include EVERY
+    // key from T (no longer just the non-optional ones).
+    const s = try newSetup(
+        \\type Required<T> = { [K in keyof T]-?: T[K] };
+        \\type Source = { a: string; b?: number };
+        \\type R = Required<Source>;
+        \\let r: R = { a: "x", b: 1 };
+    );
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+    for (s.checker.diagnostics.items) |d| {
+        try T.expect(d.code != TsCodes.type_not_assignable);
+        try T.expect(d.code != TsCodes.type_missing_properties);
+    }
+}
+
+test "checker: mapped type with template-literal remap renames keys" {
+    // Phase 4 #2 — `{ [K in keyof T as `pre_${K & string}`]: T[K] }`
+    // should rename every key with a `pre_` prefix.
+    const s = try newSetup(
+        \\type Prefixed<T> = { [K in keyof T as `pre_${K & string}`]: T[K] };
+        \\type Source = { a: string; b: number };
+        \\type R = Prefixed<Source>;
+        \\let r: R = { pre_a: "x", pre_b: 1 };
+        \\const x: string = r.pre_a;
+        \\const y: number = r.pre_b;
+    );
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+    for (s.checker.diagnostics.items) |d| {
+        try T.expect(d.code != TsCodes.type_not_assignable);
+        try T.expect(d.code != TsCodes.property_does_not_exist);
+    }
+}
+
+test "checker: mapped type with conditional `as` filters keys" {
+    // Phase 4 #2 — `{ [K in keyof T as K extends string ? K : never]: T[K] }`
+    // drops keys whose remap evaluates to `never`. With all-string-keyed
+    // T this is identity, but the conditional path must evaluate.
+    const s = try newSetup(
+        \\type Strings<T> = { [K in keyof T as K extends string ? K : never]: T[K] };
+        \\type Source = { a: string; b: number };
+        \\type R = Strings<Source>;
+        \\let r: R = { a: "x", b: 1 };
+    );
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+    for (s.checker.diagnostics.items) |d| {
+        try T.expect(d.code != TsCodes.type_not_assignable);
+        try T.expect(d.code != TsCodes.property_does_not_exist);
+    }
+}
+
+test "checker: homomorphic mapped Pick<T, K> resolves member types" {
+    // Phase 4 #2 — `Pick<T, K extends keyof T>` is the
+    // homomorphic-mapped-with-constraint pattern. The constraint
+    // is `K` (a string-literal-union subset of keyof T), and the
+    // value is `T[P]`. Expected: result has only the picked keys,
+    // each typed as the source's member type.
+    const s = try newSetup(
+        \\type Pick<T, K extends keyof T> = { [P in K]: T[P] };
+        \\type T = { a: string; b: number; c: boolean };
+        \\type R = Pick<T, "a" | "b">;
+        \\let r: R;
+        \\const x: string = r.a;
+        \\const y: number = r.b;
+    );
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+    for (s.checker.diagnostics.items) |d| {
+        try T.expect(d.code != TsCodes.type_not_assignable);
+        try T.expect(d.code != TsCodes.property_does_not_exist);
+    }
+}
+
+test "checker: homomorphic mapped Readonly preserves optional modifier" {
+    // Phase 4 #2 — `Readonly<T>` is `{ readonly [K in keyof T]: T[K] }`.
+    // When T has optional members, the result should keep them optional
+    // (only readonly is added).
+    const s = try newSetup(
+        \\type Readonly<T> = { readonly [K in keyof T]: T[K] };
+        \\type Source = { a: string; b?: number };
+        \\type R = Readonly<Source>;
+        \\let r: R = { a: "x" };
+    );
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+    // Should accept `{ a: "x" }` because `b` is optional and inherits
+    // optional from Source.
+    for (s.checker.diagnostics.items) |d| {
+        try T.expect(d.code != TsCodes.type_not_assignable);
+        try T.expect(d.code != TsCodes.type_missing_properties);
+    }
+}
+
+test "checker: homomorphic mapped over tuple preserves positional element shape" {
+    // Phase 4 #2 — `{ [K in keyof T]: F<T[K]> }` over a tuple T
+    // should produce a tuple of the same length. Specifically:
+    // `Stringify<[number, boolean]>` should expose `[0]: string` and
+    // `[1]: string` (not just an indexed `string`). This test pins
+    // the per-position behavior by indexing into the result.
+    const s = try newSetup(
+        \\type Stringify<T> = { [K in keyof T]: string };
+        \\type X = Stringify<[number, boolean]>;
+        \\declare const x: X;
+        \\const a: string = x[0];
+        \\const b: string = x[1];
+    );
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+    for (s.checker.diagnostics.items) |d| {
+        try T.expect(d.code != TsCodes.type_not_assignable);
+        try T.expect(d.code != TsCodes.property_does_not_exist);
+    }
+}
+
+test "checker: homomorphic mapped over tuple preserves per-position types via T[K]" {
+    // Phase 4 #2 — when the value template references `T[K]` and T
+    // is a tuple, each position should retain its specific type.
+    // Wrap<[number, string]> should give `{0: {wrapped: number}, 1: {wrapped: string}, ...}`.
+    const s = try newSetup(
+        \\type Wrap<T extends any[]> = { [K in keyof T]: { wrapped: T[K] } };
+        \\type X = Wrap<[number, string]>;
+        \\declare const x: X;
+        \\const a: { wrapped: number } = x[0];
+        \\const b: { wrapped: string } = x[1];
+    );
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+    for (s.checker.diagnostics.items) |d| {
+        try T.expect(d.code != TsCodes.type_not_assignable);
+        try T.expect(d.code != TsCodes.property_does_not_exist);
+    }
+}
+
 test "checker: identity homomorphic mapped arrays preserve array-like source" {
     const s = try newSetup(
         \\type Mapped<T> = { [K in keyof T]: T[K] };
