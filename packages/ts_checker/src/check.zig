@@ -3240,23 +3240,32 @@ pub const Checker = struct {
             },
             .assignment => {
                 const a = hir_mod.assignmentOf(self.hir, node);
-                try self.scanExprForUsedBeforeAssign(a.value, pending);
+                // tsc walks an assignment in source order: the target's
+                // own receiver-identifier reads (e.g. `x` in `x.p = …`)
+                // fire before the value expression's reads. Mirror that
+                // so position-sensitive baseline diffs line up.
                 if (a.target != hir_mod.none_node_id and
                     self.hir.kindOf(a.target) == .identifier)
                 {
                     const id = hir_mod.identifierOf(self.hir, a.target);
                     if (a.op != null) {
                         try self.flagIfPending(a.target, id.name, pending);
-                    } else {
+                    }
+                    try self.scanExprForUsedBeforeAssign(a.value, pending);
+                    if (a.op == null) {
                         _ = pending.remove(id.name);
                     }
                 } else if (a.target != hir_mod.none_node_id) {
                     if (a.op == null) {
                         try self.scanAssignmentTargetReadParts(a.target, pending);
+                        try self.scanExprForUsedBeforeAssign(a.value, pending);
                         try self.removeAssignedTargetFromPending(a.target, pending);
                     } else {
                         try self.scanExprForUsedBeforeAssign(a.target, pending);
+                        try self.scanExprForUsedBeforeAssign(a.value, pending);
                     }
+                } else {
+                    try self.scanExprForUsedBeforeAssign(a.value, pending);
                 }
             },
             .block_stmt => {
@@ -3435,23 +3444,32 @@ pub const Checker = struct {
             },
             .assignment => {
                 const a = hir_mod.assignmentOf(self.hir, node);
-                try self.scanExprForUsedBeforeAssign(a.value, pending);
+                // tsc walks an assignment in source order: the target's
+                // own receiver-identifier reads (e.g. `x` in `x.p = …`)
+                // fire before the value expression's reads. Mirror that
+                // so position-sensitive baseline diffs line up.
                 if (a.target != hir_mod.none_node_id and
                     self.hir.kindOf(a.target) == .identifier)
                 {
                     const id = hir_mod.identifierOf(self.hir, a.target);
                     if (a.op != null) {
                         try self.flagIfPending(a.target, id.name, pending);
-                    } else {
+                    }
+                    try self.scanExprForUsedBeforeAssign(a.value, pending);
+                    if (a.op == null) {
                         _ = pending.remove(id.name);
                     }
                 } else if (a.target != hir_mod.none_node_id) {
                     if (a.op == null) {
                         try self.scanAssignmentTargetReadParts(a.target, pending);
+                        try self.scanExprForUsedBeforeAssign(a.value, pending);
                         try self.removeAssignedTargetFromPending(a.target, pending);
                     } else {
                         try self.scanExprForUsedBeforeAssign(a.target, pending);
+                        try self.scanExprForUsedBeforeAssign(a.value, pending);
                     }
+                } else {
+                    try self.scanExprForUsedBeforeAssign(a.value, pending);
                 }
             },
             else => {},
@@ -3727,6 +3745,7 @@ pub const Checker = struct {
         name: hir_mod.StringId,
         pending: *std.AutoHashMapUnmanaged(hir_mod.StringId, NodeId),
     ) CheckError!void {
+        _ = pending;
         const name_str = self.string_interner.get(name);
         const msg = try std.fmt.allocPrint(
             self.diag_arena.allocator(),
@@ -3738,9 +3757,10 @@ pub const Checker = struct {
             .code = TsCodes.used_before_assignment,
             .message = msg,
         });
-        // Remove from pending so we only flag the first use; later
-        // reads are noisy.
-        _ = pending.remove(name);
+        // Keep `name` in `pending` so each subsequent read of the
+        // unassigned variable still fires TS2454. tsc emits one
+        // diagnostic per use site, not just on the first read; the
+        // exact-baseline ratchet pins that behavior.
     }
 
     fn isCompoundAssignmentTarget(self: *Checker, node: NodeId) bool {
@@ -6926,8 +6946,24 @@ pub const Checker = struct {
         for (type_params) |tp| {
             if (self.hir.kindOf(tp) != .type_parameter) continue;
             const tpp = hir_mod.typeParameterOf(self.hir, tp);
-            if (local_type_names.contains(tpp.name)) {
+            if (local_type_names.get(tpp.name)) |body_decl| {
                 try self.reportDuplicateIdentifier(tp, tpp.name);
+                // tsc also flags the colliding body declaration's
+                // identifier so both halves of the shadow show up in
+                // baselines (e.g. `function f<T>() { interface T {} }`
+                // emits TS2300 at both the `<T>` and the `interface T`
+                // sites).
+                const decl_name_node: NodeId = switch (self.hir.kindOf(body_decl)) {
+                    .interface_decl => hir_mod.interfaceOf(self.hir, body_decl).name,
+                    .type_alias_decl => hir_mod.typeAliasOf(self.hir, body_decl).name,
+                    .class_decl, .class_expr => hir_mod.classOf(self.hir, body_decl).name,
+                    else => hir_mod.none_node_id,
+                };
+                if (decl_name_node != hir_mod.none_node_id and
+                    self.hir.kindOf(decl_name_node) == .identifier)
+                {
+                    try self.reportDuplicateIdentifier(decl_name_node, tpp.name);
+                }
             }
         }
 
@@ -30997,6 +31033,45 @@ test "checker: var initializer reads typed var for TS2454" {
         if (d.code == TsCodes.used_before_assignment) found = true;
     }
     try T.expect(found);
+}
+
+test "checker: TS2454 fires for every use of unassigned typed var" {
+    // tsc emits TS2454 once per use site (not just on the first read).
+    // The §6.A exact-baseline ratchet pins this — keeping `pending`
+    // populated after the first emit lets later reads also fire.
+    const s = try newSetup(
+        \\interface I { foo: number; bar: number; }
+        \\var i: I;
+        \\var x = i.foo;
+        \\var y = i.bar;
+        \\var z = i.foo;
+    );
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+    var count: usize = 0;
+    for (s.checker.diagnostics.items) |d| {
+        if (d.code == TsCodes.used_before_assignment) count += 1;
+    }
+    try T.expect(count >= 3);
+}
+
+test "checker: TS2454 fires for both target receiver and rhs of assignment" {
+    // tsc emits TS2454 for `c` on both sides of `c.x = c.y` (target's
+    // member-access receiver and the rhs identifier). Source ordering
+    // matters for the exact-baseline diff so the target's receiver
+    // walks first.
+    const s = try newSetup(
+        \\interface I { x: number; y: number; }
+        \\var c: I;
+        \\c.x = c.y;
+    );
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+    var count: usize = 0;
+    for (s.checker.diagnostics.items) |d| {
+        if (d.code == TsCodes.used_before_assignment) count += 1;
+    }
+    try T.expect(count >= 2);
 }
 
 test "checker: computed property key does not trigger TS2454 for typed var" {
