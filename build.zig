@@ -322,6 +322,18 @@ pub fn build(b: *std.Build) void {
     ts_bundler_pkg.addImport("ts_resolver", ts_resolver_pkg);
     ts_bundler_pkg.addImport("ts_driver", ts_driver_pkg);
 
+    // TS-parity Phase 4.5 §4.5.A.1 — Bun bundler vendored source.
+    // The 26 .zig files under packages/ts_bundler/src/bun/ are a verbatim
+    // copy of upstream Bun's bundler (MIT, see LICENSE.bun.md). They do
+    // NOT compile yet — they reference Bun's stdlib aggregator via
+    // `@import("bun")`. The port plan lives at
+    // packages/ts_bundler/src/bun/PORTING_STATUS.md and tracks a
+    // file-by-file build order. The vendored sources are intentionally
+    // NOT wired into any test artifact yet; doing so would break the
+    // build. Once the Tier 0 + Tier 1 files compile against a
+    // bun_compat shim, individual files will be added back to a
+    // dedicated `ts_bundler_bun_pkg` module.
+
     // ====================================================================
     // TS-parity binaries: `home-tsc` (compiler driver) + `home-lsp`
     // (Language Server Protocol stdio loop). Both consume the
