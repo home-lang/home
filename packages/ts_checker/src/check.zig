@@ -17918,7 +17918,13 @@ pub const Checker = struct {
                 }
                 const obj_t = self.interner.internObjectTypeWithIndexAndSymbol(members.items, string_index, types.Primitive.none, symbol_index) catch return error.OutOfMemory;
                 if (!self.objectLiteralLikelyHasContextualTarget(node)) {
-                    try self.checkObjectLiteralMethodBodiesWithThis(node, obj_t);
+                    // §4.A.X Phase 4 #11 — when the literal is a return
+                    // value, prefer the enclosing function's declared
+                    // return type as the contextual target so a
+                    // `ThisType<T>` marker on the annotation flips
+                    // `this` inside the literal's method bodies.
+                    const ctx_t = self.objectLiteralEnclosingReturnTargetType(node) orelse obj_t;
+                    try self.checkObjectLiteralMethodBodiesWithThis(node, ctx_t);
                 }
                 if (generic_spread_parts.items.len > 0) {
                     try generic_spread_parts.append(self.gpa, obj_t);
@@ -22394,6 +22400,33 @@ pub const Checker = struct {
                 else => return false,
             }
         }
+    }
+
+    /// Phase 4 #11 — when an object literal is the return value of a
+    /// function with a declared return type, return that declared
+    /// return type. Used as the contextual target for
+    /// `checkObjectLiteralMethodBodiesWithThis` so a `ThisType<T>`
+    /// marker on the return-type annotation flips `this` inside the
+    /// returned object literal's methods (Vue-style pattern with
+    /// explicit return type instead of explicit param/var annotation).
+    ///
+    /// Returns `null` when the literal isn't a return value, the
+    /// enclosing function lacks a declared return type, or the
+    /// declared return type fails to lower.
+    fn objectLiteralEnclosingReturnTargetType(self: *Checker, node: NodeId) ?TypeId {
+        const parent = self.hir.parentOf(node);
+        if (parent == hir_mod.none_node_id) return null;
+        if (self.hir.kindOf(parent) != .return_stmt) return null;
+        var cur = self.hir.parentOf(parent);
+        while (cur != hir_mod.none_node_id) : (cur = self.hir.parentOf(cur)) {
+            const k = self.hir.kindOf(cur);
+            if (k == .fn_decl or k == .fn_expr or k == .arrow_fn) {
+                const f = hir_mod.fnDeclOf(self.hir, cur);
+                if (f.return_type == hir_mod.none_node_id) return null;
+                return self.lowererLowerWithTypeParams(f.return_type) catch null;
+            }
+        }
+        return null;
     }
 
     fn memberAccessIsContextualObjectLiteralThis(self: *Checker, object_node: NodeId) bool {
@@ -36535,6 +36568,57 @@ test "checker: ThisType<T> marker supplies contextual this in object literal met
         \\use({
         \\  read() { return this.value; }
         \\});
+    );
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+    for (s.checker.diagnostics.items) |d| {
+        try T.expect(d.code != TsCodes.property_does_not_exist);
+    }
+}
+
+test "checker: ThisType<T> flips contextual this on annotated var declaration init" {
+    // Phase 4 #11 — `let x: M & ThisType<D> = { ...methods... };`
+    // The annotated intersection's `ThisType<D>` marker should make
+    // `this` inside method bodies resolve to `D`, not the methods
+    // object's own type. Verified by referring to `this.value` where
+    // `value` only exists on `D`.
+    const s = try newSetup(
+        \\let x: { read(): number } & ThisType<{ value: number }> = {
+        \\  read() { return this.value; }
+        \\};
+    );
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+    for (s.checker.diagnostics.items) |d| {
+        try T.expect(d.code != TsCodes.property_does_not_exist);
+    }
+}
+
+test "checker: ThisType<T> flips contextual this on return-type annotated function" {
+    // Phase 4 #11 — `function f(): M & ThisType<D> { return { ...methods... }; }`
+    // — `this` inside the returned object literal's methods should
+    // resolve to `D`.
+    const s = try newSetup(
+        \\function make(): { read(): number } & ThisType<{ value: number }> {
+        \\  return { read() { return this.value; } };
+        \\}
+    );
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+    for (s.checker.diagnostics.items) |d| {
+        try T.expect(d.code != TsCodes.property_does_not_exist);
+    }
+}
+
+test "checker: ThisType<T> flips contextual this on nested object-property method" {
+    // Phase 4 #11 — Vue-style descriptor: an outer type's property
+    // is typed with `M & ThisType<D>`, and the assigned object
+    // literal's methods should see `this` as `D`.
+    const s = try newSetup(
+        \\type Desc = { methods: { greet(): string } & ThisType<{ name: string }> };
+        \\let d: Desc = {
+        \\  methods: { greet() { return this.name; } }
+        \\};
     );
     defer destroySetup(s);
     try s.checker.checkSourceFile(s.root);
