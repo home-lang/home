@@ -631,7 +631,9 @@ fn specifierColumnForImportDiagnostic(source: []const u8, byte_pos: u32) ?Specif
     while (line_end < source.len and source[line_end] != '\n') line_end += 1;
     const line = source[line_start..line_end];
     // Heuristic: skip if the line doesn't look like an import statement.
-    const trimmed_line = std.mem.trimLeft(u8, line, " \t");
+    var trim_start: usize = 0;
+    while (trim_start < line.len and (line[trim_start] == ' ' or line[trim_start] == '\t')) : (trim_start += 1) {}
+    const trimmed_line = line[trim_start..];
     const looks_like_import = std.mem.startsWith(u8, trimmed_line, "import ") or
         std.mem.startsWith(u8, trimmed_line, "import\t") or
         std.mem.startsWith(u8, trimmed_line, "import(") or
