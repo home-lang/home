@@ -91,6 +91,7 @@ pub const Parser = struct {
     top_level_external_module_indicator: bool,
     top_level_export_indicator: bool,
     in_top_level_module_binding_decl: bool,
+    in_export_declaration: bool,
     /// True for `.tsx` files. Enables JSX parsing in expression
     /// position; the parser disambiguates `<T>x` (generic type
     /// assertion) vs. `<T>x</T>` (JSX) via the `<T,>` and
@@ -140,6 +141,7 @@ pub const Parser = struct {
             .top_level_external_module_indicator = false,
             .top_level_export_indicator = false,
             .in_top_level_module_binding_decl = false,
+            .in_export_declaration = false,
             .is_tsx = false,
             .is_declaration_file = false,
         };
@@ -3165,6 +3167,9 @@ pub const Parser = struct {
         }
 
         // export <decl>
+        const old_in_export_declaration = self.in_export_declaration;
+        self.in_export_declaration = true;
+        defer self.in_export_declaration = old_in_export_declaration;
         const decl = try self.parseStatement();
         const end_pos = self.hir.spanOf(decl).end;
         return try self.builder.addExport(
@@ -3193,6 +3198,14 @@ pub const Parser = struct {
 
     fn parseVarDecl(self: *Parser) ParseError!NodeId {
         const start = self.advance(); // let/const/var
+        if (self.isAmbientContextAt(start.span.start) and
+            self.block_depth == 0 and
+            self.namespace_depth == 0 and
+            self.ambient_depth == 0 and
+            !self.in_export_declaration)
+        {
+            try self.reportCodeAt(start.span.start, start.line, 1046, "Top-level declarations in .d.ts files must start with either a 'declare' or 'export' modifier.");
+        }
         const old_in_top_level_module_binding_decl = self.in_top_level_module_binding_decl;
         self.in_top_level_module_binding_decl = self.top_level_external_module_indicator and
             self.block_depth == 0 and self.namespace_depth == 0 and self.ambient_depth == 0;
@@ -10074,6 +10087,26 @@ test "parser: declaration-file statements report TS1036" {
     try T.expect(s.parser.diagnostics.items.len >= 2);
     try T.expectEqual(@as(u32, 1036), s.parser.diagnostics.items[0].code);
     try T.expectEqual(@as(u32, 1036), s.parser.diagnostics.items[1].code);
+}
+
+test "parser: declaration-file top-level var requires declare or export" {
+    var s = try newTestSetup("var v;");
+    defer destroyTestSetup(s);
+    s.parser.is_declaration_file = true;
+
+    _ = try s.parser.parseSourceFile();
+    try T.expectEqual(@as(usize, 1), s.parser.diagnostics.items.len);
+    try T.expectEqual(@as(u32, 1046), s.parser.diagnostics.items[0].code);
+}
+
+test "parser: declaration-file top-level var check respects virtual filenames" {
+    var s = try newTestSetup("// @filename: index.d.ts\nvar d;\n// @filename: index.js\nvar j;");
+    defer destroyTestSetup(s);
+    s.parser.is_declaration_file = true;
+
+    _ = try s.parser.parseSourceFile();
+    try T.expectEqual(@as(usize, 1), s.parser.diagnostics.items.len);
+    try T.expectEqual(@as(u32, 1046), s.parser.diagnostics.items[0].code);
 }
 
 test "parser: invalid class-body var reports TS1068" {

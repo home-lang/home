@@ -109,6 +109,7 @@ pub const TsCodes = struct {
     pub const for_in_left_type: u32 = 2405;
     pub const for_in_left_invalid: u32 = 2406;
     pub const for_in_right_type: u32 = 2407;
+    pub const string_iteration_requires_downlevel: u32 = 2802;
     pub const subsequent_var_type_mismatch: u32 = 2403;
     pub const interface_incorrectly_extends: u32 = 2430;
     pub const property_not_assignable_to_base: u32 = 2416;
@@ -1311,11 +1312,15 @@ pub const Checker = struct {
                 // regardless of `obj`'s shape (matches tsc).
                 const fr = hir_mod.forInOf(self.hir, node);
                 try self.checkForInTarget(fr.target);
+                try self.checkForInDestructuringTarget(fr.target);
                 const src_t = try self.checkExpression(fr.source);
                 if (self.typeContainsSymbol(src_t)) {
                     try self.report(fr.source, TsCodes.for_in_right_type, "The right-hand side of a 'for...in' statement must be of type 'any', an object type or a type parameter, but here has type 'symbol'.");
                 }
                 try self.bindForLoopTarget(fr.target, types.Primitive.string_t);
+                try self.pushNarrowScope();
+                defer self.popNarrowScope();
+                try self.recordLoopTargetBindings(fr.target, types.Primitive.string_t);
                 try self.checkStatement(fr.body);
             },
             .for_of_stmt => {
@@ -16872,7 +16877,7 @@ pub const Checker = struct {
                 .{var_name},
             );
             try self.diagnostics.append(self.gpa, .{
-                .node = node,
+                .node = if (v.name != hir_mod.none_node_id and self.hir.kindOf(v.name) == .identifier) v.name else node,
                 .code = TsCodes.variable_implicitly_any,
                 .message = msg,
             });
@@ -18295,7 +18300,7 @@ pub const Checker = struct {
                                 (self.engine.isAssignableTo(assignment_check_value_t, target_t) catch true);
                         if (!ok) {
                             const source_for_report = try self.expressionLiteralType(a.value, assignment_check_value_t);
-                            try self.reportTypeNotAssignable(node, source_for_report, target_t, "Type is not assignable to target type.");
+                            try self.reportAssignmentTypeNotAssignable(node, a.value, source_for_report, target_t, "Type is not assignable to target type.");
                         }
                     }
                 }
@@ -19115,7 +19120,11 @@ pub const Checker = struct {
                         });
                     }
                 }
-                if (!try self.computedPropertyKeyTypeIsValid(idx_t)) {
+                const loose_untyped_index = self.sourceHasStrictFalseDirective() and
+                    idx_t == types.Primitive.undefined_t and
+                    self.hir.kindOf(e.index) == .identifier and
+                    self.identifierIsUntypedUninitializedVar(e.index);
+                if (!loose_untyped_index and !try self.computedPropertyKeyTypeIsValid(idx_t)) {
                     try self.report(e.index, TsCodes.type_cannot_be_used_as_index, "Type cannot be used as an index type.");
                 }
                 break :blk try self.optionalChainResult(types.Primitive.any, element_is_optional_chain);
@@ -29131,6 +29140,81 @@ pub const Checker = struct {
         try self.report(node, TsCodes.type_not_assignable, fallback);
     }
 
+    fn reportAssignmentTypeNotAssignable(
+        self: *Checker,
+        node: NodeId,
+        value_node: NodeId,
+        source: TypeId,
+        target: TypeId,
+        fallback: []const u8,
+    ) !void {
+        const source_name = self.objectAnnotationNameForIdentifier(value_node) orelse
+            (try self.allocSimpleTypeName(source)) orelse
+            return try self.report(node, TsCodes.type_not_assignable, fallback);
+        const target_name = (try self.allocSimpleTypeName(target)) orelse
+            return try self.report(node, TsCodes.type_not_assignable, fallback);
+        const msg = try std.fmt.allocPrint(
+            self.diag_arena.allocator(),
+            "Type '{s}' is not assignable to type '{s}'.",
+            .{ source_name, target_name },
+        );
+        try self.report(node, TsCodes.type_not_assignable, msg);
+    }
+
+    fn objectAnnotationNameForIdentifier(self: *Checker, node: NodeId) ?[]const u8 {
+        if (node == hir_mod.none_node_id or self.hir.kindOf(node) != .identifier) return null;
+        const id = hir_mod.identifierOf(self.hir, node);
+        const use_start = self.hir.spanOf(node).start;
+        var cur = self.hir.parentOf(node);
+        while (cur != hir_mod.none_node_id) : (cur = self.hir.parentOf(cur)) {
+            const stmts: ?[]const NodeId = switch (self.hir.kindOf(cur)) {
+                .block_stmt => hir_mod.blockStmts(self.hir, cur),
+                .namespace_decl => hir_mod.namespaceBody(self.hir, cur),
+                else => null,
+            };
+            if (stmts) |items| {
+                for (items) |stmt| {
+                    if (self.hir.spanOf(stmt).start > use_start) break;
+                    const decl = if (self.hir.kindOf(stmt) == .export_decl) hir_mod.exportOf(self.hir, stmt).decl else stmt;
+                    if (decl == hir_mod.none_node_id) continue;
+                    const dk = self.hir.kindOf(decl);
+                    if (dk != .var_decl and dk != .let_decl and dk != .const_decl) continue;
+                    const v = hir_mod.varDeclOf(self.hir, decl);
+                    if (v.name == hir_mod.none_node_id or self.hir.kindOf(v.name) != .identifier) continue;
+                    if (hir_mod.identifierOf(self.hir, v.name).name != id.name) continue;
+                    return self.objectAnnotationName(v.type_annotation);
+                }
+            }
+        }
+        if (self.module) |module| {
+            if (module.root.lookup(id.name)) |sym| {
+                if (sym.decls.items.len == 0) return null;
+                const decl = sym.decls.items[0];
+                const dk = self.hir.kindOf(decl);
+                if (dk != .var_decl and dk != .let_decl and dk != .const_decl) return null;
+                return self.objectAnnotationName(hir_mod.varDeclOf(self.hir, decl).type_annotation);
+            }
+        }
+        return null;
+    }
+
+    fn objectAnnotationName(self: *Checker, type_node: NodeId) ?[]const u8 {
+        if (type_node == hir_mod.none_node_id) return null;
+        const object_name = "Object";
+        return switch (self.hir.kindOf(type_node)) {
+            .identifier => blk: {
+                const name = hir_mod.identifierOf(self.hir, type_node).name;
+                break :blk if (std.mem.eql(u8, self.string_interner.get(name), object_name)) object_name else null;
+            },
+            .type_ref => blk: {
+                const r = hir_mod.typeRefOf(self.hir, type_node);
+                if (r.qualifier_len != 0 or r.args_len != 0) break :blk null;
+                break :blk if (std.mem.eql(u8, self.string_interner.get(r.name), object_name)) object_name else null;
+            },
+            else => null,
+        };
+    }
+
     fn reportSwitchCaseNotComparable(self: *Checker, node: NodeId, case_t: TypeId, disc_t: TypeId) !void {
         if (try self.allocSimpleTypeName(case_t)) |case_name| {
             if (try self.allocSimpleTypeName(disc_t)) |disc_name| {
@@ -29321,6 +29405,13 @@ pub const Checker = struct {
                 // Render fixed-width tuples (`[any]`, `[undefined, null]`)
                 // so TS2322 prose includes the literal element shape.
                 if (flags.is_object_type) {
+                    const members = self.interner.objectMembers(t);
+                    if (members.len == 1) {
+                        const call_id = self.string_interner.intern("__call") catch break :blk null;
+                        if (members[0].name == call_id and self.interner.isSignature(members[0].type)) {
+                            if (try self.allocCallableSignatureName(members[0].type)) |name| break :blk name;
+                        }
+                    }
                     if (self.fixedTupleLength(t)) |length| {
                         var tuple_buf: std.ArrayListUnmanaged(u8) = .empty;
                         const arena_t = self.diag_arena.allocator();
@@ -29777,6 +29868,68 @@ pub const Checker = struct {
                 try self.report(target, TsCodes.for_in_left_invalid, "The left-hand side of a 'for...in' statement must be a variable or a property access.");
             },
         }
+    }
+
+    fn checkForInDestructuringTarget(self: *Checker, target: NodeId) CheckError!void {
+        const pattern = self.forLoopTargetPattern(target) orelse return;
+        switch (self.hir.kindOf(pattern)) {
+            .array_pattern, .array_literal => {
+                if (self.sourceDirectiveValueMentions("target", "es5")) {
+                    try self.report(pattern, TsCodes.string_iteration_requires_downlevel, "Type 'string' can only be iterated through when using the '--downlevelIteration' flag or with a '--target' of 'es2015' or higher.");
+                } else {
+                    try self.checkArrayDestructuringAssignment(pattern, types.Primitive.string_t, hir_mod.none_node_id, 0);
+                }
+            },
+            .object_pattern, .object_literal => try self.reportForInStringObjectPatternProperties(pattern),
+            else => {},
+        }
+    }
+
+    fn forLoopTargetPattern(self: *Checker, target: NodeId) ?NodeId {
+        if (target == hir_mod.none_node_id) return null;
+        switch (self.hir.kindOf(target)) {
+            .var_decl, .let_decl, .const_decl => {
+                const v = hir_mod.varDeclOf(self.hir, target);
+                if (v.name == hir_mod.none_node_id) return null;
+                const nk = self.hir.kindOf(v.name);
+                return if (nk == .array_pattern or nk == .object_pattern or nk == .array_literal or nk == .object_literal) v.name else null;
+            },
+            .array_pattern, .object_pattern, .array_literal, .object_literal => return target,
+            else => return null,
+        }
+    }
+
+    fn reportForInStringObjectPatternProperties(self: *Checker, pattern: NodeId) CheckError!void {
+        const elements: []const NodeId = switch (self.hir.kindOf(pattern)) {
+            .object_pattern => hir_mod.patternElements(self.hir, pattern),
+            .object_literal => hir_mod.objectLiteralProps(self.hir, pattern),
+            else => return,
+        };
+        for (elements) |elem| {
+            if (self.hir.kindOf(elem) == .parameter) {
+                const p = hir_mod.parameterOf(self.hir, elem);
+                if (p.name == hir_mod.none_node_id or p.flags.is_rest) continue;
+                const key_name = (try self.objectBindingElementKeyName(elem, p.name)) orelse continue;
+                try self.reportStringObjectPropertyMissing(p.name, key_name);
+            } else if (self.hir.kindOf(elem) == .object_property) {
+                const op = hir_mod.objectPropertyOf(self.hir, elem);
+                const key_name = self.propertyNameFromKeyNode(op.key) orelse continue;
+                try self.reportStringObjectPropertyMissing(op.key, key_name);
+            }
+        }
+    }
+
+    fn reportStringObjectPropertyMissing(self: *Checker, node: NodeId, name: hir_mod.StringId) CheckError!void {
+        const msg = try std.fmt.allocPrint(
+            self.diag_arena.allocator(),
+            "Property '{s}' does not exist on type 'String'.",
+            .{self.string_interner.get(name)},
+        );
+        try self.diagnostics.append(self.gpa, .{
+            .node = node,
+            .code = TsCodes.property_does_not_exist,
+            .message = msg,
+        });
     }
 
     fn forInTargetTypeAllowed(self: *Checker, t: TypeId) bool {
@@ -33566,6 +33719,51 @@ test "checker: var-decl type mismatch emits TS2322" {
     try T.expectEqual(@as(u32, 4), s.checker.hir.spanOf(s.checker.diagnostics.items[0].node).start);
 }
 
+test "checker: Object assignment mismatch renders Object and call signature names" {
+    const s = try newSetup(
+        \\interface I { (): void; }
+        \\declare var i: I;
+        \\var o: Object;
+        \\o = i;
+        \\i = o;
+        \\declare var a: { (): void };
+        \\o = a;
+        \\a = o;
+    );
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+
+    var saw_interface = false;
+    var saw_call_sig = false;
+    for (s.checker.diagnostics.items) |d| {
+        if (d.code != TsCodes.type_not_assignable) continue;
+        if (std.mem.eql(u8, d.message, "Type 'Object' is not assignable to type 'I'.")) saw_interface = true;
+        if (std.mem.eql(u8, d.message, "Type 'Object' is not assignable to type '() => void'.")) saw_call_sig = true;
+    }
+    try T.expect(saw_interface);
+    try T.expect(saw_call_sig);
+}
+
+test "checker: for-in destructuring checks string key shape and scopes bindings" {
+    const s = try newSetup(
+        \\// @target: es5
+        \\for (let [x = 'a' in {}] in { '': 0 }) { x; }
+        \\for (let {y = 'a' in {}} in { '': 0 }) { y; }
+    );
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+
+    var saw_downlevel = false;
+    var saw_missing_prop = false;
+    for (s.checker.diagnostics.items) |d| {
+        if (d.code == TsCodes.string_iteration_requires_downlevel) saw_downlevel = true;
+        if (d.code == TsCodes.property_does_not_exist and std.mem.indexOf(u8, d.message, "Property 'y' does not exist on type 'String'.") != null) saw_missing_prop = true;
+        try T.expect(d.code != TsCodes.cannot_find_name);
+    }
+    try T.expect(saw_downlevel);
+    try T.expect(saw_missing_prop);
+}
+
 test "checker: enum assignment TS2322 renders enum names" {
     const s = try newSetup(
         \\enum E { A }
@@ -35707,7 +35905,10 @@ test "checker: noImplicitAny emits TS7005 for bare `let x` declaration" {
     try s.checker.checkSourceFile(s.root);
     var found = false;
     for (s.checker.diagnostics.items) |d| {
-        if (d.code == TsCodes.variable_implicitly_any) found = true;
+        if (d.code == TsCodes.variable_implicitly_any) {
+            found = true;
+            try T.expectEqual(@as(u32, 4), s.hir.spanOf(d.node).start);
+        }
     }
     try T.expect(found);
 }
