@@ -13834,6 +13834,29 @@ pub const Checker = struct {
         });
     }
 
+    /// Variant of `reportSelfReferencedTypeAnnotation` that anchors
+    /// the diagnostic at the variable name. Mirrors upstream tsc's
+    /// `recursiveTypesWithTypeof.ts(2,5)` for direct-typeof
+    /// var-decl cycles, where the column points at the name (not
+    /// the keyword).
+    fn reportSelfReferencedTypeAnnotationAtName(self: *Checker, var_decl: NodeId) CheckError!void {
+        const v = hir_mod.varDeclOf(self.hir, var_decl);
+        if (v.name == hir_mod.none_node_id or self.hir.kindOf(v.name) != .identifier) {
+            return self.reportSelfReferencedTypeAnnotation(var_decl);
+        }
+        const name_str = self.string_interner.get(hir_mod.identifierOf(self.hir, v.name).name);
+        const msg = try std.fmt.allocPrint(
+            self.diag_arena.allocator(),
+            "'{s}' is referenced directly or indirectly in its own type annotation.",
+            .{name_str},
+        );
+        try self.diagnostics.append(self.gpa, .{
+            .node = v.name,
+            .code = TsCodes.self_referenced_type_annotation,
+            .message = msg,
+        });
+    }
+
     /// True when `type_node` contains a `typeof <var_name>` operand
     /// referring to the variable being declared. Mirrors tsc's
     /// TS2502 detection for direct self-typeof in a var-decl
@@ -17798,7 +17821,7 @@ pub const Checker = struct {
         {
             const id = hir_mod.identifierOf(self.hir, v.name);
             if (self.varDeclTypeAnnotationContainsTypeofSelf(v.type_annotation, id.name)) {
-                try self.reportSelfReferencedTypeAnnotation(node);
+                try self.reportSelfReferencedTypeAnnotationAtName(node);
             }
         }
 
@@ -18168,6 +18191,35 @@ pub const Checker = struct {
             return true;
         }
         return false;
+    }
+
+    /// Render an array-literal expression as a fixed-width tuple
+    /// type name (`[A, B, C]`). Each element's type is rendered via
+    /// `allocSimpleTypeName`; unrenderable elements bail the whole
+    /// thing so callers fall back to a generic phrasing. Used by
+    /// the assignment-expression TS2322 path so the prose matches
+    /// upstream — fixtures `wideningTuples3.ts(3,9)`,
+    /// `wideningTuples4.ts(3,9)`.
+    fn allocArrayLiteralAsTupleName(self: *Checker, node: NodeId) !?[]const u8 {
+        if (node == hir_mod.none_node_id) return null;
+        if (self.hir.kindOf(node) != .array_literal) return null;
+        const elements = hir_mod.arrayLiteralElements(self.hir, node);
+        var buf: std.ArrayListUnmanaged(u8) = .empty;
+        const arena = self.diag_arena.allocator();
+        try buf.append(arena, '[');
+        for (elements, 0..) |el, i| {
+            if (i > 0) try buf.appendSlice(arena, ", ");
+            if (el == hir_mod.none_node_id) {
+                try buf.appendSlice(arena, "any");
+                continue;
+            }
+            if (self.hir.kindOf(el) == .spread) return null;
+            const el_t = self.hir.typeOf(el);
+            const name = (try self.allocSimpleTypeName(el_t)) orelse return null;
+            try buf.appendSlice(arena, name);
+        }
+        try buf.append(arena, ']');
+        return buf.items;
     }
 
     /// Predicate: in an ambient context (`.d.ts` or `declare`),
@@ -19474,6 +19526,7 @@ pub const Checker = struct {
                 if (a.op == null and self.hir.kindOf(a.target) == .object_literal) {
                     try self.checkObjectDestructuringAssignment(a.target, value_t, a.value);
                 }
+                var array_tuple_mismatch_emitted = false;
                 if (a.op == null and
                     self.hir.kindOf(a.value) == .array_literal and
                     target_t != types.Primitive.none and
@@ -19482,12 +19535,31 @@ pub const Checker = struct {
                     self.isTupleShapedTarget(target_t) and
                     !(try self.checkArrayLiteralAgainstTuple(a.value, target_t)))
                 {
-                    try self.report(node, TsCodes.type_not_assignable, "Type is not assignable to target type.");
+                    // Render the array literal as `[A, B, ...]` and the
+                    // target tuple via `allocSimpleTypeName` so the
+                    // TS2322 prose mirrors upstream tsc — fixtures
+                    // `wideningTuples3.ts(3,9)`, `wideningTuples4.ts(3,9)`.
+                    if (try self.allocArrayLiteralAsTupleName(a.value)) |source_name| {
+                        if (try self.allocSimpleTypeName(target_t)) |target_name| {
+                            const msg = try std.fmt.allocPrint(
+                                self.diag_arena.allocator(),
+                                "Type '{s}' is not assignable to type '{s}'.",
+                                .{ source_name, target_name },
+                            );
+                            try self.report(node, TsCodes.type_not_assignable, msg);
+                        } else {
+                            try self.report(node, TsCodes.type_not_assignable, "Type is not assignable to target type.");
+                        }
+                    } else {
+                        try self.report(node, TsCodes.type_not_assignable, "Type is not assignable to target type.");
+                    }
+                    array_tuple_mismatch_emitted = true;
                 }
                 if (!target_is_destructuring and !target_is_untyped_uninitialized_var and a.op == null and self.classPrivateStructuralMismatch(target_t, value_t)) {
                     try self.report(node, TsCodes.type_not_assignable, "Type is not assignable to declared type.");
                 }
                 if (!target_is_destructuring and !target_is_untyped_uninitialized_var and a.op == null and
+                    !array_tuple_mismatch_emitted and
                     target_t != types.Primitive.none and
                     target_t != types.Primitive.any and
                     target_t != types.Primitive.unknown)
