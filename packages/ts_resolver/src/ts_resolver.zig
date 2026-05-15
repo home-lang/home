@@ -200,6 +200,19 @@ pub const Resolver = struct {
         return self.arena.allocator();
     }
 
+    /// True when the configured strategy honors `package.json`
+    /// `exports` (and `imports`) maps. tsc only consults `exports`
+    /// under the modern resolvers — `node16`, `nodenext`, and
+    /// `bundler`. The legacy `node10` (a.k.a. `node`) strategy
+    /// IGNORES `exports` and resolves through `main`/`types` only;
+    /// `classic` doesn't even look at `package.json`.
+    fn exportsResolutionEnabled(self: *Resolver) bool {
+        return switch (self.config.strategy) {
+            .node16, .nodenext, .bundler => true,
+            .classic, .node10 => false,
+        };
+    }
+
     fn joinPath(self: *Resolver, a: []const u8, b: []const u8) ResolveError![]const u8 {
         // Resolve `..` segments in b relative to a.
         var bb = b;
@@ -398,7 +411,10 @@ pub const Resolver = struct {
                     // Subpath import: try a nested package.json in the
                     // subpath directory first (e.g. @restart/hooks/useMergedRefs
                     // has its own package.json with a relative `types` field
-                    // pointing back into the parent's `esm/` dir).
+                    // pointing back into the parent's `esm/` dir). This
+                    // matches `nestedPackageJsonRedirect.ts` in upstream:
+                    // a per-subpath `package.json` *can* redirect (unlike
+                    // the parent `main`-pointed dir which is non-recursive).
                     const sub_dir = try self.joinPath(pkg_root, split.subpath);
                     if (self.fs.directoryExists(sub_dir)) {
                         const sub_pkg_json = try self.joinPath(sub_dir, "package.json");
@@ -415,7 +431,10 @@ pub const Resolver = struct {
                         const sub_outcome = try self.resolvePackageSubpath(pkg_root, root_pkg_json, split.subpath);
                         switch (sub_outcome) {
                             .resolved => |r| return .{ .path = r.path, .source = .node_modules, .is_declaration = r.is_declaration },
-                            .blocked => return null, // exports said null — hard fail
+                            .blocked => {
+                                if (try self.tryAtTypesFallback(nm, split.name, split.subpath)) |r| return r;
+                                return null;
+                            },
                             .none => {},
                         }
                     }
@@ -427,11 +446,20 @@ pub const Resolver = struct {
                         const root_outcome = try self.resolvePackageSubpath(pkg_root, root_pkg_json, ".");
                         switch (root_outcome) {
                             .resolved => |r| return .{ .path = r.path, .source = .node_modules, .is_declaration = r.is_declaration },
-                            .blocked => return null, // exports said null — hard fail
+                            .blocked => {
+                                if (try self.tryAtTypesFallback(nm, split.name, "")) |r| return r;
+                                return null;
+                            },
                             .none => {},
                         }
                     }
                 }
+
+                // `@types/<pkg>` mirror lookup — tried BEFORE the
+                // legacy JS fallback so that a sibling typings package
+                // (`@types/foo` for `foo`, `@types/scope__name` for
+                // `@scope/name`) wins over an untyped JS resolution.
+                if (try self.tryAtTypesFallback(nm, split.name, split.subpath)) |r| return r;
 
                 // Fallback: legacy file/index probing on the literal joined
                 // specifier. This matches our prior behavior and keeps
@@ -449,6 +477,53 @@ pub const Resolver = struct {
             const parent = dirname(dir);
             if (std.mem.eql(u8, parent, dir)) break;
             dir = parent;
+        }
+        return null;
+    }
+
+    /// `@types/<pkg>` parallel-directory lookup. When a JS-only package
+    /// has no `.d.ts` of its own, tsc walks the SAME `node_modules`
+    /// directory for `@types/<pkg>` (or `@types/<scope>__<name>` for
+    /// scoped packages — `@scope/foo` becomes `@types/scope__foo`).
+    /// Returns the resolved `Resolution` or null.
+    fn tryAtTypesFallback(
+        self: *Resolver,
+        nm_dir: []const u8,
+        pkg_name: []const u8,
+        subpath: []const u8,
+    ) ResolveError!?Resolution {
+        if (pkg_name.len == 0) return null;
+        const at_types_name: []const u8 = if (pkg_name[0] == '@') blk: {
+            const slash = std.mem.indexOfScalar(u8, pkg_name, '/') orelse return null;
+            const scope = pkg_name[1..slash];
+            const tail = pkg_name[slash + 1 ..];
+            break :blk try std.fmt.allocPrint(self.ar(), "@types/{s}__{s}", .{ scope, tail });
+        } else try std.fmt.allocPrint(self.ar(), "@types/{s}", .{pkg_name});
+        const at_root = try self.joinPath(nm_dir, at_types_name);
+        if (!self.fs.directoryExists(at_root)) return null;
+        const at_pkg_json = try self.joinPath(at_root, "package.json");
+        if (subpath.len > 0) {
+            const cand = try self.joinPath(at_root, subpath);
+            if (try self.tryFileWithExtensions(cand)) |r| {
+                if (r.is_declaration) return .{ .path = r.path, .source = .node_modules, .is_declaration = true };
+            }
+            if (try self.tryDirectoryIndex(cand)) |r| {
+                if (r.is_declaration) return .{ .path = r.path, .source = .node_modules, .is_declaration = true };
+            }
+            return null;
+        }
+        if (self.fs.fileExists(at_pkg_json)) {
+            const outcome = try self.resolvePackageSubpath(at_root, at_pkg_json, ".");
+            switch (outcome) {
+                .resolved => |r| if (r.is_declaration) {
+                    return .{ .path = r.path, .source = .node_modules, .is_declaration = true };
+                },
+                .blocked, .none => {},
+            }
+        }
+        const fallback = try self.joinPath(at_root, "index");
+        if (try self.tryFileWithExtensions(fallback)) |r| {
+            if (r.is_declaration) return .{ .path = r.path, .source = .node_modules, .is_declaration = true };
         }
         return null;
     }
@@ -486,31 +561,37 @@ pub const Resolver = struct {
         if (parsed.value != .object) return .none;
         const obj = parsed.value.object;
 
-        // 1) `exports` field (subpath or root).
-        if (obj.get("exports")) |exports_v| {
-            const key = if (std.mem.eql(u8, subpath, ".") or subpath.len == 0)
-                "."
-            else
-                try std.fmt.allocPrint(self.ar(), "./{s}", .{subpath});
-            if (try self.lookupExports(exports_v, key)) |target| {
-                switch (target) {
-                    .matched_null => return .blocked, // hard rejection
-                    .matched => |m| {
-                        const joined = try self.joinPath(pkg_dir, m);
-                        if (try self.tryFileWithExtensions(joined)) |r| return .{ .resolved = r };
-                        // The exports map matched but the target file
-                        // is missing on disk; tsc treats this as a
-                        // resolution failure rather than falling back
-                        // to the legacy `main` field.
-                        return .blocked;
-                    },
-                    .not_matched => {
-                        // The package has an `exports` map but it
-                        // doesn't cover this subpath — tsc treats
-                        // missing subpath entries as a hard fail
-                        // (no fallback to legacy `main`).
-                        return .blocked;
-                    },
+        // 1) `exports` field (subpath or root). Only honored for
+        //    strategies that recognize the field — `node10` and
+        //    `classic` deliberately ignore it (per tsc's
+        //    `node10AlternateResult_*` fixtures, which expect the
+        //    legacy `main` to win even when `exports` is present).
+        if (self.exportsResolutionEnabled()) {
+            if (obj.get("exports")) |exports_v| {
+                const key = if (std.mem.eql(u8, subpath, ".") or subpath.len == 0)
+                    "."
+                else
+                    try std.fmt.allocPrint(self.ar(), "./{s}", .{subpath});
+                if (try self.lookupExports(exports_v, key)) |target| {
+                    switch (target) {
+                        .matched_null => return .blocked, // hard rejection
+                        .matched => |m| {
+                            const joined = try self.joinPath(pkg_dir, m);
+                            if (try self.tryFileWithExtensions(joined)) |r| return .{ .resolved = r };
+                            // The exports map matched but the target file
+                            // is missing on disk; tsc treats this as a
+                            // resolution failure rather than falling back
+                            // to the legacy `main` field.
+                            return .blocked;
+                        },
+                        .not_matched => {
+                            // The package has an `exports` map but it
+                            // doesn't cover this subpath — tsc treats
+                            // missing subpath entries as a hard fail
+                            // (no fallback to legacy `main`).
+                            return .blocked;
+                        },
+                    }
                 }
             }
         }
@@ -660,27 +741,64 @@ pub const Resolver = struct {
         map: std.json.ObjectMap,
         subpath: []const u8,
     ) ResolveError!?Resolution {
-        // Subpath shape used by tsc: bare specifier (no leading `./`)
-        // OR `*` for the root. Convert our `.` form to `index` so the
-        // typical `{ "*": ["./types/*"] }` mapping works for the root.
-        const lookup_key: []const u8 = if (std.mem.eql(u8, subpath, ".") or subpath.len == 0)
-            "*"
-        else
-            subpath;
-        var it = map.iterator();
-        while (it.next()) |e| {
+        // Subpath shape per upstream tsc: a bare-specifier suffix
+        // (no leading `./`). For the root case (`.` / empty), tsc
+        // treats the lookup key as `index` — so a `{ "*": ["ts3.1/*"] }`
+        // mapping resolves the package root through `ts3.1/index.d.ts`.
+        // This matches `typesVersions.justIndex.ts` and
+        // `typesVersions.multiFile.ts` baselines.
+        const is_root = std.mem.eql(u8, subpath, ".") or subpath.len == 0;
+        const lookup_key: []const u8 = if (is_root) "index" else subpath;
+        // Exact (literal) matches first — tsc's `getPatternFromSpec`
+        // tries exact non-wildcard keys before wildcards.
+        var it_exact = map.iterator();
+        while (it_exact.next()) |e| {
             const pat = e.key_ptr.*;
+            if (std.mem.endsWith(u8, pat, "*")) continue;
+            if (!std.mem.eql(u8, pat, lookup_key)) continue;
             const targets = e.value_ptr.*;
             if (targets != .array) continue;
-            const captured = matchPattern(pat, lookup_key) orelse continue;
             for (targets.array.items) |t| {
                 if (t != .string) continue;
-                const expanded = try expandTarget(self.ar(), t.string, captured);
-                const joined = try self.joinPath(pkg_dir, expanded);
+                const joined = try self.joinPath(pkg_dir, t.string);
                 if (try self.tryFileWithExtensions(joined)) |r| return r;
                 if (try self.tryDirectoryIndex(joined)) |r| return r;
             }
             return null;
+        }
+        // Wildcard pass — pick the LONGEST matching prefix per tsc's
+        // `getPatternFromSpec` ordering rule.
+        var best_prefix_len: usize = 0;
+        var best_targets: ?std.json.Value = null;
+        var best_captured: []const u8 = "";
+        var found_any = false;
+        var it_wild = map.iterator();
+        while (it_wild.next()) |e| {
+            const pat = e.key_ptr.*;
+            if (!std.mem.endsWith(u8, pat, "*")) continue;
+            const targets = e.value_ptr.*;
+            if (targets != .array) continue;
+            const captured = matchPattern(pat, lookup_key) orelse continue;
+            const prefix_len = pat.len - 1;
+            if (found_any and prefix_len < best_prefix_len) continue;
+            found_any = true;
+            best_prefix_len = prefix_len;
+            best_targets = targets;
+            best_captured = captured;
+        }
+        if (best_targets) |targets| {
+            for (targets.array.items) |t| {
+                if (t != .string) continue;
+                // typesVersions targets place the wildcard wherever it
+                // logically substitutes — `ts3.1/*` ends in `*`,
+                // `fallback/*.d.ts` has it INSIDE. Use the FIRST
+                // `*` per tsc's `getPatternFromSpec` (one wildcard
+                // per side). Falls back to literal when no `*`.
+                const expanded = try substituteFirstStar(self.ar(), t.string, best_captured);
+                const joined = try self.joinPath(pkg_dir, expanded);
+                if (try self.tryFileWithExtensions(joined)) |r| return r;
+                if (try self.tryDirectoryIndex(joined)) |r| return r;
+            }
         }
         return null;
     }
@@ -805,6 +923,15 @@ pub fn expandTarget(gpa: std.mem.Allocator, target: []const u8, substitution: []
         return std.fmt.allocPrint(gpa, "{s}{s}", .{ prefix, substitution });
     }
     return gpa.dupe(u8, target);
+}
+
+/// Replace the first `*` in `target` with `substitution`. Matches
+/// tsc's `getPatternFromSpec` semantics: one wildcard per side of
+/// the mapping, substituted positionally. Used by `typesVersions`
+/// target expansion and the exports-pattern walker.
+pub fn substituteFirstStar(gpa: std.mem.Allocator, target: []const u8, substitution: []const u8) ![]const u8 {
+    const at = std.mem.indexOfScalar(u8, target, '*') orelse return gpa.dupe(u8, target);
+    return std.fmt.allocPrint(gpa, "{s}{s}{s}", .{ target[0..at], substitution, target[at + 1 ..] });
 }
 
 // =============================================================================
@@ -1477,4 +1604,295 @@ test "Resolver: package exports — exact-key match beats wildcard pattern" {
     try T.expectEqualStrings("/node_modules/foo/dist/special.d.ts", exact.path);
     const pat = try r.resolve("foo/other", "/a.ts");
     try T.expectEqualStrings("/node_modules/foo/dist/other.d.ts", pat.path);
+}
+
+// =============================================================================
+// Resolver follow-ups: typesVersions root, @types/<pkg> fallback,
+// strategy-gated `exports`, conditional ordering. Each test mirrors a
+// concrete upstream §6.A fixture or its negative-control equivalent.
+// =============================================================================
+
+test "Resolver: typesVersions — root '*' wildcard resolves through `index.d.ts`" {
+    var vfs = VirtualFs.init(T.allocator);
+    defer vfs.deinit();
+    try vfs.addFile("/node_modules/a/package.json",
+        \\{ "typesVersions": { ">=3.1.0-0": { "*": ["ts3.1/*"] } } }
+    );
+    try vfs.addFile("/node_modules/a/ts3.1/index.d.ts", "export const a = 0;");
+    try vfs.addFile("/main.ts", "");
+
+    var r = Resolver.init(T.allocator, vfs.fs(), .{});
+    defer r.deinit();
+    const res = try r.resolve("a", "/main.ts");
+    try T.expectEqualStrings("/node_modules/a/ts3.1/index.d.ts", res.path);
+    try T.expect(res.is_declaration);
+}
+
+test "Resolver: typesVersions — multi-file, root + subpath both go through ts3.1/" {
+    var vfs = VirtualFs.init(T.allocator);
+    defer vfs.deinit();
+    try vfs.addFile("/node_modules/ext/package.json",
+        \\{
+        \\  "name": "ext",
+        \\  "types": "index",
+        \\  "typesVersions": { ">=3.1.0-0": { "*": ["ts3.1/*"] } }
+        \\}
+    );
+    try vfs.addFile("/node_modules/ext/index.d.ts", "");
+    try vfs.addFile("/node_modules/ext/other.d.ts", "");
+    try vfs.addFile("/node_modules/ext/ts3.1/index.d.ts", "");
+    try vfs.addFile("/node_modules/ext/ts3.1/other.d.ts", "");
+    try vfs.addFile("/main.ts", "");
+
+    var r = Resolver.init(T.allocator, vfs.fs(), .{});
+    defer r.deinit();
+    const root = try r.resolve("ext", "/main.ts");
+    try T.expectEqualStrings("/node_modules/ext/ts3.1/index.d.ts", root.path);
+    const sub = try r.resolve("ext/other", "/main.ts");
+    try T.expectEqualStrings("/node_modules/ext/ts3.1/other.d.ts", sub.path);
+}
+
+test "Resolver: typesVersions — exact key beats wildcard pattern" {
+    var vfs = VirtualFs.init(T.allocator);
+    defer vfs.deinit();
+    try vfs.addFile("/node_modules/pkg/package.json",
+        \\{
+        \\  "typesVersions": {
+        \\    ">=4.0": {
+        \\      "special": ["custom/special.d.ts"],
+        \\      "*": ["fallback/*.d.ts"]
+        \\    }
+        \\  }
+        \\}
+    );
+    try vfs.addFile("/node_modules/pkg/custom/special.d.ts", "");
+    try vfs.addFile("/node_modules/pkg/fallback/other.d.ts", "");
+    try vfs.addFile("/main.ts", "");
+
+    var r = Resolver.init(T.allocator, vfs.fs(), .{});
+    defer r.deinit();
+    const exact = try r.resolve("pkg/special", "/main.ts");
+    try T.expectEqualStrings("/node_modules/pkg/custom/special.d.ts", exact.path);
+    const pat = try r.resolve("pkg/other", "/main.ts");
+    try T.expectEqualStrings("/node_modules/pkg/fallback/other.d.ts", pat.path);
+}
+
+test "Resolver: @types/<pkg> fallback — bare pkg with no types resolves through @types" {
+    var vfs = VirtualFs.init(T.allocator);
+    defer vfs.deinit();
+    try vfs.addFile("/node_modules/foo/package.json",
+        \\{ "name": "foo" }
+    );
+    try vfs.addFile("/node_modules/foo/index.js", "");
+    try vfs.addFile("/node_modules/@types/foo/package.json",
+        \\{ "name": "@types/foo" }
+    );
+    try vfs.addFile("/node_modules/@types/foo/index.d.ts", "export const foo: number;");
+    try vfs.addFile("/main.ts", "");
+
+    var r = Resolver.init(T.allocator, vfs.fs(), .{});
+    defer r.deinit();
+    const res = try r.resolve("foo", "/main.ts");
+    try T.expectEqualStrings("/node_modules/@types/foo/index.d.ts", res.path);
+    try T.expect(res.is_declaration);
+}
+
+test "Resolver: @types/<scope>__<name> fallback — scoped pkg flips to flattened types" {
+    var vfs = VirtualFs.init(T.allocator);
+    defer vfs.deinit();
+    try vfs.addFile("/node_modules/@scope/foo/package.json",
+        \\{ "name": "@scope/foo" }
+    );
+    try vfs.addFile("/node_modules/@scope/foo/index.js", "");
+    try vfs.addFile("/node_modules/@types/scope__foo/package.json",
+        \\{ "name": "@types/scope__foo" }
+    );
+    try vfs.addFile("/node_modules/@types/scope__foo/index.d.ts", "");
+    try vfs.addFile("/main.ts", "");
+
+    var r = Resolver.init(T.allocator, vfs.fs(), .{});
+    defer r.deinit();
+    const res = try r.resolve("@scope/foo", "/main.ts");
+    try T.expectEqualStrings("/node_modules/@types/scope__foo/index.d.ts", res.path);
+    try T.expect(res.is_declaration);
+}
+
+test "Resolver: @types fallback respects sibling .js as the implementation" {
+    var vfs = VirtualFs.init(T.allocator);
+    defer vfs.deinit();
+    try vfs.addFile("/node_modules/foo/package.json",
+        \\{ "name": "foo" }
+    );
+    try vfs.addFile("/node_modules/foo/index.js", "");
+    try vfs.addFile("/node_modules/@types/foo/package.json",
+        \\{ "name": "@types/foo" }
+    );
+    try vfs.addFile("/main.ts", "");
+
+    var r = Resolver.init(T.allocator, vfs.fs(), .{});
+    defer r.deinit();
+    const res = try r.resolve("foo", "/main.ts");
+    try T.expectEqualStrings("/node_modules/foo/index.js", res.path);
+    try T.expect(!res.is_declaration);
+}
+
+test "Resolver: node10 strategy IGNORES `exports` — falls through to `main`" {
+    var vfs = VirtualFs.init(T.allocator);
+    defer vfs.deinit();
+    try vfs.addFile("/node_modules/pkg/package.json",
+        \\{
+        \\  "name": "pkg",
+        \\  "main": "./untyped.js",
+        \\  "exports": { ".": "./definitely-not-index.js" }
+        \\}
+    );
+    try vfs.addFile("/node_modules/pkg/untyped.js", "");
+    try vfs.addFile("/main.ts", "");
+
+    var r = Resolver.init(T.allocator, vfs.fs(), .{ .strategy = .node10 });
+    defer r.deinit();
+    const res = try r.resolve("pkg", "/main.ts");
+    try T.expectEqualStrings("/node_modules/pkg/untyped.js", res.path);
+    try T.expect(!res.is_declaration);
+}
+
+test "Resolver: node16 strategy DOES honor `exports` — exports wins over main" {
+    var vfs = VirtualFs.init(T.allocator);
+    defer vfs.deinit();
+    try vfs.addFile("/node_modules/pkg/package.json",
+        \\{
+        \\  "name": "pkg",
+        \\  "main": "./present.js",
+        \\  "exports": { ".": "./definitely-not-index.js" }
+        \\}
+    );
+    try vfs.addFile("/node_modules/pkg/present.js", "");
+    try vfs.addFile("/main.ts", "");
+
+    var r = Resolver.init(T.allocator, vfs.fs(), .{ .strategy = .node16 });
+    defer r.deinit();
+    try T.expectError(error.NotFound, r.resolve("pkg", "/main.ts"));
+}
+
+test "Resolver: package exports — `import` condition string resolves over `default`" {
+    var vfs = VirtualFs.init(T.allocator);
+    defer vfs.deinit();
+    try vfs.addFile("/node_modules/dep/package.json",
+        \\{
+        \\  "exports": {
+        \\    ".": {
+        \\      "import": "./dist/index.mjs",
+        \\      "default": "./dist/index.cjs"
+        \\    }
+        \\  }
+        \\}
+    );
+    try vfs.addFile("/node_modules/dep/dist/index.mjs", "");
+    try vfs.addFile("/node_modules/dep/dist/index.cjs", "");
+    try vfs.addFile("/main.ts", "");
+
+    var r = Resolver.init(T.allocator, vfs.fs(), .{
+        .conditions = &.{ "import", "node" },
+    });
+    defer r.deinit();
+    const res = try r.resolve("dep", "/main.ts");
+    try T.expectEqualStrings("/node_modules/dep/dist/index.mjs", res.path);
+}
+
+test "Resolver: package exports — `require` condition picked when `import` absent" {
+    var vfs = VirtualFs.init(T.allocator);
+    defer vfs.deinit();
+    try vfs.addFile("/node_modules/dep/package.json",
+        \\{
+        \\  "exports": {
+        \\    ".": {
+        \\      "import": "./dist/index.mjs",
+        \\      "require": "./dist/index.cjs"
+        \\    }
+        \\  }
+        \\}
+    );
+    try vfs.addFile("/node_modules/dep/dist/index.mjs", "");
+    try vfs.addFile("/node_modules/dep/dist/index.cjs", "");
+    try vfs.addFile("/main.ts", "");
+
+    var r = Resolver.init(T.allocator, vfs.fs(), .{
+        .conditions = &.{ "require", "node" },
+    });
+    defer r.deinit();
+    const res = try r.resolve("dep", "/main.ts");
+    try T.expectEqualStrings("/node_modules/dep/dist/index.cjs", res.path);
+}
+
+test "Resolver: nestedPackageJsonRedirect — subpath `package.json` reaches into parent dir" {
+    var vfs = VirtualFs.init(T.allocator);
+    defer vfs.deinit();
+    try vfs.addFile("/node_modules/@restart/hooks/package.json",
+        \\{
+        \\  "name": "@restart/hooks",
+        \\  "main": "cjs/index.js",
+        \\  "types": "cjs/index.d.ts",
+        \\  "module": "esm/index.js"
+        \\}
+    );
+    try vfs.addFile("/node_modules/@restart/hooks/useMergedRefs/package.json",
+        \\{
+        \\  "name": "@restart/hooks/useMergedRefs",
+        \\  "private": true,
+        \\  "main": "../cjs/useMergedRefs.js",
+        \\  "module": "../esm/useMergedRefs.js",
+        \\  "types": "../esm/useMergedRefs.d.ts"
+        \\}
+    );
+    try vfs.addFile("/node_modules/@restart/hooks/esm/useMergedRefs.d.ts", "export {};");
+    try vfs.addFile("/main.ts", "");
+
+    var r = Resolver.init(T.allocator, vfs.fs(), .{ .strategy = .node16 });
+    defer r.deinit();
+    const res = try r.resolve("@restart/hooks/useMergedRefs", "/main.ts");
+    try T.expectEqualStrings("/node_modules/@restart/hooks/esm/useMergedRefs.d.ts", res.path);
+    try T.expect(res.is_declaration);
+}
+
+test "Resolver: package exports — null on import condition keeps `types` reachable" {
+    var vfs = VirtualFs.init(T.allocator);
+    defer vfs.deinit();
+    try vfs.addFile("/node_modules/dep/package.json",
+        \\{
+        \\  "exports": {
+        \\    ".": {
+        \\      "types": "./dist/index.d.ts",
+        \\      "import": null,
+        \\      "default": "./dist/index.js"
+        \\    }
+        \\  }
+        \\}
+    );
+    try vfs.addFile("/node_modules/dep/dist/index.d.ts", "");
+    try vfs.addFile("/node_modules/dep/dist/index.js", "");
+    try vfs.addFile("/main.ts", "");
+
+    var r = Resolver.init(T.allocator, vfs.fs(), .{
+        .conditions = &.{ "import", "node" },
+    });
+    defer r.deinit();
+    const res = try r.resolve("dep", "/main.ts");
+    try T.expectEqualStrings("/node_modules/dep/dist/index.d.ts", res.path);
+    try T.expect(res.is_declaration);
+}
+
+test "Resolver: relative import lands in node_modules pkg via index.js" {
+    var vfs = VirtualFs.init(T.allocator);
+    defer vfs.deinit();
+    try vfs.addFile("/node_modules/foo/package.json",
+        \\{ "name": "foo" }
+    );
+    try vfs.addFile("/node_modules/foo/index.js", "");
+    try vfs.addFile("/a.ts", "");
+
+    var r = Resolver.init(T.allocator, vfs.fs(), .{});
+    defer r.deinit();
+    const res = try r.resolve("./node_modules/foo", "/a.ts");
+    try T.expectEqualStrings("/node_modules/foo/index.js", res.path);
+    try T.expect(!res.is_declaration);
 }
