@@ -216,6 +216,8 @@ pub const TsCodes = struct {
     pub const decorator_or_modifier_on_this_parameter: u32 = 1433;
     pub const this_parameter_must_be_first: u32 = 2680;
     pub const no_exported_member_suggestion: u32 = 2724;
+    pub const class_name_object_es5_module: u32 = 2725;
+    pub const ts_only_decl_in_js: u32 = 8006;
     pub const no_exported_member: u32 = 2305;
     pub const export_assignment_es_module: u32 = 1203;
     pub const export_non_local_declaration: u32 = 2661;
@@ -510,6 +512,7 @@ const DeclarationKey = struct {
 const ExportAssignmentSection = struct {
     export_assignment: NodeId = hir_mod.none_node_id,
     has_other_export: bool = false,
+    all_export_assignments: std.ArrayListUnmanaged(NodeId) = .empty,
 };
 
 pub const StrictFlags = struct {
@@ -1923,6 +1926,7 @@ pub const Checker = struct {
             if (self.hir.kindOf(node) == .namespace_decl) {
                 if (self.namespaceIsAmbient(node)) continue;
                 const ns_name = self.declarationName(node) orelse continue;
+                const node_section = self.virtualSectionStartForNode(node);
                 for (stmts[i + 1 ..]) |later_raw| {
                     const later = self.unwrapExportDecl(later_raw);
                     const later_name = self.declarationName(later) orelse continue;
@@ -1930,6 +1934,14 @@ pub const Checker = struct {
                     if ((later_kind == .fn_decl or later_kind == .fn_expr or later_kind == .class_decl or later_kind == .class_expr) and
                         later_name == ns_name)
                     {
+                        // Namespace + class/fn merging is only valid
+                        // within the same module — and tsc only emits
+                        // TS2434 in that case. For multi-file fixtures
+                        // (`// @filename:` virtual sections), each
+                        // section is a separate module, so a namespace
+                        // in `foo3.ts` doesn't merge with a class of
+                        // the same name in `foo4.ts`.
+                        if (self.virtualSectionStartForNode(later) != node_section) continue;
                         try self.report(node, TsCodes.namespace_before_merged_function, "A namespace declaration cannot be located prior to a class or function with which it is merged.");
                         break;
                     }
@@ -2475,7 +2487,11 @@ pub const Checker = struct {
 
     fn checkExportAssignmentExclusivity(self: *Checker, stmts: []const NodeId) CheckError!void {
         var by_section: std.AutoHashMapUnmanaged(usize, ExportAssignmentSection) = .empty;
-        defer by_section.deinit(self.gpa);
+        defer {
+            var it = by_section.valueIterator();
+            while (it.next()) |v| v.all_export_assignments.deinit(self.gpa);
+            by_section.deinit(self.gpa);
+        }
 
         for (stmts) |stmt| {
             if (self.hir.kindOf(stmt) != .export_decl) continue;
@@ -2483,7 +2499,10 @@ pub const Checker = struct {
             const gop = try by_section.getOrPut(self.gpa, section);
             if (!gop.found_existing) gop.value_ptr.* = .{};
             if (self.isExportAssignmentDecl(stmt)) {
-                gop.value_ptr.export_assignment = stmt;
+                if (gop.value_ptr.export_assignment == hir_mod.none_node_id) {
+                    gop.value_ptr.export_assignment = stmt;
+                }
+                try gop.value_ptr.all_export_assignments.append(self.gpa, stmt);
             } else {
                 gop.value_ptr.has_other_export = true;
             }
@@ -2501,8 +2520,22 @@ pub const Checker = struct {
         var it = by_section.valueIterator();
         while (it.next()) |info| {
             if (info.export_assignment == hir_mod.none_node_id) continue;
-            if (target_is_esm) {
+            if (target_is_esm and !self.virtualSectionIsDeclarationFile(info.export_assignment)) {
                 try self.report(info.export_assignment, TsCodes.export_assignment_es_module, "Export assignment cannot be used when targeting ECMAScript modules. Consider using 'export default' or another module format instead.");
+                continue;
+            }
+            if (target_is_esm) continue;
+            // TS2300 — `export = X; export = Y;` in the same module
+            // (or virtual section). tsc emits "Duplicate identifier
+            // 'export='." anchored on the *target* expression of each
+            // export assignment so the column matches `export = x` →
+            // col-of-`x`. Mirrors `duplicateExportAssignments.ts`.
+            if (info.all_export_assignments.items.len >= 2) {
+                for (info.all_export_assignments.items) |ea| {
+                    const ex = hir_mod.exportOf(self.hir, ea);
+                    const anchor = if (ex.decl != hir_mod.none_node_id) ex.decl else ea;
+                    try self.reportAt(anchor, null, TsCodes.duplicate_identifier, "Duplicate identifier 'export='.");
+                }
                 continue;
             }
             if (info.has_other_export) {
@@ -8355,6 +8388,45 @@ pub const Checker = struct {
     }
 
     /// Lower a class declaration into an instance object type. Each
+    /// TS2725 — `export class Object {}` is forbidden when the
+    /// emit target is ES5+ and the module format is CommonJS / UMD
+    /// (which would conflict with the global `Object` symbol the
+    /// emitter pulls in). Fires only on classes whose name is
+    /// literally `Object` and only on the export-prefixed forms
+    /// (`export class Object`, `export default class Object`) since
+    /// those are what tsc reports — non-exported `class Object` is
+    /// still permitted.
+    fn checkClassNamedObjectInCommonJsLikeModule(self: *Checker, node: NodeId) CheckError!void {
+        const c = hir_mod.classOf(self.hir, node);
+        if (c.name == hir_mod.none_node_id or self.hir.kindOf(c.name) != .identifier) return;
+        const id = hir_mod.identifierOf(self.hir, c.name);
+        if (!std.mem.eql(u8, self.string_interner.get(id.name), "Object")) return;
+        const parent = self.hir.parentOf(node);
+        if (parent == hir_mod.none_node_id or self.hir.kindOf(parent) != .export_decl) return;
+        if (self.classHasLeadingDeclare(node)) return;
+        if (self.virtualSectionIsDeclarationFile(node)) return;
+        const module_label: []const u8 = if (self.sourceDirectiveValueMentions("module", "commonjs"))
+            "CommonJS"
+        else if (self.sourceDirectiveValueMentions("module", "umd"))
+            "UMD"
+        else if (self.sourceDirectiveValueMentions("module", "amd"))
+            "AMD"
+        else if (self.sourceDirectiveValueMentions("module", "system"))
+            "System"
+        else
+            return;
+        const msg = try std.fmt.allocPrint(
+            self.diag_arena.allocator(),
+            "Class name cannot be 'Object' when targeting ES5 and above with module {s}.",
+            .{module_label},
+        );
+        try self.diagnostics.append(self.gpa, .{
+            .node = c.name,
+            .code = TsCodes.class_name_object_es5_module,
+            .message = msg,
+        });
+    }
+
     /// method becomes an object member typed as a signature; each
     /// declared field becomes an object member typed as the
     /// annotation (or the initializer's type, or `any`).
@@ -8366,6 +8438,7 @@ pub const Checker = struct {
         const members = hir_mod.classMembers(self.hir, node);
         try self.checkClassMemberDecoratorDiagnostics(members);
         try self.detectClassMemberDuplicates(members);
+        try self.checkClassNamedObjectInCommonJsLikeModule(node);
         const class_name_scope = c.name != hir_mod.none_node_id and
             self.hir.kindOf(c.name) == .identifier;
         if (class_name_scope) {
@@ -11710,6 +11783,7 @@ pub const Checker = struct {
             );
             try self.diagnostics.append(self.gpa, .{
                 .node = node,
+                .pos = self.moduleSpecifierQuotePos(node, spec),
                 .code = TsCodes.cannot_find_module,
                 .message = msg,
             });
@@ -11745,6 +11819,7 @@ pub const Checker = struct {
         );
         try self.diagnostics.append(self.gpa, .{
             .node = node,
+            .pos = self.moduleSpecifierQuotePos(node, spec),
             .code = TsCodes.cannot_find_module,
             .message = msg,
         });
@@ -13374,6 +13449,7 @@ pub const Checker = struct {
     fn checkInterfaceDecl(self: *Checker, node: NodeId) CheckError!void {
         const it = hir_mod.interfaceOf(self.hir, node);
         const members = hir_mod.interfaceMembers(self.hir, node);
+        try self.checkTsOnlyDeclInJs(node, "interface", it.name);
         const type_params = self.hir.childSlice(it.type_params_start, it.type_params_len);
         try self.checkTypeParameterDeclList(type_params);
         if (type_params.len > 0) try self.pushNarrowScope();
@@ -14064,6 +14140,7 @@ pub const Checker = struct {
     /// enum` inlining.
     fn checkEnumDecl(self: *Checker, node: NodeId) CheckError!void {
         const e = hir_mod.enumOf(self.hir, node);
+        try self.checkTsOnlyDeclInJs(node, "enum", e.name);
         const enum_name: hir_mod.StringId = blk: {
             if (self.hir.kindOf(e.name) != .identifier) return;
             break :blk hir_mod.identifierOf(self.hir, e.name).name;
@@ -19240,6 +19317,26 @@ pub const Checker = struct {
             std.mem.endsWith(u8, filename, ".jsx") or
             std.mem.endsWith(u8, filename, ".mjs") or
             std.mem.endsWith(u8, filename, ".cjs");
+    }
+
+    /// TS8006 — `interface` / `enum` / `namespace` / `type` declarations
+    /// inside a `.js` virtual section. Mirrors upstream tsc which gates
+    /// these declarations behind the TypeScript syntax. Anchored at the
+    /// position of the declaration's name identifier so the column
+    /// matches `index.js(4,18)` for `export interface A {}`.
+    fn checkTsOnlyDeclInJs(self: *Checker, node: NodeId, kind: []const u8, name_node: NodeId) CheckError!void {
+        if (!self.virtualSectionIsJsLike(node)) return;
+        const msg = try std.fmt.allocPrint(
+            self.diag_arena.allocator(),
+            "'{s}' declarations can only be used in TypeScript files.",
+            .{kind},
+        );
+        const anchor = if (name_node != hir_mod.none_node_id) name_node else node;
+        try self.diagnostics.append(self.gpa, .{
+            .node = anchor,
+            .code = TsCodes.ts_only_decl_in_js,
+            .message = msg,
+        });
     }
 
     /// True when the function declaration/expression at `fn_node` has
