@@ -15086,10 +15086,24 @@ pub const Checker = struct {
         var import_path: std.ArrayListUnmanaged(hir_mod.StringId) = .empty;
         defer import_path.deinit(self.gpa);
         if (try self.appendImportEqualsNamespacePathForLocal(&import_path, root_name, type_node)) return true;
-        const root = self.rootBlockFor(type_node);
-        if (root == hir_mod.none_node_id or self.hir.kindOf(root) != .block_stmt) return false;
+        // Walk up enclosing namespace bodies + the source root so a
+        // sibling `namespace M { … }` is visible to qualified-type
+        // refs from within other namespaces. Mirrors `importStatements`
+        // (a namespace alias declared in a sibling block).
         const one = [_]hir_mod.StringId{root_name};
-        return self.findNamespaceByPath(hir_mod.blockStmts(self.hir, root), &one) != null;
+        var cur = type_node;
+        while (cur != hir_mod.none_node_id) {
+            const stmts: []const NodeId = blk: {
+                if (self.hir.kindOf(cur) == .block_stmt) break :blk hir_mod.blockStmts(self.hir, cur);
+                if (self.hir.kindOf(cur) == .namespace_decl) break :blk hir_mod.namespaceBody(self.hir, cur);
+                break :blk &[_]NodeId{};
+            };
+            if (stmts.len > 0 and self.findNamespaceByPath(stmts, &one) != null) return true;
+            const parent = self.hir.parentOf(cur);
+            if (parent == cur or parent == hir_mod.none_node_id) break;
+            cur = parent;
+        }
+        return false;
     }
 
     fn resolveQualifiedImportNamespaceTypeRef(
