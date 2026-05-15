@@ -7587,7 +7587,18 @@ pub const Checker = struct {
                     (self.parameterDefaultInvalid(default_t, declared_param_t) or
                         !(self.engine.isAssignableTo(default_t, declared_param_t) catch true)))
                 {
-                    try self.report(p, TsCodes.type_not_assignable, "Parameter initializer is not assignable to parameter type.");
+                    // Anchor at the parameter NAME with the full
+                    // `Type 'X' is not assignable to type 'Y'.` prose
+                    // so the column matches upstream — `(3,17)`
+                    // points at the `x` in `x: T = null`. Mirrors
+                    // `genericCallWithObjectTypeArgsAndInitializers.ts`.
+                    const anchor = if (pp.name != hir_mod.none_node_id) pp.name else p;
+                    try self.reportTypeNotAssignable(
+                        anchor,
+                        default_t,
+                        declared_param_t,
+                        "Parameter initializer is not assignable to parameter type.",
+                    );
                 }
             }
             // TS2370 — `function f(...x: T)` requires `T` to be an
