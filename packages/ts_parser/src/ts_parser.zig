@@ -1197,10 +1197,10 @@ pub const Parser = struct {
         }
         try self.reportCodeAt(start.span.start, start.line, 2410, "The 'with' statement is not supported. All symbols in a 'with' block will have type 'any'.");
         _ = try self.expect(.open_paren, "'(' after 'with'");
-        _ = try self.parseExpression();
+        const object_expr = try self.parseExpression();
         _ = try self.expect(.close_paren, "')' after with expression");
         const body = try self.parseNestedStatement();
-        return try self.builder.addBlock(.{ .start = start.span.start, .end = self.hir.spanOf(body).end }, &.{body});
+        return try self.builder.addBlock(.{ .start = start.span.start, .end = self.hir.spanOf(body).end }, &.{ object_expr, body });
     }
 
     fn parseBreakStatement(self: *Parser) ParseError!NodeId {

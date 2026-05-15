@@ -107,6 +107,7 @@ pub const TsCodes = struct {
     pub const overload_must_not_be_static: u32 = 2388;
     pub const implementation_missing: u32 = 2391;
     pub const for_in_left_type: u32 = 2405;
+    pub const for_in_left_invalid: u32 = 2406;
     pub const for_in_right_type: u32 = 2407;
     pub const subsequent_var_type_mismatch: u32 = 2403;
     pub const interface_incorrectly_extends: u32 = 2430;
@@ -1309,22 +1310,10 @@ pub const Checker = struct {
                 // `for (let k in obj)` — `k` types to `string`
                 // regardless of `obj`'s shape (matches tsc).
                 const fr = hir_mod.forInOf(self.hir, node);
+                try self.checkForInTarget(fr.target);
                 const src_t = try self.checkExpression(fr.source);
                 if (self.typeContainsSymbol(src_t)) {
                     try self.report(fr.source, TsCodes.for_in_right_type, "The right-hand side of a 'for...in' statement must be of type 'any', an object type or a type parameter, but here has type 'symbol'.");
-                }
-                if (fr.target != hir_mod.none_node_id and self.hir.kindOf(fr.target) == .identifier) {
-                    const target_id = hir_mod.identifierOf(self.hir, fr.target);
-                    var has_prior_binding = self.localValueDeclExistsBefore(node, target_id.name);
-                    if (!has_prior_binding) {
-                        if (self.module) |module| has_prior_binding = module.root.lookup(target_id.name) != null;
-                    }
-                    if (has_prior_binding) {
-                        const target_t = try self.checkExpression(fr.target);
-                        if (self.typeContainsSymbol(target_t)) {
-                            try self.report(fr.target, TsCodes.for_in_left_type, "The left-hand side of a 'for...in' statement must be of type 'string' or 'any'.");
-                        }
-                    }
                 }
                 try self.bindForLoopTarget(fr.target, types.Primitive.string_t);
                 try self.checkStatement(fr.body);
@@ -29731,6 +29720,82 @@ pub const Checker = struct {
             },
             else => {},
         }
+    }
+
+    fn checkForInTarget(self: *Checker, target: NodeId) CheckError!void {
+        if (target == hir_mod.none_node_id) return;
+        switch (self.hir.kindOf(target)) {
+            .var_decl,
+            .let_decl,
+            .const_decl,
+            .object_pattern,
+            .array_pattern,
+            .object_literal,
+            .array_literal,
+            => return,
+            .identifier,
+            .member_access,
+            .element_access,
+            => {
+                if (self.hir.kindOf(target) == .identifier) {
+                    const id = hir_mod.identifierOf(self.hir, target);
+                    if (std.mem.eql(u8, self.string_interner.get(id.name), "this")) {
+                        try self.report(target, TsCodes.for_in_left_type, "The left-hand side of a 'for...in' statement must be of type 'string' or 'any'.");
+                        return;
+                    }
+                }
+                const t = try self.checkExpression(target);
+                if (self.hir.kindOf(target) == .identifier and
+                    t == types.Primitive.undefined_t and
+                    self.identifierIsUntypedUninitializedVar(target))
+                {
+                    return;
+                }
+                if (!self.forInTargetTypeAllowed(t)) {
+                    try self.report(target, TsCodes.for_in_left_type, "The left-hand side of a 'for...in' statement must be of type 'string' or 'any'.");
+                }
+            },
+            .assignment => {
+                const t = try self.checkExpression(target);
+                if (!self.forInTargetTypeAllowed(t)) {
+                    try self.report(target, TsCodes.for_in_left_type, "The left-hand side of a 'for...in' statement must be of type 'string' or 'any'.");
+                }
+            },
+            .this_expr => {
+                try self.report(target, TsCodes.for_in_left_type, "The left-hand side of a 'for...in' statement must be of type 'string' or 'any'.");
+            },
+            .new_expr => {
+                try self.report(target, TsCodes.for_in_left_invalid, "The left-hand side of a 'for...in' statement must be a variable or a property access.");
+                _ = try self.checkExpression(target);
+            },
+            .call_expr => {
+                _ = try self.checkExpression(target);
+                try self.report(target, TsCodes.for_in_left_invalid, "The left-hand side of a 'for...in' statement must be a variable or a property access.");
+            },
+            else => {
+                _ = try self.checkExpression(target);
+                try self.report(target, TsCodes.for_in_left_invalid, "The left-hand side of a 'for...in' statement must be a variable or a property access.");
+            },
+        }
+    }
+
+    fn forInTargetTypeAllowed(self: *Checker, t: TypeId) bool {
+        if (self.typeIsAnyLike(t)) return true;
+        if (t >= self.interner.pool.typeCount()) return false;
+        const f = self.interner.pool.flagsOf(t);
+        if (f.is_string) return true;
+        if (f.is_union) {
+            for (self.interner.unionMembers(t)) |member| {
+                if (!self.forInTargetTypeAllowed(member)) return false;
+            }
+            return true;
+        }
+        if (f.is_intersection) {
+            for (self.interner.intersectionMembers(t)) |member| {
+                if (self.forInTargetTypeAllowed(member)) return true;
+            }
+        }
+        return false;
     }
 
     fn checkForOfTarget(self: *Checker, target: NodeId) CheckError!void {
