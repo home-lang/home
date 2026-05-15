@@ -6542,7 +6542,11 @@ pub const Parser = struct {
                 const operand = try self.parseUnaryExpression();
                 if (!self.isValidUpdateOperand(operand)) {
                     const operand_span = self.hir.spanOf(operand);
-                    try self.reportCodeAt(operand_span.start, t.line, 2357, "The operand of an increment or decrement operator must be a variable or a property access.");
+                    if (self.prefixUpdateUsesArithmeticOperandDiagnostic(operand)) {
+                        try self.reportCodeAt(operand_span.start, t.line, 2356, "An arithmetic operand must be of type 'any', 'number', 'bigint' or an enum type.");
+                    } else {
+                        try self.reportCodeAt(operand_span.start, t.line, 2357, "The operand of an increment or decrement operator must be a variable or a property access.");
+                    }
                     if (self.isThisIdentifier(operand)) {
                         return try self.builder.addLiteralNumber(operand_span, 1);
                     }
@@ -7039,6 +7043,16 @@ pub const Parser = struct {
                     const id = self.interner.intern("new.target") catch return error.OutOfMemory;
                     return try self.builder.addIdentifier(.{ .start = new_tok.span.start, .end = target_tok.span.end }, id);
                 }
+                if (self.peekAt(1).kind == .less_than) {
+                    const less = self.peekAt(1);
+                    try self.reportCodeAt(less.span.start, less.line, 1109, "Expression expected.");
+                    const name_tok = self.peekAt(2);
+                    if (name_tok.kind == .identifier or name_tok.kind.isContextualKeyword()) {
+                        const name_text = self.source[name_tok.span.start..name_tok.span.end];
+                        const msg = try std.fmt.allocPrint(self.diag_arena.allocator(), "Cannot find name '{s}'.", .{name_text});
+                        try self.reportCodeAt(name_tok.span.start, name_tok.line, 2304, msg);
+                    }
+                }
                 _ = self.advance();
                 // Lowered as a dedicated `new_expr` so the checker can
                 // produce the class instance type rather than the
@@ -7192,6 +7206,14 @@ pub const Parser = struct {
         return switch (self.hir.kindOf(operand)) {
             .identifier => !self.isThisIdentifier(operand),
             .member_access, .element_access => true,
+            else => false,
+        };
+    }
+
+    fn prefixUpdateUsesArithmeticOperandDiagnostic(self: *const Parser, operand: NodeId) bool {
+        return switch (self.hir.kindOf(operand)) {
+            .array_literal, .object_literal, .fn_decl, .fn_expr => true,
+            .identifier => self.isThisIdentifier(operand),
             else => false,
         };
     }
@@ -9660,6 +9682,17 @@ test "parser: new.target is accepted in functions and rejected at top level" {
     try T.expect(found);
 }
 
+test "parser: new expression before type assertion recovers like tsc" {
+    var s = try newTestSetup("new <T>Foo();");
+    defer destroyTestSetup(s);
+
+    _ = try s.parser.parseSourceFile();
+    try T.expectEqual(@as(usize, 2), s.parser.diagnostics.items.len);
+    try T.expectEqual(@as(u32, 1109), s.parser.diagnostics.items[0].code);
+    try T.expectEqual(@as(u32, 2304), s.parser.diagnostics.items[1].code);
+    try T.expectEqualStrings("Cannot find name 'T'.", s.parser.diagnostics.items[1].message);
+}
+
 test "parser: type assertion records union and intersection assertion types" {
     var s = try newTestSetup("let x = <A & B>value; let y = <A | B>value;");
     defer destroyTestSetup(s);
@@ -10851,14 +10884,25 @@ test "parser: prefix and postfix update expressions lower to compound assignment
     try T.expectEqual(@as(?hir_mod.BinOp, .sub), hir_mod.assignmentOf(&s.hir, stmts[2]).op);
 }
 
-test "parser: update expression reports invalid operand diagnostic" {
-    var s = try newTestSetup("++[0]; ++this;");
+test "parser: prefix update expression reports arithmetic operand diagnostic for expression operands" {
+    var s = try newTestSetup("++this; ++function(e) {}; ++[0]; ++{};");
     defer destroyTestSetup(s);
 
     _ = try s.parser.parseSourceFile();
-    try T.expectEqual(@as(usize, 2), s.parser.diagnostics.items.len);
+    try T.expectEqual(@as(usize, 4), s.parser.diagnostics.items.len);
+    try T.expectEqual(@as(u32, 2356), s.parser.diagnostics.items[0].code);
+    try T.expectEqual(@as(u32, 2356), s.parser.diagnostics.items[1].code);
+    try T.expectEqual(@as(u32, 2356), s.parser.diagnostics.items[2].code);
+    try T.expectEqual(@as(u32, 2356), s.parser.diagnostics.items[3].code);
+}
+
+test "parser: prefix update expression reports invalid operand diagnostic for new expression" {
+    var s = try newTestSetup("++new Foo();");
+    defer destroyTestSetup(s);
+
+    _ = try s.parser.parseSourceFile();
+    try T.expectEqual(@as(usize, 1), s.parser.diagnostics.items.len);
     try T.expectEqual(@as(u32, 2357), s.parser.diagnostics.items[0].code);
-    try T.expectEqual(@as(u32, 2357), s.parser.diagnostics.items[1].code);
 }
 
 test "parser: regex literal reports unbalanced group" {
