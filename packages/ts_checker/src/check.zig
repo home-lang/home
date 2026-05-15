@@ -316,6 +316,13 @@ pub const TsCodes = struct {
     /// TS2526 — `this` used as a type outside a non-static class or
     /// interface member.
     pub const this_type_outside_class: u32 = 2526;
+    /// TS1501 — a regular expression flag (e.g. `u`, `y`, `s`, `d`,
+    /// `v`) was used while compiling for a script target older than
+    /// the version that introduced the flag. Emitted at the byte
+    /// position of the offending flag character so the rendered
+    /// `(line, col)` lines up with the closing-`/`-relative offset
+    /// upstream tsc reports.
+    pub const regex_flag_requires_target: u32 = 1501;
 };
 
 /// Per-alias generic info: the type-parameter TypeIds in
@@ -4179,6 +4186,124 @@ pub const Checker = struct {
             self.sourceDirectiveValueMentions("target", "es2016");
     }
 
+    /// True when the source carries a `// @target` directive that
+    /// mentions ES5 (or ES3) — used to gate `TS1501` for regex flags
+    /// introduced after ES5 (`u`, `y`, `s`, `d`, `v`). Mirrors the
+    /// `report_deprecated_target_es5` driver hook the conformance
+    /// harness sets when picking a `(target=es5).errors.txt`
+    /// baseline; both diagnostics are paired in upstream tsc.
+    /// Walks raw source lines directly (rather than going through
+    /// `sourceDirectiveValueMentions`) so a leading UTF-8 BOM
+    /// (`\xEF\xBB\xBF`) on the first directive line still matches —
+    /// that helper's `startsWith("//")` check otherwise refuses the
+    /// BOM-prefixed first line and silently drops the directive.
+    fn sourceTargetMentionsEs5(self: *Checker) bool {
+        const raw = self.source orelse return false;
+        const src = if (raw.len >= 3 and raw[0] == 0xEF and raw[1] == 0xBB and raw[2] == 0xBF)
+            raw[3..]
+        else
+            raw;
+        var lines = std.mem.splitScalar(u8, src, '\n');
+        while (lines.next()) |raw_line| {
+            const line = std.mem.trim(u8, raw_line, " \t\r");
+            if (line.len == 0) continue;
+            if (!std.mem.startsWith(u8, line, "//")) break;
+            const at = std.mem.indexOfScalar(u8, line, '@') orelse continue;
+            var rest = line[at + 1 ..];
+            if (!std.mem.startsWith(u8, rest, "target")) continue;
+            rest = std.mem.trim(u8, rest["target".len..], " \t\r:");
+            var parts = std.mem.splitScalar(u8, rest, ',');
+            while (parts.next()) |part| {
+                const trimmed = std.mem.trim(u8, part, " \t\r");
+                if (std.ascii.eqlIgnoreCase(trimmed, "es3")) return true;
+                if (std.ascii.eqlIgnoreCase(trimmed, "es5")) return true;
+            }
+        }
+        return false;
+    }
+
+    /// Required script-target name for a regex flag character. Returns
+    /// `null` when the flag is available everywhere (e.g. `g`, `i`,
+    /// `m`) or unknown.
+    fn regexFlagRequiredTarget(flag: u8) ?[]const u8 {
+        return switch (flag) {
+            // ES2015 / ES6 introductions.
+            'u', 'y' => "es6",
+            // ES2018.
+            's' => "es2018",
+            // ES2022.
+            'd' => "es2022",
+            // ES2024.
+            'v' => "es2024",
+            else => null,
+        };
+    }
+
+    /// Scan a regex literal's source bytes and emit `TS1501` for each
+    /// trailing flag whose required script target is newer than the
+    /// fixture's compile target. Position points at the flag byte —
+    /// `positionToLineCol` then renders the same `(line, col)` upstream
+    /// tsc emits (column = `/`-position + 1 + flag-offset).
+    fn checkRegexFlagsForTarget(self: *Checker, node: NodeId) CheckError!void {
+        if (!self.sourceTargetMentionsEs5()) return;
+        const src = self.source orelse return;
+        const span = self.hir.spanOf(node);
+        const start: usize = @intCast(span.start);
+        const end: usize = @intCast(span.end);
+        if (start >= src.len or end > src.len or end <= start) return;
+        const slice = src[start..end];
+        // Walk to find the closing `/` (the one that separates the
+        // pattern from flags). Mirrors `findRegexLiteralEnd` in
+        // ts_parser — track `\\` escape and `[...]` character class so
+        // a `/` inside doesn't terminate early.
+        if (slice.len < 2 or slice[0] != '/') return;
+        var i: usize = 1;
+        var escaped = false;
+        var in_class = false;
+        var close_off: ?usize = null;
+        while (i < slice.len) : (i += 1) {
+            const c = slice[i];
+            if (escaped) {
+                escaped = false;
+                continue;
+            }
+            if (c == '\\') {
+                escaped = true;
+                continue;
+            }
+            if (c == '[') {
+                in_class = true;
+                continue;
+            }
+            if (c == ']' and in_class) {
+                in_class = false;
+                continue;
+            }
+            if (c == '/' and !in_class) {
+                close_off = i;
+                break;
+            }
+        }
+        const close_idx = close_off orelse return;
+        var flag_off: usize = close_idx + 1;
+        while (flag_off < slice.len) : (flag_off += 1) {
+            const flag = slice[flag_off];
+            const required = regexFlagRequiredTarget(flag) orelse continue;
+            const flag_pos: u32 = @intCast(start + flag_off);
+            const msg = try std.fmt.allocPrint(
+                self.diag_arena.allocator(),
+                "This regular expression flag is only available when targeting '{s}' or later.",
+                .{required},
+            );
+            try self.diagnostics.append(self.gpa, .{
+                .node = node,
+                .pos = flag_pos,
+                .code = TsCodes.regex_flag_requires_target,
+                .message = msg,
+            });
+        }
+    }
+
     fn sourceHasAllowUnreachableTrueDirective(self: *Checker) bool {
         const src = self.source orelse return false;
         return std.mem.indexOf(u8, src, "@allowUnreachableCode: true") != null or
@@ -7611,6 +7736,13 @@ pub const Checker = struct {
         defer static_members.deinit(self.gpa);
         var ctor_sig: TypeId = types.Primitive.none;
         var has_explicit_ctor = false;
+        // Constructor overload tracking. tsc fires TS2390 (Constructor
+        // implementation is missing) when one or more `constructor()`
+        // signatures appear without a body and there's no concrete
+        // `constructor(...) { … }` to satisfy them.
+        var ctor_first_bodyless: NodeId = hir_mod.none_node_id;
+        var ctor_bodyless_count: u32 = 0;
+        var ctor_impl_count: u32 = 0;
         var string_idx: TypeId = types.Primitive.none;
         var number_idx: TypeId = types.Primitive.none;
         var symbol_idx: TypeId = types.Primitive.none;
@@ -7734,6 +7866,12 @@ pub const Checker = struct {
                     if (fn_p.flags.is_constructor) {
                         ctor_sig = sig;
                         has_explicit_ctor = true;
+                        if (fn_p.body == hir_mod.none_node_id) {
+                            if (ctor_first_bodyless == hir_mod.none_node_id) ctor_first_bodyless = m;
+                            ctor_bodyless_count += 1;
+                        } else {
+                            ctor_impl_count += 1;
+                        }
                         const ctor_params = hir_mod.fnParams(self.hir, m);
                         for (ctor_params) |param_node| {
                             const pp = hir_mod.parameterOf(self.hir, param_node);
@@ -8123,7 +8261,15 @@ pub const Checker = struct {
                         !self.classNodeIsInsideAmbientDeclaredModule(node))
                     {
                         const field_name = self.string_interner.get(member_name);
-                        const msg = try std.fmt.allocPrint(
+                        // Computed `[Symbol.X]` fields are interned as
+                        // `Symbol.X` (no brackets). Upstream tsc renders
+                        // them with brackets in TS2564 — restore them
+                        // here so the exact baseline matches.
+                        const msg = if (std.mem.startsWith(u8, field_name, "Symbol.")) try std.fmt.allocPrint(
+                            self.diag_arena.allocator(),
+                            "Property '[{s}]' has no initializer and is not definitely assigned in the constructor.",
+                            .{field_name},
+                        ) else try std.fmt.allocPrint(
                             self.diag_arena.allocator(),
                             "Property '{s}' has no initializer and is not definitely assigned in the constructor.",
                             .{field_name},
@@ -8153,6 +8299,18 @@ pub const Checker = struct {
         }
         try self.checkClassMethodMissingImplementations(node, &method_seen);
         try self.checkClassMethodMissingImplementations(node, &static_method_seen);
+        // §6.A 2000-3000 ratchet: tsc fires TS2390 when a class has
+        // one or more `constructor(): T;` overload signatures but no
+        // implementation `constructor(...) { … }`. Skip in ambient
+        // (`declare class`) and `.d.ts` contexts where bodyless
+        // signatures are valid declarations.
+        if (ctor_bodyless_count > 0 and ctor_impl_count == 0 and
+            ctor_first_bodyless != hir_mod.none_node_id and
+            !self.classHasLeadingDeclare(node) and
+            !self.virtualSectionIsDeclarationFile(node))
+        {
+            try self.report(ctor_first_bodyless, TsCodes.constructor_implementation_missing, "Constructor implementation is missing.");
+        }
         try self.reportMissingOverrideForUnknownLocalBase(node, members, parent_instance_t);
 
         // `extends Parent`: prepend any inherited members the child
@@ -17185,9 +17343,13 @@ pub const Checker = struct {
         }
         if (self.strict_flags.strict_null_checks and v.name != hir_mod.none_node_id and v.init != hir_mod.none_node_id) {
             const nk = self.hir.kindOf(v.name);
-            if (nk == .array_pattern and (self.typeIncludesNull(init_type) or self.typeIncludesUndefined(init_type))) {
+            if (nk == .array_pattern and (self.typeIncludesNull(init_type) or self.typeIncludesUndefined(init_type)) and !self.typeIsAnyLike(init_type)) {
                 try self.report(v.init, TsCodes.yield_star_not_iterable, "Type must have a '[Symbol.iterator]()' method that returns an iterator.");
-            } else if (nk == .object_pattern and (init_type == types.Primitive.void_t or self.typeIncludesUndefined(init_type))) {
+            } else if (nk == .object_pattern and (init_type == types.Primitive.void_t or self.typeIncludesUndefined(init_type)) and !self.typeIsAnyLike(init_type)) {
+                // `any` (and `<any>` cast targets) intentionally
+                // bypass strict-null narrowing checks — destructuring
+                // from `any` does not carry an "object possibly
+                // undefined" risk in tsc, so suppress TS2532 here.
                 try self.report(v.init, TsCodes.object_possibly_undefined, "Object is possibly 'undefined'.");
             }
         }
@@ -18617,7 +18779,10 @@ pub const Checker = struct {
             .literal_bool => types.Primitive.boolean_t,
             .literal_null => types.Primitive.null_t,
             .literal_undefined => types.Primitive.undefined_t,
-            .literal_regex => self.lowerBuiltinObjectType("RegExp") orelse types.Primitive.object_t,
+            .literal_regex => blk_regex: {
+                try self.checkRegexFlagsForTarget(node);
+                break :blk_regex self.lowerBuiltinObjectType("RegExp") orelse types.Primitive.object_t;
+            },
             .identifier => self.typeOfIdentifier(node),
             .this_expr => try self.checkThisExpression(node),
             .spread => blk: {
@@ -19221,7 +19386,26 @@ pub const Checker = struct {
                 }
                 if (callee_t != types.Primitive.any and callee_t != types.Primitive.unknown) {
                     if (self.callableObjectHasOnlyConstructSignatures(callee_t)) {
-                        if (try self.allocSimpleTypeName(callee_t)) |name| {
+                        // Class static-side types aren't in
+                        // `type_names`; walk `class_static_types`
+                        // to render the constructor as
+                        // `typeof <ClassName>` (matches tsc).
+                        var rendered_name: ?[]const u8 = try self.allocSimpleTypeName(callee_t);
+                        if (rendered_name == null) {
+                            var sit = self.class_static_types.iterator();
+                            while (sit.next()) |entry| {
+                                if (entry.value_ptr.* == callee_t) {
+                                    const class_name = self.string_interner.get(entry.key_ptr.*);
+                                    rendered_name = try std.fmt.allocPrint(
+                                        self.diag_arena.allocator(),
+                                        "typeof {s}",
+                                        .{class_name},
+                                    );
+                                    break;
+                                }
+                            }
+                        }
+                        if (rendered_name) |name| {
                             const msg = try std.fmt.allocPrint(
                                 self.diag_arena.allocator(),
                                 "Value of type '{s}' is not callable. Did you mean to include 'new'?",
@@ -19806,16 +19990,6 @@ pub const Checker = struct {
                         const source_is_class_instance = self.class_name_by_instance.contains(st);
                         for (src_members) |m| {
                             if (source_is_class_instance and (m.is_method or m.is_readonly)) continue;
-                            // tsc fires TS2783 when the spread member
-                            // is required (non-optional). Under
-                            // `--strict` (`exactOptionalPropertyTypes`
-                            // included) the member's type containing
-                            // `undefined` doesn't matter — the spread
-                            // still definitely sets the property,
-                            // possibly to undefined, overwriting any
-                            // earlier explicit value. Mirrors
-                            // `spreadOverwritesProperty` /
-                            // `spreadOverwritesPropertyStrict`.
                             if (!m.is_optional) {
                                 if (explicit_props.get(m.name)) |prop_node| {
                                     const prop_name = self.string_interner.get(m.name);
@@ -27709,11 +27883,17 @@ pub const Checker = struct {
                 param_t = self.scalarTypeParameterConstraint(param_t) orelse continue;
             }
             var arg_t = arg_types[i];
+            // Track whether this arg already triggered the spread-shape
+            // diagnostic so the trailing TS2345 fall-through (which
+            // checks the IteratorElementType<T> against the param) can
+            // skip — upstream tsc reports only TS2556 in that case.
+            var emitted_2556 = false;
             if (self.hir.kindOf(args[i]) == .spread) {
                 if (!is_variadic or i < fixed_count) {
                     const is_union_arg = arg_t < self.interner.pool.typeCount() and self.interner.pool.flagsOf(arg_t).is_union;
                     if (is_union_arg or !self.isTupleShapedTarget(arg_t)) {
                         try self.report(args[i], TsCodes.spread_argument_requires_tuple_or_rest, "A spread argument must either have a tuple type or be passed to a rest parameter.");
+                        emitted_2556 = true;
                     }
                 }
                 var tuple_i: usize = 0;
@@ -27754,7 +27934,7 @@ pub const Checker = struct {
                 self.unresolvedRestTupleCallbackFromPriorArrayArg(args, param_ts, i, param_t) catch false
             else
                 false;
-            if (!ok and !contextual_ok) {
+            if (!ok and !contextual_ok and !emitted_2556) {
                 const msg = try self.formatArgumentNotAssignable(arg_t, param_t, i);
                 try self.diagnostics.append(self.gpa, .{
                     .node = args[i],
