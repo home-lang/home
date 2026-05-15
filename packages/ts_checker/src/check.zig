@@ -1424,7 +1424,24 @@ pub const Checker = struct {
                 try self.checkForOfTarget(fr.target);
                 try self.checkForOfVarSelfReferenceDiagnostics(node, fr.target, fr.source);
                 if (!self.isIterableLikeType(src_t)) {
-                    try self.report(fr.source, TsCodes.yield_star_not_iterable, "Type must have a '[Symbol.iterator]()' method that returns an iterator.");
+                    // Render the named type when available so the
+                    // baseline matches `Type 'MyIter' must have …`
+                    // shape upstream tsc emits. Falls back to the
+                    // bare wording for anonymous types.
+                    if (try self.simpleDiagnosticTypeName(src_t)) |type_name| {
+                        const msg = try std.fmt.allocPrint(
+                            self.diag_arena.allocator(),
+                            "Type '{s}' must have a '[Symbol.iterator]()' method that returns an iterator.",
+                            .{type_name},
+                        );
+                        try self.diagnostics.append(self.gpa, .{
+                            .node = fr.source,
+                            .code = TsCodes.yield_star_not_iterable,
+                            .message = msg,
+                        });
+                    } else {
+                        try self.report(fr.source, TsCodes.yield_star_not_iterable, "Type must have a '[Symbol.iterator]()' method that returns an iterator.");
+                    }
                 } else {
                     try self.checkForOfIteratorShape(fr.source, src_t);
                 }
