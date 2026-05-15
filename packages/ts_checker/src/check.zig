@@ -15310,6 +15310,10 @@ pub const Checker = struct {
         if (self.visibleTypeDeclarationExistsAt(anchor, name)) return true;
         if (self.numeric_enums.contains(name)) return true;
         if (self.enumDeclForNameAt(name, anchor) != null) return true;
+        // Built-in lib names (DOM globals like `HTMLElement`, etc.)
+        // resolve as values; treat them as resolved heritage so we
+        // don't fire TS2304 on `class X extends HTMLElement {}`.
+        if (self.isBuiltinName(name)) return true;
         return false;
     }
 
@@ -25779,7 +25783,17 @@ pub const Checker = struct {
             "console",            "undefined",      "NaN",
             "Infinity",           "globalThis",     "this",
             "new.target",         "window",         "document",
-            "Element",            "Node",
+            "Element",            "Node",           "HTMLElement",
+            "HTMLBodyElement",    "HTMLDivElement", "HTMLAnchorElement",
+            "HTMLImageElement",   "HTMLInputElement", "HTMLSpanElement",
+            "HTMLButtonElement",  "HTMLFormElement",
+            "Event",              "EventTarget",    "MouseEvent",
+            "KeyboardEvent",      "FocusEvent",
+            "Document",           "Window",         "Location",
+            "Navigator",          "History",        "Storage",
+            "URL",                "URLSearchParams", "Blob",
+            "File",               "FileReader",     "FormData",
+            "Headers",            "Request",        "Response",
             // Constructors / namespaces.
                       "Math",
             "JSON",               "Object",         "Array",
