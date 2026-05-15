@@ -129,6 +129,7 @@ pub const TsCodes = struct {
     pub const type_only_used_as_value: u32 = 2693;
     pub const destructuring_decl_must_have_initializer: u32 = 1182;
     pub const rest_element_cannot_have_initializer: u32 = 1186;
+    pub const rest_element_must_be_last: u32 = 2462;
     pub const ambient_initializer_not_allowed: u32 = 1039;
     pub const object_literal_duplicate_property: u32 = 1117;
     pub const type_not_assignable: u32 = 2322;
@@ -237,6 +238,7 @@ pub const TsCodes = struct {
     pub const namespace_before_merged_function: u32 = 2434;
     pub const import_conflicts_with_local: u32 = 2440;
     pub const generic_type_requires_args: u32 = 2314;
+    pub const type_does_not_satisfy_constraint: u32 = 2344;
     pub const circular_constraint: u32 = 2313;
     pub const type_alias_circular: u32 = 2456;
     pub const static_member_type_parameter: u32 = 2302;
@@ -265,6 +267,7 @@ pub const TsCodes = struct {
     pub const block_scoped_used_before_decl: u32 = 2448;
     pub const property_not_initialized: u32 = 2564;
     pub const cannot_assign_const: u32 = 2588;
+    pub const cannot_assign_to_namespace: u32 = 2631;
     pub const property_used_before_initialization: u32 = 2729;
     pub const await_only_in_async: u32 = 1308;
     pub const return_outside_function: u32 = 1108;
@@ -3675,13 +3678,34 @@ pub const Checker = struct {
                 var rhs_pending: std.AutoHashMapUnmanaged(hir_mod.StringId, NodeId) = .empty;
                 defer rhs_pending.deinit(self.gpa);
                 try self.clonePendingAssignments(pending, &rhs_pending);
+                // tsc treats the RHS of `&&` (or `||` after a negated
+                // guard) as flow-narrowed by the LHS — a `typeof x ===
+                // "…"`, `isFoo(x)`, `x instanceof Foo`, `x !== null`,
+                // or bare-truthy `x` guard on a pending variable makes
+                // every read of `x` on the RHS non-pending. Drop those
+                // names from `rhs_pending` so we don't double-fire
+                // TS2454 at every subsequent reference. Matches the
+                // `&&` chain pattern in fixtures like
+                // `typeGuardOfFormIsType.ts(27,23)` and
+                // `typeGuardsObjectMethods.ts(16,43)`.
+                if (l.op == .@"and") {
+                    self.collectAndRemoveGuardedNamesFromPending(l.lhs, &rhs_pending);
+                }
                 try self.scanExprForUsedBeforeAssign(l.rhs, &rhs_pending);
             },
             .conditional => {
                 const c = hir_mod.conditionalOf(self.hir, node);
                 try self.scanExprForUsedBeforeAssign(c.cond, pending);
-                try self.scanExprForUsedBeforeAssign(c.then_branch, pending);
-                try self.scanExprForUsedBeforeAssign(c.else_branch, pending);
+                // tsc treats a literal `true`/`false` test as a
+                // dead-branch elimination so the unused arm doesn't
+                // contribute use-before-assign reads — fixtures like
+                // `subtypingWithObjectMembersOptionality3` and
+                // `bestCommonTypeOfConditionalExpressions2` rely on
+                // this to suppress TS2454 on the false-branch var.
+                const cond_true = self.hir.kindOf(c.cond) == .literal_bool and hir_mod.literalBoolOf(self.hir, c.cond);
+                const cond_false = self.hir.kindOf(c.cond) == .literal_bool and !hir_mod.literalBoolOf(self.hir, c.cond);
+                if (!cond_false) try self.scanExprForUsedBeforeAssign(c.then_branch, pending);
+                if (!cond_true) try self.scanExprForUsedBeforeAssign(c.else_branch, pending);
             },
             .array_literal => {
                 for (hir_mod.arrayLiteralElements(self.hir, node)) |el| {
@@ -4046,6 +4070,86 @@ pub const Checker = struct {
         // unassigned variable still fires TS2454. tsc emits one
         // diagnostic per use site, not just on the first read; the
         // exact-baseline ratchet pins that behavior.
+    }
+
+    /// Walk a guard expression on the LHS of `&&` and remove every
+    /// pending-variable name it asserts as defined from `pending`.
+    /// Recognised guard shapes (matching tsc's narrowing taxonomy
+    /// for the use-before-assigned check):
+    ///   * bare identifier `x`             (truthy → defined)
+    ///   * `typeof x === "…"` / `!==`      (typeof guard)
+    ///   * `x instanceof Foo`              (instanceof narrow)
+    ///   * `x === null` / `x !== null`     (nullish narrow)
+    ///   * `x === undefined` / `x !== undefined`
+    ///   * `f(x)` where `x` is an identifier argument (predicate-call)
+    ///   * `(<anything-above>) && (<anything-above>)` (chained guards)
+    fn collectAndRemoveGuardedNamesFromPending(
+        self: *Checker,
+        node: NodeId,
+        pending: *std.AutoHashMapUnmanaged(hir_mod.StringId, NodeId),
+    ) void {
+        if (node == hir_mod.none_node_id) return;
+        const k = self.hir.kindOf(node);
+        switch (k) {
+            .identifier => {
+                const id = hir_mod.identifierOf(self.hir, node);
+                _ = pending.remove(id.name);
+            },
+            .logical_op => {
+                const l = hir_mod.logicalOf(self.hir, node);
+                if (l.op == .@"and") {
+                    self.collectAndRemoveGuardedNamesFromPending(l.lhs, pending);
+                    self.collectAndRemoveGuardedNamesFromPending(l.rhs, pending);
+                }
+            },
+            .binary_op => {
+                const b = hir_mod.binopOf(self.hir, node);
+                // typeof / nullish / undefined comparisons — operand
+                // identifier is asserted defined whether the result
+                // is true or false (the assertion is structural —
+                // `typeof x` doesn't ReferenceError on undefined-init
+                // vars, but the *value* `x` does in the && RHS, so
+                // tsc removes it from the use-before-assigned set).
+                if (b.op == .eq_strict or b.op == .neq_strict or
+                    b.op == .eq or b.op == .neq)
+                {
+                    self.removeIdentifierOperandFromPending(b.lhs, pending);
+                    self.removeIdentifierOperandFromPending(b.rhs, pending);
+                    if (self.hir.kindOf(b.lhs) == .unary_op) {
+                        const u = hir_mod.unaryOf(self.hir, b.lhs);
+                        if (u.op == .typeof) self.removeIdentifierOperandFromPending(u.operand, pending);
+                    }
+                    if (self.hir.kindOf(b.rhs) == .unary_op) {
+                        const u = hir_mod.unaryOf(self.hir, b.rhs);
+                        if (u.op == .typeof) self.removeIdentifierOperandFromPending(u.operand, pending);
+                    }
+                }
+                if (b.op == .instanceof) {
+                    self.removeIdentifierOperandFromPending(b.lhs, pending);
+                }
+            },
+            .call_expr => {
+                for (hir_mod.callArgs(self.hir, node)) |arg| {
+                    self.removeIdentifierOperandFromPending(arg, pending);
+                }
+            },
+            .as_expr, .satisfies_expr, .type_assertion => {
+                const a = hir_mod.asExpressionOf(self.hir, node);
+                self.collectAndRemoveGuardedNamesFromPending(a.expr, pending);
+            },
+            else => {},
+        }
+    }
+
+    fn removeIdentifierOperandFromPending(
+        self: *Checker,
+        node: NodeId,
+        pending: *std.AutoHashMapUnmanaged(hir_mod.StringId, NodeId),
+    ) void {
+        if (node == hir_mod.none_node_id) return;
+        if (self.hir.kindOf(node) != .identifier) return;
+        const id = hir_mod.identifierOf(self.hir, node);
+        _ = pending.remove(id.name);
     }
 
     fn isCompoundAssignmentTarget(self: *Checker, node: NodeId) bool {
@@ -12704,8 +12808,13 @@ pub const Checker = struct {
             "Cannot find module '{s}' or its corresponding type declarations.",
             .{spec},
         );
+        // tsc anchors TS2307 on the opening quote of the module
+        // specifier inside `import("…")`, not on the `import`
+        // keyword. Mirror that for exact-baseline parity.
+        const quote_pos = self.moduleSpecifierQuotePos(node, spec);
         try self.diagnostics.append(self.gpa, .{
             .node = node,
+            .pos = quote_pos,
             .code = TsCodes.cannot_find_module,
             .message = msg,
         });
@@ -15259,6 +15368,7 @@ pub const Checker = struct {
                         while (i < npairs) : (i += 1) {
                             const arg_t = try self.lowererLowerWithTypeParams(args[i]);
                             try subs.put(self.gpa, info.params[i], arg_t);
+                            try self.checkTypeArgSatisfiesConstraint(args[i], info.params[i], arg_t);
                         }
                         // Fill remaining type-parameters with their
                         // declaration-site defaults (`<T, U = number>`)
@@ -17523,7 +17633,8 @@ pub const Checker = struct {
             return;
         }
         const fallback_elem_t = try self.iterableElementType(source_t);
-        for (hir_mod.arrayLiteralElements(self.hir, target_node), 0..) |el, i| {
+        const target_elements = hir_mod.arrayLiteralElements(self.hir, target_node);
+        for (target_elements, 0..) |el, i| {
             if (el == hir_mod.none_node_id) continue;
             const k = self.hir.kindOf(el);
             const elem_t = self.tupleElementType(source_t, source_offset + i);
@@ -17535,6 +17646,14 @@ pub const Checker = struct {
                 fallback_elem_t;
             if (k == .spread) {
                 const sp = hir_mod.spreadOf(self.hir, el);
+                // tsc fires TS2462 when a rest element appears
+                // before the end of an assignment-destructuring
+                // pattern (`[...a, x] = …`). The parser already
+                // reports this for binding patterns; the
+                // assignment-pattern variant lives here.
+                if (i + 1 < target_elements.len) {
+                    try self.report(el, TsCodes.rest_element_must_be_last, "A rest element must be last in a destructuring pattern.");
+                }
                 if (self.hir.kindOf(sp.expression) == .assignment) {
                     try self.report(sp.expression, TsCodes.rest_element_cannot_have_initializer, "A rest element cannot have an initializer.");
                     continue;
@@ -17618,8 +17737,16 @@ pub const Checker = struct {
             try self.checkExcessProperties(source_node, expected_t);
         }
         var has_dynamic_computed_key = false;
-        for (hir_mod.objectLiteralProps(self.hir, target_node)) |prop_node| {
+        const target_props_oddl = hir_mod.objectLiteralProps(self.hir, target_node);
+        for (target_props_oddl, 0..) |prop_node, prop_i| {
             if (self.hir.kindOf(prop_node) != .object_property) {
+                // tsc fires TS2462 when an object-rest spread
+                // (`{...rest, x} = …` or `{...a, x, ...b} = …`)
+                // appears before the end of an assignment-pattern.
+                // The parser already covers binding-pattern cases.
+                if (self.hir.kindOf(prop_node) == .spread and prop_i + 1 < target_props_oddl.len) {
+                    try self.report(prop_node, TsCodes.rest_element_must_be_last, "A rest element must be last in a destructuring pattern.");
+                }
                 if (has_dynamic_computed_key) {
                     const rest_t = self.interner.internObjectType(&.{}) catch return error.OutOfMemory;
                     try self.checkDestructuringAssignmentTarget(prop_node, rest_t);
@@ -19740,6 +19867,21 @@ pub const Checker = struct {
                         try self.diagnostics.append(self.gpa, .{
                             .node = node,
                             .code = TsCodes.cannot_assign_const,
+                            .message = msg,
+                        });
+                    }
+                    // TS2631: `namespace M { ... }; M = x;` —
+                    // assigning to a namespace identifier is illegal.
+                    if (a.op == null and self.identifierResolvesToNamespaceOnly(a.target)) {
+                        const name_str = self.string_interner.get(id.name);
+                        const msg = try std.fmt.allocPrint(
+                            self.diag_arena.allocator(),
+                            "Cannot assign to '{s}' because it is a namespace.",
+                            .{name_str},
+                        );
+                        try self.diagnostics.append(self.gpa, .{
+                            .node = a.target,
+                            .code = TsCodes.cannot_assign_to_namespace,
                             .message = msg,
                         });
                     }
@@ -25901,6 +26043,74 @@ pub const Checker = struct {
         return false;
     }
 
+    /// True when `node` is an identifier whose name resolves to a
+    /// `namespace`/`module` declaration AND has no value-side binding
+    /// (e.g. `var M = …` redeclaring the namespace name). tsc fires
+    /// TS2631 for `M = x;` only on namespace-only identifiers.
+    fn identifierResolvesToNamespaceOnly(self: *Checker, node: NodeId) bool {
+        if (self.hir.kindOf(node) != .identifier) return false;
+        const id = hir_mod.identifierOf(self.hir, node);
+        // Local shadow: a `var`/`let`/`const`/parameter with the same
+        // name in scope means the identifier is a value, not the
+        // namespace.
+        var cur: hir_mod.NodeId = self.hir.parentOf(node);
+        while (cur != hir_mod.none_node_id) {
+            const k = self.hir.kindOf(cur);
+            if (k == .fn_decl or k == .fn_expr or k == .arrow_fn) {
+                const params = hir_mod.fnParams(self.hir, cur);
+                for (params) |p| {
+                    if (self.hir.kindOf(p) != .parameter) continue;
+                    const pp = hir_mod.parameterOf(self.hir, p);
+                    if (pp.name == hir_mod.none_node_id) continue;
+                    if (self.hir.kindOf(pp.name) != .identifier) continue;
+                    const pid = hir_mod.identifierOf(self.hir, pp.name);
+                    if (pid.name == id.name) return false;
+                }
+            }
+            if (k == .block_stmt) {
+                for (hir_mod.blockStmts(self.hir, cur)) |s| {
+                    const sk = self.hir.kindOf(s);
+                    if (sk == .var_decl or sk == .let_decl or sk == .const_decl) {
+                        const v = hir_mod.varDeclOf(self.hir, s);
+                        if (v.name != hir_mod.none_node_id and self.hir.kindOf(v.name) == .identifier) {
+                            const vid = hir_mod.identifierOf(self.hir, v.name);
+                            if (vid.name == id.name) return false;
+                        }
+                    } else if (sk == .fn_decl) {
+                        const fd = hir_mod.fnDeclOf(self.hir, s);
+                        if (fd.name != hir_mod.none_node_id and self.hir.kindOf(fd.name) == .identifier) {
+                            const fid = hir_mod.identifierOf(self.hir, fd.name);
+                            if (fid.name == id.name) return false;
+                        }
+                    } else if (sk == .class_decl) {
+                        const cd = hir_mod.classOf(self.hir, s);
+                        if (cd.name != hir_mod.none_node_id and self.hir.kindOf(cd.name) == .identifier) {
+                            const cid = hir_mod.identifierOf(self.hir, cd.name);
+                            if (cid.name == id.name) return false;
+                        }
+                    }
+                }
+            }
+            cur = self.hir.parentOf(cur);
+        }
+        // Module-level: a namespace decl exists, and there is no
+        // value-binding shadow (var/let/const/fn/class with the same
+        // name).
+        const module = self.module orelse return false;
+        if (module.root.namespaces.get(id.name) == null) return false;
+        if (module.root.values.get(id.name)) |sym| {
+            for (sym.decls.items) |decl| {
+                const dk = self.hir.kindOf(decl);
+                // namespace_decl entries are also recorded in `values`
+                // when they have runtime members, so we must not bail
+                // on those — only on real value-side declarations.
+                if (dk == .namespace_decl or dk == .module_decl) continue;
+                return false;
+            }
+        }
+        return true;
+    }
+
     /// Conservative gate for TS2367: return true only when both
     /// sides look like concrete primitives (string / number / boolean
     /// / bigint / symbol) or literals of those. Nullish equality
@@ -26167,6 +26377,64 @@ pub const Checker = struct {
         const tp = self.interner.pool.type_parameter_payloads.items[payload_idx];
         if (tp.constraint == types.Primitive.none or tp.constraint == types.Primitive.unknown) return null;
         return tp.constraint;
+    }
+
+    /// TS2344: Type 'X' does not satisfy the constraint 'Y'.
+    /// Conservative: only emit when both `arg_t` and the parameter's
+    /// constraint render as simple, fully-resolved type names AND the
+    /// arg is provably not assignable to the constraint. Skips
+    /// any/unknown/never/error placeholders, free type-parameters,
+    /// and generic instantiations whose body still contains a
+    /// type parameter — those need full inference machinery to
+    /// classify correctly.
+    fn checkTypeArgSatisfiesConstraint(
+        self: *Checker,
+        arg_node: NodeId,
+        param_t: TypeId,
+        arg_t: TypeId,
+    ) CheckError!void {
+        if (arg_node == hir_mod.none_node_id) return;
+        if (arg_t == types.Primitive.any or arg_t == types.Primitive.unknown or arg_t == types.Primitive.never) return;
+        if (param_t >= self.interner.pool.typeCount()) return;
+        if (!self.interner.pool.flagsOf(param_t).is_type_parameter) return;
+        const constraint = self.typeParameterConstraint(param_t) orelse return;
+        if (constraint == types.Primitive.any or constraint == types.Primitive.unknown) return;
+        if (constraint == arg_t) return;
+        if (self.containsFreeTypeParameter(constraint)) return;
+        const arg_text = (try self.simpleDiagnosticTypeName(arg_t)) orelse return;
+        const constraint_text = (try self.simpleDiagnosticTypeName(constraint)) orelse return;
+        // Special-case the upstream wording for `extends object`:
+        // null and undefined are excluded from the `object` type even
+        // though they pass our default `isAssignableTo` heuristic.
+        const constraint_is_object = constraint == types.Primitive.object_t;
+        const arg_is_nullish = arg_t == types.Primitive.null_t or arg_t == types.Primitive.undefined_t;
+        if (!constraint_is_object) {
+            if (self.engine.isAssignableTo(arg_t, constraint) catch true) return;
+        } else {
+            if (!arg_is_nullish and (self.engine.isAssignableTo(arg_t, constraint) catch true)) return;
+            if (arg_t == types.Primitive.object_t) return;
+            if (arg_t < self.interner.pool.typeCount()) {
+                const af = self.interner.pool.flagsOf(arg_t);
+                if (af.is_object_type and !arg_is_nullish) return;
+            }
+            if (self.namedTypeForId(arg_t) != null and !arg_is_nullish and
+                !(arg_t == types.Primitive.string_t or arg_t == types.Primitive.number_t or
+                arg_t == types.Primitive.boolean_t or arg_t == types.Primitive.bigint_t or
+                arg_t == types.Primitive.symbol_t))
+            {
+                return;
+            }
+        }
+        const msg = try std.fmt.allocPrint(
+            self.diag_arena.allocator(),
+            "Type '{s}' does not satisfy the constraint '{s}'.",
+            .{ arg_text, constraint_text },
+        );
+        try self.diagnostics.append(self.gpa, .{
+            .node = arg_node,
+            .code = TsCodes.type_does_not_satisfy_constraint,
+            .message = msg,
+        });
     }
 
     /// True when `source` and `target` are both type parameters with
@@ -29092,8 +29360,25 @@ pub const Checker = struct {
                 "Expected {d}{s} arguments, but got {d}.",
                 .{ expected_n, expected_label, args.len },
             );
+            // tsc anchors a too-many TS2554 on the first excess
+            // argument when one exists (matches `genericRestArity`,
+            // `genericRestArityStrict` and similar). Too-few is
+            // anchored on the call expression itself.
+            var anchor_pos: ?u32 = null;
+            if (too_many) {
+                const first_excess_idx: usize = if (fixed_variadic_count)
+                    rest_max_count.?
+                else if (is_variadic)
+                    min_required
+                else
+                    param_ts.len;
+                if (first_excess_idx < args.len) {
+                    anchor_pos = self.hir.spanOf(args[first_excess_idx]).start;
+                }
+            }
             try self.diagnostics.append(self.gpa, .{
                 .node = call_node,
+                .pos = anchor_pos,
                 .code = TsCodes.expected_n_arguments,
                 .message = msg,
             });
@@ -31382,7 +31667,14 @@ pub const Checker = struct {
     /// `A & B & ...` so TS2367 can report `'T & number' and 'string'`.
     /// Returns null when any constituent isn't nameable so callers
     /// fall through to the bare diagnostic.
+    /// For TS2367 specifically, prefers rendering literal values
+    /// (`'1'` instead of `'A'` for `type A = 1`) and prints unions
+    /// of literals in upstream sort order (smallest number first,
+    /// then alphabetic) — matches `numericLiteralTypes3.ts` and
+    /// the literal-equality diff family.
     fn allocComparisonOperandName(self: *Checker, t: TypeId) !?[]const u8 {
+        if (try self.literalDiagnosticName(t)) |lit_text| return lit_text;
+        if (try self.literalUnionDiagnosticName(t)) |union_text| return union_text;
         if (try self.allocSimpleTypeName(t)) |n| return n;
         if (t >= self.interner.pool.typeCount()) return null;
         const flags = self.interner.pool.flagsOf(t);
@@ -31395,6 +31687,72 @@ pub const Checker = struct {
             if (i > 0) try buf.appendSlice(arena, " & ");
             const name = (try self.allocSimpleTypeName(m)) orelse return null;
             try buf.appendSlice(arena, name);
+        }
+        return buf.items;
+    }
+
+    /// Render a literal type's value text directly (`1`, `"foo"`,
+    /// `true`) regardless of whether the type-id has a named-alias
+    /// binding — the TS2367/TS2678 diff family prefers literal text.
+    fn literalDiagnosticName(self: *Checker, t: TypeId) !?[]const u8 {
+        if (t == types.Primitive.true_lit) return "true";
+        if (t == types.Primitive.false_lit) return "false";
+        if (t < types.Primitive.first_dynamic) return null;
+        if (t >= self.interner.pool.typeCount()) return null;
+        const flags = self.interner.pool.flagsOf(t);
+        if (!flags.is_literal) return null;
+        const payload_idx = self.interner.pool.payloadOf(t);
+        if (payload_idx >= self.interner.pool.literal_payloads.items.len) return null;
+        const literal = self.interner.pool.literal_payloads.items[payload_idx];
+        return switch (literal) {
+            .string_lit => |sid| try std.fmt.allocPrint(self.diag_arena.allocator(), "\"{s}\"", .{self.string_interner.get(sid)}),
+            .number_lit => |bits| try std.fmt.allocPrint(self.diag_arena.allocator(), "{d}", .{@as(f64, @bitCast(bits))}),
+            .bigint_lit => |sid| try std.fmt.allocPrint(self.diag_arena.allocator(), "{s}", .{self.string_interner.get(sid)}),
+            .boolean_lit => |b| if (b) "true" else "false",
+        };
+    }
+
+    /// Render unions of literal types as `0 | 1 | 2` in upstream
+    /// sort order (numeric ascending; strings alphabetic). Returns
+    /// null for unions that contain non-literal members so callers
+    /// fall back to the standard union renderer (which keeps the
+    /// outer alias name when present).
+    fn literalUnionDiagnosticName(self: *Checker, t: TypeId) !?[]const u8 {
+        if (t < types.Primitive.first_dynamic) return null;
+        if (t >= self.interner.pool.typeCount()) return null;
+        const flags = self.interner.pool.flagsOf(t);
+        if (!flags.is_union) return null;
+        const members = self.interner.unionMembers(t);
+        if (members.len < 2) return null;
+        // Verify all members are literal-like (number, string,
+        // boolean lit) so we render predictably. Skip otherwise.
+        for (members) |m| {
+            if (m == types.Primitive.true_lit or m == types.Primitive.false_lit) continue;
+            if (m < self.interner.pool.typeCount() and self.interner.pool.flagsOf(m).is_literal) continue;
+            return null;
+        }
+        // Collect rendered names then sort lexicographically
+        // (number-as-string sort works in upstream's diagnostic
+        // formatter for small integer literals; we do not attempt
+        // numeric-aware sorting since that would diverge from
+        // tsc's own writer for negative or float values).
+        var names: std.ArrayListUnmanaged([]const u8) = .empty;
+        defer names.deinit(self.gpa);
+        for (members) |m| {
+            const name = (try self.literalDiagnosticName(m)) orelse return null;
+            try names.append(self.gpa, name);
+        }
+        const Less = struct {
+            fn lt(_: void, a: []const u8, b: []const u8) bool {
+                return std.mem.lessThan(u8, a, b);
+            }
+        };
+        std.mem.sort([]const u8, names.items, {}, Less.lt);
+        var buf: std.ArrayListUnmanaged(u8) = .empty;
+        const arena = self.diag_arena.allocator();
+        for (names.items, 0..) |n, i| {
+            if (i > 0) try buf.appendSlice(arena, " | ");
+            try buf.appendSlice(arena, n);
         }
         return buf.items;
     }
