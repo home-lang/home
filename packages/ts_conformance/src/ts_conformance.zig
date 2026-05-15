@@ -96,7 +96,17 @@ pub fn countLeadingDirectiveLines(source: []const u8) u32 {
     var count: u32 = 0;
     var directive_seen = false;
     var pending_blanks: u32 = 0;
-    var lines = std.mem.splitScalar(u8, source, '\n');
+    // Strip a leading UTF-8 BOM (`\xEF\xBB\xBF`) before scanning —
+    // many upstream fixtures start with a BOM that otherwise prevents
+    // the first `// @key:` directive from matching, so the strip
+    // count would come back as 0 and every diagnostic line would be
+    // reported off-by-N. This mirrors the existing BOM tolerance in
+    // `ts_lexer/src/scanner.zig`.
+    const after_bom = if (source.len >= 3 and source[0] == 0xEF and source[1] == 0xBB and source[2] == 0xBF)
+        source[3..]
+    else
+        source;
+    var lines = std.mem.splitScalar(u8, after_bom, '\n');
     while (lines.next()) |raw_line| {
         const trimmed = std.mem.trim(u8, raw_line, " \t\r");
         if (trimmed.len == 0) {
