@@ -5171,7 +5171,11 @@ pub const Checker = struct {
             if (pp.default_value != hir_mod.none_node_id) {
                 _ = try self.checkExpression(pp.default_value);
                 if (!self.sourceHasUseDefineForClassFieldsTrueDirective()) {
-                    try self.checkDefaultExprAgainstBodyVars(pp.default_value, &body_vars);
+                    const param_name_id: ?hir_mod.StringId = if (nk == .identifier)
+                        hir_mod.identifierOf(self.hir, pp.name).name
+                    else
+                        null;
+                    try self.checkDefaultExprAgainstBodyVars(pp.default_value, &body_vars, param_name_id);
                 }
             }
             if (nk == .array_pattern and pp.default_value != hir_mod.none_node_id) {
@@ -5260,7 +5264,7 @@ pub const Checker = struct {
         try self.collectBindingSlots(pattern_node, &slots);
         for (slots.items) |slot| {
             if (slot.default_value == hir_mod.none_node_id) continue;
-            try self.checkDefaultExprAgainstBodyVars(slot.default_value, body_vars);
+            try self.checkDefaultExprAgainstBodyVars(slot.default_value, body_vars, slot.name);
         }
     }
 
@@ -5268,13 +5272,14 @@ pub const Checker = struct {
         self: *Checker,
         default_value: NodeId,
         body_vars: *std.AutoHashMapUnmanaged(hir_mod.StringId, void),
+        param_name: ?hir_mod.StringId,
     ) CheckError!void {
         var refs: std.ArrayListUnmanaged(NameRef) = .empty;
         defer refs.deinit(self.gpa);
         try self.collectIdentifierRefsWithNodes(default_value, &refs);
         for (refs.items) |ref| {
             if (body_vars.contains(ref.name)) {
-                try self.reportBindingDefaultReference(ref.node, .parameter, false);
+                try self.reportBindingDefaultReferenceNamed(ref.node, .parameter, false, param_name, ref.name);
             }
         }
     }
@@ -5297,7 +5302,7 @@ pub const Checker = struct {
                 while (j < slots.items.len) : (j += 1) {
                     const later = slots.items[j];
                     if (later.name != ref.name) continue;
-                    try self.reportBindingDefaultReference(ref.node, mode, j == i);
+                    try self.reportBindingDefaultReferenceNamed(ref.node, mode, j == i, slot.name, ref.name);
                     break;
                 }
             }
@@ -5422,10 +5427,47 @@ pub const Checker = struct {
         mode: BindingDefaultMode,
         is_self: bool,
     ) CheckError!void {
+        try self.reportBindingDefaultReferenceNamed(node, mode, is_self, null, null);
+    }
+
+    fn reportBindingDefaultReferenceNamed(
+        self: *Checker,
+        node: NodeId,
+        mode: BindingDefaultMode,
+        is_self: bool,
+        param_name: ?hir_mod.StringId,
+        ref_name: ?hir_mod.StringId,
+    ) CheckError!void {
         const code: u32 = switch (mode) {
             .variable => TsCodes.block_scoped_used_before_decl,
             .parameter => if (is_self) TsCodes.parameter_cannot_reference_self else TsCodes.parameter_cannot_reference_later,
         };
+        // Render named TS-style message when both names are known and
+        // the caller is reporting a parameter (TS2371/TS2373). Falls
+        // back to the legacy short form for the .variable case (TS2448),
+        // which tsc still renders without identifier metadata.
+        if (mode == .parameter and param_name != null and ref_name != null) {
+            const p_str = self.string_interner.get(param_name.?);
+            const r_str = self.string_interner.get(ref_name.?);
+            const msg = if (is_self)
+                try std.fmt.allocPrint(
+                    self.diag_arena.allocator(),
+                    "Parameter '{s}' cannot reference itself in its initializer.",
+                    .{p_str},
+                )
+            else
+                try std.fmt.allocPrint(
+                    self.diag_arena.allocator(),
+                    "Parameter '{s}' cannot reference identifier '{s}' declared after it.",
+                    .{ p_str, r_str },
+                );
+            try self.diagnostics.append(self.gpa, .{
+                .node = node,
+                .code = code,
+                .message = msg,
+            });
+            return;
+        }
         const msg: []const u8 = switch (mode) {
             .variable => "Block-scoped variable used before its declaration.",
             .parameter => if (is_self)
@@ -8175,11 +8217,26 @@ pub const Checker = struct {
         if (params.len < 2) return;
         const property_key_t = params[1];
         if (self.typeIncludesUndefined(property_key_t)) return;
-        try self.report(
+        const dec_pos = self.decoratorExpressionPos(decorator_node);
+        try self.reportAt(
             decorator_node,
+            dec_pos,
             TsCodes.parameter_decorator_signature_unresolved,
-            "Unable to resolve signature of parameter decorator when called as an expression.\n  Argument of type 'undefined' is not assignable to parameter of type 'string | symbol'.",
+            "Unable to resolve signature of parameter decorator when called as an expression.",
         );
+    }
+
+    /// Decorator-anchor helper. Span starts at `@`; tsc anchors the
+    /// diagnostic at the expression itself (column of the first
+    /// expression character, e.g. `dec` in `@dec()`).
+    fn decoratorExpressionPos(self: *Checker, decorator_node: NodeId) ?u32 {
+        const span = self.hir.spanOf(decorator_node);
+        if (self.source) |src| {
+            if (span.start < src.len and src[span.start] == '@') {
+                return @intCast(@as(usize, span.start) + 1);
+            }
+        }
+        return null;
     }
 
     fn checkPropertyDecoratorCallableShape(self: *Checker, decorator_node: NodeId, expr: NodeId) CheckError!void {
@@ -8234,14 +8291,15 @@ pub const Checker = struct {
         const has_unbounded_rest = self.rest_signatures.contains(sig) and params.len > 0 and self.fixedTupleLength(params[params.len - 1]) == null;
         if (runtime_arg_count > params.len and self.decoratorSignatureAllowsExtraRuntimeArgs(kind, params)) return;
         if (runtime_arg_count >= min_required and (has_unbounded_rest or runtime_arg_count <= params.len)) return;
-        const expected_count = if (runtime_arg_count < min_required) min_required else params.len;
         const msg = try std.fmt.allocPrint(
             self.diag_arena.allocator(),
-            "Unable to resolve signature of {s} decorator when called as an expression.\n  The runtime will invoke the decorator with {d} arguments, but the decorator expects {d}.",
-            .{ kind, runtime_arg_count, expected_count },
+            "Unable to resolve signature of {s} decorator when called as an expression.",
+            .{kind},
         );
+        const dec_pos = self.decoratorExpressionPos(decorator_node);
         try self.diagnostics.append(self.gpa, .{
             .node = decorator_node,
+            .pos = dec_pos,
             .code = code,
             .message = msg,
         });
@@ -8582,8 +8640,15 @@ pub const Checker = struct {
                             try self.report(m, TsCodes.abstract_accessor_implementation, "An abstract accessor cannot have an implementation.");
                         }
                         if (!fn_p.flags.is_static) {
+                            // tsc only reports TS2611 once per member name
+                            // per derived class; the first accessor (get or
+                            // set) carries the diagnostic, sibling accessors
+                            // for the same name are silent.
+                            const already_seen_accessor = accessor_names.contains(member_name);
                             try accessor_names.put(self.gpa, member_name, {});
-                            try self.checkAccessorOverridesProperty(m, parent_class_name, member_name);
+                            if (!already_seen_accessor) {
+                                try self.checkAccessorOverridesProperty(m, fn_p.name, parent_class_name, member_name);
+                            }
                         }
                         if (!fn_p.flags.is_static) {
                             if (fn_p.flags.is_abstract and fn_p.body == hir_mod.none_node_id) {
@@ -8726,7 +8791,10 @@ pub const Checker = struct {
                             self.strict_flags.strict_property_initialization and
                             op.type_annotation != hir_mod.none_node_id and
                             op.value == hir_mod.none_node_id and
-                            !self.classFieldHasOptionalToken(m))
+                            !self.classFieldHasOptionalToken(m) and
+                            !self.classNodeIsInsideAmbientDeclaredModule(node) and
+                            !self.classHasLeadingDeclare(node) and
+                            !self.virtualSectionIsDeclarationFile(node))
                         {
                             const field_t = try self.lowererLowerWithTypeParams(op.type_annotation);
                             if (!self.typeExplicitlyIncludesUndefined(field_t)) {
@@ -8792,15 +8860,28 @@ pub const Checker = struct {
                     const is_auto_accessor = self.classMemberSourceHasLeadingKeyword(m, "accessor");
                     if (!op.is_static) {
                         if (is_auto_accessor) {
+                            const already_seen_accessor = accessor_names.contains(member_name);
                             try accessor_names.put(self.gpa, member_name, {});
-                            try self.checkAccessorOverridesProperty(m, parent_class_name, member_name);
+                            if (!already_seen_accessor) {
+                                try self.checkAccessorOverridesProperty(m, op.key, parent_class_name, member_name);
+                            }
                         } else {
                             try property_names.put(self.gpa, member_name, {});
                             try self.checkPropertyOverridesAccessor(m, parent_class_name, member_name);
                         }
                         try self.checkFieldInitializerParameterPropertyOrder(m, op.value, &parameter_property_names);
                         if (is_abstract_property and op.value != hir_mod.none_node_id) {
-                            try self.report(m, TsCodes.abstract_property_initializer, "Property cannot have an initializer because it is marked abstract.");
+                            const field_name = self.string_interner.get(member_name);
+                            const msg = try std.fmt.allocPrint(
+                                self.diag_arena.allocator(),
+                                "Property '{s}' cannot have an initializer because it is marked abstract.",
+                                .{field_name},
+                            );
+                            try self.diagnostics.append(self.gpa, .{
+                                .node = m,
+                                .code = TsCodes.abstract_property_initializer,
+                                .message = msg,
+                            });
                         }
                         if (is_abstract_property and op.value == hir_mod.none_node_id) {
                             try abstract_names.put(self.gpa, member_name, {});
@@ -8858,7 +8939,9 @@ pub const Checker = struct {
                         !self.classFieldTypeIsAnyOrUnknown(field_t) and
                         !self.classFieldHasDefiniteAssertion(m) and
                         !self.classFieldHasOptionalToken(m) and
-                        !self.classNodeIsInsideAmbientDeclaredModule(node))
+                        !self.classNodeIsInsideAmbientDeclaredModule(node) and
+                        !self.classHasLeadingDeclare(node) and
+                        !self.virtualSectionIsDeclarationFile(node))
                     {
                         const field_name = self.string_interner.get(member_name);
                         // Computed `[Symbol.X]` fields are interned as
@@ -10759,6 +10842,7 @@ pub const Checker = struct {
     fn checkAccessorOverridesProperty(
         self: *Checker,
         node: NodeId,
+        name_node: NodeId,
         parent_class_name: ?hir_mod.StringId,
         member_name: hir_mod.StringId,
     ) CheckError!void {
@@ -10768,7 +10852,38 @@ pub const Checker = struct {
         if (self.class_abstract_members.getPtr(parent_name)) |parent_abs| {
             if (parent_abs.contains(member_name)) return;
         }
-        try self.report(node, TsCodes.accessor_overrides_property, "Accessor overrides a property in the base class.");
+        // Match tsc's full TS2611 message:
+        //   `'<member>' is defined as a property in class '<parent>',
+        //    but is overridden here in '<derived>' as an accessor.`
+        // Falls back to the short form when the enclosing class name
+        // can't be located (anonymous class expression).
+        const derived_name = self.derivedClassNameForMember(node);
+        const member_str = self.string_interner.get(member_name);
+        const parent_str = self.string_interner.get(parent_name);
+        // Anchor the diagnostic at the property name (matches tsc's
+        // baseline column, e.g. column of `p` in `get p()` rather than
+        // of `get`).
+        const name_pos: ?u32 = blk: {
+            if (name_node == hir_mod.none_node_id) break :blk null;
+            const span = self.hir.spanOf(name_node);
+            break :blk @intCast(span.start);
+        };
+        if (derived_name) |dn| {
+            const derived_str = self.string_interner.get(dn);
+            const msg = try std.fmt.allocPrint(
+                self.diag_arena.allocator(),
+                "'{s}' is defined as a property in class '{s}', but is overridden here in '{s}' as an accessor.",
+                .{ member_str, parent_str, derived_str },
+            );
+            try self.diagnostics.append(self.gpa, .{
+                .node = node,
+                .pos = name_pos,
+                .code = TsCodes.accessor_overrides_property,
+                .message = msg,
+            });
+        } else {
+            try self.reportAt(node, name_pos, TsCodes.accessor_overrides_property, "Accessor overrides a property in the base class.");
+        }
     }
 
     fn checkFieldInitializerParameterPropertyOrder(
@@ -10948,8 +11063,12 @@ pub const Checker = struct {
                         "Property '{s}' is used before its initialization.",
                         .{name_text},
                     );
+                    // tsc anchors TS2729 at the property-name column,
+                    // not the start of the access expression.
+                    const name_pos = self.memberAccessPropertyNamePos(node);
                     try self.diagnostics.append(self.gpa, .{
                         .node = node,
+                        .pos = name_pos,
                         .code = TsCodes.property_used_before_initialization,
                         .message = msg,
                     });
