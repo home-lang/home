@@ -8243,6 +8243,13 @@ pub const Checker = struct {
             }
             const parent_t = try self.classExtendsInstanceType(c.extends);
             try self.reportUnresolvedClassExtendsHeritage(c.extends, type_params);
+            // TS2314: `class D extends C` where `C<T>` is generic — fire
+            // when the heritage is a bare class name (no type-arg list).
+            // The type-ref form (`class D extends C<X, Y>`) is already
+            // covered by the generic-arity check in the lowerer; this
+            // branch wires up the bare-identifier form. Mirrors upstream
+            // `genericTypeReferenceWithoutTypeArgument.ts(20,17)`.
+            try self.reportClassExtendsMissingTypeArgs(c.extends);
             break :blk parent_t;
         } else null;
         const parent_static_t: ?TypeId = if (c.extends != hir_mod.none_node_id)
@@ -11260,6 +11267,16 @@ pub const Checker = struct {
             },
             else => null,
         };
+    }
+
+    /// Walk a `Qualifier.Path.Name` member-access chain and return the
+    /// trailing identifier name. Mirrors `classExtendsName` for the
+    /// qualified form. Returns null when the chain isn't a pure
+    /// identifier path (e.g. has a call expression mixed in).
+    fn memberAccessTrailingName(self: *Checker, node: NodeId) ?hir_mod.StringId {
+        if (self.hir.kindOf(node) != .member_access) return null;
+        const ma = hir_mod.memberOf(self.hir, node);
+        return ma.name;
     }
 
     fn classExtendsInstanceType(self: *Checker, extends_expr: NodeId) CheckError!?TypeId {
@@ -14927,6 +14944,125 @@ pub const Checker = struct {
         try self.reportCannotFindNamePlainOnce(extends_expr, name);
     }
 
+    /// TS2314: Generic type 'X<...>' requires N type argument(s) — for
+    /// `class D extends C` heritage where `C<T>` is generic and no
+    /// type-arg list was supplied. Only fires for bare identifier or
+    /// member-access heritage; the `type_ref` form (with explicit
+    /// `<...>`) goes through the lowerer's existing generic-arity gate.
+    /// Mirrors upstream
+    /// `genericTypeReferenceWithoutTypeArgument.ts(20,17)` /
+    /// `(29,18)` / `(31,22)`.
+    fn reportClassExtendsMissingTypeArgs(
+        self: *Checker,
+        extends_expr: NodeId,
+    ) CheckError!void {
+        const kind = self.hir.kindOf(extends_expr);
+        const decl: NodeId = blk: {
+            if (kind == .identifier) {
+                const name = self.classExtendsName(extends_expr) orelse return;
+                break :blk self.findVisibleNamedTypeDecl(extends_expr, name) orelse return;
+            }
+            if (kind == .member_access) {
+                // Resolve `Qualifier.Trailing` against the namespace
+                // chain; reuse the existing qualified-type-ref
+                // resolver via the trailing name + namespace lookup.
+                break :blk self.findQualifiedClassDecl(extends_expr) orelse return;
+            }
+            return;
+        };
+        const params = self.typeParamNodesOfDecl(decl);
+        if (params.len == 0) return;
+        // If any required (no-default) param is present, fire the
+        // diagnostic. Mirrors `qualifiedDeclHasMissingRequiredTypeArgs`.
+        if (!self.qualifiedDeclHasMissingRequiredTypeArgs(decl, 0)) return;
+        const name = self.declarationName(decl) orelse return;
+        var name_buf: std.ArrayListUnmanaged(u8) = .empty;
+        defer name_buf.deinit(self.gpa);
+        try name_buf.appendSlice(self.gpa, self.string_interner.get(name));
+        try self.appendDeclTypeParameterListLabel(&name_buf, params);
+        const msg = try std.fmt.allocPrint(
+            self.diag_arena.allocator(),
+            "Generic type '{s}' requires {d} type argument(s).",
+            .{ name_buf.items, params.len },
+        );
+        try self.diagnostics.append(self.gpa, .{
+            .node = extends_expr,
+            .code = TsCodes.generic_type_requires_args,
+            .message = msg,
+        });
+    }
+
+    /// Look up `Qualifier.Trailing` member-access expression as a
+    /// namespaced class / interface / type-alias decl. Walks the
+    /// qualifier chain to find the namespace, then searches its body
+    /// for a matching named decl. Returns null on any chain mismatch
+    /// or when the resolved name doesn't reference a type decl.
+    fn findQualifiedClassDecl(self: *Checker, node: NodeId) ?NodeId {
+        if (self.hir.kindOf(node) != .member_access) return null;
+        const ma = hir_mod.memberOf(self.hir, node);
+        // Build the qualifier path by walking the object chain.
+        var path: std.ArrayListUnmanaged(hir_mod.StringId) = .empty;
+        defer path.deinit(self.gpa);
+        var cur = ma.object;
+        while (true) {
+            const k = self.hir.kindOf(cur);
+            if (k == .identifier) {
+                path.insert(self.gpa, 0, hir_mod.identifierOf(self.hir, cur).name) catch return null;
+                break;
+            } else if (k == .member_access) {
+                const inner = hir_mod.memberOf(self.hir, cur);
+                path.insert(self.gpa, 0, inner.name) catch return null;
+                cur = inner.object;
+                continue;
+            } else {
+                return null;
+            }
+        }
+        const root = self.rootBlockFor(node);
+        const root_stmts = if (root != hir_mod.none_node_id and self.hir.kindOf(root) == .block_stmt)
+            hir_mod.blockStmts(self.hir, root)
+        else
+            return null;
+        const ns_node = self.findNamespaceByPath(root_stmts, path.items) orelse return null;
+        return self.findNamedTypeDeclInNamespace(ns_node, ma.name);
+    }
+
+    /// Look up a class / interface / type-alias decl by name visible
+    /// from `anchor`, walking the same scope chain
+    /// `visibleTypeDeclarationExistsAt` uses but returning the decl
+    /// node so callers can introspect type-parameter arity.
+    fn findVisibleNamedTypeDecl(
+        self: *Checker,
+        anchor: NodeId,
+        name: hir_mod.StringId,
+    ) ?NodeId {
+        const anchor_section = self.virtualSectionStartForNode(anchor);
+        var cur: hir_mod.NodeId = self.hir.parentOf(anchor);
+        while (cur != hir_mod.none_node_id) : (cur = self.hir.parentOf(cur)) {
+            const k = self.hir.kindOf(cur);
+            if (k != .block_stmt and k != .namespace_decl) continue;
+            const stmts = if (k == .block_stmt)
+                hir_mod.blockStmts(self.hir, cur)
+            else
+                hir_mod.namespaceBody(self.hir, cur);
+            for (stmts) |raw| {
+                const decl = self.unwrapExportDecl(raw);
+                const decl_kind = self.hir.kindOf(decl);
+                if (decl_kind != .interface_decl and
+                    decl_kind != .type_alias_decl and
+                    decl_kind != .class_decl and
+                    decl_kind != .class_expr)
+                {
+                    continue;
+                }
+                if (self.virtualSectionStartForNode(decl) != anchor_section) continue;
+                const decl_name = self.declarationName(decl) orelse continue;
+                if (decl_name == name) return decl;
+            }
+        }
+        return null;
+    }
+
     fn reportUnresolvedTypeRefHeritage(
         self: *Checker,
         type_ref_node: NodeId,
@@ -18552,7 +18688,14 @@ pub const Checker = struct {
                     if (self.hir.kindOf(v.init) == .array_literal or
                         !(try self.tryReportSinglePropertyMissing(diag_node, v.init, init_type, declared_type)))
                     {
-                        try self.reportTypeNotAssignable(diag_node, init_type, declared_type, "Type is not assignable to declared type.");
+                        // Drill into the object literal first — when
+                        // the gap is a single property whose value is
+                        // not assignable, anchor the diagnostic at the
+                        // value position with full type prose. Mirrors
+                        // upstream `nonPrimitiveAsProperty.ts(7,28)`.
+                        if (!try self.tryReportObjectLiteralPropertyMismatch(v.init, declared_type)) {
+                            try self.reportTypeNotAssignable(diag_node, init_type, declared_type, "Type is not assignable to declared type.");
+                        }
                     }
                 }
             } else {
@@ -20134,7 +20277,21 @@ pub const Checker = struct {
                                 self.genericSignatureAssignmentAssignable(assignment_check_value_t, target_t) or
                                 (self.engine.isAssignableTo(assignment_check_value_t, target_t) catch true);
                         if (!ok) {
-                            const source_for_report = try self.expressionLiteralType(a.value, assignment_check_value_t);
+                            // Widen literal source types to their
+                            // primitive base when the target is the
+                            // broad `object`/`{}` primitive — upstream
+                            // renders `Type 'number' is not assignable
+                            // to type 'object'.` for `a = 123` where
+                            // `a: object`, not the literal `'123'`.
+                            // Mirrors `nonPrimitiveNarrow.ts(9,5)`.
+                            // Don't widen for enum / literal / fresh
+                            // object targets — those keep the literal
+                            // shape (see `enum assignment TS2322
+                            // renders enum names`).
+                            var source_for_report = try self.expressionLiteralType(a.value, assignment_check_value_t);
+                            if (target_t == types.Primitive.object_t) {
+                                source_for_report = self.widenLiteralType(source_for_report);
+                            }
                             try self.reportAssignmentTypeNotAssignable(node, a.value, source_for_report, target_t, "Type is not assignable to target type.");
                         }
                     }
@@ -23098,6 +23255,11 @@ pub const Checker = struct {
         const n = @min(type_params.len, type_arg_nodes.len);
         for (0..n) |i| {
             const explicit_t = self.lowererLowerWithTypeParams(type_arg_nodes[i]) catch types.Primitive.unknown;
+            // TS2344: Verify the explicit type arg satisfies the
+            // parameter's `extends` constraint. Mirrors upstream
+            // `nonPrimitiveInGeneric.ts(25,8)` where
+            // `bound2<number>()` violates `T extends object`.
+            try self.checkTypeArgSatisfiesConstraint(type_arg_nodes[i], type_params[i], explicit_t);
             try subs.put(self.gpa, type_params[i], explicit_t);
         }
         if (subs.count() == 0) return sig;
@@ -31257,10 +31419,83 @@ pub const Checker = struct {
         return null;
     }
 
+    /// When an object-literal init doesn't fit a structurally-known
+    /// target and the gap is a single property whose value is not
+    /// assignable, fire TS2322 at the property KEY position with
+    /// full `Type 'X' is not assignable to type 'Y'.` prose. Returns
+    /// true when a property-level diagnostic was emitted, so the
+    /// caller can skip the line-level fallback. Mirrors upstream tsc
+    /// behaviour for `nonPrimitiveAsProperty.ts(7,28)` — the source
+    /// position of the property name, not the value or declaration.
+    fn tryReportObjectLiteralPropertyMismatch(
+        self: *Checker,
+        init_node: NodeId,
+        target_t: TypeId,
+    ) !bool {
+        if (self.hir.kindOf(init_node) != .object_literal) return false;
+        if (target_t < types.Primitive.first_dynamic or target_t >= self.interner.pool.typeCount()) return false;
+        const flags = self.interner.pool.flagsOf(target_t);
+        if (!flags.is_object_type) return false;
+        var emitted = false;
+        for (self.interner.objectMembers(target_t)) |tm| {
+            const prop_node = self.findObjectLiteralPropNode(init_node, tm.name) orelse continue;
+            const op = hir_mod.objectPropertyOf(self.hir, prop_node);
+            if (op.value == hir_mod.none_node_id) continue;
+            const value_t = self.hir.typeOf(op.value);
+            if (value_t == types.Primitive.none) continue;
+            if (try self.literalExpressionAssignableToTarget(op.value, tm.type)) continue;
+            if (self.engine.isAssignableTo(value_t, tm.type) catch true) continue;
+            // Anchor at the property key so the column matches
+            // upstream — `nonPrimitiveAsProperty.ts(7,28)`.
+            const anchor = if (op.key != hir_mod.none_node_id) op.key else op.value;
+            try self.reportTypeNotAssignable(
+                anchor,
+                value_t,
+                tm.type,
+                "Type is not assignable to property type.",
+            );
+            emitted = true;
+            break;
+        }
+        return emitted;
+    }
+
+    /// Like `findObjectLiteralPropValue` but returns the
+    /// `object_property` node itself so callers can also access the
+    /// key node.
+    fn findObjectLiteralPropNode(self: *Checker, object_node: NodeId, name: hir_mod.StringId) ?NodeId {
+        if (self.hir.kindOf(object_node) != .object_literal) return null;
+        for (hir_mod.objectLiteralProps(self.hir, object_node)) |p| {
+            if (self.hir.kindOf(p) != .object_property) continue;
+            const op = hir_mod.objectPropertyOf(self.hir, p);
+            if (op.value == hir_mod.none_node_id) continue;
+            if (self.hir.kindOf(op.key) != .identifier) continue;
+            const key = hir_mod.identifierOf(self.hir, op.key);
+            if (key.name == name) return p;
+        }
+        return null;
+    }
+
     fn isLiteralType(self: *Checker, t: TypeId) bool {
         if (t == types.Primitive.true_lit or t == types.Primitive.false_lit) return true;
         if (t < types.Primitive.first_dynamic or t >= self.interner.pool.typeCount()) return false;
         return self.interner.pool.flagsOf(t).is_literal;
+    }
+
+    /// Widen a literal type (`123`, `"foo"`, `true`) to its primitive
+    /// base (`number`, `string`, `boolean`). Used for diagnostic
+    /// rendering when the target type is non-literal — upstream
+    /// reports `'number'` not `'123'` in `a = 123` where `a: object`.
+    fn widenLiteralType(self: *Checker, t: TypeId) TypeId {
+        if (t == types.Primitive.true_lit or t == types.Primitive.false_lit) return types.Primitive.boolean_t;
+        if (t < types.Primitive.first_dynamic or t >= self.interner.pool.typeCount()) return t;
+        const flags = self.interner.pool.flagsOf(t);
+        if (!flags.is_literal) return t;
+        if (flags.is_string) return types.Primitive.string_t;
+        if (flags.is_number) return types.Primitive.number_t;
+        if (flags.is_boolean) return types.Primitive.boolean_t;
+        if (flags.is_bigint) return types.Primitive.bigint_t;
+        return t;
     }
 
     fn stringLiteralAssignableToType(self: *Checker, sid: hir_mod.StringId, target_t: TypeId) CheckError!bool {
@@ -31753,14 +31988,16 @@ pub const Checker = struct {
         }
         if (missing_count != 1) return false;
 
-        const target_name = (try self.allocSimpleTypeName(target)) orelse return false;
+        const target_name = (try self.allocSimpleTypeName(target)) orelse
+            (try self.allocObjectTypeShape(target)) orelse return false;
         // Upstream tsc renders the broad `object` primitive as `{}`
         // in this missing-property error — see
         // `nonPrimitiveAssignError.ts(5,1)`.
         const source_name = if (source == types.Primitive.object_t)
             "{}"
         else
-            (try self.allocSimpleTypeName(source)) orelse "{}";
+            (try self.allocSimpleTypeName(source)) orelse
+                (try self.allocObjectTypeShape(source)) orelse "{}";
         const prop_text = self.string_interner.get(first_missing_name);
         const msg = try std.fmt.allocPrint(
             self.diag_arena.allocator(),
@@ -31769,6 +32006,36 @@ pub const Checker = struct {
         );
         try self.report(diag_node, TsCodes.property_missing_required, msg);
         return true;
+    }
+
+    /// Render a structural object type as `{ k: T; … }`. Used by
+    /// the TS2741 missing-property message when the target type
+    /// has named members and `allocSimpleTypeName` returns null.
+    /// Returns null when any constituent member type can't be named.
+    fn allocObjectTypeShape(self: *Checker, t: TypeId) !?[]const u8 {
+        if (t < types.Primitive.first_dynamic or t >= self.interner.pool.typeCount()) return null;
+        const flags = self.interner.pool.flagsOf(t);
+        if (!flags.is_object_type) return null;
+        const members = self.interner.objectMembers(t);
+        if (members.len == 0) return "{}";
+        // Cap render at a small member count to avoid runaway allocation
+        // on large object types — tsc itself elides past ~7 members but
+        // for the missing-property case we usually hit 1-3.
+        if (members.len > 8) return null;
+        var buf: std.ArrayListUnmanaged(u8) = .empty;
+        const arena = self.diag_arena.allocator();
+        try buf.appendSlice(arena, "{ ");
+        for (members) |m| {
+            const name = self.string_interner.get(m.name);
+            try buf.appendSlice(arena, name);
+            if (m.is_optional) try buf.append(arena, '?');
+            try buf.appendSlice(arena, ": ");
+            const type_name = (try self.allocSimpleTypeName(m.type)) orelse return null;
+            try buf.appendSlice(arena, type_name);
+            try buf.appendSlice(arena, "; ");
+        }
+        try buf.append(arena, '}');
+        return buf.items;
     }
 
     fn reportAssignmentTypeNotAssignable(
@@ -40532,7 +40799,9 @@ test "checker: Record over numeric enum requires enum value keys" {
     try s.checker.checkSourceFile(s.root);
     var found = false;
     for (s.checker.diagnostics.items) |d| {
-        if (d.code == TsCodes.type_not_assignable) found = true;
+        // TS2741 (single missing required property) is preferred over
+        // the bare TS2322 wording when only one record key is missing.
+        if (d.code == TsCodes.type_not_assignable or d.code == TsCodes.property_missing_required) found = true;
     }
     try T.expect(found);
 }
@@ -47658,7 +47927,9 @@ test "checker: checkjs JSDoc @type resolves multiline object typedef skeletons" 
     try s.checker.checkSourceFile(s.root);
     var found: bool = false;
     for (s.checker.diagnostics.items) |d| {
-        if (d.code == TsCodes.type_not_assignable) found = true;
+        // TS2741 supersedes the generic TS2322 wording when only the
+        // single `required` property is missing in the empty literal.
+        if (d.code == TsCodes.type_not_assignable or d.code == TsCodes.property_missing_required) found = true;
     }
     try T.expect(found);
 }
@@ -49079,7 +49350,11 @@ test "checker: type-only module namespaces expose no runtime members" {
     try s.checker.checkSourceFile(s.root);
     var found = false;
     for (s.checker.diagnostics.items) |d| {
-        if (d.code == TsCodes.type_not_assignable or d.code == TsCodes.type_missing_properties) found = true;
+        // TS2741 supersedes the generic TS2322 / TS2739 wording when
+        // only one required `M2` property is missing on `foo0`.
+        if (d.code == TsCodes.type_not_assignable or
+            d.code == TsCodes.type_missing_properties or
+            d.code == TsCodes.property_missing_required) found = true;
     }
     try T.expect(found);
 }

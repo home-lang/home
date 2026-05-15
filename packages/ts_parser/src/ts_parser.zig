@@ -1835,11 +1835,31 @@ pub const Parser = struct {
         const start = self.advance(); // class
         if (!is_abstract) span_start = start.span.start;
         var name: NodeId = hir_mod.none_node_id;
-        if (self.peek().kind == .identifier or self.peek().kind.isContextualKeyword() or self.peek().kind.isPrimitiveTypeKeyword()) {
+        // `void` is a strict-mode reserved word in ES — `class void {}`
+        // is a parse error (TS1005 `'{' expected`) rather than the
+        // soft TS2414 the other primitive-type keywords get. Skip the
+        // token so parsing continues into the class body without
+        // cascading "expected `{`" errors. Mirrors upstream
+        // `objectTypesWithPredefinedTypesAsName2.ts(3,7)`.
+        const next_kind = self.peek().kind;
+        if (next_kind == .kw_void) {
+            const void_tok = self.advance();
+            try self.reportCodeAt(void_tok.span.start, void_tok.line, 1005, "'{' expected.");
+        } else if (next_kind == .identifier or next_kind.isContextualKeyword() or next_kind.isPrimitiveTypeKeyword()) {
             const name_tok = self.advance();
             try self.reportAwaitBindingIfReserved(name_tok);
             if (name_tok.kind.isPrimitiveTypeKeyword() or self.isReservedTypeNameToken(name_tok)) {
-                try self.reportCodeAt(name_tok.span.start, name_tok.line, 2427, "Class name cannot be a reserved type name.");
+                // Match upstream TS shape: TS2414 with the specific name —
+                //   `Class name cannot be 'any'.`
+                // Source: §6.A exact-baseline ratchet
+                // (objectTypesWithPredefinedTypesAsName.ts).
+                const raw = self.source[name_tok.span.start..name_tok.span.end];
+                const msg = try std.fmt.allocPrint(
+                    self.diag_arena.allocator(),
+                    "Class name cannot be '{s}'.",
+                    .{raw},
+                );
+                try self.reportCodeAt(name_tok.span.start, name_tok.line, 2414, msg);
             }
             const name_id = try self.internToken(name_tok);
             name = try self.builder.addIdentifier(tokenSpan(name_tok), name_id);
@@ -4978,9 +4998,15 @@ pub const Parser = struct {
                 try self.reportCodeAt(prev.span.end + 1, prev.line, 1005, "';' expected.");
             }
         }
-        if (has_multiple_parameters or !key_type_valid or value_type == hir_mod.none_node_id) {
+        if (has_multiple_parameters or value_type == hir_mod.none_node_id) {
             return true;
         }
+        // Even when the key type is invalid (TS1268 already reported),
+        // store the index signature so the checker can still lower
+        // the key/value type-refs and emit follow-on diagnostics like
+        // TS2314 (`Generic type … requires N type argument(s)`).
+        // Mirrors upstream behaviour for fixtures like
+        // `genericTypeReferenceWithoutTypeArgument.ts(12,14)`.
         const sp: Span = .{ .start = start_tok.span.start, .end = self.tokens[self.cursor - 1].span.end };
         const node = try self.builder.addIndexSignature(sp, key_type, value_type, is_readonly, is_static);
         try out.append(self.gpa, node);
@@ -9777,7 +9803,8 @@ test "parser: primitive type keyword class name reports diagnostic" {
 
     _ = try s.parser.parseSourceFile();
     try T.expectEqual(@as(usize, 1), s.parser.diagnostics.items.len);
-    try T.expectEqual(@as(u32, 2427), s.parser.diagnostics.items[0].code);
+    try T.expectEqual(@as(u32, 2414), s.parser.diagnostics.items[0].code);
+    try T.expectEqualStrings("Class name cannot be 'any'.", s.parser.diagnostics.items[0].message);
 }
 
 test "parser: ambient class member implementations report diagnostic" {

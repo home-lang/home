@@ -1494,7 +1494,12 @@ test "driver: object annotation rejects shape with missing required prop" {
     }
     var saw_mismatch = false;
     for (c.diagnostics.items) |d| {
-        if (std.mem.indexOf(u8, d.message, "not assignable") != null) {
+        // Either the generic TS2322 ("not assignable") or the more
+        // specific TS2741 ("Property 'y' is missing in type ...")
+        // satisfies the rejection contract.
+        if (std.mem.indexOf(u8, d.message, "not assignable") != null or
+            std.mem.indexOf(u8, d.message, "is missing in type") != null)
+        {
             saw_mismatch = true;
             break;
         }
