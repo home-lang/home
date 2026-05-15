@@ -10077,7 +10077,87 @@ test "parser: module keyword can be a CommonJS expression root" {
     try T.expectEqual(@as(usize, 0), s.parser.diagnostics.items.len);
 }
 
-test "parser: REPRO full conformance stringNamedPropertyDuplicates" {
+test "parser: consecutive duplicate string-named class fields all reach HIR" {
+    var s = try newTestSetup(
+        \\class C {
+        \\    "a b": number;
+        \\    "a b": number;
+        \\    static "c d": number;
+        \\    static "c d": number;
+        \\}
+    );
+    defer destroyTestSetup(s);
+    const root = try s.parser.parseSourceFile();
+    const top = hir_mod.blockStmts(&s.hir, root)[0];
+    try T.expectEqual(hir_mod.NodeKind.class_decl, s.hir.kindOf(top));
+    const members = hir_mod.classMembers(&s.hir, top);
+    try T.expectEqual(@as(usize, 4), members.len);
+    // Each member is an object_property with an identifier key and the
+    // canonical (quote-stripped) name interned. Both pairs share their
+    // canonical name so the checker can detect TS2300 collisions.
+    const m0 = hir_mod.objectPropertyOf(&s.hir, members[0]);
+    const m1 = hir_mod.objectPropertyOf(&s.hir, members[1]);
+    const m2 = hir_mod.objectPropertyOf(&s.hir, members[2]);
+    const m3 = hir_mod.objectPropertyOf(&s.hir, members[3]);
+    try T.expectEqual(hir_mod.identifierOf(&s.hir, m0.key).name, hir_mod.identifierOf(&s.hir, m1.key).name);
+    try T.expectEqual(hir_mod.identifierOf(&s.hir, m2.key).name, hir_mod.identifierOf(&s.hir, m3.key).name);
+    try T.expect(!m0.is_static and !m1.is_static);
+    try T.expect(m2.is_static and m3.is_static);
+}
+
+test "parser: consecutive duplicate numeric-named class fields all reach HIR" {
+    var s = try newTestSetup(
+        \\class C {
+        \\    1: number;
+        \\    1.0: number;
+        \\    static 2: number;
+        \\    static 2: number;
+        \\}
+    );
+    defer destroyTestSetup(s);
+    const root = try s.parser.parseSourceFile();
+    const top = hir_mod.blockStmts(&s.hir, root)[0];
+    const members = hir_mod.classMembers(&s.hir, top);
+    try T.expectEqual(@as(usize, 4), members.len);
+    const m2 = hir_mod.objectPropertyOf(&s.hir, members[2]);
+    const m3 = hir_mod.objectPropertyOf(&s.hir, members[3]);
+    // Static `2` appears twice — both must reach the HIR with the same
+    // canonical name and `is_static = true` so the checker can group
+    // them and emit TS2300.
+    try T.expect(m2.is_static and m3.is_static);
+    try T.expectEqual(hir_mod.identifierOf(&s.hir, m2.key).name, hir_mod.identifierOf(&s.hir, m3.key).name);
+}
+
+test "parser: object literal recovers from missing comma between properties" {
+    // The `stringNamedPropertyDuplicates` / `numericNamedPropertyDuplicates`
+    // conformance fixtures end with a `var b = { ... }` whose properties
+    // intentionally omit commas. Without recovery the whole source-file
+    // parse aborts, so the class members above never reach the HIR for
+    // checker-side TS2300 detection. Recovery emits TS1005 and keeps
+    // both properties, matching tsc's `parseDelimitedList` shape.
+    var s = try newTestSetup(
+        \\var b = {
+        \\    "a b": 1
+        \\    "a b": 1
+        \\}
+    );
+    defer destroyTestSetup(s);
+    const root = try s.parser.parseSourceFile();
+    const stmts = hir_mod.blockStmts(&s.hir, root);
+    try T.expectEqual(@as(usize, 1), stmts.len);
+    var saw_ts1005 = false;
+    for (s.parser.diagnostics.items) |d| {
+        if (d.code == 1005) saw_ts1005 = true;
+    }
+    try T.expect(saw_ts1005);
+}
+
+test "parser: missing-comma recovery preserves preceding class duplicate members" {
+    // End-to-end shape of the conformance fixture: a class with two
+    // pairs of duplicate-name fields followed by a malformed object
+    // literal. Pre-fix, the object-literal parse error blew up the
+    // whole source file and dropped the class entirely. After fix the
+    // class reaches the HIR with all 4 members intact.
     var s = try newTestSetup(
         \\class C {
         \\    "a b": number;
@@ -10086,31 +10166,16 @@ test "parser: REPRO full conformance stringNamedPropertyDuplicates" {
         \\    static "c d": number;
         \\}
         \\
-        \\interface I {
-        \\    "a b": number;
-        \\    "a b": number;
-        \\}
-        \\
-        \\var a: {
-        \\    "a b": number;
-        \\    "a b": number;
-        \\}
-        \\
         \\var b = {
         \\    "a b": 1
         \\    "a b": 1
         \\}
     );
     defer destroyTestSetup(s);
-    const root_or_err = s.parser.parseSourceFile();
-    if (root_or_err) |root| {
-        const stmts = hir_mod.blockStmts(&s.hir, root);
-        std.debug.print("FULL stmts.len={d}\n", .{stmts.len});
-    } else |err| {
-        std.debug.print("FULL parse FAILED with {s}\n", .{@errorName(err)});
-    }
-    std.debug.print("FULL diagnostics count: {d}\n", .{s.parser.diagnostics.items.len});
-    for (s.parser.diagnostics.items) |d| {
-        std.debug.print("  diag pos={d} TS{d}: {s}\n", .{ d.pos, d.code, d.message });
-    }
+    const root = try s.parser.parseSourceFile();
+    const stmts = hir_mod.blockStmts(&s.hir, root);
+    try T.expect(stmts.len >= 2);
+    try T.expectEqual(hir_mod.NodeKind.class_decl, s.hir.kindOf(stmts[0]));
+    const members = hir_mod.classMembers(&s.hir, stmts[0]);
+    try T.expectEqual(@as(usize, 4), members.len);
 }
