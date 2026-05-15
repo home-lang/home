@@ -3523,6 +3523,7 @@ pub const Checker = struct {
                     !self.varDeclHasExplicitAnyAnnotation(node) and
                     !self.varDeclTypeIncludesUndefined(node) and
                     !self.isGlobalSymbolConstructorVarDecl(node) and
+                    !self.typeAnnotationReferencesGenericWithoutArgs(v.type_annotation) and
                     v.name != hir_mod.none_node_id and
                     self.hir.kindOf(v.name) == .identifier)
                 {
@@ -4547,6 +4548,33 @@ pub const Checker = struct {
             self.lowererLowerWithTypeParams(v.type_annotation) catch return false;
         if (lowered == types.Primitive.any or lowered == types.Primitive.unknown) return false;
         return self.typeIncludesUndefined(lowered);
+    }
+
+    /// True when `type_annotation` syntactically references a generic
+    /// type (class / interface / type alias) without supplying its
+    /// required type-args — i.e. the annotation would trip TS2314 at
+    /// the lowerer. Used to suppress TS2454 ("used before assigned")
+    /// for declarations whose annotation has already been flagged as
+    /// invalid: `var y: C; return y;` shouldn't double-report when
+    /// `C<T>` is the generic class. Mirrors upstream
+    /// `genericTypeReferenceWithoutTypeArgument.ts(14,38)`.
+    fn typeAnnotationReferencesGenericWithoutArgs(self: *Checker, type_annotation: NodeId) bool {
+        if (type_annotation == hir_mod.none_node_id) return false;
+        const k = self.hir.kindOf(type_annotation);
+        if (k != .type_ref) return false;
+        const r = hir_mod.typeRefOf(self.hir, type_annotation);
+        if (r.args_len > 0) return false;
+        if (r.qualifier_len > 0) return false;
+        // Bare `var y: C;` where C is a generic class / interface /
+        // alias declared elsewhere with at least one required
+        // type-parameter — the lowerer will fire TS2314.
+        if (self.generic_aliases.get(r.name)) |info| {
+            return self.genericAliasHasMissingRequiredArgs(info, 0);
+        }
+        if (self.findVisibleNamedTypeDecl(type_annotation, r.name)) |decl| {
+            return self.qualifiedDeclHasMissingRequiredTypeArgs(decl, 0);
+        }
+        return false;
     }
 
     fn isGlobalSymbolConstructorVarDecl(self: *Checker, node: NodeId) bool {
