@@ -10010,19 +10010,14 @@ pub const Checker = struct {
         }
         if (std.mem.startsWith(u8, spec, ".")) {
             try self.checkNamedImportSpecifiers(node, imp, spec);
+            if (!imp.is_type_only and self.sourceHasVirtualFilenameSections() and isDeclarationFileSpecifier(spec)) {
+                try self.reportVirtualCannotFindRelativeModule(node, spec);
+                return;
+            }
             if (try self.checkVirtualRelativeModuleImport(node, spec)) return;
             if (try self.isKnownAmbientModuleName(node, spec)) return;
             if (self.sourceHasVirtualFilenameSections()) {
-                const msg = try std.fmt.allocPrint(
-                    self.diag_arena.allocator(),
-                    "Cannot find module '{s}' or its corresponding type declarations.",
-                    .{spec},
-                );
-                try self.diagnostics.append(self.gpa, .{
-                    .node = node,
-                    .code = TsCodes.cannot_find_module,
-                    .message = msg,
-                });
+                try self.reportVirtualCannotFindRelativeModule(node, spec);
             }
             return;
         }
@@ -10147,6 +10142,20 @@ pub const Checker = struct {
         return true;
     }
 
+    fn reportVirtualCannotFindRelativeModule(self: *Checker, node: NodeId, spec: []const u8) CheckError!void {
+        const msg = try std.fmt.allocPrint(
+            self.diag_arena.allocator(),
+            "Cannot find module '{s}' or its corresponding type declarations.",
+            .{spec},
+        );
+        try self.diagnostics.append(self.gpa, .{
+            .node = node,
+            .pos = self.virtualLocalModuleSpecifierQuotePos(node, spec),
+            .code = TsCodes.cannot_find_module,
+            .message = msg,
+        });
+    }
+
     fn virtualArbitraryExtensionDeclarationPath(self: *Checker, node: NodeId, spec: []const u8) CheckError!?[]u8 {
         if (!std.mem.startsWith(u8, spec, ".")) return null;
         const from = self.virtualSectionFilenameForNode(node) orelse return null;
@@ -10234,6 +10243,12 @@ pub const Checker = struct {
             if (std.mem.eql(u8, ext, candidate)) return true;
         }
         return false;
+    }
+
+    fn isDeclarationFileSpecifier(spec: []const u8) bool {
+        return std.mem.endsWith(u8, spec, ".d.ts") or
+            std.mem.endsWith(u8, spec, ".d.mts") or
+            std.mem.endsWith(u8, spec, ".d.cts");
     }
 
     fn importDeclIsRequireAssignment(self: *Checker, node: NodeId) bool {
@@ -10705,6 +10720,7 @@ pub const Checker = struct {
         if (self.virtualSourceHasFilename(direct)) return true;
         if (std.mem.eql(u8, ext, ".ts") or std.mem.eql(u8, ext, ".d.ts")) {
             if (std.mem.lastIndexOfScalar(u8, base, '.')) |dot| {
+                if (isStandardModuleSpecifierExtension(base[dot..])) return false;
                 const arbitrary_decl = std.fmt.allocPrint(self.gpa, "{s}.d{s}.ts", .{ base[0..dot], base[dot..] }) catch return false;
                 defer self.gpa.free(arbitrary_decl);
                 if (self.virtualSourceHasFilename(arbitrary_decl)) return true;
@@ -36522,6 +36538,28 @@ test "checker: arbitrary extension declaration import requires option" {
     for (s.checker.diagnostics.items) |d| {
         if (d.code == TsCodes.arbitrary_extension_requires_option and
             std.mem.indexOf(u8, d.message, "component.d.html.ts") != null)
+        {
+            found = true;
+        }
+    }
+    try T.expect(found);
+}
+
+test "checker: standard extension arbitrary declaration companion does not satisfy import" {
+    const s = try newSetup(
+        \\// @allowArbitraryExtensions: true
+        \\// @filename: file.d.js.ts
+        \\export default "bad";
+        \\// @filename: main.ts
+        \\import def from "./file.js";
+        \\def;
+    );
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+    var found = false;
+    for (s.checker.diagnostics.items) |d| {
+        if (d.code == TsCodes.cannot_find_module and
+            std.mem.indexOf(u8, d.message, "./file.js") != null)
         {
             found = true;
         }
