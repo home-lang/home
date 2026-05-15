@@ -176,6 +176,17 @@ pub fn run(gpa: std.mem.Allocator, c: Case) !Result {
     // safe first cut.
     const exact_mode = c.expected_errors.len > 0;
     const directive_offset: u32 = if (exact_mode) countLeadingDirectiveLines(c.source) else 0;
+    // For multi-file fixtures (`// @filename: foo.ts` markers split a
+    // single file into virtual sub-files), upstream `.errors.txt`
+    // baselines report positions PER VIRTUAL FILE — line 1 of `foo.ts`
+    // is just line 1 of `foo.ts`, regardless of where in the outer
+    // concatenated source that section lives. Build a marker index
+    // once so we can rewrite each diagnostic's `(file, line)` pair to
+    // the virtual file it actually belongs to. Single-file fixtures
+    // (no `@filename:` markers) get a zero-length index and fall
+    // through to the existing `directive_offset` adjustment unchanged.
+    var virtual_markers = try buildVirtualFileIndex(gpa, c.source);
+    defer virtual_markers.deinit(gpa);
     var seen_keys: std.StringHashMapUnmanaged(void) = .empty;
     defer {
         var it = seen_keys.iterator();
@@ -190,18 +201,27 @@ pub fn run(gpa: std.mem.Allocator, c: Case) !Result {
     var actual_count: u32 = 0;
     for (compilation.diagnostics.items) |d| {
         const pos = ts_diagnostics.positionToLineCol(c.source, d.pos);
-        const adjusted_line = if (pos.line > directive_offset)
+        // Resolve the per-virtual-file (path, line) when this diagnostic
+        // sits inside a `@filename:` block; otherwise fall back to the
+        // case-level path with the leading-directive line offset.
+        var diag_file: []const u8 = c.path;
+        var diag_line: u32 = if (pos.line > directive_offset)
             pos.line - directive_offset
         else
             pos.line;
+        if (virtualMarkerForByte(virtual_markers.items, d.pos)) |m| {
+            diag_file = m.path;
+            const total_strip = m.line + m.extra_strip;
+            diag_line = if (pos.line > total_strip) pos.line - total_strip else 1;
+        }
         const code = if (d.code != 0) d.code else mapPhaseToCode(d.phase);
         const prefix: ts_diagnostics.Diagnostic.CodePrefix = switch (d.code_prefix) {
             .TS => .TS,
             .HM => .HM,
         };
         const fdiag: ts_diagnostics.Diagnostic = .{
-            .file = c.path,
-            .line = adjusted_line,
+            .file = diag_file,
+            .line = diag_line,
             .col = pos.col,
             .code = code,
             .code_prefix = prefix,
@@ -584,6 +604,174 @@ pub fn loadDirectoryWithOptions(
         });
     }
     return out.toOwnedSlice(gpa);
+}
+
+/// One `// @filename: <path>` marker discovered in a multi-file
+/// fixture. `path` is borrowed from the source bytes (caller must
+/// keep `source` alive). `line` is the 1-based outer-source line of
+/// the marker comment itself; `byte_offset` is the marker's start
+/// position in `source`.
+///
+/// `extra_strip` accounts for additional directive comments that
+/// upstream tsc treats as virtual-file metadata (e.g. `// @jsx:
+/// react`) — those sit after the `@filename:` marker but before any
+/// real content and are stripped from upstream's per-file line
+/// count. Per-file line for a diagnostic at outer line N inside
+/// this section is therefore `N - line - extra_strip`, with line 1
+/// guaranteed to be the first content line shown in the upstream
+/// `==== <path> ====` listing.
+pub const VirtualFileMarker = struct {
+    path: []const u8,
+    line: u32,
+    byte_offset: u32,
+    extra_strip: u32 = 0,
+};
+
+/// Scan `source` for `// @filename:` (and `// @Filename:`) markers
+/// and return them in source-order. Returns an empty list (no
+/// allocation other than the empty backing slice) when the source
+/// contains no markers, so single-file fixtures incur no overhead
+/// beyond the substring probe. For each marker we also count the
+/// run of `// @key: value` directive lines (plus trailing blanks)
+/// that immediately follow it and store the count in `extra_strip`
+/// so per-virtual-file line numbers match upstream's baseline
+/// display, which strips those inline directives from the section
+/// just like it strips the leading directive block at the file
+/// head. Caller owns the returned list.
+fn buildVirtualFileIndex(
+    gpa: std.mem.Allocator,
+    source: []const u8,
+) !std.ArrayListUnmanaged(VirtualFileMarker) {
+    var out: std.ArrayListUnmanaged(VirtualFileMarker) = .empty;
+    errdefer out.deinit(gpa);
+    if (std.mem.indexOf(u8, source, "@filename:") == null and
+        std.mem.indexOf(u8, source, "@Filename:") == null)
+    {
+        return out;
+    }
+    // First pass: collect (path, line, byte_offset).
+    var line_no: u32 = 1;
+    var line_start: usize = 0;
+    var i: usize = 0;
+    while (i <= source.len) : (i += 1) {
+        const at_end = i == source.len;
+        if (at_end or source[i] == '\n') {
+            const raw_line = source[line_start..i];
+            const line = std.mem.trim(u8, raw_line, "\r");
+            if (virtualFilename(line)) |path| {
+                try out.append(gpa, .{
+                    .path = path,
+                    .line = line_no,
+                    .byte_offset = @intCast(line_start),
+                });
+            }
+            if (at_end) break;
+            line_no += 1;
+            line_start = i + 1;
+        }
+    }
+    // Second pass: walk each marker's section and count any
+    // post-marker directive lines (and trailing blanks) that
+    // upstream strips from per-file line numbers. The directive
+    // detection mirrors `countLeadingDirectiveLines` exactly so
+    // single-file and per-section behaviour stay aligned.
+    for (out.items, 0..) |*m, idx| {
+        const section_end_line: u32 = if (idx + 1 < out.items.len)
+            out.items[idx + 1].line
+        else
+            std.math.maxInt(u32);
+        m.extra_strip = countSectionLeadingDirectives(
+            source,
+            m.line + 1,
+            section_end_line,
+        );
+    }
+    return out;
+}
+
+/// Count directive-block lines starting at `start_line` (1-based
+/// outer-source line) and stopping at `end_line` (exclusive) or at
+/// the first content-bearing line, whichever comes first. Same
+/// semantics as `countLeadingDirectiveLines`, just bounded by an
+/// outer-source line range so we can score one virtual-file
+/// section's metadata at a time.
+fn countSectionLeadingDirectives(
+    source: []const u8,
+    start_line: u32,
+    end_line: u32,
+) u32 {
+    if (start_line >= end_line) return 0;
+    var line_no: u32 = 1;
+    var line_start: usize = 0;
+    var i: usize = 0;
+    var count: u32 = 0;
+    var directive_seen = false;
+    var pending_blanks: u32 = 0;
+    while (i <= source.len) : (i += 1) {
+        const at_end = i == source.len;
+        if (at_end or source[i] == '\n') {
+            if (line_no >= end_line) break;
+            if (line_no >= start_line) {
+                const raw_line = source[line_start..i];
+                const trimmed = std.mem.trim(u8, raw_line, " \t\r");
+                if (trimmed.len == 0) {
+                    if (directive_seen) {
+                        pending_blanks += 1;
+                    } else break;
+                } else if (!std.mem.startsWith(u8, trimmed, "//")) {
+                    break;
+                } else {
+                    const after_slashes = std.mem.trim(u8, trimmed[2..], " \t");
+                    if (!std.mem.startsWith(u8, after_slashes, "@")) break;
+                    const body = after_slashes[1..];
+                    var name_end: usize = 0;
+                    while (name_end < body.len and (std.ascii.isAlphanumeric(body[name_end]) or
+                        body[name_end] == '_' or body[name_end] == '-')) : (name_end += 1)
+                    {}
+                    if (name_end == 0) break;
+                    const key = body[0..name_end];
+                    if (std.mem.startsWith(u8, key, "ts-")) break;
+                    // Don't swallow a follow-on `@filename:` — it
+                    // belongs to the NEXT virtual file. Defensive;
+                    // the `end_line` bound already enforces this,
+                    // but the explicit check keeps the helper safe
+                    // when callers feed it `maxInt` for the tail.
+                    if (std.ascii.eqlIgnoreCase(key, "filename")) break;
+                    const rest = body[name_end..];
+                    if (rest.len > 0 and rest[0] != ':' and !std.ascii.isWhitespace(rest[0])) break;
+                    count += pending_blanks + 1;
+                    pending_blanks = 0;
+                    directive_seen = true;
+                }
+            }
+            if (at_end) break;
+            line_no += 1;
+            line_start = i + 1;
+        }
+    }
+    count += pending_blanks;
+    return count;
+}
+
+/// Find the latest virtual-file marker that begins at or before the
+/// byte position `byte_pos`. Returns `null` when no such marker
+/// exists (e.g. the diagnostic sits in the implicit "default" file
+/// before the first `@filename:` line, or the fixture has no
+/// markers at all). Markers must be in source-order; we scan
+/// forward and return the last match — fixture marker counts are
+/// tiny (typically 2-4) so a linear scan beats the bookkeeping a
+/// binary search would need.
+fn virtualMarkerForByte(
+    markers: []const VirtualFileMarker,
+    byte_pos: u32,
+) ?VirtualFileMarker {
+    var match: ?VirtualFileMarker = null;
+    for (markers) |m| {
+        if (m.byte_offset <= byte_pos) {
+            match = m;
+        } else break;
+    }
+    return match;
 }
 
 fn stripNonCodeVirtualSections(gpa: std.mem.Allocator, source: []const u8) !?[]u8 {
@@ -3074,6 +3262,84 @@ test "conformance: runOwnedCorpus matches runCorpus on equal inputs" {
     }
     const stats = try runOwnedCorpus(T.allocator, owned, &results);
     try T.expectEqual(@as(u32, 2), stats.passed);
+}
+
+test "conformance: buildVirtualFileIndex returns empty list for single-file fixtures" {
+    var idx = try buildVirtualFileIndex(T.allocator,
+        \\// @target: es2015
+        \\const x = 1;
+    );
+    defer idx.deinit(T.allocator);
+    try T.expectEqual(@as(usize, 0), idx.items.len);
+}
+
+test "conformance: buildVirtualFileIndex captures multi-file markers in source order" {
+    const src =
+        \\// @module: commonjs
+        \\// @noImplicitAny: true
+        \\// This tests that `--noImplicitAny` disables untyped modules.
+        \\
+        \\// @filename: /node_modules/foo/index.js
+        \\This file is not processed.
+        \\
+        \\// @filename: /a.ts
+        \\import * as foo from "foo";
+    ;
+    var idx = try buildVirtualFileIndex(T.allocator, src);
+    defer idx.deinit(T.allocator);
+    try T.expectEqual(@as(usize, 2), idx.items.len);
+    try T.expectEqualStrings("/node_modules/foo/index.js", idx.items[0].path);
+    try T.expectEqual(@as(u32, 5), idx.items[0].line);
+    try T.expectEqualStrings("/a.ts", idx.items[1].path);
+    try T.expectEqual(@as(u32, 8), idx.items[1].line);
+    try T.expectEqual(@as(u32, 0), idx.items[1].extra_strip);
+}
+
+test "conformance: buildVirtualFileIndex strips post-marker directives like `@jsx`" {
+    const src =
+        \\// @module: commonjs
+        \\// @filename: a.ts
+        \\export const x: string[] = [];
+        \\
+        \\// @filename: b.tsx
+        \\// @jsx: react
+        \\import * as React from "react";
+        \\export const y = <div />;
+    ;
+    var idx = try buildVirtualFileIndex(T.allocator, src);
+    defer idx.deinit(T.allocator);
+    try T.expectEqual(@as(usize, 2), idx.items.len);
+    try T.expectEqualStrings("a.ts", idx.items[0].path);
+    try T.expectEqual(@as(u32, 0), idx.items[0].extra_strip);
+    try T.expectEqualStrings("b.tsx", idx.items[1].path);
+    // `// @jsx: react` sits between the marker and the first content
+    // line, so it counts as an additional strip just like the leading
+    // file-head directive block.
+    try T.expectEqual(@as(u32, 1), idx.items[1].extra_strip);
+}
+
+test "conformance: virtualMarkerForByte returns latest preceding marker" {
+    const src =
+        \\// @filename: a.ts
+        \\const a = 1;
+        \\// @filename: b.ts
+        \\const b = 2;
+    ;
+    var idx = try buildVirtualFileIndex(T.allocator, src);
+    defer idx.deinit(T.allocator);
+    // Byte 0 sits before any marker — `@filename: a.ts` starts at 0.
+    const first = virtualMarkerForByte(idx.items, 0).?;
+    try T.expectEqualStrings("a.ts", first.path);
+    // A byte deep into b.ts's section maps to the b.ts marker.
+    const b_offset: u32 = @intCast(std.mem.indexOf(u8, src, "const b").?);
+    const second = virtualMarkerForByte(idx.items, b_offset).?;
+    try T.expectEqualStrings("b.ts", second.path);
+}
+
+test "conformance: virtualMarkerForByte returns null when source has no markers" {
+    var idx = try buildVirtualFileIndex(T.allocator, "const x = 1;");
+    defer idx.deinit(T.allocator);
+    try T.expectEqual(@as(?VirtualFileMarker, null), virtualMarkerForByte(idx.items, 0));
 }
 
 test "conformance: countLeadingDirectiveLines mirrors upstream baseline strip" {
