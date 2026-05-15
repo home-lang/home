@@ -71,6 +71,7 @@ pub const TsCodes = struct {
     pub const cannot_find_name_did_you_mean: u32 = 2552;
     pub const type_not_generic: u32 = 2315;
     pub const cannot_find_module: u32 = 2307;
+    pub const arbitrary_extension_requires_option: u32 = 6263;
     pub const invalid_module_name_augmentation: u32 = 2665;
     pub const untyped_module: u32 = 7016;
     pub const cannot_find_namespace: u32 = 2503;
@@ -10106,7 +10107,10 @@ pub const Checker = struct {
         const resolution = try self.resolveVirtualRelativeModule(node, spec);
         switch (resolution) {
             .none => return false,
-            .declaration => return true,
+            .declaration => {
+                _ = try self.reportArbitraryExtensionDeclarationImport(node, spec);
+                return true;
+            },
             .implementation => {
                 if (self.strict_flags.no_implicit_any) {
                     const msg = try std.fmt.allocPrint(
@@ -10123,6 +10127,113 @@ pub const Checker = struct {
                 return true;
             },
         }
+    }
+
+    fn reportArbitraryExtensionDeclarationImport(self: *Checker, node: NodeId, spec: []const u8) CheckError!bool {
+        if (!self.sourceDirectiveValueMentions("allowArbitraryExtensions", "false")) return false;
+        const resolved = (try self.virtualArbitraryExtensionDeclarationPath(node, spec)) orelse return false;
+        defer self.gpa.free(resolved);
+        const msg = try std.fmt.allocPrint(
+            self.diag_arena.allocator(),
+            "Module '{s}' was resolved to '{s}', but '--allowArbitraryExtensions' is not set.",
+            .{ spec, resolved },
+        );
+        try self.diagnostics.append(self.gpa, .{
+            .node = node,
+            .pos = self.virtualLocalModuleSpecifierQuotePos(node, spec),
+            .code = TsCodes.arbitrary_extension_requires_option,
+            .message = msg,
+        });
+        return true;
+    }
+
+    fn virtualArbitraryExtensionDeclarationPath(self: *Checker, node: NodeId, spec: []const u8) CheckError!?[]u8 {
+        if (!std.mem.startsWith(u8, spec, ".")) return null;
+        const from = self.virtualSectionFilenameForNode(node) orelse return null;
+        const resolved = try self.resolveVirtualRelativePath(from, spec);
+        defer self.gpa.free(resolved);
+        const dot = std.mem.lastIndexOfScalar(u8, resolved, '.') orelse return null;
+        const ext = resolved[dot..];
+        if (isStandardModuleSpecifierExtension(ext)) return null;
+        const arbitrary_decl = try std.fmt.allocPrint(self.gpa, "{s}.d{s}.ts", .{ resolved[0..dot], ext });
+        errdefer self.gpa.free(arbitrary_decl);
+        if (!self.virtualSourceHasFilename(arbitrary_decl)) {
+            self.gpa.free(arbitrary_decl);
+            return null;
+        }
+        return arbitrary_decl;
+    }
+
+    fn moduleSpecifierQuotePos(self: *Checker, node: NodeId, spec: []const u8) ?u32 {
+        const src = self.source orelse return null;
+        const sp = self.hir.spanOf(node);
+        if (sp.start >= sp.end or sp.end > src.len) return null;
+        const text = src[sp.start..sp.end];
+        if (std.mem.indexOf(u8, text, spec)) |rel| {
+            if (rel > 0 and (text[rel - 1] == '"' or text[rel - 1] == '\'')) return @intCast(sp.start + rel - 1);
+            return @intCast(sp.start + rel);
+        }
+        return null;
+    }
+
+    fn virtualLocalModuleSpecifierQuotePos(self: *Checker, node: NodeId, spec: []const u8) ?u32 {
+        const src = self.source orelse return null;
+        const quote_pos = self.moduleSpecifierQuotePos(node, spec) orelse return null;
+        if (!self.sourceHasVirtualFilenameSections()) return quote_pos;
+        const section_start: u32 = @intCast(self.virtualSectionStartForNode(node));
+        const section_line0 = byteOffsetToLine(src, section_start);
+        const quote_line0 = byteOffsetToLine(src, quote_pos);
+        if (quote_line0 <= section_line0) return quote_pos;
+        const local_line1 = quote_line0 - section_line0;
+        const desired_line0 = self.leadingDirectiveLineCount() + local_line1 - 1;
+        const original_line_start = byteOffsetOfLine(src, quote_line0);
+        const col0 = quote_pos - original_line_start;
+        return byteOffsetOfLine(src, desired_line0) + col0;
+    }
+
+    fn leadingDirectiveLineCount(self: *Checker) u32 {
+        const src = self.source orelse return 0;
+        var count: u32 = 0;
+        var directive_seen = false;
+        var pending_blanks: u32 = 0;
+        var lines = std.mem.splitScalar(u8, src, '\n');
+        while (lines.next()) |raw| {
+            const line = std.mem.trim(u8, raw, " \t\r");
+            if (line.len == 0) {
+                if (directive_seen) pending_blanks += 1 else break;
+                continue;
+            }
+            if (!std.mem.startsWith(u8, line, "//")) break;
+            const rest = std.mem.trim(u8, line[2..], " \t");
+            if (!std.mem.startsWith(u8, rest, "@")) break;
+            const body = rest[1..];
+            var name_end: usize = 0;
+            while (name_end < body.len and (std.ascii.isAlphanumeric(body[name_end]) or
+                body[name_end] == '_' or body[name_end] == '-')) : (name_end += 1)
+            {}
+            if (name_end == 0) break;
+            const key = body[0..name_end];
+            if (std.mem.startsWith(u8, key, "ts-")) break;
+            const tail = body[name_end..];
+            if (tail.len > 0 and tail[0] != ':' and !std.ascii.isWhitespace(tail[0])) break;
+            count += pending_blanks + 1;
+            pending_blanks = 0;
+            directive_seen = true;
+        }
+        count += pending_blanks;
+        return count;
+    }
+
+    fn isStandardModuleSpecifierExtension(ext: []const u8) bool {
+        const standard = [_][]const u8{
+            ".ts",   ".tsx", ".mts", ".cts",
+            ".js",   ".jsx", ".mjs", ".cjs",
+            ".json",
+        };
+        for (standard) |candidate| {
+            if (std.mem.eql(u8, ext, candidate)) return true;
+        }
+        return false;
     }
 
     fn importDeclIsRequireAssignment(self: *Checker, node: NodeId) bool {
@@ -22944,6 +23055,7 @@ pub const Checker = struct {
             .{ .name = self.string_interner.intern("location") catch return error.OutOfMemory, .type = any_t, .is_optional = false, .is_readonly = false, .is_method = false },
             .{ .name = self.string_interner.intern("navigator") catch return error.OutOfMemory, .type = any_t, .is_optional = false, .is_readonly = false, .is_method = false },
             .{ .name = self.string_interner.intern("screen") catch return error.OutOfMemory, .type = screen_t, .is_optional = false, .is_readonly = false, .is_method = false },
+            .{ .name = self.string_interner.intern("customElements") catch return error.OutOfMemory, .type = any_t, .is_optional = false, .is_readonly = true, .is_method = false },
             .{ .name = self.string_interner.intern("console") catch return error.OutOfMemory, .type = any_t, .is_optional = false, .is_readonly = false, .is_method = false },
             .{ .name = self.string_interner.intern("setTimeout") catch return error.OutOfMemory, .type = sig_any, .is_optional = false, .is_readonly = false, .is_method = true },
             .{ .name = self.string_interner.intern("clearTimeout") catch return error.OutOfMemory, .type = sig_any, .is_optional = false, .is_readonly = false, .is_method = true },
@@ -36395,6 +36507,28 @@ test "checker: namespace re-export satisfies named import" {
     }
 }
 
+test "checker: arbitrary extension declaration import requires option" {
+    const s = try newSetup(
+        \\// @allowArbitraryExtensions: false
+        \\// @filename: component.d.html.ts
+        \\export const blogPost: Element;
+        \\// @filename: file.ts
+        \\import * as mod from "./component.html";
+        \\mod.blogPost;
+    );
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+    var found = false;
+    for (s.checker.diagnostics.items) |d| {
+        if (d.code == TsCodes.arbitrary_extension_requires_option and
+            std.mem.indexOf(u8, d.message, "component.d.html.ts") != null)
+        {
+            found = true;
+        }
+    }
+    try T.expect(found);
+}
+
 test "checker: virtual node_modules declaration satisfies bare import" {
     const s = try newSetup(
         \\// @filename: /node_modules/foo/index.d.ts
@@ -44766,6 +44900,17 @@ test "checker: seeded window global reports Window/globalThis receiver" {
         }
     }
     try T.expect(found);
+}
+
+test "checker: seeded window global exposes customElements" {
+    const b = try newBoundSetup(
+        \\window.customElements.define("x-thing", class {});
+    );
+    defer destroyBoundSetup(b);
+    try b.base.checker.checkSourceFile(b.base.root);
+    for (b.base.checker.diagnostics.items) |d| {
+        try T.expect(d.code != TsCodes.property_does_not_exist);
+    }
 }
 
 test "checker: seeded Proxy global exposes revocable" {
