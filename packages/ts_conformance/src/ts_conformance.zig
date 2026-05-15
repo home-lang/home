@@ -154,6 +154,15 @@ pub fn countLeadingDirectiveLines(source: []const u8) u32 {
 /// Run a single conformance case. Returns the outcome and writes
 /// human-readable detail when the case fails.
 pub fn run(gpa: std.mem.Allocator, c: Case) !Result {
+    // Resolver-aware compile path: when the fixture has multi-file
+    // markers AND at least one non-code virtual file (`package.json`,
+    // tsconfig, node_modules JS, etc.) that the legacy strip drops,
+    // route through `ts_program` so import resolution flows through
+    // `ts_resolver`. Single-file fixtures and pure multi-`.ts`
+    // fixtures fall through to the legacy `compileSource` path.
+    if (shouldRouteThroughProgram(c)) {
+        if (try runProgram(gpa, c)) |program_result| return program_result;
+    }
     var compilation = ts_driver.compileSource(gpa, c.source, .{
         .is_tsx = c.is_tsx,
         .is_declaration_file = c.is_declaration_file,
@@ -408,6 +417,9 @@ fn resolverStrategyFromCase(c: Case) ts_resolver.Strategy {
 /// path when something prevents the program-graph route (no virtual
 /// files extracted, etc.).
 fn runProgram(gpa: std.mem.Allocator, c: Case) !?Result {
+    if (std.mem.indexOf(u8, c.name, "packageJson") != null or std.mem.indexOf(u8, c.name, "untypedModule") != null) {
+        std.debug.print("[program-route] {s} raw_len={d}\n", .{ c.name, c.raw_source.len });
+    }
     var virtual_files = try splitVirtualFiles(gpa, c.raw_source);
     defer virtual_files.deinit(gpa);
     if (virtual_files.items.len == 0) return null;
