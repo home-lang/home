@@ -15970,9 +15970,14 @@ pub const Checker = struct {
                         if (try self.typeOfQualifiedNamespaceValue(raw, type_node)) |qualified_t| {
                             return qualified_t;
                         }
+                        if (try self.reportMissingRootForUnresolvedTypeofDottedQuery(tt.operand, raw)) {
+                            return types.Primitive.any;
+                        }
                     }
                     if (self.typeofQueryReferencesOwnDeclaration(type_node, name)) return types.Primitive.any;
-                    return self.typeOfIdentifier(tt.operand);
+                    const value_t = self.typeOfIdentifier(tt.operand);
+                    try self.reportUnresolvedSimpleTypeofTypeArguments(tt.operand);
+                    return value_t;
                 }
                 _ = try self.lowererLowerWithTypeParams(tt.operand);
                 return types.Primitive.unknown;
@@ -16231,6 +16236,86 @@ pub const Checker = struct {
             if (v.type_annotation != type_node) return false;
             if (v.name == hir_mod.none_node_id or self.hir.kindOf(v.name) != .identifier) return false;
             return hir_mod.identifierOf(self.hir, v.name).name == name;
+        }
+        return false;
+    }
+
+    fn reportMissingRootForUnresolvedTypeofDottedQuery(
+        self: *Checker,
+        operand: NodeId,
+        raw: []const u8,
+    ) CheckError!bool {
+        const dot = std.mem.indexOfScalar(u8, raw, '.') orelse return false;
+        const root_raw = raw[0..dot];
+        if (root_raw.len == 0) return false;
+        const root_name = self.string_interner.intern(root_raw) catch return error.OutOfMemory;
+        if (self.isBuiltinName(root_name)) return false;
+        if (self.lookupNarrow(root_name) != null) return false;
+        if ((try self.typeOfVisibleNameNoDiag(operand, root_name)) != null) return false;
+        if (self.moduleNamespaceTypeForLocalImport(root_name, operand) catch null) |_| return false;
+        if (self.virtualImportTypeForLocal(root_name, operand) catch null) |_| return false;
+        if (self.virtualDefaultImportTypeForLocal(root_name, operand) catch null) |_| return false;
+        if (self.globalAugmentedValueType(root_name, operand) catch null) |_| return false;
+        if (self.enumDeclForNameAt(root_name, operand) != null) return false;
+        const sp = self.hir.spanOf(operand);
+        try self.reportCannotFindNameAtPosOnce(operand, sp.start, root_name);
+        return true;
+    }
+
+    fn reportUnresolvedSimpleTypeofTypeArguments(self: *Checker, operand: NodeId) CheckError!void {
+        const src = self.source orelse return;
+        const sp = self.hir.spanOf(operand);
+        if (sp.end <= sp.start or sp.end > src.len) return;
+        const text = src[sp.start..sp.end];
+        const lt = std.mem.indexOfScalar(u8, text, '<') orelse return;
+        const gt = std.mem.lastIndexOfScalar(u8, text, '>') orelse return;
+        if (gt <= lt + 1) return;
+        const args = text[lt + 1 .. gt];
+        if (!simpleBareTypeArgumentList(args)) return;
+
+        var i: usize = 0;
+        while (i < args.len) {
+            while (i < args.len and !asciiIdentifierStart(args[i])) : (i += 1) {}
+            if (i >= args.len) break;
+            const name_start = i;
+            i += 1;
+            while (i < args.len and asciiIdentifierContinue(args[i])) : (i += 1) {}
+            const raw_name = args[name_start..i];
+            if (isPrimitiveTypeNameText(raw_name)) continue;
+            const name = self.string_interner.intern(raw_name) catch return error.OutOfMemory;
+            if (self.typeRefNameExists(name) or self.visibleTypeDeclarationExistsAt(operand, name) or self.isBuiltinName(name)) continue;
+            const pos = sp.start + @as(u32, @intCast(lt + 1 + name_start));
+            try self.reportCannotFindNameAtPosOnce(operand, pos, name);
+        }
+    }
+
+    fn simpleBareTypeArgumentList(text: []const u8) bool {
+        for (text) |c| {
+            if (asciiIdentifierContinue(c) or c == ',' or c == ' ' or c == '\t' or c == '\r' or c == '\n') continue;
+            return false;
+        }
+        return true;
+    }
+
+    fn asciiIdentifierStart(c: u8) bool {
+        return (c >= 'A' and c <= 'Z') or (c >= 'a' and c <= 'z') or c == '_' or c == '$';
+    }
+
+    fn asciiIdentifierContinue(c: u8) bool {
+        return asciiIdentifierStart(c) or (c >= '0' and c <= '9');
+    }
+
+    fn isPrimitiveTypeNameText(text: []const u8) bool {
+        const names = [_][]const u8{
+            "any",       "unknown",
+            "never",     "void",
+            "string",    "number",
+            "boolean",   "bigint",
+            "symbol",    "object",
+            "undefined", "null",
+        };
+        for (names) |name| {
+            if (std.mem.eql(u8, text, name)) return true;
         }
         return false;
     }
@@ -25789,55 +25874,54 @@ pub const Checker = struct {
         const s = self.string_interner.get(name);
         const builtins = [_][]const u8{
             // Core globals / values.
-            "console",            "undefined",      "NaN",
-            "Infinity",           "globalThis",     "this",
-            "new.target",         "window",         "document",
-            "Element",            "Node",           "HTMLElement",
-            "HTMLBodyElement",    "HTMLDivElement", "HTMLAnchorElement",
-            "HTMLImageElement",   "HTMLInputElement", "HTMLSpanElement",
-            "HTMLButtonElement",  "HTMLFormElement",
-            "Event",              "EventTarget",    "MouseEvent",
-            "KeyboardEvent",      "FocusEvent",
-            "Document",           "Window",         "Location",
-            "Navigator",          "History",        "Storage",
-            "URL",                "URLSearchParams", "Blob",
-            "File",               "FileReader",     "FormData",
-            "Headers",            "Request",        "Response",
+            "console",           "undefined",          "NaN",
+            "Infinity",          "globalThis",         "this",
+            "new.target",        "window",             "document",
+            "Element",           "Node",               "HTMLElement",
+            "HTMLBodyElement",   "HTMLDivElement",     "HTMLAnchorElement",
+            "HTMLImageElement",  "HTMLInputElement",   "HTMLSpanElement",
+            "HTMLButtonElement", "HTMLFormElement",    "Event",
+            "EventTarget",       "MouseEvent",         "KeyboardEvent",
+            "FocusEvent",        "Document",           "Window",
+            "Location",          "Navigator",          "History",
+            "Storage",           "URL",                "URLSearchParams",
+            "Blob",              "File",               "FileReader",
+            "FormData",          "Headers",            "Request",
+            "Response",
             // Constructors / namespaces.
-                      "Math",
-            "JSON",               "Object",         "Array",
-            "String",             "Number",         "Boolean",
-            "Symbol",             "BigInt",         "Error",
-            "TypeError",          "RangeError",     "SyntaxError",
-            "Promise",            "Map",            "Set",
-            "WeakMap",            "WeakSet",        "Date",
-            "RegExp",             "Function",       "Proxy",
-            "Reflect",            "ArrayBuffer",    "Uint8Array",
-            "Uint8ClampedArray",  "Int8Array",      "Uint16Array",
-            "Int16Array",         "Uint32Array",    "Int32Array",
-            "Float16Array",       "Float32Array",   "Float64Array",
-            "BigUint64Array",     "BigInt64Array",  "SharedArrayBuffer",
-            "Atomics",            "Intl",
+                     "Math",               "JSON",
+            "Object",            "Array",              "String",
+            "Number",            "Boolean",            "Symbol",
+            "BigInt",            "Error",              "TypeError",
+            "RangeError",        "SyntaxError",        "Promise",
+            "Map",               "Set",                "WeakMap",
+            "WeakSet",           "Date",               "RegExp",
+            "Function",          "Proxy",              "Reflect",
+            "ArrayBuffer",       "Uint8Array",         "Uint8ClampedArray",
+            "Int8Array",         "Uint16Array",        "Int16Array",
+            "Uint32Array",       "Int32Array",         "Float16Array",
+            "Float32Array",      "Float64Array",       "BigUint64Array",
+            "BigInt64Array",     "SharedArrayBuffer",  "Atomics",
+            "Intl",
             // Global functions.
-                      "parseInt",
-            "parseFloat",         "isNaN",          "isFinite",
-            "encodeURI",          "decodeURI",      "encodeURIComponent",
-            "decodeURIComponent",
+                         "parseInt",           "parseFloat",
+            "isNaN",             "isFinite",           "encodeURI",
+            "decodeURI",         "encodeURIComponent", "decodeURIComponent",
             // Timers / scheduling.
-            "setTimeout",     "clearTimeout",
-            "setInterval",        "clearInterval",  "setImmediate",
-            "clearImmediate",     "queueMicrotask",
+            "setTimeout",        "clearTimeout",       "setInterval",
+            "clearInterval",     "setImmediate",       "clearImmediate",
+            "queueMicrotask",
             // Node.js / CommonJS.
-            "process",
-            "Buffer",             "require",        "module",
-            "exports",            "__dirname",      "__filename",
+               "process",            "Buffer",
+            "require",           "module",             "exports",
+            "__dirname",         "__filename",
             // Dynamic `import("…")` parses the keyword as an
             // identifier callee — exempt it from TS2304.
-            "import",
+                    "import",
             // Common ambient names emitted by the parser for
             // module / class shapes that don't have full
             // resolution wired up yet.
-                        "super",
+            "super",
         };
         for (builtins) |b| {
             if (std.mem.eql(u8, s, b)) return true;
@@ -26510,6 +26594,23 @@ pub const Checker = struct {
             if (d.node == node and d.code == TsCodes.cannot_find_name) return;
         }
         try self.reportCannotFindNamePlain(node, name);
+    }
+
+    fn reportCannotFindNameAtPosOnce(self: *Checker, node: NodeId, pos: u32, name: hir_mod.StringId) !void {
+        for (self.diagnostics.items) |d| {
+            if (d.code == TsCodes.cannot_find_name and d.pos != null and d.pos.? == pos) return;
+        }
+        const msg = try std.fmt.allocPrint(
+            self.diag_arena.allocator(),
+            "Cannot find name '{s}'.",
+            .{self.string_interner.get(name)},
+        );
+        try self.diagnostics.append(self.gpa, .{
+            .node = node,
+            .pos = pos,
+            .code = TsCodes.cannot_find_name,
+            .message = msg,
+        });
     }
 
     fn reportCannotFindNameOnce(self: *Checker, node: NodeId, name: hir_mod.StringId) !void {
@@ -39115,6 +39216,24 @@ test "checker: typeof undefined query resolves to undefined type" {
     try s.checker.checkSourceFile(s.root);
     const stmts = hir_mod.blockStmts(&s.hir, s.root);
     try T.expectEqual(types.Primitive.undefined_t, s.hir.typeOf(stmts[0]));
+}
+
+test "checker: unresolved dotted typeof query reports missing root" {
+    const s = try newSetup("var v: typeof A.B;");
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+    try T.expectEqual(@as(usize, 1), s.checker.diagnostics.items.len);
+    try T.expectEqual(@as(u32, TsCodes.cannot_find_name), s.checker.diagnostics.items[0].code);
+    try T.expectEqualStrings("Cannot find name 'A'.", s.checker.diagnostics.items[0].message);
+}
+
+test "checker: typeof query reports unresolved simple type argument names" {
+    const s = try newSetup("var v: typeof A<B>;");
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+    try T.expectEqual(@as(usize, 2), s.checker.diagnostics.items.len);
+    try T.expectEqualStrings("Cannot find name 'A'.", s.checker.diagnostics.items[0].message);
+    try T.expectEqualStrings("Cannot find name 'B'.", s.checker.diagnostics.items[1].message);
 }
 
 test "checker: typeof this dotted query falls back to any when implicit this is allowed" {
