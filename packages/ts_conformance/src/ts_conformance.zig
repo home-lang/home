@@ -74,6 +74,12 @@ pub const Case = struct {
     /// but `checkJs` is not. These still parse/bind/emit, but checker
     /// diagnostics are not surfaced by tsc.
     suppress_js_check_diagnostics: bool = false,
+    /// Raw upstream source bytes (pre-strip). Empty means "use
+    /// `source` as-is". Populated by `loadDirectoryWithOptions` so
+    /// the program-graph compile path can rebuild a virtual
+    /// filesystem with `package.json` / non-code sections that the
+    /// legacy stripper drops.
+    raw_source: []const u8 = "",
 };
 
 /// Count the contiguous block of leading lines that the TypeScript
@@ -827,6 +833,8 @@ pub const CorpusEntry = struct {
     syntax_target_es2015: bool = false,
     report_deprecated_target_es5: bool = false,
     suppress_js_check_diagnostics: bool = false,
+    /// Raw upstream source bytes (pre-strip). See `Case.raw_source`.
+    raw_source: []const u8 = "",
 };
 
 /// Owned-source variant — like `CorpusEntry` but the source is
@@ -845,6 +853,9 @@ pub const OwnedCorpusEntry = struct {
     syntax_target_es2015: bool = false,
     report_deprecated_target_es5: bool = false,
     suppress_js_check_diagnostics: bool = false,
+    /// Raw upstream source bytes (pre-strip), owned. Empty when
+    /// there is no separate raw source (single-file fixtures).
+    raw_source: []u8 = "",
 };
 
 pub const DirectoryLoadOptions = struct {
@@ -945,8 +956,17 @@ pub fn loadDirectoryWithOptions(
             false;
         const default_path = try gpa.dupe(u8, virtual_code_path orelse entry.basename);
         errdefer gpa.free(default_path);
-        const case_src = (try stripNonCodeVirtualSections(gpa, src)) orelse src;
-        if (case_src.ptr != src.ptr) gpa.free(src);
+        // Strip non-code virtual sections from the parser-fed source
+        // but keep an owned copy of the raw upstream bytes so the
+        // program-graph compile path can rebuild a virtual filesystem
+        // that includes `package.json` / non-code sections — those
+        // sections drive resolver fallthrough decisions (e.g. `main`,
+        // `exports`, `typesVersions`) the legacy single-source path
+        // can't see. When `stripped` is null no markers were present,
+        // so `raw_source` stays empty and `case_src` reuses `src`.
+        const stripped = try stripNonCodeVirtualSections(gpa, src);
+        const case_src: []u8 = stripped orelse src;
+        const raw_source: []u8 = if (stripped != null) src else &.{};
         const ext_dot = std.mem.lastIndexOfScalar(u8, entry.basename, '.') orelse ext_end;
         const stem = entry.basename[0..ext_dot];
         const baseline_path = try errorBaselinePath(gpa, options.baseline_root, stem);

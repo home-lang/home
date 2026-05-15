@@ -81,6 +81,10 @@ pub const TsCodes = struct {
     pub const object_literal_duplicate_property: u32 = 1117;
     pub const type_not_assignable: u32 = 2322;
     pub const type_missing_properties: u32 = 2739;
+    /// TS2741 — `Property 'X' is missing in type 'A' but required in
+    /// type 'B'.`. Single-property variant of TS2739, emitted when
+    /// one (and only one) required member is absent from the source.
+    pub const property_missing_required: u32 = 2741;
     pub const super_not_derived: u32 = 2335;
     pub const property_does_not_exist: u32 = 2339;
     pub const argument_type_mismatch: u32 = 2345;
@@ -114,6 +118,12 @@ pub const TsCodes = struct {
     pub const interface_incorrectly_extends: u32 = 2430;
     pub const property_not_assignable_to_base: u32 = 2416;
     pub const class_incorrectly_extends_base: u32 = 2415;
+    /// TS2417 — emitted when a derived class narrows the
+    /// accessibility of a static member it inherits, so the
+    /// child's "static side" (i.e. the constructor's instance
+    /// type) is no longer assignable to the parent's. Mirrors
+    /// TS2415 but for the static side.
+    pub const class_static_side_incorrectly_extends_base: u32 = 2417;
     pub const property_not_assignable_to_index_type: u32 = 2411;
     pub const number_index_not_assignable_to_string_index: u32 = 2413;
     pub const class_incorrectly_implements_interface: u32 = 2420;
@@ -565,6 +575,40 @@ pub const Checker = struct {
         hir_mod.StringId,
         std.AutoHashMapUnmanaged(hir_mod.StringId, void),
     ),
+    /// Class-name → set of STATIC member names declared `private`.
+    /// Populated by `checkClassDecl`; consulted by
+    /// `checkClassHeritageAccessibility` to flag TS2417 when a
+    /// derived class narrows the static-side accessibility of an
+    /// inherited member (e.g. parent `static x` but child
+    /// `private static x`).
+    class_static_private_members: std.AutoHashMapUnmanaged(
+        hir_mod.StringId,
+        std.AutoHashMapUnmanaged(hir_mod.StringId, void),
+    ),
+    /// Class-name → set of STATIC member names declared `protected`.
+    /// Populated by `checkClassDecl`; consulted by
+    /// `checkClassHeritageAccessibility` to flag TS2417 when a
+    /// derived class narrows public-static to protected-static.
+    class_static_protected_members: std.AutoHashMapUnmanaged(
+        hir_mod.StringId,
+        std.AutoHashMapUnmanaged(hir_mod.StringId, void),
+    ),
+    /// Class-name → set of instance member names declared on the
+    /// class body (any accessibility). Used by the heritage
+    /// accessibility check to know which member names a derived
+    /// class actually redeclares (vs. just inherits).
+    class_instance_member_names: std.AutoHashMapUnmanaged(
+        hir_mod.StringId,
+        std.AutoHashMapUnmanaged(hir_mod.StringId, void),
+    ),
+    /// Class-name → set of static member names declared on the
+    /// class body (any accessibility). Used by the heritage
+    /// accessibility check to know which static names a derived
+    /// class actually redeclares.
+    class_static_member_names: std.AutoHashMapUnmanaged(
+        hir_mod.StringId,
+        std.AutoHashMapUnmanaged(hir_mod.StringId, void),
+    ),
     /// Subclass-name → parent-class name. Records the immediate
     /// `extends` target so the protected-access check can walk the
     /// inheritance chain. Set when `class B extends A { ... }` is
@@ -829,6 +873,10 @@ pub const Checker = struct {
             .class_name_by_static = .empty,
             .class_private_members = .empty,
             .class_protected_members = .empty,
+            .class_static_private_members = .empty,
+            .class_static_protected_members = .empty,
+            .class_instance_member_names = .empty,
+            .class_static_member_names = .empty,
             .class_parent = .empty,
             .abstract_classes = .empty,
             .class_abstract_members = .empty,
@@ -916,6 +964,18 @@ pub const Checker = struct {
         var pr_it = self.class_protected_members.valueIterator();
         while (pr_it.next()) |set| set.deinit(self.gpa);
         self.class_protected_members.deinit(self.gpa);
+        var spm_it = self.class_static_private_members.valueIterator();
+        while (spm_it.next()) |set| set.deinit(self.gpa);
+        self.class_static_private_members.deinit(self.gpa);
+        var spr_it = self.class_static_protected_members.valueIterator();
+        while (spr_it.next()) |set| set.deinit(self.gpa);
+        self.class_static_protected_members.deinit(self.gpa);
+        var imn_it = self.class_instance_member_names.valueIterator();
+        while (imn_it.next()) |set| set.deinit(self.gpa);
+        self.class_instance_member_names.deinit(self.gpa);
+        var smn_it = self.class_static_member_names.valueIterator();
+        while (smn_it.next()) |set| set.deinit(self.gpa);
+        self.class_static_member_names.deinit(self.gpa);
         self.class_parent.deinit(self.gpa);
         self.abstract_classes.deinit(self.gpa);
         var am_it = self.class_abstract_members.valueIterator();
@@ -7551,6 +7611,25 @@ pub const Checker = struct {
         defer private_names.deinit(self.gpa);
         var protected_names: std.AutoHashMapUnmanaged(hir_mod.StringId, void) = .empty;
         defer protected_names.deinit(self.gpa);
+        // Static-only accessibility tracking. Separate from
+        // `private_names`/`protected_names` (which mix instance +
+        // static for the legacy access-check path) so the heritage
+        // accessibility check can reason about the static side
+        // independently. Moved into `class_static_private_members`
+        // / `class_static_protected_members` once the class name
+        // is known.
+        var static_private_names: std.AutoHashMapUnmanaged(hir_mod.StringId, void) = .empty;
+        defer static_private_names.deinit(self.gpa);
+        var static_protected_names: std.AutoHashMapUnmanaged(hir_mod.StringId, void) = .empty;
+        defer static_protected_names.deinit(self.gpa);
+        // Names of every member the class actually declares (any
+        // accessibility), split by static-vs-instance side. Used
+        // by the heritage accessibility check so it only fires on
+        // members the derived class redeclares (vs. just inherits).
+        var instance_member_names_local: std.AutoHashMapUnmanaged(hir_mod.StringId, void) = .empty;
+        defer instance_member_names_local.deinit(self.gpa);
+        var static_member_names_local: std.AutoHashMapUnmanaged(hir_mod.StringId, void) = .empty;
+        defer static_member_names_local.deinit(self.gpa);
         // Names of class members treated as abstract (v0 heuristic:
         // bodyless methods inside an `abstract` class). Moved into
         // `class_abstract_members` once the class name is known.
@@ -7660,6 +7739,7 @@ pub const Checker = struct {
                                 try property_names.put(self.gpa, pid.name, {});
                                 try parameter_property_names.put(self.gpa, pid.name, {});
                                 try own_member_names.put(self.gpa, pid.name, {});
+                                try instance_member_names_local.put(self.gpa, pid.name, {});
                                 if (pp.flags.is_private) try private_names.put(self.gpa, pid.name, {});
                                 if (pp.flags.is_protected) try protected_names.put(self.gpa, pid.name, {});
                                 try self.checkPropertyOverridesAccessor(param_node, parent_class_name, pid.name);
@@ -7727,6 +7807,13 @@ pub const Checker = struct {
                     try self.checkOverrideModifier(m, if (fn_p.flags.is_static) parent_static_t else parent_instance_t, member_name, fn_p.flags.is_override, false);
                     if (fn_p.flags.is_private) try private_names.put(self.gpa, member_name, {});
                     if (fn_p.flags.is_protected) try protected_names.put(self.gpa, member_name, {});
+                    if (fn_p.flags.is_static) {
+                        try static_member_names_local.put(self.gpa, member_name, {});
+                        if (fn_p.flags.is_private) try static_private_names.put(self.gpa, member_name, {});
+                        if (fn_p.flags.is_protected) try static_protected_names.put(self.gpa, member_name, {});
+                    } else {
+                        try instance_member_names_local.put(self.gpa, member_name, {});
+                    }
                     if (!fn_p.flags.is_static) try own_member_names.put(self.gpa, member_name, {});
 
                     // Accessor (get/set): the property type is the
@@ -7897,6 +7984,13 @@ pub const Checker = struct {
                     try self.checkOverrideModifier(m, if (op.is_static) parent_static_t else parent_instance_t, member_name, op.is_override, false);
                     if (op.visibility == .private) try private_names.put(self.gpa, member_name, {});
                     if (op.visibility == .protected) try protected_names.put(self.gpa, member_name, {});
+                    if (op.is_static) {
+                        try static_member_names_local.put(self.gpa, member_name, {});
+                        if (op.visibility == .private) try static_private_names.put(self.gpa, member_name, {});
+                        if (op.visibility == .protected) try static_protected_names.put(self.gpa, member_name, {});
+                    } else {
+                        try instance_member_names_local.put(self.gpa, member_name, {});
+                    }
                     if (!op.is_static) try own_member_names.put(self.gpa, member_name, {});
                     if (op_is_method and op.value != hir_mod.none_node_id) {
                         const method_t = if (self.hir.kindOf(op.value) == .fn_decl or self.hir.kindOf(op.value) == .fn_expr or self.hir.kindOf(op.value) == .arrow_fn) blk: {
@@ -8201,6 +8295,23 @@ pub const Checker = struct {
             }
             if (parent_class_name) |ext_name| {
                 try self.checkPrivateBaseRedeclarations(node, cid.name, ext_name, &private_names, &own_member_names);
+                // Heritage accessibility narrowing checks (TS2415 /
+                // TS2417). Walks the redeclared instance/static
+                // members against the parent's recorded
+                // private/protected sets and emits when the child
+                // narrows visibility (e.g. parent `public`, child
+                // `private`).
+                try self.checkClassHeritageAccessibility(
+                    node,
+                    cid.name,
+                    ext_name,
+                    &private_names,
+                    &protected_names,
+                    &static_private_names,
+                    &static_protected_names,
+                    &instance_member_names_local,
+                    &static_member_names_local,
+                );
             }
             // Register the private-member set under the class name.
             // A prior registration (rare — repeated checks of the
@@ -8220,6 +8331,30 @@ pub const Checker = struct {
             }
             try self.class_protected_members.put(self.gpa, cid.name, protected_names);
             protected_names = .empty;
+            if (self.class_static_private_members.fetchRemove(cid.name)) |old| {
+                var owned = old.value;
+                owned.deinit(self.gpa);
+            }
+            try self.class_static_private_members.put(self.gpa, cid.name, static_private_names);
+            static_private_names = .empty;
+            if (self.class_static_protected_members.fetchRemove(cid.name)) |old| {
+                var owned = old.value;
+                owned.deinit(self.gpa);
+            }
+            try self.class_static_protected_members.put(self.gpa, cid.name, static_protected_names);
+            static_protected_names = .empty;
+            if (self.class_instance_member_names.fetchRemove(cid.name)) |old| {
+                var owned = old.value;
+                owned.deinit(self.gpa);
+            }
+            try self.class_instance_member_names.put(self.gpa, cid.name, instance_member_names_local);
+            instance_member_names_local = .empty;
+            if (self.class_static_member_names.fetchRemove(cid.name)) |old| {
+                var owned = old.value;
+                owned.deinit(self.gpa);
+            }
+            try self.class_static_member_names.put(self.gpa, cid.name, static_member_names_local);
+            static_member_names_local = .empty;
             // Register abstract-member set for this class so subclass
             // checks can consult it. Replace any prior entry.
             if (self.class_abstract_members.fetchRemove(cid.name)) |old| {
@@ -10141,6 +10276,12 @@ pub const Checker = struct {
         return false;
     }
 
+    /// Three-valued accessibility classification used by the
+    /// heritage checks. Mirrors TypeScript's `public | protected
+    /// | private` and matches the implicit default ("public") for
+    /// names absent from both the private and protected sets.
+    const MemberAccess = enum { public, protected, private };
+
     fn checkPrivateBaseRedeclarations(
         self: *Checker,
         node: NodeId,
@@ -10164,10 +10305,169 @@ pub const Checker = struct {
             );
             try self.diagnostics.append(self.gpa, .{
                 .node = node,
+                .pos = self.classNameSpanStart(node),
                 .code = TsCodes.class_incorrectly_extends_base,
                 .message = msg,
             });
             return;
+        }
+    }
+
+    /// Classify a member's declared accessibility on one side
+    /// (instance or static) of a class. Returns `.public` for
+    /// names absent from both private+protected sets; this
+    /// matches TS, where the implicit accessibility is `public`.
+    fn classifyAccessibility(
+        member: hir_mod.StringId,
+        private_set: ?*const std.AutoHashMapUnmanaged(hir_mod.StringId, void),
+        protected_set: ?*const std.AutoHashMapUnmanaged(hir_mod.StringId, void),
+    ) MemberAccess {
+        if (private_set) |s| {
+            if (s.contains(member)) return .private;
+        }
+        if (protected_set) |s| {
+            if (s.contains(member)) return .protected;
+        }
+        return .public;
+    }
+
+    /// True when a derived-class member redeclaration is
+    /// incompatible with the parent's — the trigger for TS2415
+    /// (instance) and TS2417 (static):
+    ///   - Either side is `private` (both directions, including
+    ///     `private` vs `private`). TS treats `private` members
+    ///     as identity-bound to the declaring class, so the
+    ///     child's `private x` is a different binding from the
+    ///     parent's `private x` — the two types fail nominal
+    ///     subtype checks even when their structural shapes line
+    ///     up.
+    ///   - `public` → `protected` (the child cannot narrow a
+    ///     wider visibility from the parent).
+    /// Returns false on `protected` → `public` (widening is fine)
+    /// and on identical non-private accessibility.
+    fn accessibilityNarrows(child: MemberAccess, parent: MemberAccess) bool {
+        if (child == .private or parent == .private) return true;
+        if (parent == .public and child == .protected) return true;
+        return false;
+    }
+
+    /// Walk the parent class chain via `class_parent` looking for
+    /// the nearest declared accessibility for `member` on the
+    /// requested side (static vs instance). Returns `null` when
+    /// no ancestor declares the member (the child is just
+    /// introducing a new member, not narrowing one).
+    fn ancestorMemberAccessibility(
+        self: *Checker,
+        parent_name: hir_mod.StringId,
+        member: hir_mod.StringId,
+        is_static: bool,
+    ) ?MemberAccess {
+        var probe: ?hir_mod.StringId = parent_name;
+        // Bound the walk to a generous depth to avoid pathological
+        // cycles in malformed input (TS itself rejects `extends`
+        // cycles via a separate diagnostic).
+        var depth: u32 = 0;
+        while (probe) |p| {
+            depth += 1;
+            if (depth > 64) return null;
+            const private_set = if (is_static)
+                self.class_static_private_members.getPtr(p)
+            else
+                self.class_private_members.getPtr(p);
+            const protected_set = if (is_static)
+                self.class_static_protected_members.getPtr(p)
+            else
+                self.class_protected_members.getPtr(p);
+            const member_set = if (is_static)
+                self.class_static_member_names.getPtr(p)
+            else
+                self.class_instance_member_names.getPtr(p);
+            const declares = blk: {
+                if (member_set) |s| {
+                    if (s.contains(member)) break :blk true;
+                }
+                if (private_set) |s| {
+                    if (s.contains(member)) break :blk true;
+                }
+                if (protected_set) |s| {
+                    if (s.contains(member)) break :blk true;
+                }
+                break :blk false;
+            };
+            if (declares) {
+                return classifyAccessibility(member, private_set, protected_set);
+            }
+            probe = self.class_parent.get(p);
+        }
+        return null;
+    }
+
+    /// TS2415 / TS2417 emission. Walk every member redeclared on
+    /// the child class (split by side) and check whether its
+    /// accessibility narrows the nearest ancestor's. Each side
+    /// emits at most one diagnostic per class (matches tsc, which
+    /// reports a single TS2415 per derived class even when
+    /// multiple members narrow). Position is anchored at the
+    /// class identifier to mirror the upstream baseline.
+    fn checkClassHeritageAccessibility(
+        self: *Checker,
+        node: NodeId,
+        child_name: hir_mod.StringId,
+        parent_name: hir_mod.StringId,
+        child_private: *const std.AutoHashMapUnmanaged(hir_mod.StringId, void),
+        child_protected: *const std.AutoHashMapUnmanaged(hir_mod.StringId, void),
+        child_static_private: *const std.AutoHashMapUnmanaged(hir_mod.StringId, void),
+        child_static_protected: *const std.AutoHashMapUnmanaged(hir_mod.StringId, void),
+        child_instance_members: *const std.AutoHashMapUnmanaged(hir_mod.StringId, void),
+        child_static_members: *const std.AutoHashMapUnmanaged(hir_mod.StringId, void),
+    ) CheckError!void {
+        // ---- Instance side (TS2415) ----
+        var inst_emitted = false;
+        var iit = child_instance_members.keyIterator();
+        while (iit.next()) |name_ptr| {
+            if (inst_emitted) break;
+            const member = name_ptr.*;
+            const child_acc = classifyAccessibility(member, child_private, child_protected);
+            const parent_acc = self.ancestorMemberAccessibility(parent_name, member, false) orelse continue;
+            if (!accessibilityNarrows(child_acc, parent_acc)) continue;
+            const child_str = self.string_interner.get(child_name);
+            const parent_str = self.string_interner.get(parent_name);
+            const msg = try std.fmt.allocPrint(
+                self.diag_arena.allocator(),
+                "Class '{s}' incorrectly extends base class '{s}'.",
+                .{ child_str, parent_str },
+            );
+            try self.diagnostics.append(self.gpa, .{
+                .node = node,
+                .pos = self.classNameSpanStart(node),
+                .code = TsCodes.class_incorrectly_extends_base,
+                .message = msg,
+            });
+            inst_emitted = true;
+        }
+        // ---- Static side (TS2417) ----
+        var stat_emitted = false;
+        var sit = child_static_members.keyIterator();
+        while (sit.next()) |name_ptr| {
+            if (stat_emitted) break;
+            const member = name_ptr.*;
+            const child_acc = classifyAccessibility(member, child_static_private, child_static_protected);
+            const parent_acc = self.ancestorMemberAccessibility(parent_name, member, true) orelse continue;
+            if (!accessibilityNarrows(child_acc, parent_acc)) continue;
+            const child_str = self.string_interner.get(child_name);
+            const parent_str = self.string_interner.get(parent_name);
+            const msg = try std.fmt.allocPrint(
+                self.diag_arena.allocator(),
+                "Class static side 'typeof {s}' incorrectly extends base class static side 'typeof {s}'.",
+                .{ child_str, parent_str },
+            );
+            try self.diagnostics.append(self.gpa, .{
+                .node = node,
+                .pos = self.classNameSpanStart(node),
+                .code = TsCodes.class_static_side_incorrectly_extends_base,
+                .message = msg,
+            });
+            stat_emitted = true;
         }
     }
 
@@ -10413,7 +10713,7 @@ pub const Checker = struct {
             return;
         }
         if (self.importDeclIsRequireAssignment(node) and self.sourceDirectiveValueMentions("module", "esnext")) {
-            try self.report(node, TsCodes.import_assignment_es_module, "Import assignment cannot be used when targeting ECMAScript modules.");
+            try self.report(node, TsCodes.import_assignment_es_module, "Import assignment cannot be used when targeting ECMAScript modules. Consider using 'import * as ns from \"mod\"', 'import {a} from \"mod\"', 'import d from \"mod\"', or another module format instead.");
         }
         if (self.importDeclIsRequireAssignment(node) and self.sourceDirectiveValueMentions("rewriteRelativeImportExtensions", "true") and
             std.mem.startsWith(u8, spec, ".") and try self.virtualRelativeImportResolvesToIndexUnderExtensionPath(node, spec))
@@ -10697,10 +10997,24 @@ pub const Checker = struct {
         if (!self.sourceDirectiveValueMentions("allowImportingTsExtensions", "false")) return;
         if (!std.mem.startsWith(u8, spec, ".")) return;
         const code = tsExtensionImportDiagnosticCode(spec) orelse return;
-        const msg = if (code == TsCodes.declaration_file_import_requires_import_type)
-            "A declaration file cannot be imported without 'import type'."
-        else
-            "An import path can only end with a TypeScript extension when 'allowImportingTsExtensions' is enabled.";
+        if (code == TsCodes.declaration_file_import_requires_import_type) {
+            try self.report(node, code, "A declaration file cannot be imported without 'import type'.");
+            return;
+        }
+        // TS5097's upstream prose includes the concrete extension
+        // (`.ts` / `.tsx` / `.mts` / `.cts`) — render it dynamically
+        // so baselines like `allowsImportingTsExtension` line up.
+        const ext: []const u8 = blk: {
+            if (std.mem.endsWith(u8, spec, ".tsx")) break :blk ".tsx";
+            if (std.mem.endsWith(u8, spec, ".mts")) break :blk ".mts";
+            if (std.mem.endsWith(u8, spec, ".cts")) break :blk ".cts";
+            break :blk ".ts";
+        };
+        const msg = try std.fmt.allocPrint(
+            self.diag_arena.allocator(),
+            "An import path can only end with a '{s}' extension when 'allowImportingTsExtensions' is enabled.",
+            .{ext},
+        );
         try self.report(node, code, msg);
     }
 
@@ -16787,7 +17101,13 @@ pub const Checker = struct {
             if (!ok) {
                 if (!self.callExpressionHasAnyArgument(v.init)) {
                     const diag_node = if (v.name != hir_mod.none_node_id) v.name else node;
-                    try self.reportTypeNotAssignable(diag_node, init_type, declared_type, "Type is not assignable to declared type.");
+                    // Prefer the more-specific TS2741 wording when an
+                    // empty `{}` is being assigned to a target with
+                    // exactly one missing required property — matches
+                    // upstream baselines (`renamed.ts`, etc.).
+                    if (!(try self.tryReportSinglePropertyMissing(diag_node, v.init, init_type, declared_type))) {
+                        try self.reportTypeNotAssignable(diag_node, init_type, declared_type, "Type is not assignable to declared type.");
+                    }
                 }
             } else {
                 try self.checkRemappedMappedIndexedDecl(node, declared_type, v.init);
@@ -19493,7 +19813,7 @@ pub const Checker = struct {
                     }
                 }
                 if (!self.nodeIsInsideFunctionLike(node) and self.sourceTargetDisallowsTopLevelAwait()) {
-                    try self.report(node, TsCodes.top_level_await_target_module, "Top-level 'await' expressions are only allowed when the 'target' option is 'es2017' or higher and the 'module' option supports them.");
+                    try self.report(node, TsCodes.top_level_await_target_module, "Top-level 'await' expressions are only allowed when the 'module' option is set to 'es2022', 'esnext', 'system', 'node16', 'node18', 'node20', 'nodenext', or 'preserve', and the 'target' option is set to 'es2017' or higher.");
                 }
                 break :blk self.unwrapPromise(inner_t);
             },
@@ -22951,6 +23271,13 @@ pub const Checker = struct {
                 if (self.rootHasVarDeclarationNamed(node, id.name) or self.sourceHasVarDeclarationText(id.name)) return types.Primitive.any;
                 if (self.moduleHasRuntimeNamespacePrefix(module, id.name)) return types.Primitive.any;
                 if (self.identifierNamesEnclosingClassExpression(node, id.name)) return types.Primitive.any;
+                // In JS-like source files (`.js` / `.jsx` / `.mjs` /
+                // `.cjs`) `module` / `require` are part of the implicit
+                // CommonJS environment under tsc's `--allowJs` policy
+                // and never surface TS2591. Suppress here to mirror
+                // upstream baselines (`bug27342.js`, `mod1.js`,
+                // `cls.js`, etc. across the 3000-4000 slice).
+                if (self.virtualSectionIsJsLike(node)) return types.Primitive.any;
                 self.reportCannotFindNodeName(node, id.name) catch {};
                 return types.Primitive.any;
             }
@@ -22958,6 +23285,7 @@ pub const Checker = struct {
                 if (self.rootHasVarDeclarationNamed(node, id.name) or self.sourceHasVarDeclarationText(id.name)) return types.Primitive.any;
                 if (self.moduleHasRuntimeNamespacePrefix(module, id.name)) return types.Primitive.any;
                 if (self.identifierNamesEnclosingClassExpression(node, id.name)) return types.Primitive.any;
+                if (self.virtualSectionIsJsLike(node)) return types.Primitive.any;
                 self.reportCannotFindBunName(node, id.name) catch {};
                 return types.Primitive.any;
             }
@@ -23103,12 +23431,18 @@ pub const Checker = struct {
             } else |_| {}
         }
         if (self.module == null and !self.isDeclNameSlot(node) and self.isNodeCommonJsGlobalName(id.name)) {
+            // Mirror the bound-module path: `.js` / `.jsx` / `.mjs` /
+            // `.cjs` source files don't surface TS2591 for `module` /
+            // `require` (implicit CommonJS environment under
+            // `--allowJs`).
+            if (self.virtualSectionIsJsLike(node)) return types.Primitive.any;
             if (!self.identifierNamesEnclosingClassExpression(node, id.name)) {
                 self.reportCannotFindNodeName(node, id.name) catch {};
             }
             return types.Primitive.any;
         }
         if (self.module == null and !self.isDeclNameSlot(node) and self.isBunRuntimeGlobalName(id.name)) {
+            if (self.virtualSectionIsJsLike(node)) return types.Primitive.any;
             if (!self.identifierNamesEnclosingClassExpression(node, id.name)) {
                 self.reportCannotFindBunName(node, id.name) catch {};
             }
@@ -29157,6 +29491,76 @@ pub const Checker = struct {
             }
         }
         try self.report(node, TsCodes.type_not_assignable, fallback);
+    }
+
+    /// TS2741 — single-required-property gap. Returns true and emits
+    /// the diagnostic when:
+    ///   * `value_node` is an empty object literal `{}` (or its
+    ///     widened source type is `{}` with no members), and
+    ///   * `target` is an object type with exactly one required
+    ///     non-method member that the source lacks.
+    /// Otherwise returns false so callers fall through to the
+    /// generic TS2322 / TS2739 paths. Mirrors tsc's preference for
+    /// the more-specific TS2741 wording over TS2322 in this case
+    /// (matches `renamed.ts`, `exportSpecifiers_js.ts`, etc.).
+    fn tryReportSinglePropertyMissing(
+        self: *Checker,
+        diag_node: NodeId,
+        value_node: NodeId,
+        source: TypeId,
+        target: TypeId,
+    ) !bool {
+        if (target == types.Primitive.none or target == types.Primitive.any or
+            target == types.Primitive.unknown)
+        {
+            return false;
+        }
+        if (target >= self.interner.pool.typeCount()) return false;
+        if (!self.interner.pool.flagsOf(target).is_object_type) return false;
+
+        // Source side: only fire when the value is a literal `{}`
+        // with no own properties (matches the `{}` shape tsc uses).
+        const source_is_empty_literal = blk: {
+            if (value_node != hir_mod.none_node_id and
+                self.hir.kindOf(value_node) == .object_literal and
+                hir_mod.objectLiteralProps(self.hir, value_node).len == 0)
+            {
+                break :blk true;
+            }
+            if (source < self.interner.pool.typeCount() and
+                self.interner.pool.flagsOf(source).is_object_type and
+                self.interner.objectMembers(source).len == 0)
+            {
+                break :blk true;
+            }
+            break :blk false;
+        };
+        if (!source_is_empty_literal) return false;
+
+        // Find the first required (non-optional, non-method) member
+        // and only report when there's exactly one such member —
+        // otherwise tsc prefers TS2739 (multi-property variant).
+        const members = self.interner.objectMembers(target);
+        var required_count: usize = 0;
+        var first_required_name: hir_mod.StringId = 0;
+        for (members) |m| {
+            if (m.is_optional or m.is_method) continue;
+            required_count += 1;
+            if (required_count == 1) first_required_name = m.name;
+            if (required_count > 1) break;
+        }
+        if (required_count != 1) return false;
+
+        const target_name = (try self.allocSimpleTypeName(target)) orelse return false;
+        const source_name = (try self.allocSimpleTypeName(source)) orelse "{}";
+        const prop_text = self.string_interner.get(first_required_name);
+        const msg = try std.fmt.allocPrint(
+            self.diag_arena.allocator(),
+            "Property '{s}' is missing in type '{s}' but required in type '{s}'.",
+            .{ prop_text, source_name, target_name },
+        );
+        try self.report(diag_node, TsCodes.property_missing_required, msg);
+        return true;
     }
 
     fn reportAssignmentTypeNotAssignable(
@@ -41276,6 +41680,85 @@ test "checker: missing CommonJS module global reports TS2591" {
     try T.expect(node_missing_count >= 3);
 }
 
+test "checker: empty object literal missing single required property reports TS2741" {
+    // Drives the 3000-4000 conformance slice's `renamed` /
+    // `exportSpecifiers_js` family — tsc reports the more-specific
+    // TS2741 (single required property gap) rather than the generic
+    // TS2322 fallback when `{}` is assigned to a one-property
+    // interface.
+    const s = try newSetup(
+        \\interface A { a: string }
+        \\const x: A = {};
+    );
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+    var found: bool = false;
+    for (s.checker.diagnostics.items) |d| {
+        if (d.code == TsCodes.property_missing_required) {
+            found = true;
+            // Emit the single-property wording, not the multi.
+            try T.expect(std.mem.indexOf(u8, d.message, "missing in type '{}'") != null);
+            try T.expect(std.mem.indexOf(u8, d.message, "but required in type 'A'") != null);
+        }
+        // Should not have also emitted the generic TS2322 fallback for
+        // the same site — we want the more-specific code.
+        try T.expect(d.code != TsCodes.type_not_assignable);
+    }
+    try T.expect(found);
+}
+
+test "checker: empty object literal against multi-required-property target stays TS2322" {
+    // Negative-control: when the target requires 2+ properties tsc
+    // prefers TS2739 (multi) — for now we keep falling through to
+    // the existing TS2322/TS2739 path rather than over-fitting.
+    const s = try newSetup(
+        \\interface AB { a: string; b: number }
+        \\const x: AB = {};
+    );
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+    for (s.checker.diagnostics.items) |d| {
+        try T.expect(d.code != TsCodes.property_missing_required);
+    }
+}
+
+test "checker: TS2591 module/require suppressed in JS-like virtual section" {
+    // Mirrors the 3000-4000 `bug27342.js` / `mod1.js` baseline —
+    // `module` and `require` are part of the implicit CommonJS
+    // environment under tsc's `--allowJs`, so TS2591 must not fire
+    // inside `.js` virtual sections. The driver routes these
+    // through the conformance harness via the `// @filename:`
+    // marker; we emulate that with an explicit `.js` virtual file.
+    const b = try newBoundSetup(
+        \\// @filename: mod.js
+        \\module.exports.x = 1;
+    );
+    defer destroyBoundSetup(b);
+    try b.base.checker.checkSourceFile(b.base.root);
+    for (b.base.checker.diagnostics.items) |d| {
+        try T.expect(d.code != TsCodes.cannot_find_node_name);
+    }
+}
+
+test "checker: TS2591 module global still fires in `.ts` virtual section" {
+    // Negative-control: a `.ts` virtual file (no `--allowJs`
+    // implicit env) keeps its TS2591 for missing `module`.
+    const b = try newBoundSetup(
+        \\// @filename: mod.ts
+        \\module.exports.x = 1;
+    );
+    defer destroyBoundSetup(b);
+    try b.base.checker.checkSourceFile(b.base.root);
+    var found = false;
+    for (b.base.checker.diagnostics.items) |d| {
+        if (d.code == TsCodes.cannot_find_node_name) {
+            found = true;
+            break;
+        }
+    }
+    try T.expect(found);
+}
+
 test "checker: switch on x.kind narrows x per case body" {
     // Discriminated-union narrowing inside switch cases — `s.v`
     // resolves to each variant's `v` type rather than the wider
@@ -42411,6 +42894,167 @@ test "checker: public redeclaration of private parameter property emits TS2415" 
         if (d.code == TsCodes.class_incorrectly_extends_base) found = true;
     }
     try T.expect(found);
+}
+
+test "checker: child narrows public to private instance — TS2415" {
+    // Mirrors `derivedClassWithPrivateInstanceShadowingPublicInstance` —
+    // parent declares `public x`, child re-declares `private x`. TS
+    // treats this as TS2415 because the child's nominal `private x`
+    // breaks structural assignability with the base.
+    const s = try newSetup(
+        \\class Base { public x: string = ""; }
+        \\class Derived extends Base { private x: string = ""; }
+    );
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+    var found = false;
+    for (s.checker.diagnostics.items) |d| {
+        if (d.code == TsCodes.class_incorrectly_extends_base) found = true;
+    }
+    try T.expect(found);
+}
+
+test "checker: child narrows protected to private instance — TS2415" {
+    // Mirrors `derivedClassWithPrivateInstanceShadowingProtectedInstance`.
+    const s = try newSetup(
+        \\class Base { protected x: string = ""; }
+        \\class Derived extends Base { private x: string = ""; }
+    );
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+    var found = false;
+    for (s.checker.diagnostics.items) |d| {
+        if (d.code == TsCodes.class_incorrectly_extends_base) found = true;
+    }
+    try T.expect(found);
+}
+
+test "checker: child narrows public to protected instance — TS2415" {
+    // Mirrors `derivedClassOverridesProtectedMembers3` — child declares
+    // a `protected` member where parent had `public`.
+    const s = try newSetup(
+        \\class Base { a: string = ""; }
+        \\class Derived extends Base { protected a: string = ""; }
+    );
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+    var found = false;
+    for (s.checker.diagnostics.items) |d| {
+        if (d.code == TsCodes.class_incorrectly_extends_base) found = true;
+    }
+    try T.expect(found);
+}
+
+test "checker: redeclaring inherited private member emits TS2415" {
+    // Mirrors `derivedClassOverridesPrivates` — both sides are
+    // `private`. TS still flags TS2415 because `private` is
+    // identity-bound to the declaring class.
+    const s = try newSetup(
+        \\class Base { private x: number = 0; }
+        \\class Derived extends Base { private x: number = 0; }
+    );
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+    var found = false;
+    for (s.checker.diagnostics.items) |d| {
+        if (d.code == TsCodes.class_incorrectly_extends_base) found = true;
+    }
+    try T.expect(found);
+}
+
+test "checker: child narrows public to private static — TS2417" {
+    // Mirrors `derivedClassWithPrivateStaticShadowingPublicStatic`.
+    const s = try newSetup(
+        \\class Base { public static x: string = ""; }
+        \\class Derived extends Base { private static x: string = ""; }
+    );
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+    var found = false;
+    for (s.checker.diagnostics.items) |d| {
+        if (d.code == TsCodes.class_static_side_incorrectly_extends_base) found = true;
+    }
+    try T.expect(found);
+}
+
+test "checker: child narrows protected to private static — TS2417" {
+    // Mirrors `derivedClassWithPrivateStaticShadowingProtectedStatic`.
+    const s = try newSetup(
+        \\class Base { protected static x: string = ""; }
+        \\class Derived extends Base { private static x: string = ""; }
+    );
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+    var found = false;
+    for (s.checker.diagnostics.items) |d| {
+        if (d.code == TsCodes.class_static_side_incorrectly_extends_base) found = true;
+    }
+    try T.expect(found);
+}
+
+test "checker: child narrows public to protected static — TS2417" {
+    // Mirrors the static-side cases in
+    // `derivedClassOverridesProtectedMembers3` (`Derived6`–`Derived10`).
+    const s = try newSetup(
+        \\class Base { static r: string = ""; }
+        \\class Derived extends Base { protected static r: string = ""; }
+    );
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+    var found = false;
+    for (s.checker.diagnostics.items) |d| {
+        if (d.code == TsCodes.class_static_side_incorrectly_extends_base) found = true;
+    }
+    try T.expect(found);
+}
+
+test "checker: identical accessibility (public/public) does not emit TS2415" {
+    // Negative-control: same accessibility on both sides is
+    // legitimate override semantics — no diagnostic.
+    const s = try newSetup(
+        \\class Base { x: string = ""; }
+        \\class Derived extends Base { x: string = ""; }
+    );
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+    for (s.checker.diagnostics.items) |d| {
+        try T.expect(d.code != TsCodes.class_incorrectly_extends_base);
+        try T.expect(d.code != TsCodes.class_static_side_incorrectly_extends_base);
+    }
+}
+
+test "checker: child widening protected to public does not emit TS2415" {
+    // Negative-control: widening visibility (protected → public) is
+    // permitted by TS — only narrowing fires TS2415/TS2417.
+    const s = try newSetup(
+        \\class Base { protected x: string = ""; }
+        \\class Derived extends Base { public x: string = ""; }
+    );
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+    for (s.checker.diagnostics.items) |d| {
+        try T.expect(d.code != TsCodes.class_incorrectly_extends_base);
+        try T.expect(d.code != TsCodes.class_static_side_incorrectly_extends_base);
+    }
+}
+
+test "checker: instance-side narrowing on a static-only base member is silent" {
+    // Negative-control: when the child redeclares an instance member
+    // whose name only exists statically on the parent, no heritage
+    // diagnostic fires (the two member sides are independent).
+    const s = try newSetup(
+        \\class Base { static y: string = ""; }
+        \\class Derived extends Base { private y: string = ""; }
+    );
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+    // The instance `y` does not collide with the static `y`, so we
+    // expect no TS2415 (instance side) and no TS2417 (static side
+    // either, because the child does not redeclare the static `y`).
+    for (s.checker.diagnostics.items) |d| {
+        try T.expect(d.code != TsCodes.class_incorrectly_extends_base);
+        try T.expect(d.code != TsCodes.class_static_side_incorrectly_extends_base);
+    }
 }
 
 test "checker: `new AbstractClass()` emits TS2511" {
