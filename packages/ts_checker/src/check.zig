@@ -9163,7 +9163,8 @@ pub const Checker = struct {
                         // constructor and the initializer rule only
                         // applies to identifier-named fields. Mirrors
                         // `stringNamedPropertyAccess.ts`.
-                        isJsIdentifier(self.string_interner.get(member_name)))
+                        (isJsIdentifier(self.string_interner.get(member_name)) or
+                            std.mem.startsWith(u8, self.string_interner.get(member_name), "Symbol.")))
                     {
                         const field_name = self.string_interner.get(member_name);
                         // Computed `[Symbol.X]` fields are interned as
@@ -26495,7 +26496,10 @@ pub const Checker = struct {
             try self.appendDeclaredInterfaceMembers(&members, "SymbolConstructor");
         }
 
-        return self.interner.internObjectType(members.items) catch return error.OutOfMemory;
+        const symbol_t = self.interner.internObjectType(members.items) catch return error.OutOfMemory;
+        const symbol_constructor_name = self.string_interner.intern("SymbolConstructor") catch return error.OutOfMemory;
+        try self.type_names.put(self.gpa, symbol_constructor_name, symbol_t);
+        return symbol_t;
     }
 
     // -------------------------------------------------------------------
@@ -28769,6 +28773,20 @@ pub const Checker = struct {
 
     fn reportPropertyDoesNotExistOnType(self: *Checker, node: NodeId, name: hir_mod.StringId, target_t: TypeId) CheckError!void {
         const name_str = self.string_interner.get(name);
+        if (self.memberAccessRootNameIs(node, "Symbol")) {
+            const msg = try std.fmt.allocPrint(
+                self.diag_arena.allocator(),
+                "Property '{s}' does not exist on type 'SymbolConstructor'.",
+                .{name_str},
+            );
+            try self.diagnostics.append(self.gpa, .{
+                .node = node,
+                .pos = self.memberAccessNamePos(node),
+                .code = TsCodes.property_does_not_exist,
+                .message = msg,
+            });
+            return;
+        }
         if (try self.allocPropertyMissingTargetTypeName(target_t)) |target_text| {
             const msg = try std.fmt.allocPrint(
                 self.diag_arena.allocator(),
@@ -28784,6 +28802,12 @@ pub const Checker = struct {
             return;
         }
         try self.reportPropertyDoesNotExist(node, name);
+    }
+
+    fn memberAccessRootNameIs(self: *Checker, node: NodeId, expected: []const u8) bool {
+        const root = self.calleeRootIdentifier(node) orelse return false;
+        const id = hir_mod.identifierOf(self.hir, root);
+        return std.mem.eql(u8, self.string_interner.get(id.name), expected);
     }
 
     fn memberAccessNamePos(self: *Checker, node: NodeId) ?u32 {
@@ -48241,6 +48265,33 @@ test "checker: SymbolConstructor interface augments Symbol global" {
         if (d.code == TsCodes.type_not_assignable) assign_mismatch = true;
     }
     try T.expect(assign_mismatch);
+}
+
+test "checker: missing Symbol constructor member renders named target type" {
+    const b = try newBoundSetup(
+        \\class C {
+        \\  [Symbol.isRegExp]: string;
+        \\}
+    );
+    defer destroyBoundSetup(b);
+    b.base.checker.setStrictFlags(.{ .strict_property_initialization = true, .strict_null_checks = true });
+    try b.base.checker.checkSourceFile(b.base.root);
+    var found_missing_prop = false;
+    var found_init = false;
+    for (b.base.checker.diagnostics.items) |d| {
+        if (d.code == TsCodes.property_does_not_exist and
+            std.mem.indexOf(u8, d.message, "Property 'isRegExp' does not exist on type 'SymbolConstructor'.") != null)
+        {
+            found_missing_prop = true;
+        }
+        if (d.code == TsCodes.property_not_initialized and
+            std.mem.indexOf(u8, d.message, "Property '[Symbol.isRegExp]' has no initializer") != null)
+        {
+            found_init = true;
+        }
+    }
+    try T.expect(found_missing_prop);
+    try T.expect(found_init);
 }
 
 test "checker: computed object symbol key reads unassigned symbol var" {
