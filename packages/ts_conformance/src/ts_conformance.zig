@@ -908,6 +908,7 @@ pub fn loadDirectoryWithOptions(
             if (entry.raw_source.len > 0) gpa.free(entry.raw_source);
             if (entry.path.len > 0) gpa.free(entry.path);
             if (entry.expected_errors.len > 0) gpa.free(entry.expected_errors);
+            if (entry.raw_source.len > 0) gpa.free(entry.raw_source);
         }
         out.deinit(gpa);
     }
@@ -2553,6 +2554,7 @@ pub fn runDirectoryWithOptions(
             if (entry.raw_source.len > 0) gpa.free(entry.raw_source);
             if (entry.path.len > 0) gpa.free(entry.path);
             if (entry.expected_errors.len > 0) gpa.free(entry.expected_errors);
+            if (entry.raw_source.len > 0) gpa.free(entry.raw_source);
         }
         gpa.free(corpus);
     }
@@ -3088,6 +3090,7 @@ test "conformance: bisect exact-baseline heap leak" {
             if (entry.raw_source.len > 0) T.allocator.free(entry.raw_source);
             if (entry.path.len > 0) T.allocator.free(entry.path);
             if (entry.expected_errors.len > 0) T.allocator.free(entry.expected_errors);
+            if (entry.raw_source.len > 0) T.allocator.free(entry.raw_source);
         }
         T.allocator.free(corpus);
     }
@@ -3615,6 +3618,7 @@ test "conformance: opt-in full local TypeScript corpus survey" {
             if (entry.raw_source.len > 0) T.allocator.free(entry.raw_source);
             if (entry.path.len > 0) T.allocator.free(entry.path);
             if (entry.expected_errors.len > 0) T.allocator.free(entry.expected_errors);
+            if (entry.raw_source.len > 0) T.allocator.free(entry.raw_source);
         }
         T.allocator.free(corpus);
     }
