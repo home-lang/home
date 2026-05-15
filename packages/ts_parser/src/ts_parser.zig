@@ -1692,8 +1692,13 @@ pub const Parser = struct {
                         "A rest parameter or binding pattern may not have a trailing comma.",
                     );
                 } else if (flags.is_rest and self.peek().kind != .close_paren) {
+                    // Upstream points the diagnostic at the `...` rest token
+                    // (the first character of the parameter), not the
+                    // parameter's name. `param_start` was captured before
+                    // the leading `...` was consumed, so its span.start is
+                    // the `...` position for typical rest parameters.
                     try self.reportCodeAt(
-                        self.hir.spanOf(name_node).start,
+                        param_start.span.start,
                         param_start.line,
                         1014,
                         "A rest parameter must be last in a parameter list.",
@@ -4305,6 +4310,17 @@ pub const Parser = struct {
                 try params.append(self.gpa, param);
                 if (!self.match(.comma)) break;
                 if (self.peek().kind == .close_paren) break;
+                if (flags.is_rest) {
+                    // Upstream points the diagnostic at the `...` rest token.
+                    // `ps` was captured before consuming the leading `...`,
+                    // so its span.start is the `...` position.
+                    try self.reportCodeAt(
+                        ps.span.start,
+                        ps.line,
+                        1014,
+                        "A rest parameter must be last in a parameter list.",
+                    );
+                }
             }
         }
         _ = try self.expect(.close_paren, "')' to close fn-type params");
@@ -7341,14 +7357,18 @@ pub const Parser = struct {
                 }
             }
             const method_is_generator = self.match(.asterisk);
-            // Spread element: `...expr`.
+            // Spread element: `...expr`. Wrap in a `.spread` node so
+            // diagnostics anchored at the prop point at the `...` token
+            // (matching upstream tsc's TS2698 column position).
             if (self.match(.dot_dot_dot)) {
+                const dot_tok = self.tokens[self.cursor - 1];
                 const value = try self.parseAssignmentExpression();
-                // Lower as a property with a synthetic `..` key — for
-                // now just store the value as the property and mark it
-                // as a method to flag "non-standard." A dedicated spread
-                // node is a follow-up.
-                try props.append(self.gpa, value);
+                const value_end = self.hir.spanOf(value).end;
+                const spread_node = try self.builder.addSpread(
+                    .{ .start = dot_tok.span.start, .end = value_end },
+                    value,
+                );
+                try props.append(self.gpa, spread_node);
                 if (!self.match(.comma)) break;
                 continue;
             }

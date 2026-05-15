@@ -18228,7 +18228,14 @@ pub const Checker = struct {
                 }
                 if (has_dynamic_computed_key) {
                     const rest_t = self.interner.internObjectType(&.{}) catch return error.OutOfMemory;
-                    try self.checkDestructuringAssignmentTarget(prop_node, rest_t);
+                    // Unwrap the `.spread` node so the destructuring
+                    // target check sees the underlying identifier /
+                    // member access / pattern.
+                    const target_for_rest = if (self.hir.kindOf(prop_node) == .spread)
+                        hir_mod.spreadOf(self.hir, prop_node).expression
+                    else
+                        prop_node;
+                    try self.checkDestructuringAssignmentTarget(target_for_rest, rest_t);
                 }
                 continue;
             }
@@ -22159,6 +22166,38 @@ pub const Checker = struct {
         if (flags.is_union) {
             for (self.interner.unionMembers(t)) |member| {
                 if (member == types.Primitive.null_t or member == types.Primitive.undefined_t or member == types.Primitive.false_lit) continue;
+                // Type parameters constrained to nullish-only types
+                // (`T extends undefined`, `T extends null`) collapse to
+                // their constraint within the union — TS does NOT
+                // report TS2698 if the rest of the union is spreadable.
+                // Mirrors `spreadObjectOrFalsy.ts(f4/f5/f6)`.
+                if (member < self.interner.pool.typeCount()) {
+                    const mflags = self.interner.pool.flagsOf(member);
+                    if (mflags.is_type_parameter) {
+                        if (self.typeParameterConstraint(member)) |constraint| {
+                            if (constraint != member and constraint < self.interner.pool.typeCount()) {
+                                const cflags = self.interner.pool.flagsOf(constraint);
+                                if (cflags.is_undefined or cflags.is_null or cflags.is_void) continue;
+                            }
+                        }
+                    }
+                    // Intersections that include `undefined` / `null` /
+                    // `void` reduce to `never` at runtime — also skip
+                    // them inside a union (mirrors `f2: T | T & undefined`).
+                    if (mflags.is_intersection) {
+                        var has_nullish = false;
+                        for (self.interner.intersectionMembers(member)) |im| {
+                            if (im == types.Primitive.null_t or
+                                im == types.Primitive.undefined_t or
+                                im == types.Primitive.void_t)
+                            {
+                                has_nullish = true;
+                                break;
+                            }
+                        }
+                        if (has_nullish) continue;
+                    }
+                }
                 if (!try self.objectSpreadSourceIsValid(member)) return false;
             }
             return true;
