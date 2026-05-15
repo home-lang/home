@@ -2160,7 +2160,13 @@ pub const Parser = struct {
             // Unknown — advance to keep error-recovery flowing.
             _ = self.advance();
         }
-        const close = try self.expect(.close_brace, "'}' to close class body");
+        const close = if (self.peek().kind == .close_brace)
+            self.advance()
+        else blk: {
+            const at = self.peek();
+            try self.reportCodeAt(at.span.start, at.line, 1005, "'}' expected.");
+            break :blk at;
+        };
         return try self.builder.addClass(
             .{ .start = span_start, .end = close.span.end },
             name,
@@ -5118,7 +5124,14 @@ pub const Parser = struct {
 
         // `A.B.C` — every `.B` extends the qualifier.
         while (self.peek().kind == .dot) {
-            _ = self.advance();
+            const dot = self.advance();
+            if (self.peek().flags.preceded_by_newline or self.peek().kind == .eof) {
+                try self.reportCodeAt(dot.span.end, dot.line, 1003, "Identifier expected.");
+                const prev_node = try self.builder.addIdentifier(tokenSpan(name_tok), name_id);
+                try qualifier.append(self.gpa, prev_node);
+                name_id = self.interner.intern("unknown") catch return error.OutOfMemory;
+                break;
+            }
             const next_tok = if (self.peek().kind == .identifier or
                 self.peek().kind.isContextualKeyword() or
                 self.peek().kind.isPrimitiveTypeKeyword())
@@ -11037,4 +11050,39 @@ test "parser: primitive keyword may finish qualified type name" {
 
     _ = try s.parser.parseSourceFile();
     try T.expectEqual(@as(usize, 0), s.parser.diagnostics.items.len);
+}
+
+test "parser: dangling qualified type name before newline keyword reports TS1003" {
+    var s = try newTestSetup(
+        \\var x: TypeModule1.
+        \\namespace TypeModule2 {
+        \\}
+    );
+    defer destroyTestSetup(s);
+
+    _ = try s.parser.parseSourceFile();
+    var found = false;
+    for (s.parser.diagnostics.items) |d| {
+        if (d.code == 1003 and std.mem.eql(u8, d.message, "Identifier expected.")) found = true;
+        try T.expect(d.code != 1109);
+    }
+    try T.expect(found);
+}
+
+test "parser: unterminated class body at eof reports TS1005 close brace" {
+    var s = try newTestSetup(
+        \\class Outer
+        \\{
+        \\static public
+    );
+    defer destroyTestSetup(s);
+    s.parser.setTargetEs2015OrLater(true);
+
+    _ = try s.parser.parseSourceFile();
+    var found = false;
+    for (s.parser.diagnostics.items) |d| {
+        if (d.code == 1005 and std.mem.eql(u8, d.message, "'}' expected.")) found = true;
+        try T.expect(d.code != 1109);
+    }
+    try T.expect(found);
 }

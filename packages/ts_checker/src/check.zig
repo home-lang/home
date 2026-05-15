@@ -65,6 +65,7 @@ pub const TsCodes = struct {
     pub const type_only_import_used_as_value: u32 = 1361;
     pub const cannot_find_name: u32 = 2304;
     pub const cannot_find_node_name: u32 = 2591;
+    pub const cannot_find_jquery_name: u32 = 2592;
     /// Emitted when the unresolved identifier closely resembles an
     /// in-scope name (Levenshtein distance ≤ threshold). Same as
     /// 2304 plus a `Did you mean 'X'?` suggestion.
@@ -76,6 +77,7 @@ pub const TsCodes = struct {
     pub const invalid_module_name_augmentation: u32 = 2665;
     pub const untyped_module: u32 = 7016;
     pub const cannot_find_namespace: u32 = 2503;
+    pub const cannot_find_namespace_did_you_mean: u32 = 2833;
     pub const type_only_used_as_value: u32 = 2693;
     pub const destructuring_decl_must_have_initializer: u32 = 1182;
     pub const rest_element_cannot_have_initializer: u32 = 1186;
@@ -15137,16 +15139,46 @@ pub const Checker = struct {
         if (qualifiers.len == 0 or self.hir.kindOf(qualifiers[0]) != .identifier) return;
         const root_name = hir_mod.identifierOf(self.hir, qualifiers[0]).name;
         if (self.qualifiedTypeRefRootNamespaceExists(type_node, root_name) catch false) return;
-        const msg = try std.fmt.allocPrint(
-            self.diag_arena.allocator(),
-            "Cannot find namespace '{s}'.",
-            .{self.string_interner.get(root_name)},
-        );
+        const root_text = self.string_interner.get(root_name);
+        const suggestion = self.namespaceSpellingSuggestion(root_name);
+        const msg = if (suggestion) |suggested|
+            try std.fmt.allocPrint(
+                self.diag_arena.allocator(),
+                "Cannot find namespace '{s}'. Did you mean '{s}'?",
+                .{ root_text, suggested },
+            )
+        else
+            try std.fmt.allocPrint(
+                self.diag_arena.allocator(),
+                "Cannot find namespace '{s}'.",
+                .{root_text},
+            );
         try self.diagnostics.append(self.gpa, .{
             .node = qualifiers[0],
-            .code = TsCodes.cannot_find_namespace,
+            .code = if (suggestion != null) TsCodes.cannot_find_namespace_did_you_mean else TsCodes.cannot_find_namespace,
             .message = msg,
         });
+    }
+
+    fn namespaceSpellingSuggestion(self: *Checker, name: hir_mod.StringId) ?[]const u8 {
+        const typo = self.string_interner.get(name);
+        const threshold: usize = @min((typo.len * 4) / 10, @as(usize, 4));
+        var best_name: []const u8 = "";
+        var best_dist: usize = std.math.maxInt(usize);
+        if (self.module) |module| {
+            var it = module.root.namespaces.iterator();
+            while (it.next()) |entry| {
+                const cand = self.string_interner.get(entry.key_ptr.*);
+                if (std.mem.eql(u8, cand, typo)) continue;
+                const dist = levenshteinIcase(typo, cand);
+                if (dist < best_dist) {
+                    best_dist = dist;
+                    best_name = cand;
+                }
+            }
+        }
+        if (best_name.len == 0 or best_dist > threshold) return null;
+        return best_name;
     }
 
     fn qualifiedTypeRefRootNamespaceExists(self: *Checker, type_node: NodeId, root_name: hir_mod.StringId) CheckError!bool {
@@ -19530,7 +19562,9 @@ pub const Checker = struct {
                 }
                 if (type_arg_nodes.len > 0 and !callee_had_generic_record) {
                     if (callee_t == types.Primitive.any or callee_t == types.Primitive.unknown) {
-                        try self.report(node, TsCodes.untyped_function_type_args, "Untyped function calls may not accept type arguments.");
+                        if (!self.callCalleeAlreadyHasUnresolvedNameDiagnostic(c.callee)) {
+                            try self.report(node, TsCodes.untyped_function_type_args, "Untyped function calls may not accept type arguments.");
+                        }
                     } else if (self.interner.isSignature(callee_t)) {
                         if (!self.containsFreeTypeParameter(callee_t)) {
                             const msg = try std.fmt.allocPrint(
@@ -22029,6 +22063,45 @@ pub const Checker = struct {
                     continue;
                 },
                 else => return false,
+            }
+        }
+    }
+
+    fn callCalleeAlreadyHasUnresolvedNameDiagnostic(self: *Checker, callee: NodeId) bool {
+        const root = self.calleeRootIdentifier(callee) orelse return false;
+        for (self.diagnostics.items) |d| {
+            if (d.node != root) continue;
+            switch (d.code) {
+                TsCodes.cannot_find_name,
+                TsCodes.cannot_find_name_did_you_mean,
+                TsCodes.cannot_find_node_name,
+                TsCodes.cannot_find_jquery_name,
+                2868,
+                => return true,
+                else => {},
+            }
+        }
+        return false;
+    }
+
+    fn calleeRootIdentifier(self: *Checker, callee: NodeId) ?NodeId {
+        var cur = callee;
+        while (true) {
+            switch (self.hir.kindOf(cur)) {
+                .identifier => return cur,
+                .member_access => {
+                    cur = hir_mod.memberOf(self.hir, cur).object;
+                    continue;
+                },
+                .element_access => {
+                    cur = hir_mod.elementOf(self.hir, cur).object;
+                    continue;
+                },
+                .non_null_expr => {
+                    cur = hir_mod.asExpressionOf(self.hir, cur).expr;
+                    continue;
+                },
+                else => return null,
             }
         }
     }
@@ -24846,6 +24919,10 @@ pub const Checker = struct {
         name: hir_mod.StringId,
     ) !void {
         const name_str = self.string_interner.get(name);
+        if (std.mem.eql(u8, name_str, "$")) {
+            try self.reportCannotFindJQueryName(node, name);
+            return;
+        }
 
         // Collect in-scope candidate names and find the closest one
         // by Levenshtein distance. We accept a suggestion only if the
@@ -25008,6 +25085,19 @@ pub const Checker = struct {
         try self.diagnostics.append(self.gpa, .{
             .node = node,
             .code = TsCodes.cannot_find_node_name,
+            .message = msg,
+        });
+    }
+
+    fn reportCannotFindJQueryName(self: *Checker, node: NodeId, name: hir_mod.StringId) !void {
+        const msg = try std.fmt.allocPrint(
+            self.diag_arena.allocator(),
+            "Cannot find name '{s}'. Do you need to install type definitions for jQuery? Try `npm i --save-dev @types/jquery` and then add 'jquery' to the types field in your tsconfig.",
+            .{self.string_interner.get(name)},
+        );
+        try self.diagnostics.append(self.gpa, .{
+            .node = node,
+            .code = TsCodes.cannot_find_jquery_name,
             .message = msg,
         });
     }
@@ -48458,6 +48548,41 @@ test "checker: unresolved `Bun` global emits TS2868 with bun typings hint" {
     for (s.checker.diagnostics.items) |d| {
         if (d.code != 2868) continue;
         try T.expect(std.mem.indexOf(u8, d.message, "@types/bun") != null);
+        found = true;
+    }
+    try T.expect(found);
+}
+
+test "checker: unresolved jquery global emits TS2592 and skips cascading TS2347" {
+    const s = try newSetup(
+        \\var x = $.extend<{ workItem: any }, { workItem: any, width: string }>({}, {});
+    );
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+    var found = false;
+    for (s.checker.diagnostics.items) |d| {
+        if (d.code == TsCodes.cannot_find_jquery_name) {
+            try T.expect(std.mem.indexOf(u8, d.message, "@types/jquery") != null);
+            found = true;
+        }
+        try T.expect(d.code != TsCodes.cannot_find_name);
+        try T.expect(d.code != TsCodes.untyped_function_type_args);
+    }
+    try T.expect(found);
+}
+
+test "checker: missing qualified namespace root suggests sibling namespace" {
+    const b = try newBoundSetup(
+        \\var x: TypeModule1.
+        \\namespace TypeModule2 {
+        \\}
+    );
+    defer destroyBoundSetup(b);
+    try b.base.checker.checkSourceFile(b.base.root);
+    var found = false;
+    for (b.base.checker.diagnostics.items) |d| {
+        if (d.code != TsCodes.cannot_find_namespace_did_you_mean) continue;
+        try T.expect(std.mem.indexOf(u8, d.message, "TypeModule2") != null);
         found = true;
     }
     try T.expect(found);
