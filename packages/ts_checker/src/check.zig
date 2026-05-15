@@ -15527,12 +15527,28 @@ pub const Checker = struct {
         }
         if (ids.items.len < 2) return null;
         const value_name = ids.items[ids.items.len - 1];
-        const root = self.rootBlockFor(anchor);
-        const root_stmts = if (root != hir_mod.none_node_id and self.hir.kindOf(root) == .block_stmt)
-            hir_mod.blockStmts(self.hir, root)
-        else
-            return null;
-        const ns_node = self.findNamespaceByPath(root_stmts, ids.items[0 .. ids.items.len - 1]) orelse return null;
+        // Walk up enclosing namespace bodies + the source root so a
+        // sibling `namespace M2 { … }` is visible from inside another
+        // namespace. Mirrors `nonInstantiatedModule`.
+        var ns_node: NodeId = hir_mod.none_node_id;
+        var cur = anchor;
+        while (cur != hir_mod.none_node_id) {
+            const stmts: []const NodeId = blk: {
+                if (self.hir.kindOf(cur) == .block_stmt) break :blk hir_mod.blockStmts(self.hir, cur);
+                if (self.hir.kindOf(cur) == .namespace_decl) break :blk hir_mod.namespaceBody(self.hir, cur);
+                break :blk &[_]NodeId{};
+            };
+            if (stmts.len > 0) {
+                if (self.findNamespaceByPath(stmts, ids.items[0 .. ids.items.len - 1])) |found| {
+                    ns_node = found;
+                    break;
+                }
+            }
+            const parent = self.hir.parentOf(cur);
+            if (parent == cur or parent == hir_mod.none_node_id) break;
+            cur = parent;
+        }
+        if (ns_node == hir_mod.none_node_id) return null;
         const decl = self.findNamedValueDeclInNamespace(ns_node, value_name) orelse return null;
         var t = self.hir.typeOf(decl);
         if (t != types.Primitive.none and t != types.Primitive.unknown) return t;
