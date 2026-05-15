@@ -1027,6 +1027,7 @@ pub fn loadDirectoryWithOptions(
             .syntax_target_es2015 = directiveTargetEs2015OrLater(case_src),
             .report_deprecated_target_es5 = use_exact_errors and !baseline_only_option_deprecation and baselinePathIsTargetEs5(baseline_path),
             .suppress_js_check_diagnostics = shouldSuppressJsCheckDiagnostics(diag_path, case_src),
+            .raw_source = raw_source,
         });
     }
     return out.toOwnedSlice(gpa);
