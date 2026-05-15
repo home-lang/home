@@ -15116,23 +15116,37 @@ pub const Checker = struct {
         local_name: hir_mod.StringId,
         anchor: NodeId,
     ) CheckError!bool {
-        const root = self.rootBlockFor(anchor);
-        if (root == hir_mod.none_node_id or self.hir.kindOf(root) != .block_stmt) return false;
-        for (hir_mod.blockStmts(self.hir, root)) |stmt| {
-            if (self.hir.kindOf(stmt) != .import_decl) continue;
-            const imp = hir_mod.importOf(self.hir, stmt);
-            if (self.string_interner.get(imp.module).len != 0) continue;
-            if (imp.default_binding == hir_mod.none_node_id or self.hir.kindOf(imp.default_binding) != .identifier) continue;
-            if (hir_mod.identifierOf(self.hir, imp.default_binding).name != local_name) continue;
-            if (imp.import_equals == hir_mod.none_node_id or self.hir.kindOf(imp.import_equals) != .type_ref) return false;
-            const r = hir_mod.typeRefOf(self.hir, imp.import_equals);
-            const qs = hir_mod.typeRefQualifier(self.hir, imp.import_equals);
-            for (qs) |q| {
-                if (self.hir.kindOf(q) != .identifier) return false;
-                try out.append(self.gpa, hir_mod.identifierOf(self.hir, q).name);
+        // Walk up enclosing scopes (namespace bodies + the source
+        // root) so an `import a = A;` in `namespace E { … }` resolves
+        // for type-refs inside that namespace. Mirrors the
+        // `importStatements` fixture.
+        var cur = anchor;
+        while (cur != hir_mod.none_node_id) {
+            const stmts: []const NodeId = blk: {
+                if (self.hir.kindOf(cur) == .block_stmt) break :blk hir_mod.blockStmts(self.hir, cur);
+                if (self.hir.kindOf(cur) == .namespace_decl) break :blk hir_mod.namespaceBody(self.hir, cur);
+                break :blk &[_]NodeId{};
+            };
+            for (stmts) |raw_stmt| {
+                const stmt = self.unwrapExportDecl(raw_stmt);
+                if (self.hir.kindOf(stmt) != .import_decl) continue;
+                const imp = hir_mod.importOf(self.hir, stmt);
+                if (self.string_interner.get(imp.module).len != 0) continue;
+                if (imp.default_binding == hir_mod.none_node_id or self.hir.kindOf(imp.default_binding) != .identifier) continue;
+                if (hir_mod.identifierOf(self.hir, imp.default_binding).name != local_name) continue;
+                if (imp.import_equals == hir_mod.none_node_id or self.hir.kindOf(imp.import_equals) != .type_ref) return false;
+                const r = hir_mod.typeRefOf(self.hir, imp.import_equals);
+                const qs = hir_mod.typeRefQualifier(self.hir, imp.import_equals);
+                for (qs) |q| {
+                    if (self.hir.kindOf(q) != .identifier) return false;
+                    try out.append(self.gpa, hir_mod.identifierOf(self.hir, q).name);
+                }
+                try out.append(self.gpa, r.name);
+                return true;
             }
-            try out.append(self.gpa, r.name);
-            return true;
+            const parent = self.hir.parentOf(cur);
+            if (parent == cur or parent == hir_mod.none_node_id) break;
+            cur = parent;
         }
         return false;
     }
@@ -23490,16 +23504,15 @@ pub const Checker = struct {
         if (std.mem.eql(u8, name_str, "new.target")) {
             return types.Primitive.any;
         }
-        if (std.mem.eql(u8, name_str, "arguments") and self.hasNonArrowFunctionAncestor(node)) {
-            return types.Primitive.any;
-        }
         // `arguments` referenced from an arrow function (no enclosing
         // `function` body to bind it to) is invalid for ES5 — tsc
         // emits TS2496 explaining the down-emit can't synthesize an
         // `arguments` slot inside the resulting `function () { … }`.
-        // Higher targets keep the lexical `arguments` lookup so the
-        // identifier remains valid; only fire when the source's
-        // `// @target` directive is ES5 (or earlier).
+        // This check has to run BEFORE the regular
+        // `hasNonArrowFunctionAncestor` early-return: that helper
+        // considers any non-arrow ancestor sufficient to bind
+        // `arguments`, but tsc fires TS2496 whenever the *innermost*
+        // enclosing function is an arrow regardless of what's above.
         if (std.mem.eql(u8, name_str, "arguments") and
             self.argumentsInsideArrowOnlyChain(node) and
             self.sourceTargetMentionsEs5())
@@ -23510,6 +23523,9 @@ pub const Checker = struct {
                 .code = TsCodes.arguments_in_arrow_es5,
                 .message = msg,
             }) catch return types.Primitive.any;
+            return types.Primitive.any;
+        }
+        if (std.mem.eql(u8, name_str, "arguments") and self.hasNonArrowFunctionAncestor(node)) {
             return types.Primitive.any;
         }
         if (!self.isDeclNameSlot(node) and !self.nodeHasAncestorKind(node, .typeof_type) and self.typeOnlyImportLocal(id.name, node)) {
@@ -24232,26 +24248,26 @@ pub const Checker = struct {
         return false;
     }
 
-    /// True when the node sits inside at least one arrow-function
-    /// ancestor and there's no enclosing non-arrow function above it.
-    /// Used to gate TS2496 (`arguments` in arrow function in ES5):
-    /// a top-level `() => arguments` qualifies, but `function f() {
-    /// return () => arguments; }` does not — the inner arrow inherits
-    /// the lexical `arguments` from `f` so the down-emit is valid.
+    /// True when the nearest enclosing function-like ancestor of
+    /// `node` is an arrow function (i.e. `arguments` here would
+    /// resolve through the lexical chain instead of binding to a
+    /// local `arguments` slot). Used to gate TS2496 (`arguments` in
+    /// arrow function in ES5): tsc rejects every `arguments`
+    /// reference whose innermost containing function is an arrow,
+    /// regardless of whether further out there's a real function —
+    /// the down-emit can't synthesize an `arguments` slot inside the
+    /// resulting `function () { … }`. Top-level `() => arguments`
+    /// also matches: `cur` is `none_node_id` after the arrow, so the
+    /// `saw_arrow` flag still answers "yes, I was inside an arrow".
     fn argumentsInsideArrowOnlyChain(self: *Checker, node: NodeId) bool {
         var cur = self.hir.parentOf(node);
-        var saw_arrow = false;
         while (cur != hir_mod.none_node_id) : (cur = self.hir.parentOf(cur)) {
             const k = self.hir.kindOf(cur);
             if (k != .fn_decl and k != .fn_expr and k != .arrow_fn) continue;
             const f = hir_mod.fnDeclOf(self.hir, cur);
-            if (f.flags.is_arrow) {
-                saw_arrow = true;
-            } else {
-                return false;
-            }
+            return f.flags.is_arrow;
         }
-        return saw_arrow;
+        return false;
     }
 
     const MapEntryTypes = struct {
