@@ -799,6 +799,17 @@ pub const Checker = struct {
     /// `if (<guard-expr>)`. Aliased-conditional narrowing per TS
     /// PR #46266. Cleared when `cond` is reassigned.
     cond_aliases: std.AutoHashMapUnmanaged(hir_mod.StringId, NodeId),
+    /// Pre-rendered display names for instantiated generic aliases
+    /// (`Covariant<A>`, `NonNullable<T>`, `FunctionProperties<T>`).
+    /// Populated by `lowererLowerWithTypeParams` whenever an alias is
+    /// instantiated with type-arguments; consulted by
+    /// `allocSimpleTypeName` so TS2322 / TS2345 prose preserves the
+    /// alias name instead of collapsing to the substituted body.
+    /// Strings are owned by `diag_arena`. First-write wins so we
+    /// don't override shorter names; the table is append-only across
+    /// a check pass. Empty type-args are skipped to avoid registering
+    /// non-generic identity aliases.
+    alias_display_names: std.AutoHashMapUnmanaged(TypeId, []const u8),
     /// Function name → list of overload signature TypeIds in
     /// declaration order. Populated when multiple `function f(...)`
     /// declarations share a name (overloads + implementation). The
@@ -994,6 +1005,7 @@ pub const Checker = struct {
             .member_predicates = .empty,
             .signature_param_predicates = .empty,
             .cond_aliases = .empty,
+            .alias_display_names = .empty,
             .overloads = .empty,
             .overload_has_implementation = .empty,
             .inferred_variance = .empty,
@@ -1129,6 +1141,7 @@ pub const Checker = struct {
         self.member_predicates.deinit(self.gpa);
         self.signature_param_predicates.deinit(self.gpa);
         self.cond_aliases.deinit(self.gpa);
+        self.alias_display_names.deinit(self.gpa);
         var ov_it = self.overloads.valueIterator();
         while (ov_it.next()) |list| list.deinit(self.gpa);
         self.overloads.deinit(self.gpa);
@@ -16026,6 +16039,30 @@ pub const Checker = struct {
                         try self.active_generic_aliases.append(self.gpa, .{ .name = r.name, .first_arg = first_arg });
                         defer _ = self.active_generic_aliases.pop();
 
+                        // Collect the lowered type-argument list (in
+                        // declaration order) for alias-display-name
+                        // registration. Defaults filled in by the
+                        // earlier `subs` loop participate so partial
+                        // application like `Pair<string>` still
+                        // renders `Pair<string, number>` when the
+                        // second slot defaults to `number`. We only
+                        // register for generic *type aliases* (which
+                        // have a non-none `body_node`); class /
+                        // interface bodies (`body_node == none`) skip
+                        // registration so the body's intrinsic
+                        // identity continues to drive diagnostics for
+                        // structural-relation reporting paths that
+                        // depend on the un-renamed body.
+                        var alias_arg_list: std.ArrayListUnmanaged(TypeId) = .empty;
+                        defer alias_arg_list.deinit(self.gpa);
+                        const allow_alias_display = info.body_node != hir_mod.none_node_id;
+                        if (allow_alias_display) {
+                            for (info.params) |param_t| {
+                                const at = subs.get(param_t) orelse param_t;
+                                try alias_arg_list.append(self.gpa, at);
+                            }
+                        }
+
                         // Homomorphic mapped-type alias: when the
                         // alias body is `{ [K in keyof T]: F<K> }`,
                         // the static `body_t` collapsed to `unknown`
@@ -16048,7 +16085,11 @@ pub const Checker = struct {
                                 const arg_t = subs.get(param_t) orelse continue;
                                 try self.recordNarrow(tp.name, arg_t);
                             }
-                            return self.evalMappedType(info.body_node) catch info.body;
+                            const mapped_t = self.evalMappedType(info.body_node) catch info.body;
+                            if (allow_alias_display and mapped_t != info.body) {
+                                try self.registerAliasDisplayName(mapped_t, r.name, alias_arg_list.items);
+                            }
+                            return mapped_t;
                         }
                         if (info.body_node != hir_mod.none_node_id and
                             (self.hir.kindOf(info.body_node) == .conditional_type or
@@ -16068,10 +16109,17 @@ pub const Checker = struct {
                                 const arg_t = subs.get(param_t) orelse continue;
                                 try self.recordNarrow(tp.name, arg_t);
                             }
-                            return self.lowererLowerWithTypeParams(info.body_node) catch info.body;
+                            const eval_t = self.lowererLowerWithTypeParams(info.body_node) catch info.body;
+                            if (allow_alias_display and eval_t != info.body) {
+                                try self.registerAliasDisplayName(eval_t, r.name, alias_arg_list.items);
+                            }
+                            return eval_t;
                         }
                         const instantiated = self.substituteType(info.body, &subs) catch info.body;
                         try self.copyMemberPredicatesFromReceiver(instantiated, info.body);
+                        if (allow_alias_display and instantiated != info.body) {
+                            try self.registerAliasDisplayName(instantiated, r.name, alias_arg_list.items);
+                        }
                         return instantiated;
                     }
                     const name_str = self.string_interner.get(r.name);
@@ -25449,6 +25497,14 @@ pub const Checker = struct {
             if (self.thisInsideCheckJsPrototypeAssignmentFunction(node)) return types.Primitive.any;
             if (self.thisInsideCheckJsFunctionWithThisTag(node)) return types.Primitive.any;
             if (self.thisInsideCheckJsCallbackWithThis(node)) return types.Primitive.any;
+            // TS2331: `this` referenced directly inside a namespace
+            // body (without an intervening function/class frame) is
+            // illegal — mirrors upstream tsc for `thisTypeErrors.ts(36)`
+            // (`namespace N1 { export var y = this; }`). Pairs with
+            // the implicit-any TS2683 below.
+            if (self.thisDirectlyInsideNamespaceBody(node)) {
+                self.report(node, TsCodes.this_in_namespace_body, "'this' cannot be referenced in a module or namespace body.") catch {};
+            }
             if (!self.sourceHasStrictFalseDirective() and
                 !self.identifierThisIsArrowCaptured(node) and
                 !self.thisInsideObjectLiteralMethod(node))
@@ -27952,6 +28008,21 @@ pub const Checker = struct {
             if (kind != .var_decl and kind != .let_decl and kind != .const_decl) continue;
             const v = hir_mod.varDeclOf(self.hir, cur);
             return v.is_ambient and v.init != hir_mod.none_node_id;
+        }
+        return false;
+    }
+
+    /// True when `node` is lexically inside a `namespace M { ... }`
+    /// (or `module M { ... }`) body without any intervening
+    /// function-like or class frame. Used by TS2331 / `this` checks
+    /// to mirror upstream `isInsideStaticOrModule`.
+    fn thisDirectlyInsideNamespaceBody(self: *Checker, node: NodeId) bool {
+        var cur = self.hir.parentOf(node);
+        while (cur != hir_mod.none_node_id) : (cur = self.hir.parentOf(cur)) {
+            const k = self.hir.kindOf(cur);
+            if (k == .fn_decl or k == .fn_expr or k == .arrow_fn or
+                k == .class_decl or k == .class_expr) return false;
+            if (k == .namespace_decl or k == .module_decl) return true;
         }
         return false;
     }
@@ -30577,6 +30648,21 @@ pub const Checker = struct {
                 .{ pair.arg, pair.param },
             );
         }
+        // Last-resort upgrade: when both operands have a registered
+        // generic-alias display name (`Foo3<string>` etc.) populated
+        // by `lowererLowerWithTypeParams`, prefer the named form over
+        // the positional placeholder. Restricted to the alias-display
+        // table specifically so we don't accidentally render arbitrary
+        // structural shapes that upstream tsc elides.
+        if (self.alias_display_names.get(arg_t)) |arg_text| {
+            if (self.alias_display_names.get(param_t)) |param_text| {
+                return try std.fmt.allocPrint(
+                    self.diag_arena.allocator(),
+                    "Argument of type '{s}' is not assignable to parameter of type '{s}'.",
+                    .{ arg_text, param_text },
+                );
+            }
+        }
         return try std.fmt.allocPrint(
             self.diag_arena.allocator(),
             "Argument is not assignable to parameter at position {d}.",
@@ -33071,6 +33157,16 @@ pub const Checker = struct {
                 if (self.namedTypeForId(t)) |type_name| {
                     break :blk self.string_interner.get(type_name);
                 }
+                // Generic-alias instantiation display name
+                // (`Covariant<A>`, `Partial<T>`, `FunctionProperties<T>`).
+                // Populated by `lowererLowerWithTypeParams` whenever a
+                // generic alias is instantiated with type-arguments;
+                // mirrors upstream tsc which preserves the alias name
+                // in TS2322 prose rather than collapsing to the
+                // substituted body. See `conditionalTypes2.ts(15,5)`.
+                if (self.alias_display_names.get(t)) |display| {
+                    break :blk display;
+                }
                 // Defensive guard: `typeParameterName` indexes the
                 // type-parameter payloads directly without bounds
                 // checking the payload index. Non-tp types occasionally
@@ -33291,6 +33387,43 @@ pub const Checker = struct {
             if (entry.value_ptr.* == t) return entry.key_ptr.*;
         }
         return null;
+    }
+
+    /// Record `<alias_name><<arg1, arg2, ...>>` as the display name
+    /// for the substituted alias result `t`. Skipped when the result
+    /// is a primitive, when no type-arguments materialize, when the
+    /// result already has a more direct named identity, or when any
+    /// argument fails to render. First-write wins so the earliest
+    /// instantiation observed for a given collapsed body keeps its
+    /// name; later collisions stay silent rather than thrashing the
+    /// table.
+    fn registerAliasDisplayName(
+        self: *Checker,
+        t: TypeId,
+        alias_name: hir_mod.StringId,
+        args: []const TypeId,
+    ) !void {
+        if (t < types.Primitive.first_dynamic) return;
+        if (t >= self.interner.pool.typeCount()) return;
+        if (args.len == 0) return;
+        if (self.alias_display_names.contains(t)) return;
+        // Skip if the result already has a more direct display name
+        // via `type_names` (so we don't shadow class/interface
+        // identity) or via the enum-nominal table.
+        if (self.namedTypeForId(t) != null) return;
+        if (self.enumNameFromNominal(t) != null) return;
+        const arena = self.diag_arena.allocator();
+        var buf: std.ArrayListUnmanaged(u8) = .empty;
+        const alias_str = self.string_interner.get(alias_name);
+        try buf.appendSlice(arena, alias_str);
+        try buf.append(arena, '<');
+        for (args, 0..) |a, i| {
+            if (i > 0) try buf.appendSlice(arena, ", ");
+            const arg_name = (try self.allocSimpleTypeName(a)) orelse return;
+            try buf.appendSlice(arena, arg_name);
+        }
+        try buf.append(arena, '>');
+        try self.alias_display_names.put(self.gpa, t, buf.items);
     }
 
     fn report(self: *Checker, node: NodeId, code: u32, message: []const u8) !void {
