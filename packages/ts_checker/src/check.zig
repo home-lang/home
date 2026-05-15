@@ -32792,7 +32792,14 @@ pub const Checker = struct {
                         const member_name = (try self.allocSimpleTypeName(member)) orelse break :blk null;
                         if (!first) try union_buf.appendSlice(arena_u, " | ");
                         first = false;
+                        // Wrap function/construct signature members in
+                        // parens within a union so `(() => string) |
+                        // (() => number)` reads unambiguously — matches
+                        // upstream tsc for `unionTypeLiterals.ts`.
+                        const needs_parens = std.mem.indexOf(u8, member_name, "=>") != null;
+                        if (needs_parens) try union_buf.append(arena_u, '(');
                         try union_buf.appendSlice(arena_u, member_name);
+                        if (needs_parens) try union_buf.append(arena_u, ')');
                     }
                     if (has_null) {
                         if (!first) try union_buf.appendSlice(arena_u, " | ");

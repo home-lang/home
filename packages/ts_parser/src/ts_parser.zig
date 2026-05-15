@@ -6265,11 +6265,7 @@ pub const Parser = struct {
                 const operand = try self.parseUnaryExpression();
                 if (!self.isValidUpdateOperand(operand)) {
                     const operand_span = self.hir.spanOf(operand);
-                    if (self.hir.kindOf(operand) == .new_expr) {
-                        try self.reportCodeAt(operand_span.start, t.line, 2357, "The operand of an increment or decrement operator must be a variable or a property access.");
-                        return operand;
-                    }
-                    try self.reportCodeAt(operand_span.start, t.line, 2356, "An arithmetic operand must be of type 'any', 'number', 'bigint' or an enum type.");
+                    try self.reportCodeAt(operand_span.start, t.line, 2357, "The operand of an increment or decrement operator must be a variable or a property access.");
                     if (self.isThisIdentifier(operand)) {
                         return try self.builder.addLiteralNumber(operand_span, 1);
                     }
@@ -6884,12 +6880,11 @@ pub const Parser = struct {
                 if (t.kind == .close_paren or
                     t.kind == .close_brace or
                     t.kind == .semicolon or
+                    t.kind == .colon or
                     t.kind == .eof or
                     t.kind == .kw_return or
                     t.kind == .kw_case or
-                    t.kind == .kw_default or
-                    t.kind == .semicolon or
-                    t.kind == .eof)
+                    t.kind == .kw_default)
                 {
                     try self.reportCodeAt(t.span.start, t.line, 1109, "Expression expected.");
                     return error.UnexpectedToken;
