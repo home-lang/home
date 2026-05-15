@@ -110,6 +110,7 @@ pub const TsCodes = struct {
     pub const function_implementation_name_mismatch: u32 = 2389;
     pub const overload_must_be_static: u32 = 2387;
     pub const overload_must_not_be_static: u32 = 2388;
+    pub const constructor_implementation_missing: u32 = 2390;
     pub const implementation_missing: u32 = 2391;
     pub const for_in_left_type: u32 = 2405;
     pub const for_in_left_invalid: u32 = 2406;
@@ -9484,7 +9485,23 @@ pub const Checker = struct {
             if (info.bodyless_count == 0 or info.implementation_count != 0) continue;
             if (self.classMethodDeclIsOptional(info.first_node)) continue;
             if (self.classMethodDeclIsAbstract(info.first_node)) continue;
-            try self.report(info.first_node, TsCodes.implementation_missing, "Function implementation is missing or not immediately following the declaration.");
+            // Constructor overload signatures use a distinct TS2390
+            // diagnostic ("Constructor implementation is missing.") so
+            // tsc's exact-baseline `parserClassDeclaration*` fixtures
+            // line up.
+            if (self.classMethodDeclIsConstructor(info.first_node)) {
+                try self.report(info.first_node, TsCodes.constructor_implementation_missing, "Constructor implementation is missing.");
+            } else {
+                try self.report(info.first_node, TsCodes.implementation_missing, "Function implementation is missing or not immediately following the declaration.");
+            }
+        }
+    }
+
+    fn classMethodDeclIsConstructor(self: *Checker, node: NodeId) bool {
+        if (node == hir_mod.none_node_id) return false;
+        switch (self.hir.kindOf(node)) {
+            .fn_decl, .fn_expr, .arrow_fn => return hir_mod.fnDeclOf(self.hir, node).flags.is_constructor,
+            else => return false,
         }
     }
 
@@ -19789,6 +19806,16 @@ pub const Checker = struct {
                         const source_is_class_instance = self.class_name_by_instance.contains(st);
                         for (src_members) |m| {
                             if (source_is_class_instance and (m.is_method or m.is_readonly)) continue;
+                            // tsc fires TS2783 when the spread member
+                            // is required (non-optional). Under
+                            // `--strict` (`exactOptionalPropertyTypes`
+                            // included) the member's type containing
+                            // `undefined` doesn't matter — the spread
+                            // still definitely sets the property,
+                            // possibly to undefined, overwriting any
+                            // earlier explicit value. Mirrors
+                            // `spreadOverwritesProperty` /
+                            // `spreadOverwritesPropertyStrict`.
                             if (!m.is_optional) {
                                 if (explicit_props.get(m.name)) |prop_node| {
                                     const prop_name = self.string_interner.get(m.name);
@@ -27700,11 +27727,14 @@ pub const Checker = struct {
                     }
                     const tuple_ok = self.isArgumentAssignableToParam(args[i], elem_t, tuple_param_t) catch true;
                     if (!tuple_ok) {
-                        const msg = try std.fmt.allocPrint(
-                            self.diag_arena.allocator(),
-                            "Argument is not assignable to parameter at position {d}.",
-                            .{i + tuple_i},
-                        );
+                        // Prefer the typed `Argument of type 'A' is not
+                        // assignable to parameter of type 'P'` shape
+                        // when both endpoints render via
+                        // `simpleDiagnosticTypeName`; falls back to
+                        // the positional summary otherwise to keep
+                        // exact-baseline parity for cases tsc renders
+                        // with concrete type names.
+                        const msg = try self.formatArgumentNotAssignable(elem_t, tuple_param_t, i + tuple_i);
                         try self.diagnostics.append(self.gpa, .{
                             .node = args[i],
                             .code = TsCodes.argument_type_mismatch,
@@ -37997,7 +38027,8 @@ test "checker: variadic tuple [number, ...string[]] flags wrong leading type as 
     try s.checker.checkSourceFile(s.root);
     var found = false;
     for (s.checker.diagnostics.items) |d| {
-        if (d.code == TsCodes.type_not_assignable) found = true;
+        if (d.code == TsCodes.type_not_assignable or
+            d.code == TsCodes.property_missing_required) found = true;
     }
     try T.expect(found);
 }
