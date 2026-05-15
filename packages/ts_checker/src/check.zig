@@ -699,6 +699,19 @@ pub const Checker = struct {
     /// table preserves declaration-site optional/default metadata and
     /// the TS rule that a trailing `void` parameter may be omitted.
     signature_min_args: std.AutoHashMapUnmanaged(TypeId, usize),
+    /// Signature TypeId → source-level parameter name StringIds in
+    /// declaration order. Populated by `recordSignatureParamNames`
+    /// from `fn_decl` / `fn_expr` / `arrow_fn` / `fn_type` /
+    /// `constructor_type` lowering sites. The interner only stores
+    /// parameter types (so two `(a: T) => U` and `(b: T) => U`
+    /// share a TypeId), but the diagnostic renderer consults this
+    /// side table to print the actual source name (`x` rather than
+    /// `x0`) and match upstream TS prose for fixtures like
+    /// `stringLiteralTypesOverloadAssignability01`. Falls back to
+    /// `x0`/`x1` when no entry exists (synthesized signatures from
+    /// generic instantiation, lowerer-only paths, or signatures
+    /// whose params are binding patterns).
+    signature_param_names: std.AutoHashMapUnmanaged(TypeId, []hir_mod.StringId),
     /// `(enum_name, member_name) → numeric value` for enum members
     /// whose value the checker resolved (either from an explicit
     /// numeric initializer or auto-incremented from the prior
@@ -831,6 +844,7 @@ pub const Checker = struct {
             .inferred_variance = .empty,
             .rest_signatures = .empty,
             .signature_min_args = .empty,
+            .signature_param_names = .empty,
             .enum_member_values = .empty,
             .const_enums = .empty,
             .numeric_enums = .empty,
@@ -931,6 +945,9 @@ pub const Checker = struct {
         self.inferred_variance.deinit(self.gpa);
         self.rest_signatures.deinit(self.gpa);
         self.signature_min_args.deinit(self.gpa);
+        var spn_it = self.signature_param_names.valueIterator();
+        while (spn_it.next()) |names| self.gpa.free(names.*);
+        self.signature_param_names.deinit(self.gpa);
         self.enum_member_values.deinit(self.gpa);
         self.const_enums.deinit(self.gpa);
         self.numeric_enums.deinit(self.gpa);
@@ -5434,6 +5451,7 @@ pub const Checker = struct {
         if (self.signature_this_params.get(sig)) |this_t| {
             try self.signature_this_params.put(self.gpa, new_sig, this_t);
         }
+        try self.copySignatureParamNames(new_sig, sig);
         self.hir.setType(fn_node, new_sig);
         const f = hir_mod.fnDeclOf(self.hir, fn_node);
         if (f.name != hir_mod.none_node_id) self.hir.setType(f.name, new_sig);
@@ -6856,6 +6874,7 @@ pub const Checker = struct {
         try self.recordGenericSignatureParams(sig, captured_tp_ids.items);
         if (explicit_this_t != types.Primitive.none) try self.signature_this_params.put(self.gpa, sig, explicit_this_t);
         try self.recordSignatureMinArgs(sig, param_omittable.items);
+        try self.recordSignatureParamNames(sig, params);
         self.hir.setType(node, sig);
         if (f.name != hir_mod.none_node_id) self.hir.setType(f.name, sig);
         // Record rest-parameter signatures so call-site argument
@@ -7945,7 +7964,8 @@ pub const Checker = struct {
                         !op.is_static and
                         op.type_annotation != hir_mod.none_node_id and
                         op.value == hir_mod.none_node_id and
-                        !self.typeExplicitlyIncludesUndefined(field_t))
+                        !self.typeExplicitlyIncludesUndefined(field_t) and
+                        !self.classNodeIsInsideAmbientDeclaredModule(node))
                     {
                         const field_name = self.string_interner.get(member_name);
                         const msg = try std.fmt.allocPrint(
@@ -8052,6 +8072,15 @@ pub const Checker = struct {
                 if (self.signature_min_args.get(parent_sig)) |min_required| {
                     try self.signature_min_args.put(self.gpa, static_ctor_sig, min_required);
                 }
+            }
+            // Inherit source-level parameter names from the donor
+            // ctor signature so the static-side construct signature
+            // renders as `new (msg: string) => T` instead of `new
+            // (x0: string) => T`.
+            if (has_explicit_ctor) {
+                try self.copySignatureParamNames(static_ctor_sig, ctor_sig);
+            } else if (inherited_ctor_sig) |parent_sig| {
+                try self.copySignatureParamNames(static_ctor_sig, parent_sig);
             }
             try static_members.append(self.gpa, .{
                 .name = construct_name,
@@ -8325,6 +8354,9 @@ pub const Checker = struct {
             try self.recordGenericSignatureParams(static_ctor_sig, class_param_ids.items);
             if (has_explicit_ctor and self.rest_signatures.contains(ctor_sig)) {
                 try self.rest_signatures.put(self.gpa, static_ctor_sig, {});
+            }
+            if (has_explicit_ctor) {
+                try self.copySignatureParamNames(static_ctor_sig, ctor_sig);
             }
             for (static_members.items) |*member| {
                 if (member.name == construct_name) {
@@ -8799,22 +8831,26 @@ pub const Checker = struct {
         };
     }
 
-    /// Source-verbatim display text for a class-member key. Returns
-    /// the raw source slice for string literals (so quotes are kept
-    /// in the diagnostic message) and numeric literals (preserving
-    /// the original formatting like `1.0`). Identifier keys use the
-    /// interned name. Returned slice is borrowed from `self.source`
-    /// or the string interner — do not free.
+    /// Source-verbatim display text for a class-member key. The
+    /// parser folds string and numeric class-member keys into
+    /// `.identifier` HIR nodes (with the quote/format-stripped
+    /// name interned), so reading from the original source span
+    /// is the only way to recover the verbatim text. This keeps
+    /// `"a b"` quoted and `1.0` un-trimmed in the diagnostic
+    /// message — matching tsc's render shape for fixtures like
+    /// `numericStringNamedPropertyEquivalence` (`'1.0'`) and
+    /// `stringNamedPropertyDuplicates` (`'"a b"'`). Falls back
+    /// to the interned name when source isn't available.
     fn classMemberDisplayTextForKey(self: *Checker, key: NodeId) ?[]const u8 {
         if (key == hir_mod.none_node_id) return null;
+        if (self.source) |src| {
+            const span = self.hir.spanOf(key);
+            if (span.end <= src.len and span.start < span.end) {
+                return src[span.start..span.end];
+            }
+        }
         return switch (self.hir.kindOf(key)) {
             .identifier => self.string_interner.get(hir_mod.identifierOf(self.hir, key).name),
-            .literal_string, .literal_number => blk: {
-                const src = self.source orelse break :blk null;
-                const span = self.hir.spanOf(key);
-                if (span.end > src.len or span.start >= span.end) break :blk null;
-                break :blk src[span.start..span.end];
-            },
             else => null,
         };
     }
@@ -14094,6 +14130,7 @@ pub const Checker = struct {
                 const is_construct = self.hir.kindOf(type_node) == .constructor_type;
                 const sig = self.interner.internSignature(fn_param_ts.items, ret_t, is_construct) catch return error.OutOfMemory;
                 try self.recordSignatureMinArgs(sig, fn_param_omittable.items);
+                try self.recordSignatureParamNames(sig, fn_params);
                 if (explicit_this_t != types.Primitive.none) try self.signature_this_params.put(self.gpa, sig, explicit_this_t);
                 if (is_predicate) {
                     const pred = hir_mod.typePredicateOf(self.hir, ft.return_type);
@@ -28829,6 +28866,51 @@ pub const Checker = struct {
         return span.start;
     }
 
+    /// Render a call or construct signature as `(p: T, q: U) => R`
+    /// (or `new (p: T) => R`), preferring source-level parameter
+    /// names recorded in `signature_param_names` and falling back
+    /// to synthesized `x0`/`x1`/etc. positional placeholders.
+    /// Returns null when the TypeId is not a signature payload or
+    /// when the payload index is out of bounds. The caller
+    /// (`allocSimpleTypeName`) gates on `interner.isSignature(t)`,
+    /// so the OOB guards are only defensive.
+    fn allocCallableSignatureName(self: *Checker, t: TypeId) CheckError!?[]const u8 {
+        if (t >= self.interner.pool.typeCount()) return null;
+        const sig_payload_idx = self.interner.pool.payloadOf(t);
+        if (sig_payload_idx >= self.interner.pool.signature_payloads.items.len) return null;
+        const sig = self.interner.pool.signature_payloads.items[sig_payload_idx];
+        const params = self.interner.signatureParams(t);
+        var sig_buf: std.ArrayListUnmanaged(u8) = .empty;
+        const arena = self.diag_arena.allocator();
+        if (sig.is_construct) try sig_buf.appendSlice(arena, "new ");
+        try sig_buf.append(arena, '(');
+        const recorded_names: ?[]const hir_mod.StringId = self.signature_param_names.get(t);
+        for (params, 0..) |p, i| {
+            if (i > 0) try sig_buf.appendSlice(arena, ", ");
+            const name_text: []const u8 = blk: {
+                if (recorded_names) |names| if (i < names.len) {
+                    break :blk self.string_interner.get(names[i]);
+                };
+                break :blk try std.fmt.allocPrint(arena, "x{d}", .{i});
+            };
+            try sig_buf.appendSlice(arena, name_text);
+            try sig_buf.appendSlice(arena, ": ");
+            if (try self.allocSimpleTypeName(p)) |pn| {
+                try sig_buf.appendSlice(arena, pn);
+            } else {
+                try sig_buf.appendSlice(arena, "any");
+            }
+        }
+        try sig_buf.appendSlice(arena, ") => ");
+        const ret = self.interner.signatureReturn(t) orelse types.Primitive.any;
+        if (try self.allocSimpleTypeName(ret)) |rn| {
+            try sig_buf.appendSlice(arena, rn);
+        } else {
+            try sig_buf.appendSlice(arena, "any");
+        }
+        return sig_buf.items;
+    }
+
     fn allocSimpleTypeName(self: *Checker, t: TypeId) !?[]const u8 {
         return switch (t) {
             types.Primitive.any => "any",
@@ -28948,40 +29030,18 @@ pub const Checker = struct {
                     if (int_buf.items.len == 0) break :blk null;
                     break :blk int_buf.items;
                 }
-                // Render bare construct signatures (`new () => string`)
-                // so TS2348 can include the type. Call signatures
-                // (`(x) => T`) are intentionally NOT rendered here:
-                // TS uses source-level parameter names like `(z: T)`,
-                // and the interner only carries types, so a synthetic
-                // rendering would mislead TS2322 prose where source
-                // and target both render to the same shape.
+                // Render call and construct signatures via the
+                // shared `allocCallableSignatureName` helper. The
+                // helper consults `signature_param_names` so we
+                // emit source-level parameter names (`(x: number)
+                // => void`) when available, matching upstream TS
+                // prose for fixtures like
+                // `stringLiteralTypesOverloadAssignability01`.
+                // Synthesized signatures (no recorded names) fall
+                // back to positional `xN` placeholders.
                 if (self.interner.isSignature(t)) {
-                    const sig_payload_idx = self.interner.pool.payloadOf(t);
-                    if (sig_payload_idx >= self.interner.pool.signature_payloads.items.len) break :blk null;
-                    const sig = self.interner.pool.signature_payloads.items[sig_payload_idx];
-                    if (!sig.is_construct) break :blk null;
-                    var sig_buf: std.ArrayListUnmanaged(u8) = .empty;
-                    const arena = self.diag_arena.allocator();
-                    try sig_buf.appendSlice(arena, "new (");
-                    const params = self.interner.signatureParams(t);
-                    for (params, 0..) |p, i| {
-                        if (i > 0) try sig_buf.appendSlice(arena, ", ");
-                        const idx_text = try std.fmt.allocPrint(arena, "x{d}: ", .{i});
-                        try sig_buf.appendSlice(arena, idx_text);
-                        if (try self.allocSimpleTypeName(p)) |pn| {
-                            try sig_buf.appendSlice(arena, pn);
-                        } else {
-                            try sig_buf.appendSlice(arena, "any");
-                        }
-                    }
-                    try sig_buf.appendSlice(arena, ") => ");
-                    const ret = self.interner.signatureReturn(t) orelse types.Primitive.any;
-                    if (try self.allocSimpleTypeName(ret)) |rn| {
-                        try sig_buf.appendSlice(arena, rn);
-                    } else {
-                        try sig_buf.appendSlice(arena, "any");
-                    }
-                    break :blk sig_buf.items;
+                    if (try self.allocCallableSignatureName(t)) |name| break :blk name;
+                    break :blk null;
                 }
                 if (flags.is_intersection) {
                     var intersection_buf: std.ArrayListUnmanaged(u8) = .empty;
@@ -29847,6 +29907,49 @@ pub const Checker = struct {
             min_required -= 1;
         }
         try self.signature_min_args.put(self.gpa, sig, min_required);
+    }
+
+    /// Capture source-level parameter names for a signature so the
+    /// diagnostic renderer can print `(x: T)` instead of `(x0: T)`.
+    /// `param_nodes` is the HIR child slice of `parameter` nodes
+    /// from a `fn_decl` / `fn_expr` / `arrow_fn` / `fn_type` /
+    /// `constructor_type`. Skips non-parameter and `this`-parameter
+    /// children (matching how `internSignature` is called: with the
+    /// `this`-less type list). Aborts the recording if any
+    /// parameter slot is a binding pattern (object/array
+    /// destructuring) — partial recording could leak misaligned
+    /// names into the renderer, and the positional `xN` fallback is
+    /// stable. Idempotent: re-recording frees the previous slice.
+    fn recordSignatureParamNames(self: *Checker, sig: TypeId, param_nodes: []const NodeId) CheckError!void {
+        if (param_nodes.len == 0) return;
+        var names: std.ArrayListUnmanaged(hir_mod.StringId) = .empty;
+        defer names.deinit(self.gpa);
+        try names.ensureTotalCapacity(self.gpa, param_nodes.len);
+        for (param_nodes) |p| {
+            if (self.hir.kindOf(p) != .parameter) continue;
+            if (self.isThisParameter(p)) continue;
+            const pp = hir_mod.parameterOf(self.hir, p);
+            if (pp.name == hir_mod.none_node_id) return;
+            if (self.hir.kindOf(pp.name) != .identifier) return;
+            const name_id = hir_mod.identifierOf(self.hir, pp.name).name;
+            try names.append(self.gpa, name_id);
+        }
+        if (names.items.len == 0) return;
+        const owned = names.toOwnedSlice(self.gpa) catch return error.OutOfMemory;
+        if (self.signature_param_names.fetchRemove(sig)) |old| self.gpa.free(old.value);
+        try self.signature_param_names.put(self.gpa, sig, owned);
+    }
+
+    /// Carry recorded parameter names from a donor signature to a
+    /// re-interned target signature. Used when only the return type
+    /// or constructor flag changes — the parameter list is
+    /// unchanged so the source names still apply.
+    fn copySignatureParamNames(self: *Checker, target_sig: TypeId, donor_sig: TypeId) CheckError!void {
+        if (target_sig == donor_sig) return;
+        const donor_names = self.signature_param_names.get(donor_sig) orelse return;
+        const dup = self.gpa.dupe(hir_mod.StringId, donor_names) catch return error.OutOfMemory;
+        if (self.signature_param_names.fetchRemove(target_sig)) |old| self.gpa.free(old.value);
+        try self.signature_param_names.put(self.gpa, target_sig, dup);
     }
 
     fn signatureMinRequiredArgs(self: *Checker, sig: TypeId, params: []const TypeId) usize {
