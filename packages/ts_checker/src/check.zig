@@ -3449,6 +3449,21 @@ pub const Checker = struct {
             .if_stmt => {
                 const i = hir_mod.ifOf(self.hir, node);
                 try self.scanExprForUsedBeforeAssign(i.cond, pending);
+                // Scan the else-branch with a clone of `pending` so
+                // a use-before-assignment inside `else { … }` still
+                // fires when the cond's type guard never asserts the
+                // variable. Skip scanning the then-branch — tsc
+                // treats the cond's reference (e.g. `isFoo(value)`)
+                // as having narrowed the operand for the then-branch
+                // flow, so re-firing TS2454 there double-counts.
+                // Branch-local assignments collapse via
+                // `removeDefinitelyAssignedAfterIf` below.
+                if (i.else_branch != hir_mod.none_node_id) {
+                    var else_pending: std.AutoHashMapUnmanaged(hir_mod.StringId, NodeId) = .empty;
+                    defer else_pending.deinit(self.gpa);
+                    try self.clonePendingAssignments(pending, &else_pending);
+                    try self.scanForUsedBeforeAssign(i.else_branch, &else_pending);
+                }
                 try self.removeDefinitelyAssignedAfterIf(i, pending);
             },
             .while_stmt => {
@@ -48587,3 +48602,58 @@ test "checker: missing qualified namespace root suggests sibling namespace" {
     }
     try T.expect(found);
 }
+
+// §6.A 2000-3000 ratchet — TS2552 spelling suggestions should be
+// case-insensitive (mirroring tsc's `getSpellingSuggestion`) and
+// should walk a built-in globals list. Pins
+// `parserS7.3_A1.1_T2` exact-baseline.
+test "checker: TS2552 case-insensitive suggestion for $ERROR -> Error" {
+    const s = try newSetup("$ERROR();");
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+    var saw = false;
+    for (s.checker.diagnostics.items) |d| {
+        if (d.code != TsCodes.cannot_find_name_did_you_mean) continue;
+        if (std.mem.indexOf(u8, d.message, "'$ERROR'") == null) continue;
+        if (std.mem.indexOf(u8, d.message, "'Error'") == null) continue;
+        saw = true;
+    }
+    try T.expect(saw);
+}
+
+// §6.A 2000-3000 ratchet — TS2552 must skip qualified-name lookups
+// (`Z.foo`, `M2.Point`) so we don't suggest the bare leaf as a typo.
+test "checker: TS2552 skips suggestion for qualified-name typo" {
+    const s = try newSetup(
+        \\function foo() {}
+        \\Z.foo();
+    );
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+    for (s.checker.diagnostics.items) |d| {
+        if (d.code != TsCodes.cannot_find_name_did_you_mean) continue;
+        try T.expect(std.mem.indexOf(u8, d.message, "Z.foo") == null);
+    }
+}
+
+// §6.A 2000-3000 ratchet — `import a = A` inside a namespace `B`
+// should make `a.Point` resolvable from `B`'s body. Without the
+// parent-walk in `qualifiedTypeRefRootNamespaceExists`, the
+// type-ref triggers a spurious TS2503.
+test "checker: import-equals alias inside namespace satisfies qualified type-ref" {
+    const s = try newSetup(
+        \\namespace A {
+        \\  export class Point { x: number = 0; y: number = 0; }
+        \\}
+        \\namespace B {
+        \\  import a = A;
+        \\  export function f(p: a.Point): a.Point { return p; }
+        \\}
+    );
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+    for (s.checker.diagnostics.items) |d| {
+        try T.expect(d.code != TsCodes.cannot_find_namespace);
+    }
+}
+
