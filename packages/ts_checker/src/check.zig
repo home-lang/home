@@ -8646,7 +8646,8 @@ pub const Checker = struct {
                             !self.computedKeyIsUnresolvedIdentifier(op.key) and
                             self.strict_flags.strict_property_initialization and
                             op.type_annotation != hir_mod.none_node_id and
-                            op.value == hir_mod.none_node_id)
+                            op.value == hir_mod.none_node_id and
+                            !self.classFieldHasOptionalToken(m))
                         {
                             const field_t = try self.lowererLowerWithTypeParams(op.type_annotation);
                             if (!self.typeExplicitlyIncludesUndefined(field_t)) {
@@ -11810,17 +11811,43 @@ pub const Checker = struct {
             null;
         switch (legacy) {
             .none => {
-                // Conservative override: only promote to
-                // `.implementation` when the external resolver finds
-                // an *implementation* file (`.js` / `.jsx` / `.mjs`
-                // / `.cjs`). A bare-`.d.ts` resolution is too
-                // aggressive — fixtures like
-                // `conditionalExportsResolutionFallbackNull` rely on
-                // tsc's `package.json` `exports` `import: null`
-                // veto, which our resolver does not yet honor for
-                // `types` fallback. Implementation files don't have
-                // that hazard since the legacy scan can already see
-                // `.js` files that the resolver finds.
+                // External-resolver outcomes drive classification when
+                // the legacy heuristic returned `.none` (typical for
+                // `runProgram`-routed compiles where `@filename:`
+                // markers aren't visible to the per-file checker):
+                //
+                //   - `.implementation` (`.js` / `.jsx` / `.mjs`
+                //     / `.cjs`): the import resolves but lacks a
+                //     declaration file. Surface TS7016 with the
+                //     resolved path when `noImplicitAny` is on, and
+                //     suppress the TS2307 fallback either way.
+                //
+                //   - `.declaration` (`.d.ts` / `.ts` / `.tsx` /
+                //     `.mts` / `.cts` and friends): the resolver
+                //     found a real typed entry point — typically
+                //     `package.json` `main`/`types`,
+                //     `typesVersions.*`, or `exports[".."]` (incl.
+                //     the `@types/<pkg>` mirror fallback). Honor it
+                //     so `untypedModuleImport_*_typesForPackageExist`,
+                //     `nestedPackageJsonRedirect`, `typesVersions.*`,
+                //     and friends stop firing TS2307.
+                //
+                //     The hazard is tsc's `package.json` `exports`
+                //     conditional `null` veto (`import: null` /
+                //     `require: null`) — `conditionalExportsResolutio`
+                //     `nFallbackNull` expects TS2307 even though our
+                //     resolver currently happily falls back to the
+                //     `types` field. As a check.zig-side proxy for
+                //     "the `import` (`.mts`) or `require` (`.cts`)
+                //     condition is unambiguously active for this
+                //     file and may be vetoed by an `exports` `null`",
+                //     we drop the resolver's `.declaration` outcome
+                //     when the importer is `.mts` or `.cts`. All
+                //     other importers (`.ts` / `.tsx` / `.js` /
+                //     `.jsx`) flow through, since the targeted
+                //     `typesVersions`/`nestedPackageJsonRedirect`/
+                //     `untypedModuleImport_*_typesForPackageExist`
+                //     fixtures all anchor to `.ts` importers.
                 if (external_opt) |external| switch (external.kind) {
                     .implementation => {
                         if (self.strict_flags.no_implicit_any) {
@@ -11828,7 +11855,10 @@ pub const Checker = struct {
                         }
                         return true;
                     },
-                    .declaration => {},
+                    .declaration => {
+                        if (self.importerHasConditionalExportsHazard()) return false;
+                        return true;
+                    },
                 };
                 return false;
             },
@@ -11883,6 +11913,27 @@ pub const Checker = struct {
             // gratuitously fire TS7016 against e.g. `.json` resolutions.
             .declaration;
         return .{ .kind = kind, .resolved_path = r.path };
+    }
+
+    /// Returns true when the active importer file's extension makes
+    /// it unambiguously ESM (`.mts`) or CJS (`.cts`), i.e. either
+    /// the `import` or `require` `package.json` `exports` condition
+    /// is guaranteed-active. Used to gate the resolver-side
+    /// `.declaration` outcome so that `conditionalExportsResolution`
+    /// `FallbackNull` (whose `import: null` veto our resolver does
+    /// not yet honor on the `types` fallback path) keeps its
+    /// expected TS2307. All other importer extensions (`.ts` /
+    /// `.tsx` / `.js` / `.jsx`) flow through, which is sufficient
+    /// for the targeted `typesVersions`/`nestedPackageJsonRedirect`
+    /// /`untypedModuleImport_*_typesForPackageExist` fixtures.
+    fn importerHasConditionalExportsHazard(self: *Checker) bool {
+        const importer = self.importer_path;
+        if (importer.len == 0) return false;
+        if (std.mem.endsWith(u8, importer, ".mts")) return true;
+        if (std.mem.endsWith(u8, importer, ".cts")) return true;
+        if (std.mem.endsWith(u8, importer, ".d.mts")) return true;
+        if (std.mem.endsWith(u8, importer, ".d.cts")) return true;
+        return false;
     }
 
     fn appendUntypedModuleDiagnostic(
