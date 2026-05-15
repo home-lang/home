@@ -8102,13 +8102,22 @@ pub const Checker = struct {
                     !(self.heritageAssignable(instance_t, target_t) catch true))
                 {
                     const child_str = self.string_interner.get(cid.name);
-                    const msg = try std.fmt.allocPrint(
-                        self.diag_arena.allocator(),
-                        "Class '{s}' incorrectly implements interface.",
-                        .{child_str},
-                    );
+                    const target_name = try self.allocImplementsTargetName(impl_node, target_t);
+                    const msg = if (target_name) |tn|
+                        try std.fmt.allocPrint(
+                            self.diag_arena.allocator(),
+                            "Class '{s}' incorrectly implements interface '{s}'.",
+                            .{ child_str, tn },
+                        )
+                    else
+                        try std.fmt.allocPrint(
+                            self.diag_arena.allocator(),
+                            "Class '{s}' incorrectly implements interface.",
+                            .{child_str},
+                        );
                     try self.diagnostics.append(self.gpa, .{
                         .node = node,
+                        .pos = self.classNameSpanStart(node),
                         .code = TsCodes.class_incorrectly_implements_interface,
                         .message = msg,
                     });
@@ -8345,13 +8354,22 @@ pub const Checker = struct {
                         !(self.heritageAssignable(instance_t, target_t) catch true))
                     {
                         const child_str = self.string_interner.get(cid.name);
-                        const msg = try std.fmt.allocPrint(
-                            self.diag_arena.allocator(),
-                            "Class '{s}' incorrectly implements interface.",
-                            .{child_str},
-                        );
+                        const target_name = try self.allocImplementsTargetName(impl_node, target_t);
+                        const msg = if (target_name) |tn|
+                            try std.fmt.allocPrint(
+                                self.diag_arena.allocator(),
+                                "Class '{s}' incorrectly implements interface '{s}'.",
+                                .{ child_str, tn },
+                            )
+                        else
+                            try std.fmt.allocPrint(
+                                self.diag_arena.allocator(),
+                                "Class '{s}' incorrectly implements interface.",
+                                .{child_str},
+                            );
                         try self.diagnostics.append(self.gpa, .{
                             .node = node,
+                            .pos = self.classNameSpanStart(node),
                             .code = TsCodes.class_incorrectly_implements_interface,
                             .message = msg,
                         });
@@ -8585,6 +8603,219 @@ pub const Checker = struct {
             .code = TsCodes.duplicate_identifier,
             .message = msg,
         });
+    }
+
+    /// Emit a TS2300 with a custom display string (e.g. `"a b"` for a
+    /// quoted-string key, `1.0` for a numeric key as it appears in
+    /// source). Used by `detectClassMemberDuplicates` so the message
+    /// mirrors tsc's "second occurrence's source text" baseline shape.
+    fn reportDuplicateIdentifierWithDisplay(
+        self: *Checker,
+        node: NodeId,
+        display: []const u8,
+    ) CheckError!void {
+        const msg = try std.fmt.allocPrint(
+            self.diag_arena.allocator(),
+            "Duplicate identifier '{s}'.",
+            .{display},
+        );
+        try self.diagnostics.append(self.gpa, .{
+            .node = node,
+            .code = TsCodes.duplicate_identifier,
+            .message = msg,
+        });
+    }
+
+    /// TS2300 — class-field duplicate-name detection.
+    ///
+    /// Walks each declared member, builds a (canonical_name, is_static)
+    /// → entries grouping, and emits TS2300 for collisions. Mirrors
+    /// tsc's binder: getter+setter pairs are not duplicates; static
+    /// and instance members live on different objects so they don't
+    /// collide; numeric literal keys with the same numeric value
+    /// collide regardless of formatting (`1` vs `1.0`); ECMA private
+    /// `#name` collisions are TS18007 not TS2300 and are skipped here.
+    /// Two methods with bodies are flagged elsewhere as TS2393.
+    ///
+    /// The display string in the message uses the second occurrence's
+    /// source key text (verbatim — `"a b"` keeps its quotes, `1.0`
+    /// keeps the trailing zero) so the rendered baseline matches
+    /// tsc's behavior for these fixtures.
+    fn detectClassMemberDuplicates(self: *Checker, members: []const NodeId) CheckError!void {
+        if (members.len < 2) return;
+
+        const Kind = enum { field, method, getter, setter };
+        const Entry = struct {
+            name_node: NodeId,
+            canonical: hir_mod.StringId,
+            display: []const u8,
+            is_static: bool,
+            kind: Kind,
+        };
+
+        var entries: std.ArrayListUnmanaged(Entry) = .empty;
+        defer entries.deinit(self.gpa);
+
+        for (members) |m| {
+            switch (self.hir.kindOf(m)) {
+                .fn_decl, .fn_expr, .arrow_fn => {
+                    const fn_p = hir_mod.fnDeclOf(self.hir, m);
+                    if (fn_p.flags.is_constructor) continue;
+                    const name_node = fn_p.name;
+                    if (name_node == hir_mod.none_node_id) continue;
+                    // Skip computed names — non-literal keys can't be
+                    // canonicalized for collision detection in v0.
+                    if (self.nodeIsBracketedComputedName(name_node)) continue;
+                    const canonical = (try self.classMemberCanonicalNameForKey(name_node)) orelse continue;
+                    if (self.memberNameIsEcmaPrivate(canonical)) continue;
+                    const display = self.classMemberDisplayTextForKey(name_node) orelse continue;
+                    const k: Kind = if (fn_p.flags.is_getter)
+                        .getter
+                    else if (fn_p.flags.is_setter)
+                        .setter
+                    else
+                        .method;
+                    try entries.append(self.gpa, .{
+                        .name_node = name_node,
+                        .canonical = canonical,
+                        .display = display,
+                        .is_static = fn_p.flags.is_static,
+                        .kind = k,
+                    });
+                },
+                .object_property => {
+                    const op = hir_mod.objectPropertyOf(self.hir, m);
+                    if (op.is_computed or
+                        self.nodeIsBracketedComputedName(op.key) or
+                        self.memberSourceLooksComputed(m)) continue;
+                    const canonical = (try self.classMemberCanonicalNameForKey(op.key)) orelse continue;
+                    if (self.memberNameIsEcmaPrivate(canonical)) continue;
+                    const display = self.classMemberDisplayTextForKey(op.key) orelse continue;
+                    const op_is_method = op.is_method or
+                        (op.value != hir_mod.none_node_id and
+                            (self.hir.kindOf(op.value) == .fn_decl or
+                                self.hir.kindOf(op.value) == .fn_expr or
+                                self.hir.kindOf(op.value) == .arrow_fn) and
+                            self.memberSourceLooksMethod(m));
+                    const k: Kind = if (op_is_method) .method else .field;
+                    try entries.append(self.gpa, .{
+                        .name_node = op.key,
+                        .canonical = canonical,
+                        .display = display,
+                        .is_static = op.is_static,
+                        .kind = k,
+                    });
+                },
+                else => {},
+            }
+        }
+
+        if (entries.items.len < 2) return;
+
+        // Walk groups by (canonical, is_static). For each group with
+        // count >= 2, decide whether to emit, and where, mirroring
+        // tsc's binder:
+        //  - getter+setter exact pair → no error
+        //  - all methods in a group → skip (TS2393 emits separately
+        //    for two implementations; overload signatures are valid)
+        //  - everything else → emit TS2300 once per group at the
+        //    SECOND occurrence's name node with that occurrence's
+        //    source key text (matches tsc's render shape for the
+        //    `stringNamedPropertyDuplicates` / `numericNamed*` and
+        //    `class { foo; foo; }`-style fixtures)
+        var processed: std.AutoHashMapUnmanaged(usize, void) = .empty;
+        defer processed.deinit(self.gpa);
+
+        var i: usize = 0;
+        while (i < entries.items.len) : (i += 1) {
+            if (processed.contains(i)) continue;
+            const a = entries.items[i];
+            // Collect indices in this (canonical, is_static) group.
+            var group_idx: std.ArrayListUnmanaged(usize) = .empty;
+            defer group_idx.deinit(self.gpa);
+            try group_idx.append(self.gpa, i);
+            var j: usize = i + 1;
+            while (j < entries.items.len) : (j += 1) {
+                if (processed.contains(j)) continue;
+                const b = entries.items[j];
+                if (b.canonical != a.canonical) continue;
+                if (b.is_static != a.is_static) continue;
+                try group_idx.append(self.gpa, j);
+            }
+            for (group_idx.items) |idx| try processed.put(self.gpa, idx, {});
+            if (group_idx.items.len < 2) continue;
+
+            // getter+setter exact pair: not a duplicate.
+            if (group_idx.items.len == 2) {
+                const e0 = entries.items[group_idx.items[0]];
+                const e1 = entries.items[group_idx.items[1]];
+                if ((e0.kind == .getter and e1.kind == .setter) or
+                    (e0.kind == .setter and e1.kind == .getter)) continue;
+            }
+
+            // All methods (no fields/accessors): defer to TS2393
+            // duplicate-implementation logic.
+            var all_methods = true;
+            for (group_idx.items) |idx| {
+                if (entries.items[idx].kind != .method) {
+                    all_methods = false;
+                    break;
+                }
+            }
+            if (all_methods) continue;
+
+            // Emit at the SECOND occurrence with that occurrence's
+            // display text. For groups of 3+ (e.g. field+getter+setter)
+            // we still emit just once at the second site — tsc's
+            // baselines for the targeted fixtures show one emit per
+            // duplicate group.
+            const second = entries.items[group_idx.items[1]];
+            try self.reportDuplicateIdentifierWithDisplay(second.name_node, second.display);
+        }
+    }
+
+    /// Canonical-name resolver for class-member key nodes used by
+    /// `detectClassMemberDuplicates`. Differs from
+    /// `classMemberNameFromPropertyKey` in that it normalizes numeric
+    /// literal keys to a single canonical string per numeric value
+    /// (so `1` and `1.0` collide).
+    fn classMemberCanonicalNameForKey(self: *Checker, key: NodeId) CheckError!?hir_mod.StringId {
+        if (key == hir_mod.none_node_id) return null;
+        return switch (self.hir.kindOf(key)) {
+            .identifier => hir_mod.identifierOf(self.hir, key).name,
+            .literal_string => hir_mod.literalStringOf(self.hir, key).value,
+            .literal_number => blk: {
+                const v = hir_mod.literalNumberOf(self.hir, key);
+                if (std.math.isNan(v)) break :blk null;
+                var buf: [64]u8 = undefined;
+                const text = if (v == @floor(v) and v >= -9007199254740991 and v <= 9007199254740991)
+                    std.fmt.bufPrint(&buf, "{d}", .{@as(i64, @intFromFloat(v))}) catch break :blk null
+                else
+                    std.fmt.bufPrint(&buf, "{d}", .{v}) catch break :blk null;
+                break :blk self.string_interner.intern(text) catch return error.OutOfMemory;
+            },
+            else => null,
+        };
+    }
+
+    /// Source-verbatim display text for a class-member key. Returns
+    /// the raw source slice for string literals (so quotes are kept
+    /// in the diagnostic message) and numeric literals (preserving
+    /// the original formatting like `1.0`). Identifier keys use the
+    /// interned name. Returned slice is borrowed from `self.source`
+    /// or the string interner — do not free.
+    fn classMemberDisplayTextForKey(self: *Checker, key: NodeId) ?[]const u8 {
+        if (key == hir_mod.none_node_id) return null;
+        return switch (self.hir.kindOf(key)) {
+            .identifier => self.string_interner.get(hir_mod.identifierOf(self.hir, key).name),
+            .literal_string, .literal_number => blk: {
+                const src = self.source orelse break :blk null;
+                const span = self.hir.spanOf(key);
+                if (span.end > src.len or span.start >= span.end) break :blk null;
+                break :blk src[span.start..span.end];
+            },
+            else => null,
+        };
     }
 
     /// TS2341: emit when `obj.name` reaches a member declared
@@ -20550,6 +20781,15 @@ pub const Checker = struct {
         }
         if (expected_this == types.Primitive.none) return;
         if (self.engine.isAssignableTo(types.Primitive.void_t, expected_this) catch false) return;
+        if (try self.allocSimpleTypeName(expected_this)) |this_name| {
+            const msg = try std.fmt.allocPrint(
+                self.diag_arena.allocator(),
+                "The 'this' context of type 'void' is not assignable to method's 'this' of type '{s}'.",
+                .{this_name},
+            );
+            try self.report(call_node, TsCodes.this_context_not_assignable, msg);
+            return;
+        }
         try self.report(call_node, TsCodes.this_context_not_assignable, "The 'this' context of type 'void' is not assignable to method's 'this' type.");
     }
 
@@ -23331,9 +23571,13 @@ pub const Checker = struct {
             }
         }
 
-        // Threshold: max(2, name.len/4). For very short names we
-        // still allow distance 2 — matches tsc.
-        const threshold: usize = @max(@as(usize, 2), name_str.len / 4);
+        // Threshold mirrors tsc's `getSpellingSuggestion`:
+        // `min(floor(name.length * 0.4), 4)`. For very short names
+        // (1-2 chars) the threshold collapses to 0 / 1 so we suppress
+        // suggestions like "Did you mean 'x'?" for `b` — matching
+        // baselines such as objectTypesIdentityWithCallSignatures3
+        // which expect bare TS2304 in that case.
+        const threshold: usize = @min((name_str.len * 4) / 10, @as(usize, 4));
         const has_suggestion = best.dist <= threshold and best.name.len > 0;
 
         const msg = if (has_suggestion)
@@ -24893,6 +25137,49 @@ pub const Checker = struct {
             return "{}";
         }
         return null;
+    }
+
+    /// Best-effort name for the target of an `implements` clause used by
+    /// TS2420 ("Class 'X' incorrectly implements interface ..."). Returns
+    /// the interface's declared name when one is recoverable; otherwise
+    /// null so the caller falls back to the bare diagnostic.
+    fn allocImplementsTargetName(self: *Checker, impl_node: NodeId, target_t: TypeId) !?[]const u8 {
+        if (try self.allocSimpleTypeName(target_t)) |name| return name;
+        // Try to recover the syntactic type-reference name (handles cases
+        // where the lowered type is opaque but the source spelled it out).
+        return self.implementsClauseSyntacticName(impl_node);
+    }
+
+    fn implementsClauseSyntacticName(self: *Checker, impl_node: NodeId) ?[]const u8 {
+        const src = self.source orelse return null;
+        const span = self.hir.spanOf(impl_node);
+        if (span.start >= span.end or span.end > src.len) return null;
+        const text = src[span.start..span.end];
+        // Trim to the leading identifier (stop at `<`, `.`, whitespace).
+        var end: usize = 0;
+        while (end < text.len) : (end += 1) {
+            const ch = text[end];
+            const is_ident = (ch == '_') or (ch == '$') or
+                (ch >= 'a' and ch <= 'z') or
+                (ch >= 'A' and ch <= 'Z') or
+                (end > 0 and ch >= '0' and ch <= '9');
+            if (!is_ident) break;
+        }
+        if (end == 0) return null;
+        return text[0..end];
+    }
+
+    /// Span start of the class identifier (`class X`) used as the
+    /// diagnostic position for TS2420 / TS2415, matching tsc which
+    /// reports against the class name rather than the `class` keyword.
+    fn classNameSpanStart(self: *Checker, class_node: NodeId) ?u32 {
+        if (self.hir.kindOf(class_node) != .class_decl and self.hir.kindOf(class_node) != .class_expr) {
+            return null;
+        }
+        const c = hir_mod.classOf(self.hir, class_node);
+        if (c.name == hir_mod.none_node_id) return null;
+        const sp = self.hir.spanOf(c.name);
+        return sp.start;
     }
 
     fn typeIsDefinitelyNonConstructable(self: *Checker, t: TypeId) bool {
@@ -26639,6 +26926,9 @@ pub const Checker = struct {
                 }
                 if (self.namedTypeForId(t)) |type_name| {
                     break :blk self.string_interner.get(type_name);
+                }
+                if (self.interner.typeParameterName(t)) |tp_name| {
+                    break :blk self.string_interner.get(tp_name);
                 }
                 if (t >= self.interner.pool.typeCount()) break :blk null;
                 const flags = self.interner.pool.flagsOf(t);
@@ -28494,8 +28784,8 @@ pub const Checker = struct {
 
     fn reportNoOverlapComparison(self: *Checker, node: NodeId, lhs: TypeId, rhs: TypeId) !void {
         const pos = self.adjustedComparisonDiagnosticPos(node);
-        if (try self.allocSimpleTypeName(lhs)) |lhs_name| {
-            if (try self.allocSimpleTypeName(rhs)) |rhs_name| {
+        if (try self.allocComparisonOperandName(lhs)) |lhs_name| {
+            if (try self.allocComparisonOperandName(rhs)) |rhs_name| {
                 const msg = try std.fmt.allocPrint(
                     self.diag_arena.allocator(),
                     "This comparison appears to be unintentional because the types '{s}' and '{s}' have no overlap.",
@@ -28506,6 +28796,27 @@ pub const Checker = struct {
             }
         }
         try self.reportAt(node, pos, TsCodes.no_overlap_comparison, "This comparison appears to be unintentional because the types have no overlap.");
+    }
+
+    /// Like `allocSimpleTypeName` but renders intersections as
+    /// `A & B & ...` so TS2367 can report `'T & number' and 'string'`.
+    /// Returns null when any constituent isn't nameable so callers
+    /// fall through to the bare diagnostic.
+    fn allocComparisonOperandName(self: *Checker, t: TypeId) !?[]const u8 {
+        if (try self.allocSimpleTypeName(t)) |n| return n;
+        if (t >= self.interner.pool.typeCount()) return null;
+        const flags = self.interner.pool.flagsOf(t);
+        if (!flags.is_intersection) return null;
+        const members = self.interner.intersectionMembers(t);
+        if (members.len == 0) return null;
+        var buf: std.ArrayListUnmanaged(u8) = .empty;
+        const arena = self.diag_arena.allocator();
+        for (members, 0..) |m, i| {
+            if (i > 0) try buf.appendSlice(arena, " & ");
+            const name = (try self.allocSimpleTypeName(m)) orelse return null;
+            try buf.appendSlice(arena, name);
+        }
+        return buf.items;
     }
 
     fn adjustedComparisonDiagnosticPos(self: *Checker, node: NodeId) ?u32 {
@@ -28540,18 +28851,65 @@ pub const Checker = struct {
                 if (self.namedTypeForId(t)) |type_name| {
                     break :blk self.string_interner.get(type_name);
                 }
+                if (self.interner.typeParameterName(t)) |tp_name| {
+                    break :blk self.string_interner.get(tp_name);
+                }
                 if (t >= self.interner.pool.typeCount()) break :blk null;
                 const flags = self.interner.pool.flagsOf(t);
-                // Render bare signatures (`new () => string`, `() => T`)
-                // so diagnostics like TS2348 can include the type.
+                // Render unions (`object | null | undefined`) so the
+                // exact-baseline ratchet can match upstream TS prose
+                // for assignability mismatches involving nullable
+                // union sources. Upstream TS prints non-nullish
+                // members first and pushes `null` / `undefined` to
+                // the tail; mirror that ordering.
+                if (flags.is_union) {
+                    var union_buf: std.ArrayListUnmanaged(u8) = .empty;
+                    const arena_u = self.diag_arena.allocator();
+                    var has_null = false;
+                    var has_undef = false;
+                    var first = true;
+                    for (self.interner.unionMembers(t)) |member| {
+                        if (member == types.Primitive.null_t) {
+                            has_null = true;
+                            continue;
+                        }
+                        if (member == types.Primitive.undefined_t) {
+                            has_undef = true;
+                            continue;
+                        }
+                        const member_name = (try self.allocSimpleTypeName(member)) orelse break :blk null;
+                        if (!first) try union_buf.appendSlice(arena_u, " | ");
+                        first = false;
+                        try union_buf.appendSlice(arena_u, member_name);
+                    }
+                    if (has_null) {
+                        if (!first) try union_buf.appendSlice(arena_u, " | ");
+                        first = false;
+                        try union_buf.appendSlice(arena_u, "null");
+                    }
+                    if (has_undef) {
+                        if (!first) try union_buf.appendSlice(arena_u, " | ");
+                        first = false;
+                        try union_buf.appendSlice(arena_u, "undefined");
+                    }
+                    if (union_buf.items.len == 0) break :blk null;
+                    break :blk union_buf.items;
+                }
+                // Render bare construct signatures (`new () => string`)
+                // so TS2348 can include the type. Call signatures
+                // (`(x) => T`) are intentionally NOT rendered here:
+                // TS uses source-level parameter names like `(z: T)`,
+                // and the interner only carries types, so a synthetic
+                // rendering would mislead TS2322 prose where source
+                // and target both render to the same shape.
                 if (self.interner.isSignature(t)) {
                     const sig_payload_idx = self.interner.pool.payloadOf(t);
                     if (sig_payload_idx >= self.interner.pool.signature_payloads.items.len) break :blk null;
                     const sig = self.interner.pool.signature_payloads.items[sig_payload_idx];
+                    if (!sig.is_construct) break :blk null;
                     var sig_buf: std.ArrayListUnmanaged(u8) = .empty;
                     const arena = self.diag_arena.allocator();
-                    if (sig.is_construct) try sig_buf.appendSlice(arena, "new ");
-                    try sig_buf.append(arena, '(');
+                    try sig_buf.appendSlice(arena, "new (");
                     const params = self.interner.signatureParams(t);
                     for (params, 0..) |p, i| {
                         if (i > 0) try sig_buf.appendSlice(arena, ", ");
