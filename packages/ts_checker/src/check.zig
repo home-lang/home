@@ -149,6 +149,7 @@ pub const TsCodes = struct {
     pub const arithmetic_left_operand_type: u32 = 2362;
     pub const arithmetic_right_operand_type: u32 = 2363;
     pub const rest_parameter_must_be_array_type: u32 = 2370;
+    pub const accessors_cannot_declare_this: u32 = 2784;
     pub const parameter_initializer_implementation_only: u32 = 2371;
     pub const parameter_cannot_reference_self: u32 = 2372;
     pub const parameter_cannot_reference_later: u32 = 2373;
@@ -5263,7 +5264,14 @@ pub const Checker = struct {
             if (self.interner.objectNumberIndex(container_t) != types.Primitive.none and self.isNumericStringId(key_name)) continue;
             if (ep.default_value != hir_mod.none_node_id) continue;
             const name_str = self.string_interner.get(key_name);
-            const msg = if (try self.allocPropertyMissingTargetTypeName(container_t)) |target_text|
+            // Upstream tsc widens `object` to `{}` when reporting
+            // missing-property destructuring binding errors — mirrors
+            // `nonPrimitiveAccessProperty.ts(5,7)`.
+            const target_text_opt: ?[]const u8 = if (container_t == types.Primitive.object_t)
+                "{}"
+            else
+                try self.allocPropertyMissingTargetTypeName(container_t);
+            const msg = if (target_text_opt) |target_text|
                 try std.fmt.allocPrint(
                     self.diag_arena.allocator(),
                     "Property '{s}' does not exist on type '{s}'.",
@@ -5381,7 +5389,14 @@ pub const Checker = struct {
             if (!self.objectBindingElementUsesImplicitKey(e, ep.name)) continue;
             const id = hir_mod.identifierOf(self.hir, ep.name);
             const name_str = self.string_interner.get(id.name);
-            const msg = if (try self.allocPropertyMissingTargetTypeName(container_t)) |target_text|
+            // Upstream tsc widens `object` to `{}` when reporting
+            // missing-property destructuring binding errors — mirrors
+            // `nonPrimitiveAccessProperty.ts(5,7)`.
+            const target_text_opt: ?[]const u8 = if (container_t == types.Primitive.object_t)
+                "{}"
+            else
+                try self.allocPropertyMissingTargetTypeName(container_t);
+            const msg = if (target_text_opt) |target_text|
                 try std.fmt.allocPrint(
                     self.diag_arena.allocator(),
                     "Property '{s}' does not exist on type '{s}'.",
@@ -7332,6 +7347,13 @@ pub const Checker = struct {
             }
             if (is_this_param and param_index != 0) {
                 try self.report(p, TsCodes.this_parameter_must_be_first, "A 'this' parameter must be the first parameter.");
+            }
+            // TS2784 — `get x(this: T): U {}` / `set x(this: T,
+            // value: V) {}` are forbidden. Mirrors upstream
+            // `thisTypeInAccessors.ts(8,11)`. Fire on the `this`
+            // parameter node itself so the column matches.
+            if (is_this_param and (f.flags.is_getter or f.flags.is_setter)) {
+                try self.report(p, TsCodes.accessors_cannot_declare_this, "'get' and 'set' accessors cannot declare 'this' parameters.");
             }
             if (pp.flags.is_rest and !is_this_param) has_rest_param = true;
             const has_anno = pp.type_annotation != hir_mod.none_node_id;
@@ -13989,15 +14011,15 @@ pub const Checker = struct {
             if (ta.name != hir_mod.none_node_id and self.hir.kindOf(ta.name) == .identifier) {
                 const id = hir_mod.identifierOf(self.hir, ta.name);
                 if (self.typeAliasCircularTypeofVarDecl(ta.aliased, id.name)) |var_decl| {
-                    try self.reportSelfReferencedTypeAnnotation(var_decl);
-                    try self.report(node, TsCodes.type_alias_circular, "Type alias circularly references itself.");
+                    try self.reportSelfReferencedTypeAnnotationAtName(var_decl);
+                    try self.reportTypeAliasCircular(ta.name, id.name);
                     self.hir.setType(node, types.Primitive.any);
                     try self.type_names.put(self.gpa, id.name, types.Primitive.any);
                     self.hir.setType(ta.name, types.Primitive.any);
                     return;
                 }
                 if (self.typeAliasHasDirectCircularDependency(ta.aliased, id.name, id.name, 0)) {
-                    try self.report(node, TsCodes.type_alias_circular, "Type alias circularly references itself.");
+                    try self.reportTypeAliasCircular(ta.name, id.name);
                     self.hir.setType(node, types.Primitive.any);
                     try self.type_names.put(self.gpa, id.name, types.Primitive.any);
                     self.hir.setType(ta.name, types.Primitive.any);
@@ -14139,6 +14161,25 @@ pub const Checker = struct {
         try self.diagnostics.append(self.gpa, .{
             .node = v.name,
             .code = TsCodes.self_referenced_type_annotation,
+            .message = msg,
+        });
+    }
+
+    /// TS2456 — emit `Type alias '<name>' circularly references
+    /// itself.` (with the alias name) and anchor at the alias's
+    /// identifier so the column matches upstream tsc baselines
+    /// (e.g. `circularTypeofWithVarOrFunc.ts(1,6)`). Falls back to
+    /// the bare-message form when no name is available.
+    fn reportTypeAliasCircular(self: *Checker, name_node: NodeId, name_id: hir_mod.StringId) CheckError!void {
+        const name_str = self.string_interner.get(name_id);
+        const msg = try std.fmt.allocPrint(
+            self.diag_arena.allocator(),
+            "Type alias '{s}' circularly references itself.",
+            .{name_str},
+        );
+        try self.diagnostics.append(self.gpa, .{
+            .node = name_node,
+            .code = TsCodes.type_alias_circular,
             .message = msg,
         });
     }
@@ -18479,35 +18520,6 @@ pub const Checker = struct {
         return false;
     }
 
-    /// Render an array-literal expression as a fixed-width tuple
-    /// type name (`[A, B, C]`). Each element's type is rendered via
-    /// `allocSimpleTypeName`; unrenderable elements bail the whole
-    /// thing so callers fall back to a generic phrasing. Used by
-    /// the assignment-expression TS2322 path so the prose matches
-    /// upstream — fixtures `wideningTuples3.ts(3,9)`,
-    /// `wideningTuples4.ts(3,9)`.
-    fn allocArrayLiteralAsTupleName(self: *Checker, node: NodeId) !?[]const u8 {
-        if (node == hir_mod.none_node_id) return null;
-        if (self.hir.kindOf(node) != .array_literal) return null;
-        const elements = hir_mod.arrayLiteralElements(self.hir, node);
-        var buf: std.ArrayListUnmanaged(u8) = .empty;
-        const arena = self.diag_arena.allocator();
-        try buf.append(arena, '[');
-        for (elements, 0..) |el, i| {
-            if (i > 0) try buf.appendSlice(arena, ", ");
-            if (el == hir_mod.none_node_id) {
-                try buf.appendSlice(arena, "any");
-                continue;
-            }
-            if (self.hir.kindOf(el) == .spread) return null;
-            const el_t = self.hir.typeOf(el);
-            const name = (try self.allocSimpleTypeName(el_t)) orelse return null;
-            try buf.appendSlice(arena, name);
-        }
-        try buf.append(arena, ']');
-        return buf.items;
-    }
-
     /// Predicate: in an ambient context (`.d.ts` or `declare`),
     /// `const` declarations may carry a constant-value initializer
     /// (literals, `-N`/`+N` numeric literals). Mirrors upstream
@@ -19812,7 +19824,6 @@ pub const Checker = struct {
                 if (a.op == null and self.hir.kindOf(a.target) == .object_literal) {
                     try self.checkObjectDestructuringAssignment(a.target, value_t, a.value);
                 }
-                var array_tuple_mismatch_emitted = false;
                 if (a.op == null and
                     self.hir.kindOf(a.value) == .array_literal and
                     target_t != types.Primitive.none and
@@ -19821,31 +19832,12 @@ pub const Checker = struct {
                     self.isTupleShapedTarget(target_t) and
                     !(try self.checkArrayLiteralAgainstTuple(a.value, target_t)))
                 {
-                    // Render the array literal as `[A, B, ...]` and the
-                    // target tuple via `allocSimpleTypeName` so the
-                    // TS2322 prose mirrors upstream tsc — fixtures
-                    // `wideningTuples3.ts(3,9)`, `wideningTuples4.ts(3,9)`.
-                    if (try self.allocArrayLiteralAsTupleName(a.value)) |source_name| {
-                        if (try self.allocSimpleTypeName(target_t)) |target_name| {
-                            const msg = try std.fmt.allocPrint(
-                                self.diag_arena.allocator(),
-                                "Type '{s}' is not assignable to type '{s}'.",
-                                .{ source_name, target_name },
-                            );
-                            try self.report(node, TsCodes.type_not_assignable, msg);
-                        } else {
-                            try self.report(node, TsCodes.type_not_assignable, "Type is not assignable to target type.");
-                        }
-                    } else {
-                        try self.report(node, TsCodes.type_not_assignable, "Type is not assignable to target type.");
-                    }
-                    array_tuple_mismatch_emitted = true;
+                    try self.report(node, TsCodes.type_not_assignable, "Type is not assignable to target type.");
                 }
                 if (!target_is_destructuring and !target_is_untyped_uninitialized_var and a.op == null and self.classPrivateStructuralMismatch(target_t, value_t)) {
                     try self.report(node, TsCodes.type_not_assignable, "Type is not assignable to declared type.");
                 }
                 if (!target_is_destructuring and !target_is_untyped_uninitialized_var and a.op == null and
-                    !array_tuple_mismatch_emitted and
                     target_t != types.Primitive.none and
                     target_t != types.Primitive.any and
                     target_t != types.Primitive.unknown)
@@ -20316,6 +20308,24 @@ pub const Checker = struct {
                             // to the structured signature renderer so
                             // TS2348 prose carries the type shape.
                             rendered_name = try self.allocCallableSignatureName(callee_t);
+                        }
+                        // Object types whose only relevant member is a
+                        // single `__construct` signature render via
+                        // `allocCallableSignatureName` against the
+                        // signature member — mirrors upstream
+                        // `arrayTypeOfFunctionTypes2.ts(16,11)`.
+                        if (rendered_name == null and
+                            callee_t < self.interner.pool.typeCount() and
+                            self.interner.pool.flagsOf(callee_t).is_object_type)
+                        {
+                            const obj_members = self.interner.objectMembers(callee_t);
+                            if (obj_members.len == 1) {
+                                if (self.string_interner.intern("__construct")) |ctor_id| {
+                                    if (obj_members[0].name == ctor_id and self.interner.isSignature(obj_members[0].type)) {
+                                        rendered_name = try self.allocCallableSignatureName(obj_members[0].type);
+                                    }
+                                } else |_| {}
+                            }
                         }
                         if (rendered_name == null) {
                             var sit = self.class_static_types.iterator();
@@ -22622,12 +22632,30 @@ pub const Checker = struct {
         defer call_sigs.deinit(self.gpa);
         try self.collectCallSignatures(callee_t, &call_sigs);
         var saw_this_param = false;
+        var first_this_t: TypeId = types.Primitive.none;
         for (call_sigs.items) |sig| {
             const this_t = self.signature_this_params.get(sig) orelse continue;
             saw_this_param = true;
+            if (first_this_t == types.Primitive.none) first_this_t = this_t;
             if (self.engine.isAssignableTo(receiver_t, this_t) catch false) return;
         }
         if (saw_this_param) {
+            // Mirror upstream tsc: when both the receiver type and the
+            // method's `this` type render, emit TS2684 with the full
+            // form `The 'this' context of type 'A' is not assignable
+            // to method's 'this' of type 'B'.` Otherwise fall back to
+            // the bare wording.
+            if (try self.allocSimpleTypeName(receiver_t)) |source_name| {
+                if (try self.allocSimpleTypeName(first_this_t)) |target_name| {
+                    const msg = try std.fmt.allocPrint(
+                        self.diag_arena.allocator(),
+                        "The 'this' context of type '{s}' is not assignable to method's 'this' of type '{s}'.",
+                        .{ source_name, target_name },
+                    );
+                    try self.report(call_node, TsCodes.this_context_not_assignable, msg);
+                    return;
+                }
+            }
             try self.report(call_node, TsCodes.argument_type_mismatch, "The 'this' context is not assignable to method's 'this' type.");
         }
     }
@@ -38472,7 +38500,15 @@ test "checker: union receiver method checks explicit this parameter" {
     try s.checker.checkSourceFile(s.root);
     var found = false;
     for (s.checker.diagnostics.items) |d| {
-        if (d.code == TsCodes.argument_type_mismatch) found = true;
+        // TS2684 ("The 'this' context of type ...") is the
+        // upstream-correct code; TS2345 ("Argument of type ...") is
+        // the legacy fallback when receiver / target this types
+        // can't be rendered. Either one satisfies the parity test.
+        if (d.code == TsCodes.argument_type_mismatch or
+            d.code == TsCodes.this_context_not_assignable)
+        {
+            found = true;
+        }
     }
     try T.expect(found);
 }
@@ -46031,6 +46067,176 @@ test "checker: rest tuple parameter rejects object constructor argument" {
         if (d.code == TsCodes.argument_type_mismatch) found = true;
     }
     try T.expect(found);
+}
+
+test "checker: TS2370 — rest parameter with primitive annotation" {
+    const s = try newSetup("function foo(...x: string) { }");
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+    var found = false;
+    for (s.checker.diagnostics.items) |d| {
+        if (d.code == TsCodes.rest_parameter_must_be_array_type) found = true;
+    }
+    try T.expect(found);
+}
+
+test "checker: TS2370 — rest parameter accepts T[] annotation" {
+    const s = try newSetup("function foo(...x: number[]) { }");
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+    for (s.checker.diagnostics.items) |d| {
+        try T.expect(d.code != TsCodes.rest_parameter_must_be_array_type);
+    }
+}
+
+test "checker: TS2370 — rest parameter accepts tuple annotation" {
+    const s = try newSetup("function foo(...x: [string, number]) { }");
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+    for (s.checker.diagnostics.items) |d| {
+        try T.expect(d.code != TsCodes.rest_parameter_must_be_array_type);
+    }
+}
+
+test "checker: TS2370 — class method rest parameter with class-type annotation" {
+    const s = try newSetup(
+        \\class C {
+        \\  foo(...x: C) { }
+        \\}
+    );
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+    var found = false;
+    for (s.checker.diagnostics.items) |d| {
+        if (d.code == TsCodes.rest_parameter_must_be_array_type) found = true;
+    }
+    try T.expect(found);
+}
+
+test "checker: TS2370 — interface call signature rest parameter" {
+    const s = try newSetup(
+        \\interface I {
+        \\  (...x: string): void;
+        \\}
+    );
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+    var found = false;
+    for (s.checker.diagnostics.items) |d| {
+        if (d.code == TsCodes.rest_parameter_must_be_array_type) found = true;
+    }
+    try T.expect(found);
+}
+
+test "checker: TS2502 — direct typeof self-reference in var annotation" {
+    const s = try newSetup("var c: typeof c;");
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+    var found = false;
+    for (s.checker.diagnostics.items) |d| {
+        if (d.code == TsCodes.self_referenced_type_annotation) found = true;
+    }
+    try T.expect(found);
+}
+
+test "checker: TS2502 — typeof self-reference inside Array<>" {
+    const s = try newSetup(
+        \\interface Foo<T> { }
+        \\var f: Foo<typeof f>;
+    );
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+    var found = false;
+    for (s.checker.diagnostics.items) |d| {
+        if (d.code == TsCodes.self_referenced_type_annotation) found = true;
+    }
+    try T.expect(found);
+}
+
+test "checker: TS2502 — typeof self-reference inside array type" {
+    const s = try newSetup(
+        \\interface Foo<T> { }
+        \\var f3: Foo<typeof f3>[];
+    );
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+    var found = false;
+    for (s.checker.diagnostics.items) |d| {
+        if (d.code == TsCodes.self_referenced_type_annotation) found = true;
+    }
+    try T.expect(found);
+}
+
+test "checker: TS2502 — independent vars don't false-positive" {
+    const s = try newSetup(
+        \\var x: number = 1;
+        \\var y: typeof x;
+    );
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+    for (s.checker.diagnostics.items) |d| {
+        try T.expect(d.code != TsCodes.self_referenced_type_annotation);
+    }
+}
+
+test "checker: TS2784 — get accessor with this parameter is rejected" {
+    const s = try newSetup(
+        \\class C {
+        \\  _x: number = 0;
+        \\  get x(this: C): number { return this._x; }
+        \\}
+    );
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+    var found = false;
+    for (s.checker.diagnostics.items) |d| {
+        if (d.code == TsCodes.accessors_cannot_declare_this) found = true;
+    }
+    try T.expect(found);
+}
+
+test "checker: TS2784 — set accessor with this parameter is rejected" {
+    const s = try newSetup(
+        \\class C {
+        \\  _x: number = 0;
+        \\  set x(this: C, value: number) { this._x = value; }
+        \\}
+    );
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+    var found = false;
+    for (s.checker.diagnostics.items) |d| {
+        if (d.code == TsCodes.accessors_cannot_declare_this) found = true;
+    }
+    try T.expect(found);
+}
+
+test "checker: TS2784 — regular method with this parameter is fine" {
+    const s = try newSetup(
+        \\class C {
+        \\  foo(this: C, x: number) { return x; }
+        \\}
+    );
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+    for (s.checker.diagnostics.items) |d| {
+        try T.expect(d.code != TsCodes.accessors_cannot_declare_this);
+    }
+}
+
+test "checker: TS2456 — recursive alias message includes alias name" {
+    const s = try newSetup("type A = A;");
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+    var found_named = false;
+    for (s.checker.diagnostics.items) |d| {
+        if (d.code == TsCodes.type_alias_circular and
+            std.mem.indexOf(u8, d.message, "'A'") != null)
+        {
+            found_named = true;
+        }
+    }
+    try T.expect(found_named);
 }
 
 test "checker: array binding pattern requires iterable initializer" {
