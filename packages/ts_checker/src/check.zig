@@ -5660,6 +5660,8 @@ pub const Checker = struct {
                 .array_literal,
                 .as_expr,
                 .satisfies_expr,
+                .logical_op,
+                .conditional,
                 => continue,
                 else => return false,
             }
@@ -19564,6 +19566,22 @@ pub const Checker = struct {
                     ok = self.objectLiteralAssignableToTarget(a.expr, inner_t, target_t) catch false;
                 }
                 if (!ok) {
+                    // Prefer tsc's render shape:
+                    // `Type 'X' does not satisfy the expected type 'Y'.`
+                    // Fall back to the generic constraint wording when
+                    // we can't render either side as a simple name
+                    // (matches the existing baseline shape).
+                    if (try self.allocSimpleTypeName(inner_t)) |src_name| {
+                        if (try self.allocSimpleTypeName(target_t)) |dst_name| {
+                            const msg = try std.fmt.allocPrint(
+                                self.diag_arena.allocator(),
+                                "Type '{s}' does not satisfy the expected type '{s}'.",
+                                .{ src_name, dst_name },
+                            );
+                            try self.report(node, TsCodes.satisfies_constraint, msg);
+                            break :blk inner_t;
+                        }
+                    }
                     try self.report(node, TsCodes.satisfies_constraint, "Type does not satisfy the expected constraint.");
                 }
                 break :blk inner_t;
@@ -19694,7 +19712,14 @@ pub const Checker = struct {
                             if (source_is_class_instance and (m.is_method or m.is_readonly)) continue;
                             if (!m.is_optional) {
                                 if (explicit_props.get(m.name)) |prop_node| {
-                                    try self.report(prop_node, TsCodes.jsx_attribute_overwritten, "Property is specified more than once, so this usage will be overwritten.");
+                                    const prop_name = self.string_interner.get(m.name);
+                                    const msg = std.fmt.allocPrint(
+                                        self.gpa,
+                                        "'{s}' is specified more than once, so this usage will be overwritten.",
+                                        .{prop_name},
+                                    ) catch return error.OutOfMemory;
+                                    defer self.gpa.free(msg);
+                                    try self.report(prop_node, TsCodes.jsx_attribute_overwritten, msg);
                                 }
                             }
                             try upsert_spread(self, &members, m);
@@ -22164,13 +22189,60 @@ pub const Checker = struct {
         if (b.op == .instanceof and self.hir.kindOf(b.lhs) == .identifier) {
             const id = hir_mod.identifierOf(self.hir, b.lhs);
             var target: TypeId = types.Primitive.object_t;
+            var rhs_is_array = false;
             if (self.hir.kindOf(b.rhs) == .identifier) {
                 const rhs_id = hir_mod.identifierOf(self.hir, b.rhs);
                 if (self.class_instance_types.get(rhs_id.name)) |inst| {
                     target = inst;
+                } else {
+                    const rhs_name = self.string_interner.get(rhs_id.name);
+                    if (std.mem.eql(u8, rhs_name, "Array") or std.mem.eql(u8, rhs_name, "ReadonlyArray")) {
+                        rhs_is_array = true;
+                    }
                 }
             }
             const current = self.lookupNarrow(id.name) orelse self.typeOfIdentifier(b.lhs);
+            // `x instanceof Array` — narrow union to its array
+            // constituents (and the false branch keeps non-array
+            // constituents). Falls through to the object-predicate
+            // path when no array constituents are present so the
+            // existing partitioning behavior applies.
+            if (rhs_is_array) {
+                const cur_flags = self.interner.pool.flagsOf(current);
+                if (cur_flags.is_union) {
+                    var kept: std.ArrayListUnmanaged(TypeId) = .empty;
+                    defer kept.deinit(self.gpa);
+                    var subtracted: std.ArrayListUnmanaged(TypeId) = .empty;
+                    defer subtracted.deinit(self.gpa);
+                    for (self.interner.unionMembers(current)) |member| {
+                        const elem = self.interner.objectNumberIndex(member);
+                        if (elem != types.Primitive.none) {
+                            try kept.append(self.gpa, member);
+                        } else {
+                            try subtracted.append(self.gpa, member);
+                        }
+                    }
+                    if (when_true and kept.items.len > 0) {
+                        const narrowed = if (kept.items.len == 1)
+                            kept.items[0]
+                        else
+                            self.interner.internUnion(kept.items) catch current;
+                        try self.recordNarrow(id.name, narrowed);
+                        return;
+                    } else if (!when_true and subtracted.items.len > 0 and kept.items.len > 0) {
+                        const narrowed = if (subtracted.items.len == 1)
+                            subtracted.items[0]
+                        else
+                            self.interner.internUnion(subtracted.items) catch current;
+                        try self.recordNarrow(id.name, narrowed);
+                        return;
+                    }
+                } else if (when_true and self.interner.objectNumberIndex(current) != types.Primitive.none) {
+                    // Already an array — keep as-is.
+                    try self.recordNarrow(id.name, current);
+                    return;
+                }
+            }
             if (when_true) {
                 const narrowed = self.narrowTypeByPredicate(current, target) catch target;
                 try self.recordNarrow(id.name, narrowed);
@@ -29563,15 +29635,13 @@ pub const Checker = struct {
     }
 
     /// TS2741 — single-required-property gap. Returns true and emits
-    /// the diagnostic when:
-    ///   * `value_node` is an empty object literal `{}` (or its
-    ///     widened source type is `{}` with no members), and
-    ///   * `target` is an object type with exactly one required
-    ///     non-method member that the source lacks.
-    /// Otherwise returns false so callers fall through to the
-    /// generic TS2322 / TS2739 paths. Mirrors tsc's preference for
-    /// the more-specific TS2741 wording over TS2322 in this case
-    /// (matches `renamed.ts`, `exportSpecifiers_js.ts`, etc.).
+    /// the diagnostic when the source object type is missing exactly
+    /// one of `target`'s required non-method members. Mirrors tsc's
+    /// preference for the more-specific TS2741 wording over TS2322
+    /// — matches `renamed.ts`, `exportSpecifiers_js.ts`,
+    /// `objectSpreadNegative.ts`, `assignmentCompatWithEnumIndexer.ts`
+    /// and the union-of-objects family. Otherwise returns false so
+    /// callers fall through to the generic TS2322 path.
     fn tryReportSinglePropertyMissing(
         self: *Checker,
         diag_node: NodeId,
@@ -29586,43 +29656,65 @@ pub const Checker = struct {
         }
         if (target >= self.interner.pool.typeCount()) return false;
         if (!self.interner.pool.flagsOf(target).is_object_type) return false;
+        if (source == types.Primitive.any or source == types.Primitive.unknown or
+            source == types.Primitive.none)
+        {
+            return false;
+        }
 
-        // Source side: only fire when the value is a literal `{}`
-        // with no own properties (matches the `{}` shape tsc uses).
-        const source_is_empty_literal = blk: {
+        // Source-side gate: either the value is a literal object
+        // (empty or otherwise) OR the resolved source is an object
+        // type whose members we can enumerate. tsc fires TS2741 in
+        // both the empty-source case (`{}` flowing into `{ x: T }`)
+        // and the partial-source case (`{ s: string }` into
+        // `{ b: boolean; s: string }`); we mirror that.
+        const source_is_object_shaped = blk: {
             if (value_node != hir_mod.none_node_id and
-                self.hir.kindOf(value_node) == .object_literal and
-                hir_mod.objectLiteralProps(self.hir, value_node).len == 0)
+                self.hir.kindOf(value_node) == .object_literal)
             {
                 break :blk true;
             }
             if (source < self.interner.pool.typeCount() and
-                self.interner.pool.flagsOf(source).is_object_type and
-                self.interner.objectMembers(source).len == 0)
+                self.interner.pool.flagsOf(source).is_object_type)
             {
                 break :blk true;
             }
             break :blk false;
         };
-        if (!source_is_empty_literal) return false;
+        if (!source_is_object_shaped) return false;
 
-        // Find the first required (non-optional, non-method) member
-        // and only report when there's exactly one such member —
-        // otherwise tsc prefers TS2739 (multi-property variant).
-        const members = self.interner.objectMembers(target);
-        var required_count: usize = 0;
-        var first_required_name: hir_mod.StringId = 0;
-        for (members) |m| {
-            if (m.is_optional or m.is_method) continue;
-            required_count += 1;
-            if (required_count == 1) first_required_name = m.name;
-            if (required_count > 1) break;
+        // Find required (non-optional, non-method) target members the
+        // source lacks. Only fire when there's exactly one such
+        // missing member — for two or more, tsc switches to the
+        // multi-property TS2739 wording.
+        const target_members = self.interner.objectMembers(target);
+        const source_members = if (source < self.interner.pool.typeCount() and
+            self.interner.pool.flagsOf(source).is_object_type)
+            self.interner.objectMembers(source)
+        else
+            &[_]types.ObjectMember{};
+
+        var missing_count: usize = 0;
+        var first_missing_name: hir_mod.StringId = 0;
+        for (target_members) |tm| {
+            if (tm.is_optional or tm.is_method) continue;
+            var found = false;
+            for (source_members) |sm| {
+                if (sm.name == tm.name) {
+                    found = true;
+                    break;
+                }
+            }
+            if (found) continue;
+            missing_count += 1;
+            if (missing_count == 1) first_missing_name = tm.name;
+            if (missing_count > 1) break;
         }
-        if (required_count != 1) return false;
+        if (missing_count != 1) return false;
 
         const target_name = (try self.allocSimpleTypeName(target)) orelse return false;
         const source_name = (try self.allocSimpleTypeName(source)) orelse "{}";
-        const prop_text = self.string_interner.get(first_required_name);
+        const prop_text = self.string_interner.get(first_missing_name);
         const msg = try std.fmt.allocPrint(
             self.diag_arena.allocator(),
             "Property '{s}' is missing in type '{s}' but required in type '{s}'.",
