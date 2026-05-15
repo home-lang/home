@@ -6133,7 +6133,38 @@ pub const Parser = struct {
             },
             .plus_plus, .minus_minus => {
                 _ = self.advance();
+                if (self.peek().kind == .plus_plus or self.peek().kind == .minus_minus) {
+                    const bad = self.advance();
+                    try self.reportCodeAt(bad.span.start, bad.line, 1109, "Expression expected.");
+                    if (self.peek().kind == .semicolon or
+                        self.peek().kind == .close_paren or
+                        self.peek().kind == .close_bracket or
+                        self.peek().kind == .close_brace or
+                        self.peek().kind == .comma or
+                        self.peek().kind == .eof)
+                    {
+                        const one = try self.builder.addLiteralNumber(tokenSpan(bad), 1);
+                        return one;
+                    }
+                }
+                if (self.peek().kind == .kw_delete) {
+                    const bad = self.peek();
+                    try self.reportCodeAt(bad.span.start, bad.line, 1109, "Expression expected.");
+                    return try self.parseUnaryExpression();
+                }
                 const operand = try self.parseUnaryExpression();
+                if (!self.isValidUpdateOperand(operand)) {
+                    const operand_span = self.hir.spanOf(operand);
+                    if (self.hir.kindOf(operand) == .new_expr) {
+                        try self.reportCodeAt(operand_span.start, t.line, 2357, "The operand of an increment or decrement operator must be a variable or a property access.");
+                        return operand;
+                    }
+                    try self.reportCodeAt(operand_span.start, t.line, 2356, "An arithmetic operand must be of type 'any', 'number', 'bigint' or an enum type.");
+                    if (self.isThisIdentifier(operand)) {
+                        return try self.builder.addLiteralNumber(operand_span, 1);
+                    }
+                    return operand;
+                }
                 return try self.buildUpdateAssignment(t, operand, t.kind == .plus_plus, true);
             },
             else => return try self.parseCallOrMemberExpression(),
@@ -6265,6 +6296,15 @@ pub const Parser = struct {
                     node = try self.builder.addNonNullExpression(sp, node);
                 },
                 .plus_plus, .minus_minus => {
+                    if (t.flags.preceded_by_newline) break;
+                    if (self.hir.kindOf(node) == .assignment) {
+                        _ = self.advance();
+                        try self.reportCodeAt(t.span.start, t.line, 1005, "';' expected.");
+                        const next = self.peek();
+                        const pos = if (next.kind == .semicolon or next.kind == .eof) next.span.start else t.span.end;
+                        try self.reportCodeAt(pos, t.line, 1109, "Expression expected.");
+                        break;
+                    }
                     _ = self.advance();
                     node = try self.buildUpdateAssignment(t, node, t.kind == .plus_plus, false);
                 },
@@ -6724,8 +6764,15 @@ pub const Parser = struct {
                     const id = try self.internToken(t);
                     return try self.builder.addIdentifier(tokenSpan(t), id);
                 }
+                if (t.kind == .pipe_pipe or t.kind == .ampersand_ampersand) {
+                    _ = self.advance();
+                    try self.reportCodeAt(t.span.start, t.line, 1109, "Expression expected.");
+                    return try self.parseUnaryExpression();
+                }
                 if (t.kind == .close_paren or
                     t.kind == .close_brace or
+                    t.kind == .semicolon or
+                    t.kind == .eof or
                     t.kind == .kw_return or
                     t.kind == .kw_case or
                     t.kind == .kw_default or
@@ -6738,6 +6785,20 @@ pub const Parser = struct {
                 return error.UnexpectedToken;
             },
         }
+    }
+
+    fn isThisIdentifier(self: *const Parser, node: NodeId) bool {
+        if (self.hir.kindOf(node) != .identifier) return false;
+        const id = hir_mod.identifierOf(self.hir, node);
+        return std.mem.eql(u8, self.interner.get(id.name), "this");
+    }
+
+    fn isValidUpdateOperand(self: *const Parser, operand: NodeId) bool {
+        return switch (self.hir.kindOf(operand)) {
+            .identifier => !self.isThisIdentifier(operand),
+            .member_access, .element_access => true,
+            else => false,
+        };
     }
 
     fn buildUpdateAssignment(self: *Parser, op_tok: Token, operand: NodeId, is_inc: bool, is_prefix: bool) ParseError!NodeId {
@@ -10329,8 +10390,67 @@ test "parser: update expression reports invalid operand diagnostic" {
 
     _ = try s.parser.parseSourceFile();
     try T.expectEqual(@as(usize, 2), s.parser.diagnostics.items.len);
-    try T.expectEqual(@as(u32, 2364), s.parser.diagnostics.items[0].code);
-    try T.expectEqual(@as(u32, 2364), s.parser.diagnostics.items[1].code);
+    try T.expectEqual(@as(u32, 2356), s.parser.diagnostics.items[0].code);
+    try T.expectEqual(@as(u32, 2356), s.parser.diagnostics.items[1].code);
+}
+
+test "parser: prefix update of delete and new expressions reports upstream diagnostics" {
+    var s = try newTestSetup("++ delete foo.bar; ++ new Foo();");
+    defer destroyTestSetup(s);
+
+    _ = try s.parser.parseSourceFile();
+    try T.expectEqual(@as(usize, 2), s.parser.diagnostics.items.len);
+    try T.expectEqual(@as(u32, 1109), s.parser.diagnostics.items[0].code);
+    try T.expectEqualStrings("Expression expected.", s.parser.diagnostics.items[0].message);
+    try T.expectEqual(@as(u32, 2357), s.parser.diagnostics.items[1].code);
+    try T.expectEqualStrings("The operand of an increment or decrement operator must be a variable or a property access.", s.parser.diagnostics.items[1].message);
+}
+
+test "parser: postfix update does not cross newline before prefix update" {
+    var s = try newTestSetup(
+        \\var x = 0, y = 0;
+        \\var z =
+        \\x
+        \\++
+        \\++
+        \\y
+    );
+    defer destroyTestSetup(s);
+
+    _ = try s.parser.parseSourceFile();
+    try T.expectEqual(@as(usize, 1), s.parser.diagnostics.items.len);
+    try T.expectEqual(@as(u32, 1109), s.parser.diagnostics.items[0].code);
+    try T.expectEqualStrings("Expression expected.", s.parser.diagnostics.items[0].message);
+}
+
+test "parser: chained postfix update reports semicolon then expression expected" {
+    var s = try newTestSetup("foo ++ ++;");
+    defer destroyTestSetup(s);
+
+    _ = try s.parser.parseSourceFile();
+    try T.expectEqual(@as(usize, 2), s.parser.diagnostics.items.len);
+    try T.expectEqual(@as(u32, 1005), s.parser.diagnostics.items[0].code);
+    try T.expectEqualStrings("';' expected.", s.parser.diagnostics.items[0].message);
+    try T.expectEqual(@as(u32, 1109), s.parser.diagnostics.items[1].code);
+    try T.expectEqualStrings("Expression expected.", s.parser.diagnostics.items[1].message);
+}
+
+test "parser: expression terminators use upstream expression expected text" {
+    var s = try newTestSetup("var v = || b;");
+    defer destroyTestSetup(s);
+
+    _ = s.parser.parseSourceFile() catch {};
+    try T.expect(s.parser.diagnostics.items.len >= 1);
+    try T.expectEqual(@as(u32, 1109), s.parser.diagnostics.items[0].code);
+    try T.expectEqualStrings("Expression expected.", s.parser.diagnostics.items[0].message);
+
+    var export_s = try newTestSetup("export = ;");
+    defer destroyTestSetup(export_s);
+
+    _ = export_s.parser.parseSourceFile() catch {};
+    try T.expect(export_s.parser.diagnostics.items.len >= 1);
+    try T.expectEqual(@as(u32, 1109), export_s.parser.diagnostics.items[0].code);
+    try T.expectEqualStrings("Expression expected.", export_s.parser.diagnostics.items[0].message);
 }
 
 test "parser: regex literal reports unbalanced group" {
