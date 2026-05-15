@@ -212,6 +212,7 @@ pub const TsCodes = struct {
     pub const cannot_assign_const: u32 = 2588;
     pub const property_used_before_initialization: u32 = 2729;
     pub const await_only_in_async: u32 = 1308;
+    pub const return_outside_function: u32 = 1108;
     pub const await_in_class_static_block: u32 = 18037;
     pub const reserved_word_cannot_be_used_here: u32 = 1359;
     pub const generator_void_return: u32 = 2505;
@@ -803,6 +804,7 @@ pub const Checker = struct {
     /// the semantic slots needed by `yield`, `return`, and `yield*`.
     generator_type_info: std.AutoHashMapUnmanaged(TypeId, GeneratorTypeInfo),
     current_generator_info: ?GeneratorTypeInfo = null,
+    function_body_depth: u32 = 0,
     /// Reentrancy guard while synthesizing the global `Symbol` value.
     /// `interface SymbolConstructor` augmentations may mention `Symbol`
     /// in their member types; those nested lookups should see the base
@@ -910,6 +912,7 @@ pub const Checker = struct {
             .readonly_index_types = .empty,
             .generator_type_info = .empty,
             .current_generator_info = null,
+            .function_body_depth = 0,
             .symbol_global_building = false,
             .diagnostics = .empty,
             .diag_arena = std.heap.ArenaAllocator.init(gpa),
@@ -1300,6 +1303,9 @@ pub const Checker = struct {
                 }
             },
             .return_stmt => {
+                if (self.function_body_depth == 0) {
+                    try self.report(node, TsCodes.return_outside_function, "A 'return' statement can only be used within a function body.");
+                }
                 const r = hir_mod.returnOf(self.hir, node);
                 const ret_t: TypeId = if (r.value != hir_mod.none_node_id)
                     try self.checkExpression(r.value)
@@ -2859,6 +2865,8 @@ pub const Checker = struct {
         const prev_generator_info = self.current_generator_info;
         defer self.current_generator_info = prev_generator_info;
         self.current_generator_info = null;
+        self.function_body_depth += 1;
+        defer self.function_body_depth -= 1;
         if (f.flags.is_generator and f.return_type != hir_mod.none_node_id) {
             const sig = self.hir.typeOf(node);
             if (sig < self.interner.pool.typeCount() and self.interner.pool.flagsOf(sig).is_signature) {
@@ -20494,6 +20502,8 @@ pub const Checker = struct {
         }
         const f = hir_mod.fnDeclOf(self.hir, fn_node);
         if (f.body == hir_mod.none_node_id) return;
+        self.function_body_depth += 1;
+        defer self.function_body_depth -= 1;
         if (self.hir.kindOf(f.body) == .block_stmt) {
             for (hir_mod.blockStmts(self.hir, f.body)) |s| try self.checkStatement(s);
         } else {
@@ -36413,6 +36423,14 @@ test "checker: noImplicitAny does not report local function var declarations" {
     for (s.checker.diagnostics.items) |d| {
         try T.expect(d.code != TsCodes.variable_implicitly_any);
     }
+}
+
+test "checker: top-level return reports TS1108" {
+    const s = try newSetup("return;");
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+    try T.expectEqual(@as(usize, 1), s.checker.diagnostics.items.len);
+    try T.expectEqual(TsCodes.return_outside_function, s.checker.diagnostics.items[0].code);
 }
 
 test "checker: noImplicitAny emits TS7008 for bare class and interface members" {

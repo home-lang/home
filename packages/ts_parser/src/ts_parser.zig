@@ -776,6 +776,21 @@ pub const Parser = struct {
         try self.reportCodeAt(tok.span.start, tok.line, 1212, "Identifier expected. 'interface' is a reserved word in strict mode.");
     }
 
+    fn reportInvalidVariableDeclarationName(self: *Parser, tok: Token) ParseError!void {
+        if (tok.kind != .kw_export and tok.kind != .kw_class) return;
+        const raw = self.source[tok.span.start..tok.span.end];
+        const msg = try std.fmt.allocPrint(self.diag_arena.allocator(), "'{s}' is not allowed as a variable declaration name.", .{raw});
+        try self.diagnostics.append(self.gpa, .{
+            .pos = tok.span.start,
+            .line = tok.line,
+            .code = 1389,
+            .message = msg,
+        });
+        if (tok.kind == .kw_class) {
+            try self.reportCodeAt(tok.span.end, tok.line, 1005, "'{' expected.");
+        }
+    }
+
     fn reportInvalidStrictIdentifierNode(self: *Parser, node: NodeId) ParseError!void {
         if (!self.strict_mode or self.hir.kindOf(node) != .identifier) return;
         const id = hir_mod.identifierOf(self.hir, node);
@@ -3233,6 +3248,7 @@ pub const Parser = struct {
             break :blk try self.parseBindingPattern();
         } else id_blk: {
             const name_tok = try self.expectIdentifierLike();
+            try self.reportInvalidVariableDeclarationName(name_tok);
             try self.reportInvalidStrictName(name_tok);
             try self.reportInvalidFutureReservedName(name_tok);
             try self.reportAwaitBindingIfReserved(name_tok);
@@ -3264,10 +3280,15 @@ pub const Parser = struct {
                 try self.reportCodeAt(comma_tok.span.start, comma_tok.line, 1009, "Trailing comma not allowed.");
                 break;
             }
+            if (self.peek().kind == .kw_return and self.peek().flags.preceded_by_newline) {
+                try self.reportCodeAt(comma_tok.span.start, comma_tok.line, 1009, "Trailing comma not allowed.");
+                break;
+            }
             const extra_name: NodeId = if (self.peek().kind == .open_brace or self.peek().kind == .open_bracket) blk: {
                 break :blk try self.parseBindingPattern();
             } else id_blk: {
                 const name_tok = try self.expectIdentifierLike();
+                try self.reportInvalidVariableDeclarationName(name_tok);
                 try self.reportInvalidStrictName(name_tok);
                 try self.reportInvalidFutureReservedName(name_tok);
                 try self.reportAwaitBindingIfReserved(name_tok);
@@ -10654,4 +10675,36 @@ test "parser: non-identifier shorthand property names require colon" {
     for (s.parser.diagnostics.items) |d| {
         try T.expectEqual(@as(u32, 1005), d.code);
     }
+}
+
+test "parser: variable list trailing comma before return recovers as return statement" {
+    var s = try newTestSetup(
+        \\var a,
+        \\return;
+    );
+    defer destroyTestSetup(s);
+
+    const root = try s.parser.parseSourceFile();
+    const stmts = hir_mod.blockStmts(&s.hir, root);
+    try T.expectEqual(@as(usize, 2), stmts.len);
+    try T.expectEqual(hir_mod.NodeKind.var_decl, s.hir.kindOf(stmts[0]));
+    try T.expectEqual(hir_mod.NodeKind.return_stmt, s.hir.kindOf(stmts[1]));
+    try T.expectEqual(@as(usize, 1), s.parser.diagnostics.items.len);
+    try T.expectEqual(@as(u32, 1009), s.parser.diagnostics.items[0].code);
+}
+
+test "parser: reserved keywords are not variable declaration names" {
+    var s = try newTestSetup(
+        \\var export;
+        \\var foo;
+        \\var class;
+        \\var bar;
+    );
+    defer destroyTestSetup(s);
+
+    _ = try s.parser.parseSourceFile();
+    try T.expectEqual(@as(usize, 3), s.parser.diagnostics.items.len);
+    try T.expectEqual(@as(u32, 1389), s.parser.diagnostics.items[0].code);
+    try T.expectEqual(@as(u32, 1389), s.parser.diagnostics.items[1].code);
+    try T.expectEqual(@as(u32, 1005), s.parser.diagnostics.items[2].code);
 }
