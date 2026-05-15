@@ -1414,6 +1414,47 @@ pub const Parser = struct {
         return try params.toOwnedSlice(self.gpa);
     }
 
+    fn validateAccessorSignature(
+        self: *Parser,
+        accessor_kind: TokenKind,
+        name_node: NodeId,
+        params: []const NodeId,
+        return_type: NodeId,
+    ) ParseError!void {
+        const name_span = self.hir.spanOf(name_node);
+        const name_line = self.lineAt(name_span.start);
+        if (accessor_kind == .kw_get) {
+            if (params.len != 0) {
+                try self.reportCodeAt(name_span.start, name_line, 1054, "A 'get' accessor cannot have parameters.");
+            }
+            return;
+        }
+
+        if (accessor_kind != .kw_set) return;
+        if (params.len != 1) {
+            try self.reportCodeAt(name_span.start, name_line, 1049, "A 'set' accessor must have exactly one parameter.");
+        } else {
+            const param = hir_mod.parameterOf(self.hir, params[0]);
+            const param_span = self.hir.spanOf(params[0]);
+            if (param.flags.is_rest) {
+                try self.reportCodeAt(param_span.start, self.lineAt(param_span.start), 1053, "A 'set' accessor cannot have rest parameter.");
+            }
+            if (param.flags.is_optional) {
+                const pname_span = self.hir.spanOf(param.name);
+                try self.reportCodeAt(pname_span.end, self.lineAt(pname_span.end), 1051, "A 'set' accessor cannot have an optional parameter.");
+            }
+            if (param.flags.is_parameter_property) {
+                try self.reportCodeAt(param_span.start, self.lineAt(param_span.start), 2369, "A parameter property is only allowed in a constructor implementation.");
+            }
+            if (param.default_value != hir_mod.none_node_id) {
+                try self.reportCodeAt(name_span.start, name_line, 1052, "A 'set' accessor parameter cannot have an initializer.");
+            }
+        }
+        if (return_type != hir_mod.none_node_id) {
+            try self.reportCodeAt(name_span.start, name_line, 1095, "A 'set' accessor cannot have a return type annotation.");
+        }
+    }
+
     /// Parse an object or array destructuring pattern. Used in
     /// parameter and `let`/`const`/`var` binding positions:
     ///   `{ a }`, `{ a = 1 }`, `{ ...rest }`
@@ -1702,14 +1743,29 @@ pub const Parser = struct {
             // an accessor when followed by a member name + `(`. Plain
             // `get` or `get;` (no name + paren) falls through and is
             // parsed as a regular method/property named `get`.
+            var invalid_accessor_modifier: ?Token = null;
+            if ((self.peek().kind == .kw_export or self.peek().kind == .kw_declare) and
+                (self.peekAt(1).kind == .kw_get or self.peekAt(1).kind == .kw_set))
+            {
+                invalid_accessor_modifier = self.advance();
+                member_start = self.peek();
+            }
             const accessor_kw = self.peek().kind;
             if ((accessor_kw == .kw_get or accessor_kw == .kw_set) and
                 ((self.peekAt(1).kind == .identifier or
                     self.peekAt(1).kind == .private_identifier or
+                    self.peekAt(1).kind == .string_literal or
+                    self.peekAt(1).kind == .number_literal or
                     self.peekAt(1).kind.isContextualKeyword()) and
-                    self.peekAt(2).kind == .open_paren or
+                    (self.peekAt(2).kind == .open_paren or self.peekAt(2).kind == .less_than) or
                     self.peekAt(1).kind == .open_bracket))
             {
+                if (invalid_accessor_modifier) |bad| {
+                    const mod_name = self.source[bad.span.start..bad.span.end];
+                    const msg = try std.fmt.allocPrint(self.diag_arena.allocator(), "'{s}' modifier cannot appear on class elements of this kind.", .{mod_name});
+                    try self.reportCodeAt(bad.span.start, bad.line, 1031, msg);
+                }
+                try self.reportInvalidClassElementModifier(mods);
                 _ = self.advance(); // consume `get` / `set`
                 const name_node = if (self.peek().kind == .open_bracket) blk: {
                     _ = self.advance();
@@ -1718,17 +1774,25 @@ pub const Parser = struct {
                     break :blk key;
                 } else blk: {
                     const name_tok = self.advance();
-                    const name_id = try self.internToken(name_tok);
+                    const name_id = try self.internPropertyName(name_tok, tokenSpan(name_tok));
                     break :blk try self.builder.addIdentifier(tokenSpan(name_tok), name_id);
                 };
+                if (self.peek().kind == .less_than) {
+                    const tps = try self.parseTypeParameterDeclaration();
+                    defer self.gpa.free(tps);
+                    const name_span = self.hir.spanOf(name_node);
+                    try self.reportCodeAt(name_span.start, self.lineAt(name_span.start), 1094, "An accessor cannot have type parameters.");
+                }
                 const params = try self.parseParameterList();
                 defer self.gpa.free(params);
                 var return_type: NodeId = hir_mod.none_node_id;
                 if (self.match(.colon)) return_type = try self.parseReturnTypeAnnotation(params);
+                try self.validateAccessorSignature(accessor_kw, name_node, params, return_type);
                 var body: NodeId = hir_mod.none_node_id;
                 if (self.peek().kind == .open_brace) {
+                    const body_start = self.peek();
                     body = try self.parseBlockStatement();
-                    try self.reportAmbientClassImplementation(member_start);
+                    try self.reportAmbientClassImplementationAt(body_start.span.start, body_start.line);
                 } else {
                     try self.consumeStatementTerminator();
                     try self.reportMissingClassMemberImplementation(member_start, mods);
@@ -1928,6 +1992,7 @@ pub const Parser = struct {
         is_abstract: bool = false,
         is_readonly: bool = false,
         is_accessor: bool = false,
+        invalid_class_element_modifier: ?Token = null,
     };
 
     fn skipClassModifiers(self: *Parser) ParseError!ClassModifiers {
@@ -1947,7 +2012,9 @@ pub const Parser = struct {
                 }
                 if (mods.is_static and isAccessibilityModifier(k) and next_can_start_member) {
                     const mod = self.advance();
-                    try self.reportCodeAt(mod.span.start, mod.line, 1029, "Accessibility modifier must precede 'static' modifier.");
+                    const mod_name = self.source[mod.span.start..mod.span.end];
+                    const msg = try std.fmt.allocPrint(self.diag_arena.allocator(), "'{s}' modifier must precede 'static' modifier.", .{mod_name});
+                    try self.reportCodeAt(mod.span.start, mod.line, 1029, msg);
                     mods.visibility = switch (k) {
                         .kw_private => .private,
                         .kw_protected => .protected,
@@ -1982,6 +2049,9 @@ pub const Parser = struct {
                     .kw_async => mods.is_async = true,
                     .kw_override => mods.is_override = true,
                     .kw_abstract => mods.is_abstract = true,
+                    .kw_export, .kw_declare => {
+                        if (mods.invalid_class_element_modifier == null) mods.invalid_class_element_modifier = self.peek();
+                    },
                     .kw_readonly => mods.is_readonly = true,
                     .kw_accessor => {
                         // `accessor x = …` modifier (TS 4.9 / Stage 3).
@@ -2032,6 +2102,18 @@ pub const Parser = struct {
     fn reportAmbientClassImplementation(self: *Parser, member_start: Token) ParseError!void {
         if (!self.isAmbientContextAt(member_start.span.start)) return;
         try self.reportCodeAt(member_start.span.start, member_start.line, 1183, "An implementation cannot be declared in ambient contexts.");
+    }
+
+    fn reportAmbientClassImplementationAt(self: *Parser, pos: u32, line: u32) ParseError!void {
+        if (!self.isAmbientContextAt(pos)) return;
+        try self.reportCodeAt(pos, line, 1183, "An implementation cannot be declared in ambient contexts.");
+    }
+
+    fn reportInvalidClassElementModifier(self: *Parser, mods: ClassModifiers) ParseError!void {
+        const bad = mods.invalid_class_element_modifier orelse return;
+        const mod_name = self.source[bad.span.start..bad.span.end];
+        const msg = try std.fmt.allocPrint(self.diag_arena.allocator(), "'{s}' modifier cannot appear on class elements of this kind.", .{mod_name});
+        try self.reportCodeAt(bad.span.start, bad.line, 1031, msg);
     }
 
     fn reportMissingClassMemberImplementation(self: *Parser, member_start: Token, mods: ClassModifiers) ParseError!void {
@@ -6491,13 +6573,22 @@ pub const Parser = struct {
                 continue;
             }
 
+            if (isAccessibilityModifier(self.peek().kind) and
+                (self.peekAt(1).kind == .kw_get or self.peekAt(1).kind == .kw_set))
+            {
+                const mod = self.advance();
+                const mod_name = self.source[mod.span.start..mod.span.end];
+                const msg = try std.fmt.allocPrint(self.diag_arena.allocator(), "'{s}' modifier cannot be used here.", .{mod_name});
+                try self.reportCodeAt(mod.span.start, mod.line, 1042, msg);
+            }
+
             if ((self.peek().kind == .kw_get or self.peek().kind == .kw_set) and
                 (((self.peekAt(1).kind == .identifier or
                     self.peekAt(1).kind == .private_identifier or
                     self.peekAt(1).kind == .string_literal or
                     self.peekAt(1).kind == .number_literal or
                     self.peekAt(1).kind.isContextualKeyword()) and
-                    self.peekAt(2).kind == .open_paren) or
+                    (self.peekAt(2).kind == .open_paren or self.peekAt(2).kind == .less_than)) or
                     self.peekAt(1).kind == .open_bracket))
             {
                 const accessor_kw = self.advance();
@@ -6517,6 +6608,13 @@ pub const Parser = struct {
                     const key_id = try self.internPropertyName(key_tok, key_span);
                     break :blk try self.builder.addIdentifier(key_span, key_id);
                 };
+                var type_params: []NodeId = &.{};
+                if (self.peek().kind == .less_than) {
+                    type_params = try self.parseTypeParameterDeclaration();
+                    const name_span = self.hir.spanOf(key);
+                    try self.reportCodeAt(name_span.start, self.lineAt(name_span.start), 1094, "An accessor cannot have type parameters.");
+                }
+                defer if (type_params.len > 0) self.gpa.free(type_params);
                 const saved_suppress_strict_param_names = self.suppress_strict_param_names;
                 self.suppress_strict_param_names = accessor_kw.kind == .kw_set;
                 defer self.suppress_strict_param_names = saved_suppress_strict_param_names;
@@ -6524,12 +6622,13 @@ pub const Parser = struct {
                 defer self.gpa.free(params);
                 var return_type: NodeId = hir_mod.none_node_id;
                 if (self.match(.colon)) return_type = try self.parseReturnTypeAnnotation(params);
+                try self.validateAccessorSignature(accessor_kw.kind, key, params, return_type);
                 var body: NodeId = hir_mod.none_node_id;
                 if (self.peek().kind == .open_brace) body = try self.parseBlockStatement();
                 const value = try self.builder.addFnDeclGeneric(
                     .{ .start = accessor_kw.span.start, .end = self.tokens[self.cursor - 1].span.end },
-                    hir_mod.none_node_id,
-                    &.{},
+                    key,
+                    type_params,
                     params,
                     return_type,
                     body,

@@ -67,6 +67,7 @@ pub const Case = struct {
     strict_flags: ?ts_driver.StrictFlags = null,
     always_strict: bool = false,
     syntax_target_es2015: bool = false,
+    report_deprecated_target_es5: bool = false,
     /// True for virtual `.js` / `.jsx` files where `allowJs` is on
     /// but `checkJs` is not. These still parse/bind/emit, but checker
     /// diagnostics are not surfaced by tsc.
@@ -151,6 +152,7 @@ pub fn run(gpa: std.mem.Allocator, c: Case) !Result {
         .strict_flags = c.strict_flags,
         .always_strict = c.always_strict,
         .syntax_target_es2015 = c.syntax_target_es2015,
+        .report_deprecated_target_es5 = c.report_deprecated_target_es5,
         .suppress_js_check_diagnostics = c.suppress_js_check_diagnostics,
         .continue_on_error = true,
         .no_emit = true,
@@ -230,7 +232,7 @@ pub fn run(gpa: std.mem.Allocator, c: Case) !Result {
             .HM => .HM,
         };
         const fdiag: ts_diagnostics.Diagnostic = .{
-            .file = diag_file,
+            .file = if (d.is_global) "" else diag_file,
             .line = diag_line,
             .col = pos.col,
             .code = code,
@@ -432,6 +434,7 @@ pub const CorpusEntry = struct {
     strict_flags: ?ts_driver.StrictFlags = null,
     always_strict: bool = false,
     syntax_target_es2015: bool = false,
+    report_deprecated_target_es5: bool = false,
     suppress_js_check_diagnostics: bool = false,
 };
 
@@ -449,6 +452,7 @@ pub const OwnedCorpusEntry = struct {
     strict_flags: ?ts_driver.StrictFlags = null,
     always_strict: bool = false,
     syntax_target_es2015: bool = false,
+    report_deprecated_target_es5: bool = false,
     suppress_js_check_diagnostics: bool = false,
 };
 
@@ -610,6 +614,7 @@ pub fn loadDirectoryWithOptions(
             .strict_flags = strict_flags,
             .always_strict = expects_error and (directiveBool(case_src, "alwaysStrict") orelse false),
             .syntax_target_es2015 = directiveTargetEs2015OrLater(case_src),
+            .report_deprecated_target_es5 = use_exact_errors and !baseline_only_option_deprecation and baselinePathIsTargetEs5(baseline_path),
             .suppress_js_check_diagnostics = shouldSuppressJsCheckDiagnostics(diag_path, case_src),
         });
     }
@@ -1033,6 +1038,11 @@ fn firstDiagnosticPath(headers: []const u8) ?[]const u8 {
     const first = headers[0..line_end];
     const paren = std.mem.indexOfScalar(u8, first, '(') orelse return null;
     return first[0..paren];
+}
+
+fn baselinePathIsTargetEs5(path: ?[]const u8) bool {
+    const p = path orelse return false;
+    return std.mem.indexOf(u8, p, "(target=es5).errors.txt") != null;
 }
 
 fn envUsize(name: [*:0]const u8, default: usize) usize {
@@ -2089,6 +2099,7 @@ pub fn runOwnedCorpus(
             .strict_flags = entry.strict_flags,
             .always_strict = entry.always_strict,
             .syntax_target_es2015 = entry.syntax_target_es2015,
+            .report_deprecated_target_es5 = entry.report_deprecated_target_es5,
             .suppress_js_check_diagnostics = entry.suppress_js_check_diagnostics,
         };
         const r = try runOneEntry(gpa, view);
@@ -2213,6 +2224,7 @@ fn runOneEntry(gpa: std.mem.Allocator, entry: CorpusEntry) !Result {
             .strict_flags = entry.strict_flags,
             .always_strict = entry.always_strict,
             .syntax_target_es2015 = entry.syntax_target_es2015,
+            .report_deprecated_target_es5 = entry.report_deprecated_target_es5,
             .suppress_js_check_diagnostics = entry.suppress_js_check_diagnostics,
         });
         errdefer if (exact.detail.len > 0) gpa.free(exact.detail);
@@ -2683,6 +2695,7 @@ test "conformance: bisect exact-baseline heap leak" {
             .strict_flags = entry.strict_flags,
             .always_strict = entry.always_strict,
             .syntax_target_es2015 = entry.syntax_target_es2015,
+            .report_deprecated_target_es5 = entry.report_deprecated_target_es5,
             .suppress_js_check_diagnostics = entry.suppress_js_check_diagnostics,
         });
         try results.append(T.allocator, r);
@@ -3206,6 +3219,7 @@ test "conformance: opt-in full local TypeScript corpus survey" {
             .strict_flags = entry.strict_flags,
             .always_strict = entry.always_strict,
             .syntax_target_es2015 = entry.syntax_target_es2015,
+            .report_deprecated_target_es5 = entry.report_deprecated_target_es5,
             .suppress_js_check_diagnostics = entry.suppress_js_check_diagnostics,
         });
         switch (r.outcome) {

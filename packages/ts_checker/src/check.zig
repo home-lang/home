@@ -2905,7 +2905,8 @@ pub const Checker = struct {
             }
         }
         if (f.flags.is_getter and !self.fnBodyHasReturn(f.body)) {
-            try self.report(node, TsCodes.getter_must_return_value, "A 'get' accessor must return a value.");
+            const pos = if (f.name != hir_mod.none_node_id) self.hir.spanOf(f.name).start else self.hir.spanOf(node).start;
+            try self.reportAt(node, pos, TsCodes.getter_must_return_value, "A 'get' accessor must return a value.");
         }
         try self.checkUnusedParameters(node, f.body);
         try self.checkUnusedLocals(f.body);

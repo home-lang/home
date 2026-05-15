@@ -36,6 +36,9 @@ pub const Diagnostic = struct {
     code: u32 = 0,
     /// `TS` for tsc-compatible codes; `HM` for Home-only codes.
     code_prefix: CodePrefix = .TS,
+    /// Whole-program/config diagnostics have no file/line prefix in
+    /// tsc's default formatter.
+    is_global: bool = false,
     message: []const u8,
 };
 
@@ -112,6 +115,9 @@ pub const CompileOptions = struct {
     /// True when the parser should apply ES2015+ contextual-reserved
     /// word rules such as rejecting `yield` as a binding/function name.
     syntax_target_es2015: bool = false,
+    /// Report TS5107 for deprecated ES5 target selection. Conformance
+    /// exact mode enables this when it selects the ES5 baseline variant.
+    report_deprecated_target_es5: bool = false,
     /// CLI `--strict` override. When null, defer to tsconfig or the
     /// tsc default (`false`).
     strict: ?bool = null,
@@ -490,6 +496,18 @@ pub fn compileSource(
 
     c.hir = hir_mod.Hir.init(gpa) catch return error.OutOfMemory;
     errdefer c.hir.deinit();
+
+    if (options.report_deprecated_target_es5) {
+        try c.diagnostics.append(gpa, .{
+            .phase = .parse,
+            .pos = 0,
+            .line = 0,
+            .code = 5107,
+            .is_global = true,
+            .message = try gpa.dupe(u8, "Option 'target=ES5' is deprecated and will stop functioning in TypeScript 7.0. Specify compilerOption '\"ignoreDeprecations\": \"6.0\"' to silence this error."),
+        });
+        c.has_errors = true;
+    }
 
     try reportMissingReferencePathDiagnostics(gpa, c, source);
 
