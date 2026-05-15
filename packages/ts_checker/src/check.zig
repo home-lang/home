@@ -20819,6 +20819,25 @@ pub const Checker = struct {
         }
         if (expected_this == types.Primitive.none) return;
         if (self.engine.isAssignableTo(types.Primitive.void_t, expected_this) catch false) return;
+        // If a union of call signatures had at least one declared
+        // `this: T` plus another with no compatible `this`, tsc
+        // reports the conflict as a `never` intersection. Detect
+        // that by re-walking and looking for a second declared
+        // `this` that's both not-`void`-assignable AND not
+        // identical to `expected_this`. This catches fixture
+        // `unionTypeCallSignatures5` where the union of `(this: void, ...)`
+        // and `(this: number, ...)` should report `never` rather
+        // than the first matching sig's `this`.
+        if (expected_this != types.Primitive.never) {
+            for (call_sigs.items) |sig| {
+                if (!try self.signatureAccepts(sig, args, arg_types)) continue;
+                const this_t = self.signature_this_params.get(sig) orelse continue;
+                if (this_t == expected_this) continue;
+                if (self.engine.isIdenticalTo(this_t, expected_this) catch false) continue;
+                expected_this = types.Primitive.never;
+                break;
+            }
+        }
         if (try self.allocSimpleTypeName(expected_this)) |this_name| {
             const msg = try std.fmt.allocPrint(
                 self.diag_arena.allocator(),
