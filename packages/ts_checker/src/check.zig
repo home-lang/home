@@ -28276,6 +28276,15 @@ pub const Checker = struct {
                     .object_literal, .array_literal, .fn_decl, .fn_expr, .arrow_fn => {
                         try self.report(u.operand, TsCodes.expression_always_truthy, "This kind of expression is always truthy.");
                     },
+                    .literal_string => {
+                        // tsc fires TS2873 ("This kind of expression
+                        // is always falsy.") for `!""` — the empty
+                        // string is the only falsy string literal.
+                        const s = hir_mod.literalStringOf(self.hir, u.operand);
+                        if (self.string_interner.get(s.value).len == 0) {
+                            try self.report(u.operand, TsCodes.expression_always_falsy, "This kind of expression is always falsy.");
+                        }
+                    },
                     else => {},
                 }
                 break :blk types.Primitive.boolean_t;
