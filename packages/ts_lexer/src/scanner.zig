@@ -269,6 +269,12 @@ pub const Scanner = struct {
         return isIdentStart(c) or (c >= '0' and c <= '9');
     }
 
+    fn startsWithUtf8NotSign(self: *const Scanner) bool {
+        return self.pos + 1 < self.source.len and
+            self.source[self.pos] == 0xC2 and
+            self.source[self.pos + 1] == 0xAC;
+    }
+
     fn isDecimalDigit(c: u8) bool {
         return c >= '0' and c <= '9';
     }
@@ -641,6 +647,21 @@ pub const Scanner = struct {
         }
 
         const c = self.source[self.pos];
+
+        // U+00AC NOT SIGN is punctuation, not an ECMAScript
+        // IdentifierStart. The scanner still permissively accepts most
+        // non-ASCII bytes as identifiers until full Unicode tables land,
+        // but this conformance fixture relies on `tsc`'s TS1127 here.
+        if (self.startsWithUtf8NotSign()) {
+            self.pos += 2;
+            self.reportAt(gpa, start, line, "Invalid character.");
+            return .{
+                .span = .{ .start = start, .end = self.pos },
+                .kind = .invalid,
+                .flags = flags,
+                .line = line,
+            };
+        }
 
         // Identifier / keyword
         if (isIdentStart(c)) {
@@ -1131,6 +1152,19 @@ test "Scanner: leading UTF-8 BOM is trivia" {
     try t.expectEqual(@as(u32, 3), toks.items[0].span.start);
     try t.expectEqual(TokenKind.identifier, toks.items[1].kind);
     try t.expectEqualStrings("x", toks.items[1].bytes(s.source));
+}
+
+test "Scanner: not sign is invalid punctuation" {
+    var s = Scanner.init(t.allocator, "¬");
+    defer s.deinit(t.allocator);
+    var toks = try s.tokenize(t.allocator);
+    defer toks.deinit(t.allocator);
+
+    try t.expectEqual(TokenKind.invalid, toks.items[0].kind);
+    try t.expectEqual(@as(u32, 0), toks.items[0].span.start);
+    try t.expectEqual(@as(u32, 2), toks.items[0].span.end);
+    try t.expectEqual(@as(usize, 1), s.diagnostics.items.len);
+    try t.expectEqualStrings("Invalid character.", s.diagnostics.items[0].message);
 }
 
 test "Scanner: shebang after UTF-8 BOM is first-line trivia" {

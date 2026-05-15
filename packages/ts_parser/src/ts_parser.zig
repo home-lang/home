@@ -6328,8 +6328,22 @@ pub const Parser = struct {
         _ = try self.expect(.open_paren, "'(' for argument list");
         var args: std.ArrayListUnmanaged(NodeId) = .empty;
         errdefer args.deinit(self.gpa);
+        var missing_arg_before_statement = false;
         if (self.peek().kind != .close_paren) {
             while (true) {
+                const start_tok = self.peek();
+                if (start_tok.kind == .comma) {
+                    try self.reportCodeAt(start_tok.span.start, start_tok.line, 1135, "Argument expression expected.");
+                    _ = self.advance();
+                    if (self.peek().kind == .close_paren) break;
+                    continue;
+                }
+                if (start_tok.kind == .kw_return) {
+                    try self.reportCodeAt(start_tok.span.start, start_tok.line, 1135, "Argument expression expected.");
+                    missing_arg_before_statement = true;
+                    break;
+                }
+                if (start_tok.kind == .semicolon or start_tok.kind == .close_brace or start_tok.kind == .eof) break;
                 const arg = if (self.peek().kind == .dot_dot_dot) blk: {
                     const dot_tok = self.advance();
                     const inner = try self.parseAssignmentExpression();
@@ -6341,7 +6355,16 @@ pub const Parser = struct {
                 if (self.peek().kind == .close_paren) break; // trailing comma
             }
         }
-        _ = try self.expect(.close_paren, "')' to close argument list");
+        if (self.peek().kind == .close_paren) {
+            _ = self.advance();
+        } else {
+            const close_tok = self.peek();
+            if (close_tok.kind == .kw_return and !missing_arg_before_statement and args.items.len > 0) {
+                try self.reportCodeAt(close_tok.span.start, close_tok.line, 1005, "',' expected.");
+            } else if (!missing_arg_before_statement) {
+                try self.reportCodeAt(close_tok.span.start, close_tok.line, 1005, "')' expected.");
+            }
+        }
         return try args.toOwnedSlice(self.gpa);
     }
 
@@ -6589,7 +6612,8 @@ pub const Parser = struct {
                 return try self.builder.addIdentifier(tokenSpan(t), id);
             },
             .invalid => {
-                _ = self.advance();
+                const bad = self.advance();
+                try self.reportCodeAt(bad.span.start, bad.line, 1127, "Invalid character.");
                 return error.UnexpectedToken;
             },
             else => {
@@ -6598,7 +6622,12 @@ pub const Parser = struct {
                     const id = try self.internToken(t);
                     return try self.builder.addIdentifier(tokenSpan(t), id);
                 }
-                if (t.kind == .close_paren) {
+                if (t.kind == .close_paren or
+                    t.kind == .close_brace or
+                    t.kind == .kw_return or
+                    t.kind == .kw_case or
+                    t.kind == .kw_default)
+                {
                     try self.reportCodeAt(t.span.start, t.line, 1109, "Expression expected.");
                     return error.UnexpectedToken;
                 }
@@ -10940,6 +10969,32 @@ test "parser: object literal missing value recovers keyword property" {
     try T.expectEqual(@as(u32, 1005), s.parser.diagnostics.items[2].code);
 }
 
+test "parser: call argument list missing argument before return recovers" {
+    var s = try newTestSetup(
+        \\function foo() {
+        \\  bar(
+        \\  return x;
+        \\}
+    );
+    defer destroyTestSetup(s);
+
+    _ = try s.parser.parseSourceFile();
+    try T.expectEqual(@as(usize, 1), s.parser.diagnostics.items.len);
+    try T.expectEqual(@as(u32, 1135), s.parser.diagnostics.items[0].code);
+    try T.expectEqualStrings("Argument expression expected.", s.parser.diagnostics.items[0].message);
+}
+
+test "parser: call argument list empty slot before eof reports close paren" {
+    var s = try newTestSetup("Foo(,");
+    defer destroyTestSetup(s);
+
+    _ = try s.parser.parseSourceFile();
+    try T.expectEqual(@as(usize, 2), s.parser.diagnostics.items.len);
+    try T.expectEqual(@as(u32, 1135), s.parser.diagnostics.items[0].code);
+    try T.expectEqual(@as(u32, 1005), s.parser.diagnostics.items[1].code);
+    try T.expectEqualStrings("')' expected.", s.parser.diagnostics.items[1].message);
+}
+
 test "parser: top-level close parens recover as declaration expected" {
     var s = try newTestSetup(
         \\function foo() {}
@@ -10965,6 +11020,35 @@ test "parser: close paren in expression reports expression expected" {
     try T.expect(s.parser.diagnostics.items.len >= 1);
     try T.expectEqual(@as(u32, 1109), s.parser.diagnostics.items[0].code);
     try T.expectEqualStrings("Expression expected.", s.parser.diagnostics.items[0].message);
+}
+
+test "parser: return in expression position reports expression expected" {
+    var s = try newTestSetup(
+        \\function foo() {
+        \\  var x =
+        \\  return;
+        \\}
+    );
+    defer destroyTestSetup(s);
+
+    _ = s.parser.parseSourceFile() catch {};
+    try T.expect(s.parser.diagnostics.items.len >= 1);
+    try T.expectEqual(@as(u32, 1109), s.parser.diagnostics.items[0].code);
+    try T.expectEqualStrings("Expression expected.", s.parser.diagnostics.items[0].message);
+}
+
+test "parser: invalid token in expression position reports invalid character" {
+    var s = try newTestSetup(
+        \\function f() {
+        \\  ¬
+        \\}
+    );
+    defer destroyTestSetup(s);
+
+    _ = s.parser.parseSourceFile() catch {};
+    try T.expect(s.parser.diagnostics.items.len >= 1);
+    try T.expectEqual(@as(u32, 1127), s.parser.diagnostics.items[0].code);
+    try T.expectEqualStrings("Invalid character.", s.parser.diagnostics.items[0].message);
 }
 
 test "parser: top-level public before break reports declaration expected" {
