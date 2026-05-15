@@ -19332,9 +19332,9 @@ pub const Checker = struct {
                 if (self.hir.kindOf(c.callee) == .template_literal and
                     callee_t != types.Primitive.any and callee_t != types.Primitive.unknown)
                 {
-                    try self.report(node, 2351, "This expression is not constructable.");
+                    try self.report(c.callee, 2351, "This expression is not constructable.");
                 } else if (self.typeIsDefinitelyNonConstructable(callee_t)) {
-                    try self.report(node, 2351, "This expression is not constructable.");
+                    try self.report(c.callee, 2351, "This expression is not constructable.");
                 } else {
                     var call_sigs: std.ArrayListUnmanaged(TypeId) = .empty;
                     defer call_sigs.deinit(self.gpa);
