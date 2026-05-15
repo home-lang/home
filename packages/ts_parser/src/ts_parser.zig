@@ -3609,6 +3609,11 @@ pub const Parser = struct {
             _ = self.advance();
             return;
         }
+        if (t.kind == .dot) {
+            try self.reportCodeAt(t.span.start, t.line, 1005, "';' expected.");
+            _ = self.advance();
+            return;
+        }
         try self.report("expected ';' or newline ", "after statement");
         return error.UnexpectedToken;
     }
@@ -5302,6 +5307,7 @@ pub const Parser = struct {
             .equal => {
                 _ = self.advance();
                 try self.reportInvalidStrictIdentifierNode(left);
+                try self.reportInvalidAssignmentTarget(left);
                 const right = try self.parseAssignmentExpressionWithIn(allow_in);
                 const sp: Span = .{ .start = self.hir.spanOf(left).start, .end = self.hir.spanOf(right).end };
                 return try self.builder.addAssignment(sp, left, right, null);
@@ -5782,6 +5788,7 @@ pub const Parser = struct {
 
     fn parseCompoundAssign(self: *Parser, left: NodeId, op: hir_mod.BinOp, allow_in: bool) ParseError!NodeId {
         _ = self.advance();
+        try self.reportInvalidAssignmentTarget(left);
         const right = try self.parseAssignmentExpressionWithIn(allow_in);
         const sp: Span = .{ .start = self.hir.spanOf(left).start, .end = self.hir.spanOf(right).end };
         return try self.builder.addAssignment(sp, left, right, op);
@@ -5792,6 +5799,7 @@ pub const Parser = struct {
     /// independent HIR nodes because parent pointers are single-owner.
     fn parseLogicalAssign(self: *Parser, left: NodeId, op: hir_mod.LogicalOp, allow_in: bool) ParseError!NodeId {
         _ = self.advance();
+        try self.reportInvalidAssignmentTarget(left);
         const right = try self.parseAssignmentExpressionWithIn(allow_in);
         const left_dup = try self.cloneLogicalAssignmentTarget(left);
         const left_span = self.hir.spanOf(left);
@@ -6181,6 +6189,7 @@ pub const Parser = struct {
             const t = self.peek();
             switch (t.kind) {
                 .dot => {
+                    if (self.hir.kindOf(node) == .assignment) break;
                     _ = self.advance();
                     if (self.hir.kindOf(node) == .literal_number and
                         self.peek().kind == .dot and
@@ -6212,6 +6221,7 @@ pub const Parser = struct {
             const t = self.peek();
             switch (t.kind) {
                 .dot => {
+                    if (self.hir.kindOf(node) == .assignment) break;
                     _ = self.advance();
                     if (self.hir.kindOf(node) == .literal_number and
                         self.peek().kind == .dot and
@@ -6799,6 +6809,47 @@ pub const Parser = struct {
             .member_access, .element_access => true,
             else => false,
         };
+    }
+
+    fn isValidAssignmentTarget(self: *const Parser, node: NodeId) bool {
+        return switch (self.hir.kindOf(node)) {
+            .identifier, .member_access, .element_access, .array_literal, .object_literal => true,
+            else => false,
+        };
+    }
+
+    fn parenthesizedNodeStart(self: *const Parser, node: NodeId) ?u32 {
+        const sp = self.hir.spanOf(node);
+        var before = sp.start;
+        while (before > 0) {
+            const c = self.source[before - 1];
+            if (!std.ascii.isWhitespace(c)) break;
+            before -= 1;
+        }
+        var after = sp.end;
+        while (after < self.source.len) : (after += 1) {
+            if (!std.ascii.isWhitespace(self.source[after])) break;
+        }
+        if (before > 0 and after < self.source.len and self.source[before - 1] == '(' and self.source[after] == ')') {
+            return before - 1;
+        }
+        return null;
+    }
+
+    fn sourceLineAtPos(self: *const Parser, pos: u32) u32 {
+        var line: u32 = 1;
+        var i: u32 = 0;
+        const limit = @min(pos, @as(u32, @intCast(self.source.len)));
+        while (i < limit) : (i += 1) {
+            if (self.source[i] == '\n') line += 1;
+        }
+        return line;
+    }
+
+    fn reportInvalidAssignmentTarget(self: *Parser, node: NodeId) ParseError!void {
+        if (self.isValidAssignmentTarget(node)) return;
+        const pos = self.parenthesizedNodeStart(node) orelse self.hir.spanOf(node).start;
+        try self.reportCodeAt(pos, self.sourceLineAtPos(pos), 2364, "The left-hand side of an assignment expression must be a variable or a property access.");
     }
 
     fn buildUpdateAssignment(self: *Parser, op_tok: Token, operand: NodeId, is_inc: bool, is_prefix: bool) ParseError!NodeId {
@@ -10433,6 +10484,26 @@ test "parser: chained postfix update reports semicolon then expression expected"
     try T.expectEqualStrings("';' expected.", s.parser.diagnostics.items[0].message);
     try T.expectEqual(@as(u32, 1109), s.parser.diagnostics.items[1].code);
     try T.expectEqualStrings("Expression expected.", s.parser.diagnostics.items[1].message);
+}
+
+test "parser: member access after postfix update reports missing semicolon" {
+    var s = try newTestSetup("a--.toString()");
+    defer destroyTestSetup(s);
+
+    _ = try s.parser.parseSourceFile();
+    try T.expectEqual(@as(usize, 1), s.parser.diagnostics.items.len);
+    try T.expectEqual(@as(u32, 1005), s.parser.diagnostics.items[0].code);
+    try T.expectEqualStrings("';' expected.", s.parser.diagnostics.items[0].message);
+}
+
+test "parser: parenthesized call assignment reports invalid target at paren" {
+    var s = try newTestSetup("(foo()) = bar;");
+    defer destroyTestSetup(s);
+
+    _ = try s.parser.parseSourceFile();
+    try T.expectEqual(@as(usize, 1), s.parser.diagnostics.items.len);
+    try T.expectEqual(@as(u32, 2364), s.parser.diagnostics.items[0].code);
+    try T.expectEqual(@as(u32, 0), s.parser.diagnostics.items[0].pos);
 }
 
 test "parser: expression terminators use upstream expression expected text" {
