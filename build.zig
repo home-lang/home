@@ -1098,6 +1098,28 @@ pub fn build(b: *std.Build) void {
     const run_ts_bundler_tests = b.addRunArtifact(ts_bundler_tests);
     dependOnTest(test_step, &run_ts_bundler_tests.step, test_filter, "ts_bundler");
 
+    // TS-parity Phase 4.5 §4.5.A.2 — bun_compat Tier 0 shim. Wires
+    // the two Tier 0 vendored files (IndexStringMap + PathToSourceIndexMap)
+    // against the shim's `bun` aggregator. The shim re-exports only
+    // the small surface those two files need; subsequent tiers (Graph,
+    // bundled_ast, …) will extend the shim and add themselves here
+    // file-by-file. See packages/ts_bundler/src/bun/PORTING_STATUS.md
+    // for the activation plan.
+    const ts_bundler_bun_compat_pkg = b.createModule(.{
+        .root_source_file = b.path("packages/ts_bundler/src/bun_compat/bun.zig"),
+        .target = target,
+        .optimize = optimize,
+    });
+    const ts_bundler_bun_compat_tests_pkg = b.createModule(.{
+        .root_source_file = b.path("packages/ts_bundler/src/bun_compat_tests.zig"),
+        .target = target,
+        .optimize = optimize,
+    });
+    ts_bundler_bun_compat_tests_pkg.addImport("bun", ts_bundler_bun_compat_pkg);
+    const ts_bundler_bun_compat_tests = b.addTest(.{ .root_module = ts_bundler_bun_compat_tests_pkg });
+    const run_ts_bundler_bun_compat_tests = b.addRunArtifact(ts_bundler_bun_compat_tests);
+    dependOnTest(test_step, &run_ts_bundler_bun_compat_tests.step, test_filter, "ts_bundler_bun_compat");
+
     // home_test: only the public facade is wired in (the vendored
     // src/bun/ tree is deferred until the bun_compat shim lands).
     const home_test_tests = b.addTest(.{ .root_module = home_test_pkg });

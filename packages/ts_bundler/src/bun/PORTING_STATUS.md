@@ -29,8 +29,8 @@ respectively.
 
 | File | LOC | bun | rel | ext | Compile | Top 3 Externs Needed |
 |---|---:|---:|---:|---:|---|---|
-| IndexStringMap.zig | 25 | 2 | 0 | 0 | blocked | `bun.ast.Index` |
-| PathToSourceIndexMap.zig | 46 | 8 | 0 | 0 | blocked | `bun.StringHashMapUnmanaged`, `bun.fs.Path`, `bun.ast.Index` |
+| IndexStringMap.zig | 25 | 2 | 0 | 0 | **clean** (Tier 0) | `bun.ast.Index` |
+| PathToSourceIndexMap.zig | 46 | 8 | 0 | 0 | **clean** (Tier 0) | `bun.StringHashMapUnmanaged`, `bun.fs.Path`, `bun.ast.Index` |
 | DeferredBatchTask.zig | 52 | 8 | 0 | 0 | blocked | `bun.BundleV2`, `bun.jsc.ConcurrentTask`, `bun.Environment` |
 | Graph.zig | 140 | 13 | 2 | 2 | blocked | `bun.MultiArrayList`, `bun.collections.BabyList`, `bun.ast.BundledAst` |
 | BundleThread.zig | 195 | 32 | 2 | 2 | blocked | `bun.JSC.*`, `bun.Async`, `bun.Mutex` |
@@ -194,14 +194,17 @@ throughput. Any port must keep them.
 
 ## Next steps (suggested order)
 
-1. **Land this copy** with build wiring that does **not** add the new
-   files to any test step (so `zig build test` stays green).
-2. Create `packages/ts_bundler/src/bun_compat/` with a single
+1. ~~**Land this copy** with build wiring that does **not** add the new
+   files to any test step (so `zig build test` stays green).~~ ✅
+2. ~~Create `packages/ts_bundler/src/bun_compat/` with a single
    `bun.zig` aggregator that re-exports the Tier 0 surface
    (`OOM`, `handleOom`, `default_allocator`, `assert`, `ast.Index`,
-   `StringHashMapUnmanaged`, `fs.Path`).
-3. Make `IndexStringMap.zig` + `PathToSourceIndexMap.zig` compile
-   against the shim. Add a tiny test artifact.
+   `StringHashMapUnmanaged`, `fs.Path`).~~ ✅ 2026-05-15
+   (`packages/ts_bundler/src/bun_compat/bun.zig`).
+3. ~~Make `IndexStringMap.zig` + `PathToSourceIndexMap.zig` compile
+   against the shim. Add a tiny test artifact.~~ ✅ 2026-05-15
+   (`packages/ts_bundler/src/bun_compat_tests.zig`, 9 tests, wired
+   into `zig build test` under filter `ts_bundler_bun_compat`).
 4. Iterate Tier 1 → Tier 5, expanding the shim as needed.
 5. Once `bundle_v2.zig` compiles, swap the existing
    `ts_bundler.zig` v0 scaffold to delegate to it.
