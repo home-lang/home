@@ -731,7 +731,24 @@ pub fn compileSource(
         c.js = printer.toOwnedSlice() catch return error.OutOfMemory;
     }
 
+    // Diagnostics were appended in phase order (lex -> parse -> bind ->
+    // check -> emit). Upstream tsc emits in source order — top-to-bottom
+    // by `(line, col)`. Re-sort the merged list using a STABLE sort so
+    // that ties (identical positions) preserve their original emit
+    // order. `pos` (byte offset) is monotonic with `(line, col)`, so
+    // sorting by `pos` is equivalent and avoids re-walking newlines.
+    sortDiagnosticsBySourceOrder(c.diagnostics.items);
+
     return c;
+}
+
+fn sortDiagnosticsBySourceOrder(diags: []Diagnostic) void {
+    const lessThan = struct {
+        fn lt(_: void, a: Diagnostic, b: Diagnostic) bool {
+            return a.pos < b.pos;
+        }
+    }.lt;
+    std.mem.sort(Diagnostic, diags, {}, lessThan);
 }
 
 fn isDiagnosticInsideJsxText(source: []const u8, pos: u32) bool {
