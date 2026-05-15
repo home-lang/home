@@ -3591,6 +3591,18 @@ pub const Parser = struct {
         // ASI: if the next token starts on a new line, or is `}`, or is
         // EOF, accept the absence of a semicolon.
         const t = self.peek();
+        if (t.kind == .invalid) {
+            const bad = self.advance();
+            try self.reportCodeAt(bad.span.start, bad.line, 1127, "Invalid character.");
+            if (self.match(.semicolon)) return;
+            const after_invalid = self.peek();
+            if (after_invalid.kind == .eof or
+                after_invalid.kind == .close_brace or
+                after_invalid.flags.preceded_by_newline)
+            {
+                return;
+            }
+        }
         if (t.kind == .eof or t.kind == .close_brace or t.flags.preceded_by_newline) return;
         if (t.kind == .close_bracket) {
             try self.reportCodeAt(t.span.start, t.line, 1005, "';' expected.");
@@ -5100,9 +5112,19 @@ pub const Parser = struct {
         var args: std.ArrayListUnmanaged(NodeId) = .empty;
         errdefer args.deinit(self.gpa);
         while (self.peek().kind != .greater_than and self.peek().kind != .eof) {
+            if (self.peek().kind == .invalid) {
+                const bad = self.advance();
+                try self.reportCodeAt(bad.span.start, bad.line, 1127, "Invalid character.");
+                return try args.toOwnedSlice(self.gpa);
+            }
             const arg = try self.parseTypeAnnotation();
             try args.append(self.gpa, arg);
             if (!self.match(.comma)) break;
+        }
+        if (self.peek().kind == .invalid) {
+            const bad = self.advance();
+            try self.reportCodeAt(bad.span.start, bad.line, 1127, "Invalid character.");
+            return try args.toOwnedSlice(self.gpa);
         }
         _ = try self.consumeTypeGreater("'>' to close type arguments");
         return try args.toOwnedSlice(self.gpa);
@@ -5150,6 +5172,11 @@ pub const Parser = struct {
         if (self.peek().kind == .less_than) {
             _ = self.advance();
             while (self.peek().kind != .greater_than and self.peek().kind != .eof) {
+                if (self.peek().kind == .invalid) {
+                    const bad = self.advance();
+                    try self.reportCodeAt(bad.span.start, bad.line, 1127, "Invalid character.");
+                    break;
+                }
                 const a = try self.parseTypeAnnotation();
                 try args.append(self.gpa, a);
                 if (!self.match(.comma)) break;
@@ -5211,6 +5238,9 @@ pub const Parser = struct {
                 self.peek().kind == .greater_greater_greater)
             {
                 _ = try self.consumeTypeGreater("'>' to close type arguments");
+            } else if (self.peek().kind == .invalid) {
+                const bad = self.advance();
+                try self.reportCodeAt(bad.span.start, bad.line, 1127, "Invalid character.");
             } else {
                 const close_tok = self.peek();
                 try self.reportCodeAt(close_tok.span.start, close_tok.line, 1005, "'>' expected.");
@@ -6393,6 +6423,11 @@ pub const Parser = struct {
         if (self.peek().kind != .close_paren) {
             while (true) {
                 const start_tok = self.peek();
+                if (start_tok.kind == .invalid) {
+                    const bad = self.advance();
+                    try self.reportCodeAt(bad.span.start, bad.line, 1127, "Invalid character.");
+                    break;
+                }
                 if (start_tok.kind == .comma) {
                     try self.reportCodeAt(start_tok.span.start, start_tok.line, 1135, "Argument expression expected.");
                     _ = self.advance();
@@ -6412,7 +6447,13 @@ pub const Parser = struct {
                     break :blk try self.builder.addSpread(.{ .start = dot_tok.span.start, .end = end }, inner);
                 } else try self.parseAssignmentExpression();
                 try args.append(self.gpa, arg);
-                if (!self.match(.comma)) break;
+                if (!self.match(.comma)) {
+                    if (self.peek().kind == .invalid) {
+                        const bad = self.advance();
+                        try self.reportCodeAt(bad.span.start, bad.line, 1127, "Invalid character.");
+                    }
+                    break;
+                }
                 if (self.peek().kind == .close_paren) break; // trailing comma
             }
         }
@@ -6687,7 +6728,8 @@ pub const Parser = struct {
                     t.kind == .close_brace or
                     t.kind == .kw_return or
                     t.kind == .kw_case or
-                    t.kind == .kw_default)
+                    t.kind == .kw_default or
+                    t.kind == .colon)
                 {
                     try self.reportCodeAt(t.span.start, t.line, 1109, "Expression expected.");
                     return error.UnexpectedToken;
@@ -11098,6 +11140,16 @@ test "parser: return in expression position reports expression expected" {
     try T.expectEqualStrings("Expression expected.", s.parser.diagnostics.items[0].message);
 }
 
+test "parser: colon in expression position reports expression expected" {
+    var s = try newTestSetup("switch (x) { case: y; }");
+    defer destroyTestSetup(s);
+
+    _ = s.parser.parseSourceFile() catch {};
+    try T.expect(s.parser.diagnostics.items.len >= 1);
+    try T.expectEqual(@as(u32, 1109), s.parser.diagnostics.items[0].code);
+    try T.expectEqualStrings("Expression expected.", s.parser.diagnostics.items[0].message);
+}
+
 test "parser: invalid token in expression position reports invalid character" {
     var s = try newTestSetup(
         \\function f() {
@@ -11122,6 +11174,46 @@ test "parser: statement invalid token recovers following declaration" {
     const stmts = hir_mod.blockStmts(&s.hir, root);
     try T.expectEqual(@as(usize, 1), stmts.len);
     try T.expectEqual(hir_mod.NodeKind.var_decl, s.hir.kindOf(stmts[0]));
+}
+
+test "parser: invalid token at call argument tail preserves partial call" {
+    var s = try newTestSetup("foo(a \\");
+    defer destroyTestSetup(s);
+
+    const root = try s.parser.parseSourceFile();
+    var saw_invalid = false;
+    var saw_missing_close = false;
+    for (s.parser.diagnostics.items) |d| {
+        if (d.code == 1127) saw_invalid = true;
+        if (d.code == 1005) saw_missing_close = true;
+    }
+    try T.expect(saw_invalid);
+    try T.expect(saw_missing_close);
+    const stmts = hir_mod.blockStmts(&s.hir, root);
+    try T.expectEqual(@as(usize, 1), stmts.len);
+    try T.expectEqual(hir_mod.NodeKind.call_expr, s.hir.kindOf(stmts[0]));
+}
+
+test "parser: invalid token before semicolon terminates expression statement" {
+    var s = try newTestSetup("/regexp/ \\ ;");
+    defer destroyTestSetup(s);
+
+    _ = try s.parser.parseSourceFile();
+    try T.expectEqual(@as(usize, 1), s.parser.diagnostics.items.len);
+    try T.expectEqual(@as(u32, 1127), s.parser.diagnostics.items[0].code);
+}
+
+test "parser: invalid token terminates type argument list without greater cascade" {
+    var s = try newTestSetup("var v: X<T \\");
+    defer destroyTestSetup(s);
+
+    _ = try s.parser.parseSourceFile();
+    var invalid_count: usize = 0;
+    for (s.parser.diagnostics.items) |d| {
+        if (d.code == 1127) invalid_count += 1;
+        try T.expect(d.code != 1005);
+    }
+    try T.expectEqual(@as(usize, 1), invalid_count);
 }
 
 test "parser: if condition missing close paren preserves condition" {
