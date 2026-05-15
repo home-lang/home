@@ -19276,8 +19276,17 @@ pub const Checker = struct {
     /// (`type.  Variable`). Otherwise fall back to the shorter
     /// conflicting-type form so we never half-render.
     fn formatSubsequentVarTypeMismatch(self: *Checker, name: []const u8, prior: TypeId, current: TypeId) ![]const u8 {
-        if (try self.simpleDiagnosticTypeName(prior)) |prior_text| {
-            if (try self.simpleDiagnosticTypeName(current)) |current_text| {
+        // Prefer the simple primitive/enum/named-type renderer; fall
+        // back to the richer `allocSimpleTypeName` to also pick up
+        // tuple shapes (`[number]`, `[number, number]`) so fixtures
+        // like `strictTupleLength.ts(11,5)` get the full upstream
+        // wording rather than the conflicting-type fallback.
+        const prior_text_opt = (try self.simpleDiagnosticTypeName(prior)) orelse
+            (try self.allocSimpleTypeName(prior));
+        const current_text_opt = (try self.simpleDiagnosticTypeName(current)) orelse
+            (try self.allocSimpleTypeName(current));
+        if (prior_text_opt) |prior_text| {
+            if (current_text_opt) |current_text| {
                 return try std.fmt.allocPrint(
                     self.diag_arena.allocator(),
                     "Subsequent variable declarations must have the same type.  Variable '{s}' must be of type '{s}', but here has type '{s}'.",
@@ -31773,6 +31782,22 @@ pub const Checker = struct {
             break :blk false;
         };
         if (!source_is_object_shaped) return false;
+
+        // When target is a tuple and source is a number-indexed array
+        // shape (e.g. `number[]`), upstream tsc emits the generic
+        // TS2322 ("Type 'number[]' is not assignable to type
+        // '[number]'.") rather than the missing-property TS2741.
+        // Mirrors `strictTupleLength.ts(18,1)`.
+        if (self.interner.pool.flagsOf(target).is_tuple and
+            source < self.interner.pool.typeCount() and
+            self.interner.pool.flagsOf(source).is_object_type)
+        {
+            const sm = self.interner.objectMembers(source);
+            const num_idx = self.interner.objectNumberIndex(source);
+            if (sm.len == 0 and num_idx != types.Primitive.none) {
+                return false;
+            }
+        }
 
         // Find required (non-optional, non-method) target members the
         // source lacks. Only fire when there's exactly one such
