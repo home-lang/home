@@ -26960,11 +26960,74 @@ pub const Checker = struct {
                 );
             }
         }
+        // When both endpoints are callable (non-construct) signatures
+        // render them as `(p: T) => U` so fixtures like
+        // `subtypingWithCallSignaturesA` get upstream-shaped TS2345
+        // prose instead of the positional placeholder.
+        if (self.argumentCallSignatureNames(arg_t, param_t)) |pair| {
+            return try std.fmt.allocPrint(
+                self.diag_arena.allocator(),
+                "Argument of type '{s}' is not assignable to parameter of type '{s}'.",
+                .{ pair.arg, pair.param },
+            );
+        }
         return try std.fmt.allocPrint(
             self.diag_arena.allocator(),
             "Argument is not assignable to parameter at position {d}.",
             .{position},
         );
+    }
+
+    /// Render both signature TypeIds as `(p: T) => U` strings, when
+    /// every parameter type and the return type are nameable via
+    /// `allocSimpleTypeName`. Uses recorded source-level parameter
+    /// names when available, falling back to `x0`/`x1`. Returns null
+    /// (so the caller emits the positional placeholder) on any
+    /// non-signature input or non-nameable inner type.
+    fn argumentCallSignatureNames(
+        self: *Checker,
+        arg_t: TypeId,
+        param_t: TypeId,
+    ) ?struct { arg: []const u8, param: []const u8 } {
+        if (!self.interner.isSignature(arg_t) or !self.interner.isSignature(param_t)) return null;
+        const arg_name = (self.allocCallSignatureFnTypeName(arg_t) catch return null) orelse return null;
+        const param_name = (self.allocCallSignatureFnTypeName(param_t) catch return null) orelse return null;
+        return .{ .arg = arg_name, .param = param_name };
+    }
+
+    /// Render a callable signature TypeId as `(p: T, q: U) => R`.
+    /// Returns null when any constituent type isn't nameable so
+    /// callers fall through to the positional placeholder.
+    fn allocCallSignatureFnTypeName(self: *Checker, t: TypeId) CheckError!?[]const u8 {
+        if (!self.interner.isSignature(t)) return null;
+        if (t >= self.interner.pool.typeCount()) return null;
+        const sig_payload_idx = self.interner.pool.payloadOf(t);
+        if (sig_payload_idx >= self.interner.pool.signature_payloads.items.len) return null;
+        const sig = self.interner.pool.signature_payloads.items[sig_payload_idx];
+        var buf: std.ArrayListUnmanaged(u8) = .empty;
+        const arena = self.diag_arena.allocator();
+        if (sig.is_construct) try buf.appendSlice(arena, "new ");
+        try buf.append(arena, '(');
+        const params = self.interner.signatureParams(t);
+        const recorded_names: ?[]const hir_mod.StringId = self.signature_param_names.get(t);
+        for (params, 0..) |p, i| {
+            if (i > 0) try buf.appendSlice(arena, ", ");
+            const name_text: []const u8 = blk: {
+                if (recorded_names) |names| if (i < names.len) {
+                    break :blk self.string_interner.get(names[i]);
+                };
+                break :blk try std.fmt.allocPrint(arena, "x{d}", .{i});
+            };
+            try buf.appendSlice(arena, name_text);
+            try buf.appendSlice(arena, ": ");
+            const pn = (try self.allocSimpleTypeName(p)) orelse return null;
+            try buf.appendSlice(arena, pn);
+        }
+        try buf.appendSlice(arena, ") => ");
+        const ret = self.interner.signatureReturn(t) orelse types.Primitive.any;
+        const rn = (try self.allocSimpleTypeName(ret)) orelse return null;
+        try buf.appendSlice(arena, rn);
+        return buf.items;
     }
 
     /// Restricted variant of `allocSimpleTypeName` for diagnostic
