@@ -2292,7 +2292,8 @@ pub const Parser = struct {
                         // so the two diagnostics don't double-report.
                         if (!is_optional_member and
                             name_tok.kind != .kw_constructor and
-                            !self.nextClassMemberNameMatches(name_tok))
+                            !self.nextClassMemberNameMatches(name_tok) and
+                            !self.nextClassMemberLooksLikeImplementation())
                         {
                             try self.reportMissingClassMemberImplementation(member_start, mods);
                         }
@@ -2616,6 +2617,28 @@ pub const Parser = struct {
     }
 
     fn nextClassMemberNameMatches(self: *const Parser, current: Token) bool {
+        const idx = self.nextClassMemberNameIndex() orelse return false;
+        const next = self.tokens[idx];
+        return self.classMemberNameTextMatches(current, next);
+    }
+
+    fn nextClassMemberLooksLikeImplementation(self: *const Parser) bool {
+        var idx = self.nextClassMemberNameIndex() orelse return false;
+        idx += 1;
+        if (idx < self.tokens.len and self.tokens[idx].kind == .question) idx += 1;
+        if (idx < self.tokens.len and self.tokens[idx].kind == .less_than) {
+            while (idx < self.tokens.len and self.tokens[idx].kind != .open_paren and self.tokens[idx].kind != .open_brace and self.tokens[idx].kind != .semicolon and self.tokens[idx].kind != .close_brace) : (idx += 1) {}
+        }
+        if (idx >= self.tokens.len or self.tokens[idx].kind != .open_paren) return false;
+        idx = self.skipBalancedLookahead(idx);
+        if (idx < self.tokens.len and self.tokens[idx].kind == .colon) {
+            idx += 1;
+            while (idx < self.tokens.len and self.tokens[idx].kind != .open_brace and self.tokens[idx].kind != .semicolon and self.tokens[idx].kind != .close_brace) : (idx += 1) {}
+        }
+        return idx < self.tokens.len and self.tokens[idx].kind == .open_brace;
+    }
+
+    fn nextClassMemberNameIndex(self: *const Parser) ?usize {
         var idx: usize = self.cursor;
         while (idx < self.tokens.len) {
             while (idx < self.tokens.len and self.tokens[idx].kind == .at) {
@@ -2628,9 +2651,8 @@ pub const Parser = struct {
             break;
         }
         if (idx < self.tokens.len and self.tokens[idx].kind == .asterisk) idx += 1;
-        if (idx >= self.tokens.len) return false;
-        const next = self.tokens[idx];
-        return self.classMemberNameTextMatches(current, next);
+        if (idx >= self.tokens.len) return null;
+        return idx;
     }
 
     fn skipDecoratorLookahead(self: *const Parser, start: usize) usize {
@@ -10377,6 +10399,15 @@ test "parser: parameter property decorator after modifier reports comma expected
 
 test "parser: overload implementation lookahead skips decorators" {
     var s = try newTestSetup("class Foo { method(); @dec method() {} }");
+    defer destroyTestSetup(s);
+    _ = try s.parser.parseSourceFile();
+    for (s.parser.diagnostics.items) |d| {
+        try T.expect(d.code != 2391);
+    }
+}
+
+test "parser: class method overload mismatch defers TS2389 to checker" {
+    var s = try newTestSetup("class C { foo(); bar() {} }");
     defer destroyTestSetup(s);
     _ = try s.parser.parseSourceFile();
     for (s.parser.diagnostics.items) |d| {

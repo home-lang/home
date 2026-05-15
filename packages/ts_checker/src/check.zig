@@ -8640,6 +8640,8 @@ pub const Checker = struct {
         defer method_seen.deinit(self.gpa);
         var static_method_seen: std.AutoHashMapUnmanaged(hir_mod.StringId, ClassMethodSeen) = .empty;
         defer static_method_seen.deinit(self.gpa);
+        var previous_bodyless_method_name: ?hir_mod.StringId = null;
+        var previous_bodyless_method_static = false;
         var instance_member_predicates: std.AutoHashMapUnmanaged(hir_mod.StringId, FnPredicate) = .empty;
         defer instance_member_predicates.deinit(self.gpa);
         var static_member_predicates: std.AutoHashMapUnmanaged(hir_mod.StringId, FnPredicate) = .empty;
@@ -8904,7 +8906,25 @@ pub const Checker = struct {
                     // abstract member of the same name.
                     const seen = if (fn_p.flags.is_static) &static_method_seen else &method_seen;
                     const overload_info_before = seen.get(member_name);
+                    if (fn_p.body != hir_mod.none_node_id) {
+                        if (previous_bodyless_method_name) |expected| {
+                            if (previous_bodyless_method_static == fn_p.flags.is_static and expected != member_name) {
+                                if (seen.getPtr(expected)) |info| {
+                                    try self.reportClassMethodImplementationNameMismatch(m, info.first_node, expected);
+                                    info.implementation_count += 1;
+                                } else {
+                                    try self.reportClassMethodImplementationNameMismatch(m, hir_mod.none_node_id, expected);
+                                }
+                            }
+                        }
+                    }
                     try self.checkClassMethodOverloadState(m, member_name, fn_p.flags.is_static, self.methodVisibilityBits(fn_p.flags), fn_p.body != hir_mod.none_node_id, seen);
+                    if (fn_p.body == hir_mod.none_node_id) {
+                        previous_bodyless_method_name = member_name;
+                        previous_bodyless_method_static = fn_p.flags.is_static;
+                    } else {
+                        previous_bodyless_method_name = null;
+                    }
                     if (!fn_p.flags.is_static) {
                         if ((c.is_abstract or fn_p.flags.is_abstract) and fn_p.body == hir_mod.none_node_id) {
                             try abstract_names.put(self.gpa, member_name, {});
@@ -10496,6 +10516,34 @@ pub const Checker = struct {
         } else {
             gop.value_ptr.bodyless_count += 1;
         }
+    }
+
+    fn reportClassMethodImplementationNameMismatch(
+        self: *Checker,
+        node: NodeId,
+        expected_node: NodeId,
+        expected: hir_mod.StringId,
+    ) CheckError!void {
+        const expected_name = if (expected_node != hir_mod.none_node_id) blk: {
+            const fd = hir_mod.fnDeclOf(self.hir, expected_node);
+            if (fd.name != hir_mod.none_node_id) {
+                const sp = self.hir.spanOf(fd.name);
+                if (self.source) |src| {
+                    if (sp.start < sp.end and sp.end <= src.len) break :blk src[sp.start..sp.end];
+                }
+            }
+            break :blk self.string_interner.get(expected);
+        } else self.string_interner.get(expected);
+        const msg = try std.fmt.allocPrint(
+            self.diag_arena.allocator(),
+            "Function implementation name must be '{s}'.",
+            .{expected_name},
+        );
+        try self.diagnostics.append(self.gpa, .{
+            .node = node,
+            .code = TsCodes.function_implementation_name_mismatch,
+            .message = msg,
+        });
     }
 
     fn methodVisibilityBits(self: *Checker, flags: hir_mod.FnFlags) u2 {
@@ -39126,6 +39174,23 @@ test "checker: class method overload implementation is hidden from instance shap
         try T.expect(d.code != TsCodes.type_not_assignable);
         try T.expect(d.code != TsCodes.argument_type_mismatch);
     }
+}
+
+test "checker: class method implementation name must match overload" {
+    const s = try newSetup(
+        \\class C {
+        \\  foo();
+        \\  bar() {}
+        \\}
+    );
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+    var found_mismatch = false;
+    for (s.checker.diagnostics.items) |d| {
+        if (d.code == TsCodes.function_implementation_name_mismatch) found_mismatch = true;
+        try T.expect(d.code != TsCodes.implementation_missing);
+    }
+    try T.expect(found_mismatch);
 }
 
 test "checker: callable object members fall back to Function interface augmentations" {
