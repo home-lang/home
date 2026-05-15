@@ -82,6 +82,7 @@ pub const Parser = struct {
     generator_depth: u32,
     new_target_depth: u32,
     static_block_depth: u32,
+    class_body_depth: u32,
     loop_depth: u32,
     loop_switch_depth: u32,
     namespace_depth: u32,
@@ -132,6 +133,7 @@ pub const Parser = struct {
             .generator_depth = 0,
             .new_target_depth = 0,
             .static_block_depth = 0,
+            .class_body_depth = 0,
             .loop_depth = 0,
             .loop_switch_depth = 0,
             .namespace_depth = 0,
@@ -821,6 +823,29 @@ pub const Parser = struct {
         try self.reportCodeAt(tok.span.start, tok.line, 1212, "Identifier expected. 'interface' is a reserved word in strict mode.");
     }
 
+    fn isClassStrictReservedIdentifier(self: *const Parser, tok: Token) bool {
+        _ = self;
+        return switch (tok.kind) {
+            .kw_public,
+            .kw_private,
+            .kw_protected,
+            .kw_static,
+            => true,
+            else => false,
+        };
+    }
+
+    fn reportInvalidClassStrictIdentifier(self: *Parser, tok: Token) ParseError!void {
+        if (self.class_body_depth == 0 or !self.isClassStrictReservedIdentifier(tok)) return;
+        const raw = self.source[tok.span.start..tok.span.end];
+        const msg = try std.fmt.allocPrint(
+            self.diag_arena.allocator(),
+            "Identifier expected. '{s}' is a reserved word in strict mode. Class definitions are automatically in strict mode.",
+            .{raw},
+        );
+        try self.reportCodeAt(tok.span.start, tok.line, 1213, msg);
+    }
+
     fn reportInvalidVariableDeclarationName(self: *Parser, tok: Token) ParseError!void {
         if (tok.kind != .kw_export and tok.kind != .kw_class) return;
         const raw = self.source[tok.span.start..tok.span.end];
@@ -1494,7 +1519,7 @@ pub const Parser = struct {
                 }
                 // Modifiers on parameter properties: `readonly`, `public`, etc.
                 var saw_override_modifier = false;
-                while (self.peek().kind.isModifierKeyword()) {
+                while (isParameterPropertyModifier(self.peek().kind)) {
                     const mod = self.advance();
                     switch (mod.kind) {
                         .kw_readonly => {
@@ -1580,6 +1605,7 @@ pub const Parser = struct {
                     if (!self.suppress_strict_param_names) try self.reportInvalidStrictName(name_tok);
                     try self.reportInvalidYieldName(name_tok);
                     try self.reportInvalidFutureReservedName(name_tok);
+                    try self.reportInvalidClassStrictIdentifier(name_tok);
                     const name_id = try self.internToken(name_tok);
                     break :id_blk try self.builder.addIdentifier(tokenSpan(name_tok), name_id);
                 };
@@ -1920,6 +1946,8 @@ pub const Parser = struct {
         const class_body_generator_depth = self.generator_depth;
         self.generator_depth = 0;
         defer self.generator_depth = class_body_generator_depth;
+        self.class_body_depth += 1;
+        defer self.class_body_depth -= 1;
         var members: std.ArrayListUnmanaged(NodeId) = .empty;
         defer members.deinit(self.gpa);
         var recovered_nested_declaration = false;
@@ -2354,6 +2382,18 @@ pub const Parser = struct {
 
     fn isAccessibilityModifier(kind: TokenKind) bool {
         return kind == .kw_public or kind == .kw_private or kind == .kw_protected;
+    }
+
+    fn isParameterPropertyModifier(kind: TokenKind) bool {
+        return switch (kind) {
+            .kw_public,
+            .kw_private,
+            .kw_protected,
+            .kw_readonly,
+            .kw_override,
+            => true,
+            else => false,
+        };
     }
 
     fn isClassMemberNameStart(kind: TokenKind) bool {
@@ -4026,10 +4066,14 @@ pub const Parser = struct {
             },
             .kw_import => try self.parseImportTypeReference(),
             .identifier => try self.parseTypeReference(),
-            .kw_public, .kw_private, .kw_protected => blk: {
+            .kw_public, .kw_private, .kw_protected, .kw_static => blk: {
                 const bad = self.advance();
-                try self.reportCodeAt(bad.span.start, bad.line, 1213, "Identifier expected. Reserved words cannot be used as identifiers here.");
-                const id = self.interner.intern("unknown") catch return error.OutOfMemory;
+                if (self.class_body_depth > 0) {
+                    try self.reportInvalidClassStrictIdentifier(bad);
+                } else {
+                    try self.reportCodeAt(bad.span.start, bad.line, 1213, "Identifier expected. Reserved words cannot be used as identifiers here.");
+                }
+                const id = try self.internToken(bad);
                 break :blk try self.builder.addTypeRef(tokenSpan(bad), id, &.{}, &.{});
             },
             .kw_this => blk: {
@@ -10735,6 +10779,17 @@ test "parser: reserved accessibility keyword in class type annotation reports TS
     _ = try s.parser.parseSourceFile();
     try T.expectEqual(@as(usize, 1), s.parser.diagnostics.items.len);
     try T.expectEqual(@as(u32, 1213), s.parser.diagnostics.items[0].code);
+    try T.expectEqualStrings("Identifier expected. 'public' is a reserved word in strict mode. Class definitions are automatically in strict mode.", s.parser.diagnostics.items[0].message);
+}
+
+test "parser: static parameter name in constructor reports class strict TS1213" {
+    var s = try newTestSetup("class Foo { constructor(static) {} }");
+    defer destroyTestSetup(s);
+
+    _ = try s.parser.parseSourceFile();
+    try T.expectEqual(@as(usize, 1), s.parser.diagnostics.items.len);
+    try T.expectEqual(@as(u32, 1213), s.parser.diagnostics.items[0].code);
+    try T.expectEqualStrings("Identifier expected. 'static' is a reserved word in strict mode. Class definitions are automatically in strict mode.", s.parser.diagnostics.items[0].message);
 }
 
 test "parser: malformed index signature forms report diagnostics" {

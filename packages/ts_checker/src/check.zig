@@ -19262,6 +19262,14 @@ pub const Checker = struct {
             };
             if (!compatible) {
                 const name = self.string_interner.get(id.name);
+                // Suppress TS2403 when this variable already has a
+                // TS2502 (`'X' is referenced directly or indirectly in
+                // its own type annotation.`) emitted in this run —
+                // mirrors upstream tsc which emits only the more
+                // fundamental TS2502 for recursive `typeof` chains
+                // like `var f: typeof g; var g: typeof f;`. See
+                // `recursiveTypesWithTypeof.ts`.
+                if (self.varNameHasSelfReferencedTypeAnnotation(name)) return;
                 const msg = try self.formatSubsequentVarTypeMismatch(name, prior, final_type);
                 try self.diagnostics.append(self.gpa, .{
                     .node = v.name,
@@ -19278,6 +19286,25 @@ pub const Checker = struct {
             !self.typeIsEnumNominal(final_type)) return;
         try self.var_decl_types.put(self.gpa, key, final_type);
         try self.var_decl_explicit.put(self.gpa, key, has_annotation);
+    }
+
+    /// Scan accumulated diagnostics for a TS2502 whose message
+    /// references `var_name`. Used to suppress TS2403 follow-on
+    /// reports when the variable's own type annotation is already
+    /// flagged as recursive — upstream tsc never emits the
+    /// subsequent-declaration mismatch on top of TS2502.
+    fn varNameHasSelfReferencedTypeAnnotation(self: *Checker, var_name: []const u8) bool {
+        for (self.diagnostics.items) |d| {
+            if (d.code != TsCodes.self_referenced_type_annotation) continue;
+            // TS2502 message shape: `'<name>' is referenced directly
+            // or indirectly in its own type annotation.`
+            if (d.message.len < var_name.len + 4) continue;
+            if (d.message[0] != '\'') continue;
+            if (!std.mem.eql(u8, d.message[1 .. 1 + var_name.len], var_name)) continue;
+            if (d.message[1 + var_name.len] != '\'') continue;
+            return true;
+        }
+        return false;
     }
 
     fn varDeclAnnotationIsQualifiedName(self: *Checker, type_annotation: NodeId) bool {
