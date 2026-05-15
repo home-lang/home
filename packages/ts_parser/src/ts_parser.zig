@@ -1962,7 +1962,9 @@ pub const Parser = struct {
         defer if (owns_type_params) self.gpa.free(class_type_params);
 
         var extends: NodeId = hir_mod.none_node_id;
+        var saw_extends_clause = false;
         if (self.peek().kind == .kw_extends) {
+            saw_extends_clause = true;
             const extends_tok = self.advance();
             if (self.peek().kind == .open_brace or
                 self.peek().kind == .kw_implements or
@@ -1995,7 +1997,12 @@ pub const Parser = struct {
             }
             if (self.peek().kind == .comma) {
                 const comma = self.advance();
-                try self.reportCodeAt(comma.span.start, comma.line, 1009, "Trailing comma not allowed.");
+                const report_tok = self.peek();
+                if (report_tok.kind == .open_brace or report_tok.kind == .kw_implements or report_tok.kind == .eof) {
+                    try self.reportCodeAt(comma.span.start, comma.line, 1009, "Trailing comma not allowed.");
+                } else {
+                    try self.reportCodeAt(report_tok.span.start, report_tok.line, 1174, "Classes can only extend a single class.");
+                }
                 while (self.peek().kind != .kw_implements and
                     self.peek().kind != .open_brace and
                     self.peek().kind != .eof)
@@ -2042,18 +2049,30 @@ pub const Parser = struct {
             while (true) {
                 if (self.peek().kind == .kw_extends) {
                     const dup = self.advance();
-                    try self.reportCodeAt(dup.span.start, dup.line, 1172, "'extends' clause already seen.");
+                    if (saw_extends_clause) {
+                        try self.reportCodeAt(dup.span.start, dup.line, 1172, "'extends' clause already seen.");
+                    } else {
+                        try self.reportCodeAt(dup.span.start, dup.line, 1173, "'extends' clause must precede 'implements' clause.");
+                    }
+                    if (self.peek().kind != .kw_implements and
+                        self.peek().kind != .kw_extends and
+                        self.peek().kind != .open_brace and
+                        self.peek().kind != .eof)
+                    {
+                        const ref = try self.parseTypeReference();
+                        try implements_list.append(self.gpa, ref);
+                    }
                 } else if (self.peek().kind == .kw_implements) {
                     const dup = self.advance();
                     try self.reportCodeAt(dup.span.start, dup.line, 1175, "'implements' clause already seen.");
+                    while (self.peek().kind != .kw_implements and
+                        self.peek().kind != .kw_extends and
+                        self.peek().kind != .open_brace and
+                        self.peek().kind != .eof)
+                    {
+                        _ = self.advance();
+                    }
                 } else break;
-                while (self.peek().kind != .kw_implements and
-                    self.peek().kind != .kw_extends and
-                    self.peek().kind != .open_brace and
-                    self.peek().kind != .eof)
-                {
-                    _ = self.advance();
-                }
             }
         }
 
@@ -2269,6 +2288,7 @@ pub const Parser = struct {
                     if (self.match(.colon)) return_type = try self.parseReturnTypeAnnotation(params);
                     var body: NodeId = hir_mod.none_node_id;
                     if (self.peek().kind == .open_brace) {
+                        const body_start = self.peek();
                         const prev_generator_depth = self.generator_depth;
                         self.generator_depth = if (is_generator) prev_generator_depth + 1 else 0;
                         defer self.generator_depth = prev_generator_depth;
@@ -2278,7 +2298,7 @@ pub const Parser = struct {
                             if (is_constructor_body) self.new_target_depth -= 1;
                         }
                         body = try self.parseBlockStatement();
-                        try self.reportAmbientClassImplementation(member_start);
+                        try self.reportAmbientClassImplementationAt(body_start.span.start, body_start.line);
                     } else {
                         try self.consumeStatementTerminator();
                         if (is_generator and self.isAmbientContextAt(member_start.span.start)) {
@@ -10317,7 +10337,9 @@ test "parser: ambient class member implementations report diagnostic" {
     _ = try s.parser.parseSourceFile();
     try T.expectEqual(@as(usize, 2), s.parser.diagnostics.items.len);
     try T.expectEqual(@as(u32, 1183), s.parser.diagnostics.items[0].code);
+    try T.expect(std.mem.eql(u8, s.parser.source[s.parser.diagnostics.items[0].pos..][0..1], "{"));
     try T.expectEqual(@as(u32, 1183), s.parser.diagnostics.items[1].code);
+    try T.expect(std.mem.eql(u8, s.parser.source[s.parser.diagnostics.items[1].pos..][0..1], "{"));
 }
 
 test "parser: interface with generics" {
@@ -11920,12 +11942,29 @@ test "parser: malformed class heritage reports upstream diagnostics" {
     try T.expectEqual(@as(usize, 1), empty_extends.parser.diagnostics.items.len);
     try T.expectEqual(@as(u32, 1097), empty_extends.parser.diagnostics.items[0].code);
 
-    var trailing_extends = try newTestSetup("class C extends A, {}");
+    var trailing_extends = try newTestSetup("class C extends A, B {}");
     defer destroyTestSetup(trailing_extends);
     trailing_extends.parser.setTargetEs2015OrLater(true);
     _ = try trailing_extends.parser.parseSourceFile();
     try T.expectEqual(@as(usize, 1), trailing_extends.parser.diagnostics.items.len);
-    try T.expectEqual(@as(u32, 1009), trailing_extends.parser.diagnostics.items[0].code);
+    try T.expectEqual(@as(u32, 1174), trailing_extends.parser.diagnostics.items[0].code);
+
+    var empty_after_extends_comma = try newTestSetup("class C extends A, {}");
+    defer destroyTestSetup(empty_after_extends_comma);
+    empty_after_extends_comma.parser.setTargetEs2015OrLater(true);
+    _ = try empty_after_extends_comma.parser.parseSourceFile();
+    try T.expectEqual(@as(usize, 1), empty_after_extends_comma.parser.diagnostics.items.len);
+    try T.expectEqual(@as(u32, 1009), empty_after_extends_comma.parser.diagnostics.items[0].code);
+
+    var extends_after_implements = try newTestSetup("class C implements A extends B {}");
+    defer destroyTestSetup(extends_after_implements);
+    extends_after_implements.parser.setTargetEs2015OrLater(true);
+    _ = try extends_after_implements.parser.parseSourceFile();
+    var found_extends_after_implements = false;
+    for (extends_after_implements.parser.diagnostics.items) |d| {
+        if (d.code == 1173) found_extends_after_implements = true;
+    }
+    try T.expect(found_extends_after_implements);
 
     var empty_implements = try newTestSetup("class C extends A implements {}");
     defer destroyTestSetup(empty_implements);
