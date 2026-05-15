@@ -2249,8 +2249,8 @@ pub const Checker = struct {
                     if (info.name == name) {
                         if (info.has_body) {
                             if (default_fn_impl != hir_mod.none_node_id) {
-                                try self.report(default_fn_impl, TsCodes.multiple_default_exports, "A module cannot have multiple default exports.");
-                                try self.report(stmt, TsCodes.multiple_default_exports, "A module cannot have multiple default exports.");
+                                try self.reportAt(default_fn_impl, self.defaultExportNamePos(default_fn_impl), TsCodes.multiple_default_exports, "A module cannot have multiple default exports.");
+                                try self.reportAt(stmt, self.defaultExportNamePos(stmt), TsCodes.multiple_default_exports, "A module cannot have multiple default exports.");
                                 return;
                             }
                             default_fn_impl = stmt;
@@ -2259,8 +2259,8 @@ pub const Checker = struct {
                     }
                 }
             }
-            try self.report(first_default, TsCodes.multiple_default_exports, "A module cannot have multiple default exports.");
-            try self.report(stmt, TsCodes.multiple_default_exports, "A module cannot have multiple default exports.");
+            try self.reportAt(first_default, self.defaultExportNamePos(first_default), TsCodes.multiple_default_exports, "A module cannot have multiple default exports.");
+            try self.reportAt(stmt, self.defaultExportNamePos(stmt), TsCodes.multiple_default_exports, "A module cannot have multiple default exports.");
             return;
         }
     }
@@ -2297,8 +2297,8 @@ pub const Checker = struct {
                     if (info.name == name) {
                         if (info.has_body) {
                             if (state.default_fn_impl != hir_mod.none_node_id) {
-                                try self.report(state.default_fn_impl, TsCodes.multiple_default_exports, "A module cannot have multiple default exports.");
-                                try self.report(stmt, TsCodes.multiple_default_exports, "A module cannot have multiple default exports.");
+                                try self.reportAt(state.default_fn_impl, self.defaultExportNamePos(state.default_fn_impl), TsCodes.multiple_default_exports, "A module cannot have multiple default exports.");
+                                try self.reportAt(stmt, self.defaultExportNamePos(stmt), TsCodes.multiple_default_exports, "A module cannot have multiple default exports.");
                                 return;
                             }
                             state.default_fn_impl = stmt;
@@ -2307,8 +2307,8 @@ pub const Checker = struct {
                     }
                 }
             }
-            try self.report(state.first_default, TsCodes.multiple_default_exports, "A module cannot have multiple default exports.");
-            try self.report(stmt, TsCodes.multiple_default_exports, "A module cannot have multiple default exports.");
+            try self.reportAt(state.first_default, self.defaultExportNamePos(state.first_default), TsCodes.multiple_default_exports, "A module cannot have multiple default exports.");
+            try self.reportAt(stmt, self.defaultExportNamePos(stmt), TsCodes.multiple_default_exports, "A module cannot have multiple default exports.");
             return;
         }
     }
@@ -2411,6 +2411,31 @@ pub const Checker = struct {
             .name = hir_mod.identifierOf(self.hir, fd.name).name,
             .has_body = fd.body != hir_mod.none_node_id,
         };
+    }
+
+    /// For an `export default <decl>` statement, return the position of
+    /// the named declaration (function/class name) so TS2528 underlines
+    /// the identifier rather than the `export` keyword. Returns null
+    /// when the default payload isn't a named function/class (e.g. an
+    /// object literal — TS itself reports column 1 in that case).
+    fn defaultExportNamePos(self: *Checker, node: NodeId) ?u32 {
+        if (node == hir_mod.none_node_id or self.hir.kindOf(node) != .export_decl) return null;
+        const ex = hir_mod.exportOf(self.hir, node);
+        if (!ex.is_default or ex.decl == hir_mod.none_node_id) return null;
+        const decl = ex.decl;
+        const name_node: NodeId = switch (self.hir.kindOf(decl)) {
+            .fn_decl => blk: {
+                const fd = hir_mod.fnDeclOf(self.hir, decl);
+                break :blk fd.name;
+            },
+            .class_decl => blk: {
+                const cd = hir_mod.classOf(self.hir, decl);
+                break :blk cd.name;
+            },
+            else => return null,
+        };
+        if (name_node == hir_mod.none_node_id) return null;
+        return self.hir.spanOf(name_node).start;
     }
 
     fn checkExportStarDiagnostics(self: *Checker, stmts: []const NodeId) CheckError!void {
@@ -6306,7 +6331,14 @@ pub const Checker = struct {
                 .var_decl, .let_decl, .const_decl => {
                     const v = hir_mod.varDeclOf(self.hir, cur);
                     if (v.init != prev) return false;
-                    return v.type_annotation != hir_mod.none_node_id;
+                    if (v.type_annotation != hir_mod.none_node_id) return true;
+                    // In `.js` files a leading `/** @type {T} */` on
+                    // the var-decl supplies a contextual signature for
+                    // an arrow/fn initializer. Mirrors upstream tsc
+                    // which threads JSDoc `@type` through the
+                    // contextual-typing pipeline.
+                    if (self.virtualSectionIsJsLike(cur) and self.varDeclHasJsDocTypeTag(cur)) return true;
+                    return false;
                 },
                 .assignment => {
                     const a = hir_mod.assignmentOf(self.hir, cur);
@@ -7709,16 +7741,26 @@ pub const Checker = struct {
                     self.string_interner.get(hir_mod.identifierOf(self.hir, pp.name).name)
                 else
                     "<anonymous>";
-                const msg = try std.fmt.allocPrint(
-                    self.diag_arena.allocator(),
-                    "Parameter '{s}' implicitly has an 'any' type.",
-                    .{param_name},
-                );
-                try self.diagnostics.append(self.gpa, .{
-                    .node = p,
-                    .code = TsCodes.parameter_implicitly_any,
-                    .message = msg,
-                });
+                // In `.js` files (or `// @allowJs` virtual sections),
+                // a leading JSDoc `@param {T} <name>` annotates the
+                // parameter and suppresses TS7006. Mirrors upstream tsc
+                // which treats the JSDoc tag as the parameter type.
+                if (self.virtualSectionIsJsLike(node) and
+                    self.fnHasLeadingJsDocParam(node, param_name))
+                {
+                    // Skip — JSDoc supplies the type.
+                } else {
+                    const msg = try std.fmt.allocPrint(
+                        self.diag_arena.allocator(),
+                        "Parameter '{s}' implicitly has an 'any' type.",
+                        .{param_name},
+                    );
+                    try self.diagnostics.append(self.gpa, .{
+                        .node = p,
+                        .code = TsCodes.parameter_implicitly_any,
+                        .message = msg,
+                    });
+                }
             }
         }
 
@@ -14638,6 +14680,31 @@ pub const Checker = struct {
         });
     }
 
+    /// True when an earlier `var/let/const <name>` declaration exists
+    /// in the same enclosing block as `node` (and same virtual section
+    /// when multi-file fixtures are in play). Used to suppress TS2502
+    /// for subsequent declarations like `var p: typeof p` when an
+    /// earlier `var p` has already established the symbol.
+    fn priorVarDeclWithSameNameExists(self: *Checker, node: NodeId, name: hir_mod.StringId) bool {
+        const scope = self.hir.parentOf(node);
+        if (scope == hir_mod.none_node_id) return false;
+        if (self.hir.kindOf(scope) != .block_stmt) return false;
+        const node_section = self.virtualSectionStartForNode(node);
+        const stmts = hir_mod.blockStmts(self.hir, scope);
+        for (stmts) |s| {
+            if (s == node) break;
+            const k = self.hir.kindOf(s);
+            if (k != .var_decl and k != .let_decl and k != .const_decl) continue;
+            if (self.virtualSectionStartForNode(s) != node_section) continue;
+            const other = hir_mod.varDeclOf(self.hir, s);
+            if (other.name == hir_mod.none_node_id) continue;
+            if (self.hir.kindOf(other.name) != .identifier) continue;
+            const oid = hir_mod.identifierOf(self.hir, other.name);
+            if (oid.name == name) return true;
+        }
+        return false;
+    }
+
     /// True when `type_node` contains a `typeof <var_name>` operand
     /// referring to the variable being declared. Mirrors tsc's
     /// TS2502 detection for direct self-typeof in a var-decl
@@ -18846,13 +18913,21 @@ pub const Checker = struct {
         // `typeAliasCircularTypeofVarDecl`; the var-side counterpart
         // here catches the direct self-reference, which tsc reports
         // even when no intermediate alias is involved.
+        //
+        // Skip when a prior `var <name>` already exists in the same
+        // scope (same virtual section). Upstream tsc treats subsequent
+        // `var x: typeof x` as referring to the *previously declared*
+        // `x` so no cycle exists. Mirrors `validMultipleVariableDeclarations`
+        // and similar fixtures.
         if (v.type_annotation != hir_mod.none_node_id and
             v.name != hir_mod.none_node_id and
             self.hir.kindOf(v.name) == .identifier)
         {
             const id = hir_mod.identifierOf(self.hir, v.name);
             if (self.varDeclTypeAnnotationContainsTypeofSelf(v.type_annotation, id.name)) {
-                try self.reportSelfReferencedTypeAnnotationAtName(node);
+                if (!self.priorVarDeclWithSameNameExists(node, id.name)) {
+                    try self.reportSelfReferencedTypeAnnotationAtName(node);
+                }
             }
         }
 
@@ -19165,6 +19240,42 @@ pub const Checker = struct {
             std.mem.endsWith(u8, filename, ".jsx") or
             std.mem.endsWith(u8, filename, ".mjs") or
             std.mem.endsWith(u8, filename, ".cjs");
+    }
+
+    /// True when the function declaration/expression at `fn_node` has
+    /// a leading `/** @param ... <name> */` JSDoc tag for the given
+    /// parameter name. Used to suppress TS7006 (implicit-any param) on
+    /// `.js` sources where JSDoc supplies the type — mirrors upstream
+    /// tsc which lowers `@param` into the parameter's type slot.
+    fn fnHasLeadingJsDocParam(self: *Checker, fn_node: NodeId, param_name: []const u8) bool {
+        if (param_name.len == 0) return false;
+        const src = self.source orelse return false;
+        const span = self.hir.spanOf(fn_node);
+        const body = self.leadingJsDocBody(src, span.start) orelse return false;
+        const tags = ts_parser.jsdoc.parse(self.gpa, body) catch return false;
+        defer self.gpa.free(tags);
+        for (tags) |tag| {
+            if (tag.kind != .param_tag) continue;
+            // `@param {T} name [desc]` — match by name.
+            if (std.mem.eql(u8, tag.name, param_name)) return true;
+        }
+        return false;
+    }
+
+    /// True when the var/let/const decl `node` has a leading
+    /// `/** @type {T} */` JSDoc tag. Used to extend
+    /// `parameterHasContextualType` so an arrow/fn initializer of a
+    /// JSDoc-typed variable suppresses TS7006 on its parameters.
+    fn varDeclHasJsDocTypeTag(self: *Checker, node: NodeId) bool {
+        const src = self.source orelse return false;
+        const span = self.hir.spanOf(node);
+        const body = self.leadingJsDocBody(src, span.start) orelse return false;
+        const tags = ts_parser.jsdoc.parse(self.gpa, body) catch return false;
+        defer self.gpa.free(tags);
+        for (tags) |tag| {
+            if (tag.kind == .type_tag and tag.type_text.len > 0) return true;
+        }
+        return false;
     }
 
     fn expressionNodeAssignableToTarget(self: *Checker, value_node: NodeId, value_t: TypeId, target_t: TypeId) CheckError!bool {
