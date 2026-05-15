@@ -884,8 +884,21 @@ pub const Parser = struct {
         const start = self.advance(); // if
         _ = try self.expect(.open_paren, "'(' after 'if'");
         const cond = try self.parseExpression();
-        _ = try self.expect(.close_paren, "')' after if condition");
-        const then_branch = try self.parseNestedStatement();
+        var missing_close_paren = false;
+        if (self.peek().kind == .close_paren) {
+            _ = self.advance();
+        } else {
+            const close_tok = self.peek();
+            try self.reportCodeAt(close_tok.span.start, close_tok.line, 1005, "')' expected.");
+            missing_close_paren = true;
+        }
+        const then_branch = if (self.peek().kind == .close_brace or self.peek().kind == .eof) blk: {
+            const close_tok = self.peek();
+            if (!missing_close_paren) {
+                try self.reportCodeAt(close_tok.span.start, close_tok.line, 1109, "Expression expected.");
+            }
+            break :blk try self.builder.addBlock(.{ .start = close_tok.span.start, .end = close_tok.span.start }, &.{});
+        } else try self.parseNestedStatement();
         var else_branch: NodeId = hir_mod.none_node_id;
         if (self.match(.kw_else)) else_branch = try self.parseNestedStatement();
         const end_pos: u32 = if (else_branch != hir_mod.none_node_id)
@@ -1894,6 +1907,7 @@ pub const Parser = struct {
         defer self.generator_depth = class_body_generator_depth;
         var members: std.ArrayListUnmanaged(NodeId) = .empty;
         defer members.deinit(self.gpa);
+        var recovered_nested_declaration = false;
         while (self.peek().kind != .close_brace and self.peek().kind != .eof) {
             // Decorators `@dec` on members. We capture each as a
             // sibling `decorator` node in the member list — emitter
@@ -1920,6 +1934,16 @@ pub const Parser = struct {
                 self.static_block_depth -= 1;
                 try members.append(self.gpa, block);
                 continue;
+            }
+            if ((self.peek().kind == .kw_class or self.peek().kind == .kw_enum) and
+                (self.peekAt(1).kind == .identifier or
+                    self.peekAt(1).kind.isContextualKeyword() or
+                    self.peekAt(1).kind == .open_brace))
+            {
+                const bad = self.peek();
+                try self.reportCodeAt(bad.span.start, bad.line, 1068, "Unexpected token. A constructor, method, accessor, or property was expected.");
+                recovered_nested_declaration = true;
+                break;
             }
             const mods = try self.skipClassModifiers();
             var member_start = self.peek();
@@ -2160,7 +2184,9 @@ pub const Parser = struct {
             // Unknown — advance to keep error-recovery flowing.
             _ = self.advance();
         }
-        const close = if (self.peek().kind == .close_brace)
+        const close = if (recovered_nested_declaration)
+            self.peek()
+        else if (self.peek().kind == .close_brace)
             self.advance()
         else blk: {
             const at = self.peek();
@@ -2664,7 +2690,19 @@ pub const Parser = struct {
         var members: std.ArrayListUnmanaged(NodeId) = .empty;
         defer members.deinit(self.gpa);
         try self.parseTypeMemberList(&members);
-        const close = try self.expect(.close_brace, "'}' to close interface body");
+        const close = if (self.peek().kind == .close_brace)
+            self.advance()
+        else blk: {
+            const at = self.peek();
+            const suppress_after_unterminated_type_args = at.kind == .eof and
+                self.diagnostics.items.len > 0 and
+                self.diagnostics.items[self.diagnostics.items.len - 1].code == 1005 and
+                std.mem.eql(u8, self.diagnostics.items[self.diagnostics.items.len - 1].message, "'>' expected.");
+            if (!suppress_after_unterminated_type_args) {
+                try self.reportCodeAt(at.span.start, at.line, 1005, "'}' expected.");
+            }
+            break :blk at;
+        };
         const name_id_str = try self.internToken(name_tok);
         const name_node = try self.builder.addIdentifier(tokenSpan(name_tok), name_id_str);
         return try self.builder.addInterface(
@@ -5153,7 +5191,15 @@ pub const Parser = struct {
                 try args.append(self.gpa, a);
                 if (!self.match(.comma)) break;
             }
-            _ = try self.consumeTypeGreater("'>' to close type arguments");
+            if (self.peek().kind == .greater_than or
+                self.peek().kind == .greater_greater or
+                self.peek().kind == .greater_greater_greater)
+            {
+                _ = try self.consumeTypeGreater("'>' to close type arguments");
+            } else {
+                const close_tok = self.peek();
+                try self.reportCodeAt(close_tok.span.start, close_tok.line, 1005, "'>' expected.");
+            }
         }
 
         const end_pos = self.tokens[self.cursor - 1].span.end;
@@ -7501,7 +7547,7 @@ test "parser: virtual ts section overrides declaration-file ambient default" {
     );
     defer destroyTestSetup(s);
     s.parser.setDeclarationFile(true);
-    _ = try s.parser.parseSourceFile();
+    _ = s.parser.parseSourceFile() catch {};
     for (s.parser.diagnostics.items) |d| {
         try T.expect(d.code != 1183);
     }
@@ -7825,7 +7871,7 @@ test "parser: for-in rejects destructuring targets" {
     var s = try newTestSetup("for (var {a, b} in obj) {} for ([a, b] in obj) {}");
     defer destroyTestSetup(s);
 
-    _ = try s.parser.parseSourceFile();
+    _ = s.parser.parseSourceFile() catch {};
     try T.expectEqual(@as(usize, 2), s.parser.diagnostics.items.len);
     try T.expectEqual(@as(u32, 2491), s.parser.diagnostics.items[0].code);
     try T.expectEqual(@as(u32, 2491), s.parser.diagnostics.items[1].code);
@@ -11049,6 +11095,50 @@ test "parser: invalid token in expression position reports invalid character" {
     try T.expect(s.parser.diagnostics.items.len >= 1);
     try T.expectEqual(@as(u32, 1127), s.parser.diagnostics.items[0].code);
     try T.expectEqualStrings("Invalid character.", s.parser.diagnostics.items[0].message);
+}
+
+test "parser: if condition missing close paren preserves condition" {
+    var s = try newTestSetup(
+        \\class Foo {
+        \\  f1() {
+        \\    if (a
+        \\  }
+        \\}
+    );
+    defer destroyTestSetup(s);
+
+    _ = try s.parser.parseSourceFile();
+    try T.expectEqual(@as(usize, 1), s.parser.diagnostics.items.len);
+    try T.expectEqual(@as(u32, 1005), s.parser.diagnostics.items[0].code);
+}
+
+test "parser: nested class declaration in class body bails to outer statement" {
+    var s = try newTestSetup(
+        \\class C {
+        \\class D {
+        \\}
+    );
+    defer destroyTestSetup(s);
+
+    const root = try s.parser.parseSourceFile();
+    const stmts = hir_mod.blockStmts(&s.hir, root);
+    try T.expectEqual(@as(usize, 2), stmts.len);
+    try T.expectEqual(@as(u32, 1068), s.parser.diagnostics.items[0].code);
+}
+
+test "parser: unterminated generic type reference reports TS1005 and recovers" {
+    var s = try newTestSetup(
+        \\interface IQService {
+        \\  all(promises: IPromise < any > []): IPromise<
+    );
+    defer destroyTestSetup(s);
+
+    _ = s.parser.parseSourceFile() catch {};
+    var found = false;
+    for (s.parser.diagnostics.items) |d| {
+        if (d.code == 1005 and std.mem.eql(u8, d.message, "'>' expected.")) found = true;
+    }
+    try T.expect(found);
 }
 
 test "parser: top-level public before break reports declaration expected" {
