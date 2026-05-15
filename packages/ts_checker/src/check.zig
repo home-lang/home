@@ -24854,6 +24854,13 @@ pub const Checker = struct {
         const Best = struct { name: []const u8 = "", dist: usize = std.math.maxInt(usize) };
         var best: Best = .{};
 
+        // Skip spelling suggestions for qualified-name lookups
+        // (`Z.foo`, `M2.Point`, …) — tsc routes those through
+        // namespace resolution and never offers a "Did you mean
+        // 'foo'?" hint that crosses the dot. Mirrors fixtures like
+        // `typeofAnExportedType` and `typeofANonExportedType`.
+        const skip_suggestions = std.mem.indexOfScalar(u8, name_str, '.') != null;
+
         const considerCandidate = struct {
             fn call(typo: []const u8, cand_str: []const u8, b: *Best) void {
                 if (cand_str.len == 0) return;
@@ -24950,7 +24957,7 @@ pub const Checker = struct {
         // baselines such as objectTypesIdentityWithCallSignatures3
         // which expect bare TS2304 in that case.
         const threshold: usize = @min((name_str.len * 4) / 10, @as(usize, 4));
-        const has_suggestion = best.dist <= threshold and best.name.len > 0;
+        const has_suggestion = !skip_suggestions and best.dist <= threshold and best.name.len > 0;
 
         const msg = if (has_suggestion)
             try std.fmt.allocPrint(
@@ -26838,6 +26845,37 @@ pub const Checker = struct {
     }
 
     fn reportRelationalOperatorCannotBeApplied(self: *Checker, node: NodeId, op: []const u8) CheckError!void {
+        try self.reportRelationalOperatorCannotBeAppliedWithTypes(node, op, types.Primitive.none, types.Primitive.none);
+    }
+
+    fn reportRelationalOperatorCannotBeAppliedWithTypes(
+        self: *Checker,
+        node: NodeId,
+        op: []const u8,
+        lhs_t: TypeId,
+        rhs_t: TypeId,
+    ) CheckError!void {
+        // Prefer tsc's render shape when both operand types have
+        // printable names: `Operator '>=' cannot be applied to types
+        // 'A' and 'B'.` Fall back to the bare wording otherwise so we
+        // never half-render.
+        if (lhs_t != types.Primitive.none and rhs_t != types.Primitive.none) {
+            if (try self.allocSimpleTypeName(lhs_t)) |left_name| {
+                if (try self.allocSimpleTypeName(rhs_t)) |right_name| {
+                    const msg = try std.fmt.allocPrint(
+                        self.diag_arena.allocator(),
+                        "Operator '{s}' cannot be applied to types '{s}' and '{s}'.",
+                        .{ op, left_name, right_name },
+                    );
+                    try self.diagnostics.append(self.gpa, .{
+                        .node = node,
+                        .code = TsCodes.operator_cannot_be_applied,
+                        .message = msg,
+                    });
+                    return;
+                }
+            }
+        }
         const msg = try std.fmt.allocPrint(
             self.diag_arena.allocator(),
             "Operator '{s}' cannot be applied to these operand types.",
@@ -27127,7 +27165,7 @@ pub const Checker = struct {
                 } else if (!self.isRelationalOperandAllowed(lhs) or !self.isRelationalOperandAllowed(rhs) or
                     self.relationalComparisonInvalid(lhs, rhs))
                 {
-                    try self.reportRelationalOperatorCannotBeApplied(node, op_text);
+                    try self.reportRelationalOperatorCannotBeAppliedWithTypes(node, op_text, lhs, rhs);
                 }
                 break :blk types.Primitive.boolean_t;
             },
