@@ -1413,7 +1413,7 @@ pub const Checker = struct {
                 }
             },
             .return_stmt => {
-                if (self.function_body_depth == 0) {
+                if (self.function_body_depth == 0 and !self.returnInsideUnsupportedWithStatement(node)) {
                     try self.report(node, TsCodes.return_outside_function, "A 'return' statement can only be used within a function body.");
                 }
                 const r = hir_mod.returnOf(self.hir, node);
@@ -4152,6 +4152,40 @@ pub const Checker = struct {
         return self.nodeHasAncestorKind(node, .fn_decl) or
             self.nodeHasAncestorKind(node, .fn_expr) or
             self.nodeHasAncestorKind(node, .arrow_fn);
+    }
+
+    fn returnInsideUnsupportedWithStatement(self: *Checker, node: NodeId) bool {
+        const src = self.source orelse return false;
+        var child = node;
+        var cur = self.hir.parentOf(node);
+        while (cur != hir_mod.none_node_id) : ({
+            child = cur;
+            cur = self.hir.parentOf(cur);
+        }) {
+            if (self.hir.kindOf(cur) != .block_stmt) continue;
+            const span = self.hir.spanOf(cur);
+            if (!self.sourceSpanStartsWithKeyword(src, span.start, "with")) continue;
+            const stmts = hir_mod.blockStmts(self.hir, cur);
+            if (stmts.len >= 2 and stmts[0] != child) return true;
+        }
+        return false;
+    }
+
+    fn sourceSpanStartsWithKeyword(self: *Checker, src: []const u8, start: u32, keyword: []const u8) bool {
+        _ = self;
+        var i: usize = @min(start, src.len);
+        while (i < src.len) : (i += 1) {
+            switch (src[i]) {
+                ' ', '\t', '\r', '\n' => continue,
+                else => break,
+            }
+        }
+        if (i + keyword.len > src.len) return false;
+        if (!std.mem.eql(u8, src[i .. i + keyword.len], keyword)) return false;
+        const before_ok = i == 0 or !isJsDocIdentChar(src[i - 1]);
+        const after = i + keyword.len;
+        const after_ok = after >= src.len or !isJsDocIdentChar(src[after]);
+        return before_ok and after_ok;
     }
 
     fn nodeIsBracketedComputedName(self: *Checker, node: NodeId) bool {
@@ -38076,6 +38110,15 @@ test "checker: top-level return reports TS1108" {
     try s.checker.checkSourceFile(s.root);
     try T.expectEqual(@as(usize, 1), s.checker.diagnostics.items.len);
     try T.expectEqual(TsCodes.return_outside_function, s.checker.diagnostics.items[0].code);
+}
+
+test "checker: unsupported with body suppresses redundant top-level return" {
+    const s = try newSetup("with (1)\n  return;");
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+    for (s.checker.diagnostics.items) |d| {
+        try T.expect(d.code != TsCodes.return_outside_function);
+    }
 }
 
 test "checker: unresolved shorthand property reports TS18004" {

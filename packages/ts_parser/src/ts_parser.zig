@@ -693,6 +693,18 @@ pub const Parser = struct {
                 const close = self.advance();
                 break :blk try self.builder.addBlock(tokenSpan(close), &.{});
             },
+            .invalid => blk: {
+                const bad = self.advance();
+                try self.reportCodeAt(bad.span.start, bad.line, 1127, "Invalid character.");
+                if (self.peek().kind != .eof and
+                    self.peek().kind != .semicolon and
+                    !self.peek().flags.preceded_by_newline)
+                {
+                    break :blk try self.parseStatement();
+                }
+                if (self.peek().kind == .semicolon) _ = self.advance();
+                break :blk try self.builder.addBlock(tokenSpan(bad), &.{});
+            },
             else => try self.parseExpressionStatement(),
         };
     }
@@ -11098,6 +11110,18 @@ test "parser: invalid token in expression position reports invalid character" {
     try T.expect(s.parser.diagnostics.items.len >= 1);
     try T.expectEqual(@as(u32, 1127), s.parser.diagnostics.items[0].code);
     try T.expectEqualStrings("Invalid character.", s.parser.diagnostics.items[0].message);
+}
+
+test "parser: statement invalid token recovers following declaration" {
+    var s = try newTestSetup("\\ declare var v;");
+    defer destroyTestSetup(s);
+
+    const root = try s.parser.parseSourceFile();
+    try T.expectEqual(@as(usize, 1), s.parser.diagnostics.items.len);
+    try T.expectEqual(@as(u32, 1127), s.parser.diagnostics.items[0].code);
+    const stmts = hir_mod.blockStmts(&s.hir, root);
+    try T.expectEqual(@as(usize, 1), stmts.len);
+    try T.expectEqual(hir_mod.NodeKind.var_decl, s.hir.kindOf(stmts[0]));
 }
 
 test "parser: if condition missing close paren preserves condition" {
