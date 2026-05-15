@@ -194,6 +194,7 @@ pub const TsCodes = struct {
     pub const object_possibly_undefined: u32 = 2532;
     pub const readonly_index_signature: u32 = 2542;
     pub const expected_n_arguments: u32 = 2554;
+    pub const expected_at_least_n_arguments: u32 = 2555;
     pub const spread_argument_requires_tuple_or_rest: u32 = 2556;
     pub const expected_n_type_arguments: u32 = 2558;
     pub const no_default_export: u32 = 1192;
@@ -4017,6 +4018,13 @@ pub const Checker = struct {
             if (self.isGlobalSymbolConstructorVarDecl(decl_node)) return;
             if (!self.varDeclTypeContainsSymbol(decl_node)) return;
         }
+        // `var Symbol: T;` declarations shadow the ambient global
+        // `Symbol`. tsc treats reads of this binding as initialised
+        // regardless of the use site, so suppress TS2454 anywhere it
+        // appears. Mirrors `ES5SymbolProperty4.ts(7,9)` where the
+        // reference sits in `(new C)[Symbol.iterator]` (an
+        // element-access index, not a class computed-property key).
+        if (self.isGlobalSymbolConstructorVarDecl(decl_node)) return;
         if (self.declarationSourceHasLeadingDeclare(decl_node) or self.declarationLineHasDeclare(decl_node)) return;
         if (self.sourceHasDeclareAnyVarName(name)) return;
         if (std.mem.eql(u8, self.string_interner.get(name), "_")) return;
@@ -4043,9 +4051,31 @@ pub const Checker = struct {
                 !(self.nodeHasAncestorKind(ref_node, .new_expr) and self.varDeclHasTypeAnnotation(decl_node)) and
                 !(self.nodeHasAncestorKind(ref_node, .decorator) and self.varDeclHasTypeAnnotation(decl_node)) and
                 !self.isCompoundAssignmentTarget(ref_node) and
+                !(self.nodeHasAncestorKind(ref_node, .unary_op) and self.varDeclHasTypeAnnotation(decl_node)) and
+                !self.isOperandOfDirectStatementUnary(ref_node) and
                 !self.isDirectExpressionStatement(ref_node)) return;
         }
         try self.reportUsedBeforeAssignment(ref_node, name, pending);
+    }
+
+    /// True when `node` sits inside a top-level expression statement
+    /// (`stmt; ;` or `stmt;` directly inside a block) whose immediate
+    /// expression is a unary operator like `~x`, `-x`, `+x`. Used to
+    /// keep TS2454 firing for the operand of bare-statement unary
+    /// operators — see `bitwiseNotOperatorWithNumberType.ts(39,2)`,
+    /// where `~NUMBER;` should still report the use-before-assigned
+    /// even though the identifier's direct parent is the unary node.
+    fn isOperandOfDirectStatementUnary(self: *Checker, node: NodeId) bool {
+        const parent = self.hir.parentOf(node);
+        if (parent == hir_mod.none_node_id) return false;
+        const pk = self.hir.kindOf(parent);
+        if (pk != .unary_op) return false;
+        const grandparent = self.hir.parentOf(parent);
+        if (grandparent == hir_mod.none_node_id) return false;
+        return switch (self.hir.kindOf(grandparent)) {
+            .block_stmt, .expression_stmt => true,
+            else => false,
+        };
     }
 
     fn reportUsedBeforeAssignment(
@@ -4177,7 +4207,7 @@ pub const Checker = struct {
         const parent = self.hir.parentOf(node);
         if (parent == hir_mod.none_node_id) return false;
         return switch (self.hir.kindOf(parent)) {
-            .block_stmt => true,
+            .block_stmt, .expression_stmt => true,
             else => false,
         };
     }
@@ -4474,9 +4504,16 @@ pub const Checker = struct {
         if (v.name == hir_mod.none_node_id or self.hir.kindOf(v.name) != .identifier) return false;
         const id = hir_mod.identifierOf(self.hir, v.name);
         if (!std.mem.eql(u8, self.string_interner.get(id.name), "Symbol")) return false;
-        if (v.type_annotation == hir_mod.none_node_id or self.hir.kindOf(v.type_annotation) != .type_ref) return false;
-        const r = hir_mod.typeRefOf(self.hir, v.type_annotation);
-        return r.qualifier_len == 0 and std.mem.eql(u8, self.string_interner.get(r.name), "SymbolConstructor");
+        // Any top-level `var Symbol: T;` declaration shadows / merges
+        // with the ambient global `Symbol` constructor. tsc treats the
+        // resulting binding as initialised (the global stays usable),
+        // so reads like `Symbol.iterator` should not raise TS2454 even
+        // when the user-side annotation isn't literally
+        // `SymbolConstructor`. Mirrors fixtures `ES5SymbolProperty4.ts`
+        // and `ES5SymbolProperty7.ts` where the merge target is
+        // `{ iterator: string }` / `{ iterator: any }`.
+        if (v.type_annotation == hir_mod.none_node_id) return false;
+        return true;
     }
 
     fn sourceHasStrictFalseDirective(self: *Checker) bool {
@@ -29392,6 +29429,12 @@ pub const Checker = struct {
             args.len > param_ts.len;
         if (too_few or too_many) {
             const fixed_variadic_count = is_variadic and rest_max_count != null;
+            // tsc renders the "Expected at least N arguments" form
+            // (TS2555) for variadic-too-few and the "Expected N or
+            // more arguments" form (TS2554) for non-variadic-too-few
+            // with optionals; the two diverged in TS 2.0 to give
+            // overload diagnostics a distinct discriminator.
+            const use_at_least_form = is_variadic and too_few and !fixed_variadic_count;
             const expected_label: []const u8 = if (fixed_variadic_count)
                 ""
             else if (is_variadic)
@@ -29401,11 +29444,18 @@ pub const Checker = struct {
             else
                 " or fewer";
             const expected_n: usize = if (fixed_variadic_count) rest_max_count.? else if (is_variadic) min_required else param_ts.len;
-            const msg = try std.fmt.allocPrint(
-                self.diag_arena.allocator(),
-                "Expected {d}{s} arguments, but got {d}.",
-                .{ expected_n, expected_label, args.len },
-            );
+            const msg = if (use_at_least_form)
+                try std.fmt.allocPrint(
+                    self.diag_arena.allocator(),
+                    "Expected at least {d} arguments, but got {d}.",
+                    .{ expected_n, args.len },
+                )
+            else
+                try std.fmt.allocPrint(
+                    self.diag_arena.allocator(),
+                    "Expected {d}{s} arguments, but got {d}.",
+                    .{ expected_n, expected_label, args.len },
+                );
             // tsc anchors a too-many TS2554 on the first excess
             // argument when one exists (matches `genericRestArity`,
             // `genericRestArityStrict` and similar). Too-few is
@@ -29425,7 +29475,7 @@ pub const Checker = struct {
             try self.diagnostics.append(self.gpa, .{
                 .node = call_node,
                 .pos = anchor_pos,
-                .code = TsCodes.expected_n_arguments,
+                .code = if (use_at_least_form) TsCodes.expected_at_least_n_arguments else TsCodes.expected_n_arguments,
                 .message = msg,
             });
         }
