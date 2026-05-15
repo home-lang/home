@@ -417,9 +417,6 @@ fn resolverStrategyFromCase(c: Case) ts_resolver.Strategy {
 /// path when something prevents the program-graph route (no virtual
 /// files extracted, etc.).
 fn runProgram(gpa: std.mem.Allocator, c: Case) !?Result {
-    if (std.mem.indexOf(u8, c.name, "packageJson") != null or std.mem.indexOf(u8, c.name, "untypedModule") != null) {
-        std.debug.print("[program-route] {s} raw_len={d}\n", .{ c.name, c.raw_source.len });
-    }
     var virtual_files = try splitVirtualFiles(gpa, c.raw_source);
     defer virtual_files.deinit(gpa);
     if (virtual_files.items.len == 0) return null;
@@ -453,8 +450,12 @@ fn runProgram(gpa: std.mem.Allocator, c: Case) !?Result {
         path: []const u8,
         extra_strip: u32,
     }) = .empty;
-    defer for (program_files.items) |pf| gpa.free(pf.path);
+    // Defers run LIFO. Free per-element paths FIRST (registered
+    // second below), then deinit the list (registered first below).
+    // Reversing the registration order would let `deinit` run first
+    // and the subsequent iteration would dereference freed memory.
     defer program_files.deinit(gpa);
+    defer for (program_files.items) |pf| gpa.free(pf.path);
     for (virtual_files.items) |f| {
         if (!isCodeVirtualFile(f.path)) continue;
         if (isNodeModulesVirtualPath(f.path)) continue;
@@ -922,7 +923,6 @@ pub fn loadDirectoryWithOptions(
             if (entry.raw_source.len > 0) gpa.free(entry.raw_source);
             if (entry.path.len > 0) gpa.free(entry.path);
             if (entry.expected_errors.len > 0) gpa.free(entry.expected_errors);
-            if (entry.raw_source.len > 0) gpa.free(entry.raw_source);
         }
         out.deinit(gpa);
     }
@@ -2568,7 +2568,6 @@ pub fn runDirectoryWithOptions(
             if (entry.raw_source.len > 0) gpa.free(entry.raw_source);
             if (entry.path.len > 0) gpa.free(entry.path);
             if (entry.expected_errors.len > 0) gpa.free(entry.expected_errors);
-            if (entry.raw_source.len > 0) gpa.free(entry.raw_source);
         }
         gpa.free(corpus);
     }
@@ -3104,7 +3103,6 @@ test "conformance: bisect exact-baseline heap leak" {
             if (entry.raw_source.len > 0) T.allocator.free(entry.raw_source);
             if (entry.path.len > 0) T.allocator.free(entry.path);
             if (entry.expected_errors.len > 0) T.allocator.free(entry.expected_errors);
-            if (entry.raw_source.len > 0) T.allocator.free(entry.raw_source);
         }
         T.allocator.free(corpus);
     }
@@ -3632,7 +3630,6 @@ test "conformance: opt-in full local TypeScript corpus survey" {
             if (entry.raw_source.len > 0) T.allocator.free(entry.raw_source);
             if (entry.path.len > 0) T.allocator.free(entry.path);
             if (entry.expected_errors.len > 0) T.allocator.free(entry.expected_errors);
-            if (entry.raw_source.len > 0) T.allocator.free(entry.raw_source);
         }
         T.allocator.free(corpus);
     }
