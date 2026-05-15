@@ -2965,11 +2965,18 @@ pub const Checker = struct {
             }
         }
         if (f.flags.is_getter and !self.fnBodyHasReturn(f.body)) {
-            const pos = if (f.name != hir_mod.none_node_id) self.hir.spanOf(f.name).start else self.hir.spanOf(node).start;
+            const pos = if (f.name != hir_mod.none_node_id) self.accessorDiagnosticPos(f.name) else self.hir.spanOf(node).start;
             try self.reportAt(node, pos, TsCodes.getter_must_return_value, "A 'get' accessor must return a value.");
         }
         try self.checkUnusedParameters(node, f.body);
         try self.checkUnusedLocals(f.body);
+    }
+
+    fn accessorDiagnosticPos(self: *Checker, name_node: NodeId) u32 {
+        const sp = self.hir.spanOf(name_node);
+        const src = self.source orelse return sp.start;
+        if (sp.start > 0 and sp.start <= src.len and src[sp.start - 1] == '[') return sp.start - 1;
+        return sp.start;
     }
 
     fn statementDefinitelyExits(self: *Checker, node: NodeId) bool {
@@ -7953,6 +7960,7 @@ pub const Checker = struct {
                             try self.report(m, TsCodes.computed_property_name_type, "A computed property name must be of type 'string', 'number', 'symbol', or 'any'.");
                         } else if (!op_is_method and
                             !self.classMemberSourceHasLeadingKeyword(m, "accessor") and
+                            !self.computedKeyIsUnresolvedIdentifier(op.key) and
                             !self.computedClassPropertyKeyIsSimpleLiteralNode(op.key, key_t))
                         {
                             try self.report(m, 1166, "A computed property name in a class property declaration must have a simple literal type or a 'unique symbol' type.");
@@ -7966,6 +7974,7 @@ pub const Checker = struct {
                         if (op_is_computed and
                             !op_is_method and
                             !op.is_static and
+                            !self.computedKeyIsUnresolvedIdentifier(op.key) and
                             self.strict_flags.strict_property_initialization and
                             op.type_annotation != hir_mod.none_node_id and
                             op.value == hir_mod.none_node_id)
@@ -14103,6 +14112,7 @@ pub const Checker = struct {
                     if (try self.qualifiedEnumMemberTypeRef(type_node)) |t| return t;
                     if (try self.resolveQualifiedTypeRef(type_node)) |t| return t;
                     if (try self.reactComponentClassType(type_node)) |t| return t;
+                    try self.reportCannotFindNamespaceForQualifiedTypeRef(type_node);
                 }
                 if (r.qualifier_len == 0 and r.args_len == 0) {
                     const name_str = self.string_interner.get(r.name);
@@ -14735,6 +14745,37 @@ pub const Checker = struct {
             .enum_decl => self.hir.typeOf(decl),
             else => null,
         };
+    }
+
+    fn reportCannotFindNamespaceForQualifiedTypeRef(self: *Checker, type_node: NodeId) CheckError!void {
+        if (self.hir.kindOf(type_node) != .type_ref) return;
+        const qualifiers = hir_mod.typeRefQualifier(self.hir, type_node);
+        if (qualifiers.len == 0 or self.hir.kindOf(qualifiers[0]) != .identifier) return;
+        const root_name = hir_mod.identifierOf(self.hir, qualifiers[0]).name;
+        if (self.qualifiedTypeRefRootNamespaceExists(type_node, root_name) catch false) return;
+        const msg = try std.fmt.allocPrint(
+            self.diag_arena.allocator(),
+            "Cannot find namespace '{s}'.",
+            .{self.string_interner.get(root_name)},
+        );
+        try self.diagnostics.append(self.gpa, .{
+            .node = qualifiers[0],
+            .code = TsCodes.cannot_find_namespace,
+            .message = msg,
+        });
+    }
+
+    fn qualifiedTypeRefRootNamespaceExists(self: *Checker, type_node: NodeId, root_name: hir_mod.StringId) CheckError!bool {
+        if (self.module) |module| {
+            if (module.root.namespaces.get(root_name) != null) return true;
+        }
+        var import_path: std.ArrayListUnmanaged(hir_mod.StringId) = .empty;
+        defer import_path.deinit(self.gpa);
+        if (try self.appendImportEqualsNamespacePathForLocal(&import_path, root_name, type_node)) return true;
+        const root = self.rootBlockFor(type_node);
+        if (root == hir_mod.none_node_id or self.hir.kindOf(root) != .block_stmt) return false;
+        const one = [_]hir_mod.StringId{root_name};
+        return self.findNamespaceByPath(hir_mod.blockStmts(self.hir, root), &one) != null;
     }
 
     fn resolveQualifiedImportNamespaceTypeRef(
@@ -17186,7 +17227,8 @@ pub const Checker = struct {
         if (self.strict_flags.no_implicit_any and
             v.type_annotation == hir_mod.none_node_id and
             v.init == hir_mod.none_node_id and
-            !self.varDeclHasMalformedListSyntax(node, v.name))
+            !self.varDeclHasMalformedListSyntax(node, v.name) and
+            !self.varDeclIsInsideFunctionLike(node))
         {
             const var_name: []const u8 = if (v.name != hir_mod.none_node_id and self.hir.kindOf(v.name) == .identifier)
                 self.string_interner.get(hir_mod.identifierOf(self.hir, v.name).name)
@@ -17219,6 +17261,18 @@ pub const Checker = struct {
             const c = src[i];
             if (c == ';' or c == ' ' or c == '\t' or c == '\r' or c == '\n') continue;
             return c == ',';
+        }
+        return false;
+    }
+
+    fn varDeclIsInsideFunctionLike(self: *Checker, node: NodeId) bool {
+        var cur = self.hir.parentOf(node);
+        while (cur != hir_mod.none_node_id) : (cur = self.hir.parentOf(cur)) {
+            switch (self.hir.kindOf(cur)) {
+                .fn_decl, .fn_expr, .arrow_fn => return true,
+                .source_file => return false,
+                else => {},
+            }
         }
         return false;
     }
@@ -24654,6 +24708,11 @@ pub const Checker = struct {
         if (t >= self.interner.pool.typeCount()) return false;
         const f = self.interner.pool.flagsOf(t);
         return f.is_literal and (f.is_string or f.is_number);
+    }
+
+    fn computedKeyIsUnresolvedIdentifier(self: *Checker, key: NodeId) bool {
+        if (key == hir_mod.none_node_id or self.hir.kindOf(key) != .identifier) return false;
+        return !self.identifierHasNarrowableValueBinding(key);
     }
 
     fn computedClassPropertyKeyIsSimpleLiteralNode(self: *Checker, key: NodeId, t: TypeId) bool {
@@ -36346,6 +36405,16 @@ test "checker: malformed variable declaration lists suppress follow-on TS7005" {
     }
 }
 
+test "checker: noImplicitAny does not report local function var declarations" {
+    const s = try newSetup("function f() { var code; }");
+    defer destroySetup(s);
+    s.checker.setStrictFlags(.{ .no_implicit_any = true });
+    try s.checker.checkSourceFile(s.root);
+    for (s.checker.diagnostics.items) |d| {
+        try T.expect(d.code != TsCodes.variable_implicitly_any);
+    }
+}
+
 test "checker: noImplicitAny emits TS7008 for bare class and interface members" {
     const s = try newSetup(
         \\interface I { p }
@@ -43175,6 +43244,33 @@ test "checker: computed auto-accessor class member skips TS1166" {
     }
 }
 
+test "checker: unresolved computed class property key suppresses follow-on TS1166 and TS2564" {
+    const s = try newSetup("class C { [e]: number }");
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+    var saw_missing = false;
+    for (s.checker.diagnostics.items) |d| {
+        if (d.code == TsCodes.cannot_find_name) saw_missing = true;
+        try T.expect(d.code != 1166);
+        try T.expect(d.code != TsCodes.property_not_initialized);
+    }
+    try T.expect(saw_missing);
+}
+
+test "checker: qualified type assertion with missing root reports namespace diagnostic" {
+    const s = try newSetup(
+        \\let foo: any;
+        \\let x = <Missing.Type>foo;
+    );
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+    var saw_namespace = false;
+    for (s.checker.diagnostics.items) |d| {
+        if (d.code == TsCodes.cannot_find_namespace) saw_namespace = true;
+    }
+    try T.expect(saw_namespace);
+}
+
 test "checker: default type parameter — `function f<T = string>(x?: T): T` returns string when called bare" {
     const s = try newSetup(
         \\function f<T = string>(x?: T): T { return x as T; }
@@ -45464,6 +45560,20 @@ test "checker: getter body without value return reports TS2378" {
     var found = false;
     for (s.checker.diagnostics.items) |d| {
         if (d.code == TsCodes.getter_must_return_value) found = true;
+    }
+    try T.expect(found);
+}
+
+test "checker: computed getter without value return anchors TS2378 on bracket" {
+    const s = try newSetup("var v = { get [e]() { } };");
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+    var found = false;
+    for (s.checker.diagnostics.items) |d| {
+        if (d.code == TsCodes.getter_must_return_value) {
+            found = true;
+            try T.expectEqual(@as(?u32, 14), d.pos);
+        }
     }
     try T.expect(found);
 }

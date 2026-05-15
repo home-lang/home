@@ -4506,9 +4506,17 @@ pub const Parser = struct {
             return false;
         }
         const close_tok = self.advance();
-        const name_id = (try self.computedTypeMemberNameFromKey(key_expr)) orelse {
-            self.cursor = checkpoint;
-            return false;
+        const name_id = (try self.computedTypeMemberNameFromKey(key_expr)) orelse blk: {
+            if (self.hir.kindOf(key_expr) != .identifier) {
+                self.cursor = checkpoint;
+                return false;
+            }
+            const id = hir_mod.identifierOf(self.hir, key_expr);
+            const name_text = self.interner.get(id.name);
+            const msg = try std.fmt.allocPrint(self.diag_arena.allocator(), "Cannot find name '{s}'.", .{name_text});
+            const sp = self.hir.spanOf(key_expr);
+            try self.reportCodeAt(sp.start, start_tok.line, 2304, msg);
+            break :blk @as(hir_mod.StringId, 0);
         };
         if (self.computedSymbolMemberIsNonPropertySymbol(key_expr)) {
             try self.reportCodeAt(start_tok.span.start, start_tok.line, 2464, "A computed property name must be of type 'string', 'number', 'symbol', or 'any'.");
@@ -10343,6 +10351,15 @@ test "parser: malformed interface index signatures use upstream recovery diagnos
     _ = try invalid_key.parser.parseSourceFile();
     try T.expectEqual(@as(usize, 1), invalid_key.parser.diagnostics.items.len);
     try T.expectEqual(@as(u32, 1268), invalid_key.parser.diagnostics.items[0].code);
+}
+
+test "parser: unresolved computed interface member reports missing key name" {
+    var s = try newTestSetup("interface I {\n  [e]: number\n}");
+    defer destroyTestSetup(s);
+    _ = try s.parser.parseSourceFile();
+    try T.expectEqual(@as(usize, 1), s.parser.diagnostics.items.len);
+    try T.expectEqual(@as(u32, 2304), s.parser.diagnostics.items[0].code);
+    try T.expectEqualStrings("Cannot find name 'e'.", s.parser.diagnostics.items[0].message);
 }
 
 test "parser: computed enum member parses cleanly" {

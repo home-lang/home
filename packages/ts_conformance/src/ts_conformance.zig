@@ -905,6 +905,7 @@ pub fn loadDirectoryWithOptions(
         for (out.items) |entry| {
             gpa.free(entry.name);
             gpa.free(entry.source);
+            if (entry.raw_source.len > 0) gpa.free(entry.raw_source);
             if (entry.path.len > 0) gpa.free(entry.path);
             if (entry.expected_errors.len > 0) gpa.free(entry.expected_errors);
         }
@@ -2513,6 +2514,7 @@ pub fn runOwnedCorpus(
             .syntax_target_es2015 = entry.syntax_target_es2015,
             .report_deprecated_target_es5 = entry.report_deprecated_target_es5,
             .suppress_js_check_diagnostics = entry.suppress_js_check_diagnostics,
+            .raw_source = entry.raw_source,
         };
         const r = try runOneEntry(gpa, view);
         switch (r.outcome) {
@@ -2548,6 +2550,7 @@ pub fn runDirectoryWithOptions(
         for (corpus) |entry| {
             gpa.free(entry.name);
             gpa.free(entry.source);
+            if (entry.raw_source.len > 0) gpa.free(entry.raw_source);
             if (entry.path.len > 0) gpa.free(entry.path);
             if (entry.expected_errors.len > 0) gpa.free(entry.expected_errors);
         }
@@ -2638,6 +2641,7 @@ fn runOneEntry(gpa: std.mem.Allocator, entry: CorpusEntry) !Result {
             .syntax_target_es2015 = entry.syntax_target_es2015,
             .report_deprecated_target_es5 = entry.report_deprecated_target_es5,
             .suppress_js_check_diagnostics = entry.suppress_js_check_diagnostics,
+            .raw_source = entry.raw_source,
         });
         errdefer if (exact.detail.len > 0) gpa.free(exact.detail);
         exact.name = try gpa.dupe(u8, entry.name);
@@ -3081,6 +3085,7 @@ test "conformance: bisect exact-baseline heap leak" {
         for (corpus) |entry| {
             T.allocator.free(entry.name);
             T.allocator.free(entry.source);
+            if (entry.raw_source.len > 0) T.allocator.free(entry.raw_source);
             if (entry.path.len > 0) T.allocator.free(entry.path);
             if (entry.expected_errors.len > 0) T.allocator.free(entry.expected_errors);
         }
@@ -3109,6 +3114,7 @@ test "conformance: bisect exact-baseline heap leak" {
             .syntax_target_es2015 = entry.syntax_target_es2015,
             .report_deprecated_target_es5 = entry.report_deprecated_target_es5,
             .suppress_js_check_diagnostics = entry.suppress_js_check_diagnostics,
+            .raw_source = entry.raw_source,
         });
         try results.append(T.allocator, r);
     }
@@ -3606,6 +3612,7 @@ test "conformance: opt-in full local TypeScript corpus survey" {
         for (corpus) |entry| {
             T.allocator.free(entry.name);
             T.allocator.free(entry.source);
+            if (entry.raw_source.len > 0) T.allocator.free(entry.raw_source);
             if (entry.path.len > 0) T.allocator.free(entry.path);
             if (entry.expected_errors.len > 0) T.allocator.free(entry.expected_errors);
         }
