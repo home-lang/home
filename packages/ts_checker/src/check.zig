@@ -14782,6 +14782,14 @@ pub const Checker = struct {
         return false;
     }
 
+    fn isReservedKeywordTypeRefName(self: *const Checker, name: hir_mod.StringId) bool {
+        const raw = self.string_interner.get(name);
+        return std.mem.eql(u8, raw, "public") or
+            std.mem.eql(u8, raw, "private") or
+            std.mem.eql(u8, raw, "protected") or
+            std.mem.eql(u8, raw, "static");
+    }
+
     fn genericAliasHasMissingRequiredArgs(self: *Checker, info: GenericAliasInfo, supplied: usize) bool {
         if (supplied >= info.params.len) return false;
         for (info.params[supplied..]) |p| {
@@ -15534,6 +15542,10 @@ pub const Checker = struct {
                     const lowered = try self.lowerer.lower(type_node);
                     if (lowered != types.Primitive.unknown or std.mem.eql(u8, name_str, "unknown")) return lowered;
                     if (self.visibleTypeDeclarationExistsAt(type_node, r.name)) return lowered;
+                    if (self.isReservedKeywordTypeRefName(r.name)) {
+                        try self.reportCannotFindNameOnce(type_node, r.name);
+                        return types.Primitive.any;
+                    }
                     if (self.unqualifiedTypeRefSourceHasOpenAngle(type_node, r.name)) {
                         try self.reportCannotFindNameOnce(type_node, r.name);
                         return types.Primitive.any;
@@ -26908,8 +26920,8 @@ pub const Checker = struct {
             }
             if (self.namedTypeForId(arg_t) != null and !arg_is_nullish and
                 !(arg_t == types.Primitive.string_t or arg_t == types.Primitive.number_t or
-                arg_t == types.Primitive.boolean_t or arg_t == types.Primitive.bigint_t or
-                arg_t == types.Primitive.symbol_t))
+                    arg_t == types.Primitive.boolean_t or arg_t == types.Primitive.bigint_t or
+                    arg_t == types.Primitive.symbol_t))
             {
                 return;
             }
