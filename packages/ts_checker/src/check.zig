@@ -30913,6 +30913,17 @@ pub const Checker = struct {
         }
     }
 
+    /// True when `node` is a (transitive) descendant of `ancestor`.
+    /// Used by the TS2526 walker so constructor-parameter `this`
+    /// types fire while constructor-body uses of `this` stay valid.
+    fn nodeIsDescendantOf(self: *Checker, node: hir_mod.NodeId, ancestor: hir_mod.NodeId) bool {
+        var cur = self.hir.parentOf(node);
+        while (cur != hir_mod.none_node_id) : (cur = self.hir.parentOf(cur)) {
+            if (cur == ancestor) return true;
+        }
+        return false;
+    }
+
     /// Returns true when a `this` type ref located at `node` lands in
     /// a context that resolves to a class/interface this-type. The
     /// walker mirrors upstream's `getThisContainer` semantics:
@@ -30933,24 +30944,23 @@ pub const Checker = struct {
                     const f = hir_mod.fnDeclOf(self.hir, cur);
                     if (f.flags.is_static) return false;
                     const parent_kind = self.hir.kindOf(self.hir.parentOf(cur));
-                    return parent_kind == .class_decl or parent_kind == .class_expr;
+                    if (parent_kind != .class_decl and parent_kind != .class_expr) return false;
+                    // For constructors, the `this` type is only
+                    // available inside the body — parameter types and
+                    // the return-type slot reject it (TS2526).
+                    if (f.flags.is_constructor) {
+                        if (f.body == hir_mod.none_node_id) return false;
+                        return self.nodeIsDescendantOf(node, f.body);
+                    }
+                    return true;
                 },
                 .fn_type, .constructor_type => {
-                    // A function-type node is treated as a container
-                    // only when it stands alone (e.g. the body of a
-                    // type alias). When it appears as the type of an
-                    // interface member, class field, or property
-                    // signature, the *containing* member is the real
-                    // this-container. Walk past the fn_type so the
-                    // outer member can be classified.
-                    const parent_kind = self.hir.kindOf(self.hir.parentOf(cur));
-                    if (parent_kind == .interface_member or
-                        parent_kind == .object_property or
-                        parent_kind == .index_signature)
-                    {
-                        continue;
-                    }
-                    return false;
+                    // Mirrors upstream: `FunctionType` is NOT a
+                    // this-container — `getThisContainer` walks past
+                    // it. The real container is whatever encloses the
+                    // function-type node (an interface_member, class
+                    // field, type alias body, etc.). Continue the walk.
+                    continue;
                 },
                 .object_property => {
                     const op = hir_mod.objectPropertyOf(self.hir, cur);
@@ -46122,6 +46132,77 @@ test "checker: TS2526 fires on top-level `var x: this`" {
     try T.expect(hits >= 1);
 }
 
+test "checker: TS2526 fires on `var x: this` even with binder attached" {
+    const b = try newBoundSetup("var x: this;");
+    defer destroyBoundSetup(b);
+    try b.base.checker.checkSourceFile(b.base.root);
+    var hits: usize = 0;
+    for (b.base.checker.diagnostics.items) |d| {
+        if (d.code == TsCodes.this_type_outside_class) hits += 1;
+    }
+    try T.expect(hits >= 1);
+}
+
+test "checker: HIR contains type_ref for var x: this" {
+    const s = try newSetup("var x: this;");
+    defer destroySetup(s);
+    const this_id = try s.sint.intern("this");
+    var found = false;
+    var i: hir_mod.NodeId = 1;
+    while (i < s.hir.nodeCount()) : (i += 1) {
+        if (s.hir.kindOf(i) != .type_ref) continue;
+        const tr = hir_mod.typeRefOf(&s.hir, i);
+        if (tr.name == this_id) found = true;
+    }
+    try T.expect(found);
+}
+
+test "checker: TS2526 fires across full thisTypeErrors fixture" {
+    const b = try newBoundSetup(
+        \\// @target: es2015
+        \\var x1: this;
+        \\var x2: { a: this };
+        \\var x3: this[];
+        \\
+        \\function f1(x: this): this {
+        \\    var y: this;
+        \\    return this;
+        \\}
+        \\
+        \\interface I1 {
+        \\    a: { x: this };
+        \\    b: { (): this };
+        \\    c: { new (): this };
+        \\    d: { [x: string]: this };
+        \\    e: { f(x: this): this };
+        \\}
+        \\
+        \\class C1 {
+        \\    a: { x: this };
+        \\    b: { (): this };
+        \\    c: { new (): this };
+        \\    d: { [x: string]: this };
+        \\    e: { f(x: this): this };
+        \\}
+        \\
+        \\class C2 {
+        \\    static x: this;
+        \\    static y = <this>undefined;
+        \\    static foo(x: this): this {
+        \\        return undefined as any;
+        \\    }
+        \\}
+    );
+    defer destroyBoundSetup(b);
+    try b.base.checker.checkSourceFile(b.base.root);
+    var hits: usize = 0;
+    for (b.base.checker.diagnostics.items) |d| {
+        if (d.code == TsCodes.this_type_outside_class) hits += 1;
+    }
+    // Expect at least 20 distinct TS2526 emissions across the fixture.
+    try T.expect(hits >= 20);
+}
+
 test "checker: TS2526 fires on `this` return type of free function" {
     const s = try newSetup(
         \\function f(): this {
@@ -46250,4 +46331,100 @@ test "checker: TS2369 does NOT fire on regular constructor parameter" {
     for (s.checker.diagnostics.items) |d| {
         try T.expect(d.code != TsCodes.param_property_outside_ctor);
     }
+}
+
+// Regression tests for §6.A 1000-2000 exact-mode ratchet.
+
+test "checker: `new AbstractClass(arg)` skips TS2554 (only TS2511)" {
+    const s = try newSetup(
+        \\abstract class A {}
+        \\new A(1);
+    );
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+    var saw_2511 = false;
+    for (s.checker.diagnostics.items) |d| {
+        if (d.code == TsCodes.abstract_class_instantiation) saw_2511 = true;
+        try T.expect(d.code != TsCodes.expected_n_arguments);
+    }
+    try T.expect(saw_2511);
+}
+
+test "checker: `x: any;` field skips TS2564" {
+    const s = try newSetup(
+        \\class C {
+        \\  x: any;
+        \\}
+    );
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+    for (s.checker.diagnostics.items) |d| {
+        try T.expect(d.code != TsCodes.property_not_initialized);
+    }
+}
+
+test "checker: definite-assignment assertion `state!: T;` skips TS2564" {
+    const s = try newSetup(
+        \\class C {
+        \\  state!: number;
+        \\}
+    );
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+    for (s.checker.diagnostics.items) |d| {
+        try T.expect(d.code != TsCodes.property_not_initialized);
+    }
+}
+
+test "checker: TS2515 quotes only class names, not abstract member name" {
+    const s = try newSetup(
+        \\abstract class A { abstract bar(): void; }
+        \\class C extends A {}
+    );
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+    var found = false;
+    for (s.checker.diagnostics.items) |d| {
+        if (d.code != TsCodes.abstract_member_not_implemented) continue;
+        // Class names quoted ('C', 'A'), abstract member name `bar`
+        // appears unquoted in tsc's TS2515 message text.
+        try T.expect(std.mem.indexOf(u8, d.message, "'C'") != null);
+        try T.expect(std.mem.indexOf(u8, d.message, "'A'") != null);
+        try T.expect(std.mem.indexOf(u8, d.message, "member bar from") != null);
+        found = true;
+    }
+    try T.expect(found);
+}
+
+test "checker: TS2610 message names accessor source and override target" {
+    const s = try newSetup(
+        \\class Animal { get sound(): string { return ''; } }
+        \\class Lion extends Animal { sound = 'roar'; }
+    );
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+    var found = false;
+    for (s.checker.diagnostics.items) |d| {
+        if (d.code != TsCodes.property_overrides_accessor) continue;
+        try T.expect(std.mem.indexOf(u8, d.message, "'sound'") != null);
+        try T.expect(std.mem.indexOf(u8, d.message, "class 'Animal'") != null);
+        try T.expect(std.mem.indexOf(u8, d.message, "in 'Lion' as an instance property") != null);
+        found = true;
+    }
+    try T.expect(found);
+}
+
+test "checker: unresolved `Bun` global emits TS2868 with bun typings hint" {
+    const s = try newSetup(
+        \\const file = Bun.file("/a.ts");
+    );
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+    var found = false;
+    for (s.checker.diagnostics.items) |d| {
+        if (d.code != 2868) continue;
+        try T.expect(std.mem.indexOf(u8, d.message, "@types/bun") != null);
+        found = true;
+    }
+    try T.expect(found);
 }
