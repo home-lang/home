@@ -25220,6 +25220,37 @@ pub const Checker = struct {
         return sp.start;
     }
 
+    /// True when `class_node` is nested inside a `declare module
+    /// "x" { ... }` (or `declare namespace ...`). Used to suppress
+    /// TS2564 ("Property has no initializer ...") for fields in
+    /// ambient blocks where tsc treats the class shape as purely
+    /// declarative — see fixture `importTypeAmbient`. A regular
+    /// `namespace Foo { class C { ... } }` (no `declare`) still
+    /// emits TS2564, matching `assignmentCompatWithCallSignatures4`.
+    fn classNodeIsInsideAmbientDeclaredModule(self: *Checker, class_node: NodeId) bool {
+        var cur = self.hir.parentOf(class_node);
+        while (cur != hir_mod.none_node_id) : (cur = self.hir.parentOf(cur)) {
+            const k = self.hir.kindOf(cur);
+            if (k == .module_decl or k == .namespace_decl) {
+                if (self.namespaceDeclWasPrefixedWithDeclare(cur)) return true;
+            }
+        }
+        return false;
+    }
+
+    fn namespaceDeclWasPrefixedWithDeclare(self: *Checker, ns_node: NodeId) bool {
+        const src = self.source orelse return false;
+        const span = self.hir.spanOf(ns_node);
+        if (span.start >= src.len) return false;
+        // Span begins at `namespace` / `module`; the `declare`
+        // modifier sits just before. Bounded look-behind avoids
+        // drifting into a previous statement.
+        const look_back: u32 = 16;
+        const lb_start: u32 = if (span.start > look_back) span.start - look_back else 0;
+        const slice = src[lb_start..span.start];
+        return std.mem.indexOf(u8, slice, "declare") != null;
+    }
+
     fn typeIsDefinitelyNonConstructable(self: *Checker, t: TypeId) bool {
         if (t == types.Primitive.none or self.typeIsAnyLike(t)) return false;
         const f = self.interner.pool.flagsOf(t);
