@@ -660,6 +660,13 @@ pub const Parser = struct {
                 // block with zero statements at its location.
                 break :blk try self.builder.addBlock(tokenSpan(semi), &.{});
             },
+            .close_paren, .close_brace => blk: {
+                if (self.block_depth == 0 and self.nested_statement_depth == 0) {
+                    try self.reportCodeAt(t.span.start, t.line, 1128, "Declaration or statement expected.");
+                }
+                const close = self.advance();
+                break :blk try self.builder.addBlock(tokenSpan(close), &.{});
+            },
             else => try self.parseExpressionStatement(),
         };
     }
@@ -6491,6 +6498,10 @@ pub const Parser = struct {
                     const id = try self.internToken(t);
                     return try self.builder.addIdentifier(tokenSpan(t), id);
                 }
+                if (t.kind == .close_paren) {
+                    try self.reportCodeAt(t.span.start, t.line, 1109, "Expression expected.");
+                    return error.UnexpectedToken;
+                }
                 try self.report("unexpected token in expression: ", @tagName(t.kind));
                 return error.UnexpectedToken;
             },
@@ -7727,6 +7738,7 @@ test "parser: using declarations parse in for initializers" {
         \\async function main() { for (await using of of []) {} }
     );
     defer destroyTestSetup(s);
+    s.parser.setTargetEs2015OrLater(true);
 
     _ = try s.parser.parseSourceFile();
     try T.expectEqual(@as(usize, 0), s.parser.diagnostics.items.len);
@@ -10826,4 +10838,31 @@ test "parser: object literal missing value recovers keyword property" {
     try T.expectEqualStrings("Expression expected.", s.parser.diagnostics.items[0].message);
     try T.expectEqual(@as(u32, 1005), s.parser.diagnostics.items[1].code);
     try T.expectEqual(@as(u32, 1005), s.parser.diagnostics.items[2].code);
+}
+
+test "parser: top-level close parens recover as declaration expected" {
+    var s = try newTestSetup(
+        \\function foo() {}
+        \\function foo() {}
+        \\)
+        \\)
+    );
+    defer destroyTestSetup(s);
+
+    _ = try s.parser.parseSourceFile();
+    var ts1128: usize = 0;
+    for (s.parser.diagnostics.items) |d| {
+        if (d.code == 1128) ts1128 += 1;
+    }
+    try T.expectEqual(@as(usize, 2), ts1128);
+}
+
+test "parser: close paren in expression reports expression expected" {
+    var s = try newTestSetup("var x = );");
+    defer destroyTestSetup(s);
+
+    _ = s.parser.parseSourceFile() catch {};
+    try T.expect(s.parser.diagnostics.items.len >= 1);
+    try T.expectEqual(@as(u32, 1109), s.parser.diagnostics.items[0].code);
+    try T.expectEqualStrings("Expression expected.", s.parser.diagnostics.items[0].message);
 }
