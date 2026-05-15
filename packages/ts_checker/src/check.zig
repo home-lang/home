@@ -31197,16 +31197,19 @@ pub const Checker = struct {
 
         // Source-side gate: either the value is a literal object
         // (empty or otherwise) OR the resolved source is an object
-        // type whose members we can enumerate. tsc fires TS2741 in
-        // both the empty-source case (`{}` flowing into `{ x: T }`)
-        // and the partial-source case (`{ s: string }` into
-        // `{ b: boolean; s: string }`); we mirror that.
+        // type whose members we can enumerate, OR the resolved
+        // source is the broad `object` primitive (which upstream
+        // tsc widens to `{}` for the missing-property error).
+        // tsc fires TS2741 in the empty-source (`{}` flowing into
+        // `{ x: T }`), partial-source (`{ s: string }` into
+        // `{ b: boolean; s: string }`), and broad-object cases.
         const source_is_object_shaped = blk: {
             if (value_node != hir_mod.none_node_id and
                 self.hir.kindOf(value_node) == .object_literal)
             {
                 break :blk true;
             }
+            if (source == types.Primitive.object_t) break :blk true;
             if (source < self.interner.pool.typeCount() and
                 self.interner.pool.flagsOf(source).is_object_type)
             {
@@ -31246,7 +31249,13 @@ pub const Checker = struct {
         if (missing_count != 1) return false;
 
         const target_name = (try self.allocSimpleTypeName(target)) orelse return false;
-        const source_name = (try self.allocSimpleTypeName(source)) orelse "{}";
+        // Upstream tsc renders the broad `object` primitive as `{}`
+        // in this missing-property error — see
+        // `nonPrimitiveAssignError.ts(5,1)`.
+        const source_name = if (source == types.Primitive.object_t)
+            "{}"
+        else
+            (try self.allocSimpleTypeName(source)) orelse "{}";
         const prop_text = self.string_interner.get(first_missing_name);
         const msg = try std.fmt.allocPrint(
             self.diag_arena.allocator(),
@@ -31265,6 +31274,12 @@ pub const Checker = struct {
         target: TypeId,
         fallback: []const u8,
     ) !void {
+        // Prefer the more-specific TS2741 ("Property X is missing
+        // in type A but required in type B") wording over the
+        // generic TS2322 when the source is missing exactly one
+        // required property — mirrors fixture
+        // `nonPrimitiveAssignError.ts(5,1)`.
+        if (try self.tryReportSinglePropertyMissing(node, value_node, source, target)) return;
         const source_name = self.objectAnnotationNameForIdentifier(value_node) orelse
             (try self.allocSimpleTypeName(source)) orelse
             return try self.report(node, TsCodes.type_not_assignable, fallback);
@@ -38623,7 +38638,15 @@ test "checker: non-strict assignment still checks structural mismatch" {
     try s.checker.checkSourceFile(s.root);
     var found = false;
     for (s.checker.diagnostics.items) |d| {
-        if (d.code == TsCodes.type_not_assignable) found = true;
+        // TS2741 ("Property X is missing in type A but required in
+        // type B") is the more-specific upstream form when exactly
+        // one required property is missing; TS2322 is the legacy
+        // generic. Either satisfies the structural-mismatch check.
+        if (d.code == TsCodes.type_not_assignable or
+            d.code == TsCodes.property_missing_required)
+        {
+            found = true;
+        }
     }
     try T.expect(found);
 }
