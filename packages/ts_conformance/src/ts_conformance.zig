@@ -508,14 +508,44 @@ fn runProgram(gpa: std.mem.Allocator, c: Case) !?Result {
                 .TS => .TS,
                 .HM => .HM,
             };
+            // Post-process module-resolution diagnostics with
+            // resolver-derived data the checker cannot produce on its
+            // own: shift the position from the `import` keyword to the
+            // string-specifier (matching tsc's `(line, col)` baseline)
+            // and, for TS7016, append the resolved JS path tail.
+            var diag_col = pos.col;
+            var enriched_message: ?[]u8 = null;
+            defer if (enriched_message) |m| gpa.free(m);
+            if ((code == 7016 or code == 2307) and prefix == .TS) {
+                if (specifierColumnForImportDiagnostic(file.source, d.pos)) |col_pair| {
+                    diag_col = col_pair.col;
+                    if (code == 7016) {
+                        if (try resolveImportSpecifierToImpl(
+                            gpa,
+                            &resolver,
+                            col_pair.specifier,
+                            pf.path,
+                        )) |impl_path| {
+                            defer gpa.free(impl_path);
+                            const trimmed_msg = trimTrailingDot(d.message);
+                            enriched_message = try std.fmt.allocPrint(
+                                gpa,
+                                "{s}. '{s}' implicitly has an 'any' type.",
+                                .{ trimmed_msg, impl_path },
+                            );
+                        }
+                    }
+                }
+            }
+            const message: []const u8 = enriched_message orelse d.message;
             const fdiag: ts_diagnostics.Diagnostic = .{
                 .file = if (d.is_global) "" else pf.path,
                 .line = diag_line,
-                .col = pos.col,
+                .col = diag_col,
                 .code = code,
                 .code_prefix = prefix,
                 .severity = .err,
-                .message = d.message,
+                .message = message,
                 .span_len = 0,
             };
             const formatted = try ts_diagnostics.formatDefault(gpa, fdiag);
@@ -552,6 +582,90 @@ fn runProgram(gpa: std.mem.Allocator, c: Case) !?Result {
         .expected_diag_count = expected_count,
         .actual_diag_count = actual_count,
     };
+}
+
+/// Returned by `specifierColumnForImportDiagnostic`: the 1-based
+/// column where the import specifier's opening quote sits, plus the
+/// specifier text itself (without quotes). Borrowed from `source`.
+const SpecifierColumn = struct {
+    col: u32,
+    specifier: []const u8,
+};
+
+/// Locate the import specifier on the line containing `byte_pos`,
+/// returning the 1-based column of the opening quote and the
+/// specifier text (without quotes). Returns `null` when no specifier
+/// is found on that line — typically because the diagnostic was not
+/// actually emitted on an import statement, in which case the caller
+/// should leave the position untouched.
+///
+/// This bridges the checker's "diagnostic on the import_decl node"
+/// position (col 1) with tsc's per-specifier position (col N) for
+/// TS7016/TS2307. The checker emits at the AST node start; tsc
+/// reports at the string literal. Without checker changes, the
+/// harness rewires this from the resolver-aware path.
+fn specifierColumnForImportDiagnostic(source: []const u8, byte_pos: u32) ?SpecifierColumn {
+    if (byte_pos > source.len) return null;
+    // Find the start of the line containing byte_pos.
+    var line_start: usize = byte_pos;
+    while (line_start > 0 and source[line_start - 1] != '\n') line_start -= 1;
+    var line_end: usize = byte_pos;
+    while (line_end < source.len and source[line_end] != '\n') line_end += 1;
+    const line = source[line_start..line_end];
+    // Heuristic: skip if the line doesn't look like an import statement.
+    const trimmed_line = std.mem.trimLeft(u8, line, " \t");
+    const looks_like_import = std.mem.startsWith(u8, trimmed_line, "import ") or
+        std.mem.startsWith(u8, trimmed_line, "import\t") or
+        std.mem.startsWith(u8, trimmed_line, "import(") or
+        std.mem.startsWith(u8, trimmed_line, "export ") or
+        std.mem.startsWith(u8, trimmed_line, "import{") or
+        std.mem.indexOf(u8, line, "require(") != null;
+    if (!looks_like_import) return null;
+    // Find the first single-or-double-quoted string on the line.
+    var i: usize = 0;
+    while (i < line.len) : (i += 1) {
+        const ch = line[i];
+        if (ch == '"' or ch == '\'') {
+            const open = ch;
+            var j = i + 1;
+            while (j < line.len and line[j] != open) : (j += 1) {
+                if (line[j] == '\\' and j + 1 < line.len) j += 1;
+            }
+            if (j >= line.len) return null;
+            const specifier = line[i + 1 .. j];
+            // Column is 1-based.
+            const col: u32 = @intCast(i + 1);
+            return .{ .col = col, .specifier = specifier };
+        }
+    }
+    return null;
+}
+
+/// Trim one trailing `.` from `s` (no allocation). Used to splice
+/// resolver-provided detail into a TS7016 message that already ends
+/// in a period (`Could not find a declaration file for module 'X'.`)
+/// without producing the awkward `..`.
+fn trimTrailingDot(s: []const u8) []const u8 {
+    if (s.len > 0 and s[s.len - 1] == '.') return s[0 .. s.len - 1];
+    return s;
+}
+
+/// Resolve `specifier` (relative or bare) from `from_path` via the
+/// program's resolver and return the resolved file path, owned by
+/// `gpa`. Returns `null` when resolution doesn't find a matching
+/// implementation file — i.e. the harness can't enrich the
+/// diagnostic with a `'/path' implicitly has an 'any' type` tail.
+fn resolveImportSpecifierToImpl(
+    gpa: std.mem.Allocator,
+    resolver: *ts_resolver.Resolver,
+    specifier: []const u8,
+    from_path: []const u8,
+) !?[]u8 {
+    const res = resolver.resolve(specifier, from_path) catch |err| switch (err) {
+        error.OutOfMemory => return error.OutOfMemory,
+        error.NotFound, error.Ambiguous, error.InvalidSpecifier => return null,
+    };
+    return try gpa.dupe(u8, res.path);
 }
 
 /// Render a unified-diff style hunk between `expected` and `actual`
