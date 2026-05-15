@@ -6964,7 +6964,12 @@ pub const Parser = struct {
 
     fn isValidAssignmentTarget(self: *const Parser, node: NodeId) bool {
         return switch (self.hir.kindOf(node)) {
-            .identifier, .member_access, .element_access, .array_literal, .object_literal => true,
+            // `undefined` parses to a literal_undefined HIR node but
+            // is syntactically a valid identifier expression — JS lets
+            // you write `undefined = ...` and only the checker rejects
+            // it via TS2539. Keep the parser permissive so we don't
+            // double-emit TS2364. Mirrors `nullAssignedToUndefined.ts`.
+            .identifier, .member_access, .element_access, .array_literal, .object_literal, .literal_undefined => true,
             else => false,
         };
     }
