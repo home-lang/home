@@ -330,6 +330,11 @@ pub const TsCodes = struct {
     /// `function () { … }`, so tsc rejects the reference at the
     /// identifier site.
     pub const arguments_in_arrow_es5: u32 = 2496;
+    /// TS1198 — `\u{N}` extended unicode escape in a string or regex
+    /// where N exceeds 0x10FFFF (the Unicode Scalar Value max). tsc
+    /// anchors the diagnostic at the first hex digit (after `\u{`)
+    /// so the rendered `(line, col)` matches upstream.
+    pub const extended_unicode_escape_oob: u32 = 1198;
 };
 
 /// Per-alias generic info: the type-parameter TypeIds in
@@ -4308,6 +4313,54 @@ pub const Checker = struct {
                 .code = TsCodes.regex_flag_requires_target,
                 .message = msg,
             });
+        }
+
+        // Pattern-body extended-escape range check. Walk
+        // `slice[1..close_idx]` (between the opening and closing
+        // `/`) looking for `\u{HEX}` sequences whose codepoint
+        // exceeds `0x10FFFF` — the Unicode Scalar Value cap. Each
+        // out-of-range escape gets a TS1198 anchored at the first
+        // hex digit so `(line, col)` matches upstream.
+        var pos: usize = 1;
+        while (pos + 3 < close_idx) : (pos += 1) {
+            if (slice[pos] != '\\') continue;
+            if (slice[pos + 1] != 'u') continue;
+            if (slice[pos + 2] != '{') continue;
+            var hex_end: usize = pos + 3;
+            var value: u64 = 0;
+            var saw_hex = false;
+            while (hex_end < close_idx and slice[hex_end] != '}') : (hex_end += 1) {
+                const hc = slice[hex_end];
+                const digit: ?u8 = switch (hc) {
+                    '0'...'9' => hc - '0',
+                    'a'...'f' => hc - 'a' + 10,
+                    'A'...'F' => hc - 'A' + 10,
+                    else => null,
+                };
+                const d = digit orelse {
+                    saw_hex = false;
+                    break;
+                };
+                value = value * 16 + d;
+                saw_hex = true;
+                if (value > 0xFFFFFFFF) break;
+            }
+            if (!saw_hex) continue;
+            if (hex_end >= close_idx or slice[hex_end] != '}') continue;
+            if (value > 0x10FFFF) {
+                // tsc anchors TS1198 at the first hex digit (after
+                // `\u{`), not at the opening `\` — the highlighted
+                // range covers the digits themselves.
+                const escape_pos: u32 = @intCast(start + pos + 3);
+                const msg = try self.diag_arena.allocator().dupe(u8, "An extended Unicode escape value must be between 0x0 and 0x10FFFF inclusive.");
+                try self.diagnostics.append(self.gpa, .{
+                    .node = node,
+                    .pos = escape_pos,
+                    .code = TsCodes.extended_unicode_escape_oob,
+                    .message = msg,
+                });
+            }
+            pos = hex_end;
         }
     }
 
