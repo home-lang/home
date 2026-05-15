@@ -36,6 +36,7 @@ pub const RelationCache = relation.RelationCache;
 pub const Lowerer = lower.Lowerer;
 pub const Checker = check.Checker;
 pub const StrictFlags = check.StrictFlags;
+pub const ExternalResolver = check.ExternalResolver;
 pub const renderType = render.renderType;
 
 const std = @import("std");

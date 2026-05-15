@@ -27,6 +27,50 @@ const ts_driver = @import("ts_driver");
 const ts_diagnostics = @import("ts_diagnostics");
 const ts_program = @import("ts_program");
 const ts_resolver = @import("ts_resolver");
+const ts_checker = @import("ts_checker");
+
+/// Adapter that exposes a `ts_resolver.Resolver` through the
+/// `ts_checker.ExternalResolver` opaque vtable. Lives on the
+/// `runProgram` stack so the resolver pointer + arena outlive the
+/// checker calls. Adding this lets `Checker.checkVirtualBareModuleImport`
+/// delegate `untypedModuleImport_*`, `nestedPackageJsonRedirect`,
+/// `packageJsonMain*`, and `typesVersions.*` resolution to the same
+/// algorithm the program graph uses, instead of the heuristic
+/// `@filename:` virtual-section scan.
+const CheckerResolverAdapter = struct {
+    resolver: *ts_resolver.Resolver,
+
+    pub const vtable = ts_checker.ExternalResolver.VTable{
+        .resolve = resolveImpl,
+    };
+
+    fn resolveImpl(
+        self_ptr: *anyopaque,
+        specifier: []const u8,
+        containing_file: []const u8,
+    ) ?ts_checker.ExternalResolver.Resolution {
+        const self: *CheckerResolverAdapter = @ptrCast(@alignCast(self_ptr));
+        // The resolver expects leading-slash paths. The checker
+        // returns either form depending on whether `@filename:` had
+        // a leading slash; normalize before delegating.
+        var stack_buf: [1024]u8 = undefined;
+        const containing = canonicalContainingPath(&stack_buf, containing_file);
+        const r = self.resolver.resolve(specifier, containing) catch return null;
+        return .{ .path = r.path, .is_declaration = r.is_declaration };
+    }
+};
+
+/// Prepend a leading `/` to `path` when missing, writing into
+/// `buf` if the result fits. Falls back to the input slice if the
+/// buffer is too small (defensive — checker filenames are well
+/// under 1 KiB in practice).
+fn canonicalContainingPath(buf: []u8, path: []const u8) []const u8 {
+    if (path.len > 0 and path[0] == '/') return path;
+    if (path.len + 1 > buf.len) return path;
+    buf[0] = '/';
+    @memcpy(buf[1 .. 1 + path.len], path);
+    return buf[0 .. 1 + path.len];
+}
 
 pub const patience = @import("patience.zig");
 test {
@@ -492,9 +536,19 @@ fn runProgram(gpa: std.mem.Allocator, c: Case) !?Result {
     // `compileAll` runs each file through the same lex/parse/bind/
     // check/emit pipeline as `compileSource` AND then walks
     // cross-file imports through `ts_resolver`, populating each
-    // `File.imports` adjacency list. Once the checker grows a hook
-    // for "trust the program's resolution instead of re-deriving
-    // it", that's where the upstream-modular fixtures will flip.
+    // `File.imports` adjacency list.
+    //
+    // The checker now exposes `setExternalResolver`; we wrap the
+    // program's resolver into the opaque vtable shape and pass it
+    // through `CompileOptions.external_resolver`. The driver
+    // installs it on every per-file checker so bare-module
+    // resolution and TS7016 enrichment delegate to `ts_resolver`
+    // instead of the in-source `@filename:` heuristic.
+    var resolver_adapter = CheckerResolverAdapter{ .resolver = &resolver };
+    const external = ts_checker.ExternalResolver{
+        .ptr = &resolver_adapter,
+        .vtable = &CheckerResolverAdapter.vtable,
+    };
     program.compileAll(.{
         .is_tsx = c.is_tsx,
         .is_declaration_file = c.is_declaration_file,
@@ -505,6 +559,7 @@ fn runProgram(gpa: std.mem.Allocator, c: Case) !?Result {
         .suppress_js_check_diagnostics = c.suppress_js_check_diagnostics,
         .continue_on_error = true,
         .no_emit = true,
+        .external_resolver = external,
     }) catch |err| switch (err) {
         error.OutOfMemory => return error.OutOfMemory,
         else => return null,
@@ -548,7 +603,13 @@ fn runProgram(gpa: std.mem.Allocator, c: Case) !?Result {
             if ((code == 7016 or code == 2307) and prefix == .TS) {
                 if (specifierColumnForImportDiagnostic(file.source, d.pos)) |col_pair| {
                     diag_col = col_pair.col;
-                    if (code == 7016) {
+                    // Skip the harness-side `'/path' implicitly has an
+                    // 'any' type.` enrichment when the checker already
+                    // emitted that suffix via its `setExternalResolver`
+                    // hook. Otherwise the formatted text would carry
+                    // the tail twice for the same diagnostic.
+                    const already_enriched = std.mem.indexOf(u8, d.message, "implicitly has an 'any' type.") != null;
+                    if (code == 7016 and !already_enriched) {
                         if (try resolveImportSpecifierToImpl(
                             gpa,
                             &resolver,

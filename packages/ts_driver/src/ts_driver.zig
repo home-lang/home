@@ -138,6 +138,20 @@ pub const CompileOptions = struct {
     ///   - `module` — selects the import/export form (Phase 4
     ///     follow-up; today emits ES modules)
     pub_tsconfig: ?*const tsconfig_mod.TsConfig = null,
+    /// Optional `ts_resolver`-backed module-resolution hook. When
+    /// set, the driver installs it on the checker via
+    /// `Checker.setExternalResolver` so bare-module lookups
+    /// delegate to a real resolver instead of falling through the
+    /// in-source `@filename:` virtual-section heuristic. See
+    /// `ts_checker.ExternalResolver` for the vtable shape.
+    external_resolver: ?ts_checker.ExternalResolver = null,
+    /// Importer file path used as the `containing_file` argument
+    /// when the checker delegates module resolution to
+    /// `external_resolver`. The conformance harness sets this from
+    /// the program-graph file path so resolver lookups anchor at
+    /// the right point in the virtual filesystem. Empty means the
+    /// checker should fall back to its `@filename:` scan.
+    importer_path: []const u8 = "",
 };
 
 fn appendDriverDiagnostic(
@@ -649,6 +663,8 @@ pub fn compileSource(
     defer checker.deinit();
     checker.setModule(c.module);
     checker.setSource(source);
+    if (options.external_resolver) |er| checker.setExternalResolver(er);
+    if (options.importer_path.len > 0) checker.setImporterPath(options.importer_path);
     // Translate strictness flags. `strict: true` implies every
     // individual strict-family flag in TS; options.strict is the CLI
     // override, then tsconfig, then tsc's default (`false`).

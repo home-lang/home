@@ -58,6 +58,54 @@ pub const Diagnostic = struct {
     pub const CodePrefix = enum { TS, HM };
 };
 
+/// External module-resolution hook the checker can delegate to.
+///
+/// When set via `Checker.setExternalResolver`, the checker will ask
+/// this resolver to map a bare/relative module specifier to a
+/// resolved file path before falling back to its in-source
+/// `@filename:` virtual-section scan. This lets the conformance
+/// harness route through `ts_resolver` for `package.json`-aware
+/// fixtures (`packageJsonMain*`, `nestedPackageJsonRedirect`,
+/// `typesVersions.*`, `untypedModuleImport_*`) instead of having
+/// the checker re-implement node resolution against virtual-file
+/// markers.
+///
+/// The vtable shape stays opaque so `ts_checker` does not pull
+/// `ts_resolver` in as a build dependency.
+pub const ExternalResolver = struct {
+    ptr: *anyopaque,
+    vtable: *const VTable,
+
+    pub const Resolution = struct {
+        /// Resolved file path. Borrowed; lifetime is the resolver's
+        /// arena (which must outlive the `Checker`'s
+        /// `checkSourceFile` call). The checker never frees it.
+        path: []const u8,
+        /// True when `path` ends in `.d.ts` / `.d.cts` / `.d.mts`
+        /// or `.ts` / `.tsx` / `.mts` / `.cts` — i.e. tsc would
+        /// treat the resolution as "typed".
+        is_declaration: bool,
+    };
+
+    pub const VTable = struct {
+        /// Resolve `specifier` from `containing_file`. Returns
+        /// `null` when the specifier did not resolve.
+        resolve: *const fn (
+            self: *anyopaque,
+            specifier: []const u8,
+            containing_file: []const u8,
+        ) ?Resolution,
+    };
+
+    pub fn resolve(
+        self: ExternalResolver,
+        specifier: []const u8,
+        containing_file: []const u8,
+    ) ?Resolution {
+        return self.vtable.resolve(self.ptr, specifier, containing_file);
+    }
+};
+
 /// TypeScript-compatible diagnostic codes used by the checker.
 /// Matches `ts_diagnostics.TsCodes` numerically. We keep a local
 /// copy to avoid a cross-package dependency from the checker.
@@ -865,6 +913,21 @@ pub const Checker = struct {
     /// source. Populated by `scanDirectives`; consulted by
     /// `applyDirectives` to drop all diagnostics for this file.
     nocheck_file: bool = false,
+    /// Optional `ts_resolver`-backed module-resolution hook. When
+    /// set, the bare-module / relative-module lookup paths consult
+    /// it before falling back to the in-source `@filename:` virtual
+    /// scan, and the TS7016 diagnostic is enriched with the
+    /// resolved-file tail (`'/path/to/file.js' implicitly has an
+    /// 'any' type.`). See `ExternalResolver` and
+    /// `setExternalResolver`.
+    external_resolver: ?ExternalResolver = null,
+    /// Importer file path used as `containing_file` when delegating
+    /// to `external_resolver`. The driver populates this from
+    /// `CompileOptions.importer_path` so per-file program-routed
+    /// compiles anchor resolver lookups at the correct point in
+    /// the virtual filesystem. Empty means "fall back to the
+    /// `@filename:` virtual-section scan".
+    importer_path: []const u8 = "",
 
     pub fn init(
         gpa: std.mem.Allocator,
@@ -965,6 +1028,29 @@ pub const Checker = struct {
             std.mem.indexOf(u8, source, "@filename:") != null or
             std.mem.indexOf(u8, source, "@Filename:") != null;
         self.virtual_section_start_cache.clearRetainingCapacity();
+    }
+
+    /// Install an external module-resolution hook. The hook is
+    /// borrowed; the caller owns it and must keep it alive across
+    /// `checkSourceFile`. Pass `null` to clear.
+    ///
+    /// When set, `resolveVirtualBareModule` and the bare-module
+    /// import path consult the hook before falling back to the
+    /// `@filename:` virtual-section heuristic. Resolved-but-untyped
+    /// implementation files surface as TS7016 with the resolved
+    /// path appended in the upstream `'/p/q.js' implicitly has an
+    /// 'any' type.` shape.
+    pub fn setExternalResolver(self: *Checker, resolver: ?ExternalResolver) void {
+        self.external_resolver = resolver;
+    }
+
+    /// Anchor module-resolution requests to a specific file path.
+    /// Required when there are no in-source `@filename:` markers
+    /// (the program-routed conformance path compiles each virtual
+    /// file in isolation). Borrowed; the caller must keep the
+    /// slice alive across `checkSourceFile`.
+    pub fn setImporterPath(self: *Checker, path: []const u8) void {
+        self.importer_path = path;
     }
 
     pub fn deinit(self: *Checker) void {
@@ -11481,27 +11567,154 @@ pub const Checker = struct {
     }
 
     fn checkVirtualBareModuleImport(self: *Checker, node: NodeId, spec: []const u8) CheckError!bool {
-        if (!self.sourceHasVirtualFilenameSections()) return false;
-        const resolution = try self.resolveVirtualBareModule(spec);
-        switch (resolution) {
-            .none => return false,
+        // The external-resolver hook augments the legacy heuristic
+        // virtual-section scan with a real `ts_resolver` outcome:
+        //   - on a legacy `.implementation` outcome, it provides
+        //     the resolved file path so the TS7016 diagnostic carries
+        //     the upstream `'/p/q.js' implicitly has an 'any' type.`
+        //     suffix without the conformance harness needing a
+        //     post-process step.
+        //   - on a legacy `.none` outcome with no virtual sections to
+        //     scan (the `runProgram`/`ts_program` path compiles each
+        //     virtual file in isolation, so `@filename:` markers
+        //     aren't visible), the resolver still owns the
+        //     classification — `untypedModuleImport_*` /
+        //     `nestedPackageJsonRedirect` / `packageJsonMain*` /
+        //     `typesVersions.*` flow through the resolver and surface
+        //     the enriched TS7016 instead of TS2307.
+        const has_virtual = self.sourceHasVirtualFilenameSections();
+        const legacy: VirtualModuleResolution = if (has_virtual)
+            try self.resolveVirtualBareModule(spec)
+        else
+            .none;
+        const external_opt = if (self.external_resolver != null)
+            try self.resolveBareModuleViaExternal(node, spec)
+        else
+            null;
+        switch (legacy) {
+            .none => {
+                // Conservative override: only promote to
+                // `.implementation` when the external resolver finds
+                // an *implementation* file (`.js` / `.jsx` / `.mjs`
+                // / `.cjs`). A bare-`.d.ts` resolution is too
+                // aggressive — fixtures like
+                // `conditionalExportsResolutionFallbackNull` rely on
+                // tsc's `package.json` `exports` `import: null`
+                // veto, which our resolver does not yet honor for
+                // `types` fallback. Implementation files don't have
+                // that hazard since the legacy scan can already see
+                // `.js` files that the resolver finds.
+                if (external_opt) |external| switch (external.kind) {
+                    .implementation => {
+                        if (self.strict_flags.no_implicit_any) {
+                            try self.appendUntypedModuleDiagnostic(node, spec, external.resolved_path);
+                        }
+                        return true;
+                    },
+                    .declaration => {},
+                };
+                return false;
+            },
             .declaration => return true,
             .implementation => {
                 if (self.strict_flags.no_implicit_any) {
-                    const msg = try std.fmt.allocPrint(
-                        self.diag_arena.allocator(),
-                        "Could not find a declaration file for module '{s}'.",
-                        .{spec},
-                    );
-                    try self.diagnostics.append(self.gpa, .{
-                        .node = node,
-                        .code = TsCodes.untyped_module,
-                        .message = msg,
-                    });
+                    const path: ?[]const u8 = if (external_opt) |external|
+                        external.resolved_path
+                    else
+                        null;
+                    try self.appendUntypedModuleDiagnostic(node, spec, path);
                 }
                 return true;
             },
         }
+    }
+
+    /// External-resolver classification of a bare-module specifier,
+    /// keyed off the resolved file's extension. Returns `null` when
+    /// the external resolver did not yield a result.
+    const ExternalBareResolution = struct {
+        kind: enum { declaration, implementation },
+        /// Borrowed from the caller's external-resolver arena.
+        resolved_path: []const u8,
+    };
+
+    fn resolveBareModuleViaExternal(
+        self: *Checker,
+        node: NodeId,
+        spec: []const u8,
+    ) CheckError!?ExternalBareResolution {
+        const resolver = self.external_resolver orelse return null;
+        // Containing-file precedence:
+        //   1. `setImporterPath` (program-routed compiles)
+        //   2. `@filename:` virtual section (legacy heuristic mode)
+        //   3. fallback so the resolver gets at least an absolute
+        //      anchor for paths-mapping/node_modules walks.
+        const containing = if (self.importer_path.len > 0)
+            self.importer_path
+        else if (self.virtualSectionFilenameForNode(node)) |raw|
+            raw
+        else
+            "/__root__.ts";
+        const r = resolver.resolve(spec, containing) orelse return null;
+        const kind: @FieldType(ExternalBareResolution, "kind") = if (r.is_declaration or
+            isResolverDeclarationExtension(r.path))
+            .declaration
+        else if (isResolverImplementationExtension(r.path))
+            .implementation
+        else
+            // Unknown extension — treat as declaration so we don't
+            // gratuitously fire TS7016 against e.g. `.json` resolutions.
+            .declaration;
+        return .{ .kind = kind, .resolved_path = r.path };
+    }
+
+    fn appendUntypedModuleDiagnostic(
+        self: *Checker,
+        node: NodeId,
+        spec: []const u8,
+        resolved_path: ?[]const u8,
+    ) CheckError!void {
+        const msg = if (resolved_path) |p| blk: {
+            // Upstream baseline shape, e.g.
+            //   Could not find a declaration file for module 'foo'.
+            //   '/node_modules/foo/index.js' implicitly has an 'any'
+            //   type.
+            const slashed = if (p.len > 0 and p[0] == '/')
+                try self.diag_arena.allocator().dupe(u8, p)
+            else
+                try std.fmt.allocPrint(self.diag_arena.allocator(), "/{s}", .{p});
+            break :blk try std.fmt.allocPrint(
+                self.diag_arena.allocator(),
+                "Could not find a declaration file for module '{s}'. '{s}' implicitly has an 'any' type.",
+                .{ spec, slashed },
+            );
+        } else try std.fmt.allocPrint(
+            self.diag_arena.allocator(),
+            "Could not find a declaration file for module '{s}'.",
+            .{spec},
+        );
+        try self.diagnostics.append(self.gpa, .{
+            .node = node,
+            .code = TsCodes.untyped_module,
+            .message = msg,
+        });
+    }
+
+    fn isResolverDeclarationExtension(path: []const u8) bool {
+        return std.mem.endsWith(u8, path, ".d.ts") or
+            std.mem.endsWith(u8, path, ".d.mts") or
+            std.mem.endsWith(u8, path, ".d.cts") or
+            std.mem.endsWith(u8, path, ".ts") or
+            std.mem.endsWith(u8, path, ".tsx") or
+            std.mem.endsWith(u8, path, ".mts") or
+            std.mem.endsWith(u8, path, ".cts");
+    }
+
+    fn isResolverImplementationExtension(path: []const u8) bool {
+        return std.mem.endsWith(u8, path, ".js") or
+            std.mem.endsWith(u8, path, ".jsx") or
+            std.mem.endsWith(u8, path, ".mjs") or
+            std.mem.endsWith(u8, path, ".cjs");
     }
 
     fn virtualClassicBareModuleExists(self: *Checker, node: NodeId, spec: []const u8) CheckError!bool {
@@ -49116,3 +49329,102 @@ test "checker: import-equals alias inside namespace satisfies qualified type-ref
         try T.expect(d.code != TsCodes.cannot_find_namespace);
     }
 }
+
+/// Test-only stub `ExternalResolver` impl that returns a single
+/// canned `Resolution` for any specifier. The `path` is borrowed,
+/// so callers must keep the literal alive across `checkSourceFile`.
+const StubExternalResolver = struct {
+    canned_path: []const u8,
+    canned_is_declaration: bool,
+
+    pub const vtable = ExternalResolver.VTable{ .resolve = resolveImpl };
+
+    fn resolveImpl(
+        ptr: *anyopaque,
+        specifier: []const u8,
+        containing_file: []const u8,
+    ) ?ExternalResolver.Resolution {
+        const self: *StubExternalResolver = @ptrCast(@alignCast(ptr));
+        _ = specifier;
+        _ = containing_file;
+        return .{ .path = self.canned_path, .is_declaration = self.canned_is_declaration };
+    }
+};
+
+test "checker: external resolver enriches TS7016 with resolved path" {
+    const s = try newSetup(
+        \\import * as foo from "foo";
+        \\foo;
+    );
+    defer destroySetup(s);
+    var stub = StubExternalResolver{
+        .canned_path = "/node_modules/foo/index.js",
+        .canned_is_declaration = false,
+    };
+    s.checker.setExternalResolver(.{ .ptr = &stub, .vtable = &StubExternalResolver.vtable });
+    s.checker.setImporterPath("/main.ts");
+    s.checker.setStrictFlags(.{ .no_implicit_any = true });
+    try s.checker.checkSourceFile(s.root);
+    var found = false;
+    for (s.checker.diagnostics.items) |d| {
+        if (d.code != TsCodes.untyped_module) continue;
+        if (std.mem.indexOf(u8, d.message, "'/node_modules/foo/index.js' implicitly has an 'any' type.") == null) continue;
+        if (std.mem.indexOf(u8, d.message, "Could not find a declaration file for module 'foo'") == null) continue;
+        found = true;
+    }
+    try T.expect(found);
+}
+
+test "checker: external resolver promotes legacy-unresolved to TS7016 implementation" {
+    const s = try newSetup(
+        \\import * as foo from "foo";
+        \\foo;
+    );
+    defer destroySetup(s);
+    var stub = StubExternalResolver{
+        .canned_path = "/node_modules/foo/lib/main.js",
+        .canned_is_declaration = false,
+    };
+    s.checker.setExternalResolver(.{ .ptr = &stub, .vtable = &StubExternalResolver.vtable });
+    s.checker.setImporterPath("/main.ts");
+    s.checker.setStrictFlags(.{ .no_implicit_any = true });
+    try s.checker.checkSourceFile(s.root);
+    // No virtual @filename: section, no node_modules layout — the
+    // legacy scan returns `.none`. The external resolver promotes
+    // to `.implementation` (because `.js`) so TS7016 fires (with
+    // the resolved path) and TS2307 stays suppressed.
+    var ts7016 = false;
+    var ts2307 = false;
+    for (s.checker.diagnostics.items) |d| {
+        if (d.code == TsCodes.untyped_module) ts7016 = true;
+        if (d.code == TsCodes.cannot_find_module) ts2307 = true;
+    }
+    try T.expect(ts7016);
+    try T.expect(!ts2307);
+}
+
+test "checker: external resolver declaration result does NOT veto legacy unresolved" {
+    // Conservative override: a `.d.ts` resolver outcome is too
+    // aggressive against tsc's `package.json` `import: null` veto
+    // (which our resolver does not yet honor). The legacy
+    // `.none` path stays in charge for declaration-only resolver
+    // hits, so TS2307 still fires.
+    const s = try newSetup(
+        \\import * as dep from "dep";
+        \\dep;
+    );
+    defer destroySetup(s);
+    var stub = StubExternalResolver{
+        .canned_path = "/node_modules/dep/dist/index.d.ts",
+        .canned_is_declaration = true,
+    };
+    s.checker.setExternalResolver(.{ .ptr = &stub, .vtable = &StubExternalResolver.vtable });
+    s.checker.setImporterPath("/index.mts");
+    try s.checker.checkSourceFile(s.root);
+    var ts2307 = false;
+    for (s.checker.diagnostics.items) |d| {
+        if (d.code == TsCodes.cannot_find_module) ts2307 = true;
+    }
+    try T.expect(ts2307);
+}
+

@@ -172,6 +172,14 @@ pub const Program = struct {
             if (f.compilation != null) continue;
             var per_file = options;
             per_file.is_tsx = options.is_tsx or f.is_tsx;
+            // Anchor checker module-resolution requests at the
+            // current file when the caller hasn't overridden the
+            // importer path. This is what lets
+            // `Checker.setExternalResolver` produce correct
+            // node_modules-relative resolutions for fixtures whose
+            // virtual sections were stripped before per-file
+            // compilation.
+            if (per_file.importer_path.len == 0) per_file.importer_path = f.path;
             const c = ts_driver.compileSource(self.gpa, f.source, per_file) catch |err| switch (err) {
                 error.OutOfMemory => return error.OutOfMemory,
                 error.LexError => return error.LexError,

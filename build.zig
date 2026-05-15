@@ -294,6 +294,7 @@ pub fn build(b: *std.Build) void {
     // fall through to the legacy `ts_driver.compileSource` route.
     ts_conformance_pkg.addImport("ts_program", ts_program_pkg);
     ts_conformance_pkg.addImport("ts_resolver", ts_resolver_pkg);
+    ts_conformance_pkg.addImport("ts_checker", ts_checker_pkg);
 
     // TS-parity Phase 5 §5.7 — watch mode foundation.
     const ts_watch_pkg = createPackage(b, "packages/ts_watch/src/ts_watch.zig", target, optimize, zig_test_framework);
