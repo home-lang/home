@@ -1839,7 +1839,9 @@ pub const Parser = struct {
             const name_tok = self.advance();
             try self.reportAwaitBindingIfReserved(name_tok);
             if (name_tok.kind.isPrimitiveTypeKeyword() or self.isReservedTypeNameToken(name_tok)) {
-                try self.reportCodeAt(name_tok.span.start, name_tok.line, 2427, "Class name cannot be a reserved type name.");
+                const raw = self.source[name_tok.span.start..name_tok.span.end];
+                const msg = try std.fmt.allocPrint(self.diag_arena.allocator(), "Class name cannot be '{s}'.", .{raw});
+                try self.reportCodeAt(name_tok.span.start, name_tok.line, 2414, msg);
             }
             const name_id = try self.internToken(name_tok);
             name = try self.builder.addIdentifier(tokenSpan(name_tok), name_id);
@@ -1895,6 +1897,19 @@ pub const Parser = struct {
                     _ = self.advance();
                 }
             }
+            // tsc emits TS1172 for `class C extends A extends B {}` —
+            // a second `extends` clause is forbidden. Consume the
+            // duplicate clause silently so the body still parses.
+            if (self.peek().kind == .kw_extends) {
+                const dup = self.advance();
+                try self.reportCodeAt(dup.span.start, dup.line, 1172, "'extends' clause already seen.");
+                while (self.peek().kind != .kw_implements and
+                    self.peek().kind != .open_brace and
+                    self.peek().kind != .eof)
+                {
+                    _ = self.advance();
+                }
+            }
         }
         var implements_list: std.ArrayListUnmanaged(NodeId) = .empty;
         defer implements_list.deinit(self.gpa);
@@ -1912,6 +1927,26 @@ pub const Parser = struct {
                         try self.reportCodeAt(comma.span.start, comma.line, 1009, "Trailing comma not allowed.");
                         break;
                     }
+                }
+            }
+            // tsc emits TS1172 / TS1175 for duplicate clauses after
+            // `implements …`. `extends` after `implements` is allowed
+            // syntactically once, but a SECOND `implements` clause is
+            // TS1175; an `extends` after `implements` is TS1172.
+            while (true) {
+                if (self.peek().kind == .kw_extends) {
+                    const dup = self.advance();
+                    try self.reportCodeAt(dup.span.start, dup.line, 1172, "'extends' clause already seen.");
+                } else if (self.peek().kind == .kw_implements) {
+                    const dup = self.advance();
+                    try self.reportCodeAt(dup.span.start, dup.line, 1175, "'implements' clause already seen.");
+                } else break;
+                while (self.peek().kind != .kw_implements and
+                    self.peek().kind != .kw_extends and
+                    self.peek().kind != .open_brace and
+                    self.peek().kind != .eof)
+                {
+                    _ = self.advance();
                 }
             }
         }
@@ -2139,7 +2174,14 @@ pub const Parser = struct {
                         } else if (is_generator) {
                             try self.reportCodeAt(member_start.span.start, member_start.line, 1222, "An overload signature cannot be declared as a generator.");
                         }
-                        if (!is_optional_member and !self.nextClassMemberNameMatches(name_tok)) {
+                        // tsc emits TS2390 (Constructor implementation is missing.)
+                        // for missing constructor bodies — handled by the
+                        // checker. Never emit TS2391 for `constructor` here
+                        // so the two diagnostics don't double-report.
+                        if (!is_optional_member and
+                            name_tok.kind != .kw_constructor and
+                            !self.nextClassMemberNameMatches(name_tok))
+                        {
                             try self.reportMissingClassMemberImplementation(member_start, mods);
                         }
                     }
@@ -3181,7 +3223,7 @@ pub const Parser = struct {
         // keep their module shape without producing a parser diagnostic.
         if (self.match(.equal)) {
             if (self.namespace_depth > 0 and self.ambient_depth == 0) {
-                try self.reportCodeAt(start.span.start, start.line, 1203, "Export assignment cannot be used inside a namespace.");
+                try self.reportCodeAt(start.span.start, start.line, 1063, "An export assignment cannot be used in a namespace.");
             }
             const expr = try self.parseAssignmentExpression();
             try self.consumeStatementTerminator();
@@ -3224,7 +3266,7 @@ pub const Parser = struct {
         // export default <expr>;
         if (self.match(.kw_default)) {
             if (self.namespace_depth > 0 and self.ambient_depth == 0) {
-                try self.reportCodeAt(start.span.start, start.line, 1319, "A default export can only be used in an external module.");
+                try self.reportCodeAt(start.span.start, start.line, 1319, "A default export can only be used in an ECMAScript-style module.");
             }
             // `export default` may be followed by a class/function
             // *declaration* (no statement-terminator) — those have
@@ -5617,7 +5659,7 @@ pub const Parser = struct {
     fn parseRegexLiteralExpression(self: *Parser) ParseError!NodeId {
         const start_tok = self.peek();
         const end = self.findRegexLiteralEnd(start_tok.span.start) orelse {
-            try self.report("unterminated regular expression literal", "");
+            try self.reportCodeAt(start_tok.span.start, start_tok.line, 1161, "Unterminated regular expression literal.");
             return error.UnexpectedToken;
         };
         try self.reportUnbalancedRegexGroup(start_tok, end);
@@ -6687,7 +6729,9 @@ pub const Parser = struct {
                     t.kind == .close_brace or
                     t.kind == .kw_return or
                     t.kind == .kw_case or
-                    t.kind == .kw_default)
+                    t.kind == .kw_default or
+                    t.kind == .semicolon or
+                    t.kind == .eof)
                 {
                     try self.reportCodeAt(t.span.start, t.line, 1109, "Expression expected.");
                     return error.UnexpectedToken;
@@ -6699,18 +6743,27 @@ pub const Parser = struct {
     }
 
     fn buildUpdateAssignment(self: *Parser, op_tok: Token, operand: NodeId, is_inc: bool, is_prefix: bool) ParseError!NodeId {
+        // tsc anchors TS2357 at the operand expression itself
+        // (e.g. column of `this` in `++this`, or `new` in `++ new Foo()`).
+        const operand_span = self.hir.spanOf(operand);
+        const diag_pos = operand_span.start;
+        // For prefix updates the operand follows the op token on the
+        // same logical token-line; postfix is the inverse. The
+        // diagnostic's line field is informational — downstream
+        // recomputes it from `pos`. Reuse `op_tok.line` as a safe
+        // approximation when the operand lacks a token line.
+        const diag_line = op_tok.line;
         switch (self.hir.kindOf(operand)) {
             .identifier => {
                 const id = hir_mod.identifierOf(self.hir, operand);
                 if (std.mem.eql(u8, self.interner.get(id.name), "this")) {
-                    try self.reportCodeAt(op_tok.span.start, op_tok.line, 2364, "The operand of an increment or decrement operator must be a variable or property access.");
+                    try self.reportCodeAt(diag_pos, diag_line, 2357, "The operand of an increment or decrement operator must be a variable or a property access.");
                 }
             },
             .member_access, .element_access => {},
-            else => try self.reportCodeAt(op_tok.span.start, op_tok.line, 2364, "The operand of an increment or decrement operator must be a variable or property access."),
+            else => try self.reportCodeAt(diag_pos, diag_line, 2357, "The operand of an increment or decrement operator must be a variable or a property access."),
         }
         const one = try self.builder.addLiteralNumber(tokenSpan(op_tok), 1);
-        const operand_span = self.hir.spanOf(operand);
         const sp: Span = if (is_prefix)
             .{ .start = op_tok.span.start, .end = operand_span.end }
         else
@@ -8849,7 +8902,7 @@ test "parser: namespace export assignment forms report diagnostics" {
 
     _ = try s.parser.parseSourceFile();
     try T.expectEqual(@as(usize, 2), s.parser.diagnostics.items.len);
-    try T.expectEqual(@as(u32, 1203), s.parser.diagnostics.items[0].code);
+    try T.expectEqual(@as(u32, 1063), s.parser.diagnostics.items[0].code);
     try T.expectEqual(@as(u32, 1319), s.parser.diagnostics.items[1].code);
 }
 
@@ -9777,7 +9830,7 @@ test "parser: primitive type keyword class name reports diagnostic" {
 
     _ = try s.parser.parseSourceFile();
     try T.expectEqual(@as(usize, 1), s.parser.diagnostics.items.len);
-    try T.expectEqual(@as(u32, 2427), s.parser.diagnostics.items[0].code);
+    try T.expectEqual(@as(u32, 2414), s.parser.diagnostics.items[0].code);
 }
 
 test "parser: ambient class member implementations report diagnostic" {
@@ -10287,8 +10340,8 @@ test "parser: update expression reports invalid operand diagnostic" {
 
     _ = try s.parser.parseSourceFile();
     try T.expectEqual(@as(usize, 2), s.parser.diagnostics.items.len);
-    try T.expectEqual(@as(u32, 2364), s.parser.diagnostics.items[0].code);
-    try T.expectEqual(@as(u32, 2364), s.parser.diagnostics.items[1].code);
+    try T.expectEqual(@as(u32, 2357), s.parser.diagnostics.items[0].code);
+    try T.expectEqual(@as(u32, 2357), s.parser.diagnostics.items[1].code);
 }
 
 test "parser: regex literal reports unbalanced group" {
