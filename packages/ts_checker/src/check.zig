@@ -1706,6 +1706,12 @@ pub const Checker = struct {
     fn checkNamespaceTypeStatements(self: *Checker, node: NodeId) CheckError!void {
         try self.checkUntypedModuleAugmentation(node);
         try self.checkGlobalAugmentationDiagnostics(node);
+        const ns = hir_mod.namespaceOf(self.hir, node);
+        // Skip TS8006 for ambient `declare module "fs" { ... }` forms —
+        // upstream tsc only fires on plain `namespace` declarations.
+        if (!self.namespaceIsAmbient(node) and !self.namespaceNameIsStringLiteral(ns.name)) {
+            try self.checkTsOnlyDeclInJs(node, "namespace", ns.name);
+        }
         try self.checkDeclarationSpaceDiagnostics(hir_mod.namespaceBody(self.hir, node));
         for (hir_mod.namespaceBody(self.hir, node)) |s| {
             switch (self.hir.kindOf(s)) {
@@ -19324,6 +19330,19 @@ pub const Checker = struct {
             std.mem.endsWith(u8, filename, ".jsx") or
             std.mem.endsWith(u8, filename, ".mjs") or
             std.mem.endsWith(u8, filename, ".cjs");
+    }
+
+    /// True when `name_node`'s source span begins with a string-literal
+    /// quote (`"` or `'`). Distinguishes `module "fs" { ... }` (string
+    /// name — module augmentation, not subject to TS8006) from
+    /// `namespace A { ... }` (identifier name — TS8006 applies in JS).
+    fn namespaceNameIsStringLiteral(self: *Checker, name_node: NodeId) bool {
+        if (name_node == hir_mod.none_node_id) return false;
+        const src = self.source orelse return false;
+        const span = self.hir.spanOf(name_node);
+        if (span.start >= src.len) return false;
+        const c = src[span.start];
+        return c == '"' or c == '\'';
     }
 
     /// TS8006 — `interface` / `enum` / `namespace` / `type` declarations

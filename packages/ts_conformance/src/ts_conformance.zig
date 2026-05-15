@@ -1300,6 +1300,7 @@ fn countSectionLeadingDirectives(
     var count: u32 = 0;
     var directive_seen = false;
     var pending_blanks: u32 = 0;
+    var leading_blank_consumed = false;
     while (i <= source.len) : (i += 1) {
         const at_end = i == source.len;
         if (at_end or source[i] == '\n') {
@@ -1310,6 +1311,13 @@ fn countSectionLeadingDirectives(
                 if (trimmed.len == 0) {
                     if (directive_seen) {
                         pending_blanks += 1;
+                    } else if (!leading_blank_consumed) {
+                        // Upstream tsc strips the single blank line
+                        // that may sit between `// @filename:` and the
+                        // first content line. Mirrors the per-file
+                        // baseline display in `.errors.txt` baselines.
+                        count += 1;
+                        leading_blank_consumed = true;
                     } else break;
                 } else if (!std.mem.startsWith(u8, trimmed, "//")) {
                     break;
