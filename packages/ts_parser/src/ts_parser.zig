@@ -89,6 +89,7 @@ pub const Parser = struct {
     strict_mode: bool,
     target_es2015_or_later: bool,
     suppress_strict_param_names: bool,
+    parameter_list_recovered_body_as_missing_close: bool,
     top_level_external_module_indicator: bool,
     top_level_export_indicator: bool,
     in_top_level_module_binding_decl: bool,
@@ -140,6 +141,7 @@ pub const Parser = struct {
             .strict_mode = false,
             .target_es2015_or_later = false,
             .suppress_strict_param_names = false,
+            .parameter_list_recovered_body_as_missing_close = false,
             .top_level_external_module_indicator = false,
             .top_level_export_indicator = false,
             .in_top_level_module_binding_decl = false,
@@ -1448,14 +1450,24 @@ pub const Parser = struct {
             owns_tps = true;
         }
         defer if (owns_tps) self.gpa.free(type_params);
+        self.parameter_list_recovered_body_as_missing_close = false;
         const params = try self.parseParameterList();
         defer self.gpa.free(params);
+        const recovered_body_as_missing_close = self.parameter_list_recovered_body_as_missing_close;
 
         var return_type: NodeId = hir_mod.none_node_id;
         if (self.match(.colon)) return_type = try self.parseReturnTypeAnnotation(params);
 
         var body: NodeId = hir_mod.none_node_id;
-        if (self.peek().kind == .open_brace) {
+        if (recovered_body_as_missing_close) {
+            const report_pos = if (name != hir_mod.none_node_id) self.hir.spanOf(name).start else start.span.start;
+            try self.reportCodeAt(
+                report_pos,
+                self.lineAt(report_pos),
+                2391,
+                "Function implementation is missing or not immediately following the declaration.",
+            );
+        } else if (self.peek().kind == .open_brace) {
             self.function_depth += 1;
             self.new_target_depth += 1;
             defer self.function_depth -= 1;
@@ -1500,9 +1512,28 @@ pub const Parser = struct {
         errdefer params.deinit(self.gpa);
         var seen_names: std.AutoHashMapUnmanaged(hir_mod.StringId, Span) = .empty;
         defer seen_names.deinit(self.gpa);
+        var missing_close_reported = false;
         if (self.peek().kind != .close_paren) {
             while (true) {
                 const param_start = self.peek();
+                if (param_start.kind == .open_brace and self.peekAt(1).kind == .close_brace and
+                    (self.peekAt(1).flags.preceded_by_newline or self.peekAt(2).kind == .eof))
+                {
+                    _ = self.advance();
+                    const close = self.peek();
+                    try self.reportCodeAt(close.span.end, close.line, 1005, "')' expected.");
+                    missing_close_reported = true;
+                    self.parameter_list_recovered_body_as_missing_close = true;
+                    if (self.peek().kind == .close_brace) _ = self.advance();
+                    break;
+                }
+                if (param_start.kind == .invalid) {
+                    const bad = self.advance();
+                    try self.reportCodeAt(bad.span.start, bad.line, 1127, "Invalid character.");
+                    if (self.peek().kind == .close_paren) break;
+                    if (self.match(.comma)) continue;
+                    continue;
+                }
                 var flags: hir_mod.ParamFlags = .{};
                 // Capture `@dec` decorators on parameters so the
                 // emitter can produce `__param(N, dec)` calls.
@@ -1640,6 +1671,17 @@ pub const Parser = struct {
                     param_decorators.items,
                 );
                 try params.append(self.gpa, param);
+                if (self.peek().kind == .open_brace) {
+                    const open = self.advance();
+                    try self.reportCodeAt(open.span.start, open.line, 1005, "',' expected.");
+                    if (self.peek().kind == .close_brace) {
+                        const close = self.advance();
+                        try self.reportCodeAt(close.span.end, close.line, 1005, "')' expected.");
+                        missing_close_reported = true;
+                        self.parameter_list_recovered_body_as_missing_close = true;
+                    }
+                    break;
+                }
                 if (!self.match(.comma)) break;
                 if (flags.is_rest and self.peek().kind == .close_paren and self.ambient_depth == 0) {
                     const comma_tok = self.tokens[self.cursor - 1];
@@ -1660,7 +1702,7 @@ pub const Parser = struct {
                 if (self.peek().kind == .close_paren) break; // trailing comma
             }
         }
-        _ = try self.expect(.close_paren, "')' to close parameter list");
+        if (!missing_close_reported) _ = try self.expect(.close_paren, "')' to close parameter list");
         return try params.toOwnedSlice(self.gpa);
     }
 
