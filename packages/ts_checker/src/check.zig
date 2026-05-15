@@ -22632,30 +22632,12 @@ pub const Checker = struct {
         defer call_sigs.deinit(self.gpa);
         try self.collectCallSignatures(callee_t, &call_sigs);
         var saw_this_param = false;
-        var first_this_t: TypeId = types.Primitive.none;
         for (call_sigs.items) |sig| {
             const this_t = self.signature_this_params.get(sig) orelse continue;
             saw_this_param = true;
-            if (first_this_t == types.Primitive.none) first_this_t = this_t;
             if (self.engine.isAssignableTo(receiver_t, this_t) catch false) return;
         }
         if (saw_this_param) {
-            // Mirror upstream tsc: when both the receiver type and the
-            // method's `this` type render, emit TS2684 with the full
-            // form `The 'this' context of type 'A' is not assignable
-            // to method's 'this' of type 'B'.` Otherwise fall back to
-            // the bare wording.
-            if (try self.allocSimpleTypeName(receiver_t)) |source_name| {
-                if (try self.allocSimpleTypeName(first_this_t)) |target_name| {
-                    const msg = try std.fmt.allocPrint(
-                        self.diag_arena.allocator(),
-                        "The 'this' context of type '{s}' is not assignable to method's 'this' of type '{s}'.",
-                        .{ source_name, target_name },
-                    );
-                    try self.report(call_node, TsCodes.this_context_not_assignable, msg);
-                    return;
-                }
-            }
             try self.report(call_node, TsCodes.argument_type_mismatch, "The 'this' context is not assignable to method's 'this' type.");
         }
     }
@@ -38500,15 +38482,7 @@ test "checker: union receiver method checks explicit this parameter" {
     try s.checker.checkSourceFile(s.root);
     var found = false;
     for (s.checker.diagnostics.items) |d| {
-        // TS2684 ("The 'this' context of type ...") is the
-        // upstream-correct code; TS2345 ("Argument of type ...") is
-        // the legacy fallback when receiver / target this types
-        // can't be rendered. Either one satisfies the parity test.
-        if (d.code == TsCodes.argument_type_mismatch or
-            d.code == TsCodes.this_context_not_assignable)
-        {
-            found = true;
-        }
+        if (d.code == TsCodes.argument_type_mismatch) found = true;
     }
     try T.expect(found);
 }
