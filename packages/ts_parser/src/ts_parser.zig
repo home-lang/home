@@ -7143,6 +7143,15 @@ pub const Parser = struct {
                 try self.reportCodeAt(bad.span.start, bad.line, 1127, "Invalid character.");
                 return error.UnexpectedToken;
             },
+            .kw_finally => {
+                _ = self.advance();
+                try self.reportCodeAt(t.span.start, t.line, 1109, "Expression expected.");
+                if (self.peek().kind != .open_brace) {
+                    const at = self.peek();
+                    try self.reportCodeAt(at.span.start, at.line, 1005, "'{' expected.");
+                }
+                return try self.builder.addLiteralNumber(.{ .start = t.span.start, .end = t.span.start }, 0);
+            },
             else => {
                 if (t.kind.isContextualKeyword()) {
                     _ = self.advance();
@@ -11988,6 +11997,23 @@ test "parser: primitive keyword may finish qualified type name" {
 
     _ = try s.parser.parseSourceFile();
     try T.expectEqual(@as(usize, 0), s.parser.diagnostics.items.len);
+}
+
+test "parser: finally in expression position reports upstream recovery" {
+    var s = try newTestSetup("a / finally");
+    defer destroyTestSetup(s);
+    s.parser.setTargetEs2015OrLater(true);
+
+    _ = try s.parser.parseSourceFile();
+    var found_expr = false;
+    var found_brace = false;
+    for (s.parser.diagnostics.items) |d| {
+        if (d.code == 1109 and std.mem.eql(u8, d.message, "Expression expected.")) found_expr = true;
+        if (d.code == 1005 and std.mem.eql(u8, d.message, "'{' expected.")) found_brace = true;
+        try T.expect(!std.mem.startsWith(u8, d.message, "unexpected token in expression"));
+    }
+    try T.expect(found_expr);
+    try T.expect(found_brace);
 }
 
 test "parser: dangling qualified type name before newline keyword reports TS1003" {
