@@ -92,6 +92,7 @@ pub const Parser = struct {
     allow_parameter_list_arrow_recovery: bool,
     parameter_list_recovered_body_as_missing_close: bool,
     parameter_list_recovered_arrow_missing_close: bool,
+    enum_recovered_missing_close_at_eof: bool,
     top_level_external_module_indicator: bool,
     top_level_export_indicator: bool,
     in_top_level_module_binding_decl: bool,
@@ -146,6 +147,7 @@ pub const Parser = struct {
             .allow_parameter_list_arrow_recovery = false,
             .parameter_list_recovered_body_as_missing_close = false,
             .parameter_list_recovered_arrow_missing_close = false,
+            .enum_recovered_missing_close_at_eof = false,
             .top_level_external_module_indicator = false,
             .top_level_export_indicator = false,
             .in_top_level_module_binding_decl = false,
@@ -437,7 +439,7 @@ pub const Parser = struct {
             const start = self.peek();
             const dec_expr = try self.parseDecoratorExpression();
             const next = self.peek().kind;
-            if (next != .at and next != .kw_class and next != .kw_export and next != .kw_abstract and next != .eof) {
+            if (next != .at and next != .kw_class and next != .kw_export and next != .kw_abstract and next != .kw_enum and next != .eof) {
                 try self.report("decorators are not valid here", "");
             }
             const dec = try self.builder.addDecorator(
@@ -715,6 +717,12 @@ pub const Parser = struct {
             },
             else => try self.parseExpressionStatement(),
         };
+    }
+
+    fn classMemberNameIsConstructor(self: *const Parser, name_node: NodeId) bool {
+        if (name_node == hir_mod.none_node_id or self.hir.kindOf(name_node) != .identifier) return false;
+        const id = hir_mod.identifierOf(self.hir, name_node);
+        return std.mem.eql(u8, self.interner.get(id.name), "constructor");
     }
 
     fn statementIsDisallowedInAmbientContext(self: *const Parser, kind: TokenKind) bool {
@@ -2173,6 +2181,10 @@ pub const Parser = struct {
                     const name_id = try self.internPropertyName(name_tok, tokenSpan(name_tok));
                     break :blk try self.builder.addIdentifier(tokenSpan(name_tok), name_id);
                 };
+                if (self.classMemberNameIsConstructor(name_node)) {
+                    const name_span = self.hir.spanOf(name_node);
+                    try self.reportCodeAt(name_span.start, self.lineAt(name_span.start), 1341, "Class constructor may not be an accessor.");
+                }
                 if (self.peek().kind == .less_than) {
                     const tps = try self.parseTypeParameterDeclaration();
                     defer self.gpa.free(tps);
@@ -2911,6 +2923,12 @@ pub const Parser = struct {
         defer members.deinit(self.gpa);
         while (self.peek().kind != .close_brace and self.peek().kind != .eof) {
             const member_start = self.peek();
+            if (member_start.kind == .invalid) {
+                const bad = self.advance();
+                try self.reportCodeAt(bad.span.start, bad.line, 1127, "Invalid character.");
+                if (self.peek().kind == .comma) _ = self.advance();
+                continue;
+            }
             var is_computed = false;
             const name_node = if (self.peek().kind == .open_bracket) blk: {
                 _ = self.advance();
@@ -2939,11 +2957,22 @@ pub const Parser = struct {
             try members.append(self.gpa, member);
             if (!self.match(.comma)) break;
         }
-        const close = try self.expect(.close_brace, "'}' to close enum body");
+        const close_end = if (self.peek().kind == .close_brace) blk: {
+            break :blk self.advance().span.end;
+        } else blk: {
+            const close = self.peek();
+            const diag_pos = if (close.kind == .eof and self.cursor > 0 and self.tokens[self.cursor - 1].kind == .invalid)
+                self.tokens[self.cursor - 1].span.start + 1
+            else
+                close.span.start;
+            try self.reportCodeAt(diag_pos, close.line, 1005, "'}' expected.");
+            if (close.kind == .eof) self.enum_recovered_missing_close_at_eof = true;
+            break :blk diag_pos;
+        };
         const name_id = try self.internToken(name_tok);
         const name_node = try self.builder.addIdentifier(tokenSpan(name_tok), name_id);
         return try self.builder.addEnum(
-            .{ .start = start.span.start, .end = close.span.end },
+            .{ .start = start.span.start, .end = close_end },
             name_node,
             members.items,
             false,
@@ -2970,14 +2999,24 @@ pub const Parser = struct {
         while (self.hasPendingStatement() or (self.peek().kind != .close_brace and self.peek().kind != .eof)) {
             try body.append(self.gpa, try self.parseStatement());
         }
-        const close = try self.expect(.close_brace, "'}' to close namespace body");
+        const close_end = if (self.peek().kind == .close_brace) blk: {
+            break :blk self.advance().span.end;
+        } else blk: {
+            const close = self.peek();
+            if (close.kind == .eof and self.enum_recovered_missing_close_at_eof) {
+                self.enum_recovered_missing_close_at_eof = false;
+            } else {
+                try self.reportCodeAt(close.span.start, close.line, 1005, "'}' expected.");
+            }
+            break :blk close.span.start;
+        };
         const name_id = if (name_tok.kind == .string_literal)
             try self.internStringLiteral(name_tok)
         else
             self.interner.intern(self.source[name_tok.span.start..name_end]) catch return error.OutOfMemory;
         const name_node = try self.builder.addIdentifier(.{ .start = name_tok.span.start, .end = name_end }, name_id);
         return try self.builder.addNamespace(
-            .{ .start = start.span.start, .end = close.span.end },
+            .{ .start = start.span.start, .end = close_end },
             name_node,
             body.items,
         );
@@ -3511,6 +3550,12 @@ pub const Parser = struct {
     /// `@foo.bar`, `@foo()`, `@foo(arg, arg)` — all valid.
     fn parseDecoratorExpression(self: *Parser) ParseError!NodeId {
         _ = try self.expect(.at, "'@' to start decorator");
+        if (self.peek().kind == .kw_enum) {
+            const tok = self.peek();
+            try self.reportCodeAt(tok.span.start, tok.line, 1109, "Expression expected.");
+            const empty = self.interner.intern("") catch return error.OutOfMemory;
+            return try self.builder.addIdentifier(.{ .start = tok.span.start, .end = tok.span.start }, empty);
+        }
         return try self.parseLeftHandSideExpression();
     }
 
@@ -7049,7 +7094,8 @@ pub const Parser = struct {
                     t.kind == .eof or
                     t.kind == .kw_return or
                     t.kind == .kw_case or
-                    t.kind == .kw_default)
+                    t.kind == .kw_default or
+                    t.kind == .kw_enum)
                 {
                     try self.reportCodeAt(t.span.start, t.line, 1109, "Expression expected.");
                     return error.UnexpectedToken;
@@ -11648,6 +11694,50 @@ test "parser: nested class declaration in class body bails to outer statement" {
     const stmts = hir_mod.blockStmts(&s.hir, root);
     try T.expectEqual(@as(usize, 2), stmts.len);
     try T.expectEqual(@as(u32, 1068), s.parser.diagnostics.items[0].code);
+}
+
+test "parser: constructor accessor names report TS1341" {
+    var s = try newTestSetup(
+        \\class C {
+        \\  get constructor() { return }
+        \\  set constructor(value) {}
+        \\}
+    );
+    defer destroyTestSetup(s);
+
+    _ = try s.parser.parseSourceFile();
+    try T.expectEqual(@as(usize, 2), s.parser.diagnostics.items.len);
+    try T.expectEqual(@as(u32, 1341), s.parser.diagnostics.items[0].code);
+    try T.expectEqualStrings("Class constructor may not be an accessor.", s.parser.diagnostics.items[0].message);
+    try T.expectEqual(@as(u32, 1341), s.parser.diagnostics.items[1].code);
+    try T.expectEqualStrings("Class constructor may not be an accessor.", s.parser.diagnostics.items[1].message);
+}
+
+test "parser: enum keyword in expression recovery reports expression expected" {
+    var s = try newTestSetup("@\nenum E {}");
+    defer destroyTestSetup(s);
+
+    _ = s.parser.parseSourceFile() catch {};
+    var found = false;
+    for (s.parser.diagnostics.items) |d| {
+        if (d.code == 1109 and std.mem.eql(u8, d.message, "Expression expected.")) found = true;
+    }
+    try T.expect(found);
+}
+
+test "parser: invalid enum member still reports missing close brace" {
+    var s = try newTestSetup("enum E {\n  ¬");
+    defer destroyTestSetup(s);
+
+    _ = try s.parser.parseSourceFile();
+    var invalid_found = false;
+    var close_found = false;
+    for (s.parser.diagnostics.items) |d| {
+        if (d.code == 1127) invalid_found = true;
+        if (d.code == 1005 and std.mem.eql(u8, d.message, "'}' expected.")) close_found = true;
+    }
+    try T.expect(invalid_found);
+    try T.expect(close_found);
 }
 
 test "parser: unterminated generic type reference reports TS1005 and recovers" {
