@@ -437,6 +437,13 @@ pub const Parser = struct {
             return dec;
         }
         const t = self.peek();
+        if (self.block_depth == 0 and
+            self.nested_statement_depth == 0 and
+            self.isAmbientContextAt(t.span.start) and
+            self.statementIsDisallowedInAmbientContext(t.kind))
+        {
+            try self.reportCodeAt(t.span.start, t.line, 1036, "Statements are not allowed in ambient contexts.");
+        }
         if ((t.kind == .identifier or t.kind.isContextualKeyword()) and
             self.peekAt(1).kind == .colon)
         {
@@ -444,6 +451,11 @@ pub const Parser = struct {
             _ = self.advance();
             if (self.block_depth == 0 and self.isInvalidLabeledDeclarationStart()) {
                 try self.reportCodeAt(label_tok.span.start, label_tok.line, 1344, "A label is not allowed here.");
+            }
+            if (self.isAmbientContextAt(label_tok.span.start)) {
+                self.nested_statement_depth += 1;
+                defer self.nested_statement_depth -= 1;
+                return try self.parseStatement();
             }
             return try self.parseStatement();
         }
@@ -639,7 +651,7 @@ pub const Parser = struct {
             },
             .semicolon => blk: {
                 const semi = self.advance();
-                if (self.ambient_depth > 0) {
+                if (self.block_depth == 0 and self.nested_statement_depth == 0 and self.isAmbientContextAt(semi.span.start)) {
                     try self.reportCodeAt(semi.span.start, semi.line, 1036, "Statements are not allowed in ambient contexts.");
                 }
                 // Empty statement is a no-op; lower as a synthesized
@@ -647,6 +659,35 @@ pub const Parser = struct {
                 break :blk try self.builder.addBlock(tokenSpan(semi), &.{});
             },
             else => try self.parseExpressionStatement(),
+        };
+    }
+
+    fn statementIsDisallowedInAmbientContext(self: *const Parser, kind: TokenKind) bool {
+        _ = self;
+        return switch (kind) {
+            .kw_let,
+            .kw_const,
+            .kw_var,
+            .kw_function,
+            .kw_async,
+            .kw_class,
+            .kw_accessor,
+            .kw_abstract,
+            .kw_interface,
+            .kw_enum,
+            .kw_namespace,
+            .kw_module,
+            .kw_declare,
+            .kw_global,
+            .kw_import,
+            .kw_export,
+            .kw_type,
+            .kw_with,
+            .semicolon,
+            .eof,
+            => false,
+            .identifier => true,
+            else => true,
         };
     }
 
@@ -887,6 +928,26 @@ pub const Parser = struct {
                 const name_id = try self.internToken(name_tok);
                 break :blk try self.builder.addIdentifier(tokenSpan(name_tok), name_id);
             };
+            if (!is_using_decl and (binding_start.kind == .kw_in or binding_start.kind == .kw_of) and
+                self.peek().kind != .kw_in and self.peek().kind != .kw_of and
+                self.peek().kind != .equal and self.peek().kind != .colon and
+                self.peek().kind != .comma and self.peek().kind != .semicolon and
+                self.peek().kind != .close_paren)
+            {
+                const empty_pos = if (binding_start.span.start > 0) binding_start.span.start - 1 else binding_start.span.start;
+                try self.reportCodeAt(empty_pos, binding_start.line, 1123, "Variable declaration list cannot be empty.");
+                if (binding_start.kind == .kw_in) {
+                    const source_expr = try self.parseExpression();
+                    _ = try self.expect(.close_paren, "')' to close for-in/of header");
+                    self.loop_depth += 1;
+                    defer self.loop_depth -= 1;
+                    self.loop_switch_depth += 1;
+                    defer self.loop_switch_depth -= 1;
+                    const body = try self.parseNestedStatement();
+                    return try self.builder.addForIn(.{ .start = start.span.start, .end = self.hir.spanOf(body).end }, hir_mod.none_node_id, source_expr, body);
+                }
+                return try self.finishRecoveredForStatement(start);
+            }
             if (is_using_decl and (binding_start.kind == .open_brace or binding_start.kind == .open_bracket)) {
                 const message = if (is_await_using_decl)
                     "'await using' declarations may not have binding patterns."
@@ -907,6 +968,19 @@ pub const Parser = struct {
             // Detect for-in / for-of immediately.
             if (self.peek().kind == .kw_in or self.peek().kind == .kw_of) {
                 const kind_tok = self.advance(); // in/of
+                if (!is_using_decl and (binding_start.kind == .kw_in or binding_start.kind == .kw_of)) {
+                    const empty_pos = if (binding_start.span.start > 0) binding_start.span.start - 1 else binding_start.span.start;
+                    try self.reportCodeAt(empty_pos, binding_start.line, 1123, "Variable declaration list cannot be empty.");
+                    if (self.peek().kind == .close_paren) {
+                        return try self.finishRecoveredForStatement(start);
+                    }
+                } else if (type_annotation != hir_mod.none_node_id) {
+                    const message = if (kind_tok.kind == .kw_in)
+                        "The left-hand side of a 'for...in' statement cannot use a type annotation."
+                    else
+                        "The left-hand side of a 'for...of' statement cannot use a type annotation.";
+                    try self.reportCodeAt(binding_start.span.start, binding_start.line, if (kind_tok.kind == .kw_in) 2404 else 2483, message);
+                }
                 if (kind_tok.kind == .kw_in and
                     (self.hir.kindOf(binding_node) == .object_pattern or self.hir.kindOf(binding_node) == .array_pattern))
                 {
@@ -960,7 +1034,7 @@ pub const Parser = struct {
 
             // Classic for: `for (let x = init;` …)
             var init_expr: NodeId = hir_mod.none_node_id;
-            if (self.match(.equal)) init_expr = try self.parseAssignmentExpression();
+            if (self.match(.equal)) init_expr = try self.parseAssignmentExpressionWithIn(false);
             if (is_using_decl and init_expr == hir_mod.none_node_id) {
                 try self.reportCodeAt(binding_start.span.start, binding_start.line, 1155, "'using' declarations must be initialized.");
             }
@@ -986,14 +1060,42 @@ pub const Parser = struct {
                 is_await_using_decl,
                 self.ambient_depth > 0,
             );
+            var multiple_decl_token: ?Token = null;
             while (self.match(.comma)) {
+                const item_start = self.peek();
+                if (multiple_decl_token == null) multiple_decl_token = item_start;
                 if (self.peek().kind == .open_brace or self.peek().kind == .open_bracket) {
                     _ = try self.parseBindingPattern();
                 } else {
                     _ = try self.expectIdentifierLike();
                 }
                 if (self.match(.colon)) _ = try self.parseTypeAnnotation();
-                if (self.match(.equal)) _ = try self.parseAssignmentExpression();
+                if (self.match(.equal)) _ = try self.parseAssignmentExpressionWithIn(false);
+            }
+            if (self.peek().kind == .kw_in or self.peek().kind == .kw_of) {
+                const kind_tok = self.advance();
+                try self.reportInvalidForInOfDeclaration(
+                    kind_tok.kind,
+                    binding_start,
+                    type_annotation != hir_mod.none_node_id,
+                    init_expr != hir_mod.none_node_id,
+                    multiple_decl_token,
+                );
+                const source_expr = try self.parseExpression();
+                _ = try self.expect(.close_paren, "')' to close for-in/of header");
+                self.loop_depth += 1;
+                defer self.loop_depth -= 1;
+                self.loop_switch_depth += 1;
+                defer self.loop_switch_depth -= 1;
+                const body = try self.parseNestedStatement();
+                const end_pos = self.hir.spanOf(body).end;
+                if (kind_tok.kind == .kw_in) {
+                    return try self.builder.addForIn(.{ .start = start.span.start, .end = end_pos }, init_node, source_expr, body);
+                } else if (is_await) {
+                    return try self.builder.addForAwaitOf(.{ .start = start.span.start, .end = end_pos }, init_node, source_expr, body);
+                } else {
+                    return try self.builder.addForOf(.{ .start = start.span.start, .end = end_pos }, init_node, source_expr, body);
+                }
             }
         } else {
             const head_start = self.peek();
@@ -1001,6 +1103,9 @@ pub const Parser = struct {
 
             if (self.peek().kind == .kw_in or self.peek().kind == .kw_of) {
                 const kind_tok = self.advance();
+                if (!is_await and kind_tok.kind == .kw_of and self.hir.kindOf(head_expr) == .identifier and self.tokenTextEquals(head_start, "async")) {
+                    try self.reportCodeAt(head_start.span.start, head_start.line, 1106, "The left-hand side of a 'for...of' statement may not be 'async'.");
+                }
                 if (kind_tok.kind == .kw_in and (head_start.kind == .open_brace or head_start.kind == .open_bracket)) {
                     try self.reportCodeAt(head_start.span.start, head_start.line, 2491, "The left-hand side of a 'for...in' statement cannot be a destructuring pattern.");
                 }
@@ -1037,6 +1142,50 @@ pub const Parser = struct {
         const body = try self.parseNestedStatement();
         const end_pos = self.hir.spanOf(body).end;
         return try self.builder.addFor(.{ .start = start.span.start, .end = end_pos }, init_node, cond, update, body);
+    }
+
+    fn finishRecoveredForStatement(self: *Parser, start: Token) ParseError!NodeId {
+        while (self.peek().kind != .close_paren and self.peek().kind != .eof) _ = self.advance();
+        _ = self.match(.close_paren);
+        self.loop_depth += 1;
+        defer self.loop_depth -= 1;
+        self.loop_switch_depth += 1;
+        defer self.loop_switch_depth -= 1;
+        const body = try self.parseNestedStatement();
+        return try self.builder.addFor(.{ .start = start.span.start, .end = self.hir.spanOf(body).end }, hir_mod.none_node_id, hir_mod.none_node_id, hir_mod.none_node_id, body);
+    }
+
+    fn reportInvalidForInOfDeclaration(
+        self: *Parser,
+        kind: TokenKind,
+        first_binding: Token,
+        has_type_annotation: bool,
+        has_initializer: bool,
+        multiple_decl_token: ?Token,
+    ) ParseError!void {
+        if (multiple_decl_token) |tok| {
+            const message = if (kind == .kw_in)
+                "Only a single variable declaration is allowed in a 'for...in' statement."
+            else
+                "Only a single variable declaration is allowed in a 'for...of' statement.";
+            try self.reportCodeAt(tok.span.start, tok.line, if (kind == .kw_in) 1091 else 1188, message);
+            return;
+        }
+        if (has_initializer) {
+            const message = if (kind == .kw_in)
+                "The variable declaration of a 'for...in' statement cannot have an initializer."
+            else
+                "The variable declaration of a 'for...of' statement cannot have an initializer.";
+            try self.reportCodeAt(first_binding.span.start, first_binding.line, if (kind == .kw_in) 1189 else 1190, message);
+            return;
+        }
+        if (has_type_annotation) {
+            const message = if (kind == .kw_in)
+                "The left-hand side of a 'for...in' statement cannot use a type annotation."
+            else
+                "The left-hand side of a 'for...of' statement cannot use a type annotation.";
+            try self.reportCodeAt(first_binding.span.start, first_binding.line, if (kind == .kw_in) 2404 else 2483, message);
+        }
     }
 
     fn parseWithStatement(self: *Parser) ParseError!NodeId {
@@ -6654,12 +6803,14 @@ pub const Parser = struct {
             // Computed key: `[expr]: value`.
             var key: NodeId = undefined;
             var is_computed = false;
+            var can_be_shorthand_property = false;
             if (self.match(.open_bracket)) {
                 key = try self.parseAssignmentExpression();
                 _ = try self.expect(.close_bracket, "']' to close computed property name");
                 is_computed = true;
             } else {
                 const key_tok = self.advance();
+                can_be_shorthand_property = isExpressionIdentifierToken(key_tok.kind);
                 var key_span = tokenSpan(key_tok);
                 if (key_tok.kind == .no_substitution_template or key_tok.kind == .template_head) {
                     try self.reportCodeAt(key_tok.span.start, key_tok.line, 1136, "Property assignment expected.");
@@ -6675,6 +6826,10 @@ pub const Parser = struct {
             var value: NodeId = hir_mod.none_node_id;
             var is_shorthand = false;
             var is_method = false;
+            if (!is_computed and self.peek().kind == .question) {
+                const question_tok = self.advance();
+                try self.reportCodeAt(question_tok.span.start, question_tok.line, 1162, "An object member cannot be declared optional.");
+            }
             if (self.match(.colon)) {
                 value = try self.parseAssignmentExpression();
             } else if (method_is_generator or self.peek().kind == .less_than or self.peek().kind == .open_paren) {
@@ -6711,11 +6866,13 @@ pub const Parser = struct {
                     },
                 );
                 is_method = true;
-            } else {
+            } else if (can_be_shorthand_property) {
                 // Shorthand property: `{ foo }` — value mirrors the key
                 // identifier.
                 is_shorthand = true;
                 value = key;
+            } else {
+                try self.reportCodeAt(self.peek().span.start, self.peek().line, 1005, "':' expected.");
             }
             const prop = try self.builder.addObjectProperty(
                 .{ .start = prop_start.span.start, .end = self.tokens[self.cursor - 1].span.end },
@@ -9905,6 +10062,20 @@ test "parser: ambient semicolon statement reports TS1036" {
     try T.expectEqual(@as(u32, 1036), s.parser.diagnostics.items[0].code);
 }
 
+test "parser: declaration-file statements report TS1036" {
+    var s = try newTestSetup(
+        \\for (var e of []) {}
+        \\label: foo;
+    );
+    defer destroyTestSetup(s);
+    s.parser.is_declaration_file = true;
+
+    _ = try s.parser.parseSourceFile();
+    try T.expect(s.parser.diagnostics.items.len >= 2);
+    try T.expectEqual(@as(u32, 1036), s.parser.diagnostics.items[0].code);
+    try T.expectEqual(@as(u32, 1036), s.parser.diagnostics.items[1].code);
+}
+
 test "parser: invalid class-body var reports TS1068" {
     var s = try newTestSetup("class Foo { var icecream = \"chocolate\"; }");
     defer destroyTestSetup(s);
@@ -10277,4 +10448,32 @@ test "parser: missing-comma recovery preserves preceding class duplicate members
     try T.expectEqual(hir_mod.NodeKind.class_decl, s.hir.kindOf(stmts[0]));
     const members = hir_mod.classMembers(&s.hir, stmts[0]);
     try T.expectEqual(@as(usize, 4), members.len);
+}
+
+test "parser: optional shorthand object properties report TS1162 and recover" {
+    var s = try newTestSetup(
+        \\var name: any, id: any;
+        \\foo({ name?, id? });
+    );
+    defer destroyTestSetup(s);
+
+    _ = try s.parser.parseSourceFile();
+    try T.expectEqual(@as(usize, 2), s.parser.diagnostics.items.len);
+    try T.expectEqual(@as(u32, 1162), s.parser.diagnostics.items[0].code);
+    try T.expectEqual(@as(u32, 1162), s.parser.diagnostics.items[1].code);
+}
+
+test "parser: non-identifier shorthand property names require colon" {
+    var s = try newTestSetup(
+        \\var a = { class };
+        \\var b = { "" };
+        \\var c = { 0 };
+    );
+    defer destroyTestSetup(s);
+
+    _ = try s.parser.parseSourceFile();
+    try T.expectEqual(@as(usize, 3), s.parser.diagnostics.items.len);
+    for (s.parser.diagnostics.items) |d| {
+        try T.expectEqual(@as(u32, 1005), d.code);
+    }
 }
