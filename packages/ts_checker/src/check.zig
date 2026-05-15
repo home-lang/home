@@ -17563,7 +17563,11 @@ pub const Checker = struct {
                 // bypass strict-null narrowing checks — destructuring
                 // from `any` does not carry an "object possibly
                 // undefined" risk in tsc, so suppress TS2532 here.
-                try self.report(v.init, TsCodes.object_possibly_undefined, "Object is possibly 'undefined'.");
+                // tsc anchors TS2532 at the destructuring pattern
+                // (the `{ x }` in `var { x } = void 0;`), not at the
+                // init expression — switch the report node so the
+                // rendered (line, col) matches upstream.
+                try self.report(v.name, TsCodes.object_possibly_undefined, "Object is possibly 'undefined'.");
             }
         }
 
@@ -19604,6 +19608,13 @@ pub const Checker = struct {
                         // to render the constructor as
                         // `typeof <ClassName>` (matches tsc).
                         var rendered_name: ?[]const u8 = try self.allocSimpleTypeName(callee_t);
+                        if (rendered_name == null and self.interner.isSignature(callee_t)) {
+                            // Bare construct signatures (`new () => T`)
+                            // aren't in the named-type table; fall back
+                            // to the structured signature renderer so
+                            // TS2348 prose carries the type shape.
+                            rendered_name = try self.allocCallableSignatureName(callee_t);
+                        }
                         if (rendered_name == null) {
                             var sit = self.class_static_types.iterator();
                             while (sit.next()) |entry| {
@@ -27129,7 +27140,22 @@ pub const Checker = struct {
                 }
                 break :blk types.Primitive.number_t;
             },
-            .not => types.Primitive.boolean_t,
+            .not => blk: {
+                // `!{ … }` / `![ … ]` / `!fn` always evaluate to
+                // `false` because the operand is a truthy literal.
+                // tsc fires TS2872 ("This kind of expression is
+                // always truthy.") at the operand. Restrict to the
+                // operand kinds tsc actually flags (object literal,
+                // array literal, function-shaped) — `!"x"` / `!0`
+                // are intentionally not flagged.
+                switch (self.hir.kindOf(u.operand)) {
+                    .object_literal, .array_literal, .fn_decl, .fn_expr, .arrow_fn => {
+                        try self.report(u.operand, TsCodes.expression_always_truthy, "This kind of expression is always truthy.");
+                    },
+                    else => {},
+                }
+                break :blk types.Primitive.boolean_t;
+            },
             .typeof => types.Primitive.string_t,
             .void_ => types.Primitive.undefined_t,
             .delete => blk: {
