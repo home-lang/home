@@ -7600,6 +7600,11 @@ pub const Parser = struct {
         var props: std.ArrayListUnmanaged(NodeId) = .empty;
         defer props.deinit(self.gpa);
         while (self.peek().kind != .close_brace and self.peek().kind != .eof) {
+            if (self.peek().kind == .colon) {
+                const colon = self.advance();
+                try self.reportCodeAt(colon.span.start, colon.line, 1136, "Property assignment expected.");
+                continue;
+            }
             const prop_start = self.peek();
             var method_is_async = false;
             if (self.peek().kind == .kw_async) {
@@ -7715,7 +7720,11 @@ pub const Parser = struct {
             var can_be_shorthand_property = false;
             if (self.match(.open_bracket)) {
                 key = try self.parseAssignmentExpression();
-                _ = try self.expect(.close_bracket, "']' to close computed property name");
+                if (self.peek().kind == .close_bracket) {
+                    _ = self.advance();
+                } else {
+                    try self.reportCodeAt(self.peek().span.start, self.peek().line, 1005, "']' expected.");
+                }
                 is_computed = true;
             } else {
                 const key_tok = self.advance();
@@ -7799,6 +7808,11 @@ pub const Parser = struct {
             );
             try props.append(self.gpa, prop);
             if (self.match(.comma)) continue;
+            if (is_computed and self.peek().kind == .close_bracket) {
+                const close = self.advance();
+                try self.reportCodeAt(close.span.start, close.line, 1005, "',' expected.");
+                continue;
+            }
             if (recovered_missing_colon_value and objectLiteralPropertyCanStart(self.peek().kind)) continue;
             // Recover from missing `,` between properties — TS reports
             // TS1005 at the offending token and continues parsing the
@@ -11668,6 +11682,25 @@ test "parser: object literal missing value recovers keyword property" {
     try T.expectEqualStrings("Expression expected.", s.parser.diagnostics.items[0].message);
     try T.expectEqual(@as(u32, 1005), s.parser.diagnostics.items[1].code);
     try T.expectEqual(@as(u32, 1005), s.parser.diagnostics.items[2].code);
+}
+
+test "parser: object literal malformed computed indexer recovers like upstream" {
+    var s = try newTestSetup(
+        \\var x = {
+        \\  [s: symbol]: ""
+        \\}
+    );
+    defer destroyTestSetup(s);
+
+    _ = try s.parser.parseSourceFile();
+    try T.expectEqual(@as(usize, 4), s.parser.diagnostics.items.len);
+    try T.expectEqual(@as(u32, 1005), s.parser.diagnostics.items[0].code);
+    try T.expectEqualStrings("']' expected.", s.parser.diagnostics.items[0].message);
+    try T.expectEqual(@as(u32, 1005), s.parser.diagnostics.items[1].code);
+    try T.expectEqualStrings("',' expected.", s.parser.diagnostics.items[1].message);
+    try T.expectEqual(@as(u32, 1136), s.parser.diagnostics.items[2].code);
+    try T.expectEqual(@as(u32, 1005), s.parser.diagnostics.items[3].code);
+    try T.expectEqualStrings("':' expected.", s.parser.diagnostics.items[3].message);
 }
 
 test "parser: call argument list missing argument before return recovers" {
