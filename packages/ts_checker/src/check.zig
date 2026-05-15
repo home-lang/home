@@ -16865,7 +16865,8 @@ pub const Checker = struct {
         // without an initializer falls through to `any`.
         if (self.strict_flags.no_implicit_any and
             v.type_annotation == hir_mod.none_node_id and
-            v.init == hir_mod.none_node_id)
+            v.init == hir_mod.none_node_id and
+            !self.varDeclHasMalformedListSyntax(node, v.name))
         {
             const var_name: []const u8 = if (v.name != hir_mod.none_node_id and self.hir.kindOf(v.name) == .identifier)
                 self.string_interner.get(hir_mod.identifierOf(self.hir, v.name).name)
@@ -16882,6 +16883,24 @@ pub const Checker = struct {
                 .message = msg,
             });
         }
+    }
+
+    fn varDeclHasMalformedListSyntax(self: *Checker, node: NodeId, name_node: NodeId) bool {
+        if (name_node != hir_mod.none_node_id and self.hir.kindOf(name_node) == .identifier) {
+            const name = self.string_interner.get(hir_mod.identifierOf(self.hir, name_node).name);
+            if (name.len == 0) return true;
+        }
+        const src = self.source orelse return false;
+        const span = self.hir.spanOf(node);
+        if (span.start >= span.end or span.end > src.len) return false;
+        var i: usize = span.end;
+        while (i > span.start) {
+            i -= 1;
+            const c = src[i];
+            if (c == ';' or c == ' ' or c == '\t' or c == '\r' or c == '\n') continue;
+            return c == ',';
+        }
+        return false;
     }
 
     fn shouldRecordDeclaredVariableFlowNarrow(
@@ -35911,6 +35930,16 @@ test "checker: noImplicitAny emits TS7005 for bare `let x` declaration" {
         }
     }
     try T.expect(found);
+}
+
+test "checker: malformed variable declaration lists suppress follow-on TS7005" {
+    const s = try newSetup("var a,;\nvar ;");
+    defer destroySetup(s);
+    s.checker.setStrictFlags(.{ .no_implicit_any = true });
+    try s.checker.checkSourceFile(s.root);
+    for (s.checker.diagnostics.items) |d| {
+        try T.expect(d.code != TsCodes.variable_implicitly_any);
+    }
 }
 
 test "checker: noImplicitAny emits TS7008 for bare class and interface members" {

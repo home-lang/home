@@ -1880,8 +1880,10 @@ pub const Parser = struct {
                 if (try self.tryParseIndexSignature(&members, mods.is_static, mods.is_readonly)) {
                     if (invalid_index_modifier) |bad| {
                         try self.reportCodeAt(bad.span.start, bad.line, 1071, "'export' modifier cannot appear on an index signature.");
-                    } else if (mods.has_accessibility) {
-                        try self.reportCodeAt(member_start.span.start, member_start.line, 1071, "Accessibility modifier cannot appear on an index signature.");
+                    } else if (mods.accessibility_token) |bad| {
+                        const mod_name = self.source[bad.span.start..bad.span.end];
+                        const msg = try std.fmt.allocPrint(self.diag_arena.allocator(), "'{s}' modifier cannot appear on an index signature.", .{mod_name});
+                        try self.reportCodeAt(bad.span.start, bad.line, 1071, msg);
                     }
                     continue;
                 }
@@ -2137,6 +2139,7 @@ pub const Parser = struct {
     const ClassModifiers = struct {
         visibility: hir_mod.Visibility = .public,
         has_accessibility: bool = false,
+        accessibility_token: ?Token = null,
         is_static: bool = false,
         is_async: bool = false,
         is_override: bool = false,
@@ -2172,6 +2175,7 @@ pub const Parser = struct {
                         else => .public,
                     };
                     mods.has_accessibility = true;
+                    mods.accessibility_token = mod;
                     continue;
                 }
                 if (mods.is_static and isAccessibilityModifier(k)) return mods;
@@ -2182,6 +2186,7 @@ pub const Parser = struct {
                             try self.reportCodeAt(mod.span.start, mod.line, 1028, "Accessibility modifier already seen.");
                         }
                         mods.has_accessibility = true;
+                        mods.accessibility_token = mod;
                         mods.visibility = switch (k) {
                             .kw_private => .private,
                             .kw_protected => .protected,
@@ -3219,7 +3224,12 @@ pub const Parser = struct {
         // Destructuring binding (`const { a } = obj`, `const [b] = arr`)
         // stores the pattern in the var-decl's `name` slot in the same
         // way parameters stash an `object_pattern` / `array_pattern`.
-        const name_node: NodeId = if (self.peek().kind == .open_brace or self.peek().kind == .open_bracket) blk: {
+        const name_node: NodeId = if (self.peek().kind == .semicolon or self.peek().kind == .eof) blk: {
+            const empty_pos = start.span.end;
+            try self.reportCodeAt(empty_pos, start.line, 1123, "Variable declaration list cannot be empty.");
+            const empty_id = self.interner.intern("") catch return error.OutOfMemory;
+            break :blk try self.builder.addIdentifier(.{ .start = empty_pos, .end = empty_pos }, empty_id);
+        } else if (self.peek().kind == .open_brace or self.peek().kind == .open_bracket) blk: {
             break :blk try self.parseBindingPattern();
         } else id_blk: {
             const name_tok = try self.expectIdentifierLike();
@@ -3249,6 +3259,11 @@ pub const Parser = struct {
             try self.reportCodeAt(self.hir.spanOf(name_node).start, start.line, 1155, "'const' declarations must be initialized.");
         }
         while (self.match(.comma)) {
+            const comma_tok = self.tokens[self.cursor - 1];
+            if (self.peek().kind == .semicolon or self.peek().kind == .eof) {
+                try self.reportCodeAt(comma_tok.span.start, comma_tok.line, 1009, "Trailing comma not allowed.");
+                break;
+            }
             const extra_name: NodeId = if (self.peek().kind == .open_brace or self.peek().kind == .open_bracket) blk: {
                 break :blk try self.parseBindingPattern();
             } else id_blk: {
@@ -4432,32 +4447,42 @@ pub const Parser = struct {
     fn reportMalformedTypeMemberBracket(self: *Parser, start: Token) ParseError!void {
         var idx = self.cursor + 1;
         var count: u32 = 0;
-        var saw_rest = false;
-        var saw_accessibility = false;
-        var saw_question = false;
-        var saw_comma = false;
+        var rest_tok: ?Token = null;
+        var accessibility_tok: ?Token = null;
+        var question_tok: ?Token = null;
+        var comma_tok: ?Token = null;
+        var first_ident_tok: ?Token = null;
         var saw_equal = false;
         while (idx < self.tokens.len and
             self.tokens[idx].kind != .close_bracket and
             self.tokens[idx].kind != .close_brace and
             self.tokens[idx].kind != .eof)
         {
-            const k = self.tokens[idx].kind;
-            if (k == .dot_dot_dot) saw_rest = true;
-            if (isAccessibilityModifier(k)) saw_accessibility = true;
-            if (k == .question) saw_question = true;
-            if (k == .comma) saw_comma = true;
+            const tok = self.tokens[idx];
+            const k = tok.kind;
+            if (k == .dot_dot_dot) rest_tok = tok;
+            if (isAccessibilityModifier(k)) accessibility_tok = tok;
+            if (k == .question) question_tok = tok;
+            if (k == .comma) comma_tok = tok;
             if (k == .equal) saw_equal = true;
-            if (k == .identifier or k.isContextualKeyword()) count += 1;
+            if (k == .identifier or k.isContextualKeyword()) {
+                if (first_ident_tok == null) first_ident_tok = tok;
+                count += 1;
+            }
             idx += 1;
         }
-        if (saw_rest) {
-            try self.reportCodeAt(start.span.start, start.line, 1017, "An index signature cannot have a rest parameter.");
-        } else if (saw_accessibility) {
-            try self.reportCodeAt(start.span.start, start.line, 1018, "An index signature parameter cannot have an accessibility modifier.");
-        } else if (saw_question) {
-            try self.reportCodeAt(start.span.start, start.line, 1019, "An index signature parameter cannot have a question mark.");
-        } else if (count == 0 or saw_comma) {
+        if (rest_tok) |tok| {
+            try self.reportCodeAt(tok.span.start, tok.line, 1017, "An index signature cannot have a rest parameter.");
+        } else if (accessibility_tok) |tok| {
+            try self.reportCodeAt(tok.span.start, tok.line, 2369, "A parameter property is only allowed in a constructor implementation.");
+            const anchor = first_ident_tok orelse tok;
+            try self.reportCodeAt(anchor.span.start, anchor.line, 1018, "An index signature parameter cannot have an accessibility modifier.");
+        } else if (question_tok) |tok| {
+            try self.reportCodeAt(tok.span.start, tok.line, 1019, "An index signature parameter cannot have a question mark.");
+        } else if (comma_tok) |tok| {
+            const anchor = first_ident_tok orelse tok;
+            try self.reportCodeAt(anchor.span.start, anchor.line, 1096, "An index signature must have exactly one parameter.");
+        } else if (count == 0) {
             try self.reportCodeAt(start.span.start, start.line, 1096, "An index signature must have exactly one parameter.");
         } else if (saw_equal) {
             try self.reportCodeAt(start.span.start, start.line, 1169, "A computed property name in an interface must refer to an expression whose type is a literal type or a 'unique symbol' type.");
@@ -4526,18 +4551,36 @@ pub const Parser = struct {
 
     fn computedTypeMemberLooksMalformedIndexSignature(self: *const Parser) bool {
         var idx = self.cursor + 1;
+        var saw_content = false;
         while (idx < self.tokens.len and
             self.tokens[idx].kind != .close_bracket and
             self.tokens[idx].kind != .close_brace and
             self.tokens[idx].kind != .eof)
         {
+            saw_content = true;
             switch (self.tokens[idx].kind) {
                 .dot_dot_dot, .question, .comma, .equal => return true,
                 else => {},
             }
+            if (isAccessibilityModifier(self.tokens[idx].kind)) return true;
             idx += 1;
         }
-        return false;
+        return !saw_content;
+    }
+
+    fn indexSignatureKeyTypeIsValid(self: *const Parser, key_type: NodeId) bool {
+        switch (self.hir.kindOf(key_type)) {
+            .type_ref => {
+                const r = hir_mod.typeRefOf(self.hir, key_type);
+                if (r.qualifier_len != 0 or r.args_len != 0) return false;
+                const name = self.interner.get(r.name);
+                return std.mem.eql(u8, name, "string") or
+                    std.mem.eql(u8, name, "number") or
+                    std.mem.eql(u8, name, "symbol");
+            },
+            .template_literal_type => return true,
+            else => return false,
+        }
     }
 
     fn computedTypeMemberNameFromKey(self: *Parser, key_expr: NodeId) ParseError!?hir_mod.StringId {
@@ -4725,11 +4768,37 @@ pub const Parser = struct {
             self.cursor = checkpoint;
             return false;
         }
+        var has_multiple_parameters = false;
+        if (self.peek().kind == .comma) {
+            has_multiple_parameters = true;
+            try self.reportCodeAt(id1.span.start, id1.line, 1096, "An index signature must have exactly one parameter.");
+            while (self.peek().kind != .close_bracket and self.peek().kind != .close_brace and self.peek().kind != .eof) {
+                _ = self.advance();
+            }
+        }
+        const key_type_valid = self.indexSignatureKeyTypeIsValid(key_type);
+        if (!key_type_valid) {
+            try self.reportCodeAt(id1.span.start, id1.line, 1268, "An index signature parameter type must be 'string', 'number', 'symbol', or a template literal type.");
+        }
         _ = try self.expect(.close_bracket, "']' to close index signature");
-        _ = try self.expect(.colon, "':' before index-signature value type");
-        const value_type = try self.parseTypeAnnotation();
-        _ = self.match(.semicolon);
-        _ = self.match(.comma);
+        const value_type: NodeId = if (self.match(.colon)) blk: {
+            break :blk try self.parseTypeAnnotation();
+        } else blk: {
+            if (key_type_valid and !has_multiple_parameters) {
+                try self.reportCodeAt(start_tok.span.start, start_tok.line, 1021, "An index signature must have a type annotation.");
+            }
+            break :blk hir_mod.none_node_id;
+        };
+        if (!self.match(.semicolon) and !self.match(.comma)) {
+            const next = self.peek();
+            if (next.kind != .close_brace and next.kind != .eof and !next.flags.preceded_by_newline) {
+                const prev = self.tokens[self.cursor - 1];
+                try self.reportCodeAt(prev.span.end + 1, prev.line, 1005, "';' expected.");
+            }
+        }
+        if (has_multiple_parameters or !key_type_valid or value_type == hir_mod.none_node_id) {
+            return true;
+        }
         const sp: Span = .{ .start = start_tok.span.start, .end = self.tokens[self.cursor - 1].span.end };
         const node = try self.builder.addIndexSignature(sp, key_type, value_type, is_readonly, is_static);
         try out.append(self.gpa, node);
@@ -10215,6 +10284,65 @@ test "parser: class index signature accessibility modifier reports TS1071" {
     _ = try s.parser.parseSourceFile();
     try T.expectEqual(@as(usize, 1), s.parser.diagnostics.items.len);
     try T.expectEqual(@as(u32, 1071), s.parser.diagnostics.items[0].code);
+    try T.expectEqual(@as(u32, 10), s.parser.diagnostics.items[0].pos);
+    try T.expectEqualStrings("'private' modifier cannot appear on an index signature.", s.parser.diagnostics.items[0].message);
+}
+
+test "parser: empty and trailing variable declaration lists use upstream diagnostics" {
+    var empty = try newTestSetup("var ;");
+    defer destroyTestSetup(empty);
+    _ = try empty.parser.parseSourceFile();
+    try T.expectEqual(@as(usize, 1), empty.parser.diagnostics.items.len);
+    try T.expectEqual(@as(u32, 1123), empty.parser.diagnostics.items[0].code);
+    try T.expectEqual(@as(u32, 3), empty.parser.diagnostics.items[0].pos);
+
+    var trailing = try newTestSetup("var a,;");
+    defer destroyTestSetup(trailing);
+    _ = try trailing.parser.parseSourceFile();
+    try T.expectEqual(@as(usize, 1), trailing.parser.diagnostics.items.len);
+    try T.expectEqual(@as(u32, 1009), trailing.parser.diagnostics.items[0].code);
+    try T.expectEqual(@as(u32, 5), trailing.parser.diagnostics.items[0].pos);
+}
+
+test "parser: class index signature missing separator reports TS1005" {
+    var s = try newTestSetup("class C { [a: string]: number public v: number }");
+    defer destroyTestSetup(s);
+
+    _ = try s.parser.parseSourceFile();
+    var found = false;
+    for (s.parser.diagnostics.items) |d| {
+        if (d.code == 1005 and std.mem.eql(u8, d.message, "';' expected.")) found = true;
+    }
+    try T.expect(found);
+}
+
+test "parser: malformed interface index signatures use upstream recovery diagnostics" {
+    var rest = try newTestSetup("interface I {\n  [...a]\n}");
+    defer destroyTestSetup(rest);
+    _ = try rest.parser.parseSourceFile();
+    try T.expectEqual(@as(usize, 1), rest.parser.diagnostics.items.len);
+    try T.expectEqual(@as(u32, 1017), rest.parser.diagnostics.items[0].code);
+    try T.expectEqual(@as(u32, 17), rest.parser.diagnostics.items[0].pos);
+
+    var accessibility = try newTestSetup("interface I {\n  [public a]\n}");
+    defer destroyTestSetup(accessibility);
+    _ = try accessibility.parser.parseSourceFile();
+    try T.expectEqual(@as(usize, 2), accessibility.parser.diagnostics.items.len);
+    try T.expectEqual(@as(u32, 2369), accessibility.parser.diagnostics.items[0].code);
+    try T.expectEqual(@as(u32, 1018), accessibility.parser.diagnostics.items[1].code);
+    try T.expectEqual(@as(u32, 24), accessibility.parser.diagnostics.items[1].pos);
+
+    var missing_value = try newTestSetup("interface I {\n  [a:string]\n}");
+    defer destroyTestSetup(missing_value);
+    _ = try missing_value.parser.parseSourceFile();
+    try T.expectEqual(@as(usize, 1), missing_value.parser.diagnostics.items.len);
+    try T.expectEqual(@as(u32, 1021), missing_value.parser.diagnostics.items[0].code);
+
+    var invalid_key = try newTestSetup("interface I {\n  [a:boolean]\n}");
+    defer destroyTestSetup(invalid_key);
+    _ = try invalid_key.parser.parseSourceFile();
+    try T.expectEqual(@as(usize, 1), invalid_key.parser.diagnostics.items.len);
+    try T.expectEqual(@as(u32, 1268), invalid_key.parser.diagnostics.items[0].code);
 }
 
 test "parser: computed enum member parses cleanly" {
