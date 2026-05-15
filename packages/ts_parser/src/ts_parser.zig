@@ -1899,19 +1899,23 @@ pub const Parser = struct {
 
     fn reportReservedBindingNameIfNeeded(self: *Parser, name_tok: Token) ParseError!void {
         if (isReservedBindingNameToken(name_tok.kind)) {
-            const name = self.source[name_tok.span.start..name_tok.span.end];
-            const msg = try std.fmt.allocPrint(
-                self.diag_arena.allocator(),
-                "Identifier expected. '{s}' is a reserved word that cannot be used here.",
-                .{name},
-            );
-            try self.diagnostics.append(self.gpa, .{
-                .pos = name_tok.span.start,
-                .line = name_tok.line,
-                .code = 1359,
-                .message = msg,
-            });
+            try self.reportReservedWordCannotBeUsedHere(name_tok);
         }
+    }
+
+    fn reportReservedWordCannotBeUsedHere(self: *Parser, name_tok: Token) ParseError!void {
+        const name = self.source[name_tok.span.start..name_tok.span.end];
+        const msg = try std.fmt.allocPrint(
+            self.diag_arena.allocator(),
+            "Identifier expected. '{s}' is a reserved word that cannot be used here.",
+            .{name},
+        );
+        try self.diagnostics.append(self.gpa, .{
+            .pos = name_tok.span.start,
+            .line = name_tok.line,
+            .code = 1359,
+            .message = msg,
+        });
     }
 
     fn parseClassDeclaration(self: *Parser) ParseError!NodeId {
@@ -2917,12 +2921,23 @@ pub const Parser = struct {
 
     fn parseEnumDeclaration(self: *Parser) ParseError!NodeId {
         const start = self.advance(); // enum
-        const name_tok = try self.expect(.identifier, "enum name");
+        const name_tok = if (self.peek().kind == .identifier or self.peek().kind.isContextualKeyword())
+            self.advance()
+        else if (isReservedBindingNameToken(self.peek().kind)) blk: {
+            const tok = self.advance();
+            try self.reportReservedWordCannotBeUsedHere(tok);
+            break :blk tok;
+        } else try self.expect(.identifier, "enum name");
         _ = try self.expect(.open_brace, "'{' to open enum body");
         var members: std.ArrayListUnmanaged(NodeId) = .empty;
         defer members.deinit(self.gpa);
         while (self.peek().kind != .close_brace and self.peek().kind != .eof) {
             const member_start = self.peek();
+            if (member_start.kind == .comma) {
+                const comma = self.advance();
+                try self.reportCodeAt(comma.span.start, comma.line, 1132, "Enum member expected.");
+                continue;
+            }
             if (member_start.kind == .invalid) {
                 const bad = self.advance();
                 try self.reportCodeAt(bad.span.start, bad.line, 1127, "Invalid character.");
@@ -2937,14 +2952,23 @@ pub const Parser = struct {
                 is_computed = true;
                 break :blk key;
             } else blk: {
-                const member_tok = if (self.peek().kind == .string_literal)
+                const member_tok = if (self.peek().kind == .string_literal or self.peek().kind == .number_literal)
                     self.advance()
                 else
                     try self.expectIdentifierLike();
-                const name_id = try self.internToken(member_tok);
+                if (member_tok.kind == .number_literal) {
+                    try self.reportCodeAt(member_tok.span.start, member_tok.line, 2452, "An enum member cannot have a numeric name.");
+                }
+                const name_id = try self.internPropertyName(member_tok, tokenSpan(member_tok));
                 break :blk try self.builder.addIdentifier(tokenSpan(member_tok), name_id);
             };
             var value: NodeId = hir_mod.none_node_id;
+            var recovered_bad_separator = false;
+            if (self.peek().kind == .colon) {
+                const colon = self.advance();
+                try self.reportCodeAt(colon.span.start, colon.line, 1357, "An enum member name must be followed by a ',', '=', or '}'.");
+                recovered_bad_separator = true;
+            }
             if (self.match(.equal)) value = try self.parseAssignmentExpression();
             const member = try self.builder.addObjectProperty(
                 .{ .start = member_start.span.start, .end = self.tokens[self.cursor - 1].span.end },
@@ -2955,6 +2979,7 @@ pub const Parser = struct {
                 false,
             );
             try members.append(self.gpa, member);
+            if (recovered_bad_separator) continue;
             if (!self.match(.comma)) break;
         }
         const close_end = if (self.peek().kind == .close_brace) blk: {
@@ -11738,6 +11763,39 @@ test "parser: invalid enum member still reports missing close brace" {
     }
     try T.expect(invalid_found);
     try T.expect(close_found);
+}
+
+test "parser: enum reserved declaration name reports TS1359" {
+    var s = try newTestSetup("enum void {\n}");
+    defer destroyTestSetup(s);
+
+    _ = try s.parser.parseSourceFile();
+    try T.expectEqual(@as(usize, 1), s.parser.diagnostics.items.len);
+    try T.expectEqual(@as(u32, 1359), s.parser.diagnostics.items[0].code);
+    try T.expectEqualStrings("Identifier expected. 'void' is a reserved word that cannot be used here.", s.parser.diagnostics.items[0].message);
+}
+
+test "parser: malformed enum members report enum-specific diagnostics" {
+    var s = try newTestSetup(
+        \\enum E {
+        \\  ,
+        \\  1, a: 2, b: 3 = 4
+        \\}
+    );
+    defer destroyTestSetup(s);
+
+    _ = try s.parser.parseSourceFile();
+    var missing_member = false;
+    var numeric_member_count: usize = 0;
+    var bad_separator_count: usize = 0;
+    for (s.parser.diagnostics.items) |d| {
+        if (d.code == 1132 and std.mem.eql(u8, d.message, "Enum member expected.")) missing_member = true;
+        if (d.code == 2452 and std.mem.eql(u8, d.message, "An enum member cannot have a numeric name.")) numeric_member_count += 1;
+        if (d.code == 1357 and std.mem.eql(u8, d.message, "An enum member name must be followed by a ',', '=', or '}'.")) bad_separator_count += 1;
+    }
+    try T.expect(missing_member);
+    try T.expectEqual(@as(usize, 3), numeric_member_count);
+    try T.expectEqual(@as(usize, 2), bad_separator_count);
 }
 
 test "parser: unterminated generic type reference reports TS1005 and recovers" {
