@@ -21615,6 +21615,23 @@ pub const Checker = struct {
             return true;
         }
         if (flags.is_intersection) {
+            // TS2698 wave-2: an intersection that includes a hard
+            // nullish member (`null`, `undefined`, `void`) collapses
+            // to `never` in upstream's relation engine — `T &
+            // undefined` has no inhabitants, so spreading it must
+            // surface as TS2698 rather than silently passing because
+            // a sibling type-parameter member happened to clear the
+            // per-member check. Mirrors `spreadObjectOrFalsy.ts`
+            // lines 5/13 (`f1<T>(a: T & undefined)`,
+            // `f3<T extends undefined>(a: T)`).
+            for (self.interner.intersectionMembers(t)) |member| {
+                if (member == types.Primitive.null_t or
+                    member == types.Primitive.undefined_t or
+                    member == types.Primitive.void_t)
+                {
+                    return false;
+                }
+            }
             for (self.interner.intersectionMembers(t)) |member| {
                 if (try self.objectSpreadSourceIsValid(member)) return true;
             }
@@ -26401,6 +26418,14 @@ pub const Checker = struct {
         if (constraint == types.Primitive.any or constraint == types.Primitive.unknown) return;
         if (constraint == arg_t) return;
         if (self.containsFreeTypeParameter(constraint)) return;
+        // Free type parameters as type-arguments (e.g. `infer U`,
+        // a generic alias body referring to its own outer
+        // parameters) need full inference machinery to classify;
+        // upstream defers the constraint check until a concrete
+        // instantiation appears. Skip to avoid spurious TS2344
+        // noise on `inferTypesWithExtends1.ts(136)` and similar
+        // conditional-type alias bodies.
+        if (self.containsFreeTypeParameter(arg_t)) return;
         const arg_text = (try self.simpleDiagnosticTypeName(arg_t)) orelse return;
         const constraint_text = (try self.simpleDiagnosticTypeName(constraint)) orelse return;
         // Special-case the upstream wording for `extends object`:
@@ -28224,6 +28249,18 @@ pub const Checker = struct {
                         .bit_not => "~",
                         else => unreachable,
                     });
+                }
+                // tsc fires TS18050 ("The value 'null' / 'undefined'
+                // cannot be used here.") when the operand of `-`, `+`
+                // or `~` is a literal `null` or `undefined`. Mirrors
+                // fixtures `negateOperatorWithAnyOtherType.ts(34,…)`,
+                // `bitwiseNotOperatorWithAnyOtherType.ts(34,…)`, and
+                // friends — the diagnostic is anchored at the operand
+                // start, not the operator. Emits regardless of
+                // `strictNullChecks` since tsc's grammar-level check
+                // doesn't gate on it.
+                if (self.typeIsExactNullish(operand_t)) {
+                    try self.reportNullishRelationalOperand(u.operand, operand_t);
                 }
                 break :blk types.Primitive.number_t;
             },
@@ -31891,6 +31928,21 @@ pub const Checker = struct {
                     }
                 }
                 if (t >= self.interner.pool.typeCount()) break :blk null;
+                // `typeof Foo` rendering for class constructor types.
+                // The static side of `class Foo { … }` lives in
+                // `class_static_types[Foo]`; when that matches `t`,
+                // tsc renders the type as `typeof Foo`. Mirrors the
+                // upstream prose for fixtures like
+                // `superSymbolIndexedAccess3.ts(11,22)`.
+                {
+                    var sit = self.class_static_types.iterator();
+                    while (sit.next()) |entry| {
+                        if (entry.value_ptr.* != t) continue;
+                        const class_name_str = self.string_interner.get(entry.key_ptr.*);
+                        const buf = std.fmt.allocPrint(self.diag_arena.allocator(), "typeof {s}", .{class_name_str}) catch break :blk null;
+                        break :blk buf;
+                    }
+                }
                 const flags = self.interner.pool.flagsOf(t);
                 // Render fixed-width tuples (`[any]`, `[undefined, null]`)
                 // so TS2322 prose includes the literal element shape.
@@ -50030,5 +50082,152 @@ test "checker: external resolver declaration result does NOT veto legacy unresol
         if (d.code == TsCodes.cannot_find_module) ts2307 = true;
     }
     try T.expect(ts2307);
+}
+
+// §6.A wave-2 — TS2344 fires when a generic alias is instantiated
+// with a type argument that does not satisfy the parameter's
+// `extends` constraint. Mirrors `nonPrimitiveInGeneric.ts`,
+// `nonPrimitiveStrictNull.ts`, `inferTypes1.ts` shapes.
+test "checker: TS2344 fires for primitive arg violating extends object constraint" {
+    const s = try newSetup(
+        \\interface Proxy<T extends object> { value: T; }
+        \\var x: Proxy<number>;
+    );
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+    var found = false;
+    for (s.checker.diagnostics.items) |d| {
+        if (d.code != TsCodes.type_does_not_satisfy_constraint) continue;
+        try T.expect(std.mem.indexOf(u8, d.message, "'number'") != null);
+        try T.expect(std.mem.indexOf(u8, d.message, "'object'") != null);
+        try T.expect(std.mem.indexOf(u8, d.message, "does not satisfy the constraint") != null);
+        found = true;
+    }
+    try T.expect(found);
+}
+
+test "checker: TS2344 fires for string arg violating extends number constraint" {
+    const s = try newSetup(
+        \\type Box<T extends number> = { value: T };
+        \\var b: Box<string>;
+    );
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+    var found = false;
+    for (s.checker.diagnostics.items) |d| {
+        if (d.code != TsCodes.type_does_not_satisfy_constraint) continue;
+        try T.expect(std.mem.indexOf(u8, d.message, "'string'") != null);
+        try T.expect(std.mem.indexOf(u8, d.message, "'number'") != null);
+        found = true;
+    }
+    try T.expect(found);
+}
+
+test "checker: TS2344 does NOT fire for satisfying type argument" {
+    const s = try newSetup(
+        \\interface Proxy<T extends object> { value: T; }
+        \\interface Foo { x: number; }
+        \\var ok: Proxy<Foo>;
+    );
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+    for (s.checker.diagnostics.items) |d| {
+        try T.expect(d.code != TsCodes.type_does_not_satisfy_constraint);
+    }
+}
+
+test "checker: TS2344 fires for null arg violating extends object constraint" {
+    const s = try newSetup(
+        \\interface Proxy<T extends object> { value: T; }
+        \\var nul: Proxy<null>;
+    );
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+    var found = false;
+    for (s.checker.diagnostics.items) |d| {
+        if (d.code != TsCodes.type_does_not_satisfy_constraint) continue;
+        try T.expect(std.mem.indexOf(u8, d.message, "'null'") != null);
+        try T.expect(std.mem.indexOf(u8, d.message, "'object'") != null);
+        found = true;
+    }
+    try T.expect(found);
+}
+
+test "checker: TS2344 skipped for any/unknown placeholder type arguments" {
+    const s = try newSetup(
+        \\type Box<T extends number> = { value: T };
+        \\var any_box: Box<any>;
+        \\var unk_box: Box<unknown>;
+    );
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+    for (s.checker.diagnostics.items) |d| {
+        try T.expect(d.code != TsCodes.type_does_not_satisfy_constraint);
+    }
+}
+
+// §6.A wave-2 — TS2367 / TS2678 should prefer literal-text rendering
+// over the alias name when comparing literal types. Pins the
+// `numericLiteralTypes3` family expectation that an alias `type A = 1`
+// surfaces as `'1'` in the no-overlap message.
+test "checker: TS2367 renders literal text for single-literal type alias" {
+    const s = try newSetup(
+        \\type A = 1;
+        \\function f(a: A) {
+        \\  a === 0;
+        \\}
+    );
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+    var saw_literal_form = false;
+    for (s.checker.diagnostics.items) |d| {
+        if (d.code != TsCodes.no_overlap_comparison) continue;
+        if (std.mem.indexOf(u8, d.message, "'1'") != null and
+            std.mem.indexOf(u8, d.message, "'0'") != null)
+        {
+            saw_literal_form = true;
+        }
+    }
+    try T.expect(saw_literal_form);
+}
+
+test "checker: TS2367 renders literal text for boolean literal equality" {
+    const s = try newSetup(
+        \\function f(a: true) {
+        \\  a === false;
+        \\}
+    );
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+    var saw = false;
+    for (s.checker.diagnostics.items) |d| {
+        if (d.code != TsCodes.no_overlap_comparison) continue;
+        if (std.mem.indexOf(u8, d.message, "'true'") != null and
+            std.mem.indexOf(u8, d.message, "'false'") != null)
+        {
+            saw = true;
+        }
+    }
+    try T.expect(saw);
+}
+
+// §6.A wave-2 — TS2698 must fire when spreading an intersection
+// that includes a hard nullish member (`null`, `undefined`,
+// `void`). Such intersections collapse to `never` in upstream's
+// relation engine and aren't valid spread sources. Pins
+// `spreadObjectOrFalsy.ts` lines 5/13 expectation.
+test "checker: TS2698 fires when spreading T & undefined intersection" {
+    const s = try newSetup(
+        \\function f<T>(a: T & undefined) {
+        \\  return { ...a };
+        \\}
+    );
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+    var found = false;
+    for (s.checker.diagnostics.items) |d| {
+        if (d.code == TsCodes.spread_types_object_only) found = true;
+    }
+    try T.expect(found);
 }
 
