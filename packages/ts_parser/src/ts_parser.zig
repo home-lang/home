@@ -577,6 +577,29 @@ pub const Parser = struct {
                 if (self.peekAt(1).flags.preceded_by_newline) break :blk try self.parseExpressionStatement();
                 break :blk try self.parseInterfaceDeclaration();
             },
+            .kw_public, .kw_private, .kw_protected, .kw_static => blk: {
+                const next = self.peekAt(1).kind;
+                if (next == .kw_interface or next == .kw_namespace or next == .kw_module) {
+                    const modifier = self.advance();
+                    try self.reportCodeAt(modifier.span.start, modifier.line, 1044, try std.fmt.allocPrint(
+                        self.diag_arena.allocator(),
+                        "'{s}' modifier cannot appear on a module or namespace element.",
+                        .{self.source[modifier.span.start..modifier.span.end]},
+                    ));
+                    break :blk try self.parseStatement();
+                }
+                try self.reportCodeAt(t.span.start, t.line, 1128, "Declaration or statement expected.");
+                const start = self.advance();
+                while (self.peek().kind != .semicolon and
+                    self.peek().kind != .eof and
+                    !self.peek().flags.preceded_by_newline)
+                {
+                    _ = self.advance();
+                }
+                if (self.peek().kind == .semicolon) _ = self.advance();
+                const end_pos = if (self.cursor > 0) self.tokens[self.cursor - 1].span.end else start.span.end;
+                break :blk try self.builder.addBlock(.{ .start = start.span.start, .end = end_pos }, &.{});
+            },
             .kw_enum => try self.parseEnumDeclaration(),
             .kw_namespace => blk: {
                 if (self.peekAt(1).flags.preceded_by_newline) break :blk try self.parseExpressionStatement();
@@ -1803,8 +1826,16 @@ pub const Parser = struct {
         defer if (owns_type_params) self.gpa.free(class_type_params);
 
         var extends: NodeId = hir_mod.none_node_id;
-        if (self.match(.kw_extends)) {
-            extends = try self.parseLeftHandSideExpression();
+        if (self.peek().kind == .kw_extends) {
+            const extends_tok = self.advance();
+            if (self.peek().kind == .open_brace or
+                self.peek().kind == .kw_implements or
+                self.peek().kind == .comma)
+            {
+                try self.reportCodeAt(extends_tok.span.end, extends_tok.line, 1097, "'extends' list cannot be empty.");
+            } else {
+                extends = try self.parseLeftHandSideExpression();
+            }
             // Optional `<T>` after `extends Foo<T>` — preserve it as
             // a type-ref for the checker while emit erases it back to
             // the runtime `extends Foo` expression.
@@ -1826,14 +1857,34 @@ pub const Parser = struct {
                     extends = try self.memberAccessToTypeRef(extends, args);
                 }
             }
+            if (self.peek().kind == .comma) {
+                const comma = self.advance();
+                try self.reportCodeAt(comma.span.start, comma.line, 1009, "Trailing comma not allowed.");
+                while (self.peek().kind != .kw_implements and
+                    self.peek().kind != .open_brace and
+                    self.peek().kind != .eof)
+                {
+                    _ = self.advance();
+                }
+            }
         }
         var implements_list: std.ArrayListUnmanaged(NodeId) = .empty;
         defer implements_list.deinit(self.gpa);
-        if (self.match(.kw_implements)) {
-            while (true) {
-                const ref = try self.parseTypeReference();
-                try implements_list.append(self.gpa, ref);
-                if (!self.match(.comma)) break;
+        if (self.peek().kind == .kw_implements) {
+            const implements_tok = self.advance();
+            if (self.peek().kind == .open_brace or self.peek().kind == .eof) {
+                try self.reportCodeAt(implements_tok.span.end, implements_tok.line, 1097, "'implements' list cannot be empty.");
+            } else {
+                while (true) {
+                    const ref = try self.parseTypeReference();
+                    try implements_list.append(self.gpa, ref);
+                    if (self.peek().kind != .comma) break;
+                    const comma = self.advance();
+                    if (self.peek().kind == .open_brace or self.peek().kind == .eof) {
+                        try self.reportCodeAt(comma.span.start, comma.line, 1009, "Trailing comma not allowed.");
+                        break;
+                    }
+                }
             }
         }
 
@@ -2555,7 +2606,17 @@ pub const Parser = struct {
 
     fn parseInterfaceDeclaration(self: *Parser) ParseError!NodeId {
         const start = self.advance(); // interface
-        const name_tok = try self.expect(.identifier, "interface name");
+        const name_tok = if (self.peek().kind == .identifier or
+            self.peek().kind.isContextualKeyword() or
+            self.peek().kind.isPrimitiveTypeKeyword())
+            self.advance()
+        else
+            try self.expect(.identifier, "interface name");
+        if (name_tok.kind.isPrimitiveTypeKeyword() or self.isReservedTypeNameToken(name_tok)) {
+            const raw = self.source[name_tok.span.start..name_tok.span.end];
+            const msg = try std.fmt.allocPrint(self.diag_arena.allocator(), "Interface name cannot be '{s}'.", .{raw});
+            try self.reportCodeAt(name_tok.span.start, name_tok.line, 2427, msg);
+        }
         var type_params: []NodeId = &.{};
         var owns_tps = false;
         if (self.peek().kind == .less_than) {
@@ -2565,12 +2626,33 @@ pub const Parser = struct {
         defer if (owns_tps) self.gpa.free(type_params);
         var extends_list: std.ArrayListUnmanaged(NodeId) = .empty;
         defer extends_list.deinit(self.gpa);
-        if (self.match(.kw_extends)) {
-            while (true) {
-                const ref = try self.parseTypeReference();
-                try extends_list.append(self.gpa, ref);
-                if (!self.match(.comma)) break;
+        if (self.peek().kind == .kw_extends) {
+            const extends_tok = self.advance();
+            if (self.peek().kind == .open_brace or self.peek().kind == .eof) {
+                try self.reportCodeAt(extends_tok.span.end, extends_tok.line, 1097, "'extends' list cannot be empty.");
+            } else {
+                while (true) {
+                    const ref = try self.parseTypeReference();
+                    try extends_list.append(self.gpa, ref);
+                    if (self.peek().kind == .kw_extends) {
+                        const duplicate = self.advance();
+                        try self.reportCodeAt(duplicate.span.start, duplicate.line, 1172, "'extends' clause already seen.");
+                        while (self.peek().kind != .open_brace and
+                            self.peek().kind != .comma and
+                            self.peek().kind != .eof)
+                        {
+                            _ = self.advance();
+                        }
+                        break;
+                    }
+                    if (!self.match(.comma)) break;
+                }
             }
+        }
+        if (self.peek().kind == .kw_implements) {
+            const impl = self.advance();
+            try self.reportCodeAt(impl.span.start, impl.line, 1176, "Interface declaration cannot have 'implements' clause.");
+            while (self.peek().kind != .open_brace and self.peek().kind != .eof) _ = self.advance();
         }
         _ = try self.expect(.open_brace, "'{' to open interface body");
         var members: std.ArrayListUnmanaged(NodeId) = .empty;
@@ -5037,7 +5119,12 @@ pub const Parser = struct {
         // `A.B.C` — every `.B` extends the qualifier.
         while (self.peek().kind == .dot) {
             _ = self.advance();
-            const next_tok = try self.expect(.identifier, "qualified-name member");
+            const next_tok = if (self.peek().kind == .identifier or
+                self.peek().kind.isContextualKeyword() or
+                self.peek().kind.isPrimitiveTypeKeyword())
+                self.advance()
+            else
+                try self.expect(.identifier, "qualified-name member");
             const prev_id = name_id;
             const prev_node = try self.builder.addIdentifier(tokenSpan(name_tok), prev_id);
             try qualifier.append(self.gpa, prev_node);
@@ -10865,4 +10952,89 @@ test "parser: close paren in expression reports expression expected" {
     try T.expect(s.parser.diagnostics.items.len >= 1);
     try T.expectEqual(@as(u32, 1109), s.parser.diagnostics.items[0].code);
     try T.expectEqualStrings("Expression expected.", s.parser.diagnostics.items[0].message);
+}
+
+test "parser: top-level public before break reports declaration expected" {
+    var s = try newTestSetup("public break;");
+    defer destroyTestSetup(s);
+    s.parser.setTargetEs2015OrLater(true);
+
+    _ = try s.parser.parseSourceFile();
+    try T.expectEqual(@as(usize, 1), s.parser.diagnostics.items.len);
+    try T.expectEqual(@as(u32, 1128), s.parser.diagnostics.items[0].code);
+}
+
+test "parser: module modifiers before interface report TS1044 and recover" {
+    var s = try newTestSetup("public interface I {}");
+    defer destroyTestSetup(s);
+    s.parser.setTargetEs2015OrLater(true);
+
+    _ = try s.parser.parseSourceFile();
+    try T.expectEqual(@as(usize, 1), s.parser.diagnostics.items.len);
+    try T.expectEqual(@as(u32, 1044), s.parser.diagnostics.items[0].code);
+}
+
+test "parser: malformed interface header reports upstream diagnostics" {
+    var duplicate_extends = try newTestSetup("interface I extends A extends B {}");
+    defer destroyTestSetup(duplicate_extends);
+    duplicate_extends.parser.setTargetEs2015OrLater(true);
+    _ = try duplicate_extends.parser.parseSourceFile();
+    var saw_1172 = false;
+    for (duplicate_extends.parser.diagnostics.items) |d| {
+        if (d.code == 1172) saw_1172 = true;
+    }
+    try T.expect(saw_1172);
+
+    var implements = try newTestSetup("interface I implements A {}");
+    defer destroyTestSetup(implements);
+    implements.parser.setTargetEs2015OrLater(true);
+    _ = try implements.parser.parseSourceFile();
+    try T.expectEqual(@as(usize, 1), implements.parser.diagnostics.items.len);
+    try T.expectEqual(@as(u32, 1176), implements.parser.diagnostics.items[0].code);
+
+    var reserved_name = try newTestSetup("interface string {}");
+    defer destroyTestSetup(reserved_name);
+    reserved_name.parser.setTargetEs2015OrLater(true);
+    _ = try reserved_name.parser.parseSourceFile();
+    try T.expectEqual(@as(usize, 1), reserved_name.parser.diagnostics.items.len);
+    try T.expectEqual(@as(u32, 2427), reserved_name.parser.diagnostics.items[0].code);
+}
+
+test "parser: malformed class heritage reports upstream diagnostics" {
+    var empty_extends = try newTestSetup("class C extends {}");
+    defer destroyTestSetup(empty_extends);
+    empty_extends.parser.setTargetEs2015OrLater(true);
+    _ = try empty_extends.parser.parseSourceFile();
+    try T.expectEqual(@as(usize, 1), empty_extends.parser.diagnostics.items.len);
+    try T.expectEqual(@as(u32, 1097), empty_extends.parser.diagnostics.items[0].code);
+
+    var trailing_extends = try newTestSetup("class C extends A, {}");
+    defer destroyTestSetup(trailing_extends);
+    trailing_extends.parser.setTargetEs2015OrLater(true);
+    _ = try trailing_extends.parser.parseSourceFile();
+    try T.expectEqual(@as(usize, 1), trailing_extends.parser.diagnostics.items.len);
+    try T.expectEqual(@as(u32, 1009), trailing_extends.parser.diagnostics.items[0].code);
+
+    var empty_implements = try newTestSetup("class C extends A implements {}");
+    defer destroyTestSetup(empty_implements);
+    empty_implements.parser.setTargetEs2015OrLater(true);
+    _ = try empty_implements.parser.parseSourceFile();
+    try T.expectEqual(@as(usize, 1), empty_implements.parser.diagnostics.items.len);
+    try T.expectEqual(@as(u32, 1097), empty_implements.parser.diagnostics.items[0].code);
+
+    var trailing_implements = try newTestSetup("class C implements B, {}");
+    defer destroyTestSetup(trailing_implements);
+    trailing_implements.parser.setTargetEs2015OrLater(true);
+    _ = try trailing_implements.parser.parseSourceFile();
+    try T.expectEqual(@as(usize, 1), trailing_implements.parser.diagnostics.items.len);
+    try T.expectEqual(@as(u32, 1009), trailing_implements.parser.diagnostics.items[0].code);
+}
+
+test "parser: primitive keyword may finish qualified type name" {
+    var s = try newTestSetup("var v: x.void;");
+    defer destroyTestSetup(s);
+    s.parser.setTargetEs2015OrLater(true);
+
+    _ = try s.parser.parseSourceFile();
+    try T.expectEqual(@as(usize, 0), s.parser.diagnostics.items.len);
 }

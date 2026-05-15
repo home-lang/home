@@ -79,6 +79,7 @@ pub const TsCodes = struct {
     pub const type_only_used_as_value: u32 = 2693;
     pub const destructuring_decl_must_have_initializer: u32 = 1182;
     pub const rest_element_cannot_have_initializer: u32 = 1186;
+    pub const ambient_initializer_not_allowed: u32 = 1039;
     pub const object_literal_duplicate_property: u32 = 1117;
     pub const type_not_assignable: u32 = 2322;
     pub const type_missing_properties: u32 = 2739;
@@ -7724,7 +7725,9 @@ pub const Checker = struct {
             if (self.expressionContainsThis(c.extends)) {
                 try self.report(c.extends, TsCodes.not_constructor_function_type, "Type 'typeof globalThis' is not a constructor function type.");
             }
-            break :blk try self.classExtendsInstanceType(c.extends);
+            const parent_t = try self.classExtendsInstanceType(c.extends);
+            try self.reportUnresolvedClassExtendsHeritage(c.extends, type_params);
+            break :blk parent_t;
         } else null;
         const parent_static_t: ?TypeId = if (c.extends != hir_mod.none_node_id)
             (self.classExtendsStaticType(c.extends) catch null) orelse types.Primitive.any
@@ -8440,6 +8443,7 @@ pub const Checker = struct {
             }
             const implements = self.hir.childSlice(c.implements_start, c.implements_len);
             for (implements) |impl_node| {
+                try self.reportUnresolvedTypeRefHeritage(impl_node, type_params);
                 const target_t = self.lowererLowerWithTypeParams(impl_node) catch types.Primitive.unknown;
                 if (self.objectHasNoOverlapWithWeakTarget(instance_t, target_t) or
                     !(self.heritageAssignable(instance_t, target_t) catch true))
@@ -8743,6 +8747,7 @@ pub const Checker = struct {
                 try self.class_name_by_static.put(self.gpa, static_t, cid.name);
                 const implements = self.hir.childSlice(c.implements_start, c.implements_len);
                 for (implements) |impl_node| {
+                    try self.reportUnresolvedTypeRefHeritage(impl_node, type_params);
                     const target_t = self.lowererLowerWithTypeParams(impl_node) catch types.Primitive.unknown;
                     if (self.objectHasNoOverlapWithWeakTarget(instance_t, target_t) or
                         !(self.heritageAssignable(instance_t, target_t) catch true))
@@ -12431,6 +12436,9 @@ pub const Checker = struct {
         var has_readonly_index = false;
         var own_index_signatures: IndexSignatureDuplicateState = .{};
         const extends = hir_mod.interfaceExtends(self.hir, node);
+        for (extends) |extends_node| {
+            try self.reportUnresolvedTypeRefHeritage(extends_node, type_params);
+        }
         for (members) |m| {
             if (self.hir.kindOf(m) == .index_signature) {
                 const ix = hir_mod.indexSignatureOf(self.hir, m);
@@ -14059,6 +14067,120 @@ pub const Checker = struct {
         if (self.class_instance_types.contains(name)) return true;
         if (self.lookupNarrow(name)) |t| {
             return t != types.Primitive.none and t != types.Primitive.any and t != types.Primitive.unknown;
+        }
+        return false;
+    }
+
+    fn reportUnresolvedClassExtendsHeritage(
+        self: *Checker,
+        extends_expr: NodeId,
+        type_params: []const NodeId,
+    ) CheckError!void {
+        const name = self.classExtendsName(extends_expr) orelse return;
+        if (self.bareTypeNodeIsTypeParam(extends_expr, type_params)) return;
+        if (try self.classExtendsHeritageNameResolves(extends_expr, name)) return;
+        try self.reportCannotFindNamePlainOnce(extends_expr, name);
+    }
+
+    fn reportUnresolvedTypeRefHeritage(
+        self: *Checker,
+        type_ref_node: NodeId,
+        type_params: []const NodeId,
+    ) CheckError!void {
+        if (type_ref_node == hir_mod.none_node_id or self.hir.kindOf(type_ref_node) != .type_ref) return;
+        const r = hir_mod.typeRefOf(self.hir, type_ref_node);
+        if (r.qualifier_len != 0) return;
+        if (self.bareTypeNodeIsTypeParam(type_ref_node, type_params)) return;
+        if (try self.typeRefHeritageNameResolves(type_ref_node, r.name)) return;
+        try self.reportCannotFindNamePlainOnce(type_ref_node, r.name);
+    }
+
+    fn classExtendsHeritageNameResolves(
+        self: *Checker,
+        anchor: NodeId,
+        name: hir_mod.StringId,
+    ) CheckError!bool {
+        if (self.class_instance_types.contains(name)) return true;
+        if (self.class_static_types.contains(name)) return true;
+        if (try self.resolveForwardClassInstanceType(anchor, name)) |_| return true;
+        if (self.lowerBuiltinObjectType(self.string_interner.get(name)) != null) return true;
+        if (try self.heritageValueType(anchor, name)) |_| return true;
+        if (self.generic_aliases.contains(name)) return true;
+        if (self.type_names.contains(name)) return true;
+        if (self.visibleTypeDeclarationExistsAt(anchor, name)) return true;
+        if (self.numeric_enums.contains(name)) return true;
+        if (self.enumDeclForNameAt(name, anchor) != null) return true;
+        return false;
+    }
+
+    fn typeRefHeritageNameResolves(
+        self: *Checker,
+        anchor: NodeId,
+        name: hir_mod.StringId,
+    ) CheckError!bool {
+        const raw = self.string_interner.get(name);
+        if (std.mem.eql(u8, raw, "this")) return true;
+        if (std.mem.eql(u8, raw, "any") or
+            std.mem.eql(u8, raw, "unknown") or
+            std.mem.eql(u8, raw, "never") or
+            std.mem.eql(u8, raw, "void") or
+            std.mem.eql(u8, raw, "null") or
+            std.mem.eql(u8, raw, "undefined") or
+            std.mem.eql(u8, raw, "string") or
+            std.mem.eql(u8, raw, "number") or
+            std.mem.eql(u8, raw, "boolean") or
+            std.mem.eql(u8, raw, "bigint") or
+            std.mem.eql(u8, raw, "symbol") or
+            std.mem.eql(u8, raw, "object"))
+        {
+            return true;
+        }
+        if (self.lookupNarrow(name)) |t| {
+            if (t != types.Primitive.none and t != types.Primitive.any and t != types.Primitive.unknown) return true;
+        }
+        if (self.type_names.contains(name)) return true;
+        if (self.generic_aliases.contains(name)) return true;
+        if (self.class_instance_types.contains(name)) return true;
+        if (self.class_static_types.contains(name)) return true;
+        if (self.visibleTypeDeclarationExistsAt(anchor, name)) return true;
+        if (self.numeric_enums.contains(name)) return true;
+        if (self.enumDeclForNameAt(name, anchor) != null) return true;
+        if (try self.resolveUnqualifiedNamespaceTypeRef(anchor, name)) |_| return true;
+        if (try self.resolveForwardClassInstanceType(anchor, name)) |_| return true;
+        if (self.lowerBuiltinObjectType(raw) != null) return true;
+        return false;
+    }
+
+    fn visibleTypeDeclarationExistsAt(
+        self: *Checker,
+        anchor: NodeId,
+        name: hir_mod.StringId,
+    ) bool {
+        const anchor_section = self.virtualSectionStartForNode(anchor);
+        var cur: hir_mod.NodeId = self.hir.parentOf(anchor);
+        while (cur != hir_mod.none_node_id) : (cur = self.hir.parentOf(cur)) {
+            const k = self.hir.kindOf(cur);
+            if (k != .block_stmt and k != .namespace_decl) continue;
+            const stmts = if (k == .block_stmt)
+                hir_mod.blockStmts(self.hir, cur)
+            else
+                hir_mod.namespaceBody(self.hir, cur);
+            for (stmts) |raw| {
+                const decl = self.unwrapExportDecl(raw);
+                const decl_kind = self.hir.kindOf(decl);
+                if (decl_kind != .interface_decl and
+                    decl_kind != .type_alias_decl and
+                    decl_kind != .class_decl and
+                    decl_kind != .class_expr and
+                    decl_kind != .enum_decl and
+                    decl_kind != .namespace_decl)
+                {
+                    continue;
+                }
+                if (self.virtualSectionStartForNode(decl) != anchor_section) continue;
+                const decl_name = self.declarationName(decl) orelse continue;
+                if (decl_name == name) return true;
+            }
         }
         return false;
     }
@@ -17296,14 +17418,18 @@ pub const Checker = struct {
         // Type the initializer.
         var init_type: TypeId = if (v.is_ambient) types.Primitive.any else types.Primitive.undefined_t;
         if (v.init != hir_mod.none_node_id) {
-            init_type = try self.checkExpression(v.init);
+            if (v.is_ambient) {
+                try self.report(v.init, TsCodes.ambient_initializer_not_allowed, "Initializers are not allowed in ambient contexts.");
+            } else {
+                init_type = try self.checkExpression(v.init);
+            }
             if (declared_type == types.Primitive.none and
                 init_type == types.Primitive.undefined_t and
                 self.virtualSectionIsJsLike(node))
             {
                 init_type = types.Primitive.any;
             }
-            if (declared_type == types.Primitive.none and self.hir.kindOf(node) == .const_decl) {
+            if (declared_type == types.Primitive.none and !v.is_ambient and self.hir.kindOf(node) == .const_decl) {
                 init_type = try self.constInitializerType(v.init, init_type);
             }
             if (declared_type == types.Primitive.none and
@@ -23341,6 +23467,7 @@ pub const Checker = struct {
 
         if (std.mem.eql(u8, name_str, "this")) {
             if (self.isDeclNameSlot(node) or self.nodeIsThisParameterName(node) or self.thisInsideDecoratorInitializerCallback(node)) return types.Primitive.any;
+            if (self.nodeInsideAmbientVarInitializer(node)) return types.Primitive.any;
             if (self.nodeHasAncestorKind(node, .decorator)) return types.Primitive.any;
             if (self.thisInsideCheckJsConstructorFunction(node)) return types.Primitive.any;
             if (self.thisInsideCheckJsPrototypeAssignmentFunction(node)) return types.Primitive.any;
@@ -24620,20 +24747,19 @@ pub const Checker = struct {
         // `parserS7.3_A1.1_T2` where `$ERROR` should suggest
         // `Error`.
         const builtin_suggestions = [_][]const u8{
-            "console",   "undefined",  "NaN",         "Infinity",
-            "globalThis", "window",    "document",    "Element",
-            "Node",      "Math",       "JSON",        "Object",
-            "Array",     "String",     "Number",      "Boolean",
-            "Symbol",    "BigInt",     "Error",       "TypeError",
-            "RangeError", "SyntaxError", "Promise",   "Map",
-            "Set",       "WeakMap",    "WeakSet",     "Date",
-            "RegExp",    "Function",   "Proxy",       "Reflect",
-            "ArrayBuffer", "Uint8Array", "Int8Array", "Uint16Array",
-            "Int16Array", "Uint32Array", "Int32Array",
-            "Float32Array", "Float64Array",
-            "parseInt", "parseFloat", "isNaN",       "isFinite",
-            "encodeURI", "decodeURI",
-            "setTimeout", "clearTimeout", "setInterval", "clearInterval",
+            "console",      "undefined",   "NaN",           "Infinity",
+            "globalThis",   "window",      "document",      "Element",
+            "Node",         "Math",        "JSON",          "Object",
+            "Array",        "String",      "Number",        "Boolean",
+            "Symbol",       "BigInt",      "Error",         "TypeError",
+            "RangeError",   "SyntaxError", "Promise",       "Map",
+            "Set",          "WeakMap",     "WeakSet",       "Date",
+            "RegExp",       "Function",    "Proxy",         "Reflect",
+            "ArrayBuffer",  "Uint8Array",  "Int8Array",     "Uint16Array",
+            "Int16Array",   "Uint32Array", "Int32Array",    "Float32Array",
+            "Float64Array", "parseInt",    "parseFloat",    "isNaN",
+            "isFinite",     "encodeURI",   "decodeURI",     "setTimeout",
+            "clearTimeout", "setInterval", "clearInterval",
         };
         for (builtin_suggestions) |b| {
             considerCandidate(name_str, b, &best);
@@ -24679,6 +24805,13 @@ pub const Checker = struct {
             .code = TsCodes.cannot_find_name,
             .message = msg,
         });
+    }
+
+    fn reportCannotFindNamePlainOnce(self: *Checker, node: NodeId, name: hir_mod.StringId) !void {
+        for (self.diagnostics.items) |d| {
+            if (d.node == node and d.code == TsCodes.cannot_find_name) return;
+        }
+        try self.reportCannotFindNamePlain(node, name);
     }
 
     fn reportCannotFindNodeName(self: *Checker, node: NodeId, name: hir_mod.StringId) !void {
@@ -25543,6 +25676,7 @@ pub const Checker = struct {
     fn checkThisExpression(self: *Checker, node: NodeId) CheckError!TypeId {
         if (self.nodeIsThisParameterName(node)) return types.Primitive.any;
         if (self.thisInsideDecoratorInitializerCallback(node)) return types.Primitive.any;
+        if (self.nodeInsideAmbientVarInitializer(node)) return types.Primitive.any;
         if (self.sourceHasStrictFalseDirective() and self.thisInsideNonArrowPlainFunction(node)) return types.Primitive.any;
         if (self.thisInsideCheckJsConstructorFunction(node)) return types.Primitive.any;
         if (self.thisInsideCheckJsPrototypeAssignmentFunction(node)) return types.Primitive.any;
@@ -25554,6 +25688,17 @@ pub const Checker = struct {
             try self.report(node, TsCodes.this_implicitly_any, "'this' implicitly has type 'any' because it does not have a type annotation.");
         }
         return types.Primitive.any;
+    }
+
+    fn nodeInsideAmbientVarInitializer(self: *Checker, node: NodeId) bool {
+        var cur = self.hir.parentOf(node);
+        while (cur != hir_mod.none_node_id) : (cur = self.hir.parentOf(cur)) {
+            const kind = self.hir.kindOf(cur);
+            if (kind != .var_decl and kind != .let_decl and kind != .const_decl) continue;
+            const v = hir_mod.varDeclOf(self.hir, cur);
+            return v.is_ambient and v.init != hir_mod.none_node_id;
+        }
+        return false;
     }
 
     fn nodeIsThisParameterName(self: *Checker, node: NodeId) bool {
@@ -47974,6 +48119,65 @@ test "checker: TS2610 message names accessor source and override target" {
         try T.expect(std.mem.indexOf(u8, d.message, "class 'Animal'") != null);
         try T.expect(std.mem.indexOf(u8, d.message, "in 'Lion' as an instance property") != null);
         found = true;
+    }
+    try T.expect(found);
+}
+
+test "checker: unresolved class extends heritage name reports TS2304" {
+    const s = try newSetup(
+        \\class C extends A {}
+    );
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+    var found = false;
+    for (s.checker.diagnostics.items) |d| {
+        if (d.code != TsCodes.cannot_find_name) continue;
+        try T.expect(std.mem.indexOf(u8, d.message, "'A'") != null);
+        found = true;
+    }
+    try T.expect(found);
+}
+
+test "checker: unresolved class implements heritage name reports TS2304" {
+    const s = try newSetup(
+        \\class C implements A {}
+    );
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+    var found = false;
+    for (s.checker.diagnostics.items) |d| {
+        if (d.code != TsCodes.cannot_find_name) continue;
+        try T.expect(std.mem.indexOf(u8, d.message, "'A'") != null);
+        found = true;
+    }
+    try T.expect(found);
+}
+
+test "checker: unresolved interface extends heritage name reports TS2304" {
+    const s = try newSetup(
+        \\interface I extends A {}
+    );
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+    var found = false;
+    for (s.checker.diagnostics.items) |d| {
+        if (d.code != TsCodes.cannot_find_name) continue;
+        try T.expect(std.mem.indexOf(u8, d.message, "'A'") != null);
+        found = true;
+    }
+    try T.expect(found);
+}
+
+test "checker: ambient var initializer reports TS1039 without checking initializer" {
+    const s = try newSetup(
+        \\declare var x = this;
+    );
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+    var found = false;
+    for (s.checker.diagnostics.items) |d| {
+        if (d.code == TsCodes.ambient_initializer_not_allowed) found = true;
+        try T.expect(d.code != TsCodes.this_implicitly_any);
     }
     try T.expect(found);
 }
