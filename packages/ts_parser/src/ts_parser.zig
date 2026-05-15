@@ -6627,10 +6627,40 @@ pub const Parser = struct {
                 is_method,
             );
             try props.append(self.gpa, prop);
-            if (!self.match(.comma)) break;
+            if (self.match(.comma)) continue;
+            // Recover from missing `,` between properties — TS reports
+            // TS1005 at the offending token and continues parsing the
+            // next property. Mirrors `tsc`'s `parseDelimitedList` recovery
+            // for object literals (matters for fixtures like
+            // `stringNamedPropertyDuplicates` whose intentional missing
+            // commas would otherwise abort the whole source-file parse).
+            if (objectLiteralPropertyCanStart(self.peek().kind)) {
+                try self.reportCodeAt(self.peek().span.start, self.peek().line, 1005, "',' expected.");
+                continue;
+            }
+            break;
         }
         const close = try self.expect(.close_brace, "'}' to close object literal");
         return try self.builder.addObjectLiteral(.{ .start = start.span.start, .end = close.span.end }, props.items);
+    }
+
+    /// Returns true when `kind` can begin an object-literal property —
+    /// used by `parseObjectLiteral` to recover from missing comma
+    /// separators (TS1005) without aborting the whole file parse.
+    fn objectLiteralPropertyCanStart(kind: TokenKind) bool {
+        return switch (kind) {
+            .identifier,
+            .private_identifier,
+            .string_literal,
+            .number_literal,
+            .open_bracket,
+            .dot_dot_dot,
+            .asterisk,
+            .no_substitution_template,
+            .template_head,
+            => true,
+            else => kind.isKeyword() or kind.isContextualKeyword(),
+        };
     }
 
     /// Accept any token that can appear after `.` — identifier or
@@ -10045,4 +10075,42 @@ test "parser: module keyword can be a CommonJS expression root" {
 
     _ = try s.parser.parseSourceFile();
     try T.expectEqual(@as(usize, 0), s.parser.diagnostics.items.len);
+}
+
+test "parser: REPRO full conformance stringNamedPropertyDuplicates" {
+    var s = try newTestSetup(
+        \\class C {
+        \\    "a b": number;
+        \\    "a b": number;
+        \\    static "c d": number;
+        \\    static "c d": number;
+        \\}
+        \\
+        \\interface I {
+        \\    "a b": number;
+        \\    "a b": number;
+        \\}
+        \\
+        \\var a: {
+        \\    "a b": number;
+        \\    "a b": number;
+        \\}
+        \\
+        \\var b = {
+        \\    "a b": 1
+        \\    "a b": 1
+        \\}
+    );
+    defer destroyTestSetup(s);
+    const root_or_err = s.parser.parseSourceFile();
+    if (root_or_err) |root| {
+        const stmts = hir_mod.blockStmts(&s.hir, root);
+        std.debug.print("FULL stmts.len={d}\n", .{stmts.len});
+    } else |err| {
+        std.debug.print("FULL parse FAILED with {s}\n", .{@errorName(err)});
+    }
+    std.debug.print("FULL diagnostics count: {d}\n", .{s.parser.diagnostics.items.len});
+    for (s.parser.diagnostics.items) |d| {
+        std.debug.print("  diag pos={d} TS{d}: {s}\n", .{ d.pos, d.code, d.message });
+    }
 }

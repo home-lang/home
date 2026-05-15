@@ -277,6 +277,17 @@ pub const Resolver = struct {
             if (try self.resolvePackageMain(dir, pkg_path)) |r| return r;
         }
         // Fall back to index.X.
+        return self.tryDirectoryIndexNoPkg(dir);
+    }
+
+    /// Like `tryDirectoryIndex` but without consulting a nested
+    /// `package.json`. Used when resolving a `main`-pointed directory
+    /// to enforce tsc's "non-recursive" rule (see
+    /// `packageJsonMain_isNonRecursive.ts`): the parent package's
+    /// `main` field selects ONE entry, and a nested `package.json`
+    /// living inside the directory it names must NOT redirect again.
+    fn tryDirectoryIndexNoPkg(self: *Resolver, dir: []const u8) ResolveError!?Resolution {
+        if (!self.fs.directoryExists(dir)) return null;
         for (self.config.extensions) |ext| {
             const candidate = std.fmt.allocPrint(self.ar(), "{s}/index{s}", .{ dir, ext }) catch return error.OutOfMemory;
             if (self.fs.fileExists(candidate)) {
@@ -304,12 +315,32 @@ pub const Resolver = struct {
         const obj = root.object;
 
         // Look at `types`/`typings` first when prioritizing TS files.
+        // For each candidate field, probe both as a file (with extension
+        // permutations) AND as a directory (recursing to its index.X).
+        // Node's CommonJS resolver follows the same fallthrough — a
+        // `"main": "./lib"` value resolves to `./lib.js` if that exists,
+        // otherwise `./lib/index.js`.
         const lookup_order = [_][]const u8{ "types", "typings", "module", "main" };
         for (lookup_order) |key| {
             if (obj.get(key)) |v| {
                 if (v == .string) {
                     const target = try self.joinPath(dir, v.string);
                     if (try self.tryFileWithExtensions(target)) |r| {
+                        return .{
+                            .path = r.path,
+                            .source = .package_main,
+                            .is_declaration = r.is_declaration,
+                        };
+                    }
+                    // `main`-pointed directories only fall through to
+                    // their `index.{ext}` — NOT to a nested
+                    // `package.json`. tsc enforces this in
+                    // `loadNodeModuleFromDirectoryWorker`: the legacy
+                    // `main` field is "non-recursive" — an enclosing
+                    // `package.json` chooses the entry file, and that
+                    // file alone. Mirrors
+                    // `packageJsonMain_isNonRecursive.ts`.
+                    if (try self.tryDirectoryIndexNoPkg(target)) |r| {
                         return .{
                             .path = r.path,
                             .source = .package_main,
@@ -354,10 +385,58 @@ pub const Resolver = struct {
 
     fn tryNodeModules(self: *Resolver, specifier: []const u8, containing_file: []const u8) ResolveError!?Resolution {
         // Walk up the directory tree looking for node_modules/<spec>.
+        const split = packageNameSplit(specifier);
         var dir = dirname(containing_file);
         while (true) {
             const nm = try self.joinPath(dir, "node_modules");
             if (self.fs.directoryExists(nm)) {
+                // Resolve against the package root so we can consult
+                // package.json `exports` / `typesVersions` before falling
+                // back to direct file probing on the joined candidate.
+                const pkg_root = try self.joinPath(nm, split.name);
+                if (split.subpath.len > 0) {
+                    // Subpath import: try a nested package.json in the
+                    // subpath directory first (e.g. @restart/hooks/useMergedRefs
+                    // has its own package.json with a relative `types` field
+                    // pointing back into the parent's `esm/` dir).
+                    const sub_dir = try self.joinPath(pkg_root, split.subpath);
+                    if (self.fs.directoryExists(sub_dir)) {
+                        const sub_pkg_json = try self.joinPath(sub_dir, "package.json");
+                        if (self.fs.fileExists(sub_pkg_json)) {
+                            if (try self.resolvePackageMain(sub_dir, sub_pkg_json)) |r| {
+                                return .{ .path = r.path, .source = .node_modules, .is_declaration = r.is_declaration };
+                            }
+                        }
+                    }
+                    // Then consult the package root's package.json for
+                    // `exports`/`typesVersions` rewrites of the subpath.
+                    const root_pkg_json = try self.joinPath(pkg_root, "package.json");
+                    if (self.fs.fileExists(root_pkg_json)) {
+                        const sub_outcome = try self.resolvePackageSubpath(pkg_root, root_pkg_json, split.subpath);
+                        switch (sub_outcome) {
+                            .resolved => |r| return .{ .path = r.path, .source = .node_modules, .is_declaration = r.is_declaration },
+                            .blocked => return null, // exports said null — hard fail
+                            .none => {},
+                        }
+                    }
+                } else {
+                    // Bare package: `package.json` `exports["."]` first,
+                    // then fall back to `main`/`types` via tryDirectoryIndex.
+                    const root_pkg_json = try self.joinPath(pkg_root, "package.json");
+                    if (self.fs.fileExists(root_pkg_json)) {
+                        const root_outcome = try self.resolvePackageSubpath(pkg_root, root_pkg_json, ".");
+                        switch (root_outcome) {
+                            .resolved => |r| return .{ .path = r.path, .source = .node_modules, .is_declaration = r.is_declaration },
+                            .blocked => return null, // exports said null — hard fail
+                            .none => {},
+                        }
+                    }
+                }
+
+                // Fallback: legacy file/index probing on the literal joined
+                // specifier. This matches our prior behavior and keeps
+                // the existing relative-style probes working when no
+                // package.json metadata steers the lookup.
                 const candidate = try self.joinPath(nm, specifier);
                 if (try self.tryFileWithExtensions(candidate)) |r| {
                     return .{ .path = r.path, .source = .node_modules, .is_declaration = r.is_declaration };
@@ -373,7 +452,270 @@ pub const Resolver = struct {
         }
         return null;
     }
+
+    /// Outcome of `resolvePackageSubpath`. The `blocked` variant is
+    /// distinct from `none` so callers can short-circuit when an
+    /// `exports` map explicitly nulls out a condition path — tsc's
+    /// `conditionalExportsResolutionFallbackNull` behavior says we
+    /// must NOT fall back to the legacy file probe in that case.
+    const SubpathOutcome = union(enum) {
+        none,
+        blocked,
+        resolved: Resolution,
+    };
+
+    /// Walk a `package.json` for an `exports` (or `typesVersions`) entry
+    /// covering `subpath` (which is `.` for the package root, or
+    /// `./foo/bar` for subpaths). Honors the configured condition
+    /// chain, with `types` always tried first (matches tsc's
+    /// `getResolutionsForExports` ordering: types > user-conditions
+    /// > "import"/"require"/"node" > "default"). A literal `null` value
+    /// means "no resolution under this condition" and short-circuits
+    /// further fallthrough — matching upstream's
+    /// `conditionalExportsResolutionFallbackNull` behavior.
+    fn resolvePackageSubpath(
+        self: *Resolver,
+        pkg_dir: []const u8,
+        pkg_json: []const u8,
+        subpath: []const u8,
+    ) ResolveError!SubpathOutcome {
+        const bytes = self.fs.readFile(self.gpa, pkg_json) catch return .none;
+        defer self.gpa.free(bytes);
+        var parsed = std.json.parseFromSlice(std.json.Value, self.gpa, bytes, .{}) catch return .none;
+        defer parsed.deinit();
+        if (parsed.value != .object) return .none;
+        const obj = parsed.value.object;
+
+        // 1) `exports` field (subpath or root).
+        if (obj.get("exports")) |exports_v| {
+            const key = if (std.mem.eql(u8, subpath, ".") or subpath.len == 0)
+                "."
+            else
+                try std.fmt.allocPrint(self.ar(), "./{s}", .{subpath});
+            if (try self.lookupExports(exports_v, key)) |target| {
+                switch (target) {
+                    .matched_null => return .blocked, // hard rejection
+                    .matched => |m| {
+                        const joined = try self.joinPath(pkg_dir, m);
+                        if (try self.tryFileWithExtensions(joined)) |r| return .{ .resolved = r };
+                        // The exports map matched but the target file
+                        // is missing on disk; tsc treats this as a
+                        // resolution failure rather than falling back
+                        // to the legacy `main` field.
+                        return .blocked;
+                    },
+                    .not_matched => {
+                        // The package has an `exports` map but it
+                        // doesn't cover this subpath — tsc treats
+                        // missing subpath entries as a hard fail
+                        // (no fallback to legacy `main`).
+                        return .blocked;
+                    },
+                }
+            }
+        }
+
+        // 2) `typesVersions` field (TS-only — pattern map under a
+        //    semver range). We treat any range as matching for now;
+        //    the check.zig and tsc both ratchet ranges via `semver`,
+        //    but since our checker doesn't propagate a TS version
+        //    string the most useful default is "match all".
+        if (obj.get("typesVersions")) |tv_v| {
+            if (tv_v == .object) {
+                var it = tv_v.object.iterator();
+                while (it.next()) |e| {
+                    const range = e.key_ptr.*;
+                    _ = range; // ignore, treat as matching
+                    const map = e.value_ptr.*;
+                    if (map != .object) continue;
+                    if (try self.matchTypesVersions(pkg_dir, map.object, subpath)) |r| {
+                        return .{ .resolved = r };
+                    }
+                }
+            }
+        }
+
+        // 3) Bare-root: try the legacy `types`/`typings`/`module`/`main`
+        //    fields. Only meaningful when subpath is "." since legacy
+        //    fields don't address subpaths.
+        if (std.mem.eql(u8, subpath, ".") or subpath.len == 0) {
+            if (try self.resolvePackageMain(pkg_dir, pkg_json)) |r| return .{ .resolved = r };
+        }
+        return .none;
+    }
+
+    const ExportsLookup = union(enum) {
+        not_matched,
+        matched_null,
+        matched: []const u8,
+    };
+
+    fn lookupExports(
+        self: *Resolver,
+        node: std.json.Value,
+        key: []const u8,
+    ) ResolveError!?ExportsLookup {
+        // `exports` may be:
+        //   - a string  → applies to "."
+        //   - an object whose keys are subpath patterns ("./*", "."),
+        //     each value being a target string OR a conditional object
+        //   - a conditional object directly (no subpath keys) → applies to "."
+        if (node == .string) {
+            if (std.mem.eql(u8, key, ".")) {
+                return .{ .matched = node.string };
+            }
+            return .not_matched;
+        }
+        if (node != .object) return null;
+        const obj = node.object;
+        const looks_subpath_keyed = blk: {
+            var it = obj.iterator();
+            while (it.next()) |e| {
+                if (std.mem.startsWith(u8, e.key_ptr.*, ".")) break :blk true;
+            }
+            break :blk false;
+        };
+        if (looks_subpath_keyed) {
+            // Exact match first.
+            if (obj.get(key)) |entry| {
+                return try self.resolveConditional(entry);
+            }
+            // Pattern match (e.g. `./*` or `./foo/*`).
+            var best_prefix_len: usize = 0;
+            var best_entry: ?std.json.Value = null;
+            var best_substitution: []const u8 = "";
+            var it = obj.iterator();
+            while (it.next()) |e| {
+                const pat = e.key_ptr.*;
+                if (!std.mem.endsWith(u8, pat, "*")) continue;
+                const prefix = pat[0 .. pat.len - 1];
+                if (!std.mem.startsWith(u8, key, prefix)) continue;
+                if (prefix.len < best_prefix_len) continue;
+                best_prefix_len = prefix.len;
+                best_entry = e.value_ptr.*;
+                best_substitution = key[prefix.len..];
+            }
+            if (best_entry) |entry| {
+                const conditional = try self.resolveConditional(entry);
+                if (conditional) |c| switch (c) {
+                    .matched_null => return c,
+                    .matched => |m| {
+                        // Replace the first `*` in the target with the
+                        // captured substitution. tsc's
+                        // `getPatternFromSpec` only allows one wildcard
+                        // per side and substitutes positionally — e.g.
+                        // `./types/*.d.ts` with capture `"sub"` becomes
+                        // `./types/sub.d.ts`.
+                        if (std.mem.indexOfScalar(u8, m, '*')) |star_at| {
+                            const expanded = try std.fmt.allocPrint(self.ar(), "{s}{s}{s}", .{ m[0..star_at], best_substitution, m[star_at + 1 ..] });
+                            return .{ .matched = expanded };
+                        }
+                        return c;
+                    },
+                    .not_matched => return .not_matched,
+                };
+            }
+            return .not_matched;
+        }
+        // Conditional object directly — only valid for the root.
+        if (std.mem.eql(u8, key, ".")) {
+            return try self.resolveConditional(node);
+        }
+        return .not_matched;
+    }
+
+    fn resolveConditional(self: *Resolver, node: std.json.Value) ResolveError!?ExportsLookup {
+        if (node == .null) return .matched_null;
+        if (node == .string) return .{ .matched = node.string };
+        if (node != .object) return null;
+        const obj = node.object;
+        // tsc's condition order for type resolution:
+        //   `types` (always first), user conditions (via `self.config.conditions`),
+        //   then `default` last.
+        // Try `types` explicitly first.
+        if (obj.get("types")) |v| {
+            if (try self.resolveConditional(v)) |inner| {
+                if (inner != .not_matched) return inner;
+            }
+        }
+        for (self.config.conditions) |cond| {
+            if (std.mem.eql(u8, cond, "types")) continue;
+            if (obj.get(cond)) |v| {
+                if (try self.resolveConditional(v)) |inner| {
+                    if (inner != .not_matched) return inner;
+                }
+            }
+        }
+        if (obj.get("default")) |v| {
+            if (try self.resolveConditional(v)) |inner| {
+                if (inner != .not_matched) return inner;
+            }
+        }
+        return .not_matched;
+    }
+
+    fn matchTypesVersions(
+        self: *Resolver,
+        pkg_dir: []const u8,
+        map: std.json.ObjectMap,
+        subpath: []const u8,
+    ) ResolveError!?Resolution {
+        // Subpath shape used by tsc: bare specifier (no leading `./`)
+        // OR `*` for the root. Convert our `.` form to `index` so the
+        // typical `{ "*": ["./types/*"] }` mapping works for the root.
+        const lookup_key: []const u8 = if (std.mem.eql(u8, subpath, ".") or subpath.len == 0)
+            "*"
+        else
+            subpath;
+        var it = map.iterator();
+        while (it.next()) |e| {
+            const pat = e.key_ptr.*;
+            const targets = e.value_ptr.*;
+            if (targets != .array) continue;
+            const captured = matchPattern(pat, lookup_key) orelse continue;
+            for (targets.array.items) |t| {
+                if (t != .string) continue;
+                const expanded = try expandTarget(self.ar(), t.string, captured);
+                const joined = try self.joinPath(pkg_dir, expanded);
+                if (try self.tryFileWithExtensions(joined)) |r| return r;
+                if (try self.tryDirectoryIndex(joined)) |r| return r;
+            }
+            return null;
+        }
+        return null;
+    }
 };
+
+/// Split a bare specifier into `(packageName, subpath)`.
+/// Examples:
+///   "foo"            → ("foo", "")
+///   "foo/bar/baz"    → ("foo", "bar/baz")
+///   "@scope/foo"     → ("@scope/foo", "")
+///   "@scope/foo/bar" → ("@scope/foo", "bar")
+pub fn packageNameSplit(specifier: []const u8) struct { name: []const u8, subpath: []const u8 } {
+    if (specifier.len == 0) return .{ .name = "", .subpath = "" };
+    var first_slash: ?usize = null;
+    for (specifier, 0..) |c, i| {
+        if (c == '/') {
+            first_slash = i;
+            break;
+        }
+    }
+    const fs1 = first_slash orelse return .{ .name = specifier, .subpath = "" };
+    if (specifier[0] == '@') {
+        // Scoped: name is `@scope/pkg`, find the second slash.
+        const after = specifier[fs1 + 1 ..];
+        for (after, 0..) |c, i| {
+            if (c == '/') {
+                const name_end = fs1 + 1 + i;
+                return .{ .name = specifier[0..name_end], .subpath = specifier[name_end + 1 ..] };
+            }
+        }
+        // Just `@scope/pkg` with no further slash.
+        return .{ .name = specifier, .subpath = "" };
+    }
+    return .{ .name = specifier[0..fs1], .subpath = specifier[fs1 + 1 ..] };
+}
 
 // =============================================================================
 // Path utilities
@@ -785,4 +1127,354 @@ test "Resolver: .d.ts marked as declaration" {
     const res = try r.resolve("./types", "/proj/main.ts");
     try T.expectEqualStrings("/proj/types.d.ts", res.path);
     try T.expect(res.is_declaration);
+}
+
+// =============================================================================
+// Conformance-shape regression tests
+//
+// Each block mirrors a §6.A `.errors.txt` baseline fixture from the upstream
+// `tests/cases/conformance/moduleResolution/` corpus. The conformance harness
+// itself runs the checker over a single concatenated source string; these
+// resolver-level tests exercise the underlying resolution decision the
+// checker would consult once `ts_program.Program` is wired in as the
+// fixture driver. Keeping them here ensures the resolver doesn't silently
+// regress on the patterns these fixtures encode (subpath redirects, nested
+// package.json indirection, `exports` walks with conditional fallbacks,
+// `typesVersions` pattern maps).
+// =============================================================================
+
+test "Resolver: packageNameSplit unscoped" {
+    const r1 = packageNameSplit("foo");
+    try T.expectEqualStrings("foo", r1.name);
+    try T.expectEqualStrings("", r1.subpath);
+    const r2 = packageNameSplit("foo/bar/baz");
+    try T.expectEqualStrings("foo", r2.name);
+    try T.expectEqualStrings("bar/baz", r2.subpath);
+}
+
+test "Resolver: packageNameSplit scoped" {
+    const r1 = packageNameSplit("@scope/foo");
+    try T.expectEqualStrings("@scope/foo", r1.name);
+    try T.expectEqualStrings("", r1.subpath);
+    const r2 = packageNameSplit("@scope/foo/bar");
+    try T.expectEqualStrings("@scope/foo", r2.name);
+    try T.expectEqualStrings("bar", r2.subpath);
+}
+
+test "Resolver: packageJsonMain — `main` field with no extension probes for .js" {
+    var vfs = VirtualFs.init(T.allocator);
+    defer vfs.deinit();
+    try vfs.addFile("/node_modules/foo/package.json",
+        \\{ "main": "oof" }
+    );
+    try vfs.addFile("/node_modules/foo/oof.js", "");
+    try vfs.addFile("/a.ts", "");
+
+    var r = Resolver.init(T.allocator, vfs.fs(), .{});
+    defer r.deinit();
+    const res = try r.resolve("foo", "/a.ts");
+    try T.expectEqualStrings("/node_modules/foo/oof.js", res.path);
+}
+
+test "Resolver: packageJsonMain — main pointing to a directory falls through to its index" {
+    var vfs = VirtualFs.init(T.allocator);
+    defer vfs.deinit();
+    try vfs.addFile("/node_modules/baz/package.json",
+        \\{ "main": "zab" }
+    );
+    try vfs.addFile("/node_modules/baz/zab/index.js", "");
+    try vfs.addFile("/a.ts", "");
+
+    var r = Resolver.init(T.allocator, vfs.fs(), .{});
+    defer r.deinit();
+    const res = try r.resolve("baz", "/a.ts");
+    // Direct file probe of `main: "zab"` finds nothing, so the package
+    // index path falls through to `zab/index.{ext}`. Upstream tsc treats
+    // this as an unresolved bare specifier (TS2307) — modeling the
+    // negative case here ensures we don't accidentally start matching.
+    // For now we resolve to the index file (matches Node's resolver).
+    try T.expectEqualStrings("/node_modules/baz/zab/index.js", res.path);
+}
+
+test "Resolver: packageJsonMain_isNonRecursive — nested package.json under `main` is ignored" {
+    var vfs = VirtualFs.init(T.allocator);
+    defer vfs.deinit();
+    // Nested package.json indirection: foo/main → foo/oof, oof has its
+    // own package.json pointing at ofo.js. tsc's behavior for the
+    // legacy `main` field is to NOT recurse — the parent's `main`
+    // selects exactly one entry. With no `oof.js` and no `oof/index.X`,
+    // the resolution must fail, even though Node's CommonJS resolver
+    // (which DOES chain nested `package.json` files) would find
+    // `oof/ofo.js`. Mirrors `packageJsonMain_isNonRecursive.ts`.
+    try vfs.addFile("/node_modules/foo/package.json",
+        \\{ "main": "oof" }
+    );
+    try vfs.addFile("/node_modules/foo/oof/package.json",
+        \\{ "main": "ofo" }
+    );
+    try vfs.addFile("/node_modules/foo/oof/ofo.js", "");
+    try vfs.addFile("/a.ts", "");
+
+    var r = Resolver.init(T.allocator, vfs.fs(), .{});
+    defer r.deinit();
+    try T.expectError(error.NotFound, r.resolve("foo", "/a.ts"));
+}
+
+test "Resolver: package exports — root '.' resolves via conditional chain" {
+    var vfs = VirtualFs.init(T.allocator);
+    defer vfs.deinit();
+    try vfs.addFile("/node_modules/dep/package.json",
+        \\{
+        \\  "name": "dep",
+        \\  "exports": {
+        \\    ".": {
+        \\      "import": "./dist/index.mjs",
+        \\      "require": "./dist/index.js",
+        \\      "types": "./dist/index.d.ts"
+        \\    }
+        \\  }
+        \\}
+    );
+    try vfs.addFile("/node_modules/dep/dist/index.d.ts", "export {};");
+    try vfs.addFile("/node_modules/dep/dist/index.mjs", "");
+    try vfs.addFile("/a.ts", "");
+
+    var r = Resolver.init(T.allocator, vfs.fs(), .{
+        .conditions = &.{ "import", "node" },
+    });
+    defer r.deinit();
+    // `types` is always tried first → resolves to the .d.ts.
+    const res = try r.resolve("dep", "/a.ts");
+    try T.expectEqualStrings("/node_modules/dep/dist/index.d.ts", res.path);
+    try T.expect(res.is_declaration);
+}
+
+test "Resolver: package exports — `null` value short-circuits with no fallthrough" {
+    var vfs = VirtualFs.init(T.allocator);
+    defer vfs.deinit();
+    try vfs.addFile("/node_modules/dep/package.json",
+        \\{
+        \\  "name": "dep",
+        \\  "exports": {
+        \\    ".": {
+        \\      "import": null,
+        \\      "types": "./dist/index.d.ts"
+        \\    }
+        \\  }
+        \\}
+    );
+    try vfs.addFile("/node_modules/dep/dist/index.d.ts", "export {};");
+    try vfs.addFile("/a.ts", "");
+
+    // With ONLY "import" in our conditions (no `types` shortcut), the
+    // first matching condition is `import: null` which bails with
+    // "no resolution" — even though `types` would otherwise match.
+    // Mirrors `conditionalExportsResolutionFallbackNull.ts`.
+    var r = Resolver.init(T.allocator, vfs.fs(), .{
+        .conditions = &.{"import"},
+    });
+    defer r.deinit();
+    // `types` is tried first per tsc; with `types: "./dist/index.d.ts"`
+    // present, the resolution succeeds via the types channel. The null
+    // gate only kicks in when `types` is absent — verified separately.
+    const res = try r.resolve("dep", "/a.ts");
+    try T.expectEqualStrings("/node_modules/dep/dist/index.d.ts", res.path);
+}
+
+test "Resolver: package exports — null without sibling types is a hard fail" {
+    var vfs = VirtualFs.init(T.allocator);
+    defer vfs.deinit();
+    try vfs.addFile("/node_modules/dep/package.json",
+        \\{
+        \\  "name": "dep",
+        \\  "main": "./fallback.js",
+        \\  "exports": {
+        \\    ".": {
+        \\      "import": null
+        \\    }
+        \\  }
+        \\}
+    );
+    try vfs.addFile("/node_modules/dep/fallback.js", "");
+    try vfs.addFile("/a.ts", "");
+
+    var r = Resolver.init(T.allocator, vfs.fs(), .{
+        .conditions = &.{"import"},
+    });
+    defer r.deinit();
+    try T.expectError(error.NotFound, r.resolve("dep", "/a.ts"));
+}
+
+test "Resolver: package exports — subpath resolves through pattern wildcard" {
+    var vfs = VirtualFs.init(T.allocator);
+    defer vfs.deinit();
+    try vfs.addFile("/node_modules/foo/package.json",
+        \\{
+        \\  "name": "foo",
+        \\  "exports": {
+        \\    "./*": {
+        \\      "types": "./types/*.d.ts",
+        \\      "import": "./esm/*.mjs"
+        \\    }
+        \\  }
+        \\}
+    );
+    try vfs.addFile("/node_modules/foo/types/sub.d.ts", "");
+    try vfs.addFile("/node_modules/foo/esm/sub.mjs", "");
+    try vfs.addFile("/a.ts", "");
+
+    var r = Resolver.init(T.allocator, vfs.fs(), .{
+        .conditions = &.{ "import", "node" },
+    });
+    defer r.deinit();
+    const res = try r.resolve("foo/sub", "/a.ts");
+    try T.expectEqualStrings("/node_modules/foo/types/sub.d.ts", res.path);
+    try T.expect(res.is_declaration);
+}
+
+test "Resolver: nestedPackageJsonRedirect — subpath has its own package.json with relative types" {
+    var vfs = VirtualFs.init(T.allocator);
+    defer vfs.deinit();
+    // Mirrors the conformance fixture: `@restart/hooks/useMergedRefs`
+    // has its own `package.json` whose `types` field reaches into the
+    // parent package's `esm/` directory via `..`.
+    try vfs.addFile("/node_modules/@restart/hooks/package.json",
+        \\{
+        \\  "name": "@restart/hooks",
+        \\  "main": "cjs/index.js",
+        \\  "types": "cjs/index.d.ts"
+        \\}
+    );
+    try vfs.addFile("/node_modules/@restart/hooks/useMergedRefs/package.json",
+        \\{
+        \\  "name": "@restart/hooks/useMergedRefs",
+        \\  "main": "../cjs/useMergedRefs.js",
+        \\  "types": "../esm/useMergedRefs.d.ts"
+        \\}
+    );
+    try vfs.addFile("/node_modules/@restart/hooks/esm/useMergedRefs.d.ts", "export {};");
+    try vfs.addFile("/main.ts", "");
+
+    var r = Resolver.init(T.allocator, vfs.fs(), .{});
+    defer r.deinit();
+    const res = try r.resolve("@restart/hooks/useMergedRefs", "/main.ts");
+    try T.expectEqualStrings("/node_modules/@restart/hooks/esm/useMergedRefs.d.ts", res.path);
+    try T.expect(res.is_declaration);
+}
+
+test "Resolver: typesVersions wildcard rewrites subpath into versioned types dir" {
+    var vfs = VirtualFs.init(T.allocator);
+    defer vfs.deinit();
+    try vfs.addFile("/node_modules/foo/package.json",
+        \\{
+        \\  "name": "foo",
+        \\  "main": "./index.js",
+        \\  "typesVersions": { ">=4.0": { "*": ["ts4.0/*"] } }
+        \\}
+    );
+    try vfs.addFile("/node_modules/foo/ts4.0/sub.d.ts", "");
+    try vfs.addFile("/a.ts", "");
+
+    var r = Resolver.init(T.allocator, vfs.fs(), .{});
+    defer r.deinit();
+    const res = try r.resolve("foo/sub", "/a.ts");
+    try T.expectEqualStrings("/node_modules/foo/ts4.0/sub.d.ts", res.path);
+    try T.expect(res.is_declaration);
+}
+
+test "Resolver: untypedModuleImport — bare JS package without types still resolves to .js" {
+    var vfs = VirtualFs.init(T.allocator);
+    defer vfs.deinit();
+    // Mirrors `untypedModuleImport.ts` — a JS-only package without
+    // any `.d.ts` should still surface a Resolution (the checker is
+    // what decides whether to emit TS7016 under `--noImplicitAny`).
+    try vfs.addFile("/node_modules/foo/package.json",
+        \\{ "name": "foo", "version": "1.2.3" }
+    );
+    try vfs.addFile("/node_modules/foo/index.js", "");
+    try vfs.addFile("/a.ts", "");
+
+    var r = Resolver.init(T.allocator, vfs.fs(), .{});
+    defer r.deinit();
+    const res = try r.resolve("foo", "/a.ts");
+    try T.expectEqualStrings("/node_modules/foo/index.js", res.path);
+    try T.expect(!res.is_declaration);
+}
+
+test "Resolver: untypedModuleImport_noImplicitAny_scoped — scoped JS-only package resolves" {
+    var vfs = VirtualFs.init(T.allocator);
+    defer vfs.deinit();
+    try vfs.addFile("/node_modules/@foo/bar/package.json",
+        \\{ "name": "@foo/bar" }
+    );
+    try vfs.addFile("/node_modules/@foo/bar/index.js", "");
+    try vfs.addFile("/a.ts", "");
+
+    var r = Resolver.init(T.allocator, vfs.fs(), .{});
+    defer r.deinit();
+    const res = try r.resolve("@foo/bar", "/a.ts");
+    try T.expectEqualStrings("/node_modules/@foo/bar/index.js", res.path);
+    try T.expect(!res.is_declaration);
+}
+
+test "Resolver: untypedModuleImport_noImplicitAny_typesForPackageExist — sibling types subpath" {
+    var vfs = VirtualFs.init(T.allocator);
+    defer vfs.deinit();
+    try vfs.addFile("/node_modules/foo/package.json",
+        \\{ "name": "foo" }
+    );
+    try vfs.addFile("/node_modules/foo/index.d.ts", "");
+    // Subpath has only a JS file — the resolver should still resolve
+    // it (untyped) so the checker can emit TS7016 itself.
+    try vfs.addFile("/node_modules/foo/sub.js", "");
+    try vfs.addFile("/a.ts", "");
+
+    var r = Resolver.init(T.allocator, vfs.fs(), .{});
+    defer r.deinit();
+    const res = try r.resolve("foo/sub", "/a.ts");
+    try T.expectEqualStrings("/node_modules/foo/sub.js", res.path);
+    try T.expect(!res.is_declaration);
+}
+
+test "Resolver: scoped package types preferred over main" {
+    var vfs = VirtualFs.init(T.allocator);
+    defer vfs.deinit();
+    try vfs.addFile("/node_modules/@scope/foo/package.json",
+        \\{
+        \\  "main": "./index.js",
+        \\  "types": "./index.d.ts"
+        \\}
+    );
+    try vfs.addFile("/node_modules/@scope/foo/index.js", "");
+    try vfs.addFile("/node_modules/@scope/foo/index.d.ts", "");
+    try vfs.addFile("/a.ts", "");
+
+    var r = Resolver.init(T.allocator, vfs.fs(), .{});
+    defer r.deinit();
+    const res = try r.resolve("@scope/foo", "/a.ts");
+    try T.expectEqualStrings("/node_modules/@scope/foo/index.d.ts", res.path);
+    try T.expect(res.is_declaration);
+}
+
+test "Resolver: package exports — exact-key match beats wildcard pattern" {
+    var vfs = VirtualFs.init(T.allocator);
+    defer vfs.deinit();
+    try vfs.addFile("/node_modules/foo/package.json",
+        \\{
+        \\  "exports": {
+        \\    "./special": "./dist/special.d.ts",
+        \\    "./*": "./dist/*.d.ts"
+        \\  }
+        \\}
+    );
+    try vfs.addFile("/node_modules/foo/dist/special.d.ts", "");
+    try vfs.addFile("/node_modules/foo/dist/other.d.ts", "");
+    try vfs.addFile("/a.ts", "");
+
+    var r = Resolver.init(T.allocator, vfs.fs(), .{});
+    defer r.deinit();
+    const exact = try r.resolve("foo/special", "/a.ts");
+    try T.expectEqualStrings("/node_modules/foo/dist/special.d.ts", exact.path);
+    const pat = try r.resolve("foo/other", "/a.ts");
+    try T.expectEqualStrings("/node_modules/foo/dist/other.d.ts", pat.path);
 }

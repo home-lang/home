@@ -295,6 +295,12 @@ pub const TsCodes = struct {
     pub const enum_computed_after_string: u32 = 2553;
     pub const const_enum_initializer_must_be_constant: u32 = 2474;
     pub const jsdoc_function_type_mismatch: u32 = 8030;
+    /// TS2369 — `public`/`private`/`protected`/`readonly` modifier on
+    /// a parameter outside of a constructor implementation.
+    pub const param_property_outside_ctor: u32 = 2369;
+    /// TS2526 — `this` used as a type outside a non-static class or
+    /// interface member.
+    pub const this_type_outside_class: u32 = 2526;
 };
 
 /// Per-alias generic info: the type-parameter TypeIds in
@@ -1014,6 +1020,8 @@ pub const Checker = struct {
         try self.checkTopLevelDecoratorDiagnostics(stmts);
         try self.checkUsedBeforeAssignment(stmts);
         try self.checkClassUsedBeforeDeclaration(stmts);
+        try self.detectInvalidParamProperty();
+        try self.detectThisInStaticContext();
         if (self.source != null) try self.applyDirectives(root);
     }
 
@@ -8939,8 +8947,14 @@ pub const Checker = struct {
             "Property '{s}' is private and only accessible within class '{s}'.",
             .{ prop_str, class_str },
         );
+        // Anchor TS2341 at the property-name position (col 22 of
+        // `C.bar`) rather than the head of the access expression
+        // (col 20). Matches tsc baselines such as
+        // `privateStaticNotAccessibleInClodule`.
+        const property_name_pos = self.memberAccessPropertyNamePos(node);
         try self.diagnostics.append(self.gpa, .{
             .node = node,
+            .pos = property_name_pos,
             .code = TsCodes.private_member_access,
             .message = msg,
         });
@@ -8983,8 +8997,13 @@ pub const Checker = struct {
             "Property '{s}' is protected and only accessible within class '{s}' and its subclasses.",
             .{ prop_str, class_str },
         );
+        // Anchor TS2445 at the property name (matches tsc baselines
+        // such as `derivedClassTransitivity4` which expects col `foo`,
+        // not col `obj`).
+        const property_name_pos = self.memberAccessPropertyNamePos(node);
         try self.diagnostics.append(self.gpa, .{
             .node = node,
+            .pos = property_name_pos,
             .code = TsCodes.protected_member_access,
             .message = msg,
         });
@@ -9762,7 +9781,46 @@ pub const Checker = struct {
         const parent_name = parent_class_name orelse return;
         const parent_accessors = self.class_accessor_members.getPtr(parent_name) orelse return;
         if (!parent_accessors.contains(member_name)) return;
-        try self.report(node, TsCodes.property_overrides_accessor, "Property overrides an accessor in the base class.");
+        // Match tsc's full TS2610 message:
+        //   `'<member>' is defined as an accessor in class '<parent>',
+        //    but is overridden here in '<derived>' as an instance property.`
+        // Falls back to the short form when the enclosing class name
+        // can't be located (anonymous class expression).
+        const derived_name = self.derivedClassNameForMember(node);
+        const member_str = self.string_interner.get(member_name);
+        const parent_str = self.string_interner.get(parent_name);
+        if (derived_name) |dn| {
+            const derived_str = self.string_interner.get(dn);
+            const msg = try std.fmt.allocPrint(
+                self.diag_arena.allocator(),
+                "'{s}' is defined as an accessor in class '{s}', but is overridden here in '{s}' as an instance property.",
+                .{ member_str, parent_str, derived_str },
+            );
+            try self.diagnostics.append(self.gpa, .{
+                .node = node,
+                .code = TsCodes.property_overrides_accessor,
+                .message = msg,
+            });
+        } else {
+            try self.report(node, TsCodes.property_overrides_accessor, "Property overrides an accessor in the base class.");
+        }
+    }
+
+    /// Walk parents from a class member node to the enclosing
+    /// `class_decl` / `class_expr` and return the class identifier,
+    /// or `null` for anonymous classes / unrecognised parents.
+    fn derivedClassNameForMember(self: *Checker, member_node: NodeId) ?hir_mod.StringId {
+        var cur = self.hir.parentOf(member_node);
+        while (cur != hir_mod.none_node_id) : (cur = self.hir.parentOf(cur)) {
+            const k = self.hir.kindOf(cur);
+            if (k == .class_decl or k == .class_expr) {
+                const c = hir_mod.classOf(self.hir, cur);
+                if (c.name == hir_mod.none_node_id) return null;
+                if (self.hir.kindOf(c.name) != .identifier) return null;
+                return hir_mod.identifierOf(self.hir, c.name).name;
+            }
+        }
+        return null;
     }
 
     fn checkAccessorOverridesProperty(
@@ -9790,19 +9848,87 @@ pub const Checker = struct {
         if (!self.sourceHasUseDefineForClassFieldsTrueDirective()) return;
         var it = parameter_properties.keyIterator();
         while (it.next()) |name_ptr| {
-            if (!self.expressionContainsThisMember(init_node, name_ptr.*)) continue;
+            // tsc anchors TS2729 on the offending `this.<member>`
+            // expression itself (e.g. column 16 of `bug = this.facade.create()`),
+            // not the field declaration. Locate the access node so
+            // the column matches the upstream baseline; fall back to
+            // the field node if no access could be pinpointed.
+            const access_node = self.findThisMemberAccess(init_node, name_ptr.*);
+            if (access_node == hir_mod.none_node_id) continue;
             const name_text = self.string_interner.get(name_ptr.*);
             const msg = try std.fmt.allocPrint(
                 self.diag_arena.allocator(),
                 "Property '{s}' is used before its initialization.",
                 .{name_text},
             );
+            const property_name_pos = self.memberAccessPropertyNamePos(access_node);
             try self.diagnostics.append(self.gpa, .{
-                .node = field_node,
+                .node = access_node,
+                .pos = property_name_pos,
                 .code = TsCodes.property_used_before_initialization,
                 .message = msg,
             });
+            _ = field_node;
             return;
+        }
+    }
+
+    /// Locate the property-name position within a member-access span
+    /// (e.g. for `this.facade`, return the offset of `facade`). Used
+    /// to anchor diagnostics like TS2729 at the property name rather
+    /// than the head of the access expression. Returns `null` if no
+    /// dot can be found in source.
+    fn memberAccessPropertyNamePos(self: *Checker, access_node: NodeId) ?u32 {
+        const src = self.source orelse return null;
+        if (self.hir.kindOf(access_node) != .member_access) return null;
+        const span = self.hir.spanOf(access_node);
+        const start: usize = span.start;
+        const end: usize = @min(src.len, @as(usize, span.end));
+        if (start >= end) return null;
+        var i: usize = end;
+        while (i > start) {
+            i -= 1;
+            if (src[i] == '.') return @intCast(i + 1);
+        }
+        return null;
+    }
+
+    /// Walk `node` looking for a `member_access` whose object is
+    /// `this` and whose member name is `member_name`. Returns the
+    /// matching access node, or `none_node_id` if none found. Used
+    /// to anchor TS2729 at the offending property access (matching
+    /// tsc's column behavior).
+    fn findThisMemberAccess(self: *Checker, node: NodeId, member_name: hir_mod.StringId) NodeId {
+        if (node == hir_mod.none_node_id) return hir_mod.none_node_id;
+        switch (self.hir.kindOf(node)) {
+            .member_access => {
+                const m = hir_mod.memberOf(self.hir, node);
+                if (m.name == member_name and self.nodeIsThisReference(m.object)) return node;
+                return self.findThisMemberAccess(m.object, member_name);
+            },
+            .call_expr, .new_expr => {
+                const c = hir_mod.callOf(self.hir, node);
+                const found = self.findThisMemberAccess(c.callee, member_name);
+                if (found != hir_mod.none_node_id) return found;
+                for (hir_mod.callArgs(self.hir, node)) |arg| {
+                    const f2 = self.findThisMemberAccess(arg, member_name);
+                    if (f2 != hir_mod.none_node_id) return f2;
+                }
+                return hir_mod.none_node_id;
+            },
+            .binary_op => {
+                const b = hir_mod.binopOf(self.hir, node);
+                const lf = self.findThisMemberAccess(b.lhs, member_name);
+                if (lf != hir_mod.none_node_id) return lf;
+                return self.findThisMemberAccess(b.rhs, member_name);
+            },
+            .assignment => {
+                const a = hir_mod.assignmentOf(self.hir, node);
+                const lf = self.findThisMemberAccess(a.target, member_name);
+                if (lf != hir_mod.none_node_id) return lf;
+                return self.findThisMemberAccess(a.value, member_name);
+            },
+            else => return hir_mod.none_node_id,
         }
     }
 
@@ -20627,11 +20753,21 @@ pub const Checker = struct {
 
         if (!found_applicable and construct_sigs.items.len > 1) {
             try self.report(node, TsCodes.no_overload_matches, "No overload matches this call.");
-        } else {
+        } else if (!self.newCalleeIsAbstractClass(callee_node)) {
+            // Skip arg-arity / arg-type checks (TS2554/TS2345) when
+            // constructing an abstract class — tsc reports only
+            // TS2511 in that case. See `classAbstractInstantiations1`.
             try self.checkArgsAgainstSignature(node, args, arg_types, selected_sig);
         }
 
         return self.interner.signatureReturn(selected_sig) orelse types.Primitive.any;
+    }
+
+    fn newCalleeIsAbstractClass(self: *Checker, callee_node: NodeId) bool {
+        if (callee_node == hir_mod.none_node_id) return false;
+        if (self.hir.kindOf(callee_node) != .identifier) return false;
+        const id = hir_mod.identifierOf(self.hir, callee_node);
+        return self.abstract_classes.contains(id.name);
     }
 
     fn newCalleeAcceptsTypeArguments(self: *Checker, callee_node: NodeId) bool {
@@ -22794,6 +22930,13 @@ pub const Checker = struct {
                 self.reportCannotFindNodeName(node, id.name) catch {};
                 return types.Primitive.any;
             }
+            if (!self.isDeclNameSlot(node) and self.isBunRuntimeGlobalName(id.name)) {
+                if (self.rootHasVarDeclarationNamed(node, id.name) or self.sourceHasVarDeclarationText(id.name)) return types.Primitive.any;
+                if (self.moduleHasRuntimeNamespacePrefix(module, id.name)) return types.Primitive.any;
+                if (self.identifierNamesEnclosingClassExpression(node, id.name)) return types.Primitive.any;
+                self.reportCannotFindBunName(node, id.name) catch {};
+                return types.Primitive.any;
+            }
             if (!self.isDeclNameSlot(node) and !self.isBuiltinName(id.name)) {
                 if (self.rootHasVarDeclarationNamed(node, id.name) or self.sourceHasVarDeclarationText(id.name)) return types.Primitive.any;
                 if (self.moduleHasRuntimeNamespacePrefix(module, id.name)) return types.Primitive.any;
@@ -22938,6 +23081,12 @@ pub const Checker = struct {
         if (self.module == null and !self.isDeclNameSlot(node) and self.isNodeCommonJsGlobalName(id.name)) {
             if (!self.identifierNamesEnclosingClassExpression(node, id.name)) {
                 self.reportCannotFindNodeName(node, id.name) catch {};
+            }
+            return types.Primitive.any;
+        }
+        if (self.module == null and !self.isDeclNameSlot(node) and self.isBunRuntimeGlobalName(id.name)) {
+            if (!self.identifierNamesEnclosingClassExpression(node, id.name)) {
+                self.reportCannotFindBunName(node, id.name) catch {};
             }
             return types.Primitive.any;
         }
@@ -23725,6 +23874,30 @@ pub const Checker = struct {
             .code = TsCodes.cannot_find_node_name,
             .message = msg,
         });
+    }
+
+    /// TS2868 — `Cannot find name 'Bun'. Do you need to install type
+    /// definitions for Bun? Try `npm i --save-dev @types/bun`...`
+    /// Mirrors the upstream Bun typings suggestion (fixtures
+    /// `typingsSuggestionBun1` / `typingsSuggestionBun2`). The
+    /// trigger is identical to the node-typings path — an unbound
+    /// identifier whose name matches a known runtime global.
+    fn reportCannotFindBunName(self: *Checker, node: NodeId, name: hir_mod.StringId) !void {
+        const msg = try std.fmt.allocPrint(
+            self.diag_arena.allocator(),
+            "Cannot find name '{s}'. Do you need to install type definitions for Bun? Try `npm i --save-dev @types/bun` and then add 'bun' to the types field in your tsconfig.",
+            .{self.string_interner.get(name)},
+        );
+        try self.diagnostics.append(self.gpa, .{
+            .node = node,
+            .code = 2868,
+            .message = msg,
+        });
+    }
+
+    fn isBunRuntimeGlobalName(self: *const Checker, name: hir_mod.StringId) bool {
+        const s = self.string_interner.get(name);
+        return std.mem.eql(u8, s, "Bun");
     }
 
     /// Classic two-row Levenshtein edit distance. Computes the
@@ -30674,6 +30847,137 @@ pub const Checker = struct {
                 .message = msg,
             });
         }
+    }
+
+    /// TS2369 — fires when a parameter carries `public`/`private`/
+    /// `protected`/`readonly` (i.e. the parameter-property syntax)
+    /// outside of a constructor implementation. Mirrors the upstream
+    /// check at `checkParameter` in `tsc/checker.ts`. The walker
+    /// inspects every `parameter` node in the HIR; if its enclosing
+    /// function-like is anything other than a constructor with a body,
+    /// the diagnostic fires on the parameter node itself.
+    fn detectInvalidParamProperty(self: *Checker) CheckError!void {
+        const total = self.hir.nodeCount();
+        var i: hir_mod.NodeId = 1;
+        while (i < total) : (i += 1) {
+            if (self.hir.kindOf(i) != .parameter) continue;
+            const pp = hir_mod.parameterOf(self.hir, i);
+            if (!pp.flags.is_parameter_property) continue;
+            // Find the enclosing function-like.
+            var cur = self.hir.parentOf(i);
+            var enclosing: hir_mod.NodeId = hir_mod.none_node_id;
+            while (cur != hir_mod.none_node_id) : (cur = self.hir.parentOf(cur)) {
+                const k = self.hir.kindOf(cur);
+                if (k == .fn_decl or k == .fn_expr or k == .arrow_fn or
+                    k == .fn_type or k == .constructor_type)
+                {
+                    enclosing = cur;
+                    break;
+                }
+            }
+            if (enclosing == hir_mod.none_node_id) {
+                try self.report(i, TsCodes.param_property_outside_ctor, "A parameter property is only allowed in a constructor implementation.");
+                continue;
+            }
+            const enc_kind = self.hir.kindOf(enclosing);
+            if (enc_kind == .arrow_fn or enc_kind == .fn_type or enc_kind == .constructor_type) {
+                try self.report(i, TsCodes.param_property_outside_ctor, "A parameter property is only allowed in a constructor implementation.");
+                continue;
+            }
+            const f = hir_mod.fnDeclOf(self.hir, enclosing);
+            // Must be a constructor with a body (i.e. an
+            // implementation, not an overload signature).
+            if (!f.flags.is_constructor or f.body == hir_mod.none_node_id) {
+                try self.report(i, TsCodes.param_property_outside_ctor, "A parameter property is only allowed in a constructor implementation.");
+            }
+        }
+    }
+
+    /// TS2526 — fires when `this` is used as a type outside a
+    /// non-static class or interface member. Walks every `type_ref`
+    /// node whose name is exactly "this" and applies the upstream
+    /// `getThisType` rule: the closest enclosing this-container's
+    /// parent must be a class-like or interface declaration, and the
+    /// container itself must not be static.
+    fn detectThisInStaticContext(self: *Checker) CheckError!void {
+        const this_id = self.string_interner.intern("this") catch return error.OutOfMemory;
+        const total = self.hir.nodeCount();
+        var i: hir_mod.NodeId = 1;
+        while (i < total) : (i += 1) {
+            if (self.hir.kindOf(i) != .type_ref) continue;
+            const tr = hir_mod.typeRefOf(self.hir, i);
+            if (tr.qualifier_len != 0) continue;
+            if (tr.name != this_id) continue;
+            if (self.thisTypeIsValidHere(i)) continue;
+            try self.report(i, TsCodes.this_type_outside_class, "A 'this' type is available only in a non-static member of a class or interface.");
+        }
+    }
+
+    /// Returns true when a `this` type ref located at `node` lands in
+    /// a context that resolves to a class/interface this-type. The
+    /// walker mirrors upstream's `getThisContainer` semantics:
+    ///   * arrow functions are transparent — they capture the
+    ///     enclosing `this`.
+    ///   * the first non-arrow function-like, class-field, interface
+    ///     member, or index signature encountered is the container.
+    ///   * the container is "valid" only when it sits directly inside
+    ///     a class or interface declaration AND is not declared with
+    ///     the `static` modifier.
+    fn thisTypeIsValidHere(self: *Checker, node: hir_mod.NodeId) bool {
+        var cur = self.hir.parentOf(node);
+        while (cur != hir_mod.none_node_id) : (cur = self.hir.parentOf(cur)) {
+            const k = self.hir.kindOf(cur);
+            switch (k) {
+                .arrow_fn => continue,
+                .fn_decl, .fn_expr => {
+                    const f = hir_mod.fnDeclOf(self.hir, cur);
+                    if (f.flags.is_static) return false;
+                    const parent_kind = self.hir.kindOf(self.hir.parentOf(cur));
+                    return parent_kind == .class_decl or parent_kind == .class_expr;
+                },
+                .fn_type, .constructor_type => {
+                    // A function-type node is treated as a container
+                    // only when it stands alone (e.g. the body of a
+                    // type alias). When it appears as the type of an
+                    // interface member, class field, or property
+                    // signature, the *containing* member is the real
+                    // this-container. Walk past the fn_type so the
+                    // outer member can be classified.
+                    const parent_kind = self.hir.kindOf(self.hir.parentOf(cur));
+                    if (parent_kind == .interface_member or
+                        parent_kind == .object_property or
+                        parent_kind == .index_signature)
+                    {
+                        continue;
+                    }
+                    return false;
+                },
+                .object_property => {
+                    const op = hir_mod.objectPropertyOf(self.hir, cur);
+                    if (op.is_static) return false;
+                    const parent_kind = self.hir.kindOf(self.hir.parentOf(cur));
+                    return parent_kind == .class_decl or parent_kind == .class_expr;
+                },
+                .interface_member => {
+                    const parent_kind = self.hir.kindOf(self.hir.parentOf(cur));
+                    return parent_kind == .interface_decl;
+                },
+                .index_signature => {
+                    const parent_kind = self.hir.kindOf(self.hir.parentOf(cur));
+                    return parent_kind == .class_decl or parent_kind == .class_expr or parent_kind == .interface_decl;
+                },
+                .class_decl, .class_expr, .interface_decl => {
+                    // Reached the class/interface body without a
+                    // member-level container — treat as valid since
+                    // the type ref must be in a nested member position
+                    // we did not recognise.
+                    return true;
+                },
+                .source_file, .namespace_decl, .module_decl, .enum_decl => return false,
+                else => continue,
+            }
+        }
+        return false;
     }
 };
 
@@ -45801,4 +46105,149 @@ test "checker: string-named class fields collide with TS2300" {
         if (d.code == TsCodes.duplicate_identifier) dup_count += 1;
     }
     try T.expect(dup_count >= 1);
+}
+
+// =============================================================================
+// TS2526 — `this` type outside a non-static class/interface member.
+// =============================================================================
+
+test "checker: TS2526 fires on top-level `var x: this`" {
+    const s = try newSetup("var x: this;");
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+    var hits: usize = 0;
+    for (s.checker.diagnostics.items) |d| {
+        if (d.code == TsCodes.this_type_outside_class) hits += 1;
+    }
+    try T.expect(hits >= 1);
+}
+
+test "checker: TS2526 fires on `this` return type of free function" {
+    const s = try newSetup(
+        \\function f(): this {
+        \\  return undefined as any;
+        \\}
+    );
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+    var hits: usize = 0;
+    for (s.checker.diagnostics.items) |d| {
+        if (d.code == TsCodes.this_type_outside_class) hits += 1;
+    }
+    try T.expect(hits >= 1);
+}
+
+test "checker: TS2526 fires on `this` in static class member" {
+    const s = try newSetup(
+        \\class C {
+        \\  static foo(x: this): this {
+        \\    return undefined as any;
+        \\  }
+        \\}
+    );
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+    var hits: usize = 0;
+    for (s.checker.diagnostics.items) |d| {
+        if (d.code == TsCodes.this_type_outside_class) hits += 1;
+    }
+    try T.expect(hits >= 2);
+}
+
+test "checker: TS2526 does NOT fire on `this` return type of class method" {
+    const s = try newSetup(
+        \\class C {
+        \\  foo(): this { return this; }
+        \\}
+    );
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+    for (s.checker.diagnostics.items) |d| {
+        try T.expect(d.code != TsCodes.this_type_outside_class);
+    }
+}
+
+test "checker: TS2526 does NOT fire on `this` in interface methods" {
+    const s = try newSetup(
+        \\interface I {
+        \\  foo(): this;
+        \\  bar(x: this): void;
+        \\}
+    );
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+    for (s.checker.diagnostics.items) |d| {
+        try T.expect(d.code != TsCodes.this_type_outside_class);
+    }
+}
+
+// =============================================================================
+// TS2369 — parameter property outside a constructor implementation.
+// =============================================================================
+
+test "checker: TS2369 fires on parameter property in non-constructor method" {
+    const s = try newSetup(
+        \\class C {
+        \\  foo(public x: number) {}
+        \\}
+    );
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+    var hits: usize = 0;
+    for (s.checker.diagnostics.items) |d| {
+        if (d.code == TsCodes.param_property_outside_ctor) hits += 1;
+    }
+    try T.expect(hits >= 1);
+}
+
+test "checker: TS2369 fires on parameter property in free function" {
+    const s = try newSetup("function f(public x: number) {}");
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+    var hits: usize = 0;
+    for (s.checker.diagnostics.items) |d| {
+        if (d.code == TsCodes.param_property_outside_ctor) hits += 1;
+    }
+    try T.expect(hits >= 1);
+}
+
+test "checker: TS2369 fires on parameter property in setter" {
+    const s = try newSetup(
+        \\class C {
+        \\  set X(public v: number) {}
+        \\}
+    );
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+    var hits: usize = 0;
+    for (s.checker.diagnostics.items) |d| {
+        if (d.code == TsCodes.param_property_outside_ctor) hits += 1;
+    }
+    try T.expect(hits >= 1);
+}
+
+test "checker: TS2369 does NOT fire on parameter property in constructor" {
+    const s = try newSetup(
+        \\class C {
+        \\  constructor(public x: number, private readonly y: string) {}
+        \\}
+    );
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+    for (s.checker.diagnostics.items) |d| {
+        try T.expect(d.code != TsCodes.param_property_outside_ctor);
+    }
+}
+
+test "checker: TS2369 does NOT fire on regular constructor parameter" {
+    const s = try newSetup(
+        \\class C {
+        \\  constructor(x: number) {}
+        \\}
+    );
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+    for (s.checker.diagnostics.items) |d| {
+        try T.expect(d.code != TsCodes.param_property_outside_ctor);
+    }
 }
