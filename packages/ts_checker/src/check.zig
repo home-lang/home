@@ -32727,6 +32727,24 @@ pub const Checker = struct {
                     }
                     break :blk intersection_buf.items;
                 }
+                // Indexed-access types (`T[P]`, `Arr[number]`) — render
+                // as `<object>[<index>]` so TS2322 prose for fixtures
+                // like `nonPrimitiveConstraintOfIndexAccessType.ts`
+                // includes the indexed-access shape rather than
+                // falling through to the generic fallback.
+                if (flags.is_indexed_access) {
+                    const ia_payload_idx = self.interner.pool.payloadOf(t);
+                    if (ia_payload_idx < self.interner.pool.indexed_access_payloads.items.len) {
+                        const ia = self.interner.pool.indexed_access_payloads.items[ia_payload_idx];
+                        const obj_name = (try self.allocSimpleTypeName(ia.object)) orelse break :blk null;
+                        const idx_name = (try self.allocSimpleTypeName(ia.index)) orelse break :blk null;
+                        break :blk try std.fmt.allocPrint(
+                            self.diag_arena.allocator(),
+                            "{s}[{s}]",
+                            .{ obj_name, idx_name },
+                        );
+                    }
+                }
                 if (!flags.is_literal) break :blk null;
                 // Some non-literal types share a flag bit; guard against payload OOB.
                 const payload_idx = self.interner.pool.payloadOf(t);
