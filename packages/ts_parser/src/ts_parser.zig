@@ -3181,7 +3181,7 @@ pub const Parser = struct {
         // keep their module shape without producing a parser diagnostic.
         if (self.match(.equal)) {
             if (self.namespace_depth > 0 and self.ambient_depth == 0) {
-                try self.reportCodeAt(start.span.start, start.line, 1203, "Export assignment cannot be used inside a namespace.");
+                try self.reportCodeAt(start.span.start, start.line, 1063, "An export assignment cannot be used in a namespace.");
             }
             const expr = try self.parseAssignmentExpression();
             try self.consumeStatementTerminator();
@@ -3224,7 +3224,7 @@ pub const Parser = struct {
         // export default <expr>;
         if (self.match(.kw_default)) {
             if (self.namespace_depth > 0 and self.ambient_depth == 0) {
-                try self.reportCodeAt(start.span.start, start.line, 1319, "A default export can only be used in an external module.");
+                try self.reportCodeAt(start.span.start, start.line, 1319, "A default export can only be used in an ECMAScript-style module.");
             }
             // `export default` may be followed by a class/function
             // *declaration* (no statement-terminator) — those have
@@ -6189,7 +6189,7 @@ pub const Parser = struct {
             const t = self.peek();
             switch (t.kind) {
                 .dot => {
-                    if (self.hir.kindOf(node) == .assignment) break;
+                    if (self.hir.kindOf(node) == .assignment and self.parenthesizedNodeStart(node) == null) break;
                     _ = self.advance();
                     if (self.hir.kindOf(node) == .literal_number and
                         self.peek().kind == .dot and
@@ -6221,7 +6221,7 @@ pub const Parser = struct {
             const t = self.peek();
             switch (t.kind) {
                 .dot => {
-                    if (self.hir.kindOf(node) == .assignment) break;
+                    if (self.hir.kindOf(node) == .assignment and self.parenthesizedNodeStart(node) == null) break;
                     _ = self.advance();
                     if (self.hir.kindOf(node) == .literal_number and
                         self.peek().kind == .dot and
@@ -9003,8 +9003,10 @@ test "parser: namespace export assignment forms report diagnostics" {
 
     _ = try s.parser.parseSourceFile();
     try T.expectEqual(@as(usize, 2), s.parser.diagnostics.items.len);
-    try T.expectEqual(@as(u32, 1203), s.parser.diagnostics.items[0].code);
+    try T.expectEqual(@as(u32, 1063), s.parser.diagnostics.items[0].code);
+    try T.expectEqualStrings("An export assignment cannot be used in a namespace.", s.parser.diagnostics.items[0].message);
     try T.expectEqual(@as(u32, 1319), s.parser.diagnostics.items[1].code);
+    try T.expectEqualStrings("A default export can only be used in an ECMAScript-style module.", s.parser.diagnostics.items[1].message);
 }
 
 test "parser: ambient external module permits export assignment" {
@@ -10504,6 +10506,16 @@ test "parser: parenthesized call assignment reports invalid target at paren" {
     try T.expectEqual(@as(usize, 1), s.parser.diagnostics.items.len);
     try T.expectEqual(@as(u32, 2364), s.parser.diagnostics.items[0].code);
     try T.expectEqual(@as(u32, 0), s.parser.diagnostics.items[0].pos);
+}
+
+test "parser: parenthesized assignment permits member access" {
+    var s = try newTestSetup("(o = fn()).done;");
+    defer destroyTestSetup(s);
+
+    const root = try s.parser.parseSourceFile();
+    const stmt = hir_mod.blockStmts(&s.hir, root)[0];
+    try T.expectEqual(hir_mod.NodeKind.member_access, s.hir.kindOf(stmt));
+    try T.expectEqual(@as(usize, 0), s.parser.diagnostics.items.len);
 }
 
 test "parser: expression terminators use upstream expression expected text" {

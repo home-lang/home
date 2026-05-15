@@ -1733,6 +1733,13 @@ pub const Checker = struct {
                     if (ex.decl == hir_mod.none_node_id) continue;
                     const decl_kind = self.hir.kindOf(ex.decl);
                     if (self.isExportAssignmentDecl(s)) {
+                        if (!self.namespaceNameComesFromStringLiteral(node)) {
+                            // `export = expr` is itself illegal in a
+                            // namespace. Upstream reports TS1063 only and
+                            // does not cascade into name-resolution errors
+                            // for the invalid assignment expression.
+                            continue;
+                        }
                         if (decl_kind == .identifier) {
                             const id = hir_mod.identifierOf(self.hir, ex.decl);
                             if (!self.isBuiltinName(id.name) and
@@ -1855,6 +1862,15 @@ pub const Checker = struct {
         if (ns.name == hir_mod.none_node_id or self.hir.kindOf(ns.name) != .identifier) return false;
         const id = hir_mod.identifierOf(self.hir, ns.name);
         return std.mem.eql(u8, self.string_interner.get(id.name), name);
+    }
+
+    fn namespaceNameComesFromStringLiteral(self: *Checker, node: NodeId) bool {
+        const src = self.source orelse return false;
+        if (node == hir_mod.none_node_id or self.hir.kindOf(node) != .namespace_decl) return false;
+        const ns = hir_mod.namespaceOf(self.hir, node);
+        if (ns.name == hir_mod.none_node_id) return false;
+        const sp = self.hir.spanOf(ns.name);
+        return sp.start < src.len and (src[sp.start] == '"' or src[sp.start] == '\'');
     }
 
     fn rootHasTopLevelExternalModuleMarker(self: *Checker, node: NodeId) bool {
@@ -31788,7 +31804,8 @@ pub const Checker = struct {
         // TS2322 ("Type 'number[]' is not assignable to type
         // '[number]'.") rather than the missing-property TS2741.
         // Mirrors `strictTupleLength.ts(18,1)`.
-        if (self.interner.pool.flagsOf(target).is_tuple and
+        const target_tuple_len_opt = self.fixedTupleLength(target);
+        if (target_tuple_len_opt != null and
             source < self.interner.pool.typeCount() and
             self.interner.pool.flagsOf(source).is_object_type)
         {
@@ -31841,8 +31858,10 @@ pub const Checker = struct {
         // For other object types the missing string-named property is
         // double-quoted when the name isn't a JS identifier — see
         // `assignmentCompatWithObjectMembersStringNumericNames.ts`.
-        const target_is_tuple = target < self.interner.pool.typeCount() and
-            self.interner.pool.flagsOf(target).is_tuple;
+        // (Tuples are stored as object types with a numeric `length`
+        // member; `is_tuple` flag is not consistently set, so detect
+        // via `fixedTupleLength`.)
+        const target_is_tuple = target_tuple_len_opt != null;
         const prop_text = if (target_is_tuple)
             self.string_interner.get(first_missing_name)
         else
@@ -38255,6 +38274,19 @@ test "checker: namespace type declarations are checked for heritage errors" {
         if (d.code == TsCodes.interface_incorrectly_extends) found = true;
     }
     try T.expect(found);
+}
+
+test "checker: namespace export assignment does not cascade into unresolved expression" {
+    const s = try newSetup(
+        \\namespace M {
+        \\  export = A;
+        \\}
+    );
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+    for (s.checker.diagnostics.items) |d| {
+        try T.expect(d.code != TsCodes.cannot_find_name);
+    }
 }
 
 test "checker: interface property must match string index signature" {
@@ -50535,4 +50567,3 @@ test "checker: TS2698 fires when spreading T & undefined intersection" {
     }
     try T.expect(found);
 }
-
