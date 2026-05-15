@@ -19293,7 +19293,7 @@ pub const Checker = struct {
                     if (k == .fn_decl or k == .fn_expr or k == .arrow_fn) {
                         const fp = hir_mod.fnDeclOf(self.hir, cur);
                         if (!fp.flags.is_async) {
-                            try self.report(node, TsCodes.await_only_in_async, "'await' expression is only allowed in async functions and at top levels of modules.");
+                            try self.report(node, TsCodes.await_only_in_async, "'await' expressions are only allowed within async functions and at the top levels of modules.");
                         }
                         break;
                     }

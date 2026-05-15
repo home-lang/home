@@ -1113,7 +1113,9 @@ pub const Parser = struct {
                 };
                 if (self.peek().kind == .colon) {
                     const colon = self.advance();
-                    try self.reportCodeAt(colon.span.start, colon.line, 1196, "Catch clause variable type annotation must be 'any' or 'unknown' if specified.");
+                    var type_pos = colon.span.end;
+                    while (type_pos < self.source.len and (self.source[type_pos] == ' ' or self.source[type_pos] == '\t')) : (type_pos += 1) {}
+                    try self.reportCodeAt(type_pos, colon.line, 1196, "Catch clause variable type annotation must be 'any' or 'unknown' if specified.");
                     try self.skipTypeAnnotation();
                 }
                 _ = try self.expect(.close_paren, "')' to close catch param");
@@ -6131,6 +6133,10 @@ pub const Parser = struct {
                 _ = self.advance();
                 const id = try self.internToken(t);
                 return try self.builder.addIdentifier(tokenSpan(t), id);
+            },
+            .invalid => {
+                _ = self.advance();
+                return error.UnexpectedToken;
             },
             else => {
                 if (t.kind.isContextualKeyword()) {

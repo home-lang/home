@@ -165,6 +165,16 @@ pub const Scanner = struct {
         }) catch {};
     }
 
+    fn reportAt(self: *Scanner, gpa: std.mem.Allocator, pos: u32, line: u32, message: []const u8) void {
+        const owned = self.diag_arena.allocator().dupe(u8, message) catch return;
+        self.diagnostics.append(gpa, .{
+            .pos = pos,
+            .line = line,
+            .column = pos - self.line_start,
+            .message = owned,
+        }) catch {};
+    }
+
     fn isAtEnd(self: *const Scanner) bool {
         return self.pos >= self.source.len;
     }
@@ -813,7 +823,7 @@ pub const Scanner = struct {
                 return self.tok(start, .caret, flags, line);
             },
             else => {
-                self.report(gpa, "unexpected character");
+                self.reportAt(gpa, start, line, "Invalid character.");
                 return .{
                     .span = .{ .start = start, .end = self.pos },
                     .kind = .invalid,

@@ -514,16 +514,18 @@ pub fn compileSource(
             c.tokens = .empty;
             errdefer c.tokens.deinit(gpa);
             for (scanner.diagnostics.items) |d| {
-                if (options.is_tsx and std.mem.eql(u8, d.message, "unexpected character") and
+                if (options.is_tsx and scannerDiagnosticIsUnexpectedCharacter(d.message) and
                     isDiagnosticInsideJsxText(source, d.pos))
                 {
                     continue;
                 }
+                const normalized = normalizeScannerDiagnostic(d.message);
                 try c.diagnostics.append(gpa, .{
                     .phase = .lex,
                     .pos = d.pos,
                     .line = d.line,
-                    .message = try gpa.dupe(u8, d.message),
+                    .code = normalized.code,
+                    .message = try gpa.dupe(u8, normalized.message),
                 });
             }
             var bind = binder.Binder.init(gpa, &c.hir, &c.interner, options.file_id) catch return error.OutOfMemory;
@@ -545,16 +547,18 @@ pub fn compileSource(
 
     // Drain scanner diagnostics.
     for (scanner.diagnostics.items) |d| {
-        if (options.is_tsx and std.mem.eql(u8, d.message, "unexpected character") and
+        if (options.is_tsx and scannerDiagnosticIsUnexpectedCharacter(d.message) and
             isDiagnosticInsideJsxText(source, d.pos))
         {
             continue;
         }
+        const normalized = normalizeScannerDiagnostic(d.message);
         try c.diagnostics.append(gpa, .{
             .phase = .lex,
             .pos = d.pos,
             .line = d.line,
-            .message = try gpa.dupe(u8, d.message),
+            .code = normalized.code,
+            .message = try gpa.dupe(u8, normalized.message),
         });
         c.has_errors = true;
     }
@@ -738,6 +742,23 @@ fn isDiagnosticInsideJsxText(source: []const u8, pos: u32) bool {
         }
     }
     return false;
+}
+
+const NormalizedScannerDiagnostic = struct {
+    code: u32 = 0,
+    message: []const u8,
+};
+
+fn scannerDiagnosticIsUnexpectedCharacter(message: []const u8) bool {
+    return std.mem.eql(u8, message, "unexpected character") or
+        std.mem.eql(u8, message, "Invalid character.");
+}
+
+fn normalizeScannerDiagnostic(message: []const u8) NormalizedScannerDiagnostic {
+    if (scannerDiagnosticIsUnexpectedCharacter(message)) {
+        return .{ .code = 1127, .message = "Invalid character." };
+    }
+    return .{ .message = message };
 }
 
 fn sanitizeTsxLexSource(gpa: std.mem.Allocator, source: []const u8) ![]u8 {
