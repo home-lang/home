@@ -6583,10 +6583,7 @@ pub const Parser = struct {
                 },
                 .open_bracket => {
                     _ = self.advance();
-                    const idx = try self.parseExpression();
-                    const close = try self.expect(.close_bracket, "']' to close index access");
-                    const sp: Span = .{ .start = self.hir.spanOf(node).start, .end = close.span.end };
-                    node = try self.builder.addElementAccess(sp, node, idx, false);
+                    node = try self.finishElementAccess(node, false);
                 },
                 else => break,
             }
@@ -6624,10 +6621,7 @@ pub const Parser = struct {
                         node = try self.builder.addOptionalCall(sp, node, args);
                     } else if (self.peek().kind == .open_bracket) {
                         _ = self.advance();
-                        const idx = try self.parseExpression();
-                        const close = try self.expect(.close_bracket, "']' to close index access");
-                        const sp: Span = .{ .start = self.hir.spanOf(node).start, .end = close.span.end };
-                        node = try self.builder.addElementAccess(sp, node, idx, true);
+                        node = try self.finishElementAccess(node, true);
                     } else {
                         const name_tok = try self.expectIdentifierLike();
                         const name_id = try self.internToken(name_tok);
@@ -6666,10 +6660,7 @@ pub const Parser = struct {
                 },
                 .open_bracket => {
                     _ = self.advance();
-                    const idx = try self.parseExpression();
-                    const close = try self.expect(.close_bracket, "']' to close index access");
-                    const sp: Span = .{ .start = self.hir.spanOf(node).start, .end = close.span.end };
-                    node = try self.builder.addElementAccess(sp, node, idx, false);
+                    node = try self.finishElementAccess(node, false);
                 },
                 .bang => {
                     // Postfix `!` — non-null assertion. TS only
@@ -6708,6 +6699,17 @@ pub const Parser = struct {
             }
         }
         return node;
+    }
+
+    fn finishElementAccess(self: *Parser, object: NodeId, optional: bool) ParseError!NodeId {
+        const idx = if (self.peek().kind == .close_bracket) blk: {
+            const close = self.peek();
+            try self.reportCodeAt(close.span.start, close.line, 1011, "An element access expression should take an argument.");
+            break :blk try self.builder.addLiteralNumber(.{ .start = close.span.start, .end = close.span.start }, 0);
+        } else try self.parseExpression();
+        const close = try self.expect(.close_bracket, "']' to close index access");
+        const sp: Span = .{ .start = self.hir.spanOf(object).start, .end = close.span.end };
+        return try self.builder.addElementAccess(sp, object, idx, optional);
     }
 
     /// Parse a substitution template literal expression
@@ -8240,6 +8242,19 @@ test "parser: element access" {
     const root = try s.parser.parseSourceFile();
     const top = hir_mod.blockStmts(&s.hir, root)[0];
     try T.expectEqual(hir_mod.NodeKind.element_access, s.hir.kindOf(top));
+}
+
+test "parser: empty element access reports TS1011 and recovers" {
+    var s = try newTestSetup("new Type[]; a?.[];");
+    defer destroyTestSetup(s);
+    const root = try s.parser.parseSourceFile();
+    const stmts = hir_mod.blockStmts(&s.hir, root);
+    try T.expectEqual(@as(usize, 2), stmts.len);
+    try T.expectEqual(hir_mod.NodeKind.new_expr, s.hir.kindOf(stmts[0]));
+    try T.expectEqual(hir_mod.NodeKind.element_access, s.hir.kindOf(stmts[1]));
+    try T.expectEqual(@as(usize, 2), s.parser.diagnostics.items.len);
+    try T.expectEqual(@as(u32, 1011), s.parser.diagnostics.items[0].code);
+    try T.expectEqual(@as(u32, 1011), s.parser.diagnostics.items[1].code);
 }
 
 test "parser: ternary conditional" {
