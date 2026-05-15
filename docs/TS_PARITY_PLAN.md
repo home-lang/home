@@ -617,6 +617,18 @@ Each landed deliverable updates the table above (status → ✅ done) **and** wr
   
   Still in flight: Agent #31 (5000-end slice), Agent #32 (2000-3000 slice), Agent #34 (missing TS-code diagnostics) — all in worktrees on `check.zig`. Carry-forward for next session: drive remaining 2,111 failing fixtures (35.7% of corpus) toward 100% parity. Top remaining categories: synthesized signature param-name tracking (out-of-scope work item), per-fixture strict-state inference, `setExternalResolver` hook in `ts_checker` to fully wire resolver fixtures.
 
+- **2026-05-15 (early morning) — Phase 6 exact-mode round 8: 5 cooperating agents. Per-fixture strict inference + setExternalResolver + 0-1000 ratchet + missing TS-codes.** Agents #35 (0-1000 slice), #36 (per-fixture strict-state inference), #37 (setExternalResolver hook), #38 (more missing TS-codes) all completed; #31 (5000-end) finished retroactively. Pull-request commits:
+  - **Agent #35** (`5bf5127d`): 0-1000 slice 460 → 476 (+16). Wins: `allocSimpleTypeName` array shape (`T[]` rendering), empty object shape (`{}` rendering), `ambientInitializerIsConstantValue` (TS1039 grammar exception for inline literal types in `.d.ts`), destructuring `'object'`→`'{}'` widening for missing-property prose, `tryReportSinglePropertyMissing` extended to broad `object` source.
+  - **Agent #36** (`63847e1c`): `inferFixtureStrictOn` four-step decision (explicit directive → tsconfig virtual file → baseline-aware fallback → default true). Resolves the over-fire problem from Agent #25's report. Slices each gain +2.
+  - **Agent #37** (`6c8f162c`): `Checker.external_resolver` field + `setExternalResolver`/`setImporterPath` setters. Opaque vtable so `ts_checker` doesn't pull `ts_resolver`. Conservative augment-don't-replace policy. `untypedModuleImport_noImplicitAny` family flips to passing.
+  - **Agent #38** (`543960d3`): TS2370 (rest-param array type), TS2502 (self-referenced typeof), TS2784 (accessor `this` parameter), TS2456 (type alias circular). +14 fixtures across 0-3000.
+  - **Agent #31** retro (`adb17ba9` etc): 5000-end slice 446 → 459 (+13).
+  - **Other**: `5b11b14c feat(ts-bundler): Phase 4.5 §4.5.A.2 — bun_compat Tier 0 shim` — first compile-clean tier of the Bun bundler port now stands on a Home-side compatibility shim.
+  
+  Verification: `zig build test --summary all` is **170/170** build steps and **3,065 / 3,065** tests passing under Pantry Zig `0.17.0-dev.263+0add2dfc4` (was 3,014 before round 8 — +51 unit tests). Smoke 16/16, named category 86/86, baseline-aware 175/175 still clean. Coarse `HOME_TS_CONFORMANCE_FULL=1` still saturated at 5,907 / 5,907. Exact `HOME_TS_CONFORMANCE_FULL=1 HOME_TS_CONFORMANCE_EXACT=1` end-to-end now reports **3,821 / 5,907 (64.7%)** (was 3,747 at session 2 milestone — net +74 fixtures across rounds 7-8).
+  
+  Disk-management note: cleared 6.5GB of completed-agent worktree caches mid-session after disk hit 100% full; rebuilt cleanly. Session 4 (next): drive remaining 2,086 failing fixtures (35.3% of corpus) further down. Top targets: more missing TS-code emissions, more message-format alignments, parser recovery refinements, resolver-side `typesVersions`/`exports` walking.
+
 This is the canonical plan for evolving Home into a **drop-in TypeScript compiler that is measurably faster than tsgo**, while preserving Home's existing identity as a native-code language.
 
 ---
