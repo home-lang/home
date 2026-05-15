@@ -3658,6 +3658,7 @@ test "conformance: opt-in full local TypeScript corpus survey" {
             .syntax_target_es2015 = entry.syntax_target_es2015,
             .report_deprecated_target_es5 = entry.report_deprecated_target_es5,
             .suppress_js_check_diagnostics = entry.suppress_js_check_diagnostics,
+            .raw_source = entry.raw_source,
         });
         switch (r.outcome) {
             .passed => stats.passed += 1,
