@@ -21422,7 +21422,16 @@ pub const Checker = struct {
                 if (obj_t == types.Primitive.object_t and self.strict_flags.no_implicit_any) {
                     const idx_flags = self.interner.pool.flagsOf(idx_t);
                     if (idx_flags.is_string or idx_flags.is_number or idx_flags.is_symbol) {
-                        const msg = try self.diag_arena.allocator().dupe(u8, "Element implicitly has an 'any' type because expression can't be used to index type 'object'.");
+                        // tsc renders the broad `object` primitive
+                        // as `{}` and includes the index expression
+                        // type in the message — see fixture
+                        // `nonPrimitiveIndexingWithForInSupressError`.
+                        const idx_name = (try self.allocSimpleTypeName(idx_t)) orelse "any";
+                        const msg = try std.fmt.allocPrint(
+                            self.diag_arena.allocator(),
+                            "Element implicitly has an 'any' type because expression of type '{s}' can't be used to index type '{{}}'.",
+                            .{idx_name},
+                        );
                         try self.diagnostics.append(self.gpa, .{
                             .node = node,
                             .code = TsCodes.element_implicitly_any,

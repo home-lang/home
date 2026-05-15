@@ -4401,15 +4401,17 @@ pub const Parser = struct {
         const open = try self.expect(.open_bracket, "'[' to start tuple type");
         var elems: std.ArrayListUnmanaged(NodeId) = .empty;
         defer elems.deinit(self.gpa);
+        var saw_optional = false;
         while (self.peek().kind != .close_bracket and self.peek().kind != .eof) {
             // Accept (and ignore for now) leading labelled tuple
             // elements: `[x: number, y?: number]`.
+            var labeled_optional = false;
             if (self.peek().kind == .identifier and
                 (self.peekAt(1).kind == .colon or
                     (self.peekAt(1).kind == .question and self.peekAt(2).kind == .colon)))
             {
                 _ = self.advance();
-                _ = self.match(.question);
+                if (self.match(.question)) labeled_optional = true;
                 _ = self.advance();
             }
             // Rest element prefix `...T` (TS 4.0+ variadic tuples).
@@ -4422,8 +4424,17 @@ pub const Parser = struct {
                 _ = self.advance();
                 _ = self.advance();
             }
+            const elem_start = self.peek().span.start;
+            const elem_line = self.peek().line;
             var e = try self.parseTypeAnnotation();
-            _ = self.match(.question); // optional element marker
+            const trailing_optional = self.match(.question); // optional element marker
+            const this_optional = labeled_optional or trailing_optional;
+            // TS1257 — a required tuple element cannot follow an
+            // optional one. Mirrors `optionalTupleElements1.ts(11,29)`.
+            if (saw_optional and !this_optional and !has_rest) {
+                try self.reportCodeAt(elem_start, elem_line, 1257, "A required element cannot follow an optional element.");
+            }
+            if (this_optional) saw_optional = true;
             if (has_rest) {
                 const end = if (self.cursor > 0) self.tokens[self.cursor - 1].span.end else rest_tok.span.end;
                 e = try self.builder.addRestType(.{ .start = rest_tok.span.start, .end = end }, e);
