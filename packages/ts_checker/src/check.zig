@@ -14131,13 +14131,32 @@ pub const Checker = struct {
         });
     }
 
-    fn typeRefNameAcceptsTypeArgs(self: *Checker, name: hir_mod.StringId, raw: []const u8) bool {
+    fn typeRefNameAcceptsTypeArgsAt(self: *Checker, anchor: NodeId, name: hir_mod.StringId, raw: []const u8) bool {
         if (self.generic_aliases.contains(name)) return true;
+        if (self.visibleTypeDeclarationAcceptsTypeArgsAt(anchor, name)) return true;
         if (std.mem.eql(u8, raw, "Array") or
             std.mem.eql(u8, raw, "ReadonlyArray") or
             std.mem.eql(u8, raw, "Record") or
             std.mem.eql(u8, raw, "ThisType") or
             std.mem.eql(u8, raw, "NoInfer") or
+            std.mem.eql(u8, raw, "Partial") or
+            std.mem.eql(u8, raw, "Required") or
+            std.mem.eql(u8, raw, "Readonly") or
+            std.mem.eql(u8, raw, "Pick") or
+            std.mem.eql(u8, raw, "Omit") or
+            std.mem.eql(u8, raw, "Exclude") or
+            std.mem.eql(u8, raw, "Extract") or
+            std.mem.eql(u8, raw, "Parameters") or
+            std.mem.eql(u8, raw, "ConstructorParameters") or
+            std.mem.eql(u8, raw, "ReturnType") or
+            std.mem.eql(u8, raw, "InstanceType") or
+            std.mem.eql(u8, raw, "ThisParameterType") or
+            std.mem.eql(u8, raw, "OmitThisParameter") or
+            std.mem.eql(u8, raw, "Iterator") or
+            std.mem.eql(u8, raw, "AsyncIterator") or
+            std.mem.eql(u8, raw, "Iterable") or
+            std.mem.eql(u8, raw, "PromiseLike") or
+            std.mem.eql(u8, raw, "TypedPropertyDescriptor") or
             std.mem.eql(u8, raw, "NonNullable") or
             std.mem.eql(u8, raw, "Uppercase") or
             std.mem.eql(u8, raw, "Lowercase") or
@@ -14153,6 +14172,42 @@ pub const Checker = struct {
             return true;
         }
         return false;
+    }
+
+    fn visibleTypeDeclarationAcceptsTypeArgsAt(
+        self: *Checker,
+        anchor: NodeId,
+        name: hir_mod.StringId,
+    ) bool {
+        const anchor_section = self.virtualSectionStartForNode(anchor);
+        var cur: hir_mod.NodeId = self.hir.parentOf(anchor);
+        while (cur != hir_mod.none_node_id) : (cur = self.hir.parentOf(cur)) {
+            const k = self.hir.kindOf(cur);
+            if (k != .block_stmt and k != .namespace_decl) continue;
+            const stmts = if (k == .block_stmt)
+                hir_mod.blockStmts(self.hir, cur)
+            else
+                hir_mod.namespaceBody(self.hir, cur);
+            for (stmts) |raw_decl| {
+                const decl = self.unwrapExportDecl(raw_decl);
+                if (self.virtualSectionStartForNode(decl) != anchor_section) continue;
+                const decl_name = self.declarationName(decl) orelse continue;
+                if (decl_name != name) continue;
+                return self.typeParamNodesOfDecl(decl).len > 0;
+            }
+        }
+        return false;
+    }
+
+    fn unqualifiedTypeRefSourceHasOpenAngle(self: *Checker, node: NodeId, name: hir_mod.StringId) bool {
+        const src = self.source orelse return false;
+        const sp = self.hir.spanOf(node);
+        if (sp.start >= src.len) return false;
+        const raw = self.string_interner.get(name);
+        if (!std.mem.startsWith(u8, src[sp.start..], raw)) return false;
+        var i = sp.start + raw.len;
+        while (i < src.len and (src[i] == ' ' or src[i] == '\t' or src[i] == '\r' or src[i] == '\n')) : (i += 1) {}
+        return i < src.len and src[i] == '<';
     }
 
     fn typeRefNameExists(self: *Checker, name: hir_mod.StringId) bool {
@@ -14551,6 +14606,14 @@ pub const Checker = struct {
                     if (self.lowerBuiltinObjectType(name_str)) |t| return t;
                     if (self.type_names.get(r.name)) |t| return t;
                     if (try self.reportInvalidUppercasePrimitiveTypeRef(type_node, r.name)) return types.Primitive.any;
+                    const lowered = try self.lowerer.lower(type_node);
+                    if (lowered != types.Primitive.unknown or std.mem.eql(u8, name_str, "unknown")) return lowered;
+                    if (self.visibleTypeDeclarationExistsAt(type_node, r.name)) return lowered;
+                    if (self.unqualifiedTypeRefSourceHasOpenAngle(type_node, r.name)) {
+                        try self.reportCannotFindNameOnce(type_node, r.name);
+                        return types.Primitive.any;
+                    }
+                    return lowered;
                 }
                 // `Alias<X, Y>` — instantiate the generic alias by
                 // substituting each declared parameter with the
@@ -14565,7 +14628,7 @@ pub const Checker = struct {
                     // handling is layered in the object-literal checker.
                     {
                         const name_str = self.string_interner.get(r.name);
-                        if (!self.typeRefNameAcceptsTypeArgs(r.name, name_str) and self.typeRefNameExists(r.name)) {
+                        if (!self.typeRefNameAcceptsTypeArgsAt(type_node, r.name, name_str) and self.typeRefNameExists(r.name)) {
                             try self.reportTypeNotGeneric(type_node, r.name);
                         }
                         if (std.mem.eql(u8, name_str, "Generator") or std.mem.eql(u8, name_str, "AsyncGenerator")) {
@@ -14791,6 +14854,16 @@ pub const Checker = struct {
                         try self.copyMemberPredicatesFromReceiver(instantiated, info.body);
                         return instantiated;
                     }
+                    const name_str = self.string_interner.get(r.name);
+                    if (self.typeRefNameExists(r.name) or self.visibleTypeDeclarationExistsAt(type_node, r.name)) {
+                        return self.lowerer.lower(type_node);
+                    }
+                    const args = hir_mod.typeRefArgs(self.hir, type_node);
+                    for (args) |arg| _ = try self.lowererLowerWithTypeParams(arg);
+                    if (!self.typeRefNameAcceptsTypeArgsAt(type_node, r.name, name_str)) {
+                        try self.reportCannotFindNameOnce(type_node, r.name);
+                    }
+                    return types.Primitive.any;
                 }
             },
             .typeof_type => {
@@ -25089,6 +25162,14 @@ pub const Checker = struct {
             if (d.node == node and d.code == TsCodes.cannot_find_name) return;
         }
         try self.reportCannotFindNamePlain(node, name);
+    }
+
+    fn reportCannotFindNameOnce(self: *Checker, node: NodeId, name: hir_mod.StringId) !void {
+        for (self.diagnostics.items) |d| {
+            if (d.node != node) continue;
+            if (d.code == TsCodes.cannot_find_name or d.code == TsCodes.cannot_find_name_did_you_mean) return;
+        }
+        try self.reportCannotFindName(node, name);
     }
 
     fn reportCannotFindNodeName(self: *Checker, node: NodeId, name: hir_mod.StringId) !void {
@@ -48621,6 +48702,27 @@ test "checker: TS2552 case-insensitive suggestion for $ERROR -> Error" {
     try T.expect(saw);
 }
 
+// §6.A 2000-3000 ratchet — unresolved type references must report
+// from generic type annotations too, including malformed return
+// types like `IPromise<` that recover without type arguments.
+test "checker: unresolved generic type refs report TS2552" {
+    const s = try newSetup(
+        \\interface IQService {
+        \\  all(promises: IPromise<any>[]): IPromise<
+        \\}
+    );
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+    var count: usize = 0;
+    for (s.checker.diagnostics.items) |d| {
+        if (d.code != TsCodes.cannot_find_name_did_you_mean) continue;
+        if (std.mem.indexOf(u8, d.message, "'IPromise'") == null) continue;
+        if (std.mem.indexOf(u8, d.message, "'Promise'") == null) continue;
+        count += 1;
+    }
+    try T.expectEqual(@as(usize, 2), count);
+}
+
 // §6.A 2000-3000 ratchet — TS2552 must skip qualified-name lookups
 // (`Z.foo`, `M2.Point`) so we don't suggest the bare leaf as a typo.
 test "checker: TS2552 skips suggestion for qualified-name typo" {
@@ -48656,4 +48758,3 @@ test "checker: import-equals alias inside namespace satisfies qualified type-ref
         try T.expect(d.code != TsCodes.cannot_find_namespace);
     }
 }
-
