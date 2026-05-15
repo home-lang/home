@@ -18198,7 +18198,8 @@ pub const Checker = struct {
                 }
                 if (obj_t == types.Primitive.never and
                     self.hir.kindOf(m.object) == .identifier and
-                    std.mem.eql(u8, self.string_interner.get(m.name), "toString"))
+                    (std.mem.eql(u8, self.string_interner.get(m.name), "toString") or
+                        std.mem.eql(u8, self.string_interner.get(m.name), "isArray")))
                 {
                     try self.reportPropertyDoesNotExistOnType(node, m.name, obj_t);
                     break :blk types.Primitive.any;
@@ -18363,6 +18364,11 @@ pub const Checker = struct {
                         self.memberAccessIsContextualObjectLiteralThis(m.object))
                     {
                         break :blk types.Primitive.any;
+                    }
+                    try self.reportPropertyDoesNotExistOnType(node, m.name, access_obj_t);
+                } else if (self.interner.pool.flagsOf(access_obj_t).is_intersection) {
+                    if (try self.broadObjectPrototypeMember(m.name)) |t| {
+                        break :blk try self.optionalChainResult(t, member_is_optional_chain);
                     }
                     try self.reportPropertyDoesNotExistOnType(node, m.name, access_obj_t);
                 }
@@ -22421,6 +22427,9 @@ pub const Checker = struct {
         if (std.mem.eql(u8, name_str, "process")) {
             return self.processGlobalType() catch types.Primitive.any;
         }
+        if (std.mem.eql(u8, name_str, "window")) {
+            return self.windowGlobalType() catch types.Primitive.any;
+        }
         if (std.mem.eql(u8, name_str, "NaN") or std.mem.eql(u8, name_str, "Infinity")) {
             return types.Primitive.number_t;
         }
@@ -22917,6 +22926,39 @@ pub const Checker = struct {
             .{ .name = self.string_interner.intern("emit") catch return error.OutOfMemory, .type = try self.seedAnySigVariadic(types.Primitive.boolean_t), .is_optional = false, .is_readonly = false, .is_method = true },
         };
         return self.interner.internObjectType(&m) catch return error.OutOfMemory;
+    }
+
+    fn windowGlobalType(self: *Checker) CheckError!TypeId {
+        const any_t = types.Primitive.any;
+        const number_t = types.Primitive.number_t;
+        const sig_any = try self.seedAnySigVariadic(any_t);
+        const screen_members = [_]types.ObjectMember{
+            .{ .name = self.string_interner.intern("width") catch return error.OutOfMemory, .type = number_t, .is_optional = false, .is_readonly = true, .is_method = false },
+            .{ .name = self.string_interner.intern("height") catch return error.OutOfMemory, .type = number_t, .is_optional = false, .is_readonly = true, .is_method = false },
+            .{ .name = self.string_interner.intern("availWidth") catch return error.OutOfMemory, .type = number_t, .is_optional = false, .is_readonly = true, .is_method = false },
+            .{ .name = self.string_interner.intern("availHeight") catch return error.OutOfMemory, .type = number_t, .is_optional = false, .is_readonly = true, .is_method = false },
+        };
+        const screen_t = self.interner.internObjectType(&screen_members) catch return error.OutOfMemory;
+        const window_members = [_]types.ObjectMember{
+            .{ .name = self.string_interner.intern("document") catch return error.OutOfMemory, .type = any_t, .is_optional = false, .is_readonly = false, .is_method = false },
+            .{ .name = self.string_interner.intern("location") catch return error.OutOfMemory, .type = any_t, .is_optional = false, .is_readonly = false, .is_method = false },
+            .{ .name = self.string_interner.intern("navigator") catch return error.OutOfMemory, .type = any_t, .is_optional = false, .is_readonly = false, .is_method = false },
+            .{ .name = self.string_interner.intern("screen") catch return error.OutOfMemory, .type = screen_t, .is_optional = false, .is_readonly = false, .is_method = false },
+            .{ .name = self.string_interner.intern("console") catch return error.OutOfMemory, .type = any_t, .is_optional = false, .is_readonly = false, .is_method = false },
+            .{ .name = self.string_interner.intern("setTimeout") catch return error.OutOfMemory, .type = sig_any, .is_optional = false, .is_readonly = false, .is_method = true },
+            .{ .name = self.string_interner.intern("clearTimeout") catch return error.OutOfMemory, .type = sig_any, .is_optional = false, .is_readonly = false, .is_method = true },
+        };
+        const window_t = self.interner.internObjectType(&window_members) catch return error.OutOfMemory;
+        const global_members = [_]types.ObjectMember{
+            .{ .name = self.string_interner.intern("window") catch return error.OutOfMemory, .type = window_t, .is_optional = false, .is_readonly = true, .is_method = false },
+            .{ .name = self.string_interner.intern("globalThis") catch return error.OutOfMemory, .type = any_t, .is_optional = false, .is_readonly = true, .is_method = false },
+        };
+        const global_this_t = self.interner.internObjectType(&global_members) catch return error.OutOfMemory;
+        const window_name = self.string_interner.intern("Window") catch return error.OutOfMemory;
+        const global_name = self.string_interner.intern("typeof globalThis") catch return error.OutOfMemory;
+        try self.type_names.put(self.gpa, window_name, window_t);
+        try self.type_names.put(self.gpa, global_name, global_this_t);
+        return self.interner.internIntersection(&[_]TypeId{ window_t, global_this_t }) catch return error.OutOfMemory;
     }
 
     fn appendDeclaredInterfaceMembers(
@@ -28402,6 +28444,16 @@ pub const Checker = struct {
                     }
                     break :blk sig_buf.items;
                 }
+                if (flags.is_intersection) {
+                    var intersection_buf: std.ArrayListUnmanaged(u8) = .empty;
+                    const arena = self.diag_arena.allocator();
+                    for (self.interner.intersectionMembers(t), 0..) |member, i| {
+                        const member_name = (try self.allocSimpleTypeName(member)) orelse break :blk null;
+                        if (i > 0) try intersection_buf.appendSlice(arena, " & ");
+                        try intersection_buf.appendSlice(arena, member_name);
+                    }
+                    break :blk intersection_buf.items;
+                }
                 if (!flags.is_literal) break :blk null;
                 // Some non-literal types share a flag bit; guard against payload OOB.
                 const payload_idx = self.interner.pool.payloadOf(t);
@@ -28665,7 +28717,13 @@ pub const Checker = struct {
         prop_name: hir_mod.StringId,
         keep_with_prop: bool,
     ) !TypeId {
-        if (!self.interner.pool.flagsOf(t).is_union) return t;
+        if (!self.interner.pool.flagsOf(t).is_union) {
+            if (self.interner.pool.flagsOf(t).is_object_type) {
+                const has = self.interner.objectMember(t, prop_name) != null;
+                if (has and !keep_with_prop) return types.Primitive.never;
+            }
+            return t;
+        }
         const members = self.interner.unionMembers(t);
         var kept: std.ArrayListUnmanaged(TypeId) = .empty;
         defer kept.deinit(self.gpa);
@@ -40506,6 +40564,24 @@ test "checker: lib — Object.prototype helpers and Array.isArray are reachable"
     }
 }
 
+test "checker: in-operator false branch narrows known static member object to never" {
+    const b = try newBoundSetup(
+        \\let f;
+        \\f = "isArray" in Array ? function (value: any) { return false; } : Array.isArray;
+    );
+    defer destroyBoundSetup(b);
+    try b.base.checker.checkSourceFile(b.base.root);
+    var found = false;
+    for (b.base.checker.diagnostics.items) |d| {
+        if (d.code == TsCodes.property_does_not_exist and
+            std.mem.indexOf(u8, d.message, "Property 'isArray' does not exist on type 'never'.") != null)
+        {
+            found = true;
+        }
+    }
+    try T.expect(found);
+}
+
 test "checker: lib — `Math.PI` types as number" {
     const b = try newBoundSetup("Math.PI;");
     defer destroyBoundSetup(b);
@@ -44671,6 +44747,25 @@ test "checker: seeded process global exposes argv/env/exit/cwd" {
         try T.expect(d.code != TsCodes.cannot_find_name);
         try T.expect(d.code != TsCodes.property_does_not_exist);
     }
+}
+
+test "checker: seeded window global reports Window/globalThis receiver" {
+    const b = try newBoundSetup(
+        \\if (typeof window !== "undefined") {
+        \\  window.MobileDetect = {};
+        \\}
+    );
+    defer destroyBoundSetup(b);
+    try b.base.checker.checkSourceFile(b.base.root);
+    var found = false;
+    for (b.base.checker.diagnostics.items) |d| {
+        if (d.code == TsCodes.property_does_not_exist and
+            std.mem.indexOf(u8, d.message, "Window & typeof globalThis") != null)
+        {
+            found = true;
+        }
+    }
+    try T.expect(found);
 }
 
 test "checker: seeded Proxy global exposes revocable" {
