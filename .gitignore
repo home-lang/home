@@ -80,3 +80,4 @@ pantry
 /test-summary.log
 /test-count.txt
 /.claude/worktrees
+.claude/scheduled_tasks.lock
