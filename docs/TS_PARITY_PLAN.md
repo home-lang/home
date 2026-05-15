@@ -549,6 +549,28 @@ Each landed deliverable updates the table above (status → ✅ done) **and** wr
   
   Aggregate verification: full `zig build test --summary all` is **168/168** build steps and **2907/2907** tests passing (was 2887 — +20 this batch). `-Dfilter=ts_checker` 962/962. Smoke 16/16, named category 86/86, baseline-aware 175/175 still clean. Coarse `HOME_TS_CONFORMANCE_FULL=1 LIMIT=500` 500/500. Exact `HOME_TS_CONFORMANCE_FULL=1 HOME_TS_CONFORMANCE_EXACT=1 LIMIT=500` **200/500** (was 193 — +7 fixtures flipped to passing). Open follow-ups for next batch: a fourth concurrent agent (near-pass triage / opportunistic fixes) is still running with a renderSignatureForDiagnostic refactor in stash; several fixtures still blocked by parser-side gaps (`callSignaturesWithDuplicateParameters` needs the parameter name in `Duplicate identifier.` parser emits at `ts_parser.zig:1350+`); class-field duplicate-name detection (`stringNamedPropertyDuplicates` / `numericNamedPropertyDuplicates`) — the checker has no class-field duplicate detection at all yet; `Map`/`Set`/`WeakMap`/`WeakSet` lib-seeding waits on generic-class instantiation rework so `new Map([...])` keeps working under the seeded shape.
 
+- **2026-05-14 (very late evening, milestone) — Phase 6 first full-corpus exact-mode survey: 3 476 / 5 907 (58.8%) passing.** First end-to-end measurement of the entire local TypeScript corpus in `.errors.txt` byte-comparison mode (12 contiguous 500-case slices via `HOME_TS_CONFORMANCE_FULL=1 HOME_TS_CONFORMANCE_EXACT=1 HOME_TS_CONFORMANCE_START=N HOME_TS_CONFORMANCE_LIMIT=500`):
+  
+  | Slice | Passing | Rate |
+  |---|---|---|
+  | 0–500 | 203 | 40.6% |
+  | 500–1000 | 249 | 49.8% |
+  | 1000–1500 | 338 | 67.6% |
+  | 1500–2000 | 383 | 76.6% |
+  | 2000–2500 | 325 | 65.0% |
+  | 2500–3000 | 301 | 60.2% |
+  | 3000–3500 | 359 | 71.8% |
+  | 3500–4000 | 305 | 61.0% |
+  | 4000–4500 | 287 | 57.4% |
+  | 4500–5000 | 280 | 56.0% |
+  | 5000–5500 | 255 | 51.0% |
+  | 5500–5907 | 191 / 407 | 46.9% |
+  | **TOTAL** | **3 476 / 5 907** | **58.8%** |
+  
+  Pattern: the leading slice (0–500) is the LOWEST pass rate at 40.6% because it's heavily weighted toward resolver / module-system fixtures (bundler*, untypedModuleImport_*, packageJsonMain_*, conditionalExportsResolutionFallback*, declarationFileForHtmlImport, importFromDot, ...) which our checker doesn't fully support yet. The 1500–2000 slice is the HIGHEST at 76.6% — predominantly straightforward type-checker / declaration-merging cases. The tail 5500–5907 dips to 46.9% (likely complex JSDoc / control-flow / async-await fixtures). Next-batch priority is the resolver gap: every untypedModuleImport / bundler / packageJson fixture in 0–500 needs a real module resolver path. Coarse-mode `HOME_TS_CONFORMANCE_FULL=1` (no EXACT) stays saturated at 5 907 / 5 907.
+  
+  Verification note: this measurement was taken with 4 concurrent agents (#18 class-field-dup, #19 500-1000 ratchet, #20 multi-file harness positions, #21 source-param-name signature rendering) actively writing to `packages/ts_checker/src/check.zig` and `packages/ts_conformance/src/ts_conformance.zig` with un-committed WIP. Numbers may shift as those agents land. Umbrella tests confirmed at **2 915 / 2 915** with the WIP applied; commits in flight will be journaled as they land.
+
 This is the canonical plan for evolving Home into a **drop-in TypeScript compiler that is measurably faster than tsgo**, while preserving Home's existing identity as a native-code language.
 
 ---
