@@ -89,7 +89,9 @@ pub const Parser = struct {
     strict_mode: bool,
     target_es2015_or_later: bool,
     suppress_strict_param_names: bool,
+    allow_parameter_list_arrow_recovery: bool,
     parameter_list_recovered_body_as_missing_close: bool,
+    parameter_list_recovered_arrow_missing_close: bool,
     top_level_external_module_indicator: bool,
     top_level_export_indicator: bool,
     in_top_level_module_binding_decl: bool,
@@ -141,7 +143,9 @@ pub const Parser = struct {
             .strict_mode = false,
             .target_es2015_or_later = false,
             .suppress_strict_param_names = false,
+            .allow_parameter_list_arrow_recovery = false,
             .parameter_list_recovered_body_as_missing_close = false,
+            .parameter_list_recovered_arrow_missing_close = false,
             .top_level_external_module_indicator = false,
             .top_level_export_indicator = false,
             .in_top_level_module_binding_decl = false,
@@ -1680,6 +1684,13 @@ pub const Parser = struct {
                         missing_close_reported = true;
                         self.parameter_list_recovered_body_as_missing_close = true;
                     }
+                    break;
+                }
+                if (self.allow_parameter_list_arrow_recovery and self.peek().kind == .arrow) {
+                    const arrow_tok = self.peek();
+                    try self.reportCodeAt(arrow_tok.span.start, arrow_tok.line, 1005, "',' expected.");
+                    missing_close_reported = true;
+                    self.parameter_list_recovered_arrow_missing_close = true;
                     break;
                 }
                 if (!self.match(.comma)) break;
@@ -4005,6 +4016,10 @@ pub const Parser = struct {
                     _ = self.advance();
                     ref_name_end = self.advance().span.end;
                 }
+                if (self.peek().kind == .dot) {
+                    const dot = self.advance();
+                    try self.reportCodeAt(dot.span.end, dot.line, 1003, "Identifier expected.");
+                }
                 var ref_end = ref_name_end;
                 if (self.peek().kind == .less_than) {
                     const args = try self.parseTypeArgumentList();
@@ -5576,6 +5591,7 @@ pub const Parser = struct {
         // committing.
         if (self.peek().kind == .open_paren) {
             if (try self.tryParseArrowAfterParen(start_tok, is_async, &.{})) |arrow| return arrow;
+            if (try self.tryParseArrowWithMissingCloseParen(start_tok, is_async, &.{})) |arrow| return arrow;
         }
         // Not an arrow — restore and fall through.
         self.cursor = checkpoint;
@@ -5669,6 +5685,62 @@ pub const Parser = struct {
         _ = type_params;
         _ = before_paren;
         return try self.builder.addFnDecl(sp, hir_mod.none_node_id, params, return_type, body, flags);
+    }
+
+    fn tryParseArrowWithMissingCloseParen(
+        self: *Parser,
+        start_tok: Token,
+        is_async: bool,
+        type_params: []const NodeId,
+    ) ParseError!?NodeId {
+        const checkpoint = self.cursor;
+        const diag_checkpoint = self.diagnostics.items.len;
+        if (self.findTopLevelArrowBeforeCloseParen(self.cursor) == null) return null;
+
+        const saved_allow = self.allow_parameter_list_arrow_recovery;
+        const saved_recovered = self.parameter_list_recovered_arrow_missing_close;
+        self.allow_parameter_list_arrow_recovery = true;
+        self.parameter_list_recovered_arrow_missing_close = false;
+        defer {
+            self.allow_parameter_list_arrow_recovery = saved_allow;
+            self.parameter_list_recovered_arrow_missing_close = saved_recovered;
+        }
+
+        const params = self.parseParameterList() catch |err| {
+            self.cursor = checkpoint;
+            self.diagnostics.items.len = diag_checkpoint;
+            switch (err) {
+                error.UnexpectedToken, error.UnexpectedEof, error.InvalidLeftHandSide => return null,
+                else => return err,
+            }
+        };
+        defer self.gpa.free(params);
+        if (!self.parameter_list_recovered_arrow_missing_close) {
+            self.cursor = checkpoint;
+            self.diagnostics.items.len = diag_checkpoint;
+            return null;
+        }
+        _ = try self.expect(.arrow, "'=>' in arrow function");
+        self.function_depth += 1;
+        const prev_generator_depth = self.generator_depth;
+        self.generator_depth = 0;
+        defer {
+            self.generator_depth = prev_generator_depth;
+            self.function_depth -= 1;
+        }
+        const body = try self.parseArrowBody();
+        const close = self.peek();
+        try self.reportCodeAt(close.span.start, close.line, 1005, "')' expected.");
+        const sp: Span = .{ .start = start_tok.span.start, .end = self.hir.spanOf(body).end };
+        _ = type_params;
+        return try self.builder.addFnDecl(
+            sp,
+            hir_mod.none_node_id,
+            params,
+            hir_mod.none_node_id,
+            body,
+            .{ .is_arrow = true, .is_async = is_async },
+        );
     }
 
     /// Speculative: cursor points at `<` after a callee. Walk
@@ -5906,6 +5978,30 @@ pub const Parser = struct {
             }
         }
         return null;
+    }
+
+    fn findTopLevelArrowBeforeCloseParen(self: *Parser, start: u32) ?u32 {
+        if (start >= self.tokens.len or self.tokens[start].kind != .open_paren) return null;
+        var depth: i32 = 1;
+        var arrow_index: ?u32 = null;
+        var i: u32 = start + 1;
+        while (i < self.tokens.len) : (i += 1) {
+            const tk = self.tokens[i].kind;
+            if (depth == 1 and tk == .arrow and arrow_index == null) arrow_index = i;
+            switch (tk) {
+                .open_paren, .open_bracket, .open_brace, .less_than => depth += 1,
+                .close_paren => {
+                    depth -= 1;
+                    if (depth == 0) return null;
+                },
+                .close_bracket, .close_brace, .greater_than => {
+                    if (depth > 1) depth -= 1;
+                },
+                .eof => return arrow_index,
+                else => {},
+            }
+        }
+        return arrow_index;
     }
 
     /// From `idx` (right after `:`), scan past a type annotation and
