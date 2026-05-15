@@ -25,6 +25,8 @@
 const std = @import("std");
 const ts_driver = @import("ts_driver");
 const ts_diagnostics = @import("ts_diagnostics");
+const ts_program = @import("ts_program");
+const ts_resolver = @import("ts_resolver");
 
 pub const patience = @import("patience.zig");
 test {
@@ -269,6 +271,281 @@ pub fn run(gpa: std.mem.Allocator, c: Case) !Result {
 
     const detail = try renderUnifiedDiff(gpa, expected_trimmed, actual_trimmed);
     return .{
+        .name = c.name,
+        .outcome = .failed,
+        .detail = detail,
+        .expected_diag_count = expected_count,
+        .actual_diag_count = actual_count,
+    };
+}
+
+// =============================================================================
+// Program-graph compile path
+// =============================================================================
+
+/// One virtual file extracted from a multi-file fixture's raw source.
+/// `path` and `source` borrow from the raw bytes (no allocation).
+const VirtualFile = struct {
+    path: []const u8,
+    source: []const u8,
+    /// Post-marker `// @key:` directive lines + trailing blanks the
+    /// upstream runner strips from per-file line numbers (matching
+    /// `VirtualFileMarker.extra_strip` semantics).
+    extra_strip: u32,
+};
+
+/// Predicate: does this case benefit from routing through `ts_program`?
+///
+/// Today the win is concentrated on resolver-driven fixtures where
+/// the legacy `compileSource` path can't see `package.json` `main` /
+/// `exports`, `node_modules` JS files, or other non-code virtual
+/// sections that the strip drops. Routing single-file or pure
+/// multi-`.ts` fixtures has no upside (the checker still re-implements
+/// resolution via virtual-file scanning) and a measurable downside
+/// (per-file module isolation breaks fixtures that depend on
+/// concatenation-induced symbol leakage). So gate strictly on the
+/// presence of non-code virtual sections in the raw source.
+fn shouldRouteThroughProgram(c: Case) bool {
+    if (c.raw_source.len == 0) return false;
+    return rawSourceHasNonCodeMarker(c.raw_source);
+}
+
+fn rawSourceHasNonCodeMarker(raw: []const u8) bool {
+    var lines = std.mem.splitScalar(u8, raw, '\n');
+    while (lines.next()) |line_with_cr| {
+        const line = std.mem.trim(u8, line_with_cr, "\r");
+        const path = virtualFilename(line) orelse continue;
+        if (!isCodeVirtualFile(path)) return true;
+        if (isNodeModulesVirtualPath(path) and isJsLikeVirtualFile(path)) return true;
+    }
+    return false;
+}
+
+/// Split the raw multi-file source into virtual file entries — one
+/// per `// @filename:` marker. The implicit "default" section (any
+/// content before the first marker) is skipped because upstream
+/// fixtures put their directive comments there, not real code.
+fn splitVirtualFiles(
+    gpa: std.mem.Allocator,
+    raw: []const u8,
+) !std.ArrayListUnmanaged(VirtualFile) {
+    var out: std.ArrayListUnmanaged(VirtualFile) = .empty;
+    errdefer out.deinit(gpa);
+
+    var markers = try buildVirtualFileIndex(gpa, raw);
+    defer markers.deinit(gpa);
+
+    for (markers.items, 0..) |m, idx| {
+        // Section content starts on the line AFTER the marker line.
+        const marker_line_end = lineEndOffset(raw, m.byte_offset);
+        const content_start = if (marker_line_end < raw.len) marker_line_end + 1 else raw.len;
+
+        // Section ends at the start of the next marker (its byte_offset),
+        // or end-of-file for the last marker.
+        const section_end = if (idx + 1 < markers.items.len)
+            @as(usize, markers.items[idx + 1].byte_offset)
+        else
+            raw.len;
+
+        if (content_start >= section_end) continue;
+        const section_source = raw[content_start..section_end];
+        try out.append(gpa, .{
+            .path = m.path,
+            .source = section_source,
+            .extra_strip = m.extra_strip,
+        });
+    }
+    return out;
+}
+
+fn lineEndOffset(raw: []const u8, start: usize) usize {
+    var i = start;
+    while (i < raw.len and raw[i] != '\n') : (i += 1) {}
+    return i;
+}
+
+/// Canonicalise a virtual-file path to the form the resolver's VFS
+/// expects: leading slash, no `./`. Upstream fixtures mix both
+/// `/node_modules/foo/index.js` and `node_modules/foo/index.js`
+/// styles; the resolver always opens absolute paths.
+fn canonicalVfsPath(gpa: std.mem.Allocator, path: []const u8) ![]u8 {
+    var p = path;
+    if (std.mem.startsWith(u8, p, "./")) p = p[2..];
+    if (std.mem.startsWith(u8, p, "/")) {
+        return gpa.dupe(u8, p);
+    }
+    return std.fmt.allocPrint(gpa, "/{s}", .{p});
+}
+
+/// Pick a resolver `Strategy` from the fixture's `// @moduleResolution:`
+/// directive. Multi-value directives (`node16,nodenext,bundler`) pick
+/// the first valid one — matching what the upstream runner does for
+/// the unspecified-variant baseline.
+fn resolverStrategyFromCase(c: Case) ts_resolver.Strategy {
+    const raw = directiveValue(c.raw_source, "moduleResolution") orelse
+        directiveValue(c.raw_source, "ModuleResolution") orelse
+        return .bundler;
+    var it = std.mem.splitScalar(u8, raw, ',');
+    while (it.next()) |part| {
+        const trimmed = std.mem.trim(u8, part, " \t\r");
+        if (std.ascii.eqlIgnoreCase(trimmed, "classic")) return .classic;
+        if (std.ascii.eqlIgnoreCase(trimmed, "node") or
+            std.ascii.eqlIgnoreCase(trimmed, "node10")) return .node10;
+        if (std.ascii.eqlIgnoreCase(trimmed, "node16")) return .node16;
+        if (std.ascii.eqlIgnoreCase(trimmed, "nodenext")) return .nodenext;
+        if (std.ascii.eqlIgnoreCase(trimmed, "bundler")) return .bundler;
+    }
+    return .bundler;
+}
+
+/// Routed compile path. Returns `null` to fall back to the legacy
+/// path when something prevents the program-graph route (no virtual
+/// files extracted, etc.).
+fn runProgram(gpa: std.mem.Allocator, c: Case) !?Result {
+    var virtual_files = try splitVirtualFiles(gpa, c.raw_source);
+    defer virtual_files.deinit(gpa);
+    if (virtual_files.items.len == 0) return null;
+
+    // Build a `VirtualFs` populated with EVERY virtual file (including
+    // package.json, tsconfig.json, declaration JS, etc.) so the
+    // resolver has the full filesystem the upstream fixture describes.
+    // The VFS dupes its keys+values internally so we don't need to
+    // keep `c.raw_source` alive past this function.
+    var vfs = ts_resolver.VirtualFs.init(gpa);
+    defer vfs.deinit();
+    for (virtual_files.items) |f| {
+        const canon = try canonicalVfsPath(gpa, f.path);
+        defer gpa.free(canon);
+        try vfs.addFile(canon, f.source);
+    }
+
+    var resolver = ts_resolver.Resolver.init(gpa, vfs.fs(), .{
+        .strategy = resolverStrategyFromCase(c),
+    });
+    defer resolver.deinit();
+
+    var program = ts_program.Program.init(gpa, &resolver);
+    defer program.deinit();
+
+    // Add only TypeScript code-bearing virtual files to the program.
+    // `node_modules` JS files live in the VFS for the resolver to
+    // consult; they're untyped resolution targets, not files we want
+    // the checker to reason about.
+    var program_files: std.ArrayListUnmanaged(struct {
+        path: []const u8,
+        extra_strip: u32,
+    }) = .empty;
+    defer for (program_files.items) |pf| gpa.free(pf.path);
+    defer program_files.deinit(gpa);
+    for (virtual_files.items) |f| {
+        if (!isCodeVirtualFile(f.path)) continue;
+        if (isNodeModulesVirtualPath(f.path)) continue;
+        const canon = try canonicalVfsPath(gpa, f.path);
+        _ = program.add(canon, f.source) catch |err| switch (err) {
+            error.OutOfMemory => {
+                gpa.free(canon);
+                return error.OutOfMemory;
+            },
+            else => {
+                gpa.free(canon);
+                return null;
+            },
+        };
+        try program_files.append(gpa, .{
+            .path = canon,
+            .extra_strip = f.extra_strip,
+        });
+    }
+
+    if (program_files.items.len == 0) return null;
+
+    // Compile every code file in the program. The driver's
+    // `compileAll` runs each file through the same lex/parse/bind/
+    // check/emit pipeline as `compileSource` AND then walks
+    // cross-file imports through `ts_resolver`, populating each
+    // `File.imports` adjacency list. Once the checker grows a hook
+    // for "trust the program's resolution instead of re-deriving
+    // it", that's where the upstream-modular fixtures will flip.
+    program.compileAll(.{
+        .is_tsx = c.is_tsx,
+        .is_declaration_file = c.is_declaration_file,
+        .strict_flags = c.strict_flags,
+        .always_strict = c.always_strict,
+        .syntax_target_es2015 = c.syntax_target_es2015,
+        .report_deprecated_target_es5 = c.report_deprecated_target_es5,
+        .suppress_js_check_diagnostics = c.suppress_js_check_diagnostics,
+        .continue_on_error = true,
+        .no_emit = true,
+    }) catch |err| switch (err) {
+        error.OutOfMemory => return error.OutOfMemory,
+        else => return null,
+    };
+
+    // Format diagnostics in tsc's default `(file, line, col): code: msg`
+    // shape — same renderer as the legacy path so EXACT-mode baseline
+    // comparison stays apples-to-apples.
+    const exact_mode = c.expected_errors.len > 0;
+    var actual: std.ArrayListUnmanaged(u8) = .empty;
+    defer actual.deinit(gpa);
+    var actual_count: u32 = 0;
+    var seen_keys: std.StringHashMapUnmanaged(void) = .empty;
+    defer {
+        var it = seen_keys.iterator();
+        while (it.next()) |entry| gpa.free(entry.key_ptr.*);
+        seen_keys.deinit(gpa);
+    }
+    for (program_files.items, 0..) |pf, i| {
+        const file = program.fileById(@intCast(i));
+        const compilation = file.compilation orelse continue;
+        for (compilation.diagnostics.items) |d| {
+            const pos = ts_diagnostics.positionToLineCol(file.source, d.pos);
+            const diag_line: u32 = if (pos.line > pf.extra_strip)
+                pos.line - pf.extra_strip
+            else
+                1;
+            const code = if (d.code != 0) d.code else mapPhaseToCode(d.phase);
+            const prefix: ts_diagnostics.Diagnostic.CodePrefix = switch (d.code_prefix) {
+                .TS => .TS,
+                .HM => .HM,
+            };
+            const fdiag: ts_diagnostics.Diagnostic = .{
+                .file = if (d.is_global) "" else pf.path,
+                .line = diag_line,
+                .col = pos.col,
+                .code = code,
+                .code_prefix = prefix,
+                .severity = .err,
+                .message = d.message,
+                .span_len = 0,
+            };
+            const formatted = try ts_diagnostics.formatDefault(gpa, fdiag);
+            defer gpa.free(formatted);
+            if (exact_mode) {
+                const gop = try seen_keys.getOrPut(gpa, formatted);
+                if (gop.found_existing) continue;
+                gop.key_ptr.* = try gpa.dupe(u8, formatted);
+            }
+            try actual.appendSlice(gpa, formatted);
+            try actual.append(gpa, '\n');
+            actual_count += 1;
+        }
+    }
+
+    const actual_trimmed = trimRightNewlines(actual.items);
+    const expected_trimmed = trimRightNewlines(c.expected_errors);
+    const expected_count = countLines(expected_trimmed);
+
+    if (std.mem.eql(u8, actual_trimmed, expected_trimmed)) {
+        return Result{
+            .name = c.name,
+            .outcome = .passed,
+            .expected_diag_count = expected_count,
+            .actual_diag_count = actual_count,
+        };
+    }
+
+    const detail = try renderUnifiedDiff(gpa, expected_trimmed, actual_trimmed);
+    return Result{
         .name = c.name,
         .outcome = .failed,
         .detail = detail,

@@ -288,6 +288,12 @@ pub fn build(b: *std.Build) void {
     const ts_conformance_pkg = createPackage(b, "packages/ts_conformance/src/ts_conformance.zig", target, optimize, zig_test_framework);
     ts_conformance_pkg.addImport("ts_driver", ts_driver_pkg);
     ts_conformance_pkg.addImport("ts_diagnostics", ts_diagnostics_pkg);
+    // Multi-file fixtures route through the program graph + resolver
+    // so module lookups flow through the same `ts_resolver` path a
+    // real `home tsc` invocation would take. Single-file fixtures
+    // fall through to the legacy `ts_driver.compileSource` route.
+    ts_conformance_pkg.addImport("ts_program", ts_program_pkg);
+    ts_conformance_pkg.addImport("ts_resolver", ts_resolver_pkg);
 
     // TS-parity Phase 5 §5.7 — watch mode foundation.
     const ts_watch_pkg = createPackage(b, "packages/ts_watch/src/ts_watch.zig", target, optimize, zig_test_framework);
