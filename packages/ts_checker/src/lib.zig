@@ -242,7 +242,7 @@ pub fn arrayProto(
 }
 
 /// Build (or fetch from cache) the `Object` global — the namespace
-/// shape carrying `keys / values / entries / assign` plus
+/// shape carrying `keys / values / entries / assign / create` plus
 /// `Object.prototype` for common borrowed-method patterns such as
 /// `Object.prototype.hasOwnProperty.call(...)`.
 pub fn objectGlobal(
@@ -275,6 +275,8 @@ pub fn objectGlobal(
     const sig_assign = try ti.internIntersection(&[_]TypeId{ sig_assign2, sig_assign3, sig_assign4 });
     // `Object.defineProperty(o, key, descriptor): any`.
     const sig_define_property = try ti.internSignature(&[_]TypeId{ any_t, any_t, any_t }, any_t, false);
+    // `Object.create(o): any`.
+    const sig_create = try ti.internSignature(&[_]TypeId{any_t}, any_t, false);
     const sig_has_own_property = try ti.internSignature(&[_]TypeId{any_t}, boolean_t, false);
     const sig_to_string = try ti.internSignature(&[_]TypeId{}, string_t, false);
     const prototype_members = [_]types.ObjectMember{
@@ -289,6 +291,7 @@ pub fn objectGlobal(
         .{ .name = try sint.intern("values"), .type = sig_values, .is_optional = false, .is_readonly = false, .is_method = true },
         .{ .name = try sint.intern("entries"), .type = sig_entries, .is_optional = false, .is_readonly = false, .is_method = true },
         .{ .name = try sint.intern("assign"), .type = sig_assign, .is_optional = false, .is_readonly = false, .is_method = true },
+        .{ .name = try sint.intern("create"), .type = sig_create, .is_optional = false, .is_readonly = false, .is_method = true },
         .{ .name = try sint.intern("defineProperty"), .type = sig_define_property, .is_optional = false, .is_readonly = false, .is_method = true },
     };
     cache.object_global = try ti.internObjectType(&m);

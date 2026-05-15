@@ -7803,6 +7803,7 @@ fn isExpressionIdentifierToken(kind: TokenKind) bool {
         .kw_namespace,
         .kw_interface,
         .kw_declare,
+        .kw_constructor,
         .kw_of,
         .kw_type,
         => true,
@@ -11952,4 +11953,19 @@ test "parser: unterminated class body at eof reports TS1005 close brace" {
         try T.expect(d.code != 1109);
     }
     try T.expect(found);
+}
+
+test "parser: constructor is an expression identifier outside class member grammar" {
+    var s = try newTestSetup(
+        \\function f(constructor) {
+        \\  Object.defineProperty(constructor.prototype, "constructor", { value: constructor });
+        \\}
+    );
+    defer destroyTestSetup(s);
+
+    _ = try s.parser.parseSourceFile();
+    for (s.parser.diagnostics.items) |d| {
+        try T.expect(d.code != 1109);
+        try T.expect(d.code != 1005);
+    }
 }

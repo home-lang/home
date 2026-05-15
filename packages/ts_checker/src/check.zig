@@ -46061,6 +46061,17 @@ test "checker: lib — Object.keys is reachable as a member of `Object`" {
     }
 }
 
+test "checker: lib — Object.create is reachable as a member of `Object`" {
+    const b = try newBoundSetup("Object.create({});");
+    defer destroyBoundSetup(b);
+    try b.base.checker.checkSourceFile(b.base.root);
+    for (b.base.checker.diagnostics.items) |d| {
+        try T.expect(d.code != TsCodes.cannot_find_name);
+        try T.expect(d.code != TsCodes.property_does_not_exist);
+        try T.expect(d.code != TsCodes.not_callable);
+    }
+}
+
 test "checker: lib — Object.assign accepts multiple sources" {
     const b = try newBoundSetup("Object.assign({}, { a: 1 }, { b: 2 });");
     defer destroyBoundSetup(b);
