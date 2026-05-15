@@ -69,6 +69,7 @@ pub const TsCodes = struct {
     /// in-scope name (Levenshtein distance ≤ threshold). Same as
     /// 2304 plus a `Did you mean 'X'?` suggestion.
     pub const cannot_find_name_did_you_mean: u32 = 2552;
+    pub const shorthand_property_no_value: u32 = 18004;
     pub const type_not_generic: u32 = 2315;
     pub const cannot_find_module: u32 = 2307;
     pub const arbitrary_extension_requires_option: u32 = 6263;
@@ -16411,6 +16412,78 @@ pub const Checker = struct {
         return true;
     }
 
+    fn tupleAnnotationSourceNode(self: *Checker, type_node: NodeId) ?NodeId {
+        if (type_node == hir_mod.none_node_id) return null;
+        switch (self.hir.kindOf(type_node)) {
+            .tuple_type => return type_node,
+            .type_ref => {
+                const r = hir_mod.typeRefOf(self.hir, type_node);
+                if (r.qualifier_len != 0 or r.args_len != 0) return null;
+                const decl = self.findTypeAliasDeclInScope(type_node, r.name) orelse return null;
+                const ta = hir_mod.typeAliasOf(self.hir, decl);
+                if (self.hir.kindOf(ta.aliased) == .tuple_type) return ta.aliased;
+                return null;
+            },
+            else => return null,
+        }
+    }
+
+    fn expressionAssignableToTypeNode(self: *Checker, expr: NodeId, type_node: NodeId) CheckError!bool {
+        const expr_t = try self.checkExpression(expr);
+        const target_t = try self.lowererLowerWithTypeParams(type_node);
+        if (try self.literalExpressionAssignableToTarget(expr, target_t)) return true;
+        return self.engine.isAssignableTo(expr_t, target_t) catch return error.OutOfMemory;
+    }
+
+    fn tupleRestElementTypeNode(self: *Checker, rest_node: NodeId) NodeId {
+        const rt = hir_mod.restTypeOf(self.hir, rest_node);
+        if (self.hir.kindOf(rt.operand) == .array_type) {
+            return hir_mod.arrayTypeOf(self.hir, rt.operand).element;
+        }
+        return rt.operand;
+    }
+
+    fn tupleTypeHasRestElement(self: *Checker, tuple_node: NodeId) bool {
+        for (hir_mod.tupleTypeElements(self.hir, tuple_node)) |elem| {
+            if (self.hir.kindOf(elem) == .rest_type) return true;
+        }
+        return false;
+    }
+
+    fn checkArrayLiteralAgainstTupleAnnotation(self: *Checker, init_node: NodeId, tuple_node: NodeId) CheckError!bool {
+        const values = hir_mod.arrayLiteralElements(self.hir, init_node);
+        const elems = hir_mod.tupleTypeElements(self.hir, tuple_node);
+        var rest_i: ?usize = null;
+        for (elems, 0..) |elem, i| {
+            if (self.hir.kindOf(elem) == .rest_type) {
+                rest_i = i;
+                break;
+            }
+        }
+        const ri = rest_i orelse return true;
+        const suffix_len = elems.len - ri - 1;
+        if (values.len < ri + suffix_len) return false;
+        var i: usize = 0;
+        while (i < ri) : (i += 1) {
+            if (values[i] == hir_mod.none_node_id) continue;
+            if (!try self.expressionAssignableToTypeNode(values[i], elems[i])) return false;
+        }
+        const rest_type_node = self.tupleRestElementTypeNode(elems[ri]);
+        var mid = ri;
+        const mid_end = values.len - suffix_len;
+        while (mid < mid_end) : (mid += 1) {
+            if (values[mid] == hir_mod.none_node_id) continue;
+            if (!try self.expressionAssignableToTypeNode(values[mid], rest_type_node)) return false;
+        }
+        var s: usize = 0;
+        while (s < suffix_len) : (s += 1) {
+            const value_i = values.len - suffix_len + s;
+            if (values[value_i] == hir_mod.none_node_id) continue;
+            if (!try self.expressionAssignableToTypeNode(values[value_i], elems[ri + 1 + s])) return false;
+        }
+        return true;
+    }
+
     fn checkArrayDestructuringAssignment(self: *Checker, target_node: NodeId, source_t: TypeId, source_node: NodeId, source_offset: usize) CheckError!void {
         if (source_node != hir_mod.none_node_id and
             self.hir.kindOf(source_node) == .object_literal and
@@ -17115,11 +17188,15 @@ pub const Checker = struct {
             // fall back to the target's number-key indexer for any
             // extras (variadic tuple rest).
             const ok = blk: {
-                if (v.type_annotation != hir_mod.none_node_id and
-                    self.hir.kindOf(v.init) == .array_literal and
-                    self.isTupleShapedTarget(declared_type))
-                {
-                    break :blk try self.checkArrayLiteralAgainstTuple(v.init, declared_type);
+                if (v.type_annotation != hir_mod.none_node_id and self.hir.kindOf(v.init) == .array_literal) {
+                    if (self.tupleAnnotationSourceNode(v.type_annotation)) |tuple_node| {
+                        if (self.tupleTypeHasRestElement(tuple_node)) {
+                            break :blk try self.checkArrayLiteralAgainstTupleAnnotation(v.init, tuple_node);
+                        }
+                    }
+                    if (self.isTupleShapedTarget(declared_type)) {
+                        break :blk try self.checkArrayLiteralAgainstTuple(v.init, declared_type);
+                    }
                 }
                 if (self.hir.kindOf(v.init) == .object_literal and
                     declared_type < self.interner.pool.typeCount() and
@@ -17156,7 +17233,9 @@ pub const Checker = struct {
                     // empty `{}` is being assigned to a target with
                     // exactly one missing required property — matches
                     // upstream baselines (`renamed.ts`, etc.).
-                    if (!(try self.tryReportSinglePropertyMissing(diag_node, v.init, init_type, declared_type))) {
+                    if (self.hir.kindOf(v.init) == .array_literal or
+                        !(try self.tryReportSinglePropertyMissing(diag_node, v.init, init_type, declared_type)))
+                    {
                         try self.reportTypeNotAssignable(diag_node, init_type, declared_type, "Type is not assignable to declared type.");
                     }
                 }
@@ -19796,6 +19875,9 @@ pub const Checker = struct {
                         ((value_kind == .fn_decl or value_kind == .fn_expr or value_kind == .arrow_fn) and
                             self.memberSourceLooksMethod(p));
                     const raw_vt = try self.checkExpression(op.value);
+                    if (op.is_shorthand and value_kind == .identifier) {
+                        try self.rewriteMissingShorthandPropertyDiagnostic(op.value);
+                    }
                     if (self.strict_flags.no_implicit_any and
                         !self.strict_flags.strict_null_checks and
                         value_kind == .literal_null)
@@ -19970,6 +20052,22 @@ pub const Checker = struct {
         };
         self.hir.setType(node, t);
         return t;
+    }
+
+    fn rewriteMissingShorthandPropertyDiagnostic(self: *Checker, value_node: NodeId) CheckError!void {
+        if (self.diagnostics.items.len == 0) return;
+        const idx = self.diagnostics.items.len - 1;
+        var last = &self.diagnostics.items[idx];
+        if (last.node != value_node) return;
+        if (last.code != TsCodes.cannot_find_name and last.code != TsCodes.cannot_find_name_did_you_mean) return;
+        const id = hir_mod.identifierOf(self.hir, value_node);
+        const name = self.string_interner.get(id.name);
+        last.code = TsCodes.shorthand_property_no_value;
+        last.message = try std.fmt.allocPrint(
+            self.diag_arena.allocator(),
+            "No value exists in scope for the shorthand property '{s}'. Either declare one or provide an initializer.",
+            .{name},
+        );
     }
 
     fn isDynamicImportCallee(self: *Checker, callee: NodeId) bool {
@@ -36523,6 +36621,18 @@ test "checker: top-level return reports TS1108" {
     try s.checker.checkSourceFile(s.root);
     try T.expectEqual(@as(usize, 1), s.checker.diagnostics.items.len);
     try T.expectEqual(TsCodes.return_outside_function, s.checker.diagnostics.items[0].code);
+}
+
+test "checker: unresolved shorthand property reports TS18004" {
+    const s = try newSetup("var v = { a };");
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+    var found = false;
+    for (s.checker.diagnostics.items) |d| {
+        if (d.code == TsCodes.shorthand_property_no_value) found = true;
+        try T.expect(d.code != TsCodes.cannot_find_name);
+    }
+    try T.expect(found);
 }
 
 test "checker: noImplicitAny emits TS7008 for bare class and interface members" {

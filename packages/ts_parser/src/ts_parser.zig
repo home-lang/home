@@ -3444,6 +3444,11 @@ pub const Parser = struct {
         // EOF, accept the absence of a semicolon.
         const t = self.peek();
         if (t.kind == .eof or t.kind == .close_brace or t.flags.preceded_by_newline) return;
+        if (t.kind == .close_bracket) {
+            try self.reportCodeAt(t.span.start, t.line, 1005, "';' expected.");
+            _ = self.advance();
+            return;
+        }
         try self.report("expected ';' or newline ", "after statement");
         return error.UnexpectedToken;
     }
@@ -6795,7 +6800,18 @@ pub const Parser = struct {
             }
             const e = try self.parseAssignmentExpression();
             try elements.append(self.gpa, e);
-            if (!self.match(.comma)) break;
+            if (self.match(.comma)) continue;
+            if (self.peek().kind == .close_bracket or self.peek().kind == .eof) break;
+            if (self.peek().kind == .semicolon) {
+                try self.reportCodeAt(self.peek().span.start, self.peek().line, 1005, "',' expected.");
+                const end = if (self.cursor > 0) self.tokens[self.cursor - 1].span.end else start.span.end;
+                return try self.builder.addArrayLiteral(.{ .start = start.span.start, .end = end }, elements.items);
+            }
+            if (arrayLiteralElementCanStart(self.peek().kind)) {
+                try self.reportCodeAt(self.peek().span.start, self.peek().line, 1005, "',' expected.");
+                continue;
+            }
+            break;
         }
         const close = try self.expect(.close_bracket, "']' to close array literal");
         return try self.builder.addArrayLiteral(.{ .start = start.span.start, .end = close.span.end }, elements.items);
@@ -6941,8 +6957,14 @@ pub const Parser = struct {
                 const question_tok = self.advance();
                 try self.reportCodeAt(question_tok.span.start, question_tok.line, 1162, "An object member cannot be declared optional.");
             }
+            var recovered_missing_colon_value = false;
             if (self.match(.colon)) {
-                value = try self.parseAssignmentExpression();
+                if (arrayLiteralElementCanStart(self.peek().kind)) {
+                    value = try self.parseAssignmentExpression();
+                } else {
+                    try self.reportCodeAt(self.peek().span.start, self.peek().line, 1109, "Expression expected.");
+                    recovered_missing_colon_value = true;
+                }
             } else if (method_is_generator or self.peek().kind == .less_than or self.peek().kind == .open_paren) {
                 // Method shorthand: `{ foo<T>() {} }`.
                 var type_params: []NodeId = &.{};
@@ -6995,6 +7017,7 @@ pub const Parser = struct {
             );
             try props.append(self.gpa, prop);
             if (self.match(.comma)) continue;
+            if (recovered_missing_colon_value and objectLiteralPropertyCanStart(self.peek().kind)) continue;
             // Recover from missing `,` between properties — TS reports
             // TS1005 at the offending token and continues parsing the
             // next property. Mirrors `tsc`'s `parseDelimitedList` recovery
@@ -7006,6 +7029,11 @@ pub const Parser = struct {
                 continue;
             }
             break;
+        }
+        if (self.peek().kind == .semicolon) {
+            const semi = self.advance();
+            try self.reportCodeAt(semi.span.end, semi.line, 1005, "'}' expected.");
+            return try self.builder.addObjectLiteral(.{ .start = start.span.start, .end = semi.span.end }, props.items);
         }
         const close = try self.expect(.close_brace, "'}' to close object literal");
         return try self.builder.addObjectLiteral(.{ .start = start.span.start, .end = close.span.end }, props.items);
@@ -7072,6 +7100,43 @@ fn isExpressionIdentifierToken(kind: TokenKind) bool {
         .kw_type,
         => true,
         else => false,
+    };
+}
+
+fn arrayLiteralElementCanStart(kind: TokenKind) bool {
+    return switch (kind) {
+        .number_literal,
+        .bigint_literal,
+        .string_literal,
+        .regex_literal,
+        .slash,
+        .no_substitution_template,
+        .template_head,
+        .kw_true,
+        .kw_false,
+        .kw_null,
+        .kw_undefined,
+        .open_paren,
+        .open_bracket,
+        .open_brace,
+        .less_than,
+        .kw_class,
+        .kw_abstract,
+        .kw_this,
+        .kw_super,
+        .kw_new,
+        .kw_import,
+        .kw_function,
+        .plus,
+        .minus,
+        .bang,
+        .tilde,
+        .kw_typeof,
+        .kw_delete,
+        .kw_yield,
+        .dot_dot_dot,
+        => true,
+        else => isExpressionIdentifierToken(kind),
     };
 }
 
@@ -10706,5 +10771,59 @@ test "parser: reserved keywords are not variable declaration names" {
     try T.expectEqual(@as(usize, 3), s.parser.diagnostics.items.len);
     try T.expectEqual(@as(u32, 1389), s.parser.diagnostics.items[0].code);
     try T.expectEqual(@as(u32, 1389), s.parser.diagnostics.items[1].code);
+    try T.expectEqual(@as(u32, 1005), s.parser.diagnostics.items[2].code);
+}
+
+test "parser: array literal recovers missing comma across newline" {
+    var s = try newTestSetup(
+        \\var v = [1, 2, 3
+        \\4, 5, 6, 7];
+    );
+    defer destroyTestSetup(s);
+
+    _ = try s.parser.parseSourceFile();
+    try T.expectEqual(@as(usize, 1), s.parser.diagnostics.items.len);
+    try T.expectEqual(@as(u32, 1005), s.parser.diagnostics.items[0].code);
+}
+
+test "parser: array literal semicolon recovery leaves tail as statement" {
+    var s = try newTestSetup(
+        \\var texCoords = [2, 2, 0.5000001192092895, 0.8749999 ; 403953552, 0.5000001192092895, 0.8749999403953552];
+    );
+    defer destroyTestSetup(s);
+
+    const root = try s.parser.parseSourceFile();
+    const stmts = hir_mod.blockStmts(&s.hir, root);
+    try T.expectEqual(@as(usize, 3), stmts.len);
+    try T.expectEqual(@as(usize, 2), s.parser.diagnostics.items.len);
+    try T.expectEqual(@as(u32, 1005), s.parser.diagnostics.items[0].code);
+    try T.expectEqual(@as(u32, 1005), s.parser.diagnostics.items[1].code);
+}
+
+test "parser: object literal missing close before semicolon reports TS1005" {
+    var s = try newTestSetup(
+        \\var v = { a: 1,
+        \\return;
+    );
+    defer destroyTestSetup(s);
+
+    _ = try s.parser.parseSourceFile();
+    try T.expectEqual(@as(usize, 2), s.parser.diagnostics.items.len);
+    try T.expectEqual(@as(u32, 1005), s.parser.diagnostics.items[0].code);
+    try T.expectEqual(@as(u32, 1005), s.parser.diagnostics.items[1].code);
+}
+
+test "parser: object literal missing value recovers keyword property" {
+    var s = try newTestSetup(
+        \\var v = { a:
+        \\return;
+    );
+    defer destroyTestSetup(s);
+
+    _ = try s.parser.parseSourceFile();
+    try T.expectEqual(@as(usize, 3), s.parser.diagnostics.items.len);
+    try T.expectEqual(@as(u32, 1109), s.parser.diagnostics.items[0].code);
+    try T.expectEqualStrings("Expression expected.", s.parser.diagnostics.items[0].message);
+    try T.expectEqual(@as(u32, 1005), s.parser.diagnostics.items[1].code);
     try T.expectEqual(@as(u32, 1005), s.parser.diagnostics.items[2].code);
 }

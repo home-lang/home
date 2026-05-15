@@ -260,7 +260,7 @@ pub fn run(gpa: std.mem.Allocator, c: Case) !Result {
         };
         const formatted = try ts_diagnostics.formatDefault(gpa, fdiag);
         defer gpa.free(formatted);
-        if (exact_mode) {
+        if (exact_mode and exactDiagnosticShouldDedup(code)) {
             const gop = try seen_keys.getOrPut(gpa, formatted);
             if (gop.found_existing) continue;
             gop.key_ptr.* = try gpa.dupe(u8, formatted);
@@ -832,6 +832,15 @@ fn run_(gpa: std.mem.Allocator, c: Case) !Result {
     return try run(gpa, c);
 }
 
+fn exactDiagnosticShouldDedup(code: u32) bool {
+    // Upstream baselines preserve duplicate TS2695 comma-operator
+    // warnings for nested comma expressions at the same source
+    // coordinate. Keep the exact-mode structural de-dupe for the
+    // checker re-visits it was introduced for, but do not erase
+    // intentionally repeated comma diagnostics.
+    return code != 2695;
+}
+
 // =============================================================================
 // In-memory bulk runner
 // =============================================================================
@@ -927,13 +936,7 @@ pub fn loadDirectoryWithOptions(
 ) ![]OwnedCorpusEntry {
     var out: std.ArrayListUnmanaged(OwnedCorpusEntry) = .empty;
     errdefer {
-        for (out.items) |entry| {
-            gpa.free(entry.name);
-            gpa.free(entry.source);
-            if (entry.raw_source.len > 0) gpa.free(entry.raw_source);
-            if (entry.path.len > 0) gpa.free(entry.path);
-            if (entry.expected_errors.len > 0) gpa.free(entry.expected_errors);
-        }
+        for (out.items) |entry| freeOwnedCorpusEntry(gpa, entry);
         out.deinit(gpa);
     }
     var threaded = std.Io.Threaded.init(gpa, .{});
@@ -2572,16 +2575,18 @@ pub fn runDirectoryWithOptions(
 ) !Stats {
     const corpus = try loadDirectoryWithOptions(gpa, dir_path, options);
     defer {
-        for (corpus) |entry| {
-            gpa.free(entry.name);
-            gpa.free(entry.source);
-            if (entry.raw_source.len > 0) gpa.free(entry.raw_source);
-            if (entry.path.len > 0) gpa.free(entry.path);
-            if (entry.expected_errors.len > 0) gpa.free(entry.expected_errors);
-        }
+        for (corpus) |entry| freeOwnedCorpusEntry(gpa, entry);
         gpa.free(corpus);
     }
     return runOwnedCorpus(gpa, corpus, results);
+}
+
+fn freeOwnedCorpusEntry(gpa: std.mem.Allocator, entry: OwnedCorpusEntry) void {
+    gpa.free(entry.name);
+    gpa.free(entry.source);
+    if (entry.raw_source.len > 0) gpa.free(entry.raw_source);
+    if (entry.path.len > 0) gpa.free(entry.path);
+    if (entry.expected_errors.len > 0) gpa.free(entry.expected_errors);
 }
 
 /// Run named conformance categories relative to `root_path`.
@@ -3107,13 +3112,7 @@ test "conformance: bisect exact-baseline heap leak" {
         .load_limit = limit,
     });
     defer {
-        for (corpus) |entry| {
-            T.allocator.free(entry.name);
-            T.allocator.free(entry.source);
-            if (entry.raw_source.len > 0) T.allocator.free(entry.raw_source);
-            if (entry.path.len > 0) T.allocator.free(entry.path);
-            if (entry.expected_errors.len > 0) T.allocator.free(entry.expected_errors);
-        }
+        for (corpus) |entry| freeOwnedCorpusEntry(T.allocator, entry);
         T.allocator.free(corpus);
     }
 
@@ -3634,13 +3633,7 @@ test "conformance: opt-in full local TypeScript corpus survey" {
         .load_limit = requested_limit,
     });
     defer {
-        for (corpus) |entry| {
-            T.allocator.free(entry.name);
-            T.allocator.free(entry.source);
-            if (entry.raw_source.len > 0) T.allocator.free(entry.raw_source);
-            if (entry.path.len > 0) T.allocator.free(entry.path);
-            if (entry.expected_errors.len > 0) T.allocator.free(entry.expected_errors);
-        }
+        for (corpus) |entry| freeOwnedCorpusEntry(T.allocator, entry);
         T.allocator.free(corpus);
     }
 
