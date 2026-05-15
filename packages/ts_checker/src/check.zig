@@ -7415,6 +7415,7 @@ pub const Checker = struct {
         const c = hir_mod.classOf(self.hir, node);
         const members = hir_mod.classMembers(self.hir, node);
         try self.checkClassMemberDecoratorDiagnostics(members);
+        try self.detectClassMemberDuplicates(members);
         const class_name_scope = c.name != hir_mod.none_node_id and
             self.hir.kindOf(c.name) == .identifier;
         if (class_name_scope) {
@@ -28851,11 +28852,47 @@ pub const Checker = struct {
                 if (self.namedTypeForId(t)) |type_name| {
                     break :blk self.string_interner.get(type_name);
                 }
-                if (self.interner.typeParameterName(t)) |tp_name| {
-                    break :blk self.string_interner.get(tp_name);
+                // Defensive guard: `typeParameterName` indexes the
+                // type-parameter payloads directly without bounds
+                // checking the payload index. Non-tp types occasionally
+                // share the `is_type_parameter` flag bit (interner is
+                // sharded; recycled slots can leak transient flags),
+                // which crashed the full-corpus run before this guard
+                // landed.
+                if (t < self.interner.pool.typeCount()) {
+                    const tp_flags = self.interner.pool.flagsOf(t);
+                    if (tp_flags.is_type_parameter) {
+                        const tp_payload_idx = self.interner.pool.payloadOf(t);
+                        if (tp_payload_idx < self.interner.pool.type_parameter_payloads.items.len) {
+                            if (self.interner.typeParameterName(t)) |tp_name| {
+                                break :blk self.string_interner.get(tp_name);
+                            }
+                        }
+                    }
                 }
                 if (t >= self.interner.pool.typeCount()) break :blk null;
                 const flags = self.interner.pool.flagsOf(t);
+                // Render fixed-width tuples (`[any]`, `[undefined, null]`)
+                // so TS2322 prose includes the literal element shape.
+                if (flags.is_object_type) {
+                    if (self.fixedTupleLength(t)) |length| {
+                        var tuple_buf: std.ArrayListUnmanaged(u8) = .empty;
+                        const arena_t = self.diag_arena.allocator();
+                        try tuple_buf.append(arena_t, '[');
+                        var ti: u64 = 0;
+                        while (ti < length) : (ti += 1) {
+                            if (ti > 0) try tuple_buf.appendSlice(arena_t, ", ");
+                            const elem_t = self.tupleElementType(t, @intCast(ti));
+                            if (try self.allocSimpleTypeName(elem_t)) |nm| {
+                                try tuple_buf.appendSlice(arena_t, nm);
+                            } else {
+                                try tuple_buf.appendSlice(arena_t, "any");
+                            }
+                        }
+                        try tuple_buf.append(arena_t, ']');
+                        break :blk tuple_buf.items;
+                    }
+                }
                 // Render unions (`object | null | undefined`) so the
                 // exact-baseline ratchet can match upstream TS prose
                 // for assignability mismatches involving nullable
@@ -28894,6 +28931,22 @@ pub const Checker = struct {
                     }
                     if (union_buf.items.len == 0) break :blk null;
                     break :blk union_buf.items;
+                }
+                // Intersections (`Real & Fake`) — render only when
+                // every member is nameable so the prose stays
+                // unambiguous.
+                if (flags.is_intersection) {
+                    var int_buf: std.ArrayListUnmanaged(u8) = .empty;
+                    const arena_i = self.diag_arena.allocator();
+                    var first_i = true;
+                    for (self.interner.intersectionMembers(t)) |member| {
+                        const member_name = (try self.allocSimpleTypeName(member)) orelse break :blk null;
+                        if (!first_i) try int_buf.appendSlice(arena_i, " & ");
+                        first_i = false;
+                        try int_buf.appendSlice(arena_i, member_name);
+                    }
+                    if (int_buf.items.len == 0) break :blk null;
+                    break :blk int_buf.items;
                 }
                 // Render bare construct signatures (`new () => string`)
                 // so TS2348 can include the type. Call signatures
@@ -29926,30 +29979,41 @@ pub const Checker = struct {
         if (self.assertionTargetIsFunctionObject(target_t)) return;
         if (self.nullAssertionTargetIsPermissive(target_t)) return;
         if (source_t == types.Primitive.null_t and self.strict_flags.strict_null_checks and !self.typeIncludesNull(target_t)) {
-            try self.diagnostics.append(self.gpa, .{
-                .node = node,
-                .code = TsCodes.conversion_may_be_mistake,
-                .message = "Conversion may be a mistake because neither type sufficiently overlaps with the other.",
-            });
+            try self.emitConversionMayBeMistake(node, source_t, target_t);
             return;
         }
         if (source_t == types.Primitive.undefined_t and !self.typeIncludesUndefined(target_t)) {
-            try self.diagnostics.append(self.gpa, .{
-                .node = node,
-                .code = TsCodes.conversion_may_be_mistake,
-                .message = "Conversion may be a mistake because neither type sufficiently overlaps with the other.",
-            });
+            try self.emitConversionMayBeMistake(node, source_t, target_t);
             return;
         }
         if (try self.assertionUnionConstituentHasNoOverlap(source_t, target_t)) {
-            try self.diagnostics.append(self.gpa, .{
-                .node = node,
-                .code = TsCodes.conversion_may_be_mistake,
-                .message = "Conversion may be a mistake because neither type sufficiently overlaps with the other.",
-            });
+            try self.emitConversionMayBeMistake(node, source_t, target_t);
             return;
         }
         if (try self.typesHaveComparableOverlap(source_t, target_t)) return;
+        try self.emitConversionMayBeMistake(node, source_t, target_t);
+    }
+
+    /// Format and emit TS2352 ("Conversion ... may be a mistake ...").
+    /// When both endpoints are nameable, mirror upstream's verbose
+    /// form including the "convert to 'unknown' first" hint; otherwise
+    /// fall back to the bare message that pre-dated the helper.
+    fn emitConversionMayBeMistake(self: *Checker, node: NodeId, source_t: TypeId, target_t: TypeId) CheckError!void {
+        if (try self.allocSimpleTypeName(source_t)) |source_name| {
+            if (try self.allocSimpleTypeName(target_t)) |target_name| {
+                const msg = try std.fmt.allocPrint(
+                    self.diag_arena.allocator(),
+                    "Conversion of type '{s}' to type '{s}' may be a mistake because neither type sufficiently overlaps with the other. If this was intentional, convert the expression to 'unknown' first.",
+                    .{ source_name, target_name },
+                );
+                try self.diagnostics.append(self.gpa, .{
+                    .node = node,
+                    .code = TsCodes.conversion_may_be_mistake,
+                    .message = msg,
+                });
+                return;
+            }
+        }
         try self.diagnostics.append(self.gpa, .{
             .node = node,
             .code = TsCodes.conversion_may_be_mistake,
@@ -45321,4 +45385,112 @@ test "checker: seeded Proxy global exposes revocable" {
         try T.expect(d.code != TsCodes.cannot_find_name);
         try T.expect(d.code != TsCodes.property_does_not_exist);
     }
+}
+
+test "checker: TS2300 fires on duplicate class field names" {
+    const s = try newSetup(
+        \\class C {
+        \\  foo: number;
+        \\  foo: string;
+        \\}
+    );
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+    var dup_count: usize = 0;
+    for (s.checker.diagnostics.items) |d| {
+        if (d.code == TsCodes.duplicate_identifier) dup_count += 1;
+    }
+    try T.expect(dup_count >= 1);
+}
+
+test "checker: static and instance field of same name do not collide" {
+    const s = try newSetup(
+        \\class C {
+        \\  foo: number;
+        \\  static foo: string;
+        \\}
+    );
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+    for (s.checker.diagnostics.items) |d| {
+        try T.expect(d.code != TsCodes.duplicate_identifier);
+    }
+}
+
+test "checker: getter/setter pair on same name does not collide" {
+    const s = try newSetup(
+        \\class C {
+        \\  get foo(): number { return 1; }
+        \\  set foo(v: number) {}
+        \\}
+    );
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+    for (s.checker.diagnostics.items) |d| {
+        try T.expect(d.code != TsCodes.duplicate_identifier);
+    }
+}
+
+test "checker: two getters of same name emit TS2300" {
+    const s = try newSetup(
+        \\class C {
+        \\  get foo(): number { return 1; }
+        \\  get foo(): number { return 2; }
+        \\}
+    );
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+    var dup_count: usize = 0;
+    for (s.checker.diagnostics.items) |d| {
+        if (d.code == TsCodes.duplicate_identifier) dup_count += 1;
+    }
+    try T.expect(dup_count >= 1);
+}
+
+test "checker: method and field of same name emit TS2300" {
+    const s = try newSetup(
+        \\class C {
+        \\  foo(): number { return 1; }
+        \\  foo: string;
+        \\}
+    );
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+    var dup_count: usize = 0;
+    for (s.checker.diagnostics.items) |d| {
+        if (d.code == TsCodes.duplicate_identifier) dup_count += 1;
+    }
+    try T.expect(dup_count >= 1);
+}
+
+test "checker: numeric literal duplicate keys collide regardless of formatting" {
+    const s = try newSetup(
+        \\class C {
+        \\  1: number;
+        \\  1.0: number;
+        \\}
+    );
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+    var dup_count: usize = 0;
+    for (s.checker.diagnostics.items) |d| {
+        if (d.code == TsCodes.duplicate_identifier) dup_count += 1;
+    }
+    try T.expect(dup_count >= 1);
+}
+
+test "checker: string-named class fields collide with TS2300" {
+    const s = try newSetup(
+        \\class C {
+        \\  "a b": number;
+        \\  "a b": number;
+        \\}
+    );
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+    var dup_count: usize = 0;
+    for (s.checker.diagnostics.items) |d| {
+        if (d.code == TsCodes.duplicate_identifier) dup_count += 1;
+    }
+    try T.expect(dup_count >= 1);
 }
