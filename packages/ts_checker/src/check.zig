@@ -1717,6 +1717,45 @@ pub const Checker = struct {
         return false;
     }
 
+    fn namespaceScopeHasErrantModifierAssignmentTarget(self: *Checker, node: NodeId, name: hir_mod.StringId) bool {
+        var cur = self.hir.parentOf(node);
+        while (cur != hir_mod.none_node_id) : (cur = self.hir.parentOf(cur)) {
+            if (self.hir.kindOf(cur) != .namespace_decl) continue;
+            for (hir_mod.namespaceBody(self.hir, cur)) |raw| {
+                const stmt = self.unwrapExportDecl(raw);
+                if (self.hir.kindOf(stmt) != .assignment) continue;
+                const a = hir_mod.assignmentOf(self.hir, stmt);
+                if (a.target == hir_mod.none_node_id or self.hir.kindOf(a.target) != .identifier) continue;
+                if (hir_mod.identifierOf(self.hir, a.target).name != name) continue;
+                if (self.assignmentTargetHasErrantModifierPrefix(a.target)) return true;
+            }
+        }
+        return false;
+    }
+
+    fn assignmentTargetHasErrantModifierPrefix(self: *Checker, target: NodeId) bool {
+        const src = self.source orelse return false;
+        const sp = self.hir.spanOf(target);
+        if (sp.start > src.len) return false;
+        var line_start: usize = sp.start;
+        while (line_start > 0 and src[line_start - 1] != '\n' and src[line_start - 1] != '\r') {
+            line_start -= 1;
+        }
+        var prefix = src[line_start..sp.start];
+        while (prefix.len > 0 and (prefix[prefix.len - 1] == ' ' or prefix[prefix.len - 1] == '\t')) {
+            prefix = prefix[0 .. prefix.len - 1];
+        }
+        const modifiers = [_][]const u8{ "private", "public", "protected", "static" };
+        for (modifiers) |modifier| {
+            if (!std.mem.endsWith(u8, prefix, modifier)) continue;
+            const before = prefix.len - modifier.len;
+            if (before == 0) return true;
+            const ch = prefix[before - 1];
+            if (!(std.ascii.isAlphanumeric(ch) or ch == '_' or ch == '$')) return true;
+        }
+        return false;
+    }
+
     fn namespaceNameIs(self: *Checker, node: NodeId, name: []const u8) bool {
         if (node == hir_mod.none_node_id or self.hir.kindOf(node) != .namespace_decl) return false;
         const ns = hir_mod.namespaceOf(self.hir, node);
@@ -24332,7 +24371,12 @@ pub const Checker = struct {
             cur = self.hir.parentOf(cur);
         }
 
-        if (saw_namespace_scope and !self.report_unresolved_in_namespace_scope) return types.Primitive.any;
+        if (saw_namespace_scope and !self.report_unresolved_in_namespace_scope) {
+            if (!self.isDeclNameSlot(node) and self.namespaceScopeHasErrantModifierAssignmentTarget(node, id.name)) {
+                self.reportCannotFindNamePlainOnce(node, id.name) catch {};
+            }
+            return types.Primitive.any;
+        }
 
         if (self.moduleNamespaceTypeForLocalImport(id.name, node) catch null) |ns_t| return ns_t;
         if (self.virtualImportTypeForLocal(id.name, node) catch null) |import_t| return import_t;
@@ -35095,6 +35139,26 @@ test "checker: namespace expression statements report comma left unused" {
         if (d.code == TsCodes.comma_left_unused) found = true;
     }
     try T.expect(found);
+}
+
+test "checker: errant namespace modifier assignment target does not declare value" {
+    const s = try newSetup(
+        \\namespace M {
+        \\  var x = 10;
+        \\  private y = x;
+        \\  export var z = y;
+        \\}
+    );
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+
+    var missing_y: usize = 0;
+    for (s.checker.diagnostics.items) |d| {
+        if (d.code != TsCodes.cannot_find_name) continue;
+        const id = if (s.hir.kindOf(d.node) == .identifier) hir_mod.identifierOf(&s.hir, d.node) else continue;
+        if (std.mem.eql(u8, s.sint.get(id.name), "y")) missing_y += 1;
+    }
+    try T.expectEqual(@as(usize, 2), missing_y);
 }
 
 test "checker: object literal bool discriminant satisfies union annotation" {

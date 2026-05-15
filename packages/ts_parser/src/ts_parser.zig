@@ -590,6 +590,9 @@ pub const Parser = struct {
                 }
                 try self.reportCodeAt(t.span.start, t.line, 1128, "Declaration or statement expected.");
                 const start = self.advance();
+                if (self.namespace_depth > 0 and !self.peek().flags.preceded_by_newline and self.peek().kind == .identifier) {
+                    break :blk try self.parseStatement();
+                }
                 while (self.peek().kind != .semicolon and
                     self.peek().kind != .eof and
                     !self.peek().flags.preceded_by_newline)
@@ -11149,6 +11152,27 @@ test "parser: top-level public before break reports declaration expected" {
     _ = try s.parser.parseSourceFile();
     try T.expectEqual(@as(usize, 1), s.parser.diagnostics.items.len);
     try T.expectEqual(@as(u32, 1128), s.parser.diagnostics.items[0].code);
+}
+
+test "parser: errant namespace accessibility modifier recovers following assignment" {
+    var s = try newTestSetup(
+        \\namespace M {
+        \\  var x = 10;
+        \\  private y = x;
+        \\  export var z = y;
+        \\}
+    );
+    defer destroyTestSetup(s);
+    s.parser.setTargetEs2015OrLater(true);
+
+    const root = try s.parser.parseSourceFile();
+    try T.expectEqual(@as(usize, 1), s.parser.diagnostics.items.len);
+    try T.expectEqual(@as(u32, 1128), s.parser.diagnostics.items[0].code);
+
+    const ns = hir_mod.blockStmts(&s.hir, root)[0];
+    const body = hir_mod.namespaceBody(&s.hir, ns);
+    try T.expectEqual(@as(usize, 3), body.len);
+    try T.expectEqual(hir_mod.NodeKind.assignment, s.hir.kindOf(body[1]));
 }
 
 test "parser: module modifiers before interface report TS1044 and recover" {
