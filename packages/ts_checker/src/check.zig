@@ -33007,6 +33007,16 @@ pub const Checker = struct {
     /// (or `new (p: T) => R`), preferring source-level parameter
     /// names recorded in `signature_param_names` and falling back
     /// to synthesized `x0`/`x1`/etc. positional placeholders.
+    ///
+    /// Generic signatures emit a `<T, U>` (or `<T extends C>`)
+    /// prefix from the `generic_signature_params` side table —
+    /// e.g. `<T>(x: T) => T[]`. Optional parameter slots beyond
+    /// `signature_min_args` render as `(x?: T)`, and the trailing
+    /// rest parameter (when `rest_signatures` flags the signature)
+    /// renders as `...x: T`. Mirrors upstream tsc's TS2322 prose
+    /// for the `callSignatureAssignabilityInInheritance*` and
+    /// `assignmentCompatWith{Call,Construct}Signatures*` family.
+    ///
     /// Returns null when the TypeId is not a signature payload or
     /// when the payload index is out of bounds. The caller
     /// (`allocSimpleTypeName`) gates on `interner.isSignature(t)`,
@@ -33020,10 +33030,41 @@ pub const Checker = struct {
         var sig_buf: std.ArrayListUnmanaged(u8) = .empty;
         const arena = self.diag_arena.allocator();
         if (sig.is_construct) try sig_buf.appendSlice(arena, "new ");
+        // `<T, U extends Foo>` generic prefix. The
+        // `generic_signature_params` side table records the
+        // type-parameter TypeIds in declaration order; we render
+        // each via `typeParameterName` plus an optional
+        // `extends C` constraint via `typeParameterConstraint`.
+        if (self.generic_signature_params.get(t)) |tp_ids| {
+            if (tp_ids.len > 0) {
+                try sig_buf.append(arena, '<');
+                for (tp_ids, 0..) |tp_id, ti| {
+                    if (ti > 0) try sig_buf.appendSlice(arena, ", ");
+                    if (self.interner.typeParameterName(tp_id)) |tp_name| {
+                        try sig_buf.appendSlice(arena, self.string_interner.get(tp_name));
+                    } else {
+                        try sig_buf.appendSlice(arena, "T");
+                    }
+                    if (self.interner.typeParameterConstraint(tp_id)) |c_id| {
+                        if (try self.allocSimpleTypeName(c_id)) |cn| {
+                            try sig_buf.appendSlice(arena, " extends ");
+                            try sig_buf.appendSlice(arena, cn);
+                        }
+                    }
+                }
+                try sig_buf.append(arena, '>');
+            }
+        }
         try sig_buf.append(arena, '(');
         const recorded_names: ?[]const hir_mod.StringId = self.signature_param_names.get(t);
+        const min_required = self.signature_min_args.get(t) orelse params.len;
+        const has_rest = self.rest_signatures.contains(t);
         for (params, 0..) |p, i| {
             if (i > 0) try sig_buf.appendSlice(arena, ", ");
+            const is_last = i == params.len - 1;
+            const is_rest = has_rest and is_last;
+            const is_optional = !is_rest and i >= min_required;
+            if (is_rest) try sig_buf.appendSlice(arena, "...");
             const name_text: []const u8 = blk: {
                 if (recorded_names) |names| if (i < names.len) {
                     break :blk self.string_interner.get(names[i]);
@@ -33031,6 +33072,7 @@ pub const Checker = struct {
                 break :blk try std.fmt.allocPrint(arena, "x{d}", .{i});
             };
             try sig_buf.appendSlice(arena, name_text);
+            if (is_optional) try sig_buf.append(arena, '?');
             try sig_buf.appendSlice(arena, ": ");
             if (try self.allocSimpleTypeName(p)) |pn| {
                 try sig_buf.appendSlice(arena, pn);
