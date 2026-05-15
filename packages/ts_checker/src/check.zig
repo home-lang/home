@@ -24614,6 +24614,31 @@ pub const Checker = struct {
             }
         }
 
+        // Built-in globals — without a real lib.d.ts loaded these
+        // names aren't in `module.root`, but tsc's `Did you mean
+        // '<x>'?` suggestion still walks them. Mirrors fixtures like
+        // `parserS7.3_A1.1_T2` where `$ERROR` should suggest
+        // `Error`.
+        const builtin_suggestions = [_][]const u8{
+            "console",   "undefined",  "NaN",         "Infinity",
+            "globalThis", "window",    "document",    "Element",
+            "Node",      "Math",       "JSON",        "Object",
+            "Array",     "String",     "Number",      "Boolean",
+            "Symbol",    "BigInt",     "Error",       "TypeError",
+            "RangeError", "SyntaxError", "Promise",   "Map",
+            "Set",       "WeakMap",    "WeakSet",     "Date",
+            "RegExp",    "Function",   "Proxy",       "Reflect",
+            "ArrayBuffer", "Uint8Array", "Int8Array", "Uint16Array",
+            "Int16Array", "Uint32Array", "Int32Array",
+            "Float32Array", "Float64Array",
+            "parseInt", "parseFloat", "isNaN",       "isFinite",
+            "encodeURI", "decodeURI",
+            "setTimeout", "clearTimeout", "setInterval", "clearInterval",
+        };
+        for (builtin_suggestions) |b| {
+            considerCandidate(name_str, b, &best);
+        }
+
         // Threshold mirrors tsc's `getSpellingSuggestion`:
         // `min(floor(name.length * 0.4), 4)`. For very short names
         // (1-2 chars) the threshold collapses to 0 / 1 so we suppress
@@ -26207,6 +26232,47 @@ pub const Checker = struct {
             self.interner.objectNumberIndex(target_t) == types.Primitive.none)
         {
             return "{}";
+        }
+        // Render small literal object types like `{ x: number; }` so
+        // TS2339 prose matches upstream when the target was a local
+        // object literal preserved by `satisfies` or by contextual
+        // typing. Bail on indexers/methods/optionals so we don't
+        // mis-render shapes the simple printer can't faithfully
+        // reproduce.
+        if (flags.is_object_type and
+            self.interner.objectStringIndex(target_t) == types.Primitive.none and
+            self.interner.objectNumberIndex(target_t) == types.Primitive.none)
+        {
+            const members = self.interner.objectMembers(target_t);
+            if (members.len > 0 and members.len <= 8) {
+                var obj_buf: std.ArrayListUnmanaged(u8) = .empty;
+                const arena_o = self.diag_arena.allocator();
+                try obj_buf.appendSlice(arena_o, "{ ");
+                var renderable = true;
+                for (members) |m| {
+                    if (m.is_method or m.is_optional) {
+                        renderable = false;
+                        break;
+                    }
+                    const member_name_str = self.string_interner.get(m.name);
+                    if (member_name_str.len == 0 or member_name_str[0] == '_') {
+                        renderable = false;
+                        break;
+                    }
+                    const value_text = (try self.allocSimpleTypeName(m.type)) orelse {
+                        renderable = false;
+                        break;
+                    };
+                    try obj_buf.appendSlice(arena_o, member_name_str);
+                    try obj_buf.appendSlice(arena_o, ": ");
+                    try obj_buf.appendSlice(arena_o, value_text);
+                    try obj_buf.appendSlice(arena_o, "; ");
+                }
+                if (renderable) {
+                    try obj_buf.append(arena_o, '}');
+                    return obj_buf.items;
+                }
+            }
         }
         return null;
     }
@@ -31810,11 +31876,22 @@ pub const Checker = struct {
             const declared_member_t = try self.excessPropertyTargetMemberType(declared_t, prop_name);
             if (declared_member_t == null) {
                 const name_str = self.string_interner.get(prop_name);
-                const msg = try std.fmt.allocPrint(
-                    self.diag_arena.allocator(),
-                    "Object literal may only specify known properties, and '{s}' does not exist on the target type.",
-                    .{name_str},
-                );
+                // Prefer tsc's render shape:
+                // `... and 'foo' does not exist in type 'X'.` when the
+                // target has a printable name; fall back to the bare
+                // `target type` wording otherwise.
+                const msg = if (try self.allocPropertyMissingTargetTypeName(declared_t)) |target_text|
+                    try std.fmt.allocPrint(
+                        self.diag_arena.allocator(),
+                        "Object literal may only specify known properties, and '{s}' does not exist in type '{s}'.",
+                        .{ name_str, target_text },
+                    )
+                else
+                    try std.fmt.allocPrint(
+                        self.diag_arena.allocator(),
+                        "Object literal may only specify known properties, and '{s}' does not exist on the target type.",
+                        .{name_str},
+                    );
                 try self.diagnostics.append(self.gpa, .{
                     .node = p,
                     .code = TsCodes.object_literal_excess_property,
