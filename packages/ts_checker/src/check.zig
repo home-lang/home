@@ -4386,6 +4386,25 @@ pub const Checker = struct {
         return false;
     }
 
+    /// Scan a class member's source span for the optional-property
+    /// `?:` modifier (e.g. `x?: number`). The HIR currently doesn't
+    /// surface the optional bit on class fields, so we re-scan the
+    /// source. Optional fields implicitly include `undefined` and
+    /// must not trigger TS2564 (`property has no initializer`).
+    fn classFieldHasOptionalToken(self: *Checker, node: NodeId) bool {
+        const src = self.source orelse return false;
+        const span = self.hir.spanOf(node);
+        if (span.start >= src.len) return false;
+        const end = @min(src.len, @as(usize, span.end));
+        var i: usize = span.start;
+        while (i < end) : (i += 1) {
+            const ch = src[i];
+            if (ch == '=' or ch == '{') return false;
+            if (ch == '?' and i + 1 < end and src[i + 1] == ':') return true;
+        }
+        return false;
+    }
+
     fn memberSourceLooksMethod(self: *Checker, node: NodeId) bool {
         const src = self.source orelse return false;
         const span = self.hir.spanOf(node);
@@ -8758,6 +8777,7 @@ pub const Checker = struct {
                         !self.typeExplicitlyIncludesUndefined(field_t) and
                         !self.classFieldTypeIsAnyOrUnknown(field_t) and
                         !self.classFieldHasDefiniteAssertion(m) and
+                        !self.classFieldHasOptionalToken(m) and
                         !self.classNodeIsInsideAmbientDeclaredModule(node))
                     {
                         const field_name = self.string_interner.get(member_name);
@@ -14778,6 +14798,9 @@ pub const Checker = struct {
             std.mem.eql(u8, raw, "Iterator") or
             std.mem.eql(u8, raw, "AsyncIterator") or
             std.mem.eql(u8, raw, "Iterable") or
+            std.mem.eql(u8, raw, "AsyncIterable") or
+            std.mem.eql(u8, raw, "IterableIterator") or
+            std.mem.eql(u8, raw, "AsyncIterableIterator") or
             std.mem.eql(u8, raw, "PromiseLike") or
             std.mem.eql(u8, raw, "TypedPropertyDescriptor") or
             std.mem.eql(u8, raw, "NonNullable") or
@@ -17277,6 +17300,9 @@ pub const Checker = struct {
             "Iterator",
             "AsyncIterator",
             "Iterable",
+            "AsyncIterable",
+            "IterableIterator",
+            "AsyncIterableIterator",
             "ArrayBuffer",
             "Uint8Array",
             "Uint8ClampedArray",
