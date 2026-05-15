@@ -324,6 +324,12 @@ pub const TsCodes = struct {
     /// `(line, col)` lines up with the closing-`/`-relative offset
     /// upstream tsc reports.
     pub const regex_flag_requires_target: u32 = 1501;
+    /// TS2496 — `arguments` referenced from inside an arrow function
+    /// while compiling for an ES5 target. The down-emit can't
+    /// synthesize an `arguments` slot inside the resulting
+    /// `function () { … }`, so tsc rejects the reference at the
+    /// identifier site.
+    pub const arguments_in_arrow_es5: u32 = 2496;
 };
 
 /// Per-alias generic info: the type-parameter TypeIds in
@@ -23487,6 +23493,25 @@ pub const Checker = struct {
         if (std.mem.eql(u8, name_str, "arguments") and self.hasNonArrowFunctionAncestor(node)) {
             return types.Primitive.any;
         }
+        // `arguments` referenced from an arrow function (no enclosing
+        // `function` body to bind it to) is invalid for ES5 — tsc
+        // emits TS2496 explaining the down-emit can't synthesize an
+        // `arguments` slot inside the resulting `function () { … }`.
+        // Higher targets keep the lexical `arguments` lookup so the
+        // identifier remains valid; only fire when the source's
+        // `// @target` directive is ES5 (or earlier).
+        if (std.mem.eql(u8, name_str, "arguments") and
+            self.argumentsInsideArrowOnlyChain(node) and
+            self.sourceTargetMentionsEs5())
+        {
+            const msg = self.diag_arena.allocator().dupe(u8, "The 'arguments' object cannot be referenced in an arrow function in ES5. Consider using a standard function expression.") catch return types.Primitive.any;
+            self.diagnostics.append(self.gpa, .{
+                .node = node,
+                .code = TsCodes.arguments_in_arrow_es5,
+                .message = msg,
+            }) catch return types.Primitive.any;
+            return types.Primitive.any;
+        }
         if (!self.isDeclNameSlot(node) and !self.nodeHasAncestorKind(node, .typeof_type) and self.typeOnlyImportLocal(id.name, node)) {
             const msg = std.fmt.allocPrint(
                 self.diag_arena.allocator(),
@@ -24207,6 +24232,28 @@ pub const Checker = struct {
         return false;
     }
 
+    /// True when the node sits inside at least one arrow-function
+    /// ancestor and there's no enclosing non-arrow function above it.
+    /// Used to gate TS2496 (`arguments` in arrow function in ES5):
+    /// a top-level `() => arguments` qualifies, but `function f() {
+    /// return () => arguments; }` does not — the inner arrow inherits
+    /// the lexical `arguments` from `f` so the down-emit is valid.
+    fn argumentsInsideArrowOnlyChain(self: *Checker, node: NodeId) bool {
+        var cur = self.hir.parentOf(node);
+        var saw_arrow = false;
+        while (cur != hir_mod.none_node_id) : (cur = self.hir.parentOf(cur)) {
+            const k = self.hir.kindOf(cur);
+            if (k != .fn_decl and k != .fn_expr and k != .arrow_fn) continue;
+            const f = hir_mod.fnDeclOf(self.hir, cur);
+            if (f.flags.is_arrow) {
+                saw_arrow = true;
+            } else {
+                return false;
+            }
+        }
+        return saw_arrow;
+    }
+
     const MapEntryTypes = struct {
         key: TypeId,
         value: TypeId,
@@ -24688,7 +24735,11 @@ pub const Checker = struct {
                 // cannot satisfy the threshold.
                 const ll = if (cand_str.len > typo.len) cand_str.len - typo.len else typo.len - cand_str.len;
                 if (ll > 2 and ll > typo.len / 4) return;
-                const d = levenshtein(typo, cand_str);
+                // tsc's `getSpellingSuggestion` does case-insensitive
+                // comparison so `$ERROR` → `Error` (parserS7.3_A1.1_T2)
+                // and `mY_Var` → `my_var` are recognized. Mirror
+                // that with an ASCII case-folded distance.
+                const d = levenshteinIcase(typo, cand_str);
                 if (d < b.dist) b.* = .{ .name = cand_str, .dist = d };
             }
         }.call;
@@ -24873,6 +24924,41 @@ pub const Checker = struct {
             var k: usize = 1;
             while (k <= b.len) : (k += 1) {
                 const cost: usize = if (a[i - 1] == b[k - 1]) 0 else 1;
+                const del = prev[k] + 1;
+                const ins = curr[k - 1] + 1;
+                const sub = prev[k - 1] + cost;
+                var m = del;
+                if (ins < m) m = ins;
+                if (sub < m) m = sub;
+                curr[k] = m;
+            }
+            std.mem.copyForwards(usize, prev[0 .. b.len + 1], curr[0 .. b.len + 1]);
+        }
+        return prev[b.len];
+    }
+
+    /// Case-insensitive (ASCII) Levenshtein. Mirrors the
+    /// `equateStringsCaseInsensitive` flag tsc passes to its
+    /// `getSpellingSuggestion` helper — substitutions that differ
+    /// only in ASCII case cost 0, so `$ERROR` → `Error` measures
+    /// distance 1 (the leading `$`), well within the threshold.
+    fn levenshteinIcase(a: []const u8, b: []const u8) usize {
+        if (a.len == 0) return b.len;
+        if (b.len == 0) return a.len;
+        const cap: usize = 128;
+        if (a.len + 1 > cap or b.len + 1 > cap) return std.math.maxInt(usize);
+        var prev: [cap]usize = undefined;
+        var curr: [cap]usize = undefined;
+        var j: usize = 0;
+        while (j <= b.len) : (j += 1) prev[j] = j;
+        var i: usize = 1;
+        while (i <= a.len) : (i += 1) {
+            curr[0] = i;
+            var k: usize = 1;
+            while (k <= b.len) : (k += 1) {
+                const ai = std.ascii.toLower(a[i - 1]);
+                const bk = std.ascii.toLower(b[k - 1]);
+                const cost: usize = if (ai == bk) 0 else 1;
                 const del = prev[k] + 1;
                 const ins = curr[k - 1] + 1;
                 const sub = prev[k - 1] + cost;
