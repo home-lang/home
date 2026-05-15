@@ -16596,11 +16596,17 @@ pub const Checker = struct {
                 const ip = hir_mod.inferTypeOf(self.hir, node);
                 if (inferred.getPtr(ip.name)) |prior| {
                     if (!self.inferConstraintsEqual(prior.constraint, ip.constraint)) {
+                        const tp_name = self.string_interner.get(ip.name);
+                        const msg = std.fmt.allocPrint(
+                            self.diag_arena.allocator(),
+                            "All declarations of '{s}' must have identical constraints.",
+                            .{tp_name},
+                        ) catch return error.OutOfMemory;
                         if (!prior.first_reported) {
-                            try self.report(prior.node, TsCodes.infer_constraints_not_identical, "All declarations of this type parameter must have identical constraints.");
+                            try self.reportInferTypeName(prior.node, ip.name, msg);
                             prior.first_reported = true;
                         }
-                        try self.report(node, TsCodes.infer_constraints_not_identical, "All declarations of this type parameter must have identical constraints.");
+                        try self.reportInferTypeName(node, ip.name, msg);
                     }
                 } else {
                     try inferred.put(self.gpa, ip.name, .{ .node = node, .constraint = ip.constraint });
@@ -22854,14 +22860,55 @@ pub const Checker = struct {
         defer call_sigs.deinit(self.gpa);
         try self.collectCallSignatures(callee_t, &call_sigs);
         var saw_this_param = false;
+        var unmet_this: std.ArrayListUnmanaged(TypeId) = .empty;
+        defer unmet_this.deinit(self.gpa);
         for (call_sigs.items) |sig| {
             const this_t = self.signature_this_params.get(sig) orelse continue;
             saw_this_param = true;
             if (self.engine.isAssignableTo(receiver_t, this_t) catch false) return;
+            // Track unique unmet `this` types — when the receiver is
+            // a union of method-bearing types each requiring its own
+            // `this`, upstream tsc intersects them in the diagnostic.
+            var seen = false;
+            for (unmet_this.items) |existing| {
+                if (existing == this_t) {
+                    seen = true;
+                    break;
+                }
+            }
+            if (!seen) try unmet_this.append(self.gpa, this_t);
         }
-        if (saw_this_param) {
-            try self.report(call_node, TsCodes.argument_type_mismatch, "The 'this' context is not assignable to method's 'this' type.");
+        if (!saw_this_param) return;
+        // Prefer the upstream-shaped TS2684 with both `of type 'X'`
+        // and `of type 'Y'` clauses when we can name both sides.
+        // Falls back to the generic wording when the engine lacks a
+        // simple type name for either side.
+        if (unmet_this.items.len > 0) {
+            const recv_name = try self.allocSimpleTypeName(receiver_t);
+            const this_name: ?[]const u8 = blk: {
+                if (unmet_this.items.len == 1) {
+                    break :blk try self.allocSimpleTypeName(unmet_this.items[0]);
+                }
+                var buf: std.ArrayListUnmanaged(u8) = .empty;
+                const arena = self.diag_arena.allocator();
+                for (unmet_this.items, 0..) |this_t, i| {
+                    const part = (try self.allocSimpleTypeName(this_t)) orelse break :blk null;
+                    if (i > 0) try buf.appendSlice(arena, " & ");
+                    try buf.appendSlice(arena, part);
+                }
+                break :blk buf.items;
+            };
+            if (recv_name != null and this_name != null) {
+                const msg = try std.fmt.allocPrint(
+                    self.diag_arena.allocator(),
+                    "The 'this' context of type '{s}' is not assignable to method's 'this' of type '{s}'.",
+                    .{ recv_name.?, this_name.? },
+                );
+                try self.report(call_node, TsCodes.this_context_not_assignable, msg);
+                return;
+            }
         }
+        try self.report(call_node, TsCodes.this_context_not_assignable, "The 'this' context is not assignable to method's 'this' type.");
     }
 
     fn checkBareCallThisCompatibility(
@@ -32195,6 +32242,30 @@ pub const Checker = struct {
         try self.reportAt(node, null, code, message);
     }
 
+    /// Report TS2838 (`infer X` constraint mismatch) anchored at the
+    /// `X` identifier's position rather than the `infer` keyword
+    /// span start. Mirrors upstream tsc which underlines the
+    /// type-parameter name.
+    fn reportInferTypeName(
+        self: *Checker,
+        node: NodeId,
+        name: hir_mod.StringId,
+        message: []const u8,
+    ) !void {
+        const span = self.hir.spanOf(node);
+        var pos: ?u32 = null;
+        if (self.source) |src| {
+            const tp_name = self.string_interner.get(name);
+            if (tp_name.len > 0 and span.start < src.len) {
+                const end = @min(src.len, @as(usize, span.end));
+                if (std.mem.indexOfPos(u8, src[0..end], span.start, tp_name)) |idx| {
+                    pos = @intCast(idx);
+                }
+            }
+        }
+        try self.reportAt(node, pos, TsCodes.infer_constraints_not_identical, message);
+    }
+
     fn reportAt(self: *Checker, node: NodeId, pos: ?u32, code: u32, message: []const u8) !void {
         const msg = try self.diag_arena.allocator().dupe(u8, message);
         try self.diagnostics.append(self.gpa, .{
@@ -38992,7 +39063,7 @@ test "checker: union receiver method checks explicit this parameter" {
     try s.checker.checkSourceFile(s.root);
     var found = false;
     for (s.checker.diagnostics.items) |d| {
-        if (d.code == TsCodes.argument_type_mismatch) found = true;
+        if (d.code == TsCodes.this_context_not_assignable) found = true;
     }
     try T.expect(found);
 }
