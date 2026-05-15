@@ -8941,7 +8941,16 @@ pub const Checker = struct {
                         !self.classFieldHasOptionalToken(m) and
                         !self.classNodeIsInsideAmbientDeclaredModule(node) and
                         !self.classHasLeadingDeclare(node) and
-                        !self.virtualSectionIsDeclarationFile(node))
+                        !self.virtualSectionIsDeclarationFile(node) and
+                        // Upstream tsc never fires TS2564 for fields
+                        // whose name is a string-literal / numeric /
+                        // computed key (e.g. `class { "a b": number }`,
+                        // `class { 1: number }`) — those names can't
+                        // be initialized via `this.<name>` in the
+                        // constructor and the initializer rule only
+                        // applies to identifier-named fields. Mirrors
+                        // `stringNamedPropertyAccess.ts`.
+                        isJsIdentifier(self.string_interner.get(member_name)))
                     {
                         const field_name = self.string_interner.get(member_name);
                         // Computed `[Symbol.X]` fields are interned as
