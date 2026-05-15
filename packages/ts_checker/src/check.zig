@@ -216,6 +216,8 @@ pub const TsCodes = struct {
     pub const decorator_or_modifier_on_this_parameter: u32 = 1433;
     pub const this_parameter_must_be_first: u32 = 2680;
     pub const no_exported_member_suggestion: u32 = 2724;
+    pub const no_exported_member: u32 = 2305;
+    pub const export_assignment_es_module: u32 = 1203;
     pub const export_non_local_declaration: u32 = 2661;
     pub const global_augmentation_not_external: u32 = 2669;
     pub const delete_operand_property_reference: u32 = 2703;
@@ -2445,9 +2447,24 @@ pub const Checker = struct {
                 gop.value_ptr.has_other_export = true;
             }
         }
+        // When the source declares an ESM-target module (`esnext`,
+        // `es2015`, `es2020`, etc.) `export = X` is invalid syntax —
+        // emit upstream TS1203 directly on the export assignment node
+        // and skip the TS2309 "with other exports" diagnostic so the
+        // baseline shape matches `bundlerSyntaxRestrictions`.
+        const target_is_esm = self.sourceDirectiveValueMentions("module", "esnext") or
+            self.sourceDirectiveValueMentions("module", "es2015") or
+            self.sourceDirectiveValueMentions("module", "es2020") or
+            self.sourceDirectiveValueMentions("module", "es2022") or
+            self.sourceDirectiveValueMentions("module", "es6");
         var it = by_section.valueIterator();
         while (it.next()) |info| {
-            if (info.export_assignment != hir_mod.none_node_id and info.has_other_export) {
+            if (info.export_assignment == hir_mod.none_node_id) continue;
+            if (target_is_esm) {
+                try self.report(info.export_assignment, TsCodes.export_assignment_es_module, "Export assignment cannot be used when targeting ECMAScript modules. Consider using 'export default' or another module format instead.");
+                continue;
+            }
+            if (info.has_other_export) {
                 try self.report(info.export_assignment, TsCodes.export_assignment_with_other_exports, "An export assignment cannot be used in a module with other exported elements.");
             }
         }
@@ -12475,13 +12492,33 @@ pub const Checker = struct {
             if (sp.is_type_only or std.mem.eql(u8, self.string_interner.get(sp.imported), "default")) continue;
             if (scoped_virtual_relative) {
                 if (try self.virtualRelativeModuleHasNamedExport(node, spec, sp.imported)) continue;
-                try self.report(spec_node, TsCodes.no_exported_member_suggestion, "Module has no exported member.");
+                const requested = self.string_interner.get(sp.imported);
+                const msg = try std.fmt.allocPrint(
+                    self.diag_arena.allocator(),
+                    "Module '\"{s}\"' has no exported member '{s}'.",
+                    .{ spec, requested },
+                );
+                try self.diagnostics.append(self.gpa, .{
+                    .node = spec_node,
+                    .code = TsCodes.no_exported_member,
+                    .message = msg,
+                });
                 continue;
             }
             if (scoped_virtual_bare) {
                 if (try self.ambientModuleExportsNameForSpec(node, spec, sp.imported)) continue;
                 if (try self.virtualBareModuleHasNamedExport(node, spec, sp.imported)) continue;
-                try self.report(spec_node, TsCodes.no_exported_member_suggestion, "Module has no exported member.");
+                const requested = self.string_interner.get(sp.imported);
+                const msg = try std.fmt.allocPrint(
+                    self.diag_arena.allocator(),
+                    "Module '\"{s}\"' has no exported member '{s}'.",
+                    .{ spec, requested },
+                );
+                try self.diagnostics.append(self.gpa, .{
+                    .node = spec_node,
+                    .code = TsCodes.no_exported_member,
+                    .message = msg,
+                });
                 continue;
             }
             if (self.rootHasNonImportDeclarationNamed(sp.imported) or self.rootHasExportedName(sp.imported)) continue;
@@ -19164,6 +19201,19 @@ pub const Checker = struct {
 
     fn isJsDocIdentChar(c: u8) bool {
         return isJsDocIdentStart(c) or (c >= '0' and c <= '9');
+    }
+
+    /// Returns true when `name` is a valid ECMAScript identifier
+    /// (ASCII subset that covers everything tsc renders unquoted in
+    /// diagnostics like `Property 'X' is missing in type ...`).
+    fn isJsIdentifier(name: []const u8) bool {
+        if (name.len == 0) return false;
+        if (!isJsDocIdentStart(name[0])) return false;
+        var i: usize = 1;
+        while (i < name.len) : (i += 1) {
+            if (!isJsDocIdentChar(name[i])) return false;
+        }
+        return true;
     }
 
     fn checkRepeatedVarDeclaration(self: *Checker, node: NodeId, final_type: TypeId) CheckError!void {
@@ -31761,7 +31811,17 @@ pub const Checker = struct {
             "{}"
         else
             (try self.allocSimpleTypeName(source)) orelse "{}";
-        const prop_text = self.string_interner.get(first_missing_name);
+        // Tuple types render their numeric element index as `'2'`
+        // (no inner quotes) — see `arityAndOrderCompatibility01.ts`.
+        // For other object types the missing string-named property is
+        // double-quoted when the name isn't a JS identifier — see
+        // `assignmentCompatWithObjectMembersStringNumericNames.ts`.
+        const target_is_tuple = target < self.interner.pool.typeCount() and
+            self.interner.pool.flagsOf(target).is_tuple;
+        const prop_text = if (target_is_tuple)
+            self.string_interner.get(first_missing_name)
+        else
+            self.formatPropertyNameForDiagnostic(self.string_interner.get(first_missing_name));
         const msg = try std.fmt.allocPrint(
             self.diag_arena.allocator(),
             "Property '{s}' is missing in type '{s}' but required in type '{s}'.",
@@ -31769,6 +31829,18 @@ pub const Checker = struct {
         );
         try self.report(diag_node, TsCodes.property_missing_required, msg);
         return true;
+    }
+
+    /// Formats a property name for use in a diagnostic message that
+    /// already wraps it in single quotes (e.g. `Property '{s}' is
+    /// missing...`). Upstream tsc applies an outer single-quote layer
+    /// and, when the name isn't a JS identifier (numeric like `1`,
+    /// dotted like `1.0`, or otherwise non-identifier), additionally
+    /// wraps the name itself in single quotes, producing `''1''` /
+    /// `''1.0''` in the rendered message.
+    fn formatPropertyNameForDiagnostic(self: *Checker, name: []const u8) []const u8 {
+        if (isJsIdentifier(name)) return name;
+        return std.fmt.allocPrint(self.diag_arena.allocator(), "'{s}'", .{name}) catch name;
     }
 
     fn reportAssignmentTypeNotAssignable(
@@ -40893,7 +40965,7 @@ test "checker: import from dot uses directory index exports" {
     try s.checker.checkSourceFile(s.root);
     var found = false;
     for (s.checker.diagnostics.items) |d| {
-        if (d.code == TsCodes.no_exported_member_suggestion) found = true;
+        if (d.code == TsCodes.no_exported_member) found = true;
     }
     try T.expect(found);
 }
@@ -44811,6 +44883,7 @@ test "checker: ambient wildcard module declaration satisfies matching imports" {
     for (s.checker.diagnostics.items) |d| {
         try T.expect(d.code != TsCodes.cannot_find_module);
         try T.expect(d.code != TsCodes.no_exported_member_suggestion);
+        try T.expect(d.code != TsCodes.no_exported_member);
     }
 }
 
