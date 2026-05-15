@@ -3923,6 +3923,35 @@ pub const Checker = struct {
         return false;
     }
 
+    /// Returns true when the class field's source text contains a
+    /// definite-assignment assertion (`!`) immediately after the
+    /// member name and before the `:` type annotation. Examples:
+    ///   `state!: State;`
+    ///   `s!: Date;`
+    /// Used to suppress TS2564 (property has no initializer) on
+    /// fields that opt out via `!`. The HIR doesn't currently
+    /// surface the assertion bit, so we re-scan the source.
+    fn classFieldHasDefiniteAssertion(self: *Checker, node: NodeId) bool {
+        const src = self.source orelse return false;
+        const span = self.hir.spanOf(node);
+        if (span.start >= src.len) return false;
+        const end = @min(src.len, @as(usize, span.end));
+        var i: usize = span.start;
+        // Skip leading modifier keywords up to the field name.
+        // We're looking for the pattern `<ident>!:` — the easiest
+        // way is to scan the member span for `!:` ignoring strings,
+        // but field names can't contain `!:`, so a substring search
+        // over the span (truncated at the first `=` so an initializer
+        // expression of the form `x = y!: as never` can't false-match)
+        // is sufficient.
+        while (i < end) : (i += 1) {
+            const ch = src[i];
+            if (ch == '=' or ch == '{') return false;
+            if (ch == '!' and i + 1 < end and src[i + 1] == ':') return true;
+        }
+        return false;
+    }
+
     fn memberSourceLooksMethod(self: *Checker, node: NodeId) bool {
         const src = self.source orelse return false;
         const span = self.hir.spanOf(node);
@@ -7965,6 +7994,8 @@ pub const Checker = struct {
                         op.type_annotation != hir_mod.none_node_id and
                         op.value == hir_mod.none_node_id and
                         !self.typeExplicitlyIncludesUndefined(field_t) and
+                        !self.classFieldTypeIsAnyOrUnknown(field_t) and
+                        !self.classFieldHasDefiniteAssertion(m) and
                         !self.classNodeIsInsideAmbientDeclaredModule(node))
                     {
                         const field_name = self.string_interner.get(member_name);
@@ -8218,13 +8249,20 @@ pub const Checker = struct {
                                 const member_str = self.string_interner.get(member_name);
                                 const child_str = self.string_interner.get(cid.name);
                                 const parent_str = self.string_interner.get(ext_name);
+                                // tsc anchors TS2515 at the class name
+                                // identifier (column 7 for `class CC ...`)
+                                // and quotes only the class names, NOT
+                                // the abstract member name. Match that
+                                // formatting exactly so fixtures like
+                                // `classAbstractExtends` and
+                                // `classAbstractOverrideWithAbstract` pass.
                                 const msg = try std.fmt.allocPrint(
                                     self.diag_arena.allocator(),
-                                    "Non-abstract class '{s}' does not implement inherited abstract member '{s}' from class '{s}'.",
+                                    "Non-abstract class '{s}' does not implement inherited abstract member {s} from class '{s}'.",
                                     .{ child_str, member_str, parent_str },
                                 );
                                 try self.diagnostics.append(self.gpa, .{
-                                    .node = node,
+                                    .node = c.name,
                                     .code = TsCodes.abstract_member_not_implemented,
                                     .message = msg,
                                 });
@@ -18184,14 +18222,20 @@ pub const Checker = struct {
                 if (self.hir.kindOf(c.callee) == .identifier) {
                     const id = hir_mod.identifierOf(self.hir, c.callee);
                     if (self.class_constructor_sigs.get(id.name)) |ctor_sig| {
-                        var effective_ctor_sig = ctor_sig;
-                        var ctor_subs: std.AutoHashMapUnmanaged(TypeId, TypeId) = .empty;
-                        defer ctor_subs.deinit(self.gpa);
-                        try self.inferCallSubstitutions(ctor_sig, args, arg_types.items, &ctor_subs);
-                        if (ctor_subs.count() > 0) {
-                            effective_ctor_sig = self.substituteType(ctor_sig, &ctor_subs) catch ctor_sig;
+                        // Suppress arg-count / arg-type checks when the
+                        // class is abstract: tsc reports only TS2511
+                        // and skips arity / TS2554 in that case (see
+                        // fixture `classAbstractInstantiations1`).
+                        if (!self.abstract_classes.contains(id.name)) {
+                            var effective_ctor_sig = ctor_sig;
+                            var ctor_subs: std.AutoHashMapUnmanaged(TypeId, TypeId) = .empty;
+                            defer ctor_subs.deinit(self.gpa);
+                            try self.inferCallSubstitutions(ctor_sig, args, arg_types.items, &ctor_subs);
+                            if (ctor_subs.count() > 0) {
+                                effective_ctor_sig = self.substituteType(ctor_sig, &ctor_subs) catch ctor_sig;
+                            }
+                            try self.checkArgsAgainstSignature(node, args, arg_types.items, effective_ctor_sig);
                         }
-                        try self.checkArgsAgainstSignature(node, args, arg_types.items, effective_ctor_sig);
                     }
                     if (self.class_instance_types.get(id.name)) |inst| {
                         if (type_arg_nodes.len > 0) {
@@ -28974,9 +29018,47 @@ pub const Checker = struct {
         const src = self.source orelse return null;
         const span = self.hir.spanOf(node);
         if (span.start > 0 and span.start <= src.len and src[span.start - 1] == '(') {
+            // Don't shift to `(` when it's the open-paren of a
+            // control-flow head (`if`, `while`, `for`, `switch`).
+            // tsc keeps the diagnostic on the operand identifier
+            // there — see fixture `discriminatedUnionTypes1` which
+            // expects col `m` rather than col `(` for
+            // `if (m.kind === "X")`.
+            if (self.parenIsControlFlowHead(span.start - 1)) return span.start;
             return span.start - 1;
         }
         return span.start;
+    }
+
+    fn parenIsControlFlowHead(self: *Checker, paren_pos: u32) bool {
+        const src = self.source orelse return false;
+        if (paren_pos == 0) return false;
+        // Skip whitespace before the `(`.
+        var i: u32 = paren_pos;
+        while (i > 0) {
+            const ch = src[i - 1];
+            if (ch == ' ' or ch == '\t' or ch == '\n' or ch == '\r') {
+                i -= 1;
+                continue;
+            }
+            break;
+        }
+        if (i == 0) return false;
+        const head_keywords = [_][]const u8{ "if", "while", "for", "switch" };
+        for (head_keywords) |kw| {
+            if (i >= kw.len and std.mem.eql(u8, src[i - kw.len .. i], kw)) {
+                // Ensure the keyword stands alone (not a suffix
+                // of a longer identifier).
+                if (i == kw.len) return true;
+                const prev = src[i - kw.len - 1];
+                const ident_char = (prev == '_') or (prev == '$') or
+                    (prev >= 'a' and prev <= 'z') or
+                    (prev >= 'A' and prev <= 'Z') or
+                    (prev >= '0' and prev <= '9');
+                if (!ident_char) return true;
+            }
+        }
+        return false;
     }
 
     /// Render a call or construct signature as `(p: T, q: U) => R`
@@ -30325,6 +30407,16 @@ pub const Checker = struct {
             if (self.interner.pool.flagsOf(m).is_undefined) return true;
         }
         return false;
+    }
+
+    /// `any` and `unknown` field types are not subject to the
+    /// strict-property-initialization (TS2564) check because they
+    /// admit `undefined` as a value. Matches the upstream behavior
+    /// in fixtures like `derivedClassWithAny` where `x: any;` does
+    /// NOT report the diagnostic.
+    fn classFieldTypeIsAnyOrUnknown(self: *Checker, t: TypeId) bool {
+        _ = self;
+        return t == types.Primitive.any or t == types.Primitive.unknown;
     }
 
     /// Build `t | undefined` (or return `t` if it already includes
