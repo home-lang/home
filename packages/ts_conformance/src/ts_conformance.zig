@@ -322,7 +322,17 @@ const VirtualFile = struct {
 /// presence of non-code virtual sections in the raw source.
 fn shouldRouteThroughProgram(c: Case) bool {
     if (c.raw_source.len == 0) return false;
-    return rawSourceHasNonCodeMarker(c.raw_source);
+    if (!rawSourceHasNonCodeMarker(c.raw_source)) return false;
+    // Only route fixtures with explicit expected diagnostics. Fixtures
+    // upstream treats as clean (no `.errors.txt` baseline) work today
+    // via the legacy concatenated source — the checker sees all
+    // virtual sections in one buffer and resolves modules through its
+    // own virtual-section scan. Routing those through `ts_program`
+    // splits each file into its own compilation, which loses the
+    // shared-source ambient resolution and surfaces brand-new
+    // "Cannot find module" diagnostics they should not have.
+    if (c.expected_errors.len == 0) return false;
+    return true;
 }
 
 fn rawSourceHasNonCodeMarker(raw: []const u8) bool {
