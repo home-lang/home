@@ -1022,6 +1022,12 @@ pub const Checker = struct {
         try self.checkClassUsedBeforeDeclaration(stmts);
         try self.detectInvalidParamProperty();
         try self.detectThisInStaticContext();
+        // Detection passes above append diagnostics in node-id
+        // (i.e. AST-construction) order rather than source-position
+        // order. Re-sort so the output matches tsc's per-source-line
+        // emission and the conformance ratchet's exact-baseline diff
+        // doesn't trip on ordering alone.
+        self.sortDiagnosticsByPosition();
         if (self.source != null) try self.applyDirectives(root);
     }
 
