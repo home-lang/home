@@ -218,6 +218,7 @@ pub const TsCodes = struct {
     pub const no_exported_member_suggestion: u32 = 2724;
     pub const class_name_object_es5_module: u32 = 2725;
     pub const ts_only_decl_in_js: u32 = 8006;
+    pub const fn_must_return_value: u32 = 2355;
     pub const no_exported_member: u32 = 2305;
     pub const export_assignment_es_module: u32 = 1203;
     pub const export_non_local_declaration: u32 = 2661;
@@ -3013,6 +3014,64 @@ pub const Checker = struct {
         try self.checkFnParameterDuplicateNames(node);
         try self.walkFnBody(node);
         try self.checkFunctionOverloadCompatibilityAfterBody(node);
+        try self.checkFnReturnPathExits(node);
+    }
+
+    /// TS2355 — a function whose declared return type is neither
+    /// `undefined`, `void`, nor `any` must return a value on every code
+    /// path. We approximate "every code path returns" with
+    /// `statementDefinitelyExits`. Mirrors upstream tsc; anchored at
+    /// the return-type annotation node so `function fn1(): number {}`
+    /// reports `(N, col-of-`number`)`.
+    fn checkFnReturnPathExits(self: *Checker, node: NodeId) CheckError!void {
+        const f = hir_mod.fnDeclOf(self.hir, node);
+        if (f.body == hir_mod.none_node_id) return;
+        if (f.return_type == hir_mod.none_node_id) return;
+        if (f.flags.is_generator or f.flags.is_async) return;
+        if (f.flags.is_setter) return;
+        // Only fire on function/method bodies (block_stmt). Arrow
+        // expression bodies and other concise forms always return the
+        // expression value, so they never trigger TS2355.
+        if (self.hir.kindOf(f.body) != .block_stmt) return;
+        // Skip class members and object-literal methods — TS2355
+        // applies to standalone functions / arrows in our slice; the
+        // class-member path needs additional ambient/abstract handling.
+        const parent = self.hir.parentOf(node);
+        if (parent != hir_mod.none_node_id) {
+            switch (self.hir.kindOf(parent)) {
+                .object_property, .class_decl, .class_expr => return,
+                else => {},
+            }
+        }
+        // Type-predicate annotations (`x is T`) always have a boolean
+        // return — handled by the explicit predicate path elsewhere.
+        if (self.hir.kindOf(f.return_type) == .type_predicate_type) return;
+        const return_t = self.lowererLowerWithTypeParams(f.return_type) catch return;
+        if (return_t == types.Primitive.none) return;
+        if (return_t == types.Primitive.any or
+            return_t == types.Primitive.unknown or
+            return_t == types.Primitive.void_t or
+            return_t == types.Primitive.undefined_t or
+            return_t == types.Primitive.never) return;
+        if (self.typeContainsAnyOrUndefinedOrVoid(return_t)) return;
+        if (self.statementDefinitelyExits(f.body)) return;
+        try self.report(
+            f.return_type,
+            TsCodes.fn_must_return_value,
+            "A function whose declared type is neither 'undefined', 'void', nor 'any' must return a value.",
+        );
+    }
+
+    fn typeContainsAnyOrUndefinedOrVoid(self: *Checker, t: TypeId) bool {
+        if (t == types.Primitive.any or t == types.Primitive.unknown or t == types.Primitive.void_t or t == types.Primitive.undefined_t) return true;
+        const flags = self.interner.pool.flagsOf(t);
+        if (flags.is_any or flags.is_unknown or flags.is_undefined or flags.is_void) return true;
+        if (flags.is_union) {
+            for (self.interner.unionMembers(t)) |m| {
+                if (self.typeContainsAnyOrUndefinedOrVoid(m)) return true;
+            }
+        }
+        return false;
     }
 
     fn checkJsDocFunctionTypeTag(self: *Checker, node: NodeId) CheckError!void {
