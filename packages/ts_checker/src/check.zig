@@ -100,6 +100,7 @@ pub const TsCodes = struct {
     pub const arithmetic_operand_type: u32 = 2356;
     pub const arithmetic_left_operand_type: u32 = 2362;
     pub const arithmetic_right_operand_type: u32 = 2363;
+    pub const rest_parameter_must_be_array_type: u32 = 2370;
     pub const parameter_initializer_implementation_only: u32 = 2371;
     pub const parameter_cannot_reference_self: u32 = 2372;
     pub const parameter_cannot_reference_later: u32 = 2373;
@@ -5904,6 +5905,74 @@ pub const Checker = struct {
         return f.flags.is_setter;
     }
 
+    /// True when `t` is a valid rest-parameter type (TS2370 wants
+    /// "an array type"). tsc accepts any/unknown/never (and error
+    /// types), tuples, generic Array<T> / ReadonlyArray<T> / T[]
+    /// (which all interner-surface as object types with a numeric
+    /// index signature), bare type parameters whose constraint is
+    /// array-like, and unions / intersections where the structural
+    /// rule recurses.
+    fn restParamTypeIsValidArrayLike(self: *Checker, t: TypeId) bool {
+        if (t == types.Primitive.none) return true;
+        if (t == types.Primitive.any or t == types.Primitive.unknown or t == types.Primitive.never) return true;
+        if (t >= self.interner.pool.typeCount()) return true;
+        const flags = self.interner.pool.flagsOf(t);
+        if (flags.is_any or flags.is_unknown or flags.is_never) return true;
+        if (flags.is_tuple) return true;
+        // Defer to runtime: anything whose array-likeness depends on
+        // substitution gets the benefit of the doubt so we never
+        // raise a false positive on a generic that resolves to a
+        // tuple at the call site.
+        if (flags.is_conditional or flags.is_mapped or flags.is_indexed_access or
+            flags.is_keyof or flags.is_infer or flags.is_template_literal or
+            flags.is_string_mapping or flags.is_instantiation or flags.is_typeof) return true;
+        if (flags.is_type_parameter) {
+            const constraint = self.typeParameterConstraint(t) orelse return true;
+            return self.restParamTypeIsValidArrayLike(constraint);
+        }
+        if (flags.is_union) {
+            for (self.interner.unionMembers(t)) |member| {
+                if (!self.restParamTypeIsValidArrayLike(member)) return false;
+            }
+            return true;
+        }
+        if (flags.is_intersection) {
+            for (self.interner.intersectionMembers(t)) |member| {
+                if (self.restParamTypeIsValidArrayLike(member)) return true;
+            }
+            return false;
+        }
+        if (flags.is_object_type) {
+            // Structural array-likes (Array<T> / ReadonlyArray<T>)
+            // surface as object types with a numeric index signature
+            // courtesy of `Interner.internArrayType`.
+            if (self.interner.objectNumberIndex(t) != types.Primitive.none) return true;
+            return false;
+        }
+        return false;
+    }
+
+    /// Syntax-level fast path mirroring `restParamTypeIsValidArrayLike`.
+    /// Some annotations (`Array<T>` / `ReadonlyArray<T>` / `T[]`) lower
+    /// to object types whose interned form depends on lib resolution
+    /// being present — when the lib types haven't been wired in for
+    /// a fixture, the structural check reports a false positive. The
+    /// syntax check covers those cases without needing the full
+    /// resolved type.
+    fn restParamAnnotationLooksArrayLike(self: *Checker, type_annotation: NodeId) bool {
+        if (type_annotation == hir_mod.none_node_id) return true;
+        const k = self.hir.kindOf(type_annotation);
+        if (k == .array_type or k == .tuple_type) return true;
+        if (k == .type_ref) {
+            const ref = hir_mod.typeRefOf(self.hir, type_annotation);
+            if (ref.qualifier_len == 0) {
+                const name = self.string_interner.get(ref.name);
+                if (std.mem.eql(u8, name, "Array") or std.mem.eql(u8, name, "ReadonlyArray")) return true;
+            }
+        }
+        return false;
+    }
+
     fn returnStatementViolatesGenericRestTuple(self: *Checker, return_node: NodeId, ret_t: TypeId) bool {
         const fn_node = self.enclosingFunctionForReturn(return_node) orelse return false;
         if (!self.functionHasGenericRestTupleReturn(fn_node)) return false;
@@ -7146,6 +7215,19 @@ pub const Checker = struct {
                 {
                     try self.report(p, TsCodes.type_not_assignable, "Parameter initializer is not assignable to parameter type.");
                 }
+            }
+            // TS2370 — `function f(...x: T)` requires `T` to be an
+            // array type (any tuple, `T[]`, `Array<T>`, etc.). The
+            // syntax check covers `Array<T>` / `ReadonlyArray<T>`
+            // even when the lib types haven't been bound for a
+            // fixture; the type-level check handles bare
+            // identifiers / aliases that resolve to array shapes
+            // through the interner.
+            if (pp.flags.is_rest and !is_this_param and has_anno and
+                !self.restParamAnnotationLooksArrayLike(pp.type_annotation) and
+                !self.restParamTypeIsValidArrayLike(declared_param_t))
+            {
+                try self.report(p, TsCodes.rest_parameter_must_be_array_type, "A rest parameter must be of an array type.");
             }
             // `f(x?: T)` and `f(x: T = default)` both widen the
             // parameter type to include `undefined` (matches the
@@ -13752,6 +13834,51 @@ pub const Checker = struct {
         });
     }
 
+    /// True when `type_node` contains a `typeof <var_name>` operand
+    /// referring to the variable being declared. Mirrors tsc's
+    /// TS2502 detection for direct self-typeof in a var-decl
+    /// annotation (`var c: typeof c;`, `var f: Array<typeof f>;`,
+    /// `var f3: Foo<typeof f3>[];`). Recurses through array, tuple,
+    /// union, intersection, type-ref args, and parenthesised types
+    /// — anywhere a tsc baseline reports the cycle.
+    fn varDeclTypeAnnotationContainsTypeofSelf(self: *Checker, type_node: NodeId, var_name: hir_mod.StringId) bool {
+        if (type_node == hir_mod.none_node_id) return false;
+        return switch (self.hir.kindOf(type_node)) {
+            .typeof_type => blk: {
+                const tt = hir_mod.typeofTypeOf(self.hir, type_node);
+                if (tt.operand == hir_mod.none_node_id) break :blk false;
+                if (self.hir.kindOf(tt.operand) != .identifier) break :blk false;
+                break :blk hir_mod.identifierOf(self.hir, tt.operand).name == var_name;
+            },
+            .type_ref => blk: {
+                for (hir_mod.typeRefArgs(self.hir, type_node)) |arg| {
+                    if (self.varDeclTypeAnnotationContainsTypeofSelf(arg, var_name)) break :blk true;
+                }
+                break :blk false;
+            },
+            .array_type => self.varDeclTypeAnnotationContainsTypeofSelf(hir_mod.arrayTypeOf(self.hir, type_node).element, var_name),
+            .tuple_type => blk: {
+                for (hir_mod.tupleTypeElements(self.hir, type_node)) |member| {
+                    if (self.varDeclTypeAnnotationContainsTypeofSelf(member, var_name)) break :blk true;
+                }
+                break :blk false;
+            },
+            .union_type => blk: {
+                for (hir_mod.unionTypeMembers(self.hir, type_node)) |member| {
+                    if (self.varDeclTypeAnnotationContainsTypeofSelf(member, var_name)) break :blk true;
+                }
+                break :blk false;
+            },
+            .intersection_type => blk: {
+                for (hir_mod.intersectionTypeMembers(self.hir, type_node)) |member| {
+                    if (self.varDeclTypeAnnotationContainsTypeofSelf(member, var_name)) break :blk true;
+                }
+                break :blk false;
+            },
+            else => false,
+        };
+    }
+
     fn typeNodeContainsAliasReference(self: *Checker, node: NodeId, alias_name: hir_mod.StringId) bool {
         if (node == hir_mod.none_node_id) return false;
         return switch (self.hir.kindOf(node)) {
@@ -15074,6 +15201,16 @@ pub const Checker = struct {
                         try self.lowererLowerWithTypeParams(pp.type_annotation)
                     else
                         types.Primitive.any;
+                    // TS2370 — same rest-parameter check as the
+                    // function-decl path. Function/constructor type
+                    // expressions and interface call/method
+                    // signatures all flow through this loop.
+                    if (pp.flags.is_rest and !is_this_param and pp.type_annotation != hir_mod.none_node_id and
+                        !self.restParamAnnotationLooksArrayLike(pp.type_annotation) and
+                        !self.restParamTypeIsValidArrayLike(t))
+                    {
+                        try self.report(p, TsCodes.rest_parameter_must_be_array_type, "A rest parameter must be of an array type.");
+                    }
                     if (pp.flags.is_optional or pp.default_value != hir_mod.none_node_id) {
                         t = self.unionWithUndefined(t) catch t;
                     }
@@ -17155,7 +17292,14 @@ pub const Checker = struct {
                     self.propertyNameFromKeyNode(op.key);
                 if (prop_name) |name| {
                     const name_str = self.string_interner.get(name);
-                    const msg = if (try self.allocPropertyMissingTargetTypeName(source_t)) |target_text|
+                    // Upstream tsc widens `object` to `{}` when reporting
+                    // missing-property destructuring errors — mirrors
+                    // `nonPrimitiveAccessProperty.ts(5,7)`.
+                    const target_text_opt: ?[]const u8 = if (source_t == types.Primitive.object_t)
+                        "{}"
+                    else
+                        try self.allocPropertyMissingTargetTypeName(source_t);
+                    const msg = if (target_text_opt) |target_text|
                         try std.fmt.allocPrint(
                             self.diag_arena.allocator(),
                             "Property '{s}' does not exist on type '{s}'.",
@@ -17642,6 +17786,22 @@ pub const Checker = struct {
     fn checkVarDecl(self: *Checker, node: NodeId) CheckError!void {
         const v = hir_mod.varDeclOf(self.hir, node);
 
+        // TS2502 — `var x: typeof x` (or via an identical-name
+        // qualifier-less typeof inside a tuple / array / union).
+        // The full typeof-cycle detection lives in
+        // `typeAliasCircularTypeofVarDecl`; the var-side counterpart
+        // here catches the direct self-reference, which tsc reports
+        // even when no intermediate alias is involved.
+        if (v.type_annotation != hir_mod.none_node_id and
+            v.name != hir_mod.none_node_id and
+            self.hir.kindOf(v.name) == .identifier)
+        {
+            const id = hir_mod.identifierOf(self.hir, v.name);
+            if (self.varDeclTypeAnnotationContainsTypeofSelf(v.type_annotation, id.name)) {
+                try self.reportSelfReferencedTypeAnnotation(node);
+            }
+        }
+
         // Lower type annotation first (so we can check init against it).
         var declared_type: TypeId = types.Primitive.none;
         if (v.type_annotation != hir_mod.none_node_id) {
@@ -17659,7 +17819,17 @@ pub const Checker = struct {
         var init_type: TypeId = if (v.is_ambient) types.Primitive.any else types.Primitive.undefined_t;
         if (v.init != hir_mod.none_node_id) {
             if (v.is_ambient) {
-                try self.report(v.init, TsCodes.ambient_initializer_not_allowed, "Initializers are not allowed in ambient contexts.");
+                // Upstream tsc allows constant-value initializers
+                // (literal numbers, strings, bigints, booleans, and
+                // unary `-N` / `+N` numeric literals) on ambient
+                // `const` and `export const` declarations — they're
+                // treated as inline literal type annotations. Mirrors
+                // fixtures `typesVersions.justIndex.ts(1,18)`,
+                // `typesVersions.emptyTypes`, `scopedPackagesClassic`.
+                const is_const_decl = self.hir.kindOf(node) == .const_decl;
+                if (!(is_const_decl and self.ambientInitializerIsConstantValue(v.init))) {
+                    try self.report(v.init, TsCodes.ambient_initializer_not_allowed, "Initializers are not allowed in ambient contexts.");
+                }
             } else {
                 init_type = try self.checkExpression(v.init);
             }
@@ -17998,6 +18168,25 @@ pub const Checker = struct {
             return true;
         }
         return false;
+    }
+
+    /// Predicate: in an ambient context (`.d.ts` or `declare`),
+    /// `const` declarations may carry a constant-value initializer
+    /// (literals, `-N`/`+N` numeric literals). Mirrors upstream
+    /// tsc's grammar exception that treats these as inline literal
+    /// type annotations rather than runtime initializers.
+    fn ambientInitializerIsConstantValue(self: *Checker, init_node: NodeId) bool {
+        if (init_node == hir_mod.none_node_id) return false;
+        return switch (self.hir.kindOf(init_node)) {
+            .literal_string, .literal_number, .literal_bool, .literal_bigint => true,
+            .unary_op => blk: {
+                const u = hir_mod.unaryOf(self.hir, init_node);
+                if (u.op != .neg and u.op != .plus) break :blk false;
+                const inner_kind = self.hir.kindOf(u.operand);
+                break :blk inner_kind == .literal_number or inner_kind == .literal_bigint;
+            },
+            else => false,
+        };
     }
 
     fn constInitializerType(self: *Checker, init_node: NodeId, fallback: TypeId) CheckError!TypeId {
@@ -30983,6 +31172,39 @@ pub const Checker = struct {
                         }
                         try tuple_buf.append(arena_t, ']');
                         break :blk tuple_buf.items;
+                    }
+                    // Render array shapes (`T[]`) when the object type
+                    // has a number index signature, no string/symbol
+                    // index, and no own non-method members. Mirrors
+                    // upstream TS prose for fixtures like
+                    // `assignmentCompatBetweenTupleAndArray.ts(18,1)`.
+                    const num_idx = self.interner.objectNumberIndex(t);
+                    if (members.len == 0 and
+                        num_idx != types.Primitive.none and
+                        self.interner.objectStringIndex(t) == types.Primitive.none and
+                        self.interner.objectSymbolIndex(t) == types.Primitive.none)
+                    {
+                        if (try self.allocSimpleTypeName(num_idx)) |elem_name| {
+                            // Wrap union element type in parens so
+                            // `T[]` doesn't become ambiguous in prose.
+                            const wrap = std.mem.indexOfScalar(u8, elem_name, '|') != null or
+                                std.mem.indexOf(u8, elem_name, "=>") != null;
+                            const arena_arr = self.diag_arena.allocator();
+                            const out_text = if (wrap)
+                                try std.fmt.allocPrint(arena_arr, "({s})[]", .{elem_name})
+                            else
+                                try std.fmt.allocPrint(arena_arr, "{s}[]", .{elem_name});
+                            break :blk out_text;
+                        }
+                    }
+                    // Empty object type (`{}`) — used by
+                    // `assignmentCompatBetweenTupleAndArray.ts(18,1)`.
+                    if (members.len == 0 and
+                        num_idx == types.Primitive.none and
+                        self.interner.objectStringIndex(t) == types.Primitive.none and
+                        self.interner.objectSymbolIndex(t) == types.Primitive.none)
+                    {
+                        break :blk "{}";
                     }
                 }
                 // Render unions (`object | null | undefined`) so the
