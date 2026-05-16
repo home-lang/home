@@ -520,6 +520,18 @@ pub const Parser = struct {
 
     fn internToken(self: *Parser, tok: Token) ParseError!hir_mod.StringId {
         const slice = self.source[tok.span.start..tok.span.end];
+        // Identifier tokens may contain `\uXXXX` / `\u{XXXXXX}` Unicode
+        // escapes (ES2015+). Decode them before interning so two
+        // syntactic spellings of the same name (`А` and `А`)
+        // resolve to the same symbol. Without this the binder treats
+        // them as distinct identifiers and references like `if (А)`
+        // fire spurious TS2304. Baseline: scannerS7.6_A4.2_T1.
+        if (tok.kind == .identifier and std.mem.indexOfScalar(u8, slice, '\\') != null) {
+            const decoded = decodeIdentifierEscapes(self.diag_arena.allocator(), slice) catch {
+                return self.interner.intern(slice) catch error.OutOfMemory;
+            };
+            return self.interner.intern(decoded) catch error.OutOfMemory;
+        }
         return self.interner.intern(slice) catch error.OutOfMemory;
     }
 
@@ -9235,6 +9247,71 @@ fn arrayLiteralElementCanStart(kind: TokenKind) bool {
     };
 }
 
+/// Decode `\uXXXX` and `\u{XXXXXX}` escapes in an identifier slice
+/// into a freshly-allocated UTF-8 string. Returned bytes are owned by
+/// `gpa`. Callers feed the output straight into the interner so two
+/// spellings of the same Unicode identifier (`A` and `A`) hash to
+/// the same StringId. Falls back to the raw slice on malformed escapes
+/// rather than refusing — the scanner has already produced the
+/// "Hexadecimal digit expected." diagnostics in that case, and we want
+/// the binder to still see *some* identifier rather than crashing.
+fn decodeIdentifierEscapes(gpa: std.mem.Allocator, slice: []const u8) ![]const u8 {
+    var buf: std.ArrayListUnmanaged(u8) = .empty;
+    errdefer buf.deinit(gpa);
+    var i: usize = 0;
+    while (i < slice.len) {
+        const c = slice[i];
+        if (c != '\\' or i + 1 >= slice.len or slice[i + 1] != 'u') {
+            try buf.append(gpa, c);
+            i += 1;
+            continue;
+        }
+        // `\u{XXXXXX}`
+        if (i + 2 < slice.len and slice[i + 2] == '{') {
+            var j: usize = i + 3;
+            var value: u32 = 0;
+            while (j < slice.len and slice[j] != '}') : (j += 1) {
+                const v = hexDigitValue(slice[j]) orelse return slice; // malformed -> fall back
+                value = value * 16 + v;
+                if (value > 0x10FFFF) return slice;
+            }
+            if (j >= slice.len or slice[j] != '}') return slice;
+            try appendUtf8CodePoint(gpa, &buf, value);
+            i = j + 1;
+            continue;
+        }
+        // `\uXXXX`
+        if (i + 6 > slice.len) return slice;
+        var value: u32 = 0;
+        var k: usize = 0;
+        while (k < 4) : (k += 1) {
+            const v = hexDigitValue(slice[i + 2 + k]) orelse return slice;
+            value = value * 16 + v;
+        }
+        try appendUtf8CodePoint(gpa, &buf, value);
+        i += 6;
+    }
+    return buf.toOwnedSlice(gpa);
+}
+
+fn hexDigitValue(c: u8) ?u32 {
+    return switch (c) {
+        '0'...'9' => c - '0',
+        'a'...'f' => 10 + (c - 'a'),
+        'A'...'F' => 10 + (c - 'A'),
+        else => null,
+    };
+}
+
+fn appendUtf8CodePoint(gpa: std.mem.Allocator, buf: *std.ArrayListUnmanaged(u8), cp: u32) !void {
+    var enc: [4]u8 = undefined;
+    const len = std.unicode.utf8Encode(@intCast(cp), &enc) catch {
+        try buf.append(gpa, '?'); // unreachable in practice (we clamp to 0x10FFFF), but keep it safe
+        return;
+    };
+    try buf.appendSlice(gpa, enc[0..len]);
+}
+
 /// Parse a numeric literal as f64. Handles hex/oct/bin via `parseInt`
 /// + cast, decimal via `parseFloat`. Strips `_` digit separators.
 fn parseNumericLiteral(slice: []const u8) f64 {
@@ -9370,6 +9447,35 @@ test "parser: identifier expression" {
     try T.expectEqual(hir_mod.NodeKind.identifier, s.hir.kindOf(top));
     const id = hir_mod.identifierOf(&s.hir, top);
     try T.expectEqualStrings("foo", s.interner.get(id.name));
+}
+
+test "parser: identifier with `\\uXXXX` escape decodes to the same name as the bare form" {
+    // ES2015+ allows any IdentifierPart (and Start) to be spelled with
+    // a `\uXXXX` Unicode escape. tsc decodes the escape before symbol
+    // resolution so `A` (`A`) and the bare `A` are the same name.
+    // Without this fold the binder treats them as distinct and emits
+    // spurious TS2304 on cross-spelling references. Baseline:
+    // scannerS7.6_A4.2_T1 (Cyrillic identifier round-trip).
+    var s = try newTestSetup("\\u0041;");
+    defer destroyTestSetup(s);
+    const root = try s.parser.parseSourceFile();
+    const top = hir_mod.blockStmts(&s.hir, root)[0];
+    try T.expectEqual(hir_mod.NodeKind.identifier, s.hir.kindOf(top));
+    const id = hir_mod.identifierOf(&s.hir, top);
+    try T.expectEqualStrings("A", s.interner.get(id.name));
+}
+
+test "parser: identifier with `\\u{XXXX}` brace-form escape decodes correctly" {
+    // Brace-form `\u{XXXXXX}` supports code points up to U+10FFFF. Use
+    // a Cyrillic capital А (U+0410) so the test exercises a multi-byte
+    // UTF-8 round-trip.
+    var s = try newTestSetup("\\u{410};");
+    defer destroyTestSetup(s);
+    const root = try s.parser.parseSourceFile();
+    const top = hir_mod.blockStmts(&s.hir, root)[0];
+    try T.expectEqual(hir_mod.NodeKind.identifier, s.hir.kindOf(top));
+    const id = hir_mod.identifierOf(&s.hir, top);
+    try T.expectEqualStrings("\xd0\x90", s.interner.get(id.name)); // "А" in UTF-8
 }
 
 test "parser: string literal" {

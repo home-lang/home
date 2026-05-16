@@ -64,8 +64,14 @@ pub const TokenFlags = packed struct(u16) {
     /// True if this token is a string literal containing one or more
     /// template-substitutions (i.e. a `${expr}` boundary).
     is_template_part: bool = false,
+    /// True if this identifier/keyword token contains one or more
+    /// `\uXXXX` / `\u{XXXXXX}` Unicode escapes in its raw spelling.
+    /// The parser folds the escape into the interned name; this flag
+    /// lets diagnostic emitters (TS1260, etc.) see when the original
+    /// source used escapes even though the decoded form is a keyword.
+    has_escape: bool = false,
     /// Reserved for future use.
-    _padding: u11 = 0,
+    _padding: u10 = 0,
 };
 
 /// 16-byte token record. SoA-friendly: scanner emits `[]Token` with no
