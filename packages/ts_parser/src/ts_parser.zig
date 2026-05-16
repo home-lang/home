@@ -1848,6 +1848,11 @@ pub const Parser = struct {
 
     fn parseFunctionDeclaration(self: *Parser, require_name: bool) ParseError!NodeId {
         const start = self.advance(); // function
+        // Capture the asterisk position so TS1221/TS1222 can be reported
+        // at the `*` token (mirrors upstream tsc spans for ambient and
+        // overload-as-generator diagnostics on fixtures like
+        // `generatorInAmbientContext2`, `generatorOverloads1`).
+        const asterisk_tok: ?Token = if (self.peek().kind == .asterisk) self.peek() else null;
         const is_generator = self.match(.asterisk);
         // Function name (optional in expression context, required in
         // declaration). Phase 1.D treats `function` as a declaration only
@@ -1928,10 +1933,12 @@ pub const Parser = struct {
             // Ambient declaration `function foo(...);`.
             try self.consumeStatementTerminator();
             if (is_generator) {
+                const diag_pos: u32 = if (asterisk_tok) |at| at.span.start else start.span.start;
+                const diag_line: u32 = if (asterisk_tok) |at| at.line else start.line;
                 if (self.ambient_depth > 0) {
-                    try self.reportCodeAt(start.span.start, start.line, 1221, "Generators are not allowed in an ambient context.");
+                    try self.reportCodeAt(diag_pos, diag_line, 1221, "Generators are not allowed in an ambient context.");
                 } else {
-                    try self.reportCodeAt(start.span.start, start.line, 1222, "An overload signature cannot be declared as a generator.");
+                    try self.reportCodeAt(diag_pos, diag_line, 1222, "An overload signature cannot be declared as a generator.");
                 }
             }
         }

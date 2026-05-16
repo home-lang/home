@@ -24561,6 +24561,15 @@ pub const Checker = struct {
                     }
                     break :blk types.Primitive.any;
                 }
+                // Skip operand type-checking when the enclosing context
+                // isn't a generator — the parser already raised TS1163
+                // ("'yield' is only allowed in a generator body") and
+                // tsc suppresses cascading TS2304/TS2363 noise on the
+                // operand. Matches fixtures like `YieldExpression11/14/15_es6`
+                // and `YieldStarExpression1_es6`.
+                if (gen == null) {
+                    break :blk types.Primitive.any;
+                }
                 const inner_t = try self.checkExpression(y.expr);
                 if (y.type_node != hir_mod.none_node_id) {
                     if (!self.isIterableLikeType(inner_t) and
