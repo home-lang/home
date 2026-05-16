@@ -2459,12 +2459,12 @@ pub const Printer = struct {
         }
     }
 
-    /// §4.A.4.16 — true iff `switch_stmt` is acceptable for state-
-    /// machine lowering. Each case body: yield/await-free non-
-    /// structured stmts + at most one bare `yield E` + ends with
+    /// §4.A.4.16 v0/v1 — true iff `switch_stmt` is acceptable for
+    /// state-machine lowering. Each case body: yield/await-free
+    /// non-structured stmts + ≥0 bare `yield E` + ends with
     /// `break;` / `return` / `throw`. No labeled break. No
-    /// fall-through (we require explicit `break;` since the dispatch
-    /// emit assumes each case is independent).
+    /// fall-through. Multi-yield per case is fine — each yield opens
+    /// a fresh resume state in the emit.
     fn switchYieldOk(self: *const Printer, switch_node: NodeId) bool {
         const sp = hir_mod.switchOf(self.hir, switch_node);
         if (self.subtreeContainsYield(sp.discriminant)) return false;
@@ -2474,7 +2474,6 @@ pub const Printer = struct {
             const cp = hir_mod.switchCaseOf(self.hir, cn);
             if (cp.value != hir_mod.none_node_id and self.subtreeContainsYield(cp.value)) return false;
             const stmts = hir_mod.switchCaseStmts(self.hir, cn);
-            var yield_count: usize = 0;
             var terminates = false;
             for (stmts) |st| {
                 const k = self.hir.kindOf(st);
@@ -2482,8 +2481,6 @@ pub const Printer = struct {
                     const yp = hir_mod.yieldExprOf(self.hir, st);
                     if (yp.type_node != hir_mod.none_node_id) return false; // no yield* in v0
                     if (yp.expr != hir_mod.none_node_id and self.subtreeContainsYield(yp.expr)) return false;
-                    yield_count += 1;
-                    if (yield_count > 1) return false;
                     continue;
                 }
                 if (k == .break_stmt) {
@@ -2498,8 +2495,6 @@ pub const Printer = struct {
                     continue;
                 }
                 if (self.subtreeContainsYield(st)) return false;
-                // Reject nested structured stmts that could complicate
-                // the dispatch (the dispatch emit doesn't recurse).
                 switch (k) {
                     .while_stmt, .do_while_stmt, .for_stmt, .for_in_stmt, .for_of_stmt, .try_stmt, .switch_stmt, .if_stmt, .fn_decl, .class_decl, .continue_stmt => return false,
                     else => {},
@@ -9973,6 +9968,27 @@ test "emit: generator with switch + yield-free case still routes through dispatc
     defer T.allocator.free(out);
     // case 2 body emits `log()` + the break rewrite to exit.
     try T.expect(std.mem.indexOf(u8, out, "case 3: log(); return [3, 4];") != null);
+}
+
+test "emit: generator with switch + multi-yield-per-case lowers" {
+    // §4.A.4.16 v1 — multi-yield per case. Each yield opens a fresh
+    // resume state. `case 1: pre(); yield 'a'; mid(); yield 'b';
+    // post(); break;` lowers to 3 states (initial + 2 resumes).
+    const out = try emitWithOpts(
+        "function* g() { switch (x) { case 1: pre(); yield 'a'; mid(); yield 'b'; post(); break; } }",
+        .{ .es_target = .es5 },
+    );
+    defer T.allocator.free(out);
+    try T.expect(std.mem.indexOf(u8, out, "__generator") != null);
+    // Dispatch (default → exit, no default arm).
+    try T.expect(std.mem.indexOf(u8, out, "switch (x) { case 1: return [3, 1]; default: return [3, 4]; }") != null);
+    // Case 1: pre() + first yield.
+    try T.expect(std.mem.indexOf(u8, out, "case 1: pre(); return [4, \"a\"];") != null);
+    // Resume1: sent + mid() + second yield.
+    try T.expect(std.mem.indexOf(u8, out, "case 2: _a.sent(); mid(); return [4, \"b\"];") != null);
+    // Resume2: sent + post() + break (→ exit).
+    try T.expect(std.mem.indexOf(u8, out, "case 3: _a.sent(); post(); return [3, 4];") != null);
+    try T.expect(std.mem.indexOf(u8, out, "case 4:") != null);
 }
 
 test "emit: generator with switch missing-break still bails" {
