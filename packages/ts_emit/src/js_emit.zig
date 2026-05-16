@@ -1360,7 +1360,7 @@ pub const Printer = struct {
         //     loop wrapped in try/catch/finally so the iterator's
         //     `.return()` runs on abrupt completion. Matches tsc's
         //     `downlevelIteration` flag.
-        if (self.hir.kindOf(node) == .for_of_stmt and self.options.es_target == .es5) {
+        if (self.hir.kindOf(node) == .for_of_stmt and !p.is_await and self.options.es_target == .es5) {
             if (self.options.downlevel_iteration) {
                 try self.printForOfIteratorProtocol(p.target, p.source, p.body);
                 return;
@@ -1399,8 +1399,18 @@ pub const Printer = struct {
             try self.write("); _astep = ");
             try self.write(await_kw);
             try self.write("_aiter.next(), !_astep.done; ) { ");
-            try self.printForOfBindingDecl(p.target);
-            try self.write(" = _astep.value; ");
+            // §4.A destructuring v9 — at ES5 the native `var { a } =
+            // _astep.value;` shape would fail; lower via temp ident.
+            // At ES2015+ the printForOfBindingDecl path emits native
+            // destructuring which is fine.
+            if (self.options.es_target == .es5 and self.forOfBindingIsPattern(p.target)) {
+                try self.write("var _e = _astep.value; ");
+                try self.emitDestructuringShim(self.forOfBindingPatternNode(p.target), "_e");
+                try self.write(" ");
+            } else {
+                try self.printForOfBindingDecl(p.target);
+                try self.write(" = _astep.value; ");
+            }
             try self.printForOfBody(p.body);
             try self.write(" } } catch (e_1_1) { e_1 = { error: e_1_1 }; } finally { try { if (_astep && !_astep.done && (_r = _aiter.return)) ");
             try self.write(await_kw);
@@ -8286,6 +8296,24 @@ test "emit: for-of with object destructuring target lowers via _e temp at es5" {
     defer T.allocator.free(out);
     try T.expect(std.mem.indexOf(u8, out, "var _e = _arr[_i];") != null);
     try T.expect(std.mem.indexOf(u8, out, "var name = _e.name, age = _e.age;") != null);
+}
+
+test "emit: for-await-of with destructuring target lowers via _e temp at es5" {
+    // §4.A destructuring v9 — async for-await-of also handles pattern
+    // targets via temp ident. Using es2017 so the for-await-of falls
+    // through the iterator-protocol emit (native await) and we get
+    // a clean read on the destructuring lowering at ES5.
+    const out = try emitWithOpts(
+        "async function f() { for await (const [a, b] of source) { use(a, b); } }",
+        .{ .es_target = .es5 },
+    );
+    defer T.allocator.free(out);
+    // The async fn is downleveled to __awaiter; for-await emits
+    // `__asyncValues` inside. The ES5 destructuring shim still fires
+    // because the for-of branch checks es_target == .es5 directly.
+    try T.expect(std.mem.indexOf(u8, out, "var _e = _astep.value;") != null);
+    try T.expect(std.mem.indexOf(u8, out, "var a = _e[0], b = _e[1];") != null);
+    try T.expect(std.mem.indexOf(u8, out, "var [a, b] = _astep.value") == null);
 }
 
 test "emit: for-of with downlevel_iteration + destructuring target lowers at es5" {
