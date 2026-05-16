@@ -17236,6 +17236,19 @@ pub const Checker = struct {
         {
             return true;
         }
+        // `Promise<T>` / `PromiseLike<T>` / `Awaited<T>` are
+        // synthesized structurally in
+        // `lowererLowerWithTypeParams` rather than declared as
+        // ambient interfaces. Treat them as known heritage targets
+        // so `interface A extends Promise<string> {}` does not
+        // trip TS2304. Mirrors conformance fixture
+        // `awaitInheritedPromise_es2017.ts(3,21)`.
+        if (std.mem.eql(u8, raw, "Promise") or
+            std.mem.eql(u8, raw, "PromiseLike") or
+            std.mem.eql(u8, raw, "Awaited"))
+        {
+            return true;
+        }
         if (self.lookupNarrow(name)) |t| {
             if (t != types.Primitive.none and t != types.Primitive.any and t != types.Primitive.unknown) return true;
         }
