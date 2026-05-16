@@ -2071,15 +2071,12 @@ fn hasHarnessModeledExpectedError(name: []const u8, source: []const u8) bool {
     // removed — coarse-mode checker already emits diagnostics
     // (covered by cluster-probe test).
     if (std.mem.indexOf(u8, name, "classStaticBlock16") != null) return true;
-    if (std.mem.indexOf(u8, name, "library-reference-15") != null) return true;
-    if (std.mem.indexOf(u8, name, "library-reference-5") != null) return true;
-    if (std.mem.indexOf(u8, name, "constructBigint") != null) return true;
-    if (std.mem.indexOf(u8, name, "exportAsNamespace_exportAssignment") != null) return true;
-    if (std.mem.indexOf(u8, name, "exportAsNamespace_missingEmitHelpers") != null) return true;
-    if (std.mem.indexOf(u8, name, "exportAsNamespace_nonExistent") != null) return true;
-    if (std.mem.indexOf(u8, name, "importAttributes9") != null) return true;
-    if (std.mem.indexOf(u8, name, "useObjectValuesAndEntries3") != null) return true;
-    if (std.mem.indexOf(u8, name, "typingsLookup3") != null) return true;
+    // (Retired 2026-05-16) Per Agent BT — `library-reference-15`,
+    // `library-reference-5`, `constructBigint`, `exportAsNamespace_*`,
+    // `importAttributes9`, `useObjectValuesAndEntries3`, `typingsLookup3`
+    // — all dead-code shims (the runner already short-circuits). The
+    // BT regression test pins this; do not re-add them when cherry-
+    // picking older agent branches.
     // (Retired 2026-05-16) Async/await `_es*` shim removal pass (Agent BQ).
     //
     // PROBED & REMOVED (dead code — checker already emits the
@@ -2128,8 +2125,8 @@ fn hasHarnessModeledExpectedError(name: []const u8, source: []const u8) bool {
     // generator yield/return/next type parameters. Keep these narrow cases
     // tracked in coarse mode while source support handles generator parsing,
     // overload placement, ambient diagnostics, and primitive return checks.
-    if (std.mem.eql(u8, name, "generatorTypeCheck8")) return true;
-    if (std.mem.eql(u8, name, "generatorTypeCheck31")) return true;
+    // (Retired 2026-05-16 per Agent BT) — `generatorTypeCheck8` and
+    // `generatorTypeCheck31` were dead-code shims.
     if (std.mem.indexOf(u8, name, "asyncArrowFunction10_es6") != null) return true;
     if (std.mem.indexOf(u8, name, "enumConstantMembers") != null) return true;
     if (std.mem.indexOf(u8, name, "enumShadowedInfinityNaN") != null) return true;

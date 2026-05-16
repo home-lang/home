@@ -1293,6 +1293,7 @@ pub const Checker = struct {
     /// Check a complete source file. The HIR root must be a
     /// block_stmt of top-level statements.
     pub fn checkSourceFile(self: *Checker, root: NodeId) CheckError!void {
+        std.debug.print("[DEBUG checkSourceFile] root={d}\n", .{root});
         // §4.A.X TS 4.0 — give the relation engine a live reference
         // to `rest_signatures` so signature assignability can expand
         // a tuple-typed rest param into positional params when
@@ -21469,12 +21470,12 @@ pub const Checker = struct {
         // identifier name. Ambient declarations are exempt because
         // they participate in the global type rather than introducing
         // a local binding.
-        if (!v.is_ambient and
-            v.name != hir_mod.none_node_id and
+        if (v.name != hir_mod.none_node_id and
             self.hir.kindOf(v.name) == .identifier)
         {
             const id = hir_mod.identifierOf(self.hir, v.name);
-            if (std.mem.eql(u8, self.string_interner.get(id.name), "globalThis")) {
+            const name_str = self.string_interner.get(id.name);
+            if (!v.is_ambient and std.mem.eql(u8, name_str, "globalThis")) {
                 try self.report(
                     v.name,
                     TsCodes.declaration_name_conflicts_builtin_global,
