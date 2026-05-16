@@ -8988,6 +8988,35 @@ test "emit: generator with for-of-yield + object destructuring target" {
     try T.expect(std.mem.indexOf(u8, out, "var { value } = _arr[_i];") != null);
 }
 
+test "emit: generator with for-of-yield + if-guarded continue lowers" {
+    // Sibling of §4.A.4.14 v8 for sync gen. `for (const x of items) {
+    // if (x.skip) continue; yield x; }` uses splitLoopBody (pre=[if],
+    // yield, post=[]). The if-stmt + break/continue printer cooperation
+    // emits `if (x.skip) return [3, <continue_label>];` inline.
+    const out = try emitWithOpts(
+        "function* g() { for (const x of items) { if (x.skip) continue; yield x; } }",
+        .{ .es_target = .es5 },
+    );
+    defer T.allocator.free(out);
+    try T.expect(std.mem.indexOf(u8, out, "__generator") != null);
+    try T.expect(std.mem.indexOf(u8, out, "TODO: ES5 generator") == null);
+    // continue_label is case 3 for this 4-case loop layout (header /
+    // resume / continue / exit). gen_continue_label is wired before
+    // splitLoopBody's pre-stmts emit.
+    try T.expect(std.mem.indexOf(u8, out, "if (x.skip) return [3, 3];") != null);
+}
+
+test "emit: generator with for-of-yield + if-guarded break lowers" {
+    const out = try emitWithOpts(
+        "function* g() { for (const x of items) { if (x.done) break; yield x; } }",
+        .{ .es_target = .es5 },
+    );
+    defer T.allocator.free(out);
+    try T.expect(std.mem.indexOf(u8, out, "__generator") != null);
+    // break → exit_label = case 4.
+    try T.expect(std.mem.indexOf(u8, out, "if (x.done) return [3, 4];") != null);
+}
+
 test "emit: generator with for-in-yield + destructuring target" {
     // for-in iterates keys (strings), so destructuring on a key is
     // unusual but valid TS (treats key as string-indexed).
