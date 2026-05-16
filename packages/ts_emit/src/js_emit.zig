@@ -1597,12 +1597,39 @@ pub const Printer = struct {
         if (p.catch_block != hir_mod.none_node_id) {
             try self.write(" catch");
             if (p.catch_param != hir_mod.none_node_id) {
-                try self.write(" (");
-                try self.printExpression(p.catch_param);
-                try self.write(")");
+                const pk = self.hir.kindOf(p.catch_param);
+                const is_pattern = pk == .object_pattern or pk == .array_pattern;
+                // §4.A destructuring v10 — catch param destructuring.
+                // At ES5 the native `catch ({ a }) { ... }` shape would
+                // fail; lower to `catch (_e) { var a = _e.a; ... }`.
+                // At ES2015+ render the pattern verbatim via
+                // `printBindingName` (which routes patterns through
+                // their respective printers).
+                if (is_pattern and self.options.es_target == .es5) {
+                    try self.write(" (_e) ");
+                    try self.write("{ ");
+                    try self.emitDestructuringShim(p.catch_param, "_e");
+                    try self.write(" ");
+                    if (self.hir.kindOf(p.catch_block) == .block_stmt) {
+                        const stmts = hir_mod.blockStmts(self.hir, p.catch_block);
+                        for (stmts, 0..) |s, i| {
+                            if (i > 0) try self.write(" ");
+                            try self.printNonIndentStatement(s);
+                        }
+                    } else {
+                        try self.printNonIndentStatement(p.catch_block);
+                    }
+                    try self.write(" }");
+                } else {
+                    try self.write(" (");
+                    try self.printBindingName(p.catch_param);
+                    try self.write(") ");
+                    try self.printStatementInline(p.catch_block);
+                }
+            } else {
+                try self.write(" ");
+                try self.printStatementInline(p.catch_block);
             }
-            try self.write(" ");
-            try self.printStatementInline(p.catch_block);
         }
         if (p.finally_block != hir_mod.none_node_id) {
             try self.write(" finally ");
@@ -8296,6 +8323,44 @@ test "emit: for-of with object destructuring target lowers via _e temp at es5" {
     defer T.allocator.free(out);
     try T.expect(std.mem.indexOf(u8, out, "var _e = _arr[_i];") != null);
     try T.expect(std.mem.indexOf(u8, out, "var name = _e.name, age = _e.age;") != null);
+}
+
+test "emit: try-catch with destructuring param renders pattern at es2015+" {
+    // §4.A destructuring v10 — at ES2015+ catch destructuring is
+    // native; printBindingName routes the pattern through the right
+    // emit instead of dropping it.
+    const out = try emitWithOpts(
+        "try { f(); } catch ({ message }) { log(message); }",
+        .{ .es_target = .es2015 },
+    );
+    defer T.allocator.free(out);
+    try T.expect(std.mem.indexOf(u8, out, "catch ({ message })") != null);
+    try T.expect(std.mem.indexOf(u8, out, "log(message)") != null);
+}
+
+test "emit: try-catch with destructuring param lowers to temp + shim at es5" {
+    // At ES5 the native pattern doesn't work — emit `catch (_e) {
+    // var message = _e.message; ... }`.
+    const out = try emitWithOpts(
+        "try { f(); } catch ({ message }) { log(message); }",
+        .{ .es_target = .es5 },
+    );
+    defer T.allocator.free(out);
+    try T.expect(std.mem.indexOf(u8, out, "catch (_e)") != null);
+    try T.expect(std.mem.indexOf(u8, out, "var message = _e.message;") != null);
+    try T.expect(std.mem.indexOf(u8, out, "log(message)") != null);
+    // Native pattern must not leak through.
+    try T.expect(std.mem.indexOf(u8, out, "catch ({ message })") == null);
+}
+
+test "emit: try-catch with array destructuring param lowers at es5" {
+    const out = try emitWithOpts(
+        "try { f(); } catch ([code, msg]) { log(msg); }",
+        .{ .es_target = .es5 },
+    );
+    defer T.allocator.free(out);
+    try T.expect(std.mem.indexOf(u8, out, "catch (_e)") != null);
+    try T.expect(std.mem.indexOf(u8, out, "var code = _e[0], msg = _e[1];") != null);
 }
 
 test "emit: for-await-of with destructuring target lowers via _e temp at es5" {
