@@ -6326,7 +6326,17 @@ pub const Parser = struct {
     fn parseImportTypeReference(self: *Parser) ParseError!NodeId {
         const import_tok = self.advance();
         _ = try self.expect(.open_paren, "'(' after import in import type");
-        _ = try self.expect(.string_literal, "module specifier in import type");
+        // tsc emits TS1141 "String literal expected." at the offending
+        // token when `import(<non-string>)` appears in type position.
+        // Mirror that exact code+phrasing so baselines line up
+        // (`importTypeNested`, `importTypeNonString`,
+        // `importTypeNestedNoRef`).
+        if (self.peek().kind != .string_literal) {
+            const tok = self.peek();
+            try self.reportCodeAt(tok.span.start, tok.line, 1141, "String literal expected.");
+            return error.UnexpectedToken;
+        }
+        _ = self.advance();
         if (self.match(.comma)) {
             var depth: i32 = 0;
             while (self.peek().kind != .eof) {
@@ -10805,6 +10815,26 @@ test "parser: import equals require expects string literal" {
     _ = try s.parser.parseSourceFile();
     try T.expectEqual(@as(usize, 1), s.parser.diagnostics.items.len);
     try T.expectEqual(@as(u32, 1141), s.parser.diagnostics.items[0].code);
+}
+
+// `import(<non-string>)` in type position must report TS1141
+// "String literal expected." at the offending token — mirrors tsc
+// for `importTypeNonString`, `importTypeNested`,
+// `importTypeNestedNoRef`. The previous emission used TS1109 with
+// the parser's internal "expected module specifier in import type"
+// phrasing, which broke baseline comparison.
+test "parser: import type non-string emits TS1141" {
+    var s = try newTestSetup(
+        \\export const x: import({x: 12}) = undefined as any;
+    );
+    defer destroyTestSetup(s);
+
+    _ = s.parser.parseSourceFile() catch {};
+    var saw_1141 = false;
+    for (s.parser.diagnostics.items) |d| {
+        if (d.code == 1141 and std.mem.eql(u8, d.message, "String literal expected.")) saw_1141 = true;
+    }
+    try T.expect(saw_1141);
 }
 
 test "parser: import type alias reports diagnostic" {

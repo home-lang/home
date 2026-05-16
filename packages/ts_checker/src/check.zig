@@ -9986,7 +9986,13 @@ pub const Checker = struct {
                     // accessors of either kind are folded by skipping.
                     if (fn_p.flags.is_getter or fn_p.flags.is_setter) {
                         if (fn_p.flags.is_abstract and fn_p.body != hir_mod.none_node_id) {
-                            try self.report(m, TsCodes.abstract_accessor_implementation, "An abstract accessor cannot have an implementation.");
+                            // Anchor TS1318 at the accessor name (e.g.
+                            // `aa` in `abstract get aa() { }`) so the
+                            // baseline column matches tsc which
+                            // underlines the identifier, not the
+                            // member start.
+                            const anchor: NodeId = if (fn_p.name != hir_mod.none_node_id) fn_p.name else m;
+                            try self.report(anchor, TsCodes.abstract_accessor_implementation, "An abstract accessor cannot have an implementation.");
                         }
                         if (!fn_p.flags.is_static) {
                             // tsc only reports TS2611 once per member name
@@ -20499,7 +20505,12 @@ pub const Checker = struct {
                     try self.report(el, TsCodes.rest_element_must_be_last, "A rest element must be last in a destructuring pattern.");
                 }
                 if (self.hir.kindOf(sp.expression) == .assignment) {
-                    try self.report(sp.expression, TsCodes.rest_element_cannot_have_initializer, "A rest element cannot have an initializer.");
+                    // tsc anchors TS1186 at the `=` token rather than
+                    // the assignment-pattern's target identifier. Mirrors
+                    // `restElementWithInitializer2.ts(3,7)`. Falls back
+                    // to the assignment span when source isn't available.
+                    const eq_pos = self.restElementInitializerEqualPos(sp.expression);
+                    try self.reportAt(sp.expression, eq_pos, TsCodes.rest_element_cannot_have_initializer, "A rest element cannot have an initializer.");
                     continue;
                 }
                 const rest_source_t = try self.arrayRestSourceType(source_node, source_offset + i, source_elem_t);
@@ -31549,6 +31560,29 @@ pub const Checker = struct {
         if (!try self.compoundAdditionAssignableBack(result_t, target_t)) {
             try self.reportTypeNotAssignable(target, result_t, target_t, "Type is not assignable to target type.");
         }
+    }
+
+    /// Locate the `=` token inside an `x = <init>` assignment node used
+    /// as the spread element of `[..."x = init"]`. Returns the byte
+    /// offset of the `=` so TS1186 anchors at the operator (matching
+    /// `restElementWithInitializer2.ts(3,7)`), or null when source
+    /// isn't available / the scan fails so callers fall back to the
+    /// assignment span start.
+    fn restElementInitializerEqualPos(self: *Checker, assign_node: NodeId) ?u32 {
+        if (self.source == null) return null;
+        if (self.hir.kindOf(assign_node) != .assignment) return null;
+        const a = hir_mod.assignmentOf(self.hir, assign_node);
+        const src = self.source.?;
+        const target_span = self.hir.spanOf(a.target);
+        const value_span = self.hir.spanOf(a.value);
+        const scan_start: usize = @intCast(target_span.end);
+        const scan_end: usize = @min(src.len, @as(usize, @intCast(value_span.start)));
+        if (scan_start >= scan_end) return null;
+        var i = scan_start;
+        while (i < scan_end) : (i += 1) {
+            if (src[i] == '=') return @intCast(i);
+        }
+        return null;
     }
 
     fn reportPropertyDoesNotExist(self: *Checker, node: NodeId, name: hir_mod.StringId) CheckError!void {
@@ -50845,6 +50879,41 @@ test "checker: abstract property initializer and accessor implementation report 
     try T.expect(accessor_found);
 }
 
+test "checker: TS1318 anchors at accessor name, not the member start" {
+    // tsc underlines the accessor identifier (e.g. `aa` in
+    // `abstract get aa() { ... }`), so the column in the
+    // baseline points at the name — not the leading
+    // `abstract`/`get`/`set` keyword. Mirrors the conformance
+    // baseline for `classAbstractAccessor`.
+    const src =
+        \\abstract class A {
+        \\  abstract get a();
+        \\  abstract get aa() { return 1; }
+        \\  abstract set b(x: string);
+        \\  abstract set bb(x: string) {}
+        \\}
+    ;
+    const s = try newSetup(src);
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+    var saw_aa = false;
+    var saw_bb = false;
+    for (s.checker.diagnostics.items) |d| {
+        if (d.code != TsCodes.abstract_accessor_implementation) continue;
+        const span = s.checker.hir.spanOf(d.node);
+        if (span.start >= src.len) continue;
+        // The anchor should point at an identifier character, not
+        // the `abstract` keyword (`a`) or `get`/`set` keyword.
+        // We look at the byte just before the span to ensure it is
+        // whitespace (i.e. we land exactly on the accessor name).
+        const tok = src[span.start..@min(src.len, @as(usize, span.end))];
+        if (std.mem.eql(u8, tok, "aa")) saw_aa = true;
+        if (std.mem.eql(u8, tok, "bb")) saw_bb = true;
+    }
+    try T.expect(saw_aa);
+    try T.expect(saw_bb);
+}
+
 test "checker: strict false accepts null constructor parameter default" {
     const s = try newSetup(
         \\// @strict: false
@@ -55885,4 +55954,28 @@ test "checker: TS2698 fires when spreading T & undefined intersection" {
         if (d.code == TsCodes.spread_types_object_only) found = true;
     }
     try T.expect(found);
+}
+
+test "checker: TS1186 anchors at '=' for rest element with initializer in array destructuring" {
+    // Mirrors `restElementWithInitializer2.ts(3,7)` — tsc points at
+    // the `=` token of `[...x = a] = a;` rather than the rest's
+    // target identifier so the squiggle covers the offending operator.
+    const source =
+        "declare var a: number[];\n" ++
+        "var x: number[];\n" ++
+        "[...x = a] = a;\n";
+    const s = try newSetup(source);
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+    var found_pos: ?u32 = null;
+    for (s.checker.diagnostics.items) |d| {
+        if (d.code != TsCodes.rest_element_cannot_have_initializer) continue;
+        found_pos = d.pos;
+        break;
+    }
+    try T.expect(found_pos != null);
+    // Source: line 3 starts at byte 42 (25 + 17). Within `[...x = a] = a;`
+    // the first `=` (operator of `x = a`) sits 6 bytes into the line.
+    const line3_start: u32 = 25 + 17;
+    try T.expectEqual(line3_start + 6, found_pos.?);
 }
