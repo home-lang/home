@@ -1548,7 +1548,14 @@ pub const Parser = struct {
         const start = self.advance(); // with
         if (self.isAmbientContextAt(start.span.start)) {
             try self.reportCodeAt(start.span.start, start.line, 1036, "Statements are not allowed in ambient contexts.");
-        } else if (self.strict_mode or self.target_es2015_or_later) {
+        } else if (self.strict_mode) {
+            // tsc only emits TS1101 when the source is genuinely in
+            // strict mode (either an explicit `"use strict"`, an ES
+            // module top-level, or `alwaysStrict`/`strict` is on).
+            // Targeting ES2015+ alone is NOT enough to fire TS1101 —
+            // the upstream baseline for fixtures like
+            // `arrowFunctionContexts(alwaysstrict=false).errors.txt`
+            // emits TS2410 only.
             try self.reportCodeAt(start.span.start, start.line, 1101, "'with' statements are not allowed in strict mode.");
         }
         try self.reportCodeAt(start.span.start, start.line, 2410, "The 'with' statement is not supported. All symbols in a 'with' block will have type 'any'.");
@@ -7153,9 +7160,21 @@ pub const Parser = struct {
                     const operand_span = self.hir.spanOf(operand);
                     if (self.prefixUpdateUsesArithmeticOperandDiagnostic(operand)) {
                         try self.reportCodeAt(operand_span.start, t.line, 2356, "An arithmetic operand must be of type 'any', 'number', 'bigint' or an enum type.");
-                    } else {
-                        try self.reportCodeAt(operand_span.start, t.line, 2357, "The operand of an increment or decrement operator must be a variable or a property access.");
+                        if (self.isThisIdentifier(operand)) {
+                            return try self.builder.addLiteralNumber(operand_span, 1);
+                        }
+                        return operand;
                     }
+                    if (self.prefixUpdateDefersDiagnosticToChecker(operand)) {
+                        // `--foo()` / `--(x + y)` — tsc skips the
+                        // grammar-level TS2357 lvalue error and
+                        // relies on the checker to emit TS2356 when
+                        // the operand's type isn't numeric. Build the
+                        // assignment so the synthesised-update path
+                        // in `checkBinop` runs.
+                        return try self.buildUpdateAssignment(t, operand, t.kind == .plus_plus, true);
+                    }
+                    try self.reportCodeAt(operand_span.start, t.line, 2357, "The operand of an increment or decrement operator must be a variable or a property access.");
                     if (self.isThisIdentifier(operand)) {
                         return try self.builder.addLiteralNumber(operand_span, 1);
                     }
@@ -7851,8 +7870,26 @@ pub const Parser = struct {
 
     fn prefixUpdateUsesArithmeticOperandDiagnostic(self: *const Parser, operand: NodeId) bool {
         return switch (self.hir.kindOf(operand)) {
-            .array_literal, .object_literal, .fn_decl, .fn_expr => true,
+            // Operands whose type cannot be coerced to a numeric for
+            // increment/decrement render as TS2356 ("An arithmetic
+            // operand must be …") instead of TS2357 ("must be a
+            // variable or a property access."). Mirrors tsc, which
+            // prefers the operand-type error when the operand has a
+            // concrete non-numeric shape (object/array/fn/string).
+            .array_literal, .object_literal, .fn_decl, .fn_expr, .literal_string, .template_literal => true,
             .identifier => self.isThisIdentifier(operand),
+            else => false,
+        };
+    }
+
+    /// Operands the parser cannot classify by shape alone — the
+    /// checker decides between TS2356 (non-numeric operand type)
+    /// and silently accepting once it knows the call/expression's
+    /// return type. Build the synthesised assignment so
+    /// `checkBinop`'s synth-update path runs.
+    fn prefixUpdateDefersDiagnosticToChecker(self: *const Parser, operand: NodeId) bool {
+        return switch (self.hir.kindOf(operand)) {
+            .call_expr, .binary_op => true,
             else => false,
         };
     }
@@ -7923,6 +7960,19 @@ pub const Parser = struct {
                 }
             },
             .member_access, .element_access => {},
+            // Concrete non-numeric operands (`"x"--`, `{}--`, `[]--`)
+            // render as TS2356 ("An arithmetic operand must be …")
+            // to match tsc, which prefers the operand-type error
+            // for these shapes over the bare TS2357 lvalue error.
+            .literal_string, .template_literal, .array_literal, .object_literal, .fn_decl, .fn_expr => {
+                try self.reportCodeAt(diag_pos, diag_line, 2356, "An arithmetic operand must be of type 'any', 'number', 'bigint' or an enum type.");
+            },
+            // Calls / parenthesised binary results
+            // are not l-values in JS, but tsc skips TS2357 for them
+            // and relies on the checker to emit TS2356 when the
+            // return type is non-numeric. Stay silent so the synth
+            // path in `checkBinop` picks the right code.
+            .call_expr, .binary_op => {},
             else => try self.reportCodeAt(diag_pos, diag_line, 2357, "The operand of an increment or decrement operator must be a variable or a property access."),
         }
         const one = try self.builder.addLiteralNumber(tokenSpan(op_tok), 1);
@@ -12100,10 +12150,15 @@ test "parser: strict mode legacy octal literal reports TS1121" {
 }
 
 test "parser: with statement reports strict and unsupported diagnostics" {
-    var s = try newTestSetup("with (1) return;");
+    // tsc reserves TS1101 ("'with' statements are not allowed in
+    // strict mode.") for genuinely strict sources — a `"use strict"`
+    // directive or the always-strict harness setting. Targeting
+    // ES2015+ alone does not flip the source into strict mode for
+    // diagnostic purposes (see baseline
+    // `arrowFunctionContexts(alwaysstrict=false).errors.txt`).
+    var s = try newTestSetup("\"use strict\"; with (1) return;");
     defer destroyTestSetup(s);
 
-    s.parser.setTargetEs2015OrLater(true);
     _ = try s.parser.parseSourceFile();
     try T.expect(s.parser.diagnostics.items.len >= 2);
     try T.expectEqual(@as(u32, 1101), s.parser.diagnostics.items[0].code);

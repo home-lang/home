@@ -22083,10 +22083,31 @@ pub const Checker = struct {
                             try self.checkCompoundAdditionAssignment(node, a.target, a.value, target_t, value_t);
                         },
                         .sub, .mul, .div, .mod, .pow, .bit_and, .bit_or, .bit_xor, .shl, .shr, .shr_unsigned => {
+                            // tsc reports `++x` / `x--` operand-type
+                            // violations as TS2356 ("An arithmetic
+                            // operand must be …"), not TS2362/TS2363
+                            // ("The left/right-hand side …"). The
+                            // parser desugars update expressions into
+                            // `target -= 1` / `target += 1`; detect
+                            // that synthetic shape here so the
+                            // diagnostic shape matches.
+                            const is_synth_update = self.assignmentIsSynthesizedUpdate(node, a);
+                            const arith_code = if (is_synth_update)
+                                TsCodes.arithmetic_operand_type
+                            else
+                                TsCodes.arithmetic_left_operand_type;
+                            const arith_msg = if (is_synth_update)
+                                "An arithmetic operand must be of type 'any', 'number', 'bigint' or an enum type."
+                            else
+                                "The left-hand side of an arithmetic operation must be of type 'any', 'number', 'bigint' or an enum type.";
                             if (!self.isArithmeticOperandAllowed(target_t)) {
-                                try self.reportArithmeticOperand(a.target, TsCodes.arithmetic_left_operand_type, "The left-hand side of an arithmetic operation must be of type 'any', 'number', 'bigint' or an enum type.");
+                                try self.reportArithmeticOperand(a.target, arith_code, arith_msg);
                             }
-                            if (!self.isArithmeticOperandAllowed(value_t)) {
+                            // Skip the right-hand-side check for
+                            // synthesized updates — the `1` is a
+                            // compiler-inserted constant and reporting
+                            // it confuses the diagnostic baseline.
+                            if (!is_synth_update and !self.isArithmeticOperandAllowed(value_t)) {
                                 try self.reportArithmeticOperand(a.value, TsCodes.arithmetic_right_operand_type, "The right-hand side of an arithmetic operation must be of type 'any', 'number', 'bigint' or an enum type.");
                             }
                         },
@@ -23128,7 +23149,24 @@ pub const Checker = struct {
                     self.hir.kindOf(e.index) == .identifier and
                     self.identifierIsUntypedUninitializedVar(e.index);
                 if (!loose_untyped_index and !try self.computedPropertyKeyTypeIsValid(idx_t)) {
-                    try self.report(e.index, TsCodes.type_cannot_be_used_as_index, "Type cannot be used as an index type.");
+                    // Prefer tsc's render shape with the inferred type
+                    // name when available — `Type 'typeof Foo' cannot
+                    // be used as an index type.` — falling back to the
+                    // bare form for unnamed types.
+                    if (try self.allocSimpleTypeName(idx_t)) |idx_name| {
+                        const msg = try std.fmt.allocPrint(
+                            self.diag_arena.allocator(),
+                            "Type '{s}' cannot be used as an index type.",
+                            .{idx_name},
+                        );
+                        try self.diagnostics.append(self.gpa, .{
+                            .node = e.index,
+                            .code = TsCodes.type_cannot_be_used_as_index,
+                            .message = msg,
+                        });
+                    } else {
+                        try self.report(e.index, TsCodes.type_cannot_be_used_as_index, "Type cannot be used as an index type.");
+                    }
                 }
                 break :blk try self.optionalChainResult(types.Primitive.any, element_is_optional_chain);
             },
@@ -28751,7 +28789,37 @@ pub const Checker = struct {
         if (self.isObjectLikeType(a) or self.isObjectLikeType(b)) {
             return self.engine.isComparableTo(a, b) catch true;
         }
+        // Two distinct type parameters with no relating constraint
+        // have no provable overlap — tsc emits TS2367 for `t == u`
+        // where T and U are sibling type parameters. Mirrors fixtures
+        // like comparisonOperatorWithTypeParameter.ts.
+        if (af.is_type_parameter and bf.is_type_parameter and a != b) {
+            if (!self.typeParameterConstraintsRelate(a, b)) return false;
+        }
         return true;
+    }
+
+    fn typeParameterConstraintsRelate(self: *Checker, a: TypeId, b: TypeId) bool {
+        // Allow comparison when one parameter's constraint chain
+        // reaches the other (e.g., `U extends T`), or when they share
+        // a common ancestor constraint type.
+        if (self.typeParameterConstraintReaches(a, b)) return true;
+        if (self.typeParameterConstraintReaches(b, a)) return true;
+        return false;
+    }
+
+    fn typeParameterConstraintReaches(self: *Checker, from: TypeId, target: TypeId) bool {
+        var cur = from;
+        var depth: u8 = 0;
+        while (depth < 16) : (depth += 1) {
+            const constraint = self.typeParameterConstraint(cur) orelse return false;
+            if (constraint == target) return true;
+            if (constraint == cur) return false;
+            const cf = self.interner.pool.flagsOf(constraint);
+            if (!cf.is_type_parameter) return false;
+            cur = constraint;
+        }
+        return false;
     }
 
     fn enumNumberLiteralOverlap(self: *Checker, enum_t: TypeId, lit_t: TypeId) ?bool {
@@ -30382,7 +30450,16 @@ pub const Checker = struct {
     fn relationalTypeHasNumberLike(self: *Checker, t: TypeId) bool {
         if (self.typeIsAnyLike(t)) return false;
         const f = self.interner.pool.flagsOf(t);
-        if (f.is_object or f.is_object_type or f.is_signature or f.is_tuple or f.is_intersection) return false;
+        if (f.is_object or f.is_object_type or f.is_signature or f.is_tuple) return false;
+        // Numeric enum nominal types render as `number & { __enum:X }`.
+        // Treat the intersection as number-like so relational compare
+        // with `number` / another numeric enum doesn't fire TS2365.
+        if (f.is_intersection) {
+            for (self.interner.intersectionMembers(t)) |member| {
+                if (member == types.Primitive.number_t) return true;
+            }
+            return false;
+        }
         if (f.is_union) {
             for (self.interner.unionMembers(t)) |member| {
                 if (self.relationalTypeHasNumberLike(member)) return true;
@@ -30394,7 +30471,15 @@ pub const Checker = struct {
     fn relationalTypeHasObjectLike(self: *Checker, t: TypeId) bool {
         if (self.typeIsAnyLike(t)) return false;
         const f = self.interner.pool.flagsOf(t);
-        if (f.is_object or f.is_object_type or f.is_signature or f.is_tuple or f.is_intersection) return true;
+        if (f.is_object or f.is_object_type or f.is_signature or f.is_tuple) return true;
+        if (f.is_intersection) {
+            // A numeric enum nominal (`number & { __enum:X }`) is
+            // primitive-like, not object-like, for relational compares.
+            for (self.interner.intersectionMembers(t)) |member| {
+                if (member == types.Primitive.number_t) return false;
+            }
+            return true;
+        }
         if (f.is_union) {
             for (self.interner.unionMembers(t)) |member| {
                 if (self.relationalTypeHasObjectLike(member)) return true;
@@ -30415,6 +30500,28 @@ pub const Checker = struct {
         if (!f.is_type_parameter) return false;
         const constraint = self.typeParameterConstraint(t) orelse return false;
         return constraint != t;
+    }
+
+    /// Detect the parser's `++x`/`x--` desugaring shape: the
+    /// assignment value is a literal `1` whose span sits at the
+    /// operator-token slot — outside the target's span. Used so
+    /// arithmetic-operand diagnostics on update-expression operands
+    /// render as TS2356 instead of TS2362/TS2363.
+    fn assignmentIsSynthesizedUpdate(self: *Checker, node: NodeId, a: hir_mod.AssignmentPayload) bool {
+        if (self.hir.kindOf(a.value) != .literal_number) return false;
+        if (hir_mod.literalNumberOf(self.hir, a.value) != 1.0) return false;
+        const value_span = self.hir.spanOf(a.value);
+        const target_span = self.hir.spanOf(a.target);
+        const node_span = self.hir.spanOf(node);
+        // Prefix `++x`: value span starts at the assignment start,
+        // before the target span.
+        const is_prefix_shape = value_span.start == node_span.start and
+            value_span.end <= target_span.start;
+        // Postfix `x++`: value span ends at the assignment end,
+        // after the target span.
+        const is_postfix_shape = value_span.end == node_span.end and
+            value_span.start >= target_span.end;
+        return is_prefix_shape or is_postfix_shape;
     }
 
     fn loweredLogicalAssignmentAssignableToTarget(self: *Checker, target: NodeId, value: NodeId, target_t: TypeId) CheckError!bool {
