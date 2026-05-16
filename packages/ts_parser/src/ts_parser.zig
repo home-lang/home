@@ -3684,6 +3684,7 @@ pub const Parser = struct {
         if (self.match(.equal)) {
             init_node = try self.parseAssignmentExpression();
         }
+        try self.recoverRegexVariableDeclarationTail(init_node);
         const is_ambient_decl = self.isAmbientContextAt(start.span.start);
         if (decl_kind == .const_decl and init_node == hir_mod.none_node_id and !is_ambient_decl) {
             try self.reportCodeAt(self.hir.spanOf(name_node).start, start.line, 1155, "'const' declarations must be initialized.");
@@ -3714,6 +3715,7 @@ pub const Parser = struct {
             if (self.match(.colon)) extra_type = try self.parseTypeAnnotation();
             var extra_init: NodeId = hir_mod.none_node_id;
             if (self.match(.equal)) extra_init = try self.parseAssignmentExpression();
+            try self.recoverRegexVariableDeclarationTail(extra_init);
             if (decl_kind == .const_decl and extra_init == hir_mod.none_node_id and !is_ambient_decl) {
                 try self.reportCodeAt(self.hir.spanOf(extra_name).start, start.line, 1155, "'const' declarations must be initialized.");
             }
@@ -3744,6 +3746,26 @@ pub const Parser = struct {
             false,
             is_ambient_decl,
         );
+    }
+
+    fn recoverRegexVariableDeclarationTail(self: *Parser, init_node: NodeId) ParseError!void {
+        if (init_node == hir_mod.none_node_id or self.hir.kindOf(init_node) != .literal_regex) return;
+        const close = self.peek();
+        if (close.kind != .close_bracket or close.flags.preceded_by_newline) return;
+
+        try self.reportCodeAt(close.span.start, close.line, 1005, "',' expected.");
+        _ = self.advance();
+
+        const bad_decl = self.peek();
+        if (bad_decl.kind == .semicolon or
+            bad_decl.kind == .eof or
+            bad_decl.kind == .close_brace or
+            bad_decl.flags.preceded_by_newline)
+        {
+            return;
+        }
+        try self.reportCodeAt(bad_decl.span.start, bad_decl.line, 1134, "Variable declaration expected.");
+        _ = self.advance();
     }
 
     /// Parse a Stage 3 explicit-resource-management declaration:
@@ -8164,6 +8186,20 @@ test "parser: variable declaration list tolerates additional declarators" {
     try T.expectEqual(hir_mod.NodeKind.let_decl, s.hir.kindOf(stmts[0]));
     try T.expectEqual(hir_mod.NodeKind.let_decl, s.hir.kindOf(stmts[1]));
     try T.expectEqual(@as(usize, 0), s.parser.diagnostics.items.len);
+}
+
+test "parser: regex var declaration stray close bracket recovers as var list" {
+    var s = try newTestSetup("var v = /[^]/]/");
+    defer destroyTestSetup(s);
+
+    _ = try s.parser.parseSourceFile();
+    try T.expectEqual(@as(usize, 2), s.parser.diagnostics.items.len);
+    try T.expectEqual(@as(u32, 1005), s.parser.diagnostics.items[0].code);
+    try T.expectEqualStrings("',' expected.", s.parser.diagnostics.items[0].message);
+    try T.expectEqual(@as(u32, 13), s.parser.diagnostics.items[0].pos);
+    try T.expectEqual(@as(u32, 1134), s.parser.diagnostics.items[1].code);
+    try T.expectEqualStrings("Variable declaration expected.", s.parser.diagnostics.items[1].message);
+    try T.expectEqual(@as(u32, 14), s.parser.diagnostics.items[1].pos);
 }
 
 test "parser: var / const / let produce distinct kinds" {
