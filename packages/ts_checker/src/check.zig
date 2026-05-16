@@ -8708,7 +8708,12 @@ pub const Checker = struct {
             }
             if (pp.flags.is_rest and !is_this_param) has_rest_param = true;
             const has_anno = pp.type_annotation != hir_mod.none_node_id;
-            if (has_anno and f.body == hir_mod.none_node_id) {
+            // Sweep param annotations for unresolved bare type-refs —
+            // for body-ful fns too. Mirrors upstream tsc, which fires
+            // TS2304 on `function foo(x: V) { ... }` when `V` is not
+            // declared anywhere. See
+            // `typeParameterUsedAsTypeParameterConstraint4.ts`.
+            if (has_anno) {
                 try self.reportUnresolvedBodylessSignatureTypeRefs(pp.type_annotation, type_params);
             }
             // `f(x = literal)` — when no annotation is present, the
@@ -8881,7 +8886,12 @@ pub const Checker = struct {
         // so call sites can narrow the argument.
         const is_predicate = f.return_type != hir_mod.none_node_id and
             self.hir.kindOf(f.return_type) == .type_predicate_type;
-        if (f.body == hir_mod.none_node_id and f.return_type != hir_mod.none_node_id) {
+        // Bodyless-aware TS2304 sweep for return types — fires
+        // for any declared return-type annotation that references
+        // an unresolved bare name (whether or not a body follows).
+        // Mirrors upstream tsc, which surfaces TS2304 on return-type
+        // refs like `function foo(): V` when `V` is not in scope.
+        if (f.return_type != hir_mod.none_node_id) {
             try self.reportUnresolvedBodylessSignatureTypeRefs(f.return_type, type_params);
         }
         const ret_t: TypeId = if (f.return_type != hir_mod.none_node_id)
@@ -9012,6 +9022,20 @@ pub const Checker = struct {
             .code = TsCodes.function_return_implicitly_any,
             .message = msg,
         });
+    }
+
+    /// Walk an annotation node and emit TS2304 for any bare unresolved
+    /// type-ref name. Used for class-field annotations and interface
+    /// members where the parent decl has type parameters in
+    /// `lookupNarrow` scope. Mirrors upstream tsc, which emits
+    /// `Cannot find name 'X'.` for e.g. `class C<T> { z: W; }` where
+    /// `W` isn't declared anywhere visible. See fixture
+    /// `typeParameterUsedAsTypeParameterConstraint4.ts`.
+    fn reportUnresolvedBareTypeRefsInAnnotation(
+        self: *Checker,
+        type_node: NodeId,
+    ) CheckError!void {
+        try self.reportUnresolvedBodylessSignatureTypeRefs(type_node, &.{});
     }
 
     fn reportUnresolvedBodylessSignatureTypeRefs(
@@ -10346,6 +10370,7 @@ pub const Checker = struct {
                     }
                     const field_t: TypeId = blk: {
                         if (op.type_annotation != hir_mod.none_node_id) {
+                            try self.reportUnresolvedBareTypeRefsInAnnotation(op.type_annotation);
                             break :blk try self.lowererLowerWithTypeParams(op.type_annotation);
                         }
                         if (op.value != hir_mod.none_node_id) {
@@ -10443,12 +10468,25 @@ pub const Checker = struct {
                             .message = msg,
                         });
                     }
+                    const is_field_readonly = self.classMemberSourceHasLeadingKeyword(m, "readonly") or
+                        self.leadingJsDocHasReadonly(m);
+                    // Mirror tsc: `readonly x = 1;` narrows the field's
+                    // declared type to the literal `1` (no annotation
+                    // path only). This makes `this.x = 5;` inside the
+                    // constructor a TS2322 "Type '5' is not assignable
+                    // to type '1'." See `literalTypesWidenInParameterPosition.ts`.
+                    var effective_field_t = field_t;
+                    if (is_field_readonly and
+                        op.type_annotation == hir_mod.none_node_id and
+                        op.value != hir_mod.none_node_id)
+                    {
+                        effective_field_t = try self.expressionLiteralType(op.value, field_t);
+                    }
                     const field_member: types.ObjectMember = .{
                         .name = member_name,
-                        .type = field_t,
+                        .type = effective_field_t,
                         .is_optional = false,
-                        .is_readonly = self.classMemberSourceHasLeadingKeyword(m, "readonly") or
-                            self.leadingJsDocHasReadonly(m),
+                        .is_readonly = is_field_readonly,
                         .is_method = false,
                     };
                     if (op.is_static) {
@@ -15221,6 +15259,7 @@ pub const Checker = struct {
             if (im.name == 0) continue;
             const member_t: TypeId = blk: {
                 if (im.type_node != hir_mod.none_node_id) {
+                    try self.reportUnresolvedBareTypeRefsInAnnotation(im.type_node);
                     break :blk try self.lowererLowerWithTypeParams(im.type_node);
                 }
                 break :blk types.Primitive.any;
@@ -32873,7 +32912,10 @@ pub const Checker = struct {
         _ = t;
         return switch (self.hir.kindOf(node)) {
             .literal_number => hir_mod.literalNumberOf(self.hir, node) != 0,
-            .object_literal, .array_literal => true,
+            // Function expressions / arrow functions / function declarations /
+            // regex literals are heap-allocated objects — always truthy.
+            // Mirrors tsc's TS2872 emit at e.g. `contextuallyTypeLogicalAnd03.ts`.
+            .object_literal, .array_literal, .fn_expr, .arrow_fn, .fn_decl, .literal_regex => true,
             else => false,
         };
     }
@@ -37242,6 +37284,17 @@ pub const Checker = struct {
                     var has_null = false;
                     var has_undef = false;
                     var first = true;
+                    // Textual dedup of rendered member names. Distinct
+                    // TypeIds can render to the same TS prose (e.g. a
+                    // primitive `string_t` and a separately-interned
+                    // string-flagged type both render as "string"); the
+                    // union prose should only mention each label once.
+                    // Mirrors upstream tsc which deduplicates by display
+                    // form before joining with `|`. See fixture
+                    // `restElementWithAssignmentPattern2.ts` which would
+                    // otherwise render as `string | string | number`.
+                    var seen_names: std.ArrayListUnmanaged([]const u8) = .empty;
+                    defer seen_names.deinit(self.gpa);
                     for (self.interner.unionMembers(t)) |member| {
                         if (member == types.Primitive.null_t) {
                             has_null = true;
@@ -37252,6 +37305,16 @@ pub const Checker = struct {
                             continue;
                         }
                         const member_name = (try self.allocSimpleTypeName(member)) orelse break :blk null;
+                        // Skip if we've already emitted this exact label.
+                        var duplicate = false;
+                        for (seen_names.items) |prior_name| {
+                            if (std.mem.eql(u8, prior_name, member_name)) {
+                                duplicate = true;
+                                break;
+                            }
+                        }
+                        if (duplicate) continue;
+                        try seen_names.append(self.gpa, member_name);
                         if (!first) try union_buf.appendSlice(arena_u, " | ");
                         first = false;
                         // Wrap function/construct signature members in

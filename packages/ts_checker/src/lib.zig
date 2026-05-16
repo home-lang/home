@@ -326,8 +326,18 @@ pub fn arrayGlobal(
     const boolean_t = types.Primitive.boolean_t;
     const sig_is_array = try ti.internSignature(&[_]TypeId{any_t}, boolean_t, false);
     const any_arr = try ti.internArrayType(sint, any_t);
+    // `Array.from` / `Array.of` — modeled loosely as `(...args: any[]): any[]`.
+    // The real lib.d.ts signatures are generic and overloaded; the
+    // checker just needs the member to exist so call sites typecheck
+    // without spurious TS2339. Inference at the call site falls back
+    // to `any[]` which is enough for fixtures that pipe the result
+    // back into a generic param (e.g. neverInference.ts: `f2(Array.from([0]), …)`).
+    const sig_from = try ti.internSignature(&[_]TypeId{any_t}, any_arr, false);
+    const sig_of = try ti.internSignature(&[_]TypeId{any_t}, any_arr, false);
     const m = [_]types.ObjectMember{
         .{ .name = try sint.intern("isArray"), .type = sig_is_array, .is_optional = false, .is_readonly = false, .is_method = true },
+        .{ .name = try sint.intern("from"), .type = sig_from, .is_optional = false, .is_readonly = false, .is_method = true },
+        .{ .name = try sint.intern("of"), .type = sig_of, .is_optional = false, .is_readonly = false, .is_method = true },
         .{ .name = try sint.intern("prototype"), .type = any_arr, .is_optional = false, .is_readonly = false, .is_method = false },
     };
     cache.array_global = try ti.internObjectType(&m);
@@ -559,6 +569,10 @@ test "lib: arrayGlobal exposes isArray" {
     const ag = try arrayGlobal(&cache, &ti, &sint);
     try T.expect(ti.objectMember(ag, try sint.intern("isArray")) != null);
     try T.expect(ti.objectMember(ag, try sint.intern("prototype")) != null);
+    // `Array.from` / `Array.of` — needed by fixtures that funnel the
+    // result back through a generic param (see neverInference.ts).
+    try T.expect(ti.objectMember(ag, try sint.intern("from")) != null);
+    try T.expect(ti.objectMember(ag, try sint.intern("of")) != null);
 }
 
 test "lib: mathGlobal exposes PI/floor/max" {
