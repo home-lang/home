@@ -15622,6 +15622,17 @@ pub const Checker = struct {
         {
             return true;
         }
+        // Built-in generic types `Array<T>` / `ReadonlyArray<T>` are
+        // legal heritage targets even though they're synthesized
+        // structurally rather than declared as interfaces in scope.
+        // Mirrors fixtures like
+        // `restParametersOfNonArrayTypes2.ts` and
+        // `conditionalTypes1.ts(125,40)`.
+        if (std.mem.eql(u8, raw, "Array") or
+            std.mem.eql(u8, raw, "ReadonlyArray"))
+        {
+            return true;
+        }
         if (self.lookupNarrow(name)) |t| {
             if (t != types.Primitive.none and t != types.Primitive.any and t != types.Primitive.unknown) return true;
         }
@@ -20032,6 +20043,14 @@ pub const Checker = struct {
         var i: usize = 1;
         while (i < name.len) : (i += 1) {
             if (!isJsDocIdentChar(name[i])) return false;
+        }
+        return true;
+    }
+
+    fn isAllDigits(name: []const u8) bool {
+        if (name.len == 0) return false;
+        for (name) |c| {
+            if (c < '0' or c > '9') return false;
         }
         return true;
     }
@@ -32873,7 +32892,8 @@ pub const Checker = struct {
         // shape (e.g. `number[]`), upstream tsc emits the generic
         // TS2322 ("Type 'number[]' is not assignable to type
         // '[number]'.") rather than the missing-property TS2741.
-        // Mirrors `strictTupleLength.ts(18,1)`.
+        // Mirrors `strictTupleLength.ts(18,1)` and
+        // `assignmentCompatBetweenTupleAndArray.ts(18,1)`.
         const target_tuple_len_opt = self.fixedTupleLength(target);
         if (target_tuple_len_opt != null and
             source < self.interner.pool.typeCount() and
@@ -32881,8 +32901,24 @@ pub const Checker = struct {
         {
             const sm = self.interner.objectMembers(source);
             const num_idx = self.interner.objectNumberIndex(source);
-            if (sm.len == 0 and num_idx != types.Primitive.none) {
-                return false;
+            if (num_idx != types.Primitive.none) {
+                // Treat the source as an array-shape (and skip TS2741)
+                // unless it has any *non-`length*, non-numeric, non-method
+                // members — those would indicate a richer object literal
+                // where TS2741 is still the correct preference.
+                const length_id = self.string_interner.intern("length") catch 0;
+                var has_extra_member = false;
+                for (sm) |m| {
+                    if (m.name == length_id) continue;
+                    // Numeric-indexed members (e.g. tuple element `0`) are
+                    // structurally part of the array shape, not extra
+                    // properties.
+                    const nm = self.string_interner.get(m.name);
+                    if (nm.len > 0 and isAllDigits(nm)) continue;
+                    has_extra_member = true;
+                    break;
+                }
+                if (!has_extra_member) return false;
             }
         }
 
@@ -33426,11 +33462,22 @@ pub const Checker = struct {
                     }
                     // Render array shapes (`T[]`) when the object type
                     // has a number index signature, no string/symbol
-                    // index, and no own non-method members. Mirrors
-                    // upstream TS prose for fixtures like
-                    // `assignmentCompatBetweenTupleAndArray.ts(18,1)`.
+                    // index, and no own non-method, non-numeric, non-
+                    // `length` members. Mirrors upstream TS prose for
+                    // fixtures like
+                    // `assignmentCompatBetweenTupleAndArray.ts(18,1)`
+                    // and `strictTupleLength.ts(18,1)`.
                     const num_idx = self.interner.objectNumberIndex(t);
-                    if (members.len == 0 and
+                    const length_id_arr = self.string_interner.intern("length") catch 0;
+                    var has_only_length_or_numeric = true;
+                    for (members) |m| {
+                        if (m.name == length_id_arr) continue;
+                        const nm = self.string_interner.get(m.name);
+                        if (nm.len > 0 and isAllDigits(nm)) continue;
+                        has_only_length_or_numeric = false;
+                        break;
+                    }
+                    if (has_only_length_or_numeric and
                         num_idx != types.Primitive.none and
                         self.interner.objectStringIndex(t) == types.Primitive.none and
                         self.interner.objectSymbolIndex(t) == types.Primitive.none)
