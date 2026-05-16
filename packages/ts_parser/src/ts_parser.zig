@@ -802,6 +802,16 @@ pub const Parser = struct {
             },
             .kw_declare => blk: {
                 if (self.peekAt(1).flags.preceded_by_newline) break :blk try self.parseExpressionStatement();
+                // `declare` is a contextual keyword. When the next
+                // token can start a tagged template, function call,
+                // member access, or any non-declaration construct
+                // (e.g. `declare \`...\``, `declare(x)`, `declare.x`),
+                // it's just an identifier reference — parse as an
+                // expression statement instead of opening an ambient
+                // context.
+                if (!self.declareStartsDeclaration(self.peekAt(1).kind)) {
+                    break :blk try self.parseExpressionStatement();
+                }
                 // `declare global { ... }` lowers through the
                 // `kw_global` arm below; `declare let x: T` and friends
                 // parse as ordinary declarations with an ambient bit.
@@ -897,6 +907,56 @@ pub const Parser = struct {
         if (name_node == hir_mod.none_node_id or self.hir.kindOf(name_node) != .identifier) return false;
         const id = hir_mod.identifierOf(self.hir, name_node);
         return std.mem.eql(u8, self.interner.get(id.name), "constructor");
+    }
+
+    /// True when the token after `declare` can plausibly start a
+    /// declaration (so `declare` is acting as a modifier opening an
+    /// ambient context). Otherwise `declare` is just an identifier
+    /// — e.g. `declare \`tag\``, `declare(x)`, `declare.prop`,
+    /// `declare + 1` — and the statement should parse as an
+    /// expression statement. The exclusion list catches the common
+    /// expression-continuation tokens; everything else falls back to
+    /// declaration parsing (preserving existing behaviour for
+    /// `declare var/let/const/function/class/...` and contextual
+    /// keywords like `declare module Foo`).
+    fn declareStartsDeclaration(self: *const Parser, kind: TokenKind) bool {
+        _ = self;
+        return switch (kind) {
+            // Template tag / call / member-access / increment-decrement /
+            // bin-op continuations: `declare` is just an identifier
+            // here, not a modifier.
+            .no_substitution_template,
+            .template_head,
+            .open_paren,
+            .open_bracket,
+            .dot,
+            .question_dot,
+            .plus_plus,
+            .minus_minus,
+            .equal,
+            .equal_equal,
+            .equal_equal_equal,
+            .bang_equal,
+            .bang_equal_equal,
+            .less_than,
+            .less_than_equal,
+            .greater_than,
+            .greater_than_equal,
+            .plus,
+            .minus,
+            .asterisk,
+            .slash,
+            .percent,
+            .ampersand_ampersand,
+            .pipe_pipe,
+            .question_question,
+            .question,
+            .comma,
+            .semicolon,
+            .eof,
+            => false,
+            else => true,
+        };
     }
 
     fn statementIsDisallowedInAmbientContext(self: *const Parser, kind: TokenKind) bool {
