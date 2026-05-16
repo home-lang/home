@@ -6680,12 +6680,8 @@ pub const Parser = struct {
             .is_arrow = true,
             .is_async = is_async,
         };
-        // type_params slot reuses the standard FnDecl fields; for now
-        // we drop them at the HIR boundary to keep the lowering
-        // uniform. Phase 3 / type checker will re-derive them.
-        _ = type_params;
         _ = before_paren;
-        return try self.builder.addFnDecl(sp, hir_mod.none_node_id, params, return_type, body, flags);
+        return try self.builder.addFnDeclGeneric(sp, hir_mod.none_node_id, type_params, params, return_type, body, flags);
     }
 
     fn tryParseArrowWithMissingCloseParen(
