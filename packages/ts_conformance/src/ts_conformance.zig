@@ -1751,6 +1751,22 @@ fn extractModuleResolutionFromBaseline(gpa: std.mem.Allocator, path: []const u8)
     return gpa.dupe(u8, path[after..close]);
 }
 
+/// Extract `(alwaysStrict=true|false)` from a baseline filename so
+/// per-fixture strict-mode pins (`alwaysStrict.errors.txt(alwaysStrict=true)`)
+/// override the directive scan. Returns null when the suffix is
+/// absent so callers fall back to the source-directive check.
+fn baselineAlwaysStrictValue(path_opt: ?[]const u8) ?bool {
+    const path = path_opt orelse return null;
+    const needle = "(alwaysStrict=";
+    const start = std.mem.indexOf(u8, path, needle) orelse return null;
+    const after = start + needle.len;
+    const close = std.mem.indexOfScalarPos(u8, path, after, ')') orelse return null;
+    const value = path[after..close];
+    if (std.mem.eql(u8, value, "true")) return true;
+    if (std.mem.eql(u8, value, "false")) return false;
+    return null;
+}
+
 fn envUsize(name: [*:0]const u8, default: usize) usize {
     const raw = std.c.getenv(name) orelse return default;
     const value = std.mem.span(raw);
