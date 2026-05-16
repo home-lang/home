@@ -16632,6 +16632,7 @@ pub const Checker = struct {
                         }
                     }
                     if (std.mem.indexOfScalar(u8, raw, '.')) |_| {
+                        std.debug.print("DEBUG_TYPEOF_DOTTED raw={s}\n", .{raw});
                         if (try self.typeOfDottedValueReference(raw, type_node)) |dotted_t| {
                             return dotted_t;
                         }
@@ -16641,6 +16642,16 @@ pub const Checker = struct {
                         if (try self.reportMissingRootForUnresolvedTypeofDottedQuery(tt.operand, raw)) {
                             return types.Primitive.any;
                         }
+                        // For dotted typeof queries (`typeof E.A`, `typeof Z.foo`)
+                        // where the root binding IS visible (enum, import-equals
+                        // alias, namespace) but the qualified lookup didn't yield
+                        // a concrete TypeId, fall back to `any` WITHOUT routing
+                        // through `typeOfIdentifier` — that path emits a bogus
+                        // `TS2304 Cannot find name 'E.A'` for the full dotted
+                        // string since the parser stored the qualified name as a
+                        // single identifier. Mirrors tsc's silent fallback for
+                        // `typeofAnExportedType.ts` / `typeofANonExportedType.ts`.
+                        return types.Primitive.any;
                     }
                     if (self.typeofQueryReferencesOwnDeclaration(type_node, name)) return types.Primitive.any;
                     const value_t = self.typeOfIdentifier(tt.operand);
