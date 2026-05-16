@@ -632,6 +632,17 @@ pub const Checker = struct {
     narrow_lookup_floor: usize,
     declared_identifier_lookup: bool,
     report_unresolved_in_namespace_scope: bool,
+    /// Set while type-checking the contents of a class computed-property
+    /// name (e.g. the `[…]` in `class C extends B { [super.bar()]() {} }`).
+    /// tsc already emits TS2466 ("'super' cannot be referenced in a
+    /// computed property name") for these, so the subsequent TS2335
+    /// ("'super' can only be referenced in a derived class") that our
+    /// generic super-lookup-fails path would otherwise produce is
+    /// noise — the computed-name scope just has no `super` binding even
+    /// though the enclosing class extends one. Suppress that secondary
+    /// report while this flag is on. Affects baselines
+    /// `computedPropertyNames{24,27}_ES{5,6}`.
+    in_computed_property_name: bool,
     /// Parallel stack of member-access narrows keyed by
     /// `(obj_name, prop_name)`. Populated by `applyTypeGuard` when
     /// a guard's LHS is a member-access on an identifier root (e.g.
@@ -1034,6 +1045,7 @@ pub const Checker = struct {
             .narrow_lookup_floor = 0,
             .declared_identifier_lookup = false,
             .report_unresolved_in_namespace_scope = false,
+            .in_computed_property_name = false,
             .member_narrow_scopes = .empty,
             .class_instance_types = .empty,
             .checked_class_decls = .empty,
@@ -1783,6 +1795,23 @@ pub const Checker = struct {
                     .identifier => {
                         var target_t = self.typeOfIdentifierDeclared(fr.target);
                         if (target_t == types.Primitive.none) target_t = try self.checkExpression(fr.target);
+                        // TS2588 — `const v; for (v of arr) { … }` writes to a
+                        // const binding. tsc reports the assignment site at the
+                        // for-of LHS. Mirrors baseline `for-of2`.
+                        if (self.identifierResolvesToConst(fr.target)) {
+                            const id = hir_mod.identifierOf(self.hir, fr.target);
+                            const name_str = self.string_interner.get(id.name);
+                            const msg = try std.fmt.allocPrint(
+                                self.diag_arena.allocator(),
+                                "Cannot assign to '{s}' because it is a constant.",
+                                .{name_str},
+                            );
+                            try self.diagnostics.append(self.gpa, .{
+                                .node = fr.target,
+                                .code = TsCodes.cannot_assign_const,
+                                .message = msg,
+                            });
+                        }
                         if (target_t == types.Primitive.undefined_t and
                             self.identifierIsUntypedUninitializedVar(fr.target))
                         {
@@ -8734,7 +8763,18 @@ pub const Checker = struct {
                 try param_predicates.append(self.gpa, .{ .param_index = value_param_index, .pred = param_pred });
             }
             value_param_index += 1;
+            // Suppress TS7006 when the default-value initializer is
+            // an `await` expression with no operand — i.e. the parser
+            // already emitted TS2524 + TS1109 for `f(a = await)` /
+            // similar inside an async function. Mirrors tsc's
+            // `asyncFunctionDeclaration6/7_es*` baselines which omit
+            // the implicit-any diagnostic when the initializer parse
+            // failed in this specific shape.
+            const default_is_await_error_placeholder = pp.default_value != hir_mod.none_node_id and
+                self.hir.kindOf(pp.default_value) == .await_expr and
+                hir_mod.awaitExprOf(self.hir, pp.default_value).expr == hir_mod.none_node_id;
             if (!has_anno and !inferred_from_default and self.strict_flags.no_implicit_any and
+                !default_is_await_error_placeholder and
                 !self.parameterHasContextualType(node, p))
             {
                 // Binding-pattern parameters (`function f([a, b]) {}` /
@@ -9836,7 +9876,10 @@ pub const Checker = struct {
                         if (self.expressionContainsSuper(fn_p.name)) {
                             try self.report(fn_p.name, TsCodes.super_in_computed_property_name, "'super' cannot be referenced in a computed property name.");
                         }
+                        const prev_in_computed_name = self.in_computed_property_name;
+                        self.in_computed_property_name = true;
                         computed_fn_key_t = try self.checkExpression(fn_p.name);
+                        self.in_computed_property_name = prev_in_computed_name;
                         if (!try self.computedPropertyKeyTypeIsValid(computed_fn_key_t)) {
                             try self.reportComputedKeyBracket(fn_p.name, TsCodes.computed_property_name_type, "A computed property name must be of type 'string', 'number', 'symbol', or 'any'.");
                         }
@@ -10066,7 +10109,10 @@ pub const Checker = struct {
                         if (!self.sourceHasStrictFalseDirective() and self.expressionContainsThis(op.key) and self.currentThisType() == null) {
                             try self.report(op.key, TsCodes.this_implicitly_any, "'this' implicitly has type 'any' because it does not have a type annotation.");
                         }
+                        const prev_in_computed_name = self.in_computed_property_name;
+                        self.in_computed_property_name = true;
                         const key_t = try self.checkExpression(op.key);
+                        self.in_computed_property_name = prev_in_computed_name;
                         if (!try self.computedPropertyKeyTypeIsValid(key_t)) {
                             try self.reportComputedKeyBracket(op.key, TsCodes.computed_property_name_type, "A computed property name must be of type 'string', 'number', 'symbol', or 'any'.");
                         } else if (!op_is_method and
@@ -18378,6 +18424,12 @@ pub const Checker = struct {
             return;
         }
         const root_text = self.string_interner.get(root_name);
+        // Suppress `Cannot find namespace 'JSX'.` when the fixture
+        // references the react.d.ts triple-slash library — tsc treats
+        // JSX as an ambient namespace provided by that lib and never
+        // emits the diagnostic. Without this guard checkJsxChildrenProperty*
+        // and tsxUnionTypeComponent* fixtures over-report TS2503.
+        if (std.mem.eql(u8, root_text, "JSX") and self.sourceHasReactJsxReference()) return;
         const suggestion = self.namespaceSpellingSuggestion(root_name);
         const msg = if (suggestion) |suggested|
             try std.fmt.allocPrint(
@@ -23253,7 +23305,12 @@ pub const Checker = struct {
                     const id = hir_mod.identifierOf(self.hir, c.callee);
                     if (std.mem.eql(u8, self.string_interner.get(id.name), "super")) {
                         if (self.lookupNarrow(id.name) == null) {
-                            try self.report(c.callee, TsCodes.super_not_derived, "'super' can only be referenced in a derived class.");
+                            // Skip TS2335 when the super reference lives inside a
+                            // class computed property name — TS2466 already
+                            // covers it and tsc does not double-report.
+                            if (!self.in_computed_property_name) {
+                                try self.report(c.callee, TsCodes.super_not_derived, "'super' can only be referenced in a derived class.");
+                            }
                         } else {
                             const args = hir_mod.callArgs(self.hir, node);
                             for (args) |arg| _ = try self.checkExpression(arg);
@@ -23628,7 +23685,12 @@ pub const Checker = struct {
                         obj_t = st;
                         try self.reportSuperPropertyNotMethodInStatic(m.object, st, node, m.name);
                     } else {
-                        try self.report(m.object, TsCodes.super_not_derived, "'super' can only be referenced in a derived class.");
+                        // See note in `call_expr` super branch: TS2466 is the
+                        // canonical diagnostic for super used inside a class
+                        // computed property name; tsc does not also emit TS2335.
+                        if (!self.in_computed_property_name) {
+                            try self.report(m.object, TsCodes.super_not_derived, "'super' can only be referenced in a derived class.");
+                        }
                         obj_t = types.Primitive.any;
                     }
                 } else {
@@ -23838,7 +23900,11 @@ pub const Checker = struct {
                     if (self.nodeIsSuperReference(e.object)) {
                         const super_id = self.string_interner.intern("super") catch return error.OutOfMemory;
                         if (self.lookupNarrow(super_id)) |st| break :blk_obj st;
-                        try self.report(e.object, TsCodes.super_not_derived, "'super' can only be referenced in a derived class.");
+                        // TS2466 (super-in-computed-property-name) already covers
+                        // the same root error; skip the secondary TS2335.
+                        if (!self.in_computed_property_name) {
+                            try self.report(e.object, TsCodes.super_not_derived, "'super' can only be referenced in a derived class.");
+                        }
                         break :blk_obj types.Primitive.any;
                     }
                     break :blk_obj try self.checkExpression(e.object);
