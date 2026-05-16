@@ -5818,7 +5818,11 @@ pub const Parser = struct {
             // We need to scan past the type annotation to find a `=>`.
             // Simple approach: look for the next top-level `=>` before
             // a statement-terminator-class token.
-            if (!self.scanForArrowAfterColon(after_paren_idx + 1)) return null;
+            if (!self.scanForArrowAfterColon(after_paren_idx + 1) and
+                !self.scanForMissingArrowBlockAfterColon(after_paren_idx + 1))
+            {
+                return null;
+            }
         }
 
         // Looks like an arrow — parse for real.
@@ -5835,7 +5839,12 @@ pub const Parser = struct {
             const arrow_tok = self.peek();
             try self.reportCodeAt(arrow_tok.span.start, arrow_tok.line, 1200, "Line terminator not permitted before arrow.");
         }
-        _ = try self.expect(.arrow, "'=>' in arrow function");
+        if (self.peek().kind == .open_brace) {
+            const body_tok = self.peek();
+            try self.reportCodeAt(body_tok.span.start, body_tok.line, 1005, "'=>' expected.");
+        } else {
+            _ = try self.expect(.arrow, "'=>' in arrow function");
+        }
         self.function_depth += 1;
         const prev_generator_depth = self.generator_depth;
         self.generator_depth = 0;
@@ -6192,6 +6201,32 @@ pub const Parser = struct {
             switch (tk) {
                 .less_than, .open_paren, .open_brace, .open_bracket => depth += 1,
                 .greater_than, .close_paren, .close_brace, .close_bracket => {
+                    if (depth > 0) depth -= 1;
+                },
+                else => {},
+            }
+        }
+        return false;
+    }
+
+    fn scanForMissingArrowBlockAfterColon(self: *Parser, idx: u32) bool {
+        var depth: i32 = 0;
+        var saw_type_token = false;
+        var i: u32 = idx;
+        while (i < self.tokens.len) : (i += 1) {
+            const tk = self.tokens[i].kind;
+            if (depth == 0) {
+                if (tk == .open_brace) return saw_type_token;
+                if (tk == .semicolon or tk == .comma or tk == .close_paren or
+                    tk == .close_brace or tk == .close_bracket or tk == .eof)
+                {
+                    return false;
+                }
+                saw_type_token = true;
+            }
+            switch (tk) {
+                .less_than, .open_paren, .open_bracket => depth += 1,
+                .greater_than, .close_paren, .close_bracket => {
                     if (depth > 0) depth -= 1;
                 },
                 else => {},
@@ -9317,6 +9352,16 @@ test "parser: generic arrow accepts nested type parameter constraint" {
     const top = hir_mod.blockStmts(&s.hir, root)[0];
     const vd = hir_mod.varDeclOf(&s.hir, top);
     try T.expectEqual(hir_mod.NodeKind.arrow_fn, s.hir.kindOf(vd.init));
+}
+
+test "parser: typed paren arrow missing arrow recovers before block body" {
+    var s = try newTestSetup("function foo(): any { return (): void {}; }");
+    defer destroyTestSetup(s);
+
+    _ = try s.parser.parseSourceFile();
+    try T.expectEqual(@as(usize, 1), s.parser.diagnostics.items.len);
+    try T.expectEqual(@as(u32, 1005), s.parser.diagnostics.items[0].code);
+    try T.expectEqualStrings("'=>' expected.", s.parser.diagnostics.items[0].message);
 }
 
 test "parser: interface declaration" {
