@@ -4225,10 +4225,14 @@ test "conformance: baseline-aware type-relationship survey" {
     const specs = [_]CategorySpec{
         .{ .label = "types/typeRelationships/apparentType", .rel_path = "types/typeRelationships/apparentType" },
         .{ .label = "types/typeRelationships/bestCommonType", .rel_path = "types/typeRelationships/bestCommonType" },
+        .{ .label = "types/typeRelationships/instanceOf", .rel_path = "types/typeRelationships/instanceOf" },
         .{ .label = "types/typeRelationships/recursiveTypes", .rel_path = "types/typeRelationships/recursiveTypes" },
         .{ .label = "types/typeRelationships/subtypesAndSuperTypes", .rel_path = "types/typeRelationships/subtypesAndSuperTypes" },
         .{ .label = "types/typeRelationships/typeAndMemberIdentity", .rel_path = "types/typeRelationships/typeAndMemberIdentity" },
         .{ .label = "types/typeRelationships/typeInference", .rel_path = "types/typeRelationships/typeInference" },
+        .{ .label = "types/typeRelationships/widenedTypes", .rel_path = "types/typeRelationships/widenedTypes" },
+        .{ .label = "types/specifyingTypes", .rel_path = "types/specifyingTypes" },
+        .{ .label = "types/primitives", .rel_path = "types/primitives" },
     };
 
     const cats = try runCategorySpecsWithOptions(T.allocator, ts_root, .{
@@ -4250,8 +4254,8 @@ test "conformance: baseline-aware type-relationship survey" {
     );
 
     try T.expectEqual(@as(usize, specs.len), cats.len);
-    try T.expectEqual(@as(u32, 175), combined.total());
-    try T.expect(combined.passed >= 90);
+    try T.expectEqual(@as(u32, 246), combined.total());
+    try T.expectEqual(@as(u32, 246), combined.passed);
 }
 
 // Default location of the local TypeScript checkout. Other devs
