@@ -1844,7 +1844,11 @@ pub const Printer = struct {
                     } else if (tk == .var_decl or tk == .let_decl or tk == .const_decl) {
                         const v = hir_mod.varDeclOf(self.hir, fip.target);
                         if (v.name == hir_mod.none_node_id) return false;
-                        if (self.hir.kindOf(v.name) != .identifier) return false;
+                        // §4.A.4.8 v2 — accept identifier OR destructuring
+                        // pattern as the binding name; emit routes through
+                        // `printBindingName`.
+                        const nk = self.hir.kindOf(v.name);
+                        if (nk != .identifier and nk != .object_pattern and nk != .array_pattern) return false;
                     } else {
                         return false;
                     }
@@ -1871,15 +1875,17 @@ pub const Printer = struct {
                     } else {
                         return false;
                     }
-                    // Target must be a simple identifier or `let/const/var
-                    // <ident>` for v0.
+                    // Target is a simple identifier OR `let/const/var
+                    // <name>` where name is identifier or destructuring
+                    // pattern (§4.A.4.8 v2).
                     const tk = self.hir.kindOf(fop.target);
                     if (tk == .identifier) {
                         // ok
                     } else if (tk == .var_decl or tk == .let_decl or tk == .const_decl) {
                         const v = hir_mod.varDeclOf(self.hir, fop.target);
                         if (v.name == hir_mod.none_node_id) return false;
-                        if (self.hir.kindOf(v.name) != .identifier) return false;
+                        const nk = self.hir.kindOf(v.name);
+                        if (nk != .identifier and nk != .object_pattern and nk != .array_pattern) return false;
                     } else {
                         return false;
                     }
@@ -2912,7 +2918,10 @@ pub const Printer = struct {
                     var num_exit_buf: [16]u8 = undefined;
                     try self.write(std.fmt.bufPrint(&num_exit_buf, "{d}", .{exit_label}) catch unreachable);
                     try self.write("]; var ");
-                    try self.printExpression(target_name);
+                    // §4.A.4.8 v2 — printBindingName routes identifier
+                    // / array_pattern / object_pattern through the right
+                    // emit (destructuring shapes render correctly).
+                    try self.printBindingName(target_name);
                     try self.write(" = _keys[_i];");
                 }
                 if (ye_first != hir_mod.none_node_id) {
@@ -3081,13 +3090,13 @@ pub const Printer = struct {
                         try self.write(" if (_c.done) return [3, ");
                         try self.write(num_exit);
                         try self.write("]; var ");
-                        try self.printExpression(target_name);
+                        try self.printBindingName(target_name);
                         try self.write(" = _c.value;");
                     } else {
                         try self.write(" if (!(_i < _arr.length)) return [3, ");
                         try self.write(num_exit);
                         try self.write("]; var ");
-                        try self.printExpression(target_name);
+                        try self.printBindingName(target_name);
                         try self.write(" = _arr[_i];");
                     }
                 }
@@ -8781,6 +8790,40 @@ test "emit: generator with for-of-yield + multi-stmt body lowers" {
     try T.expect(std.mem.indexOf(u8, out, "case 2: _a.sent(); post();") != null);
     try T.expect(std.mem.indexOf(u8, out, "case 3: _i++; return [3, 1];") != null);
     try T.expect(std.mem.indexOf(u8, out, "case 4:") != null);
+}
+
+test "emit: generator with for-of-yield + array destructuring target" {
+    // §4.A.4.8 v2 — destructuring binding inside the state-machine
+    // for-of: `var [a, b] = _arr[_i];`.
+    const out = try emitWithOpts(
+        "function* g() { for (const [a, b] of items) yield a; }",
+        .{ .es_target = .es5 },
+    );
+    defer T.allocator.free(out);
+    try T.expect(std.mem.indexOf(u8, out, "__generator") != null);
+    try T.expect(std.mem.indexOf(u8, out, "var [a, b] = _arr[_i];") != null);
+}
+
+test "emit: generator with for-of-yield + object destructuring target" {
+    const out = try emitWithOpts(
+        "function* g() { for (const { value } of items) yield value; }",
+        .{ .es_target = .es5 },
+    );
+    defer T.allocator.free(out);
+    try T.expect(std.mem.indexOf(u8, out, "__generator") != null);
+    try T.expect(std.mem.indexOf(u8, out, "var { value } = _arr[_i];") != null);
+}
+
+test "emit: generator with for-in-yield + destructuring target" {
+    // for-in iterates keys (strings), so destructuring on a key is
+    // unusual but valid TS (treats key as string-indexed).
+    const out = try emitWithOpts(
+        "function* g() { for (const [a, b] in obj) yield a; }",
+        .{ .es_target = .es5 },
+    );
+    defer T.allocator.free(out);
+    try T.expect(std.mem.indexOf(u8, out, "__generator") != null);
+    try T.expect(std.mem.indexOf(u8, out, "var [a, b] = _keys[_i];") != null);
 }
 
 test "emit: generator with for-in-yield lowers via eager keys collection" {
