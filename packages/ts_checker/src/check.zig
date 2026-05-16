@@ -11622,8 +11622,16 @@ pub const Checker = struct {
             "Cannot assign to '{s}' because it is a read-only property.",
             .{prop_str},
         );
+        // Anchor at the property-name token (the `x` of `obj.x`)
+        // rather than the start of the member-access expression
+        // (`obj`). Matches tsc which prints the column of the
+        // accessed property — see baseline `jsdocReadonly.errors.txt`
+        // expecting `(23,3)` for `l.y = 12`.
+        const span = self.hir.spanOf(target);
+        const name_pos: ?u32 = if (span.end >= prop_str.len) span.end - @as(u32, @intCast(prop_str.len)) else null;
         try self.diagnostics.append(self.gpa, .{
             .node = target,
+            .pos = name_pos,
             .code = TsCodes.readonly_property,
             .message = msg,
         });
@@ -50586,6 +50594,32 @@ test "checker: assigning to an interface readonly property emits TS2540" {
         if (d.code == TsCodes.readonly_property) found = true;
     }
     try T.expect(found);
+}
+
+test "checker: TS2540 anchors at the property name not the object" {
+    // Mirrors baseline `jsdocReadonly.errors.txt` which reports
+    // `(23,3)` for `l.y = 12` — the column of the read-only
+    // property name, not the start of the member-access. Pin the
+    // anchor here so the slice 3000–4000 fixture stays passing.
+    const s = try newSetup(
+        \\interface P { readonly y: number }
+        \\const l: P = { y: 1 };
+        \\l.y = 12;
+    );
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+    var found_pos: ?u32 = null;
+    for (s.checker.diagnostics.items) |d| {
+        if (d.code == TsCodes.readonly_property) {
+            found_pos = d.pos;
+            break;
+        }
+    }
+    // `l.y = 12;` starts at byte 47 (after the two preceding lines
+    // each ending in `\n`). The `y` is at offset 49.
+    const src = "interface P { readonly y: number }\nconst l: P = { y: 1 };\nl.y = 12;";
+    const y_pos: u32 = @intCast(std.mem.indexOf(u8, src, "l.y").? + 2);
+    try T.expectEqual(@as(?u32, y_pos), found_pos);
 }
 
 test "checker: assigning through readonly index signatures emits TS2542" {
