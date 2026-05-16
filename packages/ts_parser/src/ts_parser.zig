@@ -6185,6 +6185,7 @@ pub const Parser = struct {
                 .semicolon,
                 .arrow,
                 .question_dot,
+                .invalid,
                 .eof,
                 => return null,
                 else => {},
@@ -6583,6 +6584,20 @@ pub const Parser = struct {
                 prec
             else
                 @enumFromInt(@intFromEnum(prec) + 1);
+            if (self.peek().kind == .close_paren) {
+                const missing = self.advance();
+                try self.reportCodeAt(missing.span.start, missing.line, 1109, "Expression expected.");
+                const right = try self.builder.addLiteralNumber(.{ .start = missing.span.start, .end = missing.span.start }, 0);
+                const sp: Span = .{ .start = self.hir.spanOf(left).start, .end = t.span.end };
+                if (prec_mod.binOpOf(t.kind)) |bop| {
+                    left = try self.builder.addBinaryOp(sp, bop, left, right);
+                } else if (prec_mod.logicalOpOf(t.kind)) |lop| {
+                    left = try self.builder.addLogicalOp(sp, lop, left, right);
+                } else {
+                    left = right;
+                }
+                continue;
+            }
             const right = try self.parseBinaryExpressionWithIn(next_min, allow_in);
             const sp: Span = .{ .start = self.hir.spanOf(left).start, .end = self.hir.spanOf(right).end };
             if (prec_mod.binOpOf(t.kind)) |bop| {
@@ -7445,6 +7460,9 @@ pub const Parser = struct {
             .invalid => {
                 const bad = self.advance();
                 try self.reportCodeAt(bad.span.start, bad.line, 1127, "Invalid character.");
+                if (!self.peek().flags.preceded_by_newline and arrayLiteralElementCanStart(self.peek().kind)) {
+                    return try self.parseUnaryExpression();
+                }
                 return error.UnexpectedToken;
             },
             .kw_finally => {
@@ -12221,6 +12239,21 @@ test "parser: close paren in expression reports expression expected" {
     try T.expectEqualStrings("Expression expected.", s.parser.diagnostics.items[0].message);
 }
 
+test "parser: binary expression missing rhs before close paren preserves lhs" {
+    var s = try newTestSetup("retValue = bfs.VARIABLES >> );");
+    defer destroyTestSetup(s);
+
+    const root = try s.parser.parseSourceFile();
+    const top = hir_mod.blockStmts(&s.hir, root)[0];
+    try T.expectEqual(hir_mod.NodeKind.assignment, s.hir.kindOf(top));
+    const assign = hir_mod.assignmentOf(&s.hir, top);
+    try T.expectEqual(hir_mod.NodeKind.identifier, s.hir.kindOf(assign.target));
+    try T.expectEqual(hir_mod.NodeKind.binary_op, s.hir.kindOf(assign.value));
+    try T.expectEqual(@as(usize, 1), s.parser.diagnostics.items.len);
+    try T.expectEqual(@as(u32, 1109), s.parser.diagnostics.items[0].code);
+    try T.expectEqualStrings("Expression expected.", s.parser.diagnostics.items[0].message);
+}
+
 test "parser: return in expression position reports expression expected" {
     var s = try newTestSetup(
         \\function foo() {
@@ -12258,6 +12291,17 @@ test "parser: invalid token in expression position reports invalid character" {
     try T.expect(s.parser.diagnostics.items.len >= 1);
     try T.expectEqual(@as(u32, 1127), s.parser.diagnostics.items[0].code);
     try T.expectEqualStrings("Invalid character.", s.parser.diagnostics.items[0].message);
+}
+
+test "parser: invalid generic-call type args fall back to expression recovery" {
+    var s = try newTestSetup("Foo<A,B,\\ C>(4, 5, 6);");
+    defer destroyTestSetup(s);
+
+    const root = try s.parser.parseSourceFile();
+    const top = hir_mod.blockStmts(&s.hir, root)[0];
+    try T.expectEqual(hir_mod.NodeKind.binary_op, s.hir.kindOf(top));
+    try T.expectEqual(@as(usize, 1), s.parser.diagnostics.items.len);
+    try T.expectEqual(@as(u32, 1127), s.parser.diagnostics.items[0].code);
 }
 
 test "parser: statement invalid token recovers following declaration" {

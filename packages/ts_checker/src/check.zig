@@ -504,6 +504,7 @@ const DeclarationEntry = struct {
     has_body: bool = false,
     is_exported: bool = false,
     is_ambient: bool = false,
+    duplicate_function_body_reported: bool = false,
 };
 
 const DeclarationKey = struct {
@@ -1438,11 +1439,17 @@ pub const Checker = struct {
                 }
             },
             .return_stmt => {
-                if (self.function_body_depth == 0 and !self.returnInsideUnsupportedWithStatement(node)) {
+                const suppress_recovered_top_level_return = self.topLevelReturnBeforeRecoveredCloseBrace(node);
+                if (self.function_body_depth == 0 and
+                    !self.returnInsideUnsupportedWithStatement(node) and
+                    !suppress_recovered_top_level_return)
+                {
                     try self.report(node, TsCodes.return_outside_function, "A 'return' statement can only be used within a function body.");
                 }
                 const r = hir_mod.returnOf(self.hir, node);
-                const ret_t: TypeId = if (r.value != hir_mod.none_node_id)
+                const ret_t: TypeId = if (suppress_recovered_top_level_return)
+                    types.Primitive.void_t
+                else if (r.value != hir_mod.none_node_id)
                     try self.checkExpression(r.value)
                 else
                     types.Primitive.void_t;
@@ -2090,6 +2097,13 @@ pub const Checker = struct {
                 try self.reportDuplicateIdentifier(node, name);
             }
             if (gop.value_ptr.is_function and is_fn) {
+                if (gop.value_ptr.has_body and has_body and !gop.value_ptr.is_ambient and !is_ambient) {
+                    if (!gop.value_ptr.duplicate_function_body_reported) {
+                        try self.reportDuplicateFunctionImplementation(gop.value_ptr.node);
+                        gop.value_ptr.duplicate_function_body_reported = true;
+                    }
+                    try self.reportDuplicateFunctionImplementation(node);
+                }
                 if (gop.value_ptr.is_exported != exported) {
                     try self.report(node, TsCodes.overloads_must_all_be_exported_or_not, "Overload signatures must all be exported or non-exported.");
                 }
@@ -2098,6 +2112,15 @@ pub const Checker = struct {
                 }
             }
         }
+    }
+
+    fn reportDuplicateFunctionImplementation(self: *Checker, node: NodeId) CheckError!void {
+        const report_node = if (self.hir.kindOf(node) == .fn_decl or self.hir.kindOf(node) == .fn_expr) blk: {
+            const f = hir_mod.fnDeclOf(self.hir, node);
+            if (f.name != hir_mod.none_node_id) break :blk f.name;
+            break :blk node;
+        } else node;
+        try self.report(report_node, TsCodes.duplicate_function_implementation, "Duplicate function implementation.");
     }
 
     fn interfaceHeritageReachesName(
@@ -4473,6 +4496,22 @@ pub const Checker = struct {
             if (!self.sourceSpanStartsWithKeyword(src, span.start, "with")) continue;
             const stmts = hir_mod.blockStmts(self.hir, cur);
             if (stmts.len >= 2 and stmts[0] != child) return true;
+        }
+        return false;
+    }
+
+    fn topLevelReturnBeforeRecoveredCloseBrace(self: *Checker, node: NodeId) bool {
+        if (self.function_body_depth != 0) return false;
+        const src = self.source orelse return false;
+        const span = self.hir.spanOf(node);
+        if (span.end > src.len) return false;
+        var i: usize = @intCast(span.end);
+        while (i < src.len) : (i += 1) {
+            switch (src[i]) {
+                ' ', '\t', '\r', '\n' => continue,
+                '}' => return true,
+                else => return false,
+            }
         }
         return false;
     }
@@ -40394,6 +40433,35 @@ test "checker: top-level return reports TS1108" {
     try s.checker.checkSourceFile(s.root);
     try T.expectEqual(@as(usize, 1), s.checker.diagnostics.items.len);
     try T.expectEqual(TsCodes.return_outside_function, s.checker.diagnostics.items[0].code);
+}
+
+test "checker: recovered top-level return before unmatched close suppresses follow-ons" {
+    const s = try newSetup(
+        \\return foo;
+        \\}
+        \\return bar;
+        \\}
+    );
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+    for (s.checker.diagnostics.items) |d| {
+        try T.expect(d.code != TsCodes.return_outside_function);
+        try T.expect(d.code != TsCodes.cannot_find_name);
+    }
+}
+
+test "checker: duplicate function implementations report on both bodies" {
+    const s = try newSetup(
+        \\function foo() {}
+        \\function foo() {}
+    );
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+    var count: usize = 0;
+    for (s.checker.diagnostics.items) |d| {
+        if (d.code == TsCodes.duplicate_function_implementation) count += 1;
+    }
+    try T.expectEqual(@as(usize, 2), count);
 }
 
 test "checker: unsupported with body suppresses redundant top-level return" {
