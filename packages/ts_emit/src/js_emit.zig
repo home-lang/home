@@ -5377,7 +5377,7 @@ pub const Printer = struct {
         // legacy assignment semantics rather than ES2022 [[Define]].
         const downlevel_fields = (!self.options.es_target.supportsNativeClassFields() or
             !self.options.use_define_for_class_fields) and
-            self.classHasPublicFieldInit(node);
+            (self.classHasPublicFieldInit(node) or self.classHasPrivateFieldInit(node));
         try self.write("class");
         if (c.name != hir_mod.none_node_id) {
             try self.write(" ");
@@ -5619,17 +5619,48 @@ pub const Printer = struct {
         return false;
     }
 
-    /// Emit `this.<key> = <init>; ` for every public field with an
-    /// initializer on this class. Caller is responsible for being
-    /// inside a constructor body and writing surrounding indentation.
-    fn writeHoistedFieldInits(self: *Printer, class_node: NodeId) !void {
+    /// §4.A.7 v2 — true if the class has at least one private field
+    /// with an initializer. Used to trigger ctor synthesis (or
+    /// hoisted-fields decoration of an explicit ctor) at sub-ES2022
+    /// targets so `_<Class>_<field>.set(this, <init>);` runs.
+    fn classHasPrivateFieldInit(self: *Printer, class_node: NodeId) bool {
         const members = hir_mod.classMembers(self.hir, class_node);
         for (members) |m| {
             if (self.hir.kindOf(m) != .object_property) continue;
             const op = hir_mod.objectPropertyOf(self.hir, m);
             if (op.is_static) continue;
             if (op.value == hir_mod.none_node_id) continue;
-            if (self.privateFieldName(op.key) != null) continue;
+            if (self.privateFieldName(op.key) == null) continue;
+            return true;
+        }
+        return false;
+    }
+
+    /// Emit `this.<key> = <init>; ` for every public field with an
+    /// initializer on this class. Caller is responsible for being
+    /// inside a constructor body and writing surrounding indentation.
+    fn writeHoistedFieldInits(self: *Printer, class_node: NodeId) !void {
+        const members = hir_mod.classMembers(self.hir, class_node);
+        const c = hir_mod.classOf(self.hir, class_node);
+        for (members) |m| {
+            if (self.hir.kindOf(m) != .object_property) continue;
+            const op = hir_mod.objectPropertyOf(self.hir, m);
+            if (op.is_static) continue;
+            if (op.value == hir_mod.none_node_id) continue;
+            // §4.A.7 v2 — private field initializer hoist. Below ES2022
+            // private fields lower through per-class WeakMap instances;
+            // the field's `<init>` expression needs to land in the
+            // ctor body as `_<Class>_<field>.set(this, <init>);` so
+            // instances actually get the initial value.
+            if (self.privateFieldName(op.key)) |pname| {
+                if (!self.options.es_target.supportsNativePrivateFields() and c.name != hir_mod.none_node_id) {
+                    try self.writeWeakMapName(c.name, pname);
+                    try self.write(".set(this, ");
+                    try self.printExpression(op.value);
+                    try self.write("); ");
+                }
+                continue;
+            }
             // Auto-accessor: hoist its `_<key>` storage assignment
             // into the ctor (not the public-facing `<key>` name —
             // that's the getter/setter pair). At ES2022+ the storage
@@ -11763,6 +11794,62 @@ test "emit: private field downlevel to WeakMap at es2019" {
     try T.expect(std.mem.indexOf(u8, out, "var _Foo_x = new WeakMap();") != null);
     try T.expect(std.mem.indexOf(u8, out, "_Foo_x.get(this)") != null);
     try T.expect(std.mem.indexOf(u8, out, "#x") == null);
+    // §4.A.7 v2 — private field initializer is now hoisted into the
+    // (synthesized) ctor as `_Foo_x.set(this, 1);` so instances get
+    // the initial value.
+    try T.expect(std.mem.indexOf(u8, out, "_Foo_x.set(this, 1)") != null);
+}
+
+test "emit: private field with no other fields synthesizes ctor + init at es2019" {
+    // Class with ONLY private-field initializer (no public fields)
+    // still needs ctor synthesis at sub-ES2022.
+    const out = try emitWithOpts(
+        "class Foo { #count = 0; }",
+        .{ .es_target = .es2019 },
+    );
+    defer T.allocator.free(out);
+    try T.expect(std.mem.indexOf(u8, out, "var _Foo_count = new WeakMap();") != null);
+    try T.expect(std.mem.indexOf(u8, out, "_Foo_count.set(this, 0)") != null);
+}
+
+test "emit: private field with explicit ctor hoists init into ctor body at es2019" {
+    // Explicit ctor + private field init: the init lands inside the
+    // ctor body (before user statements for root classes).
+    const out = try emitWithOpts(
+        "class Foo { #count = 0; constructor() { log(); } }",
+        .{ .es_target = .es2019 },
+    );
+    defer T.allocator.free(out);
+    try T.expect(std.mem.indexOf(u8, out, "_Foo_count.set(this, 0)") != null);
+    // log() is user body; the hoisted init runs first.
+    try T.expect(std.mem.indexOf(u8, out, "log()") != null);
+    const init_idx = std.mem.indexOf(u8, out, "_Foo_count.set(this, 0)");
+    const user_idx = std.mem.indexOf(u8, out, "log()");
+    try T.expect(init_idx != null and user_idx != null);
+    try T.expect(init_idx.? < user_idx.?);
+}
+
+test "emit: multiple private fields with inits all hoist at es2019" {
+    const out = try emitWithOpts(
+        "class Foo { #a = 1; #b = 2; }",
+        .{ .es_target = .es2019 },
+    );
+    defer T.allocator.free(out);
+    try T.expect(std.mem.indexOf(u8, out, "_Foo_a.set(this, 1)") != null);
+    try T.expect(std.mem.indexOf(u8, out, "_Foo_b.set(this, 2)") != null);
+}
+
+test "emit: private field with no initializer doesn't synthesize ctor at es2019" {
+    // A private field declared but not initialized doesn't need ctor
+    // injection — the WeakMap entry just isn't pre-populated.
+    const out = try emitWithOpts(
+        "class Foo { #x; getX() { return this.#x; } }",
+        .{ .es_target = .es2019 },
+    );
+    defer T.allocator.free(out);
+    try T.expect(std.mem.indexOf(u8, out, "var _Foo_x = new WeakMap();") != null);
+    // No .set() call.
+    try T.expect(std.mem.indexOf(u8, out, "_Foo_x.set") == null);
 }
 
 test "emit: private method `#m()` preserved at es2022+" {
