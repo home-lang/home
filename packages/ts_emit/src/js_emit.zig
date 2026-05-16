@@ -4005,9 +4005,22 @@ pub const Printer = struct {
                             try self.write(": _a.sent();");
                             continue;
                         }
-                        // break_stmt/return/throw etc. — emit inline
+                        // §4.A.4.16 v1 — `return E;` inside a state-
+                        // machine switch case must emit `return [2, E];`
+                        // (op-2 = generator-return), not native return.
+                        if (sk == .return_stmt) {
+                            const r = hir_mod.returnOf(self.hir, st);
+                            try self.write(" return [2");
+                            if (r.value != hir_mod.none_node_id) {
+                                try self.write(", ");
+                                try self.printExpression(r.value);
+                            }
+                            try self.write("];");
+                            continue;
+                        }
+                        // break_stmt/throw/other — emit inline
                         // (printNonIndentStatement rewrites break via
-                        // gen_break_label).
+                        // gen_break_label; throw stays native).
                         try self.write(" ");
                         try self.printNonIndentStatement(st);
                     }
@@ -9989,6 +10002,19 @@ test "emit: generator with switch + multi-yield-per-case lowers" {
     // Resume2: sent + post() + break (→ exit).
     try T.expect(std.mem.indexOf(u8, out, "case 3: _a.sent(); post(); return [3, 4];") != null);
     try T.expect(std.mem.indexOf(u8, out, "case 4:") != null);
+}
+
+test "emit: generator with switch + return in case emits return-op-2" {
+    // `return E;` inside a state-machine switch case must emit
+    // `return [2, E];` (generator-return op), not native return.
+    const out = try emitWithOpts(
+        "function* g() { switch (x) { case 1: return 'done'; case 2: yield 'b'; break; } }",
+        .{ .es_target = .es5 },
+    );
+    defer T.allocator.free(out);
+    try T.expect(std.mem.indexOf(u8, out, "__generator") != null);
+    // case 1 emits `return [2, 'done']` — the early generator return.
+    try T.expect(std.mem.indexOf(u8, out, "case 1: return [2, \"done\"];") != null);
 }
 
 test "emit: generator with switch missing-break still bails" {
