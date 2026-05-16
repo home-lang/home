@@ -238,6 +238,15 @@ pub const TsCodes = struct {
     pub const class_name_object_es5_module: u32 = 2725;
     pub const ts_only_decl_in_js: u32 = 8006;
     pub const fn_must_return_value: u32 = 2355;
+    /// TS1064 — "The return type of an async function or method must
+    /// be the global Promise<T> type." Emitted when an async function
+    /// is declared with an explicit return type that isn't the global
+    /// `Promise<T>` (anything else, including user-defined classes
+    /// extending Promise, qualified names like `X.MyPromise`, plain
+    /// objects, primitives, etc.). Mirrors fixtures
+    /// `asyncImportedPromise_es6`, `asyncQualifiedReturnType_es6`,
+    /// and `asyncFunctionDeclaration15_es6`.
+    pub const async_return_must_be_promise: u32 = 1064;
     pub const no_exported_member: u32 = 2305;
     pub const export_assignment_es_module: u32 = 1203;
     pub const export_non_local_declaration: u32 = 2661;
@@ -3373,9 +3382,81 @@ pub const Checker = struct {
         try self.checkUseStrictNonSimpleParameterList(node);
         try self.checkFnParameterDefaultReferences(node);
         try self.checkFnParameterDuplicateNames(node);
+        try self.checkAsyncReturnTypeIsPromise(node);
         try self.walkFnBody(node);
         try self.checkFunctionOverloadCompatibilityAfterBody(node);
         try self.checkFnReturnPathExits(node);
+    }
+
+    /// TS1064 — when an async function declares an explicit return
+    /// type, it must be the global `Promise<T>`. Anything else
+    /// (qualified name like `X.MyPromise`, user-defined class like
+    /// `Task<T>` extending Promise, plain object/primitive, etc.)
+    /// is rejected. Anchored at the return-type annotation node so
+    /// the column matches upstream baselines.
+    fn checkAsyncReturnTypeIsPromise(self: *Checker, node: NodeId) CheckError!void {
+        const f = hir_mod.fnDeclOf(self.hir, node);
+        if (!f.flags.is_async) return;
+        // Async generators (`async function * f()`) have their own
+        // return-type contract (`AsyncIterableIterator<T>` /
+        // `AsyncGenerator<T,…>`), not `Promise<T>`. TS1064 only
+        // applies to plain async functions.
+        if (f.flags.is_generator) return;
+        if (f.return_type == hir_mod.none_node_id) return;
+        const rt = f.return_type;
+        if (self.hir.kindOf(rt) != .type_ref) {
+            try self.reportAsyncReturnNotPromise(rt);
+            return;
+        }
+        const r = hir_mod.typeRefOf(self.hir, rt);
+        // Qualified names like `X.MyPromise<T>` always trip TS1064.
+        if (r.qualifier_len != 0) {
+            try self.reportAsyncReturnNotPromise(rt);
+            return;
+        }
+        // Bare `Promise` is the accepted base case. Type aliases
+        // that resolve to `Promise<T>` (e.g.
+        // `type MyPromise<T> = Promise<T>;`) are also accepted —
+        // approximate by checking if the name resolves to a known
+        // type alias whose target is a Promise-named type ref.
+        const name_str = self.string_interner.get(r.name);
+        if (std.mem.eql(u8, name_str, "Promise")) return;
+        if (self.typeRefNameResolvesToPromiseAlias(node, r.name)) return;
+        try self.reportAsyncReturnNotPromise(rt);
+    }
+
+    /// Returns true if `name` refers to a type alias whose target
+    /// is a bare `Promise<…>` type reference. Used by the TS1064
+    /// async-return-type check to accept `type MyPromise<T> = Promise<T>;`
+    /// style aliases without flagging them. Conservative: only one
+    /// hop of alias resolution; doesn't follow chains.
+    fn typeRefNameResolvesToPromiseAlias(self: *Checker, anchor: NodeId, name: hir_mod.StringId) bool {
+        const root = self.rootBlockFor(anchor);
+        if (self.hir.kindOf(root) != .block_stmt) return false;
+        const stmts = hir_mod.blockStmts(self.hir, root);
+        for (stmts) |s| {
+            if (self.hir.kindOf(s) != .type_alias_decl) continue;
+            const ta = hir_mod.typeAliasOf(self.hir, s);
+            if (ta.name == hir_mod.none_node_id) continue;
+            if (self.hir.kindOf(ta.name) != .identifier) continue;
+            const alias_name = hir_mod.identifierOf(self.hir, ta.name).name;
+            if (alias_name != name) continue;
+            if (ta.aliased == hir_mod.none_node_id) return false;
+            if (self.hir.kindOf(ta.aliased) != .type_ref) return false;
+            const tr = hir_mod.typeRefOf(self.hir, ta.aliased);
+            if (tr.qualifier_len != 0) return false;
+            const target_name = self.string_interner.get(tr.name);
+            return std.mem.eql(u8, target_name, "Promise");
+        }
+        return false;
+    }
+
+    fn reportAsyncReturnNotPromise(self: *Checker, node: NodeId) CheckError!void {
+        try self.report(
+            node,
+            TsCodes.async_return_must_be_promise,
+            "The return type of an async function or method must be the global Promise<T> type.",
+        );
     }
 
     /// TS2355 — a function whose declared return type is neither
@@ -5782,14 +5863,9 @@ pub const Checker = struct {
                 }
                 // TS2372: `function f(x = x) {}` — the default
                 // expression mentions the same identifier as the
-                // parameter being declared. tsc emits "Parameter 'X'
-                // cannot reference itself in its initializer." This
-                // is distinct from `checkBindingPatternDefaultReferences`
-                // (which handles destructuring patterns) and the
-                // body-vars walk (which finds shadowing locals).
-                // Anchors the diagnostic at the offending reference
-                // node so the column matches the upstream baseline
-                // (e.g. `asyncFunctionDeclaration3_es2017.ts(1,20)`).
+                // parameter being declared. tsc anchors the diagnostic
+                // at the offending reference node so the column matches
+                // upstream (`asyncFunctionDeclaration3_es2017.ts(1,20)`).
                 if (nk == .identifier) {
                     const param_name_id = hir_mod.identifierOf(self.hir, pp.name).name;
                     var refs: std.ArrayListUnmanaged(NameRef) = .empty;
@@ -53273,6 +53349,99 @@ test "checker: binding pattern defaults reject self and later references" {
     try T.expect(saw_var);
     try T.expect(saw_param_self);
     try T.expect(saw_param_later);
+}
+
+test "checker: plain identifier parameter default cannot reference itself (TS2372)" {
+    // Mirrors `asyncFunctionDeclaration3_es2017.ts` and `asyncArrowFunction3_es2017.ts`:
+    //   function f(await = await) {}
+    // The destructuring-pattern self-ref check (`checkBindingPatternDefaultReferences`)
+    // doesn't cover plain identifier parameters, so this exercises the
+    // dedicated `nk == .identifier` branch in `checkFnParameterDefaultReferences`.
+    const s = try newSetup(
+        \\function f(x = x) {}
+    );
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+    var saw_param_self = false;
+    for (s.checker.diagnostics.items) |d| {
+        if (d.code == TsCodes.parameter_cannot_reference_self) saw_param_self = true;
+    }
+    try T.expect(saw_param_self);
+}
+
+test "checker: async function with non-Promise return type emits TS1064" {
+    // Mirrors `asyncFunctionDeclaration15_es6` (`async function fn4(): number`)
+    // and `asyncQualifiedReturnType_es6` (`async function f(): X.MyPromise<void>`).
+    const s = try newSetup(
+        \\async function fn4(): number { }
+        \\async function fn6(): Thenable { }
+        \\namespace X { export class MyPromise<T> extends Promise<T> {} }
+        \\async function fq(): X.MyPromise<void> { }
+    );
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+    var count: u32 = 0;
+    for (s.checker.diagnostics.items) |d| {
+        if (d.code == TsCodes.async_return_must_be_promise) count += 1;
+    }
+    // At least the `number`, `Thenable` and `X.MyPromise` cases trip TS1064.
+    try T.expect(count >= 3);
+}
+
+test "checker: async function with bare Promise<T> return is accepted (no TS1064)" {
+    const s = try newSetup(
+        \\async function fn1(): Promise<void> { }
+        \\async function fn2(): Promise<number> { return 1; }
+    );
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+    for (s.checker.diagnostics.items) |d| {
+        try T.expect(d.code != TsCodes.async_return_must_be_promise);
+    }
+}
+
+test "checker: async function accepts a one-hop alias to Promise (no TS1064)" {
+    // Mirrors `asyncAwait_es2017` / `asyncAwait_es6`:
+    //   type MyPromise<T> = Promise<T>;
+    //   async function f3(): MyPromise<void> { }
+    const s = try newSetup(
+        \\type MyPromise<T> = Promise<T>;
+        \\async function f3(): MyPromise<void> { }
+    );
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+    for (s.checker.diagnostics.items) |d| {
+        try T.expect(d.code != TsCodes.async_return_must_be_promise);
+    }
+}
+
+test "checker: async generator return type is NOT subjected to TS1064" {
+    // Async generators have a different return-type contract
+    // (`AsyncIterableIterator<T>` / `AsyncGenerator<T,…>`), not Promise<T>.
+    // Mirrors `types.asyncGenerators.es2018.1.ts`.
+    const s = try newSetup(
+        \\async function * gen(): AsyncIterableIterator<number> { yield 1; }
+    );
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+    for (s.checker.diagnostics.items) |d| {
+        try T.expect(d.code != TsCodes.async_return_must_be_promise);
+    }
+}
+
+test "checker: plain identifier parameter default does NOT emit TS2372 for unrelated reference" {
+    // Gate the self-ref check against false positives: a default that
+    // references a *different* identifier (here `y`, declared later)
+    // must not produce TS2372 — only TS2304 / TS2448 family.
+    const s = try newSetup(
+        \\function f(x = y) {}
+        \\const y = 1;
+    );
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+    for (s.checker.diagnostics.items) |d| {
+        try T.expect(d.code != TsCodes.parameter_cannot_reference_self);
+    }
 }
 
 test "checker: useDefineForClassFields true skips later body var check for class field parameter default" {
