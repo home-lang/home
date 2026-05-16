@@ -5011,6 +5011,7 @@ pub const Parser = struct {
             try self.reportCodeAt(start.span.start, start.line, 1096, "An index signature must have exactly one parameter.");
         } else if (saw_equal) {
             try self.reportCodeAt(start.span.start, start.line, 1169, "A computed property name in an interface must refer to an expression whose type is a literal type or a 'unique symbol' type.");
+            if (first_ident_tok) |ident_tok| try self.reportCannotFindNameToken(ident_tok);
         } else {
             try self.reportCodeAt(start.span.start, start.line, 1169, "A computed property name in an interface must refer to an expression whose type is a literal type or a 'unique symbol' type.");
         }
@@ -5036,11 +5037,7 @@ pub const Parser = struct {
                 self.cursor = checkpoint;
                 return false;
             }
-            const id = hir_mod.identifierOf(self.hir, key_expr);
-            const name_text = self.interner.get(id.name);
-            const msg = try std.fmt.allocPrint(self.diag_arena.allocator(), "Cannot find name '{s}'.", .{name_text});
-            const sp = self.hir.spanOf(key_expr);
-            try self.reportCodeAt(sp.start, start_tok.line, 2304, msg);
+            try self.reportCannotFindNameNode(key_expr, start_tok.line);
             break :blk @as(hir_mod.StringId, 0);
         };
         if (self.computedSymbolMemberIsNonPropertySymbol(key_expr)) {
@@ -5080,6 +5077,21 @@ pub const Parser = struct {
         const member = try self.builder.addInterfaceMember(member_span, name_id, type_node, is_optional, is_readonly, false, false);
         try out.append(self.gpa, member);
         return true;
+    }
+
+    fn reportCannotFindNameNode(self: *Parser, node: NodeId, line: u32) ParseError!void {
+        if (self.hir.kindOf(node) != .identifier) return;
+        const id = hir_mod.identifierOf(self.hir, node);
+        const name_text = self.interner.get(id.name);
+        const msg = try std.fmt.allocPrint(self.diag_arena.allocator(), "Cannot find name '{s}'.", .{name_text});
+        const sp = self.hir.spanOf(node);
+        try self.reportCodeAt(sp.start, line, 2304, msg);
+    }
+
+    fn reportCannotFindNameToken(self: *Parser, tok: Token) ParseError!void {
+        const name_text = self.source[tok.span.start..tok.span.end];
+        const msg = try std.fmt.allocPrint(self.diag_arena.allocator(), "Cannot find name '{s}'.", .{name_text});
+        try self.reportCodeAt(tok.span.start, tok.line, 2304, msg);
     }
 
     fn computedTypeMemberLooksMalformedIndexSignature(self: *const Parser) bool {
@@ -11505,6 +11517,16 @@ test "parser: unresolved computed interface member reports missing key name" {
     try T.expectEqual(@as(usize, 1), s.parser.diagnostics.items.len);
     try T.expectEqual(@as(u32, 2304), s.parser.diagnostics.items[0].code);
     try T.expectEqualStrings("Cannot find name 'e'.", s.parser.diagnostics.items[0].message);
+}
+
+test "parser: computed interface assignment key reports missing key name" {
+    var s = try newTestSetup("interface I {\n  [a = 0]\n}");
+    defer destroyTestSetup(s);
+    _ = try s.parser.parseSourceFile();
+    try T.expectEqual(@as(usize, 2), s.parser.diagnostics.items.len);
+    try T.expectEqual(@as(u32, 1169), s.parser.diagnostics.items[0].code);
+    try T.expectEqual(@as(u32, 2304), s.parser.diagnostics.items[1].code);
+    try T.expectEqualStrings("Cannot find name 'a'.", s.parser.diagnostics.items[1].message);
 }
 
 test "parser: computed enum member parses cleanly" {
