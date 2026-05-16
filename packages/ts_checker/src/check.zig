@@ -8800,9 +8800,23 @@ pub const Checker = struct {
             }
             const start = i;
             while (i < stmts.len and self.hir.kindOf(stmts[i]) == .decorator) : (i += 1) {}
-            if (i >= stmts.len) break;
-            const target = self.unwrapExportDecl(stmts[i]);
-            if (target == hir_mod.none_node_id or (self.hir.kindOf(target) != .class_decl and self.hir.kindOf(target) != .class_expr)) continue;
+            // Decorators only apply to classes (and class members).
+            // Top-level decorators attached to enums, type aliases,
+            // interfaces, vars, functions, modules, or import-equals
+            // must surface TS1206. Mirrors the `decoratorOn*` fixtures
+            // under `conformance/decorators/invalid/`.
+            const target_invalid = i >= stmts.len or blk: {
+                const target = self.unwrapExportDecl(stmts[i]);
+                if (target == hir_mod.none_node_id) break :blk true;
+                const tk = self.hir.kindOf(target);
+                break :blk tk != .class_decl and tk != .class_expr;
+            };
+            if (target_invalid) {
+                for (stmts[start..i]) |decorator_node| {
+                    try self.report(decorator_node, TsCodes.decorators_not_valid_here, "Decorators are not valid here.");
+                }
+                continue;
+            }
             for (stmts[start..i]) |decorator_node| {
                 try self.checkClassDecoratorDiagnostic(decorator_node);
             }
@@ -9525,7 +9539,14 @@ pub const Checker = struct {
                     if (fn_p.flags.is_static) {
                         try static_names.put(self.gpa, member_name, m);
                     }
-                    try self.checkOverrideModifier(m, if (fn_p.flags.is_static) parent_static_t else parent_instance_t, member_name, fn_p.flags.is_override, false);
+                    // Skip implicit-override TS4114 in ambient classes
+                    // (`declare class D extends B { foo(): void; }`):
+                    // upstream's `noImplicitOverride` rule applies only
+                    // to concrete implementations, not declaration-only
+                    // shapes. Mirrors `override3.ts(7,5)` baseline.
+                    if (!self.declarationLineHasDeclare(node)) {
+                        try self.checkOverrideModifier(m, if (fn_p.flags.is_static) parent_static_t else parent_instance_t, member_name, fn_p.flags.is_override, false);
+                    }
                     if (fn_p.flags.is_private) try private_names.put(self.gpa, member_name, {});
                     if (fn_p.flags.is_protected) try protected_names.put(self.gpa, member_name, {});
                     if (fn_p.flags.is_static) {
@@ -9632,6 +9653,14 @@ pub const Checker = struct {
                     // abstract member of the same name.
                     const seen = if (fn_p.flags.is_static) &static_method_seen else &method_seen;
                     const overload_info_before = seen.get(member_name);
+                    // Abstract methods (and ambient overloads inside an
+                    // abstract class) are bodyless by design and don't
+                    // expect a following implementation. Treat them as
+                    // self-terminating so a sibling concrete method
+                    // doesn't get reported as a name-mismatched
+                    // implementation. Mirrors `override10.ts`,
+                    // `optionalMethods.ts` shapes.
+                    const is_abstract_method = fn_p.flags.is_abstract or (c.is_abstract and fn_p.body == hir_mod.none_node_id) or fn_p.flags.is_optional;
                     if (fn_p.body != hir_mod.none_node_id) {
                         if (previous_bodyless_method_name) |expected| {
                             if (previous_bodyless_method_static == fn_p.flags.is_static and expected != member_name) {
@@ -9645,7 +9674,7 @@ pub const Checker = struct {
                         }
                     }
                     try self.checkClassMethodOverloadState(m, member_name, fn_p.flags.is_static, self.methodVisibilityBits(fn_p.flags), fn_p.body != hir_mod.none_node_id, seen);
-                    if (fn_p.body == hir_mod.none_node_id) {
+                    if (fn_p.body == hir_mod.none_node_id and !is_abstract_method) {
                         previous_bodyless_method_name = member_name;
                         previous_bodyless_method_static = fn_p.flags.is_static;
                     } else {
@@ -11266,13 +11295,46 @@ pub const Checker = struct {
         const has_base = self.baseClassHasMember(parent_t, name);
         const has_jsdoc_override = !has_override and !is_parameter_property and
             self.sourceHasCheckJsDirective() and self.leadingJsDocHasOverride(node);
+        // Render the base-class name when available so the diagnostic
+        // matches upstream's `... 'B'.` suffix. Mirrors `override1.ts`
+        // / `override5.ts` baselines.
+        const base_name_opt: ?[]const u8 = blk: {
+            const pt = parent_t orelse break :blk null;
+            break :blk (self.simpleDiagnosticTypeName(pt) catch null) orelse null;
+        };
         if ((has_override or has_jsdoc_override) and !has_base) {
-            try self.report(node, TsCodes.override_not_in_base, "This member cannot have an 'override' modifier because it is not declared in the base class.");
+            if (base_name_opt) |bn| {
+                const msg = try std.fmt.allocPrint(
+                    self.diag_arena.allocator(),
+                    "This member cannot have an 'override' modifier because it is not declared in the base class '{s}'.",
+                    .{bn},
+                );
+                try self.diagnostics.append(self.gpa, .{
+                    .node = node,
+                    .code = TsCodes.override_not_in_base,
+                    .message = msg,
+                });
+            } else {
+                try self.report(node, TsCodes.override_not_in_base, "This member cannot have an 'override' modifier because it is not declared in the base class.");
+            }
             return;
         }
         if (!has_override and has_base and self.strict_flags.no_implicit_override) {
             const code = if (is_parameter_property) TsCodes.missing_parameter_property_override else TsCodes.missing_override;
-            try self.report(node, code, "This member must have an 'override' modifier because it overrides a member in the base class.");
+            if (base_name_opt) |bn| {
+                const msg = try std.fmt.allocPrint(
+                    self.diag_arena.allocator(),
+                    "This member must have an 'override' modifier because it overrides a member in the base class '{s}'.",
+                    .{bn},
+                );
+                try self.diagnostics.append(self.gpa, .{
+                    .node = node,
+                    .code = code,
+                    .message = msg,
+                });
+            } else {
+                try self.report(node, code, "This member must have an 'override' modifier because it overrides a member in the base class.");
+            }
         }
     }
 
@@ -21566,11 +21628,17 @@ pub const Checker = struct {
         // back to the richer `allocSimpleTypeName` to also pick up
         // tuple shapes (`[number]`, `[number, number]`) so fixtures
         // like `strictTupleLength.ts(11,5)` get the full upstream
-        // wording rather than the conflicting-type fallback.
+        // wording rather than the conflicting-type fallback. Finally,
+        // try `allocObjectTypeShape` so object-literal / union
+        // mismatches (e.g. `spreadUnion2.ts` `{ a: number } | {}` vs
+        // `{ a?: number | undefined; }`) render with the explicit
+        // shape instead of the terse `conflicting type` fallback.
         const prior_text_opt = (try self.simpleDiagnosticTypeName(prior)) orelse
-            (try self.allocSimpleTypeName(prior));
+            (try self.allocSimpleTypeName(prior)) orelse
+            (try self.allocObjectTypeShape(prior));
         const current_text_opt = (try self.simpleDiagnosticTypeName(current)) orelse
-            (try self.allocSimpleTypeName(current));
+            (try self.allocSimpleTypeName(current)) orelse
+            (try self.allocObjectTypeShape(current));
         if (prior_text_opt) |prior_text| {
             if (current_text_opt) |current_text| {
                 return try std.fmt.allocPrint(
@@ -22493,7 +22561,12 @@ pub const Checker = struct {
                 // generic emit is therefore suppressed; see
                 // `wideningTuples4.ts(3,9)` for the motivating case.
                 if (!target_is_destructuring and !target_is_untyped_uninitialized_var and a.op == null and self.classPrivateStructuralMismatch(target_t, value_t)) {
-                    try self.report(node, TsCodes.type_not_assignable, "Type is not assignable to declared type.");
+                    // Render `Type 'X' is not assignable to type 'Y'.`
+                    // when both type names resolve; otherwise fall
+                    // back to the terse form. Mirrors
+                    // `assignmentCompatWithObjectMembersAccessibility.ts`
+                    // baseline prose for class-private overlap mismatches.
+                    try self.reportTypeNotAssignable(node, value_t, target_t, "Type is not assignable to declared type.");
                 }
                 if (!target_is_destructuring and !target_is_untyped_uninitialized_var and a.op == null and
                     target_t != types.Primitive.none and
@@ -24308,9 +24381,18 @@ pub const Checker = struct {
         if (t >= self.interner.pool.typeCount()) return false;
         const flags = self.interner.pool.flagsOf(t);
         if (flags.is_never) return true;
-        if (flags.is_null or flags.is_undefined or flags.is_void) return false;
+        // For unions/intersections, the OR'd flags include
+        // is_null/is_undefined/is_void from constituents — defer to the
+        // dedicated union/intersection branches below which inspect
+        // each member individually. Only reject the bare nullish
+        // primitives outright. Mirrors `spreadUnion2.ts(o1..o5)` where
+        // `{ a: number } | undefined` is a valid spread source.
+        if (!flags.is_union and !flags.is_intersection) {
+            if (flags.is_null or flags.is_undefined or flags.is_void) return false;
+        }
         if (flags.is_boolean and (t == types.Primitive.boolean_t or t == types.Primitive.false_lit)) return true;
         if (flags.is_union) {
+            var saw_spreadable = false;
             for (self.interner.unionMembers(t)) |member| {
                 if (member == types.Primitive.null_t or member == types.Primitive.undefined_t or member == types.Primitive.false_lit) continue;
                 // Type parameters constrained to nullish-only types
@@ -24346,8 +24428,13 @@ pub const Checker = struct {
                     }
                 }
                 if (!try self.objectSpreadSourceIsValid(member)) return false;
+                saw_spreadable = true;
             }
-            return true;
+            // A union composed entirely of nullish/falsy members
+            // (`null | undefined`, `null | undefined | false`) has no
+            // spreadable inhabitant and must surface TS2698. Mirrors
+            // `spreadUnion3.ts(19/20)`'s `nullAndUndefinedUnion`.
+            return saw_spreadable;
         }
         if (flags.is_intersection) {
             // TS2698 wave-2: an intersection that includes a hard
@@ -33063,7 +33150,26 @@ pub const Checker = struct {
 
         for (names.items, 0..) |name, i| {
             if (!self.typeParameterConstraintHasCycle(name, names.items, constraints.items, i)) continue;
-            try self.report(type_params[i], TsCodes.circular_constraint, "Type parameter has a circular constraint.");
+            // Include the parameter name so the message matches
+            // upstream's `Type parameter 'T' has a circular constraint.`
+            // shape. Mirrors `intrinsicKeyword.ts` baseline.
+            const name_str = self.string_interner.get(name);
+            const msg = try std.fmt.allocPrint(
+                self.diag_arena.allocator(),
+                "Type parameter '{s}' has a circular constraint.",
+                .{name_str},
+            );
+            // Anchor the diagnostic at the constraint node when one
+            // exists (e.g. column of `T` in `<U extends T, ...>`),
+            // mirroring upstream's reporting position from
+            // `typeParameterIndirectlyConstrainedToItself.ts`.
+            const tp = hir_mod.typeParameterOf(self.hir, type_params[i]);
+            const target_node = if (tp.constraint != hir_mod.none_node_id) tp.constraint else type_params[i];
+            try self.diagnostics.append(self.gpa, .{
+                .node = target_node,
+                .code = TsCodes.circular_constraint,
+                .message = msg,
+            });
         }
     }
 
