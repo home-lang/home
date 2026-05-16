@@ -484,6 +484,25 @@ pub const Parser = struct {
         );
     }
 
+    /// TS1359 in async-function context — `async function foo(await)`,
+    /// `var v = async function await(){}`, `async (await) => …` all
+    /// forbid `await` as a binding name because the parser is now
+    /// inside an async scope where `await` becomes a reserved keyword.
+    /// Mirrors tsc's `asyncFunctionDeclaration5_es5` and
+    /// `asyncArrowFunction5_es5` baselines (TS1359 at the `await`
+    /// token, even when the outer source is a script rather than a
+    /// module).
+    fn reportAwaitReservedInAsyncContext(self: *Parser, tok: Token) ParseError!void {
+        if (tok.kind != .kw_await) return;
+        if (self.async_function_depth == 0) return;
+        try self.reportCodeAt(
+            tok.span.start,
+            tok.line,
+            1359,
+            "Identifier expected. 'await' is a reserved word that cannot be used here.",
+        );
+    }
+
     fn span(start_tok: Token, end_tok: Token) Span {
         return .{ .start = start_tok.span.start, .end = end_tok.span.end };
     }
@@ -1841,6 +1860,13 @@ pub const Parser = struct {
             const name_tok = self.advance();
             try self.reportInvalidStrictName(name_tok);
             try self.reportInvalidYieldName(name_tok);
+            // `async function await()` as a DECLARATION is legal (the
+            // function name binds in the outer scope where `await` is
+            // not reserved). The same name as a function EXPRESSION
+            // (`var v = async function await(){}`) is TS1359, because
+            // the name then binds inside the async body. Gate on
+            // `!require_name` (expression context).
+            if (!require_name) try self.reportAwaitReservedInAsyncContext(name_tok);
             const name_id = try self.internToken(name_tok);
             name = try self.builder.addIdentifier(tokenSpan(name_tok), name_id);
         } else if (require_name) {
@@ -2064,6 +2090,7 @@ pub const Parser = struct {
                     try self.reportInvalidYieldName(name_tok);
                     try self.reportInvalidFutureReservedName(name_tok);
                     try self.reportInvalidClassStrictIdentifier(name_tok);
+                    try self.reportAwaitReservedInAsyncContext(name_tok);
                     const name_id = try self.internToken(name_tok);
                     break :id_blk try self.builder.addIdentifier(tokenSpan(name_tok), name_id);
                 };
@@ -6609,8 +6636,17 @@ pub const Parser = struct {
             }
         }
 
-        // Looks like an arrow — parse for real.
-        const params = try self.parseParameterList();
+        // Looks like an arrow — parse for real. Bump
+        // `async_function_depth` up front so `await` in the parameter
+        // list (e.g. `async (await) => …`) is correctly diagnosed as
+        // reserved (TS1359). Decrement before the permanent
+        // re-increment that wraps the arrow body further below.
+        if (is_async) self.async_function_depth += 1;
+        const params = self.parseParameterList() catch |err| {
+            if (is_async) self.async_function_depth -= 1;
+            return err;
+        };
+        if (is_async) self.async_function_depth -= 1;
         defer self.gpa.free(params);
 
         // Optional return-type annotation. Use the predicate-aware
@@ -6671,7 +6707,11 @@ pub const Parser = struct {
             self.parameter_list_recovered_arrow_missing_close = saved_recovered;
         }
 
+        // Bump `async_function_depth` ahead of the parameter parse so
+        // `async (await) => …` flags TS1359 on `await` (mirrors tsc).
+        if (is_async) self.async_function_depth += 1;
         const params = self.parseParameterList() catch |err| {
+            if (is_async) self.async_function_depth -= 1;
             self.cursor = checkpoint;
             self.diagnostics.items.len = diag_checkpoint;
             switch (err) {
@@ -6679,6 +6719,7 @@ pub const Parser = struct {
                 else => return err,
             }
         };
+        if (is_async) self.async_function_depth -= 1;
         defer self.gpa.free(params);
         if (!self.parameter_list_recovered_arrow_missing_close) {
             self.cursor = checkpoint;
@@ -8132,6 +8173,11 @@ pub const Parser = struct {
             .kw_async => {
                 if (self.peekAt(1).kind == .kw_function) {
                     _ = self.advance();
+                    // Bump `async_function_depth` so `await` used as
+                    // the function-expression name or as a parameter
+                    // name is correctly diagnosed as reserved (TS1359).
+                    self.async_function_depth += 1;
+                    defer self.async_function_depth -= 1;
                     const fd = try self.parseFunctionDeclaration(false);
                     self.hir.markFnAsync(fd);
                     return fd;
