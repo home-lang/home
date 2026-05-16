@@ -253,6 +253,16 @@ pub const Printer = struct {
     /// wrapper. The `.await_expr` printer consults this to emit
     /// `yield` instead of `await` within the generator body.
     in_async_downlevel: bool,
+    /// True while emitting inside a sync-generator state-machine
+    /// body via `printGeneratorDownlevelBody`. When set, `printReturn`
+    /// rewrites `return E;` to `return [2, E];` (op-2 = generator-
+    /// return) so nested returns inside lowered control-flow
+    /// (loops / ifs / switch cases) participate in the state machine
+    /// instead of returning from the inner state-machine fn directly.
+    /// The top-level body walker has its own explicit return emit so
+    /// it doesn't go through printReturn — this flag covers the
+    /// recursively-printed nested case.
+    in_sync_gen_body: bool = false,
     /// Name (interned) of the lexically-enclosing class while emitting
     /// its body, when private-field downlevel is active. Used to
     /// rewrite `this.#x` -> `_<Class>_x.get(this)`. `null` outside a
@@ -1519,8 +1529,23 @@ pub const Printer = struct {
     }
 
     fn printReturn(self: *Printer, node: NodeId) !void {
-        try self.write("return");
         const r = hir_mod.returnOf(self.hir, node);
+        // §4.A.4 — inside the sync-generator state-machine body,
+        // nested `return E;` (via lowered loop bodies, if branches,
+        // switch cases, etc.) must surface as the generator-return
+        // op so the tslib `__generator` runtime treats it as the
+        // function's return value rather than the inner state-machine
+        // fn's local return.
+        if (self.in_sync_gen_body) {
+            try self.write("return [2");
+            if (r.value != hir_mod.none_node_id) {
+                try self.write(", ");
+                try self.printExpression(r.value);
+            }
+            try self.write("];");
+            return;
+        }
+        try self.write("return");
         if (r.value != hir_mod.none_node_id) {
             try self.write(" ");
             try self.printExpression(r.value);
@@ -2824,6 +2849,12 @@ pub const Printer = struct {
         try self.writeNewlineIndent();
         try self.write("switch (_a.label) {");
         self.depth += 1;
+        // §4.A.4 — set the sync-gen flag so nested `return E;` (via
+        // recursively-printed loop bodies, if branches, switch cases)
+        // rewrites to `return [2, E];` automatically.
+        const prev_sync_gen = self.in_sync_gen_body;
+        self.in_sync_gen_body = true;
+        defer self.in_sync_gen_body = prev_sync_gen;
 
         const stmts = hir_mod.blockStmts(self.hir, body);
         var state: u32 = 0;
@@ -4501,6 +4532,12 @@ pub const Printer = struct {
         try self.writeNewlineIndent();
         try self.write("switch (_a.label) {");
         self.depth += 1;
+        // §4.A.4 — set the sync-gen flag so nested `return E;` (via
+        // recursively-printed loop bodies, if branches, switch cases)
+        // rewrites to `return [2, E];` automatically.
+        const prev_sync_gen = self.in_sync_gen_body;
+        self.in_sync_gen_body = true;
+        defer self.in_sync_gen_body = prev_sync_gen;
 
         const stmts = hir_mod.blockStmts(self.hir, body);
         var state: u32 = 0;
@@ -10002,6 +10039,31 @@ test "emit: generator with switch + multi-yield-per-case lowers" {
     // Resume2: sent + post() + break (→ exit).
     try T.expect(std.mem.indexOf(u8, out, "case 3: _a.sent(); post(); return [3, 4];") != null);
     try T.expect(std.mem.indexOf(u8, out, "case 4:") != null);
+}
+
+test "emit: generator with nested return in for-of-yield emits return-op-2" {
+    // §4.A.4 — `return E;` inside a lowered loop body emits as
+    // `return [2, E];` (op-2 generator return) via the in_sync_gen_body
+    // flag in printReturn.
+    const out = try emitWithOpts(
+        "function* g() { for (const x of items) { if (x.done) return x; yield x; } }",
+        .{ .es_target = .es5 },
+    );
+    defer T.allocator.free(out);
+    try T.expect(std.mem.indexOf(u8, out, "__generator") != null);
+    // The nested `return x;` (via the if-guard) emits as op-2.
+    try T.expect(std.mem.indexOf(u8, out, "if (x.done) return [2, x];") != null);
+}
+
+test "emit: generator with nested return in if-yield emits return-op-2" {
+    const out = try emitWithOpts(
+        "function* g() { if (cond) return 42; yield 1; }",
+        .{ .es_target = .es5 },
+    );
+    defer T.allocator.free(out);
+    try T.expect(std.mem.indexOf(u8, out, "__generator") != null);
+    // `return 42;` inside the if-then emits as `return [2, 42];`.
+    try T.expect(std.mem.indexOf(u8, out, "return [2, 42];") != null);
 }
 
 test "emit: generator with switch + return in case emits return-op-2" {
