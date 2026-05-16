@@ -105,6 +105,15 @@ pub fn stringProto(
         .{ .name = try sint.intern("charCodeAt"), .type = sig_num_num, .is_optional = false, .is_readonly = false, .is_method = true },
         .{ .name = try sint.intern("toUpperCase"), .type = sig_void_string, .is_optional = false, .is_readonly = false, .is_method = true },
         .{ .name = try sint.intern("toLowerCase"), .type = sig_void_string, .is_optional = false, .is_readonly = false, .is_method = true },
+        // Locale-aware case variants — tsc declares them as
+        // `toLocaleUpperCase(locales?: ...): string` /
+        // `toLocaleLowerCase(locales?: ...): string`; we model the
+        // parameterless form which still satisfies the 0-arg call
+        // sites that show up in conformance fixtures. Without these,
+        // `s.toLocaleLowerCase()` on a `string` value wrongly trips
+        // TS2339. Pins `spreadObjectOrFalsy.ts:44`.
+        .{ .name = try sint.intern("toLocaleUpperCase"), .type = sig_void_string, .is_optional = false, .is_readonly = false, .is_method = true },
+        .{ .name = try sint.intern("toLocaleLowerCase"), .type = sig_void_string, .is_optional = false, .is_readonly = false, .is_method = true },
         .{ .name = try sint.intern("startsWith"), .type = sig_str_bool, .is_optional = false, .is_readonly = false, .is_method = true },
         .{ .name = try sint.intern("endsWith"), .type = sig_str_bool, .is_optional = false, .is_readonly = false, .is_method = true },
         .{ .name = try sint.intern("includes"), .type = sig_str_bool, .is_optional = false, .is_readonly = false, .is_method = true },

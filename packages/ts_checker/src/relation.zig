@@ -740,6 +740,8 @@ pub const Engine = struct {
             std.mem.eql(u8, name, "charCodeAt") or
             std.mem.eql(u8, name, "toUpperCase") or
             std.mem.eql(u8, name, "toLowerCase") or
+            std.mem.eql(u8, name, "toLocaleUpperCase") or
+            std.mem.eql(u8, name, "toLocaleLowerCase") or
             std.mem.eql(u8, name, "startsWith") or
             std.mem.eql(u8, name, "endsWith") or
             std.mem.eql(u8, name, "includes") or

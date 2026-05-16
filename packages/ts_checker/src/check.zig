@@ -56392,3 +56392,21 @@ test "checker: <T extends Number> x.toFixed() with 0 args is valid" {
         try T.expect(d.code != TsCodes.expected_n_arguments);
     }
 }
+
+// `string` exposes `toLocaleLowerCase` / `toLocaleUpperCase` per
+// `lib.es5.d.ts` — calling them must not trip TS2339. Pins
+// `spreadObjectOrFalsy.ts:44` (narrowed `T extends string` calling
+// `toLocaleLowerCase`) and any other `toLocale*` use on a string
+// value.
+test "checker: string proto exposes toLocaleLowerCase / toLocaleUpperCase" {
+    const s = try newSetup(
+        \\let s: string = "hi";
+        \\let a: string = s.toLocaleLowerCase();
+        \\let b: string = s.toLocaleUpperCase();
+    );
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+    for (s.checker.diagnostics.items) |d| {
+        try T.expect(d.code != TsCodes.property_does_not_exist);
+    }
+}
