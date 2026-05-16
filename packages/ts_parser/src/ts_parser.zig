@@ -66,6 +66,10 @@ pub const Parser = struct {
     pending_type_gt_pos: u32,
     pending_type_gt_line: u32,
     pending_type_gt_flags: TokenFlags,
+    pending_type_eq: bool,
+    pending_type_eq_pos: u32,
+    pending_type_eq_line: u32,
+    pending_type_eq_flags: TokenFlags,
     hir: *Hir,
     builder: hir_mod.Builder,
     interner: *string_interner.Interner,
@@ -129,6 +133,10 @@ pub const Parser = struct {
             .pending_type_gt_pos = 0,
             .pending_type_gt_line = 1,
             .pending_type_gt_flags = .{},
+            .pending_type_eq = false,
+            .pending_type_eq_pos = 0,
+            .pending_type_eq_line = 1,
+            .pending_type_eq_flags = .{},
             .hir = hir,
             .builder = hir_mod.Builder.init(hir),
             .interner = interner,
@@ -194,13 +202,22 @@ pub const Parser = struct {
 
     fn peek(self: *const Parser) Token {
         if (self.pending_type_gt > 0) return self.pendingTypeGreaterToken(0);
+        if (self.pending_type_eq) return self.pendingTypeEqualToken();
         return self.tokens[self.cursor];
     }
 
     fn peekAt(self: *const Parser, offset: u32) Token {
         if (self.pending_type_gt > 0) {
             if (offset < self.pending_type_gt) return self.pendingTypeGreaterToken(offset);
-            const p_after_pending = self.cursor + (offset - self.pending_type_gt);
+            if (self.pending_type_eq and offset == self.pending_type_gt) return self.pendingTypeEqualToken();
+            const eq_offset: u32 = if (self.pending_type_eq) 1 else 0;
+            const p_after_pending = self.cursor + (offset - self.pending_type_gt - eq_offset);
+            if (p_after_pending >= self.tokens.len) return self.tokens[self.tokens.len - 1];
+            return self.tokens[p_after_pending];
+        }
+        if (self.pending_type_eq) {
+            if (offset == 0) return self.pendingTypeEqualToken();
+            const p_after_pending = self.cursor + (offset - 1);
             if (p_after_pending >= self.tokens.len) return self.tokens[self.tokens.len - 1];
             return self.tokens[p_after_pending];
         }
@@ -214,6 +231,11 @@ pub const Parser = struct {
             const tok = self.pendingTypeGreaterToken(0);
             self.pending_type_gt -= 1;
             self.pending_type_gt_pos += 1;
+            return tok;
+        }
+        if (self.pending_type_eq) {
+            const tok = self.pendingTypeEqualToken();
+            self.pending_type_eq = false;
             return tok;
         }
         const tok = self.tokens[self.cursor];
@@ -231,10 +253,41 @@ pub const Parser = struct {
         };
     }
 
+    fn pendingTypeEqualToken(self: *const Parser) Token {
+        return .{
+            .span = .{ .start = self.pending_type_eq_pos, .end = self.pending_type_eq_pos + 1 },
+            .kind = .equal,
+            .flags = self.pending_type_eq_flags,
+            .line = self.pending_type_eq_line,
+        };
+    }
+
+    fn isTypeGreaterToken(kind: TokenKind) bool {
+        return kind == .greater_than or
+            kind == .greater_greater or
+            kind == .greater_greater_greater or
+            kind == .greater_than_equal or
+            kind == .greater_greater_equal or
+            kind == .greater_greater_greater_equal;
+    }
+
     fn consumeTypeGreater(self: *Parser, what: []const u8) ParseError!Token {
         const tok = self.peek();
         switch (tok.kind) {
             .greater_than => return self.advance(),
+            .greater_than_equal => {
+                const raw = self.advance();
+                self.pending_type_eq = true;
+                self.pending_type_eq_pos = raw.span.start + 1;
+                self.pending_type_eq_line = raw.line;
+                self.pending_type_eq_flags = raw.flags;
+                return .{
+                    .span = .{ .start = raw.span.start, .end = raw.span.start + 1 },
+                    .kind = .greater_than,
+                    .flags = raw.flags,
+                    .line = raw.line,
+                };
+            },
             .greater_greater => {
                 const raw = self.advance();
                 self.pending_type_gt = 1;
@@ -248,12 +301,46 @@ pub const Parser = struct {
                     .line = raw.line,
                 };
             },
+            .greater_greater_equal => {
+                const raw = self.advance();
+                self.pending_type_gt = 1;
+                self.pending_type_gt_pos = raw.span.start + 1;
+                self.pending_type_gt_line = raw.line;
+                self.pending_type_gt_flags = raw.flags;
+                self.pending_type_eq = true;
+                self.pending_type_eq_pos = raw.span.start + 2;
+                self.pending_type_eq_line = raw.line;
+                self.pending_type_eq_flags = raw.flags;
+                return .{
+                    .span = .{ .start = raw.span.start, .end = raw.span.start + 1 },
+                    .kind = .greater_than,
+                    .flags = raw.flags,
+                    .line = raw.line,
+                };
+            },
             .greater_greater_greater => {
                 const raw = self.advance();
                 self.pending_type_gt = 2;
                 self.pending_type_gt_pos = raw.span.start + 1;
                 self.pending_type_gt_line = raw.line;
                 self.pending_type_gt_flags = raw.flags;
+                return .{
+                    .span = .{ .start = raw.span.start, .end = raw.span.start + 1 },
+                    .kind = .greater_than,
+                    .flags = raw.flags,
+                    .line = raw.line,
+                };
+            },
+            .greater_greater_greater_equal => {
+                const raw = self.advance();
+                self.pending_type_gt = 2;
+                self.pending_type_gt_pos = raw.span.start + 1;
+                self.pending_type_gt_line = raw.line;
+                self.pending_type_gt_flags = raw.flags;
+                self.pending_type_eq = true;
+                self.pending_type_eq_pos = raw.span.start + 3;
+                self.pending_type_eq_line = raw.line;
+                self.pending_type_eq_flags = raw.flags;
                 return .{
                     .span = .{ .start = raw.span.start, .end = raw.span.start + 1 },
                     .kind = .greater_than,
@@ -5778,10 +5865,7 @@ pub const Parser = struct {
                 try args.append(self.gpa, a);
                 if (!self.match(.comma)) break;
             }
-            if (self.peek().kind == .greater_than or
-                self.peek().kind == .greater_greater or
-                self.peek().kind == .greater_greater_greater)
-            {
+            if (isTypeGreaterToken(self.peek().kind)) {
                 _ = try self.consumeTypeGreater("'>' to close type arguments");
             } else if (self.peek().kind == .invalid) {
                 const bad = self.advance();
@@ -6194,6 +6278,49 @@ pub const Parser = struct {
         return null;
     }
 
+    fn findInstantiationTypeArgsPropertyAccessEnd(self: *Parser, start: u32) ?u32 {
+        if (start >= self.tokens.len or self.tokens[start].kind != .less_than) return null;
+        var depth: i32 = 1;
+        var i: u32 = start + 1;
+        while (i < self.tokens.len) : (i += 1) {
+            const tk = self.tokens[i].kind;
+            switch (tk) {
+                .less_than => depth += 1,
+                .greater_than, .greater_greater, .greater_greater_greater => {
+                    const count: u8 = switch (tk) {
+                        .greater_than => 1,
+                        .greater_greater => 2,
+                        .greater_greater_greater => 3,
+                        else => unreachable,
+                    };
+                    var n: u8 = 0;
+                    while (n < count) : (n += 1) {
+                        depth -= 1;
+                        if (depth == 0) {
+                            const next = i + 1;
+                            if (next < self.tokens.len and self.tokens[next].kind == .dot) return next;
+                            return null;
+                        }
+                    }
+                },
+                .open_paren, .open_bracket, .open_brace => {
+                    if (self.skipBalancedFrom(i)) |after| {
+                        i = after - 1;
+                    } else return null;
+                },
+                .equal,
+                .semicolon,
+                .arrow,
+                .question_dot,
+                .invalid,
+                .eof,
+                => return null,
+                else => {},
+            }
+        }
+        return null;
+    }
+
     /// Parse the comma-separated type arguments of an explicit
     /// generic call. Cursor enters at `<`; returns with the cursor
     /// positioned at the token after `>` (the index `after_gt`
@@ -6220,6 +6347,7 @@ pub const Parser = struct {
         // Force-advance to the verified continuation token even if
         // structural recovery failed.
         self.pending_type_gt = 0;
+        self.pending_type_eq = false;
         self.cursor = after_gt;
         return args.toOwnedSlice(self.gpa);
     }
@@ -6957,6 +7085,14 @@ pub const Parser = struct {
                             const sp: Span = .{ .start = self.hir.spanOf(node).start, .end = close_pos };
                             node = try self.builder.addCallWithTypeArgs(sp, node, args, type_args);
                         }
+                    } else if (self.findInstantiationTypeArgsPropertyAccessEnd(self.cursor)) |after_gt| {
+                        const less = self.peek();
+                        const type_args = try self.parseExplicitCallTypeArgs(after_gt);
+                        defer self.gpa.free(type_args);
+                        try self.reportCodeAt(less.span.start, less.line, 1477, "An instantiation expression cannot be followed by a property access.");
+                        const end_pos = if (self.cursor > 0) self.tokens[self.cursor - 1].span.end else self.hir.spanOf(node).end;
+                        const sp: Span = .{ .start = self.hir.spanOf(node).start, .end = end_pos };
+                        node = try self.builder.addCallWithTypeArgs(sp, node, &.{}, type_args);
                     } else break;
                 },
                 .open_bracket => {
@@ -7366,10 +7502,15 @@ pub const Parser = struct {
                 var type_args: []NodeId = &.{};
                 if (self.peek().kind == .less_than) {
                     const saved_cursor = self.cursor;
+                    const saved_diag_len = self.diagnostics.items.len;
                     const saved_pending_type_gt = self.pending_type_gt;
                     const saved_pending_type_gt_pos = self.pending_type_gt_pos;
                     const saved_pending_type_gt_line = self.pending_type_gt_line;
                     const saved_pending_type_gt_flags = self.pending_type_gt_flags;
+                    const saved_pending_type_eq = self.pending_type_eq;
+                    const saved_pending_type_eq_pos = self.pending_type_eq_pos;
+                    const saved_pending_type_eq_line = self.pending_type_eq_line;
+                    const saved_pending_type_eq_flags = self.pending_type_eq_flags;
                     if (self.parseTypeArgumentList()) |parsed| {
                         if (self.peek().kind == .open_paren) {
                             type_args = parsed;
@@ -7378,17 +7519,27 @@ pub const Parser = struct {
                         } else {
                             self.gpa.free(parsed);
                             self.cursor = saved_cursor;
+                            self.diagnostics.items.len = saved_diag_len;
                             self.pending_type_gt = saved_pending_type_gt;
                             self.pending_type_gt_pos = saved_pending_type_gt_pos;
                             self.pending_type_gt_line = saved_pending_type_gt_line;
                             self.pending_type_gt_flags = saved_pending_type_gt_flags;
+                            self.pending_type_eq = saved_pending_type_eq;
+                            self.pending_type_eq_pos = saved_pending_type_eq_pos;
+                            self.pending_type_eq_line = saved_pending_type_eq_line;
+                            self.pending_type_eq_flags = saved_pending_type_eq_flags;
                         }
                     } else |_| {
                         self.cursor = saved_cursor;
+                        self.diagnostics.items.len = saved_diag_len;
                         self.pending_type_gt = saved_pending_type_gt;
                         self.pending_type_gt_pos = saved_pending_type_gt_pos;
                         self.pending_type_gt_line = saved_pending_type_gt_line;
                         self.pending_type_gt_flags = saved_pending_type_gt_flags;
+                        self.pending_type_eq = saved_pending_type_eq;
+                        self.pending_type_eq_pos = saved_pending_type_eq_pos;
+                        self.pending_type_eq_line = saved_pending_type_eq_line;
+                        self.pending_type_eq_flags = saved_pending_type_eq_flags;
                     }
                 }
                 defer if (type_args.len > 0) self.gpa.free(type_args);

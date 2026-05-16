@@ -16395,6 +16395,7 @@ pub const Checker = struct {
                         return self.lowerer.lower(type_node);
                     }
                     const args = hir_mod.typeRefArgs(self.hir, type_node);
+                    try self.reportUnresolvedCallTypeArgumentNodes(args);
                     for (args) |arg| _ = try self.lowererLowerWithTypeParams(arg);
                     if (!self.typeRefNameAcceptsTypeArgsAt(type_node, r.name, name_str)) {
                         try self.reportCannotFindNameOnce(type_node, r.name);
@@ -16749,10 +16750,171 @@ pub const Checker = struct {
             const raw_name = args[name_start..i];
             if (isPrimitiveTypeNameText(raw_name)) continue;
             const name = self.string_interner.intern(raw_name) catch return error.OutOfMemory;
+            if (self.lookupNarrow(name) != null) continue;
             if (self.typeRefNameExists(name) or self.visibleTypeDeclarationExistsAt(operand, name) or self.isBuiltinName(name)) continue;
             const pos = sp.start + @as(u32, @intCast(lt + 1 + name_start));
             try self.reportCannotFindNameAtPosOnce(operand, pos, name);
         }
+    }
+
+    fn reportUnresolvedCallTypeArgumentNodes(self: *Checker, type_args: []const NodeId) CheckError!void {
+        for (type_args) |type_arg| {
+            try self.reportUnresolvedCallTypeArgumentNode(type_arg);
+        }
+    }
+
+    fn reportUnresolvedCallTypeArgumentNode(self: *Checker, type_node: NodeId) CheckError!void {
+        if (type_node == hir_mod.none_node_id) return;
+        switch (self.hir.kindOf(type_node)) {
+            .type_ref => {
+                const r = hir_mod.typeRefOf(self.hir, type_node);
+                if (r.qualifier_len == 0) {
+                    const raw_name = self.string_interner.get(r.name);
+                    if (!isPrimitiveTypeNameText(raw_name) and
+                        self.lookupNarrow(r.name) == null and
+                        !self.typeNameBoundInEnclosingTypeParams(type_node, r.name) and
+                        !self.sourceShowsPriorTypeParameterBinding(type_node, r.name) and
+                        !self.typeRefNameExists(r.name) and
+                        self.typeRefNameAcceptsTypeArgsAt(type_node, r.name, raw_name) == false and
+                        !self.visibleTypeDeclarationExistsAt(type_node, r.name) and
+                        !self.isBuiltinName(r.name))
+                    {
+                        try self.reportCannotFindNameAtPosOnce(type_node, self.hir.spanOf(type_node).start, r.name);
+                    }
+                }
+                for (hir_mod.typeRefArgs(self.hir, type_node)) |arg| {
+                    try self.reportUnresolvedCallTypeArgumentNode(arg);
+                }
+            },
+            .array_type => try self.reportUnresolvedCallTypeArgumentNode(hir_mod.arrayTypeOf(self.hir, type_node).element),
+            .tuple_type => for (hir_mod.tupleTypeElements(self.hir, type_node)) |elem| {
+                try self.reportUnresolvedCallTypeArgumentNode(elem);
+            },
+            .rest_type => try self.reportUnresolvedCallTypeArgumentNode(hir_mod.restTypeOf(self.hir, type_node).operand),
+            .union_type => for (hir_mod.unionTypeMembers(self.hir, type_node)) |member| {
+                try self.reportUnresolvedCallTypeArgumentNode(member);
+            },
+            .intersection_type => for (hir_mod.intersectionTypeMembers(self.hir, type_node)) |member| {
+                try self.reportUnresolvedCallTypeArgumentNode(member);
+            },
+            .indexed_access_type => {
+                const indexed = hir_mod.indexedAccessTypeOf(self.hir, type_node);
+                try self.reportUnresolvedCallTypeArgumentNode(indexed.object);
+                try self.reportUnresolvedCallTypeArgumentNode(indexed.index);
+            },
+            .keyof_type => try self.reportUnresolvedCallTypeArgumentNode(hir_mod.keyofTypeOf(self.hir, type_node).operand),
+            .typeof_type => try self.reportUnresolvedCallTypeArgumentNode(hir_mod.typeofTypeOf(self.hir, type_node).operand),
+            .conditional_type => {
+                const c = hir_mod.conditionalTypeOf(self.hir, type_node);
+                try self.reportUnresolvedCallTypeArgumentNode(c.check);
+                try self.reportUnresolvedCallTypeArgumentNode(c.extends);
+                try self.reportUnresolvedCallTypeArgumentNode(c.true_branch);
+                try self.reportUnresolvedCallTypeArgumentNode(c.false_branch);
+            },
+            .template_literal_type => for (hir_mod.templateLiteralTypeTypes(self.hir, type_node)) |part| {
+                try self.reportUnresolvedCallTypeArgumentNode(part);
+            },
+            .fn_type, .constructor_type => {
+                const f = hir_mod.fnTypeOf(self.hir, type_node);
+                const params = self.hir.childSlice(f.params_start, f.params_len);
+                for (params) |param| {
+                    if (self.hir.kindOf(param) != .parameter) continue;
+                    const p = hir_mod.parameterOf(self.hir, param);
+                    try self.reportUnresolvedCallTypeArgumentNode(p.type_annotation);
+                }
+                try self.reportUnresolvedCallTypeArgumentNode(f.return_type);
+            },
+            else => {},
+        }
+    }
+
+    fn typeNameBoundInEnclosingTypeParams(self: *Checker, node: NodeId, name: hir_mod.StringId) bool {
+        var cur = node;
+        while (cur != hir_mod.none_node_id) : (cur = self.hir.parentOf(cur)) {
+            switch (self.hir.kindOf(cur)) {
+                .fn_type, .constructor_type => {
+                    const f = hir_mod.fnTypeOf(self.hir, cur);
+                    if (self.typeParamNameMatches(name, self.hir.childSlice(f.type_params_start, f.type_params_len))) return true;
+                },
+                .fn_decl, .fn_expr, .arrow_fn => {
+                    if (self.typeParamNameMatches(name, hir_mod.fnTypeParams(self.hir, cur))) return true;
+                },
+                .type_alias_decl => {
+                    const t = hir_mod.typeAliasOf(self.hir, cur);
+                    if (self.typeParamNameMatches(name, self.hir.childSlice(t.type_params_start, t.type_params_len))) return true;
+                },
+                .interface_decl => {
+                    const i = hir_mod.interfaceOf(self.hir, cur);
+                    if (self.typeParamNameMatches(name, self.hir.childSlice(i.type_params_start, i.type_params_len))) return true;
+                },
+                .class_decl, .class_expr => {
+                    const c = hir_mod.classOf(self.hir, cur);
+                    if (self.typeParamNameMatches(name, self.hir.childSlice(c.type_params_start, c.type_params_len))) return true;
+                },
+                else => {},
+            }
+        }
+        return false;
+    }
+
+    fn sourceShowsPriorTypeParameterBinding(self: *Checker, node: NodeId, name: hir_mod.StringId) bool {
+        const src = self.source orelse return false;
+        const sp = self.hir.spanOf(node);
+        if (sp.start == 0 or sp.start > src.len) return false;
+        const raw_name = self.string_interner.get(name);
+        if (raw_name.len == 0) return false;
+        const start: usize = blk: {
+            var i: usize = @intCast(sp.start);
+            var remaining: usize = 512;
+            while (i > 0 and remaining > 0) : (remaining -= 1) {
+                const c = src[i - 1];
+                if (c == ';' or c == '{' or c == '}') break;
+                i -= 1;
+            }
+            break :blk i;
+        };
+        const prefix = src[start..@intCast(sp.start)];
+        var lt_search: usize = 0;
+        while (std.mem.indexOfScalarPos(u8, prefix, lt_search, '<')) |lt| {
+            lt_search = lt + 1;
+            const gt = std.mem.indexOfScalarPos(u8, prefix, lt + 1, '>') orelse continue;
+            if (gt <= lt + 1) continue;
+            var after_gt = gt + 1;
+            while (after_gt < prefix.len and
+                (prefix[after_gt] == ' ' or prefix[after_gt] == '\t' or prefix[after_gt] == '\r' or prefix[after_gt] == '\n')) : (after_gt += 1) {}
+            if (after_gt < prefix.len and prefix[after_gt] == '.') continue;
+            const params = prefix[lt + 1 .. gt];
+            var i: usize = 0;
+            while (i < params.len) {
+                while (i < params.len and !asciiIdentifierStart(params[i])) : (i += 1) {}
+                if (i >= params.len) break;
+                const name_start = i;
+                i += 1;
+                while (i < params.len and asciiIdentifierContinue(params[i])) : (i += 1) {}
+                if (std.mem.eql(u8, params[name_start..i], raw_name)) return true;
+            }
+        }
+        return false;
+    }
+
+    fn isInstantiationExpressionCall(self: *Checker, node: NodeId) bool {
+        if (self.hir.kindOf(node) != .call_expr) return false;
+        if (hir_mod.callArgs(self.hir, node).len != 0) return false;
+        if (hir_mod.callTypeArgs(self.hir, node).len == 0) return false;
+        const src = self.source orelse return false;
+        const sp = self.hir.spanOf(node);
+        if (sp.end == 0 or sp.end > src.len) return false;
+        var i: usize = @intCast(sp.end);
+        while (i > 0) {
+            i -= 1;
+            switch (src[i]) {
+                ' ', '\t', '\r', '\n' => continue,
+                ')' => return false,
+                '>' => return true,
+                else => return false,
+            }
+        }
+        return false;
     }
 
     fn simpleBareTypeArgumentList(text: []const u8) bool {
@@ -21419,6 +21581,14 @@ pub const Checker = struct {
                     const t = try self.checkExpression(arg);
                     try arg_types.append(self.gpa, t);
                 }
+                const type_arg_nodes = hir_mod.callTypeArgs(self.hir, node);
+                if (type_arg_nodes.len > 0) {
+                    try self.reportUnresolvedSimpleTypeofTypeArguments(node);
+                    try self.reportUnresolvedCallTypeArgumentNodes(type_arg_nodes);
+                }
+                if (self.isInstantiationExpressionCall(node)) {
+                    break :blk callee_t;
+                }
                 try self.checkRewriteRelativeImportCall(node, c.callee, args);
                 if (self.isDynamicImportCallee(c.callee) and args.len > 0 and self.hir.kindOf(args[0]) == .literal_string) {
                     const lit = hir_mod.literalStringOf(self.hir, args[0]);
@@ -21496,7 +21666,6 @@ pub const Checker = struct {
                 // signature drives both arg-checking (so TS2345
                 // fires against the explicit-instantiated parameter
                 // types) and the return type.
-                const type_arg_nodes = hir_mod.callTypeArgs(self.hir, node);
                 var effective_callee_t = callee_t;
                 const call_member_id = self.string_interner.intern("__call") catch return error.OutOfMemory;
                 if (!self.interner.isSignature(effective_callee_t)) {
@@ -24285,6 +24454,13 @@ pub const Checker = struct {
                 .non_null_expr => {
                     cur = hir_mod.asExpressionOf(self.hir, cur).expr;
                     continue;
+                },
+                .call_expr => {
+                    if (self.isInstantiationExpressionCall(cur)) {
+                        cur = hir_mod.callOf(self.hir, cur).callee;
+                        continue;
+                    }
+                    return null;
                 },
                 else => return null,
             }
