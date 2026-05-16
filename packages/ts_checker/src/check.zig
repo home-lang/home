@@ -1593,7 +1593,10 @@ pub const Checker = struct {
             .if_stmt => {
                 const i = hir_mod.ifOf(self.hir, node);
                 _ = try self.checkExpression(i.cond);
-                if (self.isElseIfStatement(node)) try self.reportStaticTruthiness(i.cond);
+                if (self.isElseIfStatement(node))
+                    try self.reportStaticTruthiness(i.cond)
+                else
+                    try self.reportStaticTruthinessForStatementCond(i.cond);
                 try self.pushNarrowScope();
                 try self.applyTypeGuard(i.cond, true);
                 try self.checkStatement(i.then_branch);
@@ -1612,12 +1615,14 @@ pub const Checker = struct {
             .while_stmt => {
                 const w = hir_mod.whileOf(self.hir, node);
                 _ = try self.checkExpression(w.cond);
+                try self.reportStaticTruthinessForStatementCond(w.cond);
                 try self.checkStatement(w.body);
             },
             .do_while_stmt => {
                 const d = hir_mod.doWhileOf(self.hir, node);
                 try self.checkStatement(d.body);
                 _ = try self.checkExpression(d.cond);
+                try self.reportStaticTruthinessForStatementCond(d.cond);
             },
             .for_stmt => {
                 const fr = hir_mod.forStmtOf(self.hir, node);
@@ -1647,6 +1652,23 @@ pub const Checker = struct {
                 const src_t = try self.checkExpression(fr.source);
                 if (self.typeContainsSymbol(src_t)) {
                     try self.report(fr.source, TsCodes.for_in_right_type, "The right-hand side of a 'for...in' statement must be of type 'any', an object type or a type parameter, but here has type 'symbol'.");
+                } else if (self.forInSourceIsInvalid(src_t)) {
+                    // Mirror tsc's diagnostic prose: include the
+                    // offending type name when we can resolve a simple
+                    // label, otherwise fall through to a positional
+                    // form.
+                    const name_opt = (try self.simpleDiagnosticTypeName(src_t)) orelse
+                        (try self.allocSimpleTypeName(src_t));
+                    if (name_opt) |type_name| {
+                        const msg = try std.fmt.allocPrint(
+                            self.diag_arena.allocator(),
+                            "The right-hand side of a 'for...in' statement must be of type 'any', an object type or a type parameter, but here has type '{s}'.",
+                            .{type_name},
+                        );
+                        try self.report(fr.source, TsCodes.for_in_right_type, msg);
+                    } else {
+                        try self.report(fr.source, TsCodes.for_in_right_type, "The right-hand side of a 'for...in' statement must be of type 'any', an object type or a type parameter.");
+                    }
                 }
                 try self.bindForLoopTarget(fr.target, types.Primitive.string_t);
                 try self.pushNarrowScope();
@@ -1902,6 +1924,7 @@ pub const Checker = struct {
             try self.checkTsOnlyDeclInJs(node, "namespace", ns.name);
         }
         try self.checkDeclarationSpaceDiagnostics(hir_mod.namespaceBody(self.hir, node));
+        try self.checkTopLevelDecoratorDiagnostics(hir_mod.namespaceBody(self.hir, node));
         for (hir_mod.namespaceBody(self.hir, node)) |s| {
             switch (self.hir.kindOf(s)) {
                 .fn_decl => try self.checkFnSignatureOnlyNoBody(s),
@@ -29627,6 +29650,64 @@ pub const Checker = struct {
         return false;
     }
 
+    /// Mirrors tsc's `checkRightHandSideOfForOf` for `for-in`: the
+    /// right-hand side must be `any`, an object type, or a type
+    /// parameter (after stripping null/undefined). Returns true when
+    /// the type is definitely invalid (a non-object primitive,
+    /// enum-literal, void, or never), so the caller can fire TS2407.
+    /// Conservative: returns false for unions/intersections whose
+    /// members include any valid for-in source, and false for unknown
+    /// constructions we can't classify (no over-firing).
+    fn forInSourceIsInvalid(self: *Checker, t: TypeId) bool {
+        if (t == types.Primitive.any or
+            t == types.Primitive.unknown or
+            t == types.Primitive.object_t or
+            t == types.Primitive.null_t or
+            t == types.Primitive.undefined_t)
+        {
+            // null/undefined alone would error TS2532 elsewhere; do
+            // not double-fire TS2407 on them. `unknown` is permitted.
+            return false;
+        }
+        if (t == types.Primitive.string_t or
+            t == types.Primitive.number_t or
+            t == types.Primitive.boolean_t or
+            t == types.Primitive.bigint_t or
+            t == types.Primitive.void_t or
+            t == types.Primitive.never or
+            t == types.Primitive.true_lit or
+            t == types.Primitive.false_lit)
+        {
+            return true;
+        }
+        if (t >= self.interner.pool.typeCount()) return false;
+        const f = self.interner.pool.flagsOf(t);
+        if (f.is_object_type or f.is_signature or f.is_tuple or f.is_type_parameter) return false;
+        if (f.is_intersection) {
+            // An intersection is valid as long as ANY component is a
+            // valid for-in source.
+            for (self.interner.intersectionMembers(t)) |member| {
+                if (!self.forInSourceIsInvalid(member)) return false;
+            }
+            return true;
+        }
+        if (f.is_union) {
+            // A union is invalid only when EVERY member is invalid.
+            for (self.interner.unionMembers(t)) |member| {
+                if (!self.forInSourceIsInvalid(member)) return false;
+            }
+            return true;
+        }
+        if (f.is_keyof or f.is_index_access or f.is_conditional or
+            f.is_typeof or f.is_infer or f.is_template_literal)
+        {
+            return false;
+        }
+        // Literals and enum-literals — invalid (cannot enumerate).
+        return f.is_string or f.is_number or f.is_boolean or
+            f.is_bigint or f.is_symbol;
+    }
+
     fn computedPropertyKeyTypeIsValid(self: *Checker, t: TypeId) CheckError!bool {
         if (t == types.Primitive.any or t == types.Primitive.unknown) return true;
         if (t >= self.interner.pool.typeCount()) return false;
@@ -31837,6 +31918,33 @@ pub const Checker = struct {
             .literal_number => {
                 const value = hir_mod.literalNumberOf(self.hir, node);
                 if (value == 0) {
+                    try self.report(node, TsCodes.expression_always_falsy, "This kind of expression is always falsy.");
+                } else {
+                    try self.report(node, TsCodes.expression_always_truthy, "This kind of expression is always truthy.");
+                }
+            },
+            else => {},
+        }
+    }
+
+    /// Variant of `reportStaticTruthiness` used for if/while/do-while
+    /// statement conditions. Matches tsgo's pattern: numeric & boolean
+    /// literals are excluded (tsc skips them in statement contexts —
+    /// see baselines/reference/ifDoWhileStatements.errors.txt where
+    /// `if (true)` and `if (0.0)` are NOT flagged), but `null`,
+    /// `undefined`, and the empty string ARE flagged as falsy.
+    /// Constructor calls (`new Foo()`) are not flagged either.
+    fn reportStaticTruthinessForStatementCond(self: *Checker, node: NodeId) CheckError!void {
+        switch (self.hir.kindOf(node)) {
+            .object_literal, .array_literal, .arrow_fn, .literal_regex => {
+                try self.report(node, TsCodes.expression_always_truthy, "This kind of expression is always truthy.");
+            },
+            .literal_null, .literal_undefined => {
+                try self.report(node, TsCodes.expression_always_falsy, "This kind of expression is always falsy.");
+            },
+            .literal_string => {
+                const lit = hir_mod.literalStringOf(self.hir, node);
+                if (self.string_interner.get(lit.value).len == 0) {
                     try self.report(node, TsCodes.expression_always_falsy, "This kind of expression is always falsy.");
                 } else {
                     try self.report(node, TsCodes.expression_always_truthy, "This kind of expression is always truthy.");
