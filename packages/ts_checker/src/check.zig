@@ -28274,7 +28274,9 @@ pub const Checker = struct {
                 // Quick reject: length difference > 2 and > typo.len/4
                 // cannot satisfy the threshold.
                 const ll = if (cand_str.len > typo.len) cand_str.len - typo.len else typo.len - cand_str.len;
-                if (ll > 2 and ll > typo.len / 4) return;
+                const regexp_suffix_candidate = std.mem.eql(u8, cand_str, "RegExp") and
+                    asciiEndsWithIgnoreCase(typo, "regexp");
+                if (!regexp_suffix_candidate and ll > 2 and ll > typo.len / 4) return;
                 // tsc's `getSpellingSuggestion` does case-insensitive
                 // comparison so `$ERROR` → `Error` (parserS7.3_A1.1_T2)
                 // and `mY_Var` → `my_var` are recognized. Mirror
@@ -28338,19 +28340,19 @@ pub const Checker = struct {
         // `parserS7.3_A1.1_T2` where `$ERROR` should suggest
         // `Error`.
         const builtin_suggestions = [_][]const u8{
-            "console",      "undefined",   "NaN",           "Infinity",
-            "globalThis",   "window",      "document",      "Element",
-            "Node",         "Math",        "JSON",          "Object",
-            "Array",        "String",      "Number",        "Boolean",
-            "Symbol",       "BigInt",      "Error",         "TypeError",
-            "RangeError",   "SyntaxError", "Promise",       "Map",
-            "Set",          "WeakMap",     "WeakSet",       "Date",
-            "RegExp",       "Function",    "Proxy",         "Reflect",
-            "ArrayBuffer",  "Uint8Array",  "Int8Array",     "Uint16Array",
-            "Int16Array",   "Uint32Array", "Int32Array",    "Float32Array",
-            "Float64Array", "parseInt",    "parseFloat",    "isNaN",
-            "isFinite",     "encodeURI",   "decodeURI",     "setTimeout",
-            "clearTimeout", "setInterval", "clearInterval",
+            "console",     "undefined",     "NaN",          "Infinity",
+            "globalThis",  "window",        "document",     "Element",
+            "Math",        "JSON",          "Object",       "Array",
+            "String",      "Number",        "Boolean",      "Symbol",
+            "BigInt",      "Error",         "TypeError",    "RangeError",
+            "SyntaxError", "Promise",       "Map",          "Set",
+            "WeakMap",     "WeakSet",       "Date",         "RegExp",
+            "Function",    "Proxy",         "Reflect",      "ArrayBuffer",
+            "Uint8Array",  "Int8Array",     "Uint16Array",  "Int16Array",
+            "Uint32Array", "Int32Array",    "Float32Array", "Float64Array",
+            "parseInt",    "parseFloat",    "isNaN",        "isFinite",
+            "encodeURI",   "decodeURI",     "setTimeout",   "clearTimeout",
+            "setInterval", "clearInterval",
         };
         for (builtin_suggestions) |b| {
             considerCandidate(name_str, b, &best);
@@ -28363,13 +28365,18 @@ pub const Checker = struct {
         // baselines such as objectTypesIdentityWithCallSignatures3
         // which expect bare TS2304 in that case.
         const threshold: usize = @min((name_str.len * 4) / 10, @as(usize, 4));
-        const has_suggestion = !skip_suggestions and best.dist <= threshold and best.name.len > 0;
+        const regexp_suffix_suggestion = !skip_suggestions and
+            std.mem.eql(u8, best.name, "RegExp") and
+            asciiEndsWithIgnoreCase(name_str, "regexp");
+        const has_suggestion = !skip_suggestions and
+            ((best.dist <= threshold and best.name.len > 0) or regexp_suffix_suggestion);
+        const suggestion_name: []const u8 = if (regexp_suffix_suggestion) "RegExp" else best.name;
 
         const msg = if (has_suggestion)
             try std.fmt.allocPrint(
                 self.diag_arena.allocator(),
                 "Cannot find name '{s}'. Did you mean '{s}'?",
-                .{ name_str, best.name },
+                .{ name_str, suggestion_name },
             )
         else
             try std.fmt.allocPrint(
@@ -28383,6 +28390,11 @@ pub const Checker = struct {
             .code = if (has_suggestion) TsCodes.cannot_find_name_did_you_mean else TsCodes.cannot_find_name,
             .message = msg,
         });
+    }
+
+    fn asciiEndsWithIgnoreCase(value: []const u8, suffix: []const u8) bool {
+        if (suffix.len > value.len) return false;
+        return std.ascii.eqlIgnoreCase(value[value.len - suffix.len ..], suffix);
     }
 
     fn reportCannotFindNamePlain(self: *Checker, node: NodeId, name: hir_mod.StringId) !void {
@@ -30842,15 +30854,15 @@ pub const Checker = struct {
                 break :blk types.Primitive.number_t;
             },
             .not => blk: {
-                // `!{ … }` / `![ … ]` / `!fn` always evaluate to
+                // `!{ … }` / `![ … ]` / `!fn` / `!/re/` always evaluate to
                 // `false` because the operand is a truthy literal.
                 // tsc fires TS2872 ("This kind of expression is
                 // always truthy.") at the operand. Restrict to the
                 // operand kinds tsc actually flags (object literal,
-                // array literal, function-shaped) — `!"x"` / `!0`
+                // array literal, function-shaped, regex literal) — `!"x"` / `!0`
                 // are intentionally not flagged.
                 switch (self.hir.kindOf(u.operand)) {
-                    .object_literal, .array_literal, .fn_decl, .fn_expr, .arrow_fn => {
+                    .object_literal, .array_literal, .fn_decl, .fn_expr, .arrow_fn, .literal_regex => {
                         try self.report(u.operand, TsCodes.expression_always_truthy, "This kind of expression is always truthy.");
                     },
                     .literal_string => {
@@ -31012,7 +31024,7 @@ pub const Checker = struct {
 
     fn reportStaticTruthiness(self: *Checker, node: NodeId) CheckError!void {
         switch (self.hir.kindOf(node)) {
-            .object_literal, .array_literal, .fn_decl, .fn_expr, .arrow_fn => {
+            .object_literal, .array_literal, .fn_decl, .fn_expr, .arrow_fn, .literal_regex => {
                 try self.report(node, TsCodes.expression_always_truthy, "This kind of expression is always truthy.");
             },
             .literal_string => {
@@ -38249,6 +38261,18 @@ test "checker: else-if static numeric condition reports truthiness" {
         if (d.code == TsCodes.expression_always_truthy) truthy_errors += 1;
     }
     try T.expectEqual(@as(usize, 1), truthy_errors);
+}
+
+test "checker: negated regex literal reports always truthy" {
+    const s = try newSetup("!/(\\\\?|&)adurl=/;");
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+
+    var saw = false;
+    for (s.checker.diagnostics.items) |d| {
+        if (d.code == TsCodes.expression_always_truthy) saw = true;
+    }
+    try T.expect(saw);
 }
 
 test "checker: property assignment target reads object for TS2454" {
@@ -53395,6 +53419,36 @@ test "checker: TS2552 case-insensitive suggestion for $ERROR -> Error" {
         saw = true;
     }
     try T.expect(saw);
+}
+
+test "checker: TS2552 suggests RegExp for regexp-suffixed typo" {
+    const s = try newSetup("notregexp;");
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+    var saw = false;
+    for (s.checker.diagnostics.items) |d| {
+        if (d.code != TsCodes.cannot_find_name_did_you_mean) continue;
+        if (std.mem.indexOf(u8, d.message, "'notregexp'") == null) continue;
+        if (std.mem.indexOf(u8, d.message, "'RegExp'") == null) continue;
+        saw = true;
+    }
+    try T.expect(saw);
+}
+
+test "checker: TS2552 does not suggest DOM Node for model" {
+    const s = try newSetup("model;");
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+    var saw_plain = false;
+    for (s.checker.diagnostics.items) |d| {
+        if (d.code == TsCodes.cannot_find_name_did_you_mean) {
+            try T.expect(std.mem.indexOf(u8, d.message, "'Node'") == null);
+        }
+        if (d.code == TsCodes.cannot_find_name and std.mem.indexOf(u8, d.message, "'model'") != null) {
+            saw_plain = true;
+        }
+    }
+    try T.expect(saw_plain);
 }
 
 // §6.A 2000-3000 ratchet — unresolved type references must report

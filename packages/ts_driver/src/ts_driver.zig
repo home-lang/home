@@ -825,6 +825,9 @@ fn normalizeScannerDiagnostic(message: []const u8) NormalizedScannerDiagnostic {
     if (std.mem.eql(u8, message, "unterminated template literal")) {
         return .{ .code = 1160, .message = "Unterminated template literal." };
     }
+    if (std.mem.eql(u8, message, "'*/' expected") or std.mem.eql(u8, message, "'*/' expected.")) {
+        return .{ .code = 1010, .message = "'*/' expected." };
+    }
     if (std.mem.eql(u8, message, "Numeric separators are not allowed here.")) {
         return .{ .code = 6188, .message = message };
     }
@@ -1985,6 +1988,22 @@ test "driver: scanner-error compilation deinitializes cleanly" {
     }
     try T.expect(c.has_errors);
     try T.expect(c.diagnostics.items.len > 0);
+}
+
+test "driver: unterminated block comment still checks preceding expression" {
+    var c = try compileSource(T.allocator, "a.public /*", .{ .no_emit = true });
+    defer {
+        c.deinit();
+        T.allocator.destroy(c);
+    }
+    var saw_name = false;
+    var saw_comment = false;
+    for (c.diagnostics.items) |d| {
+        if (d.code == 2304 and std.mem.indexOf(u8, d.message, "Cannot find name 'a'.") != null) saw_name = true;
+        if (d.code == 1010 and std.mem.eql(u8, d.message, "'*/' expected.")) saw_comment = true;
+    }
+    try T.expect(saw_name);
+    try T.expect(saw_comment);
 }
 
 test "driver: missing triple-slash path reference reports TS6053" {

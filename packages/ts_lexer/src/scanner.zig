@@ -249,8 +249,8 @@ pub const Scanner = struct {
                             self.pos += 1;
                         }
                         if (!closed) {
-                            self.report(gpa, "'*/' expected");
-                            return error.UnterminatedBlockComment;
+                            self.report(gpa, "'*/' expected.");
+                            return;
                         }
                     } else {
                         return;
@@ -1298,8 +1298,10 @@ test "Scanner: braced unicode escapes in strings are accepted" {
 test "Scanner: unterminated block comment reports diagnostic" {
     var s = Scanner.init(t.allocator, "/*CHECK#1/");
     defer s.deinit(t.allocator);
-    try t.expectError(error.UnterminatedBlockComment, s.next(t.allocator));
+    const tok = try s.next(t.allocator);
+    try t.expectEqual(TokenKind.eof, tok.kind);
     try t.expect(s.diagnostics.items.len > 0);
+    try t.expectEqualStrings("'*/' expected.", s.diagnostics.items[0].message);
 }
 
 test "Scanner: line and block comments are trivia" {

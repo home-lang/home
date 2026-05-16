@@ -6571,11 +6571,33 @@ pub const Parser = struct {
         return null;
     }
 
+    fn findUnterminatedRegexRecoveryEnd(self: *Parser, start: u32) u32 {
+        var i: usize = @intCast(start);
+        if (i < self.source.len and self.source[i] == '/') i += 1;
+        while (i < self.source.len) : (i += 1) {
+            switch (self.source[i]) {
+                '\n', '\r', ')', ']', '}', ';', ',' => break,
+                else => {},
+            }
+        }
+        return @intCast(i);
+    }
+
     fn parseRegexLiteralExpression(self: *Parser) ParseError!NodeId {
         const start_tok = self.peek();
         const end = self.findRegexLiteralEnd(start_tok.span.start) orelse {
             try self.reportCodeAt(start_tok.span.start, start_tok.line, 1161, "Unterminated regular expression literal.");
-            return error.UnexpectedToken;
+            const recovery_end = self.findUnterminatedRegexRecoveryEnd(start_tok.span.start);
+            var next = self.cursor;
+            while (next < self.tokens.len and
+                self.tokens[next].kind != .eof and
+                self.tokens[next].span.end <= recovery_end)
+            {
+                next += 1;
+            }
+            if (next == self.cursor) next += 1;
+            self.cursor = next;
+            return try self.builder.addLiteralRegex(.{ .start = start_tok.span.start, .end = recovery_end });
         };
         try self.reportUnbalancedRegexGroup(start_tok, end);
         var next = self.cursor;
@@ -11779,6 +11801,21 @@ test "parser: regex literal reports unbalanced group" {
     _ = try s.parser.parseSourceFile();
     try T.expectEqual(@as(usize, 1), s.parser.diagnostics.items.len);
     try T.expectEqual(@as(u32, 1005), s.parser.diagnostics.items[0].code);
+}
+
+test "parser: unterminated regex literal recovers as call argument" {
+    var s = try newTestSetup("foo(/notregexp);");
+    defer destroyTestSetup(s);
+
+    const root = try s.parser.parseSourceFile();
+    const stmt = hir_mod.blockStmts(&s.hir, root)[0];
+    try T.expectEqual(hir_mod.NodeKind.call_expr, s.hir.kindOf(stmt));
+    const call = hir_mod.callOf(&s.hir, stmt);
+    try T.expectEqual(hir_mod.NodeKind.identifier, s.hir.kindOf(call.callee));
+    try T.expectEqual(@as(usize, 1), hir_mod.callArgs(&s.hir, stmt).len);
+    try T.expectEqual(hir_mod.NodeKind.literal_regex, s.hir.kindOf(hir_mod.callArgs(&s.hir, stmt)[0]));
+    try T.expectEqual(@as(usize, 1), s.parser.diagnostics.items.len);
+    try T.expectEqual(@as(u32, 1161), s.parser.diagnostics.items[0].code);
 }
 
 test "parser: contextual primitive keyword can be parameter name and expression" {
