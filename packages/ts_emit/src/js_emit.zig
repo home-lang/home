@@ -1062,10 +1062,11 @@ pub const Printer = struct {
         }
     }
 
-    /// §4.A destructuring v14 — same as `printDestructuringVarDecl`
+    /// §4.A destructuring v14/v16 — same as `printDestructuringVarDecl`
     /// but doesn't emit a trailing `;` (for use in for-stmt init
     /// where the surrounding `for (...; ...; ...)` syntax provides
-    /// the terminator).
+    /// the terminator). Shares the recursive helper so defaults,
+    /// rest, computed keys, and nested patterns all work.
     fn printDestructuringVarDeclHeader(
         self: *Printer,
         kw_in: []const u8,
@@ -1073,7 +1074,7 @@ pub const Printer = struct {
         initializer: NodeId,
     ) anyerror!void {
         const is_array = self.hir.kindOf(pattern) == .array_pattern;
-        const tmp = if (is_array) "_arr" else "_o";
+        const tmp: []const u8 = if (is_array) "_arr" else "_o";
         const kw = if (self.options.es_target == .es5) "var" else kw_in;
         try self.write(kw);
         try self.write(" ");
@@ -1082,28 +1083,9 @@ pub const Printer = struct {
             try self.write(" = ");
             try self.printExpression(initializer);
         }
-        const elements = hir_mod.patternElements(self.hir, pattern);
-        for (elements, 0..) |elem, i| {
-            if (self.hir.kindOf(elem) != .parameter) continue;
-            const param = hir_mod.parameterOf(self.hir, elem);
-            if (param.flags.is_computed_binding_key) continue;
-            if (param.name == hir_mod.none_node_id) continue;
-            if (self.hir.kindOf(param.name) != .identifier) continue;
-            const id = hir_mod.identifierOf(self.hir, param.name);
-            const name_str = self.interner.get(id.name);
-            try self.write(", ");
-            try self.write(name_str);
-            try self.write(" = ");
-            try self.write(tmp);
-            if (is_array) {
-                var buf: [32]u8 = undefined;
-                const idx_str = std.fmt.bufPrint(&buf, "[{d}]", .{i}) catch unreachable;
-                try self.write(idx_str);
-            } else {
-                try self.write(".");
-                try self.write(name_str);
-            }
-        }
+        var emitted_count: usize = 1;
+        var counter: usize = 0;
+        try self.emitDestructuringPairs(pattern, tmp, &counter, &emitted_count);
         // No trailing `;` — caller controls the terminator.
     }
 
@@ -8551,6 +8533,19 @@ test "emit: deeply nested array destructuring chains multiple temps at es5" {
     defer T.allocator.free(out);
     try T.expect(std.mem.indexOf(u8, out, "function f(_p0)") != null);
     try T.expect(std.mem.indexOf(u8, out, "var _n1 = _p0[0], _n2 = _n1[0], a = _n2[0];") != null);
+}
+
+test "emit: for-stmt init with destructuring + defaults/rest now lowers at es5" {
+    // §4.A destructuring v16 — for-stmt init now uses the shared
+    // recursive helper, so defaults/rest/nested all work.
+    const out = try emitWithOpts(
+        "for (const [a = 1, ...rest] = arr; cond; i++) { use(a, rest); }",
+        .{ .es_target = .es5 },
+    );
+    defer T.allocator.free(out);
+    try T.expect(std.mem.indexOf(u8, out, "var _arr = arr") != null);
+    try T.expect(std.mem.indexOf(u8, out, "a = _arr[0] === void 0 ? 1 : _arr[0]") != null);
+    try T.expect(std.mem.indexOf(u8, out, "rest = _arr.slice(1)") != null);
 }
 
 test "emit: top-level nested array destructuring decl lowers via recursive temp at es5" {
