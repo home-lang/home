@@ -661,6 +661,12 @@ fn runProgram(gpa: std.mem.Allocator, c: Case) !?Result {
         seen_keys.deinit(gpa);
     }
     for (program_files.items, 0..) |pf, i| {
+        // Defensive bounds check: a fixture that fails to register
+        // some of its virtual files (e.g. via resolver errors before
+        // bind) can produce a `program_files` list longer than the
+        // actual `program.files` slice. Without this guard, the
+        // `fileById` index OOBs and crashes the whole corpus run.
+        if (i >= program.files.items.len) break;
         const file = program.fileById(@intCast(i));
         const compilation = file.compilation orelse continue;
         for (compilation.diagnostics.items) |d| {
