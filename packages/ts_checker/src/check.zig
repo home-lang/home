@@ -7763,6 +7763,9 @@ pub const Checker = struct {
             }
             if (pp.flags.is_rest and !is_this_param) has_rest_param = true;
             const has_anno = pp.type_annotation != hir_mod.none_node_id;
+            if (has_anno and f.body == hir_mod.none_node_id) {
+                try self.reportUnresolvedBodylessSignatureTypeRefs(pp.type_annotation, type_params);
+            }
             // `f(x = literal)` — when no annotation is present, the
             // default value's widened type seeds the parameter (tsc
             // does the same). Used by both the parameter typing pass
@@ -7882,10 +7885,16 @@ pub const Checker = struct {
         // so call sites can narrow the argument.
         const is_predicate = f.return_type != hir_mod.none_node_id and
             self.hir.kindOf(f.return_type) == .type_predicate_type;
+        if (f.body == hir_mod.none_node_id and f.return_type != hir_mod.none_node_id) {
+            try self.reportUnresolvedBodylessSignatureTypeRefs(f.return_type, type_params);
+        }
         const ret_t: TypeId = if (f.return_type != hir_mod.none_node_id)
             (if (is_predicate) types.Primitive.boolean_t else try self.lowererLowerWithTypeParams(f.return_type))
         else
             types.Primitive.any;
+        if (f.body == hir_mod.none_node_id and f.return_type == hir_mod.none_node_id) {
+            try self.reportImplicitAnySignatureReturn(node);
+        }
         if (f.flags.is_generator and f.return_type != hir_mod.none_node_id) {
             if (ret_t == types.Primitive.void_t) {
                 try self.report(f.return_type, TsCodes.generator_void_return, "A generator cannot have a 'void' type annotation.");
@@ -7985,6 +7994,78 @@ pub const Checker = struct {
             try self.signature_predicates.put(self.gpa, sig, fn_pred);
         }
         return sig;
+    }
+
+    fn reportImplicitAnySignatureReturn(self: *Checker, fn_node: NodeId) CheckError!void {
+        if (!self.strict_flags.no_implicit_any) return;
+        const f = hir_mod.fnDeclOf(self.hir, fn_node);
+        if (f.flags.is_constructor) return;
+        const name_node = if (f.name != hir_mod.none_node_id) f.name else fn_node;
+        const raw = if (f.name != hir_mod.none_node_id and self.hir.kindOf(f.name) == .identifier) blk: {
+            const name_id = hir_mod.identifierOf(self.hir, f.name).name;
+            const text = self.string_interner.get(name_id);
+            break :blk if (text.len == 0) "(Missing)" else text;
+        } else "<anonymous>";
+        const msg = try std.fmt.allocPrint(
+            self.diag_arena.allocator(),
+            "'{s}', which lacks return-type annotation, implicitly has an 'any' return type.",
+            .{raw},
+        );
+        try self.diagnostics.append(self.gpa, .{
+            .node = name_node,
+            .code = TsCodes.function_return_implicitly_any,
+            .message = msg,
+        });
+    }
+
+    fn reportUnresolvedBodylessSignatureTypeRefs(
+        self: *Checker,
+        type_node: NodeId,
+        type_params: []const NodeId,
+    ) CheckError!void {
+        if (type_node == hir_mod.none_node_id) return;
+        switch (self.hir.kindOf(type_node)) {
+            .type_ref => {
+                const r = hir_mod.typeRefOf(self.hir, type_node);
+                for (hir_mod.typeRefArgs(self.hir, type_node)) |arg| {
+                    try self.reportUnresolvedBodylessSignatureTypeRefs(arg, type_params);
+                }
+                if (r.qualifier_len != 0 or r.args_len != 0) return;
+                if (self.typeParamNameMatches(r.name, type_params)) return;
+                if (self.typeRefNameExists(r.name) or self.visibleTypeDeclarationExistsAt(type_node, r.name)) return;
+                const raw = self.string_interner.get(r.name);
+                if (self.lowerBuiltinObjectType(raw) != null) return;
+                if (std.mem.eql(u8, raw, "any") or
+                    std.mem.eql(u8, raw, "unknown") or
+                    std.mem.eql(u8, raw, "never") or
+                    std.mem.eql(u8, raw, "void") or
+                    std.mem.eql(u8, raw, "null") or
+                    std.mem.eql(u8, raw, "undefined") or
+                    std.mem.eql(u8, raw, "string") or
+                    std.mem.eql(u8, raw, "number") or
+                    std.mem.eql(u8, raw, "boolean") or
+                    std.mem.eql(u8, raw, "bigint") or
+                    std.mem.eql(u8, raw, "symbol") or
+                    std.mem.eql(u8, raw, "object") or
+                    self.isBuiltinName(r.name))
+                {
+                    return;
+                }
+                try self.reportCannotFindNameOnce(type_node, r.name);
+            },
+            .array_type => try self.reportUnresolvedBodylessSignatureTypeRefs(hir_mod.arrayTypeOf(self.hir, type_node).element, type_params),
+            .tuple_type => for (hir_mod.tupleTypeElements(self.hir, type_node)) |elem| try self.reportUnresolvedBodylessSignatureTypeRefs(elem, type_params),
+            .rest_type => try self.reportUnresolvedBodylessSignatureTypeRefs(hir_mod.restTypeOf(self.hir, type_node).operand, type_params),
+            .union_type => for (hir_mod.unionTypeMembers(self.hir, type_node)) |member| try self.reportUnresolvedBodylessSignatureTypeRefs(member, type_params),
+            .intersection_type => for (hir_mod.intersectionTypeMembers(self.hir, type_node)) |member| try self.reportUnresolvedBodylessSignatureTypeRefs(member, type_params),
+            .keyof_type => try self.reportUnresolvedBodylessSignatureTypeRefs(hir_mod.keyofTypeOf(self.hir, type_node).operand, type_params),
+            .indexed_access_type => {
+                const ia = hir_mod.indexedAccessTypeOf(self.hir, type_node);
+                try self.reportUnresolvedBodylessSignatureTypeRefs(ia.object, type_params);
+                try self.reportUnresolvedBodylessSignatureTypeRefs(ia.index, type_params);
+            },
+            else => {},
+        }
     }
 
     fn checkFunctionSignatureLocalTypeVisibility(self: *Checker, fn_node: NodeId, type_params: []const NodeId) CheckError!void {
@@ -26349,6 +26430,7 @@ pub const Checker = struct {
             "Map",               "Set",                "WeakMap",
             "WeakSet",           "Date",               "RegExp",
             "Function",          "Proxy",              "Reflect",
+            "TemplateStringsArray",
             "ArrayBuffer",       "Uint8Array",         "Uint8ClampedArray",
             "Int8Array",         "Uint16Array",        "Int16Array",
             "Uint32Array",       "Int32Array",         "Float16Array",
@@ -40096,6 +40178,21 @@ test "checker: noImplicitAny emits TS7006 for unannotated parameter" {
         if (d.code == TsCodes.parameter_implicitly_any) found = true;
     }
     try T.expect(found);
+}
+
+test "checker: noImplicitAny reports bodyless signature return and unresolved parameter type" {
+    const s = try newSetup("function f(p: A) => p;");
+    defer destroySetup(s);
+    s.checker.setStrictFlags(.{ .no_implicit_any = true });
+    try s.checker.checkSourceFile(s.root);
+    var saw_return = false;
+    var saw_type = false;
+    for (s.checker.diagnostics.items) |d| {
+        if (d.code == TsCodes.function_return_implicitly_any) saw_return = true;
+        if (d.code == TsCodes.cannot_find_name and std.mem.indexOf(u8, d.message, "'A'") != null) saw_type = true;
+    }
+    try T.expect(saw_return);
+    try T.expect(saw_type);
 }
 
 test "checker: noImplicitAny silent when parameter has annotation" {

@@ -90,6 +90,7 @@ pub const Parser = struct {
     target_es2015_or_later: bool,
     suppress_strict_param_names: bool,
     allow_parameter_list_arrow_recovery: bool,
+    parameter_list_arrow_is_comma: bool,
     parameter_list_recovered_body_as_missing_close: bool,
     parameter_list_recovered_arrow_missing_close: bool,
     enum_recovered_missing_close_at_eof: bool,
@@ -145,6 +146,7 @@ pub const Parser = struct {
             .target_es2015_or_later = false,
             .suppress_strict_param_names = false,
             .allow_parameter_list_arrow_recovery = false,
+            .parameter_list_arrow_is_comma = false,
             .parameter_list_recovered_body_as_missing_close = false,
             .parameter_list_recovered_arrow_missing_close = false,
             .enum_recovered_missing_close_at_eof = false,
@@ -528,7 +530,7 @@ pub const Parser = struct {
             },
             .kw_try => try self.parseTryStatement(),
             .kw_switch => try self.parseSwitchStatement(),
-            .kw_function => try self.parseFunctionDeclaration(),
+            .kw_function => try self.parseFunctionDeclaration(true),
             .kw_async => blk: {
                 // `async function f() { ... }` — consume the async
                 // keyword and parse as a function decl with the
@@ -538,7 +540,7 @@ pub const Parser = struct {
                     _ = self.advance(); // async
                     self.async_function_depth += 1;
                     defer self.async_function_depth -= 1;
-                    const fd = try self.parseFunctionDeclaration();
+                    const fd = try self.parseFunctionDeclaration(true);
                     self.hir.markFnAsync(fd);
                     break :blk fd;
                 }
@@ -1439,7 +1441,12 @@ pub const Parser = struct {
         return try self.builder.addSwitch(.{ .start = start.span.start, .end = close.span.end }, discriminant, cases.items);
     }
 
-    fn parseFunctionDeclaration(self: *Parser) ParseError!NodeId {
+    fn missingIdentifierAt(self: *Parser, pos: u32) ParseError!NodeId {
+        const empty = self.interner.intern("") catch return error.OutOfMemory;
+        return try self.builder.addIdentifier(.{ .start = pos, .end = pos }, empty);
+    }
+
+    fn parseFunctionDeclaration(self: *Parser, require_name: bool) ParseError!NodeId {
         const start = self.advance(); // function
         const is_generator = self.match(.asterisk);
         // Function name (optional in expression context, required in
@@ -1447,12 +1454,21 @@ pub const Parser = struct {
         // when at statement position; named-fn-expression handling lives
         // in parseUnaryExpression's primary path (deferred follow-up).
         var name: NodeId = hir_mod.none_node_id;
+        var recovered_missing_name = false;
+        var recovered_missing_name_arrow = false;
         if (self.peek().kind == .identifier or self.peek().kind.isContextualKeyword()) {
             const name_tok = self.advance();
             try self.reportInvalidStrictName(name_tok);
             try self.reportInvalidYieldName(name_tok);
             const name_id = try self.internToken(name_tok);
             name = try self.builder.addIdentifier(tokenSpan(name_tok), name_id);
+        } else if (require_name) {
+            const name_pos = start.span.end;
+            const diag_tok = self.peek();
+            try self.reportCodeAt(diag_tok.span.start, diag_tok.line, 1003, "Identifier expected.");
+            name = try self.missingIdentifierAt(name_pos);
+            recovered_missing_name = true;
+            recovered_missing_name_arrow = diag_tok.kind == .arrow;
         }
         // Generic type parameters: `function f<T extends U = D>(...)`.
         var type_params: []NodeId = &.{};
@@ -1463,8 +1479,18 @@ pub const Parser = struct {
         }
         defer if (owns_tps) self.gpa.free(type_params);
         self.parameter_list_recovered_body_as_missing_close = false;
-        const params = try self.parseParameterList();
-        defer self.gpa.free(params);
+        const saved_arrow_is_comma = self.parameter_list_arrow_is_comma;
+        self.parameter_list_arrow_is_comma = true;
+        defer self.parameter_list_arrow_is_comma = saved_arrow_is_comma;
+        var owns_params = false;
+        const params: []NodeId = if (recovered_missing_name_arrow) blk: {
+            if (self.peek().kind == .arrow) _ = self.advance();
+            break :blk &.{};
+        } else blk: {
+            owns_params = true;
+            break :blk try self.parseParameterList();
+        };
+        defer if (owns_params) self.gpa.free(params);
         const recovered_body_as_missing_close = self.parameter_list_recovered_body_as_missing_close;
 
         var return_type: NodeId = hir_mod.none_node_id;
@@ -1488,6 +1514,9 @@ pub const Parser = struct {
             self.generator_depth = if (is_generator) prev_generator_depth + 1 else 0;
             defer self.generator_depth = prev_generator_depth;
             body = try self.parseBlockStatement();
+        } else if (self.peek().kind == .arrow and !recovered_missing_name) {
+            const arrow_tok = self.advance();
+            try self.reportCodeAt(arrow_tok.span.start, arrow_tok.line, 1144, "'{' or ';' expected.");
         } else {
             // Ambient declaration `function foo(...);`.
             try self.consumeStatementTerminator();
@@ -1699,6 +1728,20 @@ pub const Parser = struct {
                     try self.reportCodeAt(arrow_tok.span.start, arrow_tok.line, 1005, "',' expected.");
                     missing_close_reported = true;
                     self.parameter_list_recovered_arrow_missing_close = true;
+                    break;
+                }
+                if (self.parameter_list_arrow_is_comma and self.peek().kind == .arrow) {
+                    const arrow_tok = self.advance();
+                    try self.reportCodeAt(arrow_tok.span.start, arrow_tok.line, 1005, "',' expected.");
+                    continue;
+                }
+                if (self.parameter_list_arrow_is_comma and (self.peek().kind == .semicolon or self.peek().kind == .eof)) {
+                    const stop_tok = self.peek();
+                    try self.reportCodeAt(stop_tok.span.start, stop_tok.line, 1005, "',' expected.");
+                    if (self.peek().kind == .semicolon) _ = self.advance();
+                    const close_tok = self.peek();
+                    try self.reportCodeAt(close_tok.span.start, close_tok.line, 1005, "')' expected.");
+                    missing_close_reported = true;
                     break;
                 }
                 if (!self.match(.comma)) break;
@@ -3492,13 +3535,13 @@ pub const Parser = struct {
             // expression value.
             const decl = switch (self.peek().kind) {
                 .kw_class => try self.parseClassDeclaration(),
-                .kw_function => try self.parseFunctionDeclaration(),
+                .kw_function => try self.parseFunctionDeclaration(false),
                 .kw_async => blk: {
                     if (self.peekAt(1).kind == .kw_function) {
                         _ = self.advance();
                         self.async_function_depth += 1;
                         defer self.async_function_depth -= 1;
-                        const fd = try self.parseFunctionDeclaration();
+                        const fd = try self.parseFunctionDeclaration(false);
                         self.hir.markFnAsync(fd);
                         break :blk fd;
                     }
@@ -7232,12 +7275,12 @@ pub const Parser = struct {
             .kw_function => {
                 // Function expression — reuse declaration parser; it
                 // will emit `fn_decl` even when used as expression.
-                return try self.parseFunctionDeclaration();
+                return try self.parseFunctionDeclaration(false);
             },
             .kw_async => {
                 if (self.peekAt(1).kind == .kw_function) {
                     _ = self.advance();
-                    const fd = try self.parseFunctionDeclaration();
+                    const fd = try self.parseFunctionDeclaration(false);
                     self.hir.markFnAsync(fd);
                     return fd;
                 }
@@ -8926,6 +8969,23 @@ test "parser: function declaration with parameters and body" {
     try T.expect(fn_p.name != hir_mod.none_node_id);
     const params = hir_mod.fnParams(&s.hir, top);
     try T.expectEqual(@as(usize, 2), params.len);
+}
+
+test "parser: malformed function arrow recovers as signature" {
+    var s = try newTestSetup("function (a => b;");
+    defer destroyTestSetup(s);
+    const root = try s.parser.parseSourceFile();
+    const top = hir_mod.blockStmts(&s.hir, root)[0];
+    try T.expectEqual(hir_mod.NodeKind.fn_decl, s.hir.kindOf(top));
+    try T.expectEqual(@as(usize, 2), hir_mod.fnParams(&s.hir, top).len);
+    var saw_missing_name = false;
+    var saw_arrow_comma = false;
+    for (s.parser.diagnostics.items) |d| {
+        if (d.code == 1003) saw_missing_name = true;
+        if (d.code == 1005 and std.mem.eql(u8, d.message, "',' expected.")) saw_arrow_comma = true;
+    }
+    try T.expect(saw_missing_name);
+    try T.expect(saw_arrow_comma);
 }
 
 test "parser: function with type annotations skipped" {
