@@ -1166,6 +1166,34 @@ test "driver: checkJs virtual js surfaces checker diagnostics" {
     try T.expect(c.has_errors);
 }
 
+test "driver: checkJs virtual js validates JSDoc array assignment inside class method" {
+    var c = try compileSource(T.allocator,
+        \\// @allowJs: true
+        \\// @checkJs: true
+        \\// @filename: checked.js
+        \\var A = {};
+        \\A.B = class {
+        \\    m() {
+        \\        /** @type {string[]} */
+        \\        var x = [];
+        \\        /** @type {number[]} */
+        \\        var y;
+        \\        y = x;
+        \\    }
+        \\};
+    , .{ .no_emit = true });
+    defer {
+        c.deinit();
+        T.allocator.destroy(c);
+    }
+
+    var found = false;
+    for (c.diagnostics.items) |d| {
+        if (d.code == 2322 and std.mem.indexOf(u8, d.message, "string[]") != null) found = true;
+    }
+    try T.expect(found);
+}
+
 test "driver: function with generics" {
     var c = try compileSource(T.allocator, "function id<T>(x: T): T { return x; }", .{});
     defer {

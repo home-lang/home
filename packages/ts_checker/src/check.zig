@@ -19855,7 +19855,9 @@ pub const Checker = struct {
                     const v = hir_mod.varDeclOf(self.hir, decl);
                     if (v.name == hir_mod.none_node_id or self.hir.kindOf(v.name) != .identifier) continue;
                     if (hir_mod.identifierOf(self.hir, v.name).name != id.name) continue;
-                    return v.type_annotation == hir_mod.none_node_id and v.init == hir_mod.none_node_id;
+                    return v.type_annotation == hir_mod.none_node_id and
+                        v.init == hir_mod.none_node_id and
+                        !self.varDeclHasJsDocTypeTag(decl);
                 }
                 continue;
             }
@@ -19890,7 +19892,12 @@ pub const Checker = struct {
                 const v = hir_mod.varDeclOf(self.hir, decl);
                 if (v.name == hir_mod.none_node_id or self.hir.kindOf(v.name) != .identifier) continue;
                 if (hir_mod.identifierOf(self.hir, v.name).name != id.name) continue;
-                if (v.type_annotation != hir_mod.none_node_id or v.init != hir_mod.none_node_id) return null;
+                if (v.type_annotation != hir_mod.none_node_id or
+                    v.init != hir_mod.none_node_id or
+                    self.varDeclHasJsDocTypeTag(decl))
+                {
+                    return null;
+                }
                 return decl;
             }
             return null;
@@ -20796,6 +20803,12 @@ pub const Checker = struct {
     fn jsDocTypeTextToType(self: *Checker, src: []const u8, type_text: []const u8) CheckError!?TypeId {
         const trimmed = std.mem.trim(u8, type_text, " \t\r\n");
         if (trimmed.len == 0) return null;
+        if (std.mem.endsWith(u8, trimmed, "[]")) {
+            const elem_text = std.mem.trim(u8, trimmed[0 .. trimmed.len - 2], " \t\r\n");
+            if (try self.jsDocTypeTextToType(src, elem_text)) |elem_t| {
+                return self.interner.internArrayType(self.string_interner, elem_t) catch return error.OutOfMemory;
+            }
+        }
         if (std.mem.indexOfScalar(u8, trimmed, '|')) |_| {
             var parts = std.mem.splitScalar(u8, trimmed, '|');
             var items: std.ArrayListUnmanaged(TypeId) = .empty;
@@ -22805,11 +22818,9 @@ pub const Checker = struct {
                         "Private field '{s}' must be declared in an enclosing class.",
                         .{name_str},
                     );
-                    try self.diagnostics.append(self.gpa, .{
-                        .node = node,
-                        .code = TsCodes.private_name_not_declared,
-                        .message = msg,
-                    });
+                    const span = self.hir.spanOf(node);
+                    const name_pos: ?u32 = if (span.end >= name_str.len) span.end - @as(u32, @intCast(name_str.len)) else null;
+                    try self.reportAt(node, name_pos, TsCodes.private_name_not_declared, msg);
                     break :blk types.Primitive.any;
                 }
                 if (try self.functionInterfaceMemberForCallableObject(access_obj_t, m.name)) |t| {
@@ -50947,6 +50958,55 @@ test "checker: checkjs object property @type validates initializer" {
     try T.expect(found);
 }
 
+test "checker: checkjs JSDoc array var assignment validates element type" {
+    const s = try newSetup(
+        \\// @checkJs: true
+        \\/** @type {string[]} */
+        \\var x = [];
+        \\/** @type {number[]} */
+        \\var y;
+        \\y = x;
+    );
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+    var found = false;
+    for (s.checker.diagnostics.items) |d| {
+        if (d.code == TsCodes.type_not_assignable and
+            std.mem.eql(u8, d.message, "Type 'string[]' is not assignable to type 'number[]'."))
+        {
+            found = true;
+        }
+    }
+    try T.expect(found);
+}
+
+test "checker: checkjs JSDoc array var assignment validates element type inside method" {
+    const s = try newSetup(
+        \\// @checkJs: true
+        \\var A = {};
+        \\A.B = class {
+        \\    m() {
+        \\        /** @type {string[]} */
+        \\        var x = [];
+        \\        /** @type {number[]} */
+        \\        var y;
+        \\        y = x;
+        \\    }
+        \\};
+    );
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+    var found = false;
+    for (s.checker.diagnostics.items) |d| {
+        if (d.code == TsCodes.type_not_assignable and
+            std.mem.eql(u8, d.message, "Type 'string[]' is not assignable to type 'number[]'."))
+        {
+            found = true;
+        }
+    }
+    try T.expect(found);
+}
+
 test "checker: checkjs computed binary property type does not constrain dot assignment" {
     const s = try newSetup(
         \\// @ts-check
@@ -51148,6 +51208,26 @@ test "checker: undeclared ECMAScript private field reports TS1111" {
         if (d.code == TsCodes.private_name_not_declared) found = true;
     }
     try T.expect(found);
+}
+
+test "checker: undeclared ECMAScript private field anchors at private name" {
+    const source =
+        \\class A {
+        \\    #a;
+        \\    m() {
+        \\        this.#b;
+        \\    }
+        \\}
+    ;
+    const s = try newSetup(source);
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+    var private_pos: ?u32 = null;
+    for (s.checker.diagnostics.items) |d| {
+        if (d.code == TsCodes.private_name_not_declared) private_pos = d.pos;
+    }
+    try T.expect(private_pos != null);
+    try T.expectEqual(@as(u32, @intCast(std.mem.indexOf(u8, source, "#b").?)), private_pos.?);
 }
 
 test "checker: keyof T resolves to the literal union of property names" {
