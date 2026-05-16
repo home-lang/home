@@ -16851,6 +16851,35 @@ pub const Checker = struct {
         return true;
     }
 
+    /// Walk type-argument node IDs and emit TS2304 for unresolved
+    /// bare-name type references. Mirrors the behavior of
+    /// `reportUnresolvedSimpleTypeofTypeArguments` but operates on
+    /// already-parsed NodeId slices instead of scanning source text —
+    /// used by call expressions and type refs that have parsed
+    /// type-argument nodes.
+    fn reportUnresolvedCallTypeArgumentNodes(self: *Checker, args: []const NodeId) CheckError!void {
+        for (args) |arg| {
+            if (self.hir.kindOf(arg) != .type_ref) continue;
+            const r = hir_mod.typeRefOf(self.hir, arg);
+            if (r.qualifier_len != 0) continue;
+            if (self.typeRefNameExists(r.name) or self.visibleTypeDeclarationExistsAt(arg, r.name)) continue;
+            const name_str = self.string_interner.get(r.name);
+            if (self.typeRefNameAcceptsTypeArgsAt(arg, r.name, name_str)) continue;
+            try self.reportCannotFindNameOnce(arg, r.name);
+        }
+    }
+
+    /// Stub: TypeScript 4.7 "instantiation expressions" (`Foo<T>` in
+    /// a value position without a following call) are not yet
+    /// distinguished from regular calls in our parser. The call
+    /// pipeline treats both as `.call_expr`; returning false here
+    /// preserves the existing call-typing path.
+    fn isInstantiationExpressionCall(self: *Checker, node: NodeId) bool {
+        _ = self;
+        _ = node;
+        return false;
+    }
+
     fn reportUnresolvedSimpleTypeofTypeArguments(self: *Checker, operand: NodeId) CheckError!void {
         const src = self.source orelse return;
         const sp = self.hir.spanOf(operand);
@@ -21610,7 +21639,6 @@ pub const Checker = struct {
                 const type_arg_nodes = hir_mod.callTypeArgs(self.hir, node);
                 if (type_arg_nodes.len > 0) {
                     try self.reportUnresolvedSimpleTypeofTypeArguments(node);
-                    try self.reportUnresolvedCallTypeArgumentNodes(type_arg_nodes);
                 }
                 if (self.isInstantiationExpressionCall(node)) {
                     break :blk callee_t;
