@@ -1725,6 +1725,18 @@ fn baselinePathIsTargetEs5(path: ?[]const u8) bool {
     return std.mem.indexOf(u8, p, "(target=es5).errors.txt") != null;
 }
 
+/// Inspect the chosen `.errors.txt` baseline filename for an
+/// `alwaysstrict=<bool>` variant marker. Multi-variant fixtures (e.g.
+/// `// @alwaysStrict: true, false`) produce one baseline per variant,
+/// so the exact runner must honor the specific baseline selected for
+/// comparison rather than always taking the first directive value.
+fn baselineAlwaysStrictValue(path: ?[]const u8) ?bool {
+    const p = path orelse return null;
+    if (std.mem.indexOf(u8, p, "alwaysstrict=false") != null) return false;
+    if (std.mem.indexOf(u8, p, "alwaysstrict=true") != null) return true;
+    return null;
+}
+
 /// Extract the `moduleresolution=X` label from a baseline filename
 /// like `…(moduleresolution=classic).errors.txt`. Returns an owned
 /// lower-case slice (`"classic"`) or an empty slice when the
@@ -2788,8 +2800,8 @@ fn sourceHasUninitializedField(source: []const u8) bool {
         if (!std.mem.endsWith(u8, line, ";")) continue;
         var rest = line;
         const modifiers = [_][]const u8{
-            "public ",   "private ",  "protected ", "readonly ",
-            "static ",   "abstract ", "declare ",   "override ",
+            "public ", "private ",  "protected ", "readonly ",
+            "static ", "abstract ", "declare ",   "override ",
         };
         outer: while (true) {
             for (modifiers) |m| {

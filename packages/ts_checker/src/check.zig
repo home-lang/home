@@ -269,6 +269,7 @@ pub const TsCodes = struct {
     pub const variable_self_reference_implicitly_any: u32 = 7022;
     pub const function_return_self_reference_implicitly_any: u32 = 7023;
     pub const binding_element_implicitly_any: u32 = 7031;
+    pub const setter_property_implicitly_any: u32 = 7032;
     pub const new_expression_implicitly_any: u32 = 7009;
     pub const generator_implicit_yield_type: u32 = 7055;
     pub const generator_implicit_yield_type_short: u32 = 7025;
@@ -6699,18 +6700,24 @@ pub const Checker = struct {
         return false;
     }
 
-    /// True when `fn_node` is a `set x(v) {…}` accessor (either as a
-    /// class member or as an object-literal property). tsc
+    /// True when `fn_node` is a class `set x(v) {…}` accessor. tsc
     /// contextually types the setter's parameter from the matching
     /// getter's return type when one is present, and treats the
     /// parameter as `unknown` when no getter exists — either way the
-    /// implicit-any rule never fires on the setter parameter, so we
-    /// suppress TS7006 here too.
+    /// implicit-any rule never fires on the class setter parameter, so
+    /// we suppress TS7006 here too. Object-literal setters without
+    /// parameter annotations still report TS7032 + TS7006.
     fn functionIsAccessorSetter(self: *Checker, fn_node: NodeId) bool {
         const k = self.hir.kindOf(fn_node);
         if (k != .fn_decl and k != .fn_expr and k != .arrow_fn) return false;
         const f = hir_mod.fnDeclOf(self.hir, fn_node);
-        return f.flags.is_setter;
+        if (!f.flags.is_setter) return false;
+        const parent = self.hir.parentOf(fn_node);
+        if (parent != hir_mod.none_node_id and self.hir.kindOf(parent) == .object_property) {
+            const grand = self.hir.parentOf(parent);
+            if (grand != hir_mod.none_node_id and self.hir.kindOf(grand) == .object_literal) return false;
+        }
+        return true;
     }
 
     /// True when `t` is a valid rest-parameter type (TS2370 wants
@@ -9374,6 +9381,10 @@ pub const Checker = struct {
                         if (op_is_computed and op.is_override) {
                             try self.report(m, TsCodes.override_dynamic_name, "This member cannot have an 'override' modifier because its name is dynamic.");
                         }
+                        const dynamic_field_t: TypeId = if (op.type_annotation != hir_mod.none_node_id) blk: {
+                            try self.reportUnresolvedBodylessSignatureTypeRefs(op.type_annotation, type_params);
+                            break :blk try self.lowererLowerWithTypeParams(op.type_annotation);
+                        } else types.Primitive.none;
                         if (op_is_computed and
                             !op_is_method and
                             !op.is_static and
@@ -9386,8 +9397,7 @@ pub const Checker = struct {
                             !self.classHasLeadingDeclare(node) and
                             !self.virtualSectionIsDeclarationFile(node))
                         {
-                            const field_t = try self.lowererLowerWithTypeParams(op.type_annotation);
-                            if (!self.typeExplicitlyIncludesUndefined(field_t)) {
+                            if (!self.typeExplicitlyIncludesUndefined(dynamic_field_t)) {
                                 try self.report(m, TsCodes.property_not_initialized, "Property '[computed]' has no initializer and is not definitely assigned in the constructor.");
                             }
                         }
@@ -14411,6 +14421,20 @@ pub const Checker = struct {
         try self.diagnostics.append(self.gpa, .{
             .node = node,
             .code = TsCodes.object_literal_property_implicitly_any,
+            .message = msg,
+        });
+    }
+
+    fn reportObjectLiteralSetterImplicitAny(self: *Checker, node: NodeId, name: hir_mod.StringId) CheckError!void {
+        const member_name = self.string_interner.get(name);
+        const msg = try std.fmt.allocPrint(
+            self.diag_arena.allocator(),
+            "Property '{s}' implicitly has type 'any', because its set accessor lacks a parameter type annotation.",
+            .{member_name},
+        );
+        try self.diagnostics.append(self.gpa, .{
+            .node = node,
+            .code = TsCodes.setter_property_implicitly_any,
             .message = msg,
         });
     }
@@ -23276,6 +23300,18 @@ pub const Checker = struct {
                         ((value_kind == .fn_decl or value_kind == .fn_expr or value_kind == .arrow_fn) and
                             self.memberSourceLooksMethod(p));
                     const raw_vt = try self.checkExpression(op.value);
+                    if (self.strict_flags.no_implicit_any and
+                        (value_kind == .fn_decl or value_kind == .fn_expr or value_kind == .arrow_fn))
+                    {
+                        const f = hir_mod.fnDeclOf(self.hir, op.value);
+                        const params = hir_mod.fnParams(self.hir, op.value);
+                        if (f.flags.is_setter and params.len > 0) {
+                            const first = hir_mod.parameterOf(self.hir, params[0]);
+                            if (first.type_annotation == hir_mod.none_node_id) {
+                                try self.reportObjectLiteralSetterImplicitAny(op.key, k.name);
+                            }
+                        }
+                    }
                     if (op.is_shorthand and value_kind == .identifier) {
                         try self.rewriteMissingShorthandPropertyDiagnostic(op.value);
                     }
@@ -48615,6 +48651,21 @@ test "checker: unresolved computed class property key suppresses follow-on TS116
     try T.expect(saw_missing);
 }
 
+test "checker: dynamic computed class field still checks type annotation" {
+    const s = try newSetup("class C { [e]: Type }");
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+    var saw_key = false;
+    var saw_type = false;
+    for (s.checker.diagnostics.items) |d| {
+        if (d.code != TsCodes.cannot_find_name) continue;
+        if (std.mem.indexOf(u8, d.message, "'e'") != null) saw_key = true;
+        if (std.mem.indexOf(u8, d.message, "'Type'") != null) saw_type = true;
+    }
+    try T.expect(saw_key);
+    try T.expect(saw_type);
+}
+
 test "checker: qualified type assertion with missing root reports namespace diagnostic" {
     const s = try newSetup(
         \\let foo: any;
@@ -52363,6 +52414,21 @@ test "checker: setter parameter without annotation suppresses TS7006" {
     for (s.checker.diagnostics.items) |diag| {
         try T.expect(diag.code != TsCodes.parameter_implicitly_any);
     }
+}
+
+test "checker: object literal setter without annotation reports TS7032 and TS7006" {
+    const s = try newSetup("var v = { set Foo(a) { } };");
+    defer destroySetup(s);
+    s.checker.setStrictFlags(.{ .no_implicit_any = true });
+    try s.checker.checkSourceFile(s.root);
+    var saw_property = false;
+    var saw_param = false;
+    for (s.checker.diagnostics.items) |diag| {
+        if (diag.code == TsCodes.setter_property_implicitly_any) saw_property = true;
+        if (diag.code == TsCodes.parameter_implicitly_any) saw_param = true;
+    }
+    try T.expect(saw_property);
+    try T.expect(saw_param);
 }
 
 test "checker: bare arrow with unannotated param still fires TS7006" {

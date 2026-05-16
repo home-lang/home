@@ -3277,9 +3277,10 @@ pub const Parser = struct {
             }
             var is_computed = false;
             const name_node = if (self.peek().kind == .open_bracket) blk: {
-                _ = self.advance();
+                const open = self.advance();
                 const key = try self.parseExpression();
                 _ = try self.expect(.close_bracket, "']' to close computed enum member name");
+                try self.reportCodeAt(open.span.start, open.line, 1164, "Computed property names are not allowed in enums.");
                 is_computed = true;
                 break :blk key;
             } else blk: {
@@ -4638,7 +4639,15 @@ pub const Parser = struct {
             .kw_any, .kw_unknown, .kw_never, .kw_void, .kw_string, .kw_number, .kw_boolean, .kw_bigint, .kw_symbol, .kw_object, .kw_undefined, .kw_null => blk: {
                 _ = self.advance();
                 const id = try self.internToken(t);
-                break :blk try self.builder.addTypeRef(tokenSpan(t), id, &.{}, &.{});
+                var end_pos = t.span.end;
+                if (self.peek().kind == .dot and
+                    (self.peekAt(1).kind == .identifier or self.peekAt(1).kind.isContextualKeyword() or self.peekAt(1).kind.isPrimitiveTypeKeyword()))
+                {
+                    const dot = self.advance();
+                    try self.reportCodeAt(dot.span.start, dot.line, 1005, "',' expected.");
+                    end_pos = self.advance().span.end;
+                }
+                break :blk try self.builder.addTypeRef(.{ .start = t.span.start, .end = end_pos }, id, &.{}, &.{});
             },
             .kw_true => blk: {
                 _ = self.advance();
@@ -12157,12 +12166,14 @@ test "parser: computed interface assignment key reports missing key name" {
     try T.expectEqualStrings("Cannot find name 'a'.", s.parser.diagnostics.items[1].message);
 }
 
-test "parser: computed enum member parses cleanly" {
+test "parser: computed enum member reports TS1164" {
     var s = try newTestSetup("enum E { [e] = 1 }");
     defer destroyTestSetup(s);
 
     _ = try s.parser.parseSourceFile();
-    try T.expectEqual(@as(usize, 0), s.parser.diagnostics.items.len);
+    try T.expectEqual(@as(usize, 1), s.parser.diagnostics.items.len);
+    try T.expectEqual(@as(u32, 1164), s.parser.diagnostics.items[0].code);
+    try T.expectEqualStrings("Computed property names are not allowed in enums.", s.parser.diagnostics.items[0].message);
 }
 
 test "parser: yield can be a generator function expression name" {
@@ -12999,6 +13010,17 @@ test "parser: primitive keyword may finish qualified type name" {
 
     _ = try s.parser.parseSourceFile();
     try T.expectEqual(@as(usize, 0), s.parser.diagnostics.items.len);
+}
+
+test "parser: primitive keyword cannot start qualified type name" {
+    var s = try newTestSetup("var v : void.x;");
+    defer destroyTestSetup(s);
+    s.parser.setTargetEs2015OrLater(true);
+
+    _ = try s.parser.parseSourceFile();
+    try T.expectEqual(@as(usize, 1), s.parser.diagnostics.items.len);
+    try T.expectEqual(@as(u32, 1005), s.parser.diagnostics.items[0].code);
+    try T.expectEqualStrings("',' expected.", s.parser.diagnostics.items[0].message);
 }
 
 test "parser: finally in expression position reports upstream recovery" {
