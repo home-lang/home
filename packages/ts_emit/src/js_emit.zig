@@ -1859,11 +1859,11 @@ pub const Printer = struct {
         if (f.body != hir_mod.none_node_id) {
             try self.write(" ");
             if (downlevel_async_gen) {
-                try self.printAsyncGeneratorDownlevelBody(f.body);
+                try self.printAsyncGeneratorDownlevelBody(f.body, params);
             } else if (downlevel_async) {
-                try self.printAsyncDownlevelBody(f.body);
+                try self.printAsyncDownlevelBody(f.body, params);
             } else if (downlevel_generator) {
-                try self.printGeneratorDownlevelBody(f.body);
+                try self.printGeneratorDownlevelBody(f.body, params);
             } else if (self.options.es_target == .es5 and (self.hasDefaultParam(params) or self.hasDestructuringParam(params))) {
                 // §4.A — at ES5, lower default-parameter syntax to a
                 // body-prefix `if (x === void 0) { x = ...; }` shim
@@ -1883,10 +1883,19 @@ pub const Printer = struct {
     /// — the shape tsc uses to lower async functions for ES2016 and
     /// below. Inside the generator body we set `in_async_downlevel`
     /// so the `await` printer lowers `await E` to `yield E`.
-    fn printAsyncDownlevelBody(self: *Printer, body: NodeId) anyerror!void {
+    fn printAsyncDownlevelBody(self: *Printer, body: NodeId, params: []const NodeId) anyerror!void {
         try self.write("{");
         self.depth += 1;
         try self.writeNewlineIndent();
+        // §4.A destructuring v13 — when the enclosing async fn has
+        // pattern params at ES5, the param list emits `_pN` temp idents
+        // and the body needs a destructuring shim. Inject it here
+        // before `return __awaiter(...)` so the closure-captured
+        // bindings are visible to the inner generator body.
+        if (self.options.es_target == .es5 and self.hasDestructuringParam(params)) {
+            try self.writeDestructuringParamShims(params);
+            try self.writeNewlineIndent();
+        }
         try self.write("return __awaiter(this, void 0, void 0, function* () ");
         const prev = self.in_async_downlevel;
         self.in_async_downlevel = true;
@@ -2806,10 +2815,17 @@ pub const Printer = struct {
     ///   * `[2]`        — bare return (terminates)
     ///
     /// Caller is responsible for gating on `canLowerGeneratorBody`.
-    fn printGeneratorDownlevelBody(self: *Printer, body: NodeId) anyerror!void {
+    fn printGeneratorDownlevelBody(self: *Printer, body: NodeId, params: []const NodeId) anyerror!void {
         try self.write("{");
         self.depth += 1;
         try self.writeNewlineIndent();
+        // §4.A destructuring v13 — destructuring-param shim at the
+        // outer function level so the inner state-machine sees the
+        // bindings via closure.
+        if (self.options.es_target == .es5 and self.hasDestructuringParam(params)) {
+            try self.writeDestructuringParamShims(params);
+            try self.writeNewlineIndent();
+        }
         try self.write("return __generator(this, function (_a) {");
         self.depth += 1;
         try self.writeNewlineIndent();
@@ -4342,10 +4358,16 @@ pub const Printer = struct {
     ///   `case +1: _a.sent(); return [4];`
     ///   `case +2: _a.sent();`
     /// So N user yields produce 2N resumption-related cases.
-    fn printAsyncGeneratorDownlevelBody(self: *Printer, body: NodeId) anyerror!void {
+    fn printAsyncGeneratorDownlevelBody(self: *Printer, body: NodeId, params: []const NodeId) anyerror!void {
         try self.write("{");
         self.depth += 1;
         try self.writeNewlineIndent();
+        // §4.A destructuring v13 — destructuring-param shim at the
+        // outer async-gen function level.
+        if (self.options.es_target == .es5 and self.hasDestructuringParam(params)) {
+            try self.writeDestructuringParamShims(params);
+            try self.writeNewlineIndent();
+        }
         try self.write("return __asyncGenerator(this, arguments, function () {");
         self.depth += 1;
         try self.writeNewlineIndent();
@@ -7532,7 +7554,7 @@ pub const Printer = struct {
         if (f.body != hir_mod.none_node_id) {
             try self.write(" ");
             if (downlevel_async) {
-                try self.printAsyncDownlevelBody(f.body);
+                try self.printAsyncDownlevelBody(f.body, params);
             } else if (self.options.es_target == .es5 and (self.hasDefaultParam(params) or self.hasDestructuringParam(params))) {
                 try self.printFnBodyWithDefaults(params, f.body);
             } else {
@@ -8423,6 +8445,36 @@ test "emit: function with computed-key destructuring param lowers at es5" {
     defer T.allocator.free(out);
     try T.expect(std.mem.indexOf(u8, out, "function f(_p0)") != null);
     try T.expect(std.mem.indexOf(u8, out, "var name = _p0[k];") != null);
+}
+
+test "emit: generator with destructuring param injects shim before state machine at es5" {
+    // §4.A destructuring v13 — `function* g({ a, b }) { yield a; }`
+    // at ES5 needs `var a = _p0.a, b = _p0.b;` BEFORE the inner state
+    // machine so the closure captures the bindings.
+    const out = try emitWithOpts(
+        "function* g({ a, b }) { yield a; }",
+        .{ .es_target = .es5 },
+    );
+    defer T.allocator.free(out);
+    try T.expect(std.mem.indexOf(u8, out, "function g(_p0)") != null);
+    // Destructuring shim fires before the state-machine wrapper.
+    const shim_idx = std.mem.indexOf(u8, out, "var a = _p0.a, b = _p0.b;");
+    const sm_idx = std.mem.indexOf(u8, out, "return __generator");
+    try T.expect(shim_idx != null and sm_idx != null);
+    try T.expect(shim_idx.? < sm_idx.?);
+}
+
+test "emit: async function with destructuring param injects shim before __awaiter at es5" {
+    const out = try emitWithOpts(
+        "async function f({ a }) { return a; }",
+        .{ .es_target = .es5 },
+    );
+    defer T.allocator.free(out);
+    try T.expect(std.mem.indexOf(u8, out, "function f(_p0)") != null);
+    const shim_idx = std.mem.indexOf(u8, out, "var a = _p0.a;");
+    const awaiter_idx = std.mem.indexOf(u8, out, "return __awaiter");
+    try T.expect(shim_idx != null and awaiter_idx != null);
+    try T.expect(shim_idx.? < awaiter_idx.?);
 }
 
 test "emit: function with computed-key destructuring param renders pattern at es2015+" {
