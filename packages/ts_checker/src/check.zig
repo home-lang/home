@@ -275,6 +275,7 @@ pub const TsCodes = struct {
     pub const block_scoped_used_before_decl: u32 = 2448;
     pub const property_not_initialized: u32 = 2564;
     pub const cannot_assign_const: u32 = 2588;
+    pub const cannot_assign_to_function: u32 = 2630;
     pub const cannot_assign_to_namespace: u32 = 2631;
     pub const property_used_before_initialization: u32 = 2729;
     pub const await_only_in_async: u32 = 1308;
@@ -4533,6 +4534,9 @@ pub const Checker = struct {
 
     fn topLevelReturnBeforeRecoveredCloseBrace(self: *Checker, node: NodeId) bool {
         if (self.function_body_depth != 0) return false;
+        const parent = self.hir.parentOf(node);
+        if (parent == hir_mod.none_node_id or self.hir.kindOf(parent) != .block_stmt) return false;
+        if (self.hir.parentOf(parent) != hir_mod.none_node_id) return false;
         const src = self.source orelse return false;
         const span = self.hir.spanOf(node);
         if (span.end > src.len) return false;
@@ -21348,7 +21352,11 @@ pub const Checker = struct {
             .assignment => blk: {
                 const a = hir_mod.assignmentOf(self.hir, node);
                 const target_kind = self.hir.kindOf(a.target);
-                var target_t = if (target_kind == .identifier)
+                const target_is_eval = target_kind == .identifier and
+                    std.mem.eql(u8, self.string_interner.get(hir_mod.identifierOf(self.hir, a.target).name), "eval");
+                var target_t = if (target_is_eval)
+                    types.Primitive.any
+                else if (target_kind == .identifier)
                     self.typeOfIdentifierDeclared(a.target)
                 else if (target_kind == .array_literal or target_kind == .object_literal)
                     types.Primitive.none
@@ -21368,6 +21376,9 @@ pub const Checker = struct {
                     const id = hir_mod.identifierOf(self.hir, a.target);
                     _ = self.cond_aliases.remove(id.name);
                     try self.removeCondAliasesReferencing(id.name);
+                    if (target_is_eval) {
+                        try self.report(a.target, TsCodes.cannot_assign_to_function, "Cannot assign to 'eval' because it is a function.");
+                    }
                     if (std.mem.eql(u8, self.string_interner.get(id.name), "undefined")) {
                         try self.report(a.target, TsCodes.cannot_assign_undefined, "Cannot assign to 'undefined' because it is not a variable.");
                     }
@@ -27050,55 +27061,55 @@ pub const Checker = struct {
         const s = self.string_interner.get(name);
         const builtins = [_][]const u8{
             // Core globals / values.
-            "console",           "undefined",          "NaN",
-            "Infinity",          "globalThis",         "this",
-            "new.target",        "window",             "document",
-            "Element",           "Node",               "HTMLElement",
-            "HTMLBodyElement",   "HTMLDivElement",     "HTMLAnchorElement",
-            "HTMLImageElement",  "HTMLInputElement",   "HTMLSpanElement",
-            "HTMLButtonElement", "HTMLFormElement",    "Event",
-            "EventTarget",       "MouseEvent",         "KeyboardEvent",
-            "FocusEvent",        "Document",           "Window",
-            "Location",          "Navigator",          "History",
-            "Storage",           "URL",                "URLSearchParams",
-            "Blob",              "File",               "FileReader",
-            "FormData",          "Headers",            "Request",
+            "console",              "undefined",        "NaN",
+            "Infinity",             "globalThis",       "this",
+            "new.target",           "window",           "document",
+            "Element",              "Node",             "HTMLElement",
+            "HTMLBodyElement",      "HTMLDivElement",   "HTMLAnchorElement",
+            "HTMLImageElement",     "HTMLInputElement", "HTMLSpanElement",
+            "HTMLButtonElement",    "HTMLFormElement",  "Event",
+            "EventTarget",          "MouseEvent",       "KeyboardEvent",
+            "FocusEvent",           "Document",         "Window",
+            "Location",             "Navigator",        "History",
+            "Storage",              "URL",              "URLSearchParams",
+            "Blob",                 "File",             "FileReader",
+            "FormData",             "Headers",          "Request",
             "Response",
             // Constructors / namespaces.
-                     "Math",               "JSON",
-            "Object",            "Array",              "String",
-            "Number",            "Boolean",            "Symbol",
-            "BigInt",            "Error",              "TypeError",
-            "RangeError",        "SyntaxError",        "Promise",
-            "Map",               "Set",                "WeakMap",
-            "WeakSet",           "Date",               "RegExp",
-            "Function",          "Proxy",              "Reflect",
-            "TemplateStringsArray",
-            "ArrayBuffer",       "Uint8Array",         "Uint8ClampedArray",
-            "Int8Array",         "Uint16Array",        "Int16Array",
-            "Uint32Array",       "Int32Array",         "Float16Array",
-            "Float32Array",      "Float64Array",       "BigUint64Array",
-            "BigInt64Array",     "SharedArrayBuffer",  "Atomics",
-            "Intl",
+                        "Math",             "JSON",
+            "Object",               "Array",            "String",
+            "Number",               "Boolean",          "Symbol",
+            "BigInt",               "Error",            "TypeError",
+            "RangeError",           "SyntaxError",      "Promise",
+            "Map",                  "Set",              "WeakMap",
+            "WeakSet",              "Date",             "RegExp",
+            "Function",             "Proxy",            "Reflect",
+            "TemplateStringsArray", "ArrayBuffer",      "Uint8Array",
+            "Uint8ClampedArray",    "Int8Array",        "Uint16Array",
+            "Int16Array",           "Uint32Array",      "Int32Array",
+            "Float16Array",         "Float32Array",     "Float64Array",
+            "BigUint64Array",       "BigInt64Array",    "SharedArrayBuffer",
+            "Atomics",              "Intl",
             // Global functions.
-                         "parseInt",           "parseFloat",
-            "isNaN",             "isFinite",           "encodeURI",
-            "decodeURI",         "encodeURIComponent", "decodeURIComponent",
+                        "parseInt",
+            "parseFloat",           "isNaN",            "isFinite",
+            "encodeURI",            "decodeURI",        "encodeURIComponent",
+            "decodeURIComponent",
             // Timers / scheduling.
-            "setTimeout",        "clearTimeout",       "setInterval",
-            "clearInterval",     "setImmediate",       "clearImmediate",
-            "queueMicrotask",
+              "setTimeout",       "clearTimeout",
+            "setInterval",          "clearInterval",    "setImmediate",
+            "clearImmediate",       "queueMicrotask",
             // Node.js / CommonJS.
-               "process",            "Buffer",
-            "require",           "module",             "exports",
-            "__dirname",         "__filename",
+              "process",
+            "Buffer",               "require",          "module",
+            "exports",              "__dirname",        "__filename",
             // Dynamic `import("…")` parses the keyword as an
             // identifier callee — exempt it from TS2304.
-                    "import",
+            "import",
             // Common ambient names emitted by the parser for
             // module / class shapes that don't have full
             // resolution wired up yet.
-            "super",
+                          "super",
         };
         for (builtins) |b| {
             if (std.mem.eql(u8, s, b)) return true;
@@ -30182,7 +30193,12 @@ pub const Checker = struct {
 
     fn checkUnary(self: *Checker, node: NodeId) CheckError!TypeId {
         const u = hir_mod.unaryOf(self.hir, node);
-        const operand_t = try self.checkExpression(u.operand);
+        const delete_operand_is_this = u.op == .delete and self.hir.kindOf(u.operand) == .identifier and
+            std.mem.eql(u8, self.string_interner.get(hir_mod.identifierOf(self.hir, u.operand).name), "this");
+        const operand_t = if (delete_operand_is_this)
+            types.Primitive.any
+        else
+            try self.checkExpression(u.operand);
         return switch (u.op) {
             .neg, .plus, .bit_not => blk: {
                 if (self.typeContainsSymbol(operand_t)) {
@@ -36871,6 +36887,18 @@ test "checker: assigning to const emits TS2588" {
     try T.expect(found);
 }
 
+test "checker: assigning to eval emits TS2630 instead of TS2304" {
+    const b = try newBoundSetup("\"use strict\"; eval += 1; ++eval; eval = 1;");
+    defer destroyBoundSetup(b);
+    try b.base.checker.checkSourceFile(b.base.root);
+    var function_assign_count: usize = 0;
+    for (b.base.checker.diagnostics.items) |d| {
+        if (d.code == TsCodes.cannot_assign_to_function) function_assign_count += 1;
+        try T.expect(d.code != TsCodes.cannot_find_name);
+    }
+    try T.expectEqual(@as(usize, 3), function_assign_count);
+}
+
 test "checker: assigning to let does not emit TS2588" {
     const b = try newBoundSetup("let x = 1; x = 2;");
     defer destroyBoundSetup(b);
@@ -41141,6 +41169,17 @@ test "checker: top-level return reports TS1108" {
     try T.expectEqual(TsCodes.return_outside_function, s.checker.diagnostics.items[0].code);
 }
 
+test "checker: return in top-level if block reports TS1108" {
+    const s = try newSetup("if (a) { return true; }");
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+    var found = false;
+    for (s.checker.diagnostics.items) |d| {
+        if (d.code == TsCodes.return_outside_function) found = true;
+    }
+    try T.expect(found);
+}
+
 test "checker: recovered top-level return before unmatched close suppresses follow-ons" {
     const s = try newSetup(
         \\return foo;
@@ -41842,6 +41881,18 @@ test "checker: assigning to undefined reports TS2539" {
         if (d.code == TsCodes.cannot_assign_undefined) found = true;
     }
     try T.expect(found);
+}
+
+test "checker: delete this reports property-reference error without implicit this" {
+    const s = try newSetup("\"use strict\"; delete this;");
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+    var found_delete = false;
+    for (s.checker.diagnostics.items) |d| {
+        if (d.code == TsCodes.delete_operand_property_reference) found_delete = true;
+        try T.expect(d.code != TsCodes.this_implicitly_any);
+    }
+    try T.expect(found_delete);
 }
 
 test "checker: classic for header assignments are checked" {

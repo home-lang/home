@@ -743,26 +743,13 @@ pub const Parser = struct {
             },
             .kw_public, .kw_private, .kw_protected, .kw_static => blk: {
                 const next = self.peekAt(1).kind;
-                if (next == .kw_interface or next == .kw_namespace or next == .kw_module) {
-                    const modifier = self.advance();
-                    try self.reportCodeAt(modifier.span.start, modifier.line, 1044, try std.fmt.allocPrint(
-                        self.diag_arena.allocator(),
-                        "'{s}' modifier cannot appear on a module or namespace element.",
-                        .{self.source[modifier.span.start..modifier.span.end]},
-                    ));
-                    break :blk try self.parseStatement();
+                if (next == .open_paren) {
+                    break :blk try self.parseExpressionStatement();
                 }
-                // Inside a namespace body, accept the modifier and
-                // continue to parse the declaration so checker-stage
-                // diagnostics (TS2564, etc.) still fire on the body.
-                // Mirrors upstream tsc which emits TS1044 here but
-                // recovers and binds the declaration. Without this
-                // recovery we emit TS1128 ("Declaration or statement
-                // expected.") and skip the rest of the declaration.
-                if (self.namespace_depth > 0 and
-                    (next == .kw_var or next == .kw_let or next == .kw_const or
-                        next == .kw_function or next == .kw_class or next == .kw_enum or
-                        next == .kw_async or next == .kw_abstract or next == .kw_export))
+                if (next == .kw_interface or next == .kw_namespace or next == .kw_module or
+                    next == .kw_var or next == .kw_let or next == .kw_const or
+                    next == .kw_function or next == .kw_class or next == .kw_enum or
+                    next == .kw_async or next == .kw_abstract or next == .kw_export)
                 {
                     const modifier = self.advance();
                     try self.reportCodeAt(modifier.span.start, modifier.line, 1044, try std.fmt.allocPrint(
@@ -1013,7 +1000,7 @@ pub const Parser = struct {
     }
 
     fn reportInvalidFutureReservedName(self: *Parser, tok: Token) ParseError!void {
-        if (self.strict_mode and self.class_body_depth == 0) {
+        if ((self.strict_mode or self.target_es2015_or_later) and self.class_body_depth == 0) {
             switch (tok.kind) {
                 .kw_public,
                 .kw_private,
@@ -1076,7 +1063,7 @@ pub const Parser = struct {
     }
 
     fn reportInvalidStrictIdentifierNode(self: *Parser, node: NodeId) ParseError!void {
-        if (!self.strict_mode or self.hir.kindOf(node) != .identifier) return;
+        if (self.hir.kindOf(node) != .identifier) return;
         const id = hir_mod.identifierOf(self.hir, node);
         const raw = self.interner.get(id.name);
         if (!std.mem.eql(u8, raw, "eval") and !std.mem.eql(u8, raw, "arguments")) return;
@@ -1095,7 +1082,8 @@ pub const Parser = struct {
         const c = raw[1];
         if (c == 'x' or c == 'X' or c == 'o' or c == 'O' or c == 'b' or c == 'B' or c == '.') return;
         if (c < '0' or c > '9') return;
-        try self.reportCodeAt(tok.span.start, tok.line, 1121, "Octal literals are not allowed. Use the syntax '0o...'.");
+        const msg = try std.fmt.allocPrint(self.diag_arena.allocator(), "Octal literals are not allowed. Use the syntax '0o{s}'.", .{raw[1..]});
+        try self.reportCodeAt(tok.span.start, tok.line, 1121, msg);
     }
 
     fn reportNumericLiteralDiagnostics(self: *Parser, tok: Token, raw: []const u8) ParseError!void {
@@ -1116,7 +1104,8 @@ pub const Parser = struct {
                 if (decimal_like) {
                     try self.reportCodeAt(tok.span.start, tok.line, 1489, "Decimals with leading zeros are not allowed.");
                 } else if (!self.strict_mode) {
-                    try self.reportCodeAt(tok.span.start, tok.line, 1121, "Octal literals are not allowed. Use the syntax '0o...'.");
+                    const msg = try std.fmt.allocPrint(self.diag_arena.allocator(), "Octal literals are not allowed. Use the syntax '0o{s}'.", .{raw[1..]});
+                    try self.reportCodeAt(tok.span.start, tok.line, 1121, msg);
                 }
                 return;
             }
@@ -6701,6 +6690,7 @@ pub const Parser = struct {
 
     fn parseCompoundAssign(self: *Parser, left: NodeId, op: hir_mod.BinOp, allow_in: bool) ParseError!NodeId {
         _ = self.advance();
+        try self.reportInvalidStrictIdentifierNode(left);
         try self.reportInvalidAssignmentTarget(left);
         const right = try self.parseAssignmentExpressionWithIn(allow_in);
         const sp: Span = .{ .start = self.hir.spanOf(left).start, .end = self.hir.spanOf(right).end };
@@ -6712,6 +6702,7 @@ pub const Parser = struct {
     /// independent HIR nodes because parent pointers are single-owner.
     fn parseLogicalAssign(self: *Parser, left: NodeId, op: hir_mod.LogicalOp, allow_in: bool) ParseError!NodeId {
         _ = self.advance();
+        try self.reportInvalidStrictIdentifierNode(left);
         try self.reportInvalidAssignmentTarget(left);
         const right = try self.parseAssignmentExpressionWithIn(allow_in);
         const left_dup = try self.cloneLogicalAssignmentTarget(left);
@@ -6981,8 +6972,9 @@ pub const Parser = struct {
             .kw_delete => {
                 _ = self.advance();
                 const operand = try self.parseUnaryExpression();
-                if (self.strict_mode and self.hir.kindOf(operand) != .member_access and self.hir.kindOf(operand) != .element_access) {
-                    try self.reportCodeAt(t.span.start, t.line, 2703, "The operand of a 'delete' operator must be a property reference.");
+                if (self.strict_mode and self.hir.kindOf(operand) == .identifier and !self.isThisIdentifier(operand)) {
+                    const operand_span = self.hir.spanOf(operand);
+                    try self.reportCodeAt(operand_span.start, self.lineAt(operand_span.start), 1102, "'delete' cannot be called on an identifier in strict mode.");
                 }
                 const sp: Span = .{ .start = t.span.start, .end = self.hir.spanOf(operand).end };
                 return try self.builder.addUnaryOp(sp, .delete, operand);
@@ -7526,7 +7518,7 @@ pub const Parser = struct {
                 const id = try self.internToken(t);
                 return try self.builder.addIdentifier(tokenSpan(t), id);
             },
-            .kw_any, .kw_unknown, .kw_never, .kw_void, .kw_string, .kw_number, .kw_boolean, .kw_bigint, .kw_symbol, .kw_object, .kw_get, .kw_set, .kw_global, .kw_from, .kw_require, .kw_module, .kw_namespace, .kw_interface, .kw_declare, .kw_of, .kw_type, .kw_using, .kw_await => {
+            .kw_any, .kw_unknown, .kw_never, .kw_void, .kw_string, .kw_number, .kw_boolean, .kw_bigint, .kw_symbol, .kw_object, .kw_get, .kw_set, .kw_global, .kw_from, .kw_require, .kw_module, .kw_namespace, .kw_interface, .kw_declare, .kw_of, .kw_type, .kw_using, .kw_await, .kw_static => {
                 _ = self.advance();
                 try self.reportInvalidFutureReservedName(t);
                 const id = try self.internToken(t);
@@ -7853,6 +7845,7 @@ pub const Parser = struct {
         // recomputes it from `pos`. Reuse `op_tok.line` as a safe
         // approximation when the operand lacks a token line.
         const diag_line = op_tok.line;
+        try self.reportInvalidStrictIdentifierNode(operand);
         switch (self.hir.kindOf(operand)) {
             .identifier => {
                 const id = hir_mod.identifierOf(self.hir, operand);
@@ -8271,9 +8264,6 @@ pub const Parser = struct {
                     try self.reportCodeAt(name_span.start, self.lineAt(name_span.start), 1094, "An accessor cannot have type parameters.");
                 }
                 defer if (type_params.len > 0) self.gpa.free(type_params);
-                const saved_suppress_strict_param_names = self.suppress_strict_param_names;
-                self.suppress_strict_param_names = accessor_kw.kind == .kw_set;
-                defer self.suppress_strict_param_names = saved_suppress_strict_param_names;
                 const params = try self.parseParameterList();
                 defer self.gpa.free(params);
                 var return_type: NodeId = hir_mod.none_node_id;
@@ -8497,6 +8487,7 @@ fn isExpressionIdentifierToken(kind: TokenKind) bool {
         .kw_constructor,
         .kw_of,
         .kw_type,
+        .kw_static,
         => true,
         else => false,
     };
@@ -11954,11 +11945,41 @@ test "parser: strict mode restricted names and delete operands report diagnostic
     defer destroyTestSetup(s);
 
     _ = try s.parser.parseSourceFile();
+    try T.expectEqual(@as(usize, 3), s.parser.diagnostics.items.len);
+    try T.expectEqual(@as(u32, 1100), s.parser.diagnostics.items[0].code);
+    try T.expectEqual(@as(u32, 1100), s.parser.diagnostics.items[1].code);
+    try T.expectEqual(@as(u32, 1100), s.parser.diagnostics.items[2].code);
+}
+
+test "parser: strict mode delete identifier reports TS1102 at operand" {
+    var s = try newTestSetup("\"use strict\"; delete a;");
+    defer destroyTestSetup(s);
+
+    _ = try s.parser.parseSourceFile();
+    try T.expectEqual(@as(usize, 1), s.parser.diagnostics.items.len);
+    try T.expectEqual(@as(u32, 1102), s.parser.diagnostics.items[0].code);
+}
+
+test "parser: strict mode eval assignment forms report restricted name" {
+    var s = try newTestSetup("\"use strict\"; eval += 1; ++eval; eval++; var v = { set foo(eval) {} };");
+    defer destroyTestSetup(s);
+
+    _ = try s.parser.parseSourceFile();
     try T.expectEqual(@as(usize, 4), s.parser.diagnostics.items.len);
     try T.expectEqual(@as(u32, 1100), s.parser.diagnostics.items[0].code);
     try T.expectEqual(@as(u32, 1100), s.parser.diagnostics.items[1].code);
     try T.expectEqual(@as(u32, 1100), s.parser.diagnostics.items[2].code);
-    try T.expectEqual(@as(u32, 2703), s.parser.diagnostics.items[3].code);
+    try T.expectEqual(@as(u32, 1100), s.parser.diagnostics.items[3].code);
+}
+
+test "parser: eval assignment target reports restricted name without directive" {
+    var s = try newTestSetup("eval = 1; eval++;");
+    defer destroyTestSetup(s);
+
+    _ = try s.parser.parseSourceFile();
+    try T.expectEqual(@as(usize, 2), s.parser.diagnostics.items.len);
+    try T.expectEqual(@as(u32, 1100), s.parser.diagnostics.items[0].code);
+    try T.expectEqual(@as(u32, 1100), s.parser.diagnostics.items[1].code);
 }
 
 test "parser: strict mode future reserved variable name reports TS1212" {
@@ -11969,6 +11990,25 @@ test "parser: strict mode future reserved variable name reports TS1212" {
     try T.expectEqual(@as(usize, 1), s.parser.diagnostics.items.len);
     try T.expectEqual(@as(u32, 1212), s.parser.diagnostics.items[0].code);
     try T.expectEqualStrings("Identifier expected. 'public' is a reserved word in strict mode.", s.parser.diagnostics.items[0].message);
+}
+
+test "parser: es2015 static call reports reserved identifier diagnostic" {
+    var s = try newTestSetup("static();");
+    defer destroyTestSetup(s);
+
+    s.parser.setTargetEs2015OrLater(true);
+    _ = try s.parser.parseSourceFile();
+    try T.expectEqual(@as(usize, 1), s.parser.diagnostics.items.len);
+    try T.expectEqual(@as(u32, 1212), s.parser.diagnostics.items[0].code);
+}
+
+test "parser: top-level protected class reports modifier diagnostic and recovers" {
+    var s = try newTestSetup("protected class C {}");
+    defer destroyTestSetup(s);
+
+    _ = try s.parser.parseSourceFile();
+    try T.expectEqual(@as(usize, 1), s.parser.diagnostics.items.len);
+    try T.expectEqual(@as(u32, 1044), s.parser.diagnostics.items[0].code);
 }
 
 test "parser: top-level dynamic import makes file strict" {
@@ -11987,6 +12027,7 @@ test "parser: strict mode legacy octal literal reports TS1121" {
     _ = try s.parser.parseSourceFile();
     try T.expectEqual(@as(usize, 1), s.parser.diagnostics.items.len);
     try T.expectEqual(@as(u32, 1121), s.parser.diagnostics.items[0].code);
+    try T.expectEqualStrings("Octal literals are not allowed. Use the syntax '0o3'.", s.parser.diagnostics.items[0].message);
 }
 
 test "parser: with statement reports strict and unsupported diagnostics" {
