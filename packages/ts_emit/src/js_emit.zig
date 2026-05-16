@@ -1786,11 +1786,23 @@ pub const Printer = struct {
                 },
                 .do_while_stmt => {
                     if (!self.subtreeContainsYield(s)) continue;
-                    // §4.A.4.2 part 2e / §4.A.4.3 — `do body while (cond);`
-                    // with cond yield-free and body being either bare
-                    // single yield or block with exactly one yield.
+                    // §4.A.4.2 part 2e / §4.A.4.3 / §4.A.4.13 —
+                    // `do body while (cond);` with body being either
+                    // bare single yield, split-body, or multi-yield
+                    // block; cond is either yield-free OR a single
+                    // `yield E` expression (the "cond-yield" variant
+                    // adds an extra cond-resume case to the state
+                    // machine). Multi-yield body + cond-yield bails
+                    // because the state-counting intertwines awkwardly.
                     const dwp = hir_mod.doWhileOf(self.hir, s);
-                    if (self.subtreeContainsYield(dwp.cond)) return false;
+                    var cond_yields = false;
+                    if (self.subtreeContainsYield(dwp.cond)) {
+                        if (self.hir.kindOf(dwp.cond) != .yield_expr) return false;
+                        const yc = hir_mod.yieldExprOf(self.hir, dwp.cond);
+                        if (yc.type_node != hir_mod.none_node_id) return false; // no yield* in cond
+                        if (yc.expr != hir_mod.none_node_id and self.subtreeContainsYield(yc.expr)) return false;
+                        cond_yields = true;
+                    }
                     if (self.singleYieldInThen(dwp.body)) |ye| {
                         const yp = hir_mod.yieldExprOf(self.hir, ye);
                         if (yp.expr != hir_mod.none_node_id and self.subtreeContainsYield(yp.expr)) return false;
@@ -1798,7 +1810,10 @@ pub const Printer = struct {
                         const yp = hir_mod.yieldExprOf(self.hir, split.yield_node);
                         if (yp.expr != hir_mod.none_node_id and self.subtreeContainsYield(yp.expr)) return false;
                     } else if (self.multiYieldLoopBodyOk(dwp.body, true)) {
-                        // multi-yield body — emit handles it.
+                        // multi-yield body — emit handles it, but
+                        // combined with cond-yield the layout isn't
+                        // implemented yet.
+                        if (cond_yields) return false;
                     } else {
                         return false;
                     }
@@ -3421,13 +3436,23 @@ pub const Printer = struct {
                 };
                 const yp = hir_mod.yieldExprOf(self.hir, ye_node);
                 const op: []const u8 = if (yp.type_node != hir_mod.none_node_id) "5" else "4";
+                // §4.A.4.13 — yield-in-cond adds an extra cond_yield
+                // case between the body-resume and the loopback test.
+                // Layout:
+                //   no cond-yield (existing):  body / resume / continue (cond) / exit (4 cases)
+                //   cond-yield (new):          body / resume / cond_yield / cond_resume / exit (5 cases)
+                // In the cond-yield path, the resume case falls through
+                // to `cond_yield` which emits `return [4, E_cond];`;
+                // `cond_resume` does `if (_a.sent()) return [3, body];`.
+                const cond_is_yield = self.hir.kindOf(dwp.cond) == .yield_expr;
                 const body_label = state + 1;
                 const resume_label = state + 2;
-                const continue_label = state + 3;
-                const exit_label = state + 4;
+                const cond_yield_label: u32 = if (cond_is_yield) state + 3 else 0;
+                const continue_label: u32 = if (cond_is_yield) state + 4 else state + 3;
+                const exit_label: u32 = if (cond_is_yield) state + 5 else state + 4;
                 // §4.A.4.4 — set break/continue labels for the body's pre/post.
                 self.gen_break_label = exit_label;
-                self.gen_continue_label = continue_label;
+                self.gen_continue_label = if (cond_is_yield) cond_yield_label else continue_label;
                 // Open body case: pre-stmts + yield.
                 {
                     const num_body = std.fmt.bufPrint(&buf, "{d}", .{body_label}) catch unreachable;
@@ -3447,7 +3472,9 @@ pub const Printer = struct {
                     }
                     try self.write("];");
                 }
-                // Open resume case: sent + post-stmts (falls through to continue).
+                // Open resume case: sent + post-stmts (falls through
+                // to cond_yield in the cond-yield variant, otherwise
+                // to continue).
                 {
                     const num_resume = std.fmt.bufPrint(&buf, "{d}", .{resume_label}) catch unreachable;
                     try self.writeNewlineIndent();
@@ -3459,7 +3486,26 @@ pub const Printer = struct {
                         try self.printNonIndentStatement(ps);
                     }
                 }
-                // Open continue case: cond-check loopback to body.
+                // Open cond_yield case (cond-yield only): emit the
+                // cond's yield. The body-resume falls through into this.
+                if (cond_is_yield) {
+                    const num_cy = std.fmt.bufPrint(&buf, "{d}", .{cond_yield_label}) catch unreachable;
+                    try self.writeNewlineIndent();
+                    try self.write("case ");
+                    try self.write(num_cy);
+                    try self.write(":");
+                    const yc = hir_mod.yieldExprOf(self.hir, dwp.cond);
+                    try self.write(" return [4");
+                    if (yc.expr != hir_mod.none_node_id) {
+                        try self.write(", ");
+                        try self.printExpression(yc.expr);
+                    }
+                    try self.write("];");
+                }
+                // Open continue case (in cond-yield mode this is the
+                // cond_resume case): yield-free cond just emits the
+                // truthy test against `cond`; cond-yield uses
+                // `_a.sent()` from the cond_yield resumption.
                 {
                     const num_continue = std.fmt.bufPrint(&buf, "{d}", .{continue_label}) catch unreachable;
                     try self.writeNewlineIndent();
@@ -3468,11 +3514,17 @@ pub const Printer = struct {
                     try self.write(":");
                     var num_body_buf: [16]u8 = undefined;
                     const num_body_back = std.fmt.bufPrint(&num_body_buf, "{d}", .{body_label}) catch unreachable;
-                    try self.write(" if (");
-                    try self.printExpression(dwp.cond);
-                    try self.write(") return [3, ");
-                    try self.write(num_body_back);
-                    try self.write("];");
+                    if (cond_is_yield) {
+                        try self.write(" if (_a.sent()) return [3, ");
+                        try self.write(num_body_back);
+                        try self.write("];");
+                    } else {
+                        try self.write(" if (");
+                        try self.printExpression(dwp.cond);
+                        try self.write(") return [3, ");
+                        try self.write(num_body_back);
+                        try self.write("];");
+                    }
                 }
                 // Open exit case.
                 {
@@ -3482,7 +3534,7 @@ pub const Printer = struct {
                     try self.write(num_exit);
                     try self.write(":");
                 }
-                state += 4;
+                state += if (cond_is_yield) @as(u32, 5) else @as(u32, 4);
             } else if (k == .if_stmt and self.subtreeContainsYield(stmt)) {
                 // §4.A.4.2 + §4.A.4.5 + §4.A.4.11 — unified if-yield
                 // emit. Handles all combinations of N then-yields ×
@@ -8286,9 +8338,65 @@ test "emit: generator with for-await-of still bails" {
     try T.expect(std.mem.indexOf(u8, out, "__generator") == null);
 }
 
-test "emit: generator with do-while-yield + yield-in-cond still bails" {
+test "emit: generator with do-while + yield-in-cond lowers to 5-case loop" {
+    // §4.A.4.13 — `do yield 1; while (yield 2);` now lowers: the body
+    // case yields 1, body-resume falls through to a new cond_yield
+    // case that yields 2, cond_resume tests _a.sent() and loops back.
     const out = try emitWithOpts(
         "function* g() { do yield 1; while (yield 2); }",
+        .{ .es_target = .es5 },
+    );
+    defer T.allocator.free(out);
+    try T.expect(std.mem.indexOf(u8, out, "__generator") != null);
+    try T.expect(std.mem.indexOf(u8, out, "TODO: ES5 generator") == null);
+    // Body case 1: yield 1.
+    try T.expect(std.mem.indexOf(u8, out, "case 1: return [4, 1];") != null);
+    // Body-resume case 2: sent (falls through to cond_yield).
+    try T.expect(std.mem.indexOf(u8, out, "case 2: _a.sent();") != null);
+    // Cond-yield case 3: yield 2.
+    try T.expect(std.mem.indexOf(u8, out, "case 3: return [4, 2];") != null);
+    // Cond-resume case 4: test sent + loopback to body.
+    try T.expect(std.mem.indexOf(u8, out, "case 4: if (_a.sent()) return [3, 1];") != null);
+    // Exit case 5.
+    try T.expect(std.mem.indexOf(u8, out, "case 5:") != null);
+}
+
+test "emit: generator with do-while + split-body + yield-in-cond lowers" {
+    // Split body (pre + yield + post) combined with yield-cond.
+    const out = try emitWithOpts(
+        "function* g() { do { pre(); yield 1; post(); } while (yield 2); }",
+        .{ .es_target = .es5 },
+    );
+    defer T.allocator.free(out);
+    try T.expect(std.mem.indexOf(u8, out, "__generator") != null);
+    // Body case 1: pre() + yield 1.
+    try T.expect(std.mem.indexOf(u8, out, "case 1: pre(); return [4, 1];") != null);
+    // Body-resume case 2: sent + post() (falls through to cond_yield).
+    try T.expect(std.mem.indexOf(u8, out, "case 2: _a.sent(); post();") != null);
+    try T.expect(std.mem.indexOf(u8, out, "case 3: return [4, 2];") != null);
+    try T.expect(std.mem.indexOf(u8, out, "case 4: if (_a.sent()) return [3, 1];") != null);
+    try T.expect(std.mem.indexOf(u8, out, "case 5:") != null);
+}
+
+test "emit: generator with do-while + multi-yield body + yield-in-cond still bails" {
+    // The cond-yield + multi-yield-body combination intentionally
+    // bails because the state-counting intertwines awkwardly with
+    // the extra cond_resume case.
+    const out = try emitWithOpts(
+        "function* g() { do { yield 1; yield 2; } while (yield 3); }",
+        .{ .es_target = .es5 },
+    );
+    defer T.allocator.free(out);
+    try T.expect(std.mem.indexOf(u8, out, "TODO: ES5 generator") != null);
+    try T.expect(std.mem.indexOf(u8, out, "__generator") == null);
+}
+
+test "emit: generator with do-while + yield* in cond still bails" {
+    // yield* (delegating yield) in the cond expression isn't part of
+    // the §4.A.4.13 v0 surface — it would change the cond's resumption
+    // semantics in ways the current state machine doesn't model.
+    const out = try emitWithOpts(
+        "function* g() { do yield 1; while (yield* inner); }",
         .{ .es_target = .es5 },
     );
     defer T.allocator.free(out);
