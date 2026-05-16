@@ -4585,8 +4585,15 @@ pub const Parser = struct {
             try elems.append(self.gpa, e);
             if (!self.match(.comma)) break;
         }
-        const close = try self.expect(.close_bracket, "']' to close tuple type");
-        return try self.builder.addTupleType(.{ .start = open.span.start, .end = close.span.end }, elems.items);
+        const end_pos = if (self.peek().kind == .close_bracket) blk: {
+            const close = self.advance();
+            break :blk close.span.end;
+        } else blk: {
+            const pos = self.peek().span.start;
+            try self.reportCodeAt(pos, self.peek().line, 1005, "']' expected.");
+            break :blk pos;
+        };
+        return try self.builder.addTupleType(.{ .start = open.span.start, .end = end_pos }, elems.items);
     }
 
     /// `{ ...members... }` — object type literal. Phase 6 lowers to
@@ -9869,6 +9876,15 @@ test "parser: type annotation — tuple" {
     const v = hir_mod.varDeclOf(&s.hir, top);
     try T.expectEqual(hir_mod.NodeKind.tuple_type, s.hir.kindOf(v.type_annotation));
     try T.expectEqual(@as(usize, 2), hir_mod.tupleTypeElements(&s.hir, v.type_annotation).len);
+}
+
+test "parser: unterminated tuple type reports TS1005 close bracket" {
+    var s = try newTestSetup("var v: [");
+    defer destroyTestSetup(s);
+    _ = try s.parser.parseSourceFile();
+    try T.expectEqual(@as(usize, 1), s.parser.diagnostics.items.len);
+    try T.expectEqual(@as(u32, 1005), s.parser.diagnostics.items[0].code);
+    try T.expectEqualStrings("']' expected.", s.parser.diagnostics.items[0].message);
 }
 
 test "parser: type annotation — keyof" {
