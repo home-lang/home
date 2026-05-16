@@ -4839,7 +4839,15 @@ pub const Printer = struct {
     fn printParameter(self: *Printer, node: NodeId) !void {
         const p = hir_mod.parameterOf(self.hir, node);
         if (p.flags.is_rest) try self.write("...");
-        if (p.name != hir_mod.none_node_id) try self.printExpression(p.name);
+        if (p.name != hir_mod.none_node_id) {
+            // §4.A — `printBindingName` routes identifier vs
+            // array_pattern / object_pattern through the right emit.
+            // At ES2015+, native destructuring params (`function f({ a, b })`)
+            // render verbatim. ES5 still emits the pattern in-place
+            // here; lowering it to a temp-param + var-decl-in-body
+            // shim is tracked separately.
+            try self.printBindingName(p.name);
+        }
         // §4.A — at ES5, default-parameter syntax (`x = 1`) is lowered
         // to a body-prefix `if (x === void 0) { x = 1; }` shim. Skip
         // the native default emit here so the parameter list stays
@@ -7930,6 +7938,21 @@ test "emit: object destructuring with rest-only lowers to __rest(_o, [])" {
     defer T.allocator.free(out);
     try T.expect(std.mem.indexOf(u8, out, "var _o = obj") != null);
     try T.expect(std.mem.indexOf(u8, out, "all = __rest(_o, [])") != null);
+}
+
+test "emit: function with object destructuring param emits pattern at es2015+" {
+    // `printBindingName` routes patterns to the right emit so
+    // `function f({ a, b }) { return a; }` renders verbatim at
+    // ES2015+ instead of producing an empty parameter list.
+    const out = try emitWithOpts("function f({ a, b }) { return a; }", .{ .es_target = .es2015 });
+    defer T.allocator.free(out);
+    try T.expect(std.mem.indexOf(u8, out, "function f({ a, b })") != null);
+}
+
+test "emit: function with array destructuring param emits pattern at es2015+" {
+    const out = try emitWithOpts("function f([a, b]) { return a; }", .{ .es_target = .es2015 });
+    defer T.allocator.free(out);
+    try T.expect(std.mem.indexOf(u8, out, "function f([a, b])") != null);
 }
 
 test "emit: const lowers to var at es5" {
