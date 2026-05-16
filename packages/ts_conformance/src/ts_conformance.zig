@@ -1202,7 +1202,7 @@ pub fn loadDirectoryWithOptions(
             .is_tsx = basename_is_tsx or virtual_is_tsx,
             .is_declaration_file = isDeclarationFilePath(diag_path),
             .strict_flags = strict_flags,
-            .always_strict = expects_error and (directiveBool(case_src, "alwaysStrict") orelse false),
+            .always_strict = expects_error and (baselineAlwaysStrictValue(baseline_path) orelse directiveBool(case_src, "alwaysStrict") orelse false),
             .syntax_target_es2015 = directiveTargetEs2015OrLater(case_src),
             .report_deprecated_target_es5 = use_exact_errors and !baseline_only_option_deprecation and baselinePathIsTargetEs5(baseline_path),
             .suppress_js_check_diagnostics = shouldSuppressJsCheckDiagnostics(diag_path, case_src),
@@ -1680,6 +1680,20 @@ fn firstDiagnosticPath(headers: []const u8) ?[]const u8 {
 fn baselinePathIsTargetEs5(path: ?[]const u8) bool {
     const p = path orelse return false;
     return std.mem.indexOf(u8, p, "(target=es5).errors.txt") != null;
+}
+
+/// Inspect the chosen `.errors.txt` baseline filename for an
+/// `alwaysstrict=<bool>` variant marker. Multi-variant fixtures (e.g.
+/// `// @alwaysStrict: true, false`) produce one baseline per variant
+/// — the harness picks ONE of them lexicographically — so we must
+/// honour the picked variant's setting rather than always taking the
+/// first directive value (which would always be `true` for the
+/// `true, false` ordering).
+fn baselineAlwaysStrictValue(path: ?[]const u8) ?bool {
+    const p = path orelse return null;
+    if (std.mem.indexOf(u8, p, "alwaysstrict=false") != null) return false;
+    if (std.mem.indexOf(u8, p, "alwaysstrict=true") != null) return true;
+    return null;
 }
 
 fn envUsize(name: [*:0]const u8, default: usize) usize {
