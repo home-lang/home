@@ -39757,6 +39757,28 @@ test "checker: var globalThis emits TS2397 builtin-global conflict" {
     try T.expect(found);
 }
 
+test "checker: let globalThis emits TS2397 builtin-global conflict" {
+    const s = try newSetup("let globalThis = 1;");
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+    var found = false;
+    for (s.checker.diagnostics.items) |d| {
+        if (d.code == TsCodes.declaration_name_conflicts_builtin_global) found = true;
+    }
+    try T.expect(found);
+}
+
+test "checker: const globalThis emits TS2397 builtin-global conflict" {
+    const s = try newSetup("const globalThis = 1;");
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+    var found = false;
+    for (s.checker.diagnostics.items) |d| {
+        if (d.code == TsCodes.declaration_name_conflicts_builtin_global) found = true;
+    }
+    try T.expect(found);
+}
+
 test "checker: var nonGlobalThis does not emit TS2397" {
     const s = try newSetup("var notGlobalThis;");
     defer destroySetup(s);
@@ -39773,6 +39795,28 @@ test "checker: declare var globalThis does not emit TS2397 (ambient exempt)" {
     for (s.checker.diagnostics.items) |d| {
         try T.expect(d.code != TsCodes.declaration_name_conflicts_builtin_global);
     }
+}
+
+test "checker: var globalThis in @filename js section emits TS2397" {
+    // Mirrors the globalThisCollision fixture: a virtual `.js` file
+    // with `@allowJs/@checkJs` containing `var globalThis;`. The
+    // checker is what flags the conflict, so the test runs the
+    // checker directly on the parsed HIR.
+    const src =
+        \\// @target: es2015
+        \\// @allowJs: true
+        \\// @checkJs: true
+        \\// @filename: globalThisCollision.js
+        \\var globalThis;
+    ;
+    const s = try newSetup(src);
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+    var found = false;
+    for (s.checker.diagnostics.items) |d| {
+        if (d.code == TsCodes.declaration_name_conflicts_builtin_global) found = true;
+    }
+    try T.expect(found);
 }
 
 test "checker: function signature cannot see local body type declarations" {
