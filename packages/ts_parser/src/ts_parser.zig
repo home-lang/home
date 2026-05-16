@@ -7072,6 +7072,8 @@ pub const Parser = struct {
                     if (self.parseTypeArgumentList()) |parsed| {
                         if (self.peek().kind == .open_paren) {
                             type_args = parsed;
+                        } else if (self.newExpressionTypeArgsCanEndHere()) {
+                            type_args = parsed;
                         } else {
                             self.gpa.free(parsed);
                             self.cursor = saved_cursor;
@@ -7315,6 +7317,18 @@ pub const Parser = struct {
 
     fn parseJsx(self: *Parser) ParseError!NodeId {
         return try self.parseJsxElementOrFragment();
+    }
+
+    fn newExpressionTypeArgsCanEndHere(self: *const Parser) bool {
+        return switch (self.peek().kind) {
+            .eof,
+            .semicolon,
+            .close_paren,
+            .close_brace,
+            .comma,
+            => true,
+            else => false,
+        };
     }
 
     fn parseJsxElementOrFragment(self: *Parser) ParseError!NodeId {
@@ -9184,6 +9198,16 @@ test "parser: new expression accepts explicit type arguments" {
     const vd = hir_mod.varDeclOf(&s.hir, top);
     try T.expectEqual(hir_mod.NodeKind.new_expr, s.hir.kindOf(vd.init));
     try T.expectEqual(@as(usize, 1), hir_mod.callTypeArgs(&s.hir, vd.init).len);
+}
+
+test "parser: new expression keeps complete type arguments without parens" {
+    var s = try newTestSetup("new Date<A>");
+    defer destroyTestSetup(s);
+    const root = try s.parser.parseSourceFile();
+    const top = hir_mod.blockStmts(&s.hir, root)[0];
+    try T.expectEqual(hir_mod.NodeKind.new_expr, s.hir.kindOf(top));
+    try T.expectEqual(@as(usize, 1), hir_mod.callTypeArgs(&s.hir, top).len);
+    try T.expectEqual(@as(usize, 0), s.parser.diagnostics.items.len);
 }
 
 test "parser: angle-bracket type assertion accepts array type" {

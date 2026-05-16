@@ -21151,6 +21151,25 @@ pub const Checker = struct {
                         break :blk try self.builtinWeakMapInstanceType(types.Primitive.any, types.Primitive.any);
                     }
                     if (std.mem.eql(u8, self.string_interner.get(id.name), "Date")) {
+                        if (type_arg_nodes.len > 0) {
+                            for (type_arg_nodes) |ta| {
+                                const lowered = self.lowererLowerWithTypeParams(ta) catch types.Primitive.unknown;
+                                if (lowered == types.Primitive.unknown and self.hir.kindOf(ta) == .type_ref) {
+                                    const tr = hir_mod.typeRefOf(self.hir, ta);
+                                    try self.reportCannotFindNamePlainOnce(ta, tr.name);
+                                }
+                            }
+                            const msg = try std.fmt.allocPrint(
+                                self.diag_arena.allocator(),
+                                "Expected 0 type arguments, but got {d}.",
+                                .{type_arg_nodes.len},
+                            );
+                            try self.diagnostics.append(self.gpa, .{
+                                .node = type_arg_nodes[0],
+                                .code = TsCodes.expected_n_type_arguments,
+                                .message = msg,
+                            });
+                        }
                         break :blk self.lowerBuiltinObjectType("Date") orelse types.Primitive.any;
                     }
                     if (std.mem.eql(u8, self.string_interner.get(id.name), "Promise")) {
@@ -42695,6 +42714,28 @@ test "checker: untyped new expression with type arguments reports TS2347" {
         if (d.code == TsCodes.untyped_function_type_args) found = true;
     }
     try T.expect(found);
+}
+
+test "checker: Date constructor rejects explicit type arguments without parens" {
+    const s = try newSetup("new Date<A>");
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+    var found_name = false;
+    var found_count = false;
+    for (s.checker.diagnostics.items) |d| {
+        if (d.code == TsCodes.cannot_find_name and
+            std.mem.indexOf(u8, d.message, "Cannot find name 'A'.") != null)
+        {
+            found_name = true;
+        }
+        if (d.code == TsCodes.expected_n_type_arguments and
+            std.mem.indexOf(u8, d.message, "Expected 0 type arguments, but got 1.") != null)
+        {
+            found_count = true;
+        }
+    }
+    try T.expect(found_name);
+    try T.expect(found_count);
 }
 
 test "checker: Array constructor accepts element type arguments" {
