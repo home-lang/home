@@ -528,7 +528,11 @@ pub const FnFlags = packed struct(u16) {
     is_override: bool = false,
     /// TS `abstract` modifier on a class method.
     is_abstract: bool = false,
-    _pad: u4 = 0,
+    /// TS optional-method modifier: `foo?(): T`. Bodyless optional
+    /// methods do NOT require a subsequent implementation; the
+    /// checker uses this to suppress TS2389 mismatches.
+    is_optional: bool = false,
+    _pad: u3 = 0,
 };
 
 pub const ParameterPayload = struct {

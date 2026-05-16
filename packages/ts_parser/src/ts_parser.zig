@@ -581,14 +581,14 @@ pub const Parser = struct {
         // `class` chains) attach to the next decorated statement.
         // We collect them here and store them as leading siblings —
         // the binder / emitter walks back when it sees a decorated
-        // declaration.
+        // declaration. Mis-targeted decorators (e.g. `@dec var x`)
+        // surface as TS1206 from the checker's
+        // `checkTopLevelDecoratorDiagnostics`, so the parser stays
+        // silent here to avoid a duplicate TS1109 with the wrong
+        // location.
         if (self.peek().kind == .at) {
             const start = self.peek();
             const dec_expr = try self.parseDecoratorExpression();
-            const next = self.peek().kind;
-            if (next != .at and next != .kw_class and next != .kw_export and next != .kw_abstract and next != .kw_enum and next != .eof) {
-                try self.report("decorators are not valid here", "");
-            }
             const dec = try self.builder.addDecorator(
                 .{ .start = start.span.start, .end = self.tokens[self.cursor - 1].span.end },
                 dec_expr,
@@ -2855,6 +2855,7 @@ pub const Parser = struct {
                             .is_generator = is_generator,
                             .is_override = mods.is_override,
                             .is_abstract = mods.is_abstract,
+                            .is_optional = is_optional_member,
                         },
                     );
                     try members.append(self.gpa, fn_node);
