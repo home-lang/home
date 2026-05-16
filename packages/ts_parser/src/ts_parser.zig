@@ -1739,19 +1739,33 @@ pub const Parser = struct {
     ) ParseError!void {
         const name_span = self.hir.spanOf(name_node);
         const name_line = self.lineAt(name_span.start);
+        // Per TS, a leading `this:` parameter is a type-only annotation
+        // and should not count toward the accessor parameter limit.
+        // Slice it off before counting so TS1054/TS1049 don't fire for
+        // `get foo(this: ThisType)` / `set foo(this: ThisType, v)`.
+        var counted_params = params;
+        if (counted_params.len > 0) {
+            const first = counted_params[0];
+            if (self.hir.kindOf(first) == .parameter) {
+                const fp = hir_mod.parameterOf(self.hir, first);
+                if (fp.name != hir_mod.none_node_id and self.isThisIdentifier(fp.name)) {
+                    counted_params = counted_params[1..];
+                }
+            }
+        }
         if (accessor_kind == .kw_get) {
-            if (params.len != 0) {
+            if (counted_params.len != 0) {
                 try self.reportCodeAt(name_span.start, name_line, 1054, "A 'get' accessor cannot have parameters.");
             }
             return;
         }
 
         if (accessor_kind != .kw_set) return;
-        if (params.len != 1) {
+        if (counted_params.len != 1) {
             try self.reportCodeAt(name_span.start, name_line, 1049, "A 'set' accessor must have exactly one parameter.");
         } else {
-            const param = hir_mod.parameterOf(self.hir, params[0]);
-            const param_span = self.hir.spanOf(params[0]);
+            const param = hir_mod.parameterOf(self.hir, counted_params[0]);
+            const param_span = self.hir.spanOf(counted_params[0]);
             if (param.flags.is_rest) {
                 try self.reportCodeAt(param_span.start, self.lineAt(param_span.start), 1053, "A 'set' accessor cannot have rest parameter.");
             }
