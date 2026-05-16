@@ -56626,3 +56626,74 @@ test "checker: string proto exposes toLocaleLowerCase / toLocaleUpperCase" {
         try T.expect(d.code != TsCodes.property_does_not_exist);
     }
 }
+
+test "checker: Array.from / Array.of suppress TS2339" {
+    // Mirrors neverInference.ts which uses `Array.from([0])`.
+    // Without `from` / `of` on the Array global, our checker fires
+    // a spurious TS2339 "Property 'from' does not exist on type."
+    const s = try newSetup(
+        \\let a = Array.from([0]);
+        \\let b = Array.of(1, 2, 3);
+    );
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+    for (s.checker.diagnostics.items) |d| {
+        try T.expect(d.code != TsCodes.property_does_not_exist);
+    }
+}
+
+test "checker: readonly class field with literal init narrows to literal" {
+    // Mirrors literalTypesWidenInParameterPosition.ts: `readonly noWiden = 1`
+    // narrows the field type to the literal `1`, so `this.noWiden = 5;`
+    // in the constructor is a TS2322 mismatch.
+    const s = try newSetup(
+        \\class D {
+        \\    readonly noWiden = 1;
+        \\    constructor() {
+        \\        this.noWiden = 5;
+        \\    }
+        \\}
+    );
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+    var saw_2322 = false;
+    for (s.checker.diagnostics.items) |d| {
+        if (d.code == TsCodes.type_not_assignable) saw_2322 = true;
+    }
+    try T.expect(saw_2322);
+}
+
+test "checker: arrow on LHS of `&&` fires TS2872 always-truthy" {
+    // Mirrors contextuallyTypeLogicalAnd03.ts. The arrow function on
+    // the LHS of `&&` is always truthy (heap-allocated function object),
+    // so tsc fires TS2872 "This kind of expression is always truthy."
+    const s = try newSetup(
+        \\let x: (a: string) => string;
+        \\x = (a => a) && (b => b);
+    );
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+    var saw_2872 = false;
+    for (s.checker.diagnostics.items) |d| {
+        if (d.code == TsCodes.expression_always_truthy) saw_2872 = true;
+    }
+    try T.expect(saw_2872);
+}
+
+test "checker: class field annotation referencing undefined type emits TS2304" {
+    // Mirrors typeParameterUsedAsTypeParameterConstraint4.ts: the class
+    // declares <T, U, V> but `z: W` references the undeclared `W`. tsc
+    // fires TS2304 "Cannot find name 'W'." on the annotation.
+    const s = try newSetup(
+        \\class C<T, U extends T, V extends U> {
+        \\    z: W;
+        \\}
+    );
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+    var saw_2304 = false;
+    for (s.checker.diagnostics.items) |d| {
+        if (d.code == TsCodes.cannot_find_name) saw_2304 = true;
+    }
+    try T.expect(saw_2304);
+}
