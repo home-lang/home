@@ -3280,6 +3280,94 @@ test "conformance: retired ambient/globalThis/misc shim names return false" {
     try T.expect(hasHarnessModeledExpectedError("genericCallWithGenericSignatureArguments2", empty));
 }
 
+test "conformance: bulk-retired parser/jsdoc/class/module shim names return false" {
+    // Bulk retirement of ~200 dead-code shim entries from
+    // `hasHarnessModeledExpectedError`. Each fixture name below lives
+    // in a conformance subtree (`parser/`, `jsdoc/`, `salsa/`,
+    // `classes/`, `externalModules/`, `internalModules/`,
+    // `statements/`, `emitter/`, `async/`, `enums/`) that the active
+    // baseline-aware/category/smoke tests do NOT load. The shim was
+    // therefore never consulted and removing it is a no-op for the
+    // current ratchet. If a future test adds one of these directories,
+    // any regression will surface in that test, not silently here.
+    const empty: []const u8 = "";
+    // parser/* cluster (former parser-block shims)
+    try T.expect(!hasHarnessModeledExpectedError("parserSymbolProperty5", empty));
+    try T.expect(!hasHarnessModeledExpectedError("parserClass1", empty));
+    try T.expect(!hasHarnessModeledExpectedError("parserRealSource13", empty));
+    try T.expect(!hasHarnessModeledExpectedError("parser509693", empty));
+    try T.expect(!hasHarnessModeledExpectedError("parserModule1", empty));
+    try T.expect(!hasHarnessModeledExpectedError("parser_breakTarget", empty));
+    try T.expect(!hasHarnessModeledExpectedError("TupleType6", empty));
+    // jsdoc/* cluster
+    try T.expect(!hasHarnessModeledExpectedError("jsdocImplements_interface_multiple", empty));
+    try T.expect(!hasHarnessModeledExpectedError("jsdocTemplateTag", empty));
+    try T.expect(!hasHarnessModeledExpectedError("checkJsdocSatisfiesTag9", empty));
+    try T.expect(!hasHarnessModeledExpectedError("importTag10", empty));
+    try T.expect(!hasHarnessModeledExpectedError("typedefScope1", empty));
+    try T.expect(!hasHarnessModeledExpectedError("extendsTag2", empty));
+    try T.expect(!hasHarnessModeledExpectedError("paramTagNestedWithoutTopLevelObject", empty));
+    try T.expect(!hasHarnessModeledExpectedError("topLevelAwaitErrors.6", empty));
+    // classes/* cluster
+    try T.expect(!hasHarnessModeledExpectedError("classAbstractConstructor", empty));
+    try T.expect(!hasHarnessModeledExpectedError("classAbstractInAModule", empty));
+    try T.expect(!hasHarnessModeledExpectedError("classExtendsItself", empty));
+    try T.expect(!hasHarnessModeledExpectedError("classStaticBlock8", empty));
+    try T.expect(!hasHarnessModeledExpectedError("classStaticBlock16", empty));
+    try T.expect(!hasHarnessModeledExpectedError("classConstructorAccessibility", empty));
+    try T.expect(!hasHarnessModeledExpectedError("readonlyInAmbientClass", empty));
+    try T.expect(!hasHarnessModeledExpectedError("decoratorOnClassConstructor2", empty));
+    try T.expect(!hasHarnessModeledExpectedError("decoratorOnClassConstructor3", empty));
+    try T.expect(!hasHarnessModeledExpectedError("autoAccessor11", empty));
+    try T.expect(!hasHarnessModeledExpectedError("mixinAbstractClasses.2", empty));
+    try T.expect(!hasHarnessModeledExpectedError("accessorsOverrideMethod", empty));
+    try T.expect(!hasHarnessModeledExpectedError("privateIndexer", empty));
+    // salsa/* cluster (typeFromPropertyAssignment etc.)
+    try T.expect(!hasHarnessModeledExpectedError("typeFromPropertyAssignment21", empty));
+    try T.expect(!hasHarnessModeledExpectedError("typeFromPropertyAssignment36", empty));
+    try T.expect(!hasHarnessModeledExpectedError("constructorFunctions", empty));
+    try T.expect(!hasHarnessModeledExpectedError("plainJSRedeclare", empty));
+    try T.expect(!hasHarnessModeledExpectedError("thisPropertyAssignment", empty));
+    try T.expect(!hasHarnessModeledExpectedError("expandoOnAlias", empty));
+    // esDecorators/* cluster
+    try T.expect(!hasHarnessModeledExpectedError("esDecorators-classDeclaration-missingEmitHelpers-1", empty));
+    try T.expect(!hasHarnessModeledExpectedError("esDecorators-classExpression-missingEmitHelpers-1", empty));
+    try T.expect(!hasHarnessModeledExpectedError("esDecorators-privateFieldAccess", empty));
+    // externalModules/internalModules cluster
+    try T.expect(!hasHarnessModeledExpectedError("exportNamespace1", empty));
+    try T.expect(!hasHarnessModeledExpectedError("exportNamespace12", empty));
+    try T.expect(!hasHarnessModeledExpectedError("circular1", empty));
+    try T.expect(!hasHarnessModeledExpectedError("circular4", empty));
+    try T.expect(!hasHarnessModeledExpectedError("importEquals3", empty));
+    try T.expect(!hasHarnessModeledExpectedError("importNonExternalModule", empty));
+    try T.expect(!hasHarnessModeledExpectedError("typeOnlyMerge2", empty));
+    try T.expect(!hasHarnessModeledExpectedError("ModuleWithExportedAndNonExportedEnums", empty));
+    try T.expect(!hasHarnessModeledExpectedError("FunctionAndModuleWithSameNameAndCommonRoot", empty));
+    try T.expect(!hasHarnessModeledExpectedError("preserveValueImports_mixedImports", empty));
+    try T.expect(!hasHarnessModeledExpectedError("verbatimModuleSyntaxCompat4", empty));
+    try T.expect(!hasHarnessModeledExpectedError("namespaceImportTypeQuery3", empty));
+    // statements/* (using declarations)
+    try T.expect(!hasHarnessModeledExpectedError("usingDeclarations.9", empty));
+    try T.expect(!hasHarnessModeledExpectedError("usingDeclarations.14", empty));
+    try T.expect(!hasHarnessModeledExpectedError("awaitUsingDeclarations.9", empty));
+    try T.expect(!hasHarnessModeledExpectedError("awaitUsingDeclarationsWithImportHelpers", empty));
+    // emitter/async/enums cluster
+    try T.expect(!hasHarnessModeledExpectedError("emitArrowFunctionWhenUsingArguments10", empty));
+    try T.expect(!hasHarnessModeledExpectedError("emitArrowFunctionThisCapturing", empty));
+    try T.expect(!hasHarnessModeledExpectedError("arraySpreadImportHelpers", empty));
+    try T.expect(!hasHarnessModeledExpectedError("asyncFunctionDeclaration13_es2017", empty));
+    try T.expect(!hasHarnessModeledExpectedError("asyncArrowFunction10_es6", empty));
+    try T.expect(!hasHarnessModeledExpectedError("enumConstantMembers", empty));
+    try T.expect(!hasHarnessModeledExpectedError("enumConstantMemberWithTemplateLiteralsEmitDeclaration", empty));
+    // privateName/moduleResolution cluster
+    try T.expect(!hasHarnessModeledExpectedError("privateNameBadDeclaration", empty));
+    try T.expect(!hasHarnessModeledExpectedError("moduleResolutionWithoutExtension", empty));
+    // The es5-target unicode template/strings shim is gone too.
+    try T.expect(!hasHarnessModeledExpectedError("unicodeExtendedEscapesInStrings19", "// @target: es5\nlet x = 1;"));
+    // Surviving shim stays load-bearing.
+    try T.expect(hasHarnessModeledExpectedError("genericCallWithGenericSignatureArguments2", empty));
+}
+
 test "conformance: exact-error path honors modeled Node resolver bucket" {
     const r = try runOneEntry(T.allocator, .{
         .name = "nodeModulesPackageExports",
