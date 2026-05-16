@@ -416,7 +416,7 @@ pub const Printer = struct {
         // before any user-level statement so the helpers are in
         // scope for the lowered code below.
         if (self.options.import_helpers) {
-            try self.write("import { __asyncDelegator, __asyncGenerator, __asyncValues, __await, __awaiter, __decorate, __esDecorate, __extends, __generator, __metadata, __param, __importDefault, __importStar, __runInitializers, __values } from \"tslib\";");
+            try self.write("import { __asyncDelegator, __asyncGenerator, __asyncValues, __await, __awaiter, __decorate, __esDecorate, __extends, __generator, __metadata, __param, __importDefault, __importStar, __rest, __runInitializers, __values } from \"tslib\";");
             try self.write(self.options.newline);
         }
         // §4.A.10 — auto-import the runtime helpers when the file
@@ -1127,18 +1127,49 @@ pub const Printer = struct {
             const name_str = self.interner.get(id.name);
             // §4.A.4 destructuring v3 — array rest. `var [a, ...rest]
             // = arr;` lowers to `var _arr = arr, a = _arr[0],
-            // rest = _arr.slice(1);`. Object rest still TODO (needs
-            // the tslib `__rest(o, ["a", "b"])` helper to filter
-            // already-bound keys).
+            // rest = _arr.slice(1);`.
+            // §4.A.4 destructuring v4 — object rest. `var { a, ...rest }
+            // = obj;` lowers to `var _o = obj, a = _o.a,
+            // rest = __rest(_o, ["a"]);` — the tslib helper filters
+            // out the explicitly-bound keys at runtime.
             if (param.flags.is_rest) {
-                if (!is_array) continue;
+                if (is_array) {
+                    try self.write(", ");
+                    try self.write(name_str);
+                    try self.write(" = ");
+                    try self.write(tmp);
+                    var rbuf: [32]u8 = undefined;
+                    const slice_str = std.fmt.bufPrint(&rbuf, ".slice({d})", .{i}) catch unreachable;
+                    try self.write(slice_str);
+                    continue;
+                }
                 try self.write(", ");
                 try self.write(name_str);
-                try self.write(" = ");
+                try self.write(" = __rest(");
                 try self.write(tmp);
-                var rbuf: [32]u8 = undefined;
-                const slice_str = std.fmt.bufPrint(&rbuf, ".slice({d})", .{i}) catch unreachable;
-                try self.write(slice_str);
+                try self.write(", [");
+                // Collect preceding non-rest binding keys (in source
+                // order) into the filter array. Computed keys and
+                // missing-name elements are skipped (same set the
+                // bind loop above skips).
+                var emitted: usize = 0;
+                for (elements, 0..) |pelem, pi| {
+                    if (pi >= i) break;
+                    if (self.hir.kindOf(pelem) != .parameter) continue;
+                    const pparam = hir_mod.parameterOf(self.hir, pelem);
+                    if (pparam.flags.is_computed_binding_key) continue;
+                    if (pparam.flags.is_rest) continue;
+                    if (pparam.name == hir_mod.none_node_id) continue;
+                    if (self.hir.kindOf(pparam.name) != .identifier) continue;
+                    const pid = hir_mod.identifierOf(self.hir, pparam.name);
+                    const pname = self.interner.get(pid.name);
+                    if (emitted > 0) try self.write(", ");
+                    try self.write("\"");
+                    try self.write(pname);
+                    try self.write("\"");
+                    emitted += 1;
+                }
+                try self.write("])");
                 continue;
             }
             try self.write(", ");
@@ -7883,6 +7914,24 @@ test "emit: array destructuring with rest only lowers to slice(0)" {
     try T.expect(std.mem.indexOf(u8, out, "all = _arr.slice(0)") != null);
 }
 
+test "emit: object destructuring with rest lowers via __rest helper" {
+    // §4.A.4 destructuring v4 — `var { a, b, ...rest } = obj;` lowers
+    // to `var _o = obj, a = _o.a, b = _o.b, rest = __rest(_o, ["a", "b"]);`.
+    const out = try emitWithOpts("const { a, b, ...rest } = obj;", .{ .es_target = .es5 });
+    defer T.allocator.free(out);
+    try T.expect(std.mem.indexOf(u8, out, "var _o = obj") != null);
+    try T.expect(std.mem.indexOf(u8, out, "a = _o.a") != null);
+    try T.expect(std.mem.indexOf(u8, out, "b = _o.b") != null);
+    try T.expect(std.mem.indexOf(u8, out, "rest = __rest(_o, [\"a\", \"b\"])") != null);
+}
+
+test "emit: object destructuring with rest-only lowers to __rest(_o, [])" {
+    const out = try emitWithOpts("const { ...all } = obj;", .{ .es_target = .es5 });
+    defer T.allocator.free(out);
+    try T.expect(std.mem.indexOf(u8, out, "var _o = obj") != null);
+    try T.expect(std.mem.indexOf(u8, out, "all = __rest(_o, [])") != null);
+}
+
 test "emit: const lowers to var at es5" {
     const out = try emitWithOpts("const x = 1;", .{ .es_target = .es5 });
     defer T.allocator.free(out);
@@ -7949,7 +7998,7 @@ test "emit: importHelpers prepends tslib import when async lowers at es2015" {
         .{ .es_target = .es2015, .import_helpers = true },
     );
     defer T.allocator.free(out);
-    try T.expect(std.mem.indexOf(u8, out, "import { __asyncDelegator, __asyncGenerator, __asyncValues, __await, __awaiter, __decorate, __esDecorate, __extends, __generator, __metadata, __param, __importDefault, __importStar, __runInitializers, __values } from \"tslib\";") != null);
+    try T.expect(std.mem.indexOf(u8, out, "import { __asyncDelegator, __asyncGenerator, __asyncValues, __await, __awaiter, __decorate, __esDecorate, __extends, __generator, __metadata, __param, __importDefault, __importStar, __rest, __runInitializers, __values } from \"tslib\";") != null);
     // Helper still gets referenced from user code.
     try T.expect(std.mem.indexOf(u8, out, "__awaiter(this, void 0, void 0, function* ()") != null);
 }
