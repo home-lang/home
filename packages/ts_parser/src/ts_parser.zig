@@ -4795,7 +4795,15 @@ pub const Parser = struct {
     fn parseArrayTypePostfix(self: *Parser, initial: NodeId) ParseError!NodeId {
         var node = initial;
         while (true) {
-            if (self.match(.open_bracket)) {
+            // TS spec: an `[` on a new line after a type does NOT extend
+            // the type — there's an implicit no-line-terminator boundary.
+            // Without this guard, interface index signatures on the line
+            // after a method's return type (`...): void` followed by
+            // `[x: number]: I;`) get mis-parsed as `void[x: number]`,
+            // emitting a spurious TS1109 / dropping the index member.
+            // Matches `taggedTemplateStringsWithTypedTags` family.
+            if (self.peek().kind == .open_bracket and !self.peek().flags.preceded_by_newline) {
+                _ = self.advance();
                 if (self.match(.close_bracket)) {
                     // `T[]`
                     const sp: Span = .{

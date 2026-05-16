@@ -6160,6 +6160,25 @@ pub const Checker = struct {
         if (container_t >= self.interner.pool.typeCount()) return;
         const elem_t = try self.iterableElementType(container_t);
         const rest_array_t = self.interner.internArrayType(self.string_interner, elem_t) catch return error.OutOfMemory;
+        // TS2493 — array-binding pattern with more positions than the
+        // source tuple has elements (`var [c2] = []`, `var [c0, c1] = [...temp]`).
+        // Mirrors upstream baselines for `destructuringArrayBindingPatternAndAssignment1*`.
+        const tuple_length_opt = if (self.interner.pool.flagsOf(container_t).is_object_type and
+            self.interner.objectNumberIndex(container_t) == types.Primitive.none)
+            self.fixedTupleLength(container_t)
+        else
+            null;
+        if (tuple_length_opt) |tuple_length| {
+            for (hir_mod.patternElements(self.hir, pattern_node), 0..) |elem, i| {
+                if (self.hir.kindOf(elem) != .parameter) continue;
+                const ep = hir_mod.parameterOf(self.hir, elem);
+                if (ep.flags.is_rest) continue;
+                if (i >= tuple_length) {
+                    const anchor = if (ep.name != hir_mod.none_node_id) ep.name else elem;
+                    try self.reportTupleIndexOutOfBounds(anchor, container_t, @intCast(i), tuple_length);
+                }
+            }
+        }
         for (hir_mod.patternElements(self.hir, pattern_node)) |e| {
             if (self.hir.kindOf(e) != .parameter) continue;
             const ep = hir_mod.parameterOf(self.hir, e);
@@ -15081,7 +15100,13 @@ pub const Checker = struct {
                 if (m.type == types.Primitive.any or symbol_idx == types.Primitive.any) continue;
                 if (!self.isSymbolNamedMember(m.name)) continue;
                 if (try self.heritageAssignableDeep(m.type, symbol_idx)) continue;
-                const prop_str = self.string_interner.get(m.name);
+                const raw = self.string_interner.get(m.name);
+                // Symbol-named members render with brackets in TS2411
+                // prose (`[Symbol.iterator]`, `[Symbol.toStringTag]`)
+                // — matches upstream baseline. The interner stores
+                // the bare `Symbol.<member>` form; wrap it here.
+                const inner = if (self.computedMemberNameInner(raw)) |c| c else raw;
+                const prop_str = try std.fmt.allocPrint(self.diag_arena.allocator(), "[{s}]", .{inner});
                 const msg = try self.formatPropertyNotAssignableToIndexType(prop_str, m.type, symbol_idx, "symbol");
                 try self.diagnostics.append(self.gpa, .{
                     .node = node,
@@ -19927,9 +19952,26 @@ pub const Checker = struct {
         }
         const fallback_elem_t = try self.iterableElementType(source_t);
         const target_elements = hir_mod.arrayLiteralElements(self.hir, target_node);
+        // TS2493 — array-destructuring assignment from a fixed-width
+        // tuple where the binding pattern has more positions than the
+        // tuple has elements (`[a, b, c] = [1]`). The tuple-out-of-
+        // bounds detector already lives in `reportTupleIndexOutOfBounds`;
+        // it just wasn't wired up to assignment-pattern targets yet.
+        // Matches upstream baselines for `destructuringArrayBindingPatternAndAssignment1*`.
+        const tuple_length_opt = if (source_t < self.interner.pool.typeCount() and
+            self.interner.pool.flagsOf(source_t).is_object_type and
+            self.interner.objectNumberIndex(source_t) == types.Primitive.none)
+            self.fixedTupleLength(source_t)
+        else
+            null;
         for (target_elements, 0..) |el, i| {
             if (el == hir_mod.none_node_id) continue;
             const k = self.hir.kindOf(el);
+            if (tuple_length_opt) |tuple_length| {
+                if (k != .spread and source_offset + i >= tuple_length) {
+                    try self.reportTupleIndexOutOfBounds(el, source_t, source_offset + i, tuple_length);
+                }
+            }
             const elem_t = self.tupleElementType(source_t, source_offset + i);
             const source_elem_t = if (try self.arrayLiteralSourceElementType(source_node, source_offset + i)) |literal_elem_t|
                 literal_elem_t
@@ -20159,7 +20201,11 @@ pub const Checker = struct {
                 if (source_idx != types.Primitive.none and target_idx != types.Primitive.none and
                     !(self.engine.isAssignableTo(source_idx, target_idx) catch true))
                 {
-                    try self.reportTypeNotAssignable(target_node, source_idx, target_idx, "Type is not assignable to target type.");
+                    // Use the full source/target array shapes (not the
+                    // unwrapped element types) so the TS2322 prose reads
+                    // `Type 'Foo[]' is not assignable to type 'string[]'.`
+                    // — matches upstream baseline `iterableArrayPattern6`.
+                    try self.reportTypeNotAssignable(target_node, source_t, target_t, "Type is not assignable to target type.");
                     return;
                 }
                 if (!(self.engine.isAssignableTo(source_t, target_t) catch true)) {
@@ -32780,11 +32826,13 @@ pub const Checker = struct {
                     }
                     const ok = self.restArgumentAssignable(arg_t, target_t) catch true;
                     if (!ok) {
-                        const msg = try std.fmt.allocPrint(
-                            self.diag_arena.allocator(),
-                            "Argument is not assignable to parameter at position {d}.",
-                            .{j},
-                        );
+                        // Use the shared formatter so rest-arg TS2345
+                        // sites also get the richer `Argument of type 'A'
+                        // is not assignable to parameter of type 'P'.`
+                        // prose when both endpoints have simple type
+                        // names. Matches upstream baselines for
+                        // `iterableArrayPattern{13,17,18,29}` etc.
+                        const msg = try self.formatArgumentNotAssignable(arg_t, target_t, j);
                         try self.diagnostics.append(self.gpa, .{
                             .node = args[j],
                             .code = TsCodes.argument_type_mismatch,
