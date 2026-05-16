@@ -768,7 +768,13 @@ pub fn compileSource(
 fn sortDiagnosticsBySourceOrder(diags: []Diagnostic) void {
     const lessThan = struct {
         fn lt(_: void, a: Diagnostic, b: Diagnostic) bool {
-            return a.pos < b.pos;
+            if (a.pos != b.pos) return a.pos < b.pos;
+            // tsc baseline orders diagnostics at the same position by
+            // ascending code (smaller TS code first). For
+            // `exponentiationOperatorSyntaxError2` this puts the
+            // checker's TS2362 ahead of the parser's TS17006 even
+            // though the parser emit ran first.
+            return a.code < b.code;
         }
     }.lt;
     std.mem.sort(Diagnostic, diags, {}, lessThan);
