@@ -813,6 +813,12 @@ pub const Checker = struct {
     /// a check pass. Empty type-args are skipped to avoid registering
     /// non-generic identity aliases.
     alias_display_names: std.AutoHashMapUnmanaged(TypeId, []const u8),
+    /// Builtin global object TypeId → its display name (e.g. `Date`,
+    /// `RegExp`). Populated lazily the first time `lowerBuiltinObjectType`
+    /// successfully resolves a name. Used by `simpleDiagnosticTypeName`
+    /// so TS2345/TS2322 prose renders `Date` instead of falling through
+    /// to the positional placeholder. Strings are static — no arena.
+    builtin_object_names: std.AutoHashMapUnmanaged(TypeId, []const u8),
     /// Function name → list of overload signature TypeIds in
     /// declaration order. Populated when multiple `function f(...)`
     /// declarations share a name (overloads + implementation). The
@@ -1009,6 +1015,7 @@ pub const Checker = struct {
             .signature_param_predicates = .empty,
             .cond_aliases = .empty,
             .alias_display_names = .empty,
+            .builtin_object_names = .empty,
             .overloads = .empty,
             .overload_has_implementation = .empty,
             .inferred_variance = .empty,
@@ -1145,6 +1152,7 @@ pub const Checker = struct {
         self.signature_param_predicates.deinit(self.gpa);
         self.cond_aliases.deinit(self.gpa);
         self.alias_display_names.deinit(self.gpa);
+        self.builtin_object_names.deinit(self.gpa);
         var ov_it = self.overloads.valueIterator();
         while (ov_it.next()) |list| list.deinit(self.gpa);
         self.overloads.deinit(self.gpa);
@@ -18087,6 +18095,22 @@ pub const Checker = struct {
     }
 
     fn lowerBuiltinObjectType(self: *Checker, name: []const u8) ?TypeId {
+        const t = self.lowerBuiltinObjectTypeRaw(name) orelse return null;
+        if (t >= types.Primitive.first_dynamic and t < self.interner.pool.typeCount()) {
+            // Memoize the display name so `simpleDiagnosticTypeName`
+            // can render `Date` / `RegExp` / etc. in TS2345/TS2322
+            // prose instead of falling through to the positional
+            // placeholder. First-write wins so we don't overwrite the
+            // canonical name for shapes that happen to collide with
+            // a later builtin's empty-object intern.
+            if (!self.builtin_object_names.contains(t)) {
+                self.builtin_object_names.put(self.gpa, t, name) catch {};
+            }
+        }
+        return t;
+    }
+
+    fn lowerBuiltinObjectTypeRaw(self: *Checker, name: []const u8) ?TypeId {
         if (std.mem.eql(u8, name, "Date")) {
             const sig_void_number = self.interner.internSignature(&[_]TypeId{}, types.Primitive.number_t, false) catch
                 return types.Primitive.unknown;
@@ -31022,7 +31046,18 @@ pub const Checker = struct {
     /// the fallback path so we don't emit noise like `[any, any]` or
     /// recurse through arbitrary instances such as `new Map()`.
     fn formatArgumentNotAssignable(self: *Checker, arg_t: TypeId, param_t: TypeId, position: usize) ![]const u8 {
-        if (try self.simpleDiagnosticTypeName(arg_t)) |arg_text| {
+        // Mirror tsc's diagnostic widening: when the source side is a
+        // literal type (e.g. `1`) but the target is its base primitive
+        // (`number`), upstream renders the source as the base type so
+        // the message reads `'number' is not assignable to 'Date'` —
+        // not `'1' is not assignable to 'Date'`. The `param_t` literal
+        // case still keeps its literal form so `string-literal -> "abc"`
+        // mismatches preserve the precise label.
+        const display_arg_t = if (self.shouldWidenForArgDiagnostic(arg_t, param_t))
+            self.widenLiteralType(arg_t)
+        else
+            arg_t;
+        if (try self.simpleDiagnosticTypeName(display_arg_t)) |arg_text| {
             if (try self.simpleDiagnosticTypeName(param_t)) |param_text| {
                 return try std.fmt.allocPrint(
                     self.diag_arena.allocator(),
@@ -31144,6 +31179,9 @@ pub const Checker = struct {
                 }
                 if (self.namedTypeForId(t)) |type_name| {
                     break :blk self.string_interner.get(type_name);
+                }
+                if (self.builtin_object_names.get(t)) |bname| {
+                    break :blk bname;
                 }
                 if (self.interner.typeParameterName(t)) |tp_name| {
                     break :blk self.string_interner.get(tp_name);
@@ -32637,6 +32675,28 @@ pub const Checker = struct {
     /// base (`number`, `string`, `boolean`). Used for diagnostic
     /// rendering when the target type is non-literal — upstream
     /// reports `'number'` not `'123'` in `a = 123` where `a: object`.
+    /// True when the TS2345 source operand should render in its
+    /// widened form. Matches the narrow case where `arg_t` is a
+    /// literal (e.g. `1`, `"abc"`, `true`) and `param_t` is anything
+    /// that isn't itself a literal-bearing target — i.e. a primitive,
+    /// a named class/interface, a type parameter, or other complex
+    /// shape. Literal vs literal mismatches (`"a" -> "b"`) keep their
+    /// precise labels so the message stays informative.
+    fn shouldWidenForArgDiagnostic(self: *Checker, arg_t: TypeId, param_t: TypeId) bool {
+        if (arg_t == types.Primitive.true_lit or arg_t == types.Primitive.false_lit) {
+            return param_t != types.Primitive.true_lit and param_t != types.Primitive.false_lit;
+        }
+        if (arg_t < types.Primitive.first_dynamic or arg_t >= self.interner.pool.typeCount()) return false;
+        const arg_flags = self.interner.pool.flagsOf(arg_t);
+        if (!arg_flags.is_literal) return false;
+        // Literal target — keep both literal labels so `'1' -> '2'`
+        // mismatches read precisely.
+        if (param_t < types.Primitive.first_dynamic) return true;
+        if (param_t >= self.interner.pool.typeCount()) return true;
+        const param_flags = self.interner.pool.flagsOf(param_t);
+        return !param_flags.is_literal;
+    }
+
     fn widenLiteralType(self: *Checker, t: TypeId) TypeId {
         if (t == types.Primitive.true_lit or t == types.Primitive.false_lit) return types.Primitive.boolean_t;
         if (t < types.Primitive.first_dynamic or t >= self.interner.pool.typeCount()) return t;
