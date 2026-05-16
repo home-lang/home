@@ -1121,11 +1121,26 @@ pub const Printer = struct {
             if (self.hir.kindOf(elem) != .parameter) continue;
             const param = hir_mod.parameterOf(self.hir, elem);
             if (param.flags.is_computed_binding_key) continue;
-            if (param.flags.is_rest) continue; // rest deferred
             if (param.name == hir_mod.none_node_id) continue;
             if (self.hir.kindOf(param.name) != .identifier) continue; // nested deferred
             const id = hir_mod.identifierOf(self.hir, param.name);
             const name_str = self.interner.get(id.name);
+            // §4.A.4 destructuring v3 — array rest. `var [a, ...rest]
+            // = arr;` lowers to `var _arr = arr, a = _arr[0],
+            // rest = _arr.slice(1);`. Object rest still TODO (needs
+            // the tslib `__rest(o, ["a", "b"])` helper to filter
+            // already-bound keys).
+            if (param.flags.is_rest) {
+                if (!is_array) continue;
+                try self.write(", ");
+                try self.write(name_str);
+                try self.write(" = ");
+                try self.write(tmp);
+                var rbuf: [32]u8 = undefined;
+                const slice_str = std.fmt.bufPrint(&rbuf, ".slice({d})", .{i}) catch unreachable;
+                try self.write(slice_str);
+                continue;
+            }
             try self.write(", ");
             try self.write(name_str);
             try self.write(" = ");
@@ -7849,6 +7864,23 @@ test "emit: mixed destructuring with and without defaults at es5" {
     try T.expect(std.mem.indexOf(u8, out, "var _o = obj") != null);
     try T.expect(std.mem.indexOf(u8, out, "a = _o.a") != null);
     try T.expect(std.mem.indexOf(u8, out, "b = _o.b === void 0 ? 2 : _o.b") != null);
+}
+
+test "emit: array destructuring with rest binds slice() at es5" {
+    // §4.A.4 destructuring v3 — `var [a, ...rest] = arr;` lowers to
+    // `var _arr = arr, a = _arr[0], rest = _arr.slice(1);`.
+    const out = try emitWithOpts("const [a, ...rest] = arr;", .{ .es_target = .es5 });
+    defer T.allocator.free(out);
+    try T.expect(std.mem.indexOf(u8, out, "var _arr = arr") != null);
+    try T.expect(std.mem.indexOf(u8, out, "a = _arr[0]") != null);
+    try T.expect(std.mem.indexOf(u8, out, "rest = _arr.slice(1)") != null);
+}
+
+test "emit: array destructuring with rest only lowers to slice(0)" {
+    const out = try emitWithOpts("const [...all] = arr;", .{ .es_target = .es5 });
+    defer T.allocator.free(out);
+    try T.expect(std.mem.indexOf(u8, out, "var _arr = arr") != null);
+    try T.expect(std.mem.indexOf(u8, out, "all = _arr.slice(0)") != null);
 }
 
 test "emit: const lowers to var at es5" {
