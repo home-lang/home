@@ -569,6 +569,16 @@ pub const Parser = struct {
             _ = self.advance();
             if (self.block_depth == 0 and self.isInvalidLabeledDeclarationStart()) {
                 try self.reportCodeAt(label_tok.span.start, label_tok.line, 1344, "A label is not allowed here.");
+                // Upstream tsc also emits TS1235 ("A namespace declaration
+                // is only allowed at the top level of a namespace or
+                // module.") on the `namespace`/`module` keyword that
+                // follows the disallowed label. Mirror that here so
+                // `labeledStatementWithLabel{,_strict,_es2015}` exact
+                // baselines match.
+                const after_label = self.peek();
+                if (after_label.kind == .kw_namespace or after_label.kind == .kw_module) {
+                    try self.reportCodeAt(after_label.span.start, after_label.line, 1235, "A namespace declaration is only allowed at the top level of a namespace or module.");
+                }
             }
             if (self.isAmbientContextAt(label_tok.span.start)) {
                 self.nested_statement_depth += 1;
@@ -705,6 +715,26 @@ pub const Parser = struct {
             .kw_public, .kw_private, .kw_protected, .kw_static => blk: {
                 const next = self.peekAt(1).kind;
                 if (next == .kw_interface or next == .kw_namespace or next == .kw_module) {
+                    const modifier = self.advance();
+                    try self.reportCodeAt(modifier.span.start, modifier.line, 1044, try std.fmt.allocPrint(
+                        self.diag_arena.allocator(),
+                        "'{s}' modifier cannot appear on a module or namespace element.",
+                        .{self.source[modifier.span.start..modifier.span.end]},
+                    ));
+                    break :blk try self.parseStatement();
+                }
+                // Inside a namespace body, accept the modifier and
+                // continue to parse the declaration so checker-stage
+                // diagnostics (TS2564, etc.) still fire on the body.
+                // Mirrors upstream tsc which emits TS1044 here but
+                // recovers and binds the declaration. Without this
+                // recovery we emit TS1128 ("Declaration or statement
+                // expected.") and skip the rest of the declaration.
+                if (self.namespace_depth > 0 and
+                    (next == .kw_var or next == .kw_let or next == .kw_const or
+                        next == .kw_function or next == .kw_class or next == .kw_enum or
+                        next == .kw_async or next == .kw_abstract or next == .kw_export))
+                {
                     const modifier = self.advance();
                     try self.reportCodeAt(modifier.span.start, modifier.line, 1044, try std.fmt.allocPrint(
                         self.diag_arena.allocator(),

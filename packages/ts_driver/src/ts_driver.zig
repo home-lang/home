@@ -809,6 +809,15 @@ fn normalizeScannerDiagnostic(message: []const u8) NormalizedScannerDiagnostic {
     if (scannerDiagnosticIsUnexpectedCharacter(message)) {
         return .{ .code = 1127, .message = "Invalid character." };
     }
+    // The scanner emits a lowercase "unterminated template literal"
+    // message when it walks off the end of a backtick literal.
+    // Upstream tsc reports this as TS1160 with sentence-case
+    // ("Unterminated template literal.") — matching that here so
+    // exact-baseline conformance fixtures like
+    // `labeledStatementDeclarationListInLoopNoCrash3/4` pass.
+    if (std.mem.eql(u8, message, "unterminated template literal")) {
+        return .{ .code = 1160, .message = "Unterminated template literal." };
+    }
     return .{ .message = message };
 }
 
