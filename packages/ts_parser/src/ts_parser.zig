@@ -576,8 +576,10 @@ pub const Parser = struct {
                 // `labeledStatementWithLabel{,_strict,_es2015}` exact
                 // baselines match.
                 const after_label = self.peek();
+                std.debug.print("[DBG-LBL] kind={s} pos={d} line={d}\n", .{ @tagName(after_label.kind), after_label.span.start, after_label.line });
                 if (after_label.kind == .kw_namespace or after_label.kind == .kw_module) {
                     try self.reportCodeAt(after_label.span.start, after_label.line, 1235, "A namespace declaration is only allowed at the top level of a namespace or module.");
+                    std.debug.print("[DBG-LBL] emitted TS1235\n", .{});
                 }
             }
             if (self.isAmbientContextAt(label_tok.span.start)) {
@@ -9205,6 +9207,21 @@ test "parser: label before declaration reports TS1344" {
     try T.expectEqual(@as(u32, 1344), s.parser.diagnostics.items[0].code);
     try T.expectEqual(@as(u32, 1344), s.parser.diagnostics.items[1].code);
     try T.expectEqual(@as(u32, 1344), s.parser.diagnostics.items[2].code);
+}
+
+test "parser: label before namespace reports TS1344 + TS1235" {
+    var s = try newTestSetup("label: namespace M { }\nlabel: module N { }\n");
+    defer destroyTestSetup(s);
+
+    _ = try s.parser.parseSourceFile();
+    var saw_ts1344: u32 = 0;
+    var saw_ts1235: u32 = 0;
+    for (s.parser.diagnostics.items) |d| {
+        if (d.code == 1344) saw_ts1344 += 1;
+        if (d.code == 1235) saw_ts1235 += 1;
+    }
+    try T.expectEqual(@as(u32, 2), saw_ts1344);
+    try T.expectEqual(@as(u32, 2), saw_ts1235);
 }
 
 test "parser: throw statement" {
