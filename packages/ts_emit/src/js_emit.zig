@@ -1174,9 +1174,10 @@ pub const Printer = struct {
 
     /// Lower `const { a, b } = obj` / `const [x, y] = arr` to a
     /// comma-declarator chain: `var _o = obj, a = _o.a, b = _o.b;`.
-    /// At ES5 the `let`/`const` keyword also collapses to `var`. v0
-    /// supports shorthand keys + plain array elements + default values.
-    /// Renames, rest, and nested patterns are still TODO.
+    /// At ES5 the `let`/`const` keyword also collapses to `var`.
+    /// Refactored in §4.A.4 destructuring v15 to share the recursive
+    /// `emitDestructuringPairs` helper with the shim path; nested
+    /// patterns now lower via fresh `_n<N>` temps.
     fn printDestructuringVarDecl(
         self: *Printer,
         kw_in: []const u8,
@@ -1184,7 +1185,7 @@ pub const Printer = struct {
         initializer: NodeId,
     ) anyerror!void {
         const is_array = self.hir.kindOf(pattern) == .array_pattern;
-        const tmp = if (is_array) "_arr" else "_o";
+        const tmp: []const u8 = if (is_array) "_arr" else "_o";
         // ES5 has no block-scoped declarations — collapse to `var`.
         const kw = if (self.options.es_target == .es5) "var" else kw_in;
         try self.write(kw);
@@ -1194,118 +1195,11 @@ pub const Printer = struct {
             try self.write(" = ");
             try self.printExpression(initializer);
         }
-        const elements = hir_mod.patternElements(self.hir, pattern);
-        for (elements, 0..) |elem, i| {
-            if (self.hir.kindOf(elem) != .parameter) continue;
-            const param = hir_mod.parameterOf(self.hir, elem);
-            if (param.flags.is_computed_binding_key) continue;
-            if (param.name == hir_mod.none_node_id) continue;
-            if (self.hir.kindOf(param.name) != .identifier) continue; // nested deferred
-            const id = hir_mod.identifierOf(self.hir, param.name);
-            const name_str = self.interner.get(id.name);
-            // §4.A.4 destructuring v3 — array rest. `var [a, ...rest]
-            // = arr;` lowers to `var _arr = arr, a = _arr[0],
-            // rest = _arr.slice(1);`.
-            // §4.A.4 destructuring v4 — object rest. `var { a, ...rest }
-            // = obj;` lowers to `var _o = obj, a = _o.a,
-            // rest = __rest(_o, ["a"]);` — the tslib helper filters
-            // out the explicitly-bound keys at runtime.
-            if (param.flags.is_rest) {
-                if (is_array) {
-                    try self.write(", ");
-                    try self.write(name_str);
-                    try self.write(" = ");
-                    try self.write(tmp);
-                    var rbuf: [32]u8 = undefined;
-                    const slice_str = std.fmt.bufPrint(&rbuf, ".slice({d})", .{i}) catch unreachable;
-                    try self.write(slice_str);
-                    continue;
-                }
-                try self.write(", ");
-                try self.write(name_str);
-                try self.write(" = __rest(");
-                try self.write(tmp);
-                try self.write(", [");
-                // Collect preceding non-rest binding keys (in source
-                // order) into the filter array. Computed keys and
-                // missing-name elements are skipped (same set the
-                // bind loop above skips).
-                var emitted: usize = 0;
-                for (elements, 0..) |pelem, pi| {
-                    if (pi >= i) break;
-                    if (self.hir.kindOf(pelem) != .parameter) continue;
-                    const pparam = hir_mod.parameterOf(self.hir, pelem);
-                    if (pparam.flags.is_computed_binding_key) continue;
-                    if (pparam.flags.is_rest) continue;
-                    if (pparam.name == hir_mod.none_node_id) continue;
-                    if (self.hir.kindOf(pparam.name) != .identifier) continue;
-                    const pid = hir_mod.identifierOf(self.hir, pparam.name);
-                    const pname = self.interner.get(pid.name);
-                    if (emitted > 0) try self.write(", ");
-                    try self.write("\"");
-                    try self.write(pname);
-                    try self.write("\"");
-                    emitted += 1;
-                }
-                try self.write("])");
-                continue;
-            }
-            try self.write(", ");
-            try self.write(name_str);
-            try self.write(" = ");
-            // §4.A.4 destructuring v2 — default values: when the
-            // pattern element has a default (`var { a = 1 } = obj`
-            // or `var [a = 1] = arr`), emit
-            // `_o.a === void 0 ? 1 : _o.a` (object) or
-            // `_arr[0] === void 0 ? 1 : _arr[0]` (array) so the
-            // default fires only when the slot is `undefined`.
-            const has_default = param.default_value != hir_mod.none_node_id;
-            // §4.A.4 destructuring v11 — computed binding keys. The
-            // parser emits a synthetic `is_computed_binding_key=true`
-            // element immediately before the actual binding param,
-            // carrying the key expression in `default_value`. When
-            // present, emit `<name> = <tmp>[<expr>]` instead of
-            // `<name> = <tmp>.<name>`.
-            const computed_key_expr: NodeId = blk: {
-                if (is_array or i == 0) break :blk hir_mod.none_node_id;
-                const prev = elements[i - 1];
-                if (self.hir.kindOf(prev) != .parameter) break :blk hir_mod.none_node_id;
-                const pp = hir_mod.parameterOf(self.hir, prev);
-                if (!pp.flags.is_computed_binding_key) break :blk hir_mod.none_node_id;
-                break :blk pp.default_value;
-            };
-            if (has_default) {
-                try self.write(tmp);
-                if (computed_key_expr != hir_mod.none_node_id) {
-                    try self.write("[");
-                    try self.printExpression(computed_key_expr);
-                    try self.write("]");
-                } else if (is_array) {
-                    var buf: [32]u8 = undefined;
-                    const idx_str = std.fmt.bufPrint(&buf, "[{d}]", .{i}) catch unreachable;
-                    try self.write(idx_str);
-                } else {
-                    try self.write(".");
-                    try self.write(name_str);
-                }
-                try self.write(" === void 0 ? ");
-                try self.printExpression(param.default_value);
-                try self.write(" : ");
-            }
-            try self.write(tmp);
-            if (computed_key_expr != hir_mod.none_node_id) {
-                try self.write("[");
-                try self.printExpression(computed_key_expr);
-                try self.write("]");
-            } else if (is_array) {
-                var buf: [32]u8 = undefined;
-                const idx_str = std.fmt.bufPrint(&buf, "[{d}]", .{i}) catch unreachable;
-                try self.write(idx_str);
-            } else {
-                try self.write(".");
-                try self.write(name_str);
-            }
-        }
+        // The source-temp counts as the first emitted decl; subsequent
+        // bindings prepend ", ".
+        var emitted_count: usize = 1;
+        var counter: usize = 0;
+        try self.emitDestructuringPairs(pattern, tmp, &counter, &emitted_count);
         try self.writeSemi();
     }
 
@@ -8657,6 +8551,18 @@ test "emit: deeply nested array destructuring chains multiple temps at es5" {
     defer T.allocator.free(out);
     try T.expect(std.mem.indexOf(u8, out, "function f(_p0)") != null);
     try T.expect(std.mem.indexOf(u8, out, "var _n1 = _p0[0], _n2 = _n1[0], a = _n2[0];") != null);
+}
+
+test "emit: top-level nested array destructuring decl lowers via recursive temp at es5" {
+    // §4.A destructuring v15 — top-level decls now share the
+    // recursive helper, so `const [a, [b, c]] = arr;` at ES5 lowers
+    // through the same `_n<N>` temp chain as fn-params.
+    const out = try emitWithOpts(
+        "const [a, [b, c]] = arr;",
+        .{ .es_target = .es5 },
+    );
+    defer T.allocator.free(out);
+    try T.expect(std.mem.indexOf(u8, out, "var _arr = arr, a = _arr[0], _n1 = _arr[1], b = _n1[0], c = _n1[1];") != null);
 }
 
 test "emit: nested array in catch-param lowers via recursive temp at es5" {
