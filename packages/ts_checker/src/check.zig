@@ -24968,7 +24968,14 @@ pub const Checker = struct {
                     hir_mod.blockStmts(self.hir, cur)
                 else
                     hir_mod.namespaceBody(self.hir, cur);
-                for (stmts) |s| {
+                for (stmts) |raw_s| {
+                    // `export var`, `export function`, `export class`,
+                    // `export import Z = M` etc. wrap the inner decl in
+                    // an `.export_decl`. Unwrap so the visibility walk
+                    // sees the bound identifier directly — without this
+                    // step `typeof Z` for an `export import Z = M` would
+                    // miss the binding and emit a spurious TS2304.
+                    const s = self.unwrapExportDecl(raw_s);
                     const sk = self.hir.kindOf(s);
                     if (sk == .var_decl or sk == .let_decl or sk == .const_decl) {
                         const v = hir_mod.varDeclOf(self.hir, s);
