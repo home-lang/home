@@ -29547,12 +29547,17 @@ pub const Checker = struct {
             fn call(typo: []const u8, cand_str: []const u8, b: *Best) void {
                 if (cand_str.len == 0) return;
                 if (std.mem.eql(u8, cand_str, typo)) return;
-                // Quick reject: length difference > 2 and > typo.len/4
-                // cannot satisfy the threshold.
+                // Quick reject mirrors tsc's `getSpellingSuggestion`
+                // length gate: `maximumLengthDifference = max(2,
+                // floor(typo.len * 0.34))`. Any candidate whose length
+                // differs by more than that cannot survive the
+                // Levenshtein threshold either, so we skip it without
+                // running the (more expensive) distance computation.
                 const ll = if (cand_str.len > typo.len) cand_str.len - typo.len else typo.len - cand_str.len;
                 const regexp_suffix_candidate = std.mem.eql(u8, cand_str, "RegExp") and
                     lowerAsciiIdentifierEndsWith(typo, "regexp");
-                if (!regexp_suffix_candidate and ll > 2 and ll > typo.len / 4) return;
+                const max_len_diff: usize = @max(@as(usize, 2), (typo.len * 34) / 100);
+                if (!regexp_suffix_candidate and ll > max_len_diff) return;
                 // tsc's `getSpellingSuggestion` does case-insensitive
                 // comparison so `$ERROR` → `Error` (parserS7.3_A1.1_T2)
                 // and `mY_Var` → `my_var` are recognized. Mirror
@@ -32449,6 +32454,16 @@ pub const Checker = struct {
                         if (self.string_interner.get(s.value).len == 0) {
                             try self.report(u.operand, TsCodes.expression_always_falsy, "This kind of expression is always falsy.");
                         }
+                    },
+                    // `!null` / `!undefined` — both operands are the
+                    // canonical falsy literals. tsc emits TS2873 at
+                    // the operand. Mirrors fixture
+                    // `logicalNotOperatorWithAnyOtherType` rows
+                    // `var ResultIsBoolean7 = !undefined` and
+                    // `var ResultIsBoolean8 = !null` and the LHS-of-`&&`
+                    // path already handled at the logical-op site.
+                    .literal_null, .literal_undefined => {
+                        try self.report(u.operand, TsCodes.expression_always_falsy, "This kind of expression is always falsy.");
                     },
                     else => {},
                 }
@@ -49802,6 +49817,26 @@ test "checker: nullish logical-or lhs reports always falsy" {
     try T.expectEqual(@as(usize, 3), falsy);
 }
 
+test "checker: logical-not of null/undefined literal reports TS2873 always falsy" {
+    // `!null` and `!undefined` always evaluate to `true` because
+    // the operand is the canonical falsy literal. tsc anchors
+    // TS2873 at the operand. Mirrors fixture
+    // `logicalNotOperatorWithAnyOtherType` rows
+    // `var ResultIsBoolean7 = !undefined`,
+    // `var ResultIsBoolean8 = !null`.
+    const s = try newSetup(
+        \\var a = !null;
+        \\var b = !undefined;
+    );
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+    var falsy: usize = 0;
+    for (s.checker.diagnostics.items) |d| {
+        if (d.code == TsCodes.expression_always_falsy) falsy += 1;
+    }
+    try T.expectEqual(@as(usize, 2), falsy);
+}
+
 test "checker: exhaustive if/else chain narrows discriminant to never in final else" {
     // Mirror of the switch exhaustiveness pattern using a
     // chained `if (x === "a") ... else if (x === "b") ... else`.
@@ -55526,6 +55561,28 @@ test "checker: TS2552 does not suggest RegExp for mixed-case suffix names" {
         }
     }
     try T.expect(saw_plain);
+}
+
+// §6.A 2000-3000 ratchet — TS2552 spelling suggestions must tolerate
+// the length gap between `runTestCase` (11) and `testcase` (8). The
+// quick-reject previously used `ll > typo.len/4` which rejected this
+// 3-char gap; tsc's gate is `max(2, floor(typo.len*0.34))`. Pins
+// `parser15.4.4.14-9-2` exact-baseline.
+test "checker: TS2552 suggests testcase for runTestCase typo" {
+    const s = try newSetup(
+        \\function testcase() { return true; }
+        \\runTestCase(testcase);
+    );
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+    var saw = false;
+    for (s.checker.diagnostics.items) |d| {
+        if (d.code != TsCodes.cannot_find_name_did_you_mean) continue;
+        if (std.mem.indexOf(u8, d.message, "'runTestCase'") == null) continue;
+        if (std.mem.indexOf(u8, d.message, "'testcase'") == null) continue;
+        saw = true;
+    }
+    try T.expect(saw);
 }
 
 // §6.A 2000-3000 ratchet — unresolved type references must report

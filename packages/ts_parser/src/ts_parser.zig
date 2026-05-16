@@ -2123,8 +2123,11 @@ pub const Parser = struct {
                     flags.is_optional = true;
                     const nk = self.hir.kindOf(name_node);
                     if (nk == .object_pattern or nk == .array_pattern) {
-                        const q_tok = self.tokens[self.cursor - 1];
-                        try self.reportCodeAt(q_tok.span.start, q_tok.line, 2463, "A binding pattern parameter cannot be optional in an implementation signature.");
+                        // tsc anchors TS2463 at the start of the binding
+                        // pattern (the `[` / `{` token), not the `?`
+                        // suffix. Mirrors `optionalBindingParameters1.ts(1,14)`.
+                        const pat_span = self.hir.spanOf(name_node);
+                        try self.reportCodeAt(pat_span.start, self.lineAt(pat_span.start), 2463, "A binding pattern parameter cannot be optional in an implementation signature.");
                     }
                 }
                 if (self.hir.kindOf(name_node) == .identifier) {
@@ -10288,6 +10291,25 @@ test "parser: optional binding pattern parameter reports TS2463" {
         if (d.code == 2463) found = true;
     }
     try T.expect(found);
+}
+
+test "parser: TS2463 anchors at binding pattern start, not the question token" {
+    // Mirrors `optionalBindingParameters1.ts(1,14)` — tsc reports the
+    // diagnostic at the `[` token rather than the `?` suffix so the
+    // squiggle covers the full pattern.
+    var s = try newTestSetup("function foo([x,y,z]?: [string, number, boolean]) {}");
+    defer destroyTestSetup(s);
+    _ = try s.parser.parseSourceFile();
+    var anchor_pos: ?u32 = null;
+    for (s.parser.diagnostics.items) |d| {
+        if (d.code == 2463) {
+            anchor_pos = d.pos;
+            break;
+        }
+    }
+    try T.expect(anchor_pos != null);
+    // `[` sits at byte offset 13 (0-based) → column 14 in tsc's display.
+    try T.expectEqual(@as(u32, 13), anchor_pos.?);
 }
 
 test "parser: class declaration with method and property" {
