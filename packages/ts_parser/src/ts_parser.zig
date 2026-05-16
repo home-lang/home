@@ -2148,6 +2148,10 @@ pub const Parser = struct {
                 const bad = self.advance();
                 try self.reportCodeAt(bad.span.start, bad.line, 1068, "Unexpected token. A constructor, method, accessor, or property was expected.");
                 try self.skipUntilTypeMemberSeparator();
+                if (self.peek().kind == .close_brace and self.peek().flags.preceded_by_newline) {
+                    const close = self.peek();
+                    try self.reportCodeAt(close.span.start, close.line, 1128, "Declaration or statement expected.");
+                }
                 continue;
             }
             if (self.peek().kind == .open_bracket) {
@@ -11228,6 +11232,20 @@ test "parser: invalid class-body var reports TS1068" {
     _ = try s.parser.parseSourceFile();
     try T.expectEqual(@as(usize, 1), s.parser.diagnostics.items.len);
     try T.expectEqual(@as(u32, 1068), s.parser.diagnostics.items[0].code);
+}
+
+test "parser: invalid multiline class-body var reports close brace TS1128" {
+    var s = try newTestSetup(
+        \\class Foo {
+        \\  var icecream = "chocolate";
+        \\}
+    );
+    defer destroyTestSetup(s);
+
+    _ = try s.parser.parseSourceFile();
+    try T.expectEqual(@as(usize, 2), s.parser.diagnostics.items.len);
+    try T.expectEqual(@as(u32, 1068), s.parser.diagnostics.items[0].code);
+    try T.expectEqual(@as(u32, 1128), s.parser.diagnostics.items[1].code);
 }
 
 test "parser: reserved accessibility keyword in class type annotation reports TS1213" {
