@@ -271,6 +271,10 @@ pub const TsCodes = struct {
     pub const circular_constraint: u32 = 2313;
     pub const type_alias_circular: u32 = 2456;
     pub const static_member_type_parameter: u32 = 2302;
+    /// TS2699 — `static prototype` conflicts with the implicit
+    /// `Function.prototype` property on the class constructor.
+    /// Anchored at the property name, not the `static` keyword.
+    pub const static_prototype_conflict: u32 = 2699;
     pub const this_in_namespace_body: u32 = 2331;
     pub const untyped_function_type_args: u32 = 2347;
     pub const operator_cannot_be_applied: u32 = 2365;
@@ -10208,6 +10212,33 @@ pub const Checker = struct {
                         try static_member_names_local.put(self.gpa, member_name, {});
                         if (op.visibility == .private) try static_private_names.put(self.gpa, member_name, {});
                         if (op.visibility == .protected) try static_protected_names.put(self.gpa, member_name, {});
+                        // TS2699: `static prototype` shadows the
+                        // implicit `Function.prototype` slot on the
+                        // class constructor. tsc rejects this
+                        // unconditionally regardless of declared
+                        // type. Mirrors fixture
+                        // `propertyNamedPrototype.ts(3,12)`. Anchored
+                        // at the property name (op.key) to match the
+                        // baseline column.
+                        if (!op_is_computed) {
+                            const proto_str = self.string_interner.get(member_name);
+                            if (std.mem.eql(u8, proto_str, "prototype")) {
+                                const class_name_str: []const u8 = if (c.name != hir_mod.none_node_id and self.hir.kindOf(c.name) == .identifier)
+                                    self.string_interner.get(hir_mod.identifierOf(self.hir, c.name).name)
+                                else
+                                    "(Anonymous class)";
+                                const msg = try std.fmt.allocPrint(
+                                    self.diag_arena.allocator(),
+                                    "Static property 'prototype' conflicts with built-in property 'Function.prototype' of constructor function '{s}'.",
+                                    .{class_name_str},
+                                );
+                                try self.diagnostics.append(self.gpa, .{
+                                    .node = op.key,
+                                    .code = TsCodes.static_prototype_conflict,
+                                    .message = msg,
+                                });
+                            }
+                        }
                     } else {
                         try instance_member_names_local.put(self.gpa, member_name, {});
                     }
@@ -51081,6 +51112,48 @@ test "checker: abstract class instantiation through namespace import equals emit
         if (d.code == TsCodes.abstract_class_instantiation) found += 1;
     }
     try T.expectEqual(@as(usize, 2), found);
+}
+
+test "checker: static prototype member emits TS2699 conflict" {
+    // `static prototype` shadows the implicit
+    // `Function.prototype` property on the class constructor —
+    // tsc rejects it unconditionally regardless of declared type.
+    // Mirrors conformance fixture
+    // `propertyNamedPrototype.ts(3,12)`. Instance-level
+    // `prototype` is fine.
+    const s = try newSetup(
+        \\class C {
+        \\  prototype: number;
+        \\  static prototype: C;
+        \\}
+    );
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+    var conflict_count: usize = 0;
+    var saw_class_name = false;
+    for (s.checker.diagnostics.items) |d| {
+        if (d.code != TsCodes.static_prototype_conflict) continue;
+        conflict_count += 1;
+        if (std.mem.indexOf(u8, d.message, "'C'") != null) saw_class_name = true;
+    }
+    try T.expectEqual(@as(usize, 1), conflict_count);
+    try T.expect(saw_class_name);
+}
+
+test "checker: instance-level prototype member does NOT emit TS2699" {
+    // Only the `static` qualifier collides with
+    // `Function.prototype` — instance members named `prototype`
+    // live on the instance side and are fine.
+    const s = try newSetup(
+        \\class C {
+        \\  prototype: number = 1;
+        \\}
+    );
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+    for (s.checker.diagnostics.items) |d| {
+        try T.expect(d.code != TsCodes.static_prototype_conflict);
+    }
 }
 
 test "checker: `new ConcreteSubclass()` of an abstract class is allowed" {
