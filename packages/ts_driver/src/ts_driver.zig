@@ -2038,3 +2038,36 @@ test "driver: classes with constructors and methods" {
     try T.expect(std.mem.indexOf(u8, c.js, "class Counter") != null);
     try T.expect(std.mem.indexOf(u8, c.js, "inc(") != null);
 }
+
+test "driver: typeof Array<typeof x> nested typeof in type arguments — no bogus TS2304" {
+    var c = try compileSource(T.allocator,
+        \\var x = 1;
+        \\var xs4: typeof Array<typeof x>;
+    , .{ .no_emit = true });
+    defer {
+        c.deinit();
+        T.allocator.destroy(c);
+    }
+    for (c.diagnostics.items) |d| {
+        if (d.code == 2304) return error.UnexpectedTS2304;
+    }
+}
+
+test "driver: recursive generic call with explicit type args — no bogus TS2347 from generic_fns lookup" {
+    var c = try compileSource(T.allocator,
+        \\function foo<T, U>(x: T, y: U) {
+        \\    foo<U, U>(y, y);
+        \\    return new C<U,T>();
+        \\}
+        \\class C<T, U> {
+        \\    x: T;
+        \\}
+    , .{ .no_emit = true });
+    defer {
+        c.deinit();
+        T.allocator.destroy(c);
+    }
+    for (c.diagnostics.items) |d| {
+        if (d.code == 2347) return error.UnexpectedTS2347;
+    }
+}
