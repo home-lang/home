@@ -5601,15 +5601,20 @@ pub const Checker = struct {
             const s = self.unwrapExportDecl(raw);
             if (s == hir_mod.none_node_id) continue;
 
-            var refs: std.AutoHashMapUnmanaged(hir_mod.StringId, void) = .empty;
-            defer refs.deinit(self.gpa);
-            try self.collectIdentifierRefs(s, &refs);
-            if (self.classDeclarationName(s)) |own_name| {
-                _ = refs.remove(own_name);
-            }
-            var it = refs.keyIterator();
-            while (it.next()) |name_ptr| {
-                const name = name_ptr.*;
+            // Collect refs WITH nodes so the TS2449 diagnostic can
+            // anchor at the actual `ClassName` reference (e.g. the
+            // `C2` in `class C1 extends C2`) instead of the whole
+            // statement — matches upstream tsc column anchors. See
+            // fixture `symbolProperty33.ts(1,18)`.
+            var ref_nodes: std.ArrayListUnmanaged(NameRef) = .empty;
+            defer ref_nodes.deinit(self.gpa);
+            try self.collectIdentifierRefsWithNodes(s, &ref_nodes);
+            const own_name_opt = self.classDeclarationName(s);
+            for (ref_nodes.items) |ref| {
+                const name = ref.name;
+                if (own_name_opt) |own| {
+                    if (own == name) continue;
+                }
                 if (!class_names.contains(name) or declared.contains(name) or reported.contains(name)) continue;
                 if (self.sourceHasCheckJsDirective() and self.virtualSectionIsJsLike(s)) continue;
                 const name_str = self.string_interner.get(name);
@@ -5619,7 +5624,7 @@ pub const Checker = struct {
                     .{name_str},
                 );
                 try self.diagnostics.append(self.gpa, .{
-                    .node = s,
+                    .node = ref.node,
                     .code = TsCodes.class_used_before_declaration,
                     .message = msg,
                 });
