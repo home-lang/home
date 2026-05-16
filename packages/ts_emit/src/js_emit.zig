@@ -1517,8 +1517,17 @@ pub const Printer = struct {
         try self.write("var e_1, _a; try { for (var _b = __values(");
         try self.printExpression(source);
         try self.write("), _c = _b.next(); !_c.done; _c = _b.next()) { ");
-        try self.printForOfBindingDecl(target);
-        try self.write(" = _c.value; ");
+        // §4.A destructuring v8 — pattern target at ES5 + iterator-
+        // protocol can't use native `var { a } = _c.value;`. Lower to
+        // a temp-ident bind + extraction shim.
+        if (self.forOfBindingIsPattern(target)) {
+            try self.write("var _e = _c.value; ");
+            try self.emitDestructuringShim(self.forOfBindingPatternNode(target), "_e");
+            try self.write(" ");
+        } else {
+            try self.printForOfBindingDecl(target);
+            try self.write(" = _c.value; ");
+        }
         try self.printForOfBody(body);
         try self.write(" } } catch (e_1_1) { e_1 = { error: e_1_1 }; } finally { try { if (_c && !_c.done && (_a = _b.return)) _a.call(_b); } finally { if (e_1) throw e_1.error; } }");
     }
@@ -8277,6 +8286,21 @@ test "emit: for-of with object destructuring target lowers via _e temp at es5" {
     defer T.allocator.free(out);
     try T.expect(std.mem.indexOf(u8, out, "var _e = _arr[_i];") != null);
     try T.expect(std.mem.indexOf(u8, out, "var name = _e.name, age = _e.age;") != null);
+}
+
+test "emit: for-of with downlevel_iteration + destructuring target lowers at es5" {
+    // §4.A destructuring v8 — iterator-protocol form also handles
+    // pattern targets via _e temp.
+    const out = try emitWithOpts(
+        "for (const [a, b] of items) { f(a, b); }",
+        .{ .es_target = .es5, .downlevel_iteration = true },
+    );
+    defer T.allocator.free(out);
+    try T.expect(std.mem.indexOf(u8, out, "__values(items)") != null);
+    try T.expect(std.mem.indexOf(u8, out, "var _e = _c.value;") != null);
+    try T.expect(std.mem.indexOf(u8, out, "var a = _e[0], b = _e[1];") != null);
+    // Native pattern syntax must NOT appear.
+    try T.expect(std.mem.indexOf(u8, out, "var [a, b] = _c.value") == null);
 }
 
 test "emit: for-of with identifier target keeps direct var = _arr[_i] at es5" {
