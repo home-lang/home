@@ -13741,6 +13741,17 @@ pub const Checker = struct {
             if (self.strict_flags.no_implicit_any and im.type_node == hir_mod.none_node_id and !im.is_method) {
                 try self.reportMemberImplicitAny(m, im.name);
             }
+            // TS7010: interface method-signature without an explicit return
+            // type implicitly returns 'any' under noImplicitAny.
+            if (self.strict_flags.no_implicit_any and im.is_method and
+                im.type_node != hir_mod.none_node_id and
+                self.hir.kindOf(im.type_node) == .fn_type)
+            {
+                const ft = hir_mod.fnTypeOf(self.hir, im.type_node);
+                if (ft.return_type == hir_mod.none_node_id) {
+                    try self.reportInterfaceMethodImplicitAnyReturn(m, im.name);
+                }
+            }
             var has_base_member = false;
             for (extends) |extends_node| {
                 const parent_t = self.lowererLowerWithTypeParams(extends_node) catch continue;
@@ -13855,6 +13866,20 @@ pub const Checker = struct {
         try self.diagnostics.append(self.gpa, .{
             .node = node,
             .code = TsCodes.member_implicitly_any,
+            .message = msg,
+        });
+    }
+
+    fn reportInterfaceMethodImplicitAnyReturn(self: *Checker, node: NodeId, name: hir_mod.StringId) CheckError!void {
+        const member_name = self.string_interner.get(name);
+        const msg = try std.fmt.allocPrint(
+            self.diag_arena.allocator(),
+            "'{s}', which lacks return-type annotation, implicitly has an 'any' return type.",
+            .{member_name},
+        );
+        try self.diagnostics.append(self.gpa, .{
+            .node = node,
+            .code = TsCodes.function_return_implicitly_any,
             .message = msg,
         });
     }
@@ -21874,6 +21899,12 @@ pub const Checker = struct {
                         break :blk try self.optionalChainResult(t, member_is_optional_chain);
                     }
                     try self.reportPropertyDoesNotExistOnType(node, m.name, access_obj_t);
+                } else if (access_obj_t == types.Primitive.void_t) {
+                    // `this:void` parameter — accessing properties on
+                    // a `void` receiver is a TS2339 (`Property X does
+                    // not exist on type 'void'`). Mirrors upstream
+                    // tsc, which prints the receiver type literally.
+                    try self.reportPropertyDoesNotExistOnType(node, m.name, access_obj_t);
                 }
                 break :blk types.Primitive.any;
             },
@@ -24003,29 +24034,83 @@ pub const Checker = struct {
         if (self.hir.kindOf(callee) != .member_access) return;
         const m = hir_mod.memberOf(self.hir, callee);
         const receiver_t = try self.checkExpression(m.object);
-        var call_sigs: std.ArrayListUnmanaged(TypeId) = .empty;
-        defer call_sigs.deinit(self.gpa);
-        try self.collectCallSignatures(callee_t, &call_sigs);
         var saw_this_param = false;
         var unmet_this: std.ArrayListUnmanaged(TypeId) = .empty;
         defer unmet_this.deinit(self.gpa);
-        for (call_sigs.items) |sig| {
-            const this_t = self.signature_this_params.get(sig) orelse continue;
-            saw_this_param = true;
-            if (self.engine.isAssignableTo(receiver_t, this_t) catch false) return;
-            // Track unique unmet `this` types — when the receiver is
-            // a union of method-bearing types each requiring its own
-            // `this`, upstream tsc intersects them in the diagnostic.
-            var seen = false;
-            for (unmet_this.items) |existing| {
-                if (existing == this_t) {
-                    seen = true;
-                    break;
+        // When the receiver is a union of method-bearing types each
+        // declaring its own `this: this`, the per-signature `this`
+        // type is keyed on the (interned) signature TypeId — which
+        // collides across union branches that share an identical
+        // shape. Walk the union explicitly so each branch contributes
+        // its own `this` type to the unmet set.
+        const receiver_is_union = receiver_t >= types.Primitive.first_dynamic and
+            receiver_t < self.interner.pool.typeCount() and
+            self.interner.pool.flagsOf(receiver_t).is_union;
+        if (receiver_is_union) {
+            for (self.interner.unionMembers(receiver_t)) |branch| {
+                var branch_sigs: std.ArrayListUnmanaged(TypeId) = .empty;
+                defer branch_sigs.deinit(self.gpa);
+                try self.collectNamedMemberSignatures(branch, m.name, &branch_sigs);
+                for (branch_sigs.items) |sig| {
+                    const this_t = self.signature_this_params.get(sig) orelse continue;
+                    saw_this_param = true;
+                    var effective_this: TypeId = this_t;
+                    // The signature_this_params map is keyed only on
+                    // signature TypeId, so when two union members
+                    // share an identical method signature shape only
+                    // the last branch's `this`-type is retained. If
+                    // the cached `this_t` matches one of the union
+                    // members (suggesting `this: this`/`this: <self>`),
+                    // use the current branch as its effective `this`
+                    // so each branch contributes its own type to the
+                    // unmet set.
+                    if (this_t != branch) {
+                        var this_t_is_union_member = false;
+                        for (self.interner.unionMembers(receiver_t)) |other| {
+                            if (other == this_t) {
+                                this_t_is_union_member = true;
+                                break;
+                            }
+                        }
+                        if (this_t_is_union_member) effective_this = branch;
+                    }
+                    // Check the actual receiver (the union) against
+                    // the effective `this`-type for this branch.
+                    if (self.engine.isAssignableTo(receiver_t, effective_this) catch false) continue;
+                    var seen = false;
+                    for (unmet_this.items) |existing| {
+                        if (existing == effective_this) {
+                            seen = true;
+                            break;
+                        }
+                    }
+                    if (!seen) try unmet_this.append(self.gpa, effective_this);
                 }
             }
-            if (!seen) try unmet_this.append(self.gpa, this_t);
+            if (!saw_this_param) return;
+            if (unmet_this.items.len == 0) return;
+        } else {
+            var call_sigs: std.ArrayListUnmanaged(TypeId) = .empty;
+            defer call_sigs.deinit(self.gpa);
+            try self.collectCallSignatures(callee_t, &call_sigs);
+            for (call_sigs.items) |sig| {
+                const this_t = self.signature_this_params.get(sig) orelse continue;
+                saw_this_param = true;
+                if (self.engine.isAssignableTo(receiver_t, this_t) catch false) return;
+                // Track unique unmet `this` types — when the receiver is
+                // a union of method-bearing types each requiring its own
+                // `this`, upstream tsc intersects them in the diagnostic.
+                var seen = false;
+                for (unmet_this.items) |existing| {
+                    if (existing == this_t) {
+                        seen = true;
+                        break;
+                    }
+                }
+                if (!seen) try unmet_this.append(self.gpa, this_t);
+            }
+            if (!saw_this_param) return;
         }
-        if (!saw_this_param) return;
         // Prefer the upstream-shaped TS2684 with both `of type 'X'`
         // and `of type 'Y'` clauses when we can name both sides.
         // Falls back to the generic wording when the engine lacks a
