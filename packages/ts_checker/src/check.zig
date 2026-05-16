@@ -16992,7 +16992,6 @@ pub const Checker = struct {
                         }
                     }
                     if (std.mem.indexOfScalar(u8, raw, '.')) |_| {
-                        std.debug.print("DEBUG_TYPEOF_DOTTED raw={s}\n", .{raw});
                         if (try self.typeOfDottedValueReference(raw, type_node)) |dotted_t| {
                             return dotted_t;
                         }
