@@ -359,11 +359,44 @@ pub const Scanner = struct {
     }
 
     fn scanIdentifierOrKeyword(self: *Scanner, start: u32, line: u32, flags: TokenFlags) Token {
-        while (!self.isAtEnd() and isIdentCont(self.source[self.pos])) {
-            self.pos += 1;
+        var has_escape = false;
+        while (!self.isAtEnd()) {
+            const ch = self.source[self.pos];
+            if (isIdentCont(ch)) {
+                self.pos += 1;
+                continue;
+            }
+            // ES2015+ allows IdentifierPart to be written as `\uXXXX`
+            // or `\u{XXXXXX}`. Consume the escape and continue scanning
+            // the identifier; the parser folds the escape into the
+            // interned name later.
+            if (ch == '\\' and self.pos + 1 < self.source.len and self.source[self.pos + 1] == 'u') {
+                has_escape = true;
+                self.pos += 2;
+                if (self.pos < self.source.len and self.source[self.pos] == '{') {
+                    var p = self.pos + 1;
+                    while (p < self.source.len and self.source[p] != '}' and isHexDigit(self.source[p])) : (p += 1) {}
+                    if (p < self.source.len and self.source[p] == '}') p += 1;
+                    self.pos = p;
+                } else {
+                    var n: u32 = 0;
+                    while (n < 4 and self.pos < self.source.len and isHexDigit(self.source[self.pos])) : (n += 1) {
+                        self.pos += 1;
+                    }
+                }
+                continue;
+            }
+            break;
         }
         const slice = self.source[start..self.pos];
         var f = flags;
+        f.has_escape = has_escape;
+        // Keyword classification only fires on the raw byte slice;
+        // tokens that contain `\uXXXX` escapes stay as identifiers even
+        // when their decoded form would be a reserved word. The parser
+        // handles the TS1260 "Keywords cannot contain escape characters"
+        // diagnostic when an escape-bearing identifier reaches a
+        // reserved-word position.
         const k = if (keywords.lookup(slice)) |kw| blk: {
             f.contextual = TokenKind.isContextualKeyword(kw);
             break :blk kw;
@@ -717,6 +750,27 @@ pub const Scanner = struct {
                 .flags = flags,
                 .line = line,
             };
+        }
+
+        // Identifier with a leading `\uXXXX` / `\u{XXXXXX}` Unicode
+        // escape. ES2015+ allows the IdentifierStart and any
+        // IdentifierPart to be written as a Unicode escape; tsc's
+        // scanner consumes the escape, decodes the code point, and
+        // treats the result as a normal identifier token. We don't
+        // decode here (the parser folds the escape lazily), but we
+        // consume the escape so subsequent identifier characters glue
+        // into one token — without this, `А` is reported as
+        // TS1127 ("Invalid character.") plus a stray `u0410` identifier
+        // and downstream binders/checkers can't see the intended name.
+        // Baseline: scannerS7.6_A4.2_T1.errors.txt.
+        if (c == '\\' and self.pos + 1 < self.source.len and self.source[self.pos + 1] == 'u') {
+            self.pos += 2; // skip `\u`
+            if (self.pos < self.source.len and self.source[self.pos] == '{') {
+                self.pos = self.scanEscapedUnicodeCodePoint(gpa, self.pos + 1, line, false);
+            } else {
+                self.pos = self.scanEscapedHexDigits(gpa, self.pos, 4, line);
+            }
+            return self.scanIdentifierOrKeyword(start, line, flags);
         }
 
         // Identifier / keyword
