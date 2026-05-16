@@ -7585,6 +7585,11 @@ pub const Parser = struct {
         var elements: std.ArrayListUnmanaged(NodeId) = .empty;
         defer elements.deinit(self.gpa);
         while (self.peek().kind != .close_bracket and self.peek().kind != .eof) {
+            if (self.peek().kind == .close_brace) {
+                const close = self.peek();
+                try self.reportCodeAt(close.span.start, close.line, 1137, "Expression or comma expected.");
+                return try self.builder.addArrayLiteral(.{ .start = start.span.start, .end = close.span.start }, elements.items);
+            }
             if (self.peek().kind == .comma) {
                 // Hole — represent as `none` for now. (TS treats
                 // `[,1]` as `[undefined, 1]`.)
@@ -9669,6 +9674,19 @@ test "parser: array literal" {
     const init_node = hir_mod.varDeclOf(&s.hir, top).init;
     try T.expectEqual(hir_mod.NodeKind.array_literal, s.hir.kindOf(init_node));
     try T.expectEqual(@as(usize, 3), hir_mod.arrayLiteralElements(&s.hir, init_node).len);
+}
+
+test "parser: array literal recovers class close as TS1137" {
+    var s = try newTestSetup(
+        \\class Type {
+        \\    public examples = [
+        \\}
+    );
+    defer destroyTestSetup(s);
+    _ = try s.parser.parseSourceFile();
+    try T.expectEqual(@as(usize, 1), s.parser.diagnostics.items.len);
+    try T.expectEqual(@as(u32, 1137), s.parser.diagnostics.items[0].code);
+    try T.expectEqualStrings("Expression or comma expected.", s.parser.diagnostics.items[0].message);
 }
 
 test "parser: call expression with spread arguments" {
