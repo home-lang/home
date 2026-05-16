@@ -1635,7 +1635,8 @@ fn isOptionValidationDiagnostic(line: []const u8) bool {
         if (std.mem.indexOf(u8, line, "esModuleInterop=") != null) return true;
         return false;
     }
-    return std.mem.indexOf(u8, line, "error TS5095:") != null or
+    return std.mem.indexOf(u8, line, "error TS5055:") != null or
+        std.mem.indexOf(u8, line, "error TS5095:") != null or
         std.mem.indexOf(u8, line, "error TS5098:") != null or
         std.mem.indexOf(u8, line, "error TS5101:") != null or
         std.mem.indexOf(u8, line, "error TS5102:") != null or
