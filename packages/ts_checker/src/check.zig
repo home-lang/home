@@ -1791,8 +1791,17 @@ pub const Checker = struct {
                                 );
                                 try self.report(fr.source, TsCodes.block_scoped_used_before_decl, msg);
                             }
-                            if (self.bodyHasVarDeclarationNamed(fr.body, name)) {
-                                try self.report(fr.body, TsCodes.for_of_var_conflict, "Cannot initialize outer scoped variable in the same scope as block scoped declaration.");
+                            // tsc reports TS2481 at the `var` declarator's
+                            // identifier with the conflicting name interpolated
+                            // (`'v'`). Mirrors `for-of53` / `for-of54` baselines.
+                            if (self.findVarDeclarationNodeNamed(fr.body, name)) |conflict_var| {
+                                const cn = self.string_interner.get(name);
+                                const conflict_msg = try std.fmt.allocPrint(
+                                    self.diag_arena.allocator(),
+                                    "Cannot initialize outer scoped variable '{s}' in the same scope as block scoped declaration '{s}'.",
+                                    .{ cn, cn },
+                                );
+                                try self.report(conflict_var, TsCodes.for_of_var_conflict, conflict_msg);
                             }
                         }
                     },
@@ -21399,7 +21408,10 @@ pub const Checker = struct {
                 !self.isIterableLikeType(init_type)) and
             !self.objectLiteralHasSymbolIteratorMethod(v.init))
         {
-            try self.reportIteratorRequired(v.init, init_type);
+            // tsc anchors TS2488 at the destructuring pattern itself
+            // (`[a, b]`) rather than the initializer expression.
+            // Mirrors `iterableArrayPattern21/22` baselines.
+            try self.reportIteratorRequired(v.name, init_type);
         }
         if (self.strict_flags.strict_null_checks and v.name != hir_mod.none_node_id and v.init != hir_mod.none_node_id) {
             const nk = self.hir.kindOf(v.name);
@@ -24422,7 +24434,11 @@ pub const Checker = struct {
                         const sp = hir_mod.spreadOf(self.hir, el);
                         const inner_t = try self.checkExpression(sp.expression);
                         if (!self.isIterableLikeType(inner_t)) {
-                            try self.report(sp.expression, TsCodes.yield_star_not_iterable, "Type must have a '[Symbol.iterator]()' method that returns an iterator.");
+                            // Prefer the named TS2488 form
+                            // (`Type 'SymbolIterator' must have …`) when the
+                            // source type can be named. Mirrors
+                            // `iteratorSpreadInArray8` / `iteratorSpreadInArray10`.
+                            try self.reportIteratorRequired(sp.expression, inner_t);
                         }
                         const elem_inner = self.interner.objectNumberIndex(inner_t);
                         const contrib = if (elem_inner != types.Primitive.none) elem_inner else try self.iterableElementType(inner_t);
@@ -38435,6 +38451,62 @@ pub const Checker = struct {
         }
     }
 
+    /// Walks the same tree as `bodyHasVarDeclarationNamed` but returns
+    /// the matching `var_decl`'s identifier node (so the caller can
+    /// anchor a diagnostic at the named declarator instead of the
+    /// outer block). Returns `null` when no match is found.
+    fn findVarDeclarationNodeNamed(self: *Checker, node: NodeId, name: hir_mod.StringId) ?NodeId {
+        if (node == hir_mod.none_node_id) return null;
+        switch (self.hir.kindOf(node)) {
+            .var_decl => {
+                const v = hir_mod.varDeclOf(self.hir, node);
+                if (v.name == hir_mod.none_node_id) return null;
+                if (self.hir.kindOf(v.name) != .identifier) return null;
+                if (hir_mod.identifierOf(self.hir, v.name).name != name) return null;
+                return v.name;
+            },
+            .block_stmt => {
+                for (hir_mod.blockStmts(self.hir, node)) |stmt|
+                    if (self.findVarDeclarationNodeNamed(stmt, name)) |n| return n;
+                return null;
+            },
+            .if_stmt => {
+                const i = hir_mod.ifOf(self.hir, node);
+                return self.findVarDeclarationNodeNamed(i.then_branch, name) orelse
+                    self.findVarDeclarationNodeNamed(i.else_branch, name);
+            },
+            .for_in_stmt, .for_of_stmt => {
+                const f = hir_mod.forInOf(self.hir, node);
+                return self.findVarDeclarationNodeNamed(f.target, name) orelse
+                    self.findVarDeclarationNodeNamed(f.body, name);
+            },
+            .for_stmt => {
+                const f = hir_mod.forStmtOf(self.hir, node);
+                return self.findVarDeclarationNodeNamed(f.init, name) orelse
+                    self.findVarDeclarationNodeNamed(f.body, name);
+            },
+            .try_stmt => {
+                const t = hir_mod.tryOf(self.hir, node);
+                return self.findVarDeclarationNodeNamed(t.block, name) orelse
+                    self.findVarDeclarationNodeNamed(t.catch_block, name) orelse
+                    self.findVarDeclarationNodeNamed(t.finally_block, name);
+            },
+            .while_stmt => return self.findVarDeclarationNodeNamed(hir_mod.whileOf(self.hir, node).body, name),
+            .do_while_stmt => return self.findVarDeclarationNodeNamed(hir_mod.doWhileOf(self.hir, node).body, name),
+            .switch_stmt => {
+                for (hir_mod.switchCases(self.hir, node)) |case|
+                    if (self.findVarDeclarationNodeNamed(case, name)) |n| return n;
+                return null;
+            },
+            .switch_case => {
+                for (hir_mod.switchCaseStmts(self.hir, node)) |stmt|
+                    if (self.findVarDeclarationNodeNamed(stmt, name)) |n| return n;
+                return null;
+            },
+            else => return null,
+        }
+    }
+
     fn bodyHasVarDeclarationNamed(self: *Checker, node: NodeId, name: hir_mod.StringId) bool {
         if (node == hir_mod.none_node_id) return false;
         switch (self.hir.kindOf(node)) {
@@ -44938,6 +45010,28 @@ test "checker: interface extends multiple parents merges all members" {
     try T.expect(s.ti.objectMember(c_t, a_id) != null);
     try T.expect(s.ti.objectMember(c_t, b_id) != null);
     try T.expect(s.ti.objectMember(c_t, c_id) != null);
+}
+
+test "checker: for-of var conflict TS2481 names the conflicting identifier" {
+    // Mirrors `for-of53` / `for-of54` baselines:
+    //   for (let v of []) { var v; }
+    // tsc reports TS2481 anchored at the inner `var v` with the name
+    // interpolated. We previously anchored at the for-of body without
+    // the name; this regression test pins the new shape.
+    const s = try newSetup(
+        \\for (let v of []) { var v; }
+    );
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+    var found = false;
+    for (s.checker.diagnostics.items) |d| {
+        if (d.code != TsCodes.for_of_var_conflict) continue;
+        if (std.mem.indexOf(u8, d.message, "outer scoped variable 'v'") == null) continue;
+        if (std.mem.indexOf(u8, d.message, "block scoped declaration 'v'") == null) continue;
+        found = true;
+        break;
+    }
+    try T.expect(found);
 }
 
 test "checker: for-of binds the loop variable to the array's element type" {
@@ -52017,6 +52111,30 @@ test "checker: array spread rejects non-iterable object" {
     var found = false;
     for (s.checker.diagnostics.items) |d| {
         if (d.code == TsCodes.yield_star_not_iterable) found = true;
+    }
+    try T.expect(found);
+}
+
+test "checker: array spread non-iterable class names its TS2488 source" {
+    // Mirrors `iteratorSpreadInArray8` / `iteratorSpreadInArray10`:
+    // `[...new SymbolIterator]` where `SymbolIterator` has a `next()`
+    // but no `[Symbol.iterator]()`. tsc renders the class name
+    // (`Type 'SymbolIterator' must have …`) — we previously emitted
+    // the bare-Type form.
+    const s = try newSetup(
+        \\class SymbolIterator {
+        \\    next() { return { value: 1, done: false }; }
+        \\}
+        \\const a = [...new SymbolIterator()];
+    );
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+    var found = false;
+    for (s.checker.diagnostics.items) |d| {
+        if (d.code != TsCodes.yield_star_not_iterable) continue;
+        if (std.mem.indexOf(u8, d.message, "Type 'SymbolIterator' must have") == null) continue;
+        found = true;
+        break;
     }
     try T.expect(found);
 }
