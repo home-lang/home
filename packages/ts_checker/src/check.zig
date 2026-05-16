@@ -9845,6 +9845,23 @@ pub const Checker = struct {
         var class_param_ids: std.ArrayListUnmanaged(TypeId) = .empty;
         var class_param_ids_moved = false;
         defer if (!class_param_ids_moved) class_param_ids.deinit(self.gpa);
+        // Two-pass type-parameter binding so `class C<T extends List<T>>`
+        // sees `T` while lowering its own constraint. Mirrors the
+        // function-signature path above and fixes parserGenericConstraint2-7
+        // baselines that flagged TS2304 on `T` inside its own constraint.
+        for (type_params) |tp| {
+            if (self.hir.kindOf(tp) != .type_parameter) continue;
+            const tpp = hir_mod.typeParameterOf(self.hir, tp);
+            const placeholder = self.interner.internFreshTypeParameterWithFlags(
+                tpp.name,
+                types.Primitive.unknown,
+                types.Primitive.none,
+                types.Variance.fromHirBits(tpp.variance),
+                tpp.is_const,
+            ) catch return error.OutOfMemory;
+            self.hir.setType(tp, placeholder);
+            try self.recordNarrow(tpp.name, placeholder);
+        }
         for (type_params) |tp| {
             if (self.hir.kindOf(tp) != .type_parameter) continue;
             const tpp = hir_mod.typeParameterOf(self.hir, tp);
@@ -9856,13 +9873,16 @@ pub const Checker = struct {
                 try self.lowererLowerWithTypeParams(tpp.default)
             else
                 types.Primitive.none;
-            const tp_id = self.interner.internFreshTypeParameterWithFlags(
-                tpp.name,
-                constraint,
-                def,
-                types.Variance.fromHirBits(tpp.variance),
-                tpp.is_const,
-            ) catch return error.OutOfMemory;
+            const tp_id = if (tpp.constraint == hir_mod.none_node_id and tpp.default == hir_mod.none_node_id)
+                (self.lookupNarrow(tpp.name) orelse self.hir.typeOf(tp))
+            else
+                self.interner.internFreshTypeParameterWithFlags(
+                    tpp.name,
+                    constraint,
+                    def,
+                    types.Variance.fromHirBits(tpp.variance),
+                    tpp.is_const,
+                ) catch return error.OutOfMemory;
             self.hir.setType(tp, tp_id);
             try self.recordNarrow(tpp.name, tp_id);
             try class_param_ids.append(self.gpa, tp_id);
@@ -44504,6 +44524,23 @@ test "checker: generic class type annotation substitutes type parameters" {
     const body = hir_mod.blockStmts(&s.hir, f.body);
     const ret_p = hir_mod.returnOf(&s.hir, body[0]);
     try T.expectEqual(types.Primitive.number_t, s.hir.typeOf(ret_p.value));
+}
+
+test "checker: class type parameter is in scope within its own constraint" {
+    // Pins the two-pass type-parameter binding in `checkClassDecl` so
+    // `class C<T extends List<T>>` does not emit TS2304 on the inner
+    // `T` reference. Mirrors upstream parserGenericConstraint2-7
+    // baselines.
+    const s = try newSetup(
+        \\interface List<U> {}
+        \\class C<T extends List<T>> {}
+    );
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+    for (s.checker.diagnostics.items) |d| {
+        try T.expect(d.code != TsCodes.cannot_find_name);
+        try T.expect(d.code != TsCodes.cannot_find_name_did_you_mean);
+    }
 }
 
 test "checker: strictPropertyInitialization reports uninitialized typed instance fields" {
