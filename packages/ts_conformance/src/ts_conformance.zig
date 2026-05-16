@@ -2008,34 +2008,34 @@ fn hasHarnessModeledExpectedError(name: []const u8, source: []const u8) bool {
     if (std.mem.indexOf(u8, name, "decoratorOnClassConstructor3") != null) return true;
     if (std.mem.indexOf(u8, name, "decoratorOnClassMethodParameter3") != null) return true;
     if (std.mem.indexOf(u8, name, "decoratorOnClassMethod6") != null) return true;
-    if (std.mem.indexOf(u8, name, "awaitAndYieldInProperty") != null) return true;
+    // Removed dead shim: awaitAndYieldInProperty — checker reports TS1166 on the computed name.
     if (std.mem.indexOf(u8, name, "redeclaredProperty") != null) return true;
-    if (std.mem.indexOf(u8, name, "abstractPropertyInitializer") != null) return true;
+    // Removed dead shim: abstractPropertyInitializer — checker reports TS1267.
     if (std.mem.indexOf(u8, name, "autoAccessor11") != null) return true;
     if (std.mem.indexOf(u8, name, "mixinAbstractClasses.2") != null) return true;
     if (std.mem.indexOf(u8, name, "accessorsOverrideMethod") != null) return true;
     if (std.mem.indexOf(u8, name, "accessorsOverrideProperty10") != null) return true;
-    if (std.mem.indexOf(u8, name, "memberFunctionOverloadMixingStaticAndInstance") != null) return true;
+    // Removed dead shim: memberFunctionOverloadMixingStaticAndInstance — checker reports TS2391 etc.
     if (std.mem.indexOf(u8, name, "propertyOverridesAccessors6") != null) return true;
-    if (std.mem.indexOf(u8, name, "redefinedPararameterProperty") != null) return true;
-    if (std.mem.indexOf(u8, name, "propertyAndAccessorWithSameName") != null) return true;
-    if (std.mem.indexOf(u8, name, "propertyOverridesAccessors5") != null) return true;
-    if (std.mem.indexOf(u8, name, "propertyAndFunctionWithSameName") != null) return true;
-    if (std.mem.indexOf(u8, name, "twoAccessorsWithSameName2") != null) return true;
+    // Removed dead shim: redefinedPararameterProperty — checker reports TS2339.
+    // Removed dead shim: propertyAndAccessorWithSameName — checker reports TS2300.
+    // Removed dead shim: propertyOverridesAccessors5 — checker reports TS2610.
+    // Removed dead shim: propertyAndFunctionWithSameName — checker reports TS2300.
+    // Removed dead shim: twoAccessorsWithSameName2 — checker reports TS2300.
     if (std.mem.indexOf(u8, name, "instanceMemberWithComputedPropertyName2") != null) return true;
     if (std.mem.indexOf(u8, name, "propertyNamedConstructor") != null) return true;
     if (std.mem.indexOf(u8, name, "mixinAccessors3") != null) return true;
     if (std.mem.indexOf(u8, name, "derivedClassSuperCallsWithThisArg") != null) return true;
-    if (std.mem.indexOf(u8, name, "superCallInConstructorWithNoBaseType") != null) return true;
+    // Removed dead shim: superCallInConstructorWithNoBaseType — checker reports TS2335.
     if (std.mem.indexOf(u8, name, "superPropertyInConstructorBeforeSuperCall") != null) return true;
     if (std.mem.indexOf(u8, name, "constructorImplementationWithDefaultValues2") != null) return true;
-    if (std.mem.indexOf(u8, name, "readonlyInAmbientClass") != null) return true;
+    // Removed dead shim: readonlyInAmbientClass — checker reports TS2369.
     if (std.mem.indexOf(u8, name, "classConstructorAccessibility") != null) return true;
     if (std.mem.indexOf(u8, name, "classConstructorOverloadsAccessibility") != null) return true;
     if (std.mem.indexOf(u8, name, "classWithTwoConstructorDefinitions") != null) return true;
     if (std.mem.indexOf(u8, name, "classWithoutExplicitConstructor") != null) return true;
     if (std.mem.indexOf(u8, name, "mixinWithBaseDependingOnSelfNoCrash1") != null) return true;
-    if (std.mem.indexOf(u8, name, "staticIndexSignature7") != null) return true;
+    // Removed dead shim: staticIndexSignature7 — checker reports TS2411.
     if (std.mem.indexOf(u8, name, "classBodyWithStatements") != null) return true;
     if (std.mem.indexOf(u8, name, "classExtendingPrimitive") != null) return true;
     if (std.mem.indexOf(u8, name, "classExtendsValidConstructorFunction") != null) return true;
@@ -2052,14 +2052,14 @@ fn hasHarnessModeledExpectedError(name: []const u8, source: []const u8) bool {
     if (std.mem.indexOf(u8, name, "classAbstractConstructor") != null) return true;
     if (std.mem.indexOf(u8, name, "typeOfThisInStaticMembers6") != null) return true;
     if (std.mem.indexOf(u8, name, "privateWriteOnlyAccessorRead") != null) return true;
-    if (std.mem.indexOf(u8, name, "protectedStaticNotAccessibleInClodule") != null) return true;
+    // Removed dead shim: protectedStaticNotAccessibleInClodule — checker reports TS2445.
     if (std.mem.indexOf(u8, name, "privateProtectedMembersAreNotAccessibleDestructuring") != null) return true;
     if (std.mem.indexOf(u8, name, "classWithConstructors") != null) return true;
-    if (std.mem.indexOf(u8, name, "privateIndexer") != null) return true;
+    // Removed dead shim: privateIndexer — checker reports TS1071. (privateIndexer2.ts will also be re-probed.)
     if (std.mem.indexOf(u8, name, "staticIndexers") != null) return true;
-    if (std.mem.indexOf(u8, name, "publicIndexer") != null) return true;
+    // Removed dead shim: publicIndexer — checker reports TS1071.
     if (std.mem.indexOf(u8, name, "classStaticBlockUseBeforeDef3") != null) return true;
-    if (std.mem.indexOf(u8, name, "protectedClassPropertyAccessibleWithinNestedSubclass1") != null) return true;
+    // Removed dead shim: protectedClassPropertyAccessibleWithinNestedSubclass1 — checker reports TS2445.
     if (std.mem.indexOf(u8, name, "classStaticBlock8") != null) return true;
     if (std.mem.indexOf(u8, name, "classStaticBlock19") != null) return true;
     if (std.mem.indexOf(u8, name, "classStaticBlock7") != null) return true;
@@ -2123,12 +2123,16 @@ fn hasHarnessModeledExpectedError(name: []const u8, source: []const u8) bool {
     if (std.mem.indexOf(u8, name, "asyncArrowFunctionCapturesArguments_es6") != null) return true;
     if (std.mem.indexOf(u8, name, "await_unaryExpression_es6_1") != null) return true;
     if (std.mem.indexOf(u8, name, "awaitAndYield") != null) return true;
-    if (std.mem.indexOf(u8, name, "enumConstantMembers") != null) return true;
+    // Removed dead shim: enumConstantMembers — checker reports TS2474.
     if (std.mem.indexOf(u8, name, "enumShadowedInfinityNaN") != null) return true;
     if (std.mem.indexOf(u8, name, "enumMergingErrors") != null) return true;
     if (std.mem.indexOf(u8, name, "enumErrorOnConstantBindingWithInitializer") != null) return true;
     if (std.mem.indexOf(u8, name, "enumConstantMemberWithString") != null) return true;
-    if (std.mem.indexOf(u8, name, "enumConstantMemberWithTemplateLiterals") != null) return true;
+    // Narrowed: the unsuffixed `enumConstantMemberWithTemplateLiterals` now produces real
+    // diagnostics (TS2362 etc.), but the substring originally also caught the
+    // `...EmitDeclaration` variant which is still emit-declaration-only and lacks checker
+    // diagnostics on the stripped single-source path, so keep that one modeled explicitly.
+    if (std.mem.indexOf(u8, name, "enumConstantMemberWithTemplateLiteralsEmitDeclaration") != null) return true;
     // Switch case comparability diagnostics (TS2678) require the
     // checker to compare case-clause literal types against the switch
     // discriminant. The parser/control-flow surface accepts the
@@ -4777,6 +4781,73 @@ test "conformance: runOwnedCorpus does NOT flip a clean fixture with @target: es
     // via the standard `!had_errors == !entry.expects_error` path.
     try T.expectEqual(@as(u32, 1), stats.passed);
     try T.expectEqual(@as(u32, 0), stats.failed);
+}
+
+test "harness-shim-retired: enum + class-member cluster still produces real diagnostics" {
+    // Regression net for the cluster of harness shims retired in
+    // `hasHarnessModeledExpectedError`. Each fixture below used to be
+    // a coarse "expects-error" pass that was only flagged via the
+    // shim's substring table. Probing showed the checker now emits
+    // at least one diagnostic per fixture under the default
+    // single-source compile path, so the shim entries were removed.
+    // If any of these fixtures regresses (no diagnostic), the
+    // corresponding corpus case will start failing — this test gives
+    // us a sharper, named failure first so it's clear which fixture
+    // and which TS-error class is back to silent.
+    const paths_or_null = try resolveTsCorpusPaths(T.allocator);
+    if (paths_or_null == null) return;
+    const paths = paths_or_null.?;
+    defer {
+        T.allocator.free(paths.cases);
+        T.allocator.free(paths.baselines);
+    }
+    const cases: []const []const u8 = &[_][]const u8{
+        "enums/enumConstantMembers.ts",
+        "enums/enumConstantMemberWithTemplateLiterals.ts",
+        "classes/propertyMemberDeclarations/abstractPropertyInitializer.ts",
+        "classes/propertyMemberDeclarations/memberFunctionDeclarations/memberFunctionOverloadMixingStaticAndInstance.ts",
+        "classes/propertyMemberDeclarations/propertyOverridesAccessors5.ts",
+        "classes/propertyMemberDeclarations/redefinedPararameterProperty.ts",
+        "classes/propertyMemberDeclarations/propertyAndAccessorWithSameName.ts",
+        "classes/propertyMemberDeclarations/propertyAndFunctionWithSameName.ts",
+        "classes/propertyMemberDeclarations/twoAccessorsWithSameName2.ts",
+        "classes/awaitAndYieldInProperty.ts",
+        "classes/members/accessibility/protectedStaticNotAccessibleInClodule.ts",
+        "classes/indexMemberDeclarations/privateIndexer.ts",
+        "classes/indexMemberDeclarations/privateIndexer2.ts",
+        "classes/indexMemberDeclarations/publicIndexer.ts",
+        "classes/staticIndexSignature/staticIndexSignature7.ts",
+        "classes/members/accessibility/protectedClassPropertyAccessibleWithinNestedSubclass1.ts",
+        "classes/constructorDeclarations/constructorParameters/readonlyInAmbientClass.ts",
+        "classes/constructorDeclarations/superCalls/superCallInConstructorWithNoBaseType.ts",
+    };
+    for (cases) |rel| {
+        const path = try std.fmt.allocPrint(T.allocator, "{s}/{s}", .{ paths.cases, rel });
+        defer T.allocator.free(path);
+        const source = readFileAlloc(T.allocator, path) catch |err| {
+            std.debug.print(
+                "harness-shim-retired: missing fixture {s} ({s}) — skipped\n",
+                .{ rel, @errorName(err) },
+            );
+            continue;
+        };
+        defer T.allocator.free(source);
+        var compilation = try ts_driver.compileSource(T.allocator, source, .{
+            .continue_on_error = true,
+            .no_emit = true,
+        });
+        defer {
+            compilation.deinit();
+            T.allocator.destroy(compilation);
+        }
+        if (compilation.diagnostics.items.len == 0) {
+            std.debug.print(
+                "harness-shim-retired: REGRESSION {s} produced no diagnostics; shim must be reinstated.\n",
+                .{rel},
+            );
+            try T.expect(false);
+        }
+    }
 }
 
 test "conformance: runOwnedCorpus rejects expects-error fixture with no diagnostic source" {
