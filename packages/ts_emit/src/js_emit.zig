@@ -2142,6 +2142,20 @@ pub const Printer = struct {
                     }
                     if (tp.catch_block == hir_mod.none_node_id and tp.finally_block == hir_mod.none_node_id) return false;
                 },
+                .switch_stmt => {
+                    if (!self.subtreeContainsYield(s)) continue;
+                    // §4.A.4.16 v0 — `switch (x) { case <V>: ...; break; ... }`
+                    // with yielding bodies. Restrictions:
+                    //   * discriminant is yield-free
+                    //   * each case body is a flat sequence of yield/
+                    //     await-free non-structured stmts plus at most
+                    //     ONE bare `yield E;` (E yield-free) — no
+                    //     fall-through, no labeled break
+                    //   * each case body ends with `break;` (or
+                    //     `return`/`throw` which implicitly terminate)
+                    //   * `default` is allowed
+                    if (!self.switchYieldOk(s)) return false;
+                },
                 .break_stmt, .continue_stmt, .fn_decl, .class_decl => return false,
                 .call_expr => {
                     // `f(yield E);` as a top-level expression — call
@@ -2443,6 +2457,57 @@ pub const Printer = struct {
             .while_stmt, .do_while_stmt, .for_stmt, .for_in_stmt, .for_of_stmt, .try_stmt, .switch_stmt, .throw_stmt, .fn_decl, .class_decl, .return_stmt => return false,
             else => return true,
         }
+    }
+
+    /// §4.A.4.16 — true iff `switch_stmt` is acceptable for state-
+    /// machine lowering. Each case body: yield/await-free non-
+    /// structured stmts + at most one bare `yield E` + ends with
+    /// `break;` / `return` / `throw`. No labeled break. No
+    /// fall-through (we require explicit `break;` since the dispatch
+    /// emit assumes each case is independent).
+    fn switchYieldOk(self: *const Printer, switch_node: NodeId) bool {
+        const sp = hir_mod.switchOf(self.hir, switch_node);
+        if (self.subtreeContainsYield(sp.discriminant)) return false;
+        const cases = hir_mod.switchCases(self.hir, switch_node);
+        for (cases) |cn| {
+            if (self.hir.kindOf(cn) != .switch_case) continue;
+            const cp = hir_mod.switchCaseOf(self.hir, cn);
+            if (cp.value != hir_mod.none_node_id and self.subtreeContainsYield(cp.value)) return false;
+            const stmts = hir_mod.switchCaseStmts(self.hir, cn);
+            var yield_count: usize = 0;
+            var terminates = false;
+            for (stmts) |st| {
+                const k = self.hir.kindOf(st);
+                if (k == .yield_expr) {
+                    const yp = hir_mod.yieldExprOf(self.hir, st);
+                    if (yp.type_node != hir_mod.none_node_id) return false; // no yield* in v0
+                    if (yp.expr != hir_mod.none_node_id and self.subtreeContainsYield(yp.expr)) return false;
+                    yield_count += 1;
+                    if (yield_count > 1) return false;
+                    continue;
+                }
+                if (k == .break_stmt) {
+                    const lab = hir_mod.labelOf(self.hir, st);
+                    if (lab.label != hir_mod.none_node_id) return false; // no labeled break
+                    terminates = true;
+                    continue;
+                }
+                if (k == .return_stmt or k == .throw_stmt) {
+                    if (self.subtreeContainsYield(st)) return false;
+                    terminates = true;
+                    continue;
+                }
+                if (self.subtreeContainsYield(st)) return false;
+                // Reject nested structured stmts that could complicate
+                // the dispatch (the dispatch emit doesn't recurse).
+                switch (k) {
+                    .while_stmt, .do_while_stmt, .for_stmt, .for_in_stmt, .for_of_stmt, .try_stmt, .switch_stmt, .if_stmt, .fn_decl, .class_decl, .continue_stmt => return false,
+                    else => {},
+                }
+            }
+            if (!terminates) return false;
+        }
+        return true;
     }
 
     /// §4.A.4.5 — true iff `body` is a block with **two or more**
@@ -3843,6 +3908,125 @@ pub const Printer = struct {
                     try self.write(":");
                 }
                 state += if (cond_is_yield) @as(u32, 5) else @as(u32, 4);
+            } else if (k == .switch_stmt and self.subtreeContainsYield(stmt)) {
+                // §4.A.4.16 v0 — switch with yielding case bodies.
+                // Layout per case: each case-with-yield consumes 2
+                // state slots (yield + resume+exit); pure yield-free
+                // cases consume 1 state (body + break-rewritten exit).
+                // Plus 1 dispatch case (current) + 1 exit case.
+                const sp = hir_mod.switchOf(self.hir, stmt);
+                const cases = hir_mod.switchCases(self.hir, stmt);
+                // Two-pass: pass 1 assigns a state label to each case
+                // and computes exit_label; pass 2 emits the dispatch
+                // switch and each case body inline.
+                var case_states: [128]u32 = undefined; // v0: cap at 128 cases
+                var has_default = false;
+                var default_state: u32 = 0;
+                var next_state = state + 1;
+                var case_idx: usize = 0;
+                for (cases) |cn| {
+                    if (self.hir.kindOf(cn) != .switch_case) continue;
+                    case_states[case_idx] = next_state;
+                    const cp_ = hir_mod.switchCaseOf(self.hir, cn);
+                    if (cp_.value == hir_mod.none_node_id) {
+                        has_default = true;
+                        default_state = next_state;
+                    }
+                    // Count yields in body to compute state advance.
+                    const stmts_ = hir_mod.switchCaseStmts(self.hir, cn);
+                    var yield_count: u32 = 0;
+                    for (stmts_) |st| {
+                        if (self.hir.kindOf(st) == .yield_expr) yield_count += 1;
+                    }
+                    // Each yield consumes 2 states (close + resume open);
+                    // body case open is 1; total per case = 1 + 2*yield_count.
+                    // But the resume case ends with `return [3, exit]` and
+                    // the open case label is the case_state itself, so
+                    // advance = 1 + yield_count (each yield adds 1 resume state).
+                    next_state += 1 + yield_count;
+                    case_idx += 1;
+                    if (case_idx >= case_states.len) return error.OutOfMemory;
+                }
+                const exit_label = next_state;
+                // Save/restore gen_break_label: bare `break;` in case
+                // bodies rewrites to `return [3, exit];`.
+                const prev_break = self.gen_break_label;
+                self.gen_break_label = exit_label;
+                defer self.gen_break_label = prev_break;
+                // Emit dispatch in current case.
+                try self.write(" switch (");
+                try self.printExpression(sp.discriminant);
+                try self.write(") {");
+                var di: usize = 0;
+                for (cases) |cn| {
+                    if (self.hir.kindOf(cn) != .switch_case) continue;
+                    const cp = hir_mod.switchCaseOf(self.hir, cn);
+                    if (cp.value == hir_mod.none_node_id) {
+                        di += 1;
+                        continue; // default handled below
+                    }
+                    try self.write(" case ");
+                    try self.printExpression(cp.value);
+                    try self.write(": return [3, ");
+                    var nbuf: [16]u8 = undefined;
+                    try self.write(std.fmt.bufPrint(&nbuf, "{d}", .{case_states[di]}) catch unreachable);
+                    try self.write("];");
+                    di += 1;
+                }
+                {
+                    var nbuf: [16]u8 = undefined;
+                    try self.write(" default: return [3, ");
+                    try self.write(std.fmt.bufPrint(&nbuf, "{d}", .{if (has_default) default_state else exit_label}) catch unreachable);
+                    try self.write("]; }");
+                }
+                // Pass 2: emit each case body.
+                var ci: usize = 0;
+                for (cases) |cn| {
+                    if (self.hir.kindOf(cn) != .switch_case) continue;
+                    state = case_states[ci];
+                    {
+                        var nbuf: [16]u8 = undefined;
+                        try self.writeNewlineIndent();
+                        try self.write("case ");
+                        try self.write(std.fmt.bufPrint(&nbuf, "{d}", .{state}) catch unreachable);
+                        try self.write(":");
+                    }
+                    const stmts2 = hir_mod.switchCaseStmts(self.hir, cn);
+                    for (stmts2) |st| {
+                        const sk = self.hir.kindOf(st);
+                        if (sk == .yield_expr) {
+                            const yp = hir_mod.yieldExprOf(self.hir, st);
+                            try self.write(" return [4");
+                            if (yp.expr != hir_mod.none_node_id) {
+                                try self.write(", ");
+                                try self.printExpression(yp.expr);
+                            }
+                            try self.write("];");
+                            state += 1;
+                            var nbuf: [16]u8 = undefined;
+                            try self.writeNewlineIndent();
+                            try self.write("case ");
+                            try self.write(std.fmt.bufPrint(&nbuf, "{d}", .{state}) catch unreachable);
+                            try self.write(": _a.sent();");
+                            continue;
+                        }
+                        // break_stmt/return/throw etc. — emit inline
+                        // (printNonIndentStatement rewrites break via
+                        // gen_break_label).
+                        try self.write(" ");
+                        try self.printNonIndentStatement(st);
+                    }
+                    ci += 1;
+                }
+                // Open exit case.
+                state = exit_label;
+                {
+                    var nbuf: [16]u8 = undefined;
+                    try self.writeNewlineIndent();
+                    try self.write("case ");
+                    try self.write(std.fmt.bufPrint(&nbuf, "{d}", .{state}) catch unreachable);
+                    try self.write(":");
+                }
             } else if (k == .if_stmt and self.subtreeContainsYield(stmt)) {
                 // §4.A.4.2 + §4.A.4.5 + §4.A.4.11 — unified if-yield
                 // emit. Handles all combinations of N then-yields ×
@@ -9735,6 +9919,79 @@ test "emit: generator with for-of-yield + object destructuring target" {
     defer T.allocator.free(out);
     try T.expect(std.mem.indexOf(u8, out, "__generator") != null);
     try T.expect(std.mem.indexOf(u8, out, "var { value } = _arr[_i];") != null);
+}
+
+test "emit: generator with switch + yielding cases lowers to dispatch + per-case states" {
+    // §4.A.4.16 v0 — `switch (x) { case 1: yield 'a'; break; case 2:
+    // yield 'b'; break; }` at ES5 lowers to:
+    //   case 0: switch (x) { case 1: return [3, 1]; case 2: return [3, 3]; default: return [3, exit]; }
+    //   case 1: return [4, 'a'];
+    //   case 2: _a.sent(); return [3, exit];   // break → exit_label
+    //   case 3: return [4, 'b'];
+    //   case 4: _a.sent(); return [3, exit];
+    //   case 5: (exit)
+    const out = try emitWithOpts(
+        "function* g() { switch (x) { case 1: yield 'a'; break; case 2: yield 'b'; break; } }",
+        .{ .es_target = .es5 },
+    );
+    defer T.allocator.free(out);
+    try T.expect(std.mem.indexOf(u8, out, "__generator") != null);
+    try T.expect(std.mem.indexOf(u8, out, "TODO: ES5 generator") == null);
+    // Dispatch
+    try T.expect(std.mem.indexOf(u8, out, "switch (x) { case 1: return [3, 1]; case 2: return [3, 3]; default: return [3, 5]; }") != null);
+    // case 1 yields 'a'
+    try T.expect(std.mem.indexOf(u8, out, "case 1: return [4, \"a\"];") != null);
+    // case 2 resume + break (→ exit case 5)
+    try T.expect(std.mem.indexOf(u8, out, "case 2: _a.sent(); return [3, 5];") != null);
+    // case 3 yields 'b'
+    try T.expect(std.mem.indexOf(u8, out, "case 3: return [4, \"b\"];") != null);
+    try T.expect(std.mem.indexOf(u8, out, "case 4: _a.sent(); return [3, 5];") != null);
+    // exit
+    try T.expect(std.mem.indexOf(u8, out, "case 5:") != null);
+}
+
+test "emit: generator with switch + default lowers default to its case state" {
+    // The `default:` arm gets its own state and the dispatch's
+    // `default` clause jumps there.
+    const out = try emitWithOpts(
+        "function* g() { switch (x) { case 1: yield 'a'; break; default: yield 'd'; break; } }",
+        .{ .es_target = .es5 },
+    );
+    defer T.allocator.free(out);
+    try T.expect(std.mem.indexOf(u8, out, "switch (x) { case 1: return [3, 1]; default: return [3, 3]; }") != null);
+    try T.expect(std.mem.indexOf(u8, out, "case 3: return [4, \"d\"];") != null);
+    try T.expect(std.mem.indexOf(u8, out, "case 4: _a.sent(); return [3, 5];") != null);
+    try T.expect(std.mem.indexOf(u8, out, "case 5:") != null);
+}
+
+test "emit: generator with switch + yield-free case still routes through dispatch" {
+    // A yield-free case body just runs its stmts and breaks (→ exit).
+    const out = try emitWithOpts(
+        "function* g() { switch (x) { case 1: yield 'a'; break; case 2: log(); break; } }",
+        .{ .es_target = .es5 },
+    );
+    defer T.allocator.free(out);
+    // case 2 body emits `log()` + the break rewrite to exit.
+    try T.expect(std.mem.indexOf(u8, out, "case 3: log(); return [3, 4];") != null);
+}
+
+test "emit: generator with switch missing-break still bails" {
+    // No-break case is fall-through; v0 requires explicit break.
+    const out = try emitWithOpts(
+        "function* g() { switch (x) { case 1: yield 'a'; case 2: yield 'b'; break; } }",
+        .{ .es_target = .es5 },
+    );
+    defer T.allocator.free(out);
+    try T.expect(std.mem.indexOf(u8, out, "TODO: ES5 generator") != null);
+}
+
+test "emit: generator with switch yield-in-discriminant still bails" {
+    const out = try emitWithOpts(
+        "function* g() { switch (yield 1) { case 1: yield 'a'; break; } }",
+        .{ .es_target = .es5 },
+    );
+    defer T.allocator.free(out);
+    try T.expect(std.mem.indexOf(u8, out, "TODO: ES5 generator") != null);
 }
 
 test "emit: generator with for-of-yield + if-guarded continue lowers" {
