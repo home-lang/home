@@ -138,6 +138,12 @@ pub const TsCodes = struct {
     pub const ambient_initializer_not_allowed: u32 = 1039;
     pub const object_literal_duplicate_property: u32 = 1117;
     pub const type_not_assignable: u32 = 2322;
+    /// TS2559 — `Type 'A' has no properties in common with type 'B'.`
+    /// Weak-type check: target type's members are all optional (or
+    /// it's an empty object) and source has zero overlap with the
+    /// target's property names. Mirrors upstream's weak-type
+    /// suggestion that we likely meant to widen the source.
+    pub const no_properties_in_common: u32 = 2559;
     pub const type_missing_properties: u32 = 2739;
     /// TS2741 — `Property 'X' is missing in type 'A' but required in
     /// type 'B'.`. Single-property variant of TS2739, emitted when
@@ -638,6 +644,15 @@ pub const Checker = struct {
     /// without an explicit constructor produce no entry — `new Foo()`
     /// then accepts any args (matches TS's implicit no-arg default).
     class_constructor_sigs: std.AutoHashMapUnmanaged(hir_mod.StringId, TypeId),
+    /// Class-name → list of declared *overload* constructor signatures
+    /// (the bodyless `constructor(...)` declarations preceding the
+    /// implementation). Used so `new C(args)` accepts any args.len /
+    /// param-type that matches one of the overloads even when the
+    /// implementation signature itself wouldn't (e.g. `class C {
+    /// constructor(x: number, y: string); constructor(x: number) {} }`
+    /// — `new C(1, '')` must accept the 2-arg overload). Empty / absent
+    /// entry means the implementation signature alone governs the call.
+    class_constructor_overload_sigs: std.AutoHashMapUnmanaged(hir_mod.StringId, std.ArrayListUnmanaged(TypeId)),
     /// Class-name → static-side object type. Populated from `static`
     /// methods/properties; consulted for `super.x` inside static
     /// methods of derived classes.
@@ -1011,6 +1026,7 @@ pub const Checker = struct {
             .class_instance_types = .empty,
             .checked_class_decls = .empty,
             .class_constructor_sigs = .empty,
+            .class_constructor_overload_sigs = .empty,
             .class_static_types = .empty,
             .class_static_type_by_node = .empty,
             .class_name_by_instance = .empty,
@@ -1134,6 +1150,11 @@ pub const Checker = struct {
         self.class_instance_types.deinit(self.gpa);
         self.checked_class_decls.deinit(self.gpa);
         self.class_constructor_sigs.deinit(self.gpa);
+        {
+            var ovl_it = self.class_constructor_overload_sigs.valueIterator();
+            while (ovl_it.next()) |list| list.deinit(self.gpa);
+            self.class_constructor_overload_sigs.deinit(self.gpa);
+        }
         self.class_static_types.deinit(self.gpa);
         self.class_static_type_by_node.deinit(self.gpa);
         self.class_name_by_instance.deinit(self.gpa);
@@ -8988,6 +9009,14 @@ pub const Checker = struct {
         defer static_members.deinit(self.gpa);
         var ctor_sig: TypeId = types.Primitive.none;
         var has_explicit_ctor = false;
+        // Per-class accumulation of bodyless constructor overload
+        // signatures. Flushed into `class_constructor_overload_sigs`
+        // after the class name is known so the new-expression path
+        // can consider them during arity / TS2554 checking. We only
+        // collect the BODYLESS sigs here — the implementation lands
+        // in `ctor_sig` separately.
+        var ctor_overload_sigs: std.ArrayListUnmanaged(TypeId) = .empty;
+        defer ctor_overload_sigs.deinit(self.gpa);
         // Constructor overload tracking. tsc fires TS2390 (Constructor
         // implementation is missing) when one or more `constructor()`
         // signatures appear without a body and there's no concrete
@@ -9143,6 +9172,11 @@ pub const Checker = struct {
                         if (fn_p.body == hir_mod.none_node_id) {
                             if (ctor_first_bodyless == hir_mod.none_node_id) ctor_first_bodyless = m;
                             ctor_bodyless_count += 1;
+                            // Track each bodyless overload so the
+                            // new-expression arity check can accept
+                            // any matching overload (see
+                            // `constructSignaturesWithOverloads.ts(10,1)`).
+                            try ctor_overload_sigs.append(self.gpa, sig);
                         } else {
                             ctor_impl_count += 1;
                         }
@@ -9784,6 +9818,30 @@ pub const Checker = struct {
             try self.class_name_by_static.put(self.gpa, static_t, cid.name);
             if (has_explicit_ctor) {
                 try self.class_constructor_sigs.put(self.gpa, cid.name, static_ctor_sig);
+            }
+            if (ctor_overload_sigs.items.len > 0) {
+                // Re-intern each bodyless overload signature with the
+                // instance type as return so the arity-check path can
+                // line them up against `new C(args)` calls. Mirrors
+                // the static-side rewrite for the implementation sig.
+                var converted: std.ArrayListUnmanaged(TypeId) = .empty;
+                errdefer converted.deinit(self.gpa);
+                for (ctor_overload_sigs.items) |ovl_sig| {
+                    const ovl_params = self.interner.signatureParams(ovl_sig);
+                    const new_sig = self.interner.internSignature(ovl_params, instance_t, true) catch return error.OutOfMemory;
+                    if (self.rest_signatures.contains(ovl_sig)) {
+                        try self.rest_signatures.put(self.gpa, new_sig, {});
+                    }
+                    if (self.signature_min_args.get(ovl_sig)) |min_required| {
+                        try self.signature_min_args.put(self.gpa, new_sig, min_required);
+                    }
+                    try self.copySignatureParamNames(new_sig, ovl_sig);
+                    try converted.append(self.gpa, new_sig);
+                }
+                if (self.class_constructor_overload_sigs.getPtr(cid.name)) |existing| {
+                    existing.deinit(self.gpa);
+                }
+                try self.class_constructor_overload_sigs.put(self.gpa, cid.name, converted);
             }
             const implements = self.hir.childSlice(c.implements_start, c.implements_len);
             for (implements) |impl_node| {
@@ -22227,14 +22285,34 @@ pub const Checker = struct {
                         // and skips arity / TS2554 in that case (see
                         // fixture `classAbstractInstantiations1`).
                         if (!self.abstract_classes.contains(id.name)) {
-                            var effective_ctor_sig = ctor_sig;
-                            var ctor_subs: std.AutoHashMapUnmanaged(TypeId, TypeId) = .empty;
-                            defer ctor_subs.deinit(self.gpa);
-                            try self.inferCallSubstitutions(ctor_sig, args, arg_types.items, &ctor_subs);
-                            if (ctor_subs.count() > 0) {
-                                effective_ctor_sig = self.substituteType(ctor_sig, &ctor_subs) catch ctor_sig;
+                            // When the class declared explicit overload
+                            // signatures (bodyless `constructor(...)`
+                            // before the implementation), accept the
+                            // call if it matches ANY of the overloads
+                            // by arity — defer the arity / TS2554 check
+                            // to the implementation only when no
+                            // overload fits. Mirrors upstream tsc for
+                            // `constructSignaturesWithOverloads.ts`.
+                            const overload_list_opt = self.class_constructor_overload_sigs.getPtr(id.name);
+                            var any_overload_fits = false;
+                            if (overload_list_opt) |overload_list| {
+                                for (overload_list.items) |ovl_sig| {
+                                    if (self.callArityFitsSignature(ovl_sig, args)) {
+                                        any_overload_fits = true;
+                                        break;
+                                    }
+                                }
                             }
-                            try self.checkArgsAgainstSignature(node, args, arg_types.items, effective_ctor_sig);
+                            if (!any_overload_fits) {
+                                var effective_ctor_sig = ctor_sig;
+                                var ctor_subs: std.AutoHashMapUnmanaged(TypeId, TypeId) = .empty;
+                                defer ctor_subs.deinit(self.gpa);
+                                try self.inferCallSubstitutions(ctor_sig, args, arg_types.items, &ctor_subs);
+                                if (ctor_subs.count() > 0) {
+                                    effective_ctor_sig = self.substituteType(ctor_sig, &ctor_subs) catch ctor_sig;
+                                }
+                                try self.checkArgsAgainstSignature(node, args, arg_types.items, effective_ctor_sig);
+                            }
                         }
                     }
                     if (self.class_instance_types.get(id.name)) |inst| {
@@ -24904,6 +24982,27 @@ pub const Checker = struct {
         var construct_sigs: std.ArrayListUnmanaged(TypeId) = .empty;
         defer construct_sigs.deinit(self.gpa);
         try self.collectConstructSignatures(callee_t, &construct_sigs);
+        // Splice in any declared *overload* constructor signatures for
+        // the named class so the overload-resolution loop below can
+        // pick a matching overload before falling back to the
+        // implementation's stricter arity. The implementation signature
+        // is the one that ends up in the static type's `__construct`
+        // member; the overloads only live in
+        // `class_constructor_overload_sigs`.
+        if (callee_node != hir_mod.none_node_id and self.hir.kindOf(callee_node) == .identifier) {
+            const callee_id = hir_mod.identifierOf(self.hir, callee_node);
+            if (self.class_constructor_overload_sigs.get(callee_id.name)) |overload_list| {
+                // Insert overloads at the FRONT so they're considered
+                // first — mirrors tsc's left-to-right overload-match
+                // walk for `new ClassName(...)`.
+                var combined: std.ArrayListUnmanaged(TypeId) = .empty;
+                defer combined.deinit(self.gpa);
+                try combined.appendSlice(self.gpa, overload_list.items);
+                try combined.appendSlice(self.gpa, construct_sigs.items);
+                construct_sigs.clearRetainingCapacity();
+                try construct_sigs.appendSlice(self.gpa, combined.items);
+            }
+        }
         if (construct_sigs.items.len == 0) return null;
 
         const type_arg_nodes = hir_mod.callTypeArgs(self.hir, node);
@@ -31924,6 +32023,46 @@ pub const Checker = struct {
         return try self.substituteThisTypeParametersInReturn(ret, receiver_t);
     }
 
+    /// Arity-only fit test: does `args.len` land inside the
+    /// `[min_required, max_count]` range that `sig` accepts (where
+    /// `min_required` strips trailing optionals/defaults and
+    /// `max_count` is `params.len` unless the sig is variadic, in
+    /// which case any count is allowed at or above the rest's fixed
+    /// prefix)? Used by the new-expression path to decide whether
+    /// the call would type-check against any constructor overload
+    /// before falling back to the implementation signature's stricter
+    /// arity. Spread args bump the min count by their tuple-prefix
+    /// length so `[a, ...rest]` matches the overload that requires
+    /// the prefix arity.
+    fn callArityFitsSignature(self: *Checker, sig: TypeId, args: []const NodeId) bool {
+        const param_ts = self.interner.signatureParams(sig);
+        const is_variadic = self.rest_signatures.contains(sig) and param_ts.len > 0;
+        const fixed_count: usize = if (is_variadic) param_ts.len - 1 else param_ts.len;
+        const rest_min_required: usize = if (is_variadic) self.tupleFixedPrefixCount(param_ts[param_ts.len - 1]) else 0;
+        const fixed_min_required = @min(self.signatureMinRequiredArgs(sig, param_ts), fixed_count);
+        const min_required: usize = fixed_min_required + rest_min_required;
+        var effective_min_count: usize = 0;
+        for (args) |arg| {
+            if (self.hir.kindOf(arg) == .spread) {
+                effective_min_count += 1;
+            } else {
+                effective_min_count += 1;
+            }
+        }
+        const rest_max_count: ?usize = if (is_variadic) blk: {
+            if (self.fixedTupleLength(param_ts[param_ts.len - 1])) |len| {
+                break :blk fixed_count + @as(usize, @intCast(len));
+            }
+            break :blk null;
+        } else null;
+        const too_few = effective_min_count < min_required;
+        const too_many = if (is_variadic)
+            (if (rest_max_count) |max_count| effective_min_count > max_count else false)
+        else
+            args.len > param_ts.len;
+        return !(too_few or too_many);
+    }
+
     /// Shared arg / signature checker used by both `call_expr` and
     /// `new_expr`. Emits TS2554 (count mismatch) and TS2345 (per-arg
     /// type mismatch) against `sig`'s parameter list. Type-parameter
@@ -34489,6 +34628,72 @@ pub const Checker = struct {
         return buf.items;
     }
 
+    /// "Weak type" detection: target type has only optional named
+    /// members (and no index signatures / call / construct
+    /// signatures), and the source's named members share no name
+    /// with the target's. Upstream tsc treats this as a likely
+    /// typo and surfaces TS2559 instead of TS2322. Returns true
+    /// when the diagnostic was emitted.
+    fn tryReportWeakTypeNoOverlap(
+        self: *Checker,
+        node: NodeId,
+        source: TypeId,
+        target: TypeId,
+    ) CheckError!bool {
+        if (source < types.Primitive.first_dynamic or
+            source >= self.interner.pool.typeCount()) return false;
+        if (target < types.Primitive.first_dynamic or
+            target >= self.interner.pool.typeCount()) return false;
+        const tflags = self.interner.pool.flagsOf(target);
+        const sflags = self.interner.pool.flagsOf(source);
+        if (!tflags.is_object_type) return false;
+        if (!sflags.is_object_type) return false;
+        const target_members = self.interner.objectMembers(target);
+        if (target_members.len == 0) return false;
+        // Target must be "weak": every named member is optional, and
+        // there is no index / call / construct signature that could
+        // accept arbitrary keys.
+        if (self.interner.objectStringIndex(target) != types.Primitive.none) return false;
+        if (self.interner.objectNumberIndex(target) != types.Primitive.none) return false;
+        if (self.interner.objectSymbolIndex(target) != types.Primitive.none) return false;
+        const call_id = self.string_interner.intern("__call") catch return false;
+        const construct_id = self.string_interner.intern("__construct") catch return false;
+        for (target_members) |m| {
+            if (m.name == call_id or m.name == construct_id) return false;
+            if (!m.is_optional) return false;
+        }
+        const source_members = self.interner.objectMembers(source);
+        if (source_members.len == 0) return false;
+        // Bail on source-side index signatures / call/construct
+        // members — those make "overlap" ill-defined for weak-type
+        // diagnostics; upstream tsc skips TS2559 in those cases too.
+        if (self.interner.objectStringIndex(source) != types.Primitive.none) return false;
+        if (self.interner.objectNumberIndex(source) != types.Primitive.none) return false;
+        if (self.interner.objectSymbolIndex(source) != types.Primitive.none) return false;
+        for (source_members) |sm| {
+            if (sm.name == call_id or sm.name == construct_id) return false;
+        }
+        // Detect overlap by property name only — the property's type
+        // is checked separately by the relation engine and isn't part
+        // of the TS2559 trigger.
+        for (target_members) |tm| {
+            for (source_members) |sm| {
+                if (tm.name == sm.name) return false;
+            }
+        }
+        const source_name = (try self.allocSimpleTypeName(source)) orelse
+            (try self.allocObjectTypeShape(source)) orelse return false;
+        const target_name = (try self.allocSimpleTypeName(target)) orelse
+            (try self.allocObjectTypeShape(target)) orelse return false;
+        const msg = try std.fmt.allocPrint(
+            self.diag_arena.allocator(),
+            "Type '{s}' has no properties in common with type '{s}'.",
+            .{ source_name, target_name },
+        );
+        try self.report(node, TsCodes.no_properties_in_common, msg);
+        return true;
+    }
+
     fn reportAssignmentTypeNotAssignable(
         self: *Checker,
         node: NodeId,
@@ -34503,6 +34708,11 @@ pub const Checker = struct {
         // required property — mirrors fixture
         // `nonPrimitiveAssignError.ts(5,1)`.
         if (try self.tryReportSinglePropertyMissing(node, value_node, source, target)) return;
+        // Weak-type check: when the target's named members are all
+        // optional and the source shares no property name with the
+        // target, upstream tsc surfaces TS2559 in place of TS2322.
+        // See `assignmentCompatWithObjectMembersOptionality2.ts(33,5)`.
+        if (try self.tryReportWeakTypeNoOverlap(node, source, target)) return;
         const source_name = self.objectAnnotationNameForIdentifier(value_node) orelse
             (try self.allocSimpleTypeName(source)) orelse
             (try self.allocObjectTypeShape(source)) orelse
@@ -34589,8 +34799,26 @@ pub const Checker = struct {
 
     fn reportNoOverlapComparison(self: *Checker, node: NodeId, lhs: TypeId, rhs: TypeId) !void {
         const pos = self.adjustedComparisonDiagnosticPos(node);
-        if (try self.allocComparisonOperandName(lhs)) |lhs_name| {
-            if (try self.allocComparisonOperandName(rhs)) |rhs_name| {
+        // When one operand is a literal type but the other is the
+        // base primitive of a DIFFERENT family (e.g. `"foo" == 42`,
+        // where the literal's base is `string` and the other side
+        // is `number`), tsc widens the literal to its base before
+        // rendering — so the message reads `'string' and 'number'`,
+        // not `'"foo"' and 'number'`. Mirrors upstream prose for
+        // `stringLiteralsAssertionsInEqualityComparisons02.ts(5,9)`.
+        // Same-family pairs (`"foo" === "bar"`) keep both literals,
+        // matching upstream's no-widen behavior for line 3 of the
+        // same fixture.
+        var display_lhs = lhs;
+        var display_rhs = rhs;
+        if (self.shouldWidenLiteralAgainstPrimitive(lhs, rhs)) {
+            display_lhs = self.widenLiteralType(lhs);
+        }
+        if (self.shouldWidenLiteralAgainstPrimitive(rhs, lhs)) {
+            display_rhs = self.widenLiteralType(rhs);
+        }
+        if (try self.allocComparisonOperandName(display_lhs)) |lhs_name| {
+            if (try self.allocComparisonOperandName(display_rhs)) |rhs_name| {
                 const msg = try std.fmt.allocPrint(
                     self.diag_arena.allocator(),
                     "This comparison appears to be unintentional because the types '{s}' and '{s}' have no overlap.",
@@ -34601,6 +34829,29 @@ pub const Checker = struct {
             }
         }
         try self.reportAt(node, pos, TsCodes.no_overlap_comparison, "This comparison appears to be unintentional because the types have no overlap.");
+    }
+
+    /// Returns true when `lit` is a literal type and `other` is the
+    /// base primitive of a DIFFERENT family (so widening `lit` keeps
+    /// the no-overlap message readable). `lit` itself may already be
+    /// a base primitive; in that case we don't widen.
+    fn shouldWidenLiteralAgainstPrimitive(self: *Checker, lit: TypeId, other: TypeId) bool {
+        if (lit >= self.interner.pool.typeCount()) return false;
+        const lflags = self.interner.pool.flagsOf(lit);
+        if (!lflags.is_literal) return false;
+        if (other >= self.interner.pool.typeCount()) return false;
+        const oflags = self.interner.pool.flagsOf(other);
+        if (oflags.is_literal) return false;
+        // `other` must be a primitive of a DIFFERENT family — only
+        // then does the no-overlap diagnostic widen the literal.
+        const other_is_primitive_family = oflags.is_string or oflags.is_number or
+            oflags.is_boolean or oflags.is_bigint;
+        if (!other_is_primitive_family) return false;
+        const literal_family_matches = (lflags.is_string and oflags.is_string) or
+            (lflags.is_number and oflags.is_number) or
+            (lflags.is_boolean and oflags.is_boolean) or
+            (lflags.is_bigint and oflags.is_bigint);
+        return !literal_family_matches;
     }
 
     /// Like `allocSimpleTypeName` but renders intersections as
@@ -34944,17 +35195,31 @@ pub const Checker = struct {
                     // fixtures like
                     // `assignmentCompatBetweenTupleAndArray.ts(18,1)`
                     // and `strictTupleLength.ts(18,1)`.
+                    //
+                    // Additionally require that a `length: number`
+                    // member is actually present — a literal index-
+                    // signature type like `{ [x: number]: T; }` (no
+                    // `length`) must render as the literal shape
+                    // rather than `T[]`. tsc preserves the literal
+                    // form because the type doesn't structurally
+                    // satisfy the `Array<T>` shape. See
+                    // `assignmentCompatWithNumericIndexer.ts(14,1)`.
                     const num_idx = self.interner.objectNumberIndex(t);
                     const length_id_arr = self.string_interner.intern("length") catch 0;
                     var has_only_length_or_numeric = true;
+                    var has_length_member = false;
                     for (members) |m| {
-                        if (m.name == length_id_arr) continue;
+                        if (m.name == length_id_arr) {
+                            has_length_member = true;
+                            continue;
+                        }
                         const nm = self.string_interner.get(m.name);
                         if (nm.len > 0 and isAllDigits(nm)) continue;
                         has_only_length_or_numeric = false;
                         break;
                     }
                     if (has_only_length_or_numeric and
+                        has_length_member and
                         num_idx != types.Primitive.none and
                         self.interner.objectStringIndex(t) == types.Primitive.none and
                         self.interner.objectSymbolIndex(t) == types.Primitive.none)
@@ -34980,6 +35245,38 @@ pub const Checker = struct {
                         self.interner.objectSymbolIndex(t) == types.Primitive.none)
                     {
                         break :blk "{}";
+                    }
+                    // Pure index-signature object types
+                    // (`{ [x: number]: T; }`, `{ [x: string]: T; }`).
+                    // No named members, no `length`, exactly one
+                    // string-or-number indexer — render the literal
+                    // index-signature shape. Mirrors upstream TS for
+                    // `assignmentCompatWithNumericIndexer.ts(14,1)`
+                    // and the `assignmentCompatWithStringIndexer`
+                    // family, where the source type was declared via
+                    // `var x: { [x: number]: T; }` rather than `T[]`.
+                    if (members.len == 0) {
+                        const str_idx = self.interner.objectStringIndex(t);
+                        const sym_idx = self.interner.objectSymbolIndex(t);
+                        const has_num = num_idx != types.Primitive.none;
+                        const has_str = str_idx != types.Primitive.none;
+                        const has_sym = sym_idx != types.Primitive.none;
+                        const single_count: u32 = @as(u32, @intFromBool(has_num)) +
+                            @as(u32, @intFromBool(has_str)) +
+                            @as(u32, @intFromBool(has_sym));
+                        if (single_count == 1) {
+                            const key_label: []const u8 = if (has_str) "string" else if (has_num) "number" else "symbol";
+                            const value_t: TypeId = if (has_str) str_idx else if (has_num) num_idx else sym_idx;
+                            if (try self.allocSimpleTypeName(value_t)) |value_name| {
+                                const arena_ix = self.diag_arena.allocator();
+                                const out_text = try std.fmt.allocPrint(
+                                    arena_ix,
+                                    "{{ [x: {s}]: {s}; }}",
+                                    .{ key_label, value_name },
+                                );
+                                break :blk out_text;
+                            }
+                        }
                     }
                 }
                 // Render unions (`object | null | undefined`) so the
@@ -36634,6 +36931,20 @@ pub const Checker = struct {
         if (!self.interner.pool.flagsOf(declared_t).is_object_type) return;
         if (try self.objectTargetHasStringIndex(declared_t)) return;
         const has_number_index = try self.objectTargetHasNumberIndex(declared_t);
+        // When the target has a number index signature but NO named
+        // members, tsc treats it as an "open" container and
+        // suppresses the excess-property check for non-numeric keys
+        // — TS2411 (member-type vs index-type mismatch) covers the
+        // strict cases (`2.0: number` against `[x: number]: string`)
+        // and the structural relation check fires TS2322 for the
+        // rest. Mirrors `numericIndexerConstrainsPropertyDeclarations`
+        // baseline which expects no TS2353 for string-keyed members.
+        if (has_number_index and
+            self.interner.objectStringIndex(declared_t) == types.Primitive.none and
+            self.interner.objectMembers(declared_t).len == 0)
+        {
+            return;
+        }
         const props = hir_mod.objectLiteralProps(self.hir, init_node);
         for (props) |p| {
             if (self.hir.kindOf(p) != .object_property) continue;
