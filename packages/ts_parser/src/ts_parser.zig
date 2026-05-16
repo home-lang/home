@@ -2006,6 +2006,38 @@ pub const Parser = struct {
                     flags,
                     param_decorators.items,
                 );
+                // TS1016: A required parameter cannot follow an optional
+                // parameter. Required = not optional (no `?`) AND no
+                // default value AND not rest. Optional-marker comes from
+                // either `?` or `= default`. Mirrors tsc's per-parameter
+                // scan; emitted at the *name* (or pattern) of the
+                // offending required parameter, matching the upstream
+                // column in `functionOverloadErrorsSyntax.ts`.
+                const is_required_now = !flags.is_optional and
+                    !flags.is_rest and
+                    default_value == hir_mod.none_node_id;
+                if (is_required_now and params.items.len > 0) {
+                    var prior_optional = false;
+                    var i = params.items.len;
+                    while (i > 0) : (i -= 1) {
+                        const prev = params.items[i - 1];
+                        if (self.hir.kindOf(prev) != .parameter) continue;
+                        const pp = hir_mod.parameterOf(self.hir, prev);
+                        if (pp.flags.is_optional or pp.default_value != hir_mod.none_node_id) {
+                            prior_optional = true;
+                        }
+                        break;
+                    }
+                    if (prior_optional) {
+                        const name_span = self.hir.spanOf(name_node);
+                        try self.reportCodeAt(
+                            name_span.start,
+                            self.lineAt(name_span.start),
+                            1016,
+                            "A required parameter cannot follow an optional parameter.",
+                        );
+                    }
+                }
                 try params.append(self.gpa, param);
                 if (self.peek().kind == .open_brace) {
                     const open = self.advance();
@@ -4798,6 +4830,14 @@ pub const Parser = struct {
             .number_literal => blk: {
                 _ = self.advance();
                 const slice = self.source[t.span.start..t.span.end];
+                // Type-position numeric literals (`: 01 = 01`) get the
+                // same TS1121 octal-literal diagnostic as expression-
+                // position literals — matches tsc's per-literal scan
+                // (the parser flags numeric tokens uniformly,
+                // regardless of whether they appear in a type or value
+                // context).
+                try self.reportStrictLegacyOctal(t, slice);
+                try self.reportNumericLiteralDiagnostics(t, slice);
                 const value = parseNumericLiteral(slice);
                 const lit = try self.builder.addLiteralNumber(tokenSpan(t), value);
                 break :blk try self.builder.addLiteralType(tokenSpan(t), lit, false);
@@ -8369,7 +8409,11 @@ pub const Parser = struct {
                 try elements.append(self.gpa, hir_mod.none_node_id);
                 continue;
             }
-            // Spread element: `...expr`.
+            // Spread element: `...expr`. Trailing-comma after the
+            // spread is permitted in plain array literals (`[1, ...a,]`
+            // is legal JS), so TS1013 fires only when the literal is
+            // later reinterpreted as a destructuring pattern — that
+            // check lives in the checker rather than the parser.
             if (self.peek().kind == .dot_dot_dot) {
                 const dot_tok = self.advance();
                 const inner = try self.parseAssignmentExpression();
