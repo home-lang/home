@@ -6049,12 +6049,19 @@ pub const Checker = struct {
             });
             return;
         }
-        // For TS2448 (variable mode) tsc renders the variable name in
-        // the message ("Block-scoped variable 'X' used before its
-        // declaration."). When we have the binding name (param_name),
-        // produce the named form to match upstream baselines.
-        if (mode == .variable and param_name != null) {
-            const p_str = self.string_interner.get(param_name.?);
+        // For TS2448 (variable mode) tsc renders the *referenced*
+        // variable name in the message ("Block-scoped variable 'X'
+        // used before its declaration.") — `X` is the name being
+        // forward-referenced, not the binding currently being
+        // declared. Mirrors
+        // `destructuringObjectBindingPatternAndAssignment4.ts(6,9)`
+        // (`e = f` reports `'f' used before its declaration.`).
+        // Fall back to `param_name` only when no reference name was
+        // captured so we still produce the named form for older
+        // call sites.
+        const display_name: ?hir_mod.StringId = ref_name orelse param_name;
+        if (mode == .variable and display_name != null) {
+            const p_str = self.string_interner.get(display_name.?);
             const msg = try std.fmt.allocPrint(
                 self.diag_arena.allocator(),
                 "Block-scoped variable '{s}' used before its declaration.",
@@ -56305,6 +56312,29 @@ test "checker: TS2496 still fires when `arguments` escapes the param-arrow lexic
         if (d.code == TsCodes.arguments_in_arrow_es5) saw_ts2496 = true;
     }
     try T.expect(saw_ts2496);
+}
+
+test "checker: TS2448 binding-default forward ref names the referenced variable" {
+    // Mirrors `destructuringObjectBindingPatternAndAssignment4.ts(6,9)`
+    // — `e = f` reports `'f' used before its declaration.` (the
+    // *referenced* name), not `'e'` (the binding being declared).
+    const s = try newSetup(
+        \\const {
+        \\    e = f,
+        \\    f = f
+        \\} = {} as any;
+    );
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+    var saw_f_msg = false;
+    var saw_wrong_e_msg = false;
+    for (s.checker.diagnostics.items) |d| {
+        if (d.code != TsCodes.block_scoped_used_before_decl) continue;
+        if (std.mem.indexOf(u8, d.message, "'f'") != null) saw_f_msg = true;
+        if (std.mem.indexOf(u8, d.message, "'e'") != null) saw_wrong_e_msg = true;
+    }
+    try T.expect(saw_f_msg);
+    try T.expect(!saw_wrong_e_msg);
 }
 
 // `for (k in obj)` where `k` has a type-parameter type whose
