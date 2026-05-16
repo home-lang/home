@@ -33702,6 +33702,7 @@ pub const Checker = struct {
     }
 
     fn sortDiagnosticsByPosition(self: *Checker) void {
+        self.dedupeRedundantCannotFindName();
         var i: usize = 1;
         while (i < self.diagnostics.items.len) : (i += 1) {
             const current = self.diagnostics.items[i];
@@ -33712,6 +33713,34 @@ pub const Checker = struct {
             }
             self.diagnostics.items[j] = current;
         }
+    }
+
+    /// Drop TS2304 / TS2552 ("cannot find name [did you mean]") at
+    /// the same node as a TS2448 / TS2449 ("used before declaration"
+    /// / "class used before its declaration") — tsc treats those as
+    /// the narrower diagnostic and never doubles up. Mirrors
+    /// `awaitUsingDeclarationsInForAwaitOf.2` and similar fixtures
+    /// where a binding is declared mid-expression and the right-of-
+    /// declaration use resolves to that same binding.
+    fn dedupeRedundantCannotFindName(self: *Checker) void {
+        if (self.diagnostics.items.len < 2) return;
+        var keep_count: usize = 0;
+        outer: for (self.diagnostics.items, 0..) |d, idx| {
+            if (d.code == TsCodes.cannot_find_name or d.code == TsCodes.cannot_find_name_did_you_mean) {
+                for (self.diagnostics.items, 0..) |other, j| {
+                    if (j == idx) continue;
+                    if (other.node != d.node) continue;
+                    if (other.code == TsCodes.block_scoped_used_before_decl or
+                        other.code == TsCodes.class_used_before_declaration)
+                    {
+                        continue :outer;
+                    }
+                }
+            }
+            self.diagnostics.items[keep_count] = d;
+            keep_count += 1;
+        }
+        self.diagnostics.shrinkRetainingCapacity(keep_count);
     }
 
     fn diagnosticStart(self: *Checker, diagnostic: Diagnostic) u32 {
