@@ -8429,7 +8429,7 @@ pub const Parser = struct {
             // variable or a property access."). Mirrors tsc, which
             // prefers the operand-type error when the operand has a
             // concrete non-numeric shape (object/array/fn/string).
-            .array_literal, .object_literal, .fn_decl, .fn_expr, .literal_string, .template_literal => true,
+            .array_literal, .object_literal, .fn_decl, .fn_expr, .literal_string, .literal_bool, .template_literal => true,
             .identifier => self.isThisIdentifier(operand),
             else => false,
         };
@@ -8517,7 +8517,7 @@ pub const Parser = struct {
             // render as TS2356 ("An arithmetic operand must be …")
             // to match tsc, which prefers the operand-type error
             // for these shapes over the bare TS2357 lvalue error.
-            .literal_string, .template_literal, .array_literal, .object_literal, .fn_decl, .fn_expr => {
+            .literal_string, .literal_bool, .template_literal, .array_literal, .object_literal, .fn_decl, .fn_expr => {
                 try self.reportCodeAt(diag_pos, diag_line, 2356, "An arithmetic operand must be of type 'any', 'number', 'bigint' or an enum type.");
             },
             // Calls / parenthesised binary results
@@ -12545,6 +12545,16 @@ test "parser: prefix update expression reports invalid operand diagnostic for ne
     _ = try s.parser.parseSourceFile();
     try T.expectEqual(@as(usize, 1), s.parser.diagnostics.items.len);
     try T.expectEqual(@as(u32, 2357), s.parser.diagnostics.items[0].code);
+}
+
+test "parser: update expression on boolean literal reports arithmetic operand diagnostic" {
+    var s = try newTestSetup("--true; true--;");
+    defer destroyTestSetup(s);
+
+    _ = try s.parser.parseSourceFile();
+    try T.expectEqual(@as(usize, 2), s.parser.diagnostics.items.len);
+    try T.expectEqual(@as(u32, 2356), s.parser.diagnostics.items[0].code);
+    try T.expectEqual(@as(u32, 2356), s.parser.diagnostics.items[1].code);
 }
 
 test "parser: regex literal reports unbalanced group" {
