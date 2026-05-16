@@ -30909,6 +30909,41 @@ pub const Checker = struct {
                 }
                 if (t >= self.interner.pool.typeCount()) break :blk null;
                 const flags = self.interner.pool.flagsOf(t);
+                // Template literal types and intrinsic string-mapping
+                // types — render structurally so TS2345 prose for
+                // fixtures like `templateLiteralTypesPatterns.ts` and
+                // `stringMappingOverPatternLiterals.ts` matches the
+                // upstream baselines. Delegates to `allocSimpleTypeName`
+                // which already handles these structural shapes.
+                if (flags.is_template_literal or flags.is_string_mapping) {
+                    break :blk try self.allocSimpleTypeName(t);
+                }
+                // Unions whose members are all simple (primitive,
+                // literal, named, template-literal, or string-mapping)
+                // — render `A | B | C` so TS2345 prose for fixtures like
+                // `templateLiteralTypesPatterns.ts(14,10)` matches the
+                // upstream `'\`http://${string}\` | \`https://${string}\` | \`ftp://${string}\`'`
+                // shape. Restricted to unions whose members each pass
+                // through this same simple-name helper, so we keep the
+                // safety property described in the function's docstring
+                // (no `[any, any]` noise from object/tuple shapes).
+                if (flags.is_union) {
+                    var union_buf: std.ArrayListUnmanaged(u8) = .empty;
+                    const arena_u = self.diag_arena.allocator();
+                    var first = true;
+                    var ok = true;
+                    for (self.interner.unionMembers(t)) |member| {
+                        const member_name = (try self.simpleDiagnosticTypeName(member)) orelse {
+                            ok = false;
+                            break;
+                        };
+                        if (!first) try union_buf.appendSlice(arena_u, " | ");
+                        first = false;
+                        try union_buf.appendSlice(arena_u, member_name);
+                    }
+                    if (!ok or union_buf.items.len == 0) break :blk null;
+                    break :blk union_buf.items;
+                }
                 if (!flags.is_literal) break :blk null;
                 const payload_idx = self.interner.pool.payloadOf(t);
                 if (payload_idx >= self.interner.pool.literal_payloads.items.len) break :blk null;
@@ -33561,6 +33596,64 @@ pub const Checker = struct {
                         );
                     }
                 }
+                // Template literal types (`` `prefix${T}suffix` ``) —
+                // render as a backtick-delimited template with `${...}`
+                // placeholders so TS2322 prose for fixtures like
+                // `templateLiteralTypes2.ts`,
+                // `templateLiteralTypesPatterns.ts`,
+                // `templateLiteralTypesPatternsPrefixSuffixAssignability.ts`,
+                // and `stringMappingOverPatternLiterals.ts` matches the
+                // upstream baselines.
+                if (flags.is_template_literal) {
+                    const texts = self.interner.templateLiteralTexts(t);
+                    const part_types = self.interner.templateLiteralTypes(t);
+                    var tl_buf: std.ArrayListUnmanaged(u8) = .empty;
+                    const arena_tl = self.diag_arena.allocator();
+                    try tl_buf.append(arena_tl, '`');
+                    var tl_ok = true;
+                    for (texts, 0..) |text_sid, i| {
+                        try tl_buf.appendSlice(arena_tl, self.string_interner.get(text_sid));
+                        if (i < part_types.len) {
+                            // For string-literal placeholder types,
+                            // upstream renders the bare value (without
+                            // surrounding double quotes) inside `${...}`.
+                            const part_t = part_types[i];
+                            try tl_buf.appendSlice(arena_tl, "${");
+                            if (self.stringLiteralValueFromType(part_t)) |sid| {
+                                try tl_buf.appendSlice(arena_tl, self.string_interner.get(sid));
+                            } else if (try self.allocSimpleTypeName(part_t)) |part_name| {
+                                try tl_buf.appendSlice(arena_tl, part_name);
+                            } else {
+                                tl_ok = false;
+                                break;
+                            }
+                            try tl_buf.append(arena_tl, '}');
+                        }
+                    }
+                    if (!tl_ok) break :blk null;
+                    try tl_buf.append(arena_tl, '`');
+                    break :blk tl_buf.items;
+                }
+                // Intrinsic string-mapping types (`Uppercase<T>`,
+                // `Lowercase<T>`, `Capitalize<T>`, `Uncapitalize<T>`)
+                // — render as `<Kind><<inner>>` so TS2322 prose for
+                // fixtures like `stringLiteralsAssignedToStringMappings.ts`
+                // and `stringMappingOverPatternLiterals.ts` matches.
+                if (flags.is_string_mapping) {
+                    const sm = self.interner.stringMappingPayload(t);
+                    const inner_name = (try self.allocSimpleTypeName(sm.inner)) orelse break :blk null;
+                    const kind_name: []const u8 = switch (sm.kind) {
+                        .lowercase => "Lowercase",
+                        .uppercase => "Uppercase",
+                        .capitalize => "Capitalize",
+                        .uncapitalize => "Uncapitalize",
+                    };
+                    break :blk try std.fmt.allocPrint(
+                        self.diag_arena.allocator(),
+                        "{s}<{s}>",
+                        .{ kind_name, inner_name },
+                    );
+                }
                 if (!flags.is_literal) break :blk null;
                 // Some non-literal types share a flag bit; guard against payload OOB.
                 const payload_idx = self.interner.pool.payloadOf(t);
@@ -34835,6 +34928,22 @@ pub const Checker = struct {
         if (source_t >= self.interner.pool.typeCount()) return false;
         const source_flags = self.interner.pool.flagsOf(source_t);
         if (!source_flags.is_union) return false;
+        // Upstream tsc only flags an assertion as TS2352 when *no*
+        // constituent of the source union overlaps with the target
+        // type. The union acts as "is this any of these things?";
+        // asserting it to a specific subtype is fine when at least
+        // one constituent is comparable to the target. Examples:
+        //   * `(A | B) as A`           — `stringLiteralsWithTypeAssertions01.ts(5,9)`
+        //   * `(S[] | S) as string`    — `stringLiteralTypeAssertion01.ts(29,7)`
+        //     (`S` overlaps with `string` even though `S[]` doesn't)
+        // Bail out as soon as any constituent overlaps so the caller
+        // proceeds to the structural `typesHaveComparableOverlap`
+        // check rather than emitting TS2352.
+        for (self.interner.unionMembers(source_t)) |member| {
+            if (try self.typesHaveComparableOverlap(member, target_t)) return false;
+            if (self.engine.isAssignableTo(member, target_t) catch false) return false;
+            if (self.engine.isAssignableTo(target_t, member) catch false) return false;
+        }
         for (self.interner.unionMembers(source_t)) |member| {
             if (self.assertionObjectConstituentHasNoPrimitiveOverlap(member, target_t)) return true;
             if (!self.shouldCheckNoOverlap(member, target_t)) continue;
@@ -40001,7 +40110,10 @@ test "checker: null assertion to generic array target is allowed" {
     }
 }
 
-test "checker: assertion from union rejects non-overlapping constituents" {
+test "checker: assertion from union with overlapping constituent stays silent" {
+    // Mirrors `stringLiteralTypeAssertion01.ts(29,7)` — upstream tsc
+    // does not flag `(S[] | S) as string` because at least one
+    // constituent (`S = "a" | "b"`) overlaps with `string`.
     const s = try newSetup(
         \\type S = "a" | "b";
         \\type T = S[] | S;
@@ -40010,11 +40122,9 @@ test "checker: assertion from union rejects non-overlapping constituents" {
     );
     defer destroySetup(s);
     try s.checker.checkSourceFile(s.root);
-    var found = false;
     for (s.checker.diagnostics.items) |d| {
-        if (d.code == TsCodes.conversion_may_be_mistake) found = true;
+        try T.expect(d.code != TsCodes.conversion_may_be_mistake);
     }
-    try T.expect(found);
 }
 
 test "checker: numeric property names tolerate missing interned names" {
