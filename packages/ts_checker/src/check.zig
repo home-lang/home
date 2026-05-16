@@ -56285,6 +56285,28 @@ test "checker: TS2496 suppressed when `arguments` resolves to a parameter bindin
     }
 }
 
+test "checker: TS2496 still fires when `arguments` escapes the param-arrow lexically" {
+    // Mirrors `emitArrowFunctionWhenUsingArguments07.errors.txt`
+    // (alwaysstrict=false,target=es5) — the inner `arguments` lives
+    // inside `() => arguments` whose own parameter list is empty, so
+    // the reference escapes one arrow up via the lexical chain. tsc
+    // still fires TS2496 at the inner reference because no enclosing
+    // function-form scope can provide a real arguments slot.
+    const s = try newSetup(
+        \\// @target: es5
+        \\function f(arguments: any) {
+        \\    var a = (arguments: any) => () => arguments;
+        \\}
+    );
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+    var saw_ts2496 = false;
+    for (s.checker.diagnostics.items) |d| {
+        if (d.code == TsCodes.arguments_in_arrow_es5) saw_ts2496 = true;
+    }
+    try T.expect(saw_ts2496);
+}
+
 // `for (k in obj)` where `k` has a type-parameter type whose
 // constraint is `string`-compatible must NOT emit TS2405. Mirrors
 // `keyofAndForIn.ts` upstream — `function f<K extends string>(...,
