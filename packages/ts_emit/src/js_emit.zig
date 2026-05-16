@@ -1730,9 +1730,12 @@ pub const Printer = struct {
                 try self.printAsyncDownlevelBody(f.body);
             } else if (downlevel_generator) {
                 try self.printGeneratorDownlevelBody(f.body);
-            } else if (self.options.es_target == .es5 and self.hasDefaultParam(params)) {
+            } else if (self.options.es_target == .es5 and (self.hasDefaultParam(params) or self.hasDestructuringParam(params))) {
                 // §4.A — at ES5, lower default-parameter syntax to a
-                // body-prefix `if (x === void 0) { x = ...; }` shim.
+                // body-prefix `if (x === void 0) { x = ...; }` shim
+                // AND/OR extract destructuring params via
+                // `var a = _p0.a, ...` from the temp idents emitted in
+                // the parameter list.
                 try self.printFnBodyWithDefaults(params, f.body);
             } else {
                 try self.printStatementInline(f.body);
@@ -4906,6 +4909,139 @@ pub const Printer = struct {
         return false;
     }
 
+    /// §4.A — true if any parameter's `name` is an `object_pattern` /
+    /// `array_pattern`. Used at ES5 to decide whether to substitute
+    /// temp idents in the parameter list and inject the destructuring
+    /// extraction `var a = _p<idx>.a, ...` shim into the body.
+    fn hasDestructuringParam(self: *const Printer, params: []const NodeId) bool {
+        for (params) |pn| {
+            if (self.hir.kindOf(pn) != .parameter) continue;
+            if (self.isThisParam(pn)) continue;
+            const p = hir_mod.parameterOf(self.hir, pn);
+            if (p.name == hir_mod.none_node_id) continue;
+            const nk = self.hir.kindOf(p.name);
+            if (nk == .object_pattern or nk == .array_pattern) return true;
+        }
+        return false;
+    }
+
+    /// §4.A — true if `pn`'s name is a destructuring pattern.
+    fn isPatternParam(self: *const Printer, pn: NodeId) bool {
+        if (self.hir.kindOf(pn) != .parameter) return false;
+        const p = hir_mod.parameterOf(self.hir, pn);
+        if (p.name == hir_mod.none_node_id) return false;
+        const nk = self.hir.kindOf(p.name);
+        return nk == .object_pattern or nk == .array_pattern;
+    }
+
+    /// §4.A — emit the destructuring extraction shim for ES5 pattern
+    /// params. For each pattern param at visible-index N, emit
+    /// `var a = _p<N>.a, b = _p<N>.b;` (object) or
+    /// `var a = _p<N>[0], b = _p<N>[1];` (array). Defaults / rest
+    /// follow the same conventions as `printDestructuringVarDecl`:
+    /// `=== void 0 ?` ternary for defaults; `.slice(i)` for array
+    /// rest; `__rest(_pN, [...])` for object rest.
+    fn writeDestructuringParamShims(self: *Printer, params: []const NodeId) !void {
+        var first = true;
+        var idx: usize = 0;
+        for (params) |pn| {
+            if (self.hir.kindOf(pn) != .parameter) continue;
+            if (self.isThisParam(pn)) continue;
+            defer idx += 1;
+            if (!self.isPatternParam(pn)) continue;
+            if (!first) try self.writeNewlineIndent();
+            first = false;
+            const p = hir_mod.parameterOf(self.hir, pn);
+            var name_buf: [16]u8 = undefined;
+            const tmp_name = std.fmt.bufPrint(&name_buf, "_p{d}", .{idx}) catch unreachable;
+            try self.emitDestructuringShim(p.name, tmp_name);
+        }
+    }
+
+    /// §4.A — emit the destructuring extraction body for one pattern
+    /// against a pre-existing source identifier name. Renders
+    /// `var <bindings>;` with `=`/`?: void 0` and rest conventions.
+    /// Shared between `writeDestructuringParamShims` (ES5 fn-params)
+    /// and any other call site that needs to bind from a fixed ident.
+    fn emitDestructuringShim(self: *Printer, pattern: NodeId, source_ident: []const u8) !void {
+        const is_array = self.hir.kindOf(pattern) == .array_pattern;
+        try self.write("var ");
+        const elements = hir_mod.patternElements(self.hir, pattern);
+        var emitted_count: usize = 0;
+        for (elements, 0..) |elem, i| {
+            if (self.hir.kindOf(elem) != .parameter) continue;
+            const param = hir_mod.parameterOf(self.hir, elem);
+            if (param.flags.is_computed_binding_key) continue;
+            if (param.name == hir_mod.none_node_id) continue;
+            if (self.hir.kindOf(param.name) != .identifier) continue; // nested deferred
+            const id = hir_mod.identifierOf(self.hir, param.name);
+            const name_str = self.interner.get(id.name);
+            if (emitted_count > 0) try self.write(", ");
+            emitted_count += 1;
+            if (param.flags.is_rest) {
+                if (is_array) {
+                    try self.write(name_str);
+                    try self.write(" = ");
+                    try self.write(source_ident);
+                    var rbuf: [32]u8 = undefined;
+                    const slice_str = std.fmt.bufPrint(&rbuf, ".slice({d})", .{i}) catch unreachable;
+                    try self.write(slice_str);
+                } else {
+                    try self.write(name_str);
+                    try self.write(" = __rest(");
+                    try self.write(source_ident);
+                    try self.write(", [");
+                    var pkey_emitted: usize = 0;
+                    for (elements, 0..) |pelem, pi| {
+                        if (pi >= i) break;
+                        if (self.hir.kindOf(pelem) != .parameter) continue;
+                        const pparam = hir_mod.parameterOf(self.hir, pelem);
+                        if (pparam.flags.is_computed_binding_key) continue;
+                        if (pparam.flags.is_rest) continue;
+                        if (pparam.name == hir_mod.none_node_id) continue;
+                        if (self.hir.kindOf(pparam.name) != .identifier) continue;
+                        const pid = hir_mod.identifierOf(self.hir, pparam.name);
+                        const pname = self.interner.get(pid.name);
+                        if (pkey_emitted > 0) try self.write(", ");
+                        try self.write("\"");
+                        try self.write(pname);
+                        try self.write("\"");
+                        pkey_emitted += 1;
+                    }
+                    try self.write("])");
+                }
+                continue;
+            }
+            const has_default = param.default_value != hir_mod.none_node_id;
+            try self.write(name_str);
+            try self.write(" = ");
+            if (has_default) {
+                try self.write(source_ident);
+                if (is_array) {
+                    var buf: [32]u8 = undefined;
+                    const idx_str = std.fmt.bufPrint(&buf, "[{d}]", .{i}) catch unreachable;
+                    try self.write(idx_str);
+                } else {
+                    try self.write(".");
+                    try self.write(name_str);
+                }
+                try self.write(" === void 0 ? ");
+                try self.printExpression(param.default_value);
+                try self.write(" : ");
+            }
+            try self.write(source_ident);
+            if (is_array) {
+                var buf: [32]u8 = undefined;
+                const idx_str = std.fmt.bufPrint(&buf, "[{d}]", .{i}) catch unreachable;
+                try self.write(idx_str);
+            } else {
+                try self.write(".");
+                try self.write(name_str);
+            }
+        }
+        try self.write(";");
+    }
+
     /// Emit the `if (x === void 0) { x = <default>; }` shim for each
     /// parameter that has a default value. Skips `this:T` params and
     /// rest params (rest can't have a default in valid TS). Caller
@@ -4941,7 +5077,18 @@ pub const Printer = struct {
         try self.write("{");
         self.depth += 1;
         try self.writeNewlineIndent();
-        try self.writeDefaultParamShims(params);
+        // Default-param shims first (they may target the temp idents
+        // that destructuring shims subsequently destructure into).
+        const has_defaults = self.hasDefaultParam(params);
+        if (has_defaults) try self.writeDefaultParamShims(params);
+        // §4.A — ES5 destructuring-param extraction. Runs after the
+        // default-param shims so the temp idents (`_p<N>`) are
+        // populated when this fires.
+        const has_destruct = self.options.es_target == .es5 and self.hasDestructuringParam(params);
+        if (has_destruct) {
+            if (has_defaults) try self.writeNewlineIndent();
+            try self.writeDestructuringParamShims(params);
+        }
         if (body != hir_mod.none_node_id) {
             if (self.hir.kindOf(body) == .block_stmt) {
                 const stmts = hir_mod.blockStmts(self.hir, body);
@@ -4978,11 +5125,23 @@ pub const Printer = struct {
     /// it). Caller writes the surrounding parens.
     fn printRuntimeParams(self: *Printer, params: []const NodeId) !void {
         var first = true;
+        var idx: usize = 0;
         for (params) |p| {
             if (self.isThisParam(p)) continue;
             if (!first) try self.write(", ");
-            try self.printParameter(p);
+            // §4.A — at ES5, pattern params become temp idents `_pN`;
+            // the destructuring shim in the body extracts the bindings.
+            // At ES2015+ printParameter renders the pattern verbatim.
+            if (self.options.es_target == .es5 and self.isPatternParam(p)) {
+                if (hir_mod.parameterOf(self.hir, p).flags.is_rest) try self.write("...");
+                var buf: [16]u8 = undefined;
+                const tmp_name = std.fmt.bufPrint(&buf, "_p{d}", .{idx}) catch unreachable;
+                try self.write(tmp_name);
+            } else {
+                try self.printParameter(p);
+            }
             first = false;
+            idx += 1;
         }
     }
 
@@ -5976,6 +6135,10 @@ pub const Printer = struct {
                 try self.writeDefaultParamShims(params);
                 try self.write(" ");
             }
+            if (self.hasDestructuringParam(params)) {
+                try self.writeDestructuringParamShims(params);
+                try self.write(" ");
+            }
         }
         // Synthesize `_super.call(this)` only when there is no
         // explicit constructor — an explicit ctor body already
@@ -6027,8 +6190,9 @@ pub const Printer = struct {
             try self.printRuntimeParams(params);
             try self.write(") ");
             if (fd.body != hir_mod.none_node_id) {
-                if (self.hasDefaultParam(params)) {
-                    // §4.A — ES5 default-param lowering for class methods.
+                if (self.hasDefaultParam(params) or self.hasDestructuringParam(params)) {
+                    // §4.A — ES5 default-param / destructuring-param
+                    // lowering for class methods.
                     try self.printFnBodyWithDefaults(params, fd.body);
                 } else {
                     try self.printStatementInline(fd.body);
@@ -7213,7 +7377,7 @@ pub const Printer = struct {
             try self.write(" ");
             if (downlevel_async) {
                 try self.printAsyncDownlevelBody(f.body);
-            } else if (self.options.es_target == .es5 and self.hasDefaultParam(params)) {
+            } else if (self.options.es_target == .es5 and (self.hasDefaultParam(params) or self.hasDestructuringParam(params))) {
                 try self.printFnBodyWithDefaults(params, f.body);
             } else {
                 try self.printStatementInline(f.body);
@@ -7988,6 +8152,60 @@ test "emit: function with array destructuring param emits pattern at es2015+" {
     const out = try emitWithOpts("function f([a, b]) { return a; }", .{ .es_target = .es2015 });
     defer T.allocator.free(out);
     try T.expect(std.mem.indexOf(u8, out, "function f([a, b])") != null);
+}
+
+test "emit: function with object destructuring param lowers to temp + shim at es5" {
+    // §4.A destructuring v6 — `function f({ a, b }) { return a; }`
+    // lowers to `function f(_p0) { var a = _p0.a, b = _p0.b; return a; }`
+    // at ES5. The pattern param is replaced with a temp ident `_pN`
+    // (where N is the visible-param index) and a body-prefix shim
+    // extracts the bindings.
+    const out = try emitWithOpts("function f({ a, b }) { return a; }", .{ .es_target = .es5 });
+    defer T.allocator.free(out);
+    try T.expect(std.mem.indexOf(u8, out, "function f(_p0)") != null);
+    try T.expect(std.mem.indexOf(u8, out, "var a = _p0.a, b = _p0.b;") != null);
+    // Pattern itself must NOT appear in the param list.
+    try T.expect(std.mem.indexOf(u8, out, "function f({") == null);
+}
+
+test "emit: function with array destructuring param lowers to temp + shim at es5" {
+    const out = try emitWithOpts("function f([a, b]) { return a; }", .{ .es_target = .es5 });
+    defer T.allocator.free(out);
+    try T.expect(std.mem.indexOf(u8, out, "function f(_p0)") != null);
+    try T.expect(std.mem.indexOf(u8, out, "var a = _p0[0], b = _p0[1];") != null);
+    try T.expect(std.mem.indexOf(u8, out, "function f([") == null);
+}
+
+test "emit: function with mixed plain + destructuring params at es5" {
+    // Plain param at index 0, pattern at index 1, plain at index 2.
+    // The destructuring shim uses `_p1` for the pattern, plain params
+    // render normally.
+    const out = try emitWithOpts("function f(x, { a, b }, y) { return a; }", .{ .es_target = .es5 });
+    defer T.allocator.free(out);
+    try T.expect(std.mem.indexOf(u8, out, "function f(x, _p1, y)") != null);
+    try T.expect(std.mem.indexOf(u8, out, "var a = _p1.a, b = _p1.b;") != null);
+}
+
+test "emit: function with destructuring param + default lowers at es5" {
+    // Combine pattern + default: `var a = _p0.a === void 0 ? 1 : _p0.a, ...`.
+    const out = try emitWithOpts("function f({ a = 1, b }) { return a + b; }", .{ .es_target = .es5 });
+    defer T.allocator.free(out);
+    try T.expect(std.mem.indexOf(u8, out, "function f(_p0)") != null);
+    try T.expect(std.mem.indexOf(u8, out, "var a = _p0.a === void 0 ? 1 : _p0.a, b = _p0.b;") != null);
+}
+
+test "emit: function with array destructuring rest param lowers at es5" {
+    const out = try emitWithOpts("function f([a, ...rest]) { return rest; }", .{ .es_target = .es5 });
+    defer T.allocator.free(out);
+    try T.expect(std.mem.indexOf(u8, out, "function f(_p0)") != null);
+    try T.expect(std.mem.indexOf(u8, out, "var a = _p0[0], rest = _p0.slice(1);") != null);
+}
+
+test "emit: function with object rest param uses __rest at es5" {
+    const out = try emitWithOpts("function f({ a, b, ...rest }) { return rest; }", .{ .es_target = .es5 });
+    defer T.allocator.free(out);
+    try T.expect(std.mem.indexOf(u8, out, "function f(_p0)") != null);
+    try T.expect(std.mem.indexOf(u8, out, "var a = _p0.a, b = _p0.b, rest = __rest(_p0, [\"a\", \"b\"]);") != null);
 }
 
 test "emit: const lowers to var at es5" {
