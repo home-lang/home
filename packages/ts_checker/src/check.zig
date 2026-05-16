@@ -240,6 +240,10 @@ pub const TsCodes = struct {
     pub const private_name_not_declared: u32 = 1111;
     pub const spread_types_object_only: u32 = 2698;
     pub const optional_chain_assignment_target: u32 = 2779;
+    pub const optional_chain_increment_target: u32 = 2777;
+    pub const optional_chain_object_rest_target: u32 = 2778;
+    pub const optional_chain_for_in_target: u32 = 2780;
+    pub const optional_chain_for_of_target: u32 = 2781;
     pub const cannot_assign_undefined: u32 = 2539;
     pub const jsx_element_no_construct_or_call: u32 = 2604;
     pub const jsx_element_implicit_any_no_intrinsic: u32 = 7026;
@@ -20027,8 +20031,22 @@ pub const Checker = struct {
     fn checkObjectDestructuringAssignment(self: *Checker, target_node: NodeId, source_t: TypeId, source_node: NodeId) CheckError!void {
         if (source_t == types.Primitive.any or source_t == types.Primitive.unknown) return;
         if (source_node != hir_mod.none_node_id and self.hir.kindOf(source_node) == .object_literal) {
-            const expected_t = try self.objectBindingPatternExpectedType(target_node, true);
-            try self.checkExcessProperties(source_node, expected_t);
+            // Skip the excess-properties scan when the target pattern
+            // contains a rest spread (`{...rest}`) — the rest binding
+            // accepts arbitrary keys, so flagging extras as "excess"
+            // surfaces spurious TS2353 against the literal RHS.
+            // Mirrors tsc on `propertyAccessChain.3.ts(25-26)`.
+            var target_has_spread = false;
+            for (hir_mod.objectLiteralProps(self.hir, target_node)) |tprop| {
+                if (self.hir.kindOf(tprop) == .spread) {
+                    target_has_spread = true;
+                    break;
+                }
+            }
+            if (!target_has_spread) {
+                const expected_t = try self.objectBindingPatternExpectedType(target_node, true);
+                try self.checkExcessProperties(source_node, expected_t);
+            }
         }
         var has_dynamic_computed_key = false;
         const target_props_oddl = hir_mod.objectLiteralProps(self.hir, target_node);
@@ -20040,6 +20058,17 @@ pub const Checker = struct {
                 // The parser already covers binding-pattern cases.
                 if (self.hir.kindOf(prop_node) == .spread and prop_i + 1 < target_props_oddl.len) {
                     try self.report(prop_node, TsCodes.rest_element_must_be_last, "A rest element must be last in a destructuring pattern.");
+                }
+                // `({...obj?.a} = …)` — tsc fires TS2778 on the
+                // optional-chain inner. Distinct from the TS2779
+                // emitted for plain `({a: obj?.a} = …)` because the
+                // rest target shape carries different runtime
+                // semantics (we'd write across many properties).
+                if (self.hir.kindOf(prop_node) == .spread) {
+                    const inner = hir_mod.spreadOf(self.hir, prop_node).expression;
+                    if (self.expressionIsOptionalChain(inner)) {
+                        try self.report(inner, TsCodes.optional_chain_object_rest_target, "The target of an object rest assignment may not be an optional property access.");
+                    }
                 }
                 if (has_dynamic_computed_key) {
                     const rest_t = self.interner.internObjectType(&.{}) catch return error.OutOfMemory;
@@ -20111,6 +20140,9 @@ pub const Checker = struct {
     fn checkDestructuringAssignmentTarget(self: *Checker, target_node: NodeId, source_t: TypeId) CheckError!void {
         switch (self.hir.kindOf(target_node)) {
             .identifier, .member_access, .element_access => {
+                if (self.expressionIsOptionalChain(target_node)) {
+                    try self.report(target_node, TsCodes.optional_chain_assignment_target, "The left-hand side of an assignment expression may not be an optional property access.");
+                }
                 const target_t = if (self.hir.kindOf(target_node) == .identifier)
                     self.typeOfIdentifierDeclared(target_node)
                 else
@@ -22392,7 +22424,17 @@ pub const Checker = struct {
                     try self.report(a.target, TsCodes.cannot_assign_undefined, "Cannot assign to 'undefined' because it is not a variable.");
                 }
                 if (self.expressionIsOptionalChain(a.target)) {
-                    try self.report(a.target, TsCodes.optional_chain_assignment_target, "The left-hand side of an assignment expression may not be an optional property access.");
+                    // Distinguish synthetic update expressions
+                    // (`++obj?.a` / `obj?.a++`, which the parser
+                    // desugars to `obj?.a -= 1` / `+= 1`) from real
+                    // assignments. tsc emits TS2777 for the former
+                    // and TS2779 for the latter — see
+                    // `propertyAccessChain.3.ts` / `elementAccessChain.3.ts`.
+                    if (self.assignmentIsSynthesizedUpdate(node, a)) {
+                        try self.report(a.target, TsCodes.optional_chain_increment_target, "The operand of an increment or decrement operator may not be an optional property access.");
+                    } else {
+                        try self.report(a.target, TsCodes.optional_chain_assignment_target, "The left-hand side of an assignment expression may not be an optional property access.");
+                    }
                 }
                 try self.checkEnumMemberAssignment(a.target);
                 // TS2540: assigning to a property declared `readonly`.
@@ -30983,6 +31025,11 @@ pub const Checker = struct {
         if (self.hir.kindOf(a.value) != .literal_number) return false;
         if (hir_mod.literalNumberOf(self.hir, a.value) != 1.0) return false;
         const value_span = self.hir.spanOf(a.value);
+        // Synthesised `1` carries the `++`/`--` operator token's span
+        // (2 chars wide). A user-written `1` literal is 1 char. This
+        // distinguishes `++x` from `x += 1` / `x -= 1`, which would
+        // otherwise both match the postfix-span shape below.
+        if (value_span.end - value_span.start != 2) return false;
         const target_span = self.hir.spanOf(a.target);
         const node_span = self.hir.spanOf(node);
         // Prefix `++x`: value span starts at the assignment start,
@@ -36351,6 +36398,9 @@ pub const Checker = struct {
             .member_access,
             .element_access,
             => {
+                if (self.expressionIsOptionalChain(target)) {
+                    try self.report(target, TsCodes.optional_chain_for_in_target, "The left-hand side of a 'for...in' statement may not be an optional property access.");
+                }
                 if (self.hir.kindOf(target) == .identifier) {
                     const id = hir_mod.identifierOf(self.hir, target);
                     if (std.mem.eql(u8, self.string_interner.get(id.name), "this")) {
@@ -36485,7 +36535,11 @@ pub const Checker = struct {
             .element_access,
             .array_literal,
             .object_literal,
-            => {},
+            => {
+                if (self.expressionIsOptionalChain(target)) {
+                    try self.report(target, TsCodes.optional_chain_for_of_target, "The left-hand side of a 'for...of' statement may not be an optional property access.");
+                }
+            },
             else => try self.report(target, TsCodes.for_of_lhs_invalid, "The left-hand side of a 'for...of' statement must be a variable or a property access."),
         }
     }

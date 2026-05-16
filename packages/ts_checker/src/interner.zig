@@ -729,19 +729,22 @@ pub const Interner = struct {
     ) !TypeId {
         // Object types bypass dedup (every declaration site gets a
         // distinct id), so we just need to serialize the Pool append.
-        const dup = try self.gpa.dupe(types.ObjectMember, members);
-        defer self.gpa.free(dup);
-        std.mem.sort(types.ObjectMember, dup, {}, objectMemberLessThan);
+        // Preserve insertion order so diagnostic prose renders members
+        // in the user's declaration order (`{ a: string; b: number; }`)
+        // rather than sorted-by-StringId order — matches tsc's
+        // `.errors.txt` baselines for TS2322/TS2353 messages on
+        // anonymous object types. Identity comparison in `relation.zig`
+        // tolerates unsorted members via name-based lookup.
 
         self.pool_mu.lock();
         defer self.pool_mu.unlock();
 
         const member_start: u32 = @intCast(self.pool.object_member_pool.items.len);
-        try self.pool.object_member_pool.appendSlice(self.gpa, dup);
+        try self.pool.object_member_pool.appendSlice(self.gpa, members);
         const payload_idx: u32 = @intCast(self.pool.object_type_payloads.items.len);
         try self.pool.object_type_payloads.append(self.gpa, .{
             .members_start = member_start,
-            .members_len = @intCast(dup.len),
+            .members_len = @intCast(members.len),
             .call_sig = 0,
             .construct_sig = 0,
             .string_index_type = string_index_type,
@@ -1116,9 +1119,10 @@ pub const Interner = struct {
     }
 };
 
-fn objectMemberLessThan(_: void, a: types.ObjectMember, b: types.ObjectMember) bool {
-    return a.name < b.name;
-}
+// Note: object members are stored in declaration order (no sort) so
+// diagnostic prose renders properties in the user's source order.
+// Identity and assignability checks tolerate unsorted members via
+// name-based lookup.
 
 // =============================================================================
 // Tests

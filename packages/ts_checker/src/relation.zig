@@ -446,16 +446,23 @@ pub const Engine = struct {
         }
         // Object types: structurally identical iff they have the
         // same members with the same names + types. Members are
-        // already sorted on intern, so we can compare position-wise.
+        // stored in source declaration order (not sorted), so we
+        // compare order-independently via name lookup.
         if (fa.is_object_type) {
             const am = self.interner.objectMembers(a);
             const bm = self.interner.objectMembers(b);
             if (am.len != bm.len) return false;
-            for (am, bm) |x, y| {
-                if (x.name != y.name) return false;
-                if (x.is_optional != y.is_optional) return false;
-                if (x.is_readonly != y.is_readonly) return false;
-                if (!try self.isIdenticalTo(x.type, y.type)) return false;
+            for (am) |x| {
+                var matched = false;
+                for (bm) |y| {
+                    if (x.name != y.name) continue;
+                    if (x.is_optional != y.is_optional) return false;
+                    if (x.is_readonly != y.is_readonly) return false;
+                    if (!try self.isIdenticalTo(x.type, y.type)) return false;
+                    matched = true;
+                    break;
+                }
+                if (!matched) return false;
             }
             return true;
         }
