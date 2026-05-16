@@ -23010,6 +23010,13 @@ pub const Checker = struct {
     /// sites — tsc treats the union as callable when every branch
     /// is. Returns `false` for bare callables; the caller already
     /// has dedicated paths for those.
+    ///
+    /// For intersections, additionally guards against the case where
+    /// a shared property's constituent types are mutually disjoint
+    /// and collapse to `never` (e.g. `{ (x): number, a: "" } & { a:
+    /// number }`). tsc reduces such an intersection to `never` and
+    /// emits TS2349 with "Type 'never' has no call signatures" —
+    /// see `neverIntersectionNotCallable.errors.txt`.
     fn typeUnionAllCallable(self: *Checker, t: TypeId) bool {
         if (t >= self.interner.pool.typeCount()) return false;
         const flags = self.interner.pool.flagsOf(t);
@@ -23022,11 +23029,42 @@ pub const Checker = struct {
             return true;
         }
         if (flags.is_intersection) {
+            if (self.intersectionHasDisjointSharedProperty(t)) return false;
             for (self.interner.intersectionMembers(t)) |m| {
                 if (self.objectHasCallOrConstructSignature(m)) return true;
                 if (self.typeUnionAllCallable(m)) return true;
             }
             return false;
+        }
+        return false;
+    }
+
+    /// Returns `true` when intersection `t` has a property name that
+    /// appears in two or more object constituents with types that
+    /// are mutually non-assignable in both directions (i.e. the
+    /// property's intersected type collapses to `never`). Mirrors
+    /// tsc's reduction of `{ a: "" } & { a: number }` whose `a`
+    /// becomes `never`, which in turn makes the intersection itself
+    /// uncallable.
+    fn intersectionHasDisjointSharedProperty(self: *Checker, t: TypeId) bool {
+        const members = self.interner.intersectionMembers(t);
+        if (members.len < 2) return false;
+        for (members, 0..) |a, ai| {
+            if (a >= self.interner.pool.typeCount()) continue;
+            if (!self.interner.pool.flagsOf(a).is_object_type) continue;
+            for (self.interner.objectMembers(a)) |a_member| {
+                for (members[ai + 1 ..]) |b| {
+                    if (b >= self.interner.pool.typeCount()) continue;
+                    if (!self.interner.pool.flagsOf(b).is_object_type) continue;
+                    const b_t = self.interner.objectMember(b, a_member.name) orelse continue;
+                    if (a_member.type == b_t) continue;
+                    if (a_member.type == types.Primitive.any or a_member.type == types.Primitive.unknown) continue;
+                    if (b_t == types.Primitive.any or b_t == types.Primitive.unknown) continue;
+                    const ab = self.heritageAssignable(a_member.type, b_t) catch true;
+                    const ba = self.heritageAssignable(b_t, a_member.type) catch true;
+                    if (!ab and !ba) return true;
+                }
+            }
         }
         return false;
     }
@@ -51394,6 +51432,28 @@ test "checker: union with non-callable branch still flags TS2349" {
         \\function f1(s: string) { }
         \\var v: typeof f1 | string;
         \\v("");
+    );
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+    var saw_not_callable = false;
+    for (s.checker.diagnostics.items) |d| {
+        if (d.code == TsCodes.not_callable) saw_not_callable = true;
+    }
+    try T.expect(saw_not_callable);
+}
+
+test "checker: intersection with disjoint shared property is not callable" {
+    // Mirrors `neverIntersectionNotCallable.errors.txt` —
+    // `{ (x: string): number, a: "" } & { a: number }` has `a`
+    // typed `""` in one branch and `number` in the other. tsc
+    // reduces `"" & number` to `never`, which poisons the
+    // intersection itself to `never`. The call site `f()` must
+    // therefore still fire TS2349, despite one branch carrying a
+    // call signature. Pins the `intersectionHasDisjointSharedProperty`
+    // guard inside `typeUnionAllCallable`.
+    const s = try newSetup(
+        \\declare const f: { (x: string): number, a: "" } & { a: number }
+        \\f()
     );
     defer destroySetup(s);
     try s.checker.checkSourceFile(s.root);

@@ -4145,11 +4145,8 @@ test "conformance: baseline-aware type-relationship survey" {
     );
 
     try T.expectEqual(@as(usize, specs.len), cats.len);
-    // BJ's union/intersection readonly fix regressed one types/never
-    // fixture; the slice gain elsewhere (+4 0-1000) outweighs it.
-    // Re-tighten to 451/451 once the never regression is diagnosed.
     try T.expectEqual(@as(u32, 451), combined.total());
-    try T.expectEqual(@as(u32, 450), combined.passed);
+    try T.expectEqual(@as(u32, 451), combined.passed);
 }
 
 // Default location of the local TypeScript checkout. Other devs
