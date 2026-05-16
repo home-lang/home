@@ -150,6 +150,12 @@ pub const TsCodes = struct {
     /// one (and only one) required member is absent from the source.
     pub const property_missing_required: u32 = 2741;
     pub const super_not_derived: u32 = 2335;
+    /// TS2340 — `Only public and protected methods of the base class
+    /// are accessible via the 'super' keyword.` Fires for `super.X`
+    /// where X is a data property (not a method) on the base class,
+    /// in static contexts when the emit target predates ES2015's
+    /// `Reflect.get` / class-field semantics (practically target=es5).
+    pub const super_only_methods_accessible: u32 = 2340;
     pub const property_does_not_exist: u32 = 2339;
     pub const argument_type_mismatch: u32 = 2345;
     pub const conversion_may_be_mistake: u32 = 2352;
@@ -7602,6 +7608,14 @@ pub const Checker = struct {
         const f = hir_mod.fnDeclOf(self.hir, fn_node);
         if (!f.flags.is_generator or f.return_type != hir_mod.none_node_id) return;
         if (!self.bodyHasImplicitAnyYieldType(f.body)) return;
+        // tsc only fires TS7025/TS7055 when the INFERRED yield type
+        // would be `any` overall — if any yield in the body has a
+        // concrete type (e.g. `yield new Bar` next to `yield;`), the
+        // inferred yield type is `Bar | undefined`, not `any`, and
+        // upstream stays silent. Mirror that: if any yield contributes
+        // a non-`any` element type, don't fire the function-level
+        // implicit-any diagnostic.
+        if (self.bodyHasNonAnyYield(f.body)) return;
         if (f.name != hir_mod.none_node_id and self.hir.kindOf(f.name) == .identifier) {
             const name = self.string_interner.get(hir_mod.identifierOf(self.hir, f.name).name);
             const msg = try std.fmt.allocPrint(
@@ -7750,14 +7764,48 @@ pub const Checker = struct {
         return true;
     }
 
+    /// Returns true when `node` is an unresolved identifier reference
+    /// — used to suppress duplicate implicit-any diagnostics on
+    /// `yield(foo)` when `foo` already has a TS2304 attached.
+    fn yieldOperandIsUnresolvedIdentifier(self: *Checker, node: NodeId) bool {
+        const k = self.hir.kindOf(node);
+        if (k != .identifier) return false;
+        const id = hir_mod.identifierOf(self.hir, node);
+        if (self.lookupNarrow(id.name) != null) return false;
+        const visible = self.typeOfVisibleNameNoDiag(node, id.name) catch return false;
+        return visible == null;
+    }
+
     fn bodyHasImplicitAnyYieldType(self: *Checker, node: NodeId) bool {
         if (node == hir_mod.none_node_id) return false;
         switch (self.hir.kindOf(node)) {
             .yield_expr => {
                 const y = hir_mod.yieldExprOf(self.hir, node);
-                if (y.expr == hir_mod.none_node_id) return true;
+                // Bare `yield;` is a per-expression issue, not a
+                // generator-shape issue — tsc reports TS7057 on the
+                // yield itself, never TS7055/TS7025 on the enclosing
+                // function. Skip it here so we don't double-fire with
+                // the per-yield TS7057 pass.
+                if (y.expr == hir_mod.none_node_id) return false;
+                // `yield yield` — same logic: the inner bare yield
+                // produces TS7057, the outer should NOT additionally
+                // claim the whole generator has implicit-any.
+                if (self.hir.kindOf(y.expr) == .yield_expr) {
+                    const inner = hir_mod.yieldExprOf(self.hir, y.expr);
+                    if (inner.expr == hir_mod.none_node_id) return false;
+                }
                 const expr_t = self.hir.typeOf(y.expr);
-                if (expr_t == types.Primitive.any) return true;
+                if (expr_t == types.Primitive.any) {
+                    // tsc suppresses TS7025/TS7055 when the yield's
+                    // expression is itself unresolved (TS2304 already
+                    // fires on the same node, so adding implicit-any
+                    // noise duplicates the diagnostic). Detect that
+                    // here so fixtures like `YieldExpression9_es6`
+                    // (`yield(foo)` where `foo` is undeclared) don't
+                    // double-fire.
+                    if (self.yieldOperandIsUnresolvedIdentifier(y.expr)) return false;
+                    return true;
+                }
                 if (y.type_node != hir_mod.none_node_id and
                     expr_t < self.interner.pool.typeCount() and
                     self.interner.pool.flagsOf(expr_t).is_object_type)
@@ -7861,6 +7909,127 @@ pub const Checker = struct {
                 const op = hir_mod.objectPropertyOf(self.hir, node);
                 return self.bodyHasImplicitAnyYieldType(op.value) or
                     (op.is_computed and self.bodyHasImplicitAnyYieldType(op.key));
+            },
+            else => return false,
+        }
+        return false;
+    }
+
+    /// Returns true when at least one yield in `node`'s body
+    /// contributes a non-`any` element type. Mirrors tsc's check
+    /// before firing the function-level implicit-any-yield diagnostic
+    /// (TS7025/TS7055): a single concrete yield is enough to pin the
+    /// generator's inferred yield type.
+    fn bodyHasNonAnyYield(self: *Checker, node: NodeId) bool {
+        if (node == hir_mod.none_node_id) return false;
+        switch (self.hir.kindOf(node)) {
+            .yield_expr => {
+                const y = hir_mod.yieldExprOf(self.hir, node);
+                if (y.expr == hir_mod.none_node_id) return false;
+                const expr_t = self.hir.typeOf(y.expr);
+                if (expr_t != types.Primitive.any and
+                    expr_t != types.Primitive.none and
+                    expr_t != types.Primitive.undefined_t and
+                    expr_t != types.Primitive.null_t)
+                {
+                    return true;
+                }
+                return self.bodyHasNonAnyYield(y.expr);
+            },
+            .fn_decl, .fn_expr, .arrow_fn => return false,
+            .block_stmt => for (hir_mod.blockStmts(self.hir, node)) |s| {
+                if (self.bodyHasNonAnyYield(s)) return true;
+            },
+            .if_stmt => {
+                const i = hir_mod.ifOf(self.hir, node);
+                return self.bodyHasNonAnyYield(i.cond) or
+                    self.bodyHasNonAnyYield(i.then_branch) or
+                    self.bodyHasNonAnyYield(i.else_branch);
+            },
+            .while_stmt => {
+                const w = hir_mod.whileOf(self.hir, node);
+                return self.bodyHasNonAnyYield(w.cond) or self.bodyHasNonAnyYield(w.body);
+            },
+            .do_while_stmt => {
+                const w = hir_mod.doWhileOf(self.hir, node);
+                return self.bodyHasNonAnyYield(w.cond) or self.bodyHasNonAnyYield(w.body);
+            },
+            .for_stmt => {
+                const fr = hir_mod.forStmtOf(self.hir, node);
+                return self.bodyHasNonAnyYield(fr.init) or
+                    self.bodyHasNonAnyYield(fr.cond) or
+                    self.bodyHasNonAnyYield(fr.update) or
+                    self.bodyHasNonAnyYield(fr.body);
+            },
+            .for_in_stmt, .for_of_stmt => {
+                const fr = hir_mod.forInOf(self.hir, node);
+                return self.bodyHasNonAnyYield(fr.target) or
+                    self.bodyHasNonAnyYield(fr.source) or
+                    self.bodyHasNonAnyYield(fr.body);
+            },
+            .return_stmt => return self.bodyHasNonAnyYield(hir_mod.returnOf(self.hir, node).value),
+            .var_decl, .let_decl, .const_decl => return self.bodyHasNonAnyYield(hir_mod.varDeclOf(self.hir, node).init),
+            .binary_op => {
+                const b = hir_mod.binopOf(self.hir, node);
+                return self.bodyHasNonAnyYield(b.lhs) or self.bodyHasNonAnyYield(b.rhs);
+            },
+            .unary_op => return self.bodyHasNonAnyYield(hir_mod.unaryOf(self.hir, node).operand),
+            .logical_op => {
+                const l = hir_mod.logicalOf(self.hir, node);
+                return self.bodyHasNonAnyYield(l.lhs) or self.bodyHasNonAnyYield(l.rhs);
+            },
+            .conditional => {
+                const c = hir_mod.conditionalOf(self.hir, node);
+                return self.bodyHasNonAnyYield(c.cond) or
+                    self.bodyHasNonAnyYield(c.then_branch) or
+                    self.bodyHasNonAnyYield(c.else_branch);
+            },
+            .assignment => {
+                const a = hir_mod.assignmentOf(self.hir, node);
+                return self.bodyHasNonAnyYield(a.target) or self.bodyHasNonAnyYield(a.value);
+            },
+            .call_expr, .new_expr => {
+                const c = hir_mod.callOf(self.hir, node);
+                if (self.bodyHasNonAnyYield(c.callee)) return true;
+                for (hir_mod.callArgs(self.hir, node)) |arg| {
+                    if (self.bodyHasNonAnyYield(arg)) return true;
+                }
+                return false;
+            },
+            .member_access => return self.bodyHasNonAnyYield(hir_mod.memberOf(self.hir, node).object),
+            .element_access => {
+                const e = hir_mod.elementOf(self.hir, node);
+                return self.bodyHasNonAnyYield(e.object) or self.bodyHasNonAnyYield(e.index);
+            },
+            .as_expr, .satisfies_expr, .type_assertion => return self.bodyHasNonAnyYield(hir_mod.asExpressionOf(self.hir, node).expr),
+            .throw_stmt => return self.bodyHasNonAnyYield(hir_mod.throwOf(self.hir, node).value),
+            .try_stmt => {
+                const ts = hir_mod.tryOf(self.hir, node);
+                return self.bodyHasNonAnyYield(ts.block) or
+                    self.bodyHasNonAnyYield(ts.catch_block) or
+                    self.bodyHasNonAnyYield(ts.finally_block);
+            },
+            .switch_stmt => {
+                const sw = hir_mod.switchOf(self.hir, node);
+                if (self.bodyHasNonAnyYield(sw.discriminant)) return true;
+                for (hir_mod.switchCases(self.hir, node)) |case| {
+                    if (self.bodyHasNonAnyYield(case)) return true;
+                }
+                return false;
+            },
+            .switch_case => for (hir_mod.switchCaseStmts(self.hir, node)) |s| {
+                if (self.bodyHasNonAnyYield(s)) return true;
+            },
+            .array_literal => for (hir_mod.arrayLiteralElements(self.hir, node)) |el| {
+                if (self.bodyHasNonAnyYield(el)) return true;
+            },
+            .object_literal => for (hir_mod.objectLiteralProps(self.hir, node)) |p| {
+                if (self.bodyHasNonAnyYield(p)) return true;
+            },
+            .object_property => {
+                const op = hir_mod.objectPropertyOf(self.hir, node);
+                return self.bodyHasNonAnyYield(op.value) or
+                    (op.is_computed and self.bodyHasNonAnyYield(op.key));
             },
             else => return false,
         }
@@ -23413,6 +23582,7 @@ pub const Checker = struct {
                     const super_id = self.string_interner.intern("super") catch return error.OutOfMemory;
                     if (self.lookupNarrow(super_id)) |st| {
                         obj_t = st;
+                        try self.reportSuperPropertyNotMethodInStatic(m.object, st, node, m.name);
                     } else {
                         try self.report(m.object, TsCodes.super_not_derived, "'super' can only be referenced in a derived class.");
                         obj_t = types.Primitive.any;
@@ -25323,6 +25493,89 @@ pub const Checker = struct {
             return std.mem.eql(u8, self.string_interner.get(id.name), "super");
         }
         return false;
+    }
+
+    /// Walks parents of `node` and returns the enclosing class
+    /// declaration whose lexical static `super` binding governs this
+    /// node — or `none_node_id` if the node is not inside a static
+    /// member that inherits super. Crossing a non-arrow function or a
+    /// nested class breaks the static-super chain (mirrors JS arrow
+    /// lexical inheritance: `super` flows through arrows, not through
+    /// `function () {}` or `class {}` bodies).
+    fn enclosingStaticSuperClass(self: *Checker, node: NodeId) NodeId {
+        var cur = self.hir.parentOf(node);
+        var saw_static_member = false;
+        while (cur != hir_mod.none_node_id) : (cur = self.hir.parentOf(cur)) {
+            const k = self.hir.kindOf(cur);
+            switch (k) {
+                .object_property => {
+                    const op = hir_mod.objectPropertyOf(self.hir, cur);
+                    if (op.is_static) saw_static_member = true;
+                },
+                .fn_decl, .fn_expr => {
+                    const fp = hir_mod.fnDeclOf(self.hir, cur);
+                    if (fp.flags.is_static) saw_static_member = true;
+                    // Non-arrow functions break the lexical super
+                    // chain — `function () { super.x }` doesn't see
+                    // the enclosing class's super.
+                    if (!fp.flags.is_arrow) return hir_mod.none_node_id;
+                },
+                .arrow_fn => {
+                    // Arrows inherit super lexically.
+                },
+                .class_decl, .class_expr => {
+                    if (!saw_static_member) return hir_mod.none_node_id;
+                    return cur;
+                },
+                else => {},
+            }
+        }
+        return hir_mod.none_node_id;
+    }
+
+    /// TS2340 — `Only public and protected methods of the base class
+    /// are accessible via the 'super' keyword.` Fires for `super.X`
+    /// where the access is in a static initializer / static method of
+    /// a derived class, `X` is a data property (not a method) on the
+    /// base class, and the emit target is ES5. Mirrors tsc fixtures
+    /// `typeOfThisInStaticMembers{3,4,7,9,10,11}` and `classStaticBlock5`.
+    fn reportSuperPropertyNotMethodInStatic(
+        self: *Checker,
+        super_obj_node: NodeId,
+        super_t: TypeId,
+        member_node: NodeId,
+        member_name: hir_mod.StringId,
+    ) CheckError!void {
+        if (!self.sourceTargetMentionsEs5()) return;
+        if (super_t >= self.interner.pool.typeCount()) return;
+        if (!self.interner.pool.flagsOf(super_t).is_object_type) return;
+        const enclosing = self.enclosingStaticSuperClass(super_obj_node);
+        if (enclosing == hir_mod.none_node_id) return;
+        if (self.hir.kindOf(enclosing) != .class_decl and self.hir.kindOf(enclosing) != .class_expr) return;
+        const c = hir_mod.classOf(self.hir, enclosing);
+        if (c.extends == hir_mod.none_node_id) return;
+        const obj_members = self.interner.objectMembers(super_t);
+        var found_member: ?types.ObjectMember = null;
+        for (obj_members) |om| {
+            if (om.name == member_name) {
+                found_member = om;
+                break;
+            }
+        }
+        const om = found_member orelse return;
+        if (om.is_method) return;
+        const member_span = self.hir.spanOf(member_node);
+        const name_str = self.string_interner.get(member_name);
+        const name_pos: ?u32 = if (member_span.end >= name_str.len)
+            member_span.end - @as(u32, @intCast(name_str.len))
+        else
+            null;
+        try self.diagnostics.append(self.gpa, .{
+            .node = member_node,
+            .pos = name_pos,
+            .code = TsCodes.super_only_methods_accessible,
+            .message = "Only public and protected methods of the base class are accessible via the 'super' keyword.",
+        });
     }
 
     fn pushNarrowScope(self: *Checker) !void {
@@ -29753,7 +30006,7 @@ pub const Checker = struct {
             }
             return true;
         }
-        if (f.is_keyof or f.is_index_access or f.is_conditional or
+        if (f.is_keyof or f.is_indexed_access or f.is_conditional or
             f.is_typeof or f.is_infer or f.is_template_literal)
         {
             return false;
