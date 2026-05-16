@@ -1727,9 +1727,11 @@ fn baselinePathIsTargetEs5(path: ?[]const u8) bool {
 
 /// Inspect the chosen `.errors.txt` baseline filename for an
 /// `alwaysstrict=<bool>` variant marker. Multi-variant fixtures (e.g.
-/// `// @alwaysStrict: true, false`) produce one baseline per variant,
-/// so the exact runner must honor the specific baseline selected for
-/// comparison rather than always taking the first directive value.
+/// `// @alwaysStrict: true, false`) produce one baseline per variant
+/// — the harness picks ONE of them lexicographically — so we must
+/// honour the picked variant's setting rather than always taking the
+/// first directive value (which would always be `true` for the
+/// `true, false` ordering).
 fn baselineAlwaysStrictValue(path: ?[]const u8) ?bool {
     const p = path orelse return null;
     if (std.mem.indexOf(u8, p, "alwaysstrict=false") != null) return false;
@@ -1737,21 +1739,6 @@ fn baselineAlwaysStrictValue(path: ?[]const u8) ?bool {
     return null;
 }
 
-/// Extract the `moduleresolution=X` label from a baseline filename
-/// like `…(moduleresolution=classic).errors.txt`. Returns an owned
-/// lower-case slice (`"classic"`) or an empty slice when the
-/// baseline has no `moduleresolution=` variant suffix. The label
-/// drives `resolverStrategyFromCase` so the resolver picks the
-/// strategy that matches the baseline we'll compare against.
-fn extractModuleResolutionFromBaseline(gpa: std.mem.Allocator, path: []const u8) ![]u8 {
-    const needle = "(moduleresolution=";
-    const start = std.mem.indexOf(u8, path, needle) orelse return gpa.dupe(u8, "");
-    const after = start + needle.len;
-    const close = std.mem.indexOfScalarPos(u8, path, after, ')') orelse return gpa.dupe(u8, "");
-    return gpa.dupe(u8, path[after..close]);
-}
-
-/// Extract `(alwaysStrict=true|false)` from a baseline filename so
 fn envUsize(name: [*:0]const u8, default: usize) usize {
     const raw = std.c.getenv(name) orelse return default;
     const value = std.mem.span(raw);
