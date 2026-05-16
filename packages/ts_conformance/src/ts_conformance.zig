@@ -1928,38 +1928,11 @@ fn hasHarnessModeledExpectedError(name: []const u8, source: []const u8) bool {
     {
         return true;
     }
-    // (Retired 2026-05-13) `verbatimModuleSyntaxCompat2` and
-    // `verbatimModuleSyntaxCompat3` used to live here. Their baselines
-    // are TS5102-only ("Option 'X' has been removed"); we now treat
-    // TS5102 the same as TS5101/TS5107 in
-    // `baselineHasOnlyOptionDeprecation`, so the loader short-circuits
-    // them to `expects_error=false` and this shim is bypassed.
-    // (Retired 2026-05-12) The ES5 destructuring + empty-assignment
-    // fixtures whose only upstream error is TS5107 target deprecation
-    // (`destructuringObjectBindingPatternAndAssignment6/7/8`,
-    // `destructuringObjectAssignmentPatternWithNestedSpread`,
-    // `destructuringEvaluationOrder`, `destructuringTypeAssertionsES5_5`,
-    // `emptyAssignmentPatterns01_ES5{,iterable}`,
-    // `emptyAssignmentPatterns03_ES5{,iterable}`) used to be modeled
-    // here. They were dead code: `loadDirectoryWithOptions` short-
-    // circuits via `baselineHasOnlyOptionDeprecation` and sets
-    // `expects_error=false` for these fixtures, so this shim was
-    // never consulted in the corpus path. Coarse-mode coverage of
-    // any *other* fixture with the same directive shape comes from
-    // `directiveTargetDeprecated(source)` in `runOneEntry`.
     // Target/emit-mode diagnostics in this arrow/unicode slice depend on
     // the upstream runner materializing target variants. The stripped
     // single-source checker runs one targetless source; keep those
     // target-only expected-error variants explicit until compile options
     // are threaded into checker diagnostics.
-    //
-    // (Retired 2026-05-13) `arrayLiteralSpreadES5iterable`,
-    // `objectLiteralShorthandProperties` (@target: es5),
-    // `newTarget.es5` (@target: es5) used to live here. All three had
-    // baselines whose only diagnostics were TS5101 / TS5107 option
-    // deprecations, so `loadDirectoryWithOptions` already short-
-    // circuits via `baselineHasOnlyOptionDeprecation` and sets
-    // `expects_error=false`. The shim was never consulted for them.
     if (std.mem.eql(u8, name, "emitArrowFunctionWhenUsingArguments10")) return true;
     if (std.mem.eql(u8, name, "emitArrowFunctionWhenUsingArguments18")) return true;
     if (std.mem.eql(u8, name, "emitArrowFunctionWhenUsingArguments19")) return true;
@@ -1993,64 +1966,33 @@ fn hasHarnessModeledExpectedError(name: []const u8, source: []const u8) bool {
     // stripped single source into the checker, so keep these as an
     // explicitly named harness gap until ts_driver owns that graph.
     if (isNodeResolutionFullProgramFixture(name, source)) return true;
-    // Higher-order generic call inference with fixed inference sites
-    // needs the checker to preserve candidate type arguments through
-    // contextual function-expression typing. The broad generic-call
-    // machinery is still tracked separately from this generator/class
-    // ratchet. (Retired 2026-05-16) `importDeferComments` and
-    // `importDefaultBindingDefer` used to live here; they were dead
-    // code (no test category loads `importDefer/`) and were removed.
+    // Higher-order generic-call inference with fixed inference sites
+    // requires the checker to preserve candidate type arguments
+    // through contextual function-expression typing — not yet
+    // implemented, so this fixture stays modeled until the broader
+    // generic-call machinery lands.
     if (std.mem.eql(u8, name, "genericCallWithGenericSignatureArguments2")) return true;
-    if (std.mem.eql(u8, name, "importDeferComments")) return true;
-    if (std.mem.eql(u8, name, "importDefaultBindingDefer")) return true;
-    // (Retired 2026-05-16) `decoratorOnFunctionParameter` — TS1433
-    // for `@dec this:` already fires from
-    // `checkParameterDecoratorDiagnostics` (no shim needed).
-    // (Retired 2026-05-16) `decoratedClassFromExternalModule` — TS2307
-    // "Cannot find module" already fires for the unresolvable
-    // `import Decorated from 'decorated'`.
-    // (Retired 2026-05-16) `constructableDecoratorOnClass01` — TS1238
-    // for a class identifier used directly as `@CtorDtor` is now
-    // emitted by `checkClassDecoratorDiagnostic` via the
-    // `decoratorExpressionIsClassIdentifier` helper.
     // `decoratorOnClassConstructor2/3` remain modeled: the multi-file
     // fixture imports `foo` from a sibling stub while also exporting
-    // `function foo` from the in-memory virtual file 0. The strip-
-    // then-concat single-source path merges both bindings on one
-    // symbol; the import-specifier resolution wins and the
+    // `function foo` from the in-memory virtual file 0. The
+    // strip-then-concat single-source path merges both bindings on
+    // one symbol; the import-specifier resolution wins and the
     // checker can't see the function signature to fire the TS1239
-    // constructor-parameter-decorator diagnostic. Requires program-
-    // mode multi-file resolution. Tracked separately.
+    // constructor-parameter-decorator diagnostic. Resolves once
+    // program-mode multi-file resolution lands.
     if (std.mem.indexOf(u8, name, "decoratorOnClassConstructor2") != null) return true;
     if (std.mem.indexOf(u8, name, "decoratorOnClassConstructor3") != null) return true;
-    // (Retired 2026-05-16) `decoratorOnClassMethodParameter3` —
-    // TS1308 ("await only in async") now fires for `await` inside a
-    // decorator expression. The await-scope walker in `.await_expr`
-    // treats a decorator boundary as transparent for the function
-    // the decorator targets; the enclosing function is the outer
-    // non-async one.
-    // (Retired 2026-05-16) `decoratorOnClassMethod6` —
-    // `@dec ["method"]` already trips `method_decorator_signature_unresolved`
-    // from `checkClassMemberDecoratorDiagnostics`.
     if (std.mem.indexOf(u8, name, "awaitAndYieldInProperty") != null) return true;
     if (std.mem.indexOf(u8, name, "redeclaredProperty") != null) return true;
-    // Removed dead shim: abstractPropertyInitializer — checker reports TS1267.
     if (std.mem.indexOf(u8, name, "autoAccessor11") != null) return true;
     if (std.mem.indexOf(u8, name, "mixinAbstractClasses.2") != null) return true;
     if (std.mem.indexOf(u8, name, "accessorsOverrideMethod") != null) return true;
     if (std.mem.indexOf(u8, name, "accessorsOverrideProperty10") != null) return true;
-    // Removed dead shim: memberFunctionOverloadMixingStaticAndInstance — checker reports TS2391 etc.
     if (std.mem.indexOf(u8, name, "propertyOverridesAccessors6") != null) return true;
-    // Removed dead shim: redefinedPararameterProperty — checker reports TS2339.
-    // Removed dead shim: propertyAndAccessorWithSameName — checker reports TS2300.
-    // Removed dead shim: propertyOverridesAccessors5 — checker reports TS2610.
-    // Removed dead shim: propertyAndFunctionWithSameName — checker reports TS2300.
-    // Removed dead shim: twoAccessorsWithSameName2 — checker reports TS2300.
     if (std.mem.indexOf(u8, name, "instanceMemberWithComputedPropertyName2") != null) return true;
     if (std.mem.indexOf(u8, name, "propertyNamedConstructor") != null) return true;
     if (std.mem.indexOf(u8, name, "mixinAccessors3") != null) return true;
     if (std.mem.indexOf(u8, name, "derivedClassSuperCallsWithThisArg") != null) return true;
-    // Removed dead shim: superCallInConstructorWithNoBaseType — checker reports TS2335.
     if (std.mem.indexOf(u8, name, "superPropertyInConstructorBeforeSuperCall") != null) return true;
     // RETIRED 2026-05-16: `constructorImplementationWithDefaultValues2`
     // removed — coarse-mode checker already emits diagnostics
@@ -2081,65 +2023,22 @@ fn hasHarnessModeledExpectedError(name: []const u8, source: []const u8) bool {
     if (std.mem.indexOf(u8, name, "classAbstractConstructor") != null) return true;
     if (std.mem.indexOf(u8, name, "typeOfThisInStaticMembers6") != null) return true;
     if (std.mem.indexOf(u8, name, "privateWriteOnlyAccessorRead") != null) return true;
-    // Removed dead shim: protectedStaticNotAccessibleInClodule — checker reports TS2445.
     if (std.mem.indexOf(u8, name, "privateProtectedMembersAreNotAccessibleDestructuring") != null) return true;
     // RETIRED 2026-05-16: `classWithConstructors` removed — coarse-mode
     // checker already emits diagnostics (covered by cluster-probe test).
     if (std.mem.indexOf(u8, name, "privateIndexer") != null) return true;
     if (std.mem.indexOf(u8, name, "staticIndexers") != null) return true;
-    // Removed dead shim: publicIndexer — checker reports TS1071.
     if (std.mem.indexOf(u8, name, "classStaticBlockUseBeforeDef3") != null) return true;
-    // Removed dead shim: protectedClassPropertyAccessibleWithinNestedSubclass1 — checker reports TS2445.
     if (std.mem.indexOf(u8, name, "classStaticBlock8") != null) return true;
     // RETIRED 2026-05-16: `classStaticBlock19` and `classStaticBlock7`
     // removed — coarse-mode checker already emits diagnostics
     // (covered by cluster-probe test).
     if (std.mem.indexOf(u8, name, "classStaticBlock16") != null) return true;
-    // (Retired 2026-05-16) Per Agent BT — `library-reference-15`,
-    // `library-reference-5`, `constructBigint`, `exportAsNamespace_*`,
-    // `importAttributes9`, `useObjectValuesAndEntries3`, `typingsLookup3`
-    // — all dead-code shims (the runner already short-circuits). The
-    // BT regression test pins this; do not re-add them when cherry-
-    // picking older agent branches.
-    // (Retired 2026-05-16) Async/await `_es*` shim removal pass (Agent BQ).
-    //
-    // PROBED & REMOVED (dead code — checker already emits the
-    // baseline diagnostic without the shim):
-    //   asyncAwaitIsolatedModules_es{2017,6}, asyncConstructor_es6,
-    //   asyncDeclare_es6, asyncInterface_es6, asyncSetter_es6,
-    //   asyncEnum_es6, asyncClass_es6, asyncGetter_es6, asyncModule_es6,
-    //   await_unaryExpression_es{2017_{1,2,3}, es6_{1,2,3}},
-    //   awaitBinaryExpression5_es{2017,6}, awaitAndYield,
-    //   asyncFunctionDeclaration{5,10,12}_es{2017,6},
-    //   asyncArrowFunction{5,9}_es{2017,6},
-    //   asyncArrowFunctionCapturesArguments_es{2017,6}.
-    //
-    // FIXED IN PLACE — these shims were removed once a real
-    // diagnostic landed in the checker / parser:
-    //   * TS2372 "Parameter 'X' cannot reference itself" — see
-    //     `checkFnParameterDefaultReferences` self-ref branch.
-    //     Retired: asyncFunctionDeclaration3_es{2017,6},
-    //     asyncArrowFunction3_es{2017,6}.
-    //   * TS1064 "The return type of an async function or method
-    //     must be the global Promise<T> type." — see
-    //     `checkAsyncReturnTypeIsPromise`. Retired:
-    //     asyncImportedPromise_es6, asyncQualifiedReturnType_es6,
-    //     asyncFunctionDeclaration15_es6.
-    //
-    // STILL LOAD-BEARING — the underlying checker / parser gap
-    // is documented; revisit in a follow-up pass:
-    //   * TS2552 "Cannot find name 'await'. Did you mean 'Awaited'?"
-    //     for `var v: await;` — `await` is now parsed as an
-    //     identifier in type position, but the type-reference
-    //     resolver doesn't yet emit TS2304/TS2552 for unknown
-    //     names in plain variable annotations.
-    //     (asyncFunctionDeclaration13_es{2017,6},
-    //     asyncArrowFunction10_es{2017,6})
-    //   * TS1359/TS1212 "Identifier expected. 'await'/'yield' is a
-    //     reserved word…" — the parser accepts `let await = 1` inside
-    //     async function bodies and `let yield = 2` in strict mode
-    //     without raising the reserved-word diagnostic.
-    //     (asyncOrYieldAsBindingIdentifier1)
+    // The async/await `_es*` variants below need TS2552 for `var v:
+    // await;` (the type-reference resolver doesn't yet emit
+    // TS2304/TS2552 for unknown names in plain variable annotations)
+    // and TS1359/TS1212 for `let await = 1` / `let yield = 2` (the
+    // parser accepts these as identifiers in async/strict scopes).
     if (std.mem.indexOf(u8, name, "asyncFunctionDeclaration13_es2017") != null) return true;
     if (std.mem.indexOf(u8, name, "asyncArrowFunction10_es2017") != null) return true;
     if (std.mem.indexOf(u8, name, "asyncFunctionDeclaration13_es6") != null) return true;
@@ -2149,8 +2048,6 @@ fn hasHarnessModeledExpectedError(name: []const u8, source: []const u8) bool {
     // generator yield/return/next type parameters. Keep these narrow cases
     // tracked in coarse mode while source support handles generator parsing,
     // overload placement, ambient diagnostics, and primitive return checks.
-    // (Retired 2026-05-16 per Agent BT) — `generatorTypeCheck8` and
-    // `generatorTypeCheck31` were dead-code shims.
     if (std.mem.indexOf(u8, name, "asyncArrowFunction10_es6") != null) return true;
     if (std.mem.indexOf(u8, name, "enumConstantMembers") != null) return true;
     if (std.mem.indexOf(u8, name, "enumShadowedInfinityNaN") != null) return true;
@@ -2162,17 +2059,6 @@ fn hasHarnessModeledExpectedError(name: []const u8, source: []const u8) bool {
     // `...EmitDeclaration` variant which is still emit-declaration-only and lacks checker
     // diagnostics on the stripped single-source path, so keep that one modeled explicitly.
     if (std.mem.indexOf(u8, name, "enumConstantMemberWithTemplateLiteralsEmitDeclaration") != null) return true;
-    // Switch case comparability diagnostics (TS2678) require the
-    // checker to compare case-clause literal types against the switch
-    // discriminant. The parser/control-flow surface accepts the
-    // statements; exact checker validation is still tracked under the
-    // broader comparable/type-relationship work.
-    if (std.mem.eql(u8, name, "switchBreakStatements")) return true;
-    if (std.mem.eql(u8, name, "invalidSwitchBreakStatement")) return true;
-    // These diagnostics are type-checker overlap/assignability checks
-    // for type assertions and property initializers inside `for`
-    // headers, not statement parsing failures.
-    if (std.mem.eql(u8, name, "forStatementsMultipleValidDecl")) return true;
     // `esDecorators-*-missingEmitHelpers-*` remain modeled: every
     // baseline is a TS2343 "imported helper named '__esDecorate' /
     // '__runInitializers' does not exist in 'tslib'" diagnostic
@@ -2184,29 +2070,13 @@ fn hasHarnessModeledExpectedError(name: []const u8, source: []const u8) bool {
     // classExpression variants share a single substring match.
     if (std.mem.indexOf(u8, name, "esDecorators-classDeclaration-missingEmitHelpers") != null) return true;
     if (std.mem.indexOf(u8, name, "esDecorators-classExpression-missingEmitHelpers") != null) return true;
-    // (Retired 2026-05-16) `esDecorators-arguments` — the arity
-    // mismatches on `@(() => {})` … `@((a,b,c) => {})` already
-    // trip `class_decorator_signature_unresolved` via the runtime-
-    // arity check (TS1238 fires 3+ times naturally).
-    // `esDecorators-privateFieldAccess` remains modeled: the
-    // baseline expects TS18016 (Private identifiers are not
-    // allowed outside class bodies) and TS18013 (Property '#foo'
-    // is not accessible outside class). Both diagnostics require
-    // a dedicated private-identifier checker pass that doesn't
-    // exist yet (the lexer recognizes `.private_identifier` but
-    // the parser folds them into regular identifier nodes).
+    // `esDecorators-privateFieldAccess` baseline expects TS18016
+    // (Private identifiers not allowed outside class bodies) and
+    // TS18013 (Property '#foo' is not accessible outside class).
+    // The parser currently folds `.private_identifier` tokens into
+    // regular identifier nodes, so a dedicated private-identifier
+    // checker pass is needed before the shim can come off.
     if (std.mem.indexOf(u8, name, "esDecorators-privateFieldAccess") != null) return true;
-    // (Retired 2026-05-16) The following used to live here. None of
-    // these fixtures lie in a category loaded by any active test
-    // (`es2019/`, `ambient/`, `salsa/`), so the shim was never
-    // consulted:
-    //   globalThis: `globalThisUnknown`, `globalThisBlockscopedProperties`,
-    //     `globalThisReadonlyProperties`, `globalThisPropertyAssignment`
-    //   ambient:    `ambientExternalModuleInsideNonAmbient`,
-    //     `ambientDeclarationsPatterns`, `ambientErrors`
-    //   JS-special: `importingExportingTypes`, `moduleExportsAliasLoop`,
-    //     `plainJSTypeErrors`, `thisPropertyAssignmentComputed`,
-    //     `typeFromPrototypeAssignment`, `lateBoundAssignmentDeclarationSupport1`
     if (std.mem.indexOf(u8, name, "plainJSReservedStrict") != null) return true;
     if (std.mem.indexOf(u8, name, "moduleExportDuplicateAlias") != null) return true;
     if (std.mem.indexOf(u8, name, "propertyAssignmentOnUnresolvedImportedSymbol") != null) return true;
@@ -5093,11 +4963,3 @@ test "conformance: runOwnedCorpus rejects expects-error fixture with no diagnost
     try T.expectEqual(@as(u32, 1), stats.failed);
 }
 
-// (Retired 2026-05-16) The "BQ probe: async/es2017 + async/es6 corpus
-// shim audit" test was used during the async/await `_es*` shim removal
-// pass to identify which entries were dead code vs. still load-bearing.
-// All audited shims are now either dropped or backed by real checker
-// diagnostics (see `hasHarnessModeledExpectedError` retirement notes).
-// Removed the probe to avoid leaving long-running output-only tests in
-// the suite — re-add via `runDirectoryWithOptions` if a similar audit
-// is needed in the future.

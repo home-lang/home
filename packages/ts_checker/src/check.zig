@@ -1293,7 +1293,6 @@ pub const Checker = struct {
     /// Check a complete source file. The HIR root must be a
     /// block_stmt of top-level statements.
     pub fn checkSourceFile(self: *Checker, root: NodeId) CheckError!void {
-        std.debug.print("[DEBUG checkSourceFile] root={d}\n", .{root});
         // §4.A.X TS 4.0 — give the relation engine a live reference
         // to `rest_signatures` so signature assignability can expand
         // a tuple-typed rest param into positional params when
