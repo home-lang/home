@@ -1013,6 +1013,25 @@ pub const Parser = struct {
     }
 
     fn reportInvalidFutureReservedName(self: *Parser, tok: Token) ParseError!void {
+        if (self.strict_mode and self.class_body_depth == 0) {
+            switch (tok.kind) {
+                .kw_public,
+                .kw_private,
+                .kw_protected,
+                .kw_static,
+                => {
+                    const raw = self.source[tok.span.start..tok.span.end];
+                    const msg = try std.fmt.allocPrint(
+                        self.diag_arena.allocator(),
+                        "Identifier expected. '{s}' is a reserved word in strict mode.",
+                        .{raw},
+                    );
+                    try self.reportCodeAt(tok.span.start, tok.line, 1212, msg);
+                    return;
+                },
+                else => {},
+            }
+        }
         if (!self.strict_mode and !self.target_es2015_or_later) return;
         if (!self.tokenTextEquals(tok, "interface")) return;
         try self.reportCodeAt(tok.span.start, tok.line, 1212, "Identifier expected. 'interface' is a reserved word in strict mode.");
@@ -11940,6 +11959,16 @@ test "parser: strict mode restricted names and delete operands report diagnostic
     try T.expectEqual(@as(u32, 1100), s.parser.diagnostics.items[1].code);
     try T.expectEqual(@as(u32, 1100), s.parser.diagnostics.items[2].code);
     try T.expectEqual(@as(u32, 2703), s.parser.diagnostics.items[3].code);
+}
+
+test "parser: strict mode future reserved variable name reports TS1212" {
+    var s = try newTestSetup("\"use strict\"; var public = 1;");
+    defer destroyTestSetup(s);
+
+    _ = try s.parser.parseSourceFile();
+    try T.expectEqual(@as(usize, 1), s.parser.diagnostics.items.len);
+    try T.expectEqual(@as(u32, 1212), s.parser.diagnostics.items[0].code);
+    try T.expectEqualStrings("Identifier expected. 'public' is a reserved word in strict mode.", s.parser.diagnostics.items[0].message);
 }
 
 test "parser: top-level dynamic import makes file strict" {
