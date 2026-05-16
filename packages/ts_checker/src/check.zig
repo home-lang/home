@@ -6148,10 +6148,15 @@ pub const Checker = struct {
         if (mode == .parameter and param_name != null and ref_name != null) {
             const p_str = self.string_interner.get(param_name.?);
             const r_str = self.string_interner.get(ref_name.?);
+            // TS2372 wording mirrors upstream tsc exactly:
+            // `Parameter '{0}' cannot reference itself.` — no
+            // "in its initializer." tail. Mirrors fixtures
+            // `asyncArrowFunction3_es5`, `asyncArrowFunction9_es5`,
+            // `asyncArrowFunctionCapturesArguments_es5`, etc.
             const msg = if (is_self)
                 try std.fmt.allocPrint(
                     self.diag_arena.allocator(),
-                    "Parameter '{s}' cannot reference itself in its initializer.",
+                    "Parameter '{s}' cannot reference itself.",
                     .{p_str},
                 )
             else
@@ -6195,7 +6200,7 @@ pub const Checker = struct {
         const msg: []const u8 = switch (mode) {
             .variable => "Block-scoped variable used before its declaration.",
             .parameter => if (is_self)
-                "Parameter cannot reference itself in its initializer."
+                "Parameter cannot reference itself."
             else
                 "Parameter cannot reference identifier declared after it.",
         };
@@ -53843,6 +53848,29 @@ test "checker: plain identifier parameter default cannot reference itself (TS237
         if (d.code == TsCodes.parameter_cannot_reference_self) saw_param_self = true;
     }
     try T.expect(saw_param_self);
+}
+
+test "checker: TS2372 wording matches upstream tsc (no 'in its initializer' tail)" {
+    // Mirrors upstream diagnosticMessages.json key
+    // `Parameter '{0}' cannot reference itself.` — the trailing
+    // "in its initializer." we used to emit caused an exact-baseline
+    // mismatch across the async/await es5/es6/es2017 cluster.
+    const s = try newSetup(
+        \\function f(await = await) {}
+    );
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+    var found_exact = false;
+    for (s.checker.diagnostics.items) |d| {
+        if (d.code != TsCodes.parameter_cannot_reference_self) continue;
+        // Exact upstream wording, no trailing " in its initializer.".
+        if (std.mem.eql(u8, d.message, "Parameter 'await' cannot reference itself.")) {
+            found_exact = true;
+        }
+        // Hard-fail if the legacy wording crept back.
+        try T.expect(std.mem.indexOf(u8, d.message, "in its initializer") == null);
+    }
+    try T.expect(found_exact);
 }
 
 test "checker: async function with non-Promise return type emits TS1064" {
