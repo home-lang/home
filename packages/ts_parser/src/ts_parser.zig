@@ -3935,6 +3935,19 @@ pub const Parser = struct {
             }
         }
         if (t.kind == .eof or t.kind == .close_brace or t.flags.preceded_by_newline) return;
+        if (t.kind == .colon and self.peekAt(1).kind == .arrow) {
+            try self.reportCodeAt(t.span.start, t.line, 1005, "',' expected.");
+            _ = self.advance();
+            const arrow_tok = self.peek();
+            try self.reportCodeAt(arrow_tok.span.start, arrow_tok.line, 1005, "';' expected.");
+            _ = self.advance();
+            return;
+        }
+        if (t.kind == .arrow) {
+            try self.reportCodeAt(t.span.start, t.line, 1005, "';' expected.");
+            _ = self.advance();
+            return;
+        }
         if (t.kind == .close_bracket) {
             try self.reportCodeAt(t.span.start, t.line, 1005, "';' expected.");
             _ = self.advance();
@@ -5870,6 +5883,9 @@ pub const Parser = struct {
         const after_kind = self.tokens[after_paren_idx].kind;
         if (after_kind != .arrow and after_kind != .colon) return null;
         if (after_kind == .colon) {
+            // `(expr): =>` is not a typed arrow in TypeScript. It recovers as
+            // a parenthesized expression followed by a stray `:` and `=>`.
+            if (after_paren_idx + 1 < self.tokens.len and self.tokens[after_paren_idx + 1].kind == .arrow) return null;
             // We need to scan past the type annotation to find a `=>`.
             // Simple approach: look for the next top-level `=>` before
             // a statement-terminator-class token.
@@ -10097,6 +10113,20 @@ test "parser: empty parameter type reports TS1110 and preserves arrow" {
     try T.expectEqual(@as(usize, 1), s.parser.diagnostics.items.len);
     try T.expectEqual(@as(u32, 1110), s.parser.diagnostics.items[0].code);
     try T.expectEqualStrings("Type expected.", s.parser.diagnostics.items[0].message);
+}
+
+test "parser: empty return type before arrow recovers as expression" {
+    var s = try newTestSetup("var v = (a): => {};");
+    defer destroyTestSetup(s);
+    const root = try s.parser.parseSourceFile();
+    const top = hir_mod.blockStmts(&s.hir, root)[0];
+    const v = hir_mod.varDeclOf(&s.hir, top);
+    try T.expectEqual(hir_mod.NodeKind.identifier, s.hir.kindOf(v.init));
+    try T.expectEqual(@as(usize, 2), s.parser.diagnostics.items.len);
+    try T.expectEqual(@as(u32, 1005), s.parser.diagnostics.items[0].code);
+    try T.expectEqualStrings("',' expected.", s.parser.diagnostics.items[0].message);
+    try T.expectEqual(@as(u32, 1005), s.parser.diagnostics.items[1].code);
+    try T.expectEqualStrings("';' expected.", s.parser.diagnostics.items[1].message);
 }
 
 test "parser: unterminated tuple type reports TS1005 close bracket" {

@@ -1151,6 +1151,19 @@ pub fn loadDirectoryWithOptions(
                 directive_flags orelse strictFlagsFromStrict(inferred_strict_on)
             else
                 null;
+        if (!options.honor_directives and
+            options.strict_default_for_expected_errors and
+            expects_error and
+            directive_flags == null and
+            tsconfigStrictValue(raw_source) == null and
+            tsconfigStrictValue(case_src) == null and
+            sourceHasBareVariableWithoutTypeOrInitializer(case_src) and
+            baselineLacksDiagnostic(gpa, baseline_path, "TS7005"))
+        {
+            var merged = strict_flags orelse ts_driver.StrictFlags{};
+            merged.no_implicit_any = false;
+            strict_flags = merged;
+        }
         if (!options.honor_directives) {
             if (directive_flags) |flags| {
                 if (flags.resolve_json_module) {
@@ -2734,6 +2747,37 @@ fn sourceHasUninitializedField(source: []const u8) bool {
     return false;
 }
 
+/// Lightweight signal for TS7005: a variable declaration with no type
+/// annotation and no initializer. If upstream's error baseline lacks
+/// TS7005 for such a fixture, `noImplicitAny` was not effectively on.
+fn sourceHasBareVariableWithoutTypeOrInitializer(source: []const u8) bool {
+    var lines = std.mem.splitScalar(u8, source, '\n');
+    while (lines.next()) |raw_line| {
+        var line = std.mem.trim(u8, raw_line, " \t\r");
+        if (line.len == 0 or std.mem.startsWith(u8, line, "//")) continue;
+        if (std.mem.startsWith(u8, line, "export ")) line = std.mem.trimStart(u8, line["export ".len..], " \t");
+        if (std.mem.startsWith(u8, line, "declare ")) line = std.mem.trimStart(u8, line["declare ".len..], " \t");
+        const rest = if (std.mem.startsWith(u8, line, "var "))
+            line["var ".len..]
+        else if (std.mem.startsWith(u8, line, "let "))
+            line["let ".len..]
+        else if (std.mem.startsWith(u8, line, "const "))
+            line["const ".len..]
+        else
+            continue;
+        const trimmed = std.mem.trim(u8, rest, " \t");
+        if (!std.mem.endsWith(u8, trimmed, ";")) continue;
+        if (std.mem.indexOfScalar(u8, trimmed, '=') != null) continue;
+        if (std.mem.indexOfScalar(u8, trimmed, ':') != null) continue;
+        if (std.mem.indexOfScalar(u8, trimmed, ',') != null) continue;
+        const name = std.mem.trim(u8, trimmed[0 .. trimmed.len - 1], " \t");
+        if (name.len == 0) continue;
+        if (name[0] == '{' or name[0] == '[') continue;
+        return true;
+    }
+    return false;
+}
+
 /// True when the upstream baseline file at `baseline_path` has no
 /// `TS2564` diagnostic — i.e. upstream did not flag any
 /// uninitialised-property error, which is a strong signal that
@@ -2742,10 +2786,14 @@ fn sourceHasUninitializedField(source: []const u8) bool {
 /// baseline can't be read, mirroring the conservative bias toward
 /// the historical default in unfamiliar territory.
 fn baselineLacksTs2564(gpa: std.mem.Allocator, baseline_path: ?[]const u8) bool {
+    return baselineLacksDiagnostic(gpa, baseline_path, "TS2564");
+}
+
+fn baselineLacksDiagnostic(gpa: std.mem.Allocator, baseline_path: ?[]const u8, code: []const u8) bool {
     const path = baseline_path orelse return false;
     const baseline = readFileAlloc(gpa, path) catch return false;
     defer gpa.free(baseline);
-    return std.mem.indexOf(u8, baseline, "TS2564") == null;
+    return std.mem.indexOf(u8, baseline, code) == null;
 }
 
 /// Parse `"strict": true|false` out of the first
@@ -3462,6 +3510,16 @@ test "conformance: inferFixtureStrictOn keeps strict on when baseline expects TS
         .baseline_path = baseline_path,
         .gpa = T.allocator,
     }));
+}
+
+test "conformance: bare variable scan detects TS7005 shape" {
+    try T.expect(sourceHasBareVariableWithoutTypeOrInitializer(
+        \\// @target: esnext
+        \\var async;
+        \\for (async of []) {}
+    ));
+    try T.expect(!sourceHasBareVariableWithoutTypeOrInitializer("let x: number;"));
+    try T.expect(!sourceHasBareVariableWithoutTypeOrInitializer("const x = 1;"));
 }
 
 test "conformance: Node resolver fixtures stay in full-program harness bucket" {
