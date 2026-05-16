@@ -2393,8 +2393,8 @@ pub const Parser = struct {
                     }
                     if (key_tok.kind == .string_literal or key_tok.kind == .number_literal) {
                         // tsc reports TS1005 `':' expected.` at the position of
-                        // the offending token (here, the closing brace or
-                        // whatever follows the literal key). Matches
+                        // the next token (here, the closing brace or whatever
+                        // follows the literal key). Matches
                         // `objectBindingPatternKeywordIdentifiers03` baseline.
                         try self.reportCodeAt(self.peek().span.start, self.peek().line, 1005, "':' expected.");
                         return error.UnexpectedToken;
@@ -10258,7 +10258,8 @@ test "parser: reserved shorthand object binding target reports TS1359" {
 test "parser: literal object binding key without ':' reports TS1005" {
     // Mirrors `objectBindingPatternKeywordIdentifiers03.ts`:
     //   var { "while" } = { while: 1 }
-    // tsc emits TS1005 `':' expected.` at the closing brace position.
+    // tsc emits TS1005 `':' expected.` (we previously emitted a custom TS1109
+    // "expected ':' after literal binding key" which doesn't match upstream).
     var s = try newTestSetup("var { \"while\" } = { while: 1 };");
     defer destroyTestSetup(s);
     _ = s.parser.parseSourceFile() catch {};
