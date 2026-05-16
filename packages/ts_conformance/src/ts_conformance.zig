@@ -1997,10 +1997,10 @@ fn hasHarnessModeledExpectedError(name: []const u8, source: []const u8) bool {
     // needs the checker to preserve candidate type arguments through
     // contextual function-expression typing. The broad generic-call
     // machinery is still tracked separately from this generator/class
-    // ratchet.
+    // ratchet. (Retired 2026-05-16) `importDeferComments` and
+    // `importDefaultBindingDefer` used to live here; they were dead
+    // code (no test category loads `importDefer/`) and were removed.
     if (std.mem.eql(u8, name, "genericCallWithGenericSignatureArguments2")) return true;
-    if (std.mem.eql(u8, name, "importDeferComments")) return true;
-    if (std.mem.eql(u8, name, "importDefaultBindingDefer")) return true;
     if (std.mem.indexOf(u8, name, "decoratorOnFunctionParameter") != null) return true;
     if (std.mem.indexOf(u8, name, "decoratedClassFromExternalModule") != null) return true;
     if (std.mem.indexOf(u8, name, "constructableDecoratorOnClass01") != null) return true;
@@ -2064,15 +2064,14 @@ fn hasHarnessModeledExpectedError(name: []const u8, source: []const u8) bool {
     if (std.mem.indexOf(u8, name, "classStaticBlock19") != null) return true;
     if (std.mem.indexOf(u8, name, "classStaticBlock7") != null) return true;
     if (std.mem.indexOf(u8, name, "classStaticBlock16") != null) return true;
-    if (std.mem.indexOf(u8, name, "library-reference-15") != null) return true;
-    if (std.mem.indexOf(u8, name, "library-reference-5") != null) return true;
-    if (std.mem.indexOf(u8, name, "constructBigint") != null) return true;
-    if (std.mem.indexOf(u8, name, "exportAsNamespace_exportAssignment") != null) return true;
-    if (std.mem.indexOf(u8, name, "exportAsNamespace_missingEmitHelpers") != null) return true;
-    if (std.mem.indexOf(u8, name, "exportAsNamespace_nonExistent") != null) return true;
-    if (std.mem.indexOf(u8, name, "importAttributes9") != null) return true;
-    if (std.mem.indexOf(u8, name, "useObjectValuesAndEntries3") != null) return true;
-    if (std.mem.indexOf(u8, name, "typingsLookup3") != null) return true;
+    // (Retired 2026-05-16) `library-reference-15`, `library-reference-5`,
+    // `constructBigint`, `exportAsNamespace_exportAssignment`,
+    // `exportAsNamespace_missingEmitHelpers`, `exportAsNamespace_nonExistent`,
+    // `importAttributes9`, `useObjectValuesAndEntries3`, and
+    // `typingsLookup3` used to be modeled here. None of these fixtures
+    // live in a category loaded by any active test (`references/`,
+    // `es2020/`, `importAttributes/`, `es2017/`, `typings/`), so the
+    // shim was never consulted in the corpus path.
     if (std.mem.indexOf(u8, name, "asyncAwaitIsolatedModules_es2017") != null) return true;
     if (std.mem.indexOf(u8, name, "await_unaryExpression_es2017_3") != null) return true;
     if (std.mem.indexOf(u8, name, "awaitBinaryExpression5_es2017") != null) return true;
@@ -2111,8 +2110,9 @@ fn hasHarnessModeledExpectedError(name: []const u8, source: []const u8) bool {
     // generator yield/return/next type parameters. Keep these narrow cases
     // tracked in coarse mode while source support handles generator parsing,
     // overload placement, ambient diagnostics, and primitive return checks.
-    if (std.mem.eql(u8, name, "generatorTypeCheck8")) return true;
-    if (std.mem.eql(u8, name, "generatorTypeCheck31")) return true;
+    // (Retired 2026-05-16) `generatorTypeCheck8` and `generatorTypeCheck31`
+    // used to live here. `es6/yieldExpressions/` isn't loaded by any
+    // active test category, so the shim was never consulted.
     if (std.mem.indexOf(u8, name, "asyncFunctionDeclaration15_es6") != null) return true;
     if (std.mem.indexOf(u8, name, "asyncGetter_es6") != null) return true;
     if (std.mem.indexOf(u8, name, "asyncModule_es6") != null) return true;
@@ -2134,29 +2134,25 @@ fn hasHarnessModeledExpectedError(name: []const u8, source: []const u8) bool {
     // discriminant. The parser/control-flow surface accepts the
     // statements; exact checker validation is still tracked under the
     // broader comparable/type-relationship work.
-    if (std.mem.eql(u8, name, "switchBreakStatements")) return true;
-    if (std.mem.eql(u8, name, "invalidSwitchBreakStatement")) return true;
-    // These diagnostics are type-checker overlap/assignability checks
-    // for type assertions and property initializers inside `for`
-    // headers, not statement parsing failures.
-    if (std.mem.eql(u8, name, "forStatementsMultipleValidDecl")) return true;
+    // (Retired 2026-05-16) `switchBreakStatements`,
+    // `invalidSwitchBreakStatement`, and `forStatementsMultipleValidDecl`
+    // used to live here. `statements/` isn't loaded by any active test
+    // category, so the shim was never consulted.
     if (std.mem.indexOf(u8, name, "esDecorators-classDeclaration-missingEmitHelpers") != null) return true;
     if (std.mem.indexOf(u8, name, "esDecorators-classExpression-missingEmitHelpers") != null) return true;
     if (std.mem.indexOf(u8, name, "esDecorators-arguments") != null) return true;
     if (std.mem.indexOf(u8, name, "esDecorators-privateFieldAccess") != null) return true;
-    if (std.mem.indexOf(u8, name, "globalThisUnknown") != null) return true;
-    if (std.mem.indexOf(u8, name, "globalThisBlockscopedProperties") != null) return true;
-    if (std.mem.indexOf(u8, name, "globalThisReadonlyProperties") != null) return true;
-    if (std.mem.indexOf(u8, name, "globalThisPropertyAssignment") != null) return true;
-    if (std.mem.indexOf(u8, name, "ambientExternalModuleInsideNonAmbient") != null) return true;
-    if (std.mem.indexOf(u8, name, "ambientDeclarationsPatterns") != null) return true;
-    if (std.mem.indexOf(u8, name, "ambientErrors") != null) return true;
-    if (std.mem.indexOf(u8, name, "importingExportingTypes") != null) return true;
-    if (std.mem.indexOf(u8, name, "moduleExportsAliasLoop") != null) return true;
-    if (std.mem.indexOf(u8, name, "plainJSTypeErrors") != null) return true;
-    if (std.mem.indexOf(u8, name, "thisPropertyAssignmentComputed") != null) return true;
-    if (std.mem.indexOf(u8, name, "typeFromPrototypeAssignment") != null) return true;
-    if (std.mem.indexOf(u8, name, "lateBoundAssignmentDeclarationSupport1") != null) return true;
+    // (Retired 2026-05-16) The following used to live here. None of
+    // these fixtures lie in a category loaded by any active test
+    // (`es2019/`, `ambient/`, `salsa/`), so the shim was never
+    // consulted:
+    //   globalThis: `globalThisUnknown`, `globalThisBlockscopedProperties`,
+    //     `globalThisReadonlyProperties`, `globalThisPropertyAssignment`
+    //   ambient:    `ambientExternalModuleInsideNonAmbient`,
+    //     `ambientDeclarationsPatterns`, `ambientErrors`
+    //   JS-special: `importingExportingTypes`, `moduleExportsAliasLoop`,
+    //     `plainJSTypeErrors`, `thisPropertyAssignmentComputed`,
+    //     `typeFromPrototypeAssignment`, `lateBoundAssignmentDeclarationSupport1`
     if (std.mem.indexOf(u8, name, "plainJSReservedStrict") != null) return true;
     if (std.mem.indexOf(u8, name, "moduleExportDuplicateAlias") != null) return true;
     if (std.mem.indexOf(u8, name, "propertyAssignmentOnUnresolvedImportedSymbol") != null) return true;
@@ -3674,6 +3670,57 @@ test "conformance: Node resolver fixtures stay in full-program harness bucket" {
     try T.expect(hasHarnessModeledExpectedError("nodeModulesPackageExports", node_source));
     try T.expect(hasHarnessModeledExpectedClean("nodeModulesPackageExports", node_source));
     try T.expect(!isNodeResolutionFullProgramFixture("nodeLikeLocalName", "const nodeModules = 1;"));
+}
+
+test "conformance: retired ambient/globalThis/misc shim names return false" {
+    // 2026-05-16: Removed 29 dead-code shim entries from
+    // `hasHarnessModeledExpectedError`. None of the fixtures matched
+    // those names live in a test-loaded category (e.g. `es2019/`,
+    // `ambient/`, `salsa/`, `references/`, `es2020/`,
+    // `importAttributes/`, `es2017/`, `typings/`, `es6/yieldExpressions/`,
+    // `statements/`, `importDefer/`), so the shim was never consulted.
+    // This test guards against accidental re-shimming.
+    const empty: []const u8 = "";
+    // globalThis cluster
+    try T.expect(!hasHarnessModeledExpectedError("globalThisUnknown", empty));
+    try T.expect(!hasHarnessModeledExpectedError("globalThisBlockscopedProperties", empty));
+    try T.expect(!hasHarnessModeledExpectedError("globalThisReadonlyProperties", empty));
+    try T.expect(!hasHarnessModeledExpectedError("globalThisPropertyAssignment", empty));
+    // Ambient cluster
+    try T.expect(!hasHarnessModeledExpectedError("ambientExternalModuleInsideNonAmbient", empty));
+    try T.expect(!hasHarnessModeledExpectedError("ambientDeclarationsPatterns", empty));
+    try T.expect(!hasHarnessModeledExpectedError("ambientErrors", empty));
+    // JS-special cluster (salsa/)
+    try T.expect(!hasHarnessModeledExpectedError("importingExportingTypes", empty));
+    try T.expect(!hasHarnessModeledExpectedError("moduleExportsAliasLoop", empty));
+    try T.expect(!hasHarnessModeledExpectedError("plainJSTypeErrors", empty));
+    try T.expect(!hasHarnessModeledExpectedError("thisPropertyAssignmentComputed", empty));
+    try T.expect(!hasHarnessModeledExpectedError("typeFromPrototypeAssignment", empty));
+    try T.expect(!hasHarnessModeledExpectedError("lateBoundAssignmentDeclarationSupport1", empty));
+    // Misc cluster
+    try T.expect(!hasHarnessModeledExpectedError("library-reference-15", empty));
+    try T.expect(!hasHarnessModeledExpectedError("library-reference-5", empty));
+    try T.expect(!hasHarnessModeledExpectedError("constructBigint", empty));
+    try T.expect(!hasHarnessModeledExpectedError("exportAsNamespace_exportAssignment", empty));
+    try T.expect(!hasHarnessModeledExpectedError("exportAsNamespace_missingEmitHelpers", empty));
+    try T.expect(!hasHarnessModeledExpectedError("exportAsNamespace_nonExistent", empty));
+    try T.expect(!hasHarnessModeledExpectedError("importAttributes9", empty));
+    try T.expect(!hasHarnessModeledExpectedError("useObjectValuesAndEntries3", empty));
+    try T.expect(!hasHarnessModeledExpectedError("typingsLookup3", empty));
+    // Switch + for cluster
+    try T.expect(!hasHarnessModeledExpectedError("switchBreakStatements", empty));
+    try T.expect(!hasHarnessModeledExpectedError("invalidSwitchBreakStatement", empty));
+    try T.expect(!hasHarnessModeledExpectedError("forStatementsMultipleValidDecl", empty));
+    // Generator cluster
+    try T.expect(!hasHarnessModeledExpectedError("generatorTypeCheck8", empty));
+    try T.expect(!hasHarnessModeledExpectedError("generatorTypeCheck31", empty));
+    // Import-defer cluster
+    try T.expect(!hasHarnessModeledExpectedError("importDeferComments", empty));
+    try T.expect(!hasHarnessModeledExpectedError("importDefaultBindingDefer", empty));
+    // Surviving shim: `genericCallWithGenericSignatureArguments2` is
+    // still load-bearing — it lives under `types/typeRelationships/
+    // typeInference/` which IS in the baseline-aware survey.
+    try T.expect(hasHarnessModeledExpectedError("genericCallWithGenericSignatureArguments2", empty));
 }
 
 test "conformance: exact-error path honors modeled Node resolver bucket" {
