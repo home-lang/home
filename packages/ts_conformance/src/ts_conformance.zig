@@ -1739,6 +1739,20 @@ fn baselineAlwaysStrictValue(path: ?[]const u8) ?bool {
     return null;
 }
 
+/// Extract the `moduleresolution=X` label from a baseline filename
+/// like `…(moduleresolution=classic).errors.txt`. Returns an owned
+/// lower-case slice (`"classic"`) or an empty slice when the
+/// baseline has no `moduleresolution=` variant suffix. The label
+/// drives `resolverStrategyFromCase` so the resolver picks the
+/// strategy that matches the baseline we'll compare against.
+fn extractModuleResolutionFromBaseline(gpa: std.mem.Allocator, path: []const u8) ![]u8 {
+    const needle = "(moduleresolution=";
+    const start = std.mem.indexOf(u8, path, needle) orelse return gpa.dupe(u8, "");
+    const after = start + needle.len;
+    const close = std.mem.indexOfScalarPos(u8, path, after, ')') orelse return gpa.dupe(u8, "");
+    return gpa.dupe(u8, path[after..close]);
+}
+
 fn envUsize(name: [*:0]const u8, default: usize) usize {
     const raw = std.c.getenv(name) orelse return default;
     const value = std.mem.span(raw);
