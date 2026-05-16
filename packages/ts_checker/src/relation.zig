@@ -608,8 +608,20 @@ pub const Engine = struct {
 
         // Lowercase `object` accepts non-primitive object-like values
         // while still rejecting primitive values such as `string` and
-        // `number`.
+        // `number`. A bare type parameter is accepted only when its
+        // constraint is itself assignable to `object` (e.g.
+        // `T extends object`, `T extends {a:number}`); an unconstrained
+        // `T` is rejected — upstream conformance flags
+        // `let o: object = t` as TS2322 with a related "might need
+        // `extends object` constraint" note (see nonPrimitiveInGeneric
+        // / nonPrimitiveAndTypeVariables).
         if (target == Primitive.object_t) {
+            if (sf.is_type_parameter) {
+                const constraint = self.typeParameterConstraint(source) orelse return false;
+                if (constraint == Primitive.object_t) return true;
+                if (constraint == source) return false;
+                return self.isAssignableTo(constraint, Primitive.object_t) catch false;
+            }
             return sf.is_object or
                 sf.is_object_type or
                 sf.is_signature or

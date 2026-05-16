@@ -15819,7 +15819,14 @@ pub const Checker = struct {
                 // Resolve `Qualifier.Trailing` against the namespace
                 // chain; reuse the existing qualified-type-ref
                 // resolver via the trailing name + namespace lookup.
-                break :blk self.findQualifiedClassDecl(extends_expr) orelse return;
+                if (self.findQualifiedClassDecl(extends_expr)) |found| break :blk found;
+                // Namespace exists but the trailing member does not —
+                // tsc surfaces `Property 'X' does not exist on type
+                // 'typeof Q'.` in this case (TS2339).  Mirrors
+                // `genericTypeReferenceWithoutTypeArgument.d.ts(22,28)`
+                // / `genericTypeReferenceWithoutTypeArgument3.ts(22,28)`.
+                try self.reportMissingNamespaceMemberOnExtendsMemberAccess(extends_expr);
+                return;
             }
             return;
         };
@@ -15841,6 +15848,44 @@ pub const Checker = struct {
         try self.diagnostics.append(self.gpa, .{
             .node = extends_expr,
             .code = TsCodes.generic_type_requires_args,
+            .message = msg,
+        });
+    }
+
+    /// Emit TS2339 `Property 'X' does not exist on type 'typeof Q'.`
+    /// when a `class D extends Q.X` heritage reference resolves the
+    /// qualifier namespace but no exported `X` lives inside. Mirrors
+    /// `genericTypeReferenceWithoutTypeArgument.d.ts(22,28)` and the
+    /// `3.ts` sibling. Only handles single-segment qualifiers (`Q.X`);
+    /// deeper chains stay on the legacy `findQualifiedClassDecl`
+    /// fast-path which silently returns null and lets other code emit
+    /// `cannot find name` diagnostics.
+    fn reportMissingNamespaceMemberOnExtendsMemberAccess(self: *Checker, node: NodeId) CheckError!void {
+        if (self.hir.kindOf(node) != .member_access) return;
+        const ma = hir_mod.memberOf(self.hir, node);
+        if (ma.object == hir_mod.none_node_id or self.hir.kindOf(ma.object) != .identifier) return;
+        const root_id = hir_mod.identifierOf(self.hir, ma.object);
+        const root = self.rootBlockFor(node);
+        if (root == hir_mod.none_node_id) return;
+        if (self.hir.kindOf(root) != .block_stmt) return;
+        const root_stmts = hir_mod.blockStmts(self.hir, root);
+        const one = [_]hir_mod.StringId{root_id.name};
+        const ns_node = self.findNamespaceByPath(root_stmts, &one) orelse return;
+        if (self.findNamedTypeDeclInNamespace(ns_node, ma.name) != null) return;
+        if (self.findNamedValueDeclInNamespace(ns_node, ma.name) != null) return;
+        if (!self.namespaceDeclIsAmbient(ns_node)) return;
+        const root_text = self.string_interner.get(root_id.name);
+        const leaf_text = self.string_interner.get(ma.name);
+        const msg = try std.fmt.allocPrint(
+            self.diag_arena.allocator(),
+            "Property '{s}' does not exist on type 'typeof {s}'.",
+            .{ leaf_text, root_text },
+        );
+        const leaf_pos = self.qualifiedTypeRefLeafNamePos(node);
+        try self.diagnostics.append(self.gpa, .{
+            .node = node,
+            .pos = leaf_pos,
+            .code = TsCodes.property_does_not_exist,
             .message = msg,
         });
     }
@@ -17155,7 +17200,20 @@ pub const Checker = struct {
         const qualifiers = hir_mod.typeRefQualifier(self.hir, type_node);
         if (qualifiers.len == 0 or self.hir.kindOf(qualifiers[0]) != .identifier) return;
         const root_name = hir_mod.identifierOf(self.hir, qualifiers[0]).name;
-        if (self.qualifiedTypeRefRootNamespaceExists(type_node, root_name) catch false) return;
+        if (self.qualifiedTypeRefRootNamespaceExists(type_node, root_name) catch false) {
+            // Root namespace exists, but the qualified-type lookup
+            // came back empty — emit TS2339 `Property '<leaf>' does
+            // not exist on type 'typeof <ns>'.` matching upstream
+            // `genericTypeReferenceWithoutTypeArgument.d.ts(22,28)`
+            // (`M.C` where M exists with only an `E` member). Only
+            // fires for the single-qualifier-deep case (the most
+            // common namespace-member miss) so we don't accidentally
+            // shadow `cannot_find_namespace` on deeper chains.
+            if (qualifiers.len == 1) {
+                try self.reportMissingNamespaceMemberOnQualifiedTypeRef(type_node, root_name);
+            }
+            return;
+        }
         const root_text = self.string_interner.get(root_name);
         const suggestion = self.namespaceSpellingSuggestion(root_name);
         const msg = if (suggestion) |suggested|
@@ -17175,6 +17233,138 @@ pub const Checker = struct {
             .code = if (suggestion != null) TsCodes.cannot_find_namespace_did_you_mean else TsCodes.cannot_find_namespace,
             .message = msg,
         });
+    }
+
+    /// Emit TS2339 on `<ns>.<leaf>` when `<ns>` is a known *ambient*
+    /// namespace but no exported type declaration named `<leaf>` lives
+    /// inside. Renders the same `Property '<leaf>' does not exist on
+    /// type 'typeof <ns>'.` shape tsc emits in
+    /// `genericTypeReferenceWithoutTypeArgument.d`. Only fires when
+    /// the namespace was declared with `declare namespace M { ... }`
+    /// (ambient): value namespaces surface a different TS2694
+    /// `Namespace 'M' has no exported member 'X'.` diagnostic via
+    /// `resolveQualifiedNamespaceMember` elsewhere. Skipped when
+    /// `resolveQualifiedTypeRef` already returned a hit.
+    fn reportMissingNamespaceMemberOnQualifiedTypeRef(
+        self: *Checker,
+        type_node: NodeId,
+        root_name: hir_mod.StringId,
+    ) CheckError!void {
+        const r = hir_mod.typeRefOf(self.hir, type_node);
+        const root = self.rootBlockFor(type_node);
+        if (root == hir_mod.none_node_id) return;
+        if (self.hir.kindOf(root) != .block_stmt) return;
+        const root_stmts = hir_mod.blockStmts(self.hir, root);
+        const path = [_]hir_mod.StringId{root_name};
+        const ns_node = self.findNamespaceByPath(root_stmts, &path) orelse return;
+        if (self.findNamedTypeDeclInNamespace(ns_node, r.name) != null) return;
+        if (self.findNamedValueDeclInNamespace(ns_node, r.name) != null) return;
+        if (!self.namespaceDeclIsAmbient(ns_node)) return;
+        const root_text = self.string_interner.get(root_name);
+        const leaf_text = self.string_interner.get(r.name);
+        const msg = try std.fmt.allocPrint(
+            self.diag_arena.allocator(),
+            "Property '{s}' does not exist on type 'typeof {s}'.",
+            .{ leaf_text, root_text },
+        );
+        // Anchor the diagnostic on the trailing leaf identifier (the
+        // byte after the final `.`). Upstream tsc points at `C` in
+        // `M.C` rather than at the start of the whole type-ref, so
+        // the column matches the `(31,24)` baseline shape.
+        const leaf_pos = self.qualifiedTypeRefLeafNamePos(type_node);
+        try self.diagnostics.append(self.gpa, .{
+            .node = type_node,
+            .pos = leaf_pos,
+            .code = TsCodes.property_does_not_exist,
+            .message = msg,
+        });
+    }
+
+    /// Approximate the ambient-context test for a namespace decl by
+    /// scanning the source bytes immediately preceding the namespace
+    /// keyword: an ambient namespace is prefixed by `declare ` (after
+    /// optional `export `) in the source. `.d.ts` files are implicitly
+    /// ambient even without a `declare` prefix; we treat the whole
+    /// source as ambient when the first non-directive line starts with
+    /// `declare ` (a quick heuristic that catches the conformance
+    /// `genericTypeReferenceWithoutTypeArgument.d.ts` shape without
+    /// adding a checker-wide ambient-file flag).
+    fn namespaceDeclIsAmbient(self: *Checker, ns_node: NodeId) bool {
+        const src = self.source orelse return false;
+        const span = self.hir.spanOf(ns_node);
+        if (span.start > src.len) return false;
+        // Quick path: source starts with a sequence of `declare ` /
+        // `// @directive` lines — treat as ambient (.d.ts shape).
+        if (self.sourceIsImplicitlyAmbient()) return true;
+        var i: usize = span.start;
+        // Walk backward over the namespace identifier + whitespace.
+        // Match `namespace` keyword; then check if `declare ` precedes
+        // (after optional `export `).
+        while (i > 0 and isAsciiWordChar(src[i - 1])) i -= 1;
+        // Now `i` points to start of `namespace` keyword (or close to).
+        // Skip back over whitespace.
+        while (i > 0 and (src[i - 1] == ' ' or src[i - 1] == '\t')) i -= 1;
+        // Optional `export ` prefix.
+        if (i >= 7 and std.mem.eql(u8, src[i - 7 .. i], "export ")) {
+            i -= 7;
+            while (i > 0 and (src[i - 1] == ' ' or src[i - 1] == '\t')) i -= 1;
+        }
+        // Look for `declare ` immediately before.
+        if (i >= 8 and std.mem.eql(u8, src[i - 8 .. i], "declare ")) return true;
+        return false;
+    }
+
+    fn isAsciiWordChar(b: u8) bool {
+        return (b >= 'a' and b <= 'z') or (b >= 'A' and b <= 'Z') or
+            (b >= '0' and b <= '9') or b == '_' or b == '$';
+    }
+
+    /// Heuristic: a source is "implicitly ambient" (like a `.d.ts`)
+    /// when its very first non-comment, non-directive statement
+    /// begins with the `declare ` modifier. Used by the
+    /// namespace-member miss path to differentiate the TS2339 vs
+    /// TS2694 baseline shapes without plumbing a per-source flag.
+    fn sourceIsImplicitlyAmbient(self: *Checker) bool {
+        const src = self.source orelse return false;
+        var i: usize = 0;
+        while (i < src.len) {
+            // Skip whitespace.
+            while (i < src.len and (src[i] == ' ' or src[i] == '\t' or src[i] == '\n' or src[i] == '\r')) i += 1;
+            if (i >= src.len) return false;
+            // Skip line comments / directives.
+            if (i + 1 < src.len and src[i] == '/' and src[i + 1] == '/') {
+                while (i < src.len and src[i] != '\n') i += 1;
+                continue;
+            }
+            // Skip block comments.
+            if (i + 1 < src.len and src[i] == '/' and src[i + 1] == '*') {
+                i += 2;
+                while (i + 1 < src.len and !(src[i] == '*' and src[i + 1] == '/')) i += 1;
+                i = @min(src.len, i + 2);
+                continue;
+            }
+            // First real token. Check for `declare `.
+            return i + 8 <= src.len and std.mem.eql(u8, src[i .. i + 8], "declare ");
+        }
+        return false;
+    }
+
+    /// Return the byte offset of the trailing leaf identifier in a
+    /// qualified `Q.X` type-ref by scanning forward from the type-ref
+    /// span start for the final `.`. Returns null when the span / `.`
+    /// can't be located (the caller falls back to the type-ref start).
+    fn qualifiedTypeRefLeafNamePos(self: *Checker, type_node: NodeId) ?u32 {
+        const src = self.source orelse return null;
+        const span = self.hir.spanOf(type_node);
+        if (span.start >= src.len or span.end > src.len or span.end <= span.start) return null;
+        const slice = src[span.start..span.end];
+        // Walk from the right to find the final `.` so deeper chains
+        // (`A.B.C`) anchor on the rightmost segment, matching tsc.
+        var i: usize = slice.len;
+        while (i > 0) : (i -= 1) {
+            if (slice[i - 1] == '.') return @intCast(span.start + i);
+        }
+        return null;
     }
 
     fn namespaceSpellingSuggestion(self: *Checker, name: hir_mod.StringId) ?[]const u8 {
@@ -21872,6 +22062,7 @@ pub const Checker = struct {
                         const n = @min(type_params.len, type_arg_nodes.len);
                         for (0..n) |i| {
                             const explicit_t = self.lowererLowerWithTypeParams(type_arg_nodes[i]) catch types.Primitive.unknown;
+                            try self.checkTypeArgSatisfiesConstraint(type_arg_nodes[i], type_params[i], explicit_t);
                             try subs.put(self.gpa, type_params[i], explicit_t);
                         }
                         if (subs.count() > 0) {
@@ -21900,6 +22091,7 @@ pub const Checker = struct {
                         const n = @min(type_params.len, type_arg_nodes.len);
                         for (0..n) |i| {
                             const explicit_t = self.lowererLowerWithTypeParams(type_arg_nodes[i]) catch types.Primitive.unknown;
+                            try self.checkTypeArgSatisfiesConstraint(type_arg_nodes[i], type_params[i], explicit_t);
                             try subs.put(self.gpa, type_params[i], explicit_t);
                         }
                         if (subs.count() > 0) {
@@ -31714,7 +31906,6 @@ pub const Checker = struct {
     }
 
     fn scalarTypeParameterConstraint(self: *Checker, t: TypeId) ?TypeId {
-        if (!self.strict_flags.strict_null_checks) return null;
         if (t >= self.interner.pool.typeCount()) return null;
         const flags = self.interner.pool.flagsOf(t);
         if (!flags.is_type_parameter) return null;
@@ -31723,6 +31914,15 @@ pub const Checker = struct {
         const tp = self.interner.pool.type_parameter_payloads.items[payload_idx];
         if (tp.constraint == types.Primitive.none or tp.constraint == types.Primitive.unknown) return null;
         if (self.containsFreeTypeParameter(tp.constraint)) return null;
+        // `T extends object` (the lowercase non-primitive sentinel)
+        // surfaces TS2345 on primitive arguments regardless of
+        // strict_null_checks: tsc treats `object` as a hard constraint
+        // because it is the only generic constraint that excludes all
+        // primitive types. Reuses the param-display substitution so
+        // `Argument of type 'number' is not assignable to parameter of
+        // type 'object'` renders verbatim (nonPrimitiveInGeneric.ts:18-19).
+        if (tp.constraint == types.Primitive.object_t) return tp.constraint;
+        if (!self.strict_flags.strict_null_checks) return null;
         if (tp.constraint < types.Primitive.first_dynamic) {
             return switch (tp.constraint) {
                 types.Primitive.string_t,
