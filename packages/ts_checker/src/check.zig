@@ -7535,6 +7535,17 @@ pub const Checker = struct {
                         if (inner.expr == hir_mod.none_node_id) {
                             try self.report(y.expr, TsCodes.yield_implicit_any, "'yield' expression implicitly results in an 'any' type because its containing generator lacks a return-type annotation.");
                         }
+                    } else if (self.hir.kindOf(y.expr) == .identifier) {
+                        // tsc fires TS7057 on `yield <ident>` when
+                        // <ident> resolves to an implicitly-any type
+                        // (e.g. `var o; o = yield o`). Skip unresolved
+                        // identifiers — TS2304 already covers them.
+                        const expr_t = self.hir.typeOf(y.expr);
+                        if (expr_t == types.Primitive.any and
+                            !self.yieldOperandIsUnresolvedIdentifier(y.expr))
+                        {
+                            try self.report(y.expr, TsCodes.yield_implicit_any, "'yield' expression implicitly results in an 'any' type because its containing generator lacks a return-type annotation.");
+                        }
                     }
                     try self.reportImplicitAnyYieldOperands(y.expr);
                 }
@@ -25534,11 +25545,14 @@ pub const Checker = struct {
     /// member that inherits super. Crossing a non-arrow function or a
     /// nested class breaks the static-super chain (mirrors JS arrow
     /// lexical inheritance: `super` flows through arrows, not through
-    /// `function () {}` or `class {}` bodies).
+    /// `function () {}` or `class {}` bodies). Static `{ … }` blocks
+    /// declared as class members are detected by checking whether the
+    /// block is one of the parent class's `members` slice.
     fn enclosingStaticSuperClass(self: *Checker, node: NodeId) NodeId {
+        var prev: NodeId = node;
         var cur = self.hir.parentOf(node);
         var saw_static_member = false;
-        while (cur != hir_mod.none_node_id) : (cur = self.hir.parentOf(cur)) {
+        while (cur != hir_mod.none_node_id) {
             const k = self.hir.kindOf(cur);
             switch (k) {
                 .object_property => {
@@ -25548,20 +25562,31 @@ pub const Checker = struct {
                 .fn_decl, .fn_expr => {
                     const fp = hir_mod.fnDeclOf(self.hir, cur);
                     if (fp.flags.is_static) saw_static_member = true;
-                    // Non-arrow functions break the lexical super
-                    // chain — `function () { super.x }` doesn't see
-                    // the enclosing class's super.
                     if (!fp.flags.is_arrow) return hir_mod.none_node_id;
                 },
-                .arrow_fn => {
-                    // Arrows inherit super lexically.
-                },
+                .arrow_fn => {},
                 .class_decl, .class_expr => {
+                    // `static { … }` blocks are stored as bare
+                    // `block_stmt` nodes in `classMembers`. Detect
+                    // by scanning the members slice — if the last
+                    // child we walked through (prev) is one of them
+                    // and is a block_stmt, this access lives inside
+                    // a static block.
+                    if (!saw_static_member and self.hir.kindOf(prev) == .block_stmt) {
+                        for (hir_mod.classMembers(self.hir, cur)) |m| {
+                            if (m == prev) {
+                                saw_static_member = true;
+                                break;
+                            }
+                        }
+                    }
                     if (!saw_static_member) return hir_mod.none_node_id;
                     return cur;
                 },
                 else => {},
             }
+            prev = cur;
+            cur = self.hir.parentOf(cur);
         }
         return hir_mod.none_node_id;
     }
