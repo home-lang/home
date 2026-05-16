@@ -5177,24 +5177,36 @@ pub const Printer = struct {
     /// Shared between `writeDestructuringParamShims` (ES5 fn-params)
     /// and any other call site that needs to bind from a fixed ident.
     fn emitDestructuringShim(self: *Printer, pattern: NodeId, source_ident: []const u8) !void {
-        const is_array = self.hir.kindOf(pattern) == .array_pattern;
         try self.write("var ");
-        const elements = hir_mod.patternElements(self.hir, pattern);
         var emitted_count: usize = 0;
+        var counter: usize = 0;
+        try self.emitDestructuringPairs(pattern, source_ident, &counter, &emitted_count);
+        try self.write(";");
+    }
+
+    /// §4.A destructuring v15 — recursive helper that emits the
+    /// comma-separated binding pairs `<name> = <src>.<accessor>, ...`
+    /// for one pattern. When a nested pattern is encountered, a
+    /// fresh `_n<counter>` temp ident is allocated, bound to the
+    /// parent's slot, then this fn recurses into the nested pattern
+    /// using the temp as source. All bindings (parent + recursed
+    /// children) land in the same comma-separated decl list. The
+    /// caller writes the leading `var ` and the trailing `;` (or
+    /// equivalent), and is responsible for pre-existing emitted_count.
+    fn emitDestructuringPairs(
+        self: *Printer,
+        pattern: NodeId,
+        source_ident: []const u8,
+        counter: *usize,
+        emitted_count: *usize,
+    ) anyerror!void {
+        const is_array = self.hir.kindOf(pattern) == .array_pattern;
+        const elements = hir_mod.patternElements(self.hir, pattern);
         for (elements, 0..) |elem, i| {
             if (self.hir.kindOf(elem) != .parameter) continue;
             const param = hir_mod.parameterOf(self.hir, elem);
             if (param.flags.is_computed_binding_key) continue;
             if (param.name == hir_mod.none_node_id) continue;
-            if (self.hir.kindOf(param.name) != .identifier) continue; // nested deferred
-            const id = hir_mod.identifierOf(self.hir, param.name);
-            const name_str = self.interner.get(id.name);
-            // §4.A destructuring v11 — computed binding keys. The
-            // parser emits a synthetic `is_computed_binding_key=true`
-            // element immediately before the actual binding param,
-            // carrying the key expression in `default_value`. When
-            // present, emit `<name> = <src>[<expr>]` instead of
-            // `<name> = <src>.<name>`.
             const computed_key_expr: NodeId = blk: {
                 if (is_array or i == 0) break :blk hir_mod.none_node_id;
                 const prev = elements[i - 1];
@@ -5203,78 +5215,119 @@ pub const Printer = struct {
                 if (!pp.flags.is_computed_binding_key) break :blk hir_mod.none_node_id;
                 break :blk pp.default_value;
             };
-            if (emitted_count > 0) try self.write(", ");
-            emitted_count += 1;
+            const name_kind = self.hir.kindOf(param.name);
+            const is_nested = name_kind == .object_pattern or name_kind == .array_pattern;
+            if (!is_nested and name_kind != .identifier) continue;
+            if (emitted_count.* > 0) try self.write(", ");
+            emitted_count.* += 1;
             if (param.flags.is_rest) {
-                if (is_array) {
-                    try self.write(name_str);
-                    try self.write(" = ");
-                    try self.write(source_ident);
-                    var rbuf: [32]u8 = undefined;
-                    const slice_str = std.fmt.bufPrint(&rbuf, ".slice({d})", .{i}) catch unreachable;
-                    try self.write(slice_str);
-                } else {
-                    try self.write(name_str);
-                    try self.write(" = __rest(");
-                    try self.write(source_ident);
-                    try self.write(", [");
-                    var pkey_emitted: usize = 0;
-                    for (elements, 0..) |pelem, pi| {
-                        if (pi >= i) break;
-                        if (self.hir.kindOf(pelem) != .parameter) continue;
-                        const pparam = hir_mod.parameterOf(self.hir, pelem);
-                        if (pparam.flags.is_computed_binding_key) continue;
-                        if (pparam.flags.is_rest) continue;
-                        if (pparam.name == hir_mod.none_node_id) continue;
-                        if (self.hir.kindOf(pparam.name) != .identifier) continue;
-                        const pid = hir_mod.identifierOf(self.hir, pparam.name);
-                        const pname = self.interner.get(pid.name);
-                        if (pkey_emitted > 0) try self.write(", ");
-                        try self.write("\"");
-                        try self.write(pname);
-                        try self.write("\"");
-                        pkey_emitted += 1;
+                // Rest must be an identifier in valid TS — nested rest
+                // not part of the spec. If the parser hands us one,
+                // skip the nested case gracefully.
+                if (!is_nested) {
+                    const id = hir_mod.identifierOf(self.hir, param.name);
+                    const name_str = self.interner.get(id.name);
+                    if (is_array) {
+                        try self.write(name_str);
+                        try self.write(" = ");
+                        try self.write(source_ident);
+                        var rbuf: [32]u8 = undefined;
+                        const slice_str = std.fmt.bufPrint(&rbuf, ".slice({d})", .{i}) catch unreachable;
+                        try self.write(slice_str);
+                    } else {
+                        try self.write(name_str);
+                        try self.write(" = __rest(");
+                        try self.write(source_ident);
+                        try self.write(", [");
+                        var pkey_emitted: usize = 0;
+                        for (elements, 0..) |pelem, pi| {
+                            if (pi >= i) break;
+                            if (self.hir.kindOf(pelem) != .parameter) continue;
+                            const pparam = hir_mod.parameterOf(self.hir, pelem);
+                            if (pparam.flags.is_computed_binding_key) continue;
+                            if (pparam.flags.is_rest) continue;
+                            if (pparam.name == hir_mod.none_node_id) continue;
+                            if (self.hir.kindOf(pparam.name) != .identifier) continue;
+                            const pid = hir_mod.identifierOf(self.hir, pparam.name);
+                            const pname = self.interner.get(pid.name);
+                            if (pkey_emitted > 0) try self.write(", ");
+                            try self.write("\"");
+                            try self.write(pname);
+                            try self.write("\"");
+                            pkey_emitted += 1;
+                        }
+                        try self.write("])");
                     }
-                    try self.write("])");
                 }
                 continue;
             }
+            // For nested patterns, allocate a fresh temp ident and
+            // bind the parent's slot to it; then recurse. The
+            // temp's value access uses the same accessor logic as
+            // for identifier bindings (.name / [idx] / [computed]).
+            if (is_nested) {
+                counter.* += 1;
+                var tbuf: [16]u8 = undefined;
+                const nested_src = std.fmt.bufPrint(&tbuf, "_n{d}", .{counter.*}) catch unreachable;
+                const has_default = param.default_value != hir_mod.none_node_id;
+                try self.write(nested_src);
+                try self.write(" = ");
+                if (has_default) {
+                    try self.write(source_ident);
+                    try self.writePatternAccessor(is_array, i, computed_key_expr, "");
+                    try self.write(" === void 0 ? ");
+                    try self.printExpression(param.default_value);
+                    try self.write(" : ");
+                }
+                try self.write(source_ident);
+                try self.writePatternAccessor(is_array, i, computed_key_expr, "");
+                // Recurse: nested pattern's bindings now use the
+                // freshly-bound temp as their source.
+                try self.emitDestructuringPairs(param.name, nested_src, counter, emitted_count);
+                continue;
+            }
+            const id = hir_mod.identifierOf(self.hir, param.name);
+            const name_str = self.interner.get(id.name);
             const has_default = param.default_value != hir_mod.none_node_id;
             try self.write(name_str);
             try self.write(" = ");
             if (has_default) {
                 try self.write(source_ident);
-                if (computed_key_expr != hir_mod.none_node_id) {
-                    try self.write("[");
-                    try self.printExpression(computed_key_expr);
-                    try self.write("]");
-                } else if (is_array) {
-                    var buf: [32]u8 = undefined;
-                    const idx_str = std.fmt.bufPrint(&buf, "[{d}]", .{i}) catch unreachable;
-                    try self.write(idx_str);
-                } else {
-                    try self.write(".");
-                    try self.write(name_str);
-                }
+                try self.writePatternAccessor(is_array, i, computed_key_expr, name_str);
                 try self.write(" === void 0 ? ");
                 try self.printExpression(param.default_value);
                 try self.write(" : ");
             }
             try self.write(source_ident);
-            if (computed_key_expr != hir_mod.none_node_id) {
-                try self.write("[");
-                try self.printExpression(computed_key_expr);
-                try self.write("]");
-            } else if (is_array) {
-                var buf: [32]u8 = undefined;
-                const idx_str = std.fmt.bufPrint(&buf, "[{d}]", .{i}) catch unreachable;
-                try self.write(idx_str);
-            } else {
-                try self.write(".");
-                try self.write(name_str);
-            }
+            try self.writePatternAccessor(is_array, i, computed_key_expr, name_str);
         }
-        try self.write(";");
+    }
+
+    /// §4.A destructuring v15 — write the accessor suffix for a
+    /// pattern element: `[i]` (array), `[computed]` (computed key),
+    /// or `.name` (plain object key). Encapsulates the three forms
+    /// so emit sites stay terse.
+    fn writePatternAccessor(
+        self: *Printer,
+        is_array: bool,
+        idx: usize,
+        computed_key_expr: NodeId,
+        name: []const u8,
+    ) anyerror!void {
+        if (computed_key_expr != hir_mod.none_node_id) {
+            try self.write("[");
+            try self.printExpression(computed_key_expr);
+            try self.write("]");
+            return;
+        }
+        if (is_array) {
+            var buf: [32]u8 = undefined;
+            const idx_str = std.fmt.bufPrint(&buf, "[{d}]", .{idx}) catch unreachable;
+            try self.write(idx_str);
+            return;
+        }
+        try self.write(".");
+        try self.write(name);
     }
 
     /// Emit the `if (x === void 0) { x = <default>; }` shim for each
@@ -8573,6 +8626,48 @@ test "emit: async function with destructuring param injects shim before __awaite
     const awaiter_idx = std.mem.indexOf(u8, out, "return __awaiter");
     try T.expect(shim_idx != null and awaiter_idx != null);
     try T.expect(shim_idx.? < awaiter_idx.?);
+}
+
+test "emit: nested array-in-array destructuring lowers via recursive temp at es5" {
+    // §4.A destructuring v15 — `function f([a, [b, c]]) { ... }`
+    // at ES5 lowers to `function f(_p0) { var a = _p0[0], _n1 = _p0[1],
+    // b = _n1[0], c = _n1[1]; ... }`. The nested pattern gets a fresh
+    // `_n<counter>` temp bound to the parent's positional slot, then
+    // bindings extract from it.
+    //
+    // Note: object renames + nested-object-via-key (e.g.
+    // `{ outer: { a } }`) require parser changes to preserve the
+    // "outer" key — not addressed in this v0. Positional arrays
+    // work because no key info is dropped.
+    const out = try emitWithOpts(
+        "function f([a, [b, c]]) { return a + b + c; }",
+        .{ .es_target = .es5 },
+    );
+    defer T.allocator.free(out);
+    try T.expect(std.mem.indexOf(u8, out, "function f(_p0)") != null);
+    try T.expect(std.mem.indexOf(u8, out, "var a = _p0[0], _n1 = _p0[1], b = _n1[0], c = _n1[1];") != null);
+}
+
+test "emit: deeply nested array destructuring chains multiple temps at es5" {
+    // Three levels of array nesting.
+    const out = try emitWithOpts(
+        "function f([[[a]]]) { return a; }",
+        .{ .es_target = .es5 },
+    );
+    defer T.allocator.free(out);
+    try T.expect(std.mem.indexOf(u8, out, "function f(_p0)") != null);
+    try T.expect(std.mem.indexOf(u8, out, "var _n1 = _p0[0], _n2 = _n1[0], a = _n2[0];") != null);
+}
+
+test "emit: nested array in catch-param lowers via recursive temp at es5" {
+    // Same recursion fires for catch params via the shared shim.
+    const out = try emitWithOpts(
+        "try { } catch ([code, [inner, outer]]) { log(code, inner, outer); }",
+        .{ .es_target = .es5 },
+    );
+    defer T.allocator.free(out);
+    try T.expect(std.mem.indexOf(u8, out, "catch (_e)") != null);
+    try T.expect(std.mem.indexOf(u8, out, "var code = _e[0], _n1 = _e[1], inner = _n1[0], outer = _n1[1];") != null);
 }
 
 test "emit: function with computed-key destructuring param renders pattern at es2015+" {
