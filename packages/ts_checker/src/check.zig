@@ -10685,7 +10685,30 @@ pub const Checker = struct {
             try self.class_static_member_names.put(self.gpa, cid.name, static_member_names_local);
             static_member_names_local = .empty;
             // Register abstract-member set for this class so subclass
-            // checks can consult it. Replace any prior entry.
+            // checks can consult it. Replace any prior entry. We also
+            // fold in each unimplemented abstract member inherited
+            // from a parent class so transitive chains
+            // (`A` abstract → `B extends A` (still abstract) →
+            // `class C extends B {}`) propagate the unimplemented
+            // member through to `C` for TS2515. Without this, only
+            // the direct child of an abstract class catches missing
+            // implementations and `class FF extends CC {}` (where
+            // CC concretely extends an abstract AA but doesn't
+            // implement `foo`) wrongly compiles. Mirrors fixture
+            // `classAbstractInheritance1`.
+            if (c.extends != hir_mod.none_node_id) {
+                if (self.classExtendsName(c.extends)) |parent_name| {
+                    if (self.class_abstract_members.getPtr(parent_name)) |parent_abs| {
+                        var it = parent_abs.keyIterator();
+                        while (it.next()) |name_ptr| {
+                            const member_name = name_ptr.*;
+                            if (concrete_names.contains(member_name)) continue;
+                            if (abstract_names.contains(member_name)) continue;
+                            try abstract_names.put(self.gpa, member_name, {});
+                        }
+                    }
+                }
+            }
             if (self.class_abstract_members.fetchRemove(cid.name)) |old| {
                 var owned = old.value;
                 owned.deinit(self.gpa);
@@ -19946,14 +19969,50 @@ pub const Checker = struct {
             return self.interner.internObjectType(&members) catch types.Primitive.unknown;
         }
         if (std.mem.eql(u8, name, "Number")) {
-            const sig_to_fixed = self.interner.internSignature(&[_]TypeId{types.Primitive.number_t}, types.Primitive.string_t, false) catch
+            // tsc declares `toFixed(fractionDigits?: number)`,
+            // `toExponential(fractionDigits?: number)`, and
+            // `toPrecision(precision?: number)` — all with optional
+            // numeric args. Encode the param as `number | undefined`
+            // so `parameterTypeCanBeOmitted` treats the 0-arg call
+            // form as valid. Without this, generic uses like
+            // `<T extends Number>(): void { let x: T; x.toFixed(); }`
+            // wrongly trip TS2554. Mirrors
+            // `innerTypeParameterShadowingOuterOne(2).ts` upstream.
+            const optional_number_t = self.interner.internUnion(&[_]TypeId{
+                types.Primitive.number_t,
+                types.Primitive.undefined_t,
+            }) catch return types.Primitive.unknown;
+            const sig_optional_num_string = self.interner.internSignature(&[_]TypeId{optional_number_t}, types.Primitive.string_t, false) catch
                 return types.Primitive.unknown;
             const sig_value_of = self.interner.internSignature(&[_]TypeId{}, types.Primitive.number_t, false) catch
+                return types.Primitive.unknown;
+            const sig_void_string = self.interner.internSignature(&[_]TypeId{}, types.Primitive.string_t, false) catch
                 return types.Primitive.unknown;
             const members = [_]types.ObjectMember{
                 .{
                     .name = self.string_interner.intern("toFixed") catch return types.Primitive.unknown,
-                    .type = sig_to_fixed,
+                    .type = sig_optional_num_string,
+                    .is_optional = false,
+                    .is_readonly = false,
+                    .is_method = true,
+                },
+                .{
+                    .name = self.string_interner.intern("toExponential") catch return types.Primitive.unknown,
+                    .type = sig_optional_num_string,
+                    .is_optional = false,
+                    .is_readonly = false,
+                    .is_method = true,
+                },
+                .{
+                    .name = self.string_interner.intern("toPrecision") catch return types.Primitive.unknown,
+                    .type = sig_optional_num_string,
+                    .is_optional = false,
+                    .is_readonly = false,
+                    .is_method = true,
+                },
+                .{
+                    .name = self.string_interner.intern("toString") catch return types.Primitive.unknown,
+                    .type = sig_void_string,
                     .is_optional = false,
                     .is_readonly = false,
                     .is_method = true,
@@ -29091,27 +29150,34 @@ pub const Checker = struct {
     }
 
     /// True when the identifier reference (e.g. `arguments`) resolves
-    /// to a parameter or local binding of the same name in some
-    /// enclosing function/scope, rather than the runtime `arguments`
-    /// object. Used to suppress TS2496 for `(arguments) => arguments`
-    /// where the inner reference shadows the synthetic
-    /// `arguments` slot. Mirrors
-    /// `emitArrowFunctionWhenUsingArguments08.errors.txt`.
+    /// to a parameter of the *immediate* enclosing function/arrow,
+    /// rather than the runtime `arguments` object. Used to suppress
+    /// TS2496 only for `(arguments) => arguments` where the inner
+    /// reference shadows the slot directly via its own arrow's
+    /// parameter list. A reference one level out (e.g.
+    /// `(arguments) => () => arguments` — fixture 07) must still emit
+    /// TS2496 because the inner arrow has no `arguments` parameter
+    /// and the down-emit cannot synthesize a slot for it. Mirrors
+    /// `emitArrowFunctionWhenUsingArguments08` (suppress) vs
+    /// `…07` (emit).
     fn argumentsResolvesToLocalBinding(self: *Checker, node: NodeId, name_id: hir_mod.StringId) bool {
         var cur = self.hir.parentOf(node);
         while (cur != hir_mod.none_node_id) : (cur = self.hir.parentOf(cur)) {
             const k = self.hir.kindOf(cur);
-            if (k == .fn_decl or k == .fn_expr or k == .arrow_fn) {
-                const params = hir_mod.fnParams(self.hir, cur);
-                for (params) |p| {
-                    if (self.hir.kindOf(p) != .parameter) continue;
-                    const pp = hir_mod.parameterOf(self.hir, p);
-                    if (pp.name == hir_mod.none_node_id) continue;
-                    if (self.hir.kindOf(pp.name) != .identifier) continue;
-                    const pid = hir_mod.identifierOf(self.hir, pp.name);
-                    if (pid.name == name_id) return true;
-                }
+            if (k != .fn_decl and k != .fn_expr and k != .arrow_fn) continue;
+            const params = hir_mod.fnParams(self.hir, cur);
+            for (params) |p| {
+                if (self.hir.kindOf(p) != .parameter) continue;
+                const pp = hir_mod.parameterOf(self.hir, p);
+                if (pp.name == hir_mod.none_node_id) continue;
+                if (self.hir.kindOf(pp.name) != .identifier) continue;
+                const pid = hir_mod.identifierOf(self.hir, pp.name);
+                if (pid.name == name_id) return true;
             }
+            // Only inspect the innermost enclosing function — references
+            // that escape it via the lexical chain still want TS2496
+            // when the surrounding ES5 emit can't synthesize a slot.
+            return false;
         }
         return false;
     }
@@ -37816,6 +37882,23 @@ pub const Checker = struct {
                 if (self.forInTargetTypeAllowed(member)) return true;
             }
         }
+        // tsc accepts `for (k in obj)` when `k`'s declared type is a
+        // type parameter whose constraint is string-compatible (e.g.
+        // `K extends string`, `K extends keyof T`). Without this,
+        // generic key-iteration loops like
+        // `function f<K extends string>(obj: { [P in K]: V }, k: K) { for (k in obj) ... }`
+        // wrongly trip TS2405. Mirrors `keyofAndForIn.ts` upstream.
+        if (f.is_type_parameter) {
+            if (self.typeParameterConstraint(t)) |constraint| {
+                if (self.forInTargetTypeAllowed(constraint)) return true;
+            }
+        }
+        // `keyof T` is structurally a subtype of `string | number |
+        // symbol` — tsc accepts it as a `for...in` LHS because the
+        // iteration produces string keys at runtime and the
+        // assignment is sound when narrowed. Without this, `let k:
+        // keyof T; for (k in obj)` wrongly trips TS2405.
+        if (f.is_keyof) return true;
         return false;
     }
 
@@ -56165,5 +56248,61 @@ test "checker: TS2496 suppressed when `arguments` resolves to a parameter bindin
     try s.checker.checkSourceFile(s.root);
     for (s.checker.diagnostics.items) |d| {
         try T.expect(d.code != TsCodes.arguments_in_arrow_es5);
+    }
+}
+
+// `for (k in obj)` where `k` has a type-parameter type whose
+// constraint is `string`-compatible must NOT emit TS2405. Mirrors
+// `keyofAndForIn.ts` upstream — `function f<K extends string>(...,
+// k: K) { for (k in obj) {...} }` is sound because at runtime `k`
+// receives string keys.
+test "checker: for-in accepts type parameter extending string" {
+    const s = try newSetup(
+        \\function f1<K extends string, T>(obj: { [P in K]: T }, k: K) {
+        \\  for (k in obj) {
+        \\    let x = obj[k];
+        \\  }
+        \\}
+    );
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+    for (s.checker.diagnostics.items) |d| {
+        try T.expect(d.code != TsCodes.for_in_left_type);
+    }
+}
+
+// `keyof T` is structurally a subtype of `string | number | symbol`;
+// `for (k in obj)` with `k: keyof T` must NOT emit TS2405. Pins the
+// `keyofAndForIn.ts` f2/f3 path.
+test "checker: for-in accepts keyof T as LHS type" {
+    const s = try newSetup(
+        \\function f2<T>(obj: { [P in keyof T]: T[P] }, k: keyof T) {
+        \\  for (k in obj) {
+        \\    let x = obj[k];
+        \\  }
+        \\}
+    );
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+    for (s.checker.diagnostics.items) |d| {
+        try T.expect(d.code != TsCodes.for_in_left_type);
+    }
+}
+
+// `<T extends Number>` instances expose `toFixed()` with an optional
+// fraction-digits arg. Calling `toFixed()` (0 args) on such a value
+// must NOT trip TS2554. Mirrors `innerTypeParameterShadowingOuterOne.ts`
+// f.g body upstream.
+test "checker: <T extends Number> x.toFixed() with 0 args is valid" {
+    const s = try newSetup(
+        \\function g<T extends Number>() {
+        \\  var x: T;
+        \\  x.toFixed();
+        \\}
+    );
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+    for (s.checker.diagnostics.items) |d| {
+        try T.expect(d.code != TsCodes.expected_n_arguments);
     }
 }
