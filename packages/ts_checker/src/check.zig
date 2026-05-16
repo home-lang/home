@@ -11636,23 +11636,36 @@ pub const Checker = struct {
     /// approximated by the constructor exception — `this.x = ...`
     /// inside a constructor body is allowed. Bare `any` receivers and
     /// non-object types are silently skipped (no readonly to enforce).
-    fn checkReadonlyAssignment(self: *Checker, target: NodeId) CheckError!void {
-        if (self.hir.kindOf(target) != .member_access) return;
+    ///
+    /// Union receivers (`Base | DifferentType`) emit TS2540 when ANY
+    /// constituent declares the property as readonly — mirrors tsc's
+    /// `unionTypeReadonly.errors.txt` baseline where assigning to a
+    /// property shared (by name) across a union surfaces readonly if
+    /// any branch marks it readonly, even when the property types
+    /// differ across constituents.
+    fn checkReadonlyAssignment(self: *Checker, target: NodeId) CheckError!bool {
+        if (self.hir.kindOf(target) != .member_access) return false;
         const m = hir_mod.memberOf(self.hir, target);
         var obj_t = self.hir.typeOf(m.object);
-        if (obj_t == types.Primitive.none) return;
+        if (obj_t == types.Primitive.none) return false;
         if (obj_t < self.interner.pool.typeCount() and self.interner.pool.flagsOf(obj_t).is_type_parameter) {
             obj_t = self.typeParameterConstraint(obj_t) orelse obj_t;
         }
-        if (!self.interner.pool.flagsOf(obj_t).is_object_type) return;
-        const info = self.interner.objectMemberInfo(obj_t, m.name) orelse return;
-        if (!info.is_readonly) return;
+        const obj_flags = self.interner.pool.flagsOf(obj_t);
+        if (obj_flags.is_union or obj_flags.is_intersection) {
+            if (!self.typeUnionHasReadonlyMember(obj_t, m.name)) return false;
+        } else if (obj_flags.is_object_type) {
+            const info = self.interner.objectMemberInfo(obj_t, m.name) orelse return false;
+            if (!info.is_readonly) return false;
+        } else {
+            return false;
+        }
         // Constructor exception: `this.x = ...` is only allowed in
         // the constructor of the class that declares readonly `x`.
         // Subclass constructors cannot reassign inherited readonly
         // fields unless they redeclare their own parameter property.
         if (self.nodeIsThisReference(m.object) and self.enclosingConstructorDeclaresReadonlyMember(target, m.name)) {
-            return;
+            return false;
         }
         const prop_str = self.string_interner.get(m.name);
         const msg = try std.fmt.allocPrint(
@@ -11673,6 +11686,123 @@ pub const Checker = struct {
             .code = TsCodes.readonly_property,
             .message = msg,
         });
+        return true;
+    }
+
+    /// Helper for the union/intersection-aware leg of
+    /// `checkReadonlyAssignment`.
+    ///
+    /// Union (`A | B`): the property `name` must exist on EVERY
+    /// constituent AND at least one constituent must declare it
+    /// readonly. The "exists on every branch" gate suppresses TS2540
+    /// when the property is missing on some branch — tsc emits
+    /// TS2339 there instead (see `unionTypeReadonly.errors.txt` for
+    /// `differentName.value` where the union is `Base | DifferentName`).
+    ///
+    /// Intersection (`A & B`): the property is readonly only when
+    /// EVERY constituent that declares the property declares it
+    /// readonly. A mutable declaration in any branch wins (e.g.
+    /// `Base & Mutable` with `readonly value` in Base and `value` in
+    /// Mutable yields a writable `value` — see
+    /// `intersectionTypeReadonly.errors.txt(21,9)` which has NO
+    /// TS2540 on the mutable side).
+    fn typeUnionHasReadonlyMember(self: *Checker, t: TypeId, name: hir_mod.StringId) bool {
+        if (t >= self.interner.pool.typeCount()) return false;
+        const flags = self.interner.pool.flagsOf(t);
+        if (flags.is_union) {
+            var any_readonly = false;
+            for (self.interner.unionMembers(t)) |member| {
+                if (!self.typeUnionHasMember(member, name)) return false;
+                if (self.typeUnionHasReadonlyMember(member, name)) any_readonly = true;
+            }
+            return any_readonly;
+        }
+        if (flags.is_intersection) {
+            // Property is readonly iff every constituent that
+            // declares it declares it readonly. A single mutable
+            // declaration makes the intersection's property
+            // writable.
+            var saw_any = false;
+            for (self.interner.intersectionMembers(t)) |member| {
+                const status = self.typeReadonlyStatus(member, name);
+                switch (status) {
+                    .absent => continue,
+                    .readonly => saw_any = true,
+                    .writable => return false,
+                }
+            }
+            return saw_any;
+        }
+        if (!flags.is_object_type) return false;
+        const info = self.interner.objectMemberInfo(t, name) orelse return false;
+        return info.is_readonly;
+    }
+
+    const ReadonlyStatus = enum { absent, readonly, writable };
+
+    /// Recursively classify the readonly-ness of `name` on `t`.
+    /// Walks unions and intersections so the helper composes with
+    /// the intersection rule above.
+    fn typeReadonlyStatus(self: *Checker, t: TypeId, name: hir_mod.StringId) ReadonlyStatus {
+        if (t >= self.interner.pool.typeCount()) return .absent;
+        const flags = self.interner.pool.flagsOf(t);
+        if (flags.is_union) {
+            // For a union appearing inside an intersection, the
+            // union's effective property is readonly only when every
+            // branch carries it as readonly (matches the union rule
+            // above). Any writable branch flips the union to
+            // writable; a missing branch makes the property absent.
+            var saw_any_readonly = false;
+            var saw_writable = false;
+            for (self.interner.unionMembers(t)) |member| {
+                switch (self.typeReadonlyStatus(member, name)) {
+                    .absent => return .absent,
+                    .readonly => saw_any_readonly = true,
+                    .writable => saw_writable = true,
+                }
+            }
+            if (saw_writable and !saw_any_readonly) return .writable;
+            if (saw_writable) return .writable;
+            return if (saw_any_readonly) .readonly else .absent;
+        }
+        if (flags.is_intersection) {
+            var saw_any = false;
+            for (self.interner.intersectionMembers(t)) |member| {
+                const status = self.typeReadonlyStatus(member, name);
+                switch (status) {
+                    .absent => continue,
+                    .readonly => saw_any = true,
+                    .writable => return .writable,
+                }
+            }
+            return if (saw_any) .readonly else .absent;
+        }
+        if (!flags.is_object_type) return .absent;
+        const info = self.interner.objectMemberInfo(t, name) orelse return .absent;
+        return if (info.is_readonly) .readonly else .writable;
+    }
+
+    /// Returns `true` when `name` resolves to a property anywhere
+    /// inside `t` (union/intersection/object). Used by the
+    /// union-readonly check to ensure we don't override the tsc
+    /// "property missing" diagnostic with a stale TS2540.
+    fn typeUnionHasMember(self: *Checker, t: TypeId, name: hir_mod.StringId) bool {
+        if (t >= self.interner.pool.typeCount()) return false;
+        const flags = self.interner.pool.flagsOf(t);
+        if (flags.is_union) {
+            for (self.interner.unionMembers(t)) |member| {
+                if (self.typeUnionHasMember(member, name)) return true;
+            }
+            return false;
+        }
+        if (flags.is_intersection) {
+            for (self.interner.intersectionMembers(t)) |member| {
+                if (self.typeUnionHasMember(member, name)) return true;
+            }
+            return false;
+        }
+        if (!flags.is_object_type) return false;
+        return self.interner.objectMember(t, name) != null;
     }
 
     fn nodeIsThisReference(self: *Checker, node: NodeId) bool {
@@ -17572,7 +17702,21 @@ pub const Checker = struct {
                     });
                 }
                 if (self.strict_flags.strict_null_checks and string_idx != types.Primitive.none and number_idx != types.Primitive.none) {
-                    if (!(self.heritageAssignable(number_idx, string_idx) catch true)) {
+                    // When the number-indexer's value type is a type
+                    // parameter, walk to its constraint before the
+                    // assignability check — tsc passes the constraint
+                    // through so `[x:string]:Object; [x:number]:T`
+                    // (with `T extends Date`) stays compatible
+                    // because `Date` extends `Object`. See
+                    // `genericCallWithObjectTypeArgsAndIndexers.ts(14,12)`
+                    // which expects NO TS2413 on the inner function.
+                    var number_idx_effective = number_idx;
+                    if (number_idx_effective < self.interner.pool.typeCount() and
+                        self.interner.pool.flagsOf(number_idx_effective).is_type_parameter)
+                    {
+                        if (self.typeParameterConstraint(number_idx_effective)) |c| number_idx_effective = c;
+                    }
+                    if (!(self.heritageAssignable(number_idx_effective, string_idx) catch true)) {
                         try self.report(type_node, TsCodes.number_index_not_assignable_to_string_index, "Number index type is not assignable to string index type.");
                     }
                 }
@@ -22620,6 +22764,33 @@ pub const Checker = struct {
         return false;
     }
 
+    /// Recursively check whether `t` is a union (or intersection)
+    /// whose every constituent carries a call signature. Used to
+    /// suppress TS2349 on `(typeof f1 | typeof f2)("")` style call
+    /// sites — tsc treats the union as callable when every branch
+    /// is. Returns `false` for bare callables; the caller already
+    /// has dedicated paths for those.
+    fn typeUnionAllCallable(self: *Checker, t: TypeId) bool {
+        if (t >= self.interner.pool.typeCount()) return false;
+        const flags = self.interner.pool.flagsOf(t);
+        if (flags.is_union) {
+            const members = self.interner.unionMembers(t);
+            if (members.len == 0) return false;
+            for (members) |m| {
+                if (!self.objectHasCallOrConstructSignature(m) and !self.typeUnionAllCallable(m)) return false;
+            }
+            return true;
+        }
+        if (flags.is_intersection) {
+            for (self.interner.intersectionMembers(t)) |m| {
+                if (self.objectHasCallOrConstructSignature(m)) return true;
+                if (self.typeUnionAllCallable(m)) return true;
+            }
+            return false;
+        }
+        return false;
+    }
+
     /// True when the callable shape exposes only construct signatures
     /// (e.g. `new () => string` or `{ new (): T }`) and no callable
     /// signatures. Mirrors upstream TS so TS2348 (with the
@@ -23146,9 +23317,16 @@ pub const Checker = struct {
                 // TS2540: assigning to a property declared `readonly`.
                 // Object/interface readonly fields are immutable;
                 // class-field readonly is approximated by the
-                // constructor exception inside the helper.
+                // constructor exception inside the helper. When the
+                // readonly check fires, suppress the assignment-value
+                // TS2322 below — tsc reports only the readonly error
+                // (see `intersectionTypeReadonly.errors.txt(23,15)`,
+                // where the intersection `Base & DifferentType`
+                // reduces `value` to `never` but tsc still prints
+                // just TS2540, not an additional TS2322).
+                var readonly_target_fired = false;
                 if (self.hir.kindOf(a.target) == .member_access) {
-                    try self.checkReadonlyAssignment(a.target);
+                    readonly_target_fired = try self.checkReadonlyAssignment(a.target);
                 }
                 if (self.hir.kindOf(a.target) == .element_access) {
                     try self.checkReadonlyIndexAssignment(a.target);
@@ -23267,6 +23445,7 @@ pub const Checker = struct {
                     try self.reportTypeNotAssignable(node, value_t, target_t, "Type is not assignable to declared type.");
                 }
                 if (!target_is_destructuring and !target_is_untyped_uninitialized_var and a.op == null and
+                    !readonly_target_fired and
                     target_t != types.Primitive.none and
                     target_t != types.Primitive.any and
                     target_t != types.Primitive.unknown)
@@ -23825,6 +24004,16 @@ pub const Checker = struct {
                     break :blk try self.optionalChainResult(this_ret, call_is_optional_chain);
                 }
                 if (callee_t != types.Primitive.any and callee_t != types.Primitive.unknown) {
+                    // Union of callables (`typeof f1 | typeof f2`) is
+                    // callable when every constituent is callable —
+                    // tsc only fires TS2349 when at least one branch
+                    // has no call signature. Mirrors
+                    // `unionTypeCallSignatures3.errors.txt` which
+                    // expects no TS2349 on `fUnion("")` despite each
+                    // overload taking a different parameter shape.
+                    if (self.typeUnionAllCallable(callee_t)) {
+                        break :blk try self.optionalChainResult(types.Primitive.any, call_is_optional_chain);
+                    }
                     if (self.callableObjectHasOnlyConstructSignatures(callee_t)) {
                         // Class static-side types aren't in
                         // `type_names`; walk `class_static_types`
@@ -43993,6 +44182,7 @@ test "checker: null assertion to generic array target is allowed" {
     }
 }
 
+
 test "checker: assertion from union with overlapping constituent stays silent" {
     // Mirrors `stringLiteralTypeAssertion01.ts(29,7)` — upstream tsc
     // does not flag `(S[] | S) as string` because at least one
@@ -49515,6 +49705,28 @@ test "checker: strict object type number index must satisfy string index" {
     try T.expect(found);
 }
 
+test "checker: constrained number index TP compatible with string index — no TS2413" {
+    // Mirrors
+    // `genericCallWithObjectTypeArgsAndIndexers.errors.txt(14,12)`
+    // — `function other<T extends Date>(arg: T)` declares a
+    // `[x: string]: Object; [x: number]: T` shape. Because
+    // `T extends Date` and `Date extends Object`, the number
+    // indexer's value type is assignable to the string indexer's.
+    // tsc does NOT emit TS2413 here; ensure the constraint-walk
+    // path holds.
+    const s = try newSetup(
+        \\function f<T extends Date>() {
+        \\  let x: { [k: string]: Object; [n: number]: T };
+        \\}
+    );
+    defer destroySetup(s);
+    s.checker.setStrictFlags(.{ .strict_null_checks = true });
+    try s.checker.checkSourceFile(s.root);
+    for (s.checker.diagnostics.items) |d| {
+        try T.expect(d.code != TsCodes.number_index_not_assignable_to_string_index);
+    }
+}
+
 test "checker: NoInfer<T> as alias result type unwraps" {
     const s = try newSetup(
         \\type Id<T> = NoInfer<T>;
@@ -50632,6 +50844,152 @@ test "checker: assigning to an interface readonly property emits TS2540" {
         if (d.code == TsCodes.readonly_property) found = true;
     }
     try T.expect(found);
+}
+
+test "checker: union of callables is callable, no TS2349" {
+    // Mirrors `unionTypeCallSignatures3.errors.txt(11,1)` — `fUnion`
+    // is `typeof f1 | ... | typeof f7` where every constituent
+    // accepts a single string argument, so `fUnion("")` is
+    // legitimate. tsc emits only TS2454 ("used before assigned");
+    // we must not also fire TS2349 ("not callable").
+    const s = try newSetup(
+        \\function f1(s: string) { }
+        \\function f2(s?: string) { }
+        \\var fUnion: typeof f1 | typeof f2;
+        \\fUnion("");
+    );
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+    for (s.checker.diagnostics.items) |d| {
+        try T.expect(d.code != TsCodes.not_callable);
+    }
+}
+
+test "checker: union with non-callable branch still flags TS2349" {
+    // Negative companion to the helper — a union with a
+    // non-callable branch should still produce TS2349, otherwise
+    // we'd over-suppress on `(F | string)()` style call sites.
+    const s = try newSetup(
+        \\function f1(s: string) { }
+        \\var v: typeof f1 | string;
+        \\v("");
+    );
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+    var saw_not_callable = false;
+    for (s.checker.diagnostics.items) |d| {
+        if (d.code == TsCodes.not_callable) saw_not_callable = true;
+    }
+    try T.expect(saw_not_callable);
+}
+
+test "checker: TS2540 fires when union receiver has any readonly constituent" {
+    // Mirrors baseline `unionTypeReadonly.errors.txt` line
+    // `(23,15): TS2540: Cannot assign to 'value' because it is a
+    // read-only property.` — `differentType: Base | DifferentType`
+    // has differing property types for `value` across the two
+    // branches but both declare it readonly, so the assignment is
+    // still rejected.
+    const s = try newSetup(
+        \\interface Base { readonly value: number }
+        \\interface DifferentType { readonly value: string }
+        \\declare let differentType: Base | DifferentType;
+        \\differentType.value = 12;
+    );
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+    var found: bool = false;
+    for (s.checker.diagnostics.items) |d| {
+        if (d.code == TsCodes.readonly_property) found = true;
+    }
+    try T.expect(found);
+}
+
+test "checker: TS2540 suppressed when intersection has a writable branch" {
+    // Mirrors `intersectionTypeReadonly.errors.txt(21,9)` — a
+    // mutable declaration in any branch makes the intersection's
+    // property writable, so `mutable.value = 12` does NOT emit
+    // TS2540 even though `Base` declares `value` readonly.
+    const s = try newSetup(
+        \\interface Base { readonly value: number }
+        \\interface Mutable { value: number }
+        \\declare let mutable: Base & Mutable;
+        \\mutable.value = 12;
+    );
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+    var saw_readonly: bool = false;
+    for (s.checker.diagnostics.items) |d| {
+        if (d.code == TsCodes.readonly_property) saw_readonly = true;
+    }
+    try T.expect(!saw_readonly);
+}
+
+test "checker: TS2540 on intersection receiver suppresses TS2322 value diagnostic" {
+    // Mirrors `intersectionTypeReadonly.errors.txt(23,15)` — the
+    // intersection `Base & DifferentType` reduces `value` to
+    // `never` (number & string), so a naive assignment-value check
+    // would also emit TS2322 ("Type '12' is not assignable to
+    // type 'string & number'"). tsc prints only TS2540; mirror
+    // that by gating the assignment-type-mismatch report on the
+    // readonly-target outcome.
+    const s = try newSetup(
+        \\interface Base { readonly value: number }
+        \\interface DifferentType { readonly value: string }
+        \\declare let differentType: Base & DifferentType;
+        \\differentType.value = 12;
+    );
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+    var saw_readonly = false;
+    var saw_type_mismatch = false;
+    for (s.checker.diagnostics.items) |d| {
+        if (d.code == TsCodes.readonly_property) saw_readonly = true;
+        if (d.code == TsCodes.type_not_assignable) saw_type_mismatch = true;
+    }
+    try T.expect(saw_readonly);
+    try T.expect(!saw_type_mismatch);
+}
+
+test "checker: TS2540 fires for intersection-only readonly branch" {
+    // Mirrors `intersectionTypeReadonly.errors.txt(25,15)` — when
+    // the property exists on only one intersection branch (and is
+    // readonly there) the intersection still has it readonly.
+    const s = try newSetup(
+        \\interface Base { readonly value: number }
+        \\interface DifferentName { readonly other: number }
+        \\declare let differentName: Base & DifferentName;
+        \\differentName.value = 12;
+    );
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+    var saw_readonly: bool = false;
+    for (s.checker.diagnostics.items) |d| {
+        if (d.code == TsCodes.readonly_property) saw_readonly = true;
+    }
+    try T.expect(saw_readonly);
+}
+
+test "checker: TS2540 suppressed when property missing on some union branch" {
+    // Same baseline (`unionTypeReadonly.errors.txt`) — the second
+    // half of the test asserts that `differentName.value` on a
+    // `Base | DifferentName` receiver (where `DifferentName` lacks
+    // `value` entirely) does NOT emit TS2540. tsc surfaces TS2339
+    // there; our readonly check must yield so the existing
+    // missing-property diagnostic stays the sole reporter.
+    const s = try newSetup(
+        \\interface Base { readonly value: number }
+        \\interface DifferentName { readonly other: number }
+        \\declare let differentName: Base | DifferentName;
+        \\differentName.value = 12;
+    );
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+    var saw_readonly: bool = false;
+    for (s.checker.diagnostics.items) |d| {
+        if (d.code == TsCodes.readonly_property) saw_readonly = true;
+    }
+    try T.expect(!saw_readonly);
 }
 
 test "checker: TS2540 anchors at the property name not the object" {
