@@ -4233,6 +4233,10 @@ test "conformance: baseline-aware type-relationship survey" {
         .{ .label = "types/typeRelationships/widenedTypes", .rel_path = "types/typeRelationships/widenedTypes" },
         .{ .label = "types/specifyingTypes", .rel_path = "types/specifyingTypes" },
         .{ .label = "types/primitives", .rel_path = "types/primitives" },
+        .{ .label = "types/conditional", .rel_path = "types/conditional" },
+        .{ .label = "types/any", .rel_path = "types/any" },
+        .{ .label = "types/import", .rel_path = "types/import" },
+        .{ .label = "types/uniqueSymbol", .rel_path = "types/uniqueSymbol" },
     };
 
     const cats = try runCategorySpecsWithOptions(T.allocator, ts_root, .{
@@ -4254,8 +4258,8 @@ test "conformance: baseline-aware type-relationship survey" {
     );
 
     try T.expectEqual(@as(usize, specs.len), cats.len);
-    try T.expectEqual(@as(u32, 246), combined.total());
-    try T.expectEqual(@as(u32, 246), combined.passed);
+    try T.expectEqual(@as(u32, 284), combined.total());
+    try T.expectEqual(@as(u32, 284), combined.passed);
 }
 
 // Default location of the local TypeScript checkout. Other devs
