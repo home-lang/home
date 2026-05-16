@@ -20997,7 +20997,30 @@ pub const Checker = struct {
         if (without_undefined == types.Primitive.never or without_undefined == types.Primitive.none) return default_t;
         if (default_t == types.Primitive.never or default_t == types.Primitive.none) return without_undefined;
         if (without_undefined == default_t) return without_undefined;
-        return self.interner.internUnion(&.{ without_undefined, default_t }) catch return error.OutOfMemory;
+        // Widen the literal default before unioning so a string-literal
+        // default (`a = ""`) doesn't render alongside `string` in the
+        // source's union prose for the destructured target's TS2322
+        // diagnostic. Mirrors upstream tsc which widens initializer
+        // types when computing the effective destructuring binding
+        // type. Without widening, the outer union wraps the
+        // already-union prop type (`string | number`) together with
+        // the literal `""`; downstream assignability prose renders
+        // the 2-member outer union as `(string | number) | ""` which
+        // collapses textually to `string | number | ""`. See fixture
+        // `restElementWithAssignmentPattern2.ts(2,10)` whose baseline
+        // is `string | number`.
+        const widened_default = self.widenLiteralType(default_t);
+        if (widened_default == without_undefined) return without_undefined;
+        // When the source already contains the widened default as a
+        // union member, the union is a no-op — return the source
+        // unchanged. Without this guard the outer union ends up
+        // wrapping `string | number` and `string` as siblings.
+        if (self.interner.pool.flagsOf(without_undefined).is_union) {
+            for (self.interner.unionMembers(without_undefined)) |member| {
+                if (member == widened_default) return without_undefined;
+            }
+        }
+        return self.interner.internUnion(&.{ without_undefined, widened_default }) catch return error.OutOfMemory;
     }
 
     fn objectPropertyTypeForDestructuring(self: *Checker, source_t: TypeId, key_node: NodeId, is_computed: bool) CheckError!?TypeId {
@@ -21399,7 +21422,11 @@ pub const Checker = struct {
                 !self.isIterableLikeType(init_type)) and
             !self.objectLiteralHasSymbolIteratorMethod(v.init))
         {
-            try self.reportIteratorRequired(v.init, init_type);
+            // Anchor at the array binding pattern (`[...a]`, `[a, b]`)
+            // rather than the initializer expression — upstream tsc
+            // underlines the pattern in TS2488 prose for var-decl
+            // forms. Mirrors fixture `iterableArrayPattern22.ts(1,5)`.
+            try self.reportIteratorRequired(v.name, init_type);
         }
         if (self.strict_flags.strict_null_checks and v.name != hir_mod.none_node_id and v.init != hir_mod.none_node_id) {
             const nk = self.hir.kindOf(v.name);
@@ -52046,6 +52073,35 @@ test "checker: array destructuring with default strips undefined" {
     for (s.checker.diagnostics.items) |d| {
         try T.expect(d.code != TsCodes.type_not_assignable);
     }
+}
+
+test "checker: rest object destructuring default doesn't duplicate widened type in TS2322 prose" {
+    // Regression: when an object destructuring pattern inside a
+    // rest element binds a literal-default value (e.g.
+    // `[...{ 0: a = "", b }] = ["", 1]`), the destructuring source
+    // for `a` is the rest element type (`string | number`) merged
+    // with the literal default (`""`). Without widening + dedup, the
+    // outer union ends up as 2-member `(string | number) | ""` which
+    // renders as `string | number | ""` (or once the literal widens
+    // to `string` for prose, `string | number | string`). Upstream
+    // tsc widens initializer types before computing the destructuring
+    // binding type, collapsing the union to `string | number`.
+    // Mirrors fixture `restElementWithAssignmentPattern2.ts(2,10)`.
+    const s = try newSetup(
+        \\var a: string, b: number;
+        \\[...{ 0: a = "", b }] = ["", 1];
+    );
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+    var saw = false;
+    for (s.checker.diagnostics.items) |d| {
+        if (d.code != TsCodes.type_not_assignable) continue;
+        // The prose must not include the duplicate `string | string`
+        // pattern that the old union-of-union renderer produced.
+        try T.expect(std.mem.indexOf(u8, d.message, "string | string") == null);
+        if (std.mem.indexOf(u8, d.message, "string | number") != null) saw = true;
+    }
+    try T.expect(saw);
 }
 
 test "checker: nested object binding parameter names resolve" {
