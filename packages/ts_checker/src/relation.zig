@@ -737,6 +737,7 @@ pub const Engine = struct {
         }
         if (is_string and (std.mem.eql(u8, name, "length") or
             std.mem.eql(u8, name, "charAt") or
+            std.mem.eql(u8, name, "charCodeAt") or
             std.mem.eql(u8, name, "toUpperCase") or
             std.mem.eql(u8, name, "toLowerCase") or
             std.mem.eql(u8, name, "startsWith") or

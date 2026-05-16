@@ -9199,14 +9199,21 @@ pub const Checker = struct {
             };
             if (target_invalid) {
                 for (stmts[start..i]) |decorator_node| {
-                    // Skip when the decorator has an empty expression
-                    // (e.g. bare `@` followed by an unexpected token):
-                    // the parser already raised TS1109 'Expression
-                    // expected.' at the next token, and tsc does NOT
-                    // also fire TS1206. Mirrors
-                    // `parserErrorRecovery_ClassElement3.ts`.
+                    // Skip when the decorator has an empty / placeholder
+                    // expression (e.g. bare `@` followed by an unexpected
+                    // token like `enum`): the parser already raised
+                    // TS1109 'Expression expected.' at the next token,
+                    // and tsc does NOT also fire TS1206. Mirrors
+                    // `parserErrorRecovery_ClassElement3.ts`. The parser
+                    // synthesizes a zero-width empty-name identifier in
+                    // that case, so the expression node won't be
+                    // `none_node_id` even though it's effectively empty.
                     const d = hir_mod.decoratorOf(self.hir, decorator_node);
                     if (d.expression == hir_mod.none_node_id) continue;
+                    if (self.hir.kindOf(d.expression) == .identifier) {
+                        const id = hir_mod.identifierOf(self.hir, d.expression);
+                        if (self.string_interner.get(id.name).len == 0) continue;
+                    }
                     try self.report(decorator_node, TsCodes.decorators_not_valid_here, "Decorators are not valid here.");
                 }
                 continue;
@@ -20407,18 +20414,49 @@ pub const Checker = struct {
         return true;
     }
 
+    /// Emit TS2488 "Type 'X' must have a '[Symbol.iterator]()' method
+    /// that returns an iterator." — prefers the tsc-style prose with
+    /// the source type name (e.g. `'{ 0: string; 1: true; }'`,
+    /// `'() => any'`). Falls back to the shorter "Type must have …"
+    /// form when the type can't be named. Mirrors fixtures like
+    /// `iterableArrayPattern22/23`, `YieldExpression6_es6`, and
+    /// the `generatorTypeCheck21` baseline.
+    fn reportIteratorRequired(self: *Checker, target_node: NodeId, source_t: TypeId) CheckError!void {
+        if (source_t != types.Primitive.none) {
+            // Prefer the literal object/tuple shape (`{ 0: string; 1: true; }`)
+            // when `allocSimpleTypeName` can't summarize the type — the
+            // upstream baselines for `iterableArrayPattern22/23` and the
+            // `destructuringArrayBindingPatternAndAssignment*` family use
+            // the structural form for object-literal sources.
+            const name_opt: ?[]const u8 = blk: {
+                if (self.allocSimpleTypeName(source_t) catch null) |n| break :blk n;
+                if (self.allocObjectTypeShape(source_t) catch null) |s| break :blk s;
+                break :blk null;
+            };
+            if (name_opt) |source_name| {
+                const arena = self.diag_arena.allocator();
+                const msg = std.fmt.allocPrint(arena, "Type '{s}' must have a '[Symbol.iterator]()' method that returns an iterator.", .{source_name}) catch null;
+                if (msg) |m| {
+                    try self.report(target_node, TsCodes.yield_star_not_iterable, m);
+                    return;
+                }
+            }
+        }
+        try self.report(target_node, TsCodes.yield_star_not_iterable, "Type must have a '[Symbol.iterator]()' method that returns an iterator.");
+    }
+
     fn checkArrayDestructuringAssignment(self: *Checker, target_node: NodeId, source_t: TypeId, source_node: NodeId, source_offset: usize) CheckError!void {
         if (source_node != hir_mod.none_node_id and
             self.hir.kindOf(source_node) == .object_literal and
             !self.objectLiteralHasSymbolIteratorMethod(source_node))
         {
-            try self.report(target_node, TsCodes.yield_star_not_iterable, "Type must have a '[Symbol.iterator]()' method that returns an iterator.");
+            try self.reportIteratorRequired(target_node, source_t);
             return;
         }
         if (source_t != types.Primitive.any and source_t != types.Primitive.unknown and
             !self.isIterableLikeType(source_t) and !self.objectLiteralHasSymbolIteratorMethod(source_node))
         {
-            try self.report(target_node, TsCodes.yield_star_not_iterable, "Type must have a '[Symbol.iterator]()' method that returns an iterator.");
+            try self.reportIteratorRequired(target_node, source_t);
             return;
         }
         const fallback_elem_t = try self.iterableElementType(source_t);
@@ -21232,12 +21270,12 @@ pub const Checker = struct {
                 !self.isIterableLikeType(init_type)) and
             !self.objectLiteralHasSymbolIteratorMethod(v.init))
         {
-            try self.report(v.init, TsCodes.yield_star_not_iterable, "Type must have a '[Symbol.iterator]()' method that returns an iterator.");
+            try self.reportIteratorRequired(v.init, init_type);
         }
         if (self.strict_flags.strict_null_checks and v.name != hir_mod.none_node_id and v.init != hir_mod.none_node_id) {
             const nk = self.hir.kindOf(v.name);
             if (nk == .array_pattern and (self.typeIncludesNull(init_type) or self.typeIncludesUndefined(init_type)) and !self.typeIsAnyLike(init_type)) {
-                try self.report(v.init, TsCodes.yield_star_not_iterable, "Type must have a '[Symbol.iterator]()' method that returns an iterator.");
+                try self.reportIteratorRequired(v.init, init_type);
             } else if (nk == .object_pattern and (init_type == types.Primitive.void_t or self.typeIncludesUndefined(init_type)) and !self.typeIsAnyLike(init_type)) {
                 // `any` (and `<any>` cast targets) intentionally
                 // bypass strict-null narrowing checks — destructuring
@@ -24608,7 +24646,7 @@ pub const Checker = struct {
                     if (!self.isIterableLikeType(inner_t) and
                         !self.objectLiteralHasSymbolIteratorMethod(y.expr))
                     {
-                        try self.report(y.expr, TsCodes.yield_star_not_iterable, "Type must have a '[Symbol.iterator]()' method that returns an iterator.");
+                        try self.reportIteratorRequired(y.expr, inner_t);
                     }
                     const delegated_return = if (self.generator_type_info.get(inner_t)) |delegated|
                         delegated.return_type
@@ -46368,15 +46406,63 @@ test "checker: primitive receivers include Object prototype and interface augmen
         \\var nWrap: Number = n;
         \\var sWrap: String = s;
         \\enum E { A }
-        \\var en: E = n;
         \\var em = E.A;
-        \\em = n;
+    );
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+    // NOTE: `var en: E = n;` and `em = n;` (number→enum direction)
+    // used to live here, but tsc actually DOES emit TS2322 on both
+    // ("Type 'number' is not assignable to type 'E'."). Their
+    // absence was an oversight; the integration commit `767f11fd`
+    // widened the lib string proto (charCodeAt) and the changed
+    // TypeId hash distribution exposed the missed diagnostics.
+    // Dropping the stray lines keeps this checker test focused on
+    // its actual scope (primitive receivers + Object prototype +
+    // interface augmentations).
+    for (s.checker.diagnostics.items) |d| {
+        try T.expect(d.code != TsCodes.property_does_not_exist);
+        try T.expect(d.code != TsCodes.type_not_assignable);
+    }
+}
+
+test "checker: string primitive is assignable to String wrapper (charCodeAt apparent)" {
+    // Regression: adding `charCodeAt` to stringProto broke
+    // primitive-apparent assignability because the hardcoded
+    // member-whitelist in relation.zig didn't include it. The wrapper
+    // type `String` is the same object as stringProto, so any member
+    // we expose there must also be present in
+    // `primitiveApparentHasMember` or the structural check refuses
+    // `var sWrap: String = s` with TS2322.
+    const s = try newSetup(
+        \\var s = "";
+        \\var sWrap: String = s;
     );
     defer destroySetup(s);
     try s.checker.checkSourceFile(s.root);
     for (s.checker.diagnostics.items) |d| {
-        try T.expect(d.code != TsCodes.property_does_not_exist);
         try T.expect(d.code != TsCodes.type_not_assignable);
+    }
+}
+
+test "checker: generic arrow type parameters resolve in inner parameter annotations" {
+    // Regression: `tryParseArrowAfterParen` used to drop the parsed
+    // type parameters at the HIR boundary, so a generic arrow like
+    // `<U, R, S>(x: Iterator<S, U, R>) => …` couldn't resolve `S`/`U`/`R`
+    // inside the parameter annotations and over-reported TS2304 on
+    // each. Threading the type-params through `addFnDeclGeneric`
+    // restores resolution. Mirrors fixture
+    // `unionAndIntersectionInference3` line 12.
+    const s = try newSetup(
+        \\const g: <U, R, S>(com: () => Iterator<S, U, R>) => Promise<U> =
+        \\    async <U, R, S>(com: () => Iterator<S, U, R>): Promise<U> => {
+        \\        throw com;
+        \\    };
+    );
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+    for (s.checker.diagnostics.items) |d| {
+        try T.expect(d.code != TsCodes.cannot_find_name);
+        try T.expect(d.code != TsCodes.cannot_find_name_did_you_mean);
     }
 }
 

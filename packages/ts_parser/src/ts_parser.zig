@@ -858,6 +858,17 @@ pub const Parser = struct {
                 if (next == .open_paren) {
                     break :blk try self.parseExpressionStatement();
                 }
+                // `private[key] = value;` / `private.foo` etc. — when
+                // the contextual keyword is followed by a member-access
+                // / element-access / call operator, treat it as a plain
+                // identifier expression. Mirrors tsc which only
+                // surfaces TS1212 (strict-mode reserved word) here when
+                // `alwaysStrict`/`strict` is on, and otherwise lets the
+                // expression parse cleanly. Fixture:
+                // `parserStatementIsNotAMemberVariableDeclaration1.ts`.
+                if (next == .open_bracket or next == .dot) {
+                    break :blk try self.parseExpressionStatement();
+                }
                 if (next == .kw_interface or next == .kw_namespace or next == .kw_module or
                     next == .kw_var or next == .kw_let or next == .kw_const or
                     next == .kw_function or next == .kw_class or next == .kw_enum or
@@ -13640,4 +13651,28 @@ test "parser: constructor is an expression identifier outside class member gramm
         try T.expect(d.code != 1109);
         try T.expect(d.code != 1005);
     }
+}
+
+test "parser: TS1222 generator overload reports at asterisk column not function keyword" {
+    // Regression: TS1221/TS1222 used to anchor at the `function`
+    // keyword (col 1 for an unindented declaration). tsc anchors at
+    // the `*` token instead, so we should match it. Source is a
+    // non-ambient overload signature, which produces TS1222
+    // ("An overload signature cannot be declared as a generator.").
+    var s = try newTestSetup(
+        \\function* g(): number;
+        \\function* g(): number { return 1; }
+    );
+    defer destroyTestSetup(s);
+    _ = try s.parser.parseSourceFile();
+    var saw_ts1222_at_asterisk = false;
+    for (s.parser.diagnostics.items) |d| {
+        if (d.code == 1222) {
+            // `function* g(): number;` — `function` is bytes 0..7,
+            // `*` is byte 8. Anchor must be at the `*` (pos==8), NOT
+            // at the `function` keyword (pos==0).
+            if (d.pos == 8) saw_ts1222_at_asterisk = true;
+        }
+    }
+    try T.expect(saw_ts1222_at_asterisk);
 }
