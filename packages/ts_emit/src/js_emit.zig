@@ -8658,6 +8658,30 @@ test "emit: for-await-of with destructuring target lowers via _e temp at es5" {
     try T.expect(std.mem.indexOf(u8, out, "var [a, b] = _astep.value") == null);
 }
 
+test "emit: for-of with destructuring + defaults at es5 inherits shim" {
+    // Confirm the `emitDestructuringShim` path used by for-of's
+    // pattern target also handles defaults via the v2 conditional.
+    const out = try emitWithOpts(
+        "for (const [a = 1, b = 2] of arr) { use(a, b); }",
+        .{ .es_target = .es5 },
+    );
+    defer T.allocator.free(out);
+    try T.expect(std.mem.indexOf(u8, out, "var _e = _arr[_i];") != null);
+    try T.expect(std.mem.indexOf(u8, out, "a = _e[0] === void 0 ? 1 : _e[0]") != null);
+    try T.expect(std.mem.indexOf(u8, out, "b = _e[1] === void 0 ? 2 : _e[1]") != null);
+}
+
+test "emit: for-of with destructuring rest at es5 inherits shim" {
+    const out = try emitWithOpts(
+        "for (const [a, ...rest] of arr) { use(a, rest); }",
+        .{ .es_target = .es5 },
+    );
+    defer T.allocator.free(out);
+    try T.expect(std.mem.indexOf(u8, out, "var _e = _arr[_i];") != null);
+    try T.expect(std.mem.indexOf(u8, out, "a = _e[0]") != null);
+    try T.expect(std.mem.indexOf(u8, out, "rest = _e.slice(1)") != null);
+}
+
 test "emit: for-of with downlevel_iteration + destructuring target lowers at es5" {
     // §4.A destructuring v8 — iterator-protocol form also handles
     // pattern targets via _e temp.
