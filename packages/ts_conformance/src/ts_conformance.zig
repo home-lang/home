@@ -300,10 +300,21 @@ pub fn run(gpa: std.mem.Allocator, c: Case) !Result {
             .TS => .TS,
             .HM => .HM,
         };
+        // Shift TS2307/TS7016 column from the `import`/`require` keyword
+        // to the string specifier — matches tsc's `(line, col)` baseline.
+        // Mirrors the same shift applied on the `runProgram` path so
+        // legacy-routed multi-file fixtures (no non-code virtual files)
+        // also report at the quoted module name.
+        var diag_col = pos.col;
+        if ((code == 7016 or code == 2307) and prefix == .TS) {
+            if (specifierColumnForImportDiagnostic(c.source, d.pos)) |col_pair| {
+                diag_col = col_pair.col;
+            }
+        }
         const fdiag: ts_diagnostics.Diagnostic = .{
             .file = if (d.is_global) "" else diag_file,
             .line = diag_line,
-            .col = pos.col,
+            .col = diag_col,
             .code = code,
             .code_prefix = prefix,
             .severity = .err,

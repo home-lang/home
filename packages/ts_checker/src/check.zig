@@ -3895,6 +3895,7 @@ pub const Checker = struct {
                     !self.varDeclTypeIncludesUndefined(node) and
                     !self.isGlobalSymbolConstructorVarDecl(node) and
                     !self.typeAnnotationReferencesGenericWithoutArgs(v.type_annotation) and
+                    !self.typeAnnotationRootIsUnresolved(v.type_annotation) and
                     v.name != hir_mod.none_node_id and
                     self.hir.kindOf(v.name) == .identifier)
                 {
@@ -4965,6 +4966,49 @@ pub const Checker = struct {
             return self.qualifiedDeclHasMissingRequiredTypeArgs(decl, 0);
         }
         return false;
+    }
+
+    /// True if `type_annotation` is a qualified `type_ref` whose root
+    /// identifier doesn't resolve to any visible type/value/namespace
+    /// (e.g. `let x: Foo.Thing` where `Foo` is undeclared). Used to
+    /// suppress TS2454 ("used before assigned") on subsequent reads of
+    /// the declared name — tsc treats the annotation as effectively
+    /// `any` in that case and never fires definite-assignment checks.
+    /// Mirrors `umd2.ts(3,17)` where `Foo` is an unresolved UMD global.
+    fn typeAnnotationRootIsUnresolved(self: *Checker, type_annotation: NodeId) bool {
+        if (type_annotation == hir_mod.none_node_id) return false;
+        if (self.hir.kindOf(type_annotation) != .type_ref) return false;
+        const qs = hir_mod.typeRefQualifier(self.hir, type_annotation);
+        if (qs.len == 0) return false;
+        // Resolve via the root identifier of the qualifier chain — the
+        // first element is the namespace/value reference (e.g. `Foo`
+        // in `Foo.Thing.Inner`). If a namespace by that name is
+        // visible in the root block we treat it as resolved.
+        if (self.hir.kindOf(qs[0]) != .identifier) return false;
+        const root_name = hir_mod.identifierOf(self.hir, qs[0]).name;
+        const root = self.rootBlockFor(type_annotation);
+        if (root != hir_mod.none_node_id and self.hir.kindOf(root) == .block_stmt) {
+            const stmts = hir_mod.blockStmts(self.hir, root);
+            const path = [_]hir_mod.StringId{root_name};
+            if (self.findNamespaceByPath(stmts, &path) != null) return false;
+            // `import * as Foo from "..."` / `import Foo = require(...)`:
+            // Foo is a namespace alias binding even though there's no
+            // namespace_decl with that name. Walk the import statements
+            // and check the namespace / default binding identifiers.
+            for (stmts) |s| {
+                if (self.hir.kindOf(s) != .import_decl) continue;
+                const imp = hir_mod.importOf(self.hir, s);
+                if (self.importDeclBindsLocal(s, root_name)) return false;
+                _ = imp;
+            }
+        }
+        // No matching namespace declaration in scope; also accept any
+        // visible named type declaration with the root name as
+        // "resolved" so `let x: Foo.Inner` where `Foo` is an
+        // interface/alias still participates in the TS2454 check.
+        if (self.findVisibleNamedTypeDecl(type_annotation, root_name) != null) return false;
+        if (self.generic_aliases.get(root_name) != null) return false;
+        return true;
     }
 
     fn isGlobalSymbolConstructorVarDecl(self: *Checker, node: NodeId) bool {
@@ -6370,6 +6414,76 @@ pub const Checker = struct {
             },
             else => return false,
         }
+    }
+
+    /// True if `node` is the identifier used as the computed key of a
+    /// class member whose enclosing declaration is ambient (`declare
+    /// class …`) or whose member itself is abstract — i.e. the
+    /// `[name]` expression is never evaluated at runtime, so an
+    /// `import type` binding used inside it shouldn't trip TS1361.
+    /// Mirrors upstream tsc's behaviour on
+    /// `computedPropertyName.ts` (typeOnly/) where TS suppresses the
+    /// diagnostic on abstract methods and `declare class` members.
+    fn isComputedKeyInAmbientClassMember(self: *Checker, node: NodeId) bool {
+        const parent = self.hir.parentOf(node);
+        if (parent == hir_mod.none_node_id) return false;
+        const parent_kind = self.hir.kindOf(parent);
+        // Class methods are represented as `fn_decl` nodes carrying the
+        // computed-name identifier as their `name` slot. Abstract
+        // methods have no body and are not emitted; suppress here.
+        if (parent_kind == .fn_decl or parent_kind == .fn_expr) {
+            const f = hir_mod.fnDeclOf(self.hir, parent);
+            if (f.name != node) return false;
+            if (f.flags.is_abstract) return true;
+            // Ambient class methods: check the enclosing `class_decl`.
+            const grand = self.hir.parentOf(parent);
+            if (grand != hir_mod.none_node_id and
+                (self.hir.kindOf(grand) == .class_decl or self.hir.kindOf(grand) == .class_expr))
+            {
+                if (self.declarationLineHasDeclare(grand) or
+                    self.declarationSourceHasLeadingDeclare(grand)) return true;
+            }
+            return false;
+        }
+        // Class fields / accessors / method bodies surface as
+        // `object_property` nodes. Detect computed keys, then check
+        // for abstract/declare on the enclosing class declaration.
+        if (parent_kind != .object_property) return false;
+        const op = hir_mod.objectPropertyOf(self.hir, parent);
+        if (!op.is_computed or op.key != node) return false;
+        const grand = self.hir.parentOf(parent);
+        if (grand == hir_mod.none_node_id) return false;
+        if (self.hir.kindOf(grand) != .class_decl and self.hir.kindOf(grand) != .class_expr) return false;
+        if (self.declarationLineHasDeclare(grand) or
+            self.declarationSourceHasLeadingDeclare(grand)) return true;
+        // `abstract [name](): void;` / `abstract [name]: T;` in a
+        // non-`declare` class: tsc emits the diagnostic for concrete
+        // members of an abstract class, so don't blanket-suppress
+        // every member just because the class is abstract — limit to
+        // the per-member `abstract` modifier (carried by `fn_decl`
+        // above; for fields, fall back to a line-level keyword scan
+        // since `object_property` has no dedicated flag).
+        if (self.objectPropertyLineHasAbstract(parent)) return true;
+        // Per-field `declare` modifier: `declare [name]: T;` inside a
+        // concrete class. The computed expression isn't evaluated at
+        // runtime because the field is ambient-only.
+        if (self.declarationLineHasDeclare(parent)) return true;
+        return false;
+    }
+
+    fn objectPropertyLineHasAbstract(self: *Checker, prop_node: NodeId) bool {
+        const src = self.source orelse return false;
+        const span = self.hir.spanOf(prop_node);
+        if (span.start >= src.len) return false;
+        var line_start: usize = span.start;
+        while (line_start > 0 and src[line_start - 1] != '\n') : (line_start -= 1) {}
+        var i = line_start;
+        while (i < src.len and (src[i] == ' ' or src[i] == '\t')) : (i += 1) {}
+        const word = "abstract";
+        if (i + word.len > src.len) return false;
+        if (!std.mem.eql(u8, src[i .. i + word.len], word)) return false;
+        if (i + word.len < src.len and isJsDocIdentChar(src[i + word.len])) return false;
+        return true;
     }
 
     /// If `t` is structurally a `Promise<T>` — an object type with a
@@ -12448,7 +12562,7 @@ pub const Checker = struct {
             try self.checkImportEqualsEntity(node, imp);
             return;
         }
-        if (self.importDeclIsRequireAssignment(node) and self.sourceDirectiveValueMentions("module", "esnext")) {
+        if (self.importDeclIsRequireAssignment(node) and self.sourceDirectiveValueMentions("module", "esnext") and !imp.is_type_only) {
             try self.report(node, TsCodes.import_assignment_es_module, "Import assignment cannot be used when targeting ECMAScript modules. Consider using 'import * as ns from \"mod\"', 'import {a} from \"mod\"', 'import d from \"mod\"', or another module format instead.");
         }
         if (self.importDeclIsRequireAssignment(node) and self.sourceDirectiveValueMentions("rewriteRelativeImportExtensions", "true") and
@@ -12746,18 +12860,15 @@ pub const Checker = struct {
     }
 
     fn virtualLocalModuleSpecifierQuotePos(self: *Checker, node: NodeId, spec: []const u8) ?u32 {
-        const src = self.source orelse return null;
-        const quote_pos = self.moduleSpecifierQuotePos(node, spec) orelse return null;
-        if (!self.sourceHasVirtualFilenameSections()) return quote_pos;
-        const section_start: u32 = @intCast(self.virtualSectionStartForNode(node));
-        const section_line0 = byteOffsetToLine(src, section_start);
-        const quote_line0 = byteOffsetToLine(src, quote_pos);
-        if (quote_line0 <= section_line0) return quote_pos;
-        const local_line1 = quote_line0 - section_line0;
-        const desired_line0 = self.leadingDirectiveLineCount() + local_line1 - 1;
-        const original_line_start = byteOffsetOfLine(src, quote_line0);
-        const col0 = quote_pos - original_line_start;
-        return byteOffsetOfLine(src, desired_line0) + col0;
+        // Return the raw byte position of the opening quote in the
+        // multi-file source. The harness's `virtualMarkerForByte` lookup
+        // translates (file, line) per virtual section, and the legacy
+        // diagnostic renderer uses the raw byte offset's column directly.
+        // An earlier "rebase line into directive-stripped coordinates"
+        // attempt produced positions that landed in the wrong virtual
+        // section for fixtures like `relativePathMustResolve`.
+        _ = self.source orelse return null;
+        return self.moduleSpecifierQuotePos(node, spec);
     }
 
     fn leadingDirectiveLineCount(self: *Checker) u32 {
@@ -27047,7 +27158,7 @@ pub const Checker = struct {
         if (std.mem.eql(u8, name_str, "arguments") and self.hasNonArrowFunctionAncestor(node)) {
             return types.Primitive.any;
         }
-        if (!self.isDeclNameSlot(node) and !self.nodeHasAncestorKind(node, .typeof_type) and self.typeOnlyImportLocal(id.name, node)) {
+        if (!self.isDeclNameSlot(node) and !self.nodeHasAncestorKind(node, .typeof_type) and !self.isComputedKeyInAmbientClassMember(node) and self.typeOnlyImportLocal(id.name, node)) {
             const msg = std.fmt.allocPrint(
                 self.diag_arena.allocator(),
                 "'{s}' cannot be used as a value because it was imported using 'import type'.",
