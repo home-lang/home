@@ -1368,8 +1368,20 @@ pub const Printer = struct {
             try self.write("for (var _i = 0, _arr = ");
             try self.printExpression(p.source);
             try self.write("; _i < _arr.length; _i++) { ");
-            try self.printForOfBindingDecl(p.target);
-            try self.write(" = _arr[_i]; ");
+            // §4.A destructuring v8 — for-of with destructuring target
+            // at ES5 lowers to a temp-ident bind + extraction shim
+            // instead of emitting `var [a, b] = _arr[_i];` (which is
+            // ES2015 syntax). Pattern target → `var _e = _arr[_i],
+            // a = _e[0], b = _e[1];`. Identifier target keeps the
+            // existing `var <name> = _arr[_i];` shape.
+            if (self.forOfBindingIsPattern(p.target)) {
+                try self.write("var _e = _arr[_i]; ");
+                try self.emitDestructuringShim(self.forOfBindingPatternNode(p.target), "_e");
+                try self.write(" ");
+            } else {
+                try self.printForOfBindingDecl(p.target);
+                try self.write(" = _arr[_i]; ");
+            }
             try self.printForOfBody(p.body);
             try self.write(" }");
             return;
@@ -1411,6 +1423,32 @@ pub const Printer = struct {
         try self.printExpression(p.source);
         try self.write(") ");
         try self.printStatementInline(p.body);
+    }
+
+    /// §4.A destructuring v8 — true iff `target` is a destructuring
+    /// pattern (`{...}` or `[...]`) or a `var|let|const` decl whose
+    /// name is a destructuring pattern. Used by the ES5 for-of lowering
+    /// to decide whether to emit a temp-ident + shim instead of the
+    /// native pattern syntax.
+    fn forOfBindingIsPattern(self: *const Printer, target: NodeId) bool {
+        const k = self.hir.kindOf(target);
+        if (k == .object_pattern or k == .array_pattern) return true;
+        if (k == .var_decl or k == .let_decl or k == .const_decl) {
+            const v = hir_mod.varDeclOf(self.hir, target);
+            if (v.name == hir_mod.none_node_id) return false;
+            const nk = self.hir.kindOf(v.name);
+            return nk == .object_pattern or nk == .array_pattern;
+        }
+        return false;
+    }
+
+    /// §4.A destructuring v8 — extract the pattern node from a for-of
+    /// target. Callers verify `forOfBindingIsPattern(target)` first.
+    fn forOfBindingPatternNode(self: *const Printer, target: NodeId) NodeId {
+        const k = self.hir.kindOf(target);
+        if (k == .object_pattern or k == .array_pattern) return target;
+        const v = hir_mod.varDeclOf(self.hir, target);
+        return v.name;
     }
 
     /// Emit the binding decl line for a downleveled `for-of`. The
@@ -8213,6 +8251,43 @@ test "emit: function with object rest param uses __rest at es5" {
     defer T.allocator.free(out);
     try T.expect(std.mem.indexOf(u8, out, "function f(_p0)") != null);
     try T.expect(std.mem.indexOf(u8, out, "var a = _p0.a, b = _p0.b, rest = __rest(_p0, [\"a\", \"b\"]);") != null);
+}
+
+test "emit: for-of with array destructuring target lowers via _e temp at es5" {
+    // §4.A destructuring v8 — `for (const [a, b] of arr) { f(a, b); }`
+    // lowers to `for (var _i = 0, _arr = arr; ...; _i++) { var _e =
+    // _arr[_i]; var a = _e[0], b = _e[1]; f(a, b); }` at ES5.
+    const out = try emitWithOpts(
+        "for (const [a, b] of arr) { f(a, b); }",
+        .{ .es_target = .es5 },
+    );
+    defer T.allocator.free(out);
+    try T.expect(std.mem.indexOf(u8, out, "var _i = 0, _arr = arr;") != null);
+    try T.expect(std.mem.indexOf(u8, out, "var _e = _arr[_i];") != null);
+    try T.expect(std.mem.indexOf(u8, out, "var a = _e[0], b = _e[1];") != null);
+    // Pattern itself must NOT appear in the loop body var-decl.
+    try T.expect(std.mem.indexOf(u8, out, "var [a, b] = _arr[_i]") == null);
+}
+
+test "emit: for-of with object destructuring target lowers via _e temp at es5" {
+    const out = try emitWithOpts(
+        "for (const { name, age } of items) { f(name); }",
+        .{ .es_target = .es5 },
+    );
+    defer T.allocator.free(out);
+    try T.expect(std.mem.indexOf(u8, out, "var _e = _arr[_i];") != null);
+    try T.expect(std.mem.indexOf(u8, out, "var name = _e.name, age = _e.age;") != null);
+}
+
+test "emit: for-of with identifier target keeps direct var = _arr[_i] at es5" {
+    // Identifier target keeps the existing shape — no _e temp injected.
+    const out = try emitWithOpts(
+        "for (const x of arr) { f(x); }",
+        .{ .es_target = .es5 },
+    );
+    defer T.allocator.free(out);
+    try T.expect(std.mem.indexOf(u8, out, "var x = _arr[_i];") != null);
+    try T.expect(std.mem.indexOf(u8, out, "var _e") == null);
 }
 
 test "emit: arrow with destructuring param lowers to .bind(this) + temp + shim at es5" {
