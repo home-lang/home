@@ -9129,13 +9129,29 @@ pub const Checker = struct {
             "Unable to resolve signature of {s} decorator when called as an expression.",
             .{kind},
         );
-        const dec_pos = self.decoratorExpressionPos(decorator_node);
+        // TS1238 (class decorators) is reported at the `@` token in
+        // tsc baselines; TS1240/TS1241 (property/method/parameter)
+        // point at the expression following `@`.
+        const dec_pos = if (code == TsCodes.class_decorator_signature_unresolved)
+            self.decoratorAtPos(decorator_node)
+        else
+            self.decoratorExpressionPos(decorator_node);
         try self.diagnostics.append(self.gpa, .{
             .node = decorator_node,
             .pos = dec_pos,
             .code = code,
             .message = msg,
         });
+    }
+
+    fn decoratorAtPos(self: *Checker, decorator_node: NodeId) ?u32 {
+        const span = self.hir.spanOf(decorator_node);
+        if (self.source) |src| {
+            if (span.start < src.len and src[span.start] == '@') {
+                return @intCast(span.start);
+            }
+        }
+        return null;
     }
 
     fn decoratorSignatureAllowsExtraRuntimeArgs(self: *Checker, kind: []const u8, params: []const TypeId) bool {

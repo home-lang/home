@@ -101,6 +101,10 @@ pub const Parser = struct {
     new_target_depth: u32,
     static_block_depth: u32,
     class_body_depth: u32,
+    /// Stack-style flag — true when the innermost enclosing class is
+    /// abstract. Used to gate TS1244 (`abstract` member modifier on a
+    /// non-abstract class).
+    class_is_abstract: bool,
     loop_depth: u32,
     loop_switch_depth: u32,
     /// True when the parser is currently parsing statements directly
@@ -169,6 +173,7 @@ pub const Parser = struct {
             .new_target_depth = 0,
             .static_block_depth = 0,
             .class_body_depth = 0,
+            .class_is_abstract = false,
             .loop_depth = 0,
             .loop_switch_depth = 0,
             .in_switch_case_clause = false,
@@ -745,6 +750,18 @@ pub const Parser = struct {
                 // class body) are handled by the member-modifier loop.
                 if (self.peekAt(1).kind == .kw_class) {
                     break :blk try self.parseClassDeclaration();
+                }
+                // `abstract interface/enum/namespace/module/function/var/let/const`
+                // — TS1242: `abstract` modifier can only appear on a
+                // class, method, or property declaration.
+                const next = self.peekAt(1).kind;
+                if (next == .kw_interface or next == .kw_enum or next == .kw_namespace or
+                    next == .kw_module or next == .kw_function or next == .kw_var or
+                    next == .kw_let or next == .kw_const)
+                {
+                    const abstract_tok = self.advance(); // abstract
+                    try self.reportCodeAt(abstract_tok.span.start, abstract_tok.line, 1242, "'abstract' modifier can only appear on a class, method, or property declaration.");
+                    break :blk try self.parseStatement();
                 }
                 break :blk try self.parseExpressionStatement();
             },
@@ -1904,6 +1921,11 @@ pub const Parser = struct {
                             if (saw_override_modifier) {
                                 try self.reportCodeAt(mod.span.start, mod.line, 1029, "'readonly' modifier must precede 'override' modifier.");
                             }
+                            // TS1030: duplicate `readonly` modifier on
+                            // a parameter property.
+                            if (flags.is_readonly) {
+                                try self.reportCodeAt(mod.span.start, mod.line, 1030, "'readonly' modifier already seen.");
+                            }
                             flags.is_readonly = true;
                             flags.is_parameter_property = true;
                         },
@@ -2445,6 +2467,9 @@ pub const Parser = struct {
         defer self.generator_depth = class_body_generator_depth;
         self.class_body_depth += 1;
         defer self.class_body_depth -= 1;
+        const prev_class_is_abstract = self.class_is_abstract;
+        self.class_is_abstract = is_abstract;
+        defer self.class_is_abstract = prev_class_is_abstract;
         var members: std.ArrayListUnmanaged(NodeId) = .empty;
         defer members.deinit(self.gpa);
         var recovered_nested_declaration = false;
@@ -2486,14 +2511,37 @@ pub const Parser = struct {
                 break;
             }
             const mods = try self.skipClassModifiers();
+            // TS1244: `abstract` modifier on a member can only appear
+            // inside an abstract class. Emit at the `abstract` token.
+            if (mods.is_abstract and !self.class_is_abstract) {
+                if (mods.abstract_token) |at| {
+                    try self.reportCodeAt(at.span.start, at.line, 1244, "Abstract methods can only appear within an abstract class.");
+                }
+            }
+            // TS1243: `private` modifier cannot be used with `abstract`
+            // modifier. tsc emits at the `abstract` keyword (not the
+            // `private` one) per baselines.
+            if (mods.is_abstract and mods.visibility == .private and mods.has_accessibility) {
+                if (mods.abstract_token) |at| {
+                    try self.reportCodeAt(at.span.start, at.line, 1243, "'private' modifier cannot be used with 'abstract' modifier.");
+                }
+            }
             var member_start = self.peek();
             var invalid_index_modifier: ?Token = null;
             if (self.peek().kind == .kw_export and self.peekAt(1).kind == .open_bracket) {
                 invalid_index_modifier = self.advance();
                 member_start = self.peek();
             }
+            // Track if we see decorators AFTER modifiers — TS1436.
+            // tsc requires decorators precede modifiers like `public`.
+            const had_modifiers_before_decorators =
+                mods.has_accessibility or mods.is_static or mods.is_override or
+                mods.is_abstract or mods.is_readonly or mods.is_async;
             while (self.peek().kind == .at) {
                 const dec_tok = self.advance();
+                if (had_modifiers_before_decorators) {
+                    try self.reportCodeAt(dec_tok.span.start, dec_tok.line, 1436, "Decorators must precede the name and all keywords of property declarations.");
+                }
                 const dec_expr = blk: {
                     self.generator_depth = class_body_generator_depth;
                     defer self.generator_depth = 0;
@@ -2823,6 +2871,8 @@ pub const Parser = struct {
         is_accessor: bool = false,
         invalid_class_element_modifier: ?Token = null,
         async_token: ?Token = null,
+        abstract_token: ?Token = null,
+        reported_duplicate_accessibility: bool = false,
     };
 
     fn skipClassModifiers(self: *Parser) ParseError!ClassModifiers {
@@ -2858,8 +2908,12 @@ pub const Parser = struct {
                 switch (k) {
                     .kw_private, .kw_protected, .kw_public => {
                         const mod = self.advance();
-                        if (mods.has_accessibility) {
+                        // tsc only reports TS1028 once per modifier list
+                        // — emit on the FIRST duplicate, then suppress
+                        // subsequent ones to match upstream baselines.
+                        if (mods.has_accessibility and !mods.reported_duplicate_accessibility) {
                             try self.reportCodeAt(mod.span.start, mod.line, 1028, "Accessibility modifier already seen.");
+                            mods.reported_duplicate_accessibility = true;
                         }
                         mods.has_accessibility = true;
                         mods.accessibility_token = mod;
@@ -2883,11 +2937,21 @@ pub const Parser = struct {
                         if (mods.async_token == null) mods.async_token = self.peek();
                     },
                     .kw_override => mods.is_override = true,
-                    .kw_abstract => mods.is_abstract = true,
+                    .kw_abstract => {
+                        mods.is_abstract = true;
+                        if (mods.abstract_token == null) mods.abstract_token = self.peek();
+                    },
                     .kw_export, .kw_declare => {
                         if (mods.invalid_class_element_modifier == null) mods.invalid_class_element_modifier = self.peek();
                     },
-                    .kw_readonly => mods.is_readonly = true,
+                    .kw_readonly => {
+                        // TS1030: `'readonly' modifier already seen.`
+                        // Emit at the second `readonly` token.
+                        if (mods.is_readonly) {
+                            try self.reportCodeAt(self.peek().span.start, self.peek().line, 1030, "'readonly' modifier already seen.");
+                        }
+                        mods.is_readonly = true;
+                    },
                     .kw_accessor => {
                         // `accessor x = …` modifier (TS 4.9 / Stage 3).
                         // Only valid in front of a field name — if the
@@ -2939,7 +3003,7 @@ pub const Parser = struct {
     }
 
     fn canStartClassMemberAfterModifier(kind: TokenKind) bool {
-        return isClassMemberNameStart(kind) or kind == .asterisk;
+        return isClassMemberNameStart(kind) or kind == .asterisk or kind == .at;
     }
 
     fn isReservedBindingNameToken(kind: TokenKind) bool {
