@@ -8780,6 +8780,13 @@ pub const Checker = struct {
         defer instance_member_predicates.deinit(self.gpa);
         var static_member_predicates: std.AutoHashMapUnmanaged(hir_mod.StringId, FnPredicate) = .empty;
         defer static_member_predicates.deinit(self.gpa);
+        // Names that the constructor body definitely assigns via
+        // `this.X = ...`. Used to suppress TS2564 for typed instance
+        // fields that have no inline initializer but are assigned in
+        // the constructor body (matching tsc's strict-property-init
+        // detection).
+        var ctor_assigned_names: std.AutoHashMapUnmanaged(hir_mod.StringId, void) = .empty;
+        defer ctor_assigned_names.deinit(self.gpa);
 
         // Pre-scan for accessor pairs: a member name with both a
         // `get` and a `set` accessor is a regular read+write property.
@@ -8800,6 +8807,19 @@ pub const Checker = struct {
             if (hir_mod.fnTypeParams(self.hir, m).len > 0) self.popNarrowScope();
             const params = self.interner.signatureParams(sig);
             if (params.len > 0) try setter_types.put(self.gpa, nid, params[0]);
+        }
+
+        // Pre-scan the constructor body for `this.X = ...` so the
+        // TS2564 (strict-property-initialization) check below can
+        // suppress the diagnostic for typed fields the constructor
+        // assigns — regardless of whether the field declaration
+        // appears before or after the constructor in source order.
+        for (members) |m| {
+            const k = self.hir.kindOf(m);
+            if (k != .fn_decl and k != .fn_expr and k != .arrow_fn) continue;
+            const fp = hir_mod.fnDeclOf(self.hir, m);
+            if (!fp.flags.is_constructor) continue;
+            try self.collectConstructorThisAssignedNames(m, &ctor_assigned_names);
         }
 
         for (members) |m| {
@@ -9276,6 +9296,7 @@ pub const Checker = struct {
                         !self.classNodeIsInsideAmbientDeclaredModule(node) and
                         !self.classHasLeadingDeclare(node) and
                         !self.virtualSectionIsDeclarationFile(node) and
+                        !ctor_assigned_names.contains(member_name) and
                         // Upstream tsc never fires TS2564 for fields
                         // whose name is a string-literal / numeric /
                         // computed key (e.g. `class { "a b": number }`,
@@ -9812,6 +9833,56 @@ pub const Checker = struct {
         const f = hir_mod.fnDeclOf(self.hir, ctor_node);
         if (f.body == hir_mod.none_node_id) return;
         try self.collectThisAssignmentsFromNode(f.body, parent_instance_t, members);
+    }
+
+    /// Walk the constructor body collecting every `this.X = …`
+    /// target name into `names`. Used to suppress TS2564 for typed
+    /// fields that the constructor body initializes (mirrors tsc's
+    /// strict-property-initialization "definitely assigned in the
+    /// constructor" branch). The walk stays at the top of the body
+    /// so we don't track conditional assignments — matching the
+    /// shape tsc accepts for these baselines.
+    fn collectConstructorThisAssignedNames(
+        self: *Checker,
+        ctor_node: NodeId,
+        names: *std.AutoHashMapUnmanaged(hir_mod.StringId, void),
+    ) CheckError!void {
+        const f = hir_mod.fnDeclOf(self.hir, ctor_node);
+        if (f.body == hir_mod.none_node_id) return;
+        try self.collectThisAssignedNamesFromNode(f.body, names);
+    }
+
+    fn collectThisAssignedNamesFromNode(
+        self: *Checker,
+        node: NodeId,
+        names: *std.AutoHashMapUnmanaged(hir_mod.StringId, void),
+    ) CheckError!void {
+        if (node == hir_mod.none_node_id) return;
+        switch (self.hir.kindOf(node)) {
+            .block_stmt => {
+                for (hir_mod.blockStmts(self.hir, node)) |stmt| {
+                    try self.collectThisAssignedNamesFromNode(stmt, names);
+                }
+            },
+            .assignment => {
+                const a = hir_mod.assignmentOf(self.hir, node);
+                if (a.target != hir_mod.none_node_id and self.hir.kindOf(a.target) == .member_access) {
+                    const ma = hir_mod.memberOf(self.hir, a.target);
+                    if (self.hir.kindOf(ma.object) == .identifier) {
+                        const obj = hir_mod.identifierOf(self.hir, ma.object);
+                        if (std.mem.eql(u8, self.string_interner.get(obj.name), "this")) {
+                            try names.put(self.gpa, ma.name, {});
+                        }
+                    }
+                }
+            },
+            .if_stmt => {
+                const i = hir_mod.ifOf(self.hir, node);
+                try self.collectThisAssignedNamesFromNode(i.then_branch, names);
+                try self.collectThisAssignedNamesFromNode(i.else_branch, names);
+            },
+            else => {},
+        }
     }
 
     fn collectThisAssignmentsFromNode(
