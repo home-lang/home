@@ -9241,6 +9241,25 @@ pub const Checker = struct {
         if (d.expression == hir_mod.none_node_id) return;
         try self.reportDecoratorUsedBeforeAssignment(d.expression);
         const dec_t = try self.checkExpression(d.expression);
+        // TS1238: a class identifier used directly as a decorator (e.g.
+        // `@CtorDtor` where `class CtorDtor {}`) is not callable as a
+        // decorator — class statics have a construct signature but no
+        // call signature. Mirrors fixture
+        // `constructableDecoratorOnClass01.errors.txt`.
+        if (self.decoratorExpressionIsClassIdentifier(d.expression)) {
+            const msg = try std.fmt.allocPrint(
+                self.diag_arena.allocator(),
+                "Unable to resolve signature of class decorator when called as an expression.",
+                .{},
+            );
+            try self.diagnostics.append(self.gpa, .{
+                .node = decorator_node,
+                .pos = self.decoratorAtPos(decorator_node),
+                .code = TsCodes.class_decorator_signature_unresolved,
+                .message = msg,
+            });
+            return;
+        }
         try self.checkDecoratorRuntimeArity(
             decorator_node,
             dec_t,
@@ -9248,6 +9267,22 @@ pub const Checker = struct {
             TsCodes.class_decorator_signature_unresolved,
             "class",
         );
+    }
+
+    fn decoratorExpressionIsClassIdentifier(self: *Checker, expr_node: NodeId) bool {
+        if (expr_node == hir_mod.none_node_id) return false;
+        if (self.hir.kindOf(expr_node) != .identifier) return false;
+        const id = hir_mod.identifierOf(self.hir, expr_node);
+        // A class declaration registers itself in `class_name_by_static`
+        // (every class) and optionally in `class_constructor_sigs`
+        // (only when the class has an explicit constructor). The
+        // former is the broader signal — every class binding lands
+        // there regardless of whether the user wrote `constructor(...)`.
+        var it = self.class_name_by_static.valueIterator();
+        while (it.next()) |name_ptr| {
+            if (name_ptr.* == id.name) return true;
+        }
+        return false;
     }
 
     fn reportDecoratorUsedBeforeAssignment(self: *Checker, expr_node: NodeId) CheckError!void {
@@ -24723,10 +24758,34 @@ pub const Checker = struct {
                 // function. If found and it isn't async, diagnose.
                 // Reaching the root without finding any function is
                 // top-level await, which is allowed.
+                //
+                // Decorators run at class declaration time, NOT inside
+                // the function/method they decorate. When the await is
+                // inside a decorator expression, the function (or
+                // parameter's owning method) the decorator targets is
+                // transparent for await scoping — the enclosing
+                // function is the one OUTSIDE the decorated class.
+                // Mirrors fixture `decoratorOnClassMethodParameter3`
+                // where `@dec(await value)` is on an `async method`
+                // parameter but the await belongs to the outer
+                // non-async `function fn`.
+                var inside_decorator = false;
                 var cur: hir_mod.NodeId = self.hir.parentOf(node);
                 while (cur != hir_mod.none_node_id) : (cur = self.hir.parentOf(cur)) {
                     const k = self.hir.kindOf(cur);
+                    if (k == .decorator) {
+                        inside_decorator = true;
+                        continue;
+                    }
                     if (k == .fn_decl or k == .fn_expr or k == .arrow_fn) {
+                        if (inside_decorator) {
+                            // Skip this function — decorators run
+                            // outside it. The next .decorator boundary
+                            // hasn't been crossed yet, so reset and
+                            // keep walking.
+                            inside_decorator = false;
+                            continue;
+                        }
                         const fp = hir_mod.fnDeclOf(self.hir, cur);
                         if (!fp.flags.is_async) {
                             try self.report(node, TsCodes.await_only_in_async, "'await' expressions are only allowed within async functions and at the top levels of modules.");
@@ -42273,6 +42332,65 @@ test "checker: constructor parameter decorator property key may be undefined" {
         if (d.code == TsCodes.parameter_decorator_signature_unresolved) found = true;
     }
     try T.expect(found);
+}
+
+test "checker: class identifier used directly as decorator is not callable (TS1238)" {
+    // `class CtorDtor {}` has no call signature, so `@CtorDtor` is
+    // unable to resolve a class decorator. Mirrors fixture
+    // `constructableDecoratorOnClass01.errors.txt`.
+    const s = try newSetup(
+        \\// @experimentalDecorators: true
+        \\class CtorDtor {}
+        \\@CtorDtor
+        \\class C {}
+    );
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+    var found = false;
+    for (s.checker.diagnostics.items) |d| {
+        if (d.code == TsCodes.class_decorator_signature_unresolved) found = true;
+    }
+    try T.expect(found);
+}
+
+test "checker: await inside parameter decorator escapes async method scope (TS1308)" {
+    // `@dec(await value)` on a parameter of `async method` runs at
+    // class-definition time — outside the method. The enclosing
+    // function is the OUTER `function fn` which is not async, so
+    // TS1308 fires. Mirrors fixture `decoratorOnClassMethodParameter3`.
+    const s = try newSetup(
+        \\// @experimentalDecorators: true
+        \\declare function dec(a: any): any;
+        \\function fn(value: Promise<number>): any {
+        \\  class Class {
+        \\    async method(@dec(await value) arg: number) {}
+        \\  }
+        \\  return Class
+        \\}
+    );
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+    var found = false;
+    for (s.checker.diagnostics.items) |d| {
+        if (d.code == TsCodes.await_only_in_async) found = true;
+    }
+    try T.expect(found);
+}
+
+test "checker: await still allowed inside async function parameter default" {
+    // Regression guard for the decorator-transparent await walk —
+    // an `await` used as a parameter default value (not inside a
+    // decorator) remains valid because the nearest enclosing
+    // function IS async.
+    const s = try newSetup(
+        \\declare const promise: Promise<number>;
+        \\async function fn(arg: number = (async () => await promise)()) {}
+    );
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+    for (s.checker.diagnostics.items) |d| {
+        try T.expect(d.code != TsCodes.await_only_in_async);
+    }
 }
 
 test "checker: decorators are not valid on this parameters" {

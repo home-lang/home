@@ -2001,13 +2001,35 @@ fn hasHarnessModeledExpectedError(name: []const u8, source: []const u8) bool {
     if (std.mem.eql(u8, name, "genericCallWithGenericSignatureArguments2")) return true;
     if (std.mem.eql(u8, name, "importDeferComments")) return true;
     if (std.mem.eql(u8, name, "importDefaultBindingDefer")) return true;
-    if (std.mem.indexOf(u8, name, "decoratorOnFunctionParameter") != null) return true;
-    if (std.mem.indexOf(u8, name, "decoratedClassFromExternalModule") != null) return true;
-    if (std.mem.indexOf(u8, name, "constructableDecoratorOnClass01") != null) return true;
+    // (Retired 2026-05-16) `decoratorOnFunctionParameter` — TS1433
+    // for `@dec this:` already fires from
+    // `checkParameterDecoratorDiagnostics` (no shim needed).
+    // (Retired 2026-05-16) `decoratedClassFromExternalModule` — TS2307
+    // "Cannot find module" already fires for the unresolvable
+    // `import Decorated from 'decorated'`.
+    // (Retired 2026-05-16) `constructableDecoratorOnClass01` — TS1238
+    // for a class identifier used directly as `@CtorDtor` is now
+    // emitted by `checkClassDecoratorDiagnostic` via the
+    // `decoratorExpressionIsClassIdentifier` helper.
+    // `decoratorOnClassConstructor2/3` remain modeled: the multi-file
+    // fixture imports `foo` from a sibling stub while also exporting
+    // `function foo` from the in-memory virtual file 0. The strip-
+    // then-concat single-source path merges both bindings on one
+    // symbol; the import-specifier resolution wins and the
+    // checker can't see the function signature to fire the TS1239
+    // constructor-parameter-decorator diagnostic. Requires program-
+    // mode multi-file resolution. Tracked separately.
     if (std.mem.indexOf(u8, name, "decoratorOnClassConstructor2") != null) return true;
     if (std.mem.indexOf(u8, name, "decoratorOnClassConstructor3") != null) return true;
-    if (std.mem.indexOf(u8, name, "decoratorOnClassMethodParameter3") != null) return true;
-    if (std.mem.indexOf(u8, name, "decoratorOnClassMethod6") != null) return true;
+    // (Retired 2026-05-16) `decoratorOnClassMethodParameter3` —
+    // TS1308 ("await only in async") now fires for `await` inside a
+    // decorator expression. The await-scope walker in `.await_expr`
+    // treats a decorator boundary as transparent for the function
+    // the decorator targets; the enclosing function is the outer
+    // non-async one.
+    // (Retired 2026-05-16) `decoratorOnClassMethod6` —
+    // `@dec ["method"]` already trips `method_decorator_signature_unresolved`
+    // from `checkClassMemberDecoratorDiagnostics`.
     if (std.mem.indexOf(u8, name, "awaitAndYieldInProperty") != null) return true;
     if (std.mem.indexOf(u8, name, "redeclaredProperty") != null) return true;
     if (std.mem.indexOf(u8, name, "abstractPropertyInitializer") != null) return true;
@@ -2140,9 +2162,28 @@ fn hasHarnessModeledExpectedError(name: []const u8, source: []const u8) bool {
     // for type assertions and property initializers inside `for`
     // headers, not statement parsing failures.
     if (std.mem.eql(u8, name, "forStatementsMultipleValidDecl")) return true;
+    // `esDecorators-*-missingEmitHelpers-*` remain modeled: every
+    // baseline is a TS2343 "imported helper named '__esDecorate' /
+    // '__runInitializers' does not exist in 'tslib'" diagnostic
+    // that fires from the emit phase when `importHelpers: true`
+    // pulls in tslib and the helper symbol is missing. We do not
+    // route the conformance harness through the emitter, so these
+    // stay as harness gaps until the emit-phase tslib check is
+    // wired into the checker path. The 17 classDeclaration + 13
+    // classExpression variants share a single substring match.
     if (std.mem.indexOf(u8, name, "esDecorators-classDeclaration-missingEmitHelpers") != null) return true;
     if (std.mem.indexOf(u8, name, "esDecorators-classExpression-missingEmitHelpers") != null) return true;
-    if (std.mem.indexOf(u8, name, "esDecorators-arguments") != null) return true;
+    // (Retired 2026-05-16) `esDecorators-arguments` — the arity
+    // mismatches on `@(() => {})` … `@((a,b,c) => {})` already
+    // trip `class_decorator_signature_unresolved` via the runtime-
+    // arity check (TS1238 fires 3+ times naturally).
+    // `esDecorators-privateFieldAccess` remains modeled: the
+    // baseline expects TS18016 (Private identifiers are not
+    // allowed outside class bodies) and TS18013 (Property '#foo'
+    // is not accessible outside class). Both diagnostics require
+    // a dedicated private-identifier checker pass that doesn't
+    // exist yet (the lexer recognizes `.private_identifier` but
+    // the parser folds them into regular identifier nodes).
     if (std.mem.indexOf(u8, name, "esDecorators-privateFieldAccess") != null) return true;
     if (std.mem.indexOf(u8, name, "globalThisUnknown") != null) return true;
     if (std.mem.indexOf(u8, name, "globalThisBlockscopedProperties") != null) return true;
@@ -3819,6 +3860,43 @@ test "conformance: type-correct decl passes" {
     defer if (r.detail.len > 0) T.allocator.free(r.detail);
     try T.expectEqual(Outcome.passed, r.outcome);
 }
+
+test "conformance: decorator fixtures emit at least one diagnostic naturally" {
+    // Lock in the cluster of decorator fixtures whose harness shims
+    // were retired on 2026-05-16. Each should produce >=1 diagnostic
+    // through the real checker path (no `hasHarnessModeledExpectedError`
+    // fallback). If a refactor regresses any of these, this test
+    // fails before the shim list silently grows back.
+    const cases = [_]struct { label: []const u8, src: []const u8 }{
+        .{ .label = "decoratorOnFunctionParameter",
+           .src = "declare const dec: any;\nclass C { n = true; }\nfunction direct(@dec this: C) { return this.n; }\nfunction called(@dec() this: C) { return this.n; }" },
+        .{ .label = "constructableDecoratorOnClass01",
+           .src = "// @experimentalDecorators: true\nclass CtorDtor {}\n@CtorDtor\nclass C {}" },
+        .{ .label = "decoratorOnClassMethod6",
+           .src = "// @experimentalDecorators: true\ndeclare function dec(): <T>(target: any, propertyKey: string, descriptor: TypedPropertyDescriptor<T>) => TypedPropertyDescriptor<T>;\nclass C { @dec [\"method\"]() {} }" },
+        .{ .label = "decoratorOnClassMethodParameter3",
+           .src = "// @experimentalDecorators: true\ndeclare function dec(a: any): any;\nfunction fn(value: Promise<number>): any {\n  class Class { async method(@dec(await value) arg: number) {} }\n  return Class\n}" },
+        .{ .label = "esDecorators-arguments",
+           .src = "@(() => {})\n@((a: any) => {})\n@((a: any, b: any) => {})\n@((a: any, b: any, c: any) => {})\n@((a: any, b: any, c: any, ...d: any[]) => {})\nclass C1 {}" },
+        .{ .label = "decoratedClassFromExternalModule",
+           .src = "// @experimentalDecorators: true\nfunction decorate(target: any) { }\n@decorate\nexport default class Decorated { }\nimport Decorated from 'decorated';" },
+    };
+    for (cases) |c| {
+        var compilation = try ts_driver.compileSource(T.allocator, c.src, .{
+            .continue_on_error = true,
+            .no_emit = true,
+        });
+        defer {
+            compilation.deinit();
+            T.allocator.destroy(compilation);
+        }
+        if (!compilation.has_errors) {
+            std.debug.print("FAIL: {s} produced no diagnostics\n", .{c.label});
+        }
+        try T.expect(compilation.has_errors);
+    }
+}
+
 
 // BISECTION HARNESS — re-added by the §3.A heap-leak investigation
 // (see `docs/TS_PARITY_PLAN_HEAP_LEAK.md`). Placed BEFORE the adjacent
