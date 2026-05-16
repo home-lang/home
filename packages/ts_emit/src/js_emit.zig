@@ -2214,14 +2214,17 @@ pub const Printer = struct {
         return true;
     }
 
-    /// §4.A.4.14 v3 — per-statement validator for for-await-of body.
-    /// Yields are accepted if non-delegating + yield/await-free RHS;
-    /// non-yields must be yield/await-free and not a structured stmt.
+    /// §4.A.4.14 v3+v5 — per-statement validator for for-await-of
+    /// body. Yields (including `yield*` delegating yields) are
+    /// accepted if their RHS is yield/await-free; non-yields must be
+    /// yield/await-free and not a structured stmt.
     fn asyncGenForAwaitBodyStmtOk(self: *const Printer, s: NodeId) bool {
         const k = self.hir.kindOf(s);
         if (k == .yield_expr) {
             const yp = hir_mod.yieldExprOf(self.hir, s);
-            if (yp.type_node != hir_mod.none_node_id) return false;
+            // Both `yield E` and `yield* E` are fine; `yield*` requires
+            // a non-null RHS (delegating without a source is invalid).
+            if (yp.type_node != hir_mod.none_node_id and yp.expr == hir_mod.none_node_id) return false;
             if (yp.expr != hir_mod.none_node_id and (self.subtreeContainsYield(yp.expr) or self.subtreeContainsAwait(yp.expr))) return false;
             return true;
         }
@@ -4463,20 +4466,31 @@ pub const Printer = struct {
                     try self.write(" = _aresult.value;");
                 }
                 // Walk body stmts inline. Each yield closes the current
-                // case with `return [4, __await(E)];` then opens two
-                // new resumption cases (resume1: signals done; resume2:
-                // continues with trailing stmts). The very last yield's
-                // resume2 case is closed below with the loopback.
+                // case (regular yield: `return [4, __await(E)];`;
+                // yield*: `return [5, __asyncDelegator(__asyncValues(E))];`)
+                // then opens two new resumption cases. For regular
+                // yields, resume1 signals done with `return [4];`; for
+                // yield*, resume1 re-yields the delegated value via
+                // `return [4, __await(_a.sent())];`. Resume2 in both
+                // cases is just `_a.sent();` (stays open for trailing
+                // stmts or the loopback close).
                 for (body_stmts) |s| {
                     if (self.hir.kindOf(s) == .yield_expr) {
                         const yp_n = hir_mod.yieldExprOf(self.hir, s);
-                        try self.write(" return [4, __await(");
-                        if (yp_n.expr != hir_mod.none_node_id) {
+                        const is_delegating = yp_n.type_node != hir_mod.none_node_id;
+                        if (is_delegating) {
+                            try self.write(" return [5, __asyncDelegator(__asyncValues(");
                             try self.printExpression(yp_n.expr);
+                            try self.write("))];");
                         } else {
-                            try self.write("void 0");
+                            try self.write(" return [4, __await(");
+                            if (yp_n.expr != hir_mod.none_node_id) {
+                                try self.printExpression(yp_n.expr);
+                            } else {
+                                try self.write("void 0");
+                            }
+                            try self.write(")];");
                         }
-                        try self.write(")];");
                         // Open resume1.
                         state += 1;
                         {
@@ -4484,7 +4498,11 @@ pub const Printer = struct {
                             try self.writeNewlineIndent();
                             try self.write("case ");
                             try self.write(num_r1);
-                            try self.write(": _a.sent(); return [4];");
+                            if (is_delegating) {
+                                try self.write(": return [4, __await(_a.sent())];");
+                            } else {
+                                try self.write(": _a.sent(); return [4];");
+                            }
                         }
                         // Open resume2.
                         state += 1;
@@ -8824,6 +8842,55 @@ test "emit: async generator with for-await-of + no-yield bare-stmt body lowers" 
     defer T.allocator.free(out);
     try T.expect(std.mem.indexOf(u8, out, "return __asyncGenerator(this, arguments, function () {") != null);
     try T.expect(std.mem.indexOf(u8, out, "var x = _aresult.value; g(x); return [3, 1];") != null);
+}
+
+test "emit: async generator with for-await-of + yield* in body delegates via __asyncDelegator" {
+    // §4.A.4.14 v5 — `yield* inner` in the body of for-await-of uses
+    // op-5 + __asyncDelegator(__asyncValues(...)) so delegation works
+    // for both sync and async iterables uniformly. Resume1 re-yields
+    // the delegated value via __await(_a.sent()); resume2 continues.
+    const out = try emitWithOpts(
+        "async function* g() { for await (const x of source) yield* inner(x); }",
+        .{ .es_target = .es5 },
+    );
+    defer T.allocator.free(out);
+    try T.expect(std.mem.indexOf(u8, out, "TODO: ES5 generator") == null);
+    try T.expect(std.mem.indexOf(u8, out, "return __asyncGenerator(this, arguments, function () {") != null);
+    // Body case 2 closes with op-5 delegation.
+    try T.expect(std.mem.indexOf(u8, out, "var x = _aresult.value; return [5, __asyncDelegator(__asyncValues(inner(x)))];") != null);
+    // Resume1 (case 3) re-yields the delegated value.
+    try T.expect(std.mem.indexOf(u8, out, "case 3: return [4, __await(_a.sent())];") != null);
+    // Resume2 (case 4) does _a.sent() + loopback.
+    try T.expect(std.mem.indexOf(u8, out, "case 4: _a.sent(); return [3, 1];") != null);
+}
+
+test "emit: async generator with for-await-of + mixed yield/yield* body" {
+    // Multi-yield body mixing regular and delegating yields. Layout
+    // is 1 + 2*N body cases (N=2 here, so 5 body cases).
+    const out = try emitWithOpts(
+        "async function* g() { for await (const x of source) { yield x; yield* inner(x); } }",
+        .{ .es_target = .es5 },
+    );
+    defer T.allocator.free(out);
+    try T.expect(std.mem.indexOf(u8, out, "return __asyncGenerator(this, arguments, function () {") != null);
+    // y1 (regular): case 2 closes with __await(x); case 3 = `_a.sent(); return [4];`; case 4 opens with _a.sent() + y2.
+    try T.expect(std.mem.indexOf(u8, out, "case 2: var _aresult = _a.sent(); if (_aresult.done) return [3, 7]; var x = _aresult.value; return [4, __await(x)];") != null);
+    try T.expect(std.mem.indexOf(u8, out, "case 3: _a.sent(); return [4];") != null);
+    // y2 (delegating): case 4 closes with op-5; case 5 = re-yield resume; case 6 = _a.sent() + loopback.
+    try T.expect(std.mem.indexOf(u8, out, "case 4: _a.sent(); return [5, __asyncDelegator(__asyncValues(inner(x)))];") != null);
+    try T.expect(std.mem.indexOf(u8, out, "case 5: return [4, __await(_a.sent())];") != null);
+    try T.expect(std.mem.indexOf(u8, out, "case 6: _a.sent(); return [3, 1];") != null);
+}
+
+test "emit: async generator with for-await-of + bare yield* still bails (no source)" {
+    // `yield*` without a source expression is invalid; predicate
+    // rejects so the loop falls back.
+    const out = try emitWithOpts(
+        "async function* g() { for await (const x of source) yield*; }",
+        .{ .es_target = .es5 },
+    );
+    defer T.allocator.free(out);
+    try T.expect(std.mem.indexOf(u8, out, "return __asyncGenerator(this, arguments, function () {") == null);
 }
 
 test "emit: async generator with for-await-of + awaited source peels into pre-loop yield+bind" {
