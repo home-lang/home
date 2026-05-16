@@ -25607,7 +25607,11 @@ pub const Checker = struct {
         if (!self.sourceTargetMentionsEs5()) return;
         if (super_t >= self.interner.pool.typeCount()) return;
         if (!self.interner.pool.flagsOf(super_t).is_object_type) return;
-        const enclosing = self.enclosingStaticSuperClass(super_obj_node);
+        // Anchor must live inside a derived class — both static AND
+        // instance contexts qualify under target=es5 (tsc emits
+        // TS2340 for `super.X` data-property access regardless of
+        // static-ness when the lowering target predates `Reflect.get`).
+        const enclosing = self.enclosingSuperClass(super_obj_node);
         if (enclosing == hir_mod.none_node_id) return;
         if (self.hir.kindOf(enclosing) != .class_decl and self.hir.kindOf(enclosing) != .class_expr) return;
         const c = hir_mod.classOf(self.hir, enclosing);
@@ -25634,6 +25638,56 @@ pub const Checker = struct {
             .code = TsCodes.super_only_methods_accessible,
             .message = "Only public and protected methods of the base class are accessible via the 'super' keyword.",
         });
+    }
+
+    /// Same as `enclosingStaticSuperClass` but accepts either static
+    /// or instance member contexts — provided we stay within a class
+    /// whose lexical super chain hasn't been broken by a non-arrow
+    /// function or nested class boundary.
+    fn enclosingSuperClass(self: *Checker, node: NodeId) NodeId {
+        var prev: NodeId = node;
+        var cur = self.hir.parentOf(node);
+        var saw_member = false;
+        while (cur != hir_mod.none_node_id) {
+            const k = self.hir.kindOf(cur);
+            switch (k) {
+                .object_property => {
+                    saw_member = true;
+                },
+                .fn_decl, .fn_expr => {
+                    const fp = hir_mod.fnDeclOf(self.hir, cur);
+                    const is_class_member = fp.flags.is_method or fp.flags.is_constructor or
+                        fp.flags.is_getter or fp.flags.is_setter;
+                    if (is_class_member) {
+                        saw_member = true;
+                        // Class member methods anchor the super chain
+                        // — keep walking to find the enclosing class.
+                    } else if (!fp.flags.is_arrow) {
+                        // Bare function expression / declaration breaks
+                        // the lexical super chain (`function () { super.x }`
+                        // doesn't see the enclosing class's super).
+                        return hir_mod.none_node_id;
+                    }
+                },
+                .arrow_fn => {},
+                .class_decl, .class_expr => {
+                    if (!saw_member and self.hir.kindOf(prev) == .block_stmt) {
+                        for (hir_mod.classMembers(self.hir, cur)) |m| {
+                            if (m == prev) {
+                                saw_member = true;
+                                break;
+                            }
+                        }
+                    }
+                    if (!saw_member) return hir_mod.none_node_id;
+                    return cur;
+                },
+                else => {},
+            }
+            prev = cur;
+            cur = self.hir.parentOf(cur);
+        }
+        return hir_mod.none_node_id;
     }
 
     fn pushNarrowScope(self: *Checker) !void {
