@@ -5162,6 +5162,20 @@ pub const Parser = struct {
                 const id = try self.internToken(yield_tok);
                 break :blk try self.builder.addTypeRef(tokenSpan(yield_tok), id, &.{}, &.{});
             },
+            // `await` in a type-reference position becomes an
+            // identifier-named type ref so the type-resolution
+            // pass can emit TS2552 ("Cannot find name 'await'.
+            // Did you mean 'Awaited'?"). Mirrors tsc which lets
+            // the identifier path produce the diagnostic instead
+            // of treating `await` as a built-in type keyword.
+            // Without this, the bare-token fallthrough would emit
+            // a synthetic `unknown` ref and silently swallow the
+            // error (asyncFunctionDeclaration13_es*, asyncArrowFunction10_es*).
+            .kw_await => blk: {
+                const await_tok = self.advance();
+                const id = try self.internToken(await_tok);
+                break :blk try self.builder.addTypeRef(tokenSpan(await_tok), id, &.{}, &.{});
+            },
             .kw_import => try self.parseImportTypeReference(),
             .identifier => try self.parseTypeReference(),
             .kw_public, .kw_private, .kw_protected, .kw_static => blk: {

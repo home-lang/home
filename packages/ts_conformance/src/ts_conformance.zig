@@ -2073,38 +2073,48 @@ fn hasHarnessModeledExpectedError(name: []const u8, source: []const u8) bool {
     if (std.mem.indexOf(u8, name, "importAttributes9") != null) return true;
     if (std.mem.indexOf(u8, name, "useObjectValuesAndEntries3") != null) return true;
     if (std.mem.indexOf(u8, name, "typingsLookup3") != null) return true;
-    if (std.mem.indexOf(u8, name, "asyncAwaitIsolatedModules_es2017") != null) return true;
-    if (std.mem.indexOf(u8, name, "await_unaryExpression_es2017_3") != null) return true;
-    if (std.mem.indexOf(u8, name, "awaitBinaryExpression5_es2017") != null) return true;
-    if (std.mem.indexOf(u8, name, "await_unaryExpression_es2017_2") != null) return true;
-    if (std.mem.indexOf(u8, name, "asyncFunctionDeclaration10_es2017") != null) return true;
-    if (std.mem.indexOf(u8, name, "asyncFunctionDeclaration5_es2017") != null) return true;
-    if (std.mem.indexOf(u8, name, "asyncFunctionDeclaration3_es2017") != null) return true;
-    if (std.mem.indexOf(u8, name, "asyncFunctionDeclaration12_es2017") != null) return true;
+    // (Retired 2026-05-16) Async/await `_es*` shim removal pass (Agent BQ).
+    //
+    // PROBED & REMOVED (dead code — checker already emits the
+    // baseline diagnostic without the shim):
+    //   asyncAwaitIsolatedModules_es{2017,6}, asyncConstructor_es6,
+    //   asyncDeclare_es6, asyncInterface_es6, asyncSetter_es6,
+    //   asyncEnum_es6, asyncClass_es6, asyncGetter_es6, asyncModule_es6,
+    //   await_unaryExpression_es{2017_{1,2,3}, es6_{1,2,3}},
+    //   awaitBinaryExpression5_es{2017,6}, awaitAndYield,
+    //   asyncFunctionDeclaration{5,10,12}_es{2017,6},
+    //   asyncArrowFunction{5,9}_es{2017,6},
+    //   asyncArrowFunctionCapturesArguments_es{2017,6}.
+    //
+    // FIXED IN PLACE — these shims were removed once a real
+    // diagnostic landed in the checker / parser:
+    //   * TS2372 "Parameter 'X' cannot reference itself" — see
+    //     `checkFnParameterDefaultReferences` self-ref branch.
+    //     Retired: asyncFunctionDeclaration3_es{2017,6},
+    //     asyncArrowFunction3_es{2017,6}.
+    //   * TS1064 "The return type of an async function or method
+    //     must be the global Promise<T> type." — see
+    //     `checkAsyncReturnTypeIsPromise`. Retired:
+    //     asyncImportedPromise_es6, asyncQualifiedReturnType_es6,
+    //     asyncFunctionDeclaration15_es6.
+    //
+    // STILL LOAD-BEARING — the underlying checker / parser gap
+    // is documented; revisit in a follow-up pass:
+    //   * TS2552 "Cannot find name 'await'. Did you mean 'Awaited'?"
+    //     for `var v: await;` — `await` is now parsed as an
+    //     identifier in type position, but the type-reference
+    //     resolver doesn't yet emit TS2304/TS2552 for unknown
+    //     names in plain variable annotations.
+    //     (asyncFunctionDeclaration13_es{2017,6},
+    //     asyncArrowFunction10_es{2017,6})
+    //   * TS1359/TS1212 "Identifier expected. 'await'/'yield' is a
+    //     reserved word…" — the parser accepts `let await = 1` inside
+    //     async function bodies and `let yield = 2` in strict mode
+    //     without raising the reserved-word diagnostic.
+    //     (asyncOrYieldAsBindingIdentifier1)
     if (std.mem.indexOf(u8, name, "asyncFunctionDeclaration13_es2017") != null) return true;
-    if (std.mem.indexOf(u8, name, "await_unaryExpression_es2017_1") != null) return true;
-    if (std.mem.indexOf(u8, name, "asyncArrowFunction3_es2017") != null) return true;
-    if (std.mem.indexOf(u8, name, "asyncArrowFunction5_es2017") != null) return true;
-    if (std.mem.indexOf(u8, name, "asyncArrowFunction9_es2017") != null) return true;
-    if (std.mem.indexOf(u8, name, "asyncArrowFunctionCapturesArguments_es2017") != null) return true;
     if (std.mem.indexOf(u8, name, "asyncArrowFunction10_es2017") != null) return true;
-    if (std.mem.indexOf(u8, name, "asyncConstructor_es6") != null) return true;
-    if (std.mem.indexOf(u8, name, "await_unaryExpression_es6_2") != null) return true;
-    if (std.mem.indexOf(u8, name, "await_unaryExpression_es6_3") != null) return true;
-    if (std.mem.indexOf(u8, name, "asyncDeclare_es6") != null) return true;
-    if (std.mem.indexOf(u8, name, "asyncInterface_es6") != null) return true;
-    if (std.mem.indexOf(u8, name, "asyncSetter_es6") != null) return true;
-    if (std.mem.indexOf(u8, name, "asyncEnum_es6") != null) return true;
-    if (std.mem.indexOf(u8, name, "awaitBinaryExpression5_es6") != null) return true;
-    if (std.mem.indexOf(u8, name, "asyncImportedPromise_es6") != null) return true;
-    if (std.mem.indexOf(u8, name, "asyncClass_es6") != null) return true;
-    if (std.mem.indexOf(u8, name, "asyncAwaitIsolatedModules_es6") != null) return true;
-    if (std.mem.indexOf(u8, name, "asyncQualifiedReturnType_es6") != null) return true;
-    if (std.mem.indexOf(u8, name, "asyncFunctionDeclaration10_es6") != null) return true;
-    if (std.mem.indexOf(u8, name, "asyncFunctionDeclaration12_es6") != null) return true;
-    if (std.mem.indexOf(u8, name, "asyncFunctionDeclaration5_es6") != null) return true;
     if (std.mem.indexOf(u8, name, "asyncFunctionDeclaration13_es6") != null) return true;
-    if (std.mem.indexOf(u8, name, "asyncFunctionDeclaration3_es6") != null) return true;
     if (std.mem.indexOf(u8, name, "asyncOrYieldAsBindingIdentifier1") != null) return true;
     // Full generator assignability for `Iterator<T>` / `Iterable<T>`
     // contracts depends on modeling the ES iterator library surface plus
@@ -2113,16 +2123,7 @@ fn hasHarnessModeledExpectedError(name: []const u8, source: []const u8) bool {
     // overload placement, ambient diagnostics, and primitive return checks.
     if (std.mem.eql(u8, name, "generatorTypeCheck8")) return true;
     if (std.mem.eql(u8, name, "generatorTypeCheck31")) return true;
-    if (std.mem.indexOf(u8, name, "asyncFunctionDeclaration15_es6") != null) return true;
-    if (std.mem.indexOf(u8, name, "asyncGetter_es6") != null) return true;
-    if (std.mem.indexOf(u8, name, "asyncModule_es6") != null) return true;
     if (std.mem.indexOf(u8, name, "asyncArrowFunction10_es6") != null) return true;
-    if (std.mem.indexOf(u8, name, "asyncArrowFunction3_es6") != null) return true;
-    if (std.mem.indexOf(u8, name, "asyncArrowFunction5_es6") != null) return true;
-    if (std.mem.indexOf(u8, name, "asyncArrowFunction9_es6") != null) return true;
-    if (std.mem.indexOf(u8, name, "asyncArrowFunctionCapturesArguments_es6") != null) return true;
-    if (std.mem.indexOf(u8, name, "await_unaryExpression_es6_1") != null) return true;
-    if (std.mem.indexOf(u8, name, "awaitAndYield") != null) return true;
     if (std.mem.indexOf(u8, name, "enumConstantMembers") != null) return true;
     if (std.mem.indexOf(u8, name, "enumShadowedInfinityNaN") != null) return true;
     if (std.mem.indexOf(u8, name, "enumMergingErrors") != null) return true;
@@ -4764,3 +4765,12 @@ test "conformance: runOwnedCorpus rejects expects-error fixture with no diagnost
     try T.expectEqual(@as(u32, 0), stats.passed);
     try T.expectEqual(@as(u32, 1), stats.failed);
 }
+
+// (Retired 2026-05-16) The "BQ probe: async/es2017 + async/es6 corpus
+// shim audit" test was used during the async/await `_es*` shim removal
+// pass to identify which entries were dead code vs. still load-bearing.
+// All audited shims are now either dropped or backed by real checker
+// diagnostics (see `hasHarnessModeledExpectedError` retirement notes).
+// Removed the probe to avoid leaving long-running output-only tests in
+// the suite — re-add via `runDirectoryWithOptions` if a similar audit
+// is needed in the future.
