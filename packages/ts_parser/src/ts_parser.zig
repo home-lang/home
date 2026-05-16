@@ -4713,7 +4713,13 @@ pub const Parser = struct {
             try self.reportCodeAt(t.span.start, t.line, 1005, "';' expected.");
             return;
         }
-        try self.report("expected ';' or newline ", "after statement");
+        // §6.A 2000-3000 ratchet: align the missing-terminator
+        // fallback with tsc's canonical TS1005 "';' expected." prose
+        // rather than a Home-internal "expected ';' or newline after
+        // statement" payload. Mirrors fixtures like `parserFuzz1` and
+        // `parser.numericSeparators.decmialNegative` where the
+        // recovery anchor lands on the offending token.
+        try self.reportCodeAt(t.span.start, t.line, 1005, "';' expected.");
         return error.UnexpectedToken;
     }
 
@@ -8327,7 +8333,14 @@ pub const Parser = struct {
                     try self.reportCodeAt(t.span.start, t.line, 1109, "Expression expected.");
                     return error.UnexpectedToken;
                 }
-                try self.report("unexpected token in expression: ", @tagName(t.kind));
+                // §6.A 2000-3000 ratchet: emit the canonical tsc
+                // "Expression expected." (TS1109) instead of a
+                // Home-internal "unexpected token in expression: ..."
+                // payload. Aligns recovery diagnostics with upstream
+                // baselines on fixtures like `parserMissingLambdaOpenBrace1`
+                // (lambda body opens with `var`) where tsc anchors
+                // TS1109 at the offending token.
+                try self.reportCodeAt(t.span.start, t.line, 1109, "Expression expected.");
                 return error.UnexpectedToken;
             },
         }
@@ -13766,6 +13779,40 @@ test "parser: primitive keyword cannot start qualified type name" {
     try T.expectEqual(@as(usize, 1), s.parser.diagnostics.items.len);
     try T.expectEqual(@as(u32, 1005), s.parser.diagnostics.items[0].code);
     try T.expectEqualStrings("',' expected.", s.parser.diagnostics.items[0].message);
+}
+
+// §6.A 2000-3000 ratchet — the statement-terminator fallback must
+// emit TS1005 "';' expected." (matching tsc) rather than a
+// Home-internal "expected ';' or newline after statement" payload.
+// Pins fixtures like `parserFuzz1` and
+// `parser.numericSeparators.decmialNegative`.
+test "parser: statement terminator fallback emits TS1005 not Home-internal text" {
+    // Mirrors `parser.numericSeparators.decmialNegative` virtual file `16.ts`
+    // (source `_10` on its own line). The terminator fallback must
+    // pick TS1005 to match upstream baselines.
+    var s = try newTestSetup("_10\n");
+    defer destroyTestSetup(s);
+    _ = s.parser.parseSourceFile() catch {};
+    for (s.parser.diagnostics.items) |d| {
+        try T.expect(!std.mem.startsWith(u8, d.message, "expected ';' or newline"));
+    }
+}
+
+// §6.A 2000-3000 ratchet — the expression fallback for unrecognised
+// leading tokens (e.g. `var` opening a malformed lambda body) must
+// emit TS1109 "Expression expected." rather than a Home-internal
+// "unexpected token in expression: kw_var" payload. Pins
+// `parserMissingLambdaOpenBrace1` and `parserStatementIsNotA*`.
+test "parser: expression fallback emits TS1109 not Home-internal text" {
+    var s = try newTestSetup("foo(test =>\n  var x = 0;\n);\n");
+    defer destroyTestSetup(s);
+    _ = s.parser.parseSourceFile() catch {};
+    var saw_ts1109 = false;
+    for (s.parser.diagnostics.items) |d| {
+        if (d.code == 1109 and std.mem.eql(u8, d.message, "Expression expected.")) saw_ts1109 = true;
+        try T.expect(!std.mem.startsWith(u8, d.message, "unexpected token in expression"));
+    }
+    try T.expect(saw_ts1109);
 }
 
 test "parser: finally in expression position reports upstream recovery" {
