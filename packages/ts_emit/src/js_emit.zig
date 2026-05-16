@@ -1041,6 +1041,18 @@ pub const Printer = struct {
     fn printVarDeclHeader(self: *Printer, node: NodeId, include_init: bool) anyerror!void {
         const kind = self.hir.kindOf(node);
         const v = hir_mod.varDeclOf(self.hir, node);
+        // §4.A destructuring v14 — at ES5 a pattern-name var-decl
+        // can't render as native `var [a, b] = arr;`. Route through
+        // the destructuring var-decl lowering which emits
+        // `var _arr = arr, a = _arr[0], b = _arr[1];` — a valid
+        // comma-separated decl list (works in for-stmt init too).
+        if (self.options.es_target == .es5 and v.name != hir_mod.none_node_id and include_init) {
+            const nk = self.hir.kindOf(v.name);
+            if (nk == .object_pattern or nk == .array_pattern) {
+                try self.printDestructuringVarDeclHeader(self.varDeclKeyword(kind), v.name, v.init);
+                return;
+            }
+        }
         try self.write(self.varDeclKeyword(kind));
         try self.write(" ");
         if (v.name != hir_mod.none_node_id) try self.printBindingName(v.name);
@@ -1048,6 +1060,51 @@ pub const Printer = struct {
             try self.write(" = ");
             try self.printExpression(v.init);
         }
+    }
+
+    /// §4.A destructuring v14 — same as `printDestructuringVarDecl`
+    /// but doesn't emit a trailing `;` (for use in for-stmt init
+    /// where the surrounding `for (...; ...; ...)` syntax provides
+    /// the terminator).
+    fn printDestructuringVarDeclHeader(
+        self: *Printer,
+        kw_in: []const u8,
+        pattern: NodeId,
+        initializer: NodeId,
+    ) anyerror!void {
+        const is_array = self.hir.kindOf(pattern) == .array_pattern;
+        const tmp = if (is_array) "_arr" else "_o";
+        const kw = if (self.options.es_target == .es5) "var" else kw_in;
+        try self.write(kw);
+        try self.write(" ");
+        try self.write(tmp);
+        if (initializer != hir_mod.none_node_id) {
+            try self.write(" = ");
+            try self.printExpression(initializer);
+        }
+        const elements = hir_mod.patternElements(self.hir, pattern);
+        for (elements, 0..) |elem, i| {
+            if (self.hir.kindOf(elem) != .parameter) continue;
+            const param = hir_mod.parameterOf(self.hir, elem);
+            if (param.flags.is_computed_binding_key) continue;
+            if (param.name == hir_mod.none_node_id) continue;
+            if (self.hir.kindOf(param.name) != .identifier) continue;
+            const id = hir_mod.identifierOf(self.hir, param.name);
+            const name_str = self.interner.get(id.name);
+            try self.write(", ");
+            try self.write(name_str);
+            try self.write(" = ");
+            try self.write(tmp);
+            if (is_array) {
+                var buf: [32]u8 = undefined;
+                const idx_str = std.fmt.bufPrint(&buf, "[{d}]", .{i}) catch unreachable;
+                try self.write(idx_str);
+            } else {
+                try self.write(".");
+                try self.write(name_str);
+            }
+        }
+        // No trailing `;` — caller controls the terminator.
     }
 
     fn printBindingName(self: *Printer, node: NodeId) anyerror!void {
@@ -5461,12 +5518,10 @@ pub const Printer = struct {
             // collect them for the post-class __decorate calls.
             if (self.hir.kindOf(m) == .decorator) continue;
             // Private fields are stored in the per-class WeakMap;
-            // skip the in-class field declaration entirely.
-            // TODO: when there's an initializer, inject
-            //   `_Class_x.set(this, <init>);` into a constructor body
-            //   (synthesizing one if absent). Today the initializer is
-            //   silently dropped — callers must initialize via a
-            //   method/setter for now.
+            // skip the in-class field declaration entirely. Their
+            // initializers are hoisted into the (explicit or
+            // synthesized) constructor via `writeHoistedFieldInits`
+            // → `_<Class>_<field>.set(this, <init>);` (§4.A.7 v2).
             if (downlevel_private and self.hir.kindOf(m) == .object_property) {
                 const op = hir_mod.objectPropertyOf(self.hir, m);
                 if (self.privateFieldName(op.key) != null) continue;
@@ -8431,6 +8486,18 @@ test "emit: for-of with array destructuring target lowers via _e temp at es5" {
     try T.expect(std.mem.indexOf(u8, out, "var a = _e[0], b = _e[1];") != null);
     // Pattern itself must NOT appear in the loop body var-decl.
     try T.expect(std.mem.indexOf(u8, out, "var [a, b] = _arr[_i]") == null);
+}
+
+test "emit: for-stmt with destructuring init lowers via temp + chained decl at es5" {
+    // §4.A destructuring v14 — `for (const [a, b] = arr; i < 1; i++)`
+    // can't emit native pattern at ES5. Lowers to chained decl:
+    // `for (var _arr = arr, a = _arr[0], b = _arr[1]; i < 1; i++)`.
+    const out = try emitWithOpts(
+        "for (const [a, b] = arr; cond; i++) { use(a, b); }",
+        .{ .es_target = .es5 },
+    );
+    defer T.allocator.free(out);
+    try T.expect(std.mem.indexOf(u8, out, "for (var _arr = arr, a = _arr[0], b = _arr[1]; cond; i += 1)") != null);
 }
 
 test "emit: for-of with object destructuring target lowers via _e temp at es5" {
