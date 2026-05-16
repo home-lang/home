@@ -2794,6 +2794,17 @@ pub const Parser = struct {
                 var body: NodeId = hir_mod.none_node_id;
                 if (self.peek().kind == .open_brace) {
                     const body_start = self.peek();
+                    // Class accessor bodies are function bodies — bump
+                    // function_depth so `yield`/`await`-style context
+                    // checks route through the in-function path. Same
+                    // motivation as the object-literal accessor fix.
+                    self.function_depth += 1;
+                    const prev_generator_depth = self.generator_depth;
+                    self.generator_depth = 0;
+                    defer {
+                        self.generator_depth = prev_generator_depth;
+                        self.function_depth -= 1;
+                    }
                     body = try self.parseBlockStatement();
                     try self.reportAmbientClassImplementationAt(body_start.span.start, body_start.line);
                 } else {
@@ -7526,11 +7537,37 @@ pub const Parser = struct {
                         const sp: Span = .{ .start = t.span.start, .end = self.hir.spanOf(operand).end };
                         return try self.builder.addYieldExpr(sp, operand, is_delegated);
                     }
+                    // Top-level `yield` used as an identifier. When the
+                    // target is ES2015+ (or we're in explicit strict
+                    // mode), `yield` is a reserved word; tsc emits
+                    // TS1212 at the keyword position in addition to
+                    // the checker-side TS2304. Matches baselines like
+                    // `YieldExpression1_es6` / `YieldExpression8_es6`
+                    // / `YieldExpression18_es6`. Skip TS1212 when an
+                    // `*` follows — tsc treats `yield *…` as a yield
+                    // expression form and emits only TS2304 + TS1109
+                    // (e.g. `YieldStarExpression2_es6.errors.txt`).
+                    const next_is_star = self.peek().kind == .asterisk;
+                    if (!next_is_star and self.isYieldReservedName(t)) {
+                        try self.reportCodeAt(t.span.start, t.line, 1212, "Identifier expected. 'yield' is a reserved word in strict mode.");
+                    }
                     const id = try self.internToken(t);
-                    const ident = try self.builder.addIdentifier(tokenSpan(t), id);
+                    var ident = try self.builder.addIdentifier(tokenSpan(t), id);
                     if (self.match(.asterisk)) {
                         const err_pos = if (self.cursor > 0) self.tokens[self.cursor - 1].span.end else t.span.end;
                         try self.reportCodeAt(err_pos, t.line, 1109, "Expression expected.");
+                    }
+                    // Consume an immediate call-args suffix so `yield(foo)`
+                    // (YieldExpression8_es6 / YieldExpression18_es6) parses
+                    // as a call on the yield identifier instead of leaving
+                    // `(foo)` to a follow-on statement parser that would
+                    // synthesise a spurious TS1005 between them.
+                    if (self.peek().kind == .open_paren) {
+                        const args = try self.parseArgumentList();
+                        defer self.gpa.free(args);
+                        const close_pos = self.tokens[self.cursor - 1].span.end;
+                        const sp: Span = .{ .start = t.span.start, .end = close_pos };
+                        ident = try self.builder.addCall(sp, ident, args);
                     }
                     return ident;
                 }
@@ -8822,7 +8859,24 @@ pub const Parser = struct {
                 if (self.match(.colon)) return_type = try self.parseReturnTypeAnnotation(params);
                 try self.validateAccessorSignature(accessor_kw.kind, key, params, return_type);
                 var body: NodeId = hir_mod.none_node_id;
-                if (self.peek().kind == .open_brace) body = try self.parseBlockStatement();
+                if (self.peek().kind == .open_brace) {
+                    // Object-literal accessor bodies are function bodies
+                    // — track the function depth so nested context-
+                    // sensitive parsing (e.g. `yield` inside a getter
+                    // body) routes through the in-function path that
+                    // reports TS1163 instead of treating `yield` as a
+                    // top-level identifier (TS1212). Mirrors fixture
+                    // `YieldExpression17_es6` where `get foo() { yield foo; }`
+                    // baselines a single TS1163, not TS1212.
+                    self.function_depth += 1;
+                    const prev_generator_depth = self.generator_depth;
+                    self.generator_depth = 0;
+                    defer {
+                        self.generator_depth = prev_generator_depth;
+                        self.function_depth -= 1;
+                    }
+                    body = try self.parseBlockStatement();
+                }
                 const value = try self.builder.addFnDeclGeneric(
                     .{ .start = accessor_kw.span.start, .end = self.tokens[self.cursor - 1].span.end },
                     key,
@@ -12815,6 +12869,82 @@ test "parser: delegated yield requires an operand" {
     _ = try s.parser.parseSourceFile();
     try T.expectEqual(@as(usize, 1), s.parser.diagnostics.items.len);
     try T.expectEqual(@as(u32, 1109), s.parser.diagnostics.items[0].code);
+}
+
+test "parser: top-level bare yield emits TS1212 under ES2015+ target" {
+    // Mirrors YieldExpression1_es6 — `yield;` at top-level with an
+    // ES2015 target makes `yield` a reserved word, so the parser must
+    // emit TS1212 in addition to the checker-side TS2304.
+    var s = try newTestSetup("yield;");
+    defer destroyTestSetup(s);
+
+    s.parser.setTargetEs2015OrLater(true);
+    _ = try s.parser.parseSourceFile();
+    var count_1212: usize = 0;
+    for (s.parser.diagnostics.items) |d| {
+        if (d.code == 1212) count_1212 += 1;
+    }
+    try T.expectEqual(@as(usize, 1), count_1212);
+}
+
+test "parser: top-level yield(call) parses as call without spurious TS1005" {
+    // Mirrors YieldExpression8_es6 / YieldExpression18_es6 — `yield(foo)`
+    // at top-level with an ES2015 target should parse as a call on the
+    // yield identifier. We must emit TS1212 for the reserved-word use
+    // but must NOT emit a spurious TS1005 between `yield` and `(foo)`.
+    var s = try newTestSetup("yield(foo);");
+    defer destroyTestSetup(s);
+
+    s.parser.setTargetEs2015OrLater(true);
+    _ = try s.parser.parseSourceFile();
+    var count_1212: usize = 0;
+    var count_1005: usize = 0;
+    for (s.parser.diagnostics.items) |d| {
+        if (d.code == 1212) count_1212 += 1;
+        if (d.code == 1005) count_1005 += 1;
+    }
+    try T.expectEqual(@as(usize, 1), count_1212);
+    try T.expectEqual(@as(usize, 0), count_1005);
+}
+
+test "parser: top-level `yield *` does NOT emit TS1212 (yield-star form)" {
+    // Mirrors YieldStarExpression2_es6 — tsc treats `yield *;` as an
+    // attempted yield-star expression, not a `yield` identifier, so
+    // it emits TS1109 (expression expected after `*`) + checker-side
+    // TS2304 but NOT TS1212. Pin the asymmetry against the plain
+    // identifier path covered above.
+    var s = try newTestSetup("yield *;");
+    defer destroyTestSetup(s);
+
+    s.parser.setTargetEs2015OrLater(true);
+    _ = try s.parser.parseSourceFile();
+    var count_1212: usize = 0;
+    for (s.parser.diagnostics.items) |d| {
+        if (d.code == 1212) count_1212 += 1;
+    }
+    try T.expectEqual(@as(usize, 0), count_1212);
+}
+
+test "parser: `yield` in a getter accessor body reports TS1163, not TS1212" {
+    // Mirrors YieldExpression17_es6 — a `yield foo` expression inside
+    // a non-generator function (here an object-literal getter body)
+    // must emit TS1163 ("'yield' expression is only allowed in a
+    // generator body"). Before the accessor-body function_depth fix
+    // we mis-routed through the top-level identifier path and emitted
+    // TS1212 + spurious TS1109 instead.
+    var s = try newTestSetup("var v = { get foo() { yield foo; } };");
+    defer destroyTestSetup(s);
+
+    s.parser.setTargetEs2015OrLater(true);
+    _ = try s.parser.parseSourceFile();
+    var count_1163: usize = 0;
+    var count_1212: usize = 0;
+    for (s.parser.diagnostics.items) |d| {
+        if (d.code == 1163) count_1163 += 1;
+        if (d.code == 1212) count_1212 += 1;
+    }
+    try T.expectEqual(@as(usize, 1), count_1163);
+    try T.expectEqual(@as(usize, 0), count_1212);
 }
 
 test "parser: interface can be a class method name" {
