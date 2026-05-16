@@ -3947,21 +3947,27 @@ pub const Printer = struct {
                     }
                 },
                 .for_of_stmt => {
-                    // §4.A.4.14 v3 — `for await (const x of source) BODY`
+                    // §4.A.4.14 v4 — `for await (const x of source) BODY`
                     // inside an async generator with optional multi-
-                    // yield or no-yield body. Accepted shapes:
+                    // yield / no-yield body, plus an awaited-source
+                    // form. Accepted shapes:
                     //   * `is_await: true` (regular `for-of` still bails)
-                    //   * source is yield/await-free
-                    //   * body satisfies `asyncGenForAwaitBodyOk` —
-                    //     either a bare single stmt (yield_expr or
-                    //     yield/await-free non-structured) or a block
-                    //     whose top-level stmts each pass the same check
+                    //   * source is yield/await-free OR is exactly a
+                    //     bare `await E` expression (E itself yield/
+                    //     await-free) — the await is peeled into a
+                    //     pre-loop yield+bind by the emit path
+                    //   * body satisfies `asyncGenForAwaitBodyOk`
                     //   * target is a simple ident or `var|let|const <ident>`
-                    // Emit cleanup runs through the awaited `.return()`
-                    // path regardless of N (§4.A.4.14 v1/v2/v3).
                     const fop = hir_mod.forInOf(self.hir, s);
                     if (!fop.is_await) return false;
-                    if (self.subtreeContainsYield(fop.source) or self.subtreeContainsAwait(fop.source)) return false;
+                    if (self.subtreeContainsYield(fop.source)) return false;
+                    if (self.subtreeContainsAwait(fop.source)) {
+                        // Only accept the strict shape `await <yield/await-free E>`.
+                        if (self.hir.kindOf(fop.source) != .await_expr) return false;
+                        const ap = hir_mod.awaitExprOf(self.hir, fop.source);
+                        if (ap.expr == hir_mod.none_node_id) return false;
+                        if (self.subtreeContainsYield(ap.expr) or self.subtreeContainsAwait(ap.expr)) return false;
+                    }
                     if (!self.asyncGenForAwaitBodyOk(fop.body)) return false;
                     const tk = self.hir.kindOf(fop.target);
                     if (tk == .identifier) {
@@ -4377,6 +4383,26 @@ pub const Printer = struct {
                 for (body_stmts) |s| {
                     if (self.hir.kindOf(s) == .yield_expr) n_yields += 1;
                 }
+                // §4.A.4.14 v4 — peel source's `await E` into a yield+
+                // bind case pair before the trys-frame opens. The
+                // resume case binds `_src = _a.sent();` and is then
+                // used as the source for `__asyncValues`. This adds 1
+                // case to the layout but doesn't affect any of the body
+                // / cleanup label offsets (everything stays relative
+                // to the post-peel state).
+                const source_is_await = self.hir.kindOf(fop.source) == .await_expr;
+                if (source_is_await) {
+                    const ap = hir_mod.awaitExprOf(self.hir, fop.source);
+                    try self.write(" return [4, __await(");
+                    try self.printExpression(ap.expr);
+                    try self.write(")];");
+                    state += 1;
+                    const num = std.fmt.bufPrint(&buf, "{d}", .{state}) catch unreachable;
+                    try self.writeNewlineIndent();
+                    try self.write("case ");
+                    try self.write(num);
+                    try self.write(": var _src = _a.sent();");
+                }
                 const try_start = state + 1;
                 const header_label = state + 1;
                 // Body cases = 1 (bind+check+first-yield) + 2*(N-1)
@@ -4404,7 +4430,11 @@ pub const Printer = struct {
                     try self.write("]);");
                 }
                 try self.write(" var _aiter = __asyncValues(");
-                try self.printExpression(fop.source);
+                if (source_is_await) {
+                    try self.write("_src");
+                } else {
+                    try self.printExpression(fop.source);
+                }
                 try self.write(");");
                 // Open header case: await next().
                 state += 1;
@@ -8794,6 +8824,62 @@ test "emit: async generator with for-await-of + no-yield bare-stmt body lowers" 
     defer T.allocator.free(out);
     try T.expect(std.mem.indexOf(u8, out, "return __asyncGenerator(this, arguments, function () {") != null);
     try T.expect(std.mem.indexOf(u8, out, "var x = _aresult.value; g(x); return [3, 1];") != null);
+}
+
+test "emit: async generator with for-await-of + awaited source peels into pre-loop yield+bind" {
+    // §4.A.4.14 v4 — source is `await getSource()`. The await is
+    // peeled into a pre-loop yield+bind (case 0 closes with the
+    // source's `return [4, __await(getSource())]`; case 1 binds
+    // `var _src = _a.sent();`) before the regular trys-frame opens
+    // in case 1 with `_aiter = __asyncValues(_src)`. All downstream
+    // labels shift by 1 to make room for the source-peel.
+    const out = try emitWithOpts(
+        "async function* g() { for await (const x of await getSource()) yield x; }",
+        .{ .es_target = .es5 },
+    );
+    defer T.allocator.free(out);
+    try T.expect(std.mem.indexOf(u8, out, "TODO: ES5 generator") == null);
+    try T.expect(std.mem.indexOf(u8, out, "return __asyncGenerator(this, arguments, function () {") != null);
+    // Case 0 closes with the source's await.
+    try T.expect(std.mem.indexOf(u8, out, "case 0: return [4, __await(getSource())];") != null);
+    // Case 1 binds _src then runs trys.push + __asyncValues(_src).
+    // Trys labels shift by 1: try_start=2, catch=7, finally=8, end=11.
+    try T.expect(std.mem.indexOf(u8, out, "case 1: var _src = _a.sent(); _a.trys.push([2, 7, 8, 11]); var _aiter = __asyncValues(_src);") != null);
+    // Header now at case 2.
+    try T.expect(std.mem.indexOf(u8, out, "case 2: return [4, __await(_aiter.next())];") != null);
+    // Bind/check + body yield (target case shifts to 6 = normal_end).
+    try T.expect(std.mem.indexOf(u8, out, "case 3: var _aresult = _a.sent(); if (_aresult.done) return [3, 6]; var x = _aresult.value; return [4, __await(x)];") != null);
+    // Cleanup chain shifted by 1.
+    try T.expect(std.mem.indexOf(u8, out, "case 6: return [3, 11];") != null);
+    try T.expect(std.mem.indexOf(u8, out, "case 11:") != null);
+}
+
+test "emit: async generator with for-await-of + complex non-await source still works" {
+    // Source can be any yield/await-free expression (member access,
+    // call, etc.).
+    const out = try emitWithOpts(
+        "async function* g() { for await (const x of obj.items()) yield x; }",
+        .{ .es_target = .es5 },
+    );
+    defer T.allocator.free(out);
+    try T.expect(std.mem.indexOf(u8, out, "return __asyncGenerator(this, arguments, function () {") != null);
+    // No source-peel — source emits inline as the __asyncValues arg.
+    try T.expect(std.mem.indexOf(u8, out, "var _aiter = __asyncValues(obj.items());") != null);
+    // No _src binding.
+    try T.expect(std.mem.indexOf(u8, out, "var _src = _a.sent()") == null);
+}
+
+test "emit: async generator with for-await-of + source containing nested await still bails" {
+    // `await getSource() + x` contains await but isn't a bare
+    // await_expr — predicate rejects so the loop falls back.
+    const out = try emitWithOpts(
+        "async function* g() { for await (const x of (await getSource()).items) yield x; }",
+        .{ .es_target = .es5 },
+    );
+    defer T.allocator.free(out);
+    // Source is `(await getSource()).items` — a member access on the
+    // result of an await, not a bare await. v4 rejects this shape.
+    try T.expect(std.mem.indexOf(u8, out, "return __asyncGenerator(this, arguments, function () {") == null);
 }
 
 test "emit: async generator with for-await-of + no-yield multi-stmt body lowers" {
