@@ -16166,7 +16166,15 @@ pub const Checker = struct {
                     if (self.type_names.get(id.name)) |t| return t;
                 }
                 if (std.mem.eql(u8, name_str, "String")) {
-                    return lib.stringProto(&self.lib_cache, self.interner, self.string_interner) catch types.Primitive.unknown;
+                    const t = lib.stringProto(&self.lib_cache, self.interner, self.string_interner) catch types.Primitive.unknown;
+                    // Memoize so TS2322/TS2345 prose renders `'String'`
+                    // instead of falling back to the structural shape.
+                    if (t >= types.Primitive.first_dynamic and t < self.interner.pool.typeCount()) {
+                        if (!self.builtin_object_names.contains(t)) {
+                            self.builtin_object_names.put(self.gpa, t, "String") catch {};
+                        }
+                    }
+                    return t;
                 }
                 if (self.lowerBuiltinObjectType(name_str)) |t| return t;
                 if (self.type_names.get(id.name)) |t| return t;
@@ -16298,7 +16306,13 @@ pub const Checker = struct {
                         if (self.type_names.get(r.name)) |t| return t;
                     }
                     if (std.mem.eql(u8, name_str, "String")) {
-                        return lib.stringProto(&self.lib_cache, self.interner, self.string_interner) catch types.Primitive.unknown;
+                        const t = lib.stringProto(&self.lib_cache, self.interner, self.string_interner) catch types.Primitive.unknown;
+                        if (t >= types.Primitive.first_dynamic and t < self.interner.pool.typeCount()) {
+                            if (!self.builtin_object_names.contains(t)) {
+                                self.builtin_object_names.put(self.gpa, t, "String") catch {};
+                            }
+                        }
+                        return t;
                     }
                     if (self.lowerBuiltinObjectType(name_str)) |t| return t;
                     if (self.type_names.get(r.name)) |t| return t;
@@ -33767,7 +33781,11 @@ pub const Checker = struct {
         const flags = self.interner.pool.flagsOf(t);
         if (!flags.is_object_type) return null;
         const members = self.interner.objectMembers(t);
-        if (members.len == 0) return "{}";
+        const string_idx = self.interner.objectStringIndex(t);
+        const number_idx = self.interner.objectNumberIndex(t);
+        const has_string_idx = string_idx != types.Primitive.none;
+        const has_number_idx = number_idx != types.Primitive.none;
+        if (members.len == 0 and !has_string_idx and !has_number_idx) return "{}";
         // Cap render at a small member count to avoid runaway allocation
         // on large object types — tsc itself elides past ~7 members but
         // for the missing-property case we usually hit 1-3.
@@ -33775,8 +33793,49 @@ pub const Checker = struct {
         var buf: std.ArrayListUnmanaged(u8) = .empty;
         const arena = self.diag_arena.allocator();
         try buf.appendSlice(arena, "{ ");
+        // Render index signatures BEFORE named members so the
+        // output matches `{ [x: string]: T; foo: U; }` ordering
+        // upstream tsc emits for fixtures like
+        // `assignmentCompatWithStringIndexer2.ts(15,1)`.
+        if (has_string_idx) {
+            const value_name = (try self.allocSimpleTypeName(string_idx)) orelse return null;
+            const ix_text = try std.fmt.allocPrint(arena, "[x: string]: {s}; ", .{value_name});
+            try buf.appendSlice(arena, ix_text);
+        }
+        if (has_number_idx) {
+            const value_name = (try self.allocSimpleTypeName(number_idx)) orelse return null;
+            const ix_text = try std.fmt.allocPrint(arena, "[x: number]: {s}; ", .{value_name});
+            try buf.appendSlice(arena, ix_text);
+        }
+        const call_id = self.string_interner.intern("__call") catch 0;
+        const construct_id = self.string_interner.intern("__construct") catch 0;
         for (members) |m| {
             const name = self.string_interner.get(m.name);
+            // `__call` / `__construct` members are internal markers
+            // for call / construct signatures and overload bundles.
+            // Render them upstream-style as `(params): R` / `new
+            // (params): R` (no leading name/colon) so TS2322 prose
+            // for fixtures like
+            // `stringLiteralTypesOverloadAssignability05.ts(15,1)`,
+            // `functionLiterals.ts(28,1)`, and the construct-signature
+            // family matches the tsc baselines.
+            if ((m.name == call_id or m.name == construct_id) and self.interner.isSignature(m.type)) {
+                const sig_text = (try self.allocCallSignatureFnTypeName(m.type)) orelse return null;
+                // `allocCallSignatureFnTypeName` already prefixes
+                // `new ` for construct sigs and produces `(p: T) => R`;
+                // call-signature object-member form drops the `=>`
+                // for the upstream method-style rendering.
+                const arrow = std.mem.indexOf(u8, sig_text, ") => ") orelse {
+                    try buf.appendSlice(arena, sig_text);
+                    try buf.appendSlice(arena, "; ");
+                    continue;
+                };
+                try buf.appendSlice(arena, sig_text[0 .. arrow + 1]);
+                try buf.appendSlice(arena, ": ");
+                try buf.appendSlice(arena, sig_text[arrow + 5 ..]);
+                try buf.appendSlice(arena, "; ");
+                continue;
+            }
             try buf.appendSlice(arena, name);
             if (m.is_optional) try buf.append(arena, '?');
             try buf.appendSlice(arena, ": ");
@@ -34152,6 +34211,17 @@ pub const Checker = struct {
                 }
                 if (self.namedTypeForId(t)) |type_name| {
                     break :blk self.string_interner.get(type_name);
+                }
+                // Built-in object names (`Date`, `Function`, `Number`,
+                // `String`, `RegExp`, etc.) — populated lazily by
+                // `lowerBuiltinObjectType` the first time the user's
+                // source references the type. Mirrors the existing
+                // `simpleDiagnosticTypeName` fallback so TS2322 prose
+                // for `var e: Date = undefined` renders as
+                // `Type 'undefined' is not assignable to type 'Date'.`
+                // rather than collapsing to the structural shape.
+                if (self.builtin_object_names.get(t)) |bname| {
+                    break :blk bname;
                 }
                 // Generic-alias instantiation display name
                 // (`Covariant<A>`, `Partial<T>`, `FunctionProperties<T>`).
