@@ -19974,7 +19974,12 @@ pub const Checker = struct {
                 }
                 const ok = self.engine.isAssignableTo(source_elem_t, target_t) catch return error.OutOfMemory;
                 if (!ok) {
-                    try self.report(el, TsCodes.type_not_assignable, "Type is not assignable to target type.");
+                    // Prefer the richer "Type 'X' is not assignable to
+                    // type 'Y'." prose so array-destructuring assignment
+                    // TS2322 sites pick up the source / target binding
+                    // names. Matches upstream baselines for
+                    // `iterableArrayPattern{5,6,8}.ts` and friends.
+                    try self.reportTypeNotAssignable(el, source_elem_t, target_t, "Type is not assignable to target type.");
                 } else {
                     const id = hir_mod.identifierOf(self.hir, el);
                     try self.recordNarrow(id.name, source_elem_t);
@@ -20122,11 +20127,11 @@ pub const Checker = struct {
                 if (source_idx != types.Primitive.none and target_idx != types.Primitive.none and
                     !(self.engine.isAssignableTo(source_idx, target_idx) catch true))
                 {
-                    try self.report(target_node, TsCodes.type_not_assignable, "Type is not assignable to target type.");
+                    try self.reportTypeNotAssignable(target_node, source_idx, target_idx, "Type is not assignable to target type.");
                     return;
                 }
                 if (!(self.engine.isAssignableTo(source_t, target_t) catch true)) {
-                    try self.report(target_node, TsCodes.type_not_assignable, "Type is not assignable to target type.");
+                    try self.reportTypeNotAssignable(target_node, source_t, target_t, "Type is not assignable to target type.");
                 } else if (self.hir.kindOf(target_node) == .identifier and
                     source_t != types.Primitive.none and
                     source_t != types.Primitive.any and
@@ -30663,7 +30668,7 @@ pub const Checker = struct {
         };
 
         if (!try self.compoundAdditionAssignableBack(result_t, target_t)) {
-            try self.report(target, TsCodes.type_not_assignable, "Type is not assignable to target type.");
+            try self.reportTypeNotAssignable(target, result_t, target_t, "Type is not assignable to target type.");
         }
     }
 
