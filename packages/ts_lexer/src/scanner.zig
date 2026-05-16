@@ -1505,7 +1505,9 @@ test "Scanner: string literals — single and double" {
     try t.expectEqualStrings("'with\\'quote'", toks.items[2].bytes(s.source));
 }
 
-test "Scanner: unterminated string is an error" {
+test "Scanner: unterminated string at EOF is a hard error" {
+    // No newline before EOF — `'oops` has no recovery point, so the
+    // scanner keeps the hard-error path it always did.
     var s = Scanner.init(t.allocator, "'oops");
     defer s.deinit(t.allocator);
     try t.expectError(error.UnterminatedString, s.next(t.allocator));

@@ -923,6 +923,17 @@ fn normalizeScannerDiagnostic(message: []const u8) NormalizedScannerDiagnostic {
     if (std.mem.eql(u8, message, "unterminated template literal")) {
         return .{ .code = 1160, .message = "Unterminated template literal." };
     }
+    // The scanner emits a lowercase "unterminated string literal" (with
+    // an optional " at EOF" suffix when it walks past EOF without seeing
+    // the closing quote). tsc reports both shapes uniformly as TS1002
+    // with sentence-case ("Unterminated string literal.") — match that
+    // exactly so exact-baseline fixtures like `scannerStringLiterals`
+    // ratchet through.
+    if (std.mem.eql(u8, message, "unterminated string literal") or
+        std.mem.eql(u8, message, "unterminated string literal at EOF"))
+    {
+        return .{ .code = 1002, .message = "Unterminated string literal." };
+    }
     if (std.mem.eql(u8, message, "'*/' expected") or std.mem.eql(u8, message, "'*/' expected.")) {
         return .{ .code = 1010, .message = "'*/' expected." };
     }
@@ -2119,6 +2130,27 @@ test "driver: scanner-error compilation deinitializes cleanly" {
     }
     try T.expect(c.has_errors);
     try T.expect(c.diagnostics.items.len > 0);
+}
+
+test "driver: unterminated string literal is normalized to TS1002" {
+    // Scanner emits lowercase "unterminated string literal"; tsc reports
+    // it as TS1002 with sentence-case wording. Verify the normalizer
+    // bridges both shapes so exact-baseline fixtures like
+    // `scannerStringLiterals` match the upstream `.errors.txt`.
+    var c = try compileSource(T.allocator, "var s = \"oops\nvar t = 1;\n", .{ .no_emit = true });
+    defer {
+        c.deinit();
+        T.allocator.destroy(c);
+    }
+    var saw_ts1002 = false;
+    for (c.diagnostics.items) |d| {
+        if (d.code == 1002 and std.mem.eql(u8, d.message, "Unterminated string literal.")) {
+            saw_ts1002 = true;
+        }
+        // Should NOT see the raw lowercase scanner message.
+        try T.expect(!std.mem.eql(u8, d.message, "unterminated string literal"));
+    }
+    try T.expect(saw_ts1002);
 }
 
 test "driver: unterminated block comment still checks preceding expression" {
