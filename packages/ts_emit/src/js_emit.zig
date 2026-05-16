@@ -1871,11 +1871,15 @@ pub const Printer = struct {
                 },
                 .for_stmt => {
                     if (!self.subtreeContainsYield(s)) continue;
-                    // §4.A.4.2 part 2f / §4.A.4.3 — `for (init; cond; update) body;`
-                    // init/cond/update each yield-free; body bare or
-                    // block with exactly one yield.
+                    // §4.A.4.2 part 2f / §4.A.4.3 / §4.A.4.12 — `for (init; cond; update) body;`
+                    // cond/update each yield-free; init either yield-free
+                    // OR a single `var|let|const x = yield E;` shape
+                    // (peeled into a pre-loop yield+bind by the emit
+                    // path); body bare or block with exactly one yield.
                     const fp = hir_mod.forStmtOf(self.hir, s);
-                    if (fp.init != hir_mod.none_node_id and self.subtreeContainsYield(fp.init)) return false;
+                    if (fp.init != hir_mod.none_node_id and self.subtreeContainsYield(fp.init)) {
+                        if (!self.forInitIsSimpleYieldDecl(fp.init)) return false;
+                    }
                     if (fp.cond != hir_mod.none_node_id and self.subtreeContainsYield(fp.cond)) return false;
                     if (fp.update != hir_mod.none_node_id and self.subtreeContainsYield(fp.update)) return false;
                     if (self.singleYieldInThen(fp.body)) |ye| {
@@ -2151,6 +2155,26 @@ pub const Printer = struct {
             if (stmts.len == 1 and self.hir.kindOf(stmts[0]) == .yield_expr) return stmts[0];
         }
         return null;
+    }
+
+    /// §4.A.4.12 — true iff `init` is a `for`-stmt init of the shape
+    /// `var|let|const <ident> = yield <yield-free expr>;`. This is the
+    /// only init-with-yield shape the state-machine lowering accepts:
+    /// the binding is peeled off into a pre-loop yield+bind case pair
+    /// before the loop's header opens, then the for-stmt runs with
+    /// init treated as already executed.
+    fn forInitIsSimpleYieldDecl(self: *const Printer, init_node: NodeId) bool {
+        const k = self.hir.kindOf(init_node);
+        if (k != .var_decl and k != .let_decl and k != .const_decl) return false;
+        const v = hir_mod.varDeclOf(self.hir, init_node);
+        if (v.name == hir_mod.none_node_id) return false;
+        if (self.hir.kindOf(v.name) != .identifier) return false;
+        if (v.init == hir_mod.none_node_id) return false;
+        if (self.hir.kindOf(v.init) != .yield_expr) return false;
+        const y = hir_mod.yieldExprOf(self.hir, v.init);
+        if (y.type_node != hir_mod.none_node_id) return false;
+        if (y.expr != hir_mod.none_node_id and self.subtreeContainsYield(y.expr)) return false;
+        return true;
     }
 
     /// §4.A.4.5 — true iff `body` is a block with **two or more**
@@ -3098,6 +3122,11 @@ pub const Printer = struct {
                 // into the header. continue jumps to the continue
                 // case so the update step runs once before the next
                 // cond check.
+                //
+                // §4.A.4.12 — when init is `var x = yield E;` the
+                // yield+bind is peeled off into its own case pair
+                // before the for-stmt machinery opens its header.
+                // All header/resume/continue/exit labels shift by 1.
                 const prev_break = self.gen_break_label;
                 const prev_continue = self.gen_continue_label;
                 defer {
@@ -3105,6 +3134,11 @@ pub const Printer = struct {
                     self.gen_continue_label = prev_continue;
                 }
                 const fp = hir_mod.forStmtOf(self.hir, stmt);
+                const init_is_yield_decl = fp.init != hir_mod.none_node_id and self.subtreeContainsYield(fp.init);
+                if (init_is_yield_decl) {
+                    const v = hir_mod.varDeclOf(self.hir, fp.init);
+                    try self.emitGenYieldTransition(v.init, &state, &buf, v.name, .new_decl);
+                }
                 // Multi-yield path — header + N resumes + continue + exit.
                 if (self.singleYieldInThen(fp.body) == null and self.splitLoopBody(fp.body, true) == null) {
                     const header = state + 1;
@@ -3117,8 +3151,9 @@ pub const Printer = struct {
                     const exit_label = continue_label + 1;
                     self.gen_break_label = exit_label;
                     self.gen_continue_label = continue_label;
-                    // Init in current case.
-                    if (fp.init != hir_mod.none_node_id) {
+                    // Init in current case (skipped when the init was a
+                    // yield-decl peeled off above into its own case pair).
+                    if (fp.init != hir_mod.none_node_id and !init_is_yield_decl) {
                         try self.write(" ");
                         try self.printNonIndentStatement(fp.init);
                     }
@@ -3213,8 +3248,9 @@ pub const Printer = struct {
                 // §4.A.4.4 — set break/continue labels for the body's pre/post.
                 self.gen_break_label = exit_label;
                 self.gen_continue_label = continue_label;
-                // Init in the current case (if any).
-                if (fp.init != hir_mod.none_node_id) {
+                // Init in the current case (skipped when the init was a
+                // yield-decl peeled off above into its own case pair).
+                if (fp.init != hir_mod.none_node_id and !init_is_yield_decl) {
                     try self.write(" ");
                     try self.printNonIndentStatement(fp.init);
                 }
@@ -8045,9 +8081,58 @@ test "emit: generator with bare-for-yield (no init/cond/update) lowers as infini
     try T.expect(std.mem.indexOf(u8, out, "case 4:") != null);
 }
 
-test "emit: generator with for-loop-yield + yield-in-init still bails" {
+test "emit: generator with for-loop + yield-in-init peels yield-decl into pre-loop case pair" {
+    // §4.A.4.12 — `for (var x = yield 0; cond; x++) yield x;` now
+    // lowers: the init's `yield 0` becomes a stand-alone yield+bind
+    // pair (case 0 closes with `return [4, 0]`; case 1 opens with
+    // `var x = _a.sent();`) before the regular 4-case for-stmt
+    // machinery (header / resume / continue / exit) takes over.
     const out = try emitWithOpts(
         "function* g() { for (let x = yield 0; cond; x++) yield x; }",
+        .{ .es_target = .es5 },
+    );
+    defer T.allocator.free(out);
+    try T.expect(std.mem.indexOf(u8, out, "__generator") != null);
+    try T.expect(std.mem.indexOf(u8, out, "TODO: ES5 generator") == null);
+    // Case 0 closes with the init's yield.
+    try T.expect(std.mem.indexOf(u8, out, "case 0: return [4, 0];") != null);
+    // Case 1 binds the resumed value into x.
+    try T.expect(std.mem.indexOf(u8, out, "case 1: var x = _a.sent();") != null);
+    // Header is case 2 (shifted by the yield-init pair).
+    try T.expect(std.mem.indexOf(u8, out, "case 2: if (!(cond)) return [3, 5]; return [4, x];") != null);
+    // Resume is case 3.
+    try T.expect(std.mem.indexOf(u8, out, "case 3: _a.sent();") != null);
+    // Continue is case 4 — update + jump back to header.
+    try T.expect(std.mem.indexOf(u8, out, "case 4: x += 1; return [3, 2];") != null);
+    // Exit is case 5.
+    try T.expect(std.mem.indexOf(u8, out, "case 5:") != null);
+}
+
+test "emit: generator with for-loop + yield-in-init + multi-yield body lowers" {
+    // The peeled yield-init shifts every subsequent label by 1.
+    const out = try emitWithOpts(
+        "function* g() { for (let x = yield 0; cond; x++) { pre(); yield x; post(); } }",
+        .{ .es_target = .es5 },
+    );
+    defer T.allocator.free(out);
+    try T.expect(std.mem.indexOf(u8, out, "__generator") != null);
+    try T.expect(std.mem.indexOf(u8, out, "TODO: ES5 generator") == null);
+    try T.expect(std.mem.indexOf(u8, out, "case 0: return [4, 0];") != null);
+    try T.expect(std.mem.indexOf(u8, out, "case 1: var x = _a.sent();") != null);
+    // Header now also runs pre() and yields x.
+    try T.expect(std.mem.indexOf(u8, out, "case 2: if (!(cond)) return [3, 5]; pre(); return [4, x];") != null);
+    // Resume runs post() and falls through to continue.
+    try T.expect(std.mem.indexOf(u8, out, "case 3: _a.sent(); post();") != null);
+    try T.expect(std.mem.indexOf(u8, out, "case 4: x += 1; return [3, 2];") != null);
+    try T.expect(std.mem.indexOf(u8, out, "case 5:") != null);
+}
+
+test "emit: generator with for-loop + non-yield-decl init-yield still bails" {
+    // Only `var|let|const <ident> = yield E;` is accepted; anything
+    // else (yield-in-cond, yield-in-update, bare expression init,
+    // destructuring decl, …) still bails to native `function*`.
+    const out = try emitWithOpts(
+        "function* g() { for (i = yield 0; cond; i++) yield i; }",
         .{ .es_target = .es5 },
     );
     defer T.allocator.free(out);
