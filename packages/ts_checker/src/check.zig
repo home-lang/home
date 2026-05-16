@@ -28278,7 +28278,8 @@ pub const Checker = struct {
         // enclosing function is an arrow regardless of what's above.
         if (std.mem.eql(u8, name_str, "arguments") and
             self.argumentsInsideArrowOnlyChain(node) and
-            self.sourceTargetMentionsEs5())
+            self.sourceTargetMentionsEs5() and
+            !self.argumentsResolvesToLocalBinding(node, id.name))
         {
             const msg = self.diag_arena.allocator().dupe(u8, "The 'arguments' object cannot be referenced in an arrow function in ES5. Consider using a standard function expression.") catch return types.Primitive.any;
             self.diagnostics.append(self.gpa, .{
@@ -29072,6 +29073,32 @@ pub const Checker = struct {
             if (k != .fn_decl and k != .fn_expr and k != .arrow_fn) continue;
             const f = hir_mod.fnDeclOf(self.hir, cur);
             return f.flags.is_arrow;
+        }
+        return false;
+    }
+
+    /// True when the identifier reference (e.g. `arguments`) resolves
+    /// to a parameter or local binding of the same name in some
+    /// enclosing function/scope, rather than the runtime `arguments`
+    /// object. Used to suppress TS2496 for `(arguments) => arguments`
+    /// where the inner reference shadows the synthetic
+    /// `arguments` slot. Mirrors
+    /// `emitArrowFunctionWhenUsingArguments08.errors.txt`.
+    fn argumentsResolvesToLocalBinding(self: *Checker, node: NodeId, name_id: hir_mod.StringId) bool {
+        var cur = self.hir.parentOf(node);
+        while (cur != hir_mod.none_node_id) : (cur = self.hir.parentOf(cur)) {
+            const k = self.hir.kindOf(cur);
+            if (k == .fn_decl or k == .fn_expr or k == .arrow_fn) {
+                const params = hir_mod.fnParams(self.hir, cur);
+                for (params) |p| {
+                    if (self.hir.kindOf(p) != .parameter) continue;
+                    const pp = hir_mod.parameterOf(self.hir, p);
+                    if (pp.name == hir_mod.none_node_id) continue;
+                    if (self.hir.kindOf(pp.name) != .identifier) continue;
+                    const pid = hir_mod.identifierOf(self.hir, pp.name);
+                    if (pid.name == name_id) return true;
+                }
+            }
         }
         return false;
     }
@@ -56106,5 +56133,24 @@ test "checker: Ctor.prototype assignment without JSDoc keeps structural shape" {
     try s.checker.checkSourceFile(s.root);
     for (s.checker.diagnostics.items) |d| {
         try T.expect(d.code != TsCodes.type_not_assignable);
+    }
+}
+
+test "checker: TS2496 suppressed when `arguments` resolves to a parameter binding" {
+    // Mirrors `emitArrowFunctionWhenUsingArguments08.errors.txt`
+    // (alwaysstrict=true,target=es5) — the inner `arguments`
+    // identifier shadows the synthetic slot via the parameter
+    // declaration `(arguments) =>`, so tsc emits only the TS1100
+    // diagnostics, never TS2496 against the reference.
+    const s = try newSetup(
+        \\// @target: es5
+        \\function f(arguments: any) {
+        \\    var a = () => (arguments: any) => arguments;
+        \\}
+    );
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+    for (s.checker.diagnostics.items) |d| {
+        try T.expect(d.code != TsCodes.arguments_in_arrow_es5);
     }
 }
