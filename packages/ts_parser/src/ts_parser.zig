@@ -7906,7 +7906,7 @@ pub const Parser = struct {
         if (t.kind == .identifier or t.kind == .private_identifier or t.kind.isKeyword()) {
             return self.advance();
         }
-        try self.report("expected identifier ", "after '.'");
+        try self.reportCodeAt(t.span.start, t.line, 1003, "Identifier expected.");
         return error.UnexpectedToken;
     }
 };
@@ -8313,6 +8313,25 @@ test "parser: empty element access reports TS1011 and recovers" {
     try T.expectEqual(@as(usize, 2), s.parser.diagnostics.items.len);
     try T.expectEqual(@as(u32, 1011), s.parser.diagnostics.items[0].code);
     try T.expectEqual(@as(u32, 1011), s.parser.diagnostics.items[1].code);
+}
+
+test "parser: missing identifier after dot reports TS1003" {
+    var s = try newTestSetup(
+        \\class Foo {
+        \\  f1() {
+        \\    if (this.
+        \\  }
+        \\}
+    );
+    defer destroyTestSetup(s);
+
+    _ = s.parser.parseSourceFile() catch |err| switch (err) {
+        error.UnexpectedToken => hir_mod.none_node_id,
+        else => return err,
+    };
+    try T.expectEqual(@as(usize, 1), s.parser.diagnostics.items.len);
+    try T.expectEqual(@as(u32, 1003), s.parser.diagnostics.items[0].code);
+    try T.expectEqualStrings("Identifier expected.", s.parser.diagnostics.items[0].message);
 }
 
 test "parser: ternary conditional" {
