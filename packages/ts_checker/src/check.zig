@@ -10010,6 +10010,26 @@ pub const Checker = struct {
         return hir_mod.identifierOf(self.hir, name_node).name;
     }
 
+    /// Resolve the source position of a declaration's *name*
+    /// identifier (the position tsc anchors duplicate-identifier and
+    /// related diagnostics on). Returns `null` for nodes whose name
+    /// can't be determined or whose name has no span.
+    fn declarationNameSpanStart(self: *Checker, node: NodeId) ?u32 {
+        if (node == hir_mod.none_node_id) return null;
+        const name_node: NodeId = switch (self.hir.kindOf(node)) {
+            .var_decl, .let_decl, .const_decl => hir_mod.varDeclOf(self.hir, node).name,
+            .fn_decl, .fn_expr => hir_mod.fnDeclOf(self.hir, node).name,
+            .class_decl, .class_expr => hir_mod.classOf(self.hir, node).name,
+            .interface_decl => hir_mod.interfaceOf(self.hir, node).name,
+            .enum_decl => hir_mod.enumOf(self.hir, node).name,
+            .type_alias_decl => hir_mod.typeAliasOf(self.hir, node).name,
+            .namespace_decl => hir_mod.namespaceOf(self.hir, node).name,
+            else => return null,
+        };
+        if (name_node == hir_mod.none_node_id) return null;
+        return self.hir.spanOf(name_node).start;
+    }
+
     fn reportDuplicateIdentifier(
         self: *Checker,
         node: NodeId,
@@ -10023,6 +10043,7 @@ pub const Checker = struct {
         );
         try self.diagnostics.append(self.gpa, .{
             .node = node,
+            .pos = self.declarationNameSpanStart(node),
             .code = TsCodes.duplicate_identifier,
             .message = msg,
         });
