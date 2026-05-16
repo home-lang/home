@@ -152,6 +152,12 @@ pub const CompileOptions = struct {
     /// the right point in the virtual filesystem. Empty means the
     /// checker should fall back to its `@filename:` scan.
     importer_path: []const u8 = "",
+    /// Effective `--moduleResolution` value as a normalized
+    /// lower-case label (`"classic"`, `"node10"`, `"node16"`,
+    /// `"nodenext"`, `"bundler"`). The conformance harness derives
+    /// this from the per-variant resolver `Strategy`. Empty means
+    /// "infer from `// @moduleResolution:` directive in source".
+    module_resolution: []const u8 = "",
 };
 
 fn appendDriverDiagnostic(
@@ -665,6 +671,7 @@ pub fn compileSource(
     checker.setSource(source);
     if (options.external_resolver) |er| checker.setExternalResolver(er);
     if (options.importer_path.len > 0) checker.setImporterPath(options.importer_path);
+    if (options.module_resolution.len > 0) checker.setModuleResolution(options.module_resolution);
     // Translate strictness flags. `strict: true` implies every
     // individual strict-family flag in TS; options.strict is the CLI
     // override, then tsconfig, then tsc's default (`false`).
