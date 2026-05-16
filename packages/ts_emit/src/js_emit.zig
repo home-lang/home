@@ -4046,7 +4046,12 @@ pub const Printer = struct {
                     } else if (tk == .var_decl or tk == .let_decl or tk == .const_decl) {
                         const v = hir_mod.varDeclOf(self.hir, fop.target);
                         if (v.name == hir_mod.none_node_id) return false;
-                        if (self.hir.kindOf(v.name) != .identifier) return false;
+                        // §4.A.4.14 v7 — accept identifier OR destructuring
+                        // pattern (array / object) as the decl name; the
+                        // emit routes through `printBindingName` so both
+                        // shapes render correctly.
+                        const nk = self.hir.kindOf(v.name);
+                        if (nk != .identifier and nk != .object_pattern and nk != .array_pattern) return false;
                     } else {
                         return false;
                     }
@@ -4530,7 +4535,10 @@ pub const Printer = struct {
                     try self.write(": var _aresult = _a.sent(); if (_aresult.done) return [3, ");
                     try self.write(num_normal_end);
                     try self.write("]; var ");
-                    try self.printExpression(target_name);
+                    // §4.A.4.14 v7 — printBindingName routes identifier
+                    // / array_pattern / object_pattern through the right
+                    // emit (the latter two render destructuring).
+                    try self.printBindingName(target_name);
                     try self.write(" = _aresult.value;");
                 }
                 // §4.A.4.14 v6 — wire break/continue rewrites so any
@@ -8965,6 +8973,30 @@ test "emit: async generator with for-await-of + no-yield bare-stmt body lowers" 
     defer T.allocator.free(out);
     try T.expect(std.mem.indexOf(u8, out, "return __asyncGenerator(this, arguments, function () {") != null);
     try T.expect(std.mem.indexOf(u8, out, "var x = _aresult.value; g(x); return [3, 1];") != null);
+}
+
+test "emit: async generator with for-await-of + array destructuring target" {
+    // §4.A.4.14 v7 — `for await (const [a, b] of source)` binds the
+    // tuple via `var [a, b] = _aresult.value;` in the state machine.
+    const out = try emitWithOpts(
+        "async function* g() { for await (const [a, b] of source) yield a; }",
+        .{ .es_target = .es5 },
+    );
+    defer T.allocator.free(out);
+    try T.expect(std.mem.indexOf(u8, out, "return __asyncGenerator(this, arguments, function () {") != null);
+    try T.expect(std.mem.indexOf(u8, out, "var [a, b] = _aresult.value;") != null);
+}
+
+test "emit: async generator with for-await-of + object destructuring target" {
+    // `for await (const { value, done } of source)` binds the object
+    // via `var { value, done } = _aresult.value;`.
+    const out = try emitWithOpts(
+        "async function* g() { for await (const { value, done } of source) yield value; }",
+        .{ .es_target = .es5 },
+    );
+    defer T.allocator.free(out);
+    try T.expect(std.mem.indexOf(u8, out, "return __asyncGenerator(this, arguments, function () {") != null);
+    try T.expect(std.mem.indexOf(u8, out, "var { value, done } = _aresult.value;") != null);
 }
 
 test "emit: async generator with for-await-of + break in body routes through cleanup" {
