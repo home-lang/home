@@ -16641,6 +16641,16 @@ pub const Checker = struct {
                         if (try self.reportMissingRootForUnresolvedTypeofDottedQuery(tt.operand, raw)) {
                             return types.Primitive.any;
                         }
+                        // For dotted typeof queries (`typeof E.A`, `typeof Z.foo`)
+                        // where the root binding IS visible (enum, import-equals
+                        // alias, namespace) but the qualified lookup didn't yield
+                        // a concrete TypeId, fall back to `any` WITHOUT routing
+                        // through `typeOfIdentifier` — that path emits a bogus
+                        // `TS2304 Cannot find name 'E.A'` for the full dotted
+                        // string since the parser stored the qualified name as a
+                        // single identifier. Mirrors tsc's silent fallback for
+                        // `typeofAnExportedType.ts` / `typeofANonExportedType.ts`.
+                        return types.Primitive.any;
                     }
                     if (self.typeofQueryReferencesOwnDeclaration(type_node, name)) return types.Primitive.any;
                     const value_t = self.typeOfIdentifier(tt.operand);
@@ -21013,7 +21023,14 @@ pub const Checker = struct {
                     hir_mod.blockStmts(self.hir, cur)
                 else
                     hir_mod.namespaceBody(self.hir, cur);
-                for (stmts) |s| {
+                for (stmts) |raw_s| {
+                    // `export var`, `export function`, `export class`,
+                    // `export import Z = M` etc. wrap the inner decl in
+                    // an `.export_decl`. Unwrap so the visibility walk
+                    // sees the bound identifier directly — without this
+                    // step `typeof Z` for an `export import Z = M` would
+                    // miss the binding and emit a spurious TS2304.
+                    const s = self.unwrapExportDecl(raw_s);
                     const sk = self.hir.kindOf(s);
                     if (sk == .var_decl or sk == .let_decl or sk == .const_decl) {
                         const v = hir_mod.varDeclOf(self.hir, s);
