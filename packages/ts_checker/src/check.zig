@@ -185,6 +185,7 @@ pub const TsCodes = struct {
     pub const class_incorrectly_implements_interface: u32 = 2420;
     pub const class_used_before_declaration: u32 = 2449;
     pub const tuple_index_out_of_bounds: u32 = 2493;
+    pub const tuple_negative_index: u32 = 2514;
     pub const not_constructor_function_type: u32 = 2507;
     pub const computed_property_name_type: u32 = 2464;
     pub const super_in_computed_property_name: u32 = 2466;
@@ -1466,7 +1467,12 @@ pub const Checker = struct {
                         try self.report(node, TsCodes.type_not_assignable, "Type is not assignable to generator return type.");
                     }
                 } else if (self.returnStatementViolatesGenericRestTuple(node, ret_t)) {
-                    try self.report(node, TsCodes.type_not_assignable, "Type is not assignable to function return type.");
+                    const msg = self.allocReturnVariadicRestMismatch(node, ret_t) catch null;
+                    if (msg) |m| {
+                        try self.report(node, TsCodes.type_not_assignable, m);
+                    } else {
+                        try self.report(node, TsCodes.type_not_assignable, "Type is not assignable to function return type.");
+                    }
                 }
             },
             .throw_stmt => {
@@ -6630,6 +6636,54 @@ pub const Checker = struct {
         if (fn_t >= self.interner.pool.typeCount() or !self.interner.pool.flagsOf(fn_t).is_signature) return false;
         const expected_t = self.interner.signatureReturn(fn_t) orelse return false;
         return ret_t != expected_t;
+    }
+
+    /// Render the function-return-type AST node verbatim from source.
+    /// Returns `null` when source is unavailable or the span is OOB.
+    fn allocVariadicTupleReturnAnnotationName(self: *Checker, ret_type_node: NodeId) ?[]const u8 {
+        if (ret_type_node == hir_mod.none_node_id) return null;
+        const src = self.source orelse return null;
+        const sp = self.hir.spanOf(ret_type_node);
+        if (sp.start >= sp.end or sp.end > src.len) return null;
+        const slice = src[sp.start..sp.end];
+        // Compact whitespace so multi-line annotations render single-line.
+        const arena = self.diag_arena.allocator();
+        var buf: std.ArrayListUnmanaged(u8) = .empty;
+        buf.ensureTotalCapacity(arena, slice.len) catch return null;
+        var prev_space: bool = false;
+        for (slice) |c| {
+            const is_ws = c == ' ' or c == '\t' or c == '\n' or c == '\r';
+            if (is_ws) {
+                if (!prev_space and buf.items.len > 0) {
+                    buf.append(arena, ' ') catch return null;
+                    prev_space = true;
+                }
+            } else {
+                buf.append(arena, c) catch return null;
+                prev_space = false;
+            }
+        }
+        while (buf.items.len > 0 and buf.items[buf.items.len - 1] == ' ') {
+            buf.items.len -= 1;
+        }
+        if (buf.items.len == 0) return null;
+        return buf.items;
+    }
+
+    /// Build `Type 'X' is not assignable to type '[...T, ...P]'.` for
+    /// variadic-rest-tuple return mismatches. Returns `null` when any
+    /// renderer step fails so the caller can fall back to the generic
+    /// message.
+    fn allocReturnVariadicRestMismatch(self: *Checker, return_node: NodeId, ret_t: TypeId) !?[]const u8 {
+        const fn_node = self.enclosingFunctionForReturn(return_node) orelse return null;
+        const f = hir_mod.fnDeclOf(self.hir, fn_node);
+        const target_name = self.allocVariadicTupleReturnAnnotationName(f.return_type) orelse return null;
+        const source_name = (try self.allocSimpleTypeName(ret_t)) orelse return null;
+        return try std.fmt.allocPrint(
+            self.diag_arena.allocator(),
+            "Type '{s}' is not assignable to type '{s}'.",
+            .{ source_name, target_name },
+        );
     }
 
     fn enclosingFunctionForReturn(self: *Checker, return_node: NodeId) ?NodeId {
@@ -21376,16 +21430,14 @@ pub const Checker = struct {
                 if (a.op == null and self.hir.kindOf(a.target) == .object_literal) {
                     try self.checkObjectDestructuringAssignment(a.target, value_t, a.value);
                 }
-                if (a.op == null and
-                    self.hir.kindOf(a.value) == .array_literal and
-                    target_t != types.Primitive.none and
-                    target_t != types.Primitive.any and
-                    target_t != types.Primitive.unknown and
-                    self.isTupleShapedTarget(target_t) and
-                    !(try self.checkArrayLiteralAgainstTuple(a.value, target_t)))
-                {
-                    try self.report(node, TsCodes.type_not_assignable, "Type is not assignable to target type.");
-                }
+                // Note: an `array-literal vs tuple-shape` mismatch used to
+                // emit a generic `Type is not assignable to target type.`
+                // here, but the broader assignment-typing path below
+                // already produces a richer `Type 'X' is not assignable
+                // to type 'Y'.` diagnostic for the same case, leading to
+                // duplicate TS2322 reports at the same position. The
+                // generic emit is therefore suppressed; see
+                // `wideningTuples4.ts(3,9)` for the motivating case.
                 if (!target_is_destructuring and !target_is_untyped_uninitialized_var and a.op == null and self.classPrivateStructuralMismatch(target_t, value_t)) {
                     try self.report(node, TsCodes.type_not_assignable, "Type is not assignable to declared type.");
                 }
@@ -22258,6 +22310,29 @@ pub const Checker = struct {
                             break :blk try self.optionalChainResult(nt, element_is_optional_chain);
                         }
                     }
+                    // Tuple negative-literal index: `tup[-1]` is invalid
+                    // for fixed-arity tuples even though the runtime
+                    // returns `undefined` — TS reports TS2514 against
+                    // the negation expression. Mirrors
+                    // `indexerWithTuple.ts(18,25)`. Only emit when the
+                    // receiver is a fixed-arity tuple (so we don't trip
+                    // on `arr[-1]` for plain arrays).
+                    if (self.fixedTupleLength(obj_t) != null and
+                        self.hir.kindOf(e.index) == .unary_op)
+                    {
+                        const u = hir_mod.unaryOf(self.hir, e.index);
+                        if (u.op == .neg and self.hir.kindOf(u.operand) == .literal_number) {
+                            const nv = hir_mod.literalNumberOf(self.hir, u.operand);
+                            if (nv > 0) {
+                                try self.report(
+                                    e.index,
+                                    TsCodes.tuple_negative_index,
+                                    "A tuple type cannot be indexed with a negative value.",
+                                );
+                                break :blk types.Primitive.undefined_t;
+                            }
+                        }
+                    }
                     // Tuple literal-index access: `tup[0]` should
                     // pick the per-index member typed under "0", not
                     // the broader number indexer's union. Only fires
@@ -22562,9 +22637,17 @@ pub const Checker = struct {
                         }
                         const src_members = self.interner.objectMembers(st);
                         const source_is_class_instance = self.class_name_by_instance.contains(st);
+                        // Conditional spread expressions like
+                        // `...(t ? a : {})` always overwrite *at most*
+                        // half the time, so they don't trigger the
+                        // TS2783 duplicate-overwrite warning even when
+                        // a branch contributes the same property name.
+                        // Mirrors `spreadDuplicateExact.ts(20..)` and
+                        // `spreadOverwritesPropertyStrict.ts` family.
+                        const spread_may_be_empty = self.spreadExpressionMayContributeNothing(spread_expr);
                         for (src_members) |m| {
                             if (source_is_class_instance and (m.is_method or m.is_readonly)) continue;
-                            if (!m.is_optional) {
+                            if (!m.is_optional and !spread_may_be_empty) {
                                 if (explicit_props.get(m.name)) |prop_node| {
                                     const prop_name = self.string_interner.get(m.name);
                                     const msg = std.fmt.allocPrint(
@@ -23174,15 +23257,70 @@ pub const Checker = struct {
     }
 
     fn objectSpreadEffectiveType(self: *Checker, expr: NodeId, fallback: TypeId) CheckError!TypeId {
-        if (expr == hir_mod.none_node_id or self.hir.kindOf(expr) != .logical_op) return fallback;
-        const l = hir_mod.logicalOf(self.hir, expr);
-        if (l.op != .@"and") return fallback;
-        const rhs_t = if (self.hir.typeOf(l.rhs) != types.Primitive.none)
-            self.hir.typeOf(l.rhs)
-        else
-            try self.checkExpression(l.rhs);
-        if (try self.objectSpreadSourceIsValid(rhs_t)) return rhs_t;
+        if (expr == hir_mod.none_node_id) return fallback;
+        const k = self.hir.kindOf(expr);
+        if (k == .logical_op) {
+            const l = hir_mod.logicalOf(self.hir, expr);
+            if (l.op != .@"and") return fallback;
+            const rhs_t = if (self.hir.typeOf(l.rhs) != types.Primitive.none)
+                self.hir.typeOf(l.rhs)
+            else
+                try self.checkExpression(l.rhs);
+            if (try self.objectSpreadSourceIsValid(rhs_t)) return rhs_t;
+            return fallback;
+        }
+        if (k == .conditional) {
+            // For `cond ? thenExpr : elseExpr` we use whichever branch
+            // is a valid spread source — at least one nullish branch
+            // is OK (matches `objectSpreadIndexSignature.ts(14)`'s
+            // `...b ? indexed3 : undefined`).
+            const c = hir_mod.conditionalOf(self.hir, expr);
+            const tt = if (self.hir.typeOf(c.then_branch) != types.Primitive.none)
+                self.hir.typeOf(c.then_branch)
+            else
+                try self.checkExpression(c.then_branch);
+            const ff = if (self.hir.typeOf(c.else_branch) != types.Primitive.none)
+                self.hir.typeOf(c.else_branch)
+            else
+                try self.checkExpression(c.else_branch);
+            const tt_ok = try self.objectSpreadSourceIsValid(tt);
+            const ff_ok = try self.objectSpreadSourceIsValid(ff);
+            if (tt_ok and ff_ok) return fallback;
+            if (tt_ok) return tt;
+            if (ff_ok) return ff;
+            return fallback;
+        }
         return fallback;
+    }
+
+    /// Returns true when the spread expression might contribute no
+    /// members at runtime, e.g. `...(t ? a : {})` or `...(x && a)`.
+    /// In those cases TS2783 (duplicate-property overwrite) should not
+    /// fire even when an explicit property earlier shares a name with
+    /// one of the spread's possible members — the spread is not
+    /// guaranteed to overwrite. Walks through type assertions and
+    /// parenthesized expressions so source-level grouping is
+    /// transparent.
+    fn spreadExpressionMayContributeNothing(self: *Checker, expr: NodeId) bool {
+        var cur = expr;
+        while (cur != hir_mod.none_node_id) {
+            switch (self.hir.kindOf(cur)) {
+                .conditional => return true,
+                .logical_op => {
+                    const l = hir_mod.logicalOf(self.hir, cur);
+                    // `a && b` (LHS may be falsy → spread evaluates `a`).
+                    // `a || b` and `a ?? b` similarly may pick either side.
+                    _ = l;
+                    return true;
+                },
+                .type_assertion, .as_expr, .satisfies_expr, .non_null_expr => {
+                    const inner = hir_mod.asExpressionOf(self.hir, cur);
+                    cur = inner.expr;
+                },
+                else => return false,
+            }
+        }
+        return false;
     }
 
     fn jsxAttributeAssignable(self: *Checker, value_t: TypeId, prop_t: TypeId) CheckError!bool {
@@ -33392,18 +33530,18 @@ pub const Checker = struct {
         target: TypeId,
         fallback: []const u8,
     ) !void {
-        if (try self.allocSimpleTypeName(source)) |source_name| {
-            if (try self.allocSimpleTypeName(target)) |target_name| {
-                const msg = try std.fmt.allocPrint(
-                    self.diag_arena.allocator(),
-                    "Type '{s}' is not assignable to type '{s}'.",
-                    .{ source_name, target_name },
-                );
-                try self.report(node, TsCodes.type_not_assignable, msg);
-                return;
-            }
-        }
-        try self.report(node, TsCodes.type_not_assignable, fallback);
+        const source_name = (try self.allocSimpleTypeName(source)) orelse
+            (try self.allocObjectTypeShape(source)) orelse
+            return try self.report(node, TsCodes.type_not_assignable, fallback);
+        const target_name = (try self.allocSimpleTypeName(target)) orelse
+            (try self.allocObjectTypeShape(target)) orelse
+            return try self.report(node, TsCodes.type_not_assignable, fallback);
+        const msg = try std.fmt.allocPrint(
+            self.diag_arena.allocator(),
+            "Type '{s}' is not assignable to type '{s}'.",
+            .{ source_name, target_name },
+        );
+        try self.report(node, TsCodes.type_not_assignable, msg);
     }
 
     /// TS2741 — single-required-property gap. Returns true and emits
@@ -33611,8 +33749,10 @@ pub const Checker = struct {
         if (try self.tryReportSinglePropertyMissing(node, value_node, source, target)) return;
         const source_name = self.objectAnnotationNameForIdentifier(value_node) orelse
             (try self.allocSimpleTypeName(source)) orelse
+            (try self.allocObjectTypeShape(source)) orelse
             return try self.report(node, TsCodes.type_not_assignable, fallback);
         const target_name = (try self.allocSimpleTypeName(target)) orelse
+            (try self.allocObjectTypeShape(target)) orelse
             return try self.report(node, TsCodes.type_not_assignable, fallback);
         const msg = try std.fmt.allocPrint(
             self.diag_arena.allocator(),
