@@ -2303,12 +2303,15 @@ pub const Printer = struct {
         return true;
     }
 
-    /// §4.A.4.14 v3+v5+v6 — per-statement validator for for-await-of
+    /// §4.A.4.14 v3+v5+v6+v8 — per-statement validator for for-await-of
     /// body. Yields (including `yield*`) are accepted if RHS is yield/
     /// await-free; bare unlabeled `break`/`continue` are accepted
     /// (rewritten to state-machine jumps via `printBreakOrContinue`);
-    /// other non-yields must be yield/await-free and not a nested
-    /// structured stmt.
+    /// a shallow `if (cond) break|continue;` (no else, no nested
+    /// yields/awaits, cond yield/await-free) is accepted because the
+    /// regular if-stmt printer + the wired gen_break/continue labels
+    /// produce the right state-machine jump automatically; other
+    /// non-yields must be yield/await-free and not a structured stmt.
     fn asyncGenForAwaitBodyStmtOk(self: *const Printer, s: NodeId) bool {
         const k = self.hir.kindOf(s);
         if (k == .yield_expr) {
@@ -2317,16 +2320,36 @@ pub const Printer = struct {
             if (yp.expr != hir_mod.none_node_id and (self.subtreeContainsYield(yp.expr) or self.subtreeContainsAwait(yp.expr))) return false;
             return true;
         }
-        // Bare unlabeled break/continue rewrite to state-machine
-        // jumps targeting the for-await-of's normal-end (break) or
-        // header (continue); labeled forms aren't supported in v6.
         if (k == .break_stmt or k == .continue_stmt) {
             const lab = hir_mod.labelOf(self.hir, s);
             return lab.label == hir_mod.none_node_id;
         }
+        // §4.A.4.14 v8 — shallow `if (cond) break|continue;`. The
+        // existing printIf / printBreakOrContinue cooperation handles
+        // the state-machine jump rewrite; we just need the predicate
+        // to accept the shape.
+        if (k == .if_stmt) {
+            const ip = hir_mod.ifOf(self.hir, s);
+            if (ip.else_branch != hir_mod.none_node_id) return false;
+            if (ip.cond == hir_mod.none_node_id) return false;
+            if (self.subtreeContainsYield(ip.cond) or self.subtreeContainsAwait(ip.cond)) return false;
+            // then-branch must be a bare unlabeled break or continue
+            // (or a one-element block containing one).
+            const then_branch = ip.then_branch;
+            const then_stmt: NodeId = if (self.hir.kindOf(then_branch) == .block_stmt) blk: {
+                const tstmts = hir_mod.blockStmts(self.hir, then_branch);
+                if (tstmts.len != 1) break :blk hir_mod.none_node_id;
+                break :blk tstmts[0];
+            } else then_branch;
+            if (then_stmt == hir_mod.none_node_id) return false;
+            const tk = self.hir.kindOf(then_stmt);
+            if (tk != .break_stmt and tk != .continue_stmt) return false;
+            const lab = hir_mod.labelOf(self.hir, then_stmt);
+            return lab.label == hir_mod.none_node_id;
+        }
         if (self.subtreeContainsYield(s) or self.subtreeContainsAwait(s)) return false;
         switch (k) {
-            .if_stmt, .while_stmt, .do_while_stmt, .for_stmt, .for_in_stmt, .for_of_stmt, .try_stmt, .switch_stmt, .throw_stmt, .fn_decl, .class_decl, .return_stmt => return false,
+            .while_stmt, .do_while_stmt, .for_stmt, .for_in_stmt, .for_of_stmt, .try_stmt, .switch_stmt, .throw_stmt, .fn_decl, .class_decl, .return_stmt => return false,
             else => return true,
         }
     }
@@ -9223,6 +9246,44 @@ test "emit: async generator with for-await-of + continue in body restarts loop" 
     try T.expect(std.mem.indexOf(u8, out, "return __asyncGenerator(this, arguments, function () {") != null);
     // case 4 contains the continue rewrite (return [3, 1]) — 1 is header_label.
     try T.expect(std.mem.indexOf(u8, out, "case 4: _a.sent(); return [3, 1];") != null);
+}
+
+test "emit: async generator with for-await-of + if-guarded continue lowers" {
+    // §4.A.4.14 v8 — `if (cond) continue;` in body rewrites to
+    // `if (cond) return [3, header_label];` via the existing if-stmt
+    // + break/continue printers cooperating with the wired
+    // gen_continue_label.
+    const out = try emitWithOpts(
+        "async function* g() { for await (const x of source) { if (x.skip) continue; yield x; } }",
+        .{ .es_target = .es5 },
+    );
+    defer T.allocator.free(out);
+    try T.expect(std.mem.indexOf(u8, out, "TODO: ES5 generator") == null);
+    try T.expect(std.mem.indexOf(u8, out, "return __asyncGenerator(this, arguments, function () {") != null);
+    // case 2 binds x and inlines the if-guard before the yield.
+    try T.expect(std.mem.indexOf(u8, out, "if (x.skip) return [3, 1];") != null);
+}
+
+test "emit: async generator with for-await-of + if-guarded break lowers" {
+    // `if (cond) break;` rewrites to `if (cond) return [3, normal_end];`.
+    const out = try emitWithOpts(
+        "async function* g() { for await (const x of source) { if (x.done) break; yield x; } }",
+        .{ .es_target = .es5 },
+    );
+    defer T.allocator.free(out);
+    try T.expect(std.mem.indexOf(u8, out, "return __asyncGenerator(this, arguments, function () {") != null);
+    // case 2: bind + `if (x.done) return [3, 5];` + yield x.
+    try T.expect(std.mem.indexOf(u8, out, "if (x.done) return [3, 5];") != null);
+}
+
+test "emit: async generator with for-await-of + if-with-else still bails" {
+    // v8 accepts only one-branch if (no else); if/else falls back.
+    const out = try emitWithOpts(
+        "async function* g() { for await (const x of source) { if (x.skip) continue; else f(x); } }",
+        .{ .es_target = .es5 },
+    );
+    defer T.allocator.free(out);
+    try T.expect(std.mem.indexOf(u8, out, "return __asyncGenerator(this, arguments, function () {") == null);
 }
 
 test "emit: async generator with for-await-of + labeled break still bails" {
