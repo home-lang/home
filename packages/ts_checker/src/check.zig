@@ -290,6 +290,7 @@ pub const TsCodes = struct {
     pub const reserved_word_cannot_be_used_here: u32 = 1359;
     pub const generator_void_return: u32 = 2505;
     pub const yield_star_not_iterable: u32 = 2488;
+    pub const type_not_array_type: u32 = 2461;
     pub const for_of_lhs_invalid: u32 = 2487;
     pub const symbol_operator_not_allowed: u32 = 2469;
     pub const yield_implicit_any: u32 = 7057;
@@ -1674,6 +1675,38 @@ pub const Checker = struct {
                                 try self.report(fr.target, TsCodes.type_not_assignable, "Type is not assignable to declared type.");
                             }
                         }
+                        // TS2461 — `for (var [a, b] of <iter>)` requires
+                        // each iterated element to itself be array-like
+                        // (so the destructuring pattern can index into
+                        // it). Upstream tsc anchors at the binding
+                        // pattern. Render the rejected element type's
+                        // name when available so the baseline reads
+                        // `Type 'number' is not an array type.`; fall
+                        // back to the bare wording otherwise. Mirrors
+                        // ES5For-of26/28 and ES5For-of-style fixtures.
+                        if (v.name != hir_mod.none_node_id and
+                            self.hir.kindOf(v.name) == .array_pattern and
+                            elem_t != types.Primitive.any and
+                            elem_t != types.Primitive.unknown and
+                            elem_t != types.Primitive.none and
+                            !self.elemIsArrayLikeForForOfDestructure(elem_t))
+                        {
+                            const name = (try self.simpleDiagnosticTypeName(elem_t)) orelse "";
+                            if (name.len != 0) {
+                                const msg = try std.fmt.allocPrint(
+                                    self.diag_arena.allocator(),
+                                    "Type '{s}' is not an array type.",
+                                    .{name},
+                                );
+                                try self.diagnostics.append(self.gpa, .{
+                                    .node = v.name,
+                                    .code = TsCodes.type_not_array_type,
+                                    .message = msg,
+                                });
+                            } else {
+                                try self.report(v.name, TsCodes.type_not_array_type, "Type is not an array type.");
+                            }
+                        }
                         if ((self.hir.kindOf(fr.target) == .let_decl or self.hir.kindOf(fr.target) == .const_decl) and
                             v.name != hir_mod.none_node_id and self.hir.kindOf(v.name) == .identifier)
                         {
@@ -1702,7 +1735,13 @@ pub const Checker = struct {
                             // even though their current flow type is
                             // `undefined`.
                         } else if (!(self.engine.isAssignableTo(elem_t, target_t) catch true)) {
-                            try self.report(fr.target, TsCodes.type_not_assignable, "Type is not assignable to target type.");
+                            // Prefer the richer "Type 'X' is not assignable to
+                            // type 'Y'." prose so for-of TS2322 sites pick up
+                            // the source element / target binding names —
+                            // matches upstream baselines `ES5For-ofTypeCheck8/11`
+                            // and similar. Falls back to the generic wording
+                            // when neither side renders.
+                            try self.reportTypeNotAssignable(fr.target, elem_t, target_t, "Type is not assignable to target type.");
                         }
                     },
                     .array_literal => try self.checkArrayDestructuringAssignment(fr.target, elem_t, hir_mod.none_node_id, 0),
@@ -17012,7 +17051,16 @@ pub const Checker = struct {
                         // `typeofAnExportedType.ts` / `typeofANonExportedType.ts`.
                         return types.Primitive.any;
                     }
-                    if (self.typeofQueryReferencesOwnDeclaration(type_node, name)) return types.Primitive.any;
+                    if (self.typeofQueryReferencesOwnDeclaration(type_node, name)) {
+                        // `var p: typeof p` — when a PRIOR `var p` declaration
+                        // already exists in the same scope, tsc resolves the
+                        // `typeof` to that prior binding's static type rather
+                        // than treating it as a self-cycle. Mirrors upstream
+                        // for `validMultipleVariableDeclarations.ts(25)` and
+                        // similar redeclaration-typeof patterns.
+                        if (self.priorVarDeclTypeForTypeofSelf(type_node, name)) |prior_t| return prior_t;
+                        return types.Primitive.any;
+                    }
                     const value_t = self.typeOfIdentifier(tt.operand);
                     try self.reportUnresolvedSimpleTypeofTypeArguments(tt.operand);
                     return value_t;
@@ -17276,6 +17324,27 @@ pub const Checker = struct {
             return hir_mod.identifierOf(self.hir, v.name).name == name;
         }
         return false;
+    }
+
+    /// When a `typeof p` query targets the same `var p` it sits in, look
+    /// for a PRIOR `var p` declaration in the enclosing block / namespace.
+    /// Returns its concrete declared-or-inferred type so a redeclaration
+    /// like `var p: typeof p;` (after `var p: Point;`) doesn't collapse
+    /// to `any` and trigger a spurious TS2403.
+    fn priorVarDeclTypeForTypeofSelf(
+        self: *Checker,
+        type_node: NodeId,
+        name: hir_mod.StringId,
+    ) ?TypeId {
+        var cur = type_node;
+        while (cur != hir_mod.none_node_id) : (cur = self.hir.parentOf(cur)) {
+            const k = self.hir.kindOf(cur);
+            if (k != .var_decl and k != .let_decl and k != .const_decl) continue;
+            const scope = self.hir.parentOf(cur);
+            if (scope == hir_mod.none_node_id) return null;
+            return self.previousVarDeclTypeInScope(scope, cur, name);
+        }
+        return null;
     }
 
     fn reportMissingRootForUnresolvedTypeofDottedQuery(
@@ -21715,6 +21784,31 @@ pub const Checker = struct {
             },
             else => true,
         };
+    }
+
+    /// True when `t` looks array-like enough to destructure with an
+    /// array binding pattern: an array/tuple object type whose number
+    /// index resolves, or `any`/`unknown` (treated as opaque). Falls
+    /// back to checking iterable-like for primitives like `string`.
+    fn elemIsArrayLikeForForOfDestructure(self: *Checker, t: TypeId) bool {
+        if (t == types.Primitive.any or t == types.Primitive.unknown) return true;
+        if (t == types.Primitive.string_t) return true;
+        if (t >= self.interner.pool.typeCount()) return false;
+        const flags = self.interner.pool.flagsOf(t);
+        if (flags.is_object_type) {
+            if (self.interner.objectNumberIndex(t) != types.Primitive.none) return true;
+            // Tuple shapes expose positional members but no number
+            // indexer — treat presence of any `0`/`1`/... member as
+            // array-like for destructure purposes.
+            return self.isTupleShapedTarget(t);
+        }
+        if (flags.is_union) {
+            for (self.interner.unionMembers(t)) |m| {
+                if (!self.elemIsArrayLikeForForOfDestructure(m)) return false;
+            }
+            return true;
+        }
+        return false;
     }
 
     fn arrayElementType(self: *Checker, obj_t: TypeId) CheckError!TypeId {
