@@ -3729,9 +3729,42 @@ pub const Parser = struct {
         // Only treat the keyword as an attributes clause when followed
         // by `{` — otherwise `with` is reserved for `with` statements
         // (we just leave it for whatever surrounding context handles).
-        if (self.peekAt(1).kind != .open_brace) return;
+        // A trailing `with` / `assert` with no `{` is reported as the
+        // tsc-style `TS1005: '{' expected.` anchored at the column right
+        // after the keyword (matches `importAttributes4`/`importAssertion4`).
+        const keyword_tok = self.peek();
+        if (self.peekAt(1).kind != .open_brace) {
+            const next_tok = self.peekAt(1);
+            const next_is_terminator = switch (next_tok.kind) {
+                .semicolon, .eof, .close_brace, .close_paren => true,
+                else => false,
+            };
+            // Heuristic: only synthesize the missing-`{` diagnostic when the
+            // `with` keyword sits at the tail of an import (or before a
+            // statement terminator / newline). Otherwise leave the
+            // surrounding parser to handle it (e.g. `with` statements).
+            if (next_is_terminator or next_tok.flags.preceded_by_newline) {
+                // tsc anchors TS1005 `'{' expected.` at the next "meaningful"
+                // token position. When the keyword sits immediately before a
+                // newline + EOF, that's the column-1 start of the next line
+                // (`importAssertion4` baseline `(2,1)`); when the keyword is
+                // the very last byte of the file with no newline, it's the
+                // column right after the keyword (`importAttributes4` `(1,34)`).
+                const anchor_pos: u32 = if (next_tok.flags.preceded_by_newline)
+                    next_tok.span.start
+                else
+                    keyword_tok.span.end;
+                const anchor_line: u32 = if (next_tok.flags.preceded_by_newline)
+                    next_tok.line
+                else
+                    keyword_tok.line;
+                try self.reportCodeAt(anchor_pos, anchor_line, 1005, "'{' expected.");
+                _ = self.advance(); // consume the dangling `with` / `assert`
+            }
+            return;
+        }
         _ = self.advance(); // `with` / `assert`
-        _ = try self.expect(.open_brace, "'{' to start import attributes");
+        const open_brace_tok = try self.expect(.open_brace, "'{' to start import attributes");
         while (self.peek().kind != .close_brace and self.peek().kind != .eof) {
             // key: identifier-like or string literal
             const key_kind = self.peek().kind;
@@ -3753,7 +3786,26 @@ pub const Parser = struct {
             }
             if (!self.match(.comma)) break;
         }
-        _ = try self.expect(.close_brace, "'}' to close import attributes");
+        if (self.peek().kind != .close_brace) {
+            // Synthesize `TS1005: '}' expected.` matching tsc's
+            // `importAttributes5`/`importAssertion5` baselines. tsc anchors
+            // it at the next "meaningful" token — that's column-1 of the
+            // following line when the `{` is followed by a newline + EOF
+            // (`importAssertion5` `(2,1)`), and the column right after `{`
+            // when the file ends with no newline (`importAttributes5` `(1,36)`).
+            const next_tok = self.peek();
+            const anchor_pos: u32 = if (next_tok.kind == .eof and !next_tok.flags.preceded_by_newline)
+                open_brace_tok.span.end
+            else
+                next_tok.span.start;
+            const anchor_line: u32 = if (next_tok.kind == .eof and !next_tok.flags.preceded_by_newline)
+                open_brace_tok.line
+            else
+                next_tok.line;
+            try self.reportCodeAt(anchor_pos, anchor_line, 1005, "'}' expected.");
+            return;
+        }
+        _ = self.advance(); // closing `}`
     }
 
     fn parseExportDeclaration(self: *Parser) ParseError!NodeId {
@@ -5195,6 +5247,19 @@ pub const Parser = struct {
         defer accessor_pairs.deinit(self.gpa);
         while (self.peek().kind != .close_brace and self.peek().kind != .eof) {
             const t = self.peek();
+            // `static` is illegal on an index signature inside an interface
+            // or type literal — tsc emits TS1071 anchored at the `static`
+            // keyword (matches `staticIndexSignature4`/`staticIndexSignature5`
+            // baselines). Skip the keyword so the index-signature parser
+            // takes over the following `[k: K]: V` (or `readonly [k: K]: V`).
+            if (t.kind == .kw_static and
+                (self.peekAt(1).kind == .open_bracket or
+                    (self.peekAt(1).kind == .kw_readonly and self.peekAt(2).kind == .open_bracket)))
+            {
+                _ = self.advance(); // consume `static`
+                try self.reportCodeAt(t.span.start, t.line, 1071, "'static' modifier cannot appear on an index signature.");
+                continue;
+            }
             // Index signature: `[k: K]: V` or `readonly [k: K]: V`.
             // Detect via `[ ident : ident ]` shape, then commit.
             if (t.kind == .open_bracket or
