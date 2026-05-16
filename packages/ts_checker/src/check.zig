@@ -17218,12 +17218,28 @@ pub const Checker = struct {
             try path.append(self.gpa, hir_mod.identifierOf(self.hir, q).name);
         }
         if (try self.resolveQualifiedImportNamespaceTypeRef(type_node, path.items, r.name)) |t| return t;
+        // Substitute leading `import alias = X.Y;` aliases so a qualified
+        // type-ref like `alias.Point` resolves through the aliased
+        // namespace path (`X.Y.Point`). Mirrors upstream behavior where
+        // `import a = N;` lets `a.T` refer to `N.T`. Without this the
+        // type-ref falls back to `unknown` and triggers a spurious
+        // TS2403 against later `N.T` declarations of the same `var`.
+        var alias_path: std.ArrayListUnmanaged(hir_mod.StringId) = .empty;
+        defer alias_path.deinit(self.gpa);
+        var resolved_path: []const hir_mod.StringId = path.items;
+        if (try self.appendImportEqualsNamespacePathForLocal(&alias_path, path.items[0], type_node)) {
+            for (path.items[1..]) |seg| try alias_path.append(self.gpa, seg);
+            resolved_path = alias_path.items;
+            std.debug.print("[DBG-ALIAS] sub {s} -> {} segs (first={s})\n", .{ self.string_interner.get(path.items[0]), alias_path.items.len, self.string_interner.get(alias_path.items[0]) });
+        } else {
+            std.debug.print("[DBG-ALIAS] no sub for {s}\n", .{self.string_interner.get(path.items[0])});
+        }
         const root = self.rootBlockFor(type_node);
         const root_stmts = if (root != hir_mod.none_node_id and self.hir.kindOf(root) == .block_stmt)
             hir_mod.blockStmts(self.hir, root)
         else
             return null;
-        const ns_node = self.findNamespaceByPath(root_stmts, path.items) orelse return null;
+        const ns_node = self.findNamespaceByPath(root_stmts, resolved_path) orelse return null;
         const decl = self.findNamedTypeDeclInNamespace(ns_node, r.name) orelse return null;
         if (self.qualifiedDeclHasMissingRequiredTypeArgs(decl, r.args_len)) {
             // Match upstream TS shape — `Generic type 'Foo<T>' requires N
