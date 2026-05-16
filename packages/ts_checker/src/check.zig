@@ -273,6 +273,7 @@ pub const TsCodes = struct {
     pub const new_expression_implicitly_any: u32 = 7009;
     pub const generator_implicit_yield_type: u32 = 7055;
     pub const generator_implicit_yield_type_short: u32 = 7025;
+    pub const global_this_no_index_signature: u32 = 7017;
     pub const element_implicitly_any: u32 = 7053;
     pub const declared_but_not_read: u32 = 6133;
     pub const object_literal_excess_property: u32 = 2353;
@@ -3257,13 +3258,14 @@ pub const Checker = struct {
         // expression bodies and other concise forms always return the
         // expression value, so they never trigger TS2355.
         if (self.hir.kindOf(f.body) != .block_stmt) return;
-        // Skip class members and object-literal methods — TS2355
-        // applies to standalone functions / arrows in our slice; the
-        // class-member path needs additional ambient/abstract handling.
+        // Object-literal methods are contextually typed in many JS
+        // patterns where our slice still over-reports. Class methods
+        // with real bodies do participate in TS2355, including
+        // parser-recovery bodies.
         const parent = self.hir.parentOf(node);
         if (parent != hir_mod.none_node_id) {
             switch (self.hir.kindOf(parent)) {
-                .object_property, .class_decl, .class_expr => return,
+                .object_property => return,
                 else => {},
             }
         }
@@ -22942,6 +22944,10 @@ pub const Checker = struct {
                     {
                         break :blk types.Primitive.any;
                     }
+                    if (self.memberAccessObjectIsGlobalThisThis(m.object)) {
+                        try self.reportGlobalThisNoIndexSignature(node);
+                        break :blk types.Primitive.any;
+                    }
                     try self.reportPropertyDoesNotExistOnType(node, m.name, access_obj_t);
                 } else if (self.interner.pool.flagsOf(access_obj_t).is_intersection) {
                     if (try self.broadObjectPrototypeMember(m.name)) |t| {
@@ -27005,6 +27011,7 @@ pub const Checker = struct {
             if (self.thisDirectlyInsideNamespaceBody(node)) {
                 self.report(node, TsCodes.this_in_namespace_body, "'this' cannot be referenced in a module or namespace body.") catch {};
             }
+            if (self.thisIsGlobalScriptThis(node)) return self.bareGlobalThisType() catch types.Primitive.any;
             if (!self.sourceHasStrictFalseDirective() and
                 !self.identifierThisIsArrowCaptured(node) and
                 !self.thisInsideObjectLiteralMethod(node))
@@ -28120,6 +28127,13 @@ pub const Checker = struct {
         return self.interner.internIntersection(&[_]TypeId{ window_t, global_this_t }) catch return error.OutOfMemory;
     }
 
+    fn bareGlobalThisType(self: *Checker) CheckError!TypeId {
+        const t = self.interner.internObjectType(&.{}) catch return error.OutOfMemory;
+        const global_name = self.string_interner.intern("typeof globalThis") catch return error.OutOfMemory;
+        try self.type_names.put(self.gpa, global_name, t);
+        return t;
+    }
+
     fn appendDeclaredInterfaceMembers(
         self: *Checker,
         members: *std.ArrayListUnmanaged(types.ObjectMember),
@@ -28320,7 +28334,7 @@ pub const Checker = struct {
                 // cannot satisfy the threshold.
                 const ll = if (cand_str.len > typo.len) cand_str.len - typo.len else typo.len - cand_str.len;
                 const regexp_suffix_candidate = std.mem.eql(u8, cand_str, "RegExp") and
-                    asciiEndsWithIgnoreCase(typo, "regexp");
+                    lowerAsciiIdentifierEndsWith(typo, "regexp");
                 if (!regexp_suffix_candidate and ll > 2 and ll > typo.len / 4) return;
                 // tsc's `getSpellingSuggestion` does case-insensitive
                 // comparison so `$ERROR` → `Error` (parserS7.3_A1.1_T2)
@@ -28412,7 +28426,7 @@ pub const Checker = struct {
         const threshold: usize = @min((name_str.len * 4) / 10, @as(usize, 4));
         const regexp_suffix_suggestion = !skip_suggestions and
             std.mem.eql(u8, best.name, "RegExp") and
-            asciiEndsWithIgnoreCase(name_str, "regexp");
+            lowerAsciiIdentifierEndsWith(name_str, "regexp");
         const has_suggestion = !skip_suggestions and
             ((best.dist <= threshold and best.name.len > 0) or regexp_suffix_suggestion);
         const suggestion_name: []const u8 = if (regexp_suffix_suggestion) "RegExp" else best.name;
@@ -28437,9 +28451,12 @@ pub const Checker = struct {
         });
     }
 
-    fn asciiEndsWithIgnoreCase(value: []const u8, suffix: []const u8) bool {
+    fn lowerAsciiIdentifierEndsWith(value: []const u8, suffix: []const u8) bool {
         if (suffix.len > value.len) return false;
-        return std.ascii.eqlIgnoreCase(value[value.len - suffix.len ..], suffix);
+        for (value) |c| {
+            if (c < 'a' or c > 'z') return false;
+        }
+        return std.mem.eql(u8, value[value.len - suffix.len ..], suffix);
     }
 
     fn reportCannotFindNamePlain(self: *Checker, node: NodeId, name: hir_mod.StringId) !void {
@@ -29539,10 +29556,45 @@ pub const Checker = struct {
         if (self.thisInsideCheckJsCallbackWithThis(node)) return types.Primitive.any;
         if (self.currentThisType()) |this_t| return this_t;
         if (self.nodeHasAncestorKind(node, .decorator)) return types.Primitive.any;
+        if (self.thisIsGlobalScriptThis(node)) return try self.bareGlobalThisType();
         if (!self.sourceHasStrictFalseDirective() and !self.thisInsideObjectLiteralMethod(node)) {
             try self.report(node, TsCodes.this_implicitly_any, "'this' implicitly has type 'any' because it does not have a type annotation.");
         }
         return types.Primitive.any;
+    }
+
+    fn thisIsGlobalScriptThis(self: *Checker, node: NodeId) bool {
+        if (self.sourceHasStrictFalseDirective()) return false;
+        if (self.rootHasTopLevelExternalModuleMarker(node)) return false;
+        var cur = self.hir.parentOf(node);
+        while (cur != hir_mod.none_node_id) : (cur = self.hir.parentOf(cur)) {
+            switch (self.hir.kindOf(cur)) {
+                .fn_decl, .fn_expr, .class_decl, .class_expr, .object_literal => return false,
+                .arrow_fn => {},
+                else => {},
+            }
+        }
+        return true;
+    }
+
+    fn memberAccessObjectIsGlobalThisThis(self: *Checker, object_node: NodeId) bool {
+        switch (self.hir.kindOf(object_node)) {
+            .this_expr => return self.thisIsGlobalScriptThis(object_node),
+            .identifier => {
+                const id = hir_mod.identifierOf(self.hir, object_node);
+                return std.mem.eql(u8, self.string_interner.get(id.name), "this") and self.thisIsGlobalScriptThis(object_node);
+            },
+            else => return false,
+        }
+    }
+
+    fn reportGlobalThisNoIndexSignature(self: *Checker, node: NodeId) CheckError!void {
+        try self.diagnostics.append(self.gpa, .{
+            .node = node,
+            .pos = self.memberAccessNamePos(node),
+            .code = TsCodes.global_this_no_index_signature,
+            .message = "Element implicitly has an 'any' type because type 'typeof globalThis' has no index signature.",
+        });
     }
 
     fn nodeInsideAmbientVarInitializer(self: *Checker, node: NodeId) bool {
@@ -40658,6 +40710,39 @@ test "checker: unbound this expression emits TS2683" {
         if (d.code == TsCodes.this_implicitly_any) found = true;
     }
     try T.expect(found);
+}
+
+test "checker: global script this missing property reports globalThis index diagnostic" {
+    const s = try newSetup("this.R;");
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+
+    var saw_global_this = false;
+    for (s.checker.diagnostics.items) |d| {
+        try T.expect(d.code != TsCodes.this_implicitly_any);
+        if (d.code == TsCodes.global_this_no_index_signature and
+            std.mem.indexOf(u8, d.message, "typeof globalThis") != null)
+        {
+            saw_global_this = true;
+        }
+    }
+    try T.expect(saw_global_this);
+}
+
+test "checker: class method with non-void return type must return value" {
+    const s = try newSetup(
+        \\class C {
+        \\  m(): boolean {}
+        \\}
+    );
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+
+    var saw = false;
+    for (s.checker.diagnostics.items) |d| {
+        if (d.code == TsCodes.fn_must_return_value) saw = true;
+    }
+    try T.expect(saw);
 }
 
 test "checker: missing this property in method emits TS2339" {
@@ -53525,6 +53610,22 @@ test "checker: TS2552 does not suggest DOM Node for model" {
             try T.expect(std.mem.indexOf(u8, d.message, "'Node'") == null);
         }
         if (d.code == TsCodes.cannot_find_name and std.mem.indexOf(u8, d.message, "'model'") != null) {
+            saw_plain = true;
+        }
+    }
+    try T.expect(saw_plain);
+}
+
+test "checker: TS2552 does not suggest RegExp for mixed-case suffix names" {
+    const s = try newSetup("_classNameRegexp;");
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+    var saw_plain = false;
+    for (s.checker.diagnostics.items) |d| {
+        if (d.code == TsCodes.cannot_find_name_did_you_mean) {
+            try T.expect(std.mem.indexOf(u8, d.message, "'RegExp'") == null);
+        }
+        if (d.code == TsCodes.cannot_find_name and std.mem.indexOf(u8, d.message, "'_classNameRegexp'") != null) {
             saw_plain = true;
         }
     }
