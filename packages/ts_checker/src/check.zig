@@ -17230,9 +17230,6 @@ pub const Checker = struct {
         if (try self.appendImportEqualsNamespacePathForLocal(&alias_path, path.items[0], type_node)) {
             for (path.items[1..]) |seg| try alias_path.append(self.gpa, seg);
             resolved_path = alias_path.items;
-            std.debug.print("[DBG-ALIAS] sub {s} -> {} segs (first={s})\n", .{ self.string_interner.get(path.items[0]), alias_path.items.len, self.string_interner.get(alias_path.items[0]) });
-        } else {
-            std.debug.print("[DBG-ALIAS] no sub for {s}\n", .{self.string_interner.get(path.items[0])});
         }
         const root = self.rootBlockFor(type_node);
         const root_stmts = if (root != hir_mod.none_node_id and self.hir.kindOf(root) == .block_stmt)
