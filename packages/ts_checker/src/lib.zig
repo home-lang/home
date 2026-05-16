@@ -95,9 +95,14 @@ pub fn stringProto(
     // common single-arg form until rest params land in lib).
     const sig_str_string = try ti.internSignature(&[_]TypeId{string_t}, string_t, false);
 
+    // `(pos: number): number` — used by `charCodeAt` (returns the
+    // UTF-16 code unit at the given index, NaN if out of range).
+    const sig_num_num = try ti.internSignature(&[_]TypeId{number_t}, number_t, false);
+
     const m = [_]types.ObjectMember{
         .{ .name = try sint.intern("length"), .type = number_t, .is_optional = false, .is_readonly = true, .is_method = false },
         .{ .name = try sint.intern("charAt"), .type = sig_num_string, .is_optional = false, .is_readonly = false, .is_method = true },
+        .{ .name = try sint.intern("charCodeAt"), .type = sig_num_num, .is_optional = false, .is_readonly = false, .is_method = true },
         .{ .name = try sint.intern("toUpperCase"), .type = sig_void_string, .is_optional = false, .is_readonly = false, .is_method = true },
         .{ .name = try sint.intern("toLowerCase"), .type = sig_void_string, .is_optional = false, .is_readonly = false, .is_method = true },
         .{ .name = try sint.intern("startsWith"), .type = sig_str_bool, .is_optional = false, .is_readonly = false, .is_method = true },

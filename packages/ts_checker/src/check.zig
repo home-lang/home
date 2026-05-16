@@ -7312,6 +7312,25 @@ pub const Checker = struct {
         return null;
     }
 
+    /// True when `node`'s nearest enclosing function-like node has
+    /// `is_generator` set. Used by `.yield_expr` to detect when the
+    /// parser already raised TS1163 (yield outside generator) so the
+    /// checker can suppress cascading TS2304/TS2363 noise from the
+    /// operand. Stops at the first function-like ancestor so an outer
+    /// generator wrapping a non-generator inner fn doesn't mask the
+    /// inner's invalid-yield context.
+    fn isInsideGeneratorFunction(self: *Checker, node: NodeId) bool {
+        var cur = self.hir.parentOf(node);
+        while (cur != hir_mod.none_node_id) : (cur = self.hir.parentOf(cur)) {
+            const k = self.hir.kindOf(cur);
+            if (k == .fn_decl or k == .fn_expr or k == .arrow_fn) {
+                const f = hir_mod.fnDeclOf(self.hir, cur);
+                return f.flags.is_generator;
+            }
+        }
+        return false;
+    }
+
     fn functionHasGenericRestTupleReturn(self: *Checker, fn_node: NodeId) bool {
         const f = hir_mod.fnDeclOf(self.hir, fn_node);
         if (f.return_type == hir_mod.none_node_id or self.hir.kindOf(f.return_type) != .tuple_type) return false;
@@ -9180,6 +9199,14 @@ pub const Checker = struct {
             };
             if (target_invalid) {
                 for (stmts[start..i]) |decorator_node| {
+                    // Skip when the decorator has an empty expression
+                    // (e.g. bare `@` followed by an unexpected token):
+                    // the parser already raised TS1109 'Expression
+                    // expected.' at the next token, and tsc does NOT
+                    // also fire TS1206. Mirrors
+                    // `parserErrorRecovery_ClassElement3.ts`.
+                    const d = hir_mod.decoratorOf(self.hir, decorator_node);
+                    if (d.expression == hir_mod.none_node_id) continue;
                     try self.report(decorator_node, TsCodes.decorators_not_valid_here, "Decorators are not valid here.");
                 }
                 continue;
@@ -24561,13 +24588,19 @@ pub const Checker = struct {
                     }
                     break :blk types.Primitive.any;
                 }
-                // Skip operand type-checking when the enclosing context
-                // isn't a generator — the parser already raised TS1163
-                // ("'yield' is only allowed in a generator body") and
-                // tsc suppresses cascading TS2304/TS2363 noise on the
-                // operand. Matches fixtures like `YieldExpression11/14/15_es6`
+                // Skip operand type-checking when the enclosing function
+                // isn't actually a generator — the parser already raised
+                // TS1163 ("'yield' is only allowed in a generator body")
+                // and tsc suppresses cascading TS2304/TS2363 noise on
+                // the operand. Matches fixtures like `YieldExpression11/14/15_es6`
                 // and `YieldStarExpression1_es6`.
-                if (gen == null) {
+                //
+                // `current_generator_info` alone isn't a sufficient signal:
+                // valid generators without a return-type annotation also
+                // leave it null (yield type is inferred from body). Walk
+                // the parent chain to confirm we're outside any generator
+                // fn / method body before suppressing.
+                if (gen == null and !self.isInsideGeneratorFunction(node)) {
                     break :blk types.Primitive.any;
                 }
                 const inner_t = try self.checkExpression(y.expr);

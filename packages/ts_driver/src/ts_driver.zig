@@ -219,7 +219,15 @@ fn reportMissingReferencePathDiagnostics(
         if (isHarnessProvidedReferencePath(path) or virtualReferencePathExists(source, path)) continue;
 
         std.Io.Dir.cwd().access(io, path, .{}) catch {
-            const message = try std.fmt.allocPrint(gpa, "File '{s}' not found.", .{path});
+            // tsc normalizes backslashes to forward slashes when
+            // rendering TS6053 paths (Windows-style separators in the
+            // `<reference path='..\\compiler\\io.ts'/>` source become
+            // `../compiler/io.ts` in the diagnostic prose). Mirror that
+            // here so fixtures like `parserharness.ts` match upstream.
+            const normalized = try gpa.alloc(u8, path.len);
+            defer gpa.free(normalized);
+            for (path, 0..) |ch, i| normalized[i] = if (ch == '\\') '/' else ch;
+            const message = try std.fmt.allocPrint(gpa, "File '{s}' not found.", .{normalized});
             defer gpa.free(message);
             try appendDriverDiagnostic(
                 gpa,

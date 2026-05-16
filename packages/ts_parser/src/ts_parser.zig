@@ -97,6 +97,12 @@ pub const Parser = struct {
     unbraced_statement_block_depth: ?u32,
     function_depth: u32,
     async_function_depth: u32,
+    /// Stack-style counter — incremented while parsing a parameter
+    /// default-value initializer. Used to gate TS2524 (`'await'
+    /// expressions cannot be used in a parameter initializer.`) which
+    /// fires at the `await` token when the surrounding async-function
+    /// parameter initializer contains an `await` expression.
+    param_initializer_depth: u32,
     generator_depth: u32,
     new_target_depth: u32,
     static_block_depth: u32,
@@ -169,6 +175,7 @@ pub const Parser = struct {
             .unbraced_statement_block_depth = null,
             .function_depth = 0,
             .async_function_depth = 0,
+            .param_initializer_depth = 0,
             .generator_depth = 0,
             .new_target_depth = 0,
             .static_block_depth = 0,
@@ -2122,7 +2129,11 @@ pub const Parser = struct {
                 var type_ann: NodeId = hir_mod.none_node_id;
                 if (self.match(.colon)) type_ann = try self.parseTypeAnnotation();
                 var default_value: NodeId = hir_mod.none_node_id;
-                if (self.match(.equal)) default_value = try self.parseAssignmentExpression();
+                if (self.match(.equal)) {
+                    self.param_initializer_depth += 1;
+                    defer self.param_initializer_depth -= 1;
+                    default_value = try self.parseAssignmentExpression();
+                }
                 const param = try self.builder.addParameterWithDecorators(
                     .{ .start = param_start.span.start, .end = self.tokens[self.cursor - 1].span.end },
                     name_node,
@@ -2132,12 +2143,16 @@ pub const Parser = struct {
                     param_decorators.items,
                 );
                 // TS1016: A required parameter cannot follow an optional
-                // parameter. Required = not optional (no `?`) AND no
-                // default value AND not rest. Optional-marker comes from
-                // either `?` or `= default`. Mirrors tsc's per-parameter
-                // scan; emitted at the *name* (or pattern) of the
-                // offending required parameter, matching the upstream
-                // column in `functionOverloadErrorsSyntax.ts`.
+                // parameter. Per tsc: "optional" here means the explicit
+                // `?` marker only. A parameter with a default-value
+                // initializer (`x = 1`) does NOT make the next parameter
+                // required-after-optional — see fixture
+                // `fatarrowfunctionsOptionalArgsErrors1.ts` line "(arg1 =
+                // 1, arg2) => 1; // Uninitialized parameter makes the
+                // initialized one required". Required = not `?`, not
+                // rest, no default value. Emitted at the *name* (or
+                // pattern) of the offending required parameter, matching
+                // the upstream column in `functionOverloadErrorsSyntax.ts`.
                 const is_required_now = !flags.is_optional and
                     !flags.is_rest and
                     default_value == hir_mod.none_node_id;
@@ -2148,7 +2163,7 @@ pub const Parser = struct {
                         const prev = params.items[i - 1];
                         if (self.hir.kindOf(prev) != .parameter) continue;
                         const pp = hir_mod.parameterOf(self.hir, prev);
-                        if (pp.flags.is_optional or pp.default_value != hir_mod.none_node_id) {
+                        if (pp.flags.is_optional) {
                             prior_optional = true;
                         }
                         break;
@@ -7442,21 +7457,42 @@ pub const Parser = struct {
                     const id = try self.internToken(t);
                     return try self.builder.addIdentifier(tokenSpan(t), id);
                 }
-                if (self.peekAt(1).kind == .semicolon or
-                    self.peekAt(1).kind == .close_paren or
-                    self.peekAt(1).kind == .close_bracket or
-                    self.peekAt(1).kind == .close_brace or
-                    self.peekAt(1).kind == .comma or
-                    self.peekAt(1).kind == .colon or
-                    self.peekAt(1).kind == .eof)
-                {
+                const in_async = self.async_function_depth > 0;
+                const next_kind = self.peekAt(1).kind;
+                const terminator_follows = next_kind == .semicolon or
+                    next_kind == .close_paren or
+                    next_kind == .close_bracket or
+                    next_kind == .close_brace or
+                    next_kind == .comma or
+                    next_kind == .colon or
+                    next_kind == .eof;
+                if (terminator_follows and !in_async) {
                     _ = self.advance();
                     const id = try self.internToken(t);
                     return try self.builder.addIdentifier(tokenSpan(t), id);
                 }
+                if (terminator_follows and in_async) {
+                    // `await)` / `await]` / `await,` inside an async
+                    // function — `await` is a reserved keyword here,
+                    // so treat it as an await-expression with a
+                    // missing operand. Mirrors tsc: TS2524 at the
+                    // `await` token when inside a parameter
+                    // initializer, plus TS1109 at the position right
+                    // after `await` for the missing operand.
+                    _ = self.advance();
+                    if (self.param_initializer_depth > 0) {
+                        try self.reportCodeAt(t.span.start, t.line, 2524, "'await' expressions cannot be used in a parameter initializer.");
+                    }
+                    const err_pos = t.span.end;
+                    try self.reportCodeAt(err_pos, t.line, 1109, "Expression expected.");
+                    return try self.builder.addAwaitExpr(tokenSpan(t), hir_mod.none_node_id);
+                }
                 _ = self.advance();
                 const operand = try self.parseUnaryExpression();
                 const sp: Span = .{ .start = t.span.start, .end = self.hir.spanOf(operand).end };
+                if (self.param_initializer_depth > 0) {
+                    try self.reportCodeAt(t.span.start, t.line, 2524, "'await' expressions cannot be used in a parameter initializer.");
+                }
                 return try self.builder.addAwaitExpr(sp, operand);
             },
             .kw_yield => {
