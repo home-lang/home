@@ -1097,8 +1097,8 @@ pub const Printer = struct {
     /// Lower `const { a, b } = obj` / `const [x, y] = arr` to a
     /// comma-declarator chain: `var _o = obj, a = _o.a, b = _o.b;`.
     /// At ES5 the `let`/`const` keyword also collapses to `var`. v0
-    /// supports shorthand keys + plain array elements only — defaults,
-    /// renames, rest, and nested patterns are not yet handled.
+    /// supports shorthand keys + plain array elements + default values.
+    /// Renames, rest, and nested patterns are still TODO.
     fn printDestructuringVarDecl(
         self: *Printer,
         kw_in: []const u8,
@@ -1129,6 +1129,27 @@ pub const Printer = struct {
             try self.write(", ");
             try self.write(name_str);
             try self.write(" = ");
+            // §4.A.4 destructuring v2 — default values: when the
+            // pattern element has a default (`var { a = 1 } = obj`
+            // or `var [a = 1] = arr`), emit
+            // `_o.a === void 0 ? 1 : _o.a` (object) or
+            // `_arr[0] === void 0 ? 1 : _arr[0]` (array) so the
+            // default fires only when the slot is `undefined`.
+            const has_default = param.default_value != hir_mod.none_node_id;
+            if (has_default) {
+                try self.write(tmp);
+                if (is_array) {
+                    var buf: [32]u8 = undefined;
+                    const idx_str = std.fmt.bufPrint(&buf, "[{d}]", .{i}) catch unreachable;
+                    try self.write(idx_str);
+                } else {
+                    try self.write(".");
+                    try self.write(name_str);
+                }
+                try self.write(" === void 0 ? ");
+                try self.printExpression(param.default_value);
+                try self.write(" : ");
+            }
             try self.write(tmp);
             if (is_array) {
                 var buf: [32]u8 = undefined;
@@ -7802,6 +7823,32 @@ test "emit: destructuring keeps const keyword at es2015+" {
     try T.expect(std.mem.indexOf(u8, out, "const _o = obj") != null);
     try T.expect(std.mem.indexOf(u8, out, "a = _o.a") != null);
     try T.expect(std.mem.indexOf(u8, out, "var ") == null);
+}
+
+test "emit: object destructuring with default fires void 0 check at es5" {
+    // §4.A.4 destructuring v2 — `var { a = 1 } = obj;` lowers to
+    // `var _o = obj, a = _o.a === void 0 ? 1 : _o.a;` so the default
+    // fires only when the property is missing/undefined.
+    const out = try emitWithOpts("const { a = 1 } = obj;", .{ .es_target = .es5 });
+    defer T.allocator.free(out);
+    try T.expect(std.mem.indexOf(u8, out, "var _o = obj") != null);
+    try T.expect(std.mem.indexOf(u8, out, "a = _o.a === void 0 ? 1 : _o.a") != null);
+}
+
+test "emit: array destructuring with default fires void 0 check at es5" {
+    const out = try emitWithOpts("const [a = 1] = arr;", .{ .es_target = .es5 });
+    defer T.allocator.free(out);
+    try T.expect(std.mem.indexOf(u8, out, "var _arr = arr") != null);
+    try T.expect(std.mem.indexOf(u8, out, "a = _arr[0] === void 0 ? 1 : _arr[0]") != null);
+}
+
+test "emit: mixed destructuring with and without defaults at es5" {
+    // Mix of defaulted and non-defaulted elements in the same pattern.
+    const out = try emitWithOpts("const { a, b = 2 } = obj;", .{ .es_target = .es5 });
+    defer T.allocator.free(out);
+    try T.expect(std.mem.indexOf(u8, out, "var _o = obj") != null);
+    try T.expect(std.mem.indexOf(u8, out, "a = _o.a") != null);
+    try T.expect(std.mem.indexOf(u8, out, "b = _o.b === void 0 ? 2 : _o.b") != null);
 }
 
 test "emit: const lowers to var at es5" {
