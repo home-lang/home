@@ -908,6 +908,14 @@ pub const Checker = struct {
     /// the semantic slots needed by `yield`, `return`, and `yield*`.
     generator_type_info: std.AutoHashMapUnmanaged(TypeId, GeneratorTypeInfo),
     current_generator_info: ?GeneratorTypeInfo = null,
+    /// Lowered return-type of the enclosing non-generator function body
+    /// (when an explicit return-type annotation was declared). Set on
+    /// entry to `walkFnBody` and restored on exit so `return <expr>;`
+    /// can validate `<expr>`'s type against the declared shape and
+    /// emit TS2322 on mismatch. Null inside generators (which use
+    /// `current_generator_info` instead), inside arrow bodies without
+    /// an annotation, and at top-level.
+    current_function_return_t: ?TypeId = null,
     function_body_depth: u32 = 0,
     /// Reentrancy guard while synthesizing the global `Symbol` value.
     /// `interface SymbolConstructor` augmentations may mention `Symbol`
@@ -1473,6 +1481,54 @@ pub const Checker = struct {
                         try self.report(node, TsCodes.type_not_assignable, m);
                     } else {
                         try self.report(node, TsCodes.type_not_assignable, "Type is not assignable to function return type.");
+                    }
+                } else if (self.current_function_return_t) |declared| {
+                    // Validate the returned expression against the
+                    // declared function return type. Conservatively
+                    // restricted to the `object_t` declared-return case
+                    // so we don't regress fixtures whose body type
+                    // inference produces wider unions than our relation
+                    // engine can collapse (e.g. `T | null` ret typed
+                    // against `T`). Mirrors upstream
+                    // `nonPrimitiveInFunction.ts:17` where
+                    // `return ret;` with `ret: number` violates the
+                    // declared `: object` annotation.
+                    if (declared == types.Primitive.object_t and
+                        r.value != hir_mod.none_node_id and
+                        ret_t != types.Primitive.none and
+                        ret_t != types.Primitive.any and
+                        ret_t != types.Primitive.unknown and
+                        ret_t != types.Primitive.never)
+                    {
+                        if (!(self.engine.isAssignableTo(ret_t, declared) catch true)) {
+                            // tsc widens fresh literal types in
+                            // return-type-mismatch prose so
+                            // `return ret;` where `ret = 123` (inferred
+                            // `number` after assignment) renders as
+                            // `number`, not `123`. Use the widened
+                            // form when it differs.
+                            const widened_t = self.widenLiteralType(ret_t);
+                            const arena = self.diag_arena.allocator();
+                            const msg = blk: {
+                                if (try self.simpleDiagnosticTypeName(widened_t)) |src_text| {
+                                    break :blk try std.fmt.allocPrint(
+                                        arena,
+                                        "Type '{s}' is not assignable to type 'object'.",
+                                        .{src_text},
+                                    );
+                                }
+                                break :blk try arena.dupe(u8, "Type is not assignable to function return type.");
+                            };
+                            try self.diagnostics.append(self.gpa, .{
+                                // Anchor on the `return` keyword
+                                // (the statement node's start) so the
+                                // column matches the upstream baseline
+                                // shape of `(N, col-of-`return`)`.
+                                .node = node,
+                                .code = TsCodes.type_not_assignable,
+                                .message = msg,
+                            });
+                        }
                     }
                 }
             },
@@ -3261,6 +3317,9 @@ pub const Checker = struct {
         const prev_generator_info = self.current_generator_info;
         defer self.current_generator_info = prev_generator_info;
         self.current_generator_info = null;
+        const prev_function_return_t = self.current_function_return_t;
+        defer self.current_function_return_t = prev_function_return_t;
+        self.current_function_return_t = null;
         self.function_body_depth += 1;
         defer self.function_body_depth -= 1;
         if (f.flags.is_generator and f.return_type != hir_mod.none_node_id) {
@@ -3269,6 +3328,25 @@ pub const Checker = struct {
                 if (self.interner.signatureReturn(sig)) |ret_t| {
                     self.current_generator_info = self.generator_type_info.get(ret_t);
                 }
+            }
+        } else if (!f.flags.is_generator and !f.flags.is_async and
+            f.return_type != hir_mod.none_node_id and
+            self.hir.kindOf(f.return_type) != .type_predicate_type)
+        {
+            // Capture the declared return type so `return <expr>;`
+            // statements inside the body can validate against it and
+            // emit TS2322. Skipped for generators (handled via
+            // `current_generator_info`), async (Promise-wrapped),
+            // and predicate-typed bodies which always return boolean.
+            const declared = self.lowererLowerWithTypeParams(f.return_type) catch types.Primitive.none;
+            if (declared != types.Primitive.none and
+                declared != types.Primitive.any and
+                declared != types.Primitive.unknown and
+                declared != types.Primitive.void_t and
+                declared != types.Primitive.undefined_t and
+                declared != types.Primitive.never)
+            {
+                self.current_function_return_t = declared;
             }
         }
         if (self.hir.kindOf(f.body) == .block_stmt) {
