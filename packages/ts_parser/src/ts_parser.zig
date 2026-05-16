@@ -3876,7 +3876,7 @@ pub const Parser = struct {
             _ = self.advance();
             return;
         }
-        if (t.kind == .open_brace) {
+        if (t.kind == .open_brace or t.kind == .open_paren) {
             try self.reportCodeAt(t.span.start, t.line, 1005, "';' expected.");
             return;
         }
@@ -11937,6 +11937,17 @@ test "parser: open brace after expression statement reports semicolon and recove
     try T.expectEqual(@as(u32, 1005), s.parser.diagnostics.items[0].code);
     try T.expectEqualStrings("';' expected.", s.parser.diagnostics.items[0].message);
     try T.expectEqual(@as(usize, 2), hir_mod.blockStmts(&s.hir, root).len);
+}
+
+test "parser: open paren after import-equals entity reports semicolon" {
+    var s = try newTestSetup("import rect = module(\"rect\"); var bar = rect;");
+    defer destroyTestSetup(s);
+
+    const root = try s.parser.parseSourceFile();
+    try T.expectEqual(@as(usize, 1), s.parser.diagnostics.items.len);
+    try T.expectEqual(@as(u32, 1005), s.parser.diagnostics.items[0].code);
+    try T.expectEqualStrings("';' expected.", s.parser.diagnostics.items[0].message);
+    try T.expectEqual(@as(usize, 3), hir_mod.blockStmts(&s.hir, root).len);
 }
 
 test "parser: invalid token terminates type argument list without greater cascade" {

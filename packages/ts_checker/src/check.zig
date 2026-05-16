@@ -12893,10 +12893,13 @@ pub const Checker = struct {
             .{root_text},
         );
         try self.diagnostics.append(self.gpa, .{
-            .node = node,
+            .node = imp.import_equals,
             .code = TsCodes.cannot_find_namespace,
             .message = msg,
         });
+        if (std.mem.eql(u8, root_text, "module")) {
+            try self.reportCannotFindNodeName(imp.import_equals, root_name);
+        }
     }
 
     fn recordImportEqualsAbstractAlias(self: *Checker, imp: hir_mod.ImportPayload) CheckError!void {
@@ -36784,6 +36787,23 @@ test "checker: import equals reports missing namespace root" {
         if (d.code == TsCodes.cannot_find_namespace) found = true;
     }
     try T.expect(found);
+}
+
+test "checker: import equals module target reports namespace and node global" {
+    const s = try newSetup(
+        \\import rect = module("rect");
+    );
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+
+    var found_namespace = false;
+    var found_node_name = false;
+    for (s.checker.diagnostics.items) |d| {
+        if (d.code == TsCodes.cannot_find_namespace) found_namespace = true;
+        if (d.code == TsCodes.cannot_find_node_name) found_node_name = true;
+    }
+    try T.expect(found_namespace);
+    try T.expect(found_node_name);
 }
 
 test "checker: virtual package imports prefer typesVersions declarations" {
