@@ -3980,6 +3980,7 @@ pub const Checker = struct {
                     v.type_annotation != hir_mod.none_node_id and
                     !self.varDeclHasExplicitAnyAnnotation(node) and
                     !self.varDeclTypeIncludesUndefined(node) and
+                    !self.varDeclHasDefiniteAssertion(node) and
                     !self.isGlobalSymbolConstructorVarDecl(node) and
                     !self.typeAnnotationReferencesGenericWithoutArgs(v.type_annotation) and
                     !self.typeAnnotationRootIsUnresolved(v.type_annotation) and
@@ -4989,6 +4990,38 @@ pub const Checker = struct {
         if (self.hir.kindOf(v.type_annotation) != .type_ref) return false;
         const r = hir_mod.typeRefOf(self.hir, v.type_annotation);
         return r.qualifier_len == 0 and std.mem.eql(u8, self.string_interner.get(r.name), "any");
+    }
+
+    /// Returns true when a `let`/`var` declaration uses the
+    /// definite-assignment assertion (`let x!: T`). tsc treats this
+    /// as an explicit promise that the variable will be assigned
+    /// before use, suppressing TS2454 on subsequent reads. The HIR
+    /// doesn't currently surface the `!` bit, so we re-scan the
+    /// source — the assertion lives between the identifier and the
+    /// `:` of the annotation.
+    fn varDeclHasDefiniteAssertion(self: *Checker, node: NodeId) bool {
+        switch (self.hir.kindOf(node)) {
+            .var_decl, .let_decl, .const_decl => {},
+            else => return false,
+        }
+        const v = hir_mod.varDeclOf(self.hir, node);
+        if (v.name == hir_mod.none_node_id) return false;
+        if (self.hir.kindOf(v.name) != .identifier) return false;
+        if (v.type_annotation == hir_mod.none_node_id) return false;
+        const src = self.source orelse return false;
+        const name_span = self.hir.spanOf(v.name);
+        const type_span = self.hir.spanOf(v.type_annotation);
+        if (name_span.end >= src.len or type_span.start > src.len) return false;
+        var i: usize = name_span.end;
+        const end: usize = @min(src.len, @as(usize, type_span.start));
+        while (i < end) : (i += 1) {
+            const ch = src[i];
+            if (ch == '!') return true;
+            // Anything other than whitespace or `:` before the `!`
+            // would mean we mis-parsed; bail safely.
+            if (ch != ' ' and ch != '\t' and ch != ':') return false;
+        }
+        return false;
     }
 
     fn varDeclTypeContainsSymbol(self: *Checker, node: NodeId) bool {
@@ -9794,7 +9827,7 @@ pub const Checker = struct {
                         }
                         computed_fn_key_t = try self.checkExpression(fn_p.name);
                         if (!try self.computedPropertyKeyTypeIsValid(computed_fn_key_t)) {
-                            try self.report(fn_p.name, TsCodes.computed_property_name_type, "A computed property name must be of type 'string', 'number', 'symbol', or 'any'.");
+                            try self.reportComputedKeyBracket(fn_p.name, TsCodes.computed_property_name_type, "A computed property name must be of type 'string', 'number', 'symbol', or 'any'.");
                         }
                     }
                     const member_name_opt = if (fn_name_is_computed)
@@ -10024,7 +10057,7 @@ pub const Checker = struct {
                         }
                         const key_t = try self.checkExpression(op.key);
                         if (!try self.computedPropertyKeyTypeIsValid(key_t)) {
-                            try self.report(m, TsCodes.computed_property_name_type, "A computed property name must be of type 'string', 'number', 'symbol', or 'any'.");
+                            try self.reportComputedKeyBracket(op.key, TsCodes.computed_property_name_type, "A computed property name must be of type 'string', 'number', 'symbol', or 'any'.");
                         } else if (!op_is_method and
                             !self.classMemberSourceHasLeadingKeyword(m, "accessor") and
                             !self.computedKeyIsUnresolvedIdentifier(op.key) and
@@ -31535,6 +31568,61 @@ pub const Checker = struct {
         });
     }
 
+    /// `null` / `undefined` literal name, anchored on the node kind
+    /// (not the type) so we mirror tsgo's "checkNonNullType" branch
+    /// that gates on whether the operand source token is literally
+    /// `null` or the `undefined` identifier — independent of any
+    /// flow-narrowed type. Returns null when the node isn't one of
+    /// those literals.
+    fn nullishLiteralOperandName(self: *Checker, node: NodeId) ?[]const u8 {
+        return switch (self.hir.kindOf(node)) {
+            .literal_null => "null",
+            .literal_undefined => "undefined",
+            else => null,
+        };
+    }
+
+    fn reportNullishLiteralBinaryOperand(self: *Checker, node: NodeId, name: []const u8) CheckError!void {
+        const msg = try std.fmt.allocPrint(
+            self.diag_arena.allocator(),
+            "The value '{s}' cannot be used here.",
+            .{name},
+        );
+        try self.diagnostics.append(self.gpa, .{
+            .node = node,
+            .code = TsCodes.nullish_relational_operand,
+            .message = msg,
+        });
+    }
+
+    fn reportInOperandLeft(self: *Checker, node: NodeId, t: TypeId) CheckError!void {
+        const arena = self.diag_arena.allocator();
+        const type_text = (try self.simpleDiagnosticTypeName(t)) orelse "";
+        const msg = if (type_text.len > 0)
+            try std.fmt.allocPrint(arena, "Type '{s}' is not assignable to type 'string | number | symbol'.", .{type_text})
+        else
+            try arena.dupe(u8, "Type is not assignable to type 'string | number | symbol'.");
+        try self.diagnostics.append(self.gpa, .{
+            .node = node,
+            .code = TsCodes.type_not_assignable,
+            .message = msg,
+        });
+    }
+
+    fn reportInOperandRight(self: *Checker, node: NodeId, t: TypeId) CheckError!void {
+        const arena = self.diag_arena.allocator();
+        const type_text = (try self.simpleDiagnosticTypeName(t)) orelse "";
+        const msg = if (type_text.len > 0)
+            try std.fmt.allocPrint(arena, "Type '{s}' is not assignable to type 'object'.", .{type_text})
+        else
+            try arena.dupe(u8, "Type is not assignable to type 'object'.");
+        try self.diagnostics.append(self.gpa, .{
+            .node = node,
+            .code = TsCodes.type_not_assignable,
+            .message = msg,
+        });
+    }
+
     fn relationalTypeHasNumberLike(self: *Checker, t: TypeId) bool {
         if (self.typeIsAnyLike(t)) return false;
         const f = self.interner.pool.flagsOf(t);
@@ -31808,6 +31896,16 @@ pub const Checker = struct {
             }
             return true;
         }
+        if (f.is_intersection) {
+            // Numeric enums are encoded as `number & { __enum:E }`;
+            // tsc treats them as `number`-like for `in` LHS. Accept
+            // any intersection whose primitive backbone is number,
+            // string, or symbol (the allowed leaf kinds).
+            for (self.interner.intersectionMembers(t)) |member| {
+                if (self.isInLeftOperandAllowed(member)) return true;
+            }
+            return false;
+        }
         if (f.is_type_parameter) {
             const constraint = self.typeParameterConstraint(t) orelse return false;
             if (constraint == t) return false;
@@ -31917,56 +32015,83 @@ pub const Checker = struct {
                 if (self.typeContainsSymbol(lhs) or self.typeContainsSymbol(rhs)) {
                     try self.reportSymbolOperator(node, "+");
                 }
-                if (self.typeMaybeStringLike(lhs) or self.typeMaybeStringLike(rhs)) {
+                // tsc routes binary `+` through `checkNonNullType` on
+                // each operand UNLESS one side is already string-like
+                // (in which case `+` becomes string concat). The
+                // checkNonNullType branch fires TS18050 whenever the
+                // operand node is the literal `null` keyword or the
+                // `undefined` identifier. Mirror that gate here — `any`
+                // is "assignable to string-like" in tsgo (its kind
+                // check returns true for any), so an `any` partner
+                // suppresses the diagnostic. Fixtures:
+                //   - additionOperatorWithUndefinedValueAndValidOperator
+                //   - additionOperatorWithOnlyNullValueOrUndefinedValue
+                //   - additionOperatorWithNullValueAndInvalidOperator
+                const add_string_like = self.typeMaybeStringLike(lhs) or self.typeMaybeStringLike(rhs);
+                const add_any_like = self.typeIsAnyLike(lhs) or self.typeIsAnyLike(rhs);
+                var lhs_eff = lhs;
+                var rhs_eff = rhs;
+                if (!add_string_like and !add_any_like) {
+                    // After checkNonNullType, a literal null/undefined
+                    // operand contributes the non-nullable variant of
+                    // its type — and because tsc emits TS18050 and
+                    // returns errorType (never-like) on such operands,
+                    // the downstream `Operator '+' cannot be applied`
+                    // diagnostic is suppressed. Mirror that: treat the
+                    // literal-nullish side as any-like for the
+                    // `Operator '+'` decision, but still emit the
+                    // TS18050 anchor.
+                    if (self.nullishLiteralOperandName(b.lhs)) |name| {
+                        try self.reportNullishLiteralBinaryOperand(b.lhs, name);
+                        lhs_eff = types.Primitive.any;
+                    }
+                    if (self.nullishLiteralOperandName(b.rhs)) |name| {
+                        try self.reportNullishLiteralBinaryOperand(b.rhs, name);
+                        rhs_eff = types.Primitive.any;
+                    }
+                }
+                if (self.typeMaybeStringLike(lhs_eff) or self.typeMaybeStringLike(rhs_eff)) {
                     break :blk types.Primitive.string_t;
                 }
-                if (self.typeMaybeNumericLike(lhs) and self.typeMaybeNumericLike(rhs)) {
+                if (self.typeMaybeNumericLike(lhs_eff) and self.typeMaybeNumericLike(rhs_eff)) {
                     break :blk types.Primitive.number_t;
                 }
-                if (!self.typeIsAnyLike(lhs) and !self.typeIsAnyLike(rhs)) {
+                if (!self.typeIsAnyLike(lhs_eff) and !self.typeIsAnyLike(rhs_eff)) {
                     try self.report(node, TsCodes.operator_cannot_be_applied, "Operator '+' cannot be applied to these operand types.");
                 }
                 break :blk types.Primitive.number_t;
             },
             .sub, .mul, .div, .mod, .pow => blk: {
-                // tsc reports TS18050 (`The value 'null'/'undefined'
-                // cannot be used here.`) in preference to TS2362/TS2363
-                // when the offending operand is exact-nullish. Mirrors
-                // the unary-`-`/`+`/`~` policy above and the
-                // exponentiationOperatorWithNullValue* / compound
-                // arithmetic baselines. tsc fires this grammar-level
-                // check regardless of `strictNullChecks`. Skip
-                // untyped-uninitialized-var references (e.g.
-                // `var v; v ** x;`) since tsc treats those as `any`.
-                const lhs_is_untyped_uninit = self.hir.kindOf(b.lhs) == .identifier and
-                    self.identifierIsUntypedUninitializedVar(b.lhs);
-                const rhs_is_untyped_uninit = self.hir.kindOf(b.rhs) == .identifier and
-                    self.identifierIsUntypedUninitializedVar(b.rhs);
-                if (!lhs_is_untyped_uninit and self.typeIsExactNullish(lhs)) {
-                    try self.reportNullishRelationalOperand(b.lhs, lhs);
-                } else if (!self.isArithmeticOperandAllowed(lhs)) {
+                // tsc calls `checkNonNullType` on each operand
+                // unconditionally for these ops; when the operand
+                // node is the literal `null` keyword or the
+                // `undefined` identifier it returns the errorType
+                // (treated as any-like by `checkArithmeticOperandType`)
+                // — that suppresses the TS2362/TS2363 on the SAME
+                // side while still letting the OTHER operand's check
+                // run. Fixture:
+                //   arithmeticOperatorWithNullValueAndInvalidOperands.
+                const lhs_nullish = self.nullishLiteralOperandName(b.lhs);
+                const rhs_nullish = self.nullishLiteralOperandName(b.rhs);
+                if (lhs_nullish) |name| try self.reportNullishLiteralBinaryOperand(b.lhs, name);
+                if (rhs_nullish) |name| try self.reportNullishLiteralBinaryOperand(b.rhs, name);
+                if (lhs_nullish == null and !self.isArithmeticOperandAllowed(lhs)) {
                     try self.reportArithmeticOperand(b.lhs, TsCodes.arithmetic_left_operand_type, "The left-hand side of an arithmetic operation must be of type 'any', 'number', 'bigint' or an enum type.");
                 }
-                if (!rhs_is_untyped_uninit and self.typeIsExactNullish(rhs)) {
-                    try self.reportNullishRelationalOperand(b.rhs, rhs);
-                } else if (!self.isArithmeticOperandAllowed(rhs)) {
+                if (rhs_nullish == null and !self.isArithmeticOperandAllowed(rhs)) {
                     try self.reportArithmeticOperand(b.rhs, TsCodes.arithmetic_right_operand_type, "The right-hand side of an arithmetic operation must be of type 'any', 'number', 'bigint' or an enum type.");
                 }
                 break :blk types.Primitive.number_t;
             },
             .bit_and, .bit_or, .bit_xor, .shl, .shr, .shr_unsigned => blk: {
-                const lhs_is_untyped_uninit = self.hir.kindOf(b.lhs) == .identifier and
-                    self.identifierIsUntypedUninitializedVar(b.lhs);
-                const rhs_is_untyped_uninit = self.hir.kindOf(b.rhs) == .identifier and
-                    self.identifierIsUntypedUninitializedVar(b.rhs);
-                if (!lhs_is_untyped_uninit and self.typeIsExactNullish(lhs)) {
-                    try self.reportNullishRelationalOperand(b.lhs, lhs);
-                } else if (!self.isArithmeticOperandAllowed(lhs)) {
+                const lhs_nullish = self.nullishLiteralOperandName(b.lhs);
+                const rhs_nullish = self.nullishLiteralOperandName(b.rhs);
+                if (lhs_nullish) |name| try self.reportNullishLiteralBinaryOperand(b.lhs, name);
+                if (rhs_nullish) |name| try self.reportNullishLiteralBinaryOperand(b.rhs, name);
+                if (lhs_nullish == null and !self.isArithmeticOperandAllowed(lhs)) {
                     try self.reportArithmeticOperand(b.lhs, TsCodes.arithmetic_left_operand_type, "The left-hand side of an arithmetic operation must be of type 'any', 'number', 'bigint' or an enum type.");
                 }
-                if (!rhs_is_untyped_uninit and self.typeIsExactNullish(rhs)) {
-                    try self.reportNullishRelationalOperand(b.rhs, rhs);
-                } else if (!self.isArithmeticOperandAllowed(rhs)) {
+                if (rhs_nullish == null and !self.isArithmeticOperandAllowed(rhs)) {
                     try self.reportArithmeticOperand(b.rhs, TsCodes.arithmetic_right_operand_type, "The right-hand side of an arithmetic operation must be of type 'any', 'number', 'bigint' or an enum type.");
                 }
                 break :blk types.Primitive.number_t;
@@ -32017,11 +32142,24 @@ pub const Checker = struct {
                 break :blk types.Primitive.boolean_t;
             },
             .in => blk: {
-                if (!self.isInLeftOperandAllowed(lhs)) {
-                    try self.report(b.lhs, TsCodes.type_not_assignable, "Type is not assignable to type 'string | number | symbol'.");
+                // `in`: tsc routes both operands through
+                // `checkNonNullType` first, which fires TS18050
+                // when the operand source is the literal `null`
+                // keyword or the `undefined` identifier. The
+                // operand-kind check fires AFTER and is gated on
+                // a non-error result type, so a nullish-literal
+                // operand suppresses the TS2322 on the SAME side
+                // while the OTHER operand still validates.
+                // Fixture: `inOperatorWithInvalidOperands.ts`.
+                const lhs_nullish = self.nullishLiteralOperandName(b.lhs);
+                const rhs_nullish = self.nullishLiteralOperandName(b.rhs);
+                if (lhs_nullish) |name| try self.reportNullishLiteralBinaryOperand(b.lhs, name);
+                if (rhs_nullish) |name| try self.reportNullishLiteralBinaryOperand(b.rhs, name);
+                if (lhs_nullish == null and !self.isInLeftOperandAllowed(lhs)) {
+                    try self.reportInOperandLeft(b.lhs, lhs);
                 }
-                if (!self.isInRightOperandAllowed(rhs)) {
-                    try self.report(b.rhs, TsCodes.type_not_assignable, "Type is not assignable to type 'object'.");
+                if (rhs_nullish == null and !self.isInRightOperandAllowed(rhs)) {
+                    try self.reportInOperandRight(b.rhs, rhs);
                 }
                 break :blk types.Primitive.boolean_t;
             },
@@ -32151,6 +32289,19 @@ pub const Checker = struct {
         if (l.op == .@"or" and self.expressionAlwaysFalsyInLogicalOr(l.lhs, lhs)) {
             try self.report(l.lhs, TsCodes.expression_always_falsy, "This kind of expression is always falsy.");
         }
+        // tsc also fires TS2873 on the LHS of `&&` when it is a
+        // literal `null` / `undefined` (the always-falsy gate
+        // short-circuits the right operand). Mirrors fixtures like
+        // `logicalAndOperatorWithEveryType.ts` rows 23-24 and the
+        // null/undefined repeats every 11 lines.
+        if (l.op == .@"and") {
+            switch (self.hir.kindOf(l.lhs)) {
+                .literal_null, .literal_undefined => {
+                    try self.report(l.lhs, TsCodes.expression_always_falsy, "This kind of expression is always falsy.");
+                },
+                else => {},
+            }
+        }
         if (l.op == .@"or" and self.hir.kindOf(l.lhs) == .literal_string) {
             const lit = hir_mod.literalStringOf(self.hir, l.lhs);
             if (self.string_interner.get(lit.value).len == 0) {
@@ -32255,6 +32406,13 @@ pub const Checker = struct {
                 } else {
                     try self.report(node, TsCodes.expression_always_truthy, "This kind of expression is always truthy.");
                 }
+            },
+            // Literal `null` / `undefined` — always falsy. tsc fires
+            // TS2873 in any truthiness slot (conditional cond,
+            // if-stmt, while-stmt). Fixture coverage includes
+            // `conditionalOperatorConditoinIsAnyType.ts` rows 26-31.
+            .literal_null, .literal_undefined => {
+                try self.report(node, TsCodes.expression_always_falsy, "This kind of expression is always falsy.");
             },
             else => {},
         }
@@ -33659,6 +33817,22 @@ pub const Checker = struct {
                         }
                         try tuple_buf.append(arena_t, ']');
                         break :blk tuple_buf.items;
+                    }
+                }
+                // Empty object types — anonymous, no declared members,
+                // no index signatures — render as `{}` so TS2322 prose
+                // on fixtures like `inOperatorWithInvalidOperands.ts(17,…)`
+                // matches upstream. Excludes nominal classes/interfaces
+                // (named) and fixed tuples (handled above).
+                if (flags.is_object_type and self.namedTypeForId(t) == null) {
+                    const members = self.interner.objectMembers(t);
+                    const string_idx = self.interner.objectStringIndex(t);
+                    const number_idx = self.interner.objectNumberIndex(t);
+                    if (members.len == 0 and
+                        string_idx == types.Primitive.none and
+                        number_idx == types.Primitive.none)
+                    {
+                        break :blk "{}";
                     }
                 }
                 if (!flags.is_literal) break :blk null;
@@ -36789,6 +36963,39 @@ pub const Checker = struct {
             .code = code,
             .message = msg,
         });
+    }
+
+    /// Anchor a diagnostic at the opening `[` of a class/object
+    /// computed-property-name slot. Scans backward from the key
+    /// node's source span for the `[`, ignoring `?`, whitespace,
+    /// and other punctuation. Falls back to the key span start
+    /// when the `[` can't be located (e.g. no source loaded).
+    /// Mirrors tsc which underlines the entire `[expr]` group.
+    fn reportComputedKeyBracket(
+        self: *Checker,
+        key_node: NodeId,
+        code: u32,
+        message: []const u8,
+    ) !void {
+        var pos: ?u32 = null;
+        if (self.source) |src| {
+            const span = self.hir.spanOf(key_node);
+            if (span.start > 0 and span.start <= src.len) {
+                var i: usize = span.start;
+                while (i > 0) {
+                    i -= 1;
+                    if (src[i] == '[') {
+                        pos = @intCast(i);
+                        break;
+                    }
+                    // Bail out if we cross a non-whitespace,
+                    // non-? character — keeps us from false-matching
+                    // a `[` belonging to an enclosing structure.
+                    if (src[i] != ' ' and src[i] != '\t' and src[i] != '\n' and src[i] != '\r') break;
+                }
+            }
+        }
+        try self.reportAt(key_node, pos, code, message);
     }
 
     fn reportUnknownReference(self: *Checker, node: NodeId) CheckError!void {
