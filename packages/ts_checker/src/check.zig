@@ -9658,6 +9658,36 @@ pub const Checker = struct {
                     // members (v0 has no syntax for abstract fields).
                     const is_abstract_property = self.classMemberSourceHasLeadingKeyword(m, "abstract");
                     const is_auto_accessor = self.classMemberSourceHasLeadingKeyword(m, "accessor");
+                    // TS18045: auto-accessor (`accessor x = …`) is a stage-3
+                    // class field that lowers via `Object.defineProperty` —
+                    // tsc refuses to emit it under `--target es5/es3`.
+                    // Anchored at the property name — for computed keys
+                    // the open `[` is the column tsc points at, so walk
+                    // back through whitespace until we find one. Matches
+                    // upstream `autoAccessor1`/`autoAccessor3`/`autoAccessor5`.
+                    if (is_auto_accessor and self.sourceTargetMentionsEs5()) {
+                        const key_pos = self.hir.spanOf(op.key).start;
+                        const anchor_pos: u32 = blk: {
+                            const src = self.source orelse break :blk key_pos;
+                            var i: usize = key_pos;
+                            while (i > 0) : (i -= 1) {
+                                const c2 = src[i - 1];
+                                if (c2 == ' ' or c2 == '\t') continue;
+                                if (c2 == '[') break :blk @intCast(i - 1);
+                                break;
+                            }
+                            break :blk key_pos;
+                        };
+                        try self.diagnostics.append(self.gpa, .{
+                            .node = op.key,
+                            .pos = anchor_pos,
+                            .code = 18045,
+                            .message = try self.diag_arena.allocator().dupe(
+                                u8,
+                                "Properties with the 'accessor' modifier are only available when targeting ECMAScript 2015 and higher.",
+                            ),
+                        });
+                    }
                     if (!op.is_static) {
                         if (is_auto_accessor) {
                             const already_seen_accessor = accessor_names.contains(member_name);
@@ -10744,6 +10774,29 @@ pub const Checker = struct {
             // we still emit just once at the second site — tsc's
             // baselines for the targeted fixtures show one emit per
             // duplicate group.
+            //
+            // EXCEPTION — same-kind accessor duplicates (`get x; get x;`
+            // or `set x; set x;`): tsc emits TS2300 at EVERY occurrence
+            // in the group (mirrors `twoAccessorsWithSameName` baseline).
+            var same_kind_accessors = true;
+            for (group_idx.items) |idx| {
+                const e = entries.items[idx];
+                if (e.kind != .getter and e.kind != .setter) {
+                    same_kind_accessors = false;
+                    break;
+                }
+                if (e.kind != entries.items[group_idx.items[0]].kind) {
+                    same_kind_accessors = false;
+                    break;
+                }
+            }
+            if (same_kind_accessors) {
+                for (group_idx.items) |idx| {
+                    const e = entries.items[idx];
+                    try self.reportDuplicateIdentifierWithDisplay(e.name_node, e.display);
+                }
+                continue;
+            }
             const second = entries.items[group_idx.items[1]];
             try self.reportDuplicateIdentifierWithDisplay(second.name_node, second.display);
         }
