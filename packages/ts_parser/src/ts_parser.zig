@@ -4033,7 +4033,15 @@ pub const Parser = struct {
         try self.recoverRegexVariableDeclarationTail(init_node);
         const is_ambient_decl = self.isAmbientContextAt(start.span.start);
         if (decl_kind == .const_decl and init_node == hir_mod.none_node_id and !is_ambient_decl) {
-            try self.reportCodeAt(self.hir.spanOf(name_node).start, start.line, 1155, "'const' declarations must be initialized.");
+            // `const {}` and `const []` already raise TS1182
+            // ("A destructuring declaration must have an
+            // initializer.") from the checker; tsc does not
+            // additionally surface the TS1155 ("must be
+            // initialized") so we suppress the duplicate here.
+            const name_kind = self.hir.kindOf(name_node);
+            if (name_kind != .object_pattern and name_kind != .array_pattern) {
+                try self.reportCodeAt(self.hir.spanOf(name_node).start, start.line, 1155, "'const' declarations must be initialized.");
+            }
         }
         while (self.match(.comma)) {
             const comma_tok = self.tokens[self.cursor - 1];
@@ -4063,7 +4071,10 @@ pub const Parser = struct {
             if (self.match(.equal)) extra_init = try self.parseAssignmentExpression();
             try self.recoverRegexVariableDeclarationTail(extra_init);
             if (decl_kind == .const_decl and extra_init == hir_mod.none_node_id and !is_ambient_decl) {
-                try self.reportCodeAt(self.hir.spanOf(extra_name).start, start.line, 1155, "'const' declarations must be initialized.");
+                const extra_kind = self.hir.kindOf(extra_name);
+                if (extra_kind != .object_pattern and extra_kind != .array_pattern) {
+                    try self.reportCodeAt(self.hir.spanOf(extra_name).start, start.line, 1155, "'const' declarations must be initialized.");
+                }
             }
             const extra_start = self.hir.spanOf(extra_name).start;
             const extra_end = if (self.cursor > 0) self.tokens[self.cursor - 1].span.end else self.hir.spanOf(extra_name).end;

@@ -269,6 +269,7 @@ pub const TsCodes = struct {
     pub const variable_self_reference_implicitly_any: u32 = 7022;
     pub const function_return_self_reference_implicitly_any: u32 = 7023;
     pub const binding_element_implicitly_any: u32 = 7031;
+    pub const rest_parameter_implicitly_any: u32 = 7019;
     pub const setter_property_implicitly_any: u32 = 7032;
     pub const new_expression_implicitly_any: u32 = 7009;
     pub const generator_implicit_yield_type: u32 = 7055;
@@ -6203,6 +6204,105 @@ pub const Checker = struct {
         }
     }
 
+    /// Walk a parameter's binding pattern (array/object) and emit
+    /// TS7031 (`Binding element 'X' implicitly has an 'any' type.`)
+    /// for each named slot whose type would otherwise be implicit
+    /// `any`. Mirrors upstream tsc, which reports one implicit-any
+    /// per binding element rather than one `Parameter '<anonymous>'`
+    /// for the whole pattern.
+    ///
+    /// `parent_init_values` — when the parameter or enclosing
+    /// pattern has an `= [a, b]` literal default initializer, the
+    /// per-index value expressions supply concrete types for inner
+    /// elements; passing the slice here suppresses TS7031 on
+    /// positions where the default provides a usable type.
+    fn reportImplicitAnyBindingPatternElements(
+        self: *Checker,
+        pattern_node: NodeId,
+        parent_init_values: []const NodeId,
+    ) CheckError!void {
+        const pk = self.hir.kindOf(pattern_node);
+        if (pk != .object_pattern and pk != .array_pattern) return;
+        const is_array = pk == .array_pattern;
+        var idx: usize = 0;
+        for (hir_mod.patternElements(self.hir, pattern_node)) |e| {
+            if (self.hir.kindOf(e) != .parameter) {
+                if (is_array) idx += 1;
+                continue;
+            }
+            const ep = hir_mod.parameterOf(self.hir, e);
+            if (ep.flags.is_computed_binding_key) continue;
+            if (ep.name == hir_mod.none_node_id) {
+                if (is_array) idx += 1;
+                continue;
+            }
+            // An element-level `= expr` default supplies a concrete
+            // type for this slot (number from `= 0`, string from
+            // `= 'foo'`, etc.). tsc suppresses TS7031 in that case.
+            const has_own_default = ep.default_value != hir_mod.none_node_id;
+            // The parent-level default (e.g. `= [1]` or `= [nx, sx]`)
+            // may also fill in this index with a concrete type.
+            // Conservative: only suppress when the corresponding
+            // element is a literal whose widened type isn't `any`.
+            var parent_default_supplies = false;
+            if (is_array and idx < parent_init_values.len) {
+                const v = parent_init_values[idx];
+                if (v != hir_mod.none_node_id) {
+                    parent_default_supplies = self.bindingDefaultElementIsTyped(v);
+                }
+            }
+            const nk = self.hir.kindOf(ep.name);
+            if (nk == .identifier) {
+                if (!has_own_default and !parent_default_supplies) {
+                    const id = hir_mod.identifierOf(self.hir, ep.name);
+                    const raw = self.string_interner.get(id.name);
+                    const msg = try std.fmt.allocPrint(
+                        self.diag_arena.allocator(),
+                        "Binding element '{s}' implicitly has an 'any' type.",
+                        .{raw},
+                    );
+                    try self.diagnostics.append(self.gpa, .{
+                        .node = ep.name,
+                        .code = TsCodes.binding_element_implicitly_any,
+                        .message = msg,
+                    });
+                }
+            } else if (nk == .object_pattern or nk == .array_pattern) {
+                try self.reportImplicitAnyBindingPatternElements(ep.name, &.{});
+            }
+            if (is_array) idx += 1;
+        }
+    }
+
+    /// True when `expr` (an element of a `= [a, b]` parameter
+    /// default initializer) widens to a concrete type tsc treats
+    /// as suppressing the inner element's TS7031 implicit-any.
+    /// Conservative: only literals and identifiers with concrete
+    /// inferred types qualify.
+    fn bindingDefaultElementIsTyped(self: *Checker, expr: NodeId) bool {
+        const k = self.hir.kindOf(expr);
+        switch (k) {
+            .literal_number,
+            .literal_string,
+            .literal_bool,
+            .literal_bigint,
+            .template_literal,
+            .literal_regex,
+            => return true,
+            .literal_null, .literal_undefined => return false,
+            // Identifiers / arbitrary expressions: only suppress
+            // when the resolved type is non-any. Avoid over-firing
+            // on `[anyVar]` patterns where the source is itself any.
+            else => {
+                const t = self.hir.typeOf(expr);
+                if (t == types.Primitive.none) return false;
+                if (t == types.Primitive.any) return false;
+                if (t == types.Primitive.unknown) return false;
+                return true;
+            },
+        }
+    }
+
     fn isNumericStringId(self: *Checker, name: hir_mod.StringId) bool {
         const s = self.string_interner.get(name);
         if (s.len == 0) return false;
@@ -8173,29 +8273,69 @@ pub const Checker = struct {
             if (!has_anno and !inferred_from_default and self.strict_flags.no_implicit_any and
                 !self.parameterHasContextualType(node, p))
             {
-                const param_name: []const u8 = if (pp.name != hir_mod.none_node_id and self.hir.kindOf(pp.name) == .identifier)
-                    self.string_interner.get(hir_mod.identifierOf(self.hir, pp.name).name)
-                else
-                    "<anonymous>";
-                // In `.js` files (or `// @allowJs` virtual sections),
-                // a leading JSDoc `@param {T} <name>` annotates the
-                // parameter and suppresses TS7006. Mirrors upstream tsc
-                // which treats the JSDoc tag as the parameter type.
-                if (self.virtualSectionIsJsLike(node) and
-                    self.fnHasLeadingJsDocParam(node, param_name))
-                {
-                    // Skip — JSDoc supplies the type.
+                // Binding-pattern parameters (`function f([a, b]) {}` /
+                // `function f({a, b}) {}`) — tsc reports one TS7031
+                // per *named* binding element rather than a single
+                // TS7006 for the whole anonymous parameter. The
+                // `<anonymous>` placeholder we used here previously
+                // produced a single spurious diagnostic with the
+                // wrong code, span, and (typically) name.
+                const name_kind: hir_mod.NodeKind = if (pp.name != hir_mod.none_node_id) self.hir.kindOf(pp.name) else .identifier;
+                if (pp.name != hir_mod.none_node_id and (name_kind == .array_pattern or name_kind == .object_pattern)) {
+                    // When the parameter has `= [literal, …]` as
+                    // its default, those per-index values supply
+                    // concrete types that suppress TS7031 for the
+                    // corresponding inner binding elements. Mirrors
+                    // upstream `destructuringWithLiteralInitializers2.ts`.
+                    const init_values: []const NodeId = if (pp.default_value != hir_mod.none_node_id and
+                        name_kind == .array_pattern and
+                        self.hir.kindOf(pp.default_value) == .array_literal)
+                        hir_mod.arrayLiteralElements(self.hir, pp.default_value)
+                    else
+                        &.{};
+                    try self.reportImplicitAnyBindingPatternElements(pp.name, init_values);
                 } else {
-                    const msg = try std.fmt.allocPrint(
-                        self.diag_arena.allocator(),
-                        "Parameter '{s}' implicitly has an 'any' type.",
-                        .{param_name},
-                    );
-                    try self.diagnostics.append(self.gpa, .{
-                        .node = p,
-                        .code = TsCodes.parameter_implicitly_any,
-                        .message = msg,
-                    });
+                    const param_name: []const u8 = if (pp.name != hir_mod.none_node_id and name_kind == .identifier)
+                        self.string_interner.get(hir_mod.identifierOf(self.hir, pp.name).name)
+                    else
+                        "<anonymous>";
+                    // In `.js` files (or `// @allowJs` virtual sections),
+                    // a leading JSDoc `@param {T} <name>` annotates the
+                    // parameter and suppresses TS7006. Mirrors upstream tsc
+                    // which treats the JSDoc tag as the parameter type.
+                    if (self.virtualSectionIsJsLike(node) and
+                        self.fnHasLeadingJsDocParam(node, param_name))
+                    {
+                        // Skip — JSDoc supplies the type.
+                    } else if (pp.flags.is_rest) {
+                        // `function f(...a) {}` — tsc emits TS7019
+                        // ("Rest parameter 'X' implicitly has an
+                        // 'any[]' type.") rather than the plain TS7006
+                        // implicit-any. Anchor at the parameter span
+                        // (starting at the `...` token) so the column
+                        // matches upstream.
+                        const msg = try std.fmt.allocPrint(
+                            self.diag_arena.allocator(),
+                            "Rest parameter '{s}' implicitly has an 'any[]' type.",
+                            .{param_name},
+                        );
+                        try self.diagnostics.append(self.gpa, .{
+                            .node = p,
+                            .code = TsCodes.rest_parameter_implicitly_any,
+                            .message = msg,
+                        });
+                    } else {
+                        const msg = try std.fmt.allocPrint(
+                            self.diag_arena.allocator(),
+                            "Parameter '{s}' implicitly has an 'any' type.",
+                            .{param_name},
+                        );
+                        try self.diagnostics.append(self.gpa, .{
+                            .node = p,
+                            .code = TsCodes.parameter_implicitly_any,
+                            .message = msg,
+                        });
+                    }
                 }
             }
         }
@@ -32316,6 +32456,56 @@ pub const Checker = struct {
                     }
                     if (!ok or union_buf.items.len == 0) break :blk null;
                     break :blk union_buf.items;
+                }
+                // Fixed-width tuples (`[any, any]`, `[number, string]`,
+                // `[any, ...any[]]`) — render structurally so TS2345
+                // prose for fixtures like `iterableArrayPattern10.ts`
+                // matches the upstream `Argument of type 'X' is not
+                // assignable to parameter of type '[any, any]'.` shape
+                // instead of falling back to the positional placeholder.
+                //
+                // Many tuple types lack the `is_tuple` flag (they
+                // surface only as object types with a numeric
+                // `length` literal); detect via `fixedTupleLength`
+                // which gates on the `length` member.
+                if (flags.is_object_type) {
+                    if (self.fixedTupleLength(t)) |fixed_len_u64| {
+                        const fixed_len: usize = @intCast(fixed_len_u64);
+                        var tuple_buf: std.ArrayListUnmanaged(u8) = .empty;
+                        const arena_t = self.diag_arena.allocator();
+                        try tuple_buf.append(arena_t, '[');
+                        var i: usize = 0;
+                        var tuple_ok = true;
+                        while (i < fixed_len) : (i += 1) {
+                            if (i > 0) try tuple_buf.appendSlice(arena_t, ", ");
+                            const elem_t = self.tupleElementType(t, i);
+                            const elem_name = (try self.simpleDiagnosticTypeName(elem_t)) orelse {
+                                tuple_ok = false;
+                                break;
+                            };
+                            try tuple_buf.appendSlice(arena_t, elem_name);
+                        }
+                        if (!tuple_ok) break :blk null;
+                        // `[A, ...B[]]` rest tail — the indexer carries
+                        // the element type of the rest portion. Render
+                        // when present and we can name the element.
+                        const rest_elem_t = self.interner.objectNumberIndex(t);
+                        if (rest_elem_t != types.Primitive.none) {
+                            if (try self.simpleDiagnosticTypeName(rest_elem_t)) |rest_name| {
+                                if (fixed_len > 0) try tuple_buf.appendSlice(arena_t, ", ");
+                                try tuple_buf.appendSlice(arena_t, "...");
+                                try tuple_buf.appendSlice(arena_t, rest_name);
+                                try tuple_buf.append(arena_t, '[');
+                                try tuple_buf.append(arena_t, ']');
+                            } else {
+                                // Mixed rest with un-nameable element —
+                                // skip rendering to avoid noise.
+                                break :blk null;
+                            }
+                        }
+                        try tuple_buf.append(arena_t, ']');
+                        break :blk tuple_buf.items;
+                    }
                 }
                 if (!flags.is_literal) break :blk null;
                 const payload_idx = self.interner.pool.payloadOf(t);
