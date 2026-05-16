@@ -1061,12 +1061,33 @@ pub const Printer = struct {
     fn printObjectBindingPattern(self: *Printer, node: NodeId) anyerror!void {
         try self.write("{ ");
         const elements = hir_mod.patternElements(self.hir, node);
+        var emitted: usize = 0;
         for (elements, 0..) |elem, i| {
-            if (i > 0) try self.write(", ");
             if (self.hir.kindOf(elem) != .parameter) continue;
             const param = hir_mod.parameterOf(self.hir, elem);
+            // Computed-key synthetic elements pair with the following
+            // binding param — skip here, the binding emits the
+            // `[key]: name` form by looking back at this element.
             if (param.flags.is_computed_binding_key) continue;
+            if (emitted > 0) try self.write(", ");
+            emitted += 1;
             if (param.flags.is_rest) try self.write("...");
+            // §4.A.4 destructuring v11 — computed binding key. The
+            // preceding synthetic element carries the key expression
+            // in its `default_value`; emit `[key]: name` shape.
+            const computed_key_expr: NodeId = blk: {
+                if (i == 0 or param.flags.is_rest) break :blk hir_mod.none_node_id;
+                const prev = elements[i - 1];
+                if (self.hir.kindOf(prev) != .parameter) break :blk hir_mod.none_node_id;
+                const pp = hir_mod.parameterOf(self.hir, prev);
+                if (!pp.flags.is_computed_binding_key) break :blk hir_mod.none_node_id;
+                break :blk pp.default_value;
+            };
+            if (computed_key_expr != hir_mod.none_node_id) {
+                try self.write("[");
+                try self.printExpression(computed_key_expr);
+                try self.write("]: ");
+            }
             if (param.name != hir_mod.none_node_id) try self.printBindingName(param.name);
             if (param.default_value != hir_mod.none_node_id) {
                 try self.write(" = ");
@@ -8402,6 +8423,33 @@ test "emit: function with computed-key destructuring param lowers at es5" {
     defer T.allocator.free(out);
     try T.expect(std.mem.indexOf(u8, out, "function f(_p0)") != null);
     try T.expect(std.mem.indexOf(u8, out, "var name = _p0[k];") != null);
+}
+
+test "emit: function with computed-key destructuring param renders pattern at es2015+" {
+    // §4.A.4 destructuring v11 — native pattern emit at ES2015+ now
+    // includes the [key]: name form (was previously dropping the
+    // computed-key part).
+    const out = try emitWithOpts(
+        "function f({ [k]: name }) { return name; }",
+        .{ .es_target = .es2015 },
+    );
+    defer T.allocator.free(out);
+    try T.expect(std.mem.indexOf(u8, out, "function f({ [k]: name })") != null);
+}
+
+test "emit: destructuring var-decl with computed key + adjacent plain key renders both at es2015+" {
+    // Make sure the mixed shape doesn't drop the plain key or
+    // misrender the comma.
+    const out = try emitWithOpts(
+        "const { a, [k]: b } = obj;",
+        .{ .es_target = .es2015 },
+    );
+    defer T.allocator.free(out);
+    try T.expect(std.mem.indexOf(u8, out, "const _o = obj") != null);
+    try T.expect(std.mem.indexOf(u8, out, "a = _o.a") != null);
+    try T.expect(std.mem.indexOf(u8, out, "b = _o[k]") != null);
+    // Double-comma indicates the v11 bug; must not appear.
+    try T.expect(std.mem.indexOf(u8, out, ", ,") == null);
 }
 
 test "emit: try-catch with destructuring param renders pattern at es2015+" {
