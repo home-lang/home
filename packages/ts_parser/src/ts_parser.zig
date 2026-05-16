@@ -576,10 +576,8 @@ pub const Parser = struct {
                 // `labeledStatementWithLabel{,_strict,_es2015}` exact
                 // baselines match.
                 const after_label = self.peek();
-                std.debug.print("[DBG-LBL] kind={s} pos={d} line={d}\n", .{ @tagName(after_label.kind), after_label.span.start, after_label.line });
                 if (after_label.kind == .kw_namespace or after_label.kind == .kw_module) {
                     try self.reportCodeAt(after_label.span.start, after_label.line, 1235, "A namespace declaration is only allowed at the top level of a namespace or module.");
-                    std.debug.print("[DBG-LBL] emitted TS1235\n", .{});
                 }
             }
             if (self.isAmbientContextAt(label_tok.span.start)) {
