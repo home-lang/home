@@ -2427,6 +2427,15 @@ pub const Checker = struct {
         if (a_kind == .index_signature and b_kind == .index_signature) {
             const a = hir_mod.indexSignatureOf(self.hir, a_member);
             const b = hir_mod.indexSignatureOf(self.hir, b_member);
+            // Index signatures only conflict when they share the same
+            // indexer "kind" (both number, both string, both symbol).
+            // tsc permits a number-indexer and a string-indexer to
+            // coexist on the same interface even across declaration
+            // merges. Mirrors `mergedInterfacesWithIndexers.ts` where
+            // `[x: number]: string;` in one decl and
+            // `[x: string]: { length: number };` in another merge
+            // without TS2300.
+            if (!self.indexSignatureKindsMatch(a.key_type, b.key_type)) return false;
             if (!self.nodeSourceTextEqual(a.key_type, b.key_type)) return true;
             if (!self.nodeSourceTextEqual(a.value_type, b.value_type)) return true;
             return false;
@@ -2444,6 +2453,29 @@ pub const Checker = struct {
     fn syntheticSignatureMemberName(self: *Checker, name: hir_mod.StringId) bool {
         const raw = self.string_interner.get(name);
         return std.mem.eql(u8, raw, "__call") or std.mem.eql(u8, raw, "__construct");
+    }
+
+    /// Group a type node used as an index-signature key into its tsc
+    /// "indexer kind" bucket — `number`, `string`, `symbol`, or other.
+    /// Two index signatures only conflict when they share the same
+    /// bucket; tsc treats number/string indexers as distinct and lets
+    /// them coexist across declaration merges.
+    fn indexSignatureKindOf(self: *Checker, key_type: NodeId) []const u8 {
+        if (key_type == hir_mod.none_node_id) return "";
+        const src = self.source orelse return "";
+        const span = self.hir.spanOf(key_type);
+        if (span.end > src.len or span.start > span.end) return "";
+        const text = std.mem.trim(u8, src[span.start..span.end], " \t");
+        if (std.mem.eql(u8, text, "number")) return "number";
+        if (std.mem.eql(u8, text, "string")) return "string";
+        if (std.mem.eql(u8, text, "symbol")) return "symbol";
+        return text;
+    }
+
+    fn indexSignatureKindsMatch(self: *Checker, a_key: NodeId, b_key: NodeId) bool {
+        const ak = self.indexSignatureKindOf(a_key);
+        const bk = self.indexSignatureKindOf(b_key);
+        return std.mem.eql(u8, ak, bk);
     }
 
     fn nodeSourceTextEqual(self: *Checker, a: NodeId, b: NodeId) bool {
@@ -15066,6 +15098,16 @@ pub const Checker = struct {
                 }
             }
             for (self.interner.objectMembers(parent_t)) |pm| {
+                // `__call` / `__construct` are the internal property
+                // names tsc uses for call/construct signatures. tsc
+                // checks signature compatibility via the
+                // signature-relation algorithm, not the
+                // property-by-property loop here. Skipping these
+                // mirrors fixtures like
+                // `interfaceWithCallSignaturesThatHidesBaseSignature2.ts`
+                // where the derived interface's narrower `()` return
+                // is intentional and tsc emits nothing.
+                if (self.syntheticSignatureMemberName(pm.name)) continue;
                 for (child_members) |cm| {
                     if (cm.name != pm.name) continue;
                     const cm_flags = self.interner.pool.flagsOf(cm.type);
@@ -22700,14 +22742,27 @@ pub const Checker = struct {
                                 "An arithmetic operand must be of type 'any', 'number', 'bigint' or an enum type."
                             else
                                 "The left-hand side of an arithmetic operation must be of type 'any', 'number', 'bigint' or an enum type.";
-                            if (!self.isArithmeticOperandAllowed(target_t)) {
+                            // tsc prefers TS18050 over TS2362/TS2363
+                            // when an operand is exact-nullish. Real
+                            // assignments only — synthesized updates
+                            // never have a literal-null RHS. Skip
+                            // untyped-uninitialized-var references
+                            // (e.g. `var v; x *= v;`) since tsc treats
+                            // those as `any` and emits nothing.
+                            const value_is_untyped_uninit = self.hir.kindOf(a.value) == .identifier and
+                                self.identifierIsUntypedUninitializedVar(a.value);
+                            if (!is_synth_update and self.typeIsExactNullish(target_t)) {
+                                try self.reportNullishRelationalOperand(a.target, target_t);
+                            } else if (!self.isArithmeticOperandAllowed(target_t)) {
                                 try self.reportArithmeticOperand(a.target, arith_code, arith_msg);
                             }
                             // Skip the right-hand-side check for
                             // synthesized updates — the `1` is a
                             // compiler-inserted constant and reporting
                             // it confuses the diagnostic baseline.
-                            if (!is_synth_update and !self.isArithmeticOperandAllowed(value_t)) {
+                            if (!is_synth_update and !value_is_untyped_uninit and self.typeIsExactNullish(value_t)) {
+                                try self.reportNullishRelationalOperand(a.value, value_t);
+                            } else if (!is_synth_update and !self.isArithmeticOperandAllowed(value_t)) {
                                 try self.reportArithmeticOperand(a.value, TsCodes.arithmetic_right_operand_type, "The right-hand side of an arithmetic operation must be of type 'any', 'number', 'bigint' or an enum type.");
                             }
                         },
@@ -31621,19 +31676,44 @@ pub const Checker = struct {
                 break :blk types.Primitive.number_t;
             },
             .sub, .mul, .div, .mod, .pow => blk: {
-                if (!self.isArithmeticOperandAllowed(lhs)) {
+                // tsc reports TS18050 (`The value 'null'/'undefined'
+                // cannot be used here.`) in preference to TS2362/TS2363
+                // when the offending operand is exact-nullish. Mirrors
+                // the unary-`-`/`+`/`~` policy above and the
+                // exponentiationOperatorWithNullValue* / compound
+                // arithmetic baselines. tsc fires this grammar-level
+                // check regardless of `strictNullChecks`. Skip
+                // untyped-uninitialized-var references (e.g.
+                // `var v; v ** x;`) since tsc treats those as `any`.
+                const lhs_is_untyped_uninit = self.hir.kindOf(b.lhs) == .identifier and
+                    self.identifierIsUntypedUninitializedVar(b.lhs);
+                const rhs_is_untyped_uninit = self.hir.kindOf(b.rhs) == .identifier and
+                    self.identifierIsUntypedUninitializedVar(b.rhs);
+                if (!lhs_is_untyped_uninit and self.typeIsExactNullish(lhs)) {
+                    try self.reportNullishRelationalOperand(b.lhs, lhs);
+                } else if (!self.isArithmeticOperandAllowed(lhs)) {
                     try self.reportArithmeticOperand(b.lhs, TsCodes.arithmetic_left_operand_type, "The left-hand side of an arithmetic operation must be of type 'any', 'number', 'bigint' or an enum type.");
                 }
-                if (!self.isArithmeticOperandAllowed(rhs)) {
+                if (!rhs_is_untyped_uninit and self.typeIsExactNullish(rhs)) {
+                    try self.reportNullishRelationalOperand(b.rhs, rhs);
+                } else if (!self.isArithmeticOperandAllowed(rhs)) {
                     try self.reportArithmeticOperand(b.rhs, TsCodes.arithmetic_right_operand_type, "The right-hand side of an arithmetic operation must be of type 'any', 'number', 'bigint' or an enum type.");
                 }
                 break :blk types.Primitive.number_t;
             },
             .bit_and, .bit_or, .bit_xor, .shl, .shr, .shr_unsigned => blk: {
-                if (!self.isArithmeticOperandAllowed(lhs)) {
+                const lhs_is_untyped_uninit = self.hir.kindOf(b.lhs) == .identifier and
+                    self.identifierIsUntypedUninitializedVar(b.lhs);
+                const rhs_is_untyped_uninit = self.hir.kindOf(b.rhs) == .identifier and
+                    self.identifierIsUntypedUninitializedVar(b.rhs);
+                if (!lhs_is_untyped_uninit and self.typeIsExactNullish(lhs)) {
+                    try self.reportNullishRelationalOperand(b.lhs, lhs);
+                } else if (!self.isArithmeticOperandAllowed(lhs)) {
                     try self.reportArithmeticOperand(b.lhs, TsCodes.arithmetic_left_operand_type, "The left-hand side of an arithmetic operation must be of type 'any', 'number', 'bigint' or an enum type.");
                 }
-                if (!self.isArithmeticOperandAllowed(rhs)) {
+                if (!rhs_is_untyped_uninit and self.typeIsExactNullish(rhs)) {
+                    try self.reportNullishRelationalOperand(b.rhs, rhs);
+                } else if (!self.isArithmeticOperandAllowed(rhs)) {
                     try self.reportArithmeticOperand(b.rhs, TsCodes.arithmetic_right_operand_type, "The right-hand side of an arithmetic operation must be of type 'any', 'number', 'bigint' or an enum type.");
                 }
                 break :blk types.Primitive.number_t;
