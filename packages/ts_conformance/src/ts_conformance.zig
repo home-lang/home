@@ -1965,7 +1965,10 @@ fn hasHarnessModeledExpectedError(name: []const u8, source: []const u8) bool {
     if (std.mem.eql(u8, name, "emitArrowFunctionWhenUsingArguments19")) return true;
     if (std.mem.eql(u8, name, "emitArrowFunctionThisCapturing")) return true;
     if (std.mem.eql(u8, name, "emitArrowFunctionThisCapturingES6")) return true;
-    if (std.mem.eql(u8, name, "arraySpreadImportHelpers")) return true;
+    // (Retired 2026-05-16) `arraySpreadImportHelpers` used to live
+    // here. The fixture's expected error is produced naturally by
+    // the checker, so the shim was redundant — verified 5798 -> 5798
+    // full-corpus passed via probe.
     // The `unicodeExtendedEscapesInTemplates*` / `unicodeExtendedEscapesInStrings*`
     // substring match stays — most variants (08/13/16, 06) carry
     // only TS5107 and are dead-code through the loader, but at least
@@ -1983,9 +1986,11 @@ fn hasHarnessModeledExpectedError(name: []const u8, source: []const u8) bool {
     // tests. The stripped single-source runner intentionally drops package
     // JSON sections and does not build a node_modules graph yet, so model the
     // expected resolver diagnostic in coarse mode rather than fabricating a
-    // checker error.
-    if (std.mem.indexOf(u8, name, "typesVersionsDeclarationEmit.multiFileBackReferenceToSelf") != null) return true;
-    if (std.mem.indexOf(u8, name, "typesVersionsDeclarationEmit.multiFileBackReferenceToUnmapped") != null) return true;
+    // checker error. NOTE: the two `typesVersionsDeclarationEmit.multi*`
+    // name matches that used to live here are now covered by the
+    // catch-all `"typesVersions"` + `export * from "../"` source-pattern
+    // tail at the bottom of this function, so the explicit eql matches
+    // were redundant.
     // Node16/NodeNext package-resolution fixtures assert diagnostics
     // through a full program graph: package.json mode selection,
     // conditional exports/imports, declaration emit redirection, and
@@ -2239,7 +2244,9 @@ fn hasHarnessModeledExpectedError(name: []const u8, source: []const u8) bool {
     if (std.mem.indexOf(u8, name, "parserBlockStatement1.d") != null) return true;
     if (std.mem.indexOf(u8, name, "parserTryStatement1.d") != null) return true;
     if (std.mem.indexOf(u8, name, "parserClassDeclaration12") != null) return true;
-    if (std.mem.eql(u8, name, "parserClass1")) return true;
+    // (Retired 2026-05-16) `parserClass1` used to live here. The
+    // expected TS2304 (Cannot find name 'ILogger') is produced
+    // naturally by the checker, so the shim was redundant.
     if (std.mem.eql(u8, name, "parserImportDeclaration1")) return true;
     if (std.mem.eql(u8, name, "parser509693")) return true;
     if (std.mem.eql(u8, name, "parser509698")) return true;
@@ -2377,7 +2384,10 @@ fn hasHarnessModeledExpectedError(name: []const u8, source: []const u8) bool {
     // invoking the parser/checker pipeline.
     if (std.mem.eql(u8, name, "preserveValueImports_importsNotUsedAsValues")) return true;
     if (std.mem.eql(u8, name, "preserveValueImports_mixedImports")) return true;
-    if (std.mem.eql(u8, name, "verbatimModuleSyntaxCompat4")) return true;
+    // (Retired 2026-05-16) `verbatimModuleSyntaxCompat4` used to live
+    // here. The TS5102 deprecation diagnostic is now handled by the
+    // `baselineHasOnlyOptionDeprecation` short-circuit in the loader,
+    // so the shim was never consulted in the corpus path.
     // Explicit resource management is parsed now, including the
     // statement-shape diagnostics for invalid `using` / `await using`
     // declarations. These remaining errors are semantic/lib/emit-helper
@@ -3690,6 +3700,20 @@ test "conformance: exact-error path honors modeled Node resolver bucket" {
         if (r.detail.len > 0) T.allocator.free(r.detail);
     }
     try T.expectEqual(Outcome.passed, r.outcome);
+}
+
+test "conformance: retired BU dead-code shims stay retired" {
+    // Pin the five names retired in the 2026-05-16 BU dead-code
+    // sweep. Each was a `hasHarnessModeledExpectedError` shim whose
+    // expected diagnostic is now produced by the natural
+    // parser/checker/loader path. Verified via full-corpus probe
+    // (5798 -> 5798 passed, 109 -> 109 failed unchanged).
+    const empty: []const u8 = "";
+    try T.expect(!hasHarnessModeledExpectedError("arraySpreadImportHelpers", empty));
+    try T.expect(!hasHarnessModeledExpectedError("typesVersionsDeclarationEmit.multiFileBackReferenceToSelf", empty));
+    try T.expect(!hasHarnessModeledExpectedError("typesVersionsDeclarationEmit.multiFileBackReferenceToUnmapped", empty));
+    try T.expect(!hasHarnessModeledExpectedError("verbatimModuleSyntaxCompat4", empty));
+    try T.expect(!hasHarnessModeledExpectedError("parserClass1", empty));
 }
 
 // §6 JSDoc-parity — coarse-mode probe pinning `typeTagPrototypeAssignment`
