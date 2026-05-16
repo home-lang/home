@@ -2291,7 +2291,6 @@ fn hasHarnessModeledExpectedError(name: []const u8, source: []const u8) bool {
     if (std.mem.eql(u8, name, "checkJsdocSatisfiesTag14")) return true;
     if (std.mem.eql(u8, name, "jsdocImplements_signatures")) return true;
     if (std.mem.eql(u8, name, "jsdocTemplateTagDefault")) return true;
-    if (std.mem.eql(u8, name, "typeTagPrototypeAssignment")) return true;
     if (std.mem.eql(u8, name, "jsDeclarationsTypeReassignmentFromDeclaration2")) return true;
     if (std.mem.eql(u8, name, "jsDeclarationsReusesExistingNodesMappingJSDocTypes")) return true;
     if (std.mem.eql(u8, name, "importTag12")) return true;
@@ -3685,6 +3684,34 @@ test "conformance: exact-error path honors modeled Node resolver bucket" {
         .expects_error = true,
         .expected_errors = "nodeModulesPackageExports.ts(1,1): error TS2304: Cannot find name 'missing'.",
         .use_exact_errors = true,
+    });
+    defer {
+        T.allocator.free(r.name);
+        if (r.detail.len > 0) T.allocator.free(r.detail);
+    }
+    try T.expectEqual(Outcome.passed, r.outcome);
+}
+
+// §6 JSDoc-parity — coarse-mode probe pinning `typeTagPrototypeAssignment`
+// (a `.js` fixture where `/** @type {string} */ C.prototype = 12` must
+// surface a TS2322). Previously gated as `hasHarnessModeledExpectedClean`
+// because the checker had no JSDoc-on-prototype-assignment override.
+test "conformance: typeTagPrototypeAssignment surfaces TS2322 on @type mismatch" {
+    const r = try runOneEntry(T.allocator, .{
+        .name = "typeTagPrototypeAssignment",
+        .source =
+        \\// @ts-check
+        \\function C() {
+        \\}
+        \\/** @type {string} */
+        \\C.prototype = 12;
+        ,
+        .path = "bug27327.js",
+        .expects_error = true,
+        // Coarse mode: any diagnostic counts. Exact assertion lives
+        // in the matching checker unit tests.
+        .expected_errors = "",
+        .use_exact_errors = false,
     });
     defer {
         T.allocator.free(r.name);

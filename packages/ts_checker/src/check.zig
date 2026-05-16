@@ -22935,6 +22935,22 @@ pub const Checker = struct {
                         target_t = annotated_t;
                     }
                 }
+                // `.js` files with `// @ts-check` may annotate
+                // `Ctor.prototype = expr` with a leading
+                // `/** @type {T} */`, in which case T becomes the
+                // declared type of the prototype slot — assigning a
+                // non-T value should report TS2322. The member-access
+                // checker normally returns an open object shape for
+                // `Ctor.prototype`, which would accept anything, so
+                // we override the assignment target type here.
+                // Mirrors upstream tsc for `typeTagPrototypeAssignment`.
+                if (a.op == null and target_kind == .member_access and
+                    self.sourceHasCheckJsDirective())
+                {
+                    if (try self.jsDocTypeForPrototypeAssignmentTarget(node, a.target)) |overridden_t| {
+                        target_t = overridden_t;
+                    }
+                }
                 // Reassignment clears any prior conditional alias for
                 // the variable: `let cond = isString(x); cond = false;
                 // if (cond) ...` — the second branch shouldn't
@@ -31111,6 +31127,88 @@ pub const Checker = struct {
         if (m.object == hir_mod.none_node_id or self.hir.kindOf(m.object) != .member_access) return false;
         const parent_member = hir_mod.memberOf(self.hir, m.object);
         return std.mem.eql(u8, self.string_interner.get(parent_member.name), "prototype");
+    }
+
+    /// `.js` files with `// @ts-check` accept `/** @type {T} */
+    /// C.prototype = expr` as a declaration that pins the prototype
+    /// slot to T. Returns T when the assignment statement carries a
+    /// leading `@type` JSDoc and the target is `<Ctor>.prototype`
+    /// (a 2-level member access whose tail name is `prototype` and
+    /// whose object is an identifier — typically a constructor
+    /// function or class). The override is restricted to
+    /// constructor-shaped LHS names to avoid touching unrelated
+    /// `obj.prototype = …` patterns where the member-access
+    /// structural shape is the right declared type. Mirrors
+    /// `typeTagPrototypeAssignment` upstream.
+    fn jsDocTypeForPrototypeAssignmentTarget(
+        self: *Checker,
+        assignment_node: NodeId,
+        target: NodeId,
+    ) CheckError!?TypeId {
+        if (target == hir_mod.none_node_id) return null;
+        if (self.hir.kindOf(target) != .member_access) return null;
+        const m = hir_mod.memberOf(self.hir, target);
+        if (!std.mem.eql(u8, self.string_interner.get(m.name), "prototype")) return null;
+        if (m.object == hir_mod.none_node_id or self.hir.kindOf(m.object) != .identifier) return null;
+        const obj_id = hir_mod.identifierOf(self.hir, m.object);
+        // Treat as a real constructor when:
+        //  - the checker has already registered the name as a class
+        //    instance type, OR
+        //  - the binder identifies it as a function/class symbol, OR
+        //  - the same source declares a `function <id>()` or
+        //    `class <id>` at the top level (the binder isn't always
+        //    attached, e.g. inside checker unit-test setups).
+        var is_constructor_like = self.class_instance_types.contains(obj_id.name);
+        if (!is_constructor_like) {
+            if (self.module) |module| {
+                if (module.root.lookup(obj_id.name)) |sym| {
+                    is_constructor_like = sym.flags.is_function or sym.flags.is_class;
+                }
+            }
+        }
+        if (!is_constructor_like) {
+            is_constructor_like = self.rootHasFunctionOrClassDeclNamed(assignment_node, obj_id.name);
+        }
+        if (!is_constructor_like) return null;
+        // Pull `@type` from the leading JSDoc on the assignment's
+        // enclosing expression statement (where the comment actually
+        // lives), falling back to the assignment node itself.
+        const parent = self.hir.parentOf(assignment_node);
+        const anchor = if (parent != hir_mod.none_node_id and
+            self.hir.kindOf(parent) == .expression_stmt)
+            parent
+        else
+            assignment_node;
+        return try self.jsDocTypeForLeadingNode(anchor);
+    }
+
+    /// Returns true when the source-file root block contains a
+    /// `function <name>()` or `class <name>` declaration. Used as a
+    /// binder-free constructor-shape probe for `Ctor.prototype = …`
+    /// detection in the JSDoc `@type` override. The anchor is any
+    /// node inside the source file — we walk to its root block.
+    fn rootHasFunctionOrClassDeclNamed(
+        self: *Checker,
+        anchor: NodeId,
+        wanted: hir_mod.StringId,
+    ) bool {
+        const root = self.rootBlockFor(anchor);
+        if (root == hir_mod.none_node_id or self.hir.kindOf(root) != .block_stmt) return false;
+        for (hir_mod.blockStmts(self.hir, root)) |stmt| {
+            const k = self.hir.kindOf(stmt);
+            if (k == .fn_decl) {
+                const f = hir_mod.fnDeclOf(self.hir, stmt);
+                if (f.name == hir_mod.none_node_id) continue;
+                if (self.hir.kindOf(f.name) != .identifier) continue;
+                if (hir_mod.identifierOf(self.hir, f.name).name == wanted) return true;
+            } else if (k == .class_decl) {
+                const c = hir_mod.classOf(self.hir, stmt);
+                if (c.name == hir_mod.none_node_id) continue;
+                if (self.hir.kindOf(c.name) != .identifier) continue;
+                if (hir_mod.identifierOf(self.hir, c.name).name == wanted) return true;
+            }
+        }
+        return false;
     }
 
     fn assignmentTargetLastNameStartsUppercase(self: *Checker, target: NodeId) bool {
@@ -55828,4 +55926,59 @@ test "checker: TS2698 fires when spreading T & undefined intersection" {
         if (d.code == TsCodes.spread_types_object_only) found = true;
     }
     try T.expect(found);
+}
+
+// §6 JSDoc-parity — `/** @type {T} */ Ctor.prototype = expr` in a
+// `.js`/`@ts-check` source pins the prototype slot's declared type
+// to T. Assigning a non-T value must report TS2322, mirroring
+// upstream `typeTagPrototypeAssignment.ts` baseline.
+test "checker: JSDoc @type on Ctor.prototype assignment reports TS2322 on mismatch" {
+    const s = try newSetup(
+        \\// @ts-check
+        \\function C() {
+        \\}
+        \\/** @type {string} */
+        \\C.prototype = 12;
+    );
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+    var found = false;
+    for (s.checker.diagnostics.items) |d| {
+        if (d.code == TsCodes.type_not_assignable) found = true;
+    }
+    try T.expect(found);
+}
+
+// Companion case — when the RHS matches the declared `@type` the
+// override must not produce a spurious TS2322. Keeps the fix from
+// regressing the "correct annotation" path.
+test "checker: JSDoc @type on Ctor.prototype assignment accepts matching value" {
+    const s = try newSetup(
+        \\// @ts-check
+        \\function C() {
+        \\}
+        \\/** @type {string} */
+        \\C.prototype = "ok";
+    );
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+    for (s.checker.diagnostics.items) |d| {
+        try T.expect(d.code != TsCodes.type_not_assignable);
+    }
+}
+
+// Negative case — without the leading JSDoc `@type` tag, the
+// override must not fire and the assignment should remain valid.
+test "checker: Ctor.prototype assignment without JSDoc keeps structural shape" {
+    const s = try newSetup(
+        \\// @ts-check
+        \\function C() {
+        \\}
+        \\C.prototype = 12;
+    );
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+    for (s.checker.diagnostics.items) |d| {
+        try T.expect(d.code != TsCodes.type_not_assignable);
+    }
 }
