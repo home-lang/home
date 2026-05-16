@@ -58,6 +58,15 @@ pub const Diagnostic = struct {
     message: []const u8,
 };
 
+/// One active labeled statement on the parse-time label scope stack.
+/// `function_depth` records the parser's `function_depth` at the
+/// label declaration so cross-function jumps (`break LBL` from a
+/// nested function body) can be flagged with TS1107.
+const LabelEntry = struct {
+    name: hir_mod.StringId,
+    function_depth: u32,
+};
+
 pub const Parser = struct {
     gpa: std.mem.Allocator,
     tokens: []const Token,
@@ -76,6 +85,11 @@ pub const Parser = struct {
     source: []const u8,
     diagnostics: std.ArrayListUnmanaged(Diagnostic),
     pending_statements: std.ArrayListUnmanaged(NodeId),
+    /// Active label scope stack. Each entry records the labeled
+    /// statement's name plus the `function_depth` at the labeled
+    /// declaration site, so `break LBL` / `continue LBL` can detect
+    /// undeclared labels (TS1116) and cross-function jumps (TS1107).
+    label_stack: std.ArrayListUnmanaged(LabelEntry),
     diag_arena: std.heap.ArenaAllocator,
     ambient_depth: u32,
     block_depth: u32,
@@ -143,6 +157,7 @@ pub const Parser = struct {
             .source = source,
             .diagnostics = .empty,
             .pending_statements = .empty,
+            .label_stack = .empty,
             .diag_arena = std.heap.ArenaAllocator.init(gpa),
             .ambient_depth = 0,
             .block_depth = 0,
@@ -197,6 +212,7 @@ pub const Parser = struct {
         self.builder.deinit();
         self.diagnostics.deinit(self.gpa);
         self.pending_statements.deinit(self.gpa);
+        self.label_stack.deinit(self.gpa);
         self.diag_arena.deinit();
     }
 
@@ -567,7 +583,8 @@ pub const Parser = struct {
         {
             const label_tok = self.advance();
             _ = self.advance();
-            if (self.block_depth == 0 and self.isInvalidLabeledDeclarationStart()) {
+            const label_disallowed = self.block_depth == 0 and self.isInvalidLabeledDeclarationStart();
+            if (label_disallowed) {
                 try self.reportCodeAt(label_tok.span.start, label_tok.line, 1344, "A label is not allowed here.");
                 // Upstream tsc also emits TS1235 ("A namespace declaration
                 // is only allowed at the top level of a namespace or
@@ -580,6 +597,18 @@ pub const Parser = struct {
                     try self.reportCodeAt(after_label.span.start, after_label.line, 1235, "A namespace declaration is only allowed at the top level of a namespace or module.");
                 }
             }
+            // Push the label onto the active scope for the duration of
+            // the labeled body so nested `break LBL` / `continue LBL`
+            // can resolve. We still push when the label is on a
+            // disallowed declaration target — tsc treats the label as
+            // declared even when emitting TS1344, and downstream code
+            // shouldn't emit a phantom TS1116 on top of TS1344.
+            const label_name = try self.internToken(label_tok);
+            try self.label_stack.append(self.gpa, .{
+                .name = label_name,
+                .function_depth = self.function_depth,
+            });
+            defer _ = self.label_stack.pop();
             if (self.isAmbientContextAt(label_tok.span.start)) {
                 self.nested_statement_depth += 1;
                 defer self.nested_statement_depth -= 1;
@@ -1469,6 +1498,7 @@ pub const Parser = struct {
             const lab_tok = self.advance();
             const lab_id = try self.internToken(lab_tok);
             label = try self.builder.addIdentifier(tokenSpan(lab_tok), lab_id);
+            try self.checkLabelTarget(start, lab_id);
         } else if (self.loop_switch_depth == 0) {
             try self.reportCodeAt(start.span.start, start.line, 1105, "A 'break' statement can only be used within an enclosing iteration or switch statement.");
         }
@@ -1484,12 +1514,42 @@ pub const Parser = struct {
             const lab_tok = self.advance();
             const lab_id = try self.internToken(lab_tok);
             label = try self.builder.addIdentifier(tokenSpan(lab_tok), lab_id);
+            try self.checkLabelTarget(start, lab_id);
         } else if (self.loop_depth == 0) {
             try self.reportCodeAt(start.span.start, start.line, 1104, "A 'continue' statement can only be used within an enclosing iteration statement.");
         }
         try self.consumeStatementTerminator();
         const end_pos: u32 = if (self.cursor > 0) self.tokens[self.cursor - 1].span.end else start.span.end;
         return try self.builder.addContinue(.{ .start = start.span.start, .end = end_pos }, label);
+    }
+
+    /// Resolve a `break LBL` / `continue LBL` label reference against
+    /// the active label scope. Mirrors tsc's grammar checks:
+    ///   - TS1116: label not declared in any enclosing statement
+    ///   - TS1107: label declared, but only outside the current
+    ///     function — jump targets cannot cross function boundaries
+    /// The reported position is the start of the `break`/`continue`
+    /// token (matches tsc's column for these diagnostics).
+    fn checkLabelTarget(self: *Parser, start: Token, label_name: hir_mod.StringId) ParseError!void {
+        // Walk the label stack innermost-out so a same-named label in
+        // the inner function (when present) wins before the outer one
+        // would trigger TS1107.
+        var i: usize = self.label_stack.items.len;
+        while (i > 0) {
+            i -= 1;
+            const entry = self.label_stack.items[i];
+            if (entry.name != label_name) continue;
+            if (entry.function_depth != self.function_depth) {
+                try self.reportCodeAt(start.span.start, start.line, 1107, "Jump target cannot cross function boundary.");
+            }
+            return;
+        }
+        const is_break = start.kind == .kw_break;
+        if (is_break) {
+            try self.reportCodeAt(start.span.start, start.line, 1116, "A 'break' statement can only jump to a label of an enclosing statement.");
+        } else {
+            try self.reportCodeAt(start.span.start, start.line, 1115, "A 'continue' statement can only jump to a label of an enclosing iteration statement.");
+        }
     }
 
     fn parseThrowStatement(self: *Parser) ParseError!NodeId {
@@ -9179,7 +9239,10 @@ test "parser: using in blocks under nested statements is allowed" {
 }
 
 test "parser: break and continue" {
-    var s = try newTestSetup("while (x) { break; continue; break label; continue label; }");
+    // Wrap in `label: while ...` so the labeled `break label;` /
+    // `continue label;` resolve cleanly under the parse-time label
+    // scope check (no spurious TS1116 / TS1115).
+    var s = try newTestSetup("label: while (x) { break; continue; break label; continue label; }");
     defer destroyTestSetup(s);
     const root = try s.parser.parseSourceFile();
     const top = hir_mod.blockStmts(&s.hir, root)[0];
@@ -9208,6 +9271,35 @@ test "parser: continue outside loop reports TS1104" {
     _ = try s.parser.parseSourceFile();
     try T.expectEqual(@as(usize, 1), s.parser.diagnostics.items.len);
     try T.expectEqual(@as(u32, 1104), s.parser.diagnostics.items[0].code);
+}
+
+test "parser: break/continue to unknown label reports TS1116/TS1115" {
+    var s = try newTestSetup("while (x) { break NOPE; continue NOPE; }");
+    defer destroyTestSetup(s);
+
+    _ = try s.parser.parseSourceFile();
+    var saw_1116: u32 = 0;
+    var saw_1115: u32 = 0;
+    for (s.parser.diagnostics.items) |d| {
+        if (d.code == 1116) saw_1116 += 1;
+        if (d.code == 1115) saw_1115 += 1;
+    }
+    try T.expectEqual(@as(u32, 1), saw_1116);
+    try T.expectEqual(@as(u32, 1), saw_1115);
+}
+
+test "parser: break across function boundary reports TS1107" {
+    // `break OUT;` inside the arrow body crosses the function
+    // boundary of the surrounding `OUT: while (...)` label.
+    var s = try newTestSetup("OUT: while (x) { var f = () => { break OUT; }; }");
+    defer destroyTestSetup(s);
+
+    _ = try s.parser.parseSourceFile();
+    var saw_1107: u32 = 0;
+    for (s.parser.diagnostics.items) |d| {
+        if (d.code == 1107) saw_1107 += 1;
+    }
+    try T.expectEqual(@as(u32, 1), saw_1107);
 }
 
 test "parser: label before declaration reports TS1344" {
