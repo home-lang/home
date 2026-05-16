@@ -4280,24 +4280,42 @@ pub const Printer = struct {
                     try self.printNonIndentStatement(stmt);
                 }
             } else if (k == .for_of_stmt) {
-                // §4.A.4.14 v0 — `for await (const x of source) yield E;`
-                // in an async generator. Predicate guarantees:
+                // §4.A.4.14 v1 — `for await (const x of source) yield E;`
+                // in an async generator, with try/finally cleanup via
+                // an awaited `_aiter.return()`. Predicate guarantees:
                 //   * is_await: true; source yield/await-free
                 //   * body is a single bare `yield E` (E yield/await-free)
                 //   * target is simple ident or `var|let|const <ident>`
-                // Layout (5 new cases — header, await-bind+check+body-yield,
-                // body resume1, body resume2 + loopback, exit):
-                //   case S+0 (current): var _aiter = __asyncValues(source);
+                // Layout (10 new cases — try-start runs in current case;
+                // header / bind+check+body-yield / 2 body resumes / try-
+                // normal-end / catch-start / finally-start / awaited-
+                // cleanup-resume / finally-end / exit):
+                //   case S+0 (current): _a.trys.push([S+1, catch, finally, end]);
+                //                       var _aiter = __asyncValues(source);
                 //   case S+1: return [4, __await(_aiter.next())];
                 //   case S+2: var _aresult = _a.sent();
-                //             if (_aresult.done) return [3, S+5];
+                //             if (_aresult.done) return [3, normal_end];
                 //             var x = _aresult.value;
                 //             return [4, __await(E)];
                 //   case S+3: _a.sent(); return [4];
-                //   case S+4: _a.sent(); return [3, S+1];
-                //   case S+5: (exit; falls through to function-level
-                //             `return [2];`)
-                // No trys-frame cleanup yet — see follow-up.
+                //   case S+4: _a.sent(); return [3, S+1];   // loopback
+                //   case S+5 (normal_end): return [3, end];
+                //   case S+6 (catch): var _e_1 = _a.sent();
+                //                     return [3, finally];
+                //   case S+7 (finally): if (!(_aresult && !_aresult.done
+                //                            && _aiter.return))
+                //                         return [3, finally_end];
+                //                       return [4, __await(_aiter.return.call(_aiter))];
+                //   case S+8: _a.sent();                     // cleanup resume
+                //   case S+9 (finally_end): if (_e_1) throw _e_1;
+                //                           return [7];      // endfinally
+                //   case S+10 (end): (exit; falls through to function-
+                //                     level `return [2];`)
+                // The runtime routes [3, end] jumps from inside the try
+                // frame through finally; the catch case fires on throws.
+                // `_aresult` defaults to undefined when iteration never
+                // started, so the `_aresult && !_aresult.done` guard
+                // safely skips cleanup in that case.
                 const fop = hir_mod.forInOf(self.hir, stmt);
                 const ye_node = self.singleYieldInThen(fop.body) orelse unreachable;
                 const body_yp = hir_mod.yieldExprOf(self.hir, ye_node);
@@ -4307,9 +4325,26 @@ pub const Printer = struct {
                     const v = hir_mod.varDeclOf(self.hir, fop.target);
                     break :blk v.name;
                 };
+                const try_start = state + 1;
                 const header_label = state + 1;
-                const exit_label = state + 5;
-                // Init in current case.
+                const normal_end_label = state + 5;
+                const catch_label = state + 6;
+                const finally_label = state + 7;
+                const finally_end_label = state + 9;
+                const end_label = state + 10;
+                // trys.push + init in current case.
+                {
+                    var nbuf: [16]u8 = undefined;
+                    try self.write(" _a.trys.push([");
+                    try self.write(std.fmt.bufPrint(&nbuf, "{d}", .{try_start}) catch unreachable);
+                    try self.write(", ");
+                    try self.write(std.fmt.bufPrint(&nbuf, "{d}", .{catch_label}) catch unreachable);
+                    try self.write(", ");
+                    try self.write(std.fmt.bufPrint(&nbuf, "{d}", .{finally_label}) catch unreachable);
+                    try self.write(", ");
+                    try self.write(std.fmt.bufPrint(&nbuf, "{d}", .{end_label}) catch unreachable);
+                    try self.write("]);");
+                }
                 try self.write(" var _aiter = __asyncValues(");
                 try self.printExpression(fop.source);
                 try self.write(");");
@@ -4326,13 +4361,13 @@ pub const Printer = struct {
                 state += 1;
                 {
                     const num_b = std.fmt.bufPrint(&buf, "{d}", .{state}) catch unreachable;
-                    var num_exit_buf: [16]u8 = undefined;
-                    const num_exit = std.fmt.bufPrint(&num_exit_buf, "{d}", .{exit_label}) catch unreachable;
+                    var num_ne_buf: [16]u8 = undefined;
+                    const num_normal_end = std.fmt.bufPrint(&num_ne_buf, "{d}", .{normal_end_label}) catch unreachable;
                     try self.writeNewlineIndent();
                     try self.write("case ");
                     try self.write(num_b);
                     try self.write(": var _aresult = _a.sent(); if (_aresult.done) return [3, ");
-                    try self.write(num_exit);
+                    try self.write(num_normal_end);
                     try self.write("]; var ");
                     try self.printExpression(target_name);
                     try self.write(" = _aresult.value; return [4, __await(");
@@ -4365,7 +4400,65 @@ pub const Printer = struct {
                     try self.write(num_h_back);
                     try self.write("];");
                 }
-                // Open exit case.
+                // Open normal_end case: jump past catch+finally.
+                state += 1;
+                {
+                    const num_ne = std.fmt.bufPrint(&buf, "{d}", .{state}) catch unreachable;
+                    var num_end_buf: [16]u8 = undefined;
+                    const num_end = std.fmt.bufPrint(&num_end_buf, "{d}", .{end_label}) catch unreachable;
+                    try self.writeNewlineIndent();
+                    try self.write("case ");
+                    try self.write(num_ne);
+                    try self.write(": return [3, ");
+                    try self.write(num_end);
+                    try self.write("];");
+                }
+                // Open catch case: capture error, jump to finally.
+                state += 1;
+                {
+                    const num_c = std.fmt.bufPrint(&buf, "{d}", .{state}) catch unreachable;
+                    var num_f_buf: [16]u8 = undefined;
+                    const num_f = std.fmt.bufPrint(&num_f_buf, "{d}", .{finally_label}) catch unreachable;
+                    try self.writeNewlineIndent();
+                    try self.write("case ");
+                    try self.write(num_c);
+                    try self.write(": var _e_1 = _a.sent(); return [3, ");
+                    try self.write(num_f);
+                    try self.write("];");
+                }
+                // Open finally case: skip cleanup if no usable iterator,
+                // otherwise await `.return()` call.
+                state += 1;
+                {
+                    const num_f = std.fmt.bufPrint(&buf, "{d}", .{state}) catch unreachable;
+                    var num_fe_buf: [16]u8 = undefined;
+                    const num_fe = std.fmt.bufPrint(&num_fe_buf, "{d}", .{finally_end_label}) catch unreachable;
+                    try self.writeNewlineIndent();
+                    try self.write("case ");
+                    try self.write(num_f);
+                    try self.write(": if (!(_aresult && !_aresult.done && _aiter.return)) return [3, ");
+                    try self.write(num_fe);
+                    try self.write("]; return [4, __await(_aiter.return.call(_aiter))];");
+                }
+                // Open cleanup-resume case.
+                state += 1;
+                {
+                    const num_cr = std.fmt.bufPrint(&buf, "{d}", .{state}) catch unreachable;
+                    try self.writeNewlineIndent();
+                    try self.write("case ");
+                    try self.write(num_cr);
+                    try self.write(": _a.sent();");
+                }
+                // Open finally_end case: rethrow + endfinally.
+                state += 1;
+                {
+                    const num_fe = std.fmt.bufPrint(&buf, "{d}", .{state}) catch unreachable;
+                    try self.writeNewlineIndent();
+                    try self.write("case ");
+                    try self.write(num_fe);
+                    try self.write(": if (_e_1) throw _e_1; return [7];");
+                }
+                // Open end case (exit).
                 state += 1;
                 {
                     const num_e = std.fmt.bufPrint(&buf, "{d}", .{state}) catch unreachable;
@@ -8463,16 +8556,22 @@ test "emit: sync generator with for-await-of still bails" {
     try T.expect(std.mem.indexOf(u8, out, "__generator") == null);
 }
 
-test "emit: async generator with for-await-of lowers to 6-case loop" {
-    // §4.A.4.14 v0 — `async function* g() { for await (const x of source) yield x; }`
-    // lowers into the inner generator state machine of the async-
-    // generator wrapper. Layout (no trys-frame cleanup yet):
-    //   case 0: init `_aiter = __asyncValues(source);`
+test "emit: async generator with for-await-of lowers to 11-case loop with trys-frame cleanup" {
+    // §4.A.4.14 v1 — `async function* g() { for await (const x of source) yield x; }`
+    // now lowers with full try/finally cleanup: the iterator's
+    // `.return()` is awaited on early termination or on throw. Layout:
+    //   case 0: trys.push + init (`_aiter = __asyncValues(source);`)
     //   case 1: await next() — `return [4, __await(_aiter.next())];`
     //   case 2: bind result + done-check + body yield
-    //   case 3: body yield resume1 (`_a.sent(); return [4];`)
+    //   case 3: body yield resume1
     //   case 4: body yield resume2 + loopback to case 1
-    //   case 5: exit (falls through to function-level `return [2];`)
+    //   case 5: normal-end (jump past catch+finally to case 10)
+    //   case 6: catch-start (capture _e_1)
+    //   case 7: finally-start (skip if no usable iterator, else
+    //           awaited `.return()`)
+    //   case 8: cleanup-resume
+    //   case 9: finally-end (rethrow + endfinally)
+    //   case 10: exit
     const out = try emitWithOpts(
         "async function* g() { for await (const x of source) yield x; }",
         .{ .es_target = .es5 },
@@ -8480,18 +8579,40 @@ test "emit: async generator with for-await-of lowers to 6-case loop" {
     defer T.allocator.free(out);
     try T.expect(std.mem.indexOf(u8, out, "TODO: ES5 generator") == null);
     try T.expect(std.mem.indexOf(u8, out, "return __asyncGenerator(this, arguments, function () {") != null);
-    // Init in case 0.
-    try T.expect(std.mem.indexOf(u8, out, "case 0: var _aiter = __asyncValues(source);") != null);
+    // Init in case 0 — trys.push then __asyncValues.
+    try T.expect(std.mem.indexOf(u8, out, "case 0: _a.trys.push([1, 6, 7, 10]); var _aiter = __asyncValues(source);") != null);
     // Header case 1 awaits next().
     try T.expect(std.mem.indexOf(u8, out, "case 1: return [4, __await(_aiter.next())];") != null);
-    // Bind/check/body-yield in case 2.
+    // Bind/check/body-yield in case 2 — done-jump now targets normal_end (case 5).
     try T.expect(std.mem.indexOf(u8, out, "case 2: var _aresult = _a.sent(); if (_aresult.done) return [3, 5]; var x = _aresult.value; return [4, __await(x)];") != null);
     // Body yield resume1.
     try T.expect(std.mem.indexOf(u8, out, "case 3: _a.sent(); return [4];") != null);
     // Body yield resume2 + loopback to header (case 1).
     try T.expect(std.mem.indexOf(u8, out, "case 4: _a.sent(); return [3, 1];") != null);
-    // Exit case 5.
-    try T.expect(std.mem.indexOf(u8, out, "case 5:") != null);
+    // Normal-end (case 5) jumps past catch+finally to end_label (case 10).
+    try T.expect(std.mem.indexOf(u8, out, "case 5: return [3, 10];") != null);
+    // Catch (case 6) captures error, jumps to finally (case 7).
+    try T.expect(std.mem.indexOf(u8, out, "case 6: var _e_1 = _a.sent(); return [3, 7];") != null);
+    // Finally (case 7) skips cleanup if no usable iterator, else awaits .return().
+    try T.expect(std.mem.indexOf(u8, out, "case 7: if (!(_aresult && !_aresult.done && _aiter.return)) return [3, 9]; return [4, __await(_aiter.return.call(_aiter))];") != null);
+    // Cleanup resume (case 8).
+    try T.expect(std.mem.indexOf(u8, out, "case 8: _a.sent();") != null);
+    // Finally-end (case 9) rethrows + endfinally.
+    try T.expect(std.mem.indexOf(u8, out, "case 9: if (_e_1) throw _e_1; return [7];") != null);
+    // End label (case 10) — exit.
+    try T.expect(std.mem.indexOf(u8, out, "case 10:") != null);
+}
+
+test "emit: async generator with for-await-of + var decl target binds via var" {
+    // `let x` and `var x` lower identically to `const x` (the
+    // state-machine binding is always `var x = _aresult.value;`).
+    const out = try emitWithOpts(
+        "async function* g() { for await (let x of source) yield x; }",
+        .{ .es_target = .es5 },
+    );
+    defer T.allocator.free(out);
+    try T.expect(std.mem.indexOf(u8, out, "return __asyncGenerator(this, arguments, function () {") != null);
+    try T.expect(std.mem.indexOf(u8, out, "var x = _aresult.value;") != null);
 }
 
 test "emit: async generator with for-await-of + non-yield body still bails" {
