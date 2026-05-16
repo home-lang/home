@@ -553,8 +553,22 @@ pub const Scanner = struct {
                 };
             }
             if (c == '\n' or c == '\r') {
+                // tsc's scanner reports `unterminated string literal`
+                // (TS1002) AND continues — emitting a partial
+                // string_literal token whose span stops at the newline,
+                // then resuming with subsequent tokens on the next line.
+                // Treating this as a hard ScanError discards every
+                // diagnostic after the first violation (baseline
+                // scannerStringLiterals expects TWO TS1002s, one per
+                // unterminated line). Recover by closing the string
+                // here and letting scanning continue.
                 self.report(gpa, "unterminated string literal");
-                return error.UnterminatedString;
+                return .{
+                    .span = .{ .start = start, .end = self.pos },
+                    .kind = .string_literal,
+                    .flags = flags,
+                    .line = line,
+                };
             }
             if (c == '\\') {
                 // Skip the escape sequence; we don't decode here. The
@@ -1309,10 +1323,35 @@ test "Scanner: string literals — single and double" {
     try t.expectEqualStrings("'with\\'quote'", toks.items[2].bytes(s.source));
 }
 
-test "Scanner: unterminated string is an error" {
+test "Scanner: unterminated string at EOF is a hard error" {
+    // No newline before EOF — `'oops` has no recovery point, so the
+    // scanner keeps the hard-error path it always did.
     var s = Scanner.init(t.allocator, "'oops");
     defer s.deinit(t.allocator);
     try t.expectError(error.UnterminatedString, s.next(t.allocator));
+}
+
+test "Scanner: unterminated string at newline recovers and continues" {
+    // Baseline: `scannerStringLiterals.errors.txt` expects TWO TS1002
+    // diagnostics — one per unterminated line — proving the scanner
+    // must close the partial string at the newline and resume scanning
+    // the next logical line. Mirror that recovery so downstream
+    // diagnostics aren't lost.
+    var s = Scanner.init(t.allocator,
+        \\"line one
+        \\"line two
+        \\
+    );
+    defer s.deinit(t.allocator);
+    var toks = try s.tokenize(t.allocator);
+    defer toks.deinit(t.allocator);
+
+    // Two recovered string_literal tokens, both reported as unterminated.
+    try t.expectEqual(TokenKind.string_literal, toks.items[0].kind);
+    try t.expectEqual(TokenKind.string_literal, toks.items[1].kind);
+    try t.expectEqual(@as(usize, 2), s.diagnostics.items.len);
+    try t.expectEqualStrings("unterminated string literal", s.diagnostics.items[0].message);
+    try t.expectEqualStrings("unterminated string literal", s.diagnostics.items[1].message);
 }
 
 test "Scanner: invalid unicode escape in string reports diagnostic" {

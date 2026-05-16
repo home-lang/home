@@ -1271,8 +1271,41 @@ pub const Parser = struct {
         for (raw[1..]) |ch| {
             if (ch == '8' or ch == '9' or ch == '.' or ch == 'e' or ch == 'E') return;
         }
-        const msg = try std.fmt.allocPrint(self.diag_arena.allocator(), "Octal literals are not allowed. Use the syntax '0o{s}'.", .{raw[1..]});
-        try self.reportCodeAt(tok.span.start, tok.line, 1121, msg);
+        if (self.precedingUnaryMinusForNumeric()) |minus| {
+            const msg = try std.fmt.allocPrint(self.diag_arena.allocator(), "Octal literals are not allowed. Use the syntax '-0o{s}'.", .{raw[1..]});
+            try self.reportCodeAt(minus.span.start, minus.line, 1121, msg);
+        } else {
+            const msg = try std.fmt.allocPrint(self.diag_arena.allocator(), "Octal literals are not allowed. Use the syntax '0o{s}'.", .{raw[1..]});
+            try self.reportCodeAt(tok.span.start, tok.line, 1121, msg);
+        }
+    }
+
+    /// Returns the unary `-` token immediately preceding the current
+    /// numeric literal if there is one (and no other intervening token).
+    /// tsc anchors `TS1121: Octal literals…` on the leading `-` for
+    /// expressions like `-03` (baseline `scannerNumericLiteral8`), and
+    /// embeds the `-` in the suggested syntax (`-0o3` rather than `0o3`).
+    /// Returns null when the numeric literal is bare.
+    fn precedingUnaryMinusForNumeric(self: *Parser) ?Token {
+        // self.cursor sits one past the current number (we always call
+        // this after `advance()` consumed the numeric token). The slot
+        // immediately before holds the number itself; two slots back is
+        // a candidate for the unary `-`.
+        if (self.cursor < 2) return null;
+        const minus = self.tokens[self.cursor - 2];
+        if (minus.kind != .minus) return null;
+        // Reject `1 - 03` style binary expressions: a unary `-` token
+        // sits at start-of-expression, which we approximate as "no
+        // preceding token, or the slot before is an operator/punct/kw"
+        // — anything that would make `-` unary in tsc's grammar.
+        if (self.cursor >= 3) {
+            const before_minus = self.tokens[self.cursor - 3];
+            switch (before_minus.kind) {
+                .identifier, .number_literal, .string_literal, .bigint_literal, .close_paren, .close_bracket, .no_substitution_template, .template_tail => return null,
+                else => {},
+            }
+        }
+        return minus;
     }
 
     fn reportNumericLiteralDiagnostics(self: *Parser, tok: Token, raw: []const u8) ParseError!void {
@@ -1318,8 +1351,13 @@ pub const Parser = struct {
                     try self.reportCodeAt(tok.span.start, tok.line, 1121, msg);
                     try self.reportCodeAt(tok.span.start + @as(u32, @intCast(split_at)), tok.line, 1005, "';' expected.");
                 } else if (!self.strict_mode) {
-                    const msg = try std.fmt.allocPrint(self.diag_arena.allocator(), "Octal literals are not allowed. Use the syntax '0o{s}'.", .{raw[1..]});
-                    try self.reportCodeAt(tok.span.start, tok.line, 1121, msg);
+                    if (self.precedingUnaryMinusForNumeric()) |minus| {
+                        const msg = try std.fmt.allocPrint(self.diag_arena.allocator(), "Octal literals are not allowed. Use the syntax '-0o{s}'.", .{raw[1..]});
+                        try self.reportCodeAt(minus.span.start, minus.line, 1121, msg);
+                    } else {
+                        const msg = try std.fmt.allocPrint(self.diag_arena.allocator(), "Octal literals are not allowed. Use the syntax '0o{s}'.", .{raw[1..]});
+                        try self.reportCodeAt(tok.span.start, tok.line, 1121, msg);
+                    }
                 }
                 return;
             }
@@ -12797,6 +12835,34 @@ test "parser: legacy octal literal with stray fraction reports TS1121 + TS1005" 
     try T.expectEqualStrings("Octal literals are not allowed. Use the syntax '0o1'.", s.parser.diagnostics.items[0].message);
     try T.expectEqual(@as(u32, 1005), s.parser.diagnostics.items[1].code);
     try T.expectEqualStrings("';' expected.", s.parser.diagnostics.items[1].message);
+}
+
+test "parser: unary-minus legacy octal anchors TS1121 on the `-` with `-0o` syntax" {
+    // tsc emits TS1121 on the `-` token (col 1) for `-03` and renders
+    // the suggested syntax as `-0o3` (not `0o3`). Baseline:
+    // scannerNumericLiteral8(target=es2015).errors.txt.
+    var s = try newTestSetup("-03");
+    defer destroyTestSetup(s);
+
+    _ = try s.parser.parseSourceFile();
+    try T.expectEqual(@as(usize, 1), s.parser.diagnostics.items.len);
+    try T.expectEqual(@as(u32, 1121), s.parser.diagnostics.items[0].code);
+    try T.expectEqualStrings("Octal literals are not allowed. Use the syntax '-0o3'.", s.parser.diagnostics.items[0].message);
+    // Anchor must be the `-` token at position 0, not the `0` at 1.
+    try T.expectEqual(@as(u32, 0), s.parser.diagnostics.items[0].pos);
+}
+
+test "parser: binary-minus before legacy octal does NOT anchor on the `-`" {
+    // `1 - 03` — the `-` is binary, so TS1121 stays on the `03` literal
+    // and the suggested syntax stays bare (`0o3`). Guards against
+    // mis-classifying every minus as unary in the octal-literal path.
+    var s = try newTestSetup("1 - 03");
+    defer destroyTestSetup(s);
+
+    _ = try s.parser.parseSourceFile();
+    try T.expectEqual(@as(usize, 1), s.parser.diagnostics.items.len);
+    try T.expectEqual(@as(u32, 1121), s.parser.diagnostics.items[0].code);
+    try T.expectEqualStrings("Octal literals are not allowed. Use the syntax '0o3'.", s.parser.diagnostics.items[0].message);
 }
 
 test "parser: with statement reports strict and unsupported diagnostics" {
