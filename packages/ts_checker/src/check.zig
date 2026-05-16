@@ -16941,22 +16941,24 @@ pub const Checker = struct {
             if (self.hir.kindOf(arg) != .type_ref) continue;
             const r = hir_mod.typeRefOf(self.hir, arg);
             if (r.qualifier_len != 0) continue;
-            if (self.typeRefNameExists(r.name) or self.visibleTypeDeclarationExistsAt(arg, r.name)) continue;
             const name_str = self.string_interner.get(r.name);
+            if (isPrimitiveTypeNameText(name_str)) continue;
+            if (self.lookupNarrow(r.name) != null) continue;
+            if (self.isBuiltinName(r.name)) continue;
+            if (self.typeRefNameExists(r.name) or self.visibleTypeDeclarationExistsAt(arg, r.name)) continue;
             if (self.typeRefNameAcceptsTypeArgsAt(arg, r.name, name_str)) continue;
             try self.reportCannotFindNameOnce(arg, r.name);
         }
     }
 
-    /// Stub: TypeScript 4.7 "instantiation expressions" (`Foo<T>` in
-    /// a value position without a following call) are not yet
-    /// distinguished from regular calls in our parser. The call
-    /// pipeline treats both as `.call_expr`; returning false here
-    /// preserves the existing call-typing path.
     fn isInstantiationExpressionCall(self: *Checker, node: NodeId) bool {
-        _ = self;
-        _ = node;
-        return false;
+        if (self.hir.kindOf(node) != .call_expr) return false;
+        if (hir_mod.callArgs(self.hir, node).len != 0) return false;
+        if (hir_mod.callTypeArgs(self.hir, node).len == 0) return false;
+        const src = self.source orelse return false;
+        const sp = self.hir.spanOf(node);
+        if (sp.end <= sp.start or sp.end > src.len) return false;
+        return src[sp.end - 1] == '>';
     }
 
     fn reportUnresolvedSimpleTypeofTypeArguments(self: *Checker, operand: NodeId) CheckError!void {
@@ -21715,6 +21717,8 @@ pub const Checker = struct {
                 }
                 const type_arg_nodes = hir_mod.callTypeArgs(self.hir, node);
                 if (type_arg_nodes.len > 0) {
+                    try self.reportUnresolvedCallTypeArgumentNodes(type_arg_nodes);
+                } else {
                     try self.reportUnresolvedSimpleTypeofTypeArguments(node);
                 }
                 if (self.isInstantiationExpressionCall(node)) {
