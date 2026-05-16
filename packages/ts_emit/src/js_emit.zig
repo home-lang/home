@@ -2214,23 +2214,30 @@ pub const Printer = struct {
         return true;
     }
 
-    /// §4.A.4.14 v3+v5 — per-statement validator for for-await-of
-    /// body. Yields (including `yield*` delegating yields) are
-    /// accepted if their RHS is yield/await-free; non-yields must be
-    /// yield/await-free and not a structured stmt.
+    /// §4.A.4.14 v3+v5+v6 — per-statement validator for for-await-of
+    /// body. Yields (including `yield*`) are accepted if RHS is yield/
+    /// await-free; bare unlabeled `break`/`continue` are accepted
+    /// (rewritten to state-machine jumps via `printBreakOrContinue`);
+    /// other non-yields must be yield/await-free and not a nested
+    /// structured stmt.
     fn asyncGenForAwaitBodyStmtOk(self: *const Printer, s: NodeId) bool {
         const k = self.hir.kindOf(s);
         if (k == .yield_expr) {
             const yp = hir_mod.yieldExprOf(self.hir, s);
-            // Both `yield E` and `yield* E` are fine; `yield*` requires
-            // a non-null RHS (delegating without a source is invalid).
             if (yp.type_node != hir_mod.none_node_id and yp.expr == hir_mod.none_node_id) return false;
             if (yp.expr != hir_mod.none_node_id and (self.subtreeContainsYield(yp.expr) or self.subtreeContainsAwait(yp.expr))) return false;
             return true;
         }
+        // Bare unlabeled break/continue rewrite to state-machine
+        // jumps targeting the for-await-of's normal-end (break) or
+        // header (continue); labeled forms aren't supported in v6.
+        if (k == .break_stmt or k == .continue_stmt) {
+            const lab = hir_mod.labelOf(self.hir, s);
+            return lab.label == hir_mod.none_node_id;
+        }
         if (self.subtreeContainsYield(s) or self.subtreeContainsAwait(s)) return false;
         switch (k) {
-            .if_stmt, .while_stmt, .do_while_stmt, .for_stmt, .for_in_stmt, .for_of_stmt, .try_stmt, .switch_stmt, .throw_stmt, .break_stmt, .continue_stmt, .fn_decl, .class_decl, .return_stmt => return false,
+            .if_stmt, .while_stmt, .do_while_stmt, .for_stmt, .for_in_stmt, .for_of_stmt, .try_stmt, .switch_stmt, .throw_stmt, .fn_decl, .class_decl, .return_stmt => return false,
             else => return true,
         }
     }
@@ -4464,6 +4471,22 @@ pub const Printer = struct {
                     try self.write("]; var ");
                     try self.printExpression(target_name);
                     try self.write(" = _aresult.value;");
+                }
+                // §4.A.4.14 v6 — wire break/continue rewrites so any
+                // top-level `break;` in the body emits as
+                // `return [3, normal_end_label];` (re-routes through
+                // the cleanup chain) and `continue;` emits as
+                // `return [3, header_label];` (jumps directly to the
+                // next iteration's `_aiter.next()` await). Saved/
+                // restored around the walk so outer state-machine
+                // loops keep their own bindings.
+                const prev_break_lbl = self.gen_break_label;
+                const prev_continue_lbl = self.gen_continue_label;
+                self.gen_break_label = normal_end_label;
+                self.gen_continue_label = header_label;
+                defer {
+                    self.gen_break_label = prev_break_lbl;
+                    self.gen_continue_label = prev_continue_lbl;
                 }
                 // Walk body stmts inline. Each yield closes the current
                 // case (regular yield: `return [4, __await(E)];`;
@@ -8842,6 +8865,49 @@ test "emit: async generator with for-await-of + no-yield bare-stmt body lowers" 
     defer T.allocator.free(out);
     try T.expect(std.mem.indexOf(u8, out, "return __asyncGenerator(this, arguments, function () {") != null);
     try T.expect(std.mem.indexOf(u8, out, "var x = _aresult.value; g(x); return [3, 1];") != null);
+}
+
+test "emit: async generator with for-await-of + break in body routes through cleanup" {
+    // §4.A.4.14 v6 — `break;` inside the body rewrites to
+    // `return [3, normal_end_label];` so the state machine re-routes
+    // through the finally case (awaited `.return()` cleanup) before
+    // landing on the end label.
+    const out = try emitWithOpts(
+        "async function* g() { for await (const x of source) { yield x; break; } }",
+        .{ .es_target = .es5 },
+    );
+    defer T.allocator.free(out);
+    try T.expect(std.mem.indexOf(u8, out, "TODO: ES5 generator") == null);
+    try T.expect(std.mem.indexOf(u8, out, "return __asyncGenerator(this, arguments, function () {") != null);
+    // case 4 contains the break rewrite (return [3, 5]) — 5 is normal_end_label.
+    try T.expect(std.mem.indexOf(u8, out, "case 4: _a.sent(); return [3, 5];") != null);
+    // Normal-end (case 5) still routes to end (case 10).
+    try T.expect(std.mem.indexOf(u8, out, "case 5: return [3, 10];") != null);
+}
+
+test "emit: async generator with for-await-of + continue in body restarts loop" {
+    // `continue;` inside the body rewrites to
+    // `return [3, header_label];` — jumps directly to the next
+    // iteration's _aiter.next() await without re-entering cleanup.
+    const out = try emitWithOpts(
+        "async function* g() { for await (const x of source) { yield x; continue; } }",
+        .{ .es_target = .es5 },
+    );
+    defer T.allocator.free(out);
+    try T.expect(std.mem.indexOf(u8, out, "return __asyncGenerator(this, arguments, function () {") != null);
+    // case 4 contains the continue rewrite (return [3, 1]) — 1 is header_label.
+    try T.expect(std.mem.indexOf(u8, out, "case 4: _a.sent(); return [3, 1];") != null);
+}
+
+test "emit: async generator with for-await-of + labeled break still bails" {
+    // Labeled break/continue isn't part of v6 — predicate rejects so
+    // the loop falls back to native `async function*`.
+    const out = try emitWithOpts(
+        "async function* g() { outer: for await (const x of source) { break outer; } }",
+        .{ .es_target = .es5 },
+    );
+    defer T.allocator.free(out);
+    try T.expect(std.mem.indexOf(u8, out, "return __asyncGenerator(this, arguments, function () {") == null);
 }
 
 test "emit: async generator with for-await-of + yield* in body delegates via __asyncDelegator" {
