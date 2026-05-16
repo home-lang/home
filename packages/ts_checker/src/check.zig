@@ -259,6 +259,13 @@ pub const TsCodes = struct {
     pub const delete_operand_must_be_optional: u32 = 2790;
     pub const no_overload_matches: u32 = 2769;
     pub const duplicate_identifier: u32 = 2300;
+    /// TS2397 — `Declaration name conflicts with built-in global
+    /// identifier 'X'.` Fires when a local `var`/`let`/`const`,
+    /// function, or class declaration shadows a name that is part of
+    /// the JS lexical environment (only `globalThis` today, but the
+    /// upstream check uses a fixed allow-list). Matches tsc's
+    /// `declarationNameConflictsWithBuiltInGlobalIdentifier`.
+    pub const declaration_name_conflicts_builtin_global: u32 = 2397;
     pub const export_star_conflict: u32 = 2308;
     pub const export_assignment_with_other_exports: u32 = 2309;
     pub const cannot_find_global_type: u32 = 2318;
@@ -5763,6 +5770,28 @@ pub const Checker = struct {
                     else
                         null;
                     try self.checkDefaultExprAgainstBodyVars(pp.default_value, &body_vars, param_name_id);
+                }
+                // TS2372: `function f(x = x) {}` — the default
+                // expression mentions the same identifier as the
+                // parameter being declared. tsc emits "Parameter 'X'
+                // cannot reference itself in its initializer." This
+                // is distinct from `checkBindingPatternDefaultReferences`
+                // (which handles destructuring patterns) and the
+                // body-vars walk (which finds shadowing locals).
+                // Anchors the diagnostic at the offending reference
+                // node so the column matches the upstream baseline
+                // (e.g. `asyncFunctionDeclaration3_es2017.ts(1,20)`).
+                if (nk == .identifier) {
+                    const param_name_id = hir_mod.identifierOf(self.hir, pp.name).name;
+                    var refs: std.ArrayListUnmanaged(NameRef) = .empty;
+                    defer refs.deinit(self.gpa);
+                    try self.collectIdentifierRefsWithNodes(pp.default_value, &refs);
+                    for (refs.items) |ref| {
+                        if (ref.name == param_name_id) {
+                            try self.reportBindingDefaultReferenceNamed(ref.node, .parameter, true, param_name_id, ref.name);
+                            break;
+                        }
+                    }
                 }
             }
             if (nk == .array_pattern and pp.default_value != hir_mod.none_node_id) {
@@ -21036,7 +21065,23 @@ pub const Checker = struct {
         if (without_undefined == types.Primitive.never or without_undefined == types.Primitive.none) return default_t;
         if (default_t == types.Primitive.never or default_t == types.Primitive.none) return without_undefined;
         if (without_undefined == default_t) return without_undefined;
-        return self.interner.internUnion(&.{ without_undefined, default_t }) catch return error.OutOfMemory;
+        // Widen the default before unioning so a string-literal default
+        // (`a = ""`) doesn't show up alongside `string` in the source's
+        // union prose. Mirrors upstream tsc which widens initializer
+        // types for destructuring defaults before computing the
+        // effective binding type. See `restElementWithAssignmentPattern2`
+        // which expects `string | number`, not `string | string | number`.
+        // Also skip when the widened default is already subsumed by the
+        // source (e.g. source = `string | number`, widened default =
+        // `string` — the union is a no-op, return the source unchanged).
+        const widened_default = self.widenLiteralType(default_t);
+        if (widened_default == without_undefined) return without_undefined;
+        if (self.interner.pool.flagsOf(without_undefined).is_union) {
+            for (self.interner.unionMembers(without_undefined)) |member| {
+                if (member == widened_default) return without_undefined;
+            }
+        }
+        return self.interner.internUnion(&.{ without_undefined, widened_default }) catch return error.OutOfMemory;
     }
 
     fn objectPropertyTypeForDestructuring(self: *Checker, source_t: TypeId, key_node: NodeId, is_computed: bool) CheckError!?TypeId {
@@ -21325,6 +21370,26 @@ pub const Checker = struct {
 
     fn checkVarDecl(self: *Checker, node: NodeId) CheckError!void {
         const v = hir_mod.varDeclOf(self.hir, node);
+
+        // TS2397 — `var globalThis;` (or `let`/`const`) shadows the
+        // built-in lexical binding. tsc lists only `globalThis` in
+        // its built-in conflict allow-list, anchored at the
+        // identifier name. Ambient declarations are exempt because
+        // they participate in the global type rather than introducing
+        // a local binding.
+        if (!v.is_ambient and
+            v.name != hir_mod.none_node_id and
+            self.hir.kindOf(v.name) == .identifier)
+        {
+            const id = hir_mod.identifierOf(self.hir, v.name);
+            if (std.mem.eql(u8, self.string_interner.get(id.name), "globalThis")) {
+                try self.report(
+                    v.name,
+                    TsCodes.declaration_name_conflicts_builtin_global,
+                    "Declaration name conflicts with built-in global identifier 'globalThis'.",
+                );
+            }
+        }
 
         // Top-level `await using` requires module=es2022+ AND
         // target=es2017+. The parser flags `is_await_using` on the

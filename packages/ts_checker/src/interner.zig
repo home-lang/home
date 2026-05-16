@@ -407,10 +407,29 @@ pub const Interner = struct {
         if (members.len == 0) return Primitive.never;
         if (members.len == 1) return members[0];
 
+        // Flatten nested unions: `(A | B) | C` should canonicalize to
+        // a single 3-member union. Pre-expand into an unmanaged list
+        // so we can recurse one level (members are themselves already
+        // flat by this same pre-pass, so one level suffices).
+        var expanded: std.ArrayListUnmanaged(TypeId) = .empty;
+        defer expanded.deinit(self.gpa);
+        for (members) |m| {
+            if (self.pool.flagsOf(m).is_union) {
+                for (self.unionMembers(m)) |inner_m| {
+                    try expanded.append(self.gpa, inner_m);
+                }
+            } else {
+                try expanded.append(self.gpa, m);
+            }
+        }
+        const flattened = expanded.items;
+        if (flattened.len == 0) return Primitive.never;
+        if (flattened.len == 1) return flattened[0];
+
         // Sort + dedup into a temporary buffer (gpa). After
         // canonicalization we hash to determine the owning shard,
         // then dupe into that shard's arena before the dedup lookup.
-        const scratch = try self.gpa.dupe(TypeId, members);
+        const scratch = try self.gpa.dupe(TypeId, flattened);
         defer self.gpa.free(scratch);
         std.mem.sort(TypeId, scratch, {}, std.sort.asc(TypeId));
         var write: usize = 1;
@@ -1191,6 +1210,42 @@ test "Interner: union flags fold constituent flags" {
     try T.expect(f.is_union);
     try T.expect(f.is_string);
     try T.expect(f.is_number);
+}
+
+test "Interner: union flattens nested unions" {
+    var i = try Interner.init(T.allocator);
+    defer i.deinit();
+    // (string | number) | string should collapse to (string | number).
+    // Without flattening, the outer union would contain two members
+    // (the inner union + bare string), which leaks through to
+    // diagnostic prose as `string | number | string`. Mirrors
+    // upstream tsc which canonicalizes unions in flat form. Covers
+    // the destructuring-default merge path in
+    // `restElementWithAssignmentPattern2.ts`.
+    const inner = try i.internUnion(&.{ Primitive.string_t, Primitive.number_t });
+    try T.expect(i.pool.flagsOf(inner).is_union);
+    const outer = try i.internUnion(&.{ inner, Primitive.string_t });
+    // Should collapse to the inner union (string + number, both
+    // already present after flattening + dedup).
+    try T.expectEqual(inner, outer);
+}
+
+test "Interner: union flattens multiple nested unions" {
+    var i = try Interner.init(T.allocator);
+    defer i.deinit();
+    // (string | number) | (boolean | symbol) flattens to a single
+    // four-member union; sort+dedup canonicalizes the order.
+    const left = try i.internUnion(&.{ Primitive.string_t, Primitive.number_t });
+    const right = try i.internUnion(&.{ Primitive.boolean_t, Primitive.symbol_t });
+    const flat = try i.internUnion(&.{ left, right });
+    try T.expect(i.pool.flagsOf(flat).is_union);
+    const members = i.unionMembers(flat);
+    try T.expectEqual(@as(usize, 4), members.len);
+    // Verify none of the members are themselves union types
+    // (true flat form).
+    for (members) |m| {
+        try T.expect(!i.pool.flagsOf(m).is_union);
+    }
 }
 
 test "Interner: signature accessors ignore folded union signature flags" {
