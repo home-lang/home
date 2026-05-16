@@ -85,6 +85,13 @@ pub const Parser = struct {
     class_body_depth: u32,
     loop_depth: u32,
     loop_switch_depth: u32,
+    /// True when the parser is currently parsing statements directly
+    /// under a `case`/`default` clause body (i.e. not inside a nested
+    /// block). Used to gate TS1547/TS1548 for `using`/`await using`
+    /// declarations that the spec disallows in bare case clauses.
+    /// Reset by `parseBlockStatement` so a `{}` wrapping inside the
+    /// case clause clears the flag.
+    in_switch_case_clause: bool,
     namespace_depth: u32,
     strict_mode: bool,
     target_es2015_or_later: bool,
@@ -140,6 +147,7 @@ pub const Parser = struct {
             .class_body_depth = 0,
             .loop_depth = 0,
             .loop_switch_depth = 0,
+            .in_switch_case_clause = false,
             .namespace_depth = 0,
             .strict_mode = false,
             .target_es2015_or_later = false,
@@ -449,9 +457,18 @@ pub const Parser = struct {
             return dec;
         }
         const t = self.peek();
+        // `await using` is parsed as a single `using` declaration; the
+        // generic TS1036 ambient-statement gate would otherwise fire on
+        // the leading `await` token before the dispatch reroutes it.
+        const is_await_using_in_ambient = t.kind == .kw_await and
+            self.peekAt(1).kind == .kw_using and
+            !self.peekAt(1).flags.preceded_by_newline and
+            self.peekAt(2).kind == .identifier and
+            !self.peekAt(2).flags.preceded_by_newline;
         if (self.block_depth == 0 and
             self.nested_statement_depth == 0 and
             self.isAmbientContextAt(t.span.start) and
+            !is_await_using_in_ambient and
             self.statementIsDisallowedInAmbientContext(t.kind))
         {
             try self.reportCodeAt(t.span.start, t.line, 1036, "Statements are not allowed in ambient contexts.");
@@ -490,7 +507,12 @@ pub const Parser = struct {
                 // Stage 3 explicit resource management: `using x = expr;`.
                 // `using` is contextual — only treat it as a declaration
                 // when followed by an identifier on the same line. ASI
-                // would otherwise insert a terminator after `using`.
+                // would otherwise insert a terminator after `using`,
+                // and `using [a]` / `using {a}` are intentionally NOT
+                // recognized here so they parse as the index / object
+                // expression `using[a]` / `using{a}` that upstream tsc
+                // produces. (Binding-pattern recovery still kicks in
+                // for comma-continuations inside a real using decl.)
                 if (self.peekAt(1).kind == .identifier and
                     !self.peekAt(1).flags.preceded_by_newline)
                 {
@@ -501,7 +523,11 @@ pub const Parser = struct {
             .kw_await => blk: {
                 // `await using x = expr;` — Stage 3 async dispose. The
                 // bare `await expr;` form falls through to be parsed as
-                // an expression statement.
+                // an expression statement. As with `using`, we only
+                // treat the head as an `await using` decl when an
+                // identifier follows; bracket/brace patterns mean the
+                // tokens are a regular expression and TS emits TS2304
+                // for the unresolved `using` identifier.
                 if (self.peekAt(1).kind == .kw_using and
                     !self.peekAt(1).flags.preceded_by_newline and
                     self.peekAt(2).kind == .identifier and
@@ -746,6 +772,13 @@ pub const Parser = struct {
             .kw_export,
             .kw_type,
             .kw_with,
+            // `using` is reported via TS1545 in `parseUsingDecl` when
+            // the declaration lands in an ambient context — suppress
+            // the generic TS1036 here so the more specific diagnostic
+            // isn't paired with it. (`await using` is the same shape
+            // for diagnostic purposes; the leading `await` token in
+            // that combination is handled by the dispatch peek.)
+            .kw_using,
             .semicolon,
             .eof,
             => false,
@@ -1420,6 +1453,9 @@ pub const Parser = struct {
             _ = try self.expect(.colon, "':' after case label");
             var stmts: std.ArrayListUnmanaged(NodeId) = .empty;
             defer stmts.deinit(self.gpa);
+            const prev_in_case_clause = self.in_switch_case_clause;
+            self.in_switch_case_clause = true;
+            defer self.in_switch_case_clause = prev_in_case_clause;
             while (true) {
                 const k = self.peek().kind;
                 if (!self.hasPendingStatement() and (k == .kw_case or k == .kw_default or k == .close_brace or k == .eof)) break;
@@ -3754,29 +3790,98 @@ pub const Parser = struct {
     /// `is_await_using` flag set on its payload — for v0 emitters can
     /// continue treating it as `const`. Try/finally lowering for
     /// `[Symbol.dispose]()` / `[Symbol.asyncDispose]()` is a follow-up.
+    /// Parse the target identifier (or recover from a binding pattern)
+    /// of a single `using` / `await using` binder. When the binder is
+    /// `[a, b]` / `{ a }`, emit TS1492 ("'using' declarations may not
+    /// have binding patterns") at the pattern's start, skip over the
+    /// pattern, and return a synthetic identifier token rooted at the
+    /// pattern's open bracket so downstream HIR shape is preserved.
+    fn parseUsingDeclBindingTarget(self: *Parser, await_using: bool) ParseError!Token {
+        const tok = self.peek();
+        if (tok.kind == .open_bracket or tok.kind == .open_brace) {
+            const message = if (await_using)
+                "'await using' declarations may not have binding patterns."
+            else
+                "'using' declarations may not have binding patterns.";
+            try self.reportCodeAt(tok.span.start, tok.line, 1492, message);
+            // Skip the binding pattern's content so the rest of the
+            // declarator (`= initializer`) stays parseable. Walk
+            // brackets/braces with a tiny depth counter.
+            const open = self.advance();
+            var depth: u32 = 1;
+            while (depth > 0) {
+                const cur = self.peek();
+                if (cur.kind == .eof) break;
+                if (cur.kind == .open_bracket or cur.kind == .open_brace) depth += 1;
+                if (cur.kind == .close_bracket or cur.kind == .close_brace) depth -= 1;
+                _ = self.advance();
+            }
+            // Synthesize a placeholder identifier token at the pattern's
+            // open bracket so the var-decl HIR has a usable name slot.
+            return .{
+                .kind = .identifier,
+                .span = open.span,
+                .line = open.line,
+                .flags = open.flags,
+            };
+        }
+        return try self.expect(.identifier, "identifier in using declaration");
+    }
+
     fn parseUsingDecl(self: *Parser, await_using: bool) ParseError!NodeId {
         const start = self.advance(); // `using` or `await`
         if (await_using) {
             _ = self.advance(); // `using` token following `await`
         }
-        if (await_using) {
-            const at_top_level = self.block_depth == 0 and self.namespace_depth == 0 and self.ambient_depth == 0;
+        const in_ambient = self.ambient_depth > 0;
+        if (in_ambient) {
+            // `using` / `await using` declarations are not legal in
+            // ambient contexts (TS1545 / TS1546). Emit the specific
+            // diagnostic and short-circuit the function/top-level
+            // gating (which doesn't apply when the file would never
+            // emit code anyway).
+            const code: u32 = if (await_using) 1546 else 1545;
+            const message = if (await_using)
+                "'await using' declarations are not allowed in ambient contexts."
+            else
+                "'using' declarations are not allowed in ambient contexts.";
+            try self.reportCodeAt(start.span.start, start.line, code, message);
+        } else if (await_using) {
+            // `await using` requires either an async function context
+            // OR top-level of a module. "Top-level" here means any
+            // position that isn't enclosed by a function — `{}` blocks,
+            // `if`/`while` arms, switch case bodies don't count as
+            // function boundaries. The module indicator is derived
+            // from a top-level `import`/`export` having been seen.
+            const inside_function = self.function_depth > 0;
+            const file_is_module = self.top_level_external_module_indicator;
             if (self.static_block_depth > 0) {
                 try self.reportCodeAt(start.span.start, start.line, 18054, "'await using' statements cannot be used inside a class static block.");
-            } else if (at_top_level and !self.top_level_external_module_indicator) {
-                try self.reportCodeAt(start.span.start, start.line, 2853, "'await using' statements are only allowed at the top level of a file when that file is a module, but this file has no imports or exports. Consider adding an empty 'export {}' to make this file a module.");
-            } else if (self.function_depth > 0 and self.async_function_depth == 0) {
+            } else if (inside_function and self.async_function_depth == 0) {
                 try self.reportCodeAt(start.span.start, start.line, 2852, "'await using' statements are only allowed within async functions and at the top levels of modules.");
+            } else if (!inside_function and !file_is_module and self.namespace_depth == 0) {
+                try self.reportCodeAt(start.span.start, start.line, 2853, "'await using' statements are only allowed at the top level of a file when that file is a module, but this file has no imports or exports. Consider adding an empty 'export {}' to make this file a module.");
             }
         }
-        if (self.unbraced_statement_block_depth) |depth| if (self.block_depth == depth) {
+        if (self.in_switch_case_clause) {
+            // A `using`/`await using` directly under a `case`/`default`
+            // clause (without its own enclosing block) is TS1547/TS1548
+            // — distinct from the more general TS1156 ("must be inside
+            // a block") that fires for bare `if`/`else` arms.
+            const code: u32 = if (await_using) 1548 else 1547;
+            const message = if (await_using)
+                "'await using' declarations are not allowed in 'case' or 'default' clauses unless contained within a block."
+            else
+                "'using' declarations are not allowed in 'case' or 'default' clauses unless contained within a block.";
+            try self.reportCodeAt(start.span.start, start.line, code, message);
+        } else if (self.unbraced_statement_block_depth) |depth| if (self.block_depth == depth) {
             const message = if (await_using)
                 "'await using' declarations can only be declared inside a block."
             else
                 "'using' declarations can only be declared inside a block.";
             try self.reportCodeAt(start.span.start, start.line, 1156, message);
         };
-        const name_tok = try self.expect(.identifier, "identifier in using declaration");
+        const name_tok = try self.parseUsingDeclBindingTarget(await_using);
         const name_id = try self.internToken(name_tok);
         const name_node = try self.builder.addIdentifier(tokenSpan(name_tok), name_id);
 
@@ -3785,21 +3890,28 @@ pub const Parser = struct {
             type_annotation = try self.parseTypeAnnotation();
         }
 
+        const must_init_msg = if (await_using)
+            "'await using' declarations must be initialized."
+        else
+            "'using' declarations must be initialized.";
         var init_node: NodeId = hir_mod.none_node_id;
         if (self.match(.equal)) {
             init_node = try self.parseAssignmentExpression();
-        } else {
-            try self.reportCodeAt(name_tok.span.start, name_tok.line, 1155, "'using' declarations must be initialized.");
+        } else if (!in_ambient) {
+            // Ambient `using` / `await using` declarations don't carry
+            // initializers — TS suppresses TS1155 in that case because
+            // the more specific TS1545/TS1546 already fires.
+            try self.reportCodeAt(name_tok.span.start, name_tok.line, 1155, must_init_msg);
         }
         while (self.match(.comma)) {
-            const extra_name_tok = try self.expect(.identifier, "identifier in using declaration");
+            const extra_name_tok = try self.parseUsingDeclBindingTarget(await_using);
             if (self.match(.colon)) {
                 _ = try self.parseTypeAnnotation();
             }
             if (self.match(.equal)) {
                 _ = try self.parseAssignmentExpression();
-            } else {
-                try self.reportCodeAt(extra_name_tok.span.start, extra_name_tok.line, 1155, "'using' declarations must be initialized.");
+            } else if (!in_ambient) {
+                try self.reportCodeAt(extra_name_tok.span.start, extra_name_tok.line, 1155, must_init_msg);
             }
         }
         try self.consumeStatementTerminator();
@@ -3837,6 +3949,12 @@ pub const Parser = struct {
         const open = try self.expect(.open_brace, "'{' to start block");
         self.block_depth += 1;
         defer self.block_depth -= 1;
+        // A `{}` block under a `case` clause body resets the bare-clause
+        // gate: TS1547/TS1548 only fire on `using`/`await using`
+        // declarations that aren't wrapped in their own block.
+        const prev_in_case_clause = self.in_switch_case_clause;
+        self.in_switch_case_clause = false;
+        defer self.in_switch_case_clause = prev_in_case_clause;
         var stmts: std.ArrayListUnmanaged(NodeId) = .empty;
         defer stmts.deinit(self.gpa);
         while (self.hasPendingStatement() or (self.peek().kind != .close_brace and self.peek().kind != .eof)) {
@@ -5688,11 +5806,13 @@ pub const Parser = struct {
                 .{},
             );
             self.function_depth += 1;
+            if (is_async) self.async_function_depth += 1;
             const prev_generator_depth = self.generator_depth;
             self.generator_depth = 0;
             defer {
                 self.generator_depth = prev_generator_depth;
                 self.function_depth -= 1;
+                if (is_async) self.async_function_depth -= 1;
             }
             const body = try self.parseArrowBody();
             const sp: Span = .{ .start = start_tok.span.start, .end = self.hir.spanOf(body).end };
@@ -5815,11 +5935,13 @@ pub const Parser = struct {
         }
         _ = try self.expect(.arrow, "'=>' in arrow function");
         self.function_depth += 1;
+        if (is_async) self.async_function_depth += 1;
         const prev_generator_depth = self.generator_depth;
         self.generator_depth = 0;
         defer {
             self.generator_depth = prev_generator_depth;
             self.function_depth -= 1;
+            if (is_async) self.async_function_depth -= 1;
         }
         const body = try self.parseArrowBody();
         const sp: Span = .{ .start = start_tok.span.start, .end = self.hir.spanOf(body).end };
@@ -5870,11 +5992,13 @@ pub const Parser = struct {
         }
         _ = try self.expect(.arrow, "'=>' in arrow function");
         self.function_depth += 1;
+        if (is_async) self.async_function_depth += 1;
         const prev_generator_depth = self.generator_depth;
         self.generator_depth = 0;
         defer {
             self.generator_depth = prev_generator_depth;
             self.function_depth -= 1;
+            if (is_async) self.async_function_depth -= 1;
         }
         const body = try self.parseArrowBody();
         const close = self.peek();
@@ -10753,7 +10877,10 @@ test "parser: `await using x = getR();` parses with is_await_using=true" {
 }
 
 test "parser: using declaration requires initializer" {
-    var s = try newTestSetup("{ using a; await using b; }");
+    // `await using` inside an async function avoids the TS2853
+    // top-level-module-required diagnostic that would otherwise
+    // accompany the TS1155 we're asserting here.
+    var s = try newTestSetup("async function f() { using a; await using b; }");
     defer destroyTestSetup(s);
 
     _ = try s.parser.parseSourceFile();

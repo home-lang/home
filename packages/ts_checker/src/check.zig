@@ -202,6 +202,7 @@ pub const TsCodes = struct {
     pub const await_reserved_top_level_module: u32 = 1262;
     pub const top_level_await_target_module: u32 = 1378;
     pub const for_await_target_module: u32 = 1432;
+    pub const top_level_await_using_target_module: u32 = 2854;
     pub const multiple_default_exports: u32 = 2528;
     pub const default_export_merge: u32 = 2652;
     pub const infer_constraints_not_identical: u32 = 2838;
@@ -19155,6 +19156,21 @@ pub const Checker = struct {
 
     fn checkVarDecl(self: *Checker, node: NodeId) CheckError!void {
         const v = hir_mod.varDeclOf(self.hir, node);
+
+        // Top-level `await using` requires module=es2022+ AND
+        // target=es2017+. The parser flags `is_await_using` on the
+        // const-decl shape; here we mirror tsc's TS2854 when the
+        // declaration sits outside any function-like context and the
+        // source's `// @target` directive picks an older target.
+        // Only fire when this is the first declarator on the line
+        // (anchor matches tsc — column = `await` keyword start) and
+        // we're not inside an enclosing function.
+        if (v.is_await_using and
+            !self.nodeIsInsideFunctionLike(node) and
+            self.sourceTargetDisallowsTopLevelAwait())
+        {
+            try self.report(node, TsCodes.top_level_await_using_target_module, "Top-level 'await using' statements are only allowed when the 'module' option is set to 'es2022', 'esnext', 'system', 'node16', 'node18', 'node20', 'nodenext', or 'preserve', and the 'target' option is set to 'es2017' or higher.");
+        }
 
         // TS2502 — `var x: typeof x` (or via an identical-name
         // qualifier-less typeof inside a tuple / array / union).
