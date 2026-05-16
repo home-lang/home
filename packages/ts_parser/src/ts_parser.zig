@@ -1523,7 +1523,21 @@ pub const Parser = struct {
                     const colon = self.advance();
                     var type_pos = colon.span.end;
                     while (type_pos < self.source.len and (self.source[type_pos] == ' ' or self.source[type_pos] == '\t')) : (type_pos += 1) {}
-                    try self.reportCodeAt(type_pos, colon.line, 1196, "Catch clause variable type annotation must be 'any' or 'unknown' if specified.");
+                    // Upstream tsc only emits TS1196 when the annotation
+                    // is something OTHER than `any` or `unknown`. Catch
+                    // bindings typed as `any`/`unknown` (or a type alias
+                    // for them) are valid; the checker handles non-alias
+                    // cases at parse time by inspecting the keyword.
+                    // Mirrors `catchClauseWithTypeAnnotation.ts` which
+                    // intentionally includes valid `: any` / `: unknown`
+                    // clauses that should NOT trigger TS1196.
+                    const ty_tok = self.peek();
+                    const is_simple_any_or_unknown =
+                        (ty_tok.kind == .kw_any or ty_tok.kind == .kw_unknown) and
+                        self.peekAt(1).kind == .close_paren;
+                    if (!is_simple_any_or_unknown) {
+                        try self.reportCodeAt(type_pos, colon.line, 1196, "Catch clause variable type annotation must be 'any' or 'unknown' if specified.");
+                    }
                     try self.skipTypeAnnotation();
                 }
                 _ = try self.expect(.close_paren, "')' to close catch param");
