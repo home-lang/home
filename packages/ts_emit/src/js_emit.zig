@@ -1623,6 +1623,13 @@ pub const Printer = struct {
                     try self.writeDefaultParamShims(params);
                     try self.write(" ");
                 }
+                // §4.A destructuring v7 — extract pattern params via
+                // `var a = _p0.a, ...` from the temp idents emitted in
+                // the parameter list above.
+                if (self.hasDestructuringParam(params)) {
+                    try self.writeDestructuringParamShims(params);
+                    try self.write(" ");
+                }
                 if (f.body != hir_mod.none_node_id) {
                     if (self.hir.kindOf(f.body) == .block_stmt) {
                         const stmts = hir_mod.blockStmts(self.hir, f.body);
@@ -8206,6 +8213,29 @@ test "emit: function with object rest param uses __rest at es5" {
     defer T.allocator.free(out);
     try T.expect(std.mem.indexOf(u8, out, "function f(_p0)") != null);
     try T.expect(std.mem.indexOf(u8, out, "var a = _p0.a, b = _p0.b, rest = __rest(_p0, [\"a\", \"b\"]);") != null);
+}
+
+test "emit: arrow with destructuring param lowers to .bind(this) + temp + shim at es5" {
+    // §4.A destructuring v7 — arrow ES5 lowering also handles
+    // pattern params. `({ a, b }) => a + b` becomes
+    // `function (_p0) { var a = _p0.a, b = _p0.b; return a + b; }.bind(this)`.
+    const out = try emitWithOpts("const f = ({ a, b }) => a + b;", .{ .es_target = .es5 });
+    defer T.allocator.free(out);
+    try T.expect(std.mem.indexOf(u8, out, "function (_p0)") != null);
+    try T.expect(std.mem.indexOf(u8, out, "var a = _p0.a, b = _p0.b;") != null);
+    try T.expect(std.mem.indexOf(u8, out, "}.bind(this)") != null);
+}
+
+test "emit: class method with destructuring param lowers at es5" {
+    // Class methods route through the ES5 prototype emit which now
+    // also fires the destructuring shim.
+    const out = try emitWithOpts(
+        "class C { greet({ name }) { return name; } }",
+        .{ .es_target = .es5 },
+    );
+    defer T.allocator.free(out);
+    try T.expect(std.mem.indexOf(u8, out, "C.prototype.greet = function (_p0)") != null);
+    try T.expect(std.mem.indexOf(u8, out, "var name = _p0.name;") != null);
 }
 
 test "emit: const lowers to var at es5" {
