@@ -247,6 +247,35 @@ pub const Parser = struct {
         return self.tokens[p];
     }
 
+    /// Look ahead from `at_offset` (a `{` or `[` token) and return
+    /// true when the matching close is followed by `=`. Used by the
+    /// `using`/`await using` parser to recognize binding-pattern
+    /// using-decls like `using {a} = null;` — tsc parses these
+    /// (emitting TS1492) rather than treating `using` as an
+    /// expression statement.
+    fn usingBindingPatternLookahead(self: *const Parser, at_offset: u32) bool {
+        const open = self.peekAt(at_offset);
+        if (open.kind != .open_brace and open.kind != .open_bracket) return false;
+        var off: u32 = at_offset + 1;
+        var depth: u32 = 1;
+        // Bound the scan — 256 tokens of binding pattern is wildly
+        // more than any realistic case and prevents pathological
+        // walks if the source is malformed.
+        var budget: u32 = 256;
+        while (depth > 0 and budget > 0) : (budget -= 1) {
+            const cur = self.peekAt(off);
+            if (cur.kind == .eof) return false;
+            switch (cur.kind) {
+                .open_brace, .open_bracket => depth += 1,
+                .close_brace, .close_bracket => depth -= 1,
+                else => {},
+            }
+            off += 1;
+        }
+        if (depth != 0) return false;
+        return self.peekAt(off).kind == .equal;
+    }
+
     fn advance(self: *Parser) Token {
         if (self.pending_type_gt > 0) {
             const tok = self.pendingTypeGreaterToken(0);
@@ -651,6 +680,21 @@ pub const Parser = struct {
                 {
                     break :blk try self.parseUsingDecl(false);
                 }
+                // `using {a} = ...;` — tsc parses this as a
+                // binding-pattern using-decl and reports TS1492
+                // ('using' declarations may not have binding patterns)
+                // plus the usual destructuring diagnostics. Only the
+                // `{` form is intercepted — `using [a] = ...;` is
+                // parseable as the expression `using[a] = ...;`
+                // (assignment to a computed member access), which
+                // tsc preserves (TS2304 for the bare `using` /
+                // `a`).
+                if (self.peekAt(1).kind == .open_brace and
+                    !self.peekAt(1).flags.preceded_by_newline and
+                    self.usingBindingPatternLookahead(1))
+                {
+                    break :blk try self.parseUsingDecl(false);
+                }
                 break :blk try self.parseExpressionStatement();
             },
             .kw_await => blk: {
@@ -665,6 +709,20 @@ pub const Parser = struct {
                     !self.peekAt(1).flags.preceded_by_newline and
                     self.peekAt(2).kind == .identifier and
                     !self.peekAt(2).flags.preceded_by_newline)
+                {
+                    break :blk try self.parseUsingDecl(true);
+                }
+                // `await using {a} = ...;` — same binding-pattern
+                // recovery as the bare-`using` arm above, gated on
+                // `=` following the matched brace. The `[` form
+                // (`await using [a] = ...`) is left for expression-
+                // parsing to handle so `using` / `a` surface as the
+                // TS2304 ("cannot find name") diagnostics tsc emits.
+                if (self.peekAt(1).kind == .kw_using and
+                    !self.peekAt(1).flags.preceded_by_newline and
+                    self.peekAt(2).kind == .open_brace and
+                    !self.peekAt(2).flags.preceded_by_newline and
+                    self.usingBindingPatternLookahead(2))
                 {
                     break :blk try self.parseUsingDecl(true);
                 }
@@ -4354,6 +4412,24 @@ pub const Parser = struct {
         return try self.expect(.identifier, "identifier in using declaration");
     }
 
+    /// Variant of `parseUsingDeclBindingTarget` used when we've
+    /// already committed to treating the source as a using-decl with
+    /// a real binding pattern (top-level `using {a} = ...`). Instead
+    /// of skipping the pattern we keep its structure so the checker
+    /// can emit the per-property TS2339 / TS2488 diagnostics tsc
+    /// produces against the initializer. Returns the binding pattern
+    /// node directly.
+    fn parseUsingDeclBindingPattern(self: *Parser, await_using: bool) ParseError!NodeId {
+        const tok = self.peek();
+        std.debug.assert(tok.kind == .open_brace or tok.kind == .open_bracket);
+        const message = if (await_using)
+            "'await using' declarations may not have binding patterns."
+        else
+            "'using' declarations may not have binding patterns.";
+        try self.reportCodeAt(tok.span.start, tok.line, 1492, message);
+        return try self.parseBindingPattern();
+    }
+
     fn parseUsingDecl(self: *Parser, await_using: bool) ParseError!NodeId {
         const start = self.advance(); // `using` or `await`
         if (await_using) {
@@ -4407,9 +4483,27 @@ pub const Parser = struct {
                 "'using' declarations can only be declared inside a block.";
             try self.reportCodeAt(start.span.start, start.line, 1156, message);
         };
-        const name_tok = try self.parseUsingDeclBindingTarget(await_using);
-        const name_id = try self.internToken(name_tok);
-        const name_node = try self.builder.addIdentifier(tokenSpan(name_tok), name_id);
+        // Branch on binding shape: an object-binding-pattern head
+        // (`using {a} = …`) keeps the pattern structure so the
+        // checker can emit the per-property TS2339/TS2488 against the
+        // initializer. All other heads use the existing token-based
+        // path that synthesizes a placeholder identifier.
+        const want_binding_pattern = self.peek().kind == .open_brace;
+        var name_node: NodeId = hir_mod.none_node_id;
+        var name_span_start: u32 = start.span.start;
+        var name_span_line: u32 = start.line;
+        if (want_binding_pattern) {
+            const pat_tok = self.peek();
+            name_span_start = pat_tok.span.start;
+            name_span_line = pat_tok.line;
+            name_node = try self.parseUsingDeclBindingPattern(await_using);
+        } else {
+            const name_tok = try self.parseUsingDeclBindingTarget(await_using);
+            const name_id = try self.internToken(name_tok);
+            name_node = try self.builder.addIdentifier(tokenSpan(name_tok), name_id);
+            name_span_start = name_tok.span.start;
+            name_span_line = name_tok.line;
+        }
 
         var type_annotation: NodeId = hir_mod.none_node_id;
         if (self.match(.colon)) {
@@ -4427,7 +4521,7 @@ pub const Parser = struct {
             // Ambient `using` / `await using` declarations don't carry
             // initializers — TS suppresses TS1155 in that case because
             // the more specific TS1545/TS1546 already fires.
-            try self.reportCodeAt(name_tok.span.start, name_tok.line, 1155, must_init_msg);
+            try self.reportCodeAt(name_span_start, name_span_line, 1155, must_init_msg);
         }
         while (self.match(.comma)) {
             const extra_name_tok = try self.parseUsingDeclBindingTarget(await_using);

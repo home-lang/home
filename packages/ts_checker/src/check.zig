@@ -5956,6 +5956,16 @@ pub const Checker = struct {
 
     fn checkObjectBindingPatternAgainstType(self: *Checker, pattern_node: NodeId, container_t: TypeId) CheckError!void {
         if (container_t == types.Primitive.any or container_t == types.Primitive.unknown) return;
+        // Destructuring against `null` / `undefined` — tsc emits
+        // TS2339 ("Property 'x' does not exist on type 'null'.") per
+        // declared property. Mirrors fixtures `usingDeclarations.6`
+        // and `awaitUsingDeclarations.6` (`using {a} = null`) as well
+        // as plain `let {a} = null;` shapes.
+        if (container_t == types.Primitive.null_t or container_t == types.Primitive.undefined_t) {
+            const target_text: []const u8 = if (container_t == types.Primitive.null_t) "null" else "undefined";
+            try self.reportObjectBindingPropertiesMissingOnType(pattern_node, target_text);
+            return;
+        }
         if (container_t >= self.interner.pool.typeCount()) return;
         if (container_t == types.Primitive.object_t) {
             try self.checkObjectBindingPatternAgainstBroadObject(pattern_node, container_t);
@@ -6022,6 +6032,32 @@ pub const Checker = struct {
                     "Property '{s}' does not exist on type.",
                     .{name_str},
                 );
+            try self.diagnostics.append(self.gpa, .{
+                .node = ep.name,
+                .code = TsCodes.property_does_not_exist,
+                .message = msg,
+            });
+        }
+    }
+
+    /// Walk an object binding pattern's declared properties and
+    /// emit TS2339 for each, reporting `Property 'x' does not exist
+    /// on type '{target_text}'.`. Used when the destructuring source
+    /// is a `null` or `undefined` literal — tsc fires the
+    /// no-such-property diagnostic at every shorthand element rather
+    /// than the source-side TS2531/2532.
+    fn reportObjectBindingPropertiesMissingOnType(self: *Checker, pattern_node: NodeId, target_text: []const u8) CheckError!void {
+        for (hir_mod.patternElements(self.hir, pattern_node)) |e| {
+            if (self.hir.kindOf(e) != .parameter) continue;
+            const ep = hir_mod.parameterOf(self.hir, e);
+            if (ep.name == hir_mod.none_node_id or ep.flags.is_rest) continue;
+            const key_name = (try self.objectBindingElementKeyName(e, ep.name)) orelse continue;
+            const name_str = self.string_interner.get(key_name);
+            const msg = try std.fmt.allocPrint(
+                self.diag_arena.allocator(),
+                "Property '{s}' does not exist on type '{s}'.",
+                .{ name_str, target_text },
+            );
             try self.diagnostics.append(self.gpa, .{
                 .node = ep.name,
                 .code = TsCodes.property_does_not_exist,
