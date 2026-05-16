@@ -39670,6 +39670,39 @@ test "checker: unresolved identifier emits TS2304" {
     try T.expect(found);
 }
 
+test "checker: var globalThis emits TS2397 builtin-global conflict" {
+    const s = try newSetup("var globalThis;");
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+    var found = false;
+    for (s.checker.diagnostics.items) |d| {
+        if (d.code == TsCodes.declaration_name_conflicts_builtin_global and
+            std.mem.indexOf(u8, d.message, "globalThis") != null)
+        {
+            found = true;
+        }
+    }
+    try T.expect(found);
+}
+
+test "checker: var nonGlobalThis does not emit TS2397" {
+    const s = try newSetup("var notGlobalThis;");
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+    for (s.checker.diagnostics.items) |d| {
+        try T.expect(d.code != TsCodes.declaration_name_conflicts_builtin_global);
+    }
+}
+
+test "checker: declare var globalThis does not emit TS2397 (ambient exempt)" {
+    const s = try newSetup("declare var globalThis: any;");
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+    for (s.checker.diagnostics.items) |d| {
+        try T.expect(d.code != TsCodes.declaration_name_conflicts_builtin_global);
+    }
+}
+
 test "checker: function signature cannot see local body type declarations" {
     const s = try newSetup(
         \\function outer() {
