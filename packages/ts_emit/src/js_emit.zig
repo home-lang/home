@@ -2324,13 +2324,13 @@ pub const Printer = struct {
             const lab = hir_mod.labelOf(self.hir, s);
             return lab.label == hir_mod.none_node_id;
         }
-        // §4.A.4.14 v8 — shallow `if (cond) break|continue;`. The
-        // existing printIf / printBreakOrContinue cooperation handles
-        // the state-machine jump rewrite; we just need the predicate
-        // to accept the shape.
+        // §4.A.4.14 v8+v9 — shallow `if (cond) break|continue;` with
+        // optional yield/await-free else. The existing printIf +
+        // printBreakOrContinue cooperation handles the state-machine
+        // jump rewrite for the then-branch; the else-branch (when
+        // present) emits inline via printNonIndentStatement.
         if (k == .if_stmt) {
             const ip = hir_mod.ifOf(self.hir, s);
-            if (ip.else_branch != hir_mod.none_node_id) return false;
             if (ip.cond == hir_mod.none_node_id) return false;
             if (self.subtreeContainsYield(ip.cond) or self.subtreeContainsAwait(ip.cond)) return false;
             // then-branch must be a bare unlabeled break or continue
@@ -2345,7 +2345,19 @@ pub const Printer = struct {
             const tk = self.hir.kindOf(then_stmt);
             if (tk != .break_stmt and tk != .continue_stmt) return false;
             const lab = hir_mod.labelOf(self.hir, then_stmt);
-            return lab.label == hir_mod.none_node_id;
+            if (lab.label != hir_mod.none_node_id) return false;
+            // §4.A.4.14 v9 — else-branch (when present) must be
+            // yield/await-free and not a structured stmt that would
+            // require its own state-machine plumbing.
+            if (ip.else_branch != hir_mod.none_node_id) {
+                if (self.subtreeContainsYield(ip.else_branch) or self.subtreeContainsAwait(ip.else_branch)) return false;
+                const ek = self.hir.kindOf(ip.else_branch);
+                switch (ek) {
+                    .while_stmt, .do_while_stmt, .for_stmt, .for_in_stmt, .for_of_stmt, .try_stmt, .switch_stmt, .throw_stmt, .return_stmt, .fn_decl, .class_decl => return false,
+                    else => {},
+                }
+            }
+            return true;
         }
         if (self.subtreeContainsYield(s) or self.subtreeContainsAwait(s)) return false;
         switch (k) {
@@ -9305,10 +9317,26 @@ test "emit: async generator with for-await-of + if-guarded break lowers" {
     try T.expect(std.mem.indexOf(u8, out, "if (x.done) return [3, 5];") != null);
 }
 
-test "emit: async generator with for-await-of + if-with-else still bails" {
-    // v8 accepts only one-branch if (no else); if/else falls back.
+test "emit: async generator with for-await-of + if-else with yield-free else lowers" {
+    // §4.A.4.14 v9 — `if (cond) break|continue; else <yield/await-free stmt>;`
+    // is now accepted. The state-machine jump fires in the then branch;
+    // the else runs inline.
     const out = try emitWithOpts(
-        "async function* g() { for await (const x of source) { if (x.skip) continue; else f(x); } }",
+        "async function* g() { for await (const x of source) { if (x.skip) continue; else f(x); yield x; } }",
+        .{ .es_target = .es5 },
+    );
+    defer T.allocator.free(out);
+    try T.expect(std.mem.indexOf(u8, out, "return __asyncGenerator(this, arguments, function () {") != null);
+    // case 2: bind + `if (x.skip) return [3, 1]; else f(x);` + yield x.
+    try T.expect(std.mem.indexOf(u8, out, "if (x.skip) return [3, 1];") != null);
+    try T.expect(std.mem.indexOf(u8, out, "else f(x)") != null);
+}
+
+test "emit: async generator with for-await-of + if-with-yielding-else still bails" {
+    // Yields/awaits in the else branch require state-machine plumbing
+    // the v9 simple inline emit doesn't provide.
+    const out = try emitWithOpts(
+        "async function* g() { for await (const x of source) { if (x.skip) continue; else yield x * 2; } }",
         .{ .es_target = .es5 },
     );
     defer T.allocator.free(out);
