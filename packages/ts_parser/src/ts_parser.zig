@@ -4274,6 +4274,11 @@ pub const Parser = struct {
             .open_bracket => try self.parseTupleType(),
             .open_brace => try self.parseObjectOrMappedType(),
             .less_than => try self.parseGenericFnType(),
+            .close_paren => blk: {
+                try self.reportCodeAt(t.span.start, t.line, 1110, "Type expected.");
+                const id = self.interner.intern("unknown") catch return error.OutOfMemory;
+                break :blk try self.builder.addTypeRef(.{ .start = t.span.start, .end = t.span.start }, id, &.{}, &.{});
+            },
             .kw_new => try self.parseConstructorType(),
             .kw_abstract => blk: {
                 if (self.peekAt(1).kind == .kw_new) {
@@ -9876,6 +9881,15 @@ test "parser: type annotation — tuple" {
     const v = hir_mod.varDeclOf(&s.hir, top);
     try T.expectEqual(hir_mod.NodeKind.tuple_type, s.hir.kindOf(v.type_annotation));
     try T.expectEqual(@as(usize, 2), hir_mod.tupleTypeElements(&s.hir, v.type_annotation).len);
+}
+
+test "parser: empty parameter type reports TS1110 and preserves arrow" {
+    var s = try newTestSetup("var v = (a: ) => {};");
+    defer destroyTestSetup(s);
+    _ = try s.parser.parseSourceFile();
+    try T.expectEqual(@as(usize, 1), s.parser.diagnostics.items.len);
+    try T.expectEqual(@as(u32, 1110), s.parser.diagnostics.items[0].code);
+    try T.expectEqualStrings("Type expected.", s.parser.diagnostics.items[0].message);
 }
 
 test "parser: unterminated tuple type reports TS1005 close bracket" {
