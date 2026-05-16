@@ -283,6 +283,14 @@ pub const Scanner = struct {
         return (c >= '0' and c <= '9') or (c >= 'a' and c <= 'f') or (c >= 'A' and c <= 'F');
     }
 
+    fn isOctalDigit(c: u8) bool {
+        return c >= '0' and c <= '7';
+    }
+
+    fn isBinaryDigit(c: u8) bool {
+        return c == '0' or c == '1';
+    }
+
     fn hexValue(c: u8) u32 {
         if (c >= '0' and c <= '9') return c - '0';
         if (c >= 'a' and c <= 'f') return 10 + c - 'a';
@@ -329,68 +337,41 @@ pub const Scanner = struct {
             const c = self.source[self.pos];
             if (c == 'x' or c == 'X') {
                 self.pos += 1;
-                if (!self.isAtEnd() and !isHexDigit(self.source[self.pos]) and self.source[self.pos] != '_') {
-                    self.report(gpa, "expected hex digit after '0x'");
-                    return error.InvalidNumericLiteral;
+                if (!self.scanNumberFragment(gpa, isHexDigit, false, &saw_separator)) {
+                    self.report(gpa, "Hexadecimal digit expected.");
                 }
-                while (!self.isAtEnd()) {
-                    const ch = self.source[self.pos];
-                    if (isHexDigit(ch)) self.pos += 1 else if (ch == '_') {
-                        saw_separator = true;
-                        self.pos += 1;
-                    } else break;
-                }
+                try self.checkIdentifierAfterNumericLiteral(gpa);
                 return self.numberFinish(start, line, f, saw_separator);
             }
             if (c == 'o' or c == 'O') {
                 self.pos += 1;
-                while (!self.isAtEnd()) {
-                    const ch = self.source[self.pos];
-                    if (ch >= '0' and ch <= '7') self.pos += 1 else if (ch == '_') {
-                        saw_separator = true;
-                        self.pos += 1;
-                    } else break;
+                if (!self.scanNumberFragment(gpa, isOctalDigit, false, &saw_separator)) {
+                    self.report(gpa, "Octal digit expected.");
                 }
+                try self.checkIdentifierAfterNumericLiteral(gpa);
                 return self.numberFinish(start, line, f, saw_separator);
             }
             if (c == 'b' or c == 'B') {
                 self.pos += 1;
-                while (!self.isAtEnd()) {
-                    const ch = self.source[self.pos];
-                    if (ch == '0' or ch == '1') self.pos += 1 else if (ch == '_') {
-                        saw_separator = true;
-                        self.pos += 1;
-                    } else break;
+                if (!self.scanNumberFragment(gpa, isBinaryDigit, false, &saw_separator)) {
+                    self.report(gpa, "Binary digit expected.");
                 }
+                try self.checkIdentifierAfterNumericLiteral(gpa);
                 return self.numberFinish(start, line, f, saw_separator);
             }
         }
 
         // Decimal integer part (already consumed at least one digit).
-        while (!self.isAtEnd()) {
-            const ch = self.source[self.pos];
-            if (isDecimalDigit(ch)) {
-                self.pos += 1;
-            } else if (ch == '_') {
-                saw_separator = true;
-                self.pos += 1;
-            } else break;
+        if (self.source[start] == '0' and self.pos == start + 1 and !self.isAtEnd() and self.source[self.pos] == '_') {
+            self.reportAt(gpa, self.pos, line, "Numeric separators are not allowed here.");
+            self.pos = start;
         }
+        _ = self.scanNumberFragment(gpa, isDecimalDigit, self.pos > start, &saw_separator);
 
         // Optional decimal fraction.
-        if (!self.isAtEnd() and self.source[self.pos] == '.' and
-            self.pos + 1 < self.source.len and isDecimalDigit(self.source[self.pos + 1]))
-        {
+        if (!self.isAtEnd() and self.source[self.pos] == '.') {
             self.pos += 1;
-            while (!self.isAtEnd()) {
-                const ch = self.source[self.pos];
-                if (isDecimalDigit(ch)) {
-                    self.pos += 1;
-                } else if (ch == '_') {
-                    saw_separator = true;
-                    self.pos += 1;
-                } else break;
-            }
+            _ = self.scanNumberFragment(gpa, isDecimalDigit, false, &saw_separator);
         }
 
         // Exponent.
@@ -399,18 +380,8 @@ pub const Scanner = struct {
             if (!self.isAtEnd() and (self.source[self.pos] == '+' or self.source[self.pos] == '-')) {
                 self.pos += 1;
             }
-            if (self.isAtEnd() or !isDecimalDigit(self.source[self.pos])) {
-                self.report(gpa, "exponent has no digits");
-                return error.InvalidNumericLiteral;
-            }
-            while (!self.isAtEnd()) {
-                const ch = self.source[self.pos];
-                if (isDecimalDigit(ch)) {
-                    self.pos += 1;
-                } else if (ch == '_') {
-                    saw_separator = true;
-                    self.pos += 1;
-                } else break;
+            if (!self.scanNumberFragment(gpa, isDecimalDigit, false, &saw_separator)) {
+                self.report(gpa, "Digit expected.");
             }
         }
 
@@ -425,12 +396,67 @@ pub const Scanner = struct {
                 .line = line,
             };
         }
+        try self.checkIdentifierAfterNumericLiteral(gpa);
         return .{
             .span = .{ .start = start, .end = self.pos },
             .kind = .number_literal,
             .flags = f,
             .line = line,
         };
+    }
+
+    fn scanNumberFragment(
+        self: *Scanner,
+        gpa: std.mem.Allocator,
+        comptime isDigitForBase: fn (u8) bool,
+        initial_allow_separator: bool,
+        saw_separator: *bool,
+    ) bool {
+        var allow_separator = initial_allow_separator;
+        var previous_was_separator = false;
+        var previous_separator_had_error = false;
+        var saw_digit = false;
+        while (!self.isAtEnd()) {
+            const ch = self.source[self.pos];
+            if (isDigitForBase(ch)) {
+                saw_digit = true;
+                allow_separator = true;
+                previous_was_separator = false;
+                previous_separator_had_error = false;
+                self.pos += 1;
+                continue;
+            }
+            if (ch == '_') {
+                saw_separator.* = true;
+                if (allow_separator) {
+                    allow_separator = false;
+                    previous_was_separator = true;
+                    previous_separator_had_error = false;
+                } else if (previous_was_separator) {
+                    self.reportAt(gpa, self.pos, self.line, "Multiple consecutive numeric separators are not permitted.");
+                    previous_separator_had_error = true;
+                } else {
+                    self.reportAt(gpa, self.pos, self.line, "Numeric separators are not allowed here.");
+                    previous_separator_had_error = true;
+                }
+                self.pos += 1;
+                continue;
+            }
+            break;
+        }
+        if (previous_was_separator and !previous_separator_had_error) {
+            self.reportAt(gpa, self.pos - 1, self.line, "Numeric separators are not allowed here.");
+        }
+        return saw_digit;
+    }
+
+    fn checkIdentifierAfterNumericLiteral(self: *Scanner, gpa: std.mem.Allocator) ScanError!void {
+        if (self.isAtEnd() or !isIdentStart(self.source[self.pos])) return;
+        const id_start = self.pos;
+        self.pos += 1;
+        while (!self.isAtEnd() and isIdentCont(self.source[self.pos])) self.pos += 1;
+        self.reportAt(gpa, id_start, self.line, "An identifier or keyword cannot immediately follow a numeric literal.");
+        self.pos = id_start;
     }
 
     fn numberFinish(self: *Scanner, start: u32, line: u32, flags_in: TokenFlags, saw_separator: bool) Token {

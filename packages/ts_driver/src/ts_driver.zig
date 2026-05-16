@@ -818,6 +818,21 @@ fn normalizeScannerDiagnostic(message: []const u8) NormalizedScannerDiagnostic {
     if (std.mem.eql(u8, message, "unterminated template literal")) {
         return .{ .code = 1160, .message = "Unterminated template literal." };
     }
+    if (std.mem.eql(u8, message, "Numeric separators are not allowed here.")) {
+        return .{ .code = 6188, .message = message };
+    }
+    if (std.mem.eql(u8, message, "Multiple consecutive numeric separators are not permitted.")) {
+        return .{ .code = 6189, .message = message };
+    }
+    if (std.mem.eql(u8, message, "An identifier or keyword cannot immediately follow a numeric literal.")) {
+        return .{ .code = 1351, .message = message };
+    }
+    if (std.mem.eql(u8, message, "Digit expected.")) {
+        return .{ .code = 1124, .message = message };
+    }
+    if (std.mem.eql(u8, message, "Hexadecimal digit expected.")) {
+        return .{ .code = 1125, .message = message };
+    }
     return .{ .message = message };
 }
 

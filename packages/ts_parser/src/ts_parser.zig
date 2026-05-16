@@ -1074,16 +1074,9 @@ pub const Parser = struct {
             }
         }
 
-        var i: usize = 0;
-        while (i < raw.len) : (i += 1) {
-            if (raw[i] != '_') continue;
-            const bad_before = i == 0 or !std.ascii.isDigit(raw[i - 1]);
-            const bad_after = i + 1 >= raw.len or !std.ascii.isDigit(raw[i + 1]);
-            if (bad_before or bad_after) {
-                try self.reportCodeAt(tok.span.start + @as(u32, @intCast(i)), tok.line, 6188, "Numeric separators are not allowed here.");
-                return;
-            }
-        }
+        // Separator placement diagnostics are scanner-owned in tsc/tsgo:
+        // malformed literals can produce several separator diagnostics
+        // while still yielding a recoverable numeric token.
     }
 
     fn parseIfStatement(self: *Parser) ParseError!NodeId {
@@ -4184,6 +4177,9 @@ pub const Parser = struct {
             }
         }
         if (t.kind == .eof or t.kind == .close_brace or t.flags.preceded_by_newline) return;
+        if (t.kind == .identifier and self.cursor > 0 and self.tokens[self.cursor - 1].kind == .number_literal) {
+            return;
+        }
         if (t.kind == .colon and self.peekAt(1).kind == .arrow) {
             try self.reportCodeAt(t.span.start, t.line, 1005, "',' expected.");
             _ = self.advance();
