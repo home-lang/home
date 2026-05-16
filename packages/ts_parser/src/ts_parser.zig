@@ -689,7 +689,12 @@ pub const Parser = struct {
                 // is_async flag set. Arrow async (`async () => ...`)
                 // is handled in expression position.
                 if (self.peekAt(1).kind == .kw_function) {
-                    _ = self.advance(); // async
+                    const async_tok = self.advance(); // async
+                    // TS1040: `async` modifier cannot be used in an
+                    // ambient context (e.g. `declare async function …`).
+                    if (self.ambient_depth > 0) {
+                        try self.reportCodeAt(async_tok.span.start, async_tok.line, 1040, "'async' modifier cannot be used in an ambient context.");
+                    }
                     self.async_function_depth += 1;
                     defer self.async_function_depth -= 1;
                     const fd = try self.parseFunctionDeclaration(true);
@@ -702,7 +707,13 @@ pub const Parser = struct {
                     self.peekAt(1).kind == .kw_module or
                     self.peekAt(1).kind == .kw_enum)
                 {
-                    _ = self.advance();
+                    // TS1042: `async` modifier cannot be used here (on
+                    // class/interface/enum/namespace declarations).
+                    // TS1040: in ambient context, this becomes a
+                    // different diagnostic — but `async <class…>` at
+                    // top level outside ambient is always TS1042.
+                    const async_tok = self.advance();
+                    try self.reportCodeAt(async_tok.span.start, async_tok.line, 1042, "'async' modifier cannot be used here.");
                     break :blk try self.parseStatement();
                 }
                 break :blk try self.parseExpressionStatement();
@@ -2548,6 +2559,13 @@ pub const Parser = struct {
                     const msg = try std.fmt.allocPrint(self.diag_arena.allocator(), "'{s}' modifier cannot appear on class elements of this kind.", .{mod_name});
                     try self.reportCodeAt(bad.span.start, bad.line, 1031, msg);
                 }
+                // TS1042: `async` modifier cannot be used here (on
+                // a getter / setter accessor).
+                if (mods.is_async) {
+                    if (mods.async_token) |at| {
+                        try self.reportCodeAt(at.span.start, at.line, 1042, "'async' modifier cannot be used here.");
+                    }
+                }
                 try self.reportInvalidClassElementModifier(mods);
                 _ = self.advance(); // consume `get` / `set`
                 const name_node = if (self.peek().kind == .open_bracket) blk: {
@@ -2674,6 +2692,12 @@ pub const Parser = struct {
                             try self.reportMissingClassMemberImplementation(member_start, mods);
                         }
                     }
+                    // TS1089: `async` modifier cannot appear on a constructor.
+                    if (name_tok.kind == .kw_constructor and mods.is_async) {
+                        if (mods.async_token) |at| {
+                            try self.reportCodeAt(at.span.start, at.line, 1089, "'async' modifier cannot appear on a constructor declaration.");
+                        }
+                    }
                     const name_id = try self.internPropertyName(name_tok, name_span);
                     const name_node = try self.builder.addIdentifier(name_span, name_id);
                     const fn_node = try self.builder.addFnDeclGeneric(
@@ -2798,6 +2822,7 @@ pub const Parser = struct {
         is_readonly: bool = false,
         is_accessor: bool = false,
         invalid_class_element_modifier: ?Token = null,
+        async_token: ?Token = null,
     };
 
     fn skipClassModifiers(self: *Parser) ParseError!ClassModifiers {
@@ -2853,7 +2878,10 @@ pub const Parser = struct {
                         mods.is_static = true;
                         continue;
                     },
-                    .kw_async => mods.is_async = true,
+                    .kw_async => {
+                        mods.is_async = true;
+                        if (mods.async_token == null) mods.async_token = self.peek();
+                    },
                     .kw_override => mods.is_override = true,
                     .kw_abstract => mods.is_abstract = true,
                     .kw_export, .kw_declare => {
