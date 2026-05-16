@@ -124,6 +124,14 @@ pub const Case = struct {
     /// filesystem with `package.json` / non-code sections that the
     /// legacy stripper drops.
     raw_source: []const u8 = "",
+    /// Lower-case `moduleResolution` label extracted from the chosen
+    /// baseline filename when it carries a `(moduleresolution=X)`
+    /// suffix. Empty means "infer from `// @moduleResolution:`
+    /// directive". When present, the program-graph compile path
+    /// uses this to pick the matching `ts_resolver.Strategy` and
+    /// to set `CompileOptions.module_resolution` so the checker's
+    /// TS2792 / TS2307 selection lines up with the baseline.
+    baseline_module_resolution: []const u8 = "",
 };
 
 /// Count the contiguous block of leading lines that the TypeScript
@@ -451,20 +459,34 @@ fn canonicalVfsPath(gpa: std.mem.Allocator, path: []const u8) ![]u8 {
 /// the first valid one — matching what the upstream runner does for
 /// the unspecified-variant baseline.
 fn resolverStrategyFromCase(c: Case) ts_resolver.Strategy {
+    // When the chosen baseline carries a `(moduleresolution=X)` suffix,
+    // honour that explicitly so the resolver matches the variant we'll
+    // compare against. Without this, multi-variant fixtures (e.g.
+    // `// @moduleResolution: bundler, classic`) pick the first listed
+    // strategy and silently diverge from the only baseline upstream
+    // ships for that fixture.
+    if (c.baseline_module_resolution.len > 0) {
+        if (strategyFromLabel(c.baseline_module_resolution)) |s| return s;
+    }
     const raw = directiveValue(c.raw_source, "moduleResolution") orelse
         directiveValue(c.raw_source, "ModuleResolution") orelse
         return .bundler;
     var it = std.mem.splitScalar(u8, raw, ',');
     while (it.next()) |part| {
         const trimmed = std.mem.trim(u8, part, " \t\r");
-        if (std.ascii.eqlIgnoreCase(trimmed, "classic")) return .classic;
-        if (std.ascii.eqlIgnoreCase(trimmed, "node") or
-            std.ascii.eqlIgnoreCase(trimmed, "node10")) return .node10;
-        if (std.ascii.eqlIgnoreCase(trimmed, "node16")) return .node16;
-        if (std.ascii.eqlIgnoreCase(trimmed, "nodenext")) return .nodenext;
-        if (std.ascii.eqlIgnoreCase(trimmed, "bundler")) return .bundler;
+        if (strategyFromLabel(trimmed)) |s| return s;
     }
     return .bundler;
+}
+
+fn strategyFromLabel(label: []const u8) ?ts_resolver.Strategy {
+    if (std.ascii.eqlIgnoreCase(label, "classic")) return .classic;
+    if (std.ascii.eqlIgnoreCase(label, "node") or
+        std.ascii.eqlIgnoreCase(label, "node10")) return .node10;
+    if (std.ascii.eqlIgnoreCase(label, "node16")) return .node16;
+    if (std.ascii.eqlIgnoreCase(label, "nodenext")) return .nodenext;
+    if (std.ascii.eqlIgnoreCase(label, "bundler")) return .bundler;
+    return null;
 }
 
 /// Routed compile path. Returns `null` to fall back to the legacy
@@ -562,6 +584,13 @@ fn runProgram(gpa: std.mem.Allocator, c: Case) !?Result {
         .ptr = &resolver_adapter,
         .vtable = &CheckerResolverAdapter.vtable,
     };
+    const module_resolution_label: []const u8 = switch (resolverStrategyFromCase(c)) {
+        .classic => "classic",
+        .node10 => "node10",
+        .node16 => "node16",
+        .nodenext => "nodenext",
+        .bundler => "bundler",
+    };
     program.compileAll(.{
         .is_tsx = c.is_tsx,
         .is_declaration_file = c.is_declaration_file,
@@ -573,6 +602,7 @@ fn runProgram(gpa: std.mem.Allocator, c: Case) !?Result {
         .continue_on_error = true,
         .no_emit = true,
         .external_resolver = external,
+        .module_resolution = module_resolution_label,
     }) catch |err| switch (err) {
         error.OutOfMemory => return error.OutOfMemory,
         else => return null,
@@ -988,6 +1018,9 @@ pub const CorpusEntry = struct {
     suppress_js_check_diagnostics: bool = false,
     /// Raw upstream source bytes (pre-strip). See `Case.raw_source`.
     raw_source: []const u8 = "",
+    /// See `Case.baseline_module_resolution`. Empty means the baseline
+    /// has no `(moduleresolution=X)` variant suffix.
+    baseline_module_resolution: []const u8 = "",
 };
 
 /// Owned-source variant — like `CorpusEntry` but the source is
@@ -1009,6 +1042,11 @@ pub const OwnedCorpusEntry = struct {
     /// Raw upstream source bytes (pre-strip), owned. Empty when
     /// there is no separate raw source (single-file fixtures).
     raw_source: []u8 = "",
+    /// Lower-case `moduleResolution` variant extracted from the
+    /// chosen baseline filename's `(moduleresolution=X)` suffix.
+    /// Empty when the baseline has no variant suffix. Owned slice
+    /// freed alongside `name` / `source`.
+    baseline_module_resolution: []u8 = "",
 };
 
 pub const DirectoryLoadOptions = struct {
@@ -1192,6 +1230,10 @@ pub fn loadDirectoryWithOptions(
                 }
             }
         }
+        const baseline_mr: []u8 = if (baseline_path) |bp|
+            try extractModuleResolutionFromBaseline(gpa, bp)
+        else
+            &.{};
         try out.append(gpa, .{
             .name = name,
             .source = case_src,
@@ -1207,6 +1249,7 @@ pub fn loadDirectoryWithOptions(
             .report_deprecated_target_es5 = use_exact_errors and !baseline_only_option_deprecation and baselinePathIsTargetEs5(baseline_path),
             .suppress_js_check_diagnostics = shouldSuppressJsCheckDiagnostics(diag_path, case_src),
             .raw_source = raw_source,
+            .baseline_module_resolution = baseline_mr,
         });
     }
     return out.toOwnedSlice(gpa);
@@ -1682,18 +1725,18 @@ fn baselinePathIsTargetEs5(path: ?[]const u8) bool {
     return std.mem.indexOf(u8, p, "(target=es5).errors.txt") != null;
 }
 
-/// Inspect the chosen `.errors.txt` baseline filename for an
-/// `alwaysstrict=<bool>` variant marker. Multi-variant fixtures (e.g.
-/// `// @alwaysStrict: true, false`) produce one baseline per variant
-/// — the harness picks ONE of them lexicographically — so we must
-/// honour the picked variant's setting rather than always taking the
-/// first directive value (which would always be `true` for the
-/// `true, false` ordering).
-fn baselineAlwaysStrictValue(path: ?[]const u8) ?bool {
-    const p = path orelse return null;
-    if (std.mem.indexOf(u8, p, "alwaysstrict=false") != null) return false;
-    if (std.mem.indexOf(u8, p, "alwaysstrict=true") != null) return true;
-    return null;
+/// Extract the `moduleresolution=X` label from a baseline filename
+/// like `…(moduleresolution=classic).errors.txt`. Returns an owned
+/// lower-case slice (`"classic"`) or an empty slice when the
+/// baseline has no `moduleresolution=` variant suffix. The label
+/// drives `resolverStrategyFromCase` so the resolver picks the
+/// strategy that matches the baseline we'll compare against.
+fn extractModuleResolutionFromBaseline(gpa: std.mem.Allocator, path: []const u8) ![]u8 {
+    const needle = "(moduleresolution=";
+    const start = std.mem.indexOf(u8, path, needle) orelse return gpa.dupe(u8, "");
+    const after = start + needle.len;
+    const close = std.mem.indexOfScalarPos(u8, path, after, ')') orelse return gpa.dupe(u8, "");
+    return gpa.dupe(u8, path[after..close]);
 }
 
 fn envUsize(name: [*:0]const u8, default: usize) usize {
@@ -2970,6 +3013,7 @@ pub fn runOwnedCorpus(
             .report_deprecated_target_es5 = entry.report_deprecated_target_es5,
             .suppress_js_check_diagnostics = entry.suppress_js_check_diagnostics,
             .raw_source = entry.raw_source,
+            .baseline_module_resolution = entry.baseline_module_resolution,
         };
         const r = try runOneEntry(gpa, view);
         switch (r.outcome) {
@@ -3014,6 +3058,7 @@ fn freeOwnedCorpusEntry(gpa: std.mem.Allocator, entry: OwnedCorpusEntry) void {
     if (entry.raw_source.len > 0) gpa.free(entry.raw_source);
     if (entry.path.len > 0) gpa.free(entry.path);
     if (entry.expected_errors.len > 0) gpa.free(entry.expected_errors);
+    if (entry.baseline_module_resolution.len > 0) gpa.free(entry.baseline_module_resolution);
 }
 
 /// Run named conformance categories relative to `root_path`.
@@ -3099,6 +3144,7 @@ fn runOneEntry(gpa: std.mem.Allocator, entry: CorpusEntry) !Result {
             .report_deprecated_target_es5 = entry.report_deprecated_target_es5,
             .suppress_js_check_diagnostics = entry.suppress_js_check_diagnostics,
             .raw_source = entry.raw_source,
+            .baseline_module_resolution = entry.baseline_module_resolution,
         });
         errdefer if (exact.detail.len > 0) gpa.free(exact.detail);
         exact.name = try gpa.dupe(u8, entry.name);
@@ -3739,6 +3785,7 @@ test "conformance: bisect exact-baseline heap leak" {
             .report_deprecated_target_es5 = entry.report_deprecated_target_es5,
             .suppress_js_check_diagnostics = entry.suppress_js_check_diagnostics,
             .raw_source = entry.raw_source,
+            .baseline_module_resolution = entry.baseline_module_resolution,
         });
         try results.append(T.allocator, r);
     }
@@ -4259,6 +4306,7 @@ test "conformance: opt-in full local TypeScript corpus survey" {
             .report_deprecated_target_es5 = entry.report_deprecated_target_es5,
             .suppress_js_check_diagnostics = entry.suppress_js_check_diagnostics,
             .raw_source = entry.raw_source,
+            .baseline_module_resolution = entry.baseline_module_resolution,
         });
         switch (r.outcome) {
             .passed => stats.passed += 1,

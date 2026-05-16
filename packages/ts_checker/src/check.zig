@@ -121,6 +121,11 @@ pub const TsCodes = struct {
     pub const shorthand_property_no_value: u32 = 18004;
     pub const type_not_generic: u32 = 2315;
     pub const cannot_find_module: u32 = 2307;
+    /// TS2792 — "Cannot find module 'X'. Did you mean to set the
+    /// 'moduleResolution' option to 'nodenext'…?". Emitted in place
+    /// of TS2307 when `--moduleResolution classic` is selected and a
+    /// bare module specifier fails to resolve.
+    pub const cannot_find_module_did_you_mean_nodenext: u32 = 2792;
     pub const arbitrary_extension_requires_option: u32 = 6263;
     pub const invalid_module_name_augmentation: u32 = 2665;
     pub const untyped_module: u32 = 7016;
@@ -968,6 +973,14 @@ pub const Checker = struct {
     /// the virtual filesystem. Empty means "fall back to the
     /// `@filename:` virtual-section scan".
     importer_path: []const u8 = "",
+    /// Effective `--moduleResolution` value as a normalized lower-case
+    /// label (`"classic"`, `"node10"`, `"node16"`, `"nodenext"`,
+    /// `"bundler"`). Populated by the driver/program path; empty
+    /// means "infer from `// @moduleResolution:` directive in source".
+    /// Consulted by `moduleResolutionIsClassic` to upgrade TS2307
+    /// "Cannot find module" to the TS2792 "Did you mean to set the
+    /// 'moduleResolution' option to 'nodenext'…?" variant.
+    module_resolution: []const u8 = "",
 
     pub fn init(
         gpa: std.mem.Allocator,
@@ -1093,6 +1106,16 @@ pub const Checker = struct {
     /// slice alive across `checkSourceFile`.
     pub fn setImporterPath(self: *Checker, path: []const u8) void {
         self.importer_path = path;
+    }
+
+    /// Tell the checker which `moduleResolution` variant the program
+    /// was configured with (`"classic"`, `"node16"`, `"nodenext"`,
+    /// `"bundler"`, …). Used by the bare-module fall-through to
+    /// pick between TS2307 and TS2792 ("Did you mean to set the
+    /// 'moduleResolution' option to 'nodenext'…?"). Borrowed; the
+    /// caller must keep the slice alive across `checkSourceFile`.
+    pub fn setModuleResolution(self: *Checker, name: []const u8) void {
+        self.module_resolution = name;
     }
 
     pub fn deinit(self: *Checker) void {
@@ -2002,20 +2025,56 @@ pub const Checker = struct {
     }
 
     fn checkUntypedModuleAugmentation(self: *Checker, node: NodeId) CheckError!void {
-        if (!self.sourceHasVirtualFilenameSections()) return;
         if (self.hir.kindOf(node) != .namespace_decl) return;
-        if (self.virtualSectionIsDeclarationFile(node)) return;
         const ns = hir_mod.namespaceOf(self.hir, node);
         if (ns.name == hir_mod.none_node_id or self.hir.kindOf(ns.name) != .identifier) return;
         const module_name_id = hir_mod.identifierOf(self.hir, ns.name).name;
         const module_name = self.string_interner.get(module_name_id);
         if (module_name.len == 0 or std.mem.indexOfScalar(u8, module_name, '.') != null) return;
-        const resolution = try self.resolveVirtualBareModule(module_name);
-        if (resolution != .implementation) return;
+
+        // Legacy virtual-section path: `@filename:` markers are visible
+        // in the same source. Use the in-source scan when available.
+        if (self.sourceHasVirtualFilenameSections()) {
+            if (self.virtualSectionIsDeclarationFile(node)) return;
+            const resolution = try self.resolveVirtualBareModule(module_name);
+            if (resolution != .implementation) return;
+            const msg = try std.fmt.allocPrint(
+                self.diag_arena.allocator(),
+                "Invalid module name in augmentation. Module '{s}' resolves to an untyped module, which cannot be augmented.",
+                .{module_name},
+            );
+            try self.diagnostics.append(self.gpa, .{
+                .node = ns.name,
+                .code = TsCodes.invalid_module_name_augmentation,
+                .message = msg,
+            });
+            return;
+        }
+
+        // Program-routed path: `@filename:` markers were stripped before
+        // this file was compiled in isolation, so use the external
+        // resolver hook the conformance harness wires up. Match the
+        // upstream baseline shape — which includes the resolved JS file
+        // path in `at '/path/to/file.js'`.
+        if (self.virtualSectionIsDeclarationFile(node)) return;
+        // tsc never reports TS2665 inside a `.d.ts` declaration file —
+        // ambient module augmentations are the entire point of those
+        // files. Use the importer path as a proxy when no virtual
+        // section markers are visible.
+        if (std.mem.endsWith(u8, self.importer_path, ".d.ts") or
+            std.mem.endsWith(u8, self.importer_path, ".d.mts") or
+            std.mem.endsWith(u8, self.importer_path, ".d.cts")) return;
+        const external = (try self.resolveBareModuleViaExternal(node, module_name)) orelse return;
+        if (external.kind != .implementation) return;
+        const path = external.resolved_path;
+        const slashed = if (path.len > 0 and path[0] == '/')
+            try self.diag_arena.allocator().dupe(u8, path)
+        else
+            try std.fmt.allocPrint(self.diag_arena.allocator(), "/{s}", .{path});
         const msg = try std.fmt.allocPrint(
             self.diag_arena.allocator(),
-            "Invalid module name in augmentation. Module '{s}' resolves to an untyped module, which cannot be augmented.",
-            .{module_name},
+            "Invalid module name in augmentation. Module '{s}' resolves to an untyped module at '{s}', which cannot be augmented.",
+            .{ module_name, slashed },
         );
         try self.diagnostics.append(self.gpa, .{
             .node = ns.name,
@@ -12320,7 +12379,9 @@ pub const Checker = struct {
             });
             return;
         }
-        if (imp.is_type_only and self.nodeSourceContainsImportAttributes(node)) {
+        if (imp.is_type_only and self.nodeSourceContainsImportAttributes(node) and
+            !self.nodeImportAttributesOnlyResolutionMode(node))
+        {
             try self.report(node, TsCodes.type_not_assignable, "Import attributes are not valid on type-only imports.");
         }
         if (std.mem.startsWith(u8, spec, ".")) {
@@ -12343,6 +12404,20 @@ pub const Checker = struct {
         if (try self.virtualClassicBareModuleExists(node, spec)) return;
         if (self.referenceLibProvidesBareModule(spec)) return;
         if (try self.isKnownAmbientModuleName(node, spec)) return;
+        if (self.moduleResolutionIsClassic()) {
+            const msg = try std.fmt.allocPrint(
+                self.diag_arena.allocator(),
+                "Cannot find module '{s}'. Did you mean to set the 'moduleResolution' option to 'nodenext', or to add aliases to the 'paths' option?",
+                .{spec},
+            );
+            try self.diagnostics.append(self.gpa, .{
+                .node = node,
+                .pos = self.moduleSpecifierQuotePos(node, spec),
+                .code = TsCodes.cannot_find_module_did_you_mean_nodenext,
+                .message = msg,
+            });
+            return;
+        }
         const msg = try std.fmt.allocPrint(
             self.diag_arena.allocator(),
             "Cannot find module '{s}' or its corresponding type declarations.",
@@ -12363,6 +12438,47 @@ pub const Checker = struct {
         const text = src[sp.start..sp.end];
         return std.mem.indexOf(u8, text, " with") != null or
             std.mem.indexOf(u8, text, " assert") != null;
+    }
+
+    /// Returns true if the import attributes block on this node contains
+    /// *only* the `resolution-mode` key. TS5.3+ specifically allows
+    /// `with { "resolution-mode": "import"|"require" }` on `import type`
+    /// declarations — TS2857/TS2322 must NOT fire in that case.
+    fn nodeImportAttributesOnlyResolutionMode(self: *Checker, node: NodeId) bool {
+        const src = self.source orelse return false;
+        const sp = self.hir.spanOf(node);
+        if (sp.start >= sp.end or sp.end > src.len) return false;
+        const text = src[sp.start..sp.end];
+        // Locate the start of the attribute block — either ` with` or ` assert`.
+        const with_at = std.mem.indexOf(u8, text, " with") orelse
+            (std.mem.indexOf(u8, text, " assert") orelse return false);
+        const open = std.mem.indexOfScalarPos(u8, text, with_at, '{') orelse return false;
+        const close = std.mem.indexOfScalarPos(u8, text, open, '}') orelse return false;
+        const block = text[open + 1 .. close];
+        // Split by `,` and ensure every key (text before `:`) is `resolution-mode`.
+        var parts = std.mem.splitScalar(u8, block, ',');
+        var any = false;
+        while (parts.next()) |raw| {
+            const part = std.mem.trim(u8, raw, " \t\r\n");
+            if (part.len == 0) continue;
+            any = true;
+            const colon = std.mem.indexOfScalar(u8, part, ':') orelse return false;
+            const key = std.mem.trim(u8, part[0..colon], " \t\r\n\"'");
+            if (!std.mem.eql(u8, key, "resolution-mode")) return false;
+        }
+        return any;
+    }
+
+    /// True when this fixture's directives or tsconfig select the
+    /// `classic` moduleResolution variant. Used to upgrade the
+    /// generic TS2307 "Cannot find module" diagnostic to TS2792
+    /// ("Did you mean to set the 'moduleResolution' option to
+    /// 'nodenext'…?") for bare module imports that fall through.
+    fn moduleResolutionIsClassic(self: *Checker) bool {
+        if (self.module_resolution.len > 0 and
+            std.ascii.eqlIgnoreCase(self.module_resolution, "classic")) return true;
+        return self.sourceDirectiveValueMentions("moduleResolution", "classic") or
+            self.sourceDirectiveValueMentions("ModuleResolution", "classic");
     }
 
     fn sourceContainsImportAttributesForSpecifier(self: *Checker, spec: []const u8) bool {
@@ -12414,7 +12530,25 @@ pub const Checker = struct {
     };
 
     fn checkVirtualRelativeModuleImport(self: *Checker, node: NodeId, spec: []const u8) CheckError!bool {
-        if (!self.sourceHasVirtualFilenameSections()) return false;
+        if (!self.sourceHasVirtualFilenameSections()) {
+            // Program-routed compiles (`@filename:` markers stripped):
+            // fall back to the external resolver hook for relative
+            // specifiers too, so `untypedModuleImport_noImplicitAny_`
+            // `relativePath` and friends can surface TS7016 with the
+            // resolved JS path. The legacy resolver-empty path still
+            // returns `false` so the caller's TS2307 fall-through stays
+            // intact.
+            const external = (try self.resolveBareModuleViaExternal(node, spec)) orelse return false;
+            switch (external.kind) {
+                .implementation => {
+                    if (self.strict_flags.no_implicit_any) {
+                        try self.appendUntypedModuleDiagnostic(node, spec, external.resolved_path);
+                    }
+                    return true;
+                },
+                .declaration => return true,
+            }
+        }
         const resolution = try self.resolveVirtualRelativeModule(node, spec);
         switch (resolution) {
             .none => return false,
@@ -12459,6 +12593,20 @@ pub const Checker = struct {
     }
 
     fn reportVirtualCannotFindRelativeModule(self: *Checker, node: NodeId, spec: []const u8) CheckError!void {
+        if (self.moduleResolutionIsClassic()) {
+            const msg = try std.fmt.allocPrint(
+                self.diag_arena.allocator(),
+                "Cannot find module '{s}'. Did you mean to set the 'moduleResolution' option to 'nodenext', or to add aliases to the 'paths' option?",
+                .{spec},
+            );
+            try self.diagnostics.append(self.gpa, .{
+                .node = node,
+                .pos = self.virtualLocalModuleSpecifierQuotePos(node, spec),
+                .code = TsCodes.cannot_find_module_did_you_mean_nodenext,
+                .message = msg,
+            });
+            return;
+        }
         const msg = try std.fmt.allocPrint(
             self.diag_arena.allocator(),
             "Cannot find module '{s}' or its corresponding type declarations.",
@@ -12581,7 +12729,35 @@ pub const Checker = struct {
         if (!std.mem.startsWith(u8, spec, ".")) return;
         const code = tsExtensionImportDiagnosticCode(spec) orelse return;
         if (code == TsCodes.declaration_file_import_requires_import_type) {
-            try self.report(node, code, "A declaration file cannot be imported without 'import type'.");
+            // Suggest the implementation-file specifier in the prose —
+            // upstream emits `Did you mean to import an implementation
+            // file '<spec_with_.js_extension>' instead?` so users can
+            // copy the suggestion verbatim. Synthesise the JS spec by
+            // stripping the leading `.d` and trailing `s` from `.d.ts`
+            // / `.d.mts` / `.d.cts`.
+            const impl_spec: ?[]const u8 = blk: {
+                if (std.mem.endsWith(u8, spec, ".d.ts"))
+                    break :blk try std.fmt.allocPrint(self.diag_arena.allocator(), "{s}.js", .{spec[0 .. spec.len - ".d.ts".len]});
+                if (std.mem.endsWith(u8, spec, ".d.mts"))
+                    break :blk try std.fmt.allocPrint(self.diag_arena.allocator(), "{s}.mjs", .{spec[0 .. spec.len - ".d.mts".len]});
+                if (std.mem.endsWith(u8, spec, ".d.cts"))
+                    break :blk try std.fmt.allocPrint(self.diag_arena.allocator(), "{s}.cjs", .{spec[0 .. spec.len - ".d.cts".len]});
+                break :blk null;
+            };
+            const msg = if (impl_spec) |js|
+                try std.fmt.allocPrint(
+                    self.diag_arena.allocator(),
+                    "A declaration file cannot be imported without 'import type'. Did you mean to import an implementation file '{s}' instead?",
+                    .{js},
+                )
+            else
+                try self.diag_arena.allocator().dupe(u8, "A declaration file cannot be imported without 'import type'.");
+            try self.diagnostics.append(self.gpa, .{
+                .node = node,
+                .pos = self.moduleSpecifierQuotePos(node, spec),
+                .code = code,
+                .message = msg,
+            });
             return;
         }
         // TS5097's upstream prose includes the concrete extension
@@ -12598,7 +12774,12 @@ pub const Checker = struct {
             "An import path can only end with a '{s}' extension when 'allowImportingTsExtensions' is enabled.",
             .{ext},
         );
-        try self.report(node, code, msg);
+        try self.diagnostics.append(self.gpa, .{
+            .node = node,
+            .pos = self.moduleSpecifierQuotePos(node, spec),
+            .code = code,
+            .message = msg,
+        });
     }
 
     fn tsExtensionImportDiagnosticCode(spec: []const u8) ?u32 {
@@ -13799,15 +13980,29 @@ pub const Checker = struct {
     fn reportMissingImportTypeModule(self: *Checker, node: NodeId) CheckError!bool {
         const spec = self.importTypeModuleSpecifier(node) orelse return false;
         if (try self.importTypeModuleExists(node, spec)) return false;
+        // tsc anchors TS2307 on the opening quote of the module
+        // specifier inside `import("…")`, not on the `import`
+        // keyword. Mirror that for exact-baseline parity.
+        const quote_pos = self.moduleSpecifierQuotePos(node, spec);
+        if (self.moduleResolutionIsClassic() and !std.mem.startsWith(u8, spec, ".")) {
+            const msg = try std.fmt.allocPrint(
+                self.diag_arena.allocator(),
+                "Cannot find module '{s}'. Did you mean to set the 'moduleResolution' option to 'nodenext', or to add aliases to the 'paths' option?",
+                .{spec},
+            );
+            try self.diagnostics.append(self.gpa, .{
+                .node = node,
+                .pos = quote_pos,
+                .code = TsCodes.cannot_find_module_did_you_mean_nodenext,
+                .message = msg,
+            });
+            return true;
+        }
         const msg = try std.fmt.allocPrint(
             self.diag_arena.allocator(),
             "Cannot find module '{s}' or its corresponding type declarations.",
             .{spec},
         );
-        // tsc anchors TS2307 on the opening quote of the module
-        // specifier inside `import("…")`, not on the `import`
-        // keyword. Mirror that for exact-baseline parity.
-        const quote_pos = self.moduleSpecifierQuotePos(node, spec);
         try self.diagnostics.append(self.gpa, .{
             .node = node,
             .pos = quote_pos,
