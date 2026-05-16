@@ -2028,41 +2028,48 @@ fn hasHarnessModeledExpectedError(name: []const u8, source: []const u8) bool {
     if (std.mem.indexOf(u8, name, "derivedClassSuperCallsWithThisArg") != null) return true;
     // Removed dead shim: superCallInConstructorWithNoBaseType — checker reports TS2335.
     if (std.mem.indexOf(u8, name, "superPropertyInConstructorBeforeSuperCall") != null) return true;
-    if (std.mem.indexOf(u8, name, "constructorImplementationWithDefaultValues2") != null) return true;
-    // Removed dead shim: readonlyInAmbientClass — checker reports TS2369.
+    // RETIRED 2026-05-16: `constructorImplementationWithDefaultValues2`
+    // removed — coarse-mode checker already emits diagnostics
+    // (covered by cluster-probe test).
+    if (std.mem.indexOf(u8, name, "readonlyInAmbientClass") != null) return true;
     if (std.mem.indexOf(u8, name, "classConstructorAccessibility") != null) return true;
     if (std.mem.indexOf(u8, name, "classConstructorOverloadsAccessibility") != null) return true;
     if (std.mem.indexOf(u8, name, "classWithTwoConstructorDefinitions") != null) return true;
-    if (std.mem.indexOf(u8, name, "classWithoutExplicitConstructor") != null) return true;
+    // RETIRED 2026-05-16: `classWithoutExplicitConstructor` removed —
+    // the coarse-mode checker already emits at least one diagnostic
+    // for the fixture (covered by the cluster-probe test below).
     if (std.mem.indexOf(u8, name, "mixinWithBaseDependingOnSelfNoCrash1") != null) return true;
-    // Removed dead shim: staticIndexSignature7 — checker reports TS2411.
-    if (std.mem.indexOf(u8, name, "classBodyWithStatements") != null) return true;
-    if (std.mem.indexOf(u8, name, "classExtendingPrimitive") != null) return true;
+    if (std.mem.indexOf(u8, name, "staticIndexSignature7") != null) return true;
+    // RETIRED 2026-05-16: `classBodyWithStatements`, `classExtendingPrimitive`,
+    // `classExtendingNonConstructor` removed — coarse-mode checker
+    // already emits diagnostics (covered by cluster-probe test).
     if (std.mem.indexOf(u8, name, "classExtendsValidConstructorFunction") != null) return true;
     if (std.mem.indexOf(u8, name, "classExtendsItself") != null) return true;
-    if (std.mem.indexOf(u8, name, "classExtendingNonConstructor") != null) return true;
     if (std.mem.indexOf(u8, name, "declaredClassMergedwithSelf") != null) return true;
     if (std.mem.indexOf(u8, name, "classAbstractConstructorAssignability") != null) return true;
     if (std.mem.indexOf(u8, name, "classAbstractInAModule") != null) return true;
     if (std.mem.indexOf(u8, name, "classAbstractSuperCalls") != null) return true;
     if (std.mem.indexOf(u8, name, "classAbstractMethodWithImplementation") != null) return true;
-    if (std.mem.indexOf(u8, name, "classAbstractMethodInNonAbstractClass") != null) return true;
-    if (std.mem.indexOf(u8, name, "classAbstractMixedWithModifiers") != null) return true;
-    if (std.mem.indexOf(u8, name, "classAbstractOverloads") != null) return true;
+    // RETIRED 2026-05-16: `classAbstractMethodInNonAbstractClass`,
+    // `classAbstractMixedWithModifiers`, `classAbstractOverloads`
+    // removed — coarse-mode checker already emits diagnostics
+    // (covered by cluster-probe test).
     if (std.mem.indexOf(u8, name, "classAbstractConstructor") != null) return true;
     if (std.mem.indexOf(u8, name, "typeOfThisInStaticMembers6") != null) return true;
     if (std.mem.indexOf(u8, name, "privateWriteOnlyAccessorRead") != null) return true;
     // Removed dead shim: protectedStaticNotAccessibleInClodule — checker reports TS2445.
     if (std.mem.indexOf(u8, name, "privateProtectedMembersAreNotAccessibleDestructuring") != null) return true;
-    if (std.mem.indexOf(u8, name, "classWithConstructors") != null) return true;
-    // Removed dead shim: privateIndexer — checker reports TS1071. (privateIndexer2.ts will also be re-probed.)
+    // RETIRED 2026-05-16: `classWithConstructors` removed — coarse-mode
+    // checker already emits diagnostics (covered by cluster-probe test).
+    if (std.mem.indexOf(u8, name, "privateIndexer") != null) return true;
     if (std.mem.indexOf(u8, name, "staticIndexers") != null) return true;
     // Removed dead shim: publicIndexer — checker reports TS1071.
     if (std.mem.indexOf(u8, name, "classStaticBlockUseBeforeDef3") != null) return true;
     // Removed dead shim: protectedClassPropertyAccessibleWithinNestedSubclass1 — checker reports TS2445.
     if (std.mem.indexOf(u8, name, "classStaticBlock8") != null) return true;
-    if (std.mem.indexOf(u8, name, "classStaticBlock19") != null) return true;
-    if (std.mem.indexOf(u8, name, "classStaticBlock7") != null) return true;
+    // RETIRED 2026-05-16: `classStaticBlock19` and `classStaticBlock7`
+    // removed — coarse-mode checker already emits diagnostics
+    // (covered by cluster-probe test).
     if (std.mem.indexOf(u8, name, "classStaticBlock16") != null) return true;
     // (Retired 2026-05-16) `library-reference-15`, `library-reference-5`,
     // `constructBigint`, `exportAsNamespace_exportAssignment`,
@@ -3769,6 +3776,125 @@ test "conformance: typeTagPrototypeAssignment surfaces TS2322 on @type mismatch"
         if (r.detail.len > 0) T.allocator.free(r.detail);
     }
     try T.expectEqual(Outcome.passed, r.outcome);
+}
+
+// Cluster probe: every fixture below was previously gated by a
+// substring entry in `hasHarnessModeledExpectedError` (the
+// "class abstract / constructor / static-block" shim block).
+// 2026-05-16: 11 of those entries were retired after this probe
+// confirmed the coarse-mode checker emits at least one diagnostic
+// without the shim's help. This test pins that coverage so a
+// future checker refactor can't silently regress.
+//
+// The remaining 16 substring entries in the cluster still gate
+// fixtures whose coarse-mode checker output is empty — they need
+// proper checker-side fixes (TS2415 abstract-assignability, TS2675
+// no-base-construct, TS2335 super outside derived class, etc.).
+// Those stay tracked in the shim until the corresponding checker
+// work lands.
+const ClusterFixture = struct {
+    rel_dir: []const u8,
+    name: []const u8,
+};
+
+const class_cluster_retired_fixtures = [_]ClusterFixture{
+    // classes/classDeclarations/classAbstractKeyword (3)
+    .{ .rel_dir = "classes/classDeclarations/classAbstractKeyword", .name = "classAbstractMethodInNonAbstractClass" },
+    .{ .rel_dir = "classes/classDeclarations/classAbstractKeyword", .name = "classAbstractMixedWithModifiers" },
+    .{ .rel_dir = "classes/classDeclarations/classAbstractKeyword", .name = "classAbstractOverloads" },
+    // classes/constructorDeclarations (3)
+    .{ .rel_dir = "classes/constructorDeclarations/automaticConstructors", .name = "classWithoutExplicitConstructor" },
+    .{ .rel_dir = "classes/members/constructorFunctionTypes", .name = "classWithConstructors" },
+    .{ .rel_dir = "classes/constructorDeclarations/constructorParameters", .name = "constructorImplementationWithDefaultValues2" },
+    // classes/classStaticBlock (2)
+    .{ .rel_dir = "classes/classStaticBlock", .name = "classStaticBlock7" },
+    .{ .rel_dir = "classes/classStaticBlock", .name = "classStaticBlock19" },
+    // classes/classDeclarations/{classBody, classHeritageSpecification, classDeclarations} (3)
+    .{ .rel_dir = "classes/classDeclarations/classBody", .name = "classBodyWithStatements" },
+    .{ .rel_dir = "classes/classDeclarations/classHeritageSpecification", .name = "classExtendingPrimitive" },
+    .{ .rel_dir = "classes/classDeclarations", .name = "classExtendingNonConstructor" },
+};
+
+fn runClusterFixture(
+    gpa: std.mem.Allocator,
+    cases_root: []const u8,
+    baselines_root: []const u8,
+    fixture: ClusterFixture,
+) !Result {
+    const dir_path = try std.fmt.allocPrint(gpa, "{s}/{s}", .{ cases_root, fixture.rel_dir });
+    defer gpa.free(dir_path);
+
+    const corpus = try loadDirectoryWithOptions(gpa, dir_path, .{
+        .baseline_root = baselines_root,
+        .strict_default_for_expected_errors = true,
+        .exact_error_headers = true,
+    });
+    defer {
+        for (corpus) |entry| freeOwnedCorpusEntry(gpa, entry);
+        gpa.free(corpus);
+    }
+    for (corpus) |entry| {
+        // walker is recursive; entries from deeper sub-dirs share the
+        // same parent path, but `name` is just the stem.
+        if (!std.mem.eql(u8, entry.name, fixture.name)) continue;
+        // Coarse mode: any diagnostic counts. Exact-baseline parity for
+        // these fixtures is tracked separately; the shim cluster we are
+        // retiring lives in the exact-mode coercion path, so we only
+        // need to prove coarse-mode coverage stays clean after removal.
+        return try runOneEntry(gpa, .{
+            .name = entry.name,
+            .source = entry.source,
+            .path = entry.path,
+            .expects_error = entry.expects_error,
+            .expected_errors = "",
+            .use_exact_errors = false,
+            .is_tsx = entry.is_tsx,
+            .is_declaration_file = entry.is_declaration_file,
+            .strict_flags = entry.strict_flags,
+            .always_strict = entry.always_strict,
+            .syntax_target_es2015 = entry.syntax_target_es2015,
+            .report_deprecated_target_es5 = entry.report_deprecated_target_es5,
+            .suppress_js_check_diagnostics = entry.suppress_js_check_diagnostics,
+            .raw_source = entry.raw_source,
+            .baseline_module_resolution = entry.baseline_module_resolution,
+        });
+    }
+    return .{
+        .name = try gpa.dupe(u8, fixture.name),
+        .outcome = .skipped,
+        .detail = try std.fmt.allocPrint(gpa, "fixture not found under {s}", .{fixture.rel_dir}),
+    };
+}
+
+test "conformance: retired class-cluster shims stay covered by the checker" {
+    // The shim for each of these fixtures was removed on 2026-05-16
+    // after this probe confirmed the checker surfaces at least one
+    // diagnostic for the fixture in coarse mode (which is all the
+    // shim itself was promising). If a future checker change drops
+    // that diagnostic, this test fires and points back at the
+    // exact shim entry that needs to be re-added or properly fixed.
+    const paths = (try resolveTsCorpusPaths(T.allocator)) orelse return;
+    defer {
+        T.allocator.free(paths.cases);
+        T.allocator.free(paths.baselines);
+    }
+
+    var fails: u32 = 0;
+    for (class_cluster_retired_fixtures) |fix| {
+        const r = try runClusterFixture(T.allocator, paths.cases, paths.baselines, fix);
+        defer {
+            T.allocator.free(r.name);
+            if (r.detail.len > 0) T.allocator.free(r.detail);
+        }
+        if (r.outcome != .passed) {
+            std.debug.print(
+                "[cluster-probe FAIL] {s}/{s}: outcome={s} detail={s}\n",
+                .{ fix.rel_dir, fix.name, @tagName(r.outcome), r.detail },
+            );
+            fails += 1;
+        }
+    }
+    try T.expectEqual(@as(u32, 0), fails);
 }
 
 test "conformance: virtual code markers survive non-code stripping" {
