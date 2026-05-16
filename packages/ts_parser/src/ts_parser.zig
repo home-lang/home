@@ -3876,6 +3876,10 @@ pub const Parser = struct {
             _ = self.advance();
             return;
         }
+        if (t.kind == .open_brace) {
+            try self.reportCodeAt(t.span.start, t.line, 1005, "';' expected.");
+            return;
+        }
         try self.report("expected ';' or newline ", "after statement");
         return error.UnexpectedToken;
     }
@@ -7857,6 +7861,15 @@ pub const Parser = struct {
             }
             break;
         }
+        if (self.peek().kind == .semicolon and self.peekAt(1).kind == .close_brace and props.items.len > 0 and
+            self.hir.kindOf(props.items[props.items.len - 1]) == .object_property and
+            hir_mod.objectPropertyOf(self.hir, props.items[props.items.len - 1]).is_shorthand)
+        {
+            const semi = self.advance();
+            try self.reportCodeAt(semi.span.start, semi.line, 1005, "',' expected.");
+            const close = self.advance();
+            return try self.builder.addObjectLiteral(.{ .start = start.span.start, .end = close.span.end }, props.items);
+        }
         if (self.peek().kind == .semicolon) {
             const semi = self.advance();
             try self.reportCodeAt(semi.span.end, semi.line, 1005, "'}' expected.");
@@ -11614,6 +11627,15 @@ test "parser: object literal recovers from missing comma between properties" {
     try T.expect(saw_ts1005);
 }
 
+test "parser: object shorthand semicolon before close reports comma expected" {
+    var s = try newTestSetup("var tt = { aa; }");
+    defer destroyTestSetup(s);
+    _ = try s.parser.parseSourceFile();
+    try T.expectEqual(@as(usize, 1), s.parser.diagnostics.items.len);
+    try T.expectEqual(@as(u32, 1005), s.parser.diagnostics.items[0].code);
+    try T.expectEqualStrings("',' expected.", s.parser.diagnostics.items[0].message);
+}
+
 test "parser: missing-comma recovery preserves preceding class duplicate members" {
     // End-to-end shape of the conformance fixture: a class with two
     // pairs of duplicate-name fields followed by a malformed object
@@ -11904,6 +11926,17 @@ test "parser: invalid token before semicolon terminates expression statement" {
     _ = try s.parser.parseSourceFile();
     try T.expectEqual(@as(usize, 1), s.parser.diagnostics.items.len);
     try T.expectEqual(@as(u32, 1127), s.parser.diagnostics.items[0].code);
+}
+
+test "parser: open brace after expression statement reports semicolon and recovers block" {
+    var s = try newTestSetup("module.module { }");
+    defer destroyTestSetup(s);
+
+    const root = try s.parser.parseSourceFile();
+    try T.expectEqual(@as(usize, 1), s.parser.diagnostics.items.len);
+    try T.expectEqual(@as(u32, 1005), s.parser.diagnostics.items[0].code);
+    try T.expectEqualStrings("';' expected.", s.parser.diagnostics.items[0].message);
+    try T.expectEqual(@as(usize, 2), hir_mod.blockStmts(&s.hir, root).len);
 }
 
 test "parser: invalid token terminates type argument list without greater cascade" {
