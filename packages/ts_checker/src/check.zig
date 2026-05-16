@@ -16739,6 +16739,18 @@ pub const Checker = struct {
         const args = text[lt + 1 .. gt];
         if (!simpleBareTypeArgumentList(args)) return;
 
+        // `typeof Array<typeof x>` and similar — when the inner type
+        // arguments include a TS type-operator keyword (`typeof`,
+        // `keyof`, `infer`, `readonly`), the simple-name scanner here
+        // would emit a bogus `Cannot find name 'typeof'`. The real
+        // type-arg list was already parsed (the parser frees the
+        // resulting node list), so reaching this fallback for a
+        // keyword-bearing list means we've already accepted those
+        // arguments syntactically; skip the bare-name diagnostic
+        // entirely. Mirrors upstream tsc, which never emits TS2304
+        // for the `typeof`/`keyof` token in this position.
+        if (typeArgListContainsTypeKeyword(args)) return;
+
         var i: usize = 0;
         while (i < args.len) {
             while (i < args.len and !asciiIdentifierStart(args[i])) : (i += 1) {}
@@ -16748,11 +16760,34 @@ pub const Checker = struct {
             while (i < args.len and asciiIdentifierContinue(args[i])) : (i += 1) {}
             const raw_name = args[name_start..i];
             if (isPrimitiveTypeNameText(raw_name)) continue;
+            if (isTypeOperatorKeywordText(raw_name)) continue;
             const name = self.string_interner.intern(raw_name) catch return error.OutOfMemory;
             if (self.typeRefNameExists(name) or self.visibleTypeDeclarationExistsAt(operand, name) or self.isBuiltinName(name)) continue;
             const pos = sp.start + @as(u32, @intCast(lt + 1 + name_start));
             try self.reportCannotFindNameAtPosOnce(operand, pos, name);
         }
+    }
+
+    fn typeArgListContainsTypeKeyword(text: []const u8) bool {
+        var i: usize = 0;
+        while (i < text.len) {
+            while (i < text.len and !asciiIdentifierStart(text[i])) : (i += 1) {}
+            if (i >= text.len) break;
+            const name_start = i;
+            i += 1;
+            while (i < text.len and asciiIdentifierContinue(text[i])) : (i += 1) {}
+            const word = text[name_start..i];
+            if (isTypeOperatorKeywordText(word)) return true;
+        }
+        return false;
+    }
+
+    fn isTypeOperatorKeywordText(text: []const u8) bool {
+        const kws = [_][]const u8{ "typeof", "keyof", "infer", "readonly", "unique" };
+        for (kws) |kw| {
+            if (std.mem.eql(u8, text, kw)) return true;
+        }
+        return false;
     }
 
     fn simpleBareTypeArgumentList(text: []const u8) bool {
@@ -21271,7 +21306,20 @@ pub const Checker = struct {
                 const type_arg_nodes = hir_mod.callTypeArgs(self.hir, node);
                 const callee_is_builtin = self.hir.kindOf(c.callee) == .identifier and
                     self.isBuiltinName(hir_mod.identifierOf(self.hir, c.callee).name);
-                if (type_arg_nodes.len > 0 and !callee_is_builtin and (callee_t == types.Primitive.any or callee_t == types.Primitive.unknown)) {
+                // `new C<U,T>()` where `C` is a known generic class —
+                // even when `callee_t` resolved to `any`/`unknown` (the
+                // class identifier looks up via the value namespace, but
+                // the constructor signature isn't tracked there), the
+                // class itself is generic, so explicit type args are
+                // valid. Mirrors fixtures `typeParameterAsTypeArgument`.
+                const callee_is_known_generic_class = blk_known: {
+                    if (self.hir.kindOf(c.callee) != .identifier) break :blk_known false;
+                    const id = hir_mod.identifierOf(self.hir, c.callee);
+                    if (self.class_constructor_sigs.contains(id.name)) break :blk_known true;
+                    if (self.classNameRefersToGenericDecl(id.name, node)) break :blk_known true;
+                    break :blk_known false;
+                };
+                if (type_arg_nodes.len > 0 and !callee_is_builtin and !callee_is_known_generic_class and (callee_t == types.Primitive.any or callee_t == types.Primitive.unknown)) {
                     try self.report(node, TsCodes.untyped_function_type_args, "Untyped function calls may not accept type arguments.");
                 }
                 // `new Foo(...)` produces the instance type recorded
@@ -21566,6 +21614,25 @@ pub const Checker = struct {
                             effective_callee_t = self.substituteType(callee_t, &subs) catch callee_t;
                             used_explicit_type_args = true;
                         }
+                    }
+                }
+                // Recursive call within the function's own body, or
+                // forward reference to a generic function whose signature
+                // hasn't yet been resolved on this scope (callee_t is
+                // `any`/`unknown`). The pre-pass registered the function's
+                // type parameters in `generic_fns`; treat that as proof
+                // that the callee accepts type arguments and skip the
+                // TS2347 fallback below. Mirrors fixtures
+                // `typeParameterAsTypeArgument` where the recursive
+                // `foo<U, U>(...)` inside `function foo<T, U>` would
+                // otherwise wrongly flag.
+                if (type_arg_nodes.len > 0 and !callee_had_generic_record and
+                    (callee_t == types.Primitive.any or callee_t == types.Primitive.unknown) and
+                    self.hir.kindOf(c.callee) == .identifier)
+                {
+                    const callee_name = hir_mod.identifierOf(self.hir, c.callee).name;
+                    if (self.generic_fns.get(callee_name)) |_| {
+                        callee_had_generic_record = true;
                     }
                 }
                 if (type_arg_nodes.len > 0 and !callee_had_generic_record) {
@@ -26556,6 +26623,34 @@ pub const Checker = struct {
             .code = TsCodes.namespace_as_value,
             .message = msg,
         });
+    }
+
+    /// Does this name refer to a class declaration with one or more
+    /// type parameters in the current source? Used by the `new C<...>()`
+    /// validity check to short-circuit TS2347 when the class is generic
+    /// but its constructor sig hasn't been recorded (the class member
+    /// pass and call-expr pass aren't ordered, and a class without an
+    /// explicit constructor never lands in `class_constructor_sigs`).
+    fn classNameRefersToGenericDecl(self: *Checker, name: hir_mod.StringId, ctx_node: NodeId) bool {
+        const root = self.rootBlockFor(ctx_node);
+        if (self.hir.kindOf(root) != .block_stmt) return false;
+        const stmts = hir_mod.blockStmts(self.hir, root);
+        for (stmts) |s| {
+            const k = self.hir.kindOf(s);
+            const decl = if (k == .class_decl) s else blk: {
+                if (k != .export_decl) break :blk hir_mod.none_node_id;
+                const ex = hir_mod.exportOf(self.hir, s);
+                if (ex.decl == hir_mod.none_node_id) break :blk hir_mod.none_node_id;
+                if (self.hir.kindOf(ex.decl) != .class_decl) break :blk hir_mod.none_node_id;
+                break :blk ex.decl;
+            };
+            if (decl == hir_mod.none_node_id) continue;
+            const c = hir_mod.classOf(self.hir, decl);
+            if (c.name == hir_mod.none_node_id or self.hir.kindOf(c.name) != .identifier) continue;
+            if (hir_mod.identifierOf(self.hir, c.name).name != name) continue;
+            if (c.type_params_len > 0) return true;
+        }
+        return false;
     }
 
     /// Recognize a small set of common globals that should not

@@ -10332,6 +10332,17 @@ test "parser: type annotation — typeof accepts type arguments" {
     try T.expectEqual(hir_mod.NodeKind.typeof_type, s.hir.kindOf(v.type_annotation));
 }
 
+test "parser: type annotation — typeof accepts nested typeof in type arguments" {
+    var s = try newTestSetup("var x = 1;\nvar xs4: typeof Array<typeof x>;");
+    defer destroyTestSetup(s);
+    const root = try s.parser.parseSourceFile();
+    const stmts = hir_mod.blockStmts(&s.hir, root);
+    try T.expectEqual(@as(usize, 2), stmts.len);
+    const v = hir_mod.varDeclOf(&s.hir, stmts[1]);
+    try T.expectEqual(hir_mod.NodeKind.typeof_type, s.hir.kindOf(v.type_annotation));
+    try T.expectEqual(@as(usize, 0), s.parser.diagnostics.items.len);
+}
+
 test "parser: type annotation — typeof import supports indexed access" {
     var s = try newTestSetup("let x: typeof import(\"./mod\")[\"value\"] = null;");
     defer destroyTestSetup(s);
