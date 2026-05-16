@@ -1182,9 +1182,27 @@ pub const Printer = struct {
             // `_arr[0] === void 0 ? 1 : _arr[0]` (array) so the
             // default fires only when the slot is `undefined`.
             const has_default = param.default_value != hir_mod.none_node_id;
+            // §4.A.4 destructuring v11 — computed binding keys. The
+            // parser emits a synthetic `is_computed_binding_key=true`
+            // element immediately before the actual binding param,
+            // carrying the key expression in `default_value`. When
+            // present, emit `<name> = <tmp>[<expr>]` instead of
+            // `<name> = <tmp>.<name>`.
+            const computed_key_expr: NodeId = blk: {
+                if (is_array or i == 0) break :blk hir_mod.none_node_id;
+                const prev = elements[i - 1];
+                if (self.hir.kindOf(prev) != .parameter) break :blk hir_mod.none_node_id;
+                const pp = hir_mod.parameterOf(self.hir, prev);
+                if (!pp.flags.is_computed_binding_key) break :blk hir_mod.none_node_id;
+                break :blk pp.default_value;
+            };
             if (has_default) {
                 try self.write(tmp);
-                if (is_array) {
+                if (computed_key_expr != hir_mod.none_node_id) {
+                    try self.write("[");
+                    try self.printExpression(computed_key_expr);
+                    try self.write("]");
+                } else if (is_array) {
                     var buf: [32]u8 = undefined;
                     const idx_str = std.fmt.bufPrint(&buf, "[{d}]", .{i}) catch unreachable;
                     try self.write(idx_str);
@@ -1197,7 +1215,11 @@ pub const Printer = struct {
                 try self.write(" : ");
             }
             try self.write(tmp);
-            if (is_array) {
+            if (computed_key_expr != hir_mod.none_node_id) {
+                try self.write("[");
+                try self.printExpression(computed_key_expr);
+                try self.write("]");
+            } else if (is_array) {
                 var buf: [32]u8 = undefined;
                 const idx_str = std.fmt.bufPrint(&buf, "[{d}]", .{i}) catch unreachable;
                 try self.write(idx_str);
@@ -5067,6 +5089,20 @@ pub const Printer = struct {
             if (self.hir.kindOf(param.name) != .identifier) continue; // nested deferred
             const id = hir_mod.identifierOf(self.hir, param.name);
             const name_str = self.interner.get(id.name);
+            // §4.A destructuring v11 — computed binding keys. The
+            // parser emits a synthetic `is_computed_binding_key=true`
+            // element immediately before the actual binding param,
+            // carrying the key expression in `default_value`. When
+            // present, emit `<name> = <src>[<expr>]` instead of
+            // `<name> = <src>.<name>`.
+            const computed_key_expr: NodeId = blk: {
+                if (is_array or i == 0) break :blk hir_mod.none_node_id;
+                const prev = elements[i - 1];
+                if (self.hir.kindOf(prev) != .parameter) break :blk hir_mod.none_node_id;
+                const pp = hir_mod.parameterOf(self.hir, prev);
+                if (!pp.flags.is_computed_binding_key) break :blk hir_mod.none_node_id;
+                break :blk pp.default_value;
+            };
             if (emitted_count > 0) try self.write(", ");
             emitted_count += 1;
             if (param.flags.is_rest) {
@@ -5108,7 +5144,11 @@ pub const Printer = struct {
             try self.write(" = ");
             if (has_default) {
                 try self.write(source_ident);
-                if (is_array) {
+                if (computed_key_expr != hir_mod.none_node_id) {
+                    try self.write("[");
+                    try self.printExpression(computed_key_expr);
+                    try self.write("]");
+                } else if (is_array) {
                     var buf: [32]u8 = undefined;
                     const idx_str = std.fmt.bufPrint(&buf, "[{d}]", .{i}) catch unreachable;
                     try self.write(idx_str);
@@ -5121,7 +5161,11 @@ pub const Printer = struct {
                 try self.write(" : ");
             }
             try self.write(source_ident);
-            if (is_array) {
+            if (computed_key_expr != hir_mod.none_node_id) {
+                try self.write("[");
+                try self.printExpression(computed_key_expr);
+                try self.write("]");
+            } else if (is_array) {
                 var buf: [32]u8 = undefined;
                 const idx_str = std.fmt.bufPrint(&buf, "[{d}]", .{i}) catch unreachable;
                 try self.write(idx_str);
@@ -8323,6 +8367,41 @@ test "emit: for-of with object destructuring target lowers via _e temp at es5" {
     defer T.allocator.free(out);
     try T.expect(std.mem.indexOf(u8, out, "var _e = _arr[_i];") != null);
     try T.expect(std.mem.indexOf(u8, out, "var name = _e.name, age = _e.age;") != null);
+}
+
+test "emit: object destructuring with computed key lowers to indexed read at es5" {
+    // §4.A.4 destructuring v11 — `var { [key]: name } = obj;` lowers
+    // to `var _o = obj, name = _o[key];` (uses indexed property access
+    // instead of `.name`).
+    const out = try emitWithOpts(
+        "const { [key]: name } = obj;",
+        .{ .es_target = .es5 },
+    );
+    defer T.allocator.free(out);
+    try T.expect(std.mem.indexOf(u8, out, "var _o = obj") != null);
+    try T.expect(std.mem.indexOf(u8, out, "name = _o[key]") != null);
+}
+
+test "emit: object destructuring with computed key + default at es5" {
+    const out = try emitWithOpts(
+        "const { [key]: name = 'fallback' } = obj;",
+        .{ .es_target = .es5 },
+    );
+    defer T.allocator.free(out);
+    try T.expect(std.mem.indexOf(u8, out, "var _o = obj") != null);
+    try T.expect(std.mem.indexOf(u8, out, "name = _o[key] === void 0 ? \"fallback\" : _o[key]") != null);
+}
+
+test "emit: function with computed-key destructuring param lowers at es5" {
+    // §4.A.4 destructuring v11 — the fn-param shim also resolves
+    // computed keys correctly.
+    const out = try emitWithOpts(
+        "function f({ [k]: name }) { return name; }",
+        .{ .es_target = .es5 },
+    );
+    defer T.allocator.free(out);
+    try T.expect(std.mem.indexOf(u8, out, "function f(_p0)") != null);
+    try T.expect(std.mem.indexOf(u8, out, "var name = _p0[k];") != null);
 }
 
 test "emit: try-catch with destructuring param renders pattern at es2015+" {
