@@ -175,6 +175,67 @@ pub const Scanner = struct {
         }) catch {};
     }
 
+    fn reportUnicodeEscapeUnexpectedBrace(self: *Scanner, gpa: std.mem.Allocator, from: u32, line: u32) void {
+        var p = from;
+        while (p < self.source.len) : (p += 1) {
+            const ch = self.source[p];
+            if (ch == '\n' or ch == '\r') return;
+            if (ch == '}') {
+                self.reportAt(gpa, p, line, "Unexpected '}'. Did you mean to escape it with backslash?");
+                return;
+            }
+        }
+    }
+
+    fn scanEscapedHexDigits(self: *Scanner, gpa: std.mem.Allocator, start: u32, count: u32, line: u32) u32 {
+        var i: u32 = 0;
+        while (i < count) : (i += 1) {
+            const p = start + i;
+            if (p >= self.source.len or !isHexDigit(self.source[p])) {
+                self.reportAt(gpa, p, line, "Hexadecimal digit expected.");
+                return @min(p + 1, @as(u32, @intCast(self.source.len)));
+            }
+        }
+        return start + count;
+    }
+
+    fn scanEscapedUnicodeCodePoint(self: *Scanner, gpa: std.mem.Allocator, start: u32, line: u32, report_unexpected_brace: bool) u32 {
+        var p = start;
+        var digits: u32 = 0;
+        var value: u32 = 0;
+        while (p < self.source.len and self.source[p] != '}') : (p += 1) {
+            const ch = self.source[p];
+            if (!isHexDigit(ch)) {
+                if (digits == 0) {
+                    self.reportAt(gpa, p, line, "Hexadecimal digit expected.");
+                } else {
+                    self.reportAt(gpa, p, line, "Unterminated Unicode escape sequence.");
+                }
+                if (report_unexpected_brace) self.reportUnicodeEscapeUnexpectedBrace(gpa, p + 1, line);
+                return p + 1;
+            }
+            digits += 1;
+            if (value <= 0x10FFFF) value = value * 16 + hexValue(ch);
+        }
+        if (digits == 0 or p >= self.source.len or self.source[p] != '}') {
+            self.reportAt(gpa, p, line, "Hexadecimal digit expected.");
+            return @min(p + 1, @as(u32, @intCast(self.source.len)));
+        }
+        return p + 1;
+    }
+
+    fn scanEscapeSequence(self: *Scanner, gpa: std.mem.Allocator, slash_pos: u32, line: u32, report_unexpected_brace: bool) u32 {
+        const esc_pos = slash_pos + 1;
+        if (esc_pos >= self.source.len) return esc_pos;
+        const esc = self.source[esc_pos];
+        if (esc == 'x') return self.scanEscapedHexDigits(gpa, esc_pos + 1, 2, line);
+        if (esc != 'u') return esc_pos + 1;
+        if (esc_pos + 1 < self.source.len and self.source[esc_pos + 1] == '{') {
+            return self.scanEscapedUnicodeCodePoint(gpa, esc_pos + 2, line, report_unexpected_brace);
+        }
+        return self.scanEscapedHexDigits(gpa, esc_pos + 1, 4, line);
+    }
+
     fn isAtEnd(self: *const Scanner) bool {
         return self.pos >= self.source.len;
     }
@@ -498,58 +559,22 @@ pub const Scanner = struct {
             if (c == '\\') {
                 // Skip the escape sequence; we don't decode here. The
                 // parser/binder decodes when constructing the AST node.
+                const slash_pos = self.pos;
                 self.pos += 1;
                 if (self.isAtEnd()) {
                     self.report(gpa, "unterminated string literal at EOF");
                     return error.UnterminatedString;
                 }
-                const esc_pos = self.pos;
                 const esc = self.source[self.pos];
-                self.pos += 1;
                 if (esc == 'u') {
-                    if (!self.isAtEnd() and self.source[self.pos] == '{') {
-                        self.pos += 1;
-                        var digits: usize = 0;
-                        var value: u32 = 0;
-                        while (!self.isAtEnd() and self.source[self.pos] != '}') {
-                            const h = self.source[self.pos];
-                            if (!isHexDigit(h)) {
-                                self.report(gpa, "Hexadecimal digit expected.");
-                                return error.InvalidEscapeSequence;
-                            }
-                            digits += 1;
-                            if (value <= 0x10FFFF) {
-                                value = value * 16 + hexValue(h);
-                            }
-                            self.pos += 1;
-                        }
-                        if (digits == 0 or self.isAtEnd() or self.source[self.pos] != '}') {
-                            self.report(gpa, "Hexadecimal digit expected.");
-                            return error.InvalidEscapeSequence;
-                        }
-                        self.pos += 1;
-                        if (value > 0x10FFFF) {
-                            self.report(gpa, "Hexadecimal digit expected.");
-                            return error.InvalidEscapeSequence;
-                        }
-                        continue;
-                    }
-                    if (self.pos + 4 > self.source.len) {
-                        self.pos = esc_pos + 1;
-                        self.report(gpa, "Hexadecimal digit expected.");
-                        return error.InvalidEscapeSequence;
-                    }
-                    var i: usize = 0;
-                    while (i < 4) : (i += 1) {
-                        if (!isHexDigit(self.source[self.pos + i])) {
-                            self.pos += @intCast(i);
-                            self.report(gpa, "Hexadecimal digit expected.");
-                            return error.InvalidEscapeSequence;
-                        }
-                    }
-                    self.pos += 4;
+                    self.pos = self.scanEscapeSequence(gpa, slash_pos, line, false);
                     continue;
                 }
+                if (esc == 'x') {
+                    self.pos = self.scanEscapeSequence(gpa, slash_pos, line, false);
+                    continue;
+                }
+                self.pos += 1;
                 // Line-continuation: a backslash followed by \n / \r
                 // (handled above by consuming the `\\` then the newline).
                 if (esc == '\n') {
@@ -615,9 +640,14 @@ pub const Scanner = struct {
                 };
             }
             if (c == '\\') {
+                const slash_pos = self.pos;
                 self.pos += 1;
                 if (self.isAtEnd()) break;
                 const esc = self.source[self.pos];
+                if (esc == 'u' or esc == 'x') {
+                    self.pos = self.scanEscapeSequence(gpa, slash_pos, self.line, false);
+                    continue;
+                }
                 self.pos += 1;
                 if (esc == '\n') {
                     self.line += 1;
@@ -838,7 +868,7 @@ pub const Scanner = struct {
                 // (after an identifier, number, `)`, `]`, etc.). We
                 // dispatch on `last_significant_kind` per ES Annex B.
                 if (slashStartsRegex(self.last_significant_kind)) {
-                    if (self.scanRegexLiteral(start, line, flags)) |tok_| return tok_;
+                    if (self.scanRegexLiteral(gpa, start, line, flags)) |tok_| return tok_;
                     // Fall through to division if the body looks
                     // structurally invalid (no terminating `/`).
                 }
@@ -1064,7 +1094,7 @@ pub const Scanner = struct {
     /// or a newline before the closer) restores `self.pos` to the
     /// position right after the opening `/` and returns null so
     /// the caller can fall back to division.
-    fn scanRegexLiteral(self: *Scanner, start: u32, line: u32, flags: TokenFlags) ?Token {
+    fn scanRegexLiteral(self: *Scanner, gpa: std.mem.Allocator, start: u32, line: u32, flags: TokenFlags) ?Token {
         const body_start = self.pos;
         var p: u32 = body_start;
         var in_escape = false;
@@ -1085,7 +1115,12 @@ pub const Scanner = struct {
                 continue;
             }
             if (ch == '\\') {
-                in_escape = true;
+                if (p + 1 < end_total and (self.source[p + 1] == 'u' or self.source[p + 1] == 'x')) {
+                    const next_p = self.scanEscapeSequence(gpa, p, line, true);
+                    p = if (next_p > 0) next_p - 1 else p;
+                } else {
+                    in_escape = true;
+                }
                 continue;
             }
             if (ch == '[') {
@@ -1283,8 +1318,33 @@ test "Scanner: unterminated string is an error" {
 test "Scanner: invalid unicode escape in string reports diagnostic" {
     var s = Scanner.init(t.allocator, "\"\\u000G\"");
     defer s.deinit(t.allocator);
-    try t.expectError(error.InvalidEscapeSequence, s.next(t.allocator));
-    try t.expect(s.diagnostics.items.len > 0);
+    const tok = try s.next(t.allocator);
+    try t.expectEqual(TokenKind.string_literal, tok.kind);
+    try t.expectEqual(@as(usize, 1), s.diagnostics.items.len);
+    try t.expectEqualStrings("Hexadecimal digit expected.", s.diagnostics.items[0].message);
+}
+
+test "Scanner: invalid unicode escapes in templates and regex are recoverable" {
+    var s = Scanner.init(t.allocator, "`\\u{10_ffff}`");
+    defer s.deinit(t.allocator);
+    var toks = try s.tokenize(t.allocator);
+    defer toks.deinit(t.allocator);
+
+    try t.expectEqual(TokenKind.no_substitution_template, toks.items[0].kind);
+    try t.expectEqual(@as(usize, 1), s.diagnostics.items.len);
+    try t.expectEqualStrings("Unterminated Unicode escape sequence.", s.diagnostics.items[0].message);
+}
+
+test "Scanner: invalid unicode escapes in regex are recoverable" {
+    var s = Scanner.init(t.allocator, "/\\u{10_ffff}/u");
+    defer s.deinit(t.allocator);
+    var toks = try s.tokenize(t.allocator);
+    defer toks.deinit(t.allocator);
+
+    try t.expectEqual(TokenKind.regex_literal, toks.items[0].kind);
+    try t.expectEqual(@as(usize, 2), s.diagnostics.items.len);
+    try t.expectEqualStrings("Unterminated Unicode escape sequence.", s.diagnostics.items[0].message);
+    try t.expectEqualStrings("Unexpected '}'. Did you mean to escape it with backslash?", s.diagnostics.items[1].message);
 }
 
 test "Scanner: braced unicode escapes in strings are accepted" {

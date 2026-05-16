@@ -361,20 +361,32 @@ const VirtualFile = struct {
     extra_strip: u32,
 };
 
+const ActualDiagnosticLine = struct {
+    file: []const u8,
+    line: u32,
+    col: u32,
+    order: usize,
+    text: []u8,
+
+    fn lessThan(_: void, a: ActualDiagnosticLine, b: ActualDiagnosticLine) bool {
+        const file_order = std.mem.order(u8, a.file, b.file);
+        if (file_order != .eq) return file_order == .lt;
+        if (a.line != b.line) return a.line < b.line;
+        if (a.col != b.col) return a.col < b.col;
+        return a.order < b.order;
+    }
+};
+
 /// Predicate: does this case benefit from routing through `ts_program`?
 ///
-/// Today the win is concentrated on resolver-driven fixtures where
-/// the legacy `compileSource` path can't see `package.json` `main` /
-/// `exports`, `node_modules` JS files, or other non-code virtual
-/// sections that the strip drops. Routing single-file or pure
-/// multi-`.ts` fixtures has no upside (the checker still re-implements
-/// resolution via virtual-file scanning) and a measurable downside
-/// (per-file module isolation breaks fixtures that depend on
-/// concatenation-induced symbol leakage). So gate strictly on the
-/// presence of non-code virtual sections in the raw source.
+/// Expected-error virtual fixtures need TypeScript's per-file parse
+/// semantics: `@filename` boundaries reset scanner/parser state,
+/// module classification, and ASI context. The legacy single-source
+/// path still handles single-file cases, but virtual expected-error
+/// cases route through `ts_program` so pure parser fixtures and
+/// resolver-driven fixtures both see real file boundaries.
 fn shouldRouteThroughProgram(c: Case) bool {
     if (c.raw_source.len == 0) return false;
-    if (!rawSourceHasNonCodeMarker(c.raw_source)) return false;
     // Only route fixtures with explicit expected diagnostics. Fixtures
     // upstream treats as clean (no `.errors.txt` baseline) work today
     // via the legacy concatenated source — the checker sees all
@@ -384,6 +396,7 @@ fn shouldRouteThroughProgram(c: Case) bool {
     // shared-source ambient resolution and surfaces brand-new
     // "Cannot find module" diagnostics they should not have.
     if (c.expected_errors.len == 0) return false;
+    if (!rawSourceHasNonCodeMarker(c.raw_source) and rawSourceHasJsLikeCodeMarker(c.raw_source)) return false;
     return true;
 }
 
@@ -394,6 +407,16 @@ fn rawSourceHasNonCodeMarker(raw: []const u8) bool {
         const path = virtualFilename(line) orelse continue;
         if (!isCodeVirtualFile(path)) return true;
         if (isNodeModulesVirtualPath(path) and isJsLikeVirtualFile(path)) return true;
+    }
+    return false;
+}
+
+fn rawSourceHasJsLikeCodeMarker(raw: []const u8) bool {
+    var lines = std.mem.splitScalar(u8, raw, '\n');
+    while (lines.next()) |line_with_cr| {
+        const line = std.mem.trim(u8, line_with_cr, "\r");
+        const path = virtualFilename(line) orelse continue;
+        if (isCodeVirtualFile(path) and isJsLikeVirtualFile(path)) return true;
     }
     return false;
 }
@@ -614,6 +637,11 @@ fn runProgram(gpa: std.mem.Allocator, c: Case) !?Result {
     const exact_mode = c.expected_errors.len > 0;
     var actual: std.ArrayListUnmanaged(u8) = .empty;
     defer actual.deinit(gpa);
+    var actual_lines: std.ArrayListUnmanaged(ActualDiagnosticLine) = .empty;
+    defer {
+        for (actual_lines.items) |line| gpa.free(line.text);
+        actual_lines.deinit(gpa);
+    }
     var actual_count: u32 = 0;
     var seen_keys: std.StringHashMapUnmanaged(void) = .empty;
     defer {
@@ -709,16 +737,30 @@ fn runProgram(gpa: std.mem.Allocator, c: Case) !?Result {
                 .span_len = 0,
             };
             const formatted = try ts_diagnostics.formatDefault(gpa, fdiag);
-            defer gpa.free(formatted);
             if (exact_mode) {
                 const gop = try seen_keys.getOrPut(gpa, formatted);
-                if (gop.found_existing) continue;
+                if (gop.found_existing) {
+                    gpa.free(formatted);
+                    continue;
+                }
                 gop.key_ptr.* = try gpa.dupe(u8, formatted);
             }
-            try actual.appendSlice(gpa, formatted);
-            try actual.append(gpa, '\n');
+            try actual_lines.append(gpa, .{
+                .file = if (d.is_global) "" else pf.diag_path,
+                .line = diag_line,
+                .col = diag_col,
+                .order = actual_lines.items.len,
+                .text = formatted,
+            });
             actual_count += 1;
         }
+    }
+    if (exact_mode) {
+        std.mem.sort(ActualDiagnosticLine, actual_lines.items, {}, ActualDiagnosticLine.lessThan);
+    }
+    for (actual_lines.items) |line| {
+        try actual.appendSlice(gpa, line.text);
+        try actual.append(gpa, '\n');
     }
 
     const actual_trimmed = trimRightNewlines(actual.items);
