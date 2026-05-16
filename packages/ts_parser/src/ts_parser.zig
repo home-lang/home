@@ -1265,6 +1265,12 @@ pub const Parser = struct {
         const c = raw[1];
         if (c == 'x' or c == 'X' or c == 'o' or c == 'O' or c == 'b' or c == 'B' or c == '.') return;
         if (c < '0' or c > '9') return;
+        // Pure octal digits only (no 8/9, no fraction/exponent). The
+        // mixed cases (`01.0`, `09`) are handled exclusively by
+        // `reportNumericLiteralDiagnostics` to avoid double-reporting.
+        for (raw[1..]) |ch| {
+            if (ch == '8' or ch == '9' or ch == '.' or ch == 'e' or ch == 'E') return;
+        }
         const msg = try std.fmt.allocPrint(self.diag_arena.allocator(), "Octal literals are not allowed. Use the syntax '0o{s}'.", .{raw[1..]});
         try self.reportCodeAt(tok.span.start, tok.line, 1121, msg);
     }
@@ -1277,15 +1283,40 @@ pub const Parser = struct {
                 return;
             }
             if (c >= '0' and c <= '9') {
-                var decimal_like = false;
-                for (raw[1..]) |ch| {
-                    if (ch == '.' or ch == 'e' or ch == 'E' or ch == '8' or ch == '9') {
-                        decimal_like = true;
-                        break;
+                // Classify the leading-zero literal:
+                //   - `0[0-7]+` is a legacy octal -> TS1121 (parse error
+                //     in strict mode; otherwise just an error per tsc).
+                //   - `0[0-9]*[89][0-9]*` is "decimal with leading
+                //     zeros" -> TS1489.
+                //   - `0[0-7]+.[0-9]*` (e.g. `01.0`) is tokenized by us
+                //     as a single number_literal, but tsc treats it as
+                //     a legacy octal `01` followed by a stray `.0` -
+                //     emit TS1121 for the octal prefix AND TS1005 at
+                //     the `.` so callers see the same two-error shape.
+                //   - `0[0-7]+e...` is similar (TS1121 + TS1005).
+                var has_eight_or_nine = false;
+                var dot_pos: ?usize = null;
+                var exp_pos: ?usize = null;
+                for (raw[1..], 0..) |ch, i| {
+                    if (ch == '8' or ch == '9') {
+                        has_eight_or_nine = true;
+                    } else if (ch == '.' and dot_pos == null) {
+                        dot_pos = i + 1;
+                    } else if ((ch == 'e' or ch == 'E') and exp_pos == null) {
+                        exp_pos = i + 1;
                     }
                 }
-                if (decimal_like) {
+                if (has_eight_or_nine) {
                     try self.reportCodeAt(tok.span.start, tok.line, 1489, "Decimals with leading zeros are not allowed.");
+                } else if (dot_pos != null or exp_pos != null) {
+                    // Legacy octal prefix with stray fraction/exponent:
+                    // emit TS1121 on the octal-prefix slice, TS1005 at
+                    // the `.`/`e`. This matches tsc's split tokenization.
+                    const split_at = if (dot_pos) |dp| dp else exp_pos.?;
+                    const octal_part = raw[1..split_at];
+                    const msg = try std.fmt.allocPrint(self.diag_arena.allocator(), "Octal literals are not allowed. Use the syntax '0o{s}'.", .{octal_part});
+                    try self.reportCodeAt(tok.span.start, tok.line, 1121, msg);
+                    try self.reportCodeAt(tok.span.start + @as(u32, @intCast(split_at)), tok.line, 1005, "';' expected.");
                 } else if (!self.strict_mode) {
                     const msg = try std.fmt.allocPrint(self.diag_arena.allocator(), "Octal literals are not allowed. Use the syntax '0o{s}'.", .{raw[1..]});
                     try self.reportCodeAt(tok.span.start, tok.line, 1121, msg);
@@ -12735,6 +12766,36 @@ test "parser: strict mode legacy octal literal reports TS1121" {
     try T.expectEqual(@as(usize, 1), s.parser.diagnostics.items.len);
     try T.expectEqual(@as(u32, 1121), s.parser.diagnostics.items[0].code);
     try T.expectEqualStrings("Octal literals are not allowed. Use the syntax '0o3'.", s.parser.diagnostics.items[0].message);
+}
+
+test "parser: leading-zero literal with `8` or `9` digit reports TS1489" {
+    // tsc treats `09` (and any `0[0-9]*[89][0-9]*` literal) as a
+    // decimal-with-leading-zeros error rather than a legacy-octal
+    // error, because the `8`/`9` forces decimal interpretation.
+    // Baseline: scannerNumericLiteral9.errors.txt (TS1489 only).
+    var s = try newTestSetup("009");
+    defer destroyTestSetup(s);
+
+    _ = try s.parser.parseSourceFile();
+    try T.expectEqual(@as(usize, 1), s.parser.diagnostics.items.len);
+    try T.expectEqual(@as(u32, 1489), s.parser.diagnostics.items[0].code);
+    try T.expectEqualStrings("Decimals with leading zeros are not allowed.", s.parser.diagnostics.items[0].message);
+}
+
+test "parser: legacy octal literal with stray fraction reports TS1121 + TS1005" {
+    // tsc splits `01.0` into a legacy-octal `01` (TS1121 against the
+    // pure-octal prefix, NOT the full `01.0`) and a stray `.0`
+    // fraction that triggers TS1005 at the `.`. Baseline:
+    // scannerNumericLiteral3(target=es2015).errors.txt.
+    var s = try newTestSetup("01.0");
+    defer destroyTestSetup(s);
+
+    _ = try s.parser.parseSourceFile();
+    try T.expectEqual(@as(usize, 2), s.parser.diagnostics.items.len);
+    try T.expectEqual(@as(u32, 1121), s.parser.diagnostics.items[0].code);
+    try T.expectEqualStrings("Octal literals are not allowed. Use the syntax '0o1'.", s.parser.diagnostics.items[0].message);
+    try T.expectEqual(@as(u32, 1005), s.parser.diagnostics.items[1].code);
+    try T.expectEqualStrings("';' expected.", s.parser.diagnostics.items[1].message);
 }
 
 test "parser: with statement reports strict and unsupported diagnostics" {

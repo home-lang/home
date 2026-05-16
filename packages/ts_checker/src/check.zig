@@ -34323,11 +34323,26 @@ pub const Checker = struct {
                     const arena_u = self.diag_arena.allocator();
                     var first = true;
                     var ok = true;
+                    // Textual dedup — distinct TypeIds can render to the
+                    // same label (`string_t` vs a separately-interned
+                    // string-flagged type); we should only mention each
+                    // surface form once. See `restElementWithAssignmentPattern2`.
+                    var seen_names: std.ArrayListUnmanaged([]const u8) = .empty;
+                    defer seen_names.deinit(self.gpa);
                     for (self.interner.unionMembers(t)) |member| {
                         const member_name = (try self.simpleDiagnosticTypeName(member)) orelse {
                             ok = false;
                             break;
                         };
+                        var duplicate = false;
+                        for (seen_names.items) |prior_name| {
+                            if (std.mem.eql(u8, prior_name, member_name)) {
+                                duplicate = true;
+                                break;
+                            }
+                        }
+                        if (duplicate) continue;
+                        try seen_names.append(self.gpa, member_name);
                         if (!first) try union_buf.appendSlice(arena_u, " | ");
                         first = false;
                         try union_buf.appendSlice(arena_u, member_name);
