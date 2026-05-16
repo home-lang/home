@@ -1638,9 +1638,15 @@ fn extractDiagnosticHeaders(gpa: std.mem.Allocator, baseline: []const u8) ![]u8 
 /// deprecated …` shape gets filtered.
 fn isOptionValidationDiagnostic(line: []const u8) bool {
     if (std.mem.indexOf(u8, line, "error TS5107:") != null) {
-        // Only filter the moduleResolution deprecation; keep the target
-        // deprecation since the driver reproduces it.
-        return std.mem.indexOf(u8, line, "moduleResolution=") != null;
+        // Filter the deprecation diagnostics for options the in-memory
+        // runner doesn't reproduce. Keep the `target=` variant since
+        // the driver reports that one via `report_deprecated_target_es5`.
+        if (std.mem.indexOf(u8, line, "moduleResolution=") != null) return true;
+        if (std.mem.indexOf(u8, line, "module=UMD") != null) return true;
+        if (std.mem.indexOf(u8, line, "module=AMD") != null) return true;
+        if (std.mem.indexOf(u8, line, "module=System") != null) return true;
+        if (std.mem.indexOf(u8, line, "esModuleInterop=") != null) return true;
+        return false;
     }
     return std.mem.indexOf(u8, line, "error TS5095:") != null or
         std.mem.indexOf(u8, line, "error TS5098:") != null or
