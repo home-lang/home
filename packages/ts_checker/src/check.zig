@@ -2866,6 +2866,17 @@ pub const Checker = struct {
             if (v.name != hir_mod.none_node_id) self.hir.setType(v.name, declared_type);
         }
         if (v.init == hir_mod.none_node_id) return;
+        // TS1039 — initializers are not allowed in ambient contexts.
+        // `declare namespace M { export var v = expr; }` and friends
+        // need this report just like top-level `declare var v = ...`.
+        // The non-namespace `checkVarDecl` handles the top-level case;
+        // here we mirror that emission for namespace-scoped vars.
+        if (v.is_ambient) {
+            const is_const_decl = self.hir.kindOf(node) == .const_decl;
+            if (!(is_const_decl and self.ambientInitializerIsConstantValue(v.init))) {
+                try self.report(v.init, TsCodes.ambient_initializer_not_allowed, "Initializers are not allowed in ambient contexts.");
+            }
+        }
         if (self.hir.kindOf(v.init) == .call_expr and self.callHasOptionalFunctionArgument(v.init)) return;
         if (self.hir.kindOf(v.init) == .call_expr) {
             try self.checkVarDecl(node);
@@ -9315,12 +9326,26 @@ pub const Checker = struct {
                     {
                         try self.reportMemberImplicitAny(m, member_name);
                     }
+                    // TS1039: class field initializers are not allowed
+                    // in ambient contexts (`declare class Foo { x = 1; }`
+                    // or fields inside a `.d.ts` file). Mirrors upstream
+                    // tsc which emits this per-field on the initializer
+                    // expression. See `initializersInDeclarations.ts`
+                    // and `tsc-class-field-ambient` follow-ups.
+                    if (op.value != hir_mod.none_node_id and
+                        (self.classHasLeadingDeclare(node) or
+                            self.classNodeIsInsideAmbientDeclaredModule(node) or
+                            self.virtualSectionIsDeclarationFile(node)))
+                    {
+                        try self.report(op.value, TsCodes.ambient_initializer_not_allowed, "Initializers are not allowed in ambient contexts.");
+                    }
                     if (self.strict_flags.strict_property_initialization and
                         !op.is_static and
                         op.type_annotation != hir_mod.none_node_id and
                         op.value == hir_mod.none_node_id and
                         !self.typeExplicitlyIncludesUndefined(field_t) and
-                        !self.classFieldTypeIsAnyOrUnknown(field_t) and
+                        !(self.classFieldTypeIsAnyOrUnknown(field_t) and
+                            self.classFieldAnnotationIsLiteralAnyOrUnknown(op.type_annotation)) and
                         !self.classFieldHasDefiniteAssertion(m) and
                         !self.classFieldHasOptionalToken(m) and
                         !self.classNodeIsInsideAmbientDeclaredModule(node) and
@@ -22822,7 +22847,22 @@ pub const Checker = struct {
                     }
                 }
                 if (!self.nodeIsInsideFunctionLike(node) and self.sourceTargetDisallowsTopLevelAwait()) {
-                    try self.report(node, TsCodes.top_level_await_target_module, "Top-level 'await' expressions are only allowed when the 'module' option is set to 'es2022', 'esnext', 'system', 'node16', 'node18', 'node20', 'nodenext', or 'preserve', and the 'target' option is set to 'es2017' or higher.");
+                    // Upstream tsc emits TS1378 only on the FIRST
+                    // top-level await per source file (the message is a
+                    // module-level configuration hint, not a per-await
+                    // problem). Mirror that here so fixtures with many
+                    // top-level awaits — `topLevelAwait.1`, etc. — match
+                    // the baseline exactly.
+                    var already_reported = false;
+                    for (self.diagnostics.items) |d| {
+                        if (d.code == TsCodes.top_level_await_target_module) {
+                            already_reported = true;
+                            break;
+                        }
+                    }
+                    if (!already_reported) {
+                        try self.report(node, TsCodes.top_level_await_target_module, "Top-level 'await' expressions are only allowed when the 'module' option is set to 'es2022', 'esnext', 'system', 'node16', 'node18', 'node20', 'nodenext', or 'preserve', and the 'target' option is set to 'es2017' or higher.");
+                    }
                 }
                 break :blk self.unwrapPromise(inner_t);
             },
@@ -35548,6 +35588,24 @@ pub const Checker = struct {
     fn classFieldTypeIsAnyOrUnknown(self: *Checker, t: TypeId) bool {
         _ = self;
         return t == types.Primitive.any or t == types.Primitive.unknown;
+    }
+
+    /// Return true when the syntactic type annotation on a class
+    /// member is literally `any` or `unknown` (not a generic / class
+    /// reference that happens to resolve to `any` because the lowerer
+    /// hit a recursion guard on a self-referential generic). Used by
+    /// `strictPropertyInitialization` to keep TS2564 firing on
+    /// recursive fields like `class D<T> { recurse: D<T>; }` — upstream
+    /// tsc emits the diagnostic there even though the resolved type is
+    /// nominally the class itself, which we may bail to `any` during
+    /// shallow recursion.
+    fn classFieldAnnotationIsLiteralAnyOrUnknown(self: *Checker, annotation: NodeId) bool {
+        if (annotation == hir_mod.none_node_id) return false;
+        if (self.hir.kindOf(annotation) != .type_ref) return false;
+        const ref = hir_mod.typeRefOf(self.hir, annotation);
+        if (ref.qualifier_len != 0) return false;
+        const name = self.string_interner.get(ref.name);
+        return std.mem.eql(u8, name, "any") or std.mem.eql(u8, name, "unknown");
     }
 
     /// Build `t | undefined` (or return `t` if it already includes
