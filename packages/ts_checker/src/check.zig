@@ -1576,7 +1576,13 @@ pub const Checker = struct {
                         {
                             const name = hir_mod.identifierOf(self.hir, v.name).name;
                             if (self.nodeContainsIdentifier(fr.source, name)) {
-                                try self.report(fr.source, TsCodes.block_scoped_used_before_decl, "Block-scoped variable used before its declaration.");
+                                const name_str = self.string_interner.get(name);
+                                const msg = try std.fmt.allocPrint(
+                                    self.diag_arena.allocator(),
+                                    "Block-scoped variable '{s}' used before its declaration.",
+                                    .{name_str},
+                                );
+                                try self.report(fr.source, TsCodes.block_scoped_used_before_decl, msg);
                             }
                             if (self.bodyHasVarDeclarationNamed(fr.body, name)) {
                                 try self.report(fr.body, TsCodes.for_of_var_conflict, "Cannot initialize outer scoped variable in the same scope as block scoped declaration.");
@@ -5579,9 +5585,7 @@ pub const Checker = struct {
             .parameter => if (is_self) TsCodes.parameter_cannot_reference_self else TsCodes.parameter_cannot_reference_later,
         };
         // Render named TS-style message when both names are known and
-        // the caller is reporting a parameter (TS2371/TS2373). Falls
-        // back to the legacy short form for the .variable case (TS2448),
-        // which tsc still renders without identifier metadata.
+        // the caller is reporting a parameter (TS2371/TS2373).
         if (mode == .parameter and param_name != null and ref_name != null) {
             const p_str = self.string_interner.get(param_name.?);
             const r_str = self.string_interner.get(ref_name.?);
@@ -5597,6 +5601,24 @@ pub const Checker = struct {
                     "Parameter '{s}' cannot reference identifier '{s}' declared after it.",
                     .{ p_str, r_str },
                 );
+            try self.diagnostics.append(self.gpa, .{
+                .node = node,
+                .code = code,
+                .message = msg,
+            });
+            return;
+        }
+        // For TS2448 (variable mode) tsc renders the variable name in
+        // the message ("Block-scoped variable 'X' used before its
+        // declaration."). When we have the binding name (param_name),
+        // produce the named form to match upstream baselines.
+        if (mode == .variable and param_name != null) {
+            const p_str = self.string_interner.get(param_name.?);
+            const msg = try std.fmt.allocPrint(
+                self.diag_arena.allocator(),
+                "Block-scoped variable '{s}' used before its declaration.",
+                .{p_str},
+            );
             try self.diagnostics.append(self.gpa, .{
                 .node = node,
                 .code = code,
