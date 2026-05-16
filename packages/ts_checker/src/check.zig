@@ -7312,6 +7312,23 @@ pub const Checker = struct {
         return null;
     }
 
+    /// Returns true when the nearest enclosing function-like node has
+    /// `is_generator` set. Used by `.yield_expr` to suppress cascading
+    /// operand diagnostics when `yield` was parsed inside a regular
+    /// (non-generator) function — the parser already reports TS1163 in
+    /// that case.
+    fn isInsideGeneratorFunction(self: *Checker, node: NodeId) bool {
+        var cur = self.hir.parentOf(node);
+        while (cur != hir_mod.none_node_id) : (cur = self.hir.parentOf(cur)) {
+            const k = self.hir.kindOf(cur);
+            if (k == .fn_decl or k == .fn_expr or k == .arrow_fn) {
+                const f = hir_mod.fnDeclOf(self.hir, cur);
+                return f.flags.is_generator;
+            }
+        }
+        return false;
+    }
+
     fn functionHasGenericRestTupleReturn(self: *Checker, fn_node: NodeId) bool {
         const f = hir_mod.fnDeclOf(self.hir, fn_node);
         if (f.return_type == hir_mod.none_node_id or self.hir.kindOf(f.return_type) != .tuple_type) return false;
