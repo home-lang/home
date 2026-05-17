@@ -368,6 +368,7 @@ pub const TsCodes = struct {
     pub const yield_star_not_iterable: u32 = 2488;
     pub const type_not_array_type: u32 = 2461;
     pub const for_of_lhs_invalid: u32 = 2487;
+    pub const assignment_lhs_not_variable: u32 = 2364;
     pub const symbol_operator_not_allowed: u32 = 2469;
     pub const yield_implicit_any: u32 = 7057;
     pub const no_overlap_comparison: u32 = 2367;
@@ -41061,15 +41062,48 @@ pub const Checker = struct {
             .identifier,
             .member_access,
             .element_access,
-            .array_literal,
             .object_literal,
             => {
                 if (self.expressionIsOptionalChain(target)) {
                     try self.report(target, TsCodes.optional_chain_for_of_target, "The left-hand side of a 'for...of' statement may not be an optional property access.");
                 }
             },
+            .array_literal => {
+                if (self.expressionIsOptionalChain(target)) {
+                    try self.report(target, TsCodes.optional_chain_for_of_target, "The left-hand side of a 'for...of' statement may not be an optional property access.");
+                }
+                // Each array-literal element is the LHS of an implicit
+                // assignment per iteration. tsc emits TS2364 on any
+                // element that isn't a valid assignment target — e.g.
+                // `for ([""] of [[""]])` (string literal as LHS).
+                // Mirrors fixture `ES5For-of12.ts(1,7)`.
+                for (hir_mod.arrayLiteralElements(self.hir, target)) |el| {
+                    if (el == hir_mod.none_node_id) continue;
+                    if (!self.isAssignmentLhsExpression(el)) {
+                        try self.report(el, TsCodes.assignment_lhs_not_variable, "The left-hand side of an assignment expression must be a variable or a property access.");
+                    }
+                }
+            },
             else => try self.report(target, TsCodes.for_of_lhs_invalid, "The left-hand side of a 'for...of' statement must be a variable or a property access."),
         }
+    }
+
+    /// True when `node` is a valid LHS for an assignment expression —
+    /// an identifier, member/element access, or nested destructuring
+    /// pattern. Mirrors tsc's `isAssignmentTarget` predicate used in
+    /// the `for-of` element-LHS check (TS2364).
+    fn isAssignmentLhsExpression(self: *Checker, node: NodeId) bool {
+        return switch (self.hir.kindOf(node)) {
+            .identifier, .member_access, .element_access, .array_literal, .object_literal => true,
+            // `[a = 1]` — default-value form is still a valid LHS.
+            .assignment => true,
+            // `[...rest]` — rest element with inner LHS.
+            .spread => blk: {
+                const sp = hir_mod.spreadOf(self.hir, node);
+                break :blk self.isAssignmentLhsExpression(sp.expression);
+            },
+            else => false,
+        };
     }
 
     fn checkForOfVarSelfReferenceDiagnostics(self: *Checker, for_node: NodeId, target: NodeId, source: NodeId) CheckError!void {
@@ -62625,7 +62659,6 @@ test "checker: for-of let-binding self-referenced in iterable emits TS7022" {
     try T.expect(!found_2454);
 }
 
-<<<<<<< HEAD
 test "checker: for-of let-binding self-reference under @strict:false skips TS7022" {
     // Mirrors upstream `ES5For-of20`: with `// @strict: false`
     // (noImplicitAny off), tsc's circular-initializer trigger
@@ -62649,16 +62682,6 @@ test "checker: for-of let-binding self-reference under @strict:false skips TS702
     }
 }
 
-test "checker: for-await await-using same-name source does not emit TS7022" {
-    // Mirrors upstream `awaitUsingDeclarationsInForAwaitOf.2`:
-    // `for await (await using of of of) {}` — tsc emits TS2448 only
-    // (the `of` source reference is in the resource binding's TDZ)
-    // and skips TS7022 because `using` / `await using` bind through
-    // an explicit resource manager rather than via inferred element
-    // types. The TS7022 trigger would otherwise misfire here.
-    const s = try newSetup(
-        \\// @strict: false
-=======
 test "checker: Map instance type carries Map<K, V> alias display name" {
     // Mirrors fixture `iterableArrayPattern26` — `new Map([...])`
     // should preserve the alias-display name so downstream TS2345 /
@@ -62679,16 +62702,15 @@ test "checker: Map instance type carries Map<K, V> alias display name" {
     try T.expect(found_display);
 }
 
-test "checker: for-await `await using` loop binding suppresses TS7022" {
-    // Mirrors fixture `awaitUsingDeclarationsInForAwaitOf.2` — TS does
-    // NOT emit TS7022 ("implicitly has type 'any' because it is
-    // referenced in its own initializer") for `using` / `await using`
-    // loop bindings because the binding carries an implicit
-    // Disposable/AsyncDisposable contract. The TS2448 "used before
-    // its declaration" diagnostic still fires through a separate
-    // path.
+test "checker: for-await await-using same-name source does not emit TS7022" {
+    // Mirrors upstream `awaitUsingDeclarationsInForAwaitOf.2`:
+    // `for await (await using of of of) {}` — tsc emits TS2448 only
+    // (the `of` source reference is in the resource binding's TDZ)
+    // and skips TS7022 because `using` / `await using` bind through
+    // an explicit resource manager rather than via inferred element
+    // types. The TS7022 trigger would otherwise misfire here.
     const s = try newSetup(
->>>>>>> 393bc6f9 (fix(ts-parity): tuple rest tail + Map/Set alias display name (round 2))
+        \\// @strict: false
         \\async function test() {
         \\  for await (await using of of of) {};
         \\}
@@ -62700,7 +62722,6 @@ test "checker: for-await `await using` loop binding suppresses TS7022" {
     }
 }
 
-<<<<<<< HEAD
 test "checker: export type specifier in .js virtual section emits TS8006" {
     // Mirrors upstream `exportSpecifiers_js`: `export { type foo }`
     // (or `export type { foo }`) in a `.js` file is syntactically
@@ -62748,8 +62769,24 @@ test "checker: import = require emits TS1202 under module=es2015" {
     try T.expect(found_1202);
 }
 
-=======
->>>>>>> 393bc6f9 (fix(ts-parity): tuple rest tail + Map/Set alias display name (round 2))
+test "checker: for-of array-literal element with non-LHS member emits TS2364" {
+    // Mirrors fixture `ES5For-of12.ts(1,7)` — `for ([""] of [[""]])`
+    // treats the array-literal as a destructuring pattern, but the
+    // inner `""` (a string literal) is not a valid assignment target.
+    // tsc emits TS2364 at the offending element rather than the
+    // generic TS2487 at the array-literal.
+    const s = try newSetup(
+        \\for ([""] of [[""]]) { }
+    );
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+    var found_2364 = false;
+    for (s.checker.diagnostics.items) |d| {
+        if (d.code == TsCodes.assignment_lhs_not_variable) found_2364 = true;
+    }
+    try T.expect(found_2364);
+}
+
 test "checker: default export merging with namespace and interface anchors at name" {
     // Mirrors upstream `defaultExportsCannotMerge01`: a default
     // exported function + interface (type-only, doesn't conflict) +
