@@ -7302,6 +7302,19 @@ pub const Checker = struct {
                 .logical_op,
                 .conditional,
                 => continue,
+                .binary_op => {
+                    // Only the rightmost operand of a comma sequence
+                    // receives the surrounding contextual type — left
+                    // operands are evaluated in isolation, so their
+                    // arrow/fn parameters still owe TS7006. Mirrors
+                    // tsc's `contextuallyTypeCommaOperator03` baseline
+                    // where `(a => a, b => b)` against
+                    // `(a: string) => string` only flags `a`.
+                    const b = hir_mod.binopOf(self.hir, cur);
+                    if (b.op != .comma) return false;
+                    if (b.rhs != prev) return false;
+                    continue;
+                },
                 else => return false,
             }
         }
@@ -56968,11 +56981,14 @@ test "checker: comma sequence propagates contextual type only to RHS arrow" {
     s.checker.setStrictFlags(.{ .no_implicit_any = true });
     try s.checker.checkSourceFile(s.root);
     var saw_a = false;
+    var saw_b = false;
     for (s.checker.diagnostics.items) |diag| {
         if (diag.code != TsCodes.parameter_implicitly_any) continue;
         if (std.mem.indexOf(u8, diag.message, "'a'") != null) saw_a = true;
+        if (std.mem.indexOf(u8, diag.message, "'b'") != null) saw_b = true;
     }
     try T.expect(saw_a);
+    try T.expect(!saw_b);
 }
 
 test "checker: tuple out-of-bounds diagnostic renders tuple display" {

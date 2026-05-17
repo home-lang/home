@@ -5844,7 +5844,12 @@ pub const Parser = struct {
                 );
                 if (method_optionality.get(name_id)) |prev| {
                     if (prev.optional != is_optional) {
-                        try self.reportCodeAt(prev.span.start, self.lineAt(prev.span.start), 2386, "Overload signatures must all be optional or required.");
+                        // tsc anchors TS2386 at the mismatched (current)
+                        // overload's name token, not the first one — its
+                        // baseline renderer puts `~~~~~` under the second
+                        // signature. Mirror that so single-error fixtures
+                        // like `methodSignaturesWithOverloads` line up.
+                        try self.reportCodeAt(name_span.start, name_tok.line, 2386, "Overload signatures must all be optional or required.");
                     }
                 } else {
                     try method_optionality.put(self.gpa, name_id, .{
@@ -10638,6 +10643,30 @@ test "parser: object type method overload optionality must match" {
         if (d.code == 2386) found = true;
     }
     try T.expect(found);
+}
+
+test "parser: TS2386 anchors at mismatched (second) overload, not first" {
+    // Mirrors tsc's `methodSignaturesWithOverloads.ts` baseline that
+    // underlines the second `func4` (line 3 in this stripped setup),
+    // not the leading optional `func4?` on line 2.
+    var s = try newTestSetup(
+        \\let c: {
+        \\  func?(x: number): number;
+        \\  func(s: string): string;
+        \\};
+    );
+    defer destroyTestSetup(s);
+    _ = try s.parser.parseSourceFile();
+    var matched_line: ?u32 = null;
+    for (s.parser.diagnostics.items) |d| {
+        if (d.code == 2386) {
+            matched_line = d.line;
+            break;
+        }
+    }
+    try T.expect(matched_line != null);
+    // Second `func` lives on source line 3 (1-indexed).
+    try T.expectEqual(@as(u32, 3), matched_line.?);
 }
 
 test "parser: enum members may use reserved property names" {
