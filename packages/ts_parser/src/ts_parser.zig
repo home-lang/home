@@ -1509,6 +1509,11 @@ pub const Parser = struct {
                     try self.reportCodeAt(name_tok.span.start, name_tok.line, 1212, "Identifier expected. 'let' is a reserved word in strict mode.");
                 }
                 if ((kw.kind == .kw_let or kw.kind == .kw_const) and self.tokenTextEquals(name_tok, "let")) {
+                    // `let` / `const` declarations are always strict
+                    // (per ES2015), so `let let` also emits TS1212
+                    // BEFORE the TS2480. Mirrors upstream tsc on
+                    // `for-of51` (`for (let let of []) {}`).
+                    try self.reportCodeAt(name_tok.span.start, name_tok.line, 1212, "Identifier expected. 'let' is a reserved word in strict mode.");
                     try self.reportCodeAt(name_tok.span.start, name_tok.line, 2480, "'let' is not allowed to be used as a name in 'let' or 'const' declarations.");
                 }
                 const name_id = try self.internToken(name_tok);
@@ -14796,4 +14801,23 @@ test "parser: object-literal generator '*' without property name reports TS1003"
         }
         try T.expect(saw_ts1003_at_expected);
     }
+}
+
+test "parser: for (let let ...) emits TS1212 AND TS2480 on the inner let" {
+    // `let` and `const` declarations are always strict (per ES2015),
+    // so `for (let let of [])` reports BOTH TS1212 ("Identifier
+    // expected. 'let' is a reserved word in strict mode.") and the
+    // TS2480 ("'let' is not allowed to be used as a name…") at the
+    // inner-let token. Mirrors upstream tsc on `for-of51`.
+    var s = try newTestSetup("for (let let of []) {}");
+    defer destroyTestSetup(s);
+    _ = s.parser.parseSourceFile() catch {};
+    var saw_1212 = false;
+    var saw_2480 = false;
+    for (s.parser.diagnostics.items) |d| {
+        if (d.code == 1212) saw_1212 = true;
+        if (d.code == 2480) saw_2480 = true;
+    }
+    try T.expect(saw_1212);
+    try T.expect(saw_2480);
 }
