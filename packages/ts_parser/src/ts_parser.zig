@@ -2266,6 +2266,7 @@ pub const Parser = struct {
                 }
                 // Modifiers on parameter properties: `readonly`, `public`, etc.
                 var saw_override_modifier = false;
+                var saw_readonly_modifier = false;
                 while (isParameterPropertyModifier(self.peek().kind)) {
                     const mod = self.advance();
                     switch (mod.kind) {
@@ -2280,6 +2281,7 @@ pub const Parser = struct {
                             }
                             flags.is_readonly = true;
                             flags.is_parameter_property = true;
+                            saw_readonly_modifier = true;
                         },
                         .kw_public, .kw_protected, .kw_private => {
                             if (saw_override_modifier) {
@@ -2291,6 +2293,25 @@ pub const Parser = struct {
                                 const msg = try std.fmt.allocPrint(
                                     self.diag_arena.allocator(),
                                     "{s} modifier must precede 'override' modifier.",
+                                    .{which},
+                                );
+                                try self.reportCodeAt(mod.span.start, mod.line, 1029, msg);
+                            }
+                            // TS1029 — accessibility modifiers must
+                            // come *before* `readonly` on a parameter
+                            // property (`readonly public x` is a
+                            // mis-ordering, `public readonly x` is the
+                            // canonical form). Mirrors fixture
+                            // `readonlyInConstructorParameters`.
+                            if (saw_readonly_modifier) {
+                                const which: []const u8 = switch (mod.kind) {
+                                    .kw_public => "'public'",
+                                    .kw_protected => "'protected'",
+                                    else => "'private'",
+                                };
+                                const msg = try std.fmt.allocPrint(
+                                    self.diag_arena.allocator(),
+                                    "{s} modifier must precede 'readonly' modifier.",
                                     .{which},
                                 );
                                 try self.reportCodeAt(mod.span.start, mod.line, 1029, msg);
@@ -11443,6 +11464,41 @@ test "parser: accessibility modifier after override on parameter property report
     try T.expect(saw_public);
     try T.expect(saw_protected);
     try T.expect(saw_private);
+}
+
+test "parser: accessibility modifier after readonly on parameter property reports TS1029" {
+    var s = try newTestSetup(
+        \\class E { constructor(readonly public x: number) {} }
+        \\class F { constructor(readonly protected y: number) {} }
+        \\class G { constructor(readonly private z: number) {} }
+    );
+    defer destroyTestSetup(s);
+    _ = try s.parser.parseSourceFile();
+    var saw_public = false;
+    var saw_protected = false;
+    var saw_private = false;
+    for (s.parser.diagnostics.items) |d| {
+        if (d.code != 1029) continue;
+        if (std.mem.indexOf(u8, d.message, "'public' modifier must precede 'readonly' modifier") != null) saw_public = true;
+        if (std.mem.indexOf(u8, d.message, "'protected' modifier must precede 'readonly' modifier") != null) saw_protected = true;
+        if (std.mem.indexOf(u8, d.message, "'private' modifier must precede 'readonly' modifier") != null) saw_private = true;
+    }
+    try T.expect(saw_public);
+    try T.expect(saw_protected);
+    try T.expect(saw_private);
+}
+
+test "parser: accessibility modifier before readonly on parameter property is silent" {
+    var s = try newTestSetup(
+        \\class F { constructor(public readonly x: number) {} }
+        \\class G { constructor(private readonly y: number) {} }
+    );
+    defer destroyTestSetup(s);
+    _ = try s.parser.parseSourceFile();
+    for (s.parser.diagnostics.items) |d| {
+        if (d.code != 1029) continue;
+        try T.expect(std.mem.indexOf(u8, d.message, "must precede 'readonly' modifier") == null);
+    }
 }
 
 test "parser: computed class methods preserve override metadata" {
