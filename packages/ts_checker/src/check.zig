@@ -9158,6 +9158,11 @@ pub const Checker = struct {
         if (!self.strict_flags.no_implicit_any) return;
         const f = hir_mod.fnDeclOf(self.hir, fn_node);
         if (f.flags.is_constructor) return;
+        // Setters always return void in TS — they have no usable return
+        // type, so tsc never emits TS7010 for them. Mirrors upstream
+        // behavior; verified against `propertyOverridesAccessors4`
+        // which contains `set sound(val: string)` and expects no TS7010.
+        if (f.flags.is_setter) return;
         const name_node = if (f.name != hir_mod.none_node_id) f.name else fn_node;
         const raw = if (f.name != hir_mod.none_node_id and self.hir.kindOf(f.name) == .identifier) blk: {
             const name_id = hir_mod.identifierOf(self.hir, f.name).name;
@@ -45610,6 +45615,26 @@ test "checker: noImplicitAny skips TS7008 on ambient `declare class` members" {
         if (d.code == TsCodes.member_implicitly_any) count += 1;
     }
     try T.expectEqual(@as(usize, 1), count);
+}
+
+test "checker: TS7010 skips setter accessor (always returns void)" {
+    // Setters always return void; tsc never emits TS7010 for them
+    // (`'sound', which lacks return-type annotation, implicitly has
+    // an 'any' return type.`). Regression for conformance fixture
+    // `propertyOverridesAccessors4`, which contains a bodyless
+    // `set sound(val: string)` inside `declare class`.
+    const s = try newSetup(
+        \\declare class Animal {
+        \\    get sound(): string
+        \\    set sound(val: string)
+        \\}
+    );
+    defer destroySetup(s);
+    s.checker.setStrictFlags(.{ .no_implicit_any = true });
+    try s.checker.checkSourceFile(s.root);
+    for (s.checker.diagnostics.items) |d| {
+        try T.expect(d.code != TsCodes.function_return_implicitly_any);
+    }
 }
 
 test "checker: repeated var declarations require identical annotated types" {
