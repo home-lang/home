@@ -189,6 +189,12 @@ pub const TsCodes = struct {
     pub const string_iteration_requires_downlevel: u32 = 2802;
     pub const subsequent_var_type_mismatch: u32 = 2403;
     pub const interface_incorrectly_extends: u32 = 2430;
+    /// TS2428 — emitted on EVERY declaration of an interface when
+    /// merging declarations disagree on the shape of the type parameter
+    /// list (different arity, names, or constraint text). Anchored at
+    /// the interface name; mirrors tsc's "All declarations of '<name>'
+    /// must have identical type parameters." baselines.
+    pub const interface_declarations_must_have_identical_type_parameters: u32 = 2428;
     pub const property_not_assignable_to_base: u32 = 2416;
     pub const class_incorrectly_extends_base: u32 = 2415;
     /// TS2417 — emitted when a derived class narrows the
@@ -573,6 +579,15 @@ const DeclarationEntry = struct {
 const DeclarationKey = struct {
     name: hir_mod.StringId,
     virtual_section_start: usize,
+};
+
+/// Per-name state for the interface declaration-merge pass. `first` is
+/// the first declaration we observed in document order; `type_param_mismatch_reported`
+/// records that TS2428 has already fired on `first` so a third merge
+/// attempt does not produce duplicate diagnostics.
+const InterfaceMergeEntry = struct {
+    first: NodeId,
+    type_param_mismatch_reported: bool = false,
 };
 
 const ExportAssignmentSection = struct {
@@ -2300,8 +2315,18 @@ pub const Checker = struct {
     fn checkDeclarationSpaceDiagnostics(self: *Checker, stmts: []const NodeId) CheckError!void {
         var seen: std.AutoHashMapUnmanaged(DeclarationKey, DeclarationEntry) = .empty;
         defer seen.deinit(self.gpa);
-        var seen_interfaces: std.AutoHashMapUnmanaged(DeclarationKey, NodeId) = .empty;
+        // Each interface group tracks the first-seen declaration plus a
+        // flag so that once TS2428 fires on the original declaration we
+        // don't keep re-emitting it when third+ merge attempts arrive.
+        var seen_interfaces: std.AutoHashMapUnmanaged(DeclarationKey, InterfaceMergeEntry) = .empty;
         defer seen_interfaces.deinit(self.gpa);
+        // Sibling `namespace M { ... }` blocks with the same name merge
+        // their EXPORTED members across declaration spaces. Track the
+        // exported interface decls per namespace name so we can fire
+        // TS2428 across blocks even though the inner-scope iteration
+        // sees each block in isolation. Mirrors fixture
+        // `twoGenericInterfacesWithTheSameNameButDifferentArity` M3.
+        try self.checkSiblingNamespaceInterfaceMerges(stmts);
 
         var previous_overload_name: ?hir_mod.StringId = null;
         var previous_overload_section: usize = 0;
@@ -2324,9 +2349,9 @@ pub const Checker = struct {
                 const key: DeclarationKey = .{ .name = name, .virtual_section_start = virtual_section };
                 const gop = try seen_interfaces.getOrPut(self.gpa, key);
                 if (gop.found_existing) {
-                    try self.checkInterfaceMergeDiagnostics(gop.value_ptr.*, node, name);
+                    try self.checkInterfaceMergeDiagnostics(gop.value_ptr, node, name);
                 } else {
-                    gop.value_ptr.* = node;
+                    gop.value_ptr.* = .{ .first = node };
                 }
                 previous_overload_name = null;
                 previous_overload_section = 0;
@@ -2485,19 +2510,110 @@ pub const Checker = struct {
         return r.name;
     }
 
+    /// Cross-namespace interface-merge pass. Sibling `namespace M { ... }`
+    /// blocks merge declarations through their exported surface, so a
+    /// `interface A<T>` exported from one M block and `interface A<T,U>`
+    /// exported from another must surface TS2428 even though
+    /// `checkDeclarationSpaceDiagnostics` only sees one block at a time.
+    /// Non-exported interfaces stay local to their block — those are
+    /// handled by the per-body pass already.
+    fn checkSiblingNamespaceInterfaceMerges(
+        self: *Checker,
+        stmts: []const NodeId,
+    ) CheckError!void {
+        var ns_groups: std.AutoHashMapUnmanaged(hir_mod.StringId, std.ArrayListUnmanaged(NodeId)) = .empty;
+        defer {
+            var it = ns_groups.iterator();
+            while (it.next()) |e| e.value_ptr.deinit(self.gpa);
+            ns_groups.deinit(self.gpa);
+        }
+        for (stmts) |raw| {
+            const node = self.unwrapExportDecl(raw);
+            if (node == hir_mod.none_node_id) continue;
+            if (self.hir.kindOf(node) != .namespace_decl) continue;
+            const ns_name = self.declarationName(node) orelse continue;
+            const gop = try ns_groups.getOrPut(self.gpa, ns_name);
+            if (!gop.found_existing) gop.value_ptr.* = .empty;
+            try gop.value_ptr.append(self.gpa, node);
+        }
+        var it = ns_groups.iterator();
+        while (it.next()) |e| {
+            const ns_decls = e.value_ptr.items;
+            if (ns_decls.len < 2) continue;
+            try self.crossNamespaceInterfaceMergeCheck(ns_decls);
+        }
+    }
+
+    fn crossNamespaceInterfaceMergeCheck(
+        self: *Checker,
+        ns_decls: []const NodeId,
+    ) CheckError!void {
+        var merge: std.AutoHashMapUnmanaged(hir_mod.StringId, InterfaceMergeEntry) = .empty;
+        defer merge.deinit(self.gpa);
+        for (ns_decls) |ns_node| {
+            const body = hir_mod.namespaceBody(self.hir, ns_node);
+            for (body) |raw| {
+                if (self.hir.kindOf(raw) != .export_decl) continue;
+                const iface = self.unwrapExportDecl(raw);
+                if (iface == hir_mod.none_node_id) continue;
+                if (self.hir.kindOf(iface) != .interface_decl) continue;
+                const name = self.declarationName(iface) orelse continue;
+                const gop = try merge.getOrPut(self.gpa, name);
+                if (!gop.found_existing) {
+                    gop.value_ptr.* = .{ .first = iface };
+                    continue;
+                }
+                // Only the cross-block path runs here; the within-block
+                // merge for the same namespace body was already handled
+                // by checkDeclarationSpaceDiagnostics. Skip pairs that
+                // share a body so we don't double-report.
+                if (self.hir.parentOf(iface) == self.hir.parentOf(gop.value_ptr.first)) continue;
+                try self.checkInterfaceMergeDiagnostics(gop.value_ptr, iface, name);
+            }
+        }
+    }
+
     fn checkInterfaceMergeDiagnostics(
         self: *Checker,
-        first: NodeId,
+        entry: *InterfaceMergeEntry,
         current: NodeId,
         name: hir_mod.StringId,
     ) CheckError!void {
+        const first = entry.first;
         if (!try self.interfaceTypeParametersMerge(first, current)) {
-            try self.reportDuplicateIdentifier(current, name);
+            // tsc anchors TS2428 at the interface NAME on every
+            // participating declaration. We mirror that: emit on the
+            // first declaration only once (tracked via the entry flag),
+            // then on every subsequent declaration that fails to align.
+            if (!entry.type_param_mismatch_reported) {
+                try self.reportInterfaceTypeParameterMismatch(first, name);
+                entry.type_param_mismatch_reported = true;
+            }
+            try self.reportInterfaceTypeParameterMismatch(current, name);
             return;
         }
         if (!try self.interfaceMembersMerge(first, current)) {
             try self.reportDuplicateIdentifier(current, name);
         }
+    }
+
+    fn reportInterfaceTypeParameterMismatch(
+        self: *Checker,
+        node: NodeId,
+        name: hir_mod.StringId,
+    ) CheckError!void {
+        const name_str = self.string_interner.get(name);
+        const msg = try std.fmt.allocPrint(
+            self.diag_arena.allocator(),
+            "All declarations of '{s}' must have identical type parameters.",
+            .{name_str},
+        );
+        try self.diagnostics.append(self.gpa, .{
+            .node = node,
+            .pos = self.declarationNameSpanStart(node),
+            .code = TsCodes.interface_declarations_must_have_identical_type_parameters,
+            .message = msg,
+        });
     }
 
     fn interfaceTypeParametersMerge(self: *Checker, first: NodeId, current: NodeId) CheckError!bool {
@@ -2551,7 +2667,15 @@ pub const Checker = struct {
         const a = hir_mod.interfaceMemberOf(self.hir, a_member);
         const b = hir_mod.interfaceMemberOf(self.hir, b_member);
         if (a.name == 0 or b.name == 0 or a.name != b.name) return false;
-        if (a.is_method and b.is_method and self.syntheticSignatureMemberName(a.name)) return false;
+        if (a.is_method and b.is_method) {
+            // Method members of the same name across merged interface
+            // declarations always stack as overload signatures — they
+            // never conflict the way property declarations do. Mirrors
+            // fixture `twoMergedInterfacesWithDifferingOverloads`,
+            // which merges `foo(x: number)` with `foo(x: Date)` without
+            // any TS2300 fallout.
+            return false;
+        }
         if (a.is_optional != b.is_optional) return true;
         if (a.is_method != b.is_method) return true;
         return !self.nodeSourceTextEqual(a.type_node, b.type_node);
@@ -44853,17 +44977,129 @@ test "checker: interface override modifiers participate in extends diagnostics" 
 }
 
 test "checker: merged interfaces require matching type parameter names" {
+    // Differing type-parameter names mark the merge as illegal; tsc
+    // surfaces this as TS2428 on every declaration (the more specific
+    // "must have identical type parameters" message) rather than the
+    // generic TS2300 duplicate-identifier diagnostic.
     const s = try newSetup(
         \\interface A<T> { x: T; }
         \\interface A<U> { y: U; }
     );
     defer destroySetup(s);
     try s.checker.checkSourceFile(s.root);
-    var found = false;
+    var ts2428_count: usize = 0;
     for (s.checker.diagnostics.items) |d| {
-        if (d.code == TsCodes.duplicate_identifier) found = true;
+        try T.expect(d.code != TsCodes.duplicate_identifier);
+        if (d.code == TsCodes.interface_declarations_must_have_identical_type_parameters) ts2428_count += 1;
     }
-    try T.expect(found);
+    try T.expectEqual(@as(usize, 2), ts2428_count);
+}
+
+// Merging interfaces with incompatible type-parameter constraints is
+// reported with TS2428 on EVERY participating declaration, not as
+// TS2300 on the second one — mirrors fixture
+// `twoGenericInterfacesWithDifferentConstraints`. A third differing
+// declaration must not re-emit TS2428 on the first one, the entry-
+// level flag suppresses duplicates.
+test "checker: interface type-parameter mismatch fires TS2428 on every decl" {
+    const s = try newSetup(
+        \\interface A<T extends Date> { x: T; }
+        \\interface A<T extends Number> { y: T; }
+    );
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+    var ts2428_count: usize = 0;
+    var ts2300_count: usize = 0;
+    for (s.checker.diagnostics.items) |d| {
+        if (d.code == TsCodes.interface_declarations_must_have_identical_type_parameters) ts2428_count += 1;
+        if (d.code == TsCodes.duplicate_identifier and std.mem.indexOf(u8, d.message, "'A'") != null) ts2300_count += 1;
+    }
+    try T.expectEqual(@as(usize, 2), ts2428_count);
+    try T.expectEqual(@as(usize, 0), ts2300_count);
+}
+
+test "checker: interface arity mismatch fires TS2428 once per declaration" {
+    // Three declarations with two different arities — TS2428 should
+    // anchor at every interface name and the first decl's diagnostic
+    // is only emitted once across the cascade.
+    const s = try newSetup(
+        \\interface A<T> { x: T; }
+        \\interface A<T, U> { y: U; }
+        \\interface A<T, U, V> { z: V; }
+    );
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+    var ts2428_count: usize = 0;
+    for (s.checker.diagnostics.items) |d| {
+        if (d.code == TsCodes.interface_declarations_must_have_identical_type_parameters) ts2428_count += 1;
+    }
+    try T.expectEqual(@as(usize, 3), ts2428_count);
+}
+
+// Method signatures across merged interface declarations stack as
+// overloads — even when they take different argument types — and must
+// not surface as TS2300. Mirrors fixture
+// `twoMergedInterfacesWithDifferingOverloads`.
+test "checker: merged interface method overloads do not trigger TS2300" {
+    const s = try newSetup(
+        \\interface A {
+        \\    foo(x: number): number;
+        \\}
+        \\interface A {
+        \\    foo(x: Date): Date;
+        \\}
+    );
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+    for (s.checker.diagnostics.items) |d| {
+        if (d.code == TsCodes.duplicate_identifier) {
+            try T.expect(std.mem.indexOf(u8, d.message, "'A'") == null);
+            try T.expect(std.mem.indexOf(u8, d.message, "'foo'") == null);
+        }
+    }
+}
+
+// Sibling `namespace M { ... }` blocks merge their exported
+// surfaces; an `interface A<T>` exported from one block and a
+// differing `interface A<T, U>` exported from another must surface
+// TS2428 on each. Mirrors `twoGenericInterfacesWithTheSameNameButDifferentArity`
+// where the M3 blocks live in separate declaration spaces.
+test "checker: cross-namespace interface merge fires TS2428 on each export" {
+    const s = try newSetup(
+        \\namespace M3 {
+        \\    export interface A<T> { x: T; }
+        \\}
+        \\namespace M3 {
+        \\    export interface A<T, U> { y: T; }
+        \\}
+    );
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+    var ts2428_count: usize = 0;
+    for (s.checker.diagnostics.items) |d| {
+        if (d.code == TsCodes.interface_declarations_must_have_identical_type_parameters) ts2428_count += 1;
+    }
+    try T.expectEqual(@as(usize, 2), ts2428_count);
+}
+
+// Non-exported interfaces in two `namespace M2 { ... }` blocks live
+// in independent declaration spaces and must NOT cross-merge.
+// Mirrors the M2 case in the same fixture where the second block's
+// `interface A<T, U>` is intentionally allowed.
+test "checker: cross-namespace merge ignores non-exported interfaces" {
+    const s = try newSetup(
+        \\namespace M2 {
+        \\    interface A<T> { x: T; }
+        \\}
+        \\namespace M2 {
+        \\    interface A<T, U> { y: T; }
+        \\}
+    );
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+    for (s.checker.diagnostics.items) |d| {
+        try T.expect(d.code != TsCodes.interface_declarations_must_have_identical_type_parameters);
+    }
 }
 
 test "checker: merged interfaces reject conflicting property declarations" {
