@@ -213,6 +213,7 @@ pub const Scanner = struct {
         var p = start;
         var digits: u32 = 0;
         var value: u32 = 0;
+        var overflow_reported = false;
         while (p < self.source.len and self.source[p] != '}') : (p += 1) {
             const ch = self.source[p];
             if (!isHexDigit(ch)) {
@@ -236,7 +237,18 @@ pub const Scanner = struct {
                 return p + 1;
             }
             digits += 1;
-            if (value <= 0x10FFFF) value = value * 16 + hexValue(ch);
+            // Once the accumulated codepoint exceeds the Unicode
+            // Scalar Value cap (0x10FFFF), emit TS1198 — anchored at
+            // the first hex digit so `(line, col)` matches upstream
+            // tsc on `unicodeExtendedEscapesInStrings07/12` and
+            // template-literal counterparts. Continue scanning so the
+            // outer literal still terminates cleanly.
+            const next_value: u64 = @as(u64, value) * 16 + hexValue(ch);
+            if (next_value > 0x10FFFF and !overflow_reported) {
+                self.reportAt(gpa, start, line, "An extended Unicode escape value must be between 0x0 and 0x10FFFF inclusive.");
+                overflow_reported = true;
+            }
+            if (next_value <= 0x10FFFF) value = @intCast(next_value);
         }
         if (digits == 0 or p >= self.source.len or self.source[p] != '}') {
             self.reportAt(gpa, p, line, "Hexadecimal digit expected.");
@@ -1499,6 +1511,23 @@ test "Scanner: empty `\\u{` followed by quote emits only Hexadecimal-digit-expec
         "Hexadecimal digit expected.",
         s.diagnostics.items[0].message,
     );
+}
+
+test "Scanner: extended Unicode escape > 0x10FFFF emits TS1198 message" {
+    // `"\u{110000}";` — codepoint exceeds the Unicode Scalar Value
+    // cap. tsc reports TS1198 anchored at the first hex digit (after
+    // `\u{`). Mirrors `unicodeExtendedEscapesInStrings07/12`.
+    var s = Scanner.init(t.allocator, "\"\\u{110000}\";");
+    defer s.deinit(t.allocator);
+    const tok = try s.next(t.allocator);
+    try t.expectEqual(TokenKind.string_literal, tok.kind);
+    var saw_oob = false;
+    for (s.diagnostics.items) |d| {
+        if (std.mem.eql(u8, d.message, "An extended Unicode escape value must be between 0x0 and 0x10FFFF inclusive.")) {
+            saw_oob = true;
+        }
+    }
+    try t.expect(saw_oob);
 }
 
 test "Scanner: well-formed `\\u{...}` followed by EOL still emits unterminated string literal" {
