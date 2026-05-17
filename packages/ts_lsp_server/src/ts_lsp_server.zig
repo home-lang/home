@@ -91,6 +91,7 @@ const std = @import("std");
 const ts_lsp = @import("ts_lsp");
 const ts_program = @import("ts_program");
 const ts_resolver = @import("ts_resolver");
+const ts_diagnostics = @import("ts_diagnostics");
 
 pub const RequestId = union(enum) {
     integer: i64,
@@ -739,13 +740,46 @@ pub fn handleHover(
         var buf: std.ArrayListUnmanaged(u8) = .empty;
         defer buf.deinit(gpa);
         try buf.appendSlice(gpa, "{\"contents\":{\"kind\":\"markdown\",\"value\":\"");
-        try writeJsonStringContents(&buf, gpa, hover.type_repr);
+        // §8.A.29 — when the cursor lands on a `TSnnnn` token, render
+        // the canonical TS diagnostic definition as Markdown above
+        // (or instead of) the type-aware hover content. Shape:
+        //   `**TS2304** (Error) — Cannot find name '{0}'.`
+        //   `_Key:_ `Cannot_find_name_0_2304``
+        if (hover.ts_code) |ti| {
+            try buf.appendSlice(gpa, "**TS");
+            try writeUintAscii(&buf, gpa, ti.code);
+            try buf.appendSlice(gpa, "** (");
+            try writeJsonStringContents(&buf, gpa, ts_diagnostics.codes.categoryLabel(ti.category));
+            try buf.appendSlice(gpa, ") — ");
+            try writeJsonStringContents(&buf, gpa, ti.message);
+            try buf.appendSlice(gpa, "\\n\\n_Key:_ `");
+            try writeJsonStringContents(&buf, gpa, ti.key);
+            try buf.appendSlice(gpa, "`");
+            if (hover.type_repr.len > 0) {
+                try buf.appendSlice(gpa, "\\n\\n---\\n\\n");
+                try writeJsonStringContents(&buf, gpa, hover.type_repr);
+            }
+        } else {
+            try writeJsonStringContents(&buf, gpa, hover.type_repr);
+        }
         try buf.appendSlice(gpa, "\"},\"range\":");
         try writeRange(&buf, gpa, hover.span);
         try buf.append(gpa, '}');
         return encodeResponse(gpa, request_id, buf.items);
     }
     return encodeResponse(gpa, request_id, "null");
+}
+
+/// Write `value` as decimal digits to `buf` (no allocation beyond
+/// `buf`'s reserve). Used by handleHover's §8.A.29 path.
+fn writeUintAscii(
+    buf: *std.ArrayListUnmanaged(u8),
+    gpa: std.mem.Allocator,
+    value: u32,
+) !void {
+    var tmp: [12]u8 = undefined;
+    const s = std.fmt.bufPrint(&tmp, "{d}", .{value}) catch return;
+    try buf.appendSlice(gpa, s);
 }
 
 /// Handle a `textDocument/definition` JSON-RPC request: extract the
@@ -3923,6 +3957,34 @@ test "findJsonIntField: locates line + character" {
     try T.expectEqual(@as(i64, 2), findJsonIntField(body, "line").?);
     try T.expectEqual(@as(i64, 7), findJsonIntField(body, "character").?);
     try T.expect(findJsonIntField(body, "missing") == null);
+}
+
+test "handleHover: TS code in source renders the canonical definition as markdown" {
+    // §8.A.29 — handleHover for a `TSnnnn` token returns markdown of
+    // the form `**TS2304** (Error) — Cannot find name '{0}'.` so the
+    // editor surfaces the catalogue entry.
+    var vfs = ts_resolver.VirtualFs.init(T.allocator);
+    defer vfs.deinit();
+    var resolver = ts_resolver.Resolver.init(T.allocator, vfs.fs(), .{});
+    defer resolver.deinit();
+    var program = ts_program.Program.init(T.allocator, &resolver);
+    defer program.deinit();
+
+    _ = try program.add("/main.ts", "// TS2304 here\n");
+    try program.compileAll(.{});
+
+    var svc = ts_lsp.Service.init(T.allocator, &program);
+
+    // Cursor on column 5 of line 0 → inside `TS2304`.
+    const body =
+        \\{"jsonrpc":"2.0","id":9,"method":"textDocument/hover","params":{"textDocument":{"uri":"file:///main.ts"},"position":{"line":0,"character":5}}}
+    ;
+    const out = try handleHover(&svc, T.allocator, .{ .integer = 9 }, body);
+    defer T.allocator.free(out);
+    try T.expect(std.mem.indexOf(u8, out, "**TS2304**") != null);
+    try T.expect(std.mem.indexOf(u8, out, "(Error)") != null);
+    try T.expect(std.mem.indexOf(u8, out, "Cannot find name") != null);
+    try T.expect(std.mem.indexOf(u8, out, "_Key:_") != null);
 }
 
 test "handleHover: routes request and returns Hover response" {

@@ -220,6 +220,11 @@ pub const TsCodes = struct {
 /// have no tsc analogue: native-frontend features used in TS context,
 /// HIR-side mismatches, exhaustiveness/borrow checks, FFI, and native
 /// codegen limitations.
+/// Phase 8 §8.A.29 — full upstream TS diagnostic catalogue
+/// (~2 000 entries). Powers the LSP hover that pops up a TS code's
+/// canonical definition when the cursor lands on a `TSnnnn` token.
+pub const codes = @import("ts_diagnostic_codes.zig");
+
 pub const HmCodes = struct {
     /// Home-only feature 'X' used in TS context.
     pub const home_feature_in_ts_context: u32 = 1000;
@@ -438,4 +443,30 @@ test "HmCodes: stable values for Home-only diagnostics" {
     try T.expectEqual(@as(u32, 2001), HmCodes.borrow_checker_violation);
     try T.expectEqual(@as(u32, 3000), HmCodes.ffi_signature_mismatch);
     try T.expectEqual(@as(u32, 5000), HmCodes.native_codegen_unsupported);
+}
+
+test "codes.lookup: hits common TS codes" {
+    // Spot-check entries across the catalogue.
+    const cf = codes.lookup(2304) orelse return error.MissingEntry;
+    try T.expectEqual(@as(u32, 2304), cf.code);
+    try T.expectEqual(codes.Category.err, cf.category);
+    try T.expectEqualStrings("Cannot find name '{0}'.", cf.message);
+
+    const ut = codes.lookup(1002) orelse return error.MissingEntry;
+    try T.expectEqualStrings("Unterminated string literal.", ut.message);
+
+    const arg_count = codes.lookup(2554) orelse return error.MissingEntry;
+    try T.expectEqualStrings("Expected {0} arguments, but got {1}.", arg_count.message);
+}
+
+test "codes.lookup: returns null for unknown codes" {
+    try T.expectEqual(@as(?codes.DiagInfo, null), codes.lookup(0));
+    try T.expectEqual(@as(?codes.DiagInfo, null), codes.lookup(99999));
+}
+
+test "codes.categoryLabel: matches tsc verb" {
+    try T.expectEqualStrings("Error", codes.categoryLabel(.err));
+    try T.expectEqualStrings("Warning", codes.categoryLabel(.warning));
+    try T.expectEqualStrings("Suggestion", codes.categoryLabel(.suggestion));
+    try T.expectEqualStrings("Message", codes.categoryLabel(.message));
 }

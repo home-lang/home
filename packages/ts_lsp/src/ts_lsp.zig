@@ -42,6 +42,29 @@ pub const HoverResult = struct {
     span: Span,
     /// Hover'd node kind (for editor styling).
     kind: hir_mod.NodeKind,
+    /// §8.A.29 — populated when the cursor is on a `TSnnnn` token
+    /// in source / Markdown / a comment. Carries the canonical TS
+    /// diagnostic definition so editors can render a tooltip.
+    ts_code: ?TsCodeHover = null,
+};
+
+/// §8.A.29 — TS diagnostic-code hover payload. Populated when the
+/// cursor lands on a `TSnnnn` substring anywhere in a buffer (source
+/// code, comment, Markdown). The fields mirror upstream's
+/// `diagnosticMessages.json` entry so editors can render the
+/// category, key (for cross-tool indexing), and the canonical
+/// message template verbatim.
+pub const TsCodeHover = struct {
+    code: u32,
+    category: ts_diagnostics.codes.Category,
+    /// Upstream identifier key (e.g. `Cannot_find_name_0_2304`).
+    /// Useful for cross-tool indexing (sourcegraph, LSIF, etc.).
+    key: []const u8,
+    /// Canonical message template with `{0}` / `{1}` placeholders
+    /// intact (unsubstituted). Rendering the hover with substitution
+    /// requires the surrounding diagnostic context which this hover
+    /// doesn't see.
+    message: []const u8,
 };
 
 pub const Definition = struct {
@@ -701,6 +724,32 @@ pub const Service = struct {
     pub fn hover(self: *Service, file_path: []const u8, byte_pos: u32) ?HoverResult {
         const file_id = self.program.lookupPath(file_path) orelse return null;
         const f = self.program.fileById(file_id);
+        // §8.A.29 — TS diagnostic-code hover. Pattern-match `TSnnnn`
+        // around the cursor BEFORE falling through to the type-aware
+        // hover, since a hand-typed `TS2304` in a comment doesn't
+        // bind to any HIR node but still deserves a tooltip.
+        if (lookupTsCodeAtCursor(f.source, byte_pos)) |info| {
+            const span = info.span;
+            const start_pos = ts_diagnostics.positionToLineCol(f.source, span.start);
+            const end_pos = ts_diagnostics.positionToLineCol(f.source, span.end);
+            return .{
+                .type_repr = "",
+                .span = .{
+                    .file = f.path,
+                    .start_line = start_pos.line,
+                    .start_col = start_pos.col,
+                    .end_line = end_pos.line,
+                    .end_col = end_pos.col,
+                },
+                .kind = .identifier,
+                .ts_code = .{
+                    .code = info.entry.code,
+                    .category = info.entry.category,
+                    .key = info.entry.key,
+                    .message = info.entry.message,
+                },
+            };
+        }
         const c = f.compilation orelse return null;
         const node = findInnermostNode(&c.hir, c.root, byte_pos) orelse return null;
         const t = c.hir.typeOf(node);
@@ -4973,6 +5022,56 @@ fn describeEnumMember(
     };
 }
 
+/// §8.A.29 — return type for a matched `TSnnnn` substring lookup.
+/// Pairs the source span (so hover can echo back the matched range)
+/// with the resolved catalogue entry.
+const TsCodeMatch = struct {
+    span: struct { start: u32, end: u32 },
+    entry: ts_diagnostics.codes.DiagInfo,
+};
+
+/// §8.A.29 — scan `source` around `byte_pos` for a `TSnnnn` token
+/// and resolve it through the upstream diagnostic catalogue. Returns
+/// null when the cursor isn't inside a TS-code token or the code
+/// isn't in the catalogue. Matches must start with `TS` followed by
+/// 1-5 digits and must be bounded by non-alphanumeric characters
+/// (so embedded `TS123foo` doesn't match).
+fn lookupTsCodeAtCursor(source: []const u8, byte_pos: u32) ?TsCodeMatch {
+    if (source.len == 0 or byte_pos > source.len) return null;
+    // Scan backwards from byte_pos to find the start of a potential
+    // alphanumeric run.
+    var start: usize = byte_pos;
+    while (start > 0) {
+        const c = source[start - 1];
+        if (!isAsciiAlphaNum(c)) break;
+        start -= 1;
+    }
+    // Token must begin with `TS`.
+    if (start + 2 > source.len) return null;
+    if (source[start] != 'T' or source[start + 1] != 'S') return null;
+    // Scan forward to the end of the alphanumeric run.
+    var end: usize = start + 2;
+    while (end < source.len and isAsciiAlphaNum(source[end])) end += 1;
+    // Body after `TS` must be 1-5 digits and nothing else.
+    const body = source[start + 2 .. end];
+    if (body.len == 0 or body.len > 5) return null;
+    for (body) |c| {
+        if (c < '0' or c > '9') return null;
+    }
+    // The cursor must lie within the matched token's span.
+    if (byte_pos < start or byte_pos > end) return null;
+    const code = std.fmt.parseInt(u32, body, 10) catch return null;
+    const entry = ts_diagnostics.codes.lookup(code) orelse return null;
+    return .{
+        .span = .{ .start = @intCast(start), .end = @intCast(end) },
+        .entry = entry,
+    };
+}
+
+fn isAsciiAlphaNum(c: u8) bool {
+    return (c >= '0' and c <= '9') or (c >= 'A' and c <= 'Z') or (c >= 'a' and c <= 'z') or c == '_';
+}
+
 /// Walk the HIR depth-first and return the smallest node whose
 /// span contains `byte_pos`.
 fn findInnermostNode(hir: *const hir_mod.Hir, root: hir_mod.NodeId, byte_pos: u32) ?hir_mod.NodeId {
@@ -5433,6 +5532,95 @@ fn renderDeclShape(
 
 const T = std.testing;
 const ts_resolver = @import("ts_resolver");
+
+test "Service: hover surfaces TS code definition on TSnnnn token in a comment" {
+    // §8.A.29 — `TS2304` in a comment pops up the canonical diagnostic
+    // definition (no HIR binding needed; pattern-matched directly from
+    // source text).
+    var vfs = ts_resolver.VirtualFs.init(T.allocator);
+    defer vfs.deinit();
+    var resolver = ts_resolver.Resolver.init(T.allocator, vfs.fs(), .{});
+    defer resolver.deinit();
+    var program = ts_program.Program.init(T.allocator, &resolver);
+    defer program.deinit();
+
+    // The TS2304 token starts at byte 3 (after `// `).
+    const src = "// TS2304 means a name can't be resolved.";
+    _ = try program.add("/main.ts", src);
+    try program.compileAll(.{});
+
+    var svc = Service.init(T.allocator, &program);
+    const r = svc.hover("/main.ts", 5) orelse return error.NoHover;
+    defer T.allocator.free(r.type_repr);
+    const ts_info = r.ts_code orelse return error.MissingTsCode;
+    try T.expectEqual(@as(u32, 2304), ts_info.code);
+    try T.expectEqualStrings("Cannot find name '{0}'.", ts_info.message);
+    try T.expectEqualStrings("Cannot_find_name_0_2304", ts_info.key);
+}
+
+test "Service: hover surfaces TS code definition on TSnnnn in real source" {
+    // A `TSnnnn` token can appear anywhere — including in a directive
+    // comment like `// @ts-expect-error TS2322`. Same lookup fires.
+    var vfs = ts_resolver.VirtualFs.init(T.allocator);
+    defer vfs.deinit();
+    var resolver = ts_resolver.Resolver.init(T.allocator, vfs.fs(), .{});
+    defer resolver.deinit();
+    var program = ts_program.Program.init(T.allocator, &resolver);
+    defer program.deinit();
+
+    const src = "// @ts-expect-error TS2322\nconst x: string = 1;";
+    _ = try program.add("/main.ts", src);
+    try program.compileAll(.{});
+
+    var svc = Service.init(T.allocator, &program);
+    // TS2322 starts at byte 20 (`// @ts-expect-error ` is 20 chars).
+    const r = svc.hover("/main.ts", 22) orelse return error.NoHover;
+    defer T.allocator.free(r.type_repr);
+    const ts_info = r.ts_code orelse return error.MissingTsCode;
+    try T.expectEqual(@as(u32, 2322), ts_info.code);
+}
+
+test "Service: hover skips TS code lookup when cursor is on regular identifier" {
+    // Cursor inside a normal identifier should NOT trigger the
+    // TSnnnn path — falls through to the type-aware hover.
+    var vfs = ts_resolver.VirtualFs.init(T.allocator);
+    defer vfs.deinit();
+    var resolver = ts_resolver.Resolver.init(T.allocator, vfs.fs(), .{});
+    defer resolver.deinit();
+    var program = ts_program.Program.init(T.allocator, &resolver);
+    defer program.deinit();
+
+    const src = "let x: number = 42;";
+    _ = try program.add("/main.ts", src);
+    try program.compileAll(.{});
+
+    var svc = Service.init(T.allocator, &program);
+    const r = svc.hover("/main.ts", 4) orelse return error.NoHover;
+    defer T.allocator.free(r.type_repr);
+    try T.expectEqual(@as(?TsCodeHover, null), r.ts_code);
+}
+
+test "Service: hover ignores TS code that isn't in the catalogue" {
+    // `TS99999` doesn't exist in the upstream catalogue → hover
+    // falls through to the regular path (no ts_code field set).
+    var vfs = ts_resolver.VirtualFs.init(T.allocator);
+    defer vfs.deinit();
+    var resolver = ts_resolver.Resolver.init(T.allocator, vfs.fs(), .{});
+    defer resolver.deinit();
+    var program = ts_program.Program.init(T.allocator, &resolver);
+    defer program.deinit();
+
+    const src = "// TS99999 doesn't exist.";
+    _ = try program.add("/main.ts", src);
+    try program.compileAll(.{});
+
+    var svc = Service.init(T.allocator, &program);
+    const r_opt = svc.hover("/main.ts", 5);
+    if (r_opt) |r| {
+        defer T.allocator.free(r.type_repr);
+        try T.expectEqual(@as(?TsCodeHover, null), r.ts_code);
+    }
+}
 
 test "Service: hover renders the type at a position" {
     var vfs = ts_resolver.VirtualFs.init(T.allocator);

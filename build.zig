@@ -322,6 +322,7 @@ pub fn build(b: *std.Build) void {
     ts_lsp_server_pkg.addImport("ts_lsp", ts_lsp_pkg);
     ts_lsp_server_pkg.addImport("ts_program", ts_program_pkg);
     ts_lsp_server_pkg.addImport("ts_resolver", ts_resolver_pkg);
+    ts_lsp_server_pkg.addImport("ts_diagnostics", ts_diagnostics_pkg);
 
     // TS-parity Phase 4.5 — bundler skeleton.
     const ts_bundler_pkg = createPackage(b, "packages/ts_bundler/src/ts_bundler.zig", target, optimize, zig_test_framework);
