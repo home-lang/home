@@ -2083,7 +2083,17 @@ pub const Parser = struct {
                         },
                         .kw_public, .kw_protected, .kw_private => {
                             if (saw_override_modifier) {
-                                try self.reportCodeAt(mod.span.start, mod.line, 1029, "Accessibility modifier must precede 'override' modifier.");
+                                const which: []const u8 = switch (mod.kind) {
+                                    .kw_public => "'public'",
+                                    .kw_protected => "'protected'",
+                                    else => "'private'",
+                                };
+                                const msg = try std.fmt.allocPrint(
+                                    self.diag_arena.allocator(),
+                                    "{s} modifier must precede 'override' modifier.",
+                                    .{which},
+                                );
+                                try self.reportCodeAt(mod.span.start, mod.line, 1029, msg);
                             }
                             flags.is_parameter_property = true;
                             if (mod.kind == .kw_private) flags.is_private = true;
@@ -10626,6 +10636,30 @@ test "parser: class override modifier is preserved on methods, fields, and param
     const pp = hir_mod.parameterOf(&s.hir, ctor_params[0]);
     try T.expect(pp.flags.is_parameter_property);
     try T.expect(pp.flags.is_override);
+}
+
+test "parser: accessibility modifier after override on parameter property reports keyword-specific TS1029" {
+    var s = try newTestSetup(
+        \\class B { constructor(public x: number) {} }
+        \\class D extends B { constructor(override public x: number) { super(x); } }
+        \\class E extends B { constructor(override protected y: number) { super(y); } }
+        \\class F extends B { constructor(override private z: number) { super(z); } }
+    );
+    defer destroyTestSetup(s);
+    _ = try s.parser.parseSourceFile();
+    var saw_public = false;
+    var saw_protected = false;
+    var saw_private = false;
+    for (s.parser.diagnostics.items) |d| {
+        if (d.code != 1029) continue;
+        if (std.mem.indexOf(u8, d.message, "'public' modifier must precede 'override' modifier") != null) saw_public = true;
+        if (std.mem.indexOf(u8, d.message, "'protected' modifier must precede 'override' modifier") != null) saw_protected = true;
+        if (std.mem.indexOf(u8, d.message, "'private' modifier must precede 'override' modifier") != null) saw_private = true;
+        try T.expect(std.mem.indexOf(u8, d.message, "Accessibility modifier") == null);
+    }
+    try T.expect(saw_public);
+    try T.expect(saw_protected);
+    try T.expect(saw_private);
 }
 
 test "parser: computed class methods preserve override metadata" {

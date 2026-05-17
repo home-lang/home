@@ -376,6 +376,13 @@ pub const TsCodes = struct {
     pub const index_signature_property_access: u32 = 4111;
     /// `override` was used but the base class has no matching member.
     pub const override_not_in_base: u32 = 4113;
+    /// Spelling-suggestion variant of TS4113: an `override` member is
+    /// missing in the base class, but a near-match name exists there.
+    pub const override_not_in_base_did_you_mean: u32 = 4117;
+    /// JSDoc-tag variant of TS4117: a JSDoc `@override` tag picks a
+    /// member not declared in the base class, but a near-match name
+    /// exists there.
+    pub const jsdoc_override_not_in_base_did_you_mean: u32 = 4123;
     /// `override` cannot be used with a dynamic computed member name.
     pub const override_dynamic_name: u32 = 4127;
     /// `noImplicitOverride`: a class member overrides a base member
@@ -12109,6 +12116,53 @@ pub const Checker = struct {
         return self.interner.objectMember(pt, name) != null;
     }
 
+    /// Closest member name on the base class (or null when none clears
+    /// the tsc spelling-suggestion threshold). Walks intersection
+    /// branches and ignores members that are exact name matches so the
+    /// caller treats "no suggestion" the same as "exact match found".
+    fn closestBaseClassMemberName(
+        self: *Checker,
+        parent_t: ?TypeId,
+        typo: []const u8,
+    ) ?[]const u8 {
+        const pt = parent_t orelse return null;
+        if (pt >= self.interner.pool.typeCount()) return null;
+        const threshold: usize = @min((typo.len * 4) / 10, @as(usize, 4));
+        var best_name: []const u8 = "";
+        var best_dist: usize = std.math.maxInt(usize);
+        self.collectClosestMember(pt, typo, &best_name, &best_dist);
+        if (best_name.len == 0 or best_dist > threshold) return null;
+        return best_name;
+    }
+
+    fn collectClosestMember(
+        self: *Checker,
+        pt: TypeId,
+        typo: []const u8,
+        best_name: *[]const u8,
+        best_dist: *usize,
+    ) void {
+        if (pt >= self.interner.pool.typeCount()) return;
+        const flags = self.interner.pool.flagsOf(pt);
+        if (flags.is_intersection) {
+            for (self.interner.intersectionMembers(pt)) |member| {
+                self.collectClosestMember(member, typo, best_name, best_dist);
+            }
+            return;
+        }
+        if (!flags.is_object_type) return;
+        for (self.interner.objectMembers(pt)) |m| {
+            const cand = self.string_interner.get(m.name);
+            if (cand.len == 0) continue;
+            if (std.mem.eql(u8, cand, typo)) continue;
+            const dist = levenshteinIcase(typo, cand);
+            if (dist < best_dist.*) {
+                best_dist.* = dist;
+                best_name.* = cand;
+            }
+        }
+    }
+
     fn checkOverrideModifier(
         self: *Checker,
         node: NodeId,
@@ -12128,17 +12182,45 @@ pub const Checker = struct {
             break :blk (self.simpleDiagnosticTypeName(pt) catch null) orelse null;
         };
         if ((has_override or has_jsdoc_override) and !has_base) {
+            const member_name = self.string_interner.get(name);
+            const suggestion = self.closestBaseClassMemberName(parent_t, member_name);
             if (base_name_opt) |bn| {
-                const msg = try std.fmt.allocPrint(
-                    self.diag_arena.allocator(),
-                    "This member cannot have an 'override' modifier because it is not declared in the base class '{s}'.",
-                    .{bn},
-                );
-                try self.diagnostics.append(self.gpa, .{
-                    .node = node,
-                    .code = TsCodes.override_not_in_base,
-                    .message = msg,
-                });
+                if (suggestion) |sug| {
+                    if (has_jsdoc_override) {
+                        const msg = try std.fmt.allocPrint(
+                            self.diag_arena.allocator(),
+                            "This member cannot have a JSDoc comment with an 'override' tag because it is not declared in the base class '{s}'. Did you mean '{s}'?",
+                            .{ bn, sug },
+                        );
+                        try self.diagnostics.append(self.gpa, .{
+                            .node = node,
+                            .code = TsCodes.jsdoc_override_not_in_base_did_you_mean,
+                            .message = msg,
+                        });
+                    } else {
+                        const msg = try std.fmt.allocPrint(
+                            self.diag_arena.allocator(),
+                            "This member cannot have an 'override' modifier because it is not declared in the base class '{s}'. Did you mean '{s}'?",
+                            .{ bn, sug },
+                        );
+                        try self.diagnostics.append(self.gpa, .{
+                            .node = node,
+                            .code = TsCodes.override_not_in_base_did_you_mean,
+                            .message = msg,
+                        });
+                    }
+                } else {
+                    const msg = try std.fmt.allocPrint(
+                        self.diag_arena.allocator(),
+                        "This member cannot have an 'override' modifier because it is not declared in the base class '{s}'.",
+                        .{bn},
+                    );
+                    try self.diagnostics.append(self.gpa, .{
+                        .node = node,
+                        .code = TsCodes.override_not_in_base,
+                        .message = msg,
+                    });
+                }
             } else {
                 try self.report(node, TsCodes.override_not_in_base, "This member cannot have an 'override' modifier because it is not declared in the base class.");
             }
@@ -43794,6 +43876,65 @@ test "checker: override modifier rejects members absent from base class" {
     try T.expect(found);
 }
 
+test "checker: override typo emits TS4117 with spelling suggestion" {
+    const s = try newSetup(
+        \\class A { doSomething() {} }
+        \\class B extends A { override doSomethang() {} }
+    );
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+    var saw_4117 = false;
+    var saw_4113 = false;
+    for (s.checker.diagnostics.items) |d| {
+        if (d.code == TsCodes.override_not_in_base_did_you_mean) {
+            saw_4117 = true;
+            try T.expect(std.mem.indexOf(u8, d.message, "Did you mean 'doSomething'") != null);
+        }
+        if (d.code == TsCodes.override_not_in_base) saw_4113 = true;
+    }
+    try T.expect(saw_4117);
+    try T.expect(!saw_4113);
+}
+
+test "checker: JSDoc override typo emits TS4123 with spelling suggestion" {
+    const s = try newSetup(
+        \\// @checkJs: true
+        \\class A { doSomething() {} }
+        \\class B extends A {
+        \\  /** @override */
+        \\  doSomethang() {}
+        \\}
+    );
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+    var saw_4123 = false;
+    for (s.checker.diagnostics.items) |d| {
+        if (d.code == TsCodes.jsdoc_override_not_in_base_did_you_mean) {
+            saw_4123 = true;
+            try T.expect(std.mem.indexOf(u8, d.message, "Did you mean 'doSomething'") != null);
+            try T.expect(std.mem.indexOf(u8, d.message, "JSDoc comment with an 'override' tag") != null);
+        }
+    }
+    try T.expect(saw_4123);
+}
+
+test "checker: override with no close base member keeps TS4113" {
+    const s = try newSetup(
+        \\class A { doSomething() {} }
+        \\class B extends A { override completelyDifferent() {} }
+    );
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+    var saw_4117 = false;
+    var saw_4113 = false;
+    for (s.checker.diagnostics.items) |d| {
+        if (d.code == TsCodes.override_not_in_base_did_you_mean) saw_4117 = true;
+        if (d.code == TsCodes.override_not_in_base) saw_4113 = true;
+    }
+    try T.expect(saw_4113);
+    try T.expect(!saw_4117);
+}
+
 test "checker: JSDoc override tag rejects members absent from base class" {
     const s = try newSetup(
         \\// @checkJs: true
@@ -43828,7 +43969,8 @@ test "checker: computed class override checks base computed members" {
     var saw_not_base = false;
     for (s.checker.diagnostics.items) |d| {
         if (d.code == TsCodes.missing_override) saw_missing = true;
-        if (d.code == TsCodes.override_not_in_base) saw_not_base = true;
+        if (d.code == TsCodes.override_not_in_base or
+            d.code == TsCodes.override_not_in_base_did_you_mean) saw_not_base = true;
     }
     try T.expect(saw_missing);
     try T.expect(saw_not_base);
@@ -43900,7 +44042,8 @@ test "checker: interface override modifiers participate in extends diagnostics" 
     var saw_not_base = false;
     for (s.checker.diagnostics.items) |d| {
         if (d.code == TsCodes.missing_override) saw_missing = true;
-        if (d.code == TsCodes.override_not_in_base) saw_not_base = true;
+        if (d.code == TsCodes.override_not_in_base or
+            d.code == TsCodes.override_not_in_base_did_you_mean) saw_not_base = true;
     }
     try T.expect(saw_missing);
     try T.expect(saw_not_base);

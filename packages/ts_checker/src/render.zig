@@ -84,8 +84,27 @@ pub fn renderTypeInto(
             if (m.is_readonly) try buf.appendSlice(gpa, "readonly ");
             try buf.appendSlice(gpa, sint.get(m.name));
             if (m.is_optional) try buf.append(gpa, '?');
-            try buf.appendSlice(gpa, ": ");
-            try renderTypeInto(buf, gpa, ti, sint, m.type, depth + 1);
+            // Render method-shorthand members as `name(params): ret`
+            // so error messages mirror upstream tsc — `{ f(): void }`
+            // stays in that shape instead of widening to property
+            // form `{ f: () => void }`.
+            if (m.is_method and ti.isSignature(m.type)) {
+                try buf.append(gpa, '(');
+                const sig_params = ti.signatureParams(m.type);
+                for (sig_params, 0..) |p, pi| {
+                    if (pi > 0) try buf.appendSlice(gpa, ", ");
+                    try renderTypeInto(buf, gpa, ti, sint, p, depth + 1);
+                }
+                try buf.appendSlice(gpa, "): ");
+                if (ti.signatureReturn(m.type)) |ret| {
+                    try renderTypeInto(buf, gpa, ti, sint, ret, depth + 1);
+                } else {
+                    try buf.appendSlice(gpa, "void");
+                }
+            } else {
+                try buf.appendSlice(gpa, ": ");
+                try renderTypeInto(buf, gpa, ti, sint, m.type, depth + 1);
+            }
         }
         try buf.appendSlice(gpa, " }");
         return;
@@ -163,6 +182,36 @@ test "renderType: union" {
     try T.expect(std.mem.indexOf(u8, out, "number") != null);
     try T.expect(std.mem.indexOf(u8, out, "string") != null);
     try T.expect(std.mem.indexOf(u8, out, " | ") != null);
+}
+
+test "renderType: object with method-shorthand member" {
+    var ti = try interner_mod.Interner.init(T.allocator);
+    defer ti.deinit();
+    var sint = try string_interner.Interner.init(T.allocator);
+    defer sint.deinit();
+    const sig = try ti.internSignature(&.{}, types.Primitive.void_t, false);
+    const f_name = try sint.intern("f");
+    const obj = try ti.internObjectType(&.{
+        .{ .name = f_name, .type = sig, .is_optional = false, .is_readonly = false, .is_method = true },
+    });
+    const out = try renderType(T.allocator, &ti, &sint, obj);
+    defer T.allocator.free(out);
+    try T.expectEqualStrings("{ f(): void }", out);
+}
+
+test "renderType: object with property-form function member stays arrow" {
+    var ti = try interner_mod.Interner.init(T.allocator);
+    defer ti.deinit();
+    var sint = try string_interner.Interner.init(T.allocator);
+    defer sint.deinit();
+    const sig = try ti.internSignature(&.{}, types.Primitive.void_t, false);
+    const f_name = try sint.intern("f");
+    const obj = try ti.internObjectType(&.{
+        .{ .name = f_name, .type = sig, .is_optional = false, .is_readonly = false, .is_method = false },
+    });
+    const out = try renderType(T.allocator, &ti, &sint, obj);
+    defer T.allocator.free(out);
+    try T.expectEqualStrings("{ f: () => void }", out);
 }
 
 test "renderType: signature" {
