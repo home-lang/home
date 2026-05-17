@@ -10744,6 +10744,16 @@ pub const Checker = struct {
             }
             const parent_t = try self.classExtendsInstanceType(c.extends);
             try self.reportUnresolvedClassExtendsHeritage(c.extends, type_params);
+            // TS2507: `class D extends foo` where `foo` is a plain
+            // function (or any other non-constructable value). When the
+            // extends expression resolves to a value but the resolved
+            // value type carries no construct signatures, tsc emits
+            // "Type '<sig>' is not a constructor function type." Mirrors
+            // upstream `classExtendsValidConstructorFunction` and
+            // `classExtendsShadowedConstructorFunction`.
+            if (parent_t == null and self.hir.kindOf(c.extends) == .identifier) {
+                try self.reportNonConstructorClassExtends(c.extends);
+            }
             // TS2314: `class D extends C` where `C<T>` is generic — fire
             // when the heritage is a bare class name (no type-arg list).
             // The type-ref form (`class D extends C<X, Y>`) is already
@@ -12695,6 +12705,26 @@ pub const Checker = struct {
                 }
             }
             if (same_kind_accessors) {
+                for (group_idx.items) |idx| {
+                    const e = entries.items[idx];
+                    try self.reportDuplicateIdentifierWithDisplay(e.name_node, e.display);
+                }
+                continue;
+            }
+            // EXCEPTION — field paired with another shape (accessor or
+            // method): tsc emits TS2300 at EVERY occurrence — both the
+            // field and the other declarations are flagged, even
+            // though the accessor pair would otherwise compose.
+            // Mirrors `propertyAndAccessorWithSameName` and
+            // `propertyAndFunctionWithSameName` baselines.
+            var has_field = false;
+            var has_non_field = false;
+            for (group_idx.items) |idx| {
+                const e = entries.items[idx];
+                if (e.kind == .field) has_field = true;
+                if (e.kind != .field) has_non_field = true;
+            }
+            if (has_field and has_non_field) {
                 for (group_idx.items) |idx| {
                     const e = entries.items[idx];
                     try self.reportDuplicateIdentifierWithDisplay(e.name_node, e.display);
@@ -19076,6 +19106,47 @@ pub const Checker = struct {
         if (self.bareTypeNodeIsTypeParam(extends_expr, type_params)) return;
         if (try self.classExtendsHeritageNameResolves(extends_expr, name)) return;
         try self.reportCannotFindNamePlainOnce(extends_expr, name);
+    }
+
+    /// TS2507: `class D extends foo` where `foo` resolves to a value
+    /// type with no construct signature (plain function, number, etc.).
+    /// Renders the resolved type via `allocCallableSignatureName` /
+    /// `allocSimpleTypeName` so the prose mirrors tsc's baseline.
+    fn reportNonConstructorClassExtends(
+        self: *Checker,
+        extends_expr: NodeId,
+    ) CheckError!void {
+        if (self.hir.kindOf(extends_expr) != .identifier) return;
+        const id = hir_mod.identifierOf(self.hir, extends_expr);
+        // Skip identifiers that resolve to known classes / generic
+        // aliases — `classExtendsInstanceType` returns null for those
+        // when the parent's instance type isn't yet registered (e.g.
+        // forward reference), but TS2507 would be wrong there.
+        if (self.class_instance_types.contains(id.name)) return;
+        if (self.generic_aliases.contains(id.name)) return;
+        // Resolve the heritage value; skip when the name doesn't bind
+        // at all (TS2304 fires separately).
+        const value_t = (try self.heritageValueType(extends_expr, id.name)) orelse return;
+        if (value_t == types.Primitive.any or value_t == types.Primitive.unknown) return;
+        if (value_t == types.Primitive.none) return;
+        // Already have a construct signature? then `classExtendsInstanceType`
+        // would have produced an instance — nothing to report.
+        if (try self.constructReturnType(value_t)) |_| return;
+        // Render the resolved value type. Prefer the signature form
+        // when the value is a function-like (e.g. `() => void`); fall
+        // back to the simple-type name for primitives.
+        const rendered_name: ?[]const u8 = if (try self.allocCallableSignatureName(value_t)) |sig_name|
+            sig_name
+        else
+            try self.allocSimpleTypeName(value_t);
+        if (rendered_name) |name_text| {
+            const msg = try std.fmt.allocPrint(
+                self.diag_arena.allocator(),
+                "Type '{s}' is not a constructor function type.",
+                .{name_text},
+            );
+            try self.report(extends_expr, TsCodes.not_constructor_function_type, msg);
+        }
     }
 
     /// TS2314: Generic type 'X<...>' requires N type argument(s) — for
