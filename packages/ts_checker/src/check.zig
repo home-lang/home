@@ -257,6 +257,7 @@ pub const TsCodes = struct {
     pub const for_await_only_in_async: u32 = 1103;
     pub const for_await_script_not_module: u32 = 1431;
     pub const for_await_target_module: u32 = 1432;
+    pub const for_await_non_module: u32 = 1431;
     pub const top_level_await_using_target_module: u32 = 2854;
     pub const multiple_default_exports: u32 = 2528;
     pub const default_export_merge: u32 = 2652;
@@ -27539,6 +27540,22 @@ pub const Checker = struct {
                     }
                     if (!already_reported) {
                         try self.report(node, TsCodes.top_level_await_target_module, "Top-level 'await' expressions are only allowed when the 'module' option is set to 'es2022', 'esnext', 'system', 'node16', 'node18', 'node20', 'nodenext', or 'preserve', and the 'target' option is set to 'es2017' or higher.");
+                    }
+                } else if (!self.nodeIsInsideFunctionLike(node) and !self.sourceFileIsModule()) {
+                    // TS1375 — module/target permit top-level `await`
+                    // (e.g. `@module: esnext` + `@target: esnext`), but
+                    // the file has no top-level `import`/`export` so
+                    // tsc treats it as a script. Mirrors
+                    // `topLevelAwaitNonModule`.
+                    var already_reported = false;
+                    for (self.diagnostics.items) |d| {
+                        if (d.code == TsCodes.top_level_await_non_module) {
+                            already_reported = true;
+                            break;
+                        }
+                    }
+                    if (!already_reported) {
+                        try self.report(node, TsCodes.top_level_await_non_module, "'await' expressions are only allowed at the top level of a file when that file is a module, but this file has no imports or exports. Consider adding an empty 'export {}' to make this file a module.");
                     }
                 }
                 break :blk self.unwrapPromise(inner_t);
