@@ -409,6 +409,8 @@ pub const TsCodes = struct {
     pub const abstract_property_initializer: u32 = 1267;
     /// TS1318 — abstract accessors must be declarations only.
     pub const abstract_accessor_implementation: u32 = 1318;
+    /// TS1245 — abstract methods must be bodyless declarations.
+    pub const abstract_method_implementation: u32 = 1245;
     /// TS2610 / TS2611 — TS distinguishes data properties from
     /// accessors across class inheritance.
     pub const property_overrides_accessor: u32 = 2610;
@@ -10303,6 +10305,20 @@ pub const Checker = struct {
                     // abstract. Methods with a body count as concrete
                     // implementations and satisfy any inherited
                     // abstract member of the same name.
+                    if (fn_p.flags.is_abstract and fn_p.body != hir_mod.none_node_id and !fn_p.flags.is_constructor) {
+                        // TS1245: an abstract method may not carry an
+                        // implementation. Anchor at the method name so the
+                        // baseline column matches tsc which underlines the
+                        // identifier (e.g. `foo` in `abstract foo() {}`).
+                        const anchor_node: NodeId = if (fn_p.name != hir_mod.none_node_id) fn_p.name else m;
+                        const name_str = self.string_interner.get(member_name);
+                        const msg = try std.fmt.allocPrint(
+                            self.diag_arena.allocator(),
+                            "Method '{s}' cannot have an implementation because it is marked abstract.",
+                            .{name_str},
+                        );
+                        try self.report(anchor_node, TsCodes.abstract_method_implementation, msg);
+                    }
                     const seen = if (fn_p.flags.is_static) &static_method_seen else &method_seen;
                     const overload_info_before = seen.get(member_name);
                     // Abstract methods (and ambient overloads inside an
@@ -10440,8 +10456,11 @@ pub const Checker = struct {
                         // type. Mirrors fixture
                         // `propertyNamedPrototype.ts(3,12)`. Anchored
                         // at the property name (op.key) to match the
-                        // baseline column.
-                        if (!op_is_computed) {
+                        // baseline column. Suppress in ambient context
+                        // (declare class / `.d.ts` virtual section) —
+                        // ambient declarations describe an external
+                        // construction and tsc omits the conflict there.
+                        if (!op_is_computed and !self.classHasLeadingDeclare(node) and !self.virtualSectionIsDeclarationFile(node)) {
                             const proto_str = self.string_interner.get(member_name);
                             if (std.mem.eql(u8, proto_str, "prototype")) {
                                 const class_name_str: []const u8 = if (c.name != hir_mod.none_node_id and self.hir.kindOf(c.name) == .identifier)
@@ -52603,6 +52622,64 @@ test "checker: TS1318 anchors at accessor name, not the member start" {
     }
     try T.expect(saw_aa);
     try T.expect(saw_bb);
+}
+
+test "checker: abstract method with body emits TS1245 anchored at method name" {
+    // tsc fires TS1245 (`Method '<name>' cannot have an implementation
+    // because it is marked abstract.`) at the method identifier, not
+    // the leading `abstract` keyword. Mirrors conformance fixture
+    // `classAbstractMethodWithImplementation.ts(2,14)`.
+    const src =
+        \\abstract class A {
+        \\    abstract foo() {}
+        \\}
+    ;
+    const s = try newSetup(src);
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+    var found = false;
+    var anchor_ok = false;
+    for (s.checker.diagnostics.items) |d| {
+        if (d.code != TsCodes.abstract_method_implementation) continue;
+        found = true;
+        if (std.mem.indexOf(u8, d.message, "'foo'") == null) continue;
+        const span = s.checker.hir.spanOf(d.node);
+        if (span.end <= src.len and std.mem.eql(u8, src[span.start..span.end], "foo")) {
+            anchor_ok = true;
+        }
+    }
+    try T.expect(found);
+    try T.expect(anchor_ok);
+}
+
+test "checker: abstract method without body does NOT emit TS1245" {
+    const s = try newSetup(
+        \\abstract class A {
+        \\    abstract foo(): void;
+        \\}
+    );
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+    for (s.checker.diagnostics.items) |d| {
+        try T.expect(d.code != TsCodes.abstract_method_implementation);
+    }
+}
+
+test "checker: static prototype in `declare class` suppresses TS2699" {
+    // Ambient class declarations describe an external construction
+    // site, so tsc never emits TS2699 for `static prototype` in them.
+    // Mirrors conformance fixture
+    // `staticPropertyNameConflictsInAmbientContext.ts` (no errors).
+    const s = try newSetup(
+        \\declare class C {
+        \\    static prototype: C;
+        \\}
+    );
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+    for (s.checker.diagnostics.items) |d| {
+        try T.expect(d.code != TsCodes.static_prototype_conflict);
+    }
 }
 
 test "checker: strict false accepts null constructor parameter default" {

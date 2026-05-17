@@ -2967,6 +2967,15 @@ pub const Parser = struct {
                             try self.reportCodeAt(at.span.start, at.line, 1089, "'async' modifier cannot appear on a constructor declaration.");
                         }
                     }
+                    // TS1242: `abstract constructor` is forbidden even inside
+                    // abstract classes — `abstract` may only appear on a
+                    // class, method, or property declaration. tsc anchors at
+                    // the `abstract` keyword.
+                    if (name_tok.kind == .kw_constructor and mods.is_abstract) {
+                        if (mods.abstract_token) |at| {
+                            try self.reportCodeAt(at.span.start, at.line, 1242, "'abstract' modifier can only appear on a class, method, or property declaration.");
+                        }
+                    }
                     const name_id = try self.internPropertyName(name_tok, name_span);
                     const name_node = try self.builder.addIdentifier(name_span, name_id);
                     const fn_node = try self.builder.addFnDeclGeneric(
@@ -9581,6 +9590,36 @@ test "parser: virtual ts section overrides declaration-file ambient default" {
     for (s.parser.diagnostics.items) |d| {
         try T.expect(d.code != 1183);
     }
+}
+
+test "parser: abstract constructor inside abstract class reports TS1242" {
+    // tsc fires TS1242 (`'abstract' modifier can only appear on a
+    // class, method, or property declaration.`) for an
+    // `abstract constructor` even when the enclosing class itself
+    // carries `abstract`. The diagnostic is anchored at the
+    // `abstract` keyword. Mirrors conformance fixture
+    // `classAbstractConstructor.ts(2,5)`.
+    var s = try newTestSetup(
+        \\abstract class A {
+        \\    abstract constructor() {}
+        \\}
+    );
+    defer destroyTestSetup(s);
+    _ = try s.parser.parseSourceFile();
+    var found = false;
+    var anchor_ok = false;
+    for (s.parser.diagnostics.items) |d| {
+        if (d.code != 1242) continue;
+        found = true;
+        if (d.pos < s.parser.source.len and
+            s.parser.source.len >= d.pos + 8 and
+            std.mem.eql(u8, s.parser.source[d.pos .. d.pos + 8], "abstract"))
+        {
+            anchor_ok = true;
+        }
+    }
+    try T.expect(found);
+    try T.expect(anchor_ok);
 }
 
 test "parser: contextual keyword may be variable name" {
