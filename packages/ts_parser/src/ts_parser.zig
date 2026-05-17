@@ -3178,7 +3178,14 @@ pub const Parser = struct {
                         // `cannot appear on class elements of this kind`
                         // report — tsc emits both. Mirrors upstream
                         // `parserMemberFunctionDeclaration5.ts(2,19)`.
+                        //
+                        // EXCEPTION: `declare constructor() {}` is covered
+                        // by TS1031 alone (TS1183 is suppressed since
+                        // constructors aren't representable as ambient
+                        // overloads anyway). Mirrors upstream tsc on
+                        // `parserConstructorDeclaration4.ts`.
                         if (mods.declare_token != null and
+                            name_tok.kind != .kw_constructor and
                             !self.isAmbientContextAt(member_start.span.start))
                         {
                             try self.reportCodeAt(body_start.span.start, body_start.line, 1183, "An implementation cannot be declared in ambient contexts.");
@@ -15164,6 +15171,19 @@ test "parser: 'declare module \"Foo\" {}' does not report TS1035" {
     _ = try s.parser.parseSourceFile();
     for (s.parser.diagnostics.items) |d| {
         try T.expect(d.code != 1035);
+    }
+}
+
+test "parser: 'declare constructor() {}' inside a class body does NOT report TS1183" {
+    // The per-member `declare` modifier on a constructor is rejected
+    // with TS1031 only — TS1183 must NOT cascade. Pin upstream tsc's
+    // single-diagnostic behaviour from `parserConstructorDeclaration4.ts`.
+    const src = "class C {\n  declare constructor() { }\n}";
+    var s = try newTestSetup(src);
+    defer destroyTestSetup(s);
+    _ = try s.parser.parseSourceFile();
+    for (s.parser.diagnostics.items) |d| {
+        try T.expect(d.code != 1183);
     }
 }
 
