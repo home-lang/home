@@ -3288,7 +3288,17 @@ pub const Parser = struct {
                     const params = try self.parseParameterList();
                     defer self.gpa.free(params);
                     var return_type: NodeId = hir_mod.none_node_id;
-                    if (self.match(.colon)) return_type = try self.parseReturnTypeAnnotation(params);
+                    if (self.match(.colon)) {
+                        return_type = try self.parseReturnTypeAnnotation(params);
+                        // TS1093 — a constructor cannot carry a return-type
+                        // annotation. Anchor at the annotation node's start
+                        // so the column points at the type, not the colon.
+                        // Mirrors `parserConstructorDeclaration10.ts(2,18)`.
+                        if (name_tok.kind == .kw_constructor and return_type != hir_mod.none_node_id) {
+                            const ret_span = self.hir.spanOf(return_type);
+                            try self.reportCodeAt(ret_span.start, self.lineAt(ret_span.start), 1093, "Type annotation cannot appear on a constructor declaration.");
+                        }
+                    }
                     var body: NodeId = hir_mod.none_node_id;
                     if (self.peek().kind == .open_brace) {
                         const body_start = self.peek();

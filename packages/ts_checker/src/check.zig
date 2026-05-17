@@ -4037,6 +4037,10 @@ pub const Checker = struct {
         if (f.return_type == hir_mod.none_node_id) return;
         if (f.flags.is_generator or f.flags.is_async) return;
         if (f.flags.is_setter) return;
+        // TS1093 already covers the misuse of a return-type annotation
+        // on a constructor — tsc suppresses TS2355 there so the parser
+        // diagnostic isn't doubled up.
+        if (f.flags.is_constructor) return;
         // Only fire on function/method bodies (block_stmt). Arrow
         // expression bodies and other concise forms always return the
         // expression value, so they never trigger TS2355.
@@ -63141,5 +63145,29 @@ test "checker: default export merging with mixed export status emits TS2395 too"
     }
     try T.expectEqual(@as(usize, 2), count_2652);
     try T.expectEqual(@as(usize, 2), count_2395);
+}
+
+test "checker: TS1093 fires on constructor return-type annotation and TS2355 stays silent" {
+    // Mirrors upstream `parserConstructorDeclaration10.ts(2,18)` — the
+    // parser emits TS1093 anchored at the return-type node, and the
+    // checker suppresses TS2355 ("must return a value") so the
+    // baseline matches.
+    const s = try newSetup(
+        \\class C {
+        \\  constructor(): number { }
+        \\}
+    );
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+    var count_1093: usize = 0;
+    var count_2355: usize = 0;
+    for (s.parser.diagnostics.items) |d| {
+        if (d.code == 1093) count_1093 += 1;
+    }
+    for (s.checker.diagnostics.items) |d| {
+        if (d.code == TsCodes.fn_must_return_value) count_2355 += 1;
+    }
+    try T.expectEqual(@as(usize, 1), count_1093);
+    try T.expectEqual(@as(usize, 0), count_2355);
 }
 
