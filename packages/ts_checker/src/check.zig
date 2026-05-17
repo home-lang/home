@@ -40909,6 +40909,12 @@ pub const Checker = struct {
                 const v = hir_mod.varDeclOf(self.hir, target);
                 if (v.name == hir_mod.none_node_id or self.hir.kindOf(v.name) != .identifier) return;
                 if (v.type_annotation != hir_mod.none_node_id or v.init != hir_mod.none_node_id) return;
+                // `using` / `await using` for-of heads bind via an explicit
+                // resource manager (Symbol.dispose / Symbol.asyncDispose),
+                // not via type-inferred element types — tsc emits TS2448
+                // alone for the same-name source (e.g.
+                // `for await (await using of of of) {}`) and skips TS7022.
+                if (v.is_using or v.is_await_using) return;
                 break :blk v.name;
             },
             else => return,
@@ -40937,7 +40943,16 @@ pub const Checker = struct {
                 has_self_reference = true;
             }
         }
-        if (self.nodeContainsIdentifier(source, id.name)) {
+        // tsc's circularity TS7022 trigger only fires under
+        // `noImplicitAny` (see `reportCircularityError` upstream). For
+        // fixtures with `// @strict: false` or an explicit
+        // `// @noImplicitAny: false`, type inference can resolve to
+        // `any` without emitting TS7022 — only the related TS2448
+        // remains. Mirrors `ES5For-of20` (strict:false → no TS7022)
+        // vs `ES5For-of17` (default strict → TS7022 fires).
+        const no_implicit_any_off = self.sourceDirectiveValueMentions("strict", "false") or
+            self.sourceDirectiveValueMentions("noImplicitAny", "false");
+        if (!no_implicit_any_off and self.nodeContainsIdentifier(source, id.name)) {
             has_self_reference = true;
         }
         if (has_self_reference) {
@@ -62404,6 +62419,49 @@ test "checker: for-of let-binding self-referenced in iterable emits TS7022" {
     }
     try T.expect(found_7022);
     try T.expect(!found_2454);
+}
+
+test "checker: for-of let-binding self-reference under @strict:false skips TS7022" {
+    // Mirrors upstream `ES5For-of20`: with `// @strict: false`
+    // (noImplicitAny off), tsc's circular-initializer trigger
+    // (`reportCircularityError`) does NOT emit TS7022 — only the
+    // related TS2448 fires for the source's TDZ reference. Mirrors
+    // the difference between `ES5For-of17` (no strict directive →
+    // emits TS7022) and `ES5For-of20` (strict:false → no TS7022).
+    const s = try newSetup(
+        \\// @strict: false
+        \\for (let v of []) {
+        \\    let v;
+        \\    for (let v of [v]) {
+        \\        const v;
+        \\    }
+        \\}
+    );
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+    for (s.checker.diagnostics.items) |d| {
+        try T.expect(d.code != TsCodes.variable_self_reference_implicitly_any);
+    }
+}
+
+test "checker: for-await await-using same-name source does not emit TS7022" {
+    // Mirrors upstream `awaitUsingDeclarationsInForAwaitOf.2`:
+    // `for await (await using of of of) {}` — tsc emits TS2448 only
+    // (the `of` source reference is in the resource binding's TDZ)
+    // and skips TS7022 because `using` / `await using` bind through
+    // an explicit resource manager rather than via inferred element
+    // types. The TS7022 trigger would otherwise misfire here.
+    const s = try newSetup(
+        \\// @strict: false
+        \\async function test() {
+        \\  for await (await using of of of) {};
+        \\}
+    );
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+    for (s.checker.diagnostics.items) |d| {
+        try T.expect(d.code != TsCodes.variable_self_reference_implicitly_any);
+    }
 }
 
 test "checker: default export merging with namespace and interface anchors at name" {
