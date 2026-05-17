@@ -17019,13 +17019,21 @@ pub const Checker = struct {
         if (member_node == container) return canonical;
         // The key span (for `object_property`) reads the source-written
         // form; `interface_member` has no separate key node, so fall
-        // back to the canonical interned name there.
+        // back to the canonical interned name there. Computed keys
+        // get wrapped in `[…]` so TS2411 prose matches upstream's
+        // `Property '[""]'` / `Property '["get1"]'` shape on
+        // fixtures like `computedPropertyNames42_ES6.ts(8,5)` and
+        // `computedPropertyNames45_ES6.ts(10,5)`.
         switch (self.hir.kindOf(member_node)) {
             .object_property => {
                 const op = hir_mod.objectPropertyOf(self.hir, member_node);
                 const key_span = self.hir.spanOf(op.key);
                 if (key_span.start >= key_span.end or key_span.end > src.len) return canonical;
-                return src[key_span.start..key_span.end];
+                const key_text = src[key_span.start..key_span.end];
+                if (!op.is_computed) return key_text;
+                const arena = self.diag_arena.allocator();
+                const wrapped = std.fmt.allocPrint(arena, "[{s}]", .{key_text}) catch return key_text;
+                return wrapped;
             },
             else => return canonical,
         }
@@ -17115,10 +17123,27 @@ pub const Checker = struct {
         index_type: TypeId,
         index_kind: []const u8,
     ) ![]const u8 {
-        const prop_type_text = (try self.simpleDiagnosticTypeName(prop_type)) orelse
-            (try self.allocObjectTypeShape(prop_type));
-        const index_type_text = (try self.simpleDiagnosticTypeName(index_type)) orelse
-            (try self.allocObjectTypeShape(index_type));
+        // Signature types render via `allocCallSignatureFnTypeName` as
+        // `() => Foo` / `new (x: T) => U`. Pins TS2411 prose for
+        // class-method computed properties like
+        // `computedPropertyNames40_ES6.ts(8,5)` and
+        // `computedPropertyNames40_ES5.ts(8,5)`.
+        const prop_type_text: ?[]const u8 = blk: {
+            if (try self.simpleDiagnosticTypeName(prop_type)) |n| break :blk n;
+            if (try self.allocObjectTypeShape(prop_type)) |s| break :blk s;
+            if (self.interner.isSignature(prop_type)) {
+                if (try self.allocCallSignatureFnTypeName(prop_type)) |s| break :blk s;
+            }
+            break :blk null;
+        };
+        const index_type_text: ?[]const u8 = blk: {
+            if (try self.simpleDiagnosticTypeName(index_type)) |n| break :blk n;
+            if (try self.allocObjectTypeShape(index_type)) |s| break :blk s;
+            if (self.interner.isSignature(index_type)) {
+                if (try self.allocCallSignatureFnTypeName(index_type)) |s| break :blk s;
+            }
+            break :blk null;
+        };
         if (prop_type_text != null and index_type_text != null) {
             return try std.fmt.allocPrint(
                 self.diag_arena.allocator(),
@@ -32754,9 +32779,43 @@ pub const Checker = struct {
         _ = symbol_idx;
         if (member_t == types.Primitive.any or key_t == types.Primitive.any or key_t == types.Primitive.unknown) return;
         const key_is_symbol = try self.computedPropertyKeyTypeIsSymbolLike(key_t);
+        // Render `[<source-text>]` for the property name when the
+        // source span is available so TS2411 prose matches upstream
+        // `Property '[1 << 6]' of type 'Foo'` / `Property '[""]' of
+        // type '() => Foo'` (fixtures `computedPropertyNames38/39_ES{5,6}`,
+        // `computedPropertyNames40_ES{5,6}`).
+        const display_name: ?[]const u8 = blk: {
+            const src = self.source orelse break :blk null;
+            const span = self.hir.spanOf(node);
+            if (span.start >= span.end or span.end > src.len) break :blk null;
+            const key_text = src[span.start..span.end];
+            const arena = self.diag_arena.allocator();
+            break :blk std.fmt.allocPrint(arena, "[{s}]", .{key_text}) catch null;
+        };
+        // Anchor at the opening `[` of the computed key so the
+        // diagnostic column matches upstream's
+        // `computedPropertyNames39_ES{5,6}.ts(8,9)` baseline rather
+        // than landing one character later inside the expression.
+        const bracket_pos: ?u32 = blk: {
+            const src = self.source orelse break :blk null;
+            const span = self.hir.spanOf(node);
+            if (span.start == 0 or span.start > src.len) break :blk null;
+            var i: usize = span.start;
+            while (i > 0) {
+                i -= 1;
+                if (src[i] == '[') break :blk @intCast(i);
+                if (src[i] != ' ' and src[i] != '\t' and src[i] != '\n' and src[i] != '\r') break;
+            }
+            break :blk null;
+        };
         if (!key_is_symbol and string_idx != types.Primitive.none and string_idx != types.Primitive.any) {
             if (!(self.engine.isAssignableTo(member_t, string_idx) catch true)) {
-                try self.report(node, TsCodes.property_not_assignable_to_index_type, "Property is not assignable to string index type.");
+                if (display_name) |dn| {
+                    const msg = try self.formatPropertyNotAssignableToIndexType(dn, member_t, string_idx, "string");
+                    try self.reportAt(node, bracket_pos, TsCodes.property_not_assignable_to_index_type, msg);
+                } else {
+                    try self.reportAt(node, bracket_pos, TsCodes.property_not_assignable_to_index_type, "Property is not assignable to string index type.");
+                }
             }
         }
         if (self.computedPropertyKeyTypeIsNumberLike(key_t) and
@@ -32764,7 +32823,12 @@ pub const Checker = struct {
             number_idx != types.Primitive.any)
         {
             if (!(self.engine.isAssignableTo(member_t, number_idx) catch true)) {
-                try self.report(node, TsCodes.property_not_assignable_to_index_type, "Property is not assignable to number index type.");
+                if (display_name) |dn| {
+                    const msg = try self.formatPropertyNotAssignableToIndexType(dn, member_t, number_idx, "number");
+                    try self.reportAt(node, bracket_pos, TsCodes.property_not_assignable_to_index_type, msg);
+                } else {
+                    try self.reportAt(node, bracket_pos, TsCodes.property_not_assignable_to_index_type, "Property is not assignable to number index type.");
+                }
             }
         }
     }
@@ -36457,6 +36521,41 @@ pub const Checker = struct {
             if (arg_flags.is_object_type and !has_name) {
                 if (try self.simpleDiagnosticTypeName(param_t)) |param_text| {
                     if (try self.allocObjectTypeShape(display_arg_t)) |arg_text| {
+                        return try std.fmt.allocPrint(
+                            self.diag_arena.allocator(),
+                            "Argument of type '{s}' is not assignable to parameter of type '{s}'.",
+                            .{ arg_text, param_text },
+                        );
+                    }
+                }
+            }
+        }
+        // Symmetric fallback: when both arg and param are anonymous
+        // object types (e.g. shorthand-property literal passed to a
+        // parameter typed as an anonymous shape), render BOTH sides
+        // via `allocObjectTypeShape` so TS2345 prose for fixtures like
+        // `objectLiteralShorthandPropertiesFunctionArgument2.ts(7,5)`
+        // reads `Argument of type '{ name: string; id: number; }' is
+        // not assignable to parameter of type '{ a: string; id: number; }'.`
+        // instead of the positional placeholder. Restricted to non-named,
+        // non-aliased object types on BOTH sides so we don't accidentally
+        // re-render arbitrary nominal instances.
+        if (display_arg_t < self.interner.pool.typeCount() and param_t < self.interner.pool.typeCount()) {
+            const arg_flags = self.interner.pool.flagsOf(display_arg_t);
+            const param_flags = self.interner.pool.flagsOf(param_t);
+            const arg_has_name = self.namedTypeForId(display_arg_t) != null or
+                self.alias_display_names.contains(display_arg_t) or
+                self.class_name_by_instance.contains(display_arg_t);
+            const param_has_name = self.namedTypeForId(param_t) != null or
+                self.alias_display_names.contains(param_t) or
+                self.class_name_by_instance.contains(param_t);
+            if (arg_flags.is_object_type and param_flags.is_object_type and
+                !arg_has_name and !param_has_name and
+                self.fixedTupleLength(display_arg_t) == null and
+                self.fixedTupleLength(param_t) == null)
+            {
+                if (try self.allocObjectTypeShape(display_arg_t)) |arg_text| {
+                    if (try self.allocObjectTypeShape(param_t)) |param_text| {
                         return try std.fmt.allocPrint(
                             self.diag_arena.allocator(),
                             "Argument of type '{s}' is not assignable to parameter of type '{s}'.",
@@ -59718,6 +59817,88 @@ test "checker: TS2345 renders argument and parameter type names" {
         }
     }
     try T.expect(saw_2345);
+}
+
+test "checker: TS2411 renders bracketed computed accessor name and anchors at `[`" {
+    // Mirrors upstream `computedPropertyNames39_ES5.ts(8,9)`:
+    //   Property '[1 << 6]' of type 'Foo' is not assignable to 'number' index type 'Foo2'.
+    // The diagnostic must anchor at the opening `[` (col 9) — one
+    // character before the computed-key expression itself — and must
+    // include the bracketed key plus both property and index types.
+    const s = try newSetup(
+        \\class Foo { x: any }
+        \\class Foo2 { x: any; y: any }
+        \\class C {
+        \\    [s: number]: Foo2;
+        \\    get [1 << 6]() { return new Foo() }
+        \\}
+    );
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+
+    var saw_full = false;
+    for (s.checker.diagnostics.items) |diag| {
+        if (diag.code != TsCodes.property_not_assignable_to_index_type) continue;
+        if (std.mem.indexOf(u8, diag.message, "Property '[1 << 6]' of type 'Foo'") != null and
+            std.mem.indexOf(u8, diag.message, "is not assignable to 'number' index type 'Foo2'") != null)
+        {
+            saw_full = true;
+        }
+    }
+    try T.expect(saw_full);
+}
+
+test "checker: TS2411 wraps computed property key in brackets" {
+    // Mirrors upstream `computedPropertyNames42_ES6.ts(8,5)`:
+    //   Property '[""]' of type 'Foo' is not assignable to 'string' index type 'Foo2'.
+    const s = try newSetup(
+        \\class Foo { x: any }
+        \\class Foo2 { x: any; y: any }
+        \\class C {
+        \\    [s: string]: Foo2;
+        \\    [""]: Foo;
+        \\}
+    );
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+
+    var saw_bracketed_2411 = false;
+    for (s.checker.diagnostics.items) |diag| {
+        if (diag.code != TsCodes.property_not_assignable_to_index_type) continue;
+        if (std.mem.indexOf(u8, diag.message, "Property '[\"\"]' of type 'Foo'") != null) {
+            saw_bracketed_2411 = true;
+        }
+    }
+    try T.expect(saw_bracketed_2411);
+}
+
+test "checker: TS2345 renders anonymous-shape argument and parameter" {
+    // Mirrors upstream `objectLiteralShorthandPropertiesFunctionArgument2.ts(7,5)`:
+    //   Argument of type '{ name: string; id: number; }' is not assignable
+    //   to parameter of type '{ a: string; id: number; }'.
+    const s = try newSetup(
+        \\var id: number = 1;
+        \\var name: string = "n";
+        \\var person = { name, id };
+        \\function foo(p: { a: string; id: number }) { }
+        \\foo(person);
+    );
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+
+    var saw_named_2345 = false;
+    for (s.checker.diagnostics.items) |diag| {
+        if (diag.code != TsCodes.argument_type_mismatch) continue;
+        if (std.mem.indexOf(u8, diag.message, "Argument of type '{ ") != null and
+            std.mem.indexOf(u8, diag.message, "parameter of type '{ a: string;") != null)
+        {
+            saw_named_2345 = true;
+        }
+        // Regression guard: must not emit the positional placeholder
+        // for this case.
+        try T.expect(std.mem.indexOf(u8, diag.message, "Argument is not assignable to parameter at position") == null);
+    }
+    try T.expect(saw_named_2345);
 }
 
 test "checker: seeded JSON global resolves stringify and parse" {
