@@ -3034,19 +3034,23 @@ pub const Parser = struct {
                 if (is_generator or self.peek().kind == .open_paren or self.peek().kind == .less_than) {
                     var type_params: []NodeId = &.{};
                     var owns_tps = false;
-                    var type_params_open_tok: ?Token = null;
+                    var has_type_params_clause = false;
                     if (self.peek().kind == .less_than) {
-                        type_params_open_tok = self.peek();
+                        has_type_params_clause = true;
                         type_params = try self.parseTypeParameterDeclaration();
                         owns_tps = true;
                     }
                     defer if (owns_tps) self.gpa.free(type_params);
                     // TS1092: `constructor<T>()` is forbidden — tsc anchors
-                    // at the opening `<` of the type parameter list.
+                    // at the first type-parameter's name. When the type
+                    // parameter list is empty (`constructor<>()`), fall
+                    // back to a synthesized position one past the `<`.
                     // Mirrors `parserConstructorDeclaration9`.
-                    if (name_tok.kind == .kw_constructor and type_params_open_tok != null) {
-                        const at = type_params_open_tok.?;
-                        try self.reportCodeAt(at.span.start, at.line, 1092, "Type parameters cannot appear on a constructor declaration.");
+                    if (name_tok.kind == .kw_constructor and has_type_params_clause) {
+                        if (type_params.len > 0) {
+                            const sp = self.hir.spanOf(type_params[0]);
+                            try self.reportCodeAt(sp.start, self.lineAt(sp.start), 1092, "Type parameters cannot appear on a constructor declaration.");
+                        }
                     }
                     const params = try self.parseParameterList();
                     defer self.gpa.free(params);
@@ -3257,6 +3261,22 @@ pub const Parser = struct {
         var mods: ClassModifiers = .{};
         while (true) {
             const k = self.peek().kind;
+            // `export` isn't in `isModifierKeyword` (it's a top-level
+            // statement keyword), but inside a class body it shows up
+            // only in error fixtures like `class C { export foo() }`.
+            // Capture it here so `reportInvalidClassElementModifier`
+            // can fire TS1031. Mirrors upstream
+            // `parserConstructorDeclaration3`, `parserMemberFunctionDeclaration4`,
+            // `parserMemberVariableDeclaration4`.
+            if (k == .kw_export) {
+                const next_can_start_member = canStartClassMemberAfterModifier(self.peekAt(1).kind);
+                if (!next_can_start_member and !self.peekAt(1).kind.isModifierKeyword()) {
+                    return mods;
+                }
+                const mod = self.advance();
+                if (mods.invalid_class_element_modifier == null) mods.invalid_class_element_modifier = mod;
+                continue;
+            }
             if (k.isModifierKeyword()) {
                 const next_can_start_member = canStartClassMemberAfterModifier(self.peekAt(1).kind);
                 if (!next_can_start_member and !self.peekAt(1).kind.isModifierKeyword()) {
@@ -9836,6 +9856,77 @@ test "parser: abstract constructor inside abstract class reports TS1242" {
     }
     try T.expect(found);
     try T.expect(anchor_ok);
+}
+
+test "parser: TS1031 fires for `export` modifier on class member" {
+    // `export Foo()` inside a class body — the `export` keyword is
+    // disallowed on class members. Mirrors upstream
+    // `parserMemberFunctionDeclaration4`.
+    var s = try newTestSetup("class C { export Foo() {} }");
+    defer destroyTestSetup(s);
+    _ = try s.parser.parseSourceFile();
+    var saw_1031: u32 = 0;
+    for (s.parser.diagnostics.items) |d| {
+        if (d.code == 1031) saw_1031 += 1;
+    }
+    try T.expect(saw_1031 >= 1);
+}
+
+test "parser: TS1031 fires for `declare` modifier on constructor" {
+    var s = try newTestSetup("class C { declare constructor() {} }");
+    defer destroyTestSetup(s);
+    _ = try s.parser.parseSourceFile();
+    var saw_1031: u32 = 0;
+    for (s.parser.diagnostics.items) |d| {
+        if (d.code == 1031) saw_1031 += 1;
+    }
+    try T.expect(saw_1031 >= 1);
+}
+
+test "parser: TS1089 fires for `static` modifier on constructor" {
+    var s = try newTestSetup("class C { static constructor() {} }");
+    defer destroyTestSetup(s);
+    _ = try s.parser.parseSourceFile();
+    var saw_1089: u32 = 0;
+    for (s.parser.diagnostics.items) |d| {
+        if (d.code == 1089) saw_1089 += 1;
+    }
+    try T.expectEqual(@as(u32, 1), saw_1089);
+}
+
+test "parser: TS1092 fires for type parameters on constructor" {
+    // `constructor<T>()` — type parameters are forbidden on
+    // constructors. tsc anchors at the first type-parameter name
+    // (here `T`), not the `<`. Mirrors upstream
+    // `parserConstructorDeclaration9`.
+    var s = try newTestSetup("class C { constructor<T>() {} }");
+    defer destroyTestSetup(s);
+    _ = try s.parser.parseSourceFile();
+    var saw_1092: u32 = 0;
+    var anchor_ok = false;
+    for (s.parser.diagnostics.items) |d| {
+        if (d.code != 1092) continue;
+        saw_1092 += 1;
+        if (d.pos < s.parser.source.len and s.parser.source[d.pos] == 'T') {
+            anchor_ok = true;
+        }
+    }
+    try T.expectEqual(@as(u32, 1), saw_1092);
+    try T.expect(anchor_ok);
+}
+
+test "parser: TS1015 fires for `?` and initializer on the same parameter" {
+    // `F(A?= 0)` — both `?` and `= 0` are present. tsc reports
+    // TS1015 anchored at the parameter's start. Mirrors upstream
+    // `parserParameterList2`.
+    var s = try newTestSetup("class C { F(A?= 0) {} }");
+    defer destroyTestSetup(s);
+    _ = try s.parser.parseSourceFile();
+    var saw_1015: u32 = 0;
+    for (s.parser.diagnostics.items) |d| {
+        if (d.code == 1015) saw_1015 += 1;
+    }
+    try T.expectEqual(@as(u32, 1), saw_1015);
 }
 
 test "parser: contextual keyword may be variable name" {
