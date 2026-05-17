@@ -37188,6 +37188,19 @@ pub const Checker = struct {
                     try self.report(ref_node, TsCodes.static_member_type_parameter, "Static members cannot reference class type parameters.");
                 }
             },
+            .index_signature => {
+                // `static [k: string]: T` on a class with type
+                // parameters — the value-type slot must not reference
+                // the class's own type parameters since static state
+                // is shared across instantiations. Mirrors fixture
+                // `staticIndexers` (`class E<T> { static [x: string]: T; }`).
+                const is = hir_mod.indexSignatureOf(self.hir, member);
+                if (!is.is_static or is.value_type == hir_mod.none_node_id) return;
+                if (self.typeNodeReferencesTypeParams(is.value_type, class_type_params)) {
+                    const ref_node = self.firstTypeParamRefIn(is.value_type, class_type_params) orelse is.value_type;
+                    try self.report(ref_node, TsCodes.static_member_type_parameter, "Static members cannot reference class type parameters.");
+                }
+            },
             .fn_decl, .fn_expr, .arrow_fn => {
                 const f = hir_mod.fnDeclOf(self.hir, member);
                 if (!f.flags.is_static) return;
@@ -42739,6 +42752,34 @@ test "checker: declare module with two asterisks emits TS5061" {
         }
     }
     try T.expect(found);
+}
+
+test "checker: static index signature value cannot reference class type parameter (TS2302)" {
+    const b = try newBoundSetup(
+        \\class E<T> {
+        \\    static [x: string]: T;
+        \\}
+    );
+    defer destroyBoundSetup(b);
+    try b.base.checker.checkSourceFile(b.base.root);
+    var found = false;
+    for (b.base.checker.diagnostics.items) |d| {
+        if (d.code == TsCodes.static_member_type_parameter) found = true;
+    }
+    try T.expect(found);
+}
+
+test "checker: static index signature without type-param ref does not emit TS2302" {
+    const b = try newBoundSetup(
+        \\class C {
+        \\    static [x: string]: string;
+        \\}
+    );
+    defer destroyBoundSetup(b);
+    try b.base.checker.checkSourceFile(b.base.root);
+    for (b.base.checker.diagnostics.items) |d| {
+        try T.expect(d.code != TsCodes.static_member_type_parameter);
+    }
 }
 
 test "checker: class field named 'constructor' emits TS18006" {
