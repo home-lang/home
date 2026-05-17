@@ -9508,7 +9508,7 @@ pub const Checker = struct {
             // (`number`, `string`, …) suppress the diagnostic, but an
             // `any` default still falls through and reports.
             var inferred_from_default = false;
-            var t: TypeId = if (has_anno)
+            const t: TypeId = if (has_anno)
                 try self.lowererLowerWithTypeParams(pp.type_annotation)
             else if (pp.default_value != hir_mod.none_node_id and
                 pp.name != hir_mod.none_node_id and
@@ -9566,18 +9566,28 @@ pub const Checker = struct {
                 try self.report(p, TsCodes.rest_parameter_must_be_array_type, "A rest parameter must be of an array type.");
             }
             // `f(x?: T)` and `f(x: T = default)` both widen the
-            // parameter type to include `undefined` (matches the
-            // call-site behavior where the caller can omit the arg).
+            // signature parameter type to include `undefined` so
+            // callers can omit the arg. Inside the function body
+            // however, an `?:` parameter is still observably
+            // `T | undefined`, while a defaulted `= expr` parameter
+            // is just `T` because the default fills in for undefined
+            // before the body runs. Mirrors tsc's control-flow
+            // narrowing for defaulted params.
+            var signature_t: TypeId = t;
             if (pp.flags.is_optional or pp.default_value != hir_mod.none_node_id) {
-                t = self.unionWithUndefined(t) catch t;
+                signature_t = self.unionWithUndefined(t) catch t;
             }
-            self.hir.setType(p, t);
-            if (pp.name != hir_mod.none_node_id) self.hir.setType(pp.name, t);
+            const body_t: TypeId = if (pp.flags.is_optional and pp.default_value == hir_mod.none_node_id)
+                signature_t
+            else
+                t;
+            self.hir.setType(p, body_t);
+            if (pp.name != hir_mod.none_node_id) self.hir.setType(pp.name, body_t);
             if (is_this_param) {
-                explicit_this_t = t;
+                explicit_this_t = body_t;
                 continue;
             }
-            try param_types.append(self.gpa, t);
+            try param_types.append(self.gpa, signature_t);
             try param_omittable.append(self.gpa, pp.flags.is_rest or !has_anno or pp.flags.is_optional or pp.default_value != hir_mod.none_node_id or t == types.Primitive.void_t);
             if (self.signature_predicates.get(t)) |param_pred| {
                 try param_predicates.append(self.gpa, .{ .param_index = value_param_index, .pred = param_pred });
