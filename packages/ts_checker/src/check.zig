@@ -1003,6 +1003,15 @@ pub const Checker = struct {
     /// in their member types; those nested lookups should see the base
     /// lib shape instead of recursively expanding the same augmentation.
     symbol_global_building: bool = false,
+    /// Per-checker count of spelling-suggestion attempts for unresolved
+    /// names. Mirrors tsc's `suggestionCount` / `maximumSuggestionCount`
+    /// gate (`checker.ts`): after 10 attempts, `reportCannotFindName`
+    /// stops emitting TS2552 ("Did you mean ...?") and falls back to
+    /// the plain TS2304 form. Without this cap a fixture with many
+    /// references to the same unresolved identifier (e.g. `$ERROR`)
+    /// stays on TS2552 indefinitely while upstream downgrades to TS2304
+    /// after the 10th attempt — see `parserS7.6_A4.2_T1.errors.txt`.
+    suggestion_count: u32 = 0,
     /// Strictness flags driving optional diagnostics.
     strict_flags: StrictFlags = .{},
     /// Hard-coded `lib.d.ts` substitute — `String.prototype`,
@@ -30688,7 +30697,18 @@ pub const Checker = struct {
         // namespace resolution and never offers a "Did you mean
         // 'foo'?" hint that crosses the dot. Mirrors fixtures like
         // `typeofAnExportedType` and `typeofANonExportedType`.
-        const skip_suggestions = std.mem.indexOfScalar(u8, name_str, '.') != null;
+        //
+        // Also skip once we've already attempted 10 spelling
+        // suggestions in this checker run, matching tsc's
+        // `maximumSuggestionCount = 10` cap in `checker.ts`. Without
+        // this gate a fixture that references the same unresolved
+        // identifier dozens of times (e.g. `$ERROR` in
+        // `parserS7.6_A4.2_T1`) stays on TS2552 indefinitely while
+        // upstream downgrades to TS2304 after the 10th attempt.
+        const maximum_suggestion_count: u32 = 10;
+        const suggestion_budget_exhausted = self.suggestion_count >= maximum_suggestion_count;
+        const skip_suggestions = std.mem.indexOfScalar(u8, name_str, '.') != null or
+            suggestion_budget_exhausted;
 
         const considerCandidate = struct {
             fn call(typo: []const u8, cand_str: []const u8, b: *Best) void {
@@ -30818,6 +30838,12 @@ pub const Checker = struct {
             .code = if (has_suggestion) TsCodes.cannot_find_name_did_you_mean else TsCodes.cannot_find_name,
             .message = msg,
         });
+        // Match tsc's `suggestionCount++` at the tail of the
+        // unresolved-name reporting path. Increment regardless of
+        // whether a suggestion was found this time — the counter
+        // governs how many spelling-suggestion *attempts* the
+        // checker is willing to make per file.
+        self.suggestion_count +|= 1;
     }
 
     fn lowerAsciiIdentifierEndsWith(value: []const u8, suffix: []const u8) bool {
@@ -58437,6 +58463,32 @@ test "checker: TS2552 case-insensitive suggestion for $ERROR -> Error" {
         saw = true;
     }
     try T.expect(saw);
+}
+
+test "checker: TS2552 spelling-suggestion budget caps at 10 occurrences" {
+    // Mirrors tsc's `maximumSuggestionCount = 10` cap in `checker.ts`.
+    // Twelve references to the same unresolved name `$ERROR` should
+    // yield ten TS2552 ("Did you mean 'Error'?") suggestions followed
+    // by two bare TS2304 diagnostics — matching upstream baselines
+    // like `parserS7.6_A4.2_T1.errors.txt`.
+    const src =
+        "$ERROR();$ERROR();$ERROR();$ERROR();$ERROR();$ERROR();" ++
+        "$ERROR();$ERROR();$ERROR();$ERROR();$ERROR();$ERROR();";
+    const s = try newSetup(src);
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+    var did_you_mean: u32 = 0;
+    var plain: u32 = 0;
+    for (s.checker.diagnostics.items) |d| {
+        if (std.mem.indexOf(u8, d.message, "'$ERROR'") == null) continue;
+        switch (d.code) {
+            TsCodes.cannot_find_name_did_you_mean => did_you_mean += 1,
+            TsCodes.cannot_find_name => plain += 1,
+            else => {},
+        }
+    }
+    try T.expectEqual(@as(u32, 10), did_you_mean);
+    try T.expectEqual(@as(u32, 2), plain);
 }
 
 test "checker: TS2552 suggests RegExp for regexp-suffixed typo" {
