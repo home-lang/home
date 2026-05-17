@@ -10401,9 +10401,9 @@ pub const Checker = struct {
                         if (op_is_computed and
                             !op_is_method and
                             !op.is_static and
-                            !self.computedKeyIsUnresolvedIdentifier(op.key) and
                             self.strict_flags.strict_property_initialization and
                             op.type_annotation != hir_mod.none_node_id and
+                            !self.typeAnnotationContainsUnresolvedRef(op.type_annotation) and
                             op.value == hir_mod.none_node_id and
                             !self.classFieldHasOptionalToken(m) and
                             !self.classNodeIsInsideAmbientDeclaredModule(node) and
@@ -10411,7 +10411,13 @@ pub const Checker = struct {
                             !self.virtualSectionIsDeclarationFile(node))
                         {
                             if (!self.typeExplicitlyIncludesUndefined(dynamic_field_t)) {
-                                try self.report(m, TsCodes.property_not_initialized, "Property '[computed]' has no initializer and is not definitely assigned in the constructor.");
+                                const key_text = self.computedKeyIdentifierText(op.key) orelse "computed";
+                                const msg = try std.fmt.allocPrint(
+                                    self.diag_arena.allocator(),
+                                    "Property '[{s}]' has no initializer and is not definitely assigned in the constructor.",
+                                    .{key_text},
+                                );
+                                try self.report(m, TsCodes.property_not_initialized, msg);
                             }
                         }
                         continue;
@@ -30059,13 +30065,18 @@ pub const Checker = struct {
         // `e.message`, `e.stack`, `e.name`. The `__construct` slot
         // is omitted intentionally so existing `new Error(...)`
         // constructor checks (which assume `Error` falls through to
-        // `any` via the bare-identifier fallback) keep working.
+        // `any` via the bare-identifier fallback) keep working. A
+        // `__call` slot lets bare `Error(...)` calls type-check —
+        // `interface ErrorConstructor` in lib.d.ts declares both a
+        // construct and a call signature returning `Error`.
+        const call_sig = try self.seedAnySig1(any_t);
         const m = [_]types.ObjectMember{
             .{ .name = self.string_interner.intern("name") catch return error.OutOfMemory, .type = string_t, .is_optional = false, .is_readonly = false, .is_method = false },
             .{ .name = self.string_interner.intern("message") catch return error.OutOfMemory, .type = string_t, .is_optional = false, .is_readonly = false, .is_method = false },
             .{ .name = self.string_interner.intern("stack") catch return error.OutOfMemory, .type = string_t, .is_optional = true, .is_readonly = false, .is_method = false },
             .{ .name = self.string_interner.intern("prototype") catch return error.OutOfMemory, .type = any_t, .is_optional = false, .is_readonly = false, .is_method = false },
             .{ .name = self.string_interner.intern("captureStackTrace") catch return error.OutOfMemory, .type = try self.seedAnySig2(types.Primitive.void_t), .is_optional = true, .is_readonly = false, .is_method = true },
+            .{ .name = self.string_interner.intern("__call") catch return error.OutOfMemory, .type = call_sig, .is_optional = false, .is_readonly = false, .is_method = true },
         };
         return self.interner.internObjectType(&m) catch return error.OutOfMemory;
     }
@@ -31220,6 +31231,64 @@ pub const Checker = struct {
     fn computedKeyIsUnresolvedIdentifier(self: *Checker, key: NodeId) bool {
         if (key == hir_mod.none_node_id or self.hir.kindOf(key) != .identifier) return false;
         return !self.identifierHasNarrowableValueBinding(key);
+    }
+
+    /// Returns the source text for a computed key when it is a simple
+    /// identifier (e.g. `[e2]` -> `"e2"`). Used to render TS2564 with
+    /// the upstream `Property '[NAME]'` shape instead of a placeholder.
+    /// Returns null when the key is not a bare identifier.
+    fn computedKeyIdentifierText(self: *Checker, key: NodeId) ?[]const u8 {
+        if (key == hir_mod.none_node_id) return null;
+        if (self.hir.kindOf(key) != .identifier) return null;
+        const id = hir_mod.identifierOf(self.hir, key);
+        return self.string_interner.get(id.name);
+    }
+
+    /// Returns true when a type annotation contains any bare type-ref
+    /// that doesn't resolve to a visible type declaration, builtin,
+    /// or type parameter. Used to suppress TS2564 for computed class
+    /// fields like `[e]: Type` where `Type` is unresolved — tsc skips
+    /// TS2564 since the field's type cannot be analyzed. Mirrors
+    /// `parserComputedPropertyName9`.
+    fn typeAnnotationContainsUnresolvedRef(self: *Checker, type_node: NodeId) bool {
+        if (type_node == hir_mod.none_node_id) return false;
+        return switch (self.hir.kindOf(type_node)) {
+            .type_ref => blk: {
+                const r = hir_mod.typeRefOf(self.hir, type_node);
+                for (hir_mod.typeRefArgs(self.hir, type_node)) |arg| {
+                    if (self.typeAnnotationContainsUnresolvedRef(arg)) break :blk true;
+                }
+                if (r.qualifier_len != 0 or r.args_len != 0) break :blk false;
+                if (self.typeRefNameExists(r.name) or self.visibleTypeDeclarationExistsAt(type_node, r.name)) break :blk false;
+                const raw = self.string_interner.get(r.name);
+                if (self.lowerBuiltinObjectType(raw) != null) break :blk false;
+                if (std.mem.eql(u8, raw, "any") or
+                    std.mem.eql(u8, raw, "unknown") or
+                    std.mem.eql(u8, raw, "never") or
+                    std.mem.eql(u8, raw, "void") or
+                    std.mem.eql(u8, raw, "null") or
+                    std.mem.eql(u8, raw, "undefined") or
+                    std.mem.eql(u8, raw, "string") or
+                    std.mem.eql(u8, raw, "number") or
+                    std.mem.eql(u8, raw, "boolean") or
+                    std.mem.eql(u8, raw, "bigint") or
+                    std.mem.eql(u8, raw, "symbol") or
+                    std.mem.eql(u8, raw, "object") or
+                    self.isBuiltinName(r.name))
+                {
+                    break :blk false;
+                }
+                break :blk true;
+            },
+            .array_type => self.typeAnnotationContainsUnresolvedRef(hir_mod.arrayTypeOf(self.hir, type_node).element),
+            .union_type => for (hir_mod.unionTypeMembers(self.hir, type_node)) |member| {
+                if (self.typeAnnotationContainsUnresolvedRef(member)) break true;
+            } else false,
+            .intersection_type => for (hir_mod.intersectionTypeMembers(self.hir, type_node)) |member| {
+                if (self.typeAnnotationContainsUnresolvedRef(member)) break true;
+            } else false,
+            else => false,
+        };
     }
 
     fn computedClassPropertyKeyIsSimpleLiteralNode(self: *Checker, key: NodeId, t: TypeId) bool {
@@ -33298,14 +33367,24 @@ pub const Checker = struct {
                     const anchor = if (self.typeContainsSymbol(lhs)) b.lhs else b.rhs;
                     const pos = self.symbolOperandAnchorPos(anchor);
                     try self.reportSymbolOperatorAt(anchor, pos, op_text);
-                } else if (self.strict_flags.strict_null_checks and self.typeIsExactNullish(lhs)) {
-                    try self.reportNullishRelationalOperand(b.lhs, lhs);
-                } else if (self.strict_flags.strict_null_checks and self.typeIsExactNullish(rhs)) {
-                    try self.reportNullishRelationalOperand(b.rhs, rhs);
-                } else if (!self.isRelationalOperandAllowed(lhs) or !self.isRelationalOperandAllowed(rhs) or
-                    self.relationalComparisonInvalid(lhs, rhs))
-                {
-                    try self.reportRelationalOperatorCannotBeAppliedWithTypes(node, op_text, lhs, rhs);
+                } else {
+                    // tsc fires TS18050 on EACH nullish operand of a
+                    // relational comparison, not just the first.
+                    // Mirrors `comparisonOperatorWithIdenticalPrimitiveType.ts`
+                    // where `null < null` emits at both operand
+                    // columns (15,11) AND (15,18). Equality ops
+                    // (==, !=, ===, !==) do NOT trigger TS18050 in
+                    // tsc — only ordered comparisons (lt/le/gt/ge).
+                    const lhs_nullish = self.strict_flags.strict_null_checks and self.typeIsExactNullish(lhs);
+                    const rhs_nullish = self.strict_flags.strict_null_checks and self.typeIsExactNullish(rhs);
+                    if (lhs_nullish) try self.reportNullishRelationalOperand(b.lhs, lhs);
+                    if (rhs_nullish) try self.reportNullishRelationalOperand(b.rhs, rhs);
+                    if (!lhs_nullish and !rhs_nullish and (!self.isRelationalOperandAllowed(lhs) or
+                        !self.isRelationalOperandAllowed(rhs) or
+                        self.relationalComparisonInvalid(lhs, rhs)))
+                    {
+                        try self.reportRelationalOperatorCannotBeAppliedWithTypes(node, op_text, lhs, rhs);
+                    }
                 }
                 break :blk types.Primitive.boolean_t;
             },
@@ -56592,6 +56671,30 @@ test "checker: bare arrow with unannotated param still fires TS7006" {
     try T.expect(saw_7006);
 }
 
+test "checker: comma sequence propagates contextual type only to RHS arrow" {
+    // Mirrors `contextuallyTypeCommaOperator03.ts` baseline:
+    // `let x: (a: string) => string; x = (a => a, b => b);` flags
+    // only the left arrow's `a` parameter, not the right arrow's
+    // `b` (the rightmost comma operand inherits the assignment's
+    // contextual signature).
+    const s = try newSetup(
+        \\let x: (a: string) => string;
+        \\x = (a => a, b => b);
+    );
+    defer destroySetup(s);
+    s.checker.setStrictFlags(.{ .no_implicit_any = true });
+    try s.checker.checkSourceFile(s.root);
+    var saw_a = false;
+    var saw_b = false;
+    for (s.checker.diagnostics.items) |diag| {
+        if (diag.code != TsCodes.parameter_implicitly_any) continue;
+        if (std.mem.indexOf(u8, diag.message, "'a'") != null) saw_a = true;
+        if (std.mem.indexOf(u8, diag.message, "'b'") != null) saw_b = true;
+    }
+    try T.expect(saw_a);
+    try T.expect(!saw_b);
+}
+
 test "checker: tuple out-of-bounds diagnostic renders tuple display" {
     const s = try newSetup(
         \\let t: [string, number];
@@ -56756,6 +56859,18 @@ test "checker: seeded Error global exposes message/name/stack" {
     try s.checker.checkSourceFile(s.root);
     for (s.checker.diagnostics.items) |d| {
         try T.expect(d.code != TsCodes.cannot_find_name);
+    }
+}
+
+test "checker: seeded Error global is callable without new" {
+    const s = try newSetup(
+        \\throw Error("boom");
+        \\const e = Error("oops");
+    );
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+    for (s.checker.diagnostics.items) |d| {
+        try T.expect(d.code != TsCodes.not_callable);
     }
 }
 
@@ -57999,4 +58114,30 @@ test "checker: class field annotation referencing undefined type emits TS2304" {
         if (d.code == TsCodes.cannot_find_name) saw_2304 = true;
     }
     try T.expect(saw_2304);
+}
+
+test "checker: relational op fires TS18050 on each nullish operand" {
+    // Mirrors `comparisonOperatorWithIdenticalPrimitiveType.ts`:
+    // `null < null` emits TS18050 at BOTH operand columns, not just
+    // the LHS. Equality operators (==, !=, ===, !==) deliberately
+    // do not trigger this — only ordered comparisons.
+    const s = try newSetup("var r = null < null;");
+    defer destroySetup(s);
+    s.checker.setStrictFlags(.{ .strict_null_checks = true });
+    try s.checker.checkSourceFile(s.root);
+    var nullish_count: usize = 0;
+    for (s.checker.diagnostics.items) |d| {
+        if (d.code == TsCodes.nullish_relational_operand) nullish_count += 1;
+    }
+    try T.expectEqual(@as(usize, 2), nullish_count);
+}
+
+test "checker: relational op skips TS18050 on equality operators" {
+    const s = try newSetup("var r = null == null;");
+    defer destroySetup(s);
+    s.checker.setStrictFlags(.{ .strict_null_checks = true });
+    try s.checker.checkSourceFile(s.root);
+    for (s.checker.diagnostics.items) |d| {
+        try T.expect(d.code != TsCodes.nullish_relational_operand);
+    }
 }
