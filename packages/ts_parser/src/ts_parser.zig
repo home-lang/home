@@ -113,6 +113,16 @@ pub const Parser = struct {
     class_is_abstract: bool,
     loop_depth: u32,
     loop_switch_depth: u32,
+    /// True when an enclosing function body (or the top level outside
+    /// any function) is currently inside an iteration or switch
+    /// statement. Used by `parseBreakStatement` / `parseContinueStatement`
+    /// to pick TS1107 ("Jump target cannot cross function boundary.")
+    /// instead of TS1105 / TS1104 when an unlabeled `break`/`continue`
+    /// sits in a nested function whose ancestor is a loop or switch.
+    /// `loop_depth` / `loop_switch_depth` are reset across function
+    /// boundaries so this flag carries the "is there a loop/switch
+    /// outside the current function" signal.
+    outer_loop_or_switch_active: bool,
     /// True when the parser is currently parsing statements directly
     /// under a `case`/`default` clause body (i.e. not inside a nested
     /// block). Used to gate TS1547/TS1548 for `using`/`await using`
@@ -183,6 +193,7 @@ pub const Parser = struct {
             .class_is_abstract = false,
             .loop_depth = 0,
             .loop_switch_depth = 0,
+            .outer_loop_or_switch_active = false,
             .in_switch_case_clause = false,
             .namespace_depth = 0,
             .strict_mode = false,
@@ -1768,8 +1779,19 @@ pub const Parser = struct {
             const lab_id = try self.internToken(lab_tok);
             label = try self.builder.addIdentifier(tokenSpan(lab_tok), lab_id);
             try self.checkLabelTarget(start, lab_id);
-        } else if (self.loop_switch_depth == 0) {
-            try self.reportCodeAt(start.span.start, start.line, 1105, "A 'break' statement can only be used within an enclosing iteration or switch statement.");
+        } else if (self.loop_switch_depth == 0 and !self.isAmbientContextAt(start.span.start)) {
+            // In ambient (.d.ts / `declare`) contexts the surrounding
+            // TS1036 "Statements are not allowed in ambient contexts"
+            // already covers the misuse — tsc suppresses TS1105 there
+            // to avoid double-reporting.
+            if (self.outer_loop_or_switch_active) {
+                // tsc treats an unlabeled `break` inside a nested
+                // function whose ancestor is a loop/switch as a
+                // cross-function jump, not a missing-target error.
+                try self.reportCodeAt(start.span.start, start.line, 1107, "Jump target cannot cross function boundary.");
+            } else {
+                try self.reportCodeAt(start.span.start, start.line, 1105, "A 'break' statement can only be used within an enclosing iteration or switch statement.");
+            }
         }
         try self.consumeStatementTerminator();
         const end_pos: u32 = if (self.cursor > 0) self.tokens[self.cursor - 1].span.end else start.span.end;
@@ -1784,8 +1806,15 @@ pub const Parser = struct {
             const lab_id = try self.internToken(lab_tok);
             label = try self.builder.addIdentifier(tokenSpan(lab_tok), lab_id);
             try self.checkLabelTarget(start, lab_id);
-        } else if (self.loop_depth == 0) {
-            try self.reportCodeAt(start.span.start, start.line, 1104, "A 'continue' statement can only be used within an enclosing iteration statement.");
+        } else if (self.loop_depth == 0 and !self.isAmbientContextAt(start.span.start)) {
+            // See `parseBreakStatement`: ambient contexts get TS1036
+            // for the statement itself, so suppress the redundant
+            // TS1104 "continue must be in an iteration" message.
+            if (self.outer_loop_or_switch_active) {
+                try self.reportCodeAt(start.span.start, start.line, 1107, "Jump target cannot cross function boundary.");
+            } else {
+                try self.reportCodeAt(start.span.start, start.line, 1104, "A 'continue' statement can only be used within an enclosing iteration statement.");
+            }
         }
         try self.consumeStatementTerminator();
         const end_pos: u32 = if (self.cursor > 0) self.tokens[self.cursor - 1].span.end else start.span.end;
@@ -2014,6 +2043,21 @@ pub const Parser = struct {
             const prev_generator_depth = self.generator_depth;
             self.generator_depth = if (is_generator) prev_generator_depth + 1 else 0;
             defer self.generator_depth = prev_generator_depth;
+            // Iteration/switch nesting is reset across function
+            // boundaries — an unlabeled `break`/`continue` inside the
+            // nested function body cannot reach an outer loop. The
+            // saved flag lets `parseBreakStatement` /
+            // `parseContinueStatement` pick TS1107 over TS1105/TS1104
+            // when the inner body sits below an outer loop/switch.
+            const prev_loop_depth = self.loop_depth;
+            const prev_loop_switch_depth = self.loop_switch_depth;
+            const prev_outer_loop_or_switch_active = self.outer_loop_or_switch_active;
+            self.outer_loop_or_switch_active = prev_outer_loop_or_switch_active or prev_loop_switch_depth > 0;
+            self.loop_depth = 0;
+            self.loop_switch_depth = 0;
+            defer self.loop_depth = prev_loop_depth;
+            defer self.loop_switch_depth = prev_loop_switch_depth;
+            defer self.outer_loop_or_switch_active = prev_outer_loop_or_switch_active;
             body = try self.parseBlockStatement();
         } else if (self.peek().kind == .arrow and !recovered_missing_name) {
             const arrow_tok = self.advance();

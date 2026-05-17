@@ -1559,8 +1559,13 @@ pub const Checker = struct {
                 const suppress_recovered_top_level_return = self.topLevelReturnBeforeRecoveredCloseBrace(node);
                 if (self.function_body_depth == 0 and
                     !self.returnInsideUnsupportedWithStatement(node) and
-                    !suppress_recovered_top_level_return)
+                    !suppress_recovered_top_level_return and
+                    !self.virtualSectionIsDeclarationFile(node))
                 {
+                    // In ambient (.d.ts) contexts the surrounding TS1036
+                    // ("Statements are not allowed in ambient contexts")
+                    // already covers the misuse — tsc suppresses TS1108
+                    // there to avoid double-reporting.
                     try self.report(node, TsCodes.return_outside_function, "A 'return' statement can only be used within a function body.");
                 }
                 const r = hir_mod.returnOf(self.hir, node);
