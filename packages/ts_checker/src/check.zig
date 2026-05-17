@@ -13485,20 +13485,24 @@ pub const Checker = struct {
         parent_class_name: ?hir_mod.StringId,
         member_name: hir_mod.StringId,
     ) CheckError!void {
-        var parent_name = parent_class_name orelse return;
+        const parent_name = parent_class_name orelse return;
         // Walk the `extends` chain so TS2610 fires for grandparent
         // accessor declarations too (mirrors propertyOverridesAccessors6
         // where `C extends B extends A` and only `A` declares the
         // getter). Stop walking if a class declares `member_name` as a
-        // data property first — that path uses TS2611 instead.
+        // data property first — that path uses TS2611 instead. The
+        // diagnostic prose names the direct parent — tsc reports against
+        // the declared base class regardless of which ancestor originally
+        // defined the accessor.
+        var ancestor = parent_name;
         while (true) {
-            if (self.class_property_members.getPtr(parent_name)) |props| {
+            if (self.class_property_members.getPtr(ancestor)) |props| {
                 if (props.contains(member_name)) return;
             }
-            if (self.class_accessor_members.getPtr(parent_name)) |acc| {
+            if (self.class_accessor_members.getPtr(ancestor)) |acc| {
                 if (acc.contains(member_name)) break;
             }
-            parent_name = self.class_parent.get(parent_name) orelse return;
+            ancestor = self.class_parent.get(ancestor) orelse return;
         }
         // Match tsc's full TS2610 message:
         //   `'<member>' is defined as an accessor in class '<parent>',
@@ -13549,24 +13553,28 @@ pub const Checker = struct {
         parent_class_name: ?hir_mod.StringId,
         member_name: hir_mod.StringId,
     ) CheckError!void {
-        var parent_name = parent_class_name orelse return;
+        const parent_name = parent_class_name orelse return;
         // Walk the `extends` chain to find the nearest ancestor that
         // declares `member_name` as a data property — TS2611 fires for
         // grandparent declarations too (mirrors accessorsOverrideProperty10
         // where `C extends B extends A` and only `A` declares `x`).
         // Stop walking if any class on the chain declares `member_name`
         // as an accessor (then the property-vs-accessor mismatch is a
-        // different diagnostic, TS2610) or as abstract (ambient).
+        // different diagnostic, TS2610) or as abstract (ambient). The
+        // diagnostic prose names the direct parent — tsc reports against
+        // the declared base class regardless of which ancestor originally
+        // defined the property.
+        var ancestor = parent_name;
         while (true) {
-            if (self.class_accessor_members.getPtr(parent_name)) |acc| {
+            if (self.class_accessor_members.getPtr(ancestor)) |acc| {
                 if (acc.contains(member_name)) return;
             }
-            if (self.class_property_members.getPtr(parent_name)) |props| {
+            if (self.class_property_members.getPtr(ancestor)) |props| {
                 if (props.contains(member_name)) break;
             }
-            parent_name = self.class_parent.get(parent_name) orelse return;
+            ancestor = self.class_parent.get(ancestor) orelse return;
         }
-        if (self.class_abstract_members.getPtr(parent_name)) |parent_abs| {
+        if (self.class_abstract_members.getPtr(ancestor)) |parent_abs| {
             if (parent_abs.contains(member_name)) return;
         }
         // Match tsc's full TS2611 message:
