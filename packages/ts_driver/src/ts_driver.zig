@@ -232,6 +232,25 @@ fn reportDeprecatedOptionDirectives(
                 .message = msg,
             });
             c.has_errors = true;
+
+            // TS5105 — `verbatimModuleSyntax` is incompatible with the
+            // module-system targets that don't preserve ES module syntax
+            // (UMD/AMD/System all desugar imports to plain calls).
+            // Upstream tsc emits this as a global option-validation
+            // diagnostic. Mirrors `verbatimModuleSyntaxCompat`.
+            if (directiveValue(source, "verbatimModuleSyntax")) |vms_raw| {
+                if (std.ascii.eqlIgnoreCase(vms_raw, "true")) {
+                    try c.diagnostics.append(gpa, .{
+                        .phase = .parse,
+                        .pos = 0,
+                        .line = 0,
+                        .code = 5105,
+                        .is_global = true,
+                        .message = try gpa.dupe(u8, "Option 'verbatimModuleSyntax' cannot be used when 'module' is set to 'UMD', 'AMD', or 'System'."),
+                    });
+                    c.has_errors = true;
+                }
+            }
         }
     }
 }
@@ -2341,4 +2360,26 @@ test "driver: @module: esnext does not emit TS5107" {
     for (c.diagnostics.items) |d| {
         try T.expect(d.code != 5107);
     }
+}
+
+test "driver: @verbatimModuleSyntax + @module: system emits TS5105" {
+    // Mirrors `verbatimModuleSyntaxCompat`: tsc rejects the
+    // combination of `verbatimModuleSyntax: true` with `module=UMD`,
+    // `module=AMD`, or `module=System` because those module formats
+    // can't preserve the original ES module syntax. The diagnostic is
+    // a global option-validation entry (no source span).
+    var c = try compileSource(T.allocator,
+        \\// @verbatimModuleSyntax: true
+        \\// @module: system
+        \\export {};
+    , .{ .no_emit = true });
+    defer {
+        c.deinit();
+        T.allocator.destroy(c);
+    }
+    var found_5105 = false;
+    for (c.diagnostics.items) |d| {
+        if (d.code == 5105) found_5105 = true;
+    }
+    try T.expect(found_5105);
 }
