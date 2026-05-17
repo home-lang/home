@@ -139,6 +139,12 @@ pub const TsCodes = struct {
     /// accessor.` Fires when a derived class declares an accessor for
     /// the same name a base class declared as a method.
     pub const method_overridden_by_accessor: u32 = 2423;
+    /// TS18006 — `Classes may not have a field named 'constructor'.`
+    /// Fires for class field declarations like `"constructor" = 3;`
+    /// or `constructor: T;` where the property name resolves to
+    /// `constructor` (string-literal or identifier key). Computed
+    /// keys (`["constructor"]`) are exempt.
+    pub const class_field_named_constructor: u32 = 18006;
     pub const cannot_find_namespace: u32 = 2503;
     pub const cannot_find_namespace_did_you_mean: u32 = 2833;
     pub const type_only_used_as_value: u32 = 2693;
@@ -11259,6 +11265,22 @@ pub const Checker = struct {
                                 "Properties with the 'accessor' modifier are only available when targeting ECMAScript 2015 and higher.",
                             ),
                         });
+                    }
+                    // TS18006 — non-computed class field whose name is
+                    // `constructor` collides with the synthetic class
+                    // constructor binding. Skip for auto-accessors
+                    // (which already have stricter computed-key rules)
+                    // and for computed keys (handled by op_is_computed).
+                    if (!op_is_computed and !is_auto_accessor) {
+                        const member_str = self.string_interner.get(member_name);
+                        if (std.mem.eql(u8, member_str, "constructor")) {
+                            try self.reportAt(
+                                m,
+                                @intCast(self.hir.spanOf(op.key).start),
+                                TsCodes.class_field_named_constructor,
+                                "Classes may not have a field named 'constructor'.",
+                            );
+                        }
                     }
                     if (!op.is_static) {
                         if (is_auto_accessor) {
@@ -42717,6 +42739,34 @@ test "checker: declare module with two asterisks emits TS5061" {
         }
     }
     try T.expect(found);
+}
+
+test "checker: class field named 'constructor' emits TS18006" {
+    const b = try newBoundSetup(
+        \\class X1 {
+        \\  "constructor" = 3;
+        \\}
+    );
+    defer destroyBoundSetup(b);
+    try b.base.checker.checkSourceFile(b.base.root);
+    var found = false;
+    for (b.base.checker.diagnostics.items) |d| {
+        if (d.code == TsCodes.class_field_named_constructor) found = true;
+    }
+    try T.expect(found);
+}
+
+test "checker: computed class field [constructor] does not emit TS18006" {
+    const b = try newBoundSetup(
+        \\class X2 {
+        \\  ["constructor"] = 3;
+        \\}
+    );
+    defer destroyBoundSetup(b);
+    try b.base.checker.checkSourceFile(b.base.root);
+    for (b.base.checker.diagnostics.items) |d| {
+        try T.expect(d.code != TsCodes.class_field_named_constructor);
+    }
 }
 
 test "checker: accessor overriding base method emits TS2423" {
