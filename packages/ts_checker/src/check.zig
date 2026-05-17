@@ -5601,15 +5601,20 @@ pub const Checker = struct {
             const s = self.unwrapExportDecl(raw);
             if (s == hir_mod.none_node_id) continue;
 
-            var refs: std.AutoHashMapUnmanaged(hir_mod.StringId, void) = .empty;
-            defer refs.deinit(self.gpa);
-            try self.collectIdentifierRefs(s, &refs);
-            if (self.classDeclarationName(s)) |own_name| {
-                _ = refs.remove(own_name);
-            }
-            var it = refs.keyIterator();
-            while (it.next()) |name_ptr| {
-                const name = name_ptr.*;
+            // Collect refs WITH nodes so the TS2449 diagnostic can
+            // anchor at the actual `ClassName` reference (e.g. the
+            // `C2` in `class C1 extends C2`) instead of the whole
+            // statement — matches upstream tsc column anchors. See
+            // fixture `symbolProperty33.ts(1,18)`.
+            var ref_nodes: std.ArrayListUnmanaged(NameRef) = .empty;
+            defer ref_nodes.deinit(self.gpa);
+            try self.collectIdentifierRefsWithNodes(s, &ref_nodes);
+            const own_name_opt = self.classDeclarationName(s);
+            for (ref_nodes.items) |ref| {
+                const name = ref.name;
+                if (own_name_opt) |own| {
+                    if (own == name) continue;
+                }
                 if (!class_names.contains(name) or declared.contains(name) or reported.contains(name)) continue;
                 if (self.sourceHasCheckJsDirective() and self.virtualSectionIsJsLike(s)) continue;
                 const name_str = self.string_interner.get(name);
@@ -5619,7 +5624,7 @@ pub const Checker = struct {
                     .{name_str},
                 );
                 try self.diagnostics.append(self.gpa, .{
-                    .node = s,
+                    .node = ref.node,
                     .code = TsCodes.class_used_before_declaration,
                     .message = msg,
                 });
@@ -6117,6 +6122,11 @@ pub const Checker = struct {
                 const op = hir_mod.objectPropertyOf(self.hir, node);
                 try self.collectIdentifierRefsWithNodes(op.value, out);
                 if (op.is_computed) try self.collectIdentifierRefsWithNodes(op.key, out);
+            },
+            .class_decl, .class_expr => {
+                const c = hir_mod.classOf(self.hir, node);
+                try self.collectIdentifierRefsWithNodes(c.extends, out);
+                for (hir_mod.classMembers(self.hir, node)) |m| try self.collectIdentifierRefsWithNodes(m, out);
             },
             else => {},
         }
@@ -32039,6 +32049,36 @@ pub const Checker = struct {
         });
     }
 
+    /// Like `reportSymbolOperator` but anchors at an explicit byte
+    /// position (used for parenthesized operands so the diagnostic
+    /// column matches tsc, which anchors at the opening `(`).
+    fn reportSymbolOperatorAt(self: *Checker, node: NodeId, pos: ?u32, op: []const u8) CheckError!void {
+        const msg = try std.fmt.allocPrint(
+            self.diag_arena.allocator(),
+            "The '{s}' operator cannot be applied to type 'symbol'.",
+            .{op},
+        );
+        try self.diagnostics.append(self.gpa, .{
+            .node = node,
+            .pos = pos,
+            .code = TsCodes.symbol_operator_not_allowed,
+            .message = msg,
+        });
+    }
+
+    /// Walk back over any immediately-preceding `(` characters so the
+    /// anchor for symbol-operator diagnostics on parenthesized
+    /// operands lands at the opening paren (matching tsc's column).
+    fn symbolOperandAnchorPos(self: *Checker, node: NodeId) ?u32 {
+        const src = self.source orelse return null;
+        const span = self.hir.spanOf(node);
+        if (span.start == 0 or span.start > src.len) return null;
+        var i: usize = span.start;
+        while (i > 0 and src[i - 1] == '(') : (i -= 1) {}
+        if (i == span.start) return null;
+        return @intCast(i);
+    }
+
     fn reportArithmeticOperand(
         self: *Checker,
         node: NodeId,
@@ -32983,8 +33023,25 @@ pub const Checker = struct {
         return switch (b.op) {
             // Arithmetic — number unless either side is string (matches JS).
             .add => blk: {
-                if (self.typeContainsSymbol(lhs) or self.typeContainsSymbol(rhs)) {
-                    try self.reportSymbolOperator(node, "+");
+                // tsc only emits TS2469 for symbol-typed operands when
+                // the OTHER operand is string-like or any-like (the
+                // mixed-with-string/any case where string concat is
+                // ambiguous). When both sides are symbol/numeric/etc.
+                // the TS2365 "Operator '+' cannot be applied" diagnostic
+                // below covers it instead. Mirrors fixture
+                // `symbolType6.ts` rows for `s + ""` (string side
+                // present → TS2469) versus `s + s` / `s + 0` (no
+                // string side → TS2365 only).
+                const lhs_has_sym = self.typeContainsSymbol(lhs);
+                const rhs_has_sym = self.typeContainsSymbol(rhs);
+                if (lhs_has_sym or rhs_has_sym) {
+                    const other = if (lhs_has_sym) rhs else lhs;
+                    const other_partner_ok = self.typeMaybeStringLike(other) or self.typeIsAnyLike(other);
+                    if (other_partner_ok) {
+                        const anchor = if (lhs_has_sym) b.lhs else b.rhs;
+                        const pos = self.symbolOperandAnchorPos(anchor);
+                        try self.reportSymbolOperatorAt(anchor, pos, "+");
+                    }
                 }
                 // tsc routes binary `+` through `checkNonNullType` on
                 // each operand UNLESS one side is already string-like
@@ -33091,7 +33148,16 @@ pub const Checker = struct {
                     else => unreachable,
                 };
                 if (self.typeContainsSymbol(lhs) or self.typeContainsSymbol(rhs)) {
-                    try self.reportSymbolOperator(node, op_text);
+                    // tsc anchors TS2469 at the symbol-typed operand,
+                    // not the whole binop. When BOTH sides contain
+                    // symbol, the LHS wins. Mirrors fixtures
+                    // `symbolType8.ts(11,6)` (RHS-only) and
+                    // `symbolType8.ts(12,1)` (LHS). When the operand
+                    // is parenthesized the span starts at `(`, so we
+                    // include any wrapping parens on the anchor.
+                    const anchor = if (self.typeContainsSymbol(lhs)) b.lhs else b.rhs;
+                    const pos = self.symbolOperandAnchorPos(anchor);
+                    try self.reportSymbolOperatorAt(anchor, pos, op_text);
                 } else if (self.strict_flags.strict_null_checks and self.typeIsExactNullish(lhs)) {
                     try self.reportNullishRelationalOperand(b.lhs, lhs);
                 } else if (self.strict_flags.strict_null_checks and self.typeIsExactNullish(rhs)) {
@@ -33154,7 +33220,12 @@ pub const Checker = struct {
         return switch (u.op) {
             .neg, .plus, .bit_not => blk: {
                 if (self.typeContainsSymbol(operand_t)) {
-                    try self.reportSymbolOperator(node, switch (u.op) {
+                    // tsc anchors TS2469 at the operand (including any
+                    // wrapping parens), not at the leading operator.
+                    // Mirrors fixtures `symbolType3.ts(7,3)` /
+                    // `(12,2)` for `+ Symbol()` and `+(Symbol() || 0)`.
+                    const pos = self.symbolOperandAnchorPos(u.operand);
+                    try self.reportSymbolOperatorAt(u.operand, pos, switch (u.op) {
                         .neg => "-",
                         .plus => "+",
                         .bit_not => "~",
@@ -33262,7 +33333,11 @@ pub const Checker = struct {
             try self.report(l.lhs, TsCodes.void_truthiness, "An expression of type 'void' cannot be tested for truthiness.");
         }
         if (l.op == .@"or" and self.hir.kindOf(l.lhs) == .object_literal) {
-            try self.report(l.lhs, TsCodes.expression_always_truthy, "This kind of expression is always truthy.");
+            // tsc anchors at the opening `(` for parenthesized LHS
+            // forms like `({}) || s`. Mirrors fixture
+            // `symbolType11.ts(7,1)`.
+            const lhs_pos = self.symbolOperandAnchorPos(l.lhs);
+            try self.reportAt(l.lhs, lhs_pos, TsCodes.expression_always_truthy, "This kind of expression is always truthy.");
         }
         if (l.op == .@"and" and self.expressionAlwaysTruthyInLogicalAnd(l.lhs, lhs)) {
             try self.report(l.lhs, TsCodes.expression_always_truthy, "This kind of expression is always truthy.");
@@ -37271,7 +37346,7 @@ pub const Checker = struct {
         // `other` must be a primitive of a DIFFERENT family — only
         // then does the no-overlap diagnostic widen the literal.
         const other_is_primitive_family = oflags.is_string or oflags.is_number or
-            oflags.is_boolean or oflags.is_bigint;
+            oflags.is_boolean or oflags.is_bigint or oflags.is_symbol;
         if (!other_is_primitive_family) return false;
         const literal_family_matches = (lflags.is_string and oflags.is_string) or
             (lflags.is_number and oflags.is_number) or
@@ -42654,6 +42729,89 @@ test "checker: class used before declaration emits TS2449" {
         if (d.code == TsCodes.class_used_before_declaration) found = true;
     }
     try T.expect(found);
+}
+
+test "checker: TS2449 anchors at the forward class reference (not the using stmt)" {
+    // Mirrors fixture `symbolProperty33.ts(1,18)` — the anchor must
+    // land on `C2` inside `extends C2`, not on the whole `class C1`
+    // statement.
+    const source =
+        \\class C1 extends C2 {}
+        \\class C2 {}
+    ;
+    const s = try newSetup(source);
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+    var found_at_ref = false;
+    const expected_start: u32 = @intCast(std.mem.indexOf(u8, source, "extends C2").? + "extends ".len);
+    for (s.checker.diagnostics.items) |d| {
+        if (d.code != TsCodes.class_used_before_declaration) continue;
+        const span = s.hir.spanOf(d.node);
+        if (span.start == expected_start) found_at_ref = true;
+    }
+    try T.expect(found_at_ref);
+}
+
+test "checker: TS2872 anchors at opening paren for parenthesized always-truthy LHS" {
+    // `({}) || s` — tsc anchors TS2872 at col 1 (the `(`), not col 2
+    // (the `{`). Mirrors fixture `symbolType11.ts(7,1)`.
+    const source = "({}) || \"x\";\n";
+    const s = try newSetup(source);
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+    var found_at_paren = false;
+    for (s.checker.diagnostics.items) |d| {
+        if (d.code != TsCodes.expression_always_truthy) continue;
+        if (d.pos) |p| {
+            if (p == 0) found_at_paren = true;
+        }
+    }
+    try T.expect(found_at_paren);
+}
+
+test "checker: TS2367 widens boolean literal when other side is symbol" {
+    // For `s == true` (s: symbol) the diagnostic must read
+    // `'symbol' and 'boolean'`, not `'symbol' and 'true'`. Mirrors
+    // upstream `symbolType9.ts(3,1)`.
+    const source =
+        \\var s: symbol;
+        \\s == true;
+    ;
+    const s = try newSetup(source);
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+    var found = false;
+    for (s.checker.diagnostics.items) |d| {
+        if (d.code != TsCodes.no_overlap_comparison) continue;
+        if (std.mem.indexOf(u8, d.message, "'symbol' and 'boolean'") != null) found = true;
+    }
+    try T.expect(found);
+}
+
+test "checker: TS2469 relational op anchors at symbol-typed operand" {
+    // For `s < 0` the symbol-typed operand is the LHS — TS2469 anchors
+    // at the LHS expression, not the whole binop. Mirrors upstream
+    // tsc baselines for `symbolType8`.
+    const source =
+        \\var s: symbol;
+        \\s < 0;
+        \\0 < s;
+    ;
+    const s = try newSetup(source);
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+    const lhs_anchor: u32 = @intCast(std.mem.indexOf(u8, source, "s < 0").?);
+    const rhs_anchor: u32 = @intCast(std.mem.indexOf(u8, source, "0 < s").? + 4);
+    var hit_lhs = false;
+    var hit_rhs = false;
+    for (s.checker.diagnostics.items) |d| {
+        if (d.code != TsCodes.symbol_operator_not_allowed) continue;
+        const start = s.hir.spanOf(d.node).start;
+        if (start == lhs_anchor) hit_lhs = true;
+        if (start == rhs_anchor) hit_rhs = true;
+    }
+    try T.expect(hit_lhs);
+    try T.expect(hit_rhs);
 }
 
 test "checker: prior var declaration suppresses class used-before-declaration for merged JS constructor" {
