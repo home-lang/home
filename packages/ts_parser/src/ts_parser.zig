@@ -13790,6 +13790,24 @@ test "parser: delegated yield requires an operand" {
     try T.expectEqual(@as(u32, 1109), s.parser.diagnostics.items[0].code);
 }
 
+test "parser: delegated yield anchors TS1109 at the next token, not the `*`" {
+    // Mirrors YieldExpression5_es6 — `yield*\n}` reports TS1109
+    // at the `}` (next token after the missing operand), not at
+    // the end of the `*`. The anchor convention matches upstream
+    // tsc, which always anchors `Expression expected.` at the
+    // following token's start position.
+    var s = try newTestSetup("function* g() {\n  yield*\n}");
+    defer destroyTestSetup(s);
+
+    _ = try s.parser.parseSourceFile();
+    try T.expectEqual(@as(usize, 1), s.parser.diagnostics.items.len);
+    const d = s.parser.diagnostics.items[0];
+    try T.expectEqual(@as(u32, 1109), d.code);
+    // Source is `function* g() {\n  yield*\n}` — newlines at offsets
+    // 16 and 24. The `}` sits at byte 25, line 3, col 1.
+    try T.expectEqual(@as(u32, 3), d.line);
+}
+
 test "parser: top-level bare yield emits TS1212 under ES2015+ target" {
     // Mirrors YieldExpression1_es6 — `yield;` at top-level with an
     // ES2015 target makes `yield` a reserved word, so the parser must
