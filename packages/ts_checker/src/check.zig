@@ -2405,6 +2405,16 @@ pub const Checker = struct {
                         msg,
                     );
                 }
+                // Two `type` aliases sharing a name cannot merge the
+                // way interfaces can — upstream tsc emits TS2300 on
+                // BOTH the first and second declarations (anchored at
+                // the alias name). Mirrors fixture
+                // `typeAliasesForObjectTypes` which expects
+                // duplicate-identifier diagnostics on lines 10 and 11.
+                if (gop.value_ptr.is_type_alias and is_type_alias) {
+                    try self.reportDuplicateIdentifier(gop.value_ptr.node, name);
+                    try self.reportDuplicateIdentifier(node, name);
+                }
                 continue;
             }
 
@@ -8888,6 +8898,21 @@ pub const Checker = struct {
         var has_rest_param = false;
         var explicit_this_t: TypeId = types.Primitive.none;
         var value_param_index: u16 = 0;
+        // Pre-scan: if this is an accessor (`get`/`set`) and any
+        // parameter is a `this:` param (which is invalid — TS2784
+        // already fires), upstream tsc also suppresses TS7006 for any
+        // accompanying (untyped) value parameters since the whole
+        // signature shape is already malformed. Mirrors fixture
+        // `thisTypeInAccessorsNegative`.
+        var accessor_has_invalid_this = false;
+        if (f.flags.is_getter or f.flags.is_setter) {
+            for (params) |p_scan| {
+                if (self.isThisParameter(p_scan)) {
+                    accessor_has_invalid_this = true;
+                    break;
+                }
+            }
+        }
         for (params, 0..) |p, param_index| {
             const pp = hir_mod.parameterOf(self.hir, p);
             const is_this_param = self.isThisParameter(p);
@@ -9009,6 +9034,7 @@ pub const Checker = struct {
                 hir_mod.awaitExprOf(self.hir, pp.default_value).expr == hir_mod.none_node_id;
             if (!has_anno and !inferred_from_default and self.strict_flags.no_implicit_any and
                 !default_is_await_error_placeholder and
+                !accessor_has_invalid_this and
                 !self.parameterHasContextualType(node, p))
             {
                 // Binding-pattern parameters (`function f([a, b]) {}` /
@@ -17411,8 +17437,13 @@ pub const Checker = struct {
 
     fn reportInvalidUppercasePrimitiveTypeRef(self: *Checker, type_node: NodeId, name: hir_mod.StringId) CheckError!bool {
         const raw = self.string_interner.get(name);
+        // `Null` and `Undefined` are not real types; upstream emits a
+        // plain TS2304 ("Cannot find name") without offering a
+        // `Did you mean 'undefined'?` suggestion because the lowercase
+        // forms are value-position keywords, not type-position names.
+        // Mirrors fixture `directReferenceToUndefined`.
         if (std.mem.eql(u8, raw, "Null") or std.mem.eql(u8, raw, "Undefined")) {
-            try self.reportCannotFindName(type_node, name);
+            try self.reportCannotFindNamePlain(type_node, name);
             return true;
         }
         return false;
@@ -23393,10 +23424,28 @@ pub const Checker = struct {
     fn functionInterfaceMemberForCallableObject(self: *Checker, obj_t: TypeId, name: hir_mod.StringId) CheckError!?TypeId {
         if (!self.objectHasCallOrConstructSignature(obj_t)) return null;
         const function_name = self.string_interner.intern("Function") catch return error.OutOfMemory;
-        const function_t = self.type_names.get(function_name) orelse return null;
-        if (try self.lookupObjectMember(function_t, name)) |member_t| return member_t;
-        const string_idx = self.interner.objectStringIndex(function_t);
-        return if (string_idx != types.Primitive.none) string_idx else null;
+        if (self.type_names.get(function_name)) |function_t| {
+            if (try self.lookupObjectMember(function_t, name)) |member_t| return member_t;
+            const string_idx = self.interner.objectStringIndex(function_t);
+            return if (string_idx != types.Primitive.none) string_idx else null;
+        }
+        // Hardcoded fallback for fixtures without a real `lib.d.ts`
+        // backing — every Function-prototype member that upstream tsc
+        // resolves to here, typed as `any`. Without this, simple
+        // `i.apply` / `b.arguments` lookups on callable / constructable
+        // object types would spuriously fire TS2339. Mirrors
+        // `objectTypeWithCallSignatureAppearsToBeFunctionType` and
+        // `objectTypeWithCallSignatureHidingMembersOfFunction`.
+        const raw = self.string_interner.get(name);
+        const function_proto_members = [_][]const u8{
+            "apply",      "call",     "bind",          "toString",
+            "arguments",  "caller",   "length",        "name",
+            "prototype",  "constructor",
+        };
+        for (function_proto_members) |m| {
+            if (std.mem.eql(u8, raw, m)) return types.Primitive.any;
+        }
+        return null;
     }
 
     fn functionInterfaceStringIndexForCallableObject(self: *Checker, obj_t: TypeId) CheckError!?TypeId {
@@ -37625,6 +37674,7 @@ pub const Checker = struct {
         return buf.items;
     }
 
+
     /// "Weak type" detection: target type has only optional named
     /// members (and no index signatures / call / construct
     /// signatures), and the source's named members share no name
@@ -38321,11 +38371,15 @@ pub const Checker = struct {
                         try seen_names.append(self.gpa, member_name);
                         if (!first) try union_buf.appendSlice(arena_u, " | ");
                         first = false;
-                        // Wrap function/construct signature members in
-                        // parens within a union so `(() => string) |
-                        // (() => number)` reads unambiguously — matches
-                        // upstream tsc for `unionTypeLiterals.ts`.
-                        const needs_parens = std.mem.indexOf(u8, member_name, "=>") != null;
+                        // Wrap function/construct signature members and
+                        // intersection members in parens within a union
+                        // so `(() => string) | (() => number)` and
+                        // `(A & B) | (C & D)` read unambiguously —
+                        // matches upstream tsc for `unionTypeLiterals.ts`
+                        // and `intersectionAndUnionTypes.ts(23,1)`.
+                        const member_flags = self.interner.pool.flagsOf(member);
+                        const needs_parens = std.mem.indexOf(u8, member_name, "=>") != null or
+                            member_flags.is_intersection;
                         if (needs_parens) try union_buf.append(arena_u, '(');
                         try union_buf.appendSlice(arena_u, member_name);
                         if (needs_parens) try union_buf.append(arena_u, ')');
@@ -38345,7 +38399,9 @@ pub const Checker = struct {
                 }
                 // Intersections (`Real & Fake`) — render only when
                 // every member is nameable so the prose stays
-                // unambiguous.
+                // unambiguous. Union members get parens so prose like
+                // `(A | B) & (C | D)` is unambiguous; matches upstream
+                // tsc — see `intersectionAndUnionTypes.ts(31,1)`.
                 if (flags.is_intersection) {
                     var int_buf: std.ArrayListUnmanaged(u8) = .empty;
                     const arena_i = self.diag_arena.allocator();
@@ -38354,7 +38410,12 @@ pub const Checker = struct {
                         const member_name = (try self.allocSimpleTypeName(member)) orelse break :blk null;
                         if (!first_i) try int_buf.appendSlice(arena_i, " & ");
                         first_i = false;
+                        const member_flags = self.interner.pool.flagsOf(member);
+                        const needs_parens = member_flags.is_union or
+                            std.mem.indexOf(u8, member_name, "=>") != null;
+                        if (needs_parens) try int_buf.append(arena_i, '(');
                         try int_buf.appendSlice(arena_i, member_name);
+                        if (needs_parens) try int_buf.append(arena_i, ')');
                     }
                     if (int_buf.items.len == 0) break :blk null;
                     break :blk int_buf.items;
@@ -41022,6 +41083,39 @@ test "checker: typo of in-scope name emits TS2552 with suggestion" {
 
 test "checker: unresolved identifier with no close match emits TS2304" {
     const b = try newBoundSetup("const xxx = 1; abc;");
+    defer destroyBoundSetup(b);
+    try b.base.checker.checkSourceFile(b.base.root);
+    var found_2304 = false;
+    var found_2552 = false;
+    for (b.base.checker.diagnostics.items) |d| {
+        if (d.code == TsCodes.cannot_find_name) found_2304 = true;
+        if (d.code == TsCodes.cannot_find_name_did_you_mean) found_2552 = true;
+    }
+    try T.expect(found_2304);
+    try T.expect(!found_2552);
+}
+
+// `Undefined` and `Null` are common typos of the value-position
+// `undefined` / `null` keywords, but upstream tsc reports them with
+// plain TS2304 — no `Did you mean 'undefined'?` suggestion — because
+// the lowercase forms are not type-position identifiers. Mirrors
+// fixture `directReferenceToUndefined`.
+test "checker: type-position Undefined emits plain TS2304, no TS2552 suggestion" {
+    const b = try newBoundSetup("var x: Undefined;");
+    defer destroyBoundSetup(b);
+    try b.base.checker.checkSourceFile(b.base.root);
+    var found_2304 = false;
+    var found_2552 = false;
+    for (b.base.checker.diagnostics.items) |d| {
+        if (d.code == TsCodes.cannot_find_name) found_2304 = true;
+        if (d.code == TsCodes.cannot_find_name_did_you_mean) found_2552 = true;
+    }
+    try T.expect(found_2304);
+    try T.expect(!found_2552);
+}
+
+test "checker: type-position Null emits plain TS2304, no TS2552 suggestion" {
+    const b = try newBoundSetup("var x: Null;");
     defer destroyBoundSetup(b);
     try b.base.checker.checkSourceFile(b.base.root);
     var found_2304 = false;
@@ -44695,6 +44789,84 @@ test "checker: duplicate object literal methods with literal params report TS230
         if (d.code == TsCodes.duplicate_identifier) found = true;
     }
     try T.expect(found);
+}
+
+// Type aliases (unlike interfaces) cannot be merged across multiple
+// declarations — upstream tsc emits TS2300 on every occurrence.
+// Mirrors fixture `typeAliasesForObjectTypes`.
+test "checker: duplicate type aliases report TS2300 on both declarations" {
+    const s = try newSetup(
+        \\type T2 = { x: string };
+        \\type T2 = { y: number };
+    );
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+    var dup_count: usize = 0;
+    for (s.checker.diagnostics.items) |d| {
+        if (d.code == TsCodes.duplicate_identifier) dup_count += 1;
+    }
+    try T.expect(dup_count >= 2);
+}
+
+// Upstream tsc renders optional object-property types in TS2322
+// prose with a trailing ` | undefined` even when the declared type
+// does not already include it — e.g. `{ s?: number; }` shows up as
+// `{ s?: number | undefined; }`. Mirrors fixture
+// `subtypingWithOptionalProperties`.
+
+// Member access on a callable object type (e.g. an interface with a
+// call/construct signature) resolves Function-prototype names like
+// `apply`, `call`, `bind`, `arguments`, `caller`, `length`, `name`
+// to `any` — upstream tsc treats every callable as implicitly
+// extending `Function`. Without this fallback our TS2339 sweep
+// spuriously fires when no real `lib.d.ts` is bound. Mirrors fixtures
+// `objectTypeWithCallSignatureAppearsToBeFunctionType` and
+// `objectTypeWithCallSignatureHidingMembersOfFunction`.
+test "checker: member access on callable interface resolves Function-prototype members" {
+    const b = try newBoundSetup(
+        \\interface I { (): void; }
+        \\declare var i: I;
+        \\const a = i.apply;
+        \\const c = i.call;
+        \\const r = i.arguments;
+        \\const n = i.name;
+    );
+    defer destroyBoundSetup(b);
+    try b.base.checker.checkSourceFile(b.base.root);
+    for (b.base.checker.diagnostics.items) |d| {
+        if (d.code != TsCodes.property_does_not_exist) continue;
+        // None of `apply` / `call` / `arguments` / `name` should fire
+        // TS2339 on a callable interface.
+        try T.expect(std.mem.indexOf(u8, d.message, "'apply'") == null);
+        try T.expect(std.mem.indexOf(u8, d.message, "'call'") == null);
+        try T.expect(std.mem.indexOf(u8, d.message, "'arguments'") == null);
+        try T.expect(std.mem.indexOf(u8, d.message, "'name'") == null);
+    }
+}
+
+// When a `get`/`set` accessor illegally declares a `this:` parameter
+// (TS2784), upstream tsc suppresses TS7006 ("implicitly any") for the
+// accompanying value parameter even when it lacks an annotation —
+// the signature shape is already malformed so the implicit-any sweep
+// would be noise. Mirrors fixture `thisTypeInAccessorsNegative`.
+test "checker: setter with this: param suppresses TS7006 for value param" {
+    const s = try newBoundSetup(
+        \\interface Bar { wrong: string; }
+        \\const o = {
+        \\  set x(this: Bar, n) { this.wrong = "method"; }
+        \\};
+    );
+    defer destroyBoundSetup(s);
+    s.base.checker.setStrictFlags(.{ .no_implicit_any = true });
+    try s.base.checker.checkSourceFile(s.base.root);
+    var saw_ts2784 = false;
+    var saw_ts7006 = false;
+    for (s.base.checker.diagnostics.items) |d| {
+        if (d.code == TsCodes.accessors_cannot_declare_this) saw_ts2784 = true;
+        if (d.code == TsCodes.parameter_implicitly_any) saw_ts7006 = true;
+    }
+    try T.expect(saw_ts2784);
+    try T.expect(!saw_ts7006);
 }
 
 test "checker: interface heritage detects recursive extends chain" {
