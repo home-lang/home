@@ -26677,7 +26677,25 @@ pub const Checker = struct {
                         if (self.containsFreeTypeParameter(st)) {
                             try generic_spread_parts.append(self.gpa, st);
                         }
-                        const src_members = self.interner.objectMembers(st);
+                        // For a union spread source (`{x:number} | {x:string}`),
+                        // the effective spread members are the names
+                        // present in EVERY non-nullish branch and
+                        // required in each — matching upstream tsc on
+                        // `spreadOverwritesPropertyStrict.ts(15)`'s
+                        // `h(obj: {x: number} | {x: string})`. Falsy /
+                        // nullish branches are skipped because they
+                        // already short-circuit the spread at runtime.
+                        var union_members_buf: std.ArrayListUnmanaged(types.ObjectMember) = .empty;
+                        defer union_members_buf.deinit(self.gpa);
+                        const src_members: []const types.ObjectMember = src_members_blk: {
+                            if (st < self.interner.pool.typeCount() and
+                                self.interner.pool.flagsOf(st).is_union)
+                            {
+                                try self.collectUnionSpreadCommonMembers(st, &union_members_buf);
+                                break :src_members_blk union_members_buf.items;
+                            }
+                            break :src_members_blk self.interner.objectMembers(st);
+                        };
                         const source_is_class_instance = self.class_name_by_instance.contains(st);
                         // Conditional spread expressions like
                         // `...(t ? a : {})` always overwrite *at most*
@@ -26686,7 +26704,24 @@ pub const Checker = struct {
                         // a branch contributes the same property name.
                         // Mirrors `spreadDuplicateExact.ts(20..)` and
                         // `spreadOverwritesPropertyStrict.ts` family.
-                        const spread_may_be_empty = self.spreadExpressionMayContributeNothing(spread_expr);
+                        // A spread whose type union includes a nullish
+                        // branch (`undefined`, `null`, `void`) may
+                        // evaluate to a no-op at runtime — upstream
+                        // tsc suppresses TS2783 in that case
+                        // (`spreadOverwritesPropertyStrict.ts`
+                        // `f(obj: {x: number} | undefined)`).
+                        const spread_may_be_nullish_branch = nullish_blk: {
+                            if (st >= self.interner.pool.typeCount()) break :nullish_blk false;
+                            if (!self.interner.pool.flagsOf(st).is_union) break :nullish_blk false;
+                            for (self.interner.unionMembers(st)) |um| {
+                                if (um == types.Primitive.null_t or
+                                    um == types.Primitive.undefined_t or
+                                    um == types.Primitive.void_t) break :nullish_blk true;
+                            }
+                            break :nullish_blk false;
+                        };
+                        const spread_may_be_empty = self.spreadExpressionMayContributeNothing(spread_expr) or
+                            spread_may_be_nullish_branch;
                         for (src_members) |m| {
                             if (source_is_class_instance and (m.is_method or m.is_readonly)) continue;
                             if (!m.is_optional and !spread_may_be_empty) {
@@ -27391,6 +27426,63 @@ pub const Checker = struct {
             return try self.objectSpreadSourceIsValid(constraint);
         }
         return flags.is_object_type or flags.is_object or flags.is_signature;
+    }
+
+    /// Collect the spread-equivalent members of a union spread source
+    /// (e.g. `{ x: number } | { x: string }`): a property is part of
+    /// the effective output if every non-nullish branch contributes
+    /// the same name as a required member. Optionality of an entry in
+    /// any branch downgrades the overall required-ness, so it won't
+    /// trigger TS2783. Skips nullish/never branches that contribute
+    /// nothing at runtime. Output is empty for unions where any
+    /// non-nullish branch lacks object members (any-like, signature,
+    /// etc.) — matching tsc's conservative behavior.
+    fn collectUnionSpreadCommonMembers(
+        self: *Checker,
+        union_t: TypeId,
+        out: *std.ArrayListUnmanaged(types.ObjectMember),
+    ) CheckError!void {
+        if (union_t >= self.interner.pool.typeCount()) return;
+        if (!self.interner.pool.flagsOf(union_t).is_union) return;
+        const members = self.interner.unionMembers(union_t);
+        // Counts: how many non-nullish branches contributed the name;
+        // required_in_all becomes false if any branch had it optional.
+        var name_counts: std.AutoHashMapUnmanaged(hir_mod.StringId, u32) = .empty;
+        defer name_counts.deinit(self.gpa);
+        var name_required: std.AutoHashMapUnmanaged(hir_mod.StringId, bool) = .empty;
+        defer name_required.deinit(self.gpa);
+        var name_first_member: std.AutoHashMapUnmanaged(hir_mod.StringId, types.ObjectMember) = .empty;
+        defer name_first_member.deinit(self.gpa);
+
+        var contributing: u32 = 0;
+        for (members) |branch| {
+            if (branch == types.Primitive.null_t or
+                branch == types.Primitive.undefined_t or
+                branch == types.Primitive.void_t or
+                branch == types.Primitive.never) continue;
+            if (branch >= self.interner.pool.typeCount()) return;
+            const bf = self.interner.pool.flagsOf(branch);
+            if (!bf.is_object_type) return;
+            contributing += 1;
+            for (self.interner.objectMembers(branch)) |bm| {
+                const prev = name_counts.get(bm.name) orelse 0;
+                try name_counts.put(self.gpa, bm.name, prev + 1);
+                const prev_req = name_required.get(bm.name) orelse true;
+                try name_required.put(self.gpa, bm.name, prev_req and !bm.is_optional);
+                if (!name_first_member.contains(bm.name)) {
+                    try name_first_member.put(self.gpa, bm.name, bm);
+                }
+            }
+        }
+        if (contributing == 0) return;
+        var it = name_counts.iterator();
+        while (it.next()) |entry| {
+            if (entry.value_ptr.* != contributing) continue;
+            const required = name_required.get(entry.key_ptr.*) orelse true;
+            var m = name_first_member.get(entry.key_ptr.*) orelse continue;
+            m.is_optional = !required;
+            try out.append(self.gpa, m);
+        }
     }
 
     fn objectSpreadEffectiveType(self: *Checker, expr: NodeId, fallback: TypeId) CheckError!TypeId {
@@ -56814,6 +56906,43 @@ test "checker: object spread reports required property overwrite" {
         if (d.code == TsCodes.jsx_attribute_overwritten) count += 1;
     }
     try T.expectEqual(@as(usize, 1), count);
+}
+
+test "checker: spread of union sees common required props" {
+    // `{x:number} | {x:string}` is a valid spread source whose
+    // effective shape contributes `x` to the result; an explicit
+    // `x: 1` earlier in the literal therefore gets overwritten,
+    // matching tsc on `spreadOverwritesPropertyStrict.ts(15)`.
+    const s = try newSetup(
+        \\declare function h(obj: { x: number } | { x: string }): unknown;
+        \\function k(obj: { x: number } | { x: string }) {
+        \\    return { x: 1, ...obj };
+        \\}
+    );
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+    var count: usize = 0;
+    for (s.checker.diagnostics.items) |d| {
+        if (d.code == TsCodes.jsx_attribute_overwritten) count += 1;
+    }
+    try T.expectEqual(@as(usize, 1), count);
+}
+
+test "checker: spread of T | undefined suppresses overwrite warning" {
+    // When the spread source's union has a nullish branch, the
+    // runtime spread may evaluate to a no-op. tsc suppresses TS2783
+    // — mirrors `spreadOverwritesPropertyStrict.ts(15)`'s
+    // `f(obj: {x:number} | undefined)`.
+    const s = try newSetup(
+        \\function f(obj: { x: number } | undefined) {
+        \\    return { x: 1, ...obj };
+        \\}
+    );
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+    for (s.checker.diagnostics.items) |d| {
+        try T.expect(d.code != TsCodes.jsx_attribute_overwritten);
+    }
 }
 
 test "checker: object spread omits class methods and accessors" {
