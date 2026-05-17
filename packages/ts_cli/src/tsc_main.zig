@@ -57,6 +57,61 @@ const RealFs = struct {
     }
 };
 
+const ResolverRealFs = struct {
+    pub fn fs(self: *ResolverRealFs) ts_resolver.FileSystem {
+        return .{ .ptr = self, .vtable = &vt };
+    }
+
+    const vt: ts_resolver.FileSystem.VTable = .{
+        .fileExists = fileExists,
+        .directoryExists = directoryExists,
+        .readFile = readFile,
+    };
+
+    fn fileExists(_: *anyopaque, path: []const u8) bool {
+        var threaded = std.Io.Threaded.init(std.heap.page_allocator, .{});
+        defer threaded.deinit();
+        const io = threaded.io();
+        const cwd = std.Io.Dir.cwd();
+        var file = cwd.openFile(io, path, .{}) catch return false;
+        defer file.close(io);
+        return true;
+    }
+
+    fn directoryExists(_: *anyopaque, path: []const u8) bool {
+        var threaded = std.Io.Threaded.init(std.heap.page_allocator, .{});
+        defer threaded.deinit();
+        const io = threaded.io();
+        const cwd = std.Io.Dir.cwd();
+        var dir = cwd.openDir(io, path, .{}) catch return false;
+        defer dir.close(io);
+        return true;
+    }
+
+    fn readFile(_: *anyopaque, gpa: std.mem.Allocator, path: []const u8) anyerror![]u8 {
+        const bytes = try RealFs.read(gpa, path);
+        return @constCast(bytes);
+    }
+};
+
+const CheckerResolverAdapter = struct {
+    resolver: *ts_resolver.Resolver,
+
+    pub const vtable = ts_driver.ExternalResolver.VTable{
+        .resolve = resolveImpl,
+    };
+
+    fn resolveImpl(
+        self_ptr: *anyopaque,
+        specifier: []const u8,
+        containing_file: []const u8,
+    ) ?ts_driver.ExternalResolver.Resolution {
+        const self: *CheckerResolverAdapter = @ptrCast(@alignCast(self_ptr));
+        const r = self.resolver.resolve(specifier, containing_file) catch return null;
+        return .{ .path = r.path, .is_declaration = r.is_declaration };
+    }
+};
+
 pub fn main(init: std.process.Init) !void {
     var gpa_state: std.heap.DebugAllocator(.{}) = .init;
     defer _ = gpa_state.deinit();
@@ -131,7 +186,7 @@ pub fn main(init: std.process.Init) !void {
     //   2. tsconfig `files`: literal list, used as-is
     //   3. tsconfig `include` / `exclude`: glob-expanded against the
     //      tsconfig's directory; default ext filter is `.ts` / `.tsx`
-    //      / `.d.ts` / `.mts` / `.cts`.
+    //      / `.d.ts` / `.mts` / `.cts` plus Home's `.hm` / `.home`.
     var input_files: std.ArrayListUnmanaged([]const u8) = .empty;
     var owned_paths: std.ArrayListUnmanaged([]u8) = .empty;
     defer {
@@ -200,9 +255,8 @@ pub fn main(init: std.process.Init) !void {
         }
     }
 
-    var virtual = ts_resolver.VirtualFs.init(gpa);
-    defer virtual.deinit();
-    var resolver = ts_resolver.Resolver.init(gpa, virtual.fs(), .{});
+    var resolver_fs = ResolverRealFs{};
+    var resolver = ts_resolver.Resolver.init(gpa, resolver_fs.fs(), .{});
     defer resolver.deinit();
 
     var program = ts_program.Program.init(gpa, &resolver);
@@ -226,6 +280,11 @@ pub fn main(init: std.process.Init) !void {
         .{};
     compile_opts.strict = opts.strict;
     compile_opts.no_emit = opts.no_emit;
+    var resolver_adapter = CheckerResolverAdapter{ .resolver = &resolver };
+    compile_opts.external_resolver = .{
+        .ptr = &resolver_adapter,
+        .vtable = &CheckerResolverAdapter.vtable,
+    };
 
     // §2.1 — `--listFiles` / `--listFilesOnly`. Print every input
     // path the program will compile. `--listFilesOnly` exits before
@@ -705,10 +764,14 @@ fn anyMatches(patterns: []const []const u8, path: []const u8) bool {
 
 fn isTsLikeExtension(path: []const u8) bool {
     if (std.mem.endsWith(u8, path, ".d.ts")) return true;
+    if (std.mem.endsWith(u8, path, ".d.hm")) return true;
+    if (std.mem.endsWith(u8, path, ".d.home")) return true;
     if (std.mem.endsWith(u8, path, ".ts")) return true;
     if (std.mem.endsWith(u8, path, ".tsx")) return true;
     if (std.mem.endsWith(u8, path, ".mts")) return true;
     if (std.mem.endsWith(u8, path, ".cts")) return true;
+    if (std.mem.endsWith(u8, path, ".hm")) return true;
+    if (std.mem.endsWith(u8, path, ".home")) return true;
     return false;
 }
 

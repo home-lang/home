@@ -36,7 +36,7 @@ pub const File = struct {
     compilation: ?*ts_driver.Compilation,
     /// Outgoing import edges — file ids this file imports from.
     imports: std.ArrayListUnmanaged(FileId),
-    /// True for `.d.ts` / `.d.hm` declaration-only files.
+    /// True for `.d.ts` / `.d.hm` / `.d.home` declaration-only files.
     is_declaration: bool,
     /// True for `.tsx` / `.jsx` files.
     is_tsx: bool,
@@ -115,7 +115,11 @@ pub const Program = struct {
             .source = owned_source,
             .compilation = null,
             .imports = .empty,
-            .is_declaration = std.mem.endsWith(u8, path, ".d.ts") or std.mem.endsWith(u8, path, ".d.hm"),
+            .is_declaration = std.mem.endsWith(u8, path, ".d.ts") or
+                std.mem.endsWith(u8, path, ".d.mts") or
+                std.mem.endsWith(u8, path, ".d.cts") or
+                std.mem.endsWith(u8, path, ".d.hm") or
+                std.mem.endsWith(u8, path, ".d.home"),
             .is_tsx = std.mem.endsWith(u8, path, ".tsx") or std.mem.endsWith(u8, path, ".jsx"),
         };
 
@@ -214,6 +218,7 @@ pub const Program = struct {
             }
             var per_file = options;
             per_file.is_tsx = options.is_tsx or f.is_tsx;
+            if (per_file.importer_path.len == 0) per_file.importer_path = f.path;
             const c = ts_driver.compileSource(self.gpa, f.source, per_file) catch |err| switch (err) {
                 error.OutOfMemory => return error.OutOfMemory,
                 error.LexError => return error.LexError,
@@ -364,6 +369,7 @@ pub const Program = struct {
                     const f = prog.files.items[idx];
                     var per_file = opts;
                     per_file.is_tsx = opts.is_tsx or f.is_tsx;
+                    if (per_file.importer_path.len == 0) per_file.importer_path = f.path;
                     const c = ts_driver.compileSource(prog.gpa, f.source, per_file) catch {
                         _ = fail.fetchAdd(1, .seq_cst);
                         continue;
@@ -632,6 +638,8 @@ test "Program: declaration files marked is_declaration" {
     defer p.deinit();
     _ = try p.add("/types.d.ts", "declare const X: number;");
     try T.expect(p.fileById(0).is_declaration);
+    _ = try p.add("/types.d.home", "declare const Y: number;");
+    try T.expect(p.fileById(1).is_declaration);
 }
 
 test "Program: reaches detects transitive imports" {

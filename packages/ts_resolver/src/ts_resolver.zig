@@ -55,7 +55,7 @@ pub const Config = struct {
     /// always tried last.
     conditions: []const []const u8 = &.{ "import", "node" },
     /// File extensions to probe for module specifiers without one.
-    extensions: []const []const u8 = &.{ ".ts", ".tsx", ".d.ts", ".mts", ".cts", ".js", ".jsx", ".mjs", ".cjs" },
+    extensions: []const []const u8 = &.{ ".ts", ".tsx", ".d.ts", ".mts", ".cts", ".hm", ".home", ".d.hm", ".d.home", ".js", ".jsx", ".mjs", ".cjs" },
     /// True when `compilerOptions.allowImportingTsExtensions` is on.
     allow_ts_extensions: bool = false,
     /// True when `compilerOptions.resolveJsonModule` is on.
@@ -94,7 +94,7 @@ pub const Resolution = struct {
     path: []const u8,
     /// Where the resolution was driven through (informational).
     source: Source,
-    /// True for `.d.ts` / `.d.hm` summary files.
+    /// True for `.d.ts` / `.d.hm` / `.d.home` summary files.
     is_declaration: bool,
 
     pub const Source = enum {
@@ -254,7 +254,7 @@ pub const Resolver = struct {
                 return .{
                     .path = try self.ar().dupe(u8, base),
                     .source = .relative,
-                    .is_declaration = std.mem.endsWith(u8, base, ".d.ts") or std.mem.endsWith(u8, base, ".d.hm"),
+                    .is_declaration = isDeclarationPath(base),
                 };
             }
         }
@@ -265,7 +265,7 @@ pub const Resolver = struct {
                 return .{
                     .path = candidate,
                     .source = .relative,
-                    .is_declaration = std.mem.endsWith(u8, ext, ".d.ts") or std.mem.endsWith(u8, ext, ".d.hm"),
+                    .is_declaration = isDeclarationPath(ext),
                 };
             }
         }
@@ -307,7 +307,7 @@ pub const Resolver = struct {
                 return .{
                     .path = candidate,
                     .source = .index_file,
-                    .is_declaration = std.mem.endsWith(u8, ext, ".d.ts") or std.mem.endsWith(u8, ext, ".d.hm"),
+                    .is_declaration = isDeclarationPath(ext),
                 };
             }
         }
@@ -863,9 +863,17 @@ fn isAbsolute(s: []const u8) bool {
 }
 
 fn hasKnownExtension(s: []const u8) bool {
-    const exts = [_][]const u8{ ".ts", ".tsx", ".d.ts", ".mts", ".cts", ".d.mts", ".d.cts", ".js", ".jsx", ".mjs", ".cjs", ".home", ".hm", ".d.hm" };
+    const exts = [_][]const u8{ ".ts", ".tsx", ".d.ts", ".mts", ".cts", ".d.mts", ".d.cts", ".hm", ".home", ".d.hm", ".d.home", ".js", ".jsx", ".mjs", ".cjs" };
     for (exts) |e| if (std.mem.endsWith(u8, s, e)) return true;
     return false;
+}
+
+fn isDeclarationPath(s: []const u8) bool {
+    return std.mem.endsWith(u8, s, ".d.ts") or
+        std.mem.endsWith(u8, s, ".d.mts") or
+        std.mem.endsWith(u8, s, ".d.cts") or
+        std.mem.endsWith(u8, s, ".d.hm") or
+        std.mem.endsWith(u8, s, ".d.home");
 }
 
 fn hasExtension(s: []const u8, ext: []const u8) bool {
@@ -1254,6 +1262,22 @@ test "Resolver: .d.ts marked as declaration" {
     const res = try r.resolve("./types", "/proj/main.ts");
     try T.expectEqualStrings("/proj/types.d.ts", res.path);
     try T.expect(res.is_declaration);
+}
+
+test "Resolver: Home source and declaration extensions resolve" {
+    var vfs = VirtualFs.init(T.allocator);
+    defer vfs.deinit();
+    try vfs.addFile("/proj/main.ts", "");
+    try vfs.addFile("/proj/lib.hm", "export const x = 1;");
+    try vfs.addFile("/proj/types.d.home", "export type T = string;");
+    var r = Resolver.init(T.allocator, vfs.fs(), .{});
+    defer r.deinit();
+    const lib = try r.resolve("./lib", "/proj/main.ts");
+    try T.expectEqualStrings("/proj/lib.hm", lib.path);
+    try T.expect(!lib.is_declaration);
+    const types_home = try r.resolve("./types", "/proj/main.ts");
+    try T.expectEqualStrings("/proj/types.d.home", types_home.path);
+    try T.expect(types_home.is_declaration);
 }
 
 // =============================================================================

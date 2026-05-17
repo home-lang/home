@@ -3631,6 +3631,8 @@ pub const Parser = struct {
         if (std.mem.endsWith(u8, filename, ".d.ts")) return true;
         if (std.mem.endsWith(u8, filename, ".d.mts")) return true;
         if (std.mem.endsWith(u8, filename, ".d.cts")) return true;
+        if (std.mem.endsWith(u8, filename, ".d.hm")) return true;
+        if (std.mem.endsWith(u8, filename, ".d.home")) return true;
         return std.mem.endsWith(u8, filename, ".ts") and std.mem.indexOf(u8, filename, ".d.") != null;
     }
 
@@ -15360,4 +15362,3 @@ test "parser: 'export [x: string]: string' in a class body reports TS1071 on exp
     }
     try T.expect(saw_ts1071);
 }
-

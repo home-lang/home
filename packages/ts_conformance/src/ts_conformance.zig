@@ -225,6 +225,7 @@ pub fn run(gpa: std.mem.Allocator, c: Case) !Result {
         .suppress_js_check_diagnostics = c.suppress_js_check_diagnostics,
         .continue_on_error = true,
         .no_emit = true,
+        .importer_path = c.path,
     }) catch |err| {
         const detail = try std.fmt.allocPrint(gpa, "compile failed: {s}", .{@errorName(err)});
         return .{
@@ -2861,6 +2862,7 @@ fn runOneEntry(gpa: std.mem.Allocator, entry: CorpusEntry) !Result {
         .suppress_js_check_diagnostics = entry.suppress_js_check_diagnostics,
         .continue_on_error = true,
         .no_emit = true,
+        .importer_path = entry.path,
     }) catch |err| {
         const detail = try std.fmt.allocPrint(gpa, "compile crash: {s}", .{@errorName(err)});
         return .{
@@ -4921,4 +4923,3 @@ test "conformance: runOwnedCorpus rejects expects-error fixture with no diagnost
     try T.expectEqual(@as(u32, 0), stats.passed);
     try T.expectEqual(@as(u32, 1), stats.failed);
 }
-

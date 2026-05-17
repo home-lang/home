@@ -60870,6 +60870,31 @@ test "checker: external resolver declaration result does NOT veto legacy unresol
     try T.expect(ts2307);
 }
 
+test "checker: external resolver accepts project-file named imports and type refs" {
+    const s = try newSetup(
+        \\import { GameAction } from "./action";
+        \\import { World } from "./world";
+        \\export function tick(actions: readonly GameAction[]): GameAction {
+        \\  const world = new World();
+        \\  world;
+        \\  return actions[0];
+        \\}
+    );
+    defer destroySetup(s);
+    var stub = StubExternalResolver{
+        .canned_path = "/project/action.ts",
+        .canned_is_declaration = true,
+    };
+    s.checker.setExternalResolver(.{ .ptr = &stub, .vtable = &StubExternalResolver.vtable });
+    s.checker.setImporterPath("/project/main.ts");
+    try s.checker.checkSourceFile(s.root);
+    for (s.checker.diagnostics.items) |d| {
+        try T.expect(d.code != TsCodes.cannot_find_name);
+        try T.expect(d.code != TsCodes.no_exported_member);
+        try T.expect(d.code != TsCodes.no_exported_member_suggestion);
+    }
+}
+
 // §6.A wave-2 — TS2344 fires when a generic alias is instantiated
 // with a type argument that does not satisfy the parameter's
 // `extends` constraint. Mirrors `nonPrimitiveInGeneric.ts`,
