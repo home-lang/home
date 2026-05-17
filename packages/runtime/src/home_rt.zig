@@ -76,6 +76,35 @@ pub const io = struct {
     pub const FilePoll = @import("io/stub_event_loop.zig").FilePoll;
 };
 
+// ---- src/http/ + src/http_types/ ---------------------------------------
+// HTTP value types (encoding tags, cert structs, header parsing). Pure
+// data; no JSC dependency. The full HTTP stack lands in Phase 12.5.
+pub const http = struct {
+    pub const HTTPCertError = @import("http/HTTPCertError.zig");
+    pub const InitError = @import("http/InitError.zig").InitError;
+    pub const CertificateInfo = @import("http/CertificateInfo.zig");
+    pub const HeaderValueIterator = @import("http/HeaderValueIterator.zig");
+};
+pub const http_types = struct {
+    pub const Encoding = @import("http_types/Encoding.zig").Encoding;
+};
+
+// ---- src/bun_core/ + src/bun_alloc/ + src/safety/ ----------------------
+// Result type, tty mode, c_allocator, thread-id sentinel. Pure-Zig
+// utilities the rest of the runtime leans on.
+pub const Result = @import("bun_core/result.zig").Result;
+pub const tty = @import("bun_core/tty.zig");
+pub const c_allocator = @import("bun_alloc/fallback.zig").c_allocator;
+pub const z_allocator = @import("bun_alloc/fallback.zig").z_allocator;
+pub const freeWithoutSize = @import("bun_alloc/fallback.zig").freeWithoutSize;
+pub const safety = struct {
+    pub const thread_id = @import("safety/thread_id.zig");
+};
+
+// ---- src/jsc_stub.zig --------------------------------------------------
+// WASM-target opaque stubs. Mirrors Bun's `jsc_stub` namespace exactly.
+pub const jsc_stub = @import("jsc_stub.zig");
+
 test "home_rt: substrate compiles" {
     try std.testing.expectEqualStrings(
         "fd0b6f1a271fca0b8124b69f230b100f4d636af6",
@@ -122,6 +151,11 @@ test {
     _ = cli.yarn_commands;
     _ = jsc;
     _ = io;
+    _ = http;
+    _ = http_types;
+    _ = tty;
+    _ = safety;
+    _ = jsc_stub;
 }
 
 test "home_rt.jsc enums round-trip their tag values" {
@@ -149,4 +183,29 @@ test "home_rt.io exposes the stub event-loop opaques" {
     _ = io.Loop;
     _ = io.KeepAlive;
     _ = io.FilePoll;
+}
+
+test "home_rt.http_types.Encoding flags compression families" {
+    try std.testing.expect(http_types.Encoding.gzip.isCompressed());
+    try std.testing.expect(!http_types.Encoding.identity.isCompressed());
+    try std.testing.expect(http_types.Encoding.deflate.canUseLibDeflate());
+}
+
+test "home_rt.Result threads ok/err through union" {
+    const R = Result(u32, []const u8);
+    const ok: R = .{ .ok = 99 };
+    const err: R = .{ .err = "nope" };
+    try std.testing.expect(ok.asErr() == null);
+    try std.testing.expectEqualStrings("nope", err.asErr().?);
+}
+
+test "home_rt.http types compose" {
+    // Smoke test — the namespace re-exports compile cleanly.
+    var iter = http.HeaderValueIterator.init("a, b");
+    try std.testing.expectEqualStrings("a", iter.next().?);
+    try std.testing.expectEqualStrings("b", iter.next().?);
+}
+
+test "home_rt.safety.thread_id.invalid is the max thread id" {
+    try std.testing.expectEqual(std.math.maxInt(std.Thread.Id), safety.thread_id.invalid);
 }
