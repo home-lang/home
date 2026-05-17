@@ -5704,6 +5704,20 @@ pub const Parser = struct {
             }
             const elem_start = self.peek().span.start;
             const elem_line = self.peek().line;
+            // Elided tuple element (`[number,,]`) — upstream rejects
+            // these with TS1110 "Type expected." at the comma/close
+            // position. Detect before parseTypeAnnotation consumes the
+            // delimiter and synthesises a recovery `unknown` type ref,
+            // which would otherwise hide the diagnostic. Mirrors
+            // `TupleType6.ts(1,16)` baseline.
+            if (self.peek().kind == .comma or self.peek().kind == .close_bracket) {
+                try self.reportCodeAt(elem_start, elem_line, 1110, "Type expected.");
+                const id = self.interner.intern("unknown") catch return error.OutOfMemory;
+                const synth = try self.builder.addTypeRef(.{ .start = elem_start, .end = elem_start }, id, &.{}, &.{});
+                try elems.append(self.gpa, synth);
+                if (!self.match(.comma)) break;
+                continue;
+            }
             var e = try self.parseTypeAnnotation();
             const trailing_optional = self.match(.question); // optional element marker
             const this_optional = labeled_optional or trailing_optional;
@@ -14796,4 +14810,20 @@ test "parser: object-literal generator '*' without property name reports TS1003"
         }
         try T.expect(saw_ts1003_at_expected);
     }
+}
+
+test "parser: elided tuple element reports TS1110 at the comma" {
+    // `[number,,]` — the second `,` has no preceding type. Upstream
+    // tsc reports TS1110 'Type expected.' at the comma position
+    // (column 16 in `var v: [number,,]`). Mirrors `TupleType6.ts(1,16)`.
+    const src = "var v: [number,,]";
+    var s = try newTestSetup(src);
+    defer destroyTestSetup(s);
+    _ = s.parser.parseSourceFile() catch {};
+    var saw_ts1110 = false;
+    const expected_pos: u32 = @intCast(std.mem.indexOf(u8, src, ",,").? + 1);
+    for (s.parser.diagnostics.items) |d| {
+        if (d.code == 1110 and d.pos == expected_pos) saw_ts1110 = true;
+    }
+    try T.expect(saw_ts1110);
 }
