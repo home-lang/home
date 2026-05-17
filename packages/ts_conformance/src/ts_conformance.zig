@@ -323,15 +323,20 @@ pub fn run(gpa: std.mem.Allocator, c: Case) !Result {
         };
         const formatted = try ts_diagnostics.formatDefault(gpa, fdiag);
         defer gpa.free(formatted);
-        // In exact-baseline mode, mirror the baseline-side filter for
-        // option-validation diagnostics on the actual stream: TS5101 /
-        // TS5107 (module=AMD/System/UMD) are emitted by the driver but
-        // the baseline drops them via `isOptionValidationDiagnostic`,
-        // so comparing them in apples-to-apples mode requires the same
+        // Mirror the baseline-side filter for option-validation
+        // diagnostics on the actual stream: TS5101 / TS5107
+        // (module=AMD/System/UMD) are emitted by the driver but the
+        // baseline drops them via `isOptionValidationDiagnostic`, so
+        // comparing them in apples-to-apples mode requires the same
         // drop here. Without it, exact-mode would diff against an
         // empty header set and the rescue path (`hasHarnessModeled…`)
-        // would have to keep covering for them indefinitely.
-        if (exact_mode and isOptionValidationDiagnostic(formatted)) continue;
+        // would have to keep covering for them indefinitely. The
+        // expected-clean variant (`expected_errors` is empty because
+        // `baselineHasOnlyOptionDeprecation` filtered the only
+        // baseline entry, or because the fixture genuinely has no
+        // baseline) shares the same need: any spurious TS5107 in the
+        // actual stream must drop so the empty/empty comparison wins.
+        if (isOptionValidationDiagnostic(formatted)) continue;
         if (exact_mode and exactDiagnosticShouldDedup(code)) {
             const gop = try seen_keys.getOrPut(gpa, formatted);
             if (gop.found_existing) continue;
@@ -767,8 +772,13 @@ fn runProgram(gpa: std.mem.Allocator, c: Case) !?Result {
             // program path too — the driver emits TS5101 / TS5107 per
             // file now, but the baseline drops them in
             // `isOptionValidationDiagnostic`. See the matching guard
-            // in the legacy `compileSource` path.
-            if (exact_mode and isOptionValidationDiagnostic(formatted)) {
+            // in the legacy `compileSource` path. The expected-clean
+            // variant (no expected_errors lines, because
+            // `baselineHasOnlyOptionDeprecation` filtered them out)
+            // also needs the actual stream cleaned of these
+            // option-validation entries so the empty/empty compare
+            // succeeds.
+            if (isOptionValidationDiagnostic(formatted)) {
                 gpa.free(formatted);
                 continue;
             }
