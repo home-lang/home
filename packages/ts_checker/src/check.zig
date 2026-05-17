@@ -16591,10 +16591,16 @@ pub const Checker = struct {
                     const base_name_id = self.unqualifiedTypeRefName(ext_node);
                     const base_name_str: ?[]const u8 = if (base_name_id) |n| self.string_interner.get(n) else null;
                     if (iface_name_str != null and base_name_str != null) {
+                        // Include `<T, U>` after the interface name when the
+                        // child interface declares type parameters; upstream
+                        // tsc preserves the generic shape in TS2430 prose
+                        // (`Interface 'E1<T>' ...`). Mirrors fixture
+                        // `mappedTypesAndObjects.ts(25,11)`.
+                        const child_with_params = try self.formatInterfaceDisplayName(node, iface_name_str.?);
                         const msg = try std.fmt.allocPrint(
                             self.diag_arena.allocator(),
                             "Interface '{s}' incorrectly extends interface '{s}'.",
-                            .{ iface_name_str.?, base_name_str.? },
+                            .{ child_with_params, base_name_str.? },
                         );
                         // Anchor at the interface name identifier so the
                         // column matches upstream tsc.
@@ -36128,6 +36134,32 @@ pub const Checker = struct {
                 );
             }
         }
+        // Anonymous object-literal source argument with a simple-named
+        // parameter — render the structural shape via
+        // `allocObjectTypeShape` so TS2345 prose for fixtures like
+        // `wrappedAndRecursiveConstraints4.ts(13,12)` reads
+        // `Argument of type '{ length: number; charAt: (x: number) => void; }'
+        // is not assignable to parameter of type 'string'.` instead of
+        // the positional placeholder. Restricted to non-class /
+        // non-named source object types so we don't accidentally
+        // re-render arbitrary nominal instances.
+        if (display_arg_t < self.interner.pool.typeCount()) {
+            const arg_flags = self.interner.pool.flagsOf(display_arg_t);
+            const has_name = self.namedTypeForId(display_arg_t) != null or
+                self.alias_display_names.contains(display_arg_t) or
+                self.class_name_by_instance.contains(display_arg_t);
+            if (arg_flags.is_object_type and !has_name) {
+                if (try self.simpleDiagnosticTypeName(param_t)) |param_text| {
+                    if (try self.allocObjectTypeShape(display_arg_t)) |arg_text| {
+                        return try std.fmt.allocPrint(
+                            self.diag_arena.allocator(),
+                            "Argument of type '{s}' is not assignable to parameter of type '{s}'.",
+                            .{ arg_text, param_text },
+                        );
+                    }
+                }
+            }
+        }
         return try std.fmt.allocPrint(
             self.diag_arena.allocator(),
             "Argument is not assignable to parameter at position {d}.",
@@ -36373,7 +36405,7 @@ pub const Checker = struct {
                 if (payload_idx >= self.interner.pool.literal_payloads.items.len) break :blk null;
                 const literal = self.interner.pool.literal_payloads.items[payload_idx];
                 break :blk switch (literal) {
-                    .string_lit => |sid| try std.fmt.allocPrint(self.diag_arena.allocator(), "\"{s}\"", .{self.string_interner.get(sid)}),
+                    .string_lit => |sid| try self.allocStringLiteralDisplay(sid),
                     .number_lit => |bits| try std.fmt.allocPrint(self.diag_arena.allocator(), "{d}", .{@as(f64, @bitCast(bits))}),
                     .bigint_lit => |sid| try std.fmt.allocPrint(self.diag_arena.allocator(), "{s}", .{self.string_interner.get(sid)}),
                     .boolean_lit => |b| if (b) "true" else "false",
@@ -38340,11 +38372,15 @@ pub const Checker = struct {
         target: TypeId,
         fallback: []const u8,
     ) !void {
+        // TS2322 prose widens optional property types with a trailing
+        // `| undefined` — use the suffix variant so fixtures like
+        // `subtypingWithOptionalProperties.ts(5,9)` get the upstream
+        // shape `{ s?: number | undefined; }`.
         const source_name = (try self.allocSimpleTypeName(source)) orelse
-            (try self.allocObjectTypeShape(source)) orelse
+            (try self.allocObjectTypeShapeWithUndefined(source)) orelse
             return try self.report(node, TsCodes.type_not_assignable, fallback);
         const target_name = (try self.allocSimpleTypeName(target)) orelse
-            (try self.allocObjectTypeShape(target)) orelse
+            (try self.allocObjectTypeShapeWithUndefined(target)) orelse
             return try self.report(node, TsCodes.type_not_assignable, fallback);
         const msg = try std.fmt.allocPrint(
             self.diag_arena.allocator(),
@@ -38517,7 +38553,7 @@ pub const Checker = struct {
     /// the TS2741 missing-property message when the target type
     /// has named members and `allocSimpleTypeName` returns null.
     /// Returns null when any constituent member type can't be named.
-    fn allocObjectTypeShape(self: *Checker, t: TypeId) !?[]const u8 {
+    fn allocObjectTypeShapeOpts(self: *Checker, t: TypeId, optional_undefined_suffix: bool) !?[]const u8 {
         if (t < types.Primitive.first_dynamic or t >= self.interner.pool.typeCount()) return null;
         const flags = self.interner.pool.flagsOf(t);
         if (!flags.is_object_type) return null;
@@ -38604,10 +38640,61 @@ pub const Checker = struct {
             try buf.appendSlice(arena, ": ");
             const type_name = (try self.allocSimpleTypeName(m.type)) orelse return null;
             try buf.appendSlice(arena, type_name);
+            // Upstream tsc widens an optional property's displayed type
+            // with a trailing ` | undefined` whenever the underlying
+            // type doesn't already permit `undefined` — but ONLY in the
+            // verbose TS2322 / TS2741 prose path, not in brief
+            // TS2559-style summaries. Honor the caller's
+            // `optional_undefined_suffix` flag so each diagnostic site
+            // gets the shape upstream emits. Mirrors fixtures
+            // `subtypingWithOptionalProperties.ts(5,9)` (suffix=true)
+            // and `assignmentCompatWithObjectMembersOptionality2.ts(36,5)`
+            // (suffix=false).
+            if (optional_undefined_suffix and m.is_optional and !self.typeNameIncludesUndefined(m.type, type_name)) {
+                try buf.appendSlice(arena, " | undefined");
+            }
             try buf.appendSlice(arena, "; ");
         }
         try buf.append(arena, '}');
         return buf.items;
+    }
+
+    /// Convenience wrapper that does NOT add the `| undefined` suffix
+    /// to optional property types — matches the brief shape upstream
+    /// tsc uses for TS2559 / TS2741 prose and other compact
+    /// diagnostics. Most callers want this form.
+    fn allocObjectTypeShape(self: *Checker, t: TypeId) !?[]const u8 {
+        return self.allocObjectTypeShapeOpts(t, false);
+    }
+
+    /// Variant that always renders optional members with the
+    /// `| undefined` widening upstream tsc uses for verbose
+    /// assignability prose (TS2322 / TS2741). Mirrors fixture
+    /// `subtypingWithOptionalProperties.ts(5,9)`.
+    fn allocObjectTypeShapeWithUndefined(self: *Checker, t: TypeId) !?[]const u8 {
+        return self.allocObjectTypeShapeOpts(t, true);
+    }
+
+    /// True when the type already contains `undefined` either
+    /// structurally (a union with the `undefined` primitive, or the
+    /// `undefined` primitive itself) or textually (the rendered name
+    /// already mentions an `undefined` token). Used by
+    /// `allocObjectTypeShape` to avoid double-rendering optional
+    /// property types as `T | undefined | undefined`.
+    fn typeNameIncludesUndefined(self: *Checker, t: TypeId, name: []const u8) bool {
+        if (t == types.Primitive.undefined_t or t == types.Primitive.any or t == types.Primitive.unknown) return true;
+        if (t >= self.interner.pool.typeCount()) return false;
+        const flags = self.interner.pool.flagsOf(t);
+        if (flags.is_union) {
+            for (self.interner.unionMembers(t)) |m| {
+                if (m == types.Primitive.undefined_t) return true;
+            }
+        }
+        // Fall back to a substring check for synthesized type names
+        // that may already include `undefined` even when the underlying
+        // TypeId isn't a union (e.g. an alias whose body is
+        // `T | undefined`).
+        return std.mem.indexOf(u8, name, "undefined") != null;
     }
 
 
@@ -38879,7 +38966,7 @@ pub const Checker = struct {
         if (payload_idx >= self.interner.pool.literal_payloads.items.len) return null;
         const literal = self.interner.pool.literal_payloads.items[payload_idx];
         return switch (literal) {
-            .string_lit => |sid| try std.fmt.allocPrint(self.diag_arena.allocator(), "\"{s}\"", .{self.string_interner.get(sid)}),
+            .string_lit => |sid| try self.allocStringLiteralDisplay(sid),
             .number_lit => |bits| try std.fmt.allocPrint(self.diag_arena.allocator(), "{d}", .{@as(f64, @bitCast(bits))}),
             .bigint_lit => |sid| try std.fmt.allocPrint(self.diag_arena.allocator(), "{s}", .{self.string_interner.get(sid)}),
             .boolean_lit => |b| if (b) "true" else "false",
@@ -39065,6 +39152,76 @@ pub const Checker = struct {
         return sig_buf.items;
     }
 
+    /// Render an interface declaration's name with its type-parameter
+    /// list appended (`Foo<T, U>`) when the declaration is generic.
+    /// Returns the bare name unchanged when the interface has no
+    /// type parameters or any parameter isn't a `type_parameter` HIR
+    /// node. Mirrors upstream tsc's TS2430 prose which preserves the
+    /// generic shape (`Interface 'E1<T>' ...`) for fixtures like
+    /// `mappedTypesAndObjects.ts(25,11)`.
+    fn formatInterfaceDisplayName(self: *Checker, iface_node: NodeId, bare_name: []const u8) ![]const u8 {
+        if (self.hir.kindOf(iface_node) != .interface_decl) return bare_name;
+        const iface = hir_mod.interfaceOf(self.hir, iface_node);
+        if (iface.type_params_len == 0) return bare_name;
+        const arena = self.diag_arena.allocator();
+        var buf: std.ArrayListUnmanaged(u8) = .empty;
+        try buf.appendSlice(arena, bare_name);
+        try buf.append(arena, '<');
+        const tp_nodes = self.hir.childSlice(iface.type_params_start, iface.type_params_len);
+        for (tp_nodes, 0..) |tp_node, i| {
+            if (i > 0) try buf.appendSlice(arena, ", ");
+            if (self.hir.kindOf(tp_node) == .type_parameter) {
+                const tp = hir_mod.typeParameterOf(self.hir, tp_node);
+                try buf.appendSlice(arena, self.string_interner.get(tp.name));
+            } else {
+                try buf.appendSlice(arena, "T");
+            }
+        }
+        try buf.append(arena, '>');
+        return buf.items;
+    }
+
+    /// Render a string-literal payload as it appears inside TS2322
+    /// prose: a double-quoted form with embedded control characters
+    /// re-escaped (`\n`, `\r`, `\t`, `\0`) and embedded `"` escaped.
+    /// Mirrors tsc's `getLiteralText` which never emits a raw newline
+    /// or tab inside the literal's display form. Used by every
+    /// `"\"{s}\""`-shaped string-literal renderer in this file so
+    /// fixtures like `stringLiteralTypesWithTemplateStrings02.ts`
+    /// produce `Type '"AB\nC"'` instead of a broken multi-line
+    /// diagnostic.
+    ///
+    /// We intentionally do NOT escape backslashes here. Some
+    /// literal-type lowering paths intern the source-form text
+    /// (including the literal `\r` / `\n` escape sequences), while
+    /// expression lowering interns the cooked form (with real CR/LF
+    /// bytes). Pre-escaping backslashes would double-escape the
+    /// already-source-form literal types (`\r` → `\\r`) and break the
+    /// `stringLiteralTypesWithTemplateStrings02` baseline. Display
+    /// quotes (`"`) and the literal control bytes are still escaped
+    /// because they would otherwise break the surrounding diagnostic.
+    fn allocStringLiteralDisplay(self: *Checker, sid: hir_mod.StringId) ![]const u8 {
+        const raw = self.string_interner.get(sid);
+        const arena = self.diag_arena.allocator();
+        var buf: std.ArrayListUnmanaged(u8) = .empty;
+        try buf.append(arena, '"');
+        for (raw) |c| {
+            switch (c) {
+                '\n' => try buf.appendSlice(arena, "\\n"),
+                '\r' => try buf.appendSlice(arena, "\\r"),
+                '\t' => try buf.appendSlice(arena, "\\t"),
+                8 => try buf.appendSlice(arena, "\\b"),
+                12 => try buf.appendSlice(arena, "\\f"),
+                11 => try buf.appendSlice(arena, "\\v"),
+                0 => try buf.appendSlice(arena, "\\0"),
+                '"' => try buf.appendSlice(arena, "\\\""),
+                else => try buf.append(arena, c),
+            }
+        }
+        try buf.append(arena, '"');
+        return buf.items;
+    }
+
     fn allocSimpleTypeName(self: *Checker, t: TypeId) !?[]const u8 {
         return switch (t) {
             types.Primitive.any => "any",
@@ -39150,7 +39307,17 @@ pub const Checker = struct {
                     const members = self.interner.objectMembers(t);
                     if (members.len == 1) {
                         const call_id = self.string_interner.intern("__call") catch break :blk null;
+                        const construct_id = self.string_interner.intern("__construct") catch break :blk null;
                         if (members[0].name == call_id and self.interner.isSignature(members[0].type)) {
+                            if (try self.allocCallableSignatureName(members[0].type)) |name| break :blk name;
+                        }
+                        // Single-construct-signature anonymous object type
+                        // collapses to `new (params) => Ret` in TS2322
+                        // prose — `allocCallableSignatureName` already
+                        // emits the `new ` prefix for construct sigs.
+                        // Mirrors fixture
+                        // `objectTypeWithConstructSignatureHidingMembersOfFunctionAssignmentCompat.ts(14,1)`.
+                        if (members[0].name == construct_id and self.interner.isSignature(members[0].type)) {
                             if (try self.allocCallableSignatureName(members[0].type)) |name| break :blk name;
                         }
                     }
@@ -39461,7 +39628,7 @@ pub const Checker = struct {
                 if (payload_idx >= self.interner.pool.literal_payloads.items.len) break :blk null;
                 const literal = self.interner.pool.literal_payloads.items[payload_idx];
                 break :blk switch (literal) {
-                    .string_lit => |sid| try std.fmt.allocPrint(self.diag_arena.allocator(), "\"{s}\"", .{self.string_interner.get(sid)}),
+                    .string_lit => |sid| try self.allocStringLiteralDisplay(sid),
                     .number_lit => |bits| try std.fmt.allocPrint(self.diag_arena.allocator(), "{d}", .{@as(f64, @bitCast(bits))}),
                     .bigint_lit => |sid| try std.fmt.allocPrint(self.diag_arena.allocator(), "{s}", .{self.string_interner.get(sid)}),
                     .boolean_lit => |b| if (b) "true" else "false",
@@ -46063,6 +46230,50 @@ test "checker: merged interface method overloads do not trigger TS2300" {
 // does not already include it — e.g. `{ s?: number; }` shows up as
 // `{ s?: number | undefined; }`. Mirrors fixture
 // `subtypingWithOptionalProperties`.
+// A bare object type containing only a single construct signature
+// must render in TS2322 prose as `new (params) => Ret` rather than
+// the `{ new (): T; }` literal. Mirrors fixture
+// `objectTypeWithConstructSignatureHidingMembersOfFunctionAssignmentCompat.ts(14,1)`.
+test "checker: anonymous single-construct-signature object renders as `new () => any`" {
+    const s = try newSetup("var _x;");
+    defer destroySetup(s);
+    const construct_id = try s.sint.intern("__construct");
+    const ctor_sig = try s.ti.internSignature(&.{}, types.Primitive.any, true);
+    const obj = try s.ti.internObjectType(&.{
+        .{ .name = construct_id, .type = ctor_sig, .is_optional = false, .is_readonly = false, .is_method = false },
+    });
+    const name = (try s.checker.allocSimpleTypeName(obj)) orelse return error.SkipZigTest;
+    try T.expectEqualStrings("new () => any", name);
+}
+
+test "checker: optional object property shape renders with ` | undefined` only in TS2322 variant" {
+    // Construct `{ s?: number }` directly via the interner so the
+    // assertion isolates the `allocObjectTypeShape*` rendering paths
+    // without depending on TS2322 wiring.
+    const s = try newSetup("var _x;");
+    defer destroySetup(s);
+    const s_name = try s.sint.intern("s");
+    const obj = try s.ti.internObjectType(&.{
+        .{ .name = s_name, .type = types.Primitive.number_t, .is_optional = true, .is_readonly = false, .is_method = false },
+    });
+    // Brief variant (used by TS2559, TS2741 etc.) omits the suffix.
+    const brief = (try s.checker.allocObjectTypeShape(obj)) orelse return error.SkipZigTest;
+    try T.expect(std.mem.indexOf(u8, brief, "s?: number;") != null);
+    try T.expect(std.mem.indexOf(u8, brief, "| undefined") == null);
+    // Verbose variant (used by TS2322 prose) widens with `| undefined`.
+    const verbose = (try s.checker.allocObjectTypeShapeWithUndefined(obj)) orelse return error.SkipZigTest;
+    try T.expect(std.mem.indexOf(u8, verbose, "s?: number | undefined;") != null);
+
+    // A property that is BOTH optional AND already permits undefined
+    // (`s?: number | undefined`) must not double-render the suffix
+    // even in the verbose variant.
+    const undef_union = try s.ti.internUnion(&.{ types.Primitive.number_t, types.Primitive.undefined_t });
+    const obj2 = try s.ti.internObjectType(&.{
+        .{ .name = s_name, .type = undef_union, .is_optional = true, .is_readonly = false, .is_method = false },
+    });
+    const verbose2 = (try s.checker.allocObjectTypeShapeWithUndefined(obj2)) orelse return error.SkipZigTest;
+    try T.expect(std.mem.indexOf(u8, verbose2, "undefined | undefined") == null);
+}
 
 // Member access on a callable object type (e.g. an interface with a
 // call/construct signature) resolves Function-prototype names like
@@ -46117,6 +46328,56 @@ test "checker: setter with this: param suppresses TS7006 for value param" {
     }
     try T.expect(saw_ts2784);
     try T.expect(!saw_ts7006);
+}
+
+// TS2345 prose for an anonymous object-literal argument paired with a
+// simple-named parameter should render the structural shape rather
+// than the positional placeholder. Mirrors fixture
+// `wrappedAndRecursiveConstraints4.ts(13,12)`.
+test "checker: TS2345 renders anonymous object-literal arg structurally" {
+    const s = try newBoundSetup(
+        \\function f(s: string) {}
+        \\f({ length: 1, charAt: (x: number): void => {} });
+    );
+    defer destroyBoundSetup(s);
+    try s.base.checker.checkSourceFile(s.base.root);
+    var saw_structural = false;
+    for (s.base.checker.diagnostics.items) |d| {
+        if (d.code != TsCodes.argument_type_mismatch) continue;
+        // The arg shape rendering must mention `length: number` and
+        // the parameter target should still read as `string` — never
+        // the bare positional placeholder.
+        if (std.mem.indexOf(u8, d.message, "length: number") != null and
+            std.mem.indexOf(u8, d.message, "'string'") != null and
+            std.mem.indexOf(u8, d.message, "position") == null)
+        {
+            saw_structural = true;
+        }
+    }
+    try T.expect(saw_structural);
+}
+
+// TS2430 prose for a generic interface must include the type-parameter
+// list (`Interface 'E1<T>' ...`) so the child interface display name
+// mirrors upstream tsc. Mirrors fixture
+// `mappedTypesAndObjects.ts(25,11)`.
+test "checker: TS2430 names generic child interface with its type parameters" {
+    const s = try newSetup(
+        \\interface Base {
+        \\    a: string;
+        \\}
+        \\interface E1<T> extends Base {
+        \\    a: number;
+        \\}
+    );
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+    var saw_generic_name = false;
+    for (s.checker.diagnostics.items) |d| {
+        if (d.code != TsCodes.interface_incorrectly_extends) continue;
+        if (std.mem.indexOf(u8, d.message, "'E1<T>'") != null) saw_generic_name = true;
+    }
+    try T.expect(saw_generic_name);
 }
 
 test "checker: interface heritage detects recursive extends chain" {

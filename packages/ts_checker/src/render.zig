@@ -33,6 +33,38 @@ pub fn renderType(
     return buf.toOwnedSlice(gpa);
 }
 
+/// Escape a string-literal payload for diagnostic display so that
+/// control characters mirror tsc's `getLiteralText` output. tsc maps
+/// CR/LF/tab/etc. to their `\x` escape sequences and leaves other
+/// printable characters untouched; without this, an interned literal
+/// containing a real newline (e.g. from a template-string source)
+/// would render as `'AB
+/// C'` instead of the `'AB\nC'` tsc emits. Backslashes are passed
+/// through unchanged because some upstream-aligned lowering paths
+/// intern source-form literal-type text where the `\r` / `\n` escapes
+/// are still literal `\` + letter sequences — re-escaping them here
+/// would double them and break the
+/// `stringLiteralTypesWithTemplateStrings02` baseline.
+fn appendEscapedStringLiteral(
+    buf: *std.ArrayListUnmanaged(u8),
+    gpa: std.mem.Allocator,
+    s: []const u8,
+) RenderError!void {
+    for (s) |c| {
+        switch (c) {
+            '\n' => try buf.appendSlice(gpa, "\\n"),
+            '\r' => try buf.appendSlice(gpa, "\\r"),
+            '\t' => try buf.appendSlice(gpa, "\\t"),
+            8 => try buf.appendSlice(gpa, "\\b"),
+            12 => try buf.appendSlice(gpa, "\\f"),
+            11 => try buf.appendSlice(gpa, "\\v"),
+            0 => try buf.appendSlice(gpa, "\\0"),
+            '"' => try buf.appendSlice(gpa, "\\\""),
+            else => try buf.append(gpa, c),
+        }
+    }
+}
+
 /// Append the TS source representation of `id` to `buf`.
 pub fn renderTypeInto(
     buf: *std.ArrayListUnmanaged(u8),
@@ -64,7 +96,7 @@ pub fn renderTypeInto(
         switch (lit) {
             .string_lit => |sid| {
                 try buf.append(gpa, '"');
-                try buf.appendSlice(gpa, sint.get(sid));
+                try appendEscapedStringLiteral(buf, gpa, sint.get(sid));
                 try buf.append(gpa, '"');
             },
             .number_lit => |bits| {
@@ -261,6 +293,29 @@ test "renderType: object with property-form function member stays arrow" {
     const out = try renderType(T.allocator, &ti, &sint, obj);
     defer T.allocator.free(out);
     try T.expectEqualStrings("{ f: () => void }", out);
+}
+
+test "renderType: string literal with control chars escapes like tsc" {
+    var ti = try interner_mod.Interner.init(T.allocator);
+    defer ti.deinit();
+    var sint = try string_interner.Interner.init(T.allocator);
+    defer sint.deinit();
+    // A literal payload whose raw interned text contains a real
+    // newline must render with `\n` rather than the bare control
+    // character — otherwise TS2322 prose breaks across multiple
+    // diagnostic lines. Mirrors
+    // `stringLiteralTypesWithTemplateStrings02.ts(1,5)`.
+    const sid = try sint.intern("AB\nC");
+    const lit = try ti.internStringLiteral(sid);
+    const out = try renderType(T.allocator, &ti, &sint, lit);
+    defer T.allocator.free(out);
+    try T.expectEqualStrings("\"AB\\nC\"", out);
+
+    const sid2 = try sint.intern("AB\r\nC");
+    const lit2 = try ti.internStringLiteral(sid2);
+    const out2 = try renderType(T.allocator, &ti, &sint, lit2);
+    defer T.allocator.free(out2);
+    try T.expectEqualStrings("\"AB\\r\\nC\"", out2);
 }
 
 test "renderType: signature" {
