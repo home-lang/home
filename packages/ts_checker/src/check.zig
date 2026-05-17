@@ -45637,10 +45637,15 @@ test "checker: noImplicitAny skips TS7008 on ambient `declare class` members" {
     // Mirrors upstream tsc: a `declare class` member without an annotation
     // is intentionally implicit-any in the ambient world and must not raise
     // TS7008. Only the checked, non-ambient sibling class should report.
-    // Regression for conformance fixture `privateNameAmbientNoImplicitAny`.
+    // Regression for conformance fixture `privateNameAmbientNoImplicitAny`,
+    // including the private-name (`#prop`) shape the upstream fixture uses.
     const s = try newSetup(
-        \\declare class A { p }
-        \\class B { p }
+        \\declare class A {
+        \\    #prop;
+        \\}
+        \\class B {
+        \\    #prop;
+        \\}
     );
     defer destroySetup(s);
     s.checker.setStrictFlags(.{ .no_implicit_any = true });

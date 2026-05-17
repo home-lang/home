@@ -14,6 +14,8 @@
 **Current phase:** Phase 3 type checker substantially complete + Phase 4 emit + Phase 8 LSP all advancing in parallel. Phase 6 exact-baseline ratchet now infrastructurally enabled — `HOME_TS_CONFORMANCE_FULL=1 HOME_TS_CONFORMANCE_EXACT=1` runs the local 5907-case corpus against upstream `.errors.txt` text byte-for-byte (vs the previous coarse expected-any gate). First measured baseline is **190/500 (38%) passing** on the leading slice; coarse mode stays saturated at 5907/5907. Type checker covers: generic instantiation (incl. explicit type args properly substituted through signatures and explicit `new Foo<T>()` class-instance instantiation), **contextual generic callback instantiation for concrete call slots plus expected-return fallback for nested generic calls**, generic type-alias + **generic interface** + **generic class** instantiation, **fresh declaration-scoped type-parameter identities for generic shadowing**, mapped types over string-literal-union constraints, conditional types evaluating eagerly with union distribution + deferred-conditional substitution under generic-alias instantiation, structural object assignability, signatures with return-type inference, **object/interface call and construct signatures**, full narrowing surface (typeof / null / undefined / else-branch / instanceof / `in` / discriminated unions / `as const` / **type predicates `arg is T`** / **`asserts arg is T` fall-through narrowing** / **`===`-with-literal-RHS narrowing**) with proper union subtraction, **`await` unwraps structural `Promise<T>`**, **cycle-safe auto-variance inference for generic params**, arrow-fn signatures, class+interface+type-alias resolution, getter/setter accessor typing, `this`/`super` typing, **explicit `this` parameters erased from callable signatures**, `extends` inheritance with **generic `extends Foo<T>` instantiation** and **TS2416 incompatible override diagnostics**, **structural class `implements` checks (TS2420)**, ctor signatures, index signatures with **TS2411 member/indexer compatibility diagnostics**, tuple lowering including generic tuple elements under type-parameter scope, `Array<T>` shape plus declared `interface Array<T>` member augmentation, optional params, `keyof T` including literal-object aliases + `T[keyof T]` distribution, seeded lib globals (`NaN`, `Infinity`, `isNaN`, `parseFloat`, `Math`, `Number`, `String`, `console`), strict-mode flags `noImplicitAny` (TS7005/TS7006), `strictPropertyInitialization` (TS2564), `noUnusedLocals`/`noUnusedParameters` (TS6133), `strictFunctionTypes` (bivariant ↔ contravariant signature-assignability), TS2353 fresh-object excess-property checks **including nested object literals, string-indexer tolerance, and numeric property tolerance for number index signatures**, non-null assertion `expr!`, ambient-overload fallback resolution, all-optional object assignment for unconstrained generics, and regex literals as object-typed expressions. JS emit covers: full Phase 1 surface, **generic class heritage type-argument erasure**, **`??` and `?.` lowering at ES2019 and below**, **JSX automatic runtime (`_jsx`/`_jsxs`/`_jsxDEV`)**, **CommonJS module emit with `__importDefault`/`__importStar` interop helpers**, **async/await `__awaiter` downlevel for ES2015-ES2016**, **private fields → WeakMap**, **legacy decorators with parameter metadata**, **Stage 3 class/member decorator helper shape with static-member contexts**, **object-method shorthand ES5 lowering**, regex literal preservation, source map V3, symbol-driven `.d.ts`, **basic `.d.hm` framing emitter**, zig-dtsx fast path. LSP covers: hover, definition, cross-file references, completion (module-level), **signatureHelp**, **inlayHints (inferred-let-type)**, **documentSymbols + workspaceSymbols**, **semanticTokens (13-element legend)**, **rename (cross-file)**, **codeActions (Organize Imports)**, **formatDocument stub + foldingRanges**, **`didChangeFile` triggers recompile + fresh diagnostics**, diagnostics. Program graph: parallel parse/bind, **incremental `compileAll` skips unchanged files**, persistent on-disk compilation cache, multi-file cache wiring, **streaming diagnostics callback hook**, **two-level relation cache (L1+L2) for parallelization readiness**, **`declare global` augmentation collection across files**. Conformance: harness + 56-case canon corpus exercising every landed feature, **patience-diff unified output on baseline mismatch**, **smoke + category runs against local TS conformance folders**. CLI: **`home-tsc --watch` uses real `ts_watch.Watcher` + `RealStatFs`**, **`--pretty` wires through `formatPretty` with source-snippet excerpt**.
 **Active deliverable:** Phase 6 — full local TypeScript conformance corpus integration (no submodule; use the locally-installed TypeScript checkout per user direction); Phase 7 — native codegen for typed TS subset; Phase 7.5 — game-scale TS-flavor Home validation track, anchored by the planned Settlers III remake in `~/Code/Apps/settlers-iii`; Phase 4.5 — bundler integration via Bun; Phase 4 follow-ups — generators→state-machine, full Stage 3 decorator initializer semantics, `.d.hm` type re-printing. Last verified full `zig build test --summary failures` under Pantry-managed Zig `0.17.0-dev.263+0add2dfc4`: **passing**, diagnostics snapshots pass **95/95**, the local TypeScript conformance smoke is clean at **16/16** (`comparable` 13/13, `inOperator` 2/2, `stringLiteral` 1/1), the named category ratchet is clean at **86/86** with `assignmentCompatibility` at **70/70**, `comparable` baseline-aware at **13/13**, and the baseline-aware type-relationships survey is clean at **175/175**. Full-corpus slice ratchets from `START=838` through `START=3998` in 40-case windows are all **40/40**, every larger window from `START=4038 LIMIT=200` through the final `START=5838 LIMIT=200` corpus tail is clean, `START=0 LIMIT=620` is **620/620**, `START=620 LIMIT=220` is **220/220**, `START=4900 LIMIT=100` is **100/100**, the decorator/class-member window `START=997 LIMIT=80` is **80/80**, the Phase 6 class-member/accessor window `START=1077 LIMIT=200` is **200/200**, the adjacent private-name/static-side window `START=1277 LIMIT=200` is **200/200**, the static-block/import-attributes window `START=1477 LIMIT=200` is **200/200**, the async/decorator-metadata window `START=1677 LIMIT=200` is **200/200**, the ambient/checkJs grammar window `START=1877 LIMIT=200` is **200/200**, the JS constructor/parser window `START=2077 LIMIT=200` is **200/200**, the parser real-source/interface window `START=2277 LIMIT=200` is **200/200**, the parser with-statement/for-initializer window `START=2477 LIMIT=200` is **200/200**, the export-assignment/strict-parser window `START=2677 LIMIT=200` is **200/200**, the module/namespace merge window `START=2877 LIMIT=200` is **200/200**, the JSDoc/declaration window `START=3077 LIMIT=200` is **200/200**, the JSDoc/module-resolution window `START=3277 LIMIT=200` is **200/200**, the ES module namespace/top-level-await window `START=3477 LIMIT=200` is **200/200**, the definite-assignment control-flow window `START=3677 LIMIT=200` is **200/200**, the decorator/destructuring window `START=3877 LIMIT=200` is **200/200**, the unicode/rest-destructuring window `START=4077 LIMIT=200` is **200/200**, the iterator/symbol/template bridge window `START=4277 LIMIT=200` is **200/200**, the tagged-template/module/for-of window `START=4477 LIMIT=200` is **200/200**, the export/computed-property window `START=4677 LIMIT=200` is **200/200**, the rest/type-access window `START=4877 LIMIT=200` is **200/200**, the type-guard/super/enum/function-spread window `START=5077 LIMIT=200` is **200/200**, the exponentiation/function/generator/node-module/RegExp bridge span `START=5277 LIMIT=200` is covered at **200/200** by completed partitioned ratchets, the JSX/control-flow tail span `START=5477 LIMIT=250` is covered at **250/250** by completed partitioned ratchets, and the final control-flow/import tail from `START=5727` through corpus end is covered at **180/180** (`START=5727`, `5777`, `5827` all **50/50**, final `START=5877` tail **30/30**). The latest refresh removes the expensive node-module scan blocker with virtual-section caching and no-allocation virtual path suffix checks; focused `nodeModules1` is **1/1**, `START=5423 LIMIT=54` is **54/54**, `START=5423 LIMIT=484` is **484/484**, `START=3945` through corpus end is **1962/1962**, and the full unbounded local TypeScript corpus gate is now clean at **5 907/5 907** in coarse expected-any mode. The latest early-window source sweeps close `START=0 LIMIT=80` at **80/80**, `START=80 LIMIT=40` at **40/40**, `START=120 LIMIT=40` at **40/40**, `START=0 LIMIT=200` at **200/200**, `START=0 LIMIT=260` at **260/260**, `START=200 LIMIT=200` at **200/200**, `START=400 LIMIT=200` at **200/200**, and `START=300 LIMIT=120` at **120/120**, `START=0 LIMIT=620` at **620/620**, and `START=620 LIMIT=220` at **220/220**. The harness explicitly tracks coarse expected-error/expected-clean gaps for option-deprecation, resolver/package/library/reference-path, Node package-resolution/mode-selection fixtures, decorator signature/name-evaluation/metadata/emit-helper gaps, accessor override, auto-accessor, mixin, class constructor/accessibility/abstractness/static-block/async target semantics, `super` ordering, static-side `this`, private-name, ES/lib globals, enum/ambient/logical-assignment/JS CommonJS/JSDoc/parser/internal-module/resource-management/target-variant diagnostics, contextual-typing/property-access/new-operator tail gaps, tuple/object-rest/isomorphic mapped-type inference, flattened multi-file namespace/export-assignment fixtures, and regex/divide lexer-mode exactness not yet modeled by the single-source checker. The smoke, named-category, first four broad early-window ratchets, `START=4900 LIMIT=100` crash-neighborhood ratchet, every active full-corpus slice, and the full 5 907-case coarse gate are saturated; next Phase 6 work should graduate from expected-any checks to exact `.errors.txt` text comparison, replace each modeled gap with real checker/resolver semantics, and install a per-PR delta gate. No Settlers III source migration has started; Appendix E is a planning artifact only.
 
+**Coordination note (2026-05-16, Phase 12 plan landed):** A full multi-agent runtime plan was added at **§12** (JS/TS Runtime — Bun-Zig port + Pantry-native pkg mgr). It is planning-only — no source has landed. §12.0 records hard scope guards (Pantry is the package manager, not `bun install`; JSC is the engine; vendor before Bun's Zig-→-Rust migration removes the source); §12.1–12.14 carve sub-phases sized for 12–16 parallel agents at peak; §12.15 is the dependency graph; §12.16 the risk register; §12.17 the append-only coordination log for Phase 12 agents (mirrors this Phase 6 pattern). The first agent claiming any 12.x task **must** start with §12.0.1.a (snapshot Bun's upstream HEAD SHA into `vendor/bun-zig/UPSTREAM_SHA.txt` and verify it matches Phase 4.5's bundler SHA at `packages/ts_bundler/src/bun/`). The plan deliberately keeps Phases 0–11 (TS parity) on their existing track; Phase 12 is post-v1 work that runs alongside Phase 11 but starts immediately on §12.0/12.1/12.9 because of the upstream deletion clock.
+
 **Coordination note (2026-05-14):** Multiple agents may now be working this plan. Before editing a modeled-bucket entry, check the latest git state and this section's latest dated note; this pass owns the checker/destructuring cleanup for `wideningTuples6`, `genericObjectRest`, and `objectRestAssignment`, leaving only `isomorphicMappedTypeInference` in that cluster as a modeled homomorphic mapped reverse-inference gap.
 
 **Coordination note (2026-05-14, late):** This pass owns only `packages/ts_parser/src/ts_parser.zig`, `packages/ts_checker/src/check.zig`, `packages/ts_conformance/src/ts_conformance.zig`, and this plan update. It ratchets exact parser/checker recovery in the 2000-3000 band, closes the focused statement window at `START=2619 LIMIT=95` to **95/95**, advances malformed variable-list and index-signature parser recovery, rebases over the TS5107/TS2415/TS2417 exact-mode main update, closes the focused computed-property/type-ref window at `START=2900 LIMIT=25` to **25/25**, fixes newline `var`-list/return recovery, adds faithful object/array literal recovery and exact-harness cleanup, then tightens close-paren expression/source-unit parser recovery. After rebasing over the parallel builtin-global spelling-suggestion update, the requested 2000-3000 exact band is now **771/1000** and the requested 4000-5000 exact baseline is now **643/1000**; other Phase 6 agents should continue their separate scopes without assuming these remaining parser/checker failures are harness-modeled.
@@ -2806,6 +2808,541 @@ After Tier 1, where is the next 2× hiding? Three places:
 3. **The TS conformance gate itself.** ≥ 99.6% conformance constrains how clever we can get. Phase 6's correctness work *will* slow down a few hot paths to match tsc's behavior. We accept this; correctness > speed.
 
 So: **v1 + Tier 1 is the most performant TS-compatible compiler currently practical to build.** Tier 2 buys 20–40% more in specific scenarios; Tier 3 is research. The honest claim is "approximately 3.5–4× tsgo cold and 50–100× tsgo on watch, with conformance ≥ 99.9%."
+
+---
+
+## 12 · JS/TS Runtime — Home becomes a runtime (Bun-Zig port + Pantry-native pkg mgr)
+
+**Status (2026-05-16):** ⚪ planning only — no source landed. This section is the multi-agent execution plan; sub-phases (12.0 – 12.18) are intentionally scoped so that 2–8 agents can pick up independent work in parallel. Effort estimate: **40 – 80 engineering weeks** depending on engine path and Node-compat surface. Independent of v1 schedule; tracks alongside Phase 11 as post-v1 product, but parts (12.0, 12.1, 12.9) **must start immediately** because the upstream Bun Zig source has a deletion clock — see §12.0.1.
+
+> **One-line framing.** Home already has a Zig TS frontend + bundler + LSP. Phase 12 closes the loop: ship a **Bun-compatible JS/TS runtime** in Home, with **Pantry as the native package manager** (not `bun install`). Vendor Bun's Zig runtime now while it still exists, port it onto our HIR / Pantry / event loop, and make `home run server.ts` a drop-in for `bun run server.ts` and `node server.ts`.
+
+### 12.0 · Why this phase, hard scope guards, and the deletion clock
+
+**Why.** A first-class TS toolchain (Phases 0–11) without a runtime ships a *checker* and a *bundler* — Home cannot execute the code it checks. Bun has demonstrated that a JS runtime co-designed with the bundler/checker is ~3–10× faster startup and HTTP throughput than Node. Bun is now migrating its core from Zig to Rust; Home is Zig-native on Zig `0.17.0-dev.263+0add2dfc4`. The Zig runtime that Bun published (≈ 710 K LOC across 1 290 files at `/Users/chrisbreuer/Code/bun/src/`) is currently the largest-and-most-battle-tested JS runtime ever shipped in Zig, and it is on a deletion path. We vendor it before that deletion happens, then evolve it inside Home.
+
+**Hard scope guards (do not violate without re-opening this section):**
+
+1. **Pantry is the package manager. `bun install` is NOT vendored as runtime.** Bun's installer (`~/Code/bun/src/install/`, 69 .zig files + 71 .rs files) is **excluded** from the vendor snapshot in §12.1. Pantry's resolver (`~/Code/Tools/pantry/packages/ts-pantry/`) is the source of truth for module resolution, lockfile, registry, hoisting, and lifecycle scripts. The runtime's CommonJS/ESM resolver (§12.4) calls **into Pantry**, not into Bun's installer. Phase 12.9 promotes Pantry from "TS subprocess + Zig path-resolver" to a first-class native Zig subsystem with Bun-class parallel downloads.
+2. **Engine: JavaScriptCore (JSC), linked as a prebuilt static lib.** Decision recorded in §12.0.2; alternatives (V8, QuickJS, Hermes) evaluated and rejected for v1 of the runtime. Re-evaluation gate at end of 12.2.
+3. **Node compatibility is a target, not a constraint.** Phase 12.7 follows Bun's "node compatibility tier list" — must-have surfaces first (fs, path, http, stream, buffer, process, crypto), exotic surfaces deferred. If a Node API is incompatible with Home's safety model, document the divergence in `docs/RUNTIME_DIVERGENCES.md` rather than warp Home around it.
+4. **Bun-compatible APIs are renamed `Home.*`.** `Bun.serve` becomes `Home.serve`. `Bun.file` becomes `Home.file`. Compatibility shim `globalThis.Bun = Home` is shipped behind `--compat=bun` for migrating projects. Original `Bun.*` is *not* the canonical surface.
+5. **No JS-engine rewrite in v1.** We do not write our own JS VM in Zig. We do not port V8. JSC is linked. The Zig surface area we maintain is the **embedding** (bindings, runtime APIs, event loop, module loader), not the engine. This bounds the work.
+6. **No regression of TS-parity phases.** Every sub-phase 12.x has a CI gate that runs `zig build test --summary failures` plus the TS conformance smoke. The runtime ships as `packages/runtime/`; existing TS frontend / bundler packages stay untouched unless explicitly listed in a sub-phase's *Home target*.
+7. **Vendored code lives under `vendor/bun-zig/`** with `LICENSE.bun` (MIT) preserved. **No edits to `vendor/bun-zig/` after snapshot.** All Home-specific changes go in `packages/runtime/adapters/`. This mirrors the Phase 4.5 bundler pattern (`packages/ts_bundler/src/bun/`) and keeps a clean rebase path if we ever take a newer Bun Zig SHA.
+
+#### 12.0.1 · Deletion clock — vendor immediately
+
+Bun's repository at `~/Code/bun/` currently contains **1 290 Zig files / ~710 K LOC** alongside **1 432 Rust files / ~981 K LOC**. Many subsystems already have dual implementations (`bundler/` vs `bundler_jsc/`, `install/` vs `install_jsc/`, `js_parser/` vs `js_parser_jsc/`, `http/` vs `http_jsc/`). The pattern is unambiguous: Zig is the legacy path. Once Bun's Rust migration completes, removing the `.zig` siblings from upstream will close the porting window for the *non-bundler* runtime subsystems we have not yet copied. Phase 4.5 has already snapshotted `bundler/`; Phase 12.1 must snapshot the remaining runtime tree on **the same upstream SHA** so Home's vendored runtime is internally consistent (a runtime built on one Bun SHA against a bundler built on another will diverge on shared types like `JSAst.Ast`, `Resolver.PackageJSON`, `bun.options.Options`).
+
+**Agent task 12.0.1.a** *(blocking; first thing any 12.x agent does):* record the current Bun upstream HEAD SHA into `vendor/bun-zig/UPSTREAM_SHA.txt` and verify it matches the SHA already used by `packages/ts_bundler/src/bun/` (see Phase 4.5). If they disagree, open `docs/runtime/SHA_MIGRATION.md` and resolve before any porting begins.
+
+#### 12.0.2 · Engine decision matrix
+
+| Engine | Embed cost | TS perf reference | Bun-compat semantics | License | Verdict |
+|---|---|---|---|---|---|
+| **JSC (JavaScriptCore)** | C++ bindings (≈ 1 198 files in `~/Code/bun/src/jsc/bindings/`) prebuilt static lib from WebKit | Bun proves it works at scale | **Identical** to Bun — same engine, same edge cases | LGPL (engine) + BSD (Bun's bindings); LGPL implications for dynamic-link distribution covered in §12.0.4 | **Chosen for v1** |
+| V8 | Heavy C++ binding rewrite, large binary, complex GYP build | Fastest single-thread JIT | Not Bun-compatible; would lose 100% of Bun semantic parity | BSD | Rejected; cost > win |
+| QuickJS | Tiny embed (~ 50 K LOC C) | 10–100× slower than JSC | Not Bun-compatible | MIT | Reserved as `--engine=quickjs` for `home build --compile` small binaries |
+| Hermes | Designed for React Native cold-start | Slow steady-state vs JSC | Not Bun-compatible | MIT | Rejected for general runtime; reconsider for mobile target |
+| Roll our own | Years of work | Years away | n/a | n/a | Rejected; out of scope per scope guard 5 |
+
+**Implication:** The runtime is JSC-coupled by design. Sub-phases 12.2 and the JSC parts of 12.5/12.6 must explicitly preserve JSC semantics; substituting another engine post-v1 is a v2.x project, not a sub-phase swap.
+
+#### 12.0.3 · License audit (Bun MIT + WebKit LGPL)
+
+**Agent task 12.0.3.a:** confirm Bun's `LICENSE.md` is unchanged from `LICENSE.md@<SHA>` recorded by §12.0.1; copy into `vendor/bun-zig/LICENSE.bun`. Confirm Bun's third-party manifest (boringssl, libuv, mimalloc, libarchive, libdeflate, c-ares, simdutf, μWebSockets, picohttp, lolhtml, TinyCC, zstd, brotli, zlib) — each one's license must be itemised in `vendor/bun-zig/THIRD_PARTY_LICENSES.md`. **Agent task 12.0.3.b:** open `docs/runtime/LICENSING.md` and explain JSC's LGPL position vs Home's distribution model (dynamic-link of `libJSC.dylib`/`.so`/`.dll` is the safe pattern; static-link triggers LGPL relink obligations and is therefore the default for `--compile` opt-in only, with a relink-script generator shipped per §12.11).
+
+#### 12.0.4 · Source-of-truth & no-edit policy
+
+* `vendor/bun-zig/` — **read-only mirror** of Bun at the pinned SHA. Do not edit. Re-snapshot only via the documented script in §12.1.
+* `vendor/jsc/` — prebuilt JSC binaries per platform (downloaded by `build.zig` from Bun's published JSC artifact bucket; URL pinned in `vendor/jsc/MANIFEST.json`).
+* `packages/runtime/` — Home's runtime crate. All Home-side glue, all adapters, all replacements for `bun.*` globals.
+* `packages/pantry/` — Pantry native Zig core (new; see §12.9).
+* `tests/runtime/` — Home runtime test suite, including the vendored Bun test mirror under `tests/runtime/upstream-bun/`.
+
+### 12.1 · Vendor & build — snapshot the Bun Zig tree
+
+**Goal.** A clean, byte-pinned vendor snapshot at `vendor/bun-zig/` with every Zig file compiling under Home's `zig build` toolchain on Zig `0.17.0-dev.263+0add2dfc4`. No behavior change yet; this is the foundation every other 12.x phase rebases on.
+
+**Blocks on.** §12.0.1 SHA pin.
+
+**Bun source.** Whole-tree snapshot of `~/Code/bun/src/` **excluding** the following subtrees (excluded by `vendor/bun-zig/.snapshot-excludes`):
+
+| Excluded subtree | Why |
+|---|---|
+| `install/`, `install_jsc/`, `install_types/` | Pantry replaces this — see §12.9 |
+| `bundler/`, `bundler_jsc/` | Already vendored by Phase 4.5 at `packages/ts_bundler/src/bun/`; symlink instead |
+| All `*.rs` files and `Cargo.*` | Out of scope; Zig-only port |
+| `bench/`, `dockerhub/`, `flake.*`, `oxlint.json` | Build/infra, not runtime |
+| `src/css/`, `src/css_derive/`, `src/css_jsc/` | Optional; deferred to a later sub-phase 12.18 |
+
+**Home target.** `vendor/bun-zig/` (new directory). `packages/runtime/build.zig` adds the vendor tree to the build graph but compiles only the modules listed by 12.1's per-file allowlist (no all-files-or-nothing).
+
+**Agent tasks.**
+1. **12.1.a — Snapshot script.** Write `scripts/vendor-bun-zig.sh` that takes a Bun checkout path + SHA, copies allowed `.zig` files into `vendor/bun-zig/`, preserves directory structure, writes `vendor/bun-zig/UPSTREAM_SHA.txt`, and is idempotent (re-running on same SHA is a no-op). Includes a `--dry-run` flag.
+2. **12.1.b — Allowlist + .snapshot-excludes.** Author `vendor/bun-zig/.snapshot-allow` (positive list — what we *do* take) and `vendor/bun-zig/.snapshot-excludes` (the table above). Aim for ~ 600–800 of the 1 290 Zig files in v1; everything else lives in `EXCLUDED_FROM_V1.md` with a one-liner rationale per file.
+3. **12.1.c — Bun-X stub.** Mirror Phase 4.5's `PORTING_STATUS.md` pattern at `vendor/bun-zig/PORTING_STATUS.md`. Enumerate every `bun.X` reference and assign one of: `MAPPED → home.X`, `STUB → packages/runtime/stubs/bun.zig`, `DEFER`, `DROP`. Aim for an exhaustive table; this is the master TODO that all later sub-phases consume.
+4. **12.1.d — build.zig integration.** Add `runtime_pkg` to `build.zig` analogous to `codegen_pkg` (lang/build.zig:110). New build steps `zig build runtime`, `zig build test-runtime`. Initial compile must produce `zig-out/lib/libhome_runtime.a` even if nothing in it is callable yet.
+5. **12.1.e — Zig 0.17-dev syntax fixups.** Bun pinned an older Zig version. Sweep `vendor/bun-zig/` for the standard set of 0.17-dev breaking changes (allocator API, `std.builtin` reshuffles, removed `usingnamespace`, `@field` semantics, etc.). Apply patches via `vendor/bun-zig/patches/0001-zig-0.17-dev.patch` *only* — do not edit the snapshot in place; the patch series re-applies after re-snapshot.
+6. **12.1.f — Compile-everything smoke gate.** New CI job: `zig build runtime -Dverify-vendor=true` must succeed on macOS x64, macOS arm64, Linux x64, Linux arm64. Failures triaged in `vendor/bun-zig/BRINGUP_FAILURES.md`.
+
+**Exit criteria.** `vendor/bun-zig/` compiles cleanly under Zig 0.17-dev on all four target tuples; `PORTING_STATUS.md` lists every `bun.X` reference with an assigned bucket; `home_runtime.a` builds (empty surface OK).
+
+**Effort.** 3–5 weeks. Parallel-amenable across the four target tuples and across allow-list pruning by subsystem.
+
+### 12.2 · JSC engine bring-up
+
+**Goal.** `home eval "1+1"` prints `2`. JSC linked, a VM created, value round-trip from Zig → JS → Zig works, exceptions map to Home `Result`.
+
+**Blocks on.** 12.1.
+
+**Bun source.**
+- `~/Code/bun/src/jsc/` (113 .zig files) — the Zig side of the JSC binding.
+- `~/Code/bun/src/jsc/bindings/` (533 .cpp + 665 .h files) — the C++ binding layer. This is the heaviest single piece of work in Phase 12.
+- `~/Code/bun/src/bun.js.zig` — the runtime entry that boots the VM.
+- `~/Code/bun/src/jsc_stub.zig` — what stays in WASM builds.
+
+**Home target.** `packages/runtime/jsc/` (Zig binding), `packages/runtime/jsc_bindings/` (C++), `packages/runtime/jsc_stub.zig` for non-JSC targets (`--engine=quickjs`, `--target=wasm`).
+
+**Agent tasks.**
+1. **12.2.a — JSC prebuilt acquisition.** Write `scripts/fetch-jsc.sh` to download Bun's prebuilt JSC artifacts (per-platform `libJavaScriptCore.a` + headers) into `vendor/jsc/`. Pin URL + SHA-256 in `vendor/jsc/MANIFEST.json`. Verify each download.
+2. **12.2.b — C++ binding compile.** Add a `cc` step to `build.zig` that compiles all `packages/runtime/jsc_bindings/*.cpp` against the JSC headers, producing `libhome_jsc_bindings.a`. Use Zig's C++ frontend; do not require a system C++ compiler.
+3. **12.2.c — `bun.X` → `home.X` rename pass.** Inside `packages/runtime/jsc/`, every `bun.VirtualMachine`, `bun.JSC.VM`, `bun.global_object_pointer`, etc., remaps to a `home.*` equivalent. The rename table lives in `packages/runtime/jsc/RENAME_TABLE.md` and is consumed by a script `scripts/jsc-rename-sweep.zig`.
+4. **12.2.d — `VirtualMachine.init()`.** Minimal VM constructor that creates a JSC context, a global object, an event loop handle (stub for now — 12.3 fleshes it out), and an exception handler. Mirrors `bun.js.zig:VirtualMachine.create`.
+5. **12.2.e — Value round-trip.** Implement `home.JSValue.fromNative(i64)`, `.toNative(i64)`, same for `f64`, `bool`, `[]const u8` (utf-8 strings via JSC's `JSStringRef`), and `null`/`undefined`. Unit test via `tests/runtime/jsc/value_roundtrip.zig`.
+6. **12.2.f — Eval.** `home.eval(source: []const u8) !home.JSValue`. Errors return Home's `error{JSException}` and stash the exception on a thread-local "last exception" so the caller can inspect it.
+7. **12.2.g — Exception ↔ Result mapping.** JSC `JSValueRef` exceptions normalize into Home's `Result(T, RuntimeError)` per the existing error-handling convention.
+8. **12.2.h — `home eval` CLI command.** Add `eval` to `src/main.zig` dispatch table.
+9. **12.2.i — Engine-decision gate.** Run the "1 KB JIT warmup vs cold eval" microbench against Bun's published numbers. If we are within 10%, ratify §12.0.2's choice in `docs/runtime/ENGINE_DECISION_RATIFIED.md`. If not, open `docs/runtime/ENGINE_DECISION_REOPEN.md`.
+
+**Exit criteria.** `home eval` works on all four target tuples; `home eval "throw new Error('boom')"` returns exit code 1 with a Bun-shaped error message; round-trip microbench within 10% of Bun.
+
+**Effort.** 6–10 weeks. Largest single sub-phase. Parallel-amenable: bindings split by JSC subsystem (Promise binding, ArrayBuffer binding, TypedArray binding, etc., each ~ 50–100 C++ files).
+
+### 12.3 · Event loop
+
+**Goal.** Microtasks, macrotasks, timers, and I/O completions schedule correctly. `setTimeout(() => console.log("hi"), 10)` works.
+
+**Blocks on.** 12.2.
+
+**Bun source.** `~/Code/bun/src/event_loop/` (10 .zig files), `~/Code/bun/src/io/` (12 .zig files), `~/Code/bun/src/libuv_sys/` (Rust FFI — we re-bind from Zig directly using libuv's C headers instead).
+
+**Home target.** `packages/runtime/event_loop/`, `packages/runtime/io/`, `packages/runtime/libuv/` (Zig bindings).
+
+**Agent tasks.**
+1. **12.3.a — Vendor libuv.** Snapshot libuv at a pinned version into `vendor/libuv/`; produce `libuv.a` via `build.zig`. Do not use a system libuv — version drift is a porting hazard.
+2. **12.3.b — Zig libuv bindings.** Translate `uv.h` to `packages/runtime/libuv/c.zig` (use `@cImport` initially, then hand-roll the hot paths). Bun's Rust `libuv_sys` is a reference for the binding surface, not a port target.
+3. **12.3.c — Event loop core.** Port `event_loop/EventLoop.zig`, `event_loop/jsc.zig` mapping. Microtask queue drains between every JSC callback per HTML spec.
+4. **12.3.d — Timer wheel.** Port `event_loop/Timer.zig`. `setTimeout`, `setInterval`, `setImmediate`, `queueMicrotask`, `process.nextTick`. AbortSignal-aware.
+5. **12.3.e — File I/O bridge.** Port `io/` poll/kqueue/epoll/IOCP completion glue. Hot path goes through `io_uring` on Linux per Bun's path.
+6. **12.3.f — Integration with `packages/async`.** Home's existing async package gets a `runtime_executor` backend selecting the runtime event loop when present.
+7. **12.3.g — Drain semantics.** Implement the "drain before exit" loop that Bun uses to keep the process alive while there are pending I/O / timers / promises.
+
+**Exit criteria.** A test program that fires 10 000 `setTimeout(..., 0)` callbacks completes within 100 ms; `process.nextTick` ordering matches Node; `await fetch(...)` (after 12.5) does not deadlock.
+
+**Effort.** 4–6 weeks. Per-OS work parallelizes (kqueue agent, epoll/io_uring agent, IOCP agent).
+
+### 12.4 · Module loader & Pantry resolution
+
+**Goal.** `import x from "y"` and `require("y")` resolve via **Pantry**, not Bun's installer. `.ts`, `.js`, `.mjs`, `.cjs`, `.json`, `.home`, `.hm`, `.toml`, `.txt`, `.wasm` loaders.
+
+**Blocks on.** 12.2 (eval) + 12.9.1–12.9.3 (Pantry resolver Zig API).
+
+**Bun source.**
+- `~/Code/bun/src/js_parser/` (30 .zig files) — for the on-the-fly TS→JS transform path; already partly available via Home's `packages/ts_parser/`.
+- `~/Code/bun/src/resolver/` (8 .zig files) — module resolution algorithm. **We replace the package-lookup half with Pantry**; the file-extension / node_modules-walk parts are still useful as a reference but Pantry's resolver becomes authoritative for what is a "package."
+- `~/Code/bun/src/runtime.zig`, `~/Code/bun/src/module_loader.zig` (search Bun's runtime/ dir for the loader entry points).
+
+**Home target.** `packages/runtime/loader/`, `packages/runtime/loader/resolvers/` (one file per ext: `ts.zig`, `js.zig`, `home.zig`, `json.zig`, `wasm.zig`, ...).
+
+**Agent tasks.**
+1. **12.4.a — Pantry resolver API.** Define the Zig trait `home.PackageResolver` with methods: `resolve(import_specifier, from) !ResolvedModule`, `metadata(pkg) !PackageMetadata`, `realpath(pkg, version) !Path`. Implementation is Pantry's Zig core (§12.9).
+2. **12.4.b — Path resolver.** Bare-specifier resolution: walk import-map → tsconfig paths → Pantry registry. Relative/absolute paths skip Pantry.
+3. **12.4.c — ESM loader.** Static and dynamic `import`; top-level `await`; live bindings; circular-import handling per ECMA-262.
+4. **12.4.d — CJS loader.** `require`, `module.exports`, `exports.x`, `require.resolve`, `require.cache`. Interop helpers `__importDefault` / `__importStar` per Phase 4.
+5. **12.4.e — `.ts` loader.** On import of a `.ts` file: invoke `packages/ts_parser/` + `packages/ts_emit/` in-process, hand the emitted JS to the loader. Use the existing emit cache (Phase 5) for skip-on-unchanged.
+6. **12.4.f — `.home` / `.hm` loader.** Compile via the existing Home compiler; the produced module exposes either a wasm export table or a native dlopen surface, both wrapped as a JS module object.
+7. **12.4.g — `.json` / `.toml` / `.txt` / `.wasm` loaders.** Trivial; one file each.
+8. **12.4.h — Loader hooks API.** Bun's `Bun.plugin({ setup: ... })` surface ported as `Home.plugin({ ... })`. Plugins can register custom loaders or transformers; consumed by frameworks like Astro/Vite/SvelteKit.
+9. **12.4.i — Import attributes.** `import x from "y" with { type: "json" }` per the latest ECMA proposal.
+10. **12.4.j — Module cache.** Per-VM module cache keyed by `(realpath, conditions)`. Invalidation on `--hot`.
+
+**Exit criteria.** Top-100 npm packages installable via `home install` (Pantry path) and importable via `import` / `require`. The Bun bundler/runtime test files under `~/Code/bun/test/js/bun/module-loader/` pass when re-rooted at Home.
+
+**Effort.** 6–10 weeks. Parallelizes by loader (one agent per extension type).
+
+### 12.5 · Web standards APIs
+
+**Goal.** Whatwg/W3C standard browser-style APIs available globally — `fetch`, `URL`, `Headers`, `Request`, `Response`, streams, crypto, timers, `console`.
+
+**Blocks on.** 12.2 (engine), 12.3 (event loop).
+
+**Bun source.** Largely under `~/Code/bun/src/runtime/api/` and the corresponding JSC C++ bindings under `~/Code/bun/src/jsc/bindings/webcore/`. Confirm exact paths per file during 12.1.c stub triage.
+
+**Sub-tasks (each is an independent agent slot; pick one per agent):**
+
+| ID | API | Bun source pointer | Home target | Effort |
+|---|---|---|---|---|
+| 12.5.a | `fetch` + Request/Response/Headers | `runtime/api/fetch.zig` + JSC binding | `packages/runtime/web/fetch.zig` | 2w |
+| 12.5.b | `URL`, `URLSearchParams` | `runtime/api/url.zig` | `packages/runtime/web/url.zig` | 1w |
+| 12.5.c | `Blob`, `File`, `FormData` | `runtime/api/blob.zig` | `packages/runtime/web/blob.zig` | 1w |
+| 12.5.d | `ReadableStream`, `WritableStream`, `TransformStream`, `pipeTo`, `tee` | `runtime/api/streams/` | `packages/runtime/web/streams/` | 3w |
+| 12.5.e | `WebSocket` client | `runtime/api/websocket.zig` | `packages/runtime/web/websocket.zig` | 1w |
+| 12.5.f | `SubtleCrypto`, `crypto.randomUUID`, `crypto.subtle.*` | `runtime/api/crypto.zig` + BoringSSL | `packages/runtime/web/crypto.zig` | 2w |
+| 12.5.g | `TextEncoder` / `TextDecoder` | `runtime/api/encoding.zig` | `packages/runtime/web/encoding.zig` | 3d |
+| 12.5.h | `AbortController` / `AbortSignal` | `runtime/api/abort.zig` | `packages/runtime/web/abort.zig` | 3d |
+| 12.5.i | Timers (`setTimeout`/etc.) | re-exposes 12.3.d | `packages/runtime/web/timers.zig` | 3d |
+| 12.5.j | `console.*` with Bun-style inspect formatting | `runtime/api/console.zig` | `packages/runtime/web/console.zig` | 1w |
+| 12.5.k | `performance.now`, `performance.mark`, `measure` | `runtime/api/performance.zig` | `packages/runtime/web/performance.zig` | 3d |
+| 12.5.l | `structuredClone` | `runtime/api/structured_clone.zig` | `packages/runtime/web/structured_clone.zig` | 1w |
+| 12.5.m | `atob` / `btoa` | trivial | `packages/runtime/web/base64.zig` | 1d |
+| 12.5.n | `queueMicrotask` | event-loop adapter | `packages/runtime/web/microtask.zig` | 1d |
+
+**Exit criteria.** WPT (web-platform-tests) `fetch`, `url`, `streams`, `encoding`, `xhr`, `webcrypto` subsets pass at ≥ 95% when run via `home test`. We adopt Bun's WPT triage list as the modeled-bucket reference.
+
+**Effort.** 14 weeks total nominal; with 4 parallel agents this folds to 4–6 weeks wall-clock.
+
+### 12.6 · Home runtime APIs (Bun-compat under `Home.*`)
+
+**Goal.** `Home.serve`, `Home.file`, `Home.spawn`, `Home.sql`, `Home.dlopen`, etc., are first-class. Compatibility shim `globalThis.Bun = Home` available behind `--compat=bun`.
+
+**Blocks on.** 12.2, 12.3, 12.5.
+
+**Bun source.** `~/Code/bun/src/runtime/api/server.zig`, `runtime/api/file.zig`, `runtime/api/spawn.zig`, `runtime/api/sqlite.zig`, `runtime/api/ffi.zig`, `runtime/api/password.zig`, plus the corresponding C++ JSC bindings.
+
+**Sub-tasks (parallel agent slots):**
+
+| ID | API | Bun pointer | Home target | Effort |
+|---|---|---|---|---|
+| 12.6.a | `Home.serve` (HTTP/1.1, HTTP/2, WebSocket upgrade, TLS) | `runtime/api/server.zig` + μWebSockets | `packages/runtime/home/serve.zig` | 4w |
+| 12.6.b | `Home.file`, `Home.write` (lazy file primitive) | `runtime/api/file.zig` | `packages/runtime/home/file.zig` | 2w |
+| 12.6.c | `Home.spawn`, `Home.spawnSync` | `runtime/api/spawn.zig` | `packages/runtime/home/spawn.zig` | 2w |
+| 12.6.d | `Home.sql` (SQLite) | `runtime/api/sqlite.zig` + vendored SQLite | `packages/runtime/home/sql.zig` | 2w |
+| 12.6.e | `Home.dlopen` / `Home.FFI` (TinyCC-backed) | `runtime/api/ffi.zig` + TCC | `packages/runtime/home/ffi.zig` | 3w |
+| 12.6.f | `Home.password` (Argon2id, bcrypt) | `runtime/api/password.zig` | `packages/runtime/home/password.zig` | 1w |
+| 12.6.g | `Home.env`, `Home.argv`, `Home.main`, `Home.version`, `Home.which` | scattered Bun runtime | `packages/runtime/home/env.zig` | 1w |
+| 12.6.h | `Home.deepEquals`, `Home.inspect`, `Home.peek`, `Home.nanoseconds` | `runtime/api/inspect.zig` etc. | `packages/runtime/home/util.zig` | 1w |
+| 12.6.i | `Home.gc`, `Home.allocator`, `Home.memoryUsage` | JSC GC bindings | `packages/runtime/home/gc.zig` | 1w |
+| 12.6.j | `Home.s3` (S3 client, Bun.s3 parity) | `runtime/api/s3.zig` | `packages/runtime/home/s3.zig` | 2w |
+| 12.6.k | `Home.dns` (resolve, lookup) | `runtime/api/dns.zig` + c-ares | `packages/runtime/home/dns.zig` | 1w |
+| 12.6.l | `Home.color` / terminal output helpers | Bun runtime | `packages/runtime/home/color.zig` | 3d |
+| 12.6.m | Bun compatibility shim (`globalThis.Bun = Home`) | shim file | `packages/runtime/home/bun_shim.zig` | 3d |
+
+**Exit criteria.** `Home.serve({ port: 3000, fetch }).reqs/sec` within 10% of `bun --port 3000 serve`. `Home.file("./x").text()` works. `Home.sql("SELECT 1").get()` returns `{ "1": 1 }`. Bun shim: re-running Bun's own server benchmark scripts with `--compat=bun` produces equivalent throughput.
+
+**Effort.** 17w nominal; with 4–6 parallel agents folds to 5–8w wall-clock.
+
+### 12.7 · Node compatibility layer
+
+**Goal.** Top-95% Node API surface available as `import "node:fs"`, `import "node:path"`, ... `process`, `Buffer`, `__dirname`, `__filename` globals work.
+
+**Blocks on.** 12.2, 12.3, 12.5.
+
+**Bun source.** `~/Code/bun/src/bun.js/node/`, `~/Code/bun/src/runtime/node/`, plus JSC bindings under `~/Code/bun/src/jsc/bindings/JSNode*.cpp`.
+
+**Compatibility tier list (priorities for agent claiming):**
+
+**Tier A (must-have for v1 of runtime):**
+
+| ID | Module | Bun pointer | Effort |
+|---|---|---|---|
+| 12.7.a | `node:fs` + `node:fs/promises` | `bun.js/node/node_fs.zig` | 3w |
+| 12.7.b | `node:path` | `bun.js/node/node_path.zig` | 1w |
+| 12.7.c | `node:process` | `bun.js/node/node_process.zig` | 1w |
+| 12.7.d | `node:os` | `bun.js/node/node_os.zig` | 1w |
+| 12.7.e | `node:buffer` (`Buffer`) | `bun.js/node/node_buffer.zig` | 2w |
+| 12.7.f | `node:stream` (Readable, Writable, Duplex, Transform, pipeline) | `bun.js/node/node_stream.zig` | 3w |
+| 12.7.g | `node:events` (EventEmitter) | `bun.js/node/node_events.zig` | 1w |
+| 12.7.h | `node:util` (`util.promisify`, `inspect`, `format`) | `bun.js/node/node_util.zig` | 1w |
+| 12.7.i | `node:crypto` (createHash, hmac, randomBytes, sign/verify) | `bun.js/node/node_crypto.zig` | 2w |
+| 12.7.j | `node:http` + `node:https` (Server + ClientRequest) | `bun.js/node/node_http.zig` | 4w |
+| 12.7.k | `node:net` (Socket, Server) | `bun.js/node/node_net.zig` | 2w |
+| 12.7.l | `node:tls` | `bun.js/node/node_tls.zig` | 2w |
+| 12.7.m | `node:url` + `node:querystring` | `bun.js/node/node_url.zig` | 1w |
+| 12.7.n | `node:child_process` | `bun.js/node/node_child_process.zig` | 2w |
+| 12.7.o | `node:assert` | `bun.js/node/node_assert.zig` | 3d |
+| 12.7.p | `node:timers`, `node:timers/promises` | re-export 12.3.d | 1d |
+| 12.7.q | `node:zlib` (deflate, gzip, brotli) | `bun.js/node/node_zlib.zig` + libdeflate | 2w |
+| 12.7.r | `node:dns` | reuse 12.6.k | 1w |
+| 12.7.s | `node:async_hooks` (AsyncLocalStorage) | `bun.js/node/node_async_hooks.zig` | 2w |
+
+**Tier B (should-have, lands before v1 of runtime is declared GA):**
+
+| ID | Module | Effort |
+|---|---|---|
+| 12.7.t | `node:worker_threads` | 3w |
+| 12.7.u | `node:cluster` | 1w |
+| 12.7.v | `node:perf_hooks` | 1w |
+| 12.7.w | `node:vm` | 2w |
+| 12.7.x | `node:readline`, `node:readline/promises` | 1w |
+| 12.7.y | `node:dgram` (UDP) | 1w |
+| 12.7.z | `node:http2` | 3w |
+| 12.7.aa | `node:string_decoder` | 1d |
+| 12.7.ab | `node:repl` | 2w |
+| 12.7.ac | `node:tty` | 3d |
+| 12.7.ad | `node:diagnostics_channel` | 3d |
+
+**Tier C (defer past first runtime GA; document in `docs/RUNTIME_NODE_DIVERGENCES.md`):**
+
+* `node:inspector`, `node:trace_events`, `node:domain` (legacy), `node:punycode` (deprecated), `node:sea`, `node:test` (we ship our own — see 12.8), `node:wasi`, full v8 inspector protocol.
+
+**Globals to install on `globalThis`** (single agent task 12.7.A0): `process`, `Buffer`, `__dirname`, `__filename`, `require` (in CJS scope), `module` (in CJS scope), `exports` (in CJS scope), `global`. Bun fidelity: match shape exactly so `process.env.NODE_ENV` returns `"production"` if the user set it.
+
+**Exit criteria.** Express + Fastify + Koa each boot under `home run server.js` and serve a hello-world without code changes. `node-tap` self-tests pass at ≥ 95% under `home run`. Prisma generator runs end-to-end under `home`. `next dev` boots (page rendering can still have visual diffs — those are tracked separately).
+
+**Effort.** ~45 weeks nominal across Tier A+B; with 6–8 parallel agents folds to 8–12 weeks wall-clock. Tier C is post-GA.
+
+### 12.8 · Test runner
+
+**Goal.** `home test` is a drop-in for `bun test` / `jest` / `vitest` on the common surface. Reuses Home's existing `packages/test_runner/` chassis where it exists.
+
+**Blocks on.** 12.2, 12.5.
+
+**Bun source.** `~/Code/bun/src/cli/test_command.zig`, `~/Code/bun/src/runtime/test/` (expect.zig, matchers.zig, snapshot.zig).
+
+**Home target.** `packages/runtime/test/` (or extend existing `packages/test_runner/` — agent decides during 12.8.a).
+
+**Agent tasks.**
+1. **12.8.a — Survey + integrate.** Read `packages/test_runner/` if it exists; decide extend-vs-replace. Document in `docs/runtime/TEST_RUNNER_DECISION.md`.
+2. **12.8.b — `expect()` + matchers.** Bun's matcher set (≈ 90 matchers) is the target; Jest-compatibility is the contract.
+3. **12.8.c — `describe`, `it`, `test`, `beforeEach`, `afterEach`, `beforeAll`, `afterAll`.** Including `.only`, `.skip`, `.each`, `.todo`, `.failing`.
+4. **12.8.d — Snapshot testing.** `toMatchSnapshot`, `toMatchInlineSnapshot`. Snapshot files at `__snapshots__/`.
+5. **12.8.e — Mocks.** `mock(() => ...)`, `spyOn`, `mock.module(...)`. Per-test isolation.
+6. **12.8.f — Coverage.** Instrumented via JSC's source-map-aware coverage hooks. `--coverage` flag, `lcov` output.
+7. **12.8.g — Watch mode.** Re-run on file change (uses 12.3 event loop + Home's FS watcher).
+8. **12.8.h — JUnit / TAP reporters.**
+9. **12.8.i — Concurrent test execution.** Worker-thread pool; per-file isolation by default.
+
+**Exit criteria.** Running Bun's own `test/js/bun/test/` suite under `home test` reports ≥ 95% pass. `jest`-using OSS project (e.g., `lodash`) tests pass when invoked as `home test`.
+
+**Effort.** 6–8 weeks. Modestly parallelizable (matchers, coverage, reporters each independent).
+
+### 12.9 · Pantry-native integration (the package manager replacement for `bun install`)
+
+**Goal.** Promote Pantry from "TS subprocess + path resolver" to a **native Zig subsystem inside Home** with Bun-class parallel-download performance, while keeping the Pantry CLI / lockfile / registry semantics as the canonical user-facing surface.
+
+**Strategic stance.** This is *not* a port of `~/Code/bun/src/install/`. It is **Pantry, made fast and embedded.** The user requirement is explicit: Pantry is the package manager; Bun's installer is not. The technical content we *do* lift from Bun's installer is the **performance engineering** (HTTP/2 multiplex, binary lockfile string pool, content-addressable store, lifecycle batching) — implemented inside Pantry, not by depending on `bun install`.
+
+**Blocks on.** 12.0.1 (SHA); independent of 12.2 (does not require JSC).
+
+**Bun source (reference only, not vendor target).** `~/Code/bun/src/install/NetworkTask.zig`, `PackageManager.zig`, `lockfile.zig`, `extract_tarball.zig`, `lifecycle_script_runner.zig`, `PackageInstaller.zig`, `resolution.zig`, `bin.zig`, `postinstall_optimizer.zig`. Use these as **technique references** when writing the equivalent Zig code inside `packages/pantry/`.
+
+**Pantry source.** `~/Code/Tools/pantry/packages/ts-pantry/src/` (TypeScript resolver + lockfile + registry client) and `~/Code/Tools/pantry/packages/zig/src/` (existing Zig fast paths). Both stay maintained; the new native core lives at `~/Code/Home/lang/packages/pantry/` and is upstreamed back to Tools/pantry as `packages/pantry-core` when stable.
+
+**Home target.** `packages/pantry/` (new — Zig native core), `packages/pantry_cli/` (CLI facade exposing `home install`, `home add`, `home remove`, `home update`, `home publish`, `home audit`, `home patch`, `homex`).
+
+**Agent tasks (numbered in dependency order; many parallelize):**
+
+1. **12.9.1 — Native resolver core.** Port Pantry's TypeScript resolution algorithm to Zig at `packages/pantry/src/resolver.zig`. SemVer constraint solver, transitive deps, OS-conditional deps, GitHub shortcuts, direct URL packages, path packages. Property-tested against the TS implementation via shared fixtures at `~/Code/Tools/pantry/tests/resolver-fixtures/`.
+2. **12.9.2 — Native lockfile parser + writer.** `pantry.lock` JSON in/out at `packages/pantry/src/lockfile.zig`. Byte-equivalent round-trip with the TS implementation.
+3. **12.9.3 — `home.PackageResolver` impl.** Implement the trait from §12.4.a using 12.9.1 + 12.9.2 so the runtime loader resolves through Pantry without a subprocess.
+4. **12.9.4 — Binary lockfile option (`pantry.lockb`).** Borrow Bun's lockfile string-pool technique (see `~/Code/bun/src/install/lockfile.zig` for the data layout idea, not for code). Opt-in via `pantry.json` setting; defaults to JSON `pantry.lock` for diff-friendliness.
+5. **12.9.5 — Parallel HTTP/2 downloads.** Implement in `packages/pantry/src/network.zig` using libuv + a thread pool. Technique reference: Bun's `NetworkTask.zig`. Coalesce same-origin requests over HTTP/2 multiplex; respect `Retry-After`; retry with exponential backoff on 5xx.
+6. **12.9.6 — Content-addressable store.** Global cache at `~/.local/share/pantry/global/store/<sha256-of-tarball>/`. Each package install in a project becomes a hardlink (or copy on COW filesystems) from the store. Mirrors pnpm's strategy.
+7. **12.9.7 — Streaming tarball extraction.** Port `extract_tarball.zig` *technique* into `packages/pantry/src/extract.zig` using libarchive. Concurrent decompress + extract; skip-on-checksum-match.
+8. **12.9.8 — Lifecycle script runner.** Pre/post-install, prepare, postinstall, etc. Sandboxed (FS allowlist), batched per Bun's `postinstall_optimizer.zig` ordering, opt-in `pantry.json` flag because of supply-chain risk.
+9. **12.9.9 — Binary shims (`.bin/`).** Generated by `packages/pantry/src/bin.zig`. Platform-correct shebang on Unix; `.cmd`+`.ps1` on Windows. Re-shim on `home install`.
+10. **12.9.10 — Workspaces / monorepo.** Match the Bun workspaces semantics: `pantry.json: { workspaces: ["packages/*"] }`. Topological install order; symlink/hardlink internal deps.
+11. **12.9.11 — `home install` / `home add` / `home remove` / `home update` / `home publish` / `home audit` / `home outdated` / `home patch` / `homex`.** Each is a thin command file in `packages/pantry_cli/`. CLI parity with `bun` and `pnpm` where flags overlap; Pantry-specific flags (`--global`, `--store=...`) preserved.
+12. **12.9.12 — Registry abstraction.** npm registry, GitHub registry, GitLab registry, custom mirror, file:/ registry — each behind `packages/pantry/src/registries/`. Mirror failover.
+13. **12.9.13 — Audit (vulnerability scan).** Plug into the npm audit endpoint + OSV. Cached locally per `home audit --offline`.
+14. **12.9.14 — Outdated / Update.** `home outdated` reports drift; `home update` respects ranges by default, `--latest` jumps majors.
+15. **12.9.15 — Patch protocol.** `home patch <pkg>` opens a working copy, `home patch-commit` produces a .patch file in `patches/` applied on subsequent installs.
+16. **12.9.16 — Pantry registry mirror server.** Optional bundled `home pantry serve` for offline / air-gapped environments.
+17. **12.9.17 — Performance hardening.** Benchmark against `bun install` on the standard suite (cold install of a 100-dep app, 1000-dep app, monorepo with 10 packages each with 50 deps). Target: within 1.5× of Bun in v1; within 1.05× by 12.12.
+18. **12.9.18 — Upstream the native core.** Once stable, publish `packages/pantry/` to `~/Code/Tools/pantry/packages/pantry-core/` so the standalone Pantry CLI can switch its hot paths from TS to the Zig core. The TS surface remains for non-Home users.
+19. **12.9.19 — `~/Code/Home/lang/pantry/` cleanup.** Today the gitignored `~/Code/Home/lang/pantry/` directory is a path-resolver target (see memory note `project_agent_worktree_pantry`). Once §12.9.3 ships, document the contract for that directory in `docs/runtime/PANTRY_MODULES_LAYOUT.md` so agent worktrees can re-create it locally (it remains gitignored).
+
+**Exit criteria.**
+
+* `home install` resolves and installs a typical Next.js app (>1 200 transitive deps) ≤ 1.5× wall-clock of `bun install` on first run; ≤ 1.05× on a warm cache.
+* Lockfile round-trips byte-identically through TS Pantry and Zig Pantry (fuzz tested).
+* Pantry's TS CLI continues to work standalone (no regression).
+* Runtime module resolution (12.4) routes through 12.9.3 with zero subprocess overhead.
+
+**Effort.** 10–14 weeks. **Most parallelizable sub-phase in 12.x** — each numbered task is largely independent; 6+ agents productive simultaneously.
+
+### 12.10 · CLI surface — Home as runtime
+
+**Goal.** `home` becomes the user-facing runtime. The current `home` CLI grows new sub-commands without breaking existing ones.
+
+**Blocks on.** 12.2 (`home eval`), 12.4 (`home run` needs loader), 12.8 (`home test`), 12.9 (`home install`).
+
+**Home target.** `src/main.zig` dispatch table; one command file per command at `src/commands/` (new directory; carve out existing inline command code into files at the same time).
+
+**Agent tasks.**
+
+| ID | Command | Behavior | Effort |
+|---|---|---|---|
+| 12.10.a | `home run <file>` | Auto-detect `.ts` / `.js` / `.mjs` / `.cjs` / `.home`; eval through loader | 1w |
+| 12.10.b | `home eval <code>` | One-off eval | landed in 12.2 |
+| 12.10.c | `home test` | Test runner | landed in 12.8 |
+| 12.10.d | `home install` / `add` / `remove` / `update` | Pantry CLI facade | landed in 12.9 |
+| 12.10.e | `home repl` | Interactive — JSC eval per line | 1w |
+| 12.10.f | `home build --compile <entry>` | Single-binary build (engine + script + assets) | 3w (see 12.11) |
+| 12.10.g | `home --hot run <file>` | HMR — re-eval changed modules without restart | 2w |
+| 12.10.h | `home --watch run <file>` | Restart on change | 3d |
+| 12.10.i | `home upgrade` | Self-update from registry | 1w |
+| 12.10.j | `homex <bin>` | Run a CLI binary from the Pantry global store w/o install | 1w |
+| 12.10.k | `home patch` / `home patch-commit` | Patch protocol | landed in 12.9 |
+| 12.10.l | `home init` | Scaffold a project | 1w |
+| 12.10.m | Drop-in shims | `home node …` → `home run …`; `home bun …` → `home run --compat=bun …`; `home npm …` → `home install ...`. Document in `docs/runtime/DROPIN_SHIMS.md`. | 1w |
+
+**Exit criteria.** Every command above runs end-to-end with `--help`, exits 0 on success, non-zero on failure, and prints Bun-shape diagnostics on error.
+
+**Effort.** 5–7 weeks. Highly parallelizable.
+
+### 12.11 · Cross-compilation & single-file builds
+
+**Goal.** `home build --compile --target=linux-x64 main.ts` produces a self-contained binary. Bun's `--compile` is the spec.
+
+**Blocks on.** 12.2, 12.4, 12.6.
+
+**Bun source.** `~/Code/bun/src/cli/build_command.zig`, `~/Code/bun/src/standalone_bun.zig` (the standalone bundle loader).
+
+**Agent tasks.**
+1. **12.11.a — Embedded VFS.** Pack the bundled JS + asset files into a tail-appended virtual filesystem the JSC loader reads from.
+2. **12.11.b — Engine link.** Two modes: dynamic-link to system JSC (default), static-link with relink-script generator (LGPL-aware; opt-in via `--engine-link=static`, generates a `relink.sh` per §12.0.4).
+3. **12.11.c — Cross-targets.** `linux-x64`, `linux-arm64`, `darwin-x64`, `darwin-arm64`, `windows-x64`. Use Zig's cross-compile toolchain plus the matching prebuilt JSC artifact from `vendor/jsc/`.
+4. **12.11.d — Universal macOS binary.** `lipo` post-step.
+5. **12.11.e — WASM target.** `home build --target=wasm main.ts` uses `--engine=quickjs` (since JSC isn't WASM-portable). Documents engine swap in `docs/runtime/WASM_TARGET.md`.
+6. **12.11.f — `--minify`, `--sourcemap`, `--asset-names`** mirror the bundler flags from Phase 4.5.
+7. **12.11.g — Single-file size budget.** Hello-world binary ≤ 80 MB (Bun is ~60 MB); explicit budget gate in CI.
+
+**Exit criteria.** A 200-line Express app + node_modules ships as a single 90 MB binary that runs on a fresh Linux container with no dependencies installed.
+
+**Effort.** 4–6 weeks.
+
+### 12.12 · Performance hardening
+
+**Goal.** Within 10% of Bun on every published Bun benchmark, with Pantry within 5% of Bun's installer.
+
+**Blocks on.** 12.2 – 12.9.
+
+**Agent tasks.**
+1. **12.12.a — Benchmark harness.** Adopt Bun's own benchmark suite under `bench/runtime/upstream-bun/`; add Home counterparts.
+2. **12.12.b — Startup time.** Target: `home run hello.ts` ≤ 1.05× `bun run hello.ts` cold; ≤ 1.01× warm.
+3. **12.12.c — HTTP throughput.** `Home.serve` vs `Bun.serve` on TechEmpower JSON benchmark — within 10%.
+4. **12.12.d — File I/O.** `Home.file("...").text()` on 1 GB file streamed — within 10% of `Bun.file`.
+5. **12.12.e — SQLite.** Random-read 1M row workload — within 10%.
+6. **12.12.f — Memory.** RSS for an idle `Home.serve` ≤ 1.1× Bun's idle RSS.
+7. **12.12.g — Pantry installs.** See 12.9.17.
+8. **12.12.h — Apply §11 Tier-1 techniques** to runtime hot paths: lock-striped string interner for module IDs, per-worker arenas in the loader, SIMD utf-8 validation in stream reads (`simdutf` is already vendored via §12.1), hot/cold split on JS string ropes.
+9. **12.12.i — Regression CI.** Per-PR delta gate; > 3% regression on any headline benchmark blocks merge.
+
+**Exit criteria.** All targets above hit on the standard 8-core M-class laptop hardware reference.
+
+**Effort.** 4–6 weeks; runs continuously after.
+
+### 12.13 · Test parity — port Bun's test suite
+
+**Goal.** Run Bun's `~/Code/bun/test/` suite under Home and ratchet pass-rate from baseline to ≥ 95%.
+
+**Blocks on.** 12.8 (test runner), most of 12.5/12.6/12.7.
+
+**Bun source.** `~/Code/bun/test/` (≈ 5 K test files in JS/TS). Tests are language-agnostic — they exercise Bun's runtime behavior, not Zig internals, so they re-route cleanly.
+
+**Home target.** `tests/runtime/upstream-bun/` (vendored mirror; preserved under `vendor/bun-zig/test/` policy where applicable) + `tests/runtime/home/` for Home-specific additions.
+
+**Agent tasks.**
+1. **12.13.a — Vendor + re-root.** Copy `~/Code/bun/test/` → `tests/runtime/upstream-bun/`. Mechanical sed of `Bun.` → `Home.` *only* under `--compat=bun` runtime mode; leave originals intact for parity verification.
+2. **12.13.b — Modeled-bucket harness.** Mirror Phase 6's `ts_conformance` harness pattern. Each failing test bucket gets an explicit modeled-divergence entry, just like `hasHarnessModeledExpectedError` in TS-parity (see memory `project_remove_harness_shims` — we must avoid the same shim accumulation by triaging real fixes, not just modeling).
+3. **12.13.c — Baseline + delta gate.** First run records baseline; CI fails on regression.
+4. **12.13.d — Per-suite agent claim.** Test categories under `tests/runtime/upstream-bun/js/bun/*` are independent; one agent claims `fs`, another `http`, another `websocket`, etc.
+5. **12.13.e — Snapshot diff format.** Reuse Phase 6's patience-diff renderer so failure output is consistent across the project.
+
+**Exit criteria.** ≥ 95% of Bun's vendored test suite passes under `home test`. Failing tests each have a documented modeled-divergence justification.
+
+**Effort.** Continuous; 8–14 weeks to reach the 95% gate.
+
+### 12.14 · Documentation
+
+**Goal.** Anyone reading `docs/` can build a Home runtime project without prior Bun/Node knowledge.
+
+**Agent tasks.**
+
+| ID | Doc | Effort |
+|---|---|---|
+| 12.14.a | `docs/RUNTIME.md` — top-level runtime overview | 1w |
+| 12.14.b | `docs/runtime/API_REFERENCE.md` — every `Home.*` and `node:*` surface, auto-generated from JSDoc-style comments on the Zig bindings | 2w |
+| 12.14.c | `docs/runtime/MIGRATING_FROM_NODE.md` | 1w |
+| 12.14.d | `docs/runtime/MIGRATING_FROM_BUN.md` | 3d |
+| 12.14.e | `docs/runtime/PANTRY_GUIDE.md` — install, add, monorepos, patches, registries | 1w |
+| 12.14.f | `docs/runtime/FFI_GUIDE.md` — Home.dlopen / Home.FFI | 3d |
+| 12.14.g | `docs/runtime/DEPLOYMENT.md` — single-binary, cross-compile, Docker, Lambda | 1w |
+| 12.14.h | `docs/runtime/DEBUGGING.md` — JSC inspector, source maps, profile flags | 3d |
+| 12.14.i | `docs/runtime/COMPATIBILITY_MATRIX.md` — Node API status table (Tier A/B/C with green/yellow/red) | 1w |
+| 12.14.j | `docs/runtime/PERFORMANCE.md` — current benchmark numbers + how to reproduce | 1w |
+| 12.14.k | `docs/runtime/DIVERGENCES.md` — every place where Home deliberately differs from Bun/Node | continuous |
+
+**Exit criteria.** Each doc has a "Last verified" date stamp and at least one runnable code sample.
+
+**Effort.** 6–8 weeks total; can be drafted progressively per sub-phase as APIs land.
+
+### 12.15 · Dependency graph & parallelization (for the agent dispatcher)
+
+```
+12.0 ──┬── 12.1 ──┬── 12.2 ──┬── 12.3 ──┬── 12.4 ──┬── 12.5 ──┐
+       │          │          │          │          │           ├── 12.6 ──┐
+       │          │          │          │          │           │          ├── 12.10 ── 12.11 ── 12.12
+       │          │          │          │          │           ├── 12.7 ──┘                  │
+       │          │          │          │          │           │                              │
+       │          │          │          │          │           └── 12.8 ── 12.13 ────────────┤
+       │          │          │          │          │                                          │
+       └── 12.9 (independent of 12.2; only needs 12.0) ──────── 12.9.3 feeds 12.4 ───────────┤
+                                                                                              │
+                                                                                       12.14 (continuous)
+```
+
+**Recommended agent fan-out at peak:**
+
+* 1 agent on 12.1 vendor sweep
+* 1 agent on 12.2 JSC bring-up (largest critical path)
+* 1 agent on 12.3 event loop in parallel with 12.2 (libuv binding work is independent of JSC bring-up)
+* 4–6 agents on 12.9 Pantry-native sub-tasks immediately (zero blockers)
+* Once 12.2 lands: 4–6 agents on 12.5 web APIs, 4–6 on 12.6 Home APIs, 6–8 on 12.7 Node compat — these saturate
+* 1 agent continuously on 12.13 test triage
+* 1 agent continuously on 12.14 documentation
+
+**Total practical concurrency:** ~12–16 agents productive at peak, ~6–8 at the long tail.
+
+### 12.16 · Risk register
+
+| # | Risk | Likelihood | Impact | Mitigation |
+|---|---|---|---|---|
+| R1 | Bun deletes the Zig install/ subtree mid-port | High (months) | Medium | 12.0.1 SHA pin + immediate snapshot bounds the risk; we already excluded `install/` |
+| R2 | JSC's C++ binding layer requires bug-for-bug Bun parity in places where Bun has private patches to WebKit | Medium | High | Use Bun's prebuilt JSC binaries (12.2.a) rather than vanilla WebKit so the patch set is implicit |
+| R3 | Zig 0.17-dev breaks the vendored snapshot every few weeks | High | Low | Patches under `vendor/bun-zig/patches/*` are versioned; CI runs against the pinned `ziglang.org` Pantry dep |
+| R4 | Pantry resolver port diverges from TS Pantry semantically | Medium | High | Shared fixture suite `~/Code/Tools/pantry/tests/resolver-fixtures/` is the cross-check; CI runs both implementations on every push |
+| R5 | Node compat is a moving target as Node ships new APIs | Continuous | Low | Tier C is explicitly out of scope; new Node APIs triaged into tiers quarterly |
+| R6 | LGPL relink obligations bite distributors | Low | High | §12.0.4 + §12.11.b default to dynamic-link; static-link generates `relink.sh`; legal advisory in `docs/runtime/LICENSING.md` |
+| R7 | Single-file binary size balloons past 100 MB | Medium | Low | 12.11.g budget gate; aggressive `strip`/LTO on JSC binding; optional `--no-node-compat` to skip Tier C+B surfaces |
+| R8 | Parallel-download credentials leak in Pantry logs | Low | High | 12.9 includes a credential-redaction pass in `packages/pantry/src/log.zig`; unit-tested |
+| R9 | HMR (12.10.g) corrupts module-state graph | Medium | Medium | Default HMR is opt-in; fallback `--watch` restart mode (12.10.h) is the contract |
+| R10 | Bun's prebuilt JSC artifacts move / get gated | Medium | Medium | Mirror critical JSC artifacts to a Home-owned bucket per `vendor/jsc/MANIFEST.json` |
+| R11 | `globalThis.Bun = Home` shim has subtle Bun-vs-Home semantic gaps that break shimmed apps unpredictably | Medium | Medium | Shim is opt-in; bun-shim coverage tracked under 12.13's modeled-divergence ledger |
+| R12 | Test suite vendoring brings security tests that try to exploit the runtime; CI runs them in unsafe contexts | Low | High | `tests/runtime/upstream-bun/` runs in a sandboxed CI job; no network unless test-marked `@network` |
+| R13 | Agents in parallel double-port the same subsystem | Medium | Low | This section's task numbering (12.x.N) is the claim grain; agents update §12.17 coordination notes when claiming, mirroring the existing Process State pattern |
+| R14 | JS engine GC interacts badly with Home's arena allocator | Medium | Medium | Strict boundary in 12.2: JSC owns its heap; Zig side never holds raw JSValueRef across allocator resets |
+| R15 | Cross-compile JSC artifacts not available for one target tuple (e.g., windows-arm64) | Medium | Low | Document the gap; Tier-A targets are the four in 12.1.f; others are best-effort |
+
+### 12.17 · Coordination notes (newest first — append on every Phase 12 PR)
+
+> **Append-only log.** Each agent edits this list immediately before claiming a task; mirrors the Phase 6 Process State coordination pattern. Newest entry on top. Date in ISO format. Mention exact files touched and the task ID claimed.
+
+*(no entries yet — first agent in Phase 12 writes the inaugural note when claiming 12.0.1.a)*
+
+### 12.18 · Out of scope for Phase 12 v1 (documented, not deferred to silence)
+
+* **CSS bundling/transform in the runtime.** Phase 4.5 bundler covers CSS as a build step; runtime CSS-in-JS is *not* a runtime feature.
+* **DevTools / inspector protocol full impl.** JSC supports it; Home shims a minimal surface in 12.10 but full inspector wire protocol is a v2.x item.
+* **Notebook / Jupyter kernel.** Out of scope.
+* **In-process WASI shim for `node:wasi`.** Tier C; out of scope.
+* **Mobile targets (iOS, Android).** Engine swap to Hermes would be required; revisit when Home has a mobile story.
+* **Edge-runtime stripped builds (e.g., Cloudflare Workers, Deno Deploy compat).** Documented separately; subset is achievable from §12.11.e (WASM target) but is its own project.
+* **Browser execution as a JS runtime.** Home is server/CLI/desktop; browser is the bundler's territory (Phase 4.5).
+* **Sandbox / vm-level isolation (multi-tenant).** Out of scope; `node:vm` (12.7.w) provides single-tenant evaluation only.
 
 ---
 
