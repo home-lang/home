@@ -87,6 +87,14 @@ pub const http = struct {
 };
 pub const http_types = struct {
     pub const Encoding = @import("http_types/Encoding.zig").Encoding;
+    pub const Method = @import("http_types/Method.zig").Method;
+    pub const FetchRedirect = @import("http_types/FetchRedirect.zig").FetchRedirect;
+    pub const FetchRequestMode = @import("http_types/FetchRequestMode.zig").FetchRequestMode;
+    pub const FetchCacheMode = @import("http_types/FetchCacheMode.zig").FetchCacheMode;
+};
+pub const options_types = struct {
+    pub const OfflineMode = @import("options_types/OfflineMode.zig").OfflineMode;
+    pub const OfflineModePrefer = @import("options_types/OfflineMode.zig").Prefer;
 };
 
 // ---- src/bun_core/ + src/bun_alloc/ + src/safety/ ----------------------
@@ -112,12 +120,14 @@ pub const jsc_stub = @import("jsc_stub.zig");
 pub const sql = struct {
     pub const shared = struct {
         pub const ConnectionFlags = @import("sql/shared/ConnectionFlags.zig").ConnectionFlags;
+        pub const SQLQueryResultMode = @import("sql/shared/SQLQueryResultMode.zig").SQLQueryResultMode;
     };
     pub const mysql = struct {
         pub const SSLMode = @import("sql/mysql/SSLMode.zig").SSLMode;
         pub const ConnectionState = @import("sql/mysql/ConnectionState.zig").ConnectionState;
         pub const TLSStatus = @import("sql/mysql/TLSStatus.zig").TLSStatus;
         pub const QueryStatus = @import("sql/mysql/QueryStatus.zig").Status;
+        pub const MySQLQueryResult = @import("sql/mysql/MySQLQueryResult.zig");
         pub const protocol = struct {
             pub const PacketType = @import("sql/mysql/protocol/PacketType.zig").PacketType;
         };
@@ -189,6 +199,31 @@ test {
     _ = safety;
     _ = jsc_stub;
     _ = sql;
+    _ = options_types;
+}
+
+test "home_rt.http_types.Method.find round-trips canonical verbs" {
+    try std.testing.expectEqual(http_types.Method.GET, http_types.Method.find("GET").?);
+    try std.testing.expectEqual(http_types.Method.POST, http_types.Method.find("post").?);
+    try std.testing.expectEqual(http_types.Method.PATCH, http_types.Method.find("PATCH").?);
+    try std.testing.expect(http_types.Method.find("INVALID") == null);
+}
+
+test "home_rt.http_types.Method.isIdempotent" {
+    try std.testing.expect(http_types.Method.GET.isIdempotent());
+    try std.testing.expect(http_types.Method.PUT.isIdempotent());
+    try std.testing.expect(!http_types.Method.POST.isIdempotent());
+    try std.testing.expect(!http_types.Method.PATCH.isIdempotent());
+}
+
+test "home_rt.http_types.FetchRedirect.Map maps strings to enum tags" {
+    try std.testing.expectEqual(http_types.FetchRedirect.follow, http_types.FetchRedirect.Map.get("follow").?);
+    try std.testing.expectEqual(http_types.FetchRedirect.@"error", http_types.FetchRedirect.Map.get("error").?);
+}
+
+test "home_rt.options_types.OfflineMode.Prefer maps strings to enum tags" {
+    try std.testing.expectEqual(options_types.OfflineMode.offline, options_types.OfflineModePrefer.get("offline").?);
+    try std.testing.expectEqual(options_types.OfflineMode.latest, options_types.OfflineModePrefer.get("latest").?);
 }
 
 test "home_rt.sql.postgres.types.int_types.Int32 encodes big-endian" {
