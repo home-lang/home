@@ -3157,12 +3157,21 @@ pub const Parser = struct {
                     // TS1092: `constructor<T>()` is forbidden — tsc anchors
                     // at the first type-parameter's name. When the type
                     // parameter list is empty (`constructor<>()`), fall
-                    // back to a synthesized position one past the `<`.
-                    // Mirrors `parserConstructorDeclaration9`.
+                    // back to a synthesized position one past the `<`
+                    // (the column of the `>`). Mirrors
+                    // `parserConstructorDeclaration9` and
+                    // `parserConstructorDeclaration11`.
                     if (name_tok.kind == .kw_constructor and has_type_params_clause) {
                         if (type_params.len > 0) {
                             const sp = self.hir.spanOf(type_params[0]);
                             try self.reportCodeAt(sp.start, self.lineAt(sp.start), 1092, "Type parameters cannot appear on a constructor declaration.");
+                        } else {
+                            // Empty `<>` — anchor at the column the
+                            // close-`>` already occupies (`name_span.end`
+                            // points just past `constructor`; the `<` is
+                            // there and the `>` is one column further).
+                            const anchor: u32 = name_span.end + 1;
+                            try self.reportCodeAt(anchor, name_tok.line, 1092, "Type parameters cannot appear on a constructor declaration.");
                         }
                     }
                     const params = try self.parseParameterList();
@@ -6749,9 +6758,18 @@ pub const Parser = struct {
     /// Parse `<T, U extends V = D>`. Returns owned slice of
     /// `type_parameter` HIR nodes.
     fn parseTypeParameterDeclaration(self: *Parser) ParseError![]NodeId {
-        _ = try self.expect(.less_than, "'<' to open type parameters");
+        const open_tok = try self.expect(.less_than, "'<' to open type parameters");
         var tps: std.ArrayListUnmanaged(NodeId) = .empty;
         errdefer tps.deinit(self.gpa);
+        // TS1098: an empty `<>` type parameter list is invalid. tsc
+        // anchors the diagnostic at the `<` token (specifically at
+        // the column AFTER `<`). Mirrors upstream tsc on
+        // `parserConstructorDeclaration11.ts(2,14)`. The check fires
+        // BEFORE the close-`>` is consumed so the error position is
+        // accurate.
+        if (self.peek().kind == .greater_than) {
+            try self.reportCodeAt(open_tok.span.start, open_tok.line, 1098, "Type parameter list cannot be empty.");
+        }
         while (self.peek().kind != .greater_than and self.peek().kind != .eof) {
             const tp_start = self.peek();
             // TS 5.0 `const` type-parameter modifier (`<const T>`). When
@@ -15200,6 +15218,26 @@ test "parser: 'declare constructor() {}' inside a class body does NOT report TS1
     for (s.parser.diagnostics.items) |d| {
         try T.expect(d.code != 1183);
     }
+}
+
+test "parser: 'constructor<>()' reports TS1098 (empty list) and TS1092" {
+    // `class C { constructor<>() {} }` — both the empty type
+    // parameter list TS1098 and the constructor-cannot-be-generic
+    // TS1092 must fire. The TS1092 anchor is synthesised one past
+    // the `<` since there is no type parameter to point at. Mirrors
+    // `parserConstructorDeclaration11.ts(2,14)` / `(2,15)`.
+    const src = "class C {\n  constructor<>() { }\n}";
+    var s = try newTestSetup(src);
+    defer destroyTestSetup(s);
+    _ = try s.parser.parseSourceFile();
+    var saw_1098 = false;
+    var saw_1092 = false;
+    for (s.parser.diagnostics.items) |d| {
+        if (d.code == 1098) saw_1098 = true;
+        if (d.code == 1092) saw_1092 = true;
+    }
+    try T.expect(saw_1098);
+    try T.expect(saw_1092);
 }
 
 test "parser: '*constructor()' reports TS1368 anchored at the constructor name" {
