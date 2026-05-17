@@ -7092,7 +7092,16 @@ pub const Checker = struct {
             },
             .fn_decl, .fn_expr, .arrow_fn => {
                 const f = hir_mod.fnDeclOf(self.hir, parent);
-                return f.name == node;
+                if (f.name != node) return false;
+                // Computed class-member names (`get [e]()` / `set [e](v)`,
+                // `[e]()` / `*[e]()`) reference an outer-scope value via
+                // bracketed expression syntax — they introduce nothing
+                // and must NOT be treated as a declaration name slot,
+                // otherwise the unbound-name TS2304 sweep skips them.
+                // Mirrors upstream tsc on `parserComputedPropertyName23
+                // .ts(2,10)` and `parserComputedPropertyName24.ts(2,10)`.
+                if (self.nodeIsBracketedComputedName(node)) return false;
+                return true;
             },
             .class_decl, .class_expr => {
                 const c = hir_mod.classOf(self.hir, parent);
@@ -61367,6 +61376,25 @@ test "checker: HTMLCanvasElement is recognized as a built-in DOM global" {
         if (d.code != TsCodes.cannot_find_name) continue;
         try T.expect(std.mem.indexOf(u8, d.message, "HTMLCanvasElement") == null);
     }
+}
+
+test "checker: computed setter/getter name reports TS2304 on unbound identifier" {
+    // `class C { set [e](v) {} }` — the parser stores the bare `e`
+    // identifier as the accessor's name node. `isDeclNameSlot` used
+    // to claim that identifier was a declaration name and skipped
+    // the TS2304 sweep, leaving the unbound `e` unreported. With
+    // the bracketed-computed-name carve-out, the reference is
+    // diagnosed correctly. Mirrors `parserComputedPropertyName24
+    // .ts(2,10)` (and TS-equivalent fixture 23 for `get`).
+    const s = try newSetup("class C { set [e](v) {} }");
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+    var saw_e: u32 = 0;
+    for (s.checker.diagnostics.items) |d| {
+        if (d.code != TsCodes.cannot_find_name) continue;
+        if (std.mem.indexOf(u8, d.message, "'e'") != null) saw_e += 1;
+    }
+    try T.expect(saw_e >= 1);
 }
 
 test "checker: TS2411 renders inline object types for property and index" {
