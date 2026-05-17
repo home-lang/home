@@ -129,6 +129,16 @@ pub const TsCodes = struct {
     pub const arbitrary_extension_requires_option: u32 = 6263;
     pub const invalid_module_name_augmentation: u32 = 2665;
     pub const untyped_module: u32 = 7016;
+    /// TS5061 — `Pattern '{0}' can have at most one '*' character.`
+    /// Fires for `declare module "foo*bar*baz"` ambient module forms
+    /// whose name uses pattern-matching but includes more than one
+    /// `*`. Anchored at the module-name string literal.
+    pub const pattern_too_many_asterisks: u32 = 5061;
+    /// TS2423 — `Class '{0}' defines instance member function '{1}',
+    /// but extended class '{2}' defines it as instance member
+    /// accessor.` Fires when a derived class declares an accessor for
+    /// the same name a base class declared as a method.
+    pub const method_overridden_by_accessor: u32 = 2423;
     pub const cannot_find_namespace: u32 = 2503;
     pub const cannot_find_namespace_did_you_mean: u32 = 2833;
     pub const type_only_used_as_value: u32 = 2693;
@@ -835,6 +845,12 @@ pub const Checker = struct {
         hir_mod.StringId,
         std.AutoHashMapUnmanaged(hir_mod.StringId, void),
     ),
+    /// Class-name → names declared as instance methods. Used for
+    /// TS2423 when a subclass replaces a method with an accessor.
+    class_method_members: std.AutoHashMapUnmanaged(
+        hir_mod.StringId,
+        std.AutoHashMapUnmanaged(hir_mod.StringId, void),
+    ),
     /// Generic name → TypeId table for type-annotation resolution.
     /// A superset of `class_instance_types` that also covers
     /// `interface I { ... }` and `type Alias = T`. Consulted by
@@ -1148,6 +1164,7 @@ pub const Checker = struct {
             .class_abstract_members = .empty,
             .class_property_members = .empty,
             .class_accessor_members = .empty,
+            .class_method_members = .empty,
             .type_names = .empty,
             .generic_aliases = .empty,
             .active_generic_aliases = .empty,
@@ -1312,6 +1329,9 @@ pub const Checker = struct {
         var cam_it = self.class_accessor_members.valueIterator();
         while (cam_it.next()) |set| set.deinit(self.gpa);
         self.class_accessor_members.deinit(self.gpa);
+        var cmm_it = self.class_method_members.valueIterator();
+        while (cmm_it.next()) |set| set.deinit(self.gpa);
+        self.class_method_members.deinit(self.gpa);
         self.type_names.deinit(self.gpa);
         var ga_it = self.generic_aliases.valueIterator();
         while (ga_it.next()) |info| self.gpa.free(info.params);
@@ -2069,6 +2089,7 @@ pub const Checker = struct {
 
     fn checkNamespaceTypeStatements(self: *Checker, node: NodeId) CheckError!void {
         try self.checkUntypedModuleAugmentation(node);
+        try self.checkAmbientModulePatternAsterisks(node);
         try self.checkGlobalAugmentationDiagnostics(node);
         const ns = hir_mod.namespaceOf(self.hir, node);
         // Skip TS8006 for ambient `declare module "fs" { ... }` forms —
@@ -2322,6 +2343,32 @@ pub const Checker = struct {
         try self.diagnostics.append(self.gpa, .{
             .node = ns.name,
             .code = TsCodes.invalid_module_name_augmentation,
+            .message = msg,
+        });
+    }
+
+    /// TS5061 — `Pattern '{0}' can have at most one '*' character.`
+    /// Fires for `declare module "foo*bar*baz"` where the quoted
+    /// module name (a "pattern" ambient module) contains more than
+    /// one `*`. Anchored at the string-literal's opening quote so
+    /// the column matches tsc's baseline.
+    fn checkAmbientModulePatternAsterisks(self: *Checker, node: NodeId) CheckError!void {
+        if (self.hir.kindOf(node) != .namespace_decl) return;
+        const ns = hir_mod.namespaceOf(self.hir, node);
+        if (ns.name == hir_mod.none_node_id or self.hir.kindOf(ns.name) != .identifier) return;
+        if (!self.namespaceNameIsStringLiteral(ns.name)) return;
+        const module_name_id = hir_mod.identifierOf(self.hir, ns.name).name;
+        const module_name = self.string_interner.get(module_name_id);
+        const first = std.mem.indexOfScalar(u8, module_name, '*') orelse return;
+        if (std.mem.indexOfScalarPos(u8, module_name, first + 1, '*') == null) return;
+        const msg = try std.fmt.allocPrint(
+            self.diag_arena.allocator(),
+            "Pattern '{s}' can have at most one '*' character.",
+            .{module_name},
+        );
+        try self.diagnostics.append(self.gpa, .{
+            .node = ns.name,
+            .code = TsCodes.pattern_too_many_asterisks,
             .message = msg,
         });
     }
@@ -10584,6 +10631,11 @@ pub const Checker = struct {
         defer property_names.deinit(self.gpa);
         var parameter_property_names: std.AutoHashMapUnmanaged(hir_mod.StringId, void) = .empty;
         defer parameter_property_names.deinit(self.gpa);
+        // Names of instance methods declared by this class. Moved into
+        // `class_method_members` once the class name is known. Used by
+        // TS2423 when a subclass redeclares one of these as an accessor.
+        var method_names: std.AutoHashMapUnmanaged(hir_mod.StringId, void) = .empty;
+        defer method_names.deinit(self.gpa);
         var accessor_names: std.AutoHashMapUnmanaged(hir_mod.StringId, void) = .empty;
         defer accessor_names.deinit(self.gpa);
         var own_member_names: std.AutoHashMapUnmanaged(hir_mod.StringId, void) = .empty;
@@ -10960,6 +11012,7 @@ pub const Checker = struct {
                         } else {
                             try concrete_names.put(self.gpa, member_name, {});
                         }
+                        try method_names.put(self.gpa, member_name, {});
                     }
                     const is_visible_overload_implementation = fn_p.body != hir_mod.none_node_id and
                         overload_info_before != null and
@@ -11150,7 +11203,10 @@ pub const Checker = struct {
                             }
                             break :blk sig;
                         } else try self.checkExpression(op.value);
-                        if (!op.is_static) try concrete_names.put(self.gpa, member_name, {});
+                        if (!op.is_static) {
+                            try concrete_names.put(self.gpa, member_name, {});
+                            try method_names.put(self.gpa, member_name, {});
+                        }
                         if (method_t == types.Primitive.none) continue;
                         const method_predicate = self.signature_predicates.get(method_t);
                         const method_member: types.ObjectMember = .{
@@ -11709,6 +11765,12 @@ pub const Checker = struct {
             }
             try self.class_accessor_members.put(self.gpa, cid.name, accessor_names);
             accessor_names = .empty;
+            if (self.class_method_members.fetchRemove(cid.name)) |old| {
+                var owned = old.value;
+                owned.deinit(self.gpa);
+            }
+            try self.class_method_members.put(self.gpa, cid.name, method_names);
+            method_names = .empty;
             if (c.extends != hir_mod.none_node_id) {
                 if (self.classExtendsName(c.extends)) |ext_name| {
                     if (self.class_instance_types.contains(ext_name)) {
@@ -13820,6 +13882,10 @@ pub const Checker = struct {
         parent_class_name: ?hir_mod.StringId,
         member_name: hir_mod.StringId,
     ) CheckError!void {
+        // TS2423 first — a method-vs-accessor mismatch supersedes the
+        // property-vs-accessor TS2611 path (tsc reports only TS2423 in
+        // that case).
+        try self.checkAccessorOverridesMethod(node, name_node, parent_class_name, member_name);
         const parent_name = parent_class_name orelse return;
         // Walk the `extends` chain to find the nearest ancestor that
         // declares `member_name` as a data property — TS2611 fires for
@@ -13835,6 +13901,12 @@ pub const Checker = struct {
         while (true) {
             if (self.class_accessor_members.getPtr(ancestor)) |acc| {
                 if (acc.contains(member_name)) return;
+            }
+            if (self.class_method_members.getPtr(ancestor)) |meth| {
+                // Skip TS2611 when the ancestor declares this as a
+                // method — TS2423 fires instead, and TS2611 should not
+                // double-report.
+                if (meth.contains(member_name)) return;
             }
             if (self.class_property_members.getPtr(ancestor)) |props| {
                 if (props.contains(member_name)) break;
@@ -13876,6 +13948,58 @@ pub const Checker = struct {
         } else {
             try self.reportAt(node, name_pos, TsCodes.accessor_overrides_property, "Accessor overrides a property in the base class.");
         }
+    }
+
+    /// TS2423 — emit when a derived class redeclares a base-class
+    /// instance method as an accessor. Walks the heritage chain
+    /// looking for the closest ancestor that declared `member_name`
+    /// as a method. Anchored at the accessor's name identifier.
+    fn checkAccessorOverridesMethod(
+        self: *Checker,
+        node: NodeId,
+        name_node: NodeId,
+        parent_class_name: ?hir_mod.StringId,
+        member_name: hir_mod.StringId,
+    ) CheckError!void {
+        const parent_name = parent_class_name orelse return;
+        var ancestor = parent_name;
+        var found_method: ?hir_mod.StringId = null;
+        while (true) {
+            if (self.class_accessor_members.getPtr(ancestor)) |acc| {
+                // A closer ancestor already redeclared this as an
+                // accessor — no method-vs-accessor mismatch with
+                // respect to that branch of the chain.
+                if (acc.contains(member_name)) return;
+            }
+            if (self.class_method_members.getPtr(ancestor)) |meth| {
+                if (meth.contains(member_name)) {
+                    found_method = ancestor;
+                    break;
+                }
+            }
+            ancestor = self.class_parent.get(ancestor) orelse return;
+        }
+        const base_name = found_method orelse return;
+        const derived_name = self.derivedClassNameForMember(node) orelse return;
+        const name_pos: ?u32 = blk: {
+            if (name_node == hir_mod.none_node_id) break :blk null;
+            const span = self.hir.spanOf(name_node);
+            break :blk @intCast(span.start);
+        };
+        const member_str = self.string_interner.get(member_name);
+        const base_str = self.string_interner.get(base_name);
+        const derived_str = self.string_interner.get(derived_name);
+        const msg = try std.fmt.allocPrint(
+            self.diag_arena.allocator(),
+            "Class '{s}' defines instance member function '{s}', but extended class '{s}' defines it as instance member accessor.",
+            .{ base_str, member_str, derived_str },
+        );
+        try self.diagnostics.append(self.gpa, .{
+            .node = node,
+            .pos = name_pos,
+            .code = TsCodes.method_overridden_by_accessor,
+            .message = msg,
+        });
     }
 
     fn checkFieldInitializerParameterPropertyOrder(
@@ -42575,6 +42699,74 @@ test "checker: export assignments are scoped by virtual filename sections" {
     try b.base.checker.checkSourceFile(b.base.root);
     for (b.base.checker.diagnostics.items) |d| {
         try T.expect(d.code != TsCodes.export_assignment_with_other_exports);
+    }
+}
+
+test "checker: declare module with two asterisks emits TS5061" {
+    const b = try newBoundSetup(
+        \\declare module "too*many*asterisks" { }
+    );
+    defer destroyBoundSetup(b);
+    try b.base.checker.checkSourceFile(b.base.root);
+    var found = false;
+    for (b.base.checker.diagnostics.items) |d| {
+        if (d.code == TsCodes.pattern_too_many_asterisks and
+            std.mem.indexOf(u8, d.message, "too*many*asterisks") != null)
+        {
+            found = true;
+        }
+    }
+    try T.expect(found);
+}
+
+test "checker: accessor overriding base method emits TS2423" {
+    const b = try newBoundSetup(
+        \\class A {
+        \\    m() { }
+        \\}
+        \\class B extends A {
+        \\    get m() { return () => 1 }
+        \\}
+    );
+    defer destroyBoundSetup(b);
+    try b.base.checker.checkSourceFile(b.base.root);
+    var found = false;
+    for (b.base.checker.diagnostics.items) |d| {
+        if (d.code == TsCodes.method_overridden_by_accessor and
+            std.mem.indexOf(u8, d.message, "Class 'A'") != null and
+            std.mem.indexOf(u8, d.message, "'m'") != null and
+            std.mem.indexOf(u8, d.message, "extended class 'B'") != null)
+        {
+            found = true;
+        }
+    }
+    try T.expect(found);
+}
+
+test "checker: accessor overriding base accessor does not emit TS2423" {
+    const b = try newBoundSetup(
+        \\class A {
+        \\    get m() { return 1 }
+        \\}
+        \\class B extends A {
+        \\    get m() { return 2 }
+        \\}
+    );
+    defer destroyBoundSetup(b);
+    try b.base.checker.checkSourceFile(b.base.root);
+    for (b.base.checker.diagnostics.items) |d| {
+        try T.expect(d.code != TsCodes.method_overridden_by_accessor);
+    }
+}
+
+test "checker: declare module with single asterisk does not emit TS5061" {
+    const b = try newBoundSetup(
+        \\declare module "foo/*" { }
+    );
+    defer destroyBoundSetup(b);
+    try b.base.checker.checkSourceFile(b.base.root);
+    for (b.base.checker.diagnostics.items) |d| {
+        try T.expect(d.code != TsCodes.pattern_too_many_asterisks);
     }
 }
 
