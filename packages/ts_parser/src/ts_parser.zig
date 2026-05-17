@@ -8163,6 +8163,21 @@ pub const Parser = struct {
                 const id = try self.internToken(t);
                 return try self.builder.addIdentifier(tokenSpan(t), id);
             },
+            .kw_public, .kw_private, .kw_protected => {
+                // Strict-future-reserved words like `public` are valid
+                // identifier expressions when reached in expression
+                // position (e.g. inside a computed property name
+                // `[public]: 0` or a class-body computed key). Emit the
+                // upstream TS1212 / TS1213 strict-reserved diagnostic
+                // and synthesize an identifier so downstream checker
+                // reports TS2304 instead of TS1109. Mirrors fixtures
+                // `parserComputedPropertyName36`-`39`.
+                _ = self.advance();
+                try self.reportInvalidClassStrictIdentifier(t);
+                try self.reportInvalidFutureReservedName(t);
+                const id = try self.internToken(t);
+                return try self.builder.addIdentifier(tokenSpan(t), id);
+            },
             .private_identifier => {
                 _ = self.advance();
                 const id = try self.internToken(t);

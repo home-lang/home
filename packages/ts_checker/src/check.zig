@@ -33237,14 +33237,17 @@ pub const Checker = struct {
                 };
                 if (self.typeContainsSymbol(lhs) or self.typeContainsSymbol(rhs)) {
                     try self.reportSymbolOperator(node, op_text);
-                } else if (self.strict_flags.strict_null_checks and self.typeIsExactNullish(lhs)) {
-                    try self.reportNullishRelationalOperand(b.lhs, lhs);
-                } else if (self.strict_flags.strict_null_checks and self.typeIsExactNullish(rhs)) {
-                    try self.reportNullishRelationalOperand(b.rhs, rhs);
-                } else if (!self.isRelationalOperandAllowed(lhs) or !self.isRelationalOperandAllowed(rhs) or
-                    self.relationalComparisonInvalid(lhs, rhs))
-                {
-                    try self.reportRelationalOperatorCannotBeAppliedWithTypes(node, op_text, lhs, rhs);
+                } else {
+                    const lhs_nullish = self.strict_flags.strict_null_checks and self.typeIsExactNullish(lhs);
+                    const rhs_nullish = self.strict_flags.strict_null_checks and self.typeIsExactNullish(rhs);
+                    if (lhs_nullish) try self.reportNullishRelationalOperand(b.lhs, lhs);
+                    if (rhs_nullish) try self.reportNullishRelationalOperand(b.rhs, rhs);
+                    if (!lhs_nullish and !rhs_nullish and (!self.isRelationalOperandAllowed(lhs) or
+                        !self.isRelationalOperandAllowed(rhs) or
+                        self.relationalComparisonInvalid(lhs, rhs)))
+                    {
+                        try self.reportRelationalOperatorCannotBeAppliedWithTypes(node, op_text, lhs, rhs);
+                    }
                 }
                 break :blk types.Primitive.boolean_t;
             },
