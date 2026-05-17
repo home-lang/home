@@ -10635,9 +10635,18 @@ pub const Checker = struct {
                         }
                         break :blk types.Primitive.any;
                     };
+                    // TS7008 only fires for class members in a checked
+                    // (non-ambient) context. `declare class`, classes nested
+                    // inside `declare module`, and classes inside `.d.ts`
+                    // sections are ambient — their member types are
+                    // intentionally implicit-any when no annotation is
+                    // given, since no implementation is being type-checked.
                     if (self.strict_flags.no_implicit_any and
                         op.type_annotation == hir_mod.none_node_id and
-                        op.value == hir_mod.none_node_id)
+                        op.value == hir_mod.none_node_id and
+                        !self.classHasLeadingDeclare(node) and
+                        !self.classNodeIsInsideAmbientDeclaredModule(node) and
+                        !self.virtualSectionIsDeclarationFile(node))
                     {
                         try self.reportMemberImplicitAny(m, member_name);
                     }
@@ -10673,9 +10682,13 @@ pub const Checker = struct {
                         // `class { 1: number }`) — those names can't
                         // be initialized via `this.<name>` in the
                         // constructor and the initializer rule only
-                        // applies to identifier-named fields. Mirrors
-                        // `stringNamedPropertyAccess.ts`.
+                        // applies to identifier-named fields (including
+                        // private `#name` identifiers, which tsc treats
+                        // just like ordinary fields for TS2564). Mirrors
+                        // `stringNamedPropertyAccess.ts` and the
+                        // `privateNameDeclaration` baselines.
                         (isJsIdentifier(self.string_interner.get(member_name)) or
+                            isPrivateIdentifierName(self.string_interner.get(member_name)) or
                             std.mem.startsWith(u8, self.string_interner.get(member_name), "Symbol.")))
                     {
                         const field_name = self.string_interner.get(member_name);
@@ -22774,6 +22787,15 @@ pub const Checker = struct {
 
     fn isJsDocIdentChar(c: u8) bool {
         return isJsDocIdentStart(c) or (c >= '0' and c <= '9');
+    }
+
+    /// Returns true when `name` is a private-identifier (a leading `#`
+    /// followed by a valid identifier body, e.g. `#foo`, `#_bar`).
+    /// Used wherever a diagnostic rule applies to both public and
+    /// private class members.
+    fn isPrivateIdentifierName(name: []const u8) bool {
+        if (name.len < 2 or name[0] != '#') return false;
+        return isJsIdentifier(name[1..]);
     }
 
     /// Returns true when `name` is a valid ECMAScript identifier
@@ -45540,6 +45562,54 @@ test "checker: noImplicitAny emits TS7008 for bare class and interface members" 
         if (d.code == TsCodes.member_implicitly_any) count += 1;
     }
     try T.expectEqual(@as(usize, 2), count);
+}
+
+test "checker: TS2564 fires on uninitialized private (#name) fields" {
+    // Mirrors upstream tsc: `class { #foo: string; }` without an
+    // initializer or constructor assignment must report TS2564, the
+    // same as ordinary identifier-named fields. Regression for
+    // `privateNameDeclaration` conformance baseline.
+    const s = try newSetup(
+        \\class A {
+        \\    #foo: string;
+        \\    baz: string;
+        \\}
+    );
+    defer destroySetup(s);
+    s.checker.setStrictFlags(.{ .strict_property_initialization = true, .strict_null_checks = true });
+    try s.checker.checkSourceFile(s.root);
+    var private_count: usize = 0;
+    var public_count: usize = 0;
+    for (s.checker.diagnostics.items) |d| {
+        if (d.code != TsCodes.property_not_initialized) continue;
+        if (std.mem.indexOf(u8, d.message, "'#foo'") != null) private_count += 1;
+        if (std.mem.indexOf(u8, d.message, "'baz'") != null) public_count += 1;
+    }
+    try T.expectEqual(@as(usize, 1), private_count);
+    try T.expectEqual(@as(usize, 1), public_count);
+}
+
+test "checker: noImplicitAny skips TS7008 on ambient `declare class` members" {
+    // Mirrors upstream tsc: a `declare class` member without an annotation
+    // is intentionally implicit-any in the ambient world and must not raise
+    // TS7008. Only the checked, non-ambient sibling class should report.
+    // Regression for conformance fixture `privateNameAmbientNoImplicitAny`.
+    const s = try newSetup(
+        \\declare class A {
+        \\    #prop;
+        \\}
+        \\class B {
+        \\    #prop;
+        \\}
+    );
+    defer destroySetup(s);
+    s.checker.setStrictFlags(.{ .no_implicit_any = true });
+    try s.checker.checkSourceFile(s.root);
+    var count: usize = 0;
+    for (s.checker.diagnostics.items) |d| {
+        if (d.code == TsCodes.member_implicitly_any) count += 1;
+    }
+    try T.expectEqual(@as(usize, 1), count);
 }
 
 test "checker: repeated var declarations require identical annotated types" {
