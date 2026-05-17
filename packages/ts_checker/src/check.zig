@@ -558,6 +558,10 @@ const IndexSignatureDuplicateState = struct {
 
 const ClassMethodSeen = struct {
     first_node: NodeId,
+    /// Last bodyless overload seen; used to anchor TS2391 ("Function
+    /// implementation is missing or not immediately following the
+    /// declaration.") at the last overload, matching upstream tsc.
+    last_bodyless_node: NodeId,
     first_static: bool,
     first_visibility: u2,
     bodyless_count: u32 = 0,
@@ -12888,6 +12892,7 @@ pub const Checker = struct {
         if (!gop.found_existing) {
             gop.value_ptr.* = .{
                 .first_node = node,
+                .last_bodyless_node = if (has_body) hir_mod.none_node_id else node,
                 .first_static = is_static,
                 .first_visibility = visibility,
                 .bodyless_count = if (has_body) 0 else 1,
@@ -12909,6 +12914,7 @@ pub const Checker = struct {
             }
         } else {
             gop.value_ptr.bodyless_count += 1;
+            gop.value_ptr.last_bodyless_node = node;
         }
     }
 
@@ -12966,7 +12972,11 @@ pub const Checker = struct {
             if (self.classMethodDeclIsConstructor(info.first_node)) {
                 try self.report(info.first_node, TsCodes.constructor_implementation_missing, "Constructor implementation is missing.");
             } else {
-                try self.report(info.first_node, TsCodes.implementation_missing, "Function implementation is missing or not immediately following the declaration.");
+                // tsc anchors TS2391 at the LAST bodyless overload (so
+                // overload-only signatures point at the trailing one,
+                // not the first). Mirrors `symbolProperty43.ts(3,5)`.
+                const anchor = if (info.last_bodyless_node != hir_mod.none_node_id) info.last_bodyless_node else info.first_node;
+                try self.report(anchor, TsCodes.implementation_missing, "Function implementation is missing or not immediately following the declaration.");
             }
         }
     }
@@ -16613,14 +16623,42 @@ pub const Checker = struct {
             .interface_decl => hir_mod.interfaceMembers(self.hir, container),
             else => return container,
         };
+        const lookup_raw = self.string_interner.get(name);
         for (member_ids) |mid| {
             const mkind = self.hir.kindOf(mid);
-            if (mkind != .object_property) continue;
-            const op = hir_mod.objectPropertyOf(self.hir, mid);
-            if (op.is_computed) continue;
-            const key_kind = self.hir.kindOf(op.key);
-            if (key_kind != .identifier) continue;
-            if (hir_mod.identifierOf(self.hir, op.key).name == name) return mid;
+            switch (mkind) {
+                .object_property => {
+                    const op = hir_mod.objectPropertyOf(self.hir, mid);
+                    if (op.is_computed) {
+                        // Computed-key members store their interned name
+                        // as either `Symbol.<member>` (Symbol.foo /
+                        // Symbol.iterator) or `[computed:<raw>]`
+                        // (const-bound unique-symbol). Anchor at the
+                        // property when its computed-key name matches
+                        // the lookup — TS2411 should point at the
+                        // member, not the container's opening brace.
+                        if (self.classMemberNameFromPropertyKey(op.key, true) catch null) |key_name| {
+                            if (key_name == name) return mid;
+                            if (std.mem.eql(u8, self.string_interner.get(key_name), lookup_raw)) return mid;
+                        }
+                        continue;
+                    }
+                    const key_kind = self.hir.kindOf(op.key);
+                    if (key_kind != .identifier) continue;
+                    if (hir_mod.identifierOf(self.hir, op.key).name == name) return mid;
+                },
+                .interface_member => {
+                    // Interface members store the pre-resolved name
+                    // (including the synthesised `Symbol.<member>` /
+                    // `[computed:<raw>]` form for computed keys), so a
+                    // direct name compare anchors the diagnostic at the
+                    // member's own source range.
+                    const im = hir_mod.interfaceMemberOf(self.hir, mid);
+                    if (im.name == name) return mid;
+                    if (std.mem.eql(u8, self.string_interner.get(im.name), lookup_raw)) return mid;
+                },
+                else => {},
+            }
         }
         return container;
     }
@@ -16641,10 +16679,18 @@ pub const Checker = struct {
         const src = self.source orelse return canonical;
         const member_node = self.classOrInterfaceMemberNode(container, name);
         if (member_node == container) return canonical;
-        const op = hir_mod.objectPropertyOf(self.hir, member_node);
-        const key_span = self.hir.spanOf(op.key);
-        if (key_span.start >= key_span.end or key_span.end > src.len) return canonical;
-        return src[key_span.start..key_span.end];
+        // The key span (for `object_property`) reads the source-written
+        // form; `interface_member` has no separate key node, so fall
+        // back to the canonical interned name there.
+        switch (self.hir.kindOf(member_node)) {
+            .object_property => {
+                const op = hir_mod.objectPropertyOf(self.hir, member_node);
+                const key_span = self.hir.spanOf(op.key);
+                if (key_span.start >= key_span.end or key_span.end > src.len) return canonical;
+                return src[key_span.start..key_span.end];
+            },
+            else => return canonical,
+        }
     }
 
     fn checkIndexSignatureMemberCompatibility(
@@ -16703,7 +16749,7 @@ pub const Checker = struct {
                 const prop_str = try std.fmt.allocPrint(self.diag_arena.allocator(), "[{s}]", .{inner});
                 const msg = try self.formatPropertyNotAssignableToIndexType(prop_str, m.type, symbol_idx, "symbol");
                 try self.diagnostics.append(self.gpa, .{
-                    .node = node,
+                    .node = self.classOrInterfaceMemberNode(node, m.name),
                     .code = TsCodes.property_not_assignable_to_index_type,
                     .message = msg,
                 });
@@ -25857,7 +25903,16 @@ pub const Checker = struct {
                             if (self.nodeHasAncestorKind(op.key, .namespace_decl)) {
                                 try self.report(op.key, TsCodes.this_in_namespace_body, "'this' cannot be referenced in a module or namespace body.");
                             }
-                            if (!self.sourceHasStrictFalseDirective()) {
+                            // Suppress the TS2683 pre-emit when we're
+                            // inside an enclosing class-member computed
+                            // key — the inner `this` already triggers
+                            // the more specific TS2465 once the
+                            // identifier handler runs under the
+                            // `in_computed_property_name` flag.
+                            // Mirrors `computedPropertyNames23_ES5.ts`.
+                            if (!self.sourceHasStrictFalseDirective() and
+                                !self.in_computed_property_name)
+                            {
                                 try self.report(op.key, TsCodes.this_implicitly_any, "'this' implicitly has type 'any' because it does not have a type annotation.");
                             }
                         }
@@ -29773,7 +29828,8 @@ pub const Checker = struct {
             if (self.thisIsGlobalScriptThis(node)) return self.bareGlobalThisType() catch types.Primitive.any;
             if (!self.sourceHasStrictFalseDirective() and
                 !self.identifierThisIsArrowCaptured(node) and
-                !self.thisInsideObjectLiteralMethod(node))
+                !self.thisInsideObjectLiteralMethod(node) and
+                !self.thisInsideClassConstructorParameter(node))
             {
                 self.report(node, TsCodes.this_implicitly_any, "'this' implicitly has type 'any' because it does not have a type annotation.") catch {};
             }
@@ -32564,7 +32620,10 @@ pub const Checker = struct {
         if (self.currentThisType()) |this_t| return this_t;
         if (self.nodeHasAncestorKind(node, .decorator)) return types.Primitive.any;
         if (self.thisIsGlobalScriptThis(node)) return try self.bareGlobalThisType();
-        if (!self.sourceHasStrictFalseDirective() and !self.thisInsideObjectLiteralMethod(node)) {
+        if (!self.sourceHasStrictFalseDirective() and
+            !self.thisInsideObjectLiteralMethod(node) and
+            !self.thisInsideClassConstructorParameter(node))
+        {
             try self.report(node, TsCodes.this_implicitly_any, "'this' implicitly has type 'any' because it does not have a type annotation.");
         }
         return types.Primitive.any;
@@ -32937,6 +32996,54 @@ pub const Checker = struct {
             return op.value == cur and (op.is_method or self.memberSourceLooksMethod(fn_parent) or k == .fn_expr or k == .fn_decl);
         }
         return false;
+    }
+
+    /// True when `this` sits inside a class constructor's parameter
+    /// list (e.g. `constructor(f = this) { ... }`). The class instance
+    /// type is implicit, so tsc does NOT fire TS2683 — the value of
+    /// `this` is the class itself. Mirrors fixture
+    /// `typeOfThisInConstructorParamList.ts` (expected-clean).
+    fn thisInsideClassConstructorParameter(self: *Checker, node: NodeId) bool {
+        var cur = self.hir.parentOf(node);
+        // Walk up until we hit a parameter slot; track when we cross a
+        // nested function boundary that would re-bind `this` (only
+        // arrows preserve the outer `this`; fn_decl / fn_expr / methods
+        // create a fresh `this` and so disqualify the outer constructor
+        // context).
+        while (cur != hir_mod.none_node_id) : (cur = self.hir.parentOf(cur)) {
+            const k = self.hir.kindOf(cur);
+            if (k == .fn_decl or k == .fn_expr) return false;
+            if (k != .parameter) continue;
+            // Found a parameter. Its parent should be the function the
+            // parameter belongs to. For a class constructor that
+            // function is an `fn_decl` (with `is_constructor` set in
+            // its source) whose parent is a `class_decl` / `class_expr`.
+            const param_owner = self.hir.parentOf(cur);
+            if (param_owner == hir_mod.none_node_id) return false;
+            const owner_kind = self.hir.kindOf(param_owner);
+            if (owner_kind != .fn_decl and owner_kind != .fn_expr) return false;
+            if (!self.fnDeclIsConstructor(param_owner)) return false;
+            const owner_parent = self.hir.parentOf(param_owner);
+            if (owner_parent == hir_mod.none_node_id) return false;
+            const owner_parent_kind = self.hir.kindOf(owner_parent);
+            return owner_parent_kind == .class_decl or owner_parent_kind == .class_expr;
+        }
+        return false;
+    }
+
+    fn fnDeclIsConstructor(self: *Checker, fn_node: NodeId) bool {
+        const k = self.hir.kindOf(fn_node);
+        if (k != .fn_decl and k != .fn_expr) return false;
+        const fd = hir_mod.fnDeclOf(self.hir, fn_node);
+        if (fd.flags.is_constructor) return true;
+        // Fall back to the source-written name for shapes that don't
+        // set the flag (e.g. raw `function constructor(...)` outside
+        // a class declaration won't have it, but inside a class body
+        // the parser sets `is_constructor`).
+        if (fd.name == hir_mod.none_node_id) return false;
+        if (self.hir.kindOf(fd.name) != .identifier) return false;
+        const name_id = hir_mod.identifierOf(self.hir, fd.name);
+        return std.mem.eql(u8, self.string_interner.get(name_id.name), "constructor");
     }
 
     fn optionalChainResult(self: *Checker, t: TypeId, is_optional_chain: bool) CheckError!TypeId {
@@ -34567,24 +34674,29 @@ pub const Checker = struct {
     }
 
     fn reportStaticTruthiness(self: *Checker, node: NodeId) CheckError!void {
+        // tsc anchors at the opening `(` for parenthesized truthy
+        // operands (e.g. `({}) ? a : b` reports column 1 on `(`, not
+        // column 2 on `{`). Mirrors fixture
+        // `conditionalOperatorConditionIsObjectType.ts(28,1)`.
+        const anchor = self.symbolOperandAnchorPos(node);
         switch (self.hir.kindOf(node)) {
             .object_literal, .array_literal, .fn_decl, .fn_expr, .arrow_fn, .literal_regex => {
-                try self.report(node, TsCodes.expression_always_truthy, "This kind of expression is always truthy.");
+                try self.reportAt(node, anchor, TsCodes.expression_always_truthy, "This kind of expression is always truthy.");
             },
             .literal_string => {
                 const lit = hir_mod.literalStringOf(self.hir, node);
                 if (self.string_interner.get(lit.value).len == 0) {
-                    try self.report(node, TsCodes.expression_always_falsy, "This kind of expression is always falsy.");
+                    try self.reportAt(node, anchor, TsCodes.expression_always_falsy, "This kind of expression is always falsy.");
                 } else {
-                    try self.report(node, TsCodes.expression_always_truthy, "This kind of expression is always truthy.");
+                    try self.reportAt(node, anchor, TsCodes.expression_always_truthy, "This kind of expression is always truthy.");
                 }
             },
             .literal_number => {
                 const value = hir_mod.literalNumberOf(self.hir, node);
                 if (value == 0) {
-                    try self.report(node, TsCodes.expression_always_falsy, "This kind of expression is always falsy.");
+                    try self.reportAt(node, anchor, TsCodes.expression_always_falsy, "This kind of expression is always falsy.");
                 } else {
-                    try self.report(node, TsCodes.expression_always_truthy, "This kind of expression is always truthy.");
+                    try self.reportAt(node, anchor, TsCodes.expression_always_truthy, "This kind of expression is always truthy.");
                 }
             },
             // Literal `null` / `undefined` — always falsy. tsc fires
@@ -34592,7 +34704,7 @@ pub const Checker = struct {
             // if-stmt, while-stmt). Fixture coverage includes
             // `conditionalOperatorConditoinIsAnyType.ts` rows 26-31.
             .literal_null, .literal_undefined => {
-                try self.report(node, TsCodes.expression_always_falsy, "This kind of expression is always falsy.");
+                try self.reportAt(node, anchor, TsCodes.expression_always_falsy, "This kind of expression is always falsy.");
             },
             else => {},
         }
@@ -44082,6 +44194,29 @@ test "checker: TS2872 anchors at opening paren for parenthesized always-truthy L
     try T.expect(found_at_paren);
 }
 
+test "checker: TS2872 anchors at opening paren for conditional-expression cond" {
+    // `({}) ? a : b` — tsc anchors TS2872 at col 1 (the `(`), not col 2
+    // (the `{`). Mirrors fixture
+    // `conditionalOperatorConditionIsObjectType.ts(28,1)`.
+    const source =
+        \\declare var a: string;
+        \\declare var b: string;
+        \\({}) ? a : b;
+    ;
+    const s = try newSetup(source);
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+    const expected_paren_pos = std.mem.indexOf(u8, source, "({})").?;
+    var found_at_paren = false;
+    for (s.checker.diagnostics.items) |d| {
+        if (d.code != TsCodes.expression_always_truthy) continue;
+        if (d.pos) |p| {
+            if (p == expected_paren_pos) found_at_paren = true;
+        }
+    }
+    try T.expect(found_at_paren);
+}
+
 test "checker: TS2367 widens boolean literal when other side is symbol" {
     // For `s == true` (s: symbol) the diagnostic must read
     // `'symbol' and 'boolean'`, not `'symbol' and 'true'`. Mirrors
@@ -45035,6 +45170,23 @@ test "checker: unbound this expression emits TS2683" {
     try T.expect(found);
 }
 
+test "checker: this in class constructor parameter default does not emit TS2683" {
+    // The class instance type is implicit in the constructor parameter
+    // list, so `constructor(f = this) {}` must NOT trigger TS2683.
+    // Mirrors fixture `typeOfThisInConstructorParamList.ts`
+    // (expected-clean baseline).
+    const s = try newSetup(
+        \\class ErrClass {
+        \\    constructor(f = this) { }
+        \\}
+    );
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+    for (s.checker.diagnostics.items) |d| {
+        try T.expect(d.code != TsCodes.this_implicitly_any);
+    }
+}
+
 test "checker: yield used as a type ref emits TS2304" {
     // `var v: yield;` inside a generator — the parser still produces
     // a type-ref for `yield`, and tsc emits TS1212 + TS2304 at the
@@ -45064,6 +45216,32 @@ test "checker: this in computed property name emits TS2465 not TS2683" {
         \\class C {
         \\  bar() { return 0; }
         \\  [this.bar()]() { }
+        \\}
+    );
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+    var saw_2465 = false;
+    var saw_2683 = false;
+    for (s.checker.diagnostics.items) |d| {
+        if (d.code == TsCodes.this_in_computed_property_name) saw_2465 = true;
+        if (d.code == TsCodes.this_implicitly_any) saw_2683 = true;
+    }
+    try T.expect(saw_2465);
+    try T.expect(!saw_2683);
+}
+
+test "checker: nested object-literal computed key inside class computed key suppresses TS2683" {
+    // `[{ [this.bar()]: 1 }[0]]` — the outer class-member computed
+    // key sets `in_computed_property_name`; the inner object-literal
+    // property's pre-emit must NOT fire TS2683 because the descendant
+    // `this` identifier handler already fires TS2465 with the same
+    // anchor. Mirrors `computedPropertyNames23_ES5.ts`.
+    const s = try newSetup(
+        \\class C {
+        \\  bar() { return 0; }
+        \\  [
+        \\    { [this.bar()]: 1 }[0]
+        \\  ]() { }
         \\}
     );
     defer destroySetup(s);
@@ -45812,6 +45990,43 @@ test "checker: class method implementation name must match overload" {
         try T.expect(d.code != TsCodes.implementation_missing);
     }
     try T.expect(found_mismatch);
+}
+
+test "checker: TS2391 anchors at last bodyless overload not first" {
+    // Two bodyless overloads with no implementation — tsc reports the
+    // missing implementation at the SECOND (last) signature so the
+    // user sees the diagnostic on the line that should be followed
+    // by the implementation. Mirrors `symbolProperty43.ts(3,5)`.
+    const source =
+        \\class C {
+        \\  foo(x: string): string;
+        \\  foo(x: number): number;
+        \\}
+    ;
+    const s = try newSetup(source);
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+    // The fixture has two overloads on lines 2 and 3 — confirm we
+    // anchor at the second one (the LAST bodyless signature).
+    var last_overload_start: u32 = 0;
+    const members = hir_mod.classMembers(&s.hir, firstStatement(s));
+    var seen_overloads: u32 = 0;
+    for (members) |m| {
+        const k = s.hir.kindOf(m);
+        if (k != .fn_decl and k != .fn_expr) continue;
+        const fp = hir_mod.fnDeclOf(&s.hir, m);
+        if (fp.body != hir_mod.none_node_id) continue;
+        seen_overloads += 1;
+        last_overload_start = s.hir.spanOf(m).start;
+    }
+    try T.expect(seen_overloads == 2);
+    var saw_at_last = false;
+    for (s.checker.diagnostics.items) |d| {
+        if (d.code != TsCodes.implementation_missing) continue;
+        const span = s.hir.spanOf(d.node);
+        if (span.start == last_overload_start) saw_at_last = true;
+    }
+    try T.expect(saw_at_last);
 }
 
 test "checker: callable object members fall back to Function interface augmentations" {
@@ -58462,6 +58677,36 @@ test "checker: TS2411 anchors at the property declaration not the container" {
         if (node_kind == .object_property) saw_2411_on_member = true;
     }
     try T.expect(saw_2411_on_member);
+}
+
+test "checker: TS2411 symbol-named member anchors at the property declaration" {
+    // Mirrors `symbolProperty17.ts(2,5)` — when a symbol-named member
+    // (`[Symbol.iterator]: number;`) fails the symbol-index assignment
+    // check, the diagnostic must point at the property itself rather
+    // than the interface opening brace. Confirms the computed-key
+    // branch of `classOrInterfaceMemberNode` resolves the property
+    // node by stored member name (`Symbol.iterator`) for both
+    // `object_property` (class) and `interface_member` (interface)
+    // node shapes.
+    const s = try newSetup(
+        \\interface I {
+        \\    [Symbol.iterator]: number;
+        \\    [s: symbol]: string;
+        \\}
+    );
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+    var saw_2411 = false;
+    var saw_on_member = false;
+    for (s.checker.diagnostics.items) |diag| {
+        if (diag.code != TsCodes.property_not_assignable_to_index_type) continue;
+        if (std.mem.indexOf(u8, diag.message, "[Symbol.iterator]") == null) continue;
+        saw_2411 = true;
+        const node_kind = s.checker.hir.kindOf(diag.node);
+        if (node_kind == .object_property or node_kind == .interface_member) saw_on_member = true;
+    }
+    try T.expect(saw_2411);
+    try T.expect(saw_on_member);
 }
 
 test "checker: TS2411 preserves the original numeric key text" {
