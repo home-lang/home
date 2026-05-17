@@ -434,6 +434,9 @@ pub fn build(b: *std.Build) void {
     // Image processing package
     const image_pkg = createPackage(b, "packages/image/src/image.zig", target, optimize, zig_test_framework);
 
+    // Home Runtime (Phase 12 substrate — Bun source copy in progress)
+    const home_rt_pkg = createPackage(b, "packages/runtime/src/home_rt.zig", target, optimize, zig_test_framework);
+
     // Game development packages (order matters for dependencies)
     const game_assets_pkg = createPackage(b, "packages/game/src/assets.zig", target, optimize, zig_test_framework);
     game_assets_pkg.addImport("image", image_pkg);
@@ -934,6 +937,11 @@ pub fn build(b: *std.Build) void {
     const game_replay_tests = b.addTest(.{ .root_module = game_replay_pkg });
     const run_game_replay_tests = b.addRunArtifact(game_replay_tests);
     dependOnTest(test_step, &run_game_replay_tests.step, test_filter, "game_replay");
+
+    // Home Runtime substrate tests
+    const home_rt_tests = b.addTest(.{ .root_module = home_rt_pkg });
+    const run_home_rt_tests = b.addRunArtifact(home_rt_tests);
+    dependOnTest(test_step, &run_home_rt_tests.step, test_filter, "home_rt");
 
     // Modsign tests
     const modsign_tests = b.addTest(.{ .root_module = modsign_pkg });

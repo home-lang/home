@@ -164,12 +164,22 @@ fn printUsage() void {
         \\  api-diff <old> <new>
         \\                     Compare two .d.hm declaration files
         \\  size [path]        Show package/build size report
-        \\  run <file>         Execute an Home file directly
+        \\  run <file|script>  Execute an Home, JS, or TS file (or package.json script)
         \\  build <file>       Compile an Home file to a native binary
         \\  watch <file>       Watch file for changes and auto-recompile (hot reload)
-        \\  test / t [opts]    Run tests (use --help for more options)
+        \\  test / t [opts]    Run tests (auto-routes to JS runtime when package.json is present)
         \\  profile <file>     Profile memory allocations during compilation
         \\  package [opts]     Create distributable packages (--help for options)
+        \\
+        \\  add <pkg>          Add a dependency via Pantry
+        \\  install            Install dependencies via Pantry
+        \\  remove <pkg>       Remove a dependency via Pantry
+        \\  update [pkg]       Update dependencies via Pantry
+        \\  outdated           Show outdated dependencies via Pantry
+        \\  audit              Audit dependencies via Pantry
+        \\  x <pkg> [args]     Run a package binary without installing (homex)
+        \\  exec <pkg> [args]  Alias for `home x`
+        \\  create <template>  Bootstrap a new project from a template
         \\
         \\  {s}Package Management:{s}
         \\  pkg init           Initialize a new Home project with home.toml
@@ -1493,7 +1503,140 @@ fn docsCommand(allocator: std.mem.Allocator, args: []const [:0]const u8) !void {
     std.debug.print("{s}✓{s} Wrote {s} ({d} declarations)\n", .{ Color.Green.code(), Color.Reset.code(), out_path, rendered.count });
 }
 
+// ---- Phase 12 runtime delegation shim ---------------------------------
+// Until packages/runtime/ is fully populated with copied Bun source (see
+// docs/TS_PARITY_PLAN.md §12), the home CLI exposes the Bun-compatible
+// command surface (`home run app.ts`, `home test`, `home add`, `home x`,
+// …) by spawning the system `bun` or the Pantry CLI. Every delegation
+// site carries a TODO(phase-12-N) marker so progressive replacement is
+// mechanical as native implementations land.
+//
+// Resolution order: pantry-managed binaries first, then standard system
+// locations. PATH lookup is intentionally skipped to avoid pulling in
+// versions the user didn't install through Home/Pantry.
+
+fn spawnInteractive(argv: []const []const u8) !void {
+    var child = try std.process.spawn(g_io, .{
+        .argv = argv,
+        .stdin = .inherit,
+        .stdout = .inherit,
+        .stderr = .inherit,
+    });
+    const term = try child.wait(g_io);
+    switch (term) {
+        .exited => |code| if (code != 0) std.process.exit(code),
+        else => std.process.exit(1),
+    }
+}
+
+fn findBunBinary() ![]const u8 {
+    const candidates = [_][]const u8{
+        "/Users/chrisbreuer/.local/share/pantry/global/bin/bun",
+        "/usr/local/bin/bun",
+        "/opt/homebrew/bin/bun",
+    };
+    for (candidates) |c| {
+        Io.Dir.cwd().access(g_io, c, .{}) catch continue;
+        return c;
+    }
+    return error.BunNotFound;
+}
+
+fn findPantryBinary() ![]const u8 {
+    const candidates = [_][]const u8{
+        "/Users/chrisbreuer/.local/share/pantry/global/bin/pantry",
+        "/usr/local/bin/pantry",
+        "/opt/homebrew/bin/pantry",
+    };
+    for (candidates) |c| {
+        Io.Dir.cwd().access(g_io, c, .{}) catch continue;
+        return c;
+    }
+    return error.PantryNotFound;
+}
+
+fn fileExtIsJsLike(path: []const u8) bool {
+    const exts = [_][]const u8{ ".ts", ".tsx", ".js", ".jsx", ".mjs", ".cjs", ".mts", ".cts" };
+    for (exts) |ext| {
+        if (std.mem.endsWith(u8, path, ext)) return true;
+    }
+    return false;
+}
+
+fn looksLikePackageScriptName(name: []const u8) bool {
+    if (name.len == 0) return false;
+    for (name) |c| {
+        if (c == '/' or c == '\\') return false;
+    }
+    return true;
+}
+
+fn runJsLikeFile(allocator: std.mem.Allocator, file_path: []const u8, extra_args: []const [:0]const u8) !void {
+    // TODO(phase-12-2): Replace this delegation with the native Home runtime
+    // once `packages/runtime/src/jsc/` is populated.
+    const bun_path = findBunBinary() catch {
+        std.debug.print("{s}Error:{s} `home run {s}`: no native JS/TS runtime yet (Phase 12 in progress) and the system `bun` binary was not found in pantry/global paths.\n", .{ Color.Red.code(), Color.Reset.code(), file_path });
+        std.process.exit(1);
+    };
+
+    var argv: std.ArrayListUnmanaged([]const u8) = .empty;
+    defer argv.deinit(allocator);
+    try argv.append(allocator, bun_path);
+    try argv.append(allocator, "run");
+    try argv.append(allocator, file_path);
+    for (extra_args) |a| try argv.append(allocator, a);
+
+    try spawnInteractive(argv.items);
+}
+
+fn execBunCommand(allocator: std.mem.Allocator, bun_subcommand: []const u8, extra_args: []const [:0]const u8) !void {
+    // TODO(phase-12-8/12-10): Replace with copied-from-Bun command surface.
+    const bun_path = findBunBinary() catch {
+        std.debug.print("{s}Error:{s} `home {s}` needs the system `bun` binary while Phase 12 is in progress.\n", .{ Color.Red.code(), Color.Reset.code(), bun_subcommand });
+        std.process.exit(1);
+    };
+
+    var argv: std.ArrayListUnmanaged([]const u8) = .empty;
+    defer argv.deinit(allocator);
+    try argv.append(allocator, bun_path);
+    try argv.append(allocator, bun_subcommand);
+    for (extra_args) |a| try argv.append(allocator, a);
+
+    try spawnInteractive(argv.items);
+}
+
+fn execPantryCommand(allocator: std.mem.Allocator, pantry_subcommand: []const u8, extra_args: []const [:0]const u8) !void {
+    const pantry_path = findPantryBinary() catch {
+        std.debug.print("{s}Error:{s} `home {s}` requires the Pantry CLI (~/Code/Tools/pantry).\n", .{ Color.Red.code(), Color.Reset.code(), pantry_subcommand });
+        std.process.exit(1);
+    };
+
+    var argv: std.ArrayListUnmanaged([]const u8) = .empty;
+    defer argv.deinit(allocator);
+    try argv.append(allocator, pantry_path);
+    try argv.append(allocator, pantry_subcommand);
+    for (extra_args) |a| try argv.append(allocator, a);
+
+    try spawnInteractive(argv.items);
+}
+
 fn runCommand(allocator: std.mem.Allocator, file_path: []const u8) !void {
+    // Route JS / TS files through the runtime delegation shim (Phase 12).
+    if (fileExtIsJsLike(file_path)) {
+        return runJsLikeFile(allocator, file_path, &.{});
+    }
+
+    // Bun-style `home run <script>` for package.json scripts: if the
+    // arg doesn't resolve to a local file but looks like a bare name,
+    // try the JS runtime path so script lookup happens there.
+    Io.Dir.cwd().access(g_io, file_path, .{}) catch |access_err| {
+        if (access_err == error.FileNotFound and looksLikePackageScriptName(file_path)) {
+            return runJsLikeFile(allocator, file_path, &.{});
+        }
+        std.debug.print("{s}Error:{s} Failed to access '{s}': {}\n", .{ Color.Red.code(), Color.Reset.code(), file_path, access_err });
+        return access_err;
+    };
+
     // Read the file
     const source = Io.Dir.cwd().readFileAlloc(g_io, file_path, allocator, std.Io.Limit.unlimited) catch |err| {
         std.debug.print("{s}Error:{s} Failed to read file '{s}': {}\n", .{ Color.Red.code(), Color.Reset.code(), file_path, err });
@@ -2727,7 +2870,29 @@ const TestOptions = struct {
     package: ?[]const u8 = null,
 };
 
+fn isJsLikeTestProject() bool {
+    // Heuristic: presence of `package.json` in the cwd routes `home test`
+    // through the JS runtime so existing Bun test suites keep working.
+    // Home-native projects without package.json keep the Zig-backed runner.
+    Io.Dir.cwd().access(g_io, "package.json", .{}) catch return false;
+    return true;
+}
+
 fn testCommand(allocator: std.mem.Allocator, args: []const [:0]const u8) !void {
+    // Phase 12 routing: if the cwd looks like a JS/TS project, delegate
+    // `home test` to the bun-compatible runtime path. `--home` or `--zig`
+    // overrides forces the native Home/Zig runner.
+    if (isJsLikeTestProject()) {
+        var force_native = false;
+        for (args) |a| {
+            if (std.mem.eql(u8, a, "--home") or std.mem.eql(u8, a, "--zig")) {
+                force_native = true;
+                break;
+            }
+        }
+        if (!force_native) return execBunCommand(allocator, "test", args);
+    }
+
     // Parse arguments
     var options = TestOptions{};
     var path_arg: ?[]const u8 = null;
@@ -3107,6 +3272,45 @@ pub fn main(init: std.process.Init) !void {
         }
 
         try profileCommand(allocator, args[2]);
+        return;
+    }
+
+    // ---- Bun-compatible CLI surface (Phase 12 in progress) ----
+    // `home add`, `home install`, `home remove`, `home update` route to
+    // Pantry (Home's package manager + registry, lives at ~/Code/Tools/pantry).
+    if (std.mem.eql(u8, command, "add") or std.mem.eql(u8, command, "i")) {
+        try execPantryCommand(allocator, "add", args[2..]);
+        return;
+    }
+    if (std.mem.eql(u8, command, "install")) {
+        try execPantryCommand(allocator, "install", args[2..]);
+        return;
+    }
+    if (std.mem.eql(u8, command, "remove") or std.mem.eql(u8, command, "rm") or std.mem.eql(u8, command, "uninstall")) {
+        try execPantryCommand(allocator, "remove", args[2..]);
+        return;
+    }
+    if (std.mem.eql(u8, command, "update") or std.mem.eql(u8, command, "upgrade")) {
+        try execPantryCommand(allocator, "update", args[2..]);
+        return;
+    }
+    if (std.mem.eql(u8, command, "outdated")) {
+        try execPantryCommand(allocator, "outdated", args[2..]);
+        return;
+    }
+    if (std.mem.eql(u8, command, "audit")) {
+        try execPantryCommand(allocator, "audit", args[2..]);
+        return;
+    }
+    // `home x` / `home exec` — bunx-equivalent.
+    if (std.mem.eql(u8, command, "x") or std.mem.eql(u8, command, "exec")) {
+        // TODO(phase-12-10): replace with native homex (copied from Bun's src/cli/).
+        try execBunCommand(allocator, "x", args[2..]);
+        return;
+    }
+    // `home create` — bun create / npm init equivalent.
+    if (std.mem.eql(u8, command, "create")) {
+        try execBunCommand(allocator, "create", args[2..]);
         return;
     }
 
