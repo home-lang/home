@@ -16172,6 +16172,24 @@ pub const Checker = struct {
             if (scoped_virtual_relative) {
                 if (try self.virtualRelativeModuleHasNamedExport(node, spec, sp.imported)) continue;
                 const requested = self.string_interner.get(sp.imported);
+                // If the target module exists and contains a near-spelled
+                // export, prefer the TS2724 "Did you mean" form — matches
+                // tsc's `exportSpellingSuggestion.ts` baseline where the
+                // typo `assertNevar` resolves to `assertNever`.
+                if (try self.closestVirtualRelativeExportedName(node, spec, sp.imported)) |suggestion| {
+                    const suggested = self.string_interner.get(suggestion);
+                    const msg = try std.fmt.allocPrint(
+                        self.diag_arena.allocator(),
+                        "'\"{s}\"' has no exported member named '{s}'. Did you mean '{s}'?",
+                        .{ spec, requested, suggested },
+                    );
+                    try self.diagnostics.append(self.gpa, .{
+                        .node = spec_node,
+                        .code = TsCodes.no_exported_member_suggestion,
+                        .message = msg,
+                    });
+                    continue;
+                }
                 const msg = try std.fmt.allocPrint(
                     self.diag_arena.allocator(),
                     "Module '\"{s}\"' has no exported member '{s}'.",
@@ -16217,6 +16235,64 @@ pub const Checker = struct {
                 });
             }
         }
+    }
+
+    /// Pick the closest-spelled exported name in the relative virtual
+    /// module referenced by `spec`. Used to upgrade a bare TS2305
+    /// ("no exported member") into the TS2724 "Did you mean" form
+    /// that tsc prefers when a near match exists. Returns null if
+    /// the module isn't a virtual section or no suggestion clears
+    /// the spelling-distance threshold.
+    fn closestVirtualRelativeExportedName(
+        self: *Checker,
+        node: NodeId,
+        spec: []const u8,
+        typo_name: hir_mod.StringId,
+    ) CheckError!?hir_mod.StringId {
+        const from = self.virtualSectionFilenameForNode(node) orelse return null;
+        const resolved = try self.resolveVirtualRelativePath(from, spec);
+        defer self.gpa.free(resolved);
+        const root = self.rootBlockFor(node);
+        if (root == hir_mod.none_node_id or self.hir.kindOf(root) != .block_stmt) return null;
+        const typo = self.string_interner.get(typo_name);
+        var best_name: hir_mod.StringId = 0;
+        var best_dist: usize = std.math.maxInt(usize);
+        for (hir_mod.blockStmts(self.hir, root)) |raw| {
+            if (!self.virtualSectionMatchesResolvedModule(raw, resolved, spec)) continue;
+            if (self.hir.kindOf(raw) != .export_decl) continue;
+            const ex = hir_mod.exportOf(self.hir, raw);
+            // Re-exports via `export { x } from "..."` and bare
+            // `export { x }` re-projections — score each named slot.
+            for (hir_mod.exportNamed(self.hir, raw)) |export_spec| {
+                if (self.hir.kindOf(export_spec) != .import_specifier) continue;
+                const sp = hir_mod.importSpecifierOf(self.hir, export_spec);
+                const exported = self.exportSpecifierExportedName(export_spec, sp);
+                const cand = self.string_interner.get(exported);
+                const dist = levenshtein(typo, cand);
+                if (dist < best_dist) {
+                    best_dist = dist;
+                    best_name = exported;
+                }
+            }
+            // Inline `export function foo() {}` / `export const x = ...`
+            // forms — the decl's own name is the export.
+            const decl = self.unwrapExportDecl(raw);
+            if (ex.is_default) continue;
+            if (self.declarationName(decl)) |decl_name| {
+                const cand = self.string_interner.get(decl_name);
+                const dist = levenshtein(typo, cand);
+                if (dist < best_dist) {
+                    best_dist = dist;
+                    best_name = decl_name;
+                }
+            }
+        }
+        // Same `min(floor(len * 0.4), 4)` budget as
+        // `closestNonImportDeclarationName`; keeps suggestion gates
+        // aligned with tsc's `getSpellingSuggestion`.
+        const threshold: usize = @min((typo.len * 4) / 10, @as(usize, 4));
+        if (best_name != 0 and best_dist <= threshold and best_dist > 0) return best_name;
+        return null;
     }
 
     fn virtualRelativeModuleHasNamedExport(self: *Checker, node: NodeId, spec: []const u8, name: hir_mod.StringId) CheckError!bool {
@@ -33129,6 +33205,18 @@ pub const Checker = struct {
             return self.engine.isComparableTo(a, b) catch true;
         }
         if (af.is_object_type and bf.is_object_type) {
+            // Two object types whose only members are call /
+            // construct signatures (function-like values) always
+            // overlap at runtime — they're both `Function`-shaped
+            // and could be the same closure / constructor. tsc
+            // suppresses TS2367 in this case; mirrors fixtures
+            // `comparisonOperatorWithNoRelationshipObjects`
+            // `OnInstantiatedConstructorSignature.ts` and friends.
+            if (self.objectTypeIsCallOrConstructOnly(a) and
+                self.objectTypeIsCallOrConstructOnly(b))
+            {
+                return true;
+            }
             if (try self.objectTypesHaveIndependentOverlap(a, b, depth + 1)) return true;
         }
         if (self.isObjectLikeType(a) or self.isObjectLikeType(b)) {
@@ -33215,6 +33303,26 @@ pub const Checker = struct {
         }
         for (self.interner.objectMembers(t)) |member| {
             if (!member.is_optional) return false;
+        }
+        return true;
+    }
+
+    /// True when `t` is an object whose every member is a call
+    /// (`__call`) or construct (`__construct`) signature — i.e. the
+    /// type denotes a function value with no instance properties.
+    /// Used by `typesHaveComparableOverlapLimit` to suppress TS2367
+    /// between two callable/constructible shapes (tsc treats them as
+    /// runtime-overlapping Function-typed values).
+    fn objectTypeIsCallOrConstructOnly(self: *Checker, t: TypeId) bool {
+        if (t >= self.interner.pool.typeCount()) return false;
+        const f = self.interner.pool.flagsOf(t);
+        if (!f.is_object_type) return false;
+        const members = self.interner.objectMembers(t);
+        if (members.len == 0) return false;
+        const call_id = self.string_interner.intern("__call") catch return false;
+        const construct_id = self.string_interner.intern("__construct") catch return false;
+        for (members) |m| {
+            if (m.name != call_id and m.name != construct_id) return false;
         }
         return true;
     }
@@ -41619,6 +41727,20 @@ pub const Checker = struct {
         if (!no_implicit_any_off and self.nodeContainsIdentifier(source, id.name)) {
             has_self_reference = true;
         }
+        // Only the var-flavor variant pairs TDZ priors with TS2454.
+        // For `var v of v`, the hoisted `v` makes earlier references
+        // legally observe the same binding, so an unassigned prior
+        // is a real "used before being assigned" diagnostic. For the
+        // let/const flavors the inner declaration creates its own
+        // scope — prior outer-scope references can't see it (they
+        // are caught by TS2304 / TS2448 elsewhere). Mirrors
+        // `for-of7.ts` baseline where `v;` outside the loop is not
+        // a TS2454 against the inner `let v`.
+        if (self.hir.kindOf(target) == .var_decl) {
+            if (self.firstTopLevelReferenceBefore(for_node, id.name)) |ref| {
+                try self.reportUsedBeforeAssignmentSimple(ref, id.name);
+            }
+        }
         if (has_self_reference) {
             try self.reportForOfVarSelfReference(name_node, id.name);
         }
@@ -43730,6 +43852,37 @@ test "checker: virtual file export stars do not use single-source conflict heuri
     for (s.checker.diagnostics.items) |d| {
         try T.expect(d.code != TsCodes.export_star_conflict);
     }
+}
+
+test "checker: TS2652 merged default export anchors at declaration name" {
+    // Mirrors `defaultExportsCannotMerge01.ts`: the (line, col)
+    // tuple for both halves of the merge must point at the
+    // declaration identifier (`Decl`), not the leading `export`
+    // keyword that begins the statement. Without an explicit `pos`
+    // override, both diagnostics anchored at col 1 of the `export`
+    // line and missed the baseline. Only the value-creating
+    // namespace match fires — interface merges are erased at
+    // runtime and don't conflict with `export default`.
+    const s = try newSetup(
+        \\export default function Decl() {
+        \\    return 0;
+        \\}
+        \\export namespace Decl {
+        \\    export var x = 10;
+        \\}
+    );
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+    var found_name_anchor = false;
+    for (s.checker.diagnostics.items) |d| {
+        if (d.code != TsCodes.default_export_merge) continue;
+        // Both arms of the merge must set `pos` to the
+        // declaration name span — that's what distinguishes the
+        // (1,25) / (4,18) baseline from the (1,1) / (4,1) we
+        // emitted before the explicit anchor.
+        if (d.pos != null) found_name_anchor = true;
+    }
+    try T.expect(found_name_anchor);
 }
 
 test "checker: default exports are scoped by virtual filename sections" {
@@ -46238,6 +46391,24 @@ test "checker: TS2367 widens boolean literal when other side is symbol" {
         if (std.mem.indexOf(u8, d.message, "'symbol' and 'boolean'") != null) found = true;
     }
     try T.expect(found);
+}
+
+test "checker: TS2367 suppressed for two construct-signature object types" {
+    // Two `{ new(...): T }` shapes always overlap at runtime
+    // (both are function values), so `==` / `!=` between them
+    // must NOT raise TS2367. Mirrors
+    // `comparisonOperatorWithNoRelationshipObjectsOnInstantiated`
+    // `ConstructorSignature.ts` baseline (no TS2367 there).
+    const s = try newSetup(
+        \\declare var a: { new <T>(x: T): T };
+        \\declare var b: { new (x: string): number };
+        \\a == b;
+    );
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+    for (s.checker.diagnostics.items) |d| {
+        try T.expect(d.code != TsCodes.no_overlap_comparison);
+    }
 }
 
 test "checker: TS2469 relational op anchors at symbol-typed operand" {
@@ -50028,6 +50199,29 @@ test "checker: for-of var conflict TS2481 names the conflicting identifier" {
     try T.expect(found);
 }
 
+test "checker: for-of let target self-references emit TS7022" {
+    // Mirrors `for-of55.ts`: `for (let v of v)` shadows the outer
+    // `v` and the source expression references the inner declaration
+    // by TDZ — tsc emits TS7022 ("'v' implicitly has type 'any'…
+    // referenced directly or indirectly in its own initializer.")
+    // alongside the TS2448 used-before-declaration diagnostic. The
+    // self-reference walker dispatched only on `var_decl`, dropping
+    // the `let v of v` path silently.
+    const s = try newSetup(
+        \\let v = [1];
+        \\for (let v of v) {
+        \\    v;
+        \\}
+    );
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+    var found = false;
+    for (s.checker.diagnostics.items) |d| {
+        if (d.code == TsCodes.variable_self_reference_implicitly_any) found = true;
+    }
+    try T.expect(found);
+}
+
 test "checker: for-of binds the loop variable to the array's element type" {
     const s = try newSetup(
         \\function sum(xs: number[]): number {
@@ -51394,6 +51588,38 @@ test "checker: TS2724 short typo with far candidate is suppressed" {
     for (s.checker.diagnostics.items) |d| {
         try T.expect(d.code != TsCodes.no_exported_member_suggestion);
     }
+}
+
+test "checker: TS2724 suggests close-spelled relative virtual export" {
+    // Mirrors `exportSpellingSuggestion.ts`: importing the typo
+    // `assertNevar` from a sibling file that exports `assertNever`
+    // must yield TS2724 with the "Did you mean" suggestion form,
+    // not the bare TS2305. The wrapping in the message is
+    // `'"./a"'` to match the conformance baseline shape.
+    const s = try newSetup(
+        \\// @module: commonjs
+        \\// @target: es2015
+        \\// @filename: a.ts
+        \\export function assertNever(x: never, msg: string) {
+        \\    throw new Error("Unexpected " + msg);
+        \\}
+        \\
+        \\// @filename: b.ts
+        \\import { assertNevar } from "./a";
+    );
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+    var found = false;
+    for (s.checker.diagnostics.items) |d| {
+        if (d.code == TsCodes.no_exported_member_suggestion and
+            std.mem.indexOf(u8, d.message, "'\"./a\"'") != null and
+            std.mem.indexOf(u8, d.message, "'assertNevar'") != null and
+            std.mem.indexOf(u8, d.message, "Did you mean 'assertNever'") != null)
+        {
+            found = true;
+        }
+    }
+    try T.expect(found);
 }
 
 test "checker: arbitrary extension declaration import requires option" {

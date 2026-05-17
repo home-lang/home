@@ -89,6 +89,12 @@ pub const Parser = struct {
     source: []const u8,
     diagnostics: std.ArrayListUnmanaged(Diagnostic),
     pending_statements: std.ArrayListUnmanaged(NodeId),
+    /// Extra for-init declarators (`for (var i = 0, j = 10; ...)`)
+    /// staged here until the for-body has been parsed, then flushed
+    /// to `pending_statements`. Buffering here (instead of pending
+    /// directly) prevents the body's `parseStatement` from
+    /// re-consuming them as the for's body.
+    for_init_extras: std.ArrayListUnmanaged(NodeId),
     /// Active label scope stack. Each entry records the labeled
     /// statement's name plus the `function_depth` at the labeled
     /// declaration site, so `break LBL` / `continue LBL` can detect
@@ -181,6 +187,7 @@ pub const Parser = struct {
             .source = source,
             .diagnostics = .empty,
             .pending_statements = .empty,
+            .for_init_extras = .empty,
             .label_stack = .empty,
             .diag_arena = std.heap.ArenaAllocator.init(gpa),
             .ambient_depth = 0,
@@ -239,6 +246,7 @@ pub const Parser = struct {
         self.builder.deinit();
         self.diagnostics.deinit(self.gpa);
         self.pending_statements.deinit(self.gpa);
+        self.for_init_extras.deinit(self.gpa);
         self.label_stack.deinit(self.gpa);
         self.diag_arena.deinit();
     }
@@ -1586,6 +1594,11 @@ pub const Parser = struct {
 
     fn parseForStatement(self: *Parser) ParseError!NodeId {
         const start = self.advance(); // for
+        // Snapshot the for-init extras stack depth so nested
+        // for-loops inside our body can stage and flush their own
+        // extras without entangling ours. The bottom of the classic
+        // for branch pops only the slice above this base.
+        const for_init_extras_base = self.for_init_extras.items.len;
         // Optional `await` modifier — `for await (... of asyncIter)`.
         const is_await = self.match(.kw_await);
         _ = try self.expect(.open_paren, "'(' after 'for'");
@@ -1844,6 +1857,15 @@ pub const Parser = struct {
                 self.loop_switch_depth += 1;
                 defer self.loop_switch_depth -= 1;
                 const body = try self.parseNestedStatement();
+                // The comma loop staged excess declarators in
+                // `for_init_extras` (TS1188 declarations like
+                // `for (const a, { [b]: c } of …)`). They're not
+                // siblings of the for-of stmt — flushing them to
+                // pending would fire TS1182 / TS7005 the baselines
+                // don't expect. Drop them; the checker still walks
+                // them via `for_init_extras` if it needs to surface
+                // inner identifier diagnostics (TS2304 / TS2538).
+                self.for_init_extras.items.len = for_init_extras_base;
                 const end_pos = self.hir.spanOf(body).end;
                 if (kind_tok.kind == .kw_in) {
                     return try self.builder.addForIn(.{ .start = start.span.start, .end = end_pos }, init_node, source_expr, body);
@@ -1899,6 +1921,19 @@ pub const Parser = struct {
         self.loop_switch_depth += 1;
         defer self.loop_switch_depth -= 1;
         const body = try self.parseNestedStatement();
+        // Flush our extras into `pending_statements` so the enclosing
+        // block consumes them as siblings of this for-stmt. Use the
+        // base-index snapshot taken before the comma loop — nested
+        // for-loops inside `body` always cleared their own slice
+        // before returning, so the tail above the base is exclusively
+        // ours. (`for_init_extras_base` may be undefined when the
+        // for-stmt is the for-in / for-of variant, but those branches
+        // returned earlier and never reach this code path.)
+        if (self.for_init_extras.items.len > for_init_extras_base) {
+            const tail = self.for_init_extras.items[for_init_extras_base..];
+            try self.pending_statements.appendSlice(self.gpa, tail);
+            self.for_init_extras.items.len = for_init_extras_base;
+        }
         const end_pos = self.hir.spanOf(body).end;
         return try self.builder.addFor(.{ .start = start.span.start, .end = end_pos }, init_node, cond, update, body);
     }
@@ -10315,6 +10350,38 @@ test "parser: variable declaration list tolerates additional declarators" {
     try T.expectEqual(hir_mod.NodeKind.let_decl, s.hir.kindOf(stmts[0]));
     try T.expectEqual(hir_mod.NodeKind.let_decl, s.hir.kindOf(stmts[1]));
     try T.expectEqual(@as(usize, 0), s.parser.diagnostics.items.len);
+}
+
+test "parser: for-init multi-declarator hoists each binding to enclosing block" {
+    // `for (var i = 0, j = 10; i < j; i++, j--)` — the second
+    // declarator `j` previously parsed-and-discarded, so any
+    // reference to `j` inside the for header raised TS2304. Mirrors
+    // `commaOperatorOtherValidOperation.ts` baseline (clean run).
+    var s = try newTestSetup("for (var i = 0, j = 10; i < j; i++, j--) {}");
+    defer destroyTestSetup(s);
+    const root = try s.parser.parseSourceFile();
+    const stmts = hir_mod.blockStmts(&s.hir, root);
+    // The for-stmt plus the hoisted `j` var-decl should both sit
+    // at the enclosing block. (Statement order is `for_stmt` first,
+    // then the extra `j` var-decl drained from pending.)
+    try T.expect(stmts.len >= 2);
+    var saw_for = false;
+    var saw_extra_var = false;
+    for (stmts) |stmt| {
+        switch (s.hir.kindOf(stmt)) {
+            .for_stmt => saw_for = true,
+            .var_decl => {
+                const v = hir_mod.varDeclOf(&s.hir, stmt);
+                if (v.name != hir_mod.none_node_id and s.hir.kindOf(v.name) == .identifier) {
+                    const name = hir_mod.identifierOf(&s.hir, v.name).name;
+                    if (std.mem.eql(u8, s.parser.interner.get(name), "j")) saw_extra_var = true;
+                }
+            },
+            else => {},
+        }
+    }
+    try T.expect(saw_for);
+    try T.expect(saw_extra_var);
 }
 
 test "parser: regex var declaration stray close bracket recovers as var list" {
