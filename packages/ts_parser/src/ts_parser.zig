@@ -1003,7 +1003,13 @@ pub const Parser = struct {
                 // parse as ordinary declarations with an ambient bit.
                 const declare_tok = self.advance(); // declare
                 try self.reportModifierInBlock(declare_tok);
-                if (self.ambient_depth > 0) {
+                // TS1038: redundant `declare` inside an already
+                // ambient context. `.d.ts` files are themselves an
+                // ambient context, so nested `declare` is invalid
+                // even when `ambient_depth == 0` (the outer file
+                // itself is ambient). Mirrors upstream tsc on
+                // `parserModuleDeclaration4.d.ts(2,3)`.
+                if (self.isAmbientContextAt(declare_tok.span.start)) {
                     try self.reportCodeAt(declare_tok.span.start, declare_tok.line, 1038, "A 'declare' modifier cannot be used in an already ambient context.");
                 }
                 self.ambient_depth += 1;
@@ -2078,6 +2084,15 @@ pub const Parser = struct {
                 "Function implementation is missing or not immediately following the declaration.",
             );
         } else if (self.peek().kind == .open_brace) {
+            // TS1183: An implementation body for a `function` in an
+            // ambient context (`.d.ts` or inside `declare namespace …`)
+            // is not allowed. Anchored at the opening `{` to match
+            // upstream tsc on `parserFunctionDeclaration2.d.ts(1,14)`
+            // / `parserFunctionDeclaration2.ts(1,24)`.
+            const open_brace_tok = self.peek();
+            if (self.isAmbientContextAt(open_brace_tok.span.start)) {
+                try self.reportCodeAt(open_brace_tok.span.start, open_brace_tok.line, 1183, "An implementation cannot be declared in ambient contexts.");
+            }
             self.function_depth += 1;
             self.new_target_depth += 1;
             defer self.function_depth -= 1;
@@ -14983,4 +14998,20 @@ test "parser: rest parameter with initializer reports TS1048 at the parameter na
         if (d.code == 1048 and d.pos == expected_pos) saw_ts1048 = true;
     }
     try T.expect(saw_ts1048);
+}
+
+test "parser: function body in ambient declare reports TS1183 at open brace" {
+    // `declare function Foo() {}` — the `{` opens an implementation
+    // body inside an ambient context. Mirrors upstream tsc on
+    // `parserFunctionDeclaration2.ts(1,24)`.
+    const src = "declare function Foo() {}";
+    var s = try newTestSetup(src);
+    defer destroyTestSetup(s);
+    _ = s.parser.parseSourceFile() catch {};
+    var saw_ts1183 = false;
+    const expected_pos: u32 = @intCast(std.mem.indexOf(u8, src, "{").?);
+    for (s.parser.diagnostics.items) |d| {
+        if (d.code == 1183 and d.pos == expected_pos) saw_ts1183 = true;
+    }
+    try T.expect(saw_ts1183);
 }
