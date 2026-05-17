@@ -105,6 +105,38 @@ pub const safety = struct {
 // WASM-target opaque stubs. Mirrors Bun's `jsc_stub` namespace exactly.
 pub const jsc_stub = @import("jsc_stub.zig");
 
+// ---- src/sql/ ----------------------------------------------------------
+// MySQL + Postgres value types, status enums, protocol type tags. Pure
+// data — the wire-protocol encoders, statement runtime, and JS surface
+// land in Phase 12.5 (Web standards + Home.SQL).
+pub const sql = struct {
+    pub const shared = struct {
+        pub const ConnectionFlags = @import("sql/shared/ConnectionFlags.zig").ConnectionFlags;
+    };
+    pub const mysql = struct {
+        pub const SSLMode = @import("sql/mysql/SSLMode.zig").SSLMode;
+        pub const ConnectionState = @import("sql/mysql/ConnectionState.zig").ConnectionState;
+        pub const TLSStatus = @import("sql/mysql/TLSStatus.zig").TLSStatus;
+        pub const QueryStatus = @import("sql/mysql/QueryStatus.zig").Status;
+        pub const protocol = struct {
+            pub const PacketType = @import("sql/mysql/protocol/PacketType.zig").PacketType;
+        };
+    };
+    pub const postgres = struct {
+        pub const SSLMode = @import("sql/postgres/SSLMode.zig").SSLMode;
+        pub const Status = @import("sql/postgres/Status.zig").Status;
+        pub const TLSStatus = @import("sql/postgres/TLSStatus.zig").TLSStatus;
+        pub const types = struct {
+            pub const int_types = @import("sql/postgres/types/int_types.zig");
+        };
+        pub const protocol = struct {
+            pub const TransactionStatusIndicator = @import("sql/postgres/protocol/TransactionStatusIndicator.zig").TransactionStatusIndicator;
+            pub const PortalOrPreparedStatement = @import("sql/postgres/protocol/PortalOrPreparedStatement.zig").PortalOrPreparedStatement;
+            pub const zHelpers = @import("sql/postgres/protocol/zHelpers.zig");
+        };
+    };
+};
+
 test "home_rt: substrate compiles" {
     try std.testing.expectEqualStrings(
         "fd0b6f1a271fca0b8124b69f230b100f4d636af6",
@@ -156,6 +188,35 @@ test {
     _ = tty;
     _ = safety;
     _ = jsc_stub;
+    _ = sql;
+}
+
+test "home_rt.sql.postgres.types.int_types.Int32 encodes big-endian" {
+    const bytes = sql.postgres.types.int_types.Int32(@as(u32, 0x0a0b0c0d));
+    try std.testing.expectEqualSlices(u8, &.{ 0x0a, 0x0b, 0x0c, 0x0d }, &bytes);
+}
+
+test "home_rt.sql.mysql.QueryStatus.isRunning identifies in-flight states" {
+    try std.testing.expect(sql.mysql.QueryStatus.binding.isRunning());
+    try std.testing.expect(sql.mysql.QueryStatus.running.isRunning());
+    try std.testing.expect(sql.mysql.QueryStatus.partial_response.isRunning());
+    try std.testing.expect(!sql.mysql.QueryStatus.pending.isRunning());
+    try std.testing.expect(!sql.mysql.QueryStatus.success.isRunning());
+}
+
+test "home_rt.sql.postgres.protocol.zHelpers.zCount adds NUL byte" {
+    try std.testing.expectEqual(@as(usize, 0), sql.postgres.protocol.zHelpers.zCount(""));
+    try std.testing.expectEqual(@as(usize, 5), sql.postgres.protocol.zHelpers.zCount("home"));
+}
+
+test "home_rt.sql.postgres.protocol.PortalOrPreparedStatement tags correctly" {
+    const Por = sql.postgres.protocol.PortalOrPreparedStatement;
+    const p: Por = .{ .portal = "p1" };
+    const ps: Por = .{ .prepared_statement = "s1" };
+    try std.testing.expectEqual(@as(u8, 'P'), p.tag());
+    try std.testing.expectEqual(@as(u8, 'S'), ps.tag());
+    try std.testing.expectEqualStrings("p1", p.slice());
+    try std.testing.expectEqualStrings("s1", ps.slice());
 }
 
 test "home_rt.jsc enums round-trip their tag values" {
