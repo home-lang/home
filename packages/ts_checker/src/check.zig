@@ -16477,13 +16477,16 @@ pub const Checker = struct {
                     continue;
                 }
             }
-            if (parent_number_idx != types.Primitive.none and child_string_idx != types.Primitive.none) {
-                const type_ok = try self.heritageAssignableDeep(child_string_idx, parent_number_idx);
-                if (!type_ok) {
-                    try self.reportInterfaceExtendsIndexMismatch(node);
-                    continue;
-                }
-            }
+            // The historical cross-check between the child's string
+            // indexer and the parent's number indexer (asserting that
+            // `child_string_idx` is assignable to `parent_number_idx`)
+            // does not mirror tsc and produces spurious TS2430 on
+            // fixtures like `interfaceWithStringIndexerHidingBaseTypeIndexer2.ts`.
+            // tsc enforces the "number-index value is a subtype of
+            // string-index value" rule on the *derived* shape (handled
+            // separately by the number-vs-string compatibility check
+            // farther down), not as a parent-vs-child cross-compare,
+            // so the cross-check is omitted here.
             const parent_symbol_idx = self.interner.objectSymbolIndex(parent_t);
             if (parent_symbol_idx != types.Primitive.none and child_symbol_idx != types.Primitive.none) {
                 const type_ok = try self.heritageAssignableDeep(child_symbol_idx, parent_symbol_idx);
@@ -16547,7 +16550,7 @@ pub const Checker = struct {
                     // references) never strand a half-formatted message.
                     // Pins `interfaceThatHidesBaseProperty2.ts(5,11)` and
                     // `interfaceWithMultipleBaseTypes2.ts(17,11)`.
-                    const iface_name_opt: ?hir_mod.StringId = if (self.hir.kindOf(node) == .interface_decl)
+                    const iface_name_opt: ?NodeId = if (self.hir.kindOf(node) == .interface_decl)
                         hir_mod.interfaceOf(self.hir, node).name
                     else
                         null;
@@ -60853,6 +60856,32 @@ test "checker: TS2430 names derived interface and base in prose" {
         }
     }
     try T.expect(saw_named >= 1);
+}
+
+test "checker: TS2430 suppresses spurious child-string vs parent-number cross-check" {
+    // Pins `interfaceWithStringIndexerHidingBaseTypeIndexer2.ts(8,1)`:
+    // when a derived interface adds a string indexer while inheriting a
+    // number indexer from its base, the parent-vs-child cross-comparison
+    // (child string assignable to parent number) must NOT run. tsc only
+    // enforces same-kind indexer assignability between parent and child;
+    // the number-vs-string subtype rule on the derived shape is checked
+    // separately on the merged type, not as a cross-direction
+    // parent/child compare. The pre-fix code raised a spurious TS2430
+    // here.
+    const s = try newSetup(
+        \\interface Base { [x: number]: { a: number; b: number }; x: { a: number; b: number; }; }
+        \\interface Derived extends Base { [x: string]: { a: number }; y: { a: number; }; }
+    );
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+    var saw_cross_2430: u32 = 0;
+    for (s.checker.diagnostics.items) |d| {
+        if (d.code != TsCodes.interface_incorrectly_extends) continue;
+        if (std.mem.indexOf(u8, d.message, "index signatures are incompatible") != null) {
+            saw_cross_2430 += 1;
+        }
+    }
+    try T.expectEqual(@as(u32, 0), saw_cross_2430);
 }
 
 test "checker: TS2411 renders inline object types for property and index" {
