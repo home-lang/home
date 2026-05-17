@@ -929,6 +929,10 @@ pub const Checker = struct {
     /// implementation, so every signature remains visible at call
     /// sites.
     overload_has_implementation: std.AutoHashMapUnmanaged(hir_mod.StringId, void),
+    /// Parallel to `overloads` — the decl `NodeId` for each entry,
+    /// so syntactic arity checks (TS2394) can re-walk the parameter
+    /// list and anchor diagnostics at the right span.
+    overload_decls: std.AutoHashMapUnmanaged(hir_mod.StringId, std.ArrayListUnmanaged(NodeId)),
     /// Auto-inferred variance for type-parameter TypeIds whose
     /// declaration site had no explicit `in` / `out` modifier.
     /// Populated by `checkFnSignatureOnly` and `checkTypeAliasDecl`
@@ -1135,6 +1139,7 @@ pub const Checker = struct {
             .builtin_object_names = .empty,
             .overloads = .empty,
             .overload_has_implementation = .empty,
+            .overload_decls = .empty,
             .inferred_variance = .empty,
             .rest_signatures = .empty,
             .signature_min_args = .empty,
@@ -1289,6 +1294,9 @@ pub const Checker = struct {
         while (ov_it.next()) |list| list.deinit(self.gpa);
         self.overloads.deinit(self.gpa);
         self.overload_has_implementation.deinit(self.gpa);
+        var od_it = self.overload_decls.valueIterator();
+        while (od_it.next()) |list| list.deinit(self.gpa);
+        self.overload_decls.deinit(self.gpa);
         self.inferred_variance.deinit(self.gpa);
         self.rest_signatures.deinit(self.gpa);
         self.signature_min_args.deinit(self.gpa);
@@ -3281,11 +3289,64 @@ pub const Checker = struct {
         if (overload_list.items.len <= 1 or !self.overload_has_implementation.contains(name)) return;
         const impl_sig = self.hir.typeOf(node);
         if (impl_sig == types.Primitive.none) return;
+        // Syntactic arity check: if the impl requires more parameters
+        // than the overload's maximum, the overload is unreachable
+        // through the impl. Mirrors `parserParameterList15.ts(1,10)`.
+        // We anchor at the impl decl (matching tsc's TS2394 placement).
+        const impl_required = self.syntacticRequiredParamCount(node);
+        const overload_nodes = self.overload_decls.get(name);
+        if (overload_nodes) |list| {
+            for (list.items) |ovl_node| {
+                if (ovl_node == node) continue;
+                const ovl_max_opt = self.syntacticMaxParamCount(ovl_node);
+                if (ovl_max_opt) |ovl_max| {
+                    if (impl_required > ovl_max) {
+                        try self.report(ovl_node, TsCodes.overload_signature_not_compatible, "This overload signature is not compatible with its implementation signature.");
+                        return;
+                    }
+                }
+            }
+        }
         for (overload_list.items[0 .. overload_list.items.len - 1]) |overload_sig| {
             if (try self.overloadSignatureCompatibleWithImplementation(overload_sig, impl_sig)) continue;
             try self.report(node, TsCodes.overload_signature_not_compatible, "This overload signature is not compatible with its implementation signature.");
             return;
         }
+    }
+
+    /// Count the syntactic required parameters on a `fn_decl` /
+    /// `fn_expr` / `arrow_fn` — i.e. params without `?:`, `= default`,
+    /// or `...rest`. This mirrors tsc's overload-vs-impl arity
+    /// comparison, which is purely syntactic and ignores type-omittable
+    /// rules (untyped `(a, b)` counts as 2 required, not 0).
+    fn syntacticRequiredParamCount(self: *Checker, fn_node: NodeId) usize {
+        const params = hir_mod.fnParams(self.hir, fn_node);
+        var count: usize = 0;
+        for (params) |p| {
+            if (self.hir.kindOf(p) != .parameter) {
+                count += 1;
+                continue;
+            }
+            const pp = hir_mod.parameterOf(self.hir, p);
+            if (pp.flags.is_optional or pp.flags.is_rest) continue;
+            if (pp.default_value != hir_mod.none_node_id) continue;
+            count += 1;
+        }
+        return count;
+    }
+
+    /// Syntactic max-param count: total params minus any trailing rest
+    /// element (rest accepts variadic, so the caller-visible max is
+    /// effectively unbounded, but for overload-vs-impl we treat rest
+    /// as no upper-bound). Returns `null` when the signature has a
+    /// rest parameter (unbounded max), otherwise the param count.
+    fn syntacticMaxParamCount(self: *Checker, fn_node: NodeId) ?usize {
+        const params = hir_mod.fnParams(self.hir, fn_node);
+        for (params) |p| {
+            if (self.hir.kindOf(p) != .parameter) continue;
+            if (hir_mod.parameterOf(self.hir, p).flags.is_rest) return null;
+        }
+        return params.len;
     }
 
     fn overloadSignatureCompatibleWithImplementation(self: *Checker, overload_sig: TypeId, impl_sig: TypeId) CheckError!bool {
@@ -9339,14 +9400,18 @@ pub const Checker = struct {
             const has_body = f.body != hir_mod.none_node_id;
             const gop = try self.overloads.getOrPut(self.gpa, fn_name);
             if (!gop.found_existing) gop.value_ptr.* = .empty;
+            const dop = try self.overload_decls.getOrPut(self.gpa, fn_name);
+            if (!dop.found_existing) dop.value_ptr.* = .empty;
             if (!has_body) {
                 try gop.value_ptr.*.append(self.gpa, sig);
+                try dop.value_ptr.*.append(self.gpa, node);
             } else {
                 // Implementation signature: only append if there
                 // are existing overloads — a single-decl function
                 // doesn't need overload resolution.
                 if (gop.value_ptr.*.items.len > 0) {
                     try gop.value_ptr.*.append(self.gpa, sig);
+                    try dop.value_ptr.*.append(self.gpa, node);
                     try self.overload_has_implementation.put(self.gpa, fn_name, {});
                 }
             }
@@ -10201,6 +10266,12 @@ pub const Checker = struct {
         // in `ctor_sig` separately.
         var ctor_overload_sigs: std.ArrayListUnmanaged(TypeId) = .empty;
         defer ctor_overload_sigs.deinit(self.gpa);
+        // Parallel to `ctor_overload_sigs` — the bodyless ctor decl
+        // node for each overload, so the §6.A TS2394 overload-vs-impl
+        // compatibility check can anchor at the right source position.
+        var ctor_overload_nodes: std.ArrayListUnmanaged(NodeId) = .empty;
+        defer ctor_overload_nodes.deinit(self.gpa);
+        var ctor_impl_node: NodeId = hir_mod.none_node_id;
         // Constructor overload tracking. tsc fires TS2390 (Constructor
         // implementation is missing) when one or more `constructor()`
         // signatures appear without a body and there's no concrete
@@ -10361,8 +10432,10 @@ pub const Checker = struct {
                             // any matching overload (see
                             // `constructSignaturesWithOverloads.ts(10,1)`).
                             try ctor_overload_sigs.append(self.gpa, sig);
+                            try ctor_overload_nodes.append(self.gpa, m);
                         } else {
                             ctor_impl_count += 1;
+                            ctor_impl_node = m;
                         }
                         const ctor_params = hir_mod.fnParams(self.hir, m);
                         for (ctor_params) |param_node| {
@@ -10633,7 +10706,37 @@ pub const Checker = struct {
                     const is_visible_overload_implementation = fn_p.body != hir_mod.none_node_id and
                         overload_info_before != null and
                         overload_info_before.?.bodyless_count > 0;
-                    if (is_visible_overload_implementation) continue;
+                    if (is_visible_overload_implementation) {
+                        // §6.A TS2394 — when an impl arrives for an
+                        // overload group, ensure the impl is reachable
+                        // from each bodyless overload's max-arg count.
+                        // Mirrors `parserParameterList16.ts(2,4)`
+                        // baseline. Re-walk the class members up to
+                        // this point and emit at the offending overload
+                        // signature node.
+                        const impl_required = self.syntacticRequiredParamCount(m);
+                        for (members) |earlier| {
+                            if (earlier == m) break;
+                            if (self.hir.kindOf(earlier) != .fn_decl and self.hir.kindOf(earlier) != .fn_expr and self.hir.kindOf(earlier) != .arrow_fn) continue;
+                            const earlier_fn = hir_mod.fnDeclOf(self.hir, earlier);
+                            if (earlier_fn.body != hir_mod.none_node_id) continue;
+                            if (earlier_fn.flags.is_static != fn_p.flags.is_static) continue;
+                            // Same name?
+                            const earlier_name_opt = if (self.nodeIsBracketedComputedName(earlier_fn.name) or self.nodeIsBracketedComputedName(earlier) or self.memberSourceLooksComputed(earlier))
+                                try self.classMemberNameFromPropertyKey(earlier_fn.name, true)
+                            else
+                                try self.classMemberNameFromFunctionName(earlier_fn.name);
+                            if (earlier_name_opt == null) continue;
+                            if (earlier_name_opt.? != member_name) continue;
+                            const ovl_max_opt = self.syntacticMaxParamCount(earlier);
+                            if (ovl_max_opt) |ovl_max| {
+                                if (impl_required > ovl_max) {
+                                    try self.report(earlier, TsCodes.overload_signature_not_compatible, "This overload signature is not compatible with its implementation signature.");
+                                }
+                            }
+                        }
+                        continue;
+                    }
                     const method_member: types.ObjectMember = .{
                         .name = member_name,
                         .type = sig,
@@ -11019,6 +11122,32 @@ pub const Checker = struct {
             !self.virtualSectionIsDeclarationFile(node))
         {
             try self.report(ctor_first_bodyless, TsCodes.constructor_implementation_missing, "Constructor implementation is missing.");
+        }
+        // §6.A TS2394 — bodyless constructor overloads must be
+        // compatible with the implementation. Mirrors
+        // `parserClassDeclaration12.ts(2,4)` baseline. The free-function
+        // overload check at `checkFunctionOverloadCompatibilityAfterBody`
+        // skips constructors; this branch covers them.
+        if (ctor_impl_count > 0 and ctor_overload_sigs.items.len > 0 and
+            ctor_impl_node != hir_mod.none_node_id and
+            !self.classHasLeadingDeclare(node) and
+            !self.virtualSectionIsDeclarationFile(node))
+        {
+            const impl_required = self.syntacticRequiredParamCount(ctor_impl_node);
+            for (ctor_overload_sigs.items, ctor_overload_nodes.items) |ovl_sig, ovl_node| {
+                // Syntactic arity: impl must be reachable with each
+                // overload's max-arg count.
+                const ovl_max_opt = self.syntacticMaxParamCount(ovl_node);
+                const arity_bad = if (ovl_max_opt) |ovl_max| (impl_required > ovl_max) else false;
+                if (arity_bad) {
+                    try self.report(ovl_node, TsCodes.overload_signature_not_compatible, "This overload signature is not compatible with its implementation signature.");
+                    continue;
+                }
+                if (try self.overloadSignatureCompatibleWithImplementation(ovl_sig, ctor_sig)) continue;
+                // Anchor at the overload ctor decl itself; its span
+                // starts at the `constructor` keyword (matching tsc).
+                try self.report(ovl_node, TsCodes.overload_signature_not_compatible, "This overload signature is not compatible with its implementation signature.");
+            }
         }
         try self.reportMissingOverrideForUnknownLocalBase(node, members, parent_instance_t);
 
@@ -34199,7 +34328,16 @@ pub const Checker = struct {
                     // grammar error regardless of an explicit "use
                     // strict" directive. TS2703 still fires below
                     // because an identifier is not a property reference.
-                    try self.report(u.operand, TsCodes.delete_identifier_strict_mode, "'delete' cannot be called on an identifier in strict mode.");
+                    // `this` is parsed as an identifier in our HIR but
+                    // is a reserved keyword, not a variable binding;
+                    // upstream restricts TS1102 to real identifiers and
+                    // only emits TS2703 for `delete this`. Mirrors
+                    // `parserStrictMode16.ts(2,8)` baseline.
+                    const ident_name = hir_mod.identifierOf(self.hir, u.operand).name;
+                    const is_this_keyword = std.mem.eql(u8, self.string_interner.get(ident_name), "this");
+                    if (!is_this_keyword) {
+                        try self.report(u.operand, TsCodes.delete_identifier_strict_mode, "'delete' cannot be called on an identifier in strict mode.");
+                    }
                 }
                 if (operand_kind != .member_access and operand_kind != .element_access) {
                     try self.report(u.operand, TsCodes.delete_operand_property_reference, "The operand of a 'delete' operator must be a property reference.");
@@ -47206,6 +47344,23 @@ test "checker: delete on property access does not emit TS1102" {
     }
 }
 
+test "checker: delete this does not emit TS1102" {
+    // `this` is a reserved keyword, not a real identifier binding —
+    // upstream emits only TS2703 for `delete this`, never TS1102.
+    // Mirrors `parserStrictMode16.ts(2,8)` baseline.
+    const s = try newSetup("\"use strict\"; delete this;");
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+    var found_1102 = false;
+    var found_2703 = false;
+    for (s.checker.diagnostics.items) |d| {
+        if (d.code == TsCodes.delete_identifier_strict_mode) found_1102 = true;
+        if (d.code == TsCodes.delete_operand_property_reference) found_2703 = true;
+    }
+    try T.expect(!found_1102);
+    try T.expect(found_2703);
+}
+
 test "checker: TS2353 fires on `||` LHS object literal against contextual type" {
     // `var r: T = { extra: ... } || { ... }` — the LHS literal flows
     // into the declared type and the excess-property check must walk
@@ -48437,6 +48592,59 @@ test "checker: overload implementation compatibility emits TS2394" {
         \\function f(x: string): number;
         \\function f(x: string): void {
         \\  return;
+        \\}
+    );
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+    var found = false;
+    for (s.checker.diagnostics.items) |d| {
+        if (d.code == TsCodes.overload_signature_not_compatible) found = true;
+    }
+    try T.expect(found);
+}
+
+test "checker: TS2394 fires when impl requires more args than overload max" {
+    // Impl `(a, b)` requires 2 args; overload `(a = 4)` accepts 0-1.
+    // Per upstream, the impl is unreachable through the overload —
+    // mirrors `parserParameterList15.ts(1,10)` baseline.
+    const s = try newSetup(
+        \\function foo(a = 4);
+        \\function foo(a, b) {}
+    );
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+    var found = false;
+    for (s.checker.diagnostics.items) |d| {
+        if (d.code == TsCodes.overload_signature_not_compatible) found = true;
+    }
+    try T.expect(found);
+}
+
+test "checker: TS2394 fires for constructor overload incompatible with impl" {
+    // `constructor()` overload — 0 args; impl `constructor(a)` — 1 required.
+    // Mirrors `parserClassDeclaration12.ts(2,4)` baseline.
+    const s = try newSetup(
+        \\class C {
+        \\   constructor();
+        \\   constructor(a) { }
+        \\}
+    );
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+    var found = false;
+    for (s.checker.diagnostics.items) |d| {
+        if (d.code == TsCodes.overload_signature_not_compatible) found = true;
+    }
+    try T.expect(found);
+}
+
+test "checker: TS2394 fires for class method overload incompatible with impl" {
+    // `foo(a = 4)` overload — accepts 0-1 args; impl `foo(a, b)` requires 2.
+    // Mirrors `parserParameterList16.ts(2,4)` baseline.
+    const s = try newSetup(
+        \\class C {
+        \\   foo(a = 4);
+        \\   foo(a, b) { }
         \\}
     );
     defer destroySetup(s);

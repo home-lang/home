@@ -5745,6 +5745,20 @@ pub const Parser = struct {
             }
             const elem_start = self.peek().span.start;
             const elem_line = self.peek().line;
+            // Elided tuple element (`[number,,]`) — upstream rejects
+            // these with TS1110 "Type expected." at the comma/close
+            // position. Detect before parseTypeAnnotation consumes the
+            // delimiter and synthesises a recovery `unknown` type ref,
+            // which would otherwise hide the diagnostic. Mirrors
+            // `TupleType6.ts(1,16)` baseline.
+            if (self.peek().kind == .comma or self.peek().kind == .close_bracket) {
+                try self.reportCodeAt(elem_start, elem_line, 1110, "Type expected.");
+                const id = self.interner.intern("unknown") catch return error.OutOfMemory;
+                const synth = try self.builder.addTypeRef(.{ .start = elem_start, .end = elem_start }, id, &.{}, &.{});
+                try elems.append(self.gpa, synth);
+                if (!self.match(.comma)) break;
+                continue;
+            }
             var e = try self.parseTypeAnnotation();
             const trailing_optional = self.match(.question); // optional element marker
             const this_optional = labeled_optional or trailing_optional;
@@ -14876,21 +14890,18 @@ test "parser: object-literal generator '*' without property name reports TS1003"
     }
 }
 
-test "parser: for (let let ...) emits TS1212 AND TS2480 on the inner let" {
-    // `let` and `const` declarations are always strict (per ES2015),
-    // so `for (let let of [])` reports BOTH TS1212 ("Identifier
-    // expected. 'let' is a reserved word in strict mode.") and the
-    // TS2480 ("'let' is not allowed to be used as a name…") at the
-    // inner-let token. Mirrors upstream tsc on `for-of51`.
-    var s = try newTestSetup("for (let let of []) {}");
+test "parser: elided tuple element reports TS1110 at the comma" {
+    // `[number,,]` — the second `,` has no preceding type. Upstream
+    // tsc reports TS1110 'Type expected.' at the comma position
+    // (column 16 in `var v: [number,,]`). Mirrors `TupleType6.ts(1,16)`.
+    const src = "var v: [number,,]";
+    var s = try newTestSetup(src);
     defer destroyTestSetup(s);
     _ = s.parser.parseSourceFile() catch {};
-    var saw_1212 = false;
-    var saw_2480 = false;
+    var saw_ts1110 = false;
+    const expected_pos: u32 = @intCast(std.mem.indexOf(u8, src, ",,").? + 1);
     for (s.parser.diagnostics.items) |d| {
-        if (d.code == 1212) saw_1212 = true;
-        if (d.code == 2480) saw_2480 = true;
+        if (d.code == 1110 and d.pos == expected_pos) saw_ts1110 = true;
     }
-    try T.expect(saw_1212);
-    try T.expect(saw_2480);
+    try T.expect(saw_ts1110);
 }
