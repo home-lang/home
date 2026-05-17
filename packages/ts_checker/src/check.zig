@@ -226,6 +226,8 @@ pub const TsCodes = struct {
     pub const import_assignment_es_module: u32 = 1202;
     pub const await_reserved_top_level_module: u32 = 1262;
     pub const top_level_await_target_module: u32 = 1378;
+    pub const for_await_only_in_async: u32 = 1103;
+    pub const for_await_script_not_module: u32 = 1431;
     pub const for_await_target_module: u32 = 1432;
     pub const top_level_await_using_target_module: u32 = 2854;
     pub const multiple_default_exports: u32 = 2528;
@@ -1050,6 +1052,7 @@ pub const Checker = struct {
     source: ?[]const u8 = null,
     source_has_virtual_sections: bool = false,
     check_js_enabled: bool = false,
+    target_es5_baseline: bool = false,
     /// True when the entire compilation unit is a `.d.ts` /
     /// `.d.mts` / `.d.cts` declaration file (set from outside via
     /// `setIsDeclarationFile`). Used by `virtualSectionIsDeclaration
@@ -1209,6 +1212,10 @@ pub const Checker = struct {
 
     pub fn setCheckJsEnabled(self: *Checker, enabled: bool) void {
         self.check_js_enabled = enabled;
+    }
+
+    pub fn setTargetEs5Baseline(self: *Checker, enabled: bool) void {
+        self.target_es5_baseline = enabled;
     }
 
     /// Mark the whole compilation unit as a declaration file
@@ -1802,8 +1809,8 @@ pub const Checker = struct {
                 // `internArrayType` exposes it). For unknown
                 // sources we fall through to `any`.
                 const fr = hir_mod.forInOf(self.hir, node);
-                if (fr.is_await and self.sourceTargetDisallowsTopLevelAwait() and !self.nodeIsInsideFunctionLike(node)) {
-                    try self.report(node, TsCodes.for_await_target_module, "'for await' loops are only allowed within async functions and at the top levels of modules when the target supports async iteration.");
+                if (fr.is_await) {
+                    try self.checkForAwaitContextDiagnostics(node);
                 }
                 const src_t = try self.checkExpression(fr.source);
                 try self.checkForOfTarget(fr.target);
@@ -5339,6 +5346,48 @@ pub const Checker = struct {
             self.nodeHasAncestorKind(node, .arrow_fn);
     }
 
+    fn enclosingFunctionLike(self: *Checker, node: NodeId) ?NodeId {
+        var cur = self.hir.parentOf(node);
+        while (cur != hir_mod.none_node_id) : (cur = self.hir.parentOf(cur)) {
+            switch (self.hir.kindOf(cur)) {
+                .fn_decl, .fn_expr, .arrow_fn => return cur,
+                else => {},
+            }
+        }
+        return null;
+    }
+
+    fn forAwaitKeywordPos(self: *Checker, node: NodeId) ?u32 {
+        const src = self.source orelse return null;
+        const sp = self.hir.spanOf(node);
+        if (sp.start >= src.len) return null;
+        var i: usize = sp.start;
+        if (i + 3 > src.len or !std.mem.eql(u8, src[i .. i + 3], "for")) return null;
+        i += 3;
+        while (i < src.len and (src[i] == ' ' or src[i] == '\t' or src[i] == '\r' or src[i] == '\n')) : (i += 1) {}
+        if (i + "await".len <= src.len and std.mem.eql(u8, src[i .. i + "await".len], "await")) {
+            return @intCast(i);
+        }
+        return null;
+    }
+
+    fn checkForAwaitContextDiagnostics(self: *Checker, node: NodeId) CheckError!void {
+        const await_pos = self.forAwaitKeywordPos(node);
+        if (self.enclosingFunctionLike(node)) |fn_node| {
+            const fp = hir_mod.fnDeclOf(self.hir, fn_node);
+            if (!fp.flags.is_async) {
+                try self.reportAt(node, await_pos, TsCodes.for_await_only_in_async, "'for await' loops are only allowed within async functions and at the top levels of modules.");
+            }
+            return;
+        }
+        if (!self.rootHasTopLevelExternalModuleMarker(node)) {
+            try self.reportAt(node, await_pos, TsCodes.for_await_script_not_module, "'for await' loops are only allowed at the top level of a file when that file is a module, but this file has no imports or exports. Consider adding an empty 'export {}' to make this file a module.");
+        }
+        if (self.sourceDisallowsTopLevelForAwait()) {
+            try self.reportAt(node, await_pos, TsCodes.for_await_target_module, "Top-level 'for await' loops are only allowed when the 'module' option is set to 'es2022', 'esnext', 'system', 'node16', 'node18', 'node20', 'nodenext', or 'preserve', and the 'target' option is set to 'es2017' or higher.");
+        }
+    }
+
     fn returnInsideUnsupportedWithStatement(self: *Checker, node: NodeId) bool {
         const src = self.source orelse return false;
         var child = node;
@@ -5722,6 +5771,21 @@ pub const Checker = struct {
             self.sourceDirectiveValueMentions("target", "es5") or
             self.sourceDirectiveValueMentions("target", "es2015") or
             self.sourceDirectiveValueMentions("target", "es2016");
+    }
+
+    fn sourceDisallowsTopLevelForAwait(self: *Checker) bool {
+        return self.sourceTargetDisallowsTopLevelAwait() or !self.sourceModuleSupportsTopLevelForAwait();
+    }
+
+    fn sourceModuleSupportsTopLevelForAwait(self: *Checker) bool {
+        return self.sourceDirectiveValueMentions("module", "es2022") or
+            self.sourceDirectiveValueMentions("module", "esnext") or
+            self.sourceDirectiveValueMentions("module", "system") or
+            self.sourceDirectiveValueMentions("module", "node16") or
+            self.sourceDirectiveValueMentions("module", "node18") or
+            self.sourceDirectiveValueMentions("module", "node20") or
+            self.sourceDirectiveValueMentions("module", "nodenext") or
+            self.sourceDirectiveValueMentions("module", "preserve");
     }
 
     /// True when the source carries a `// @target` directive that
@@ -6313,7 +6377,11 @@ pub const Checker = struct {
             if (nk == .array_pattern and pp.default_value != hir_mod.none_node_id) {
                 const default_t = try self.checkExpression(pp.default_value);
                 if (!self.isIterableLikeType(default_t) and !self.objectLiteralHasSymbolIteratorMethod(pp.default_value)) {
-                    try self.report(pp.default_value, TsCodes.yield_star_not_iterable, "Type must have a '[Symbol.iterator]()' method that returns an iterator.");
+                    if (self.target_es5_baseline) {
+                        try self.reportTypeNotArrayForTarget(pp.name, default_t);
+                    } else {
+                        try self.report(pp.name, TsCodes.yield_star_not_iterable, "Type must have a '[Symbol.iterator]()' method that returns an iterator.");
+                    }
                 }
             }
             if (nk == .object_pattern and pp.type_annotation != hir_mod.none_node_id) {
@@ -22117,6 +22185,19 @@ pub const Checker = struct {
         try self.report(target_node, TsCodes.yield_star_not_iterable, "Type must have a '[Symbol.iterator]()' method that returns an iterator.");
     }
 
+    fn reportTypeNotArrayForTarget(self: *Checker, target_node: NodeId, source_t: TypeId) CheckError!void {
+        const name_opt: ?[]const u8 = blk: {
+            if (self.allocSimpleTypeName(source_t) catch null) |n| break :blk n;
+            if (self.allocObjectTypeShape(source_t) catch null) |s| break :blk s;
+            break :blk null;
+        };
+        const msg = if (name_opt) |source_name|
+            try std.fmt.allocPrint(self.diag_arena.allocator(), "Type '{s}' is not an array type.", .{source_name})
+        else
+            "Type is not an array type.";
+        try self.report(target_node, TsCodes.type_not_array_type, msg);
+    }
+
     fn checkArrayDestructuringAssignment(self: *Checker, target_node: NodeId, source_t: TypeId, source_node: NodeId, source_offset: usize) CheckError!void {
         if (source_node != hir_mod.none_node_id and
             self.hir.kindOf(source_node) == .object_literal and
@@ -22395,6 +22476,7 @@ pub const Checker = struct {
                     return;
                 }
                 if (!(self.engine.isAssignableTo(source_t, target_t) catch true)) {
+                    if (try self.tryReportSinglePropertyMissing(target_node, hir_mod.none_node_id, source_t, target_t)) return;
                     try self.reportTypeNotAssignable(target_node, source_t, target_t, "Type is not assignable to target type.");
                 } else if (self.hir.kindOf(target_node) == .identifier and
                     source_t != types.Primitive.none and
@@ -24395,9 +24477,9 @@ pub const Checker = struct {
         // `objectTypeWithCallSignatureHidingMembersOfFunction`.
         const raw = self.string_interner.get(name);
         const function_proto_members = [_][]const u8{
-            "apply",      "call",     "bind",          "toString",
-            "arguments",  "caller",   "length",        "name",
-            "prototype",  "constructor",
+            "apply",     "call",        "bind",   "toString",
+            "arguments", "caller",      "length", "name",
+            "prototype", "constructor",
         };
         for (function_proto_members) |m| {
             if (std.mem.eql(u8, raw, m)) return types.Primitive.any;
@@ -31057,66 +31139,64 @@ pub const Checker = struct {
         const s = self.string_interner.get(name);
         const builtins = [_][]const u8{
             // Core globals / values.
-            "console",              "undefined",        "NaN",
-            "Infinity",             "globalThis",       "this",
-            "new.target",           "window",           "document",
-            "Element",              "Node",             "HTMLElement",
-            "HTMLBodyElement",      "HTMLDivElement",   "HTMLAnchorElement",
-            "HTMLImageElement",     "HTMLInputElement", "HTMLSpanElement",
-            "HTMLButtonElement",    "HTMLFormElement",  "HTMLCanvasElement",
-            "HTMLSelectElement",    "HTMLTextAreaElement", "HTMLLabelElement",
-            "HTMLLinkElement",      "HTMLScriptElement", "HTMLStyleElement",
-            "HTMLHeadElement",      "HTMLMetaElement", "HTMLTitleElement",
-            "HTMLOptionElement",    "HTMLOptGroupElement", "HTMLUListElement",
-            "HTMLOListElement",     "HTMLLIElement",   "HTMLTableElement",
-            "HTMLTableRowElement",  "HTMLTableCellElement", "HTMLTableSectionElement",
-            "HTMLIFrameElement",    "HTMLVideoElement", "HTMLAudioElement",
-            "HTMLMediaElement",     "HTMLSourceElement", "HTMLTrackElement",
-            "HTMLPictureElement",   "HTMLParagraphElement", "HTMLHRElement",
-            "HTMLHeadingElement",   "HTMLBRElement",   "HTMLDataListElement",
-            "HTMLOutputElement",    "HTMLDialogElement", "HTMLDetailsElement",
-            "HTMLEmbedElement",     "HTMLFieldSetElement", "HTMLLegendElement",
-            "HTMLObjectElement",    "HTMLParamElement", "HTMLProgressElement",
-            "HTMLQuoteElement",     "HTMLTemplateElement", "HTMLTimeElement",
-            "Event",
-            "EventTarget",          "MouseEvent",       "KeyboardEvent",
-            "FocusEvent",           "Document",         "Window",
-            "Location",             "Navigator",        "History",
-            "Storage",              "URL",              "URLSearchParams",
-            "Blob",                 "File",             "FileReader",
-            "FormData",             "Headers",          "Request",
-            "Response",
+            "console",             "undefined",            "NaN",
+            "Infinity",            "globalThis",           "this",
+            "new.target",          "window",               "document",
+            "Element",             "Node",                 "HTMLElement",
+            "HTMLBodyElement",     "HTMLDivElement",       "HTMLAnchorElement",
+            "HTMLImageElement",    "HTMLInputElement",     "HTMLSpanElement",
+            "HTMLButtonElement",   "HTMLFormElement",      "HTMLCanvasElement",
+            "HTMLSelectElement",   "HTMLTextAreaElement",  "HTMLLabelElement",
+            "HTMLLinkElement",     "HTMLScriptElement",    "HTMLStyleElement",
+            "HTMLHeadElement",     "HTMLMetaElement",      "HTMLTitleElement",
+            "HTMLOptionElement",   "HTMLOptGroupElement",  "HTMLUListElement",
+            "HTMLOListElement",    "HTMLLIElement",        "HTMLTableElement",
+            "HTMLTableRowElement", "HTMLTableCellElement", "HTMLTableSectionElement",
+            "HTMLIFrameElement",   "HTMLVideoElement",     "HTMLAudioElement",
+            "HTMLMediaElement",    "HTMLSourceElement",    "HTMLTrackElement",
+            "HTMLPictureElement",  "HTMLParagraphElement", "HTMLHRElement",
+            "HTMLHeadingElement",  "HTMLBRElement",        "HTMLDataListElement",
+            "HTMLOutputElement",   "HTMLDialogElement",    "HTMLDetailsElement",
+            "HTMLEmbedElement",    "HTMLFieldSetElement",  "HTMLLegendElement",
+            "HTMLObjectElement",   "HTMLParamElement",     "HTMLProgressElement",
+            "HTMLQuoteElement",    "HTMLTemplateElement",  "HTMLTimeElement",
+            "Event",               "EventTarget",          "MouseEvent",
+            "KeyboardEvent",       "FocusEvent",           "Document",
+            "Window",              "Location",             "Navigator",
+            "History",             "Storage",              "URL",
+            "URLSearchParams",     "Blob",                 "File",
+            "FileReader",          "FormData",             "Headers",
+            "Request",             "Response",
             // Constructors / namespaces.
-                        "Math",             "JSON",
-            "Object",               "Array",            "String",
-            "Number",               "Boolean",          "Symbol",
-            "BigInt",               "Error",            "TypeError",
-            "RangeError",           "SyntaxError",      "Promise",
-            "Map",                  "Set",              "WeakMap",
-            "WeakSet",              "Date",             "RegExp",
-            "Function",             "Proxy",            "Reflect",
-            "TemplateStringsArray", "ArrayBuffer",      "Uint8Array",
-            "Uint8ClampedArray",    "Int8Array",        "Uint16Array",
-            "Int16Array",           "Uint32Array",      "Int32Array",
-            "Float16Array",         "Float32Array",     "Float64Array",
-            "BigUint64Array",       "BigInt64Array",    "SharedArrayBuffer",
-            "Atomics",              "Intl",
+                        "Math",
+            "JSON",                "Object",               "Array",
+            "String",              "Number",               "Boolean",
+            "Symbol",              "BigInt",               "Error",
+            "TypeError",           "RangeError",           "SyntaxError",
+            "Promise",             "Map",                  "Set",
+            "WeakMap",             "WeakSet",              "Date",
+            "RegExp",              "Function",             "Proxy",
+            "Reflect",             "TemplateStringsArray", "ArrayBuffer",
+            "Uint8Array",          "Uint8ClampedArray",    "Int8Array",
+            "Uint16Array",         "Int16Array",           "Uint32Array",
+            "Int32Array",          "Float16Array",         "Float32Array",
+            "Float64Array",        "BigUint64Array",       "BigInt64Array",
+            "SharedArrayBuffer",   "Atomics",              "Intl",
             // Global functions.
-                        "parseInt",
-            "parseFloat",           "isNaN",            "isFinite",
-            "encodeURI",            "decodeURI",        "encodeURIComponent",
-            "decodeURIComponent",
+            "parseInt",            "parseFloat",           "isNaN",
+            "isFinite",            "encodeURI",            "decodeURI",
+            "encodeURIComponent",  "decodeURIComponent",
             // Timers / scheduling.
-              "setTimeout",       "clearTimeout",
-            "setInterval",          "clearInterval",    "setImmediate",
-            "clearImmediate",       "queueMicrotask",
+              "setTimeout",
+            "clearTimeout",        "setInterval",          "clearInterval",
+            "setImmediate",        "clearImmediate",       "queueMicrotask",
             // Node.js / CommonJS.
-              "process",
-            "Buffer",               "require",          "module",
-            "exports",              "__dirname",        "__filename",
+            "process",             "Buffer",               "require",
+            "module",              "exports",              "__dirname",
+            "__filename",
             // Dynamic `import("…")` parses the keyword as an
             // identifier callee — exempt it from TS2304.
-            "import",
+                     "import",
             // Common ambient names emitted by the parser for
             // module / class shapes that don't have full
             // resolution wired up yet.
@@ -39102,7 +39182,6 @@ pub const Checker = struct {
         return std.mem.indexOf(u8, name, "undefined") != null;
     }
 
-
     /// "Weak type" detection: target type has only optional named
     /// members (and no index signatures / call / construct
     /// signatures), and the source's named members share no name
@@ -42268,6 +42347,58 @@ test "checker: unresolved identifier emits TS2304" {
         if (d.code == TsCodes.cannot_find_name) found = true;
     }
     try T.expect(found);
+}
+
+test "checker: for-await context diagnostics match async/top-level split" {
+    const top = try newSetup(
+        \\// @target: es2018
+        \\for await (const x of y) {}
+    );
+    defer destroySetup(top);
+    try top.checker.checkSourceFile(top.root);
+    var found_1431 = false;
+    var found_1432 = false;
+    for (top.checker.diagnostics.items) |d| {
+        if (d.code == TsCodes.for_await_script_not_module) found_1431 = true;
+        if (d.code == TsCodes.for_await_target_module) found_1432 = true;
+        if (d.code == TsCodes.for_await_script_not_module or d.code == TsCodes.for_await_target_module) {
+            try T.expect(d.pos != null);
+            const src = top.checker.source.?;
+            try T.expectEqualStrings("await", src[d.pos.? .. d.pos.? + "await".len]);
+        }
+    }
+    try T.expect(found_1431);
+    try T.expect(found_1432);
+
+    const sync_fn = try newSetup("function f() { for await (const x of y) {} }");
+    defer destroySetup(sync_fn);
+    try sync_fn.checker.checkSourceFile(sync_fn.root);
+    var found_1103 = false;
+    for (sync_fn.checker.diagnostics.items) |d| {
+        if (d.code == TsCodes.for_await_only_in_async) {
+            found_1103 = true;
+            try T.expect(d.pos != null);
+            const src = sync_fn.checker.source.?;
+            try T.expectEqualStrings("await", src[d.pos.? .. d.pos.? + "await".len]);
+        }
+        try T.expect(d.code != TsCodes.for_await_script_not_module);
+        try T.expect(d.code != TsCodes.for_await_target_module);
+    }
+    try T.expect(found_1103);
+}
+
+test "checker: for-await allowed in async function and async generator" {
+    const s = try newSetup(
+        \\async function f() { for await (const x of y) {} }
+        \\async function* g() { for await (const x of y) {} }
+    );
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+    for (s.checker.diagnostics.items) |d| {
+        try T.expect(d.code != TsCodes.for_await_only_in_async);
+        try T.expect(d.code != TsCodes.for_await_script_not_module);
+        try T.expect(d.code != TsCodes.for_await_target_module);
+    }
 }
 
 test "checker: var globalThis emits TS2397 builtin-global conflict" {
@@ -47585,7 +47716,6 @@ test "checker: null assertion to generic array target is allowed" {
         try T.expect(d.code != TsCodes.conversion_may_be_mistake);
     }
 }
-
 
 test "checker: assertion from union with overlapping constituent stays silent" {
     // Mirrors `stringLiteralTypeAssertion01.ts(29,7)` — upstream tsc
@@ -61786,7 +61916,6 @@ const NeverResolveExternalResolver = struct {
         return null;
     }
 };
-
 
 test "checker: TS2430 suppresses spurious child-string vs parent-number cross-check" {
     // Pins `interfaceWithStringIndexerHidingBaseTypeIndexer2.ts(8,1)`:

@@ -741,6 +741,7 @@ pub fn compileSource(
     checker.setIsDeclarationFile(options.is_declaration_file);
     checker.setCheckJsEnabled(!options.suppress_js_check_diagnostics and
         (virtualFilenameIsJs(source) or pathIsJsLike(options.importer_path)));
+    checker.setTargetEs5Baseline(options.report_deprecated_target_es5);
     if (options.external_resolver) |er| checker.setExternalResolver(er);
     if (options.importer_path.len > 0) checker.setImporterPath(options.importer_path);
     if (options.module_resolution.len > 0) checker.setModuleResolution(options.module_resolution);

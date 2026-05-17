@@ -1109,6 +1109,18 @@ pub const Parser = struct {
                 // block with zero statements at its location.
                 break :blk try self.builder.addBlock(tokenSpan(semi), &.{});
             },
+            .dot => blk: {
+                const dot = self.advance();
+                if (self.peek().kind == .identifier and !self.peek().flags.preceded_by_newline) {
+                    try self.reportCodeAt(dot.span.start, dot.line, 1128, "Declaration or statement expected.");
+                    const name = self.advance();
+                    try self.reportCannotFindNameToken(name);
+                    if (self.peek().kind == .semicolon) _ = self.advance();
+                    break :blk try self.builder.addBlock(.{ .start = dot.span.start, .end = name.span.end }, &.{});
+                }
+                self.cursor -= 1;
+                break :blk try self.parseExpressionStatement();
+            },
             .close_paren, .close_brace => blk: {
                 if (self.block_depth == 0 and self.nested_statement_depth == 0) {
                     try self.reportCodeAt(t.span.start, t.line, 1128, "Declaration or statement expected.");
@@ -1620,6 +1632,9 @@ pub const Parser = struct {
                 {
                     try self.reportCodeAt(binding_start.span.start, binding_start.line, 2491, "The left-hand side of a 'for...in' statement cannot be a destructuring pattern.");
                 }
+                if (is_await and kind_tok.kind == .kw_in) {
+                    try self.reportCodeAt(kind_tok.span.start, kind_tok.line, 1005, "'of' expected.");
+                }
                 if (kind_tok.kind == .kw_in and is_using_decl) {
                     const message = if (is_await_using_decl)
                         "The left-hand side of a 'for...in' statement cannot be an 'await using' declaration."
@@ -1742,6 +1757,9 @@ pub const Parser = struct {
                 }
                 if (kind_tok.kind == .kw_in and (head_start.kind == .open_brace or head_start.kind == .open_bracket)) {
                     try self.reportCodeAt(head_start.span.start, head_start.line, 2491, "The left-hand side of a 'for...in' statement cannot be a destructuring pattern.");
+                }
+                if (is_await and kind_tok.kind == .kw_in) {
+                    try self.reportCodeAt(kind_tok.span.start, kind_tok.line, 1005, "'of' expected.");
                 }
                 const source_expr = try self.parseExpression();
                 _ = try self.expect(.close_paren, "')' to close for-in/of header");
@@ -5150,6 +5168,11 @@ pub const Parser = struct {
         }
         if (t.kind == .eof or t.kind == .close_brace or t.flags.preceded_by_newline) return;
         if (t.kind == .identifier and self.cursor > 0 and self.tokens[self.cursor - 1].kind == .number_literal) {
+            if (t.flags.has_escape) {
+                try self.reportCodeAt(t.span.start, t.line, 1005, "';' expected.");
+                try self.reportCannotFindNameToken(t);
+                _ = self.advance();
+            }
             return;
         }
         if (t.kind == .colon and self.peekAt(1).kind == .arrow) {
@@ -5167,6 +5190,29 @@ pub const Parser = struct {
         }
         if (t.kind == .close_bracket) {
             try self.reportCodeAt(t.span.start, t.line, 1005, "';' expected.");
+            _ = self.advance();
+            return;
+        }
+        if (t.kind == .number_literal and
+            t.span.start < t.span.end and
+            self.source[t.span.start] == '.' and
+            self.cursor > 0 and
+            self.tokens[self.cursor - 1].kind == .identifier)
+        {
+            const prev = self.tokens[self.cursor - 1];
+            try self.reportCodeAt(prev.span.start, prev.line, 1434, "Unexpected keyword or identifier.");
+            try self.reportCannotFindNameToken(prev);
+            return;
+        }
+        if (t.kind == .dot and
+            self.cursor > 0 and
+            self.tokens[self.cursor - 1].kind == .identifier and
+            self.peekAt(1).kind == .number_literal and
+            !self.peekAt(1).flags.preceded_by_newline)
+        {
+            const prev = self.tokens[self.cursor - 1];
+            try self.reportCodeAt(prev.span.start, prev.line, 1434, "Unexpected keyword or identifier.");
+            try self.reportCannotFindNameToken(prev);
             _ = self.advance();
             return;
         }
@@ -10569,6 +10615,16 @@ test "parser: for-await-of sets is_await flag" {
     try T.expect(p.is_await);
 }
 
+test "parser: for-await-in reports missing of" {
+    var s = try newTestSetup("for await (const x in y) {} for await (x in y) {}");
+    defer destroyTestSetup(s);
+
+    _ = try s.parser.parseSourceFile();
+    try T.expectEqual(@as(usize, 2), s.parser.diagnostics.items.len);
+    try T.expectEqual(@as(u32, 1005), s.parser.diagnostics.items[0].code);
+    try T.expectEqual(@as(u32, 1005), s.parser.diagnostics.items[1].code);
+}
+
 test "parser: using declarations parse in for initializers" {
     var s = try newTestSetup(
         \\for (using d1 = { [Symbol.dispose]() {} }, d2 = null;;) {}
@@ -14917,6 +14973,45 @@ test "parser: statement terminator fallback emits TS1005 not Home-internal text"
     for (s.parser.diagnostics.items) |d| {
         try T.expect(!std.mem.startsWith(u8, d.message, "expected ';' or newline"));
     }
+}
+
+test "parser: decimal separator negative recovery matches upstream shapes" {
+    var dotted_number = try newTestSetup("_0.0e0\n");
+    defer destroyTestSetup(dotted_number);
+    _ = dotted_number.parser.parseSourceFile() catch {};
+
+    var saw_unexpected_identifier = false;
+    for (dotted_number.parser.diagnostics.items) |d| {
+        if (d.code == 1434 and d.pos == 0 and std.mem.eql(u8, d.message, "Unexpected keyword or identifier.")) saw_unexpected_identifier = true;
+        try T.expect(d.code != 1109);
+    }
+    try T.expect(saw_unexpected_identifier);
+
+    var dot_identifier = try newTestSetup("._\n");
+    defer destroyTestSetup(dot_identifier);
+    _ = dot_identifier.parser.parseSourceFile() catch {};
+    var saw_dot_statement = false;
+    var saw_dot_name = false;
+    for (dot_identifier.parser.diagnostics.items) |d| {
+        if (d.code == 1128 and std.mem.eql(u8, d.message, "Declaration or statement expected.")) saw_dot_statement = true;
+        if (d.code == 2304 and std.mem.eql(u8, d.message, "Cannot find name '_'.")) saw_dot_name = true;
+        try T.expect(d.code != 1109);
+    }
+    try T.expect(saw_dot_statement);
+    try T.expect(saw_dot_name);
+
+    var escaped_identifier = try newTestSetup("1\\u005F01234\n");
+    defer destroyTestSetup(escaped_identifier);
+    _ = escaped_identifier.parser.parseSourceFile() catch {};
+    var saw_escaped_semicolon = false;
+    var saw_escaped_name = false;
+    for (escaped_identifier.parser.diagnostics.items) |d| {
+        if (d.code == 1005 and std.mem.eql(u8, d.message, "';' expected.")) saw_escaped_semicolon = true;
+        if (d.code == 2304 and std.mem.eql(u8, d.message, "Cannot find name '\\u005F01234'.")) saw_escaped_name = true;
+        try T.expect(d.code != 1109);
+    }
+    try T.expect(saw_escaped_semicolon);
+    try T.expect(saw_escaped_name);
 }
 
 // §6.A 2000-3000 ratchet — the expression fallback for unrecognised

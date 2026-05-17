@@ -448,7 +448,7 @@ pub const Scanner = struct {
         }
         const slice = self.source[start..self.pos];
         var f = flags;
-        f.has_escape = has_escape;
+        f.has_escape = flags.has_escape or has_escape;
         // Keyword classification only fires on the raw byte slice;
         // tokens that contain `\uXXXX` escapes stay as identifiers even
         // when their decoded form would be a reserved word. The parser
@@ -840,13 +840,15 @@ pub const Scanner = struct {
         // and downstream binders/checkers can't see the intended name.
         // Baseline: scannerS7.6_A4.2_T1.errors.txt.
         if (c == '\\' and self.pos + 1 < self.source.len and self.source[self.pos + 1] == 'u') {
+            var ident_flags = flags;
+            ident_flags.has_escape = true;
             self.pos += 2; // skip `\u`
             if (self.pos < self.source.len and self.source[self.pos] == '{') {
                 self.pos = self.scanEscapedUnicodeCodePoint(gpa, self.pos + 1, line, false);
             } else {
                 self.pos = self.scanEscapedHexDigits(gpa, self.pos, 4, line);
             }
-            return self.scanIdentifierOrKeyword(start, line, flags);
+            return self.scanIdentifierOrKeyword(start, line, ident_flags);
         }
 
         // Identifier / keyword
