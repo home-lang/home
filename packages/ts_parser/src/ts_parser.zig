@@ -2449,6 +2449,16 @@ pub const Parser = struct {
                         try self.reportCodeAt(self.peek().span.start, self.peek().line, 1005, "':' expected.");
                         return error.UnexpectedToken;
                     }
+                    // `{ while }` — shorthand object-binding entry whose key is
+                    // a reserved word. tsc treats this as a missing rename
+                    // (`while: alias`) and emits a single TS1005 `':' expected.`
+                    // at the token that follows the keyword (where the `:`
+                    // would have lived). Mirrors
+                    // `objectBindingPatternKeywordIdentifiers01` baseline.
+                    if (isReservedBindingNameToken(key_tok.kind)) {
+                        try self.reportCodeAt(self.peek().span.start, self.peek().line, 1005, "':' expected.");
+                        return error.UnexpectedToken;
+                    }
                     try self.reportInvalidStrictName(key_tok);
                     try self.reportReservedBindingNameIfNeeded(key_tok);
                     const name_id = try self.internToken(key_tok);
@@ -10528,15 +10538,25 @@ test "parser: reserved object binding target reports TS1359" {
     try T.expect(found);
 }
 
-test "parser: reserved shorthand object binding target reports TS1359" {
+test "parser: reserved shorthand object binding target reports TS1005" {
+    // Mirrors `objectBindingPatternKeywordIdentifiers01.ts` upstream
+    // baseline: `var { while } = { while: 1 }` is treated as a missing
+    // rename (`while: alias`) and reports a single TS1005 `':' expected.`
+    // at the position where the `:` would have lived. We deliberately do
+    // NOT also emit TS1359 here — the reserved-word diagnostic only
+    // surfaces when the key was actually parsed as a binding target
+    // (e.g. `var { "while": while }`).
     var s = try newTestSetup("var { while } = { while: 1 };");
     defer destroyTestSetup(s);
-    _ = try s.parser.parseSourceFile();
-    var found = false;
+    _ = s.parser.parseSourceFile() catch {};
+    var saw_1005 = false;
+    var saw_1359 = false;
     for (s.parser.diagnostics.items) |d| {
-        if (d.code == 1359) found = true;
+        if (d.code == 1005) saw_1005 = true;
+        if (d.code == 1359) saw_1359 = true;
     }
-    try T.expect(found);
+    try T.expect(saw_1005);
+    try T.expect(!saw_1359);
 }
 
 test "parser: literal object binding key without ':' reports TS1005" {

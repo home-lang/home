@@ -860,6 +860,13 @@ fn normalizeScannerDiagnostic(message: []const u8) NormalizedScannerDiagnostic {
     if (std.mem.eql(u8, message, "Unterminated Unicode escape sequence.")) {
         return .{ .code = 1199, .message = message };
     }
+    // TS1198 — `\u{N}` extended unicode escape whose codepoint
+    // exceeds the Unicode Scalar Value cap (0x10FFFF). Scanner
+    // emits at the first hex digit so `(line, col)` matches the
+    // upstream baseline (`unicodeExtendedEscapesIn{Strings,Templates}07/12`).
+    if (std.mem.eql(u8, message, "An extended Unicode escape value must be between 0x0 and 0x10FFFF inclusive.")) {
+        return .{ .code = 1198, .message = message };
+    }
     // Sentence-case + TS1002 for the scanner's lowercase
     // "unterminated string literal" messages. Mirrors tsc which
     // emits `Unterminated string literal.` when a string token

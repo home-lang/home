@@ -2614,11 +2614,13 @@ pub const Checker = struct {
         var first_default: NodeId = hir_mod.none_node_id;
         var default_fn_name: ?hir_mod.StringId = null;
         var default_fn_impl: NodeId = hir_mod.none_node_id;
+        var first_reported = false;
         for (stmts) |stmt| {
             if (self.hir.kindOf(stmt) == .import_decl and first_default != hir_mod.none_node_id) {
                 first_default = hir_mod.none_node_id;
                 default_fn_name = null;
                 default_fn_impl = hir_mod.none_node_id;
+                first_reported = false;
                 continue;
             }
             if (self.hir.kindOf(stmt) != .export_decl) continue;
@@ -2647,9 +2649,16 @@ pub const Checker = struct {
                     }
                 }
             }
-            try self.reportAt(first_default, self.defaultExportNamePos(first_default), TsCodes.multiple_default_exports, "A module cannot have multiple default exports.");
+            // tsc reports TS2528 on every subsequent default export when
+            // a module declares more than two — the first conflict pair
+            // anchors on the original `first_default`, then each later
+            // default piles on its own diagnostic. Mirrors upstream
+            // `multipleDefaultExports05` baseline.
+            if (!first_reported) {
+                try self.reportAt(first_default, self.defaultExportNamePos(first_default), TsCodes.multiple_default_exports, "A module cannot have multiple default exports.");
+                first_reported = true;
+            }
             try self.reportAt(stmt, self.defaultExportNamePos(stmt), TsCodes.multiple_default_exports, "A module cannot have multiple default exports.");
-            return;
         }
     }
 
@@ -2657,6 +2666,7 @@ pub const Checker = struct {
         first_default: NodeId = hir_mod.none_node_id,
         default_fn_name: ?hir_mod.StringId = null,
         default_fn_impl: NodeId = hir_mod.none_node_id,
+        first_reported: bool = false,
     };
 
     fn checkMultipleDefaultExportsByVirtualSection(self: *Checker, stmts: []const NodeId) CheckError!void {
@@ -2687,7 +2697,8 @@ pub const Checker = struct {
                             if (state.default_fn_impl != hir_mod.none_node_id) {
                                 try self.reportAt(state.default_fn_impl, self.defaultExportNamePos(state.default_fn_impl), TsCodes.multiple_default_exports, "A module cannot have multiple default exports.");
                                 try self.reportAt(stmt, self.defaultExportNamePos(stmt), TsCodes.multiple_default_exports, "A module cannot have multiple default exports.");
-                                return;
+                                state.first_reported = true;
+                                continue;
                             }
                             state.default_fn_impl = stmt;
                         }
@@ -2695,9 +2706,14 @@ pub const Checker = struct {
                     }
                 }
             }
-            try self.reportAt(state.first_default, self.defaultExportNamePos(state.first_default), TsCodes.multiple_default_exports, "A module cannot have multiple default exports.");
+            // Each subsequent default export piles on its own TS2528
+            // (matches `multipleDefaultExports05` baseline). We only
+            // anchor the first-default diagnostic once.
+            if (!state.first_reported) {
+                try self.reportAt(state.first_default, self.defaultExportNamePos(state.first_default), TsCodes.multiple_default_exports, "A module cannot have multiple default exports.");
+                state.first_reported = true;
+            }
             try self.reportAt(stmt, self.defaultExportNamePos(stmt), TsCodes.multiple_default_exports, "A module cannot have multiple default exports.");
-            return;
         }
     }
 
@@ -8464,7 +8480,15 @@ pub const Checker = struct {
         const symbol_iterator = self.string_interner.intern("Symbol.iterator") catch return error.OutOfMemory;
         if (self.interner.objectMember(t, symbol_iterator)) |iter_method_t| {
             if (self.iteratorMethodReturnType(iter_method_t)) |iterator_t| {
-                return try self.iteratorNextValueType(iterator_t);
+                const value_t = try self.iteratorNextValueType(iterator_t);
+                // When the iterator's next() return type has no `value`
+                // member, `iteratorNextValueType` reports `none`. Surfacing
+                // that to assignability would cascade into a spurious
+                // TS2322 at the for-of target (e.g. `for-of15`). The
+                // structural TS2490 already fires from
+                // `checkForOfIteratorShape`; here we degrade to `any` so
+                // downstream assignment checks don't double-report.
+                return if (value_t == types.Primitive.none) types.Primitive.any else value_t;
             }
         }
         return types.Primitive.any;
@@ -58461,6 +58485,50 @@ test "checker: relational op skips TS18050 on equality operators" {
     for (s.checker.diagnostics.items) |d| {
         try T.expect(d.code != TsCodes.nullish_relational_operand);
     }
+}
+
+test "checker: for-of iterator with no value member doesn't double-report TS2322" {
+    // Mirrors `for-of15.ts` upstream baseline: when `next()` returns a
+    // type with no `value` property, the structural TS2490 fires on the
+    // iterable source but the for-of target must NOT additionally
+    // surface TS2322 — `iterableElementType` degrades to `any` so
+    // assignability passes.
+    const src =
+        "class MyStringIterator {\n" ++
+        "    next() { return \"\"; }\n" ++
+        "    [Symbol.iterator]() { return this; }\n" ++
+        "}\n" ++
+        "var v: string;\n" ++
+        "for (v of new MyStringIterator) { }\n";
+    const s = try newSetup(src);
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+    var saw_2490 = false;
+    var saw_2322 = false;
+    for (s.checker.diagnostics.items) |d| {
+        if (d.code == TsCodes.iterator_value_missing) saw_2490 = true;
+        if (d.code == TsCodes.type_not_assignable) saw_2322 = true;
+    }
+    try T.expect(saw_2490);
+    try T.expect(!saw_2322);
+}
+
+test "checker: TS2528 fires on every default export beyond the first" {
+    // Mirrors `multipleDefaultExports05.ts` upstream baseline: three
+    // `export default` declarations produce three TS2528 anchors (one
+    // per default), not just the first conflicting pair.
+    const src =
+        "export default class AA1 {}\n" ++
+        "export default class BB1 {}\n" ++
+        "export default class CC1 {}\n";
+    const s = try newSetup(src);
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+    var count: usize = 0;
+    for (s.checker.diagnostics.items) |d| {
+        if (d.code == TsCodes.multiple_default_exports) count += 1;
+    }
+    try T.expectEqual(@as(usize, 3), count);
 }
 
 test "checker: simpleDiagnosticTypeName renders undefined and null after non-nullish in union" {
