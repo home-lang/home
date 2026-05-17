@@ -10016,6 +10016,16 @@ pub const Checker = struct {
             }
             const parent_t = try self.classExtendsInstanceType(c.extends);
             try self.reportUnresolvedClassExtendsHeritage(c.extends, type_params);
+            // TS2507: `class D extends foo` where `foo` is a plain
+            // function (or any other non-constructable value). When the
+            // extends expression resolves to a value but the resolved
+            // value type carries no construct signatures, tsc emits
+            // "Type '<sig>' is not a constructor function type." Mirrors
+            // upstream `classExtendsValidConstructorFunction` and
+            // `classExtendsShadowedConstructorFunction`.
+            if (parent_t == null and self.hir.kindOf(c.extends) == .identifier) {
+                try self.reportNonConstructorClassExtends(c.extends);
+            }
             // TS2314: `class D extends C` where `C<T>` is generic — fire
             // when the heritage is a bare class name (no type-arg list).
             // The type-ref form (`class D extends C<X, Y>`) is already
@@ -11853,6 +11863,26 @@ pub const Checker = struct {
                 }
                 continue;
             }
+            // EXCEPTION — field paired with another shape (accessor or
+            // method): tsc emits TS2300 at EVERY occurrence — both the
+            // field and the other declarations are flagged, even
+            // though the accessor pair would otherwise compose.
+            // Mirrors `propertyAndAccessorWithSameName` and
+            // `propertyAndFunctionWithSameName` baselines.
+            var has_field = false;
+            var has_non_field = false;
+            for (group_idx.items) |idx| {
+                const e = entries.items[idx];
+                if (e.kind == .field) has_field = true;
+                if (e.kind != .field) has_non_field = true;
+            }
+            if (has_field and has_non_field) {
+                for (group_idx.items) |idx| {
+                    const e = entries.items[idx];
+                    try self.reportDuplicateIdentifierWithDisplay(e.name_node, e.display);
+                }
+                continue;
+            }
             const second = entries.items[group_idx.items[1]];
             try self.reportDuplicateIdentifierWithDisplay(second.name_node, second.display);
         }
@@ -13126,8 +13156,32 @@ pub const Checker = struct {
         member_name: hir_mod.StringId,
     ) CheckError!void {
         const parent_name = parent_class_name orelse return;
-        const parent_accessors = self.class_accessor_members.getPtr(parent_name) orelse return;
-        if (!parent_accessors.contains(member_name)) return;
+        // Walk the parent chain: when the immediate parent doesn't
+        // declare the accessor but a transitive ancestor does, tsc
+        // still attributes the diagnostic to the immediate parent
+        // (mirrors `propertyOverridesAccessors6.ts(8,3)` where `B
+        // extends A` inherits the `x` accessor from `A` but the
+        // message says "in class 'B'").
+        var owner_found = false;
+        var cur = parent_name;
+        var guard: u8 = 0;
+        while (guard < 16) : (guard += 1) {
+            if (self.class_accessor_members.getPtr(cur)) |accs| {
+                if (accs.contains(member_name)) {
+                    owner_found = true;
+                    break;
+                }
+            }
+            if (self.class_property_members.getPtr(cur)) |props| {
+                // If an ancestor declared it as a property first,
+                // suppress — overriding property with property is not
+                // TS2610.
+                if (props.contains(member_name)) return;
+            }
+            const next_parent = self.class_parent.get(cur) orelse break;
+            cur = next_parent;
+        }
+        if (!owner_found) return;
         // Match tsc's full TS2610 message:
         //   `'<member>' is defined as an accessor in class '<parent>',
         //    but is overridden here in '<derived>' as an instance property.`
@@ -13177,9 +13231,33 @@ pub const Checker = struct {
         parent_class_name: ?hir_mod.StringId,
         member_name: hir_mod.StringId,
     ) CheckError!void {
-        const parent_name = parent_class_name orelse return;
-        const parent_props = self.class_property_members.getPtr(parent_name) orelse return;
-        if (!parent_props.contains(member_name)) return;
+        var parent_name = parent_class_name orelse return;
+        // Walk the parent chain: when the immediate parent doesn't
+        // declare the member but a transitive ancestor does, tsc still
+        // attributes the diagnostic to the immediate parent (matches
+        // `accessorsOverrideProperty10.ts(6,7)` where `B extends A`
+        // inherits `x` from `A` but the message says "in class 'B'").
+        const direct_parent = parent_name;
+        var owner_found = false;
+        var cur = parent_name;
+        var guard: u8 = 0;
+        while (guard < 16) : (guard += 1) {
+            if (self.class_property_members.getPtr(cur)) |props| {
+                if (props.contains(member_name)) {
+                    owner_found = true;
+                    break;
+                }
+            }
+            if (self.class_accessor_members.getPtr(cur)) |accs| {
+                // If an ancestor declares it as accessor, suppress —
+                // overriding accessor with accessor is not TS2611.
+                if (accs.contains(member_name)) return;
+            }
+            const next_parent = self.class_parent.get(cur) orelse break;
+            cur = next_parent;
+        }
+        if (!owner_found) return;
+        parent_name = direct_parent;
         if (self.class_abstract_members.getPtr(parent_name)) |parent_abs| {
             if (parent_abs.contains(member_name)) return;
         }
@@ -17730,6 +17808,47 @@ pub const Checker = struct {
         if (self.bareTypeNodeIsTypeParam(extends_expr, type_params)) return;
         if (try self.classExtendsHeritageNameResolves(extends_expr, name)) return;
         try self.reportCannotFindNamePlainOnce(extends_expr, name);
+    }
+
+    /// TS2507: `class D extends foo` where `foo` resolves to a value
+    /// type with no construct signature (plain function, number, etc.).
+    /// Renders the resolved type via `allocCallableSignatureName` /
+    /// `allocSimpleTypeName` so the prose mirrors tsc's baseline.
+    fn reportNonConstructorClassExtends(
+        self: *Checker,
+        extends_expr: NodeId,
+    ) CheckError!void {
+        if (self.hir.kindOf(extends_expr) != .identifier) return;
+        const id = hir_mod.identifierOf(self.hir, extends_expr);
+        // Skip identifiers that resolve to known classes / generic
+        // aliases — `classExtendsInstanceType` returns null for those
+        // when the parent's instance type isn't yet registered (e.g.
+        // forward reference), but TS2507 would be wrong there.
+        if (self.class_instance_types.contains(id.name)) return;
+        if (self.generic_aliases.contains(id.name)) return;
+        // Resolve the heritage value; skip when the name doesn't bind
+        // at all (TS2304 fires separately).
+        const value_t = (try self.heritageValueType(extends_expr, id.name)) orelse return;
+        if (value_t == types.Primitive.any or value_t == types.Primitive.unknown) return;
+        if (value_t == types.Primitive.none) return;
+        // Already have a construct signature? then `classExtendsInstanceType`
+        // would have produced an instance — nothing to report.
+        if (try self.constructReturnType(value_t)) |_| return;
+        // Render the resolved value type. Prefer the signature form
+        // when the value is a function-like (e.g. `() => void`); fall
+        // back to the simple-type name for primitives.
+        const rendered_name: ?[]const u8 = if (try self.allocCallableSignatureName(value_t)) |sig_name|
+            sig_name
+        else
+            try self.allocSimpleTypeName(value_t);
+        if (rendered_name) |name_text| {
+            const msg = try std.fmt.allocPrint(
+                self.diag_arena.allocator(),
+                "Type '{s}' is not a constructor function type.",
+                .{name_text},
+            );
+            try self.report(extends_expr, TsCodes.not_constructor_function_type, msg);
+        }
     }
 
     /// TS2314: Generic type 'X<...>' requires N type argument(s) — for
@@ -29648,7 +29767,6 @@ pub const Checker = struct {
                 // flag it with TS2708 since the assignment targets
                 // the module shape, not a runtime value slot.
                 if (!self.identifierIsExportEqualsTarget(node)) {
-                    std.debug.print("TS2708-fire node={} parent={} parent_kind={any}\n", .{ node, self.hir.parentOf(node), if (self.hir.parentOf(node) != hir_mod.none_node_id) self.hir.kindOf(self.hir.parentOf(node)) else .none });
                     self.reportNamespaceAsValue(node, id.name) catch {};
                 }
                 return types.Primitive.any;
@@ -59315,4 +59433,100 @@ test "checker: class instance member access inherits Object prototype" {
     }
     try T.expect(!saw_tostring_2339);
     try T.expect(!saw_hasown_2339);
+}
+
+test "checker: TS2300 fires at field AND accessor when both share a name" {
+    // `x; get x;` in a class — tsc emits TS2300 at BOTH the field
+    // AND the accessor (rather than only the second site, as for
+    // most duplicate-member groups). Mirrors upstream
+    // `propertyAndAccessorWithSameName`.
+    const s = try newSetup(
+        \\class C {
+        \\  x: number = 0;
+        \\  get x() { return 1; }
+        \\}
+    );
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+    var dup_count: u32 = 0;
+    for (s.checker.diagnostics.items) |d| {
+        if (d.code == TsCodes.duplicate_identifier and
+            std.mem.indexOf(u8, d.message, "'x'") != null) dup_count += 1;
+    }
+    try T.expect(dup_count >= 2);
+}
+
+test "checker: TS2507 fires when class extends a non-constructor function" {
+    // `class C extends foo` where `foo` is a plain function (no
+    // construct signatures) — tsc emits TS2507 with the rendered
+    // signature shape. Mirrors `classExtendsValidConstructorFunction`.
+    const s = try newSetup(
+        \\function foo() { }
+        \\class C extends foo { }
+    );
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+    var saw = false;
+    for (s.checker.diagnostics.items) |d| {
+        if (d.code == TsCodes.not_constructor_function_type and
+            std.mem.indexOf(u8, d.message, "is not a constructor function type") != null)
+        {
+            saw = true;
+        }
+    }
+    try T.expect(saw);
+}
+
+test "checker: TS2610 walks heritage chain to find accessor owner" {
+    // `C extends B extends A`: `A` declares `x` as an accessor (get),
+    // `B` inherits it untouched, and `C` overrides it as a property.
+    // tsc fires TS2610 anchored at the property name with the
+    // immediate parent ('B') named in the message. Mirrors upstream
+    // `propertyOverridesAccessors6`.
+    const s = try newSetup(
+        \\class A { get x() { return 2; } }
+        \\class B extends A {}
+        \\class C extends B {
+        \\  x = 1;
+        \\}
+    );
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+    var saw = false;
+    for (s.checker.diagnostics.items) |d| {
+        if (d.code == TsCodes.property_overrides_accessor and
+            std.mem.indexOf(u8, d.message, "in class 'B'") != null and
+            std.mem.indexOf(u8, d.message, "in 'C'") != null)
+        {
+            saw = true;
+        }
+    }
+    try T.expect(saw);
+}
+
+test "checker: TS2611 walks heritage chain to find property owner" {
+    // `C extends B extends A`: `A` declares `x` as a property,
+    // `B` inherits it untouched, and `C` overrides it as an accessor.
+    // tsc fires TS2611 anchored at the property name with the
+    // immediate parent ('B') named in the message. Mirrors upstream
+    // `accessorsOverrideProperty10`.
+    const s = try newSetup(
+        \\class A { x: number = 1; }
+        \\class B extends A {}
+        \\class C extends B {
+        \\  get x() { return 2; }
+        \\}
+    );
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+    var saw = false;
+    for (s.checker.diagnostics.items) |d| {
+        if (d.code == TsCodes.accessor_overrides_property and
+            std.mem.indexOf(u8, d.message, "in class 'B'") != null and
+            std.mem.indexOf(u8, d.message, "in 'C'") != null)
+        {
+            saw = true;
+        }
+    }
+    try T.expect(saw);
 }
