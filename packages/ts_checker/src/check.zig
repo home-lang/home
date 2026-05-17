@@ -30741,7 +30741,22 @@ pub const Checker = struct {
             "Element",              "Node",             "HTMLElement",
             "HTMLBodyElement",      "HTMLDivElement",   "HTMLAnchorElement",
             "HTMLImageElement",     "HTMLInputElement", "HTMLSpanElement",
-            "HTMLButtonElement",    "HTMLFormElement",  "Event",
+            "HTMLButtonElement",    "HTMLFormElement",  "HTMLCanvasElement",
+            "HTMLSelectElement",    "HTMLTextAreaElement", "HTMLLabelElement",
+            "HTMLLinkElement",      "HTMLScriptElement", "HTMLStyleElement",
+            "HTMLHeadElement",      "HTMLMetaElement", "HTMLTitleElement",
+            "HTMLOptionElement",    "HTMLOptGroupElement", "HTMLUListElement",
+            "HTMLOListElement",     "HTMLLIElement",   "HTMLTableElement",
+            "HTMLTableRowElement",  "HTMLTableCellElement", "HTMLTableSectionElement",
+            "HTMLIFrameElement",    "HTMLVideoElement", "HTMLAudioElement",
+            "HTMLMediaElement",     "HTMLSourceElement", "HTMLTrackElement",
+            "HTMLPictureElement",   "HTMLParagraphElement", "HTMLHRElement",
+            "HTMLHeadingElement",   "HTMLBRElement",   "HTMLDataListElement",
+            "HTMLOutputElement",    "HTMLDialogElement", "HTMLDetailsElement",
+            "HTMLEmbedElement",     "HTMLFieldSetElement", "HTMLLegendElement",
+            "HTMLObjectElement",    "HTMLParamElement", "HTMLProgressElement",
+            "HTMLQuoteElement",     "HTMLTemplateElement", "HTMLTimeElement",
+            "Event",
             "EventTarget",          "MouseEvent",       "KeyboardEvent",
             "FocusEvent",           "Document",         "Window",
             "Location",             "Navigator",        "History",
@@ -61027,6 +61042,25 @@ test "checker: TS2430 suppresses spurious child-string vs parent-number cross-ch
         }
     }
     try T.expectEqual(@as(u32, 0), saw_cross_2430);
+}
+
+test "checker: HTMLCanvasElement is recognized as a built-in DOM global" {
+    // Without the whitelist entry, `parserOverloadOnConstants1.ts(4,39)`
+    // emits a spurious TS2304 on `HTMLCanvasElement` while the sibling
+    // overloads `HTMLDivElement` / `HTMLSpanElement` / `HTMLElement`
+    // remain silent because they are already on the list. Pin the new
+    // entry so DOM lib types continue to round-trip.
+    const s = try newSetup(
+        \\interface Document {
+        \\    createElement(tagName: 'canvas'): HTMLCanvasElement;
+        \\}
+    );
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+    for (s.checker.diagnostics.items) |d| {
+        if (d.code != TsCodes.cannot_find_name) continue;
+        try T.expect(std.mem.indexOf(u8, d.message, "HTMLCanvasElement") == null);
+    }
 }
 
 test "checker: TS2411 renders inline object types for property and index" {

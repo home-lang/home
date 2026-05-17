@@ -15110,3 +15110,4 @@ test "parser: 'declare module \"Foo\" {}' does not report TS1035" {
         try T.expect(d.code != 1035);
     }
 }
+
