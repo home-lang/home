@@ -45651,10 +45651,20 @@ test "checker: noImplicitAny skips TS7008 on ambient `declare class` members" {
     s.checker.setStrictFlags(.{ .no_implicit_any = true });
     try s.checker.checkSourceFile(s.root);
     var count: usize = 0;
+    var declare_count: usize = 0;
     for (s.checker.diagnostics.items) |d| {
-        if (d.code == TsCodes.member_implicitly_any) count += 1;
+        if (d.code != TsCodes.member_implicitly_any) continue;
+        count += 1;
+        // Crude positional heuristic: the diagnostic node lives inside
+        // the `declare class A` body when its source position falls
+        // before the second `class` keyword in the fixture.
+        const src = "declare class A {\n    #prop;\n}\nclass B {\n    #prop;\n}";
+        const pos = d.pos orelse s.hir.spanOf(d.node).start;
+        const second_class = std.mem.indexOfPos(u8, src, 1, "class B") orelse src.len;
+        if (pos < second_class) declare_count += 1;
     }
     try T.expectEqual(@as(usize, 1), count);
+    try T.expectEqual(@as(usize, 0), declare_count);
 }
 
 test "checker: repeated var declarations require identical annotated types" {
