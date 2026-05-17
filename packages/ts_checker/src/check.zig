@@ -61424,3 +61424,15 @@ test "checker: TS2411 renders inline object types for property and index" {
     }
     try T.expect(saw_rich >= 1);
 }
+
+test "DEBUG: 2430 spurious on callSignatureAssignabilityInInheritance shape" {
+    const s = try newSetup(
+        \\interface A { a: (x: number) => number[]; }
+        \\interface I extends A { a: <T>(x: T) => T[]; }
+    );
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+    for (s.checker.diagnostics.items) |d| {
+        std.debug.print("DIAG code={} msg={s}\n", .{ d.code, d.message });
+    }
+}
