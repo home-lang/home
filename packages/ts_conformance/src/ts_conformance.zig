@@ -323,6 +323,15 @@ pub fn run(gpa: std.mem.Allocator, c: Case) !Result {
         };
         const formatted = try ts_diagnostics.formatDefault(gpa, fdiag);
         defer gpa.free(formatted);
+        // In exact-baseline mode, mirror the baseline-side filter for
+        // option-validation diagnostics on the actual stream: TS5101 /
+        // TS5107 (module=AMD/System/UMD) are emitted by the driver but
+        // the baseline drops them via `isOptionValidationDiagnostic`,
+        // so comparing them in apples-to-apples mode requires the same
+        // drop here. Without it, exact-mode would diff against an
+        // empty header set and the rescue path (`hasHarnessModeled…`)
+        // would have to keep covering for them indefinitely.
+        if (exact_mode and isOptionValidationDiagnostic(formatted)) continue;
         if (exact_mode and exactDiagnosticShouldDedup(code)) {
             const gop = try seen_keys.getOrPut(gpa, formatted);
             if (gop.found_existing) continue;
@@ -754,6 +763,15 @@ fn runProgram(gpa: std.mem.Allocator, c: Case) !?Result {
                 .span_len = 0,
             };
             const formatted = try ts_diagnostics.formatDefault(gpa, fdiag);
+            // Mirror the baseline-side option-validation filter on the
+            // program path too — the driver emits TS5101 / TS5107 per
+            // file now, but the baseline drops them in
+            // `isOptionValidationDiagnostic`. See the matching guard
+            // in the legacy `compileSource` path.
+            if (exact_mode and isOptionValidationDiagnostic(formatted)) {
+                gpa.free(formatted);
+                continue;
+            }
             if (exact_mode) {
                 const gop = try seen_keys.getOrPut(gpa, formatted);
                 if (gop.found_existing) {
@@ -1763,6 +1781,58 @@ fn isOptionValidationDiagnostic(line: []const u8) bool {
         std.mem.indexOf(u8, line, "error TS6054:") != null;
 }
 
+/// Returns true when a checker/driver diagnostic belongs to the
+/// option-validation family that upstream baselines drop. Operates on
+/// the raw (code, message) shape — callers that already have the
+/// formatted text use `isOptionValidationDiagnostic` instead.
+fn diagnosticIsOptionValidation(d: anytype) bool {
+    switch (d.code) {
+        5055, 5056, 5095, 5098, 5101, 5102, 5109, 5110, 6054, 6504 => return true,
+        5107 => {
+            // Same shape as `isOptionValidationDiagnostic` for line text:
+            // keep target= (driver-emitted via `report_deprecated_target_es5`)
+            // and drop the moduleResolution / module=AMD/System / UMD /
+            // esModuleInterop variants.
+            const m = d.message;
+            if (std.mem.indexOf(u8, m, "moduleResolution=") != null) return true;
+            if (std.mem.indexOf(u8, m, "module=UMD") != null) return true;
+            if (std.mem.indexOf(u8, m, "module=AMD") != null) return true;
+            if (std.mem.indexOf(u8, m, "module=System") != null) return true;
+            if (std.mem.indexOf(u8, m, "esModuleInterop=") != null) return true;
+            return false;
+        },
+        else => return false,
+    }
+}
+
+/// Coarse-mode helper: does this compilation contain any diagnostic
+/// outside the option-validation family that upstream baselines drop?
+/// Used by `runOneEntry` so a fixture whose only emissions are
+/// `TS5101 outFile` / `TS5107 module=AMD` still counts as clean.
+fn compilationHasNonOptionValidationError(compilation: anytype) bool {
+    for (compilation.diagnostics.items) |d| {
+        if (!diagnosticIsOptionValidation(d)) return true;
+    }
+    return false;
+}
+
+/// Return the first diagnostic that should be surfaced in failure
+/// detail rendering. For expected-clean fixtures, option-validation
+/// diagnostics are not real failures; surfacing one of them would
+/// mislead the post-run summary. For expected-error fixtures we keep
+/// the first diagnostic regardless.
+fn firstNonOptionValidationDiagnostic(
+    compilation: anytype,
+    expects_error: bool,
+) ?@TypeOf(compilation.diagnostics.items[0]) {
+    if (compilation.diagnostics.items.len == 0) return null;
+    if (expects_error) return compilation.diagnostics.items[0];
+    for (compilation.diagnostics.items) |d| {
+        if (!diagnosticIsOptionValidation(d)) return d;
+    }
+    return null;
+}
+
 fn isDiagnosticHeader(line: []const u8) bool {
     if (std.mem.startsWith(u8, line, "error TS")) return true;
     if (std.mem.startsWith(u8, line, "error HM")) return true;
@@ -1915,26 +1985,6 @@ fn isNodeResolutionFullProgramFixture(name: []const u8, source: []const u8) bool
 }
 
 fn hasHarnessModeledExpectedError(name: []const u8, source: []const u8) bool {
-    // TS 7-era upstream baselines include option deprecation diagnostics
-    // for AMD/System/outFile fixture modes. The in-memory conformance runner
-    // compiles one stripped virtual source and does not instantiate the full
-    // command-line option validator, so preserve the coarse expected-error
-    // ratchet here until exact option diagnostics are wired into ts_driver.
-    if (std.mem.indexOf(u8, source, "@outFile:") != null) return true;
-    if (std.mem.indexOf(u8, source, "@module: amd") != null or
-        std.mem.indexOf(u8, source, "@module: AMD") != null or
-        std.mem.indexOf(u8, source, "@module: system") != null or
-        std.mem.indexOf(u8, source, "@module: System") != null)
-    {
-        return true;
-    }
-    // `typesVersions` package redirects/backreferences are resolver-level
-    // tests. The stripped single-source runner intentionally drops package
-    // JSON sections and does not build a node_modules graph yet, so model the
-    // expected resolver diagnostic in coarse mode rather than fabricating a
-    // checker error.
-    if (std.mem.indexOf(u8, name, "typesVersionsDeclarationEmit.multiFileBackReferenceToSelf") != null) return true;
-    if (std.mem.indexOf(u8, name, "typesVersionsDeclarationEmit.multiFileBackReferenceToUnmapped") != null) return true;
     // Node16/NodeNext package-resolution fixtures assert diagnostics
     // through a full program graph: package.json mode selection,
     // conditional exports/imports, declaration emit redirection, and
@@ -1948,8 +1998,7 @@ fn hasHarnessModeledExpectedError(name: []const u8, source: []const u8) bool {
     // implemented, so this fixture stays modeled until the broader
     // generic-call machinery lands.
     if (std.mem.eql(u8, name, "genericCallWithGenericSignatureArguments2")) return true;
-    return std.mem.indexOf(u8, source, "\"typesVersions\"") != null and
-        std.mem.indexOf(u8, source, "export * from \"../\"") != null;
+    return false;
 }
 
 fn hasHarnessModeledExpectedClean(name: []const u8, source: []const u8) bool {
@@ -2803,13 +2852,19 @@ fn runOneEntry(gpa: std.mem.Allocator, entry: CorpusEntry) !Result {
         };
     };
     const modeled_clean = !entry.expects_error and hasHarnessModeledExpectedClean(entry.name, entry.source);
-    const had_errors = !modeled_clean and (compilation.has_errors or
+    // For expected-clean fixtures we ignore option-deprecation
+    // diagnostics: upstream baselines drop them (see
+    // `isOptionValidationDiagnostic` / `baselineHasOnlyOptionDeprecation`)
+    // so a fixture whose only "errors" are TS5101/TS5107 deprecation
+    // notices counts as clean both in baseline and here.
+    const driver_has_non_option_errors = !entry.expects_error and compilationHasNonOptionValidationError(compilation);
+    const driver_has_errors = if (entry.expects_error) compilation.has_errors else driver_has_non_option_errors;
+    const had_errors = !modeled_clean and (driver_has_errors or
         hasNoLibReferenceLib(entry.source) or
         hasCompilerOptionCompatibilityDiagnostic(entry.source) or
         (entry.expects_error and directiveTargetDeprecated(entry.source)) or
         (entry.expects_error and hasHarnessModeledExpectedError(entry.name, entry.source)));
-    const first_actual_detail: ?[]u8 = if (compilation.diagnostics.items.len > 0) blk: {
-        const d = compilation.diagnostics.items[0];
+    const first_actual_detail: ?[]u8 = if (firstNonOptionValidationDiagnostic(compilation, entry.expects_error)) |d| blk: {
         const pos = ts_diagnostics.positionToLineCol(entry.source, d.pos);
         break :blk try std.fmt.allocPrint(
             gpa,
@@ -3366,6 +3421,115 @@ test "conformance: bulk-retired parser/jsdoc/class/module shim names return fals
     try T.expect(!hasHarnessModeledExpectedError("unicodeExtendedEscapesInStrings19", "// @target: es5\nlet x = 1;"));
     // Surviving shim stays load-bearing.
     try T.expect(hasHarnessModeledExpectedError("genericCallWithGenericSignatureArguments2", empty));
+}
+
+test "conformance: option-deprecation shim entries retired (driver now emits)" {
+    // `@outFile:` and `@module: amd/AMD/system/System` used to live in
+    // `hasHarnessModeledExpectedError` as coarse-mode rescues for the
+    // TS5101 / TS5107 deprecation diagnostics our in-memory driver
+    // wasn't emitting. The driver now emits both, so the shim entries
+    // are gone — this test guards against accidental re-shimming and
+    // confirms that fixtures matching only these patterns no longer
+    // claim a harness-modeled rescue.
+    try T.expect(!hasHarnessModeledExpectedError("anything", "// @outFile: out.js\nconst x = 1;"));
+    try T.expect(!hasHarnessModeledExpectedError("x", "// @module: amd\nconst x = 1;"));
+    try T.expect(!hasHarnessModeledExpectedError("x", "// @module: AMD\nconst x = 1;"));
+    try T.expect(!hasHarnessModeledExpectedError("x", "// @module: system\nconst x = 1;"));
+    try T.expect(!hasHarnessModeledExpectedError("x", "// @module: System\nconst x = 1;"));
+}
+
+test "conformance: typesVersions resolver shim entries retired" {
+    // The two named typesVersionsDeclarationEmit entries lived under
+    // `declarationEmit/` (not in the active baseline survey) and the
+    // `"typesVersions"` + `export * from "../"` source pattern was
+    // structurally unreachable from the stripped single-source path
+    // (the package.json that carries `"typesVersions"` is dropped by
+    // `stripNonCodeVirtualSections`). Removed; this test guards
+    // against accidental re-shimming.
+    const empty: []const u8 = "";
+    try T.expect(!hasHarnessModeledExpectedError("typesVersionsDeclarationEmit.multiFileBackReferenceToSelf", empty));
+    try T.expect(!hasHarnessModeledExpectedError("typesVersionsDeclarationEmit.multiFileBackReferenceToUnmapped", empty));
+    // The catch-all `"typesVersions"` + `export * from "../"` source
+    // pattern is gone — the stripped source never contains the
+    // package.json carrying `"typesVersions"`.
+    const orphan_src =
+        \\"typesVersions"
+        \\export * from "../"
+    ;
+    try T.expect(!hasHarnessModeledExpectedError("anyName", orphan_src));
+}
+
+test "conformance: option-validation diagnostics filtered from coarse expected-clean count" {
+    // The driver now emits TS5101 / TS5107 from option-deprecation
+    // directives. Fixtures whose ONLY error in the upstream baseline
+    // is a deprecation diagnostic are flagged as expected-clean
+    // (`baselineHasOnlyOptionDeprecation` → `expects_error = false`),
+    // so the coarse path must ignore the driver-emitted deprecation
+    // when computing `had_errors` — otherwise we'd over-report.
+    const r = try runOneEntry(T.allocator, .{
+        .name = "outFileCleanFixture",
+        .source =
+        \\// @outFile: bundle.js
+        \\const x: number = 1;
+        ,
+        .path = "outFileCleanFixture.ts",
+        .expects_error = false,
+    });
+    defer {
+        T.allocator.free(r.name);
+        if (r.detail.len > 0) T.allocator.free(r.detail);
+    }
+    try T.expectEqual(Outcome.passed, r.outcome);
+}
+
+test "conformance: option-deprecation diagnostic alone passes coarse expected-error" {
+    // Coarse-mode expected-error fixtures pass when any diagnostic
+    // fires. The driver's deprecation diagnostic now satisfies that
+    // contract for AMD/System/outFile fixtures that previously needed
+    // a `hasHarnessModeledExpectedError` shim.
+    const r = try runOneEntry(T.allocator, .{
+        .name = "amdDeprecationFixture",
+        .source =
+        \\// @module: amd
+        \\export const x = 1;
+        ,
+        .path = "amdDeprecationFixture.ts",
+        .expects_error = true,
+    });
+    defer {
+        T.allocator.free(r.name);
+        if (r.detail.len > 0) T.allocator.free(r.detail);
+    }
+    try T.expectEqual(Outcome.passed, r.outcome);
+}
+
+test "conformance: option-validation diagnostic filter recognizes outFile/AMD" {
+    try T.expect(diagnosticIsOptionValidation(.{
+        .code = @as(u32, 5101),
+        .message = @as([]const u8, "Option 'outFile' is deprecated..."),
+    }));
+    try T.expect(diagnosticIsOptionValidation(.{
+        .code = @as(u32, 5107),
+        .message = @as([]const u8, "Option 'module=AMD' is deprecated..."),
+    }));
+    try T.expect(diagnosticIsOptionValidation(.{
+        .code = @as(u32, 5107),
+        .message = @as([]const u8, "Option 'module=System' is deprecated..."),
+    }));
+    try T.expect(diagnosticIsOptionValidation(.{
+        .code = @as(u32, 5107),
+        .message = @as([]const u8, "Option 'module=UMD' is deprecated..."),
+    }));
+    // `target=ES5` is still produced by the driver and kept in baselines
+    // — it must NOT be filtered (parity with isOptionValidationDiagnostic).
+    try T.expect(!diagnosticIsOptionValidation(.{
+        .code = @as(u32, 5107),
+        .message = @as([]const u8, "Option 'target=ES5' is deprecated..."),
+    }));
+    try T.expect(!diagnosticIsOptionValidation(.{
+        .code = @as(u32, 2322),
+        .message = @as([]const u8, "Type X is not assignable to type Y."),
+    }));
 }
 
 test "conformance: exact-error path honors modeled Node resolver bucket" {

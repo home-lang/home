@@ -9333,6 +9333,39 @@ pub const Checker = struct {
                 try self.reportUnresolvedBodylessSignatureTypeRefs(ia.object, type_params);
                 try self.reportUnresolvedBodylessSignatureTypeRefs(ia.index, type_params);
             },
+            .fn_type, .constructor_type => {
+                // `(x: U) => U` and `new (x: U) => U` — the inner fn-type
+                // is itself a signature whose parameter annotations and
+                // return type may reference type names from the enclosing
+                // scope. Merge in any locally-declared type parameters of
+                // the inner signature so `<S>(x: S) => S` doesn't trip
+                // TS2304 on `S`. Mirrors upstream tsc, which fires
+                // TS2304 on `function foo<T>(b: (x: U) => U) {}` for `U`.
+                const ft = hir_mod.fnTypeOf(self.hir, type_node);
+                const inner_type_params = self.hir.childSlice(ft.type_params_start, ft.type_params_len);
+                if (inner_type_params.len == 0) {
+                    for (self.hir.childSlice(ft.params_start, ft.params_len)) |p| {
+                        if (self.hir.kindOf(p) != .parameter) continue;
+                        const pp = hir_mod.parameterOf(self.hir, p);
+                        try self.reportUnresolvedBodylessSignatureTypeRefs(pp.type_annotation, type_params);
+                    }
+                    try self.reportUnresolvedBodylessSignatureTypeRefs(ft.return_type, type_params);
+                } else {
+                    // Build merged type-param list. Heap-allocate via the
+                    // checker arena so the slice lives for the recursive
+                    // call only.
+                    var merged: std.ArrayListUnmanaged(NodeId) = .empty;
+                    defer merged.deinit(self.gpa);
+                    try merged.appendSlice(self.gpa, type_params);
+                    try merged.appendSlice(self.gpa, inner_type_params);
+                    for (self.hir.childSlice(ft.params_start, ft.params_len)) |p| {
+                        if (self.hir.kindOf(p) != .parameter) continue;
+                        const pp = hir_mod.parameterOf(self.hir, p);
+                        try self.reportUnresolvedBodylessSignatureTypeRefs(pp.type_annotation, merged.items);
+                    }
+                    try self.reportUnresolvedBodylessSignatureTypeRefs(ft.return_type, merged.items);
+                }
+            },
             else => {},
         }
     }
@@ -59316,3 +59349,59 @@ test "checker: class instance member access inherits Object prototype" {
     try T.expect(!saw_tostring_2339);
     try T.expect(!saw_hasown_2339);
 }
+
+test "checker: TS2304 fires for unresolved type ref inside arrow-type parameter" {
+    // `b: (x: U) => U` inside `function foo<T>(...)` references `U`
+    // which is not in scope. Upstream tsc emits TS2304 at both `U`
+    // occurrences. Mirrors a regression from
+    // `genericCallWithGenericSignatureArguments2.ts` — the harness
+    // ratchet for that fixture stayed shimmed until this walk fired.
+    const s = try newSetup(
+        \\function foo<T>(x: T, a: (x: T) => T, b: (x: U) => U) {}
+    );
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+    var saw_2304_on_U: u32 = 0;
+    var saw_2304_on_T: u32 = 0;
+    for (s.checker.diagnostics.items) |d| {
+        if (d.code != TsCodes.cannot_find_name) continue;
+        if (std.mem.indexOf(u8, d.message, "'U'") != null) saw_2304_on_U += 1;
+        if (std.mem.indexOf(u8, d.message, "'T'") != null) saw_2304_on_T += 1;
+    }
+    try T.expectEqual(@as(u32, 2), saw_2304_on_U);
+    try T.expectEqual(@as(u32, 0), saw_2304_on_T);
+}
+
+test "checker: nested arrow type with local <S> does not fire TS2304 on S" {
+    // The inner fn-type `<S>(x: S) => S` declares S locally; reference
+    // resolution must merge those type parameters in before sweeping
+    // the parameter annotations.
+    const s = try newSetup(
+        \\function foo<T>(g: <S>(x: S) => S) {}
+    );
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+    for (s.checker.diagnostics.items) |d| {
+        if (d.code == TsCodes.cannot_find_name) {
+            try T.expect(std.mem.indexOf(u8, d.message, "'S'") == null);
+            try T.expect(std.mem.indexOf(u8, d.message, "'T'") == null);
+        }
+    }
+}
+
+test "checker: constructor-type (new (x: U) => U) walks parameter annotations" {
+    const s = try newSetup(
+        \\function foo<T>(g: new (x: U) => U) {}
+    );
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+    var saw_U_2304: u32 = 0;
+    for (s.checker.diagnostics.items) |d| {
+        if (d.code == TsCodes.cannot_find_name and
+            std.mem.indexOf(u8, d.message, "'U'") != null) saw_U_2304 += 1;
+    }
+    try T.expect(saw_U_2304 >= 1);
+}
+
+
+

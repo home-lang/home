@@ -177,6 +177,64 @@ fn appendDriverDiagnostic(
     c.has_errors = true;
 }
 
+/// Emit `tsc`'s option-deprecation diagnostics for the directive-driven
+/// compiler options we can detect from the source. Mirrors TS5101 /
+/// TS5107 emission shape upstream uses for `outFile`, `module=AMD`,
+/// `module=System`, `module=UMD`. Conformance baselines drop these
+/// before comparing (see `isOptionValidationDiagnostic`), so emitting
+/// them here doesn't break exact-mode diffs, but it DOES turn coarse-
+/// mode `expects_error` checks from a harness-modeled rescue into a
+/// real `has_errors == true`. The path mirrors the existing
+/// `report_deprecated_target_es5` flag — both fire from the option-
+/// validation layer that the in-memory driver previously skipped.
+fn reportDeprecatedOptionDirectives(
+    gpa: std.mem.Allocator,
+    c: *Compilation,
+    source: []const u8,
+) CompileError!void {
+    if (directiveValue(source, "outFile") != null) {
+        try c.diagnostics.append(gpa, .{
+            .phase = .parse,
+            .pos = 0,
+            .line = 0,
+            .code = 5101,
+            .is_global = true,
+            .message = try gpa.dupe(u8, "Option 'outFile' is deprecated and will stop functioning in TypeScript 7.0. Specify compilerOption '\"ignoreDeprecations\": \"6.0\"' to silence this error."),
+        });
+        c.has_errors = true;
+    }
+    if (directiveValue(source, "module")) |mod_raw| {
+        // The directive may include trailing characters when the value
+        // sits inline with whitespace; `directiveValue` already trims
+        // the trailing space/tab/asterisk run, so a plain ASCII
+        // case-insensitive compare suffices.
+        const label_opt: ?[]const u8 = if (std.ascii.eqlIgnoreCase(mod_raw, "amd"))
+            "AMD"
+        else if (std.ascii.eqlIgnoreCase(mod_raw, "system"))
+            "System"
+        else if (std.ascii.eqlIgnoreCase(mod_raw, "umd"))
+            "UMD"
+        else
+            null;
+        if (label_opt) |label| {
+            const msg = try std.fmt.allocPrint(
+                gpa,
+                "Option 'module={s}' is deprecated and will stop functioning in TypeScript 7.0. Specify compilerOption '\"ignoreDeprecations\": \"6.0\"' to silence this error.",
+                .{label},
+            );
+            try c.diagnostics.append(gpa, .{
+                .phase = .parse,
+                .pos = 0,
+                .line = 0,
+                .code = 5107,
+                .is_global = true,
+                .message = msg,
+            });
+            c.has_errors = true;
+        }
+    }
+}
+
 fn reportMissingReferencePathDiagnostics(
     gpa: std.mem.Allocator,
     c: *Compilation,
@@ -536,6 +594,8 @@ pub fn compileSource(
         });
         c.has_errors = true;
     }
+
+    try reportDeprecatedOptionDirectives(gpa, c, source);
 
     try reportMissingReferencePathDiagnostics(gpa, c, source);
 
@@ -2158,5 +2218,116 @@ test "driver: recursive generic call with explicit type args — no bogus TS2347
     }
     for (c.diagnostics.items) |d| {
         if (d.code == 2347) return error.UnexpectedTS2347;
+    }
+}
+
+test "driver: @outFile directive emits TS5101 option-deprecation diagnostic" {
+    // Mirrors upstream's behavior: every fixture with `// @outFile:`
+    // gets a TS5101 deprecation diagnostic from the option-validation
+    // layer. The conformance harness uses this to drop the
+    // `hasHarnessModeledExpectedError` shim that was previously
+    // pattern-matching the directive directly.
+    var c = try compileSource(T.allocator,
+        \\// @outFile: bundle.js
+        \\const x = 1;
+    , .{ .no_emit = true });
+    defer {
+        c.deinit();
+        T.allocator.destroy(c);
+    }
+    var found_5101 = false;
+    for (c.diagnostics.items) |d| {
+        if (d.code == 5101 and
+            std.mem.indexOf(u8, d.message, "Option 'outFile'") != null and
+            std.mem.indexOf(u8, d.message, "deprecated") != null and
+            d.is_global)
+        {
+            found_5101 = true;
+        }
+    }
+    try T.expect(found_5101);
+    try T.expect(c.has_errors);
+}
+
+test "driver: @outFile absence does not emit TS5101" {
+    var c = try compileSource(T.allocator, "const x = 1;", .{ .no_emit = true });
+    defer {
+        c.deinit();
+        T.allocator.destroy(c);
+    }
+    for (c.diagnostics.items) |d| {
+        try T.expect(d.code != 5101);
+    }
+}
+
+test "driver: @module: amd emits TS5107 module=AMD deprecation" {
+    var c = try compileSource(T.allocator,
+        \\// @module: amd
+        \\export const x = 1;
+    , .{ .no_emit = true });
+    defer {
+        c.deinit();
+        T.allocator.destroy(c);
+    }
+    var found = false;
+    for (c.diagnostics.items) |d| {
+        if (d.code == 5107 and
+            std.mem.indexOf(u8, d.message, "module=AMD") != null and
+            std.mem.indexOf(u8, d.message, "deprecated") != null and
+            d.is_global)
+        {
+            found = true;
+        }
+    }
+    try T.expect(found);
+}
+
+test "driver: @module: system emits TS5107 module=System deprecation" {
+    var c = try compileSource(T.allocator,
+        \\// @module: System
+        \\export const x = 1;
+    , .{ .no_emit = true });
+    defer {
+        c.deinit();
+        T.allocator.destroy(c);
+    }
+    var found = false;
+    for (c.diagnostics.items) |d| {
+        if (d.code == 5107 and
+            std.mem.indexOf(u8, d.message, "module=System") != null) found = true;
+    }
+    try T.expect(found);
+}
+
+test "driver: @module: umd emits TS5107 module=UMD deprecation" {
+    var c = try compileSource(T.allocator,
+        \\// @module: umd
+        \\export const x = 1;
+    , .{ .no_emit = true });
+    defer {
+        c.deinit();
+        T.allocator.destroy(c);
+    }
+    var found = false;
+    for (c.diagnostics.items) |d| {
+        if (d.code == 5107 and
+            std.mem.indexOf(u8, d.message, "module=UMD") != null) found = true;
+    }
+    try T.expect(found);
+}
+
+test "driver: @module: esnext does not emit TS5107" {
+    // Only AMD/System/UMD are deprecated. Modern module modes pass
+    // through cleanly.
+    var c = try compileSource(T.allocator,
+        \\// @module: esnext
+        \\export const x = 1;
+    , .{ .no_emit = true });
+    defer {
+        c.deinit();
+        T.allocator.destroy(c);
+    }
+    for (c.diagnostics.items) |d| {
+        try T.expect(d.code != 5107);
     }
 }
