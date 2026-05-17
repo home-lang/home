@@ -7930,23 +7930,6 @@ pub const Parser = struct {
                 }
                 continue;
             }
-            // `a +;`, `a +,`, `a +}`, `a +eof` — binary RHS is missing.
-            // Anchor TS1109 at the offending token (matches the
-            // `close_paren` arm above and the unary-prefix recovery in
-            // `parseUnaryExpression`) so the outer statement keeps
-            // parsing instead of bubbling `error.UnexpectedToken` and
-            // dropping the diagnostic. We deliberately drop the
-            // binary node and keep `left` as the recovered value:
-            // synthesising a numeric `0` RHS would feed a phantom
-            // operand into the checker and surface false-positive
-            // TS2365 / TS2304 on top of the parse error. Regression
-            // for upstream `plusOperatorInvalidOperations.ts(5,17)`
-            // / `(8,15)`.
-            if (self.peekIsUnaryOperandStopToken()) {
-                const at = self.peek();
-                try self.reportCodeAt(at.span.start, at.line, 1109, "Expression expected.");
-                continue;
-            }
             const right = try self.parseBinaryExpressionWithIn(next_min, allow_in);
             const sp: Span = .{ .start = self.hir.spanOf(left).start, .end = self.hir.spanOf(right).end };
             if (prec_mod.binOpOf(t.kind)) |bop| {
@@ -8041,55 +8024,17 @@ pub const Parser = struct {
         return before > 0 and after < self.source.len and self.source[before - 1] == '(' and self.source[after] == ')';
     }
 
-    /// True when the upcoming token cannot start an operand for a
-    /// unary prefix operator. Used by `parseUnaryExpression` to anchor
-    /// TS1109 at the offending token (matching upstream tsc) rather
-    /// than bubbling `error.UnexpectedToken` and dropping the
-    /// diagnostic on the floor.
-    fn peekIsUnaryOperandStopToken(self: *Parser) bool {
-        const k = self.peek().kind;
-        return k == .semicolon or k == .close_paren or k == .close_brace or
-            k == .close_bracket or k == .comma or k == .colon or k == .eof;
-    }
-
-    /// Recovery for `<op>;` / `<op>,` / `<op>)` etc. — the unary
-    /// operator already consumed `<op>`, the operand is missing.
-    /// Anchor TS1109 at the offending follow-on token (same anchor
-    /// convention as `parsePrimaryExpression`'s stop-token branch)
-    /// and synthesize an empty identifier so the outer statement
-    /// keeps parsing instead of bubbling `error.UnexpectedToken`.
-    fn recoverUnaryMissingOperand(self: *Parser, op_tok: ts_lexer.Token, op_kind: hir_mod.UnaryOp) ParseError!NodeId {
-        const at = self.peek();
-        try self.reportCodeAt(at.span.start, at.line, 1109, "Expression expected.");
-        // Synthesize a numeric `0` operand: it satisfies the unary
-        // operator's type expectations (`+`/`-`/`~` all take number,
-        // `!` widens any) so the checker won't pile downstream
-        // TS2362 / TS2304 onto the already-reported parse error.
-        // Mirrors the `(<bin>)` close-paren recovery a few lines
-        // above which also synthesizes `0` for the missing operand.
-        const operand_span: Span = .{ .start = at.span.start, .end = at.span.start };
-        const operand = try self.builder.addLiteralNumber(operand_span, 0);
-        const sp: Span = .{ .start = op_tok.span.start, .end = at.span.start };
-        return try self.builder.addUnaryOp(sp, op_kind, operand);
-    }
-
     fn parseUnaryExpression(self: *Parser) ParseError!NodeId {
         const t = self.peek();
         switch (t.kind) {
             .plus => {
                 _ = self.advance();
-                if (self.peekIsUnaryOperandStopToken()) {
-                    return try self.recoverUnaryMissingOperand(t, .plus);
-                }
                 const operand = try self.parseUnaryExpression();
                 const sp: Span = .{ .start = t.span.start, .end = self.hir.spanOf(operand).end };
                 return try self.builder.addUnaryOp(sp, .plus, operand);
             },
             .minus => {
                 _ = self.advance();
-                if (self.peekIsUnaryOperandStopToken()) {
-                    return try self.recoverUnaryMissingOperand(t, .neg);
-                }
                 const operand = try self.parseUnaryExpression();
                 const sp: Span = .{ .start = t.span.start, .end = self.hir.spanOf(operand).end };
                 return try self.builder.addUnaryOp(sp, .neg, operand);
@@ -15604,52 +15549,4 @@ test "parser: 'export [x: string]: string' in a class body reports TS1071 on exp
         if (d.code == 1071) saw_ts1071 = true;
     }
     try T.expect(saw_ts1071);
-}
-
-test "parser: prefix `+` followed only by `;` emits TS1109 at the semicolon" {
-    // Regression for `plusOperatorInvalidOperations.ts(8,15)`: the
-    // initializer `var result2 =+;` has a unary `+` with no operand.
-    // Upstream tsc anchors `Expression expected.` (TS1109) at the
-    // following token (here the `;`), not at the `+`. We previously
-    // dropped the diagnostic entirely on the `=+;` shape because the
-    // recursive `parseUnaryExpression` returned `error.UnexpectedToken`
-    // before the recovery anchor had a chance to fire.
-    const src = "var x =+;";
-    var s = try newTestSetup(src);
-    defer destroyTestSetup(s);
-    _ = s.parser.parseSourceFile() catch {};
-    var ts1109_at_semi: usize = 0;
-    for (s.parser.diagnostics.items) |d| {
-        if (d.code != 1109) continue;
-        // `var x =+;` — the `;` sits at byte index 8 (0-based),
-        // column 9 (1-based).
-        if (d.pos == 8) ts1109_at_semi += 1;
-    }
-    try T.expect(ts1109_at_semi >= 1);
-}
-
-test "parser: plusOperatorInvalidOperations fixture emits TS1109 at both unary-plus recovery points" {
-    // Regression for upstream `plusOperatorInvalidOperations.ts(8,15)`:
-    // the multi-statement fixture has TWO invalid unary-`+` shapes
-    // (`b+;` postfix + `=+;` prefix) and tsc anchors TS1109 at each
-    // recovery point. We previously emitted only the first one.
-    const src =
-        \\// Unary operator +
-        \\var b;
-        \\
-        \\// operand before +
-        \\var result1 = b+;
-        \\
-        \\// miss  an operand
-        \\var result2 =+;
-        \\
-    ;
-    var s = try newTestSetup(src);
-    defer destroyTestSetup(s);
-    _ = s.parser.parseSourceFile() catch {};
-    var ts1109_count: usize = 0;
-    for (s.parser.diagnostics.items) |d| {
-        if (d.code == 1109) ts1109_count += 1;
-    }
-    try T.expect(ts1109_count >= 2);
 }
