@@ -14828,7 +14828,19 @@ pub const Checker = struct {
             try self.checkImportEqualsEntity(node, imp);
             return;
         }
-        if (self.importDeclIsRequireAssignment(node) and self.sourceDirectiveValueMentions("module", "esnext") and !imp.is_type_only) {
+        // TS1202 fires for any ECMAScript-module `// @module` target —
+        // not just `esnext`. Upstream tsc treats `es2015`, `es2020`,
+        // `es2022`, `es6`, and the `preserve` mode the same way: the
+        // CommonJS-style `import = require(...)` form is rejected.
+        // Mirrors `es6modulekindWithES5Target10` /
+        // `verbatimModuleSyntaxRestrictionsESM`.
+        const module_is_esm = self.sourceDirectiveValueMentions("module", "esnext") or
+            self.sourceDirectiveValueMentions("module", "es2015") or
+            self.sourceDirectiveValueMentions("module", "es2020") or
+            self.sourceDirectiveValueMentions("module", "es2022") or
+            self.sourceDirectiveValueMentions("module", "es6") or
+            self.sourceDirectiveValueMentions("module", "preserve");
+        if (self.importDeclIsRequireAssignment(node) and module_is_esm and !imp.is_type_only) {
             try self.report(node, TsCodes.import_assignment_es_module, "Import assignment cannot be used when targeting ECMAScript modules. Consider using 'import * as ns from \"mod\"', 'import {a} from \"mod\"', 'import d from \"mod\"', or another module format instead.");
         }
         if (self.importDeclIsRequireAssignment(node) and self.sourceDirectiveValueMentions("rewriteRelativeImportExtensions", "true") and
@@ -62654,6 +62666,27 @@ test "checker: export type specifier in .js virtual section emits TS8006" {
     }
     try T.expect(found_8006);
     try T.expect(!found_2661);
+}
+
+test "checker: import = require emits TS1202 under module=es2015" {
+    // Mirrors `es6modulekindWithES5Target10` and
+    // `verbatimModuleSyntaxRestrictionsESM`: tsc's TS1202 trigger
+    // fires for every ECMAScript-module target (`es2015`, `es2020`,
+    // `es2022`, `es6`, `esnext`, `preserve`), not just `esnext`. The
+    // CommonJS `import x = require(...)` form is rejected in all of
+    // them. Mirrors fixtures that pair `@module: es2015` with an
+    // `import = require(...)` statement.
+    const s = try newSetup(
+        \\// @module: es2015
+        \\import i = require("mod");
+    );
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+    var found_1202 = false;
+    for (s.checker.diagnostics.items) |d| {
+        if (d.code == TsCodes.import_assignment_es_module) found_1202 = true;
+    }
+    try T.expect(found_1202);
 }
 
 test "checker: default export merging with namespace and interface anchors at name" {
