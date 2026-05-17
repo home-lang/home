@@ -1004,12 +1004,18 @@ pub const Parser = struct {
                 const declare_tok = self.advance(); // declare
                 try self.reportModifierInBlock(declare_tok);
                 // TS1038: redundant `declare` inside an already
-                // ambient context. `.d.ts` files are themselves an
-                // ambient context, so nested `declare` is invalid
-                // even when `ambient_depth == 0` (the outer file
-                // itself is ambient). Mirrors upstream tsc on
+                // ambient context. Fires when wrapped by another
+                // `declare` block OR when nested inside a namespace
+                // that sits in a `.d.ts` file (the surrounding file
+                // is implicitly ambient). Top-level `declare` in a
+                // `.d.ts` (no nested context) is NOT redundant —
+                // it's the canonical form — so guard on
+                // `namespace_depth > 0` for the .d.ts branch.
+                // Mirrors upstream tsc on
                 // `parserModuleDeclaration4.d.ts(2,3)`.
-                if (self.isAmbientContextAt(declare_tok.span.start)) {
+                if (self.ambient_depth > 0 or
+                    (self.namespace_depth > 0 and self.isAmbientContextAt(declare_tok.span.start)))
+                {
                     try self.reportCodeAt(declare_tok.span.start, declare_tok.line, 1038, "A 'declare' modifier cannot be used in an already ambient context.");
                 }
                 self.ambient_depth += 1;
